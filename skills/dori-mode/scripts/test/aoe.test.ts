@@ -123,6 +123,23 @@ test("a working lane whose aoe session waits for a human is reported once as LAN
   expect((await at(T0).registry.read("fix-a"))?.idleSince).toBe(T0 + 4 * MIN + 30_000);
 });
 
+test("an idle lane that waits on its own monitor, wake source or goal is never LANE_BLOCKED idle; a question or aoe waiting still is", async () => {
+  const lane: Lane = { key: "fix-a", title: "fix-a", thread: "none", pane: PANE, brief: "/b.md", done: "file /etc/hostname", cwd: "/repo", openedAt: new Date(T0).toISOString() };
+  await at(T0).registry.write(lane);
+  world.aoePs = [{ session: LANE_ID, state: "idle" }];
+  const status = (s: string) => `❯ \n Claude │ pool\n(OmO) mem:repo just now ${s}`;
+  let t = T0;
+  for (const mark of ["◉ watching local_ci approval-path-audit #2 (2m)", "2 wake source(s) on duty", "goal continues in 4m", "Pursuing goal (18m)"]) {
+    world.screen = status(mark);
+    for (let i = 0; i < 4; i++, t += 30_000) expect(await watchTick(at(t))).toEqual([]);
+  }
+  world.screen = ` Ask user · 2m\n Submit (0/1 answered)\n${status("Pursuing goal (18m)")}`;
+  expect(await watchTick(at(t))).toEqual([`LANE_BLOCKED fix-a question ${PANE}`]);
+  world.aoePs = [{ session: LANE_ID, state: "waiting" }];
+  world.screen = status("◉ watching ci (1m)");
+  expect(await watchTick(at(t + 30_000))).toEqual([`LANE_BLOCKED fix-a waiting ${PANE}`]);
+});
+
 test("a stopped agent in an aoe session is reported, and the lead's session is skipped", async () => {
   world.screen = "omo has stopped\n$ ";
   const deps = at(T0);
