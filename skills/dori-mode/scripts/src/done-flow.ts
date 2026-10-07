@@ -136,7 +136,7 @@ export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
     const idleSince = act === "idle" ? (lane.idleSince ?? now) : undefined;
     const blocked = act === "waiting" || act === "error" || act === "question" ? act : idleSince !== undefined && now - idleSince >= IDLE_SETTLE_MS ? "idle" : undefined;
     if (blocked === lane.blocked && idleSince === lane.idleSince) continue;
-    await deps.registry.write({ ...lane, blocked, idleSince });
+    await deps.registry.patch(lane.key, { blocked, idleSince });
     if (blocked && blocked !== lane.blocked) out.push(`LANE_BLOCKED ${lane.key} ${blocked} ${lane.pane}`);
   }
   return out;
