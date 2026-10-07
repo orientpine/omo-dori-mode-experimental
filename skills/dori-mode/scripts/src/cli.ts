@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
@@ -20,6 +23,9 @@ import { ThreadLedger } from "./messenger/thread-ledger.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
+import { QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
+import { DiscordListener } from "./messenger/discord-listener.ts";
+import { threadHook, ThreadRefError } from "./messenger/discord-thread.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
@@ -42,7 +48,16 @@ const USAGE = `dori <command> [options]
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file>              run hooks.transcribe and print the text
   inbound slack [--loop MIN]           print INBOUND lines: unread thread replies (threads view), replies in threads
-                                       the Dori posted in (any helper), DMs and channels with unread mentions`;
+                                       the Dori posted in (any helper), DMs and channels with unread mentions
+  inbound discord                      long-running gateway listener: the owner's messages get an eyes reaction and an
+                                       inbox row, voice is transcribed, question-card answers are recorded
+  ask --text Q --option A [--option B ...] [--thread REF] [--session ID] [--tmux NAME]
+                                       post a Discord question card; the first option is the recommended one
+  questions [--open]                   list tracked question cards
+  reopen <Qn> / resolve <Qn>           put a card's buttons back / forget a settled question
+  thread <reply|done> discord:<id> <text>
+                                       post in a work thread; done also sets the done status word and archives it
+                                       (Discord env: DORI_DISCORD_TOKEN, DORI_DISCORD_GUILD, DORI_DISCORD_CHANNEL, DORI_DISCORD_OWNER)`;
 
 const die = (message: string, code = 1): never => {
   console.error(message);
@@ -62,6 +77,7 @@ const flags = parseArgs({
     model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string" },
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
     to: { type: "string" }, text: { type: "string" }, edit: { type: "string" },
+    option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -78,6 +94,23 @@ const lane = async (k: string | undefined) => {
   if (!found) return die(k ? `no registered lane "${k}"` : "no open lane is registered for this pane");
   if (statusOf(found) === "closed") return die(`lane ${found.key} is already closed`);
   return found;
+};
+
+const env = (name: string): string => process.env[name]?.trim() || die(`${name} is not set`);
+const discordClient = () => new Discord(fetchHttp, realClock, env("DORI_DISCORD_TOKEN"));
+const questionCards = (dc: Discord) => new QuestionCards(dc, new QuestionStore(join(config.stateDir, "discord")), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now);
+
+const transcribeUrl = async (url: string, filename: string): Promise<string> => {
+  const dir = mkdtempSync(join(tmpdir(), "dori-voice-"));
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new TranscriptionError(`voice download failed: ${res.status}`);
+    const file = join(dir, filename.replace(/[^\w.-]/g, "_") || "voice");
+    await Bun.write(file, await res.arrayBuffer());
+    return await transcribe(run, config.hooks.transcribe, file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 };
 
 const every = async (minutes: number, tick: () => Promise<void>): Promise<void> => {
@@ -216,7 +249,35 @@ try {
       break;
     }
     case "inbound": {
-      if (key !== "slack") die("inbound supports slack");
+      if (key === "discord") {
+        const dc = discordClient();
+        const listener = new DiscordListener({
+          dc,
+          cards: questionCards(dc),
+          open: () => {
+            const ws = new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
+            return {
+              send: (d) => ws.send(d),
+              close: (code, reason) => ws.close(code, reason),
+              onMessage: (cb) => ws.addEventListener("message", (e) => cb(String(e.data))),
+              onClose: (cb) => ws.addEventListener("close", (e) => cb(e.code)),
+            };
+          },
+          token: env("DORI_DISCORD_TOKEN"),
+          guild: env("DORI_DISCORD_GUILD"),
+          channel: env("DORI_DISCORD_CHANNEL"),
+          owner: env("DORI_DISCORD_OWNER"),
+          inboxFile: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+          timers: { ...realTimers, setTimeout: (cb, ms) => setTimeout(cb, ms) },
+          now: realClock.now,
+          log: (line) => console.log(line),
+          fatal: (code) => process.exit(code === 4014 ? 4 : 3),
+          ...(config.hooks.transcribe?.length ? { transcribe: transcribeUrl } : {}),
+        });
+        listener.start();
+        await new Promise(() => {});
+      }
+      if (key !== "slack") die("inbound supports slack and discord");
       const auth = { token: process.env.DORI_SLACK_TOKEN ?? die("DORI_SLACK_TOKEN is not set"), cookie: process.env.DORI_SLACK_COOKIE };
       const ledger = new ThreadLedger(`${config.stateDir}/slack-threads.json`);
       const slack = new Slack(fetchHttp, realClock, auth, undefined, ledger);
@@ -227,6 +288,34 @@ try {
       });
       break;
     }
+    case "ask": {
+      const thread = opt("thread")?.replace(/^discord:/, "");
+      const q = await questionCards(discordClient()).ask(need("text"), (flags.values.option as string[] | undefined) ?? [], { thread: thread || null, session: opt("session") || null, tmux: opt("tmux") || null });
+      console.log(`ASKED ${q.id} message=${q.message}`);
+      break;
+    }
+    case "questions": {
+      const all = new QuestionStore(join(config.stateDir, "discord")).all().filter((q) => !flags.values.open || q.status === "open");
+      for (const q of all) console.log(`${q.id} ${q.status} ${JSON.stringify(q.text)}${q.answer ? ` -> ${JSON.stringify(q.answer)} (${q.answerKind})` : ""} thread=${q.thread ?? "-"} session=${q.session ?? "-"} tmux=${q.tmux ?? "-"}`);
+      if (!all.length) console.log("NO_QUESTIONS");
+      break;
+    }
+    case "reopen":
+      console.log(`REOPENED ${(await questionCards(discordClient()).reopen(key ?? die("reopen needs a question id"))).id}`);
+      break;
+    case "resolve": {
+      const id = key ?? die("resolve needs a question id");
+      if (!new QuestionStore(join(config.stateDir, "discord")).resolve(id)) die(`no question ${id}`);
+      console.log(`RESOLVED ${id}`);
+      break;
+    }
+    case "thread": {
+      const [verb, ref, text] = flags.positionals;
+      if ((verb !== "reply" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|done> discord:<thread id> <text>");
+      const posted = await threadHook(discordClient(), verb as "reply" | "done", ref ?? "", text ?? "", config.discord);
+      console.log(`POSTED ${posted}${verb === "done" ? " THREAD_DONE" : ""}`);
+      break;
+    }
     case "transcribe":
       console.log(await transcribe(run, config.hooks.transcribe, key ?? die("transcribe needs an audio file path")));
       break;
@@ -235,6 +324,6 @@ try {
       process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError) die(e.message);
+  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError) die(e.message);
   throw e;
 }
