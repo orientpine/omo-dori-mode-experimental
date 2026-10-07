@@ -35,7 +35,7 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `guard` | load 150/80, 20% memory, 50 GB disk, 20 panes | `guard` |
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
 | `hooks.transcribe` | none | `transcribe` (argv with `{file}`, prints the text), `inbound discord` voice notes |
-| `discord` | English words, `en-US`, `UTC` | thread status words (`working`, `waiting`, `done`) and question-card wording (`other`, `answered`, `ownerOnly`, `byButton`, `byText`), plus `locale` and `timeZone` for answer times |
+| `discord` | English words, `en-US`, `UTC`, `statusStyle: "words"` | `statusStyle` (`words` for `[working]`-style marks, `emoji` for 🔄 ⏸ ✅ and ⏳), thread status words (`working`, `waiting`, `done`) and question-card wording (`other`, `answered`, `ownerOnly`, `byButton`, `byText`), plus `locale` and `timeZone` for answer times |
 
 Tokens and ids come from the environment. Every command first reads `~/.dori/dori.env` (or the file in `DORI_ENV_FILE`), `KEY=VALUE` per line; a variable already set wins. The Discord commands need `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL` (the one channel the Dori talks in) and `DORI_DISCORD_OWNER`.
 
@@ -126,18 +126,22 @@ The Dori's own messages and bot messages are skipped. Every message the Dori pos
 Runs until stopped (run it as a service, see `setups/discord-aoe/`). It connects to the gateway with the message-content intent and handles:
 - the owner's messages in `DORI_DISCORD_CHANNEL`, its threads, and DMs; everyone else, bots included, is skipped. Each gets the eyes reaction at once, a voice note is transcribed through `hooks.transcribe`, and one row is appended to the inbox file (`DORI_DISCORD_INBOX`, default `<stateDir>/discord/inbox.jsonl`) and printed as `INBOUND discord-<scope> <channel> <id> <author> <text>`;
 - question-card taps and write-my-own submissions (below), appended as `kind:"answer"` rows and printed as `ANSWER <Qn> <kind> <answer> thread=… session=… tmux=…`;
-- after each reconnect, the owner's messages it missed in the channel and its active threads, oldest first.
+- after each reconnect, the owner's messages it missed in the channel and its active threads, oldest first;
+- an owner message in a done thread (✅ or `[done]`) reopens it: the thread is unarchived, marked working, and `THREAD_REOPENED <thread>` is printed.
 
 A rejected token or a missing intent stops it (exit 3, or 4 for a disallowed intent); other disconnects retry with backoff up to a minute.
 
 ### `dori ask --text Q --option A [--option B ...] [--thread REF] [--session ID] [--tmux NAME]`
-Posts a question card in `DORI_DISCORD_CHANNEL`, pinging only the owner, and prints `ASKED <Qn> message=<id>`. The first option is the highlighted button, so put your recommendation first; a write-my-own button that opens a text box is added last (1 to 9 options). `--thread`, `--session` and `--tmux` travel with the answer so you know where to relay it. Only the owner's answer counts: the card folds into `[answered] <Qn> … → <answer>` in the interaction response, the answer is appended to `<stateDir>/discord/answers.jsonl`, and it is echoed silently into `--thread`. The listener must be running to receive taps.
+Posts a question card in `DORI_DISCORD_CHANNEL`, pinging only the owner, and prints `ASKED <Qn> message=<id>`. The first option is the highlighted button, so put your recommendation first; a write-my-own button that opens a text box is added last (1 to 9 options). `--thread`, `--session` and `--tmux` travel with the answer so you know where to relay it. Only the owner's answer counts: the card folds into `[answered] <Qn> … → <answer>` (`✅ <Qn> …` with emoji status) in the interaction response, the answer is appended to `<stateDir>/discord/answers.jsonl`, and it is echoed silently into `--thread`. The listener must be running to receive taps.
 
 ### `dori questions [--open]` / `dori reopen <Qn>` / `dori resolve <Qn>`
 List tracked questions; put a card's buttons back (when a typed answer was not really an answer); forget a question once its follow-up is done. The folded card stays in the chat as the record.
 
-### `dori thread <reply|done> discord:<thread id> <text>`
-A ready `hooks.threadReply` / `hooks.threadDone` for Discord: `["dori", "thread", "reply", "{thread}", "{text}"]`. It shows typing, posts the text with emoji removed, and on `done` replaces the status word at the start of the thread name with the `done` word and archives the thread.
+### `dori thread <reply|wait|done> discord:<thread id> <text>`
+A ready `hooks.threadReply` / `hooks.threadDone` for Discord: `["dori", "thread", "reply", "{thread}", "{text}"]`. It shows typing, posts the text with emoji removed, and sets the status mark at the start of the thread name: `reply` working, `wait` waiting, `done` done. `done` archives the thread; the others unarchive it. Nothing is renamed when the mark already holds, because Discord allows only about two renames per ten minutes.
+
+### `dori send discord --to <thread> [--edit <id>] --status working|done --text <text>`
+Writes the text as the progress message in `discord.statusStyle`: `working: <text>` / `done: <text>`, or `⏳ · <text>` / `✅ <text>` with emoji.
 
 ### `dori transcribe <audio-file>`
 Runs `hooks.transcribe` and prints the transcript. A failed or empty transcription is an error, never an empty message.

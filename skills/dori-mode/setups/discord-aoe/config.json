@@ -38,6 +38,7 @@
     ]
   },
   "discord": {
+    "statusStyle": "emoji",
     "working": "working",
     "waiting": "waiting",
     "done": "done",

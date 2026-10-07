@@ -31,6 +31,8 @@ test("the discord-aoe setup's config loads as the aoe backend with built-in thre
   expect(c.hooks.threadDone).toEqual(["dori", "thread", "done", "{thread}", "{text}"]);
   expect(c.discord.done).toBe("done");
   expect(c.discord.timeZone).toBe("UTC");
+  expect(c.discord.statusStyle).toBe("emoji");
+  expect((await loadConfig("/nonexistent/config.json", "/home/ana")).discord.statusStyle).toBe("words");
 });
 
 test("the env file fills unset variables only, skips comments and strips quotes", async () => {

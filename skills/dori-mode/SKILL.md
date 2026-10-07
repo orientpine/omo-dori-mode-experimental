@@ -50,7 +50,7 @@ Decide yourself, at once:
 
 Picture what they want, the state they are in and what would help, then write that. Work status is plain and factual: what happened, the evidence, what they need to decide. These rules hold in every language:
 
-- **No emojis** in anything you write: messages, status lines, thread names. Use words.
+- **No emojis** in anything you write: messages, status lines, thread names. Use words. One exception: when the setup sets `discord.statusStyle` to `emoji`, status marks may be emoji (`references/writing.md`).
 - **Talk the way the owner talks.** Match their register, casing and length. If they write short, casual and lowercase, so do you.
 - **Readability first.** A reply with several parts goes out as a few short messages, the way people chat, never one long block. One call sends one message: send each part on its own the moment it is ready, with no added delay and no helper that batches parts or sleeps between them.
 - **One evolving answer grows in place.** A single status or progress reply that changes as work moves is edited (or streamed as a draft) instead of re-posted.

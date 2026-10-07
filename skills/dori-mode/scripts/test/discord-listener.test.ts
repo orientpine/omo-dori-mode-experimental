@@ -55,7 +55,7 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const t = fakeTimers();
   const logs: string[] = [];
   const fatal: number[] = [];
-  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
+  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji" }, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
   const inbox = () => (existsSync(inboxFile) ? readFileSync(inboxFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}`);
   return { listener, cards, gw, t, logs, fatal, inbox, calls, seen };
@@ -97,6 +97,22 @@ test("a message in a thread under the channel counts, one under another channel 
   await listener.onMessage(msg("1002", { channel_id: "888" }));
   await listener.onMessage(msg("1003", { channel_id: "dm1", guild_id: undefined }));
   expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1001", "thread"], ["1003", "dm"]]);
+});
+
+test("the owner writing in a closed thread reopens it as working; an open thread is left alone", async () => {
+  const names: Record<string, string> = { "501": "✅ fix login", "502": "[done] old thread", "503": "🔄 still going" };
+  const { listener, calls, seen, logs } = setup((req) => {
+    const id = /\/channels\/(\d+)$/.exec(req.url)?.[1] ?? "";
+    return id in names ? { parent_id: CHANNEL, name: names[id], thread_metadata: { archived: id !== "503" } } : {};
+  });
+  for (const [n, thread] of ["501", "502", "503"].entries()) await listener.onMessage(msg(`100${n}`, { channel_id: thread }));
+  const patches = seen.filter((r) => r.method === "PATCH");
+  expect(patches.map((r) => [r.url.replace("https://discord.com/api/v10", ""), JSON.parse(String(r.body))])).toEqual([
+    ["/channels/501", { name: "🔄 fix login", archived: false }],
+    ["/channels/502", { name: "🔄 old thread", archived: false }],
+  ]);
+  expect(calls().some((c) => c === "PATCH /channels/503")).toBe(false);
+  expect(logs.filter((l) => l.startsWith("THREAD_REOPENED"))).toEqual(["THREAD_REOPENED 501", "THREAD_REOPENED 502"]);
 });
 
 test("a voice note is transcribed into the inbox row; a failed transcription still records the message", async () => {

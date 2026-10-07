@@ -25,7 +25,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
 import { QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
-import { threadHook, ThreadRefError } from "./messenger/discord-thread.ts";
+import { progressText, threadHook, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
@@ -43,8 +43,9 @@ const USAGE = `dori <command> [options]
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
   heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
-  send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID]
-                                       post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN)
+  send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID] [--status working|done]
+                                       post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN);
+                                       --status (discord) writes it as the progress message, in discord.statusStyle
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file>              run hooks.transcribe and print the text
   inbound slack [--loop MIN]           print INBOUND lines: unread thread replies (threads view), replies in threads
@@ -55,8 +56,8 @@ const USAGE = `dori <command> [options]
                                        post a Discord question card; the first option is the recommended one
   questions [--open]                   list tracked question cards
   reopen <Qn> / resolve <Qn>           put a card's buttons back / forget a settled question
-  thread <reply|done> discord:<id> <text>
-                                       post in a work thread; done also sets the done status word and archives it
+  thread <reply|wait|done> discord:<id> <text>
+                                       post in a work thread and set its status (working, waiting, done); done archives it
                                        (Discord env: DORI_DISCORD_TOKEN, DORI_DISCORD_GUILD, DORI_DISCORD_CHANNEL, DORI_DISCORD_OWNER)`;
 
 const die = (message: string, code = 1): never => {
@@ -77,7 +78,7 @@ const flags = parseArgs({
     title: { type: "string" }, brief: { type: "string" }, done: { type: "string" }, thread: { type: "string" },
     model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string" },
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
-    to: { type: "string" }, text: { type: "string" }, edit: { type: "string" },
+    to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" },
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
   },
 });
@@ -206,7 +207,9 @@ try {
     case "send": {
       const platform = key ?? die("send needs slack, telegram or discord");
       const to = need("to");
-      const text = need("text");
+      const status = opt("status");
+      if (status !== undefined && (platform !== "discord" || (status !== "working" && status !== "done"))) die("--status takes working or done, with discord");
+      const text = status === "working" || status === "done" ? progressText(status, need("text"), config.discord) : need("text");
       const thread = opt("thread");
       const edit = opt("edit");
       const token = (name: string) => process.env[name] ?? die(`${name} is not set`);
@@ -268,6 +271,7 @@ try {
           guild: env("DORI_DISCORD_GUILD"),
           channel: env("DORI_DISCORD_CHANNEL"),
           owner: env("DORI_DISCORD_OWNER"),
+          words: config.discord,
           inboxFile: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
           timers: { ...realTimers, setTimeout: (cb, ms) => setTimeout(cb, ms) },
           now: realClock.now,
@@ -312,9 +316,9 @@ try {
     }
     case "thread": {
       const [verb, ref, text] = flags.positionals;
-      if ((verb !== "reply" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|done> discord:<thread id> <text>");
-      const posted = await threadHook(discordClient(), verb as "reply" | "done", ref ?? "", text ?? "", config.discord);
-      console.log(`POSTED ${posted}${verb === "done" ? " THREAD_DONE" : ""}`);
+      if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|wait|done> discord:<thread id> <text>");
+      const posted = await threadHook(discordClient(), verb as ThreadVerb, ref ?? "", text ?? "", config.discord);
+      console.log(`POSTED ${posted}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
       break;
     }
     case "transcribe":

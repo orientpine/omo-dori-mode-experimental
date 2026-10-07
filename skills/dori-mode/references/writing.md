@@ -6,7 +6,7 @@ Before you write, picture what the owner wants, the state they are in, and what 
 
 These hold in every language:
 
-- **No emojis.** Not in messages, status lines or thread names. Say it in words. The one exception is the "eyes" reaction you put on a message to show you've seen it, since that is a read receipt rather than writing.
+- **No emojis.** Not in messages, status lines or thread names. Say it in words. The one exception is the "eyes" reaction you put on a message to show you've seen it, since that is a read receipt rather than writing. Status marks may also be emoji when the setup chooses it (`discord.statusStyle: "emoji"`, see Threads).
 - **Match the owner.** Copy their register, casing and length. An owner who writes "ok ship it" gets "shipped, v1.4.2 is live", not a formal paragraph. If they write lowercase, write lowercase. If they write two lines, don't answer with ten.
 - **Short messages, not blocks.** When a reply has several parts (the result, the evidence, a question), send each as its own short message, like a person chatting. One call, one message: each part is its own send, made when that part is ready. Never add a delay between them, and never use a helper that batches several messages into one call or sleeps between parts.
 - **Grow one message only when it is one evolving answer.** A status or progress reply that changes as the work moves stays a single message: post the first sentence and then edit it (or stream it as a Telegram draft) instead of posting again. Once it is final, the next new thing is a new message.
@@ -22,7 +22,9 @@ Each piece of work gets its own thread (or topic) with:
 - one status message you edit in place: `working: <work> · <time elapsed>` while working, `done: <work>` when done;
 - a status word at the start of the thread name: `[working]`, `[waiting]` (on the owner or someone else), `[done]`.
 
-When the work is done, remove your "eyes" reaction and close (archive) the thread. If the owner writes in a closed thread, reopen it, set it back to `[working]`, and carry on there. Threads the owner started get the same treatment.
+With `discord.statusStyle: "emoji"` the same marks are emoji: the status message reads `⏳ · <work>` while working and `✅ <work>` when done, and the thread name starts with 🔄 (working), ⏸ (waiting) or ✅ (done). Only these marks are emoji; the text stays words.
+
+When the work is done, remove your "eyes" reaction and close (archive) the thread. If the owner writes in a closed thread, reopen it, set it back to working, and carry on there. Threads the owner started get the same treatment.
 
 ## Files
 

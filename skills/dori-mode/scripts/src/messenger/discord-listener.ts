@@ -1,8 +1,10 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
 import type { Interaction, QuestionCards } from "./discord-cards.ts";
+import { isDoneName, setThreadStatus, type ThreadInfo } from "./discord-thread.ts";
 import type { Timers } from "./typing.ts";
 
 export const EYES = "👀";
@@ -65,6 +67,7 @@ export type ListenerDeps = {
   readonly guild: string;
   readonly channel: string;
   readonly owner: string;
+  readonly words: DiscordWords;
   readonly inboxFile: string;
   readonly timers: ListenerTimers;
   readonly now: () => number;
@@ -142,6 +145,15 @@ export class DiscordListener {
       reply_to: m.message_reference?.message_id ?? null,
     });
     this.d.log(`INBOUND discord-${scope} ${m.channel_id} ${m.id} ${m.author.id} ${JSON.stringify((transcript ?? m.content).slice(0, 200))}`);
+    if (scope === "thread") await this.reopenIfDone(m.channel_id).catch((e: unknown) => this.d.log(`DISCORD_REOPEN_FAIL ${m.channel_id} ${errText(e)}`));
+  }
+
+  // the owner writing in a closed thread brings the work back: unarchive it and mark it working again
+  private async reopenIfDone(threadId: string): Promise<void> {
+    const info = await this.d.dc.call<ThreadInfo>("GET", `/channels/${threadId}`);
+    if (!isDoneName(info.name ?? "", this.d.words)) return;
+    await setThreadStatus(this.d.dc, threadId, "working", this.d.words, info);
+    this.d.log(`THREAD_REOPENED ${threadId}`);
   }
 
   async onInteraction(i: Interaction): Promise<void> {

@@ -19,8 +19,12 @@ export type GuardThresholds = {
 
 export type Backend = "herdr" | "aoe";
 
+// "words" marks status as [working] / [waiting] / [done]; "emoji" uses 🔄 / ⏸ / ✅ (and ⏳ / ✅ in progress text).
+export type StatusStyle = "words" | "emoji";
+
 // Words the Discord helpers write: thread status words, question-card labels, and how answer times are shown.
 export type DiscordWords = {
+  readonly statusStyle: StatusStyle;
   readonly working: string;
   readonly waiting: string;
   readonly done: string;
@@ -34,6 +38,7 @@ export type DiscordWords = {
 };
 
 export const defaultDiscordWords: DiscordWords = {
+  statusStyle: "words",
   working: "working",
   waiting: "waiting",
   done: "done",

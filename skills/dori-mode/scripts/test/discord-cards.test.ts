@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { type Interaction, QuestionCards, QuestionError, QuestionStore } from "../src/messenger/discord-cards.ts";
-import { threadHook, ThreadRefError } from "../src/messenger/discord-thread.ts";
+import { progressText, threadHook, ThreadRefError } from "../src/messenger/discord-thread.ts";
 import { type Http, type HttpRequest, type HttpResponse, UnsafeMessageError } from "../src/messenger/http.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
@@ -138,4 +138,51 @@ test("the done thread hook posts without emoji, swaps the status word in the thr
   expect(f.json(3)).toEqual({ name: "[done] fix login" });
   expect(f.json(4)).toEqual({ archived: true });
   await expect(threadHook(f.dc, "reply", "telegram:1", "x", defaultDiscordWords)).rejects.toBeInstanceOf(ThreadRefError);
+});
+
+const emoji = { ...defaultDiscordWords, statusStyle: "emoji" } as const;
+const T = "300000000000000003";
+const threadAs = (name: string, archived = false) => fakeDiscord((req) => (req.method === "GET" ? { name, thread_metadata: { archived } } : req.method === "POST" && req.url.endsWith("/messages") ? { id: "901" } : {}));
+
+test("with emoji status the done hook swaps the word mark for ✅ and archives; the posted note still has no emoji", async () => {
+  const f = threadAs("[working] fix login");
+  await threadHook(f.dc, "done", `discord:${T}`, "merged 🎉 abc123", emoji);
+  expect(f.json(1).content).toBe("merged abc123");
+  expect(f.json(3)).toEqual({ name: "✅ fix login" });
+  expect(f.json(4)).toEqual({ archived: true });
+});
+
+test("reply marks the thread working and wait marks it waiting, opening an archived thread in the same request", async () => {
+  const done = threadAs("✅ fix login", true);
+  await threadHook(done.dc, "reply", `discord:${T}`, "picking this up again", emoji);
+  expect(done.calls().slice(2)).toEqual([`GET /channels/${T}`, `PATCH /channels/${T}`]);
+  expect(done.json(3)).toEqual({ name: "🔄 fix login", archived: false });
+  const working = threadAs("🔄 fix login");
+  await threadHook(working.dc, "wait", `discord:${T}`, "Q2 is waiting on you", emoji);
+  expect(working.json(3)).toEqual({ name: "⏸ fix login" });
+});
+
+test("a status that already holds sends no rename, since Discord allows only about two per ten minutes", async () => {
+  const f = threadAs("🔄 fix login");
+  await threadHook(f.dc, "reply", `discord:${T}`, "tests are green", emoji);
+  expect(f.calls().filter((c) => c.startsWith("PATCH"))).toEqual([]);
+  const words = threadAs("fix login");
+  await threadHook(words.dc, "reply", `discord:${T}`, "started", defaultDiscordWords);
+  expect(words.json(3)).toEqual({ name: "[working] fix login" });
+});
+
+test("the progress message reads working:/done: in words, ⏳ · / ✅ with emoji", () => {
+  expect(progressText("working", "14:05 edited", defaultDiscordWords)).toBe("working: 14:05 edited");
+  expect(progressText("done", "login fixed", defaultDiscordWords)).toBe("done: login fixed");
+  expect(progressText("working", "14:05 edited", emoji)).toBe("⏳ · 14:05 edited");
+  expect(progressText("done", "login fixed", emoji)).toBe("✅ login fixed");
+});
+
+test("with emoji status a folded card starts with ✅ instead of the answered word", async () => {
+  state = withState();
+  const f = fakeDiscord((req) => (req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {}));
+  const cards = new QuestionCards(f.dc, new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words: emoji }, () => Date.parse("2026-01-02T03:04:00Z"));
+  await cards.ask("Ship?", ["Yes"]);
+  await cards.handle(tap("q:Q1:0"));
+  expect(f.json(1).data.components[0].components[0].content).toBe("✅ **Q1** Ship?\n→ **Yes**\n-# button · 1/2, 03:04");
 });
