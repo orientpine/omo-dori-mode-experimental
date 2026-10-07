@@ -1,0 +1,15 @@
+[Unit]
+Description=Dori watcher for aoe/tmux sessions that stop and wait for a human
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.dori/dori.env
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/discord-aoe/session-watch.ts
+Restart=always
+RestartSec=30
+StandardOutput=append:%h/.dori/session-watch.log
+StandardError=append:%h/.dori/session-watch.log
+
+[Install]
+WantedBy=default.target

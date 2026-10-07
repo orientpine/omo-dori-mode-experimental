@@ -1,0 +1,14 @@
+[Unit]
+Description=Start the Dori's own aoe session at boot
+After=dori-inbound.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+KillMode=none
+EnvironmentFile=%h/.dori/dori.env
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -lc 'aoe session start "$DORI_LEAD_AOE_ID" || true'
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=Dori Discord listener (owner messages, eyes reaction, voice, question-card answers)
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.dori/dori.env
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.bun/bin/dori inbound discord
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.dori/inbound.log
+StandardError=append:%h/.dori/inbound.log
+
+[Install]
+WantedBy=default.target
