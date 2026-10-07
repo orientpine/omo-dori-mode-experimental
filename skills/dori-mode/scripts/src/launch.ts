@@ -1,4 +1,4 @@
-import { AoeError, openAoeSession, target, waitForPrompt } from "./aoe.ts";
+import { AoeError, inputLine, openAoeSession, target } from "./aoe.ts";
 import { type Backend, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen, sendVerified } from "./panes.ts";
@@ -18,7 +18,7 @@ export type LaunchInput = {
 
 export class LaunchError extends Error {}
 
-const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API key|model_not_available|usage limit|rate limit|quota|Session crashed|unknown provider/i;
+const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API key|model_not_available|usage limit|rate limit|quota|Session crashed|unknown provider|Model "[^"\n]*" not found|Pane is dead/i;
 
 export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promise<void> => {
   if (!LANE_KEY.test(input.key)) throw new LaunchError(`key must match ${LANE_KEY}`);
@@ -83,9 +83,22 @@ const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, 
     if (e instanceof AoeError) throw new LaunchError(e.message);
     throw e;
   }
-  if (!(await waitForPrompt(deps.run, deps.clock, pane, 90, 2_000))) return { pane, failure: "no ❯ prompt within 3 minutes" };
+  const failure = await awaitPrompt(deps, pane);
+  if (failure) return { pane, failure };
   if (!(await sendVerified(deps.run, deps.clock, "aoe", pane, prompt))) return { pane, failure: "the launch prompt did not register (text still in the input line)" };
   return { pane };
+};
+
+// The agent's ❯ prompt, or the first startup error on screen: an agent that exits at once never shows a prompt.
+const awaitPrompt = async (deps: FlowDeps, pane: string): Promise<string | undefined> => {
+  for (let i = 0; i < 90; i++) {
+    const screen = await readScreen(deps.run, "aoe", pane);
+    if (inputLine(screen) !== undefined) return undefined;
+    const bad = STARTUP_FAILURE.exec(screen);
+    if (bad) return bad[0];
+    await deps.clock.sleep(2_000);
+  }
+  return "no ❯ prompt within 3 minutes";
 };
 
 export const quoteForPane = (arg: string): string => (/^[\w./:@=-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);

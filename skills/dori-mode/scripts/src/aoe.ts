@@ -43,18 +43,27 @@ export const aoeStates = async (run: Runner): Promise<Map<string, string>> => {
   return new Map((JSON.parse(r.out) as { session: string; state: string }[]).map((p) => [p.session, p.state]));
 };
 
-// omo prints "esc to interrupt" while its main turn runs; aoe's state alone can lag behind it
-export const BUSY_MARK = "esc to interrupt";
+// omo prints "esc to interrupt" while its main turn runs, and "goal continues in" while a goal wake is scheduled.
+// aoe's state lags behind both, and shows an open omo question ("Ask user · ...") as idle.
+export const BUSY_MARKS = ["esc to interrupt", "goal continues in"];
+export const QUESTION_MARK = /Ask user ·|\(\d+\/\d+ answered\)/;
 
-// Panes whose agent stopped for a human: aoe says waiting or error and the screen shows no running turn.
-export const blockedPanes = async (run: Runner, panes: readonly string[]): Promise<Map<string, string>> => {
-  const out = new Map<string, string>();
+export type Activity = "busy" | "running" | "waiting" | "error" | "question" | "idle";
+
+// What each live pane's agent is doing, from aoe ps plus its screen. Panes aoe does not list are left out.
+export const paneActivity = async (run: Runner, panes: readonly string[]): Promise<Map<string, Activity>> => {
+  const out = new Map<string, Activity>();
   if (!panes.length) return out;
   const [sessions, states] = await Promise.all([aoeSessions(run), aoeStates(run)]);
   for (const pane of panes) {
     const id = idFor(sessions, pane);
     const state = id ? states.get(id) : undefined;
-    if ((state === "waiting" || state === "error") && !(await captureTmux(run, pane)).includes(BUSY_MARK)) out.set(pane, state);
+    if (!state) continue;
+    const screen = await captureTmux(run, pane);
+    if (BUSY_MARKS.some((m) => screen.includes(m))) out.set(pane, "busy");
+    else if (state === "waiting" || state === "error") out.set(pane, state);
+    else if (QUESTION_MARK.test(screen)) out.set(pane, "question");
+    else out.set(pane, state === "idle" ? "idle" : "running");
   }
   return out;
 };

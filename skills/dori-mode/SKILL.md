@@ -69,7 +69,7 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 - **Registry** is the source of truth: platform:thread → pane (herdr pane id, or the aoe session's tmux name) → the agent's session id → status (`working`, `done-claimed`, `verified-done`, `not-done`, `closed`) with history. `dori sync` rebuilds it from live state and reports drift; it never deletes anything.
 - **Done** is a claim, not a fact. A lane claims with `dori claim-done <key> --evidence "..."`. You check the evidence against live state. If it holds, close; if not, `dori object-done <key> --reason "..."` within 5 minutes. An unanswered claim closes the lane automatically, unless its worktree has unpushed or uncommitted work or a `Done =` signal fails, which turns the claim into not-done with that reason. Full protocol for lanes: `references/done-protocol.md`; tell every lane this rule when you hand it work.
 - **Before messaging a session**, confirm its pane runs a live agent with an empty input line, send once, and verify the text left the input. Never send to a shell, a stopped agent or an approval prompt.
-- Watch for sessions that turn blocked or ask a question; answer them or bring them to the owner. With aoe, `dori watch` prints `LANE_BLOCKED <key> <waiting|error> <pane>` when a lane's agent stops for a human.
+- Watch for sessions that turn blocked or ask a question; answer them or bring them to the owner. With aoe, `dori watch` prints `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` when a lane's agent stops for a human.
 
 ## Standing rules
 

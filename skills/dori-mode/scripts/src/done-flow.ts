@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 
-import { blockedPanes, closeAoeSession } from "./aoe.ts";
+import { closeAoeSession, paneActivity } from "./aoe.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import { type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
@@ -121,16 +121,23 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
   return out;
 };
 
-// LANE_BLOCKED once each time a working lane's agent stops for a human (aoe waiting or error, no running turn on screen).
+// a turn that ended counts as stopped only after it stays ended this long (a goal wake or the next step may follow)
+export const IDLE_SETTLE_MS = 45_000;
+
+// LANE_BLOCKED once each time a working lane's agent stops for a human: aoe says waiting or error, an omo question is
+// open, or the turn ended and stayed idle; never while the screen shows a running turn.
 export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
   const lanes = (await deps.registry.open()).filter((l) => l.pane && (statusOf(l) === "working" || statusOf(l) === "not-done"));
-  const blocked = await blockedPanes(deps.run, lanes.map((l) => l.pane ?? ""));
+  const activity = await paneActivity(deps.run, lanes.map((l) => l.pane ?? ""));
+  const now = deps.clock.now();
   const out: string[] = [];
   for (const lane of lanes) {
-    const state = blocked.get(lane.pane ?? "");
-    if (state === lane.blocked) continue;
-    await deps.registry.write({ ...lane, blocked: state });
-    if (state) out.push(`LANE_BLOCKED ${lane.key} ${state} ${lane.pane}`);
+    const act = activity.get(lane.pane ?? "");
+    const idleSince = act === "idle" ? (lane.idleSince ?? now) : undefined;
+    const blocked = act === "waiting" || act === "error" || act === "question" ? act : idleSince !== undefined && now - idleSince >= IDLE_SETTLE_MS ? "idle" : undefined;
+    if (blocked === lane.blocked && idleSince === lane.idleSince) continue;
+    await deps.registry.write({ ...lane, blocked, idleSince });
+    if (blocked && blocked !== lane.blocked) out.push(`LANE_BLOCKED ${lane.key} ${blocked} ${lane.pane}`);
   }
   return out;
 };

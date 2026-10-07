@@ -87,6 +87,18 @@ test("a Telegram reply starts as Thinking…, streams drafts no faster than the 
   expect(JSON.parse(String(seen[0]?.body)).message_thread_id).toBe(9);
 });
 
+test("a Telegram forum topic is created, renamed, closed and reopened by its thread id, and a send into it carries that id", async () => {
+  const { http, seen } = fakeHttp((req) => ok({ ok: true, result: req.url.endsWith("createForumTopic") ? { message_thread_id: 41 } : req.url.endsWith("sendMessage") ? { message_id: 3 } : true }));
+  const tg = new Telegram(http, fakeClock(0), "b");
+  const topic = await tg.createTopic(5, "fix-login");
+  await tg.send({ chatId: 5, threadId: topic }, "started");
+  await tg.renameTopic(5, topic, "fix-login (done)");
+  await tg.closeTopic(5, topic);
+  await tg.reopenTopic(5, topic);
+  const calls = seen.map((r) => [r.url.split("/").pop(), JSON.parse(String(r.body)).message_thread_id ?? null, JSON.parse(String(r.body)).name ?? null]);
+  expect(calls).toEqual([["createForumTopic", null, "fix-login"], ["sendMessage", 41, null], ["editForumTopic", 41, "fix-login (done)"], ["closeForumTopic", 41, null], ["reopenForumTopic", 41, null]]);
+});
+
 test("Telegram's retry_after in the error body is honored", async () => {
   const { http } = fakeHttp((_, n) => (n === 1 ? ok({ ok: false, error_code: 429, parameters: { retry_after: 7 } }, 429) : ok({ ok: true, result: { message_id: 1 } })));
   const { clock, waited } = sleeps();

@@ -83,7 +83,7 @@ With aoe the same steps read: `aoe ps --json` shows the session's state (`waitin
 - Sessions that turn blocked or ask a question: answer them or bring them to the owner.
 - Sessions that report a bug: reproduce it before it counts, then give it its own thread.
 - `dori dead-panes` reports agent panes that stopped; restart the session in place (`<agent> --session <id>`) unless its work is finished.
-- With aoe, `dori watch` also prints `LANE_BLOCKED <key> <waiting|error> <pane>` once each time a working lane's session turns `waiting` or `error` in `aoe ps` while its screen shows no running turn (omo's `esc to interrupt` line). The screen check is there because aoe's state can lag behind the agent.
+- With aoe, `dori watch` also prints `LANE_BLOCKED <key> <state> <pane>` once each time a working lane's agent stops for a human. `state` is `waiting` or `error` (from `aoe ps --json`), `question` (omo's question UI is open on screen; aoe shows that as `idle`), or `idle` (the turn ended and stayed ended for 45 seconds). It never fires while the screen shows a running turn (`esc to interrupt`) or a scheduled goal wake (`goal continues in`): aoe's state lags behind omo, so the screen decides.
 
 ## The aoe backend
 
@@ -95,3 +95,4 @@ Set `"backend": "aoe"` in `~/.dori/config.json` to run lanes as aoe (agent-of-em
 - **Claim from inside a lane.** `dori claim-done` without a key finds the lane by the tmux session it runs in.
 - **Close** stops the session (`aoe session stop`) and moves it to the aoe trash (`aoe rm`), where it can still be restored. It never purges.
 - **Blocked lanes** come from `aoe ps --json` plus the screen check, as `LANE_BLOCKED` lines from `dori watch`.
+- **Startup errors.** An agent that exits at once (a bad model name, a missing module) leaves a dead pane with no prompt; `launch` reports its message as `STARTUP_ERROR` as soon as it is on screen instead of waiting out the 3-minute prompt timeout.

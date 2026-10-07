@@ -49,6 +49,16 @@ test("a launch opens an aoe session, waits for the prompt and types the lane pro
   expect(await Bun.file(brief).text()).toContain(`"tmux","send-keys","-t","=aoe_Dori_0a1b2c3d:","-l"`);
 });
 
+test("an agent that exits at start is a STARTUP_ERROR with its own message, without waiting out the prompt timeout", async () => {
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "# brief\n");
+  world.screen = 'Error: Model "nosuch/model" not found. Use --list-models to see available models.\nPane is dead (status 1)';
+  const r = await launchLane(at(T0), { key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "nosuch/model" });
+  expect(r.startup).toBe(`STARTUP_ERROR smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: Model "nosuch/model" not found`);
+  expect(world.calls.filter((c) => c[1] === "capture-pane")).toHaveLength(1);
+  expect(sent(world)).toEqual([]);
+});
+
 test("five quiet minutes after a claim the lane's aoe session is stopped and trashed, never purged", async () => {
   const lane: Lane = { key: "fix-a", title: "fix-a", thread: "none", pane: PANE, brief: "/b.md", done: "file /etc/hostname", cwd: "/repo", openedAt: new Date(T0 - MIN).toISOString() };
   await at(T0).registry.write(lane);
@@ -79,23 +89,38 @@ test("an aoe pane's session id is omo's --session-id under the tmux pane pid", a
   expect(world.calls).toContainEqual(["tmux", "display-message", "-p", "-t", `=${PANE}:`, "#{pane_pid}"]);
 });
 
-test("a working lane whose aoe session waits for a human is reported once as LANE_BLOCKED, not while its turn still runs", async () => {
+test("a working lane whose aoe session waits for a human is reported once as LANE_BLOCKED, never while its turn still runs", async () => {
   const lane: Lane = { key: "fix-a", title: "fix-a", thread: "none", pane: PANE, brief: "/b.md", done: "file /etc/hostname", cwd: "/repo", openedAt: new Date(T0).toISOString() };
   await at(T0).registry.write(lane);
-  world.aoePs = [{ session: LANE_ID, state: "running" }, { session: "0a1b2c3d4e5f6a7b", state: "waiting" }];
+  const state = (s: string) => { world.aoePs = [{ session: LANE_ID, state: s }, { session: "0a1b2c3d4e5f6a7b", state: "waiting" }]; };
+  const busy = "Working (12s • esc to interrupt)\n❯ ";
+  state("running");
+  world.screen = busy;
   expect(await watchTick(at(T0))).toEqual([]);
-  world.aoePs[0] = { session: LANE_ID, state: "waiting" };
-  world.screen = "Working (12s • esc to interrupt)\n❯ ";
+  state("waiting");
   expect(await watchTick(at(T0))).toEqual([]);
-  world.screen = "Which option? 1) A 2) B\n❯ ";
+  world.screen = "Allow this command? (y/n)\n❯ ";
   expect(await watchTick(at(T0))).toEqual([`LANE_BLOCKED fix-a waiting ${PANE}`]);
   expect(await watchTick(at(T0))).toEqual([]);
-  world.aoePs[0] = { session: LANE_ID, state: "error" };
+  state("error");
   expect(await watchTick(at(T0))).toEqual([`LANE_BLOCKED fix-a error ${PANE}`]);
-  world.aoePs[0] = { session: LANE_ID, state: "idle" };
+  // aoe shows an open omo question as idle; the question UI on screen says otherwise
+  state("idle");
+  world.screen = " Ask user · 2m\n dori-qa: pick A or B?\n → 1. A\n Submit (0/1 answered) — Enter advances";
+  expect(await watchTick(at(T0))).toEqual([`LANE_BLOCKED fix-a question ${PANE}`]);
+  world.screen = busy;
   expect(await watchTick(at(T0))).toEqual([]);
-  world.aoePs[0] = { session: LANE_ID, state: "waiting" };
-  expect(await watchTick(at(T0))).toEqual([`LANE_BLOCKED fix-a waiting ${PANE}`]);
+  // a turn that ended counts once it stays idle for the settle time, not before, and not while a goal wake is due
+  world.screen = "All done here.\n❯ ";
+  expect(await watchTick(at(T0 + MIN))).toEqual([]);
+  expect(await watchTick(at(T0 + MIN + 30_000))).toEqual([]);
+  expect(await watchTick(at(T0 + 2 * MIN))).toEqual([`LANE_BLOCKED fix-a idle ${PANE}`]);
+  expect(await watchTick(at(T0 + 3 * MIN))).toEqual([]);
+  world.screen = "Pursuing goal · goal continues in 4m\n❯ ";
+  expect(await watchTick(at(T0 + 4 * MIN))).toEqual([]);
+  world.screen = "All done here.\n❯ ";
+  expect(await watchTick(at(T0 + 4 * MIN + 30_000))).toEqual([]);
+  expect((await at(T0).registry.read("fix-a"))?.idleSince).toBe(T0 + 4 * MIN + 30_000);
 });
 
 test("a stopped agent in an aoe session is reported, and the lead's session is skipped", async () => {
