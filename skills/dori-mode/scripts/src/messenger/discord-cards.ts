@@ -155,7 +155,7 @@ export const doneCard = (q: Question, w: DiscordWords): object[] => [
   {
     type: 17,
     accent_color: DONE_ACCENT,
-    components: [{ type: 10, content: `[${w.answered}] **${q.id}** ${q.text}${where(q)}\n→ **${q.answer ?? ""}**\n-# ${q.answerKind === "text" ? w.byText : w.byButton} · ${stamp(q.answeredAt, w)}`.slice(0, 3000) }],
+    components: [{ type: 10, content: `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${q.text}${where(q)}\n→ **${q.answer ?? ""}**\n-# ${q.answerKind === "text" ? w.byText : w.byButton} · ${stamp(q.answeredAt, w)}`.slice(0, 3000) }],
   },
 ];
 

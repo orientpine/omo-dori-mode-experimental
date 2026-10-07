@@ -15,22 +15,45 @@ export const withoutEmoji = (text: string): string =>
     .replace(/[ \t]{2,}/g, " ")
     .trim();
 
-const STATUS_PREFIX = /^\[[^\]]{1,20}\]\s*/;
-
 export type ThreadStatus = "working" | "waiting" | "done";
 
-export const setThreadStatus = async (dc: Discord, threadId: string, status: ThreadStatus, words: DiscordWords): Promise<void> => {
-  const { name = "" } = await dc.call<{ name?: string }>("GET", `/channels/${threadId}`);
-  await dc.setThread(threadId, { name: `[${words[status]}] ${name.replace(STATUS_PREFIX, "")}` });
-  if (status === "done") await dc.setThread(threadId, { archived: true });
+export const STATUS_EMOJI: Readonly<Record<ThreadStatus, string>> = { working: "🔄", waiting: "⏸", done: "✅" };
+
+// either style's mark, so switching statusStyle never leaves two marks on one name
+const STATUS_PREFIX = /^(?:\[[^\]]{1,20}\]|(?:🔄|⏸|✅|⏳)\uFE0F?)\s*/u;
+
+export const statusMark = (status: ThreadStatus, words: DiscordWords): string => (words.statusStyle === "emoji" ? STATUS_EMOJI[status] : `[${words[status]}]`);
+
+export const isDoneName = (name: string, words: DiscordWords): boolean => name.startsWith(STATUS_EMOJI.done) || name.startsWith(`[${words.done}]`);
+
+export const progressText = (status: "working" | "done", text: string, words: DiscordWords): string =>
+  words.statusStyle === "emoji" ? (status === "working" ? `⏳ · ${text}` : `${STATUS_EMOJI.done} ${text}`) : `${words[status]}: ${text}`;
+
+export type ThreadInfo = { readonly name?: string; readonly thread_metadata?: { readonly archived?: boolean } };
+
+// Discord rate-limits thread renames (about two per ten minutes), so nothing is sent when the status already holds.
+export const setThreadStatus = async (dc: Discord, threadId: string, status: ThreadStatus, words: DiscordWords, current?: ThreadInfo): Promise<void> => {
+  const info = current ?? (await dc.call<ThreadInfo>("GET", `/channels/${threadId}`));
+  const name = info.name ?? "";
+  const next = `${statusMark(status, words)} ${name.replace(STATUS_PREFIX, "")}`;
+  const archived = info.thread_metadata?.archived === true;
+  if (status === "done") {
+    if (next !== name) await dc.setThread(threadId, { name: next });
+    await dc.setThread(threadId, { archived: true });
+    return;
+  }
+  if (next !== name || archived) await dc.setThread(threadId, { ...(next !== name ? { name: next } : {}), ...(archived ? { archived: false } : {}) });
 };
 
-export const threadHook = async (dc: Discord, verb: "reply" | "done", ref: string, text: string, words: DiscordWords): Promise<string> => {
+export type ThreadVerb = "reply" | "wait" | "done";
+const VERB_STATUS: Readonly<Record<ThreadVerb, ThreadStatus>> = { reply: "working", wait: "waiting", done: "done" };
+
+export const threadHook = async (dc: Discord, verb: ThreadVerb, ref: string, text: string, words: DiscordWords): Promise<string> => {
   const id = discordThreadId(ref);
   const plain = withoutEmoji(text);
   if (!plain) throw new ThreadRefError("nothing to post after removing emoji");
   await dc.typing(id).catch(() => {});
   const posted = await dc.send(id, plain);
-  if (verb === "done") await setThreadStatus(dc, id, "done", words);
+  await setThreadStatus(dc, id, VERB_STATUS[verb], words);
   return posted;
 };
