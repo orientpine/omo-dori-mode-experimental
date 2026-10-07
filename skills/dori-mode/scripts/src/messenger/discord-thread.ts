@@ -17,7 +17,7 @@ export const withoutEmoji = (text: string): string =>
 
 export type ThreadStatus = "working" | "waiting" | "done";
 
-export const STATUS_EMOJI: Readonly<Record<ThreadStatus, string>> = { working: "🔄", waiting: "⏸", done: "✅" };
+export const STATUS_EMOJI: Readonly<Record<ThreadStatus, string>> = { working: "🔄", waiting: "⏸️", done: "✅" };
 
 // either style's mark, so switching statusStyle never leaves two marks on one name
 const STATUS_PREFIX = /^(?:\[[^\]]{1,20}\]|(?:🔄|⏸|✅|⏳)\uFE0F?)\s*/u;

@@ -35,7 +35,7 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `guard` | load 150/80, 20% memory, 50 GB disk, 20 panes | `guard` |
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
 | `hooks.transcribe` | none | `transcribe` (argv with `{file}`, prints the text), `inbound discord` voice notes |
-| `discord` | English words, `en-US`, `UTC`, `statusStyle: "words"` | `statusStyle` (`words` for `[working]`-style marks, `emoji` for 🔄 ⏸ ✅ and ⏳), thread status words (`working`, `waiting`, `done`) and question-card wording (`other`, `answered`, `ownerOnly`, `byButton`, `byText`), plus `locale` and `timeZone` for answer times |
+| `discord` | English words, `en-US`, `UTC`, `statusStyle: "words"` | `statusStyle` (`words` for `[working]`-style marks, `emoji` for 🔄 ⏸️ ✅ and ⏳), thread status words (`working`, `waiting`, `done`) and question-card wording (`other`, `answered`, `ownerOnly`, `byButton`, `byText`), plus `locale` and `timeZone` for answer times |
 
 Tokens and ids come from the environment. Every command first reads `~/.dori/dori.env` (or the file in `DORI_ENV_FILE`), `KEY=VALUE` per line; a variable already set wins. The Discord commands need `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL` (the one channel the Dori talks in) and `DORI_DISCORD_OWNER`.
 
