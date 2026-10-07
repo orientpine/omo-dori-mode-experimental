@@ -1,6 +1,6 @@
 # Sessions (lanes)
 
-A lane is one agent session doing one job in its own herdr tab. You launch it, track it in the registry, answer it when it is stuck, and close it when its work is proven done.
+A lane is one agent session doing one job in its own herdr tab, or its own aoe session with `backend: "aoe"` (see "The aoe backend" below). You launch it, track it in the registry, answer it when it is stuck, and close it when its work is proven done.
 
 ## Launching
 
@@ -48,7 +48,7 @@ One JSON file per lane under `<stateDir>/lanes/`, written atomically (temp file 
 | Field | Meaning |
 |---|---|
 | `thread` | where its updates go, as `platform:thread` (or `none`) |
-| `pane`, `tab` | its herdr location |
+| `pane`, `tab` | its herdr location; with aoe, `pane` is the session's tmux name (`aoe_<title>_<first 8 of the id>`) and there is no tab |
 | `session` | the agent's own session id, so a closed job can be reopened later |
 | `status` | `working`, `done-claimed`, `verified-done`, `not-done`, `closed` |
 | `claim`, `objection`, `history` | what was claimed, what was objected, every status change |
@@ -76,8 +76,22 @@ Before you type into a pane:
 
 Exit code 0 and echoed input are not proof the agent got the message. A reply from the session, or its record of handling the message, is.
 
+With aoe the same steps read: `aoe ps --json` shows the session's state (`waiting` means a question or approval is open), `tmux capture-pane -p -J -t =<name>:` reads it, the input line is the last line starting with `❯`, and text goes in with `tmux send-keys -t =<name>: -l -- <text>` followed by a separate `Enter`. The `=` and trailing `:` make tmux match the exact session name; an empty name would hit whatever pane you are in.
+
 ## Watching
 
 - Sessions that turn blocked or ask a question: answer them or bring them to the owner.
 - Sessions that report a bug: reproduce it before it counts, then give it its own thread.
 - `dori dead-panes` reports agent panes that stopped; restart the session in place (`<agent> --session <id>`) unless its work is finished.
+- With aoe, `dori watch` also prints `LANE_BLOCKED <key> <waiting|error> <pane>` once each time a working lane's session turns `waiting` or `error` in `aoe ps` while its screen shows no running turn (omo's `esc to interrupt` line). The screen check is there because aoe's state can lag behind the agent.
+
+## The aoe backend
+
+Set `"backend": "aoe"` in `~/.dori/config.json` to run lanes as aoe (agent-of-empires) sessions on tmux instead of herdr tabs. Everything above holds; these parts differ:
+
+- **Launch** runs `aoe add <cwd> -t <key> --tool <agentCommand[0]> -l --extra-args "--model <model>"`, waits up to 3 minutes for the agent's `❯` prompt, then types the lane prompt and checks it left the input line. The aoe title is the lane key. aoe refuses a title and path pair that already exists, even in its trash; `aoe rm <id> --purge` clears it.
+- **Pane ids** are tmux session names. `dori adopt <key> --pane aoe_<title>_<id8>` registers a running session; `tmux ls` lists them (`aoe_term_*` are plain terminals, not agents).
+- **Reports.** The footer tells the lane to send `[REPORT]` lines to the lead's tmux session as two argv calls (`send-keys -l -- <line>`, then `Enter`). The report lands in the lead's pane, not the lane's, so `dori freshness` reads the lead pane (last 3000 lines) first and the lane's screen second. A report it has not seen before counts as hearing from the lane.
+- **Claim from inside a lane.** `dori claim-done` without a key finds the lane by the tmux session it runs in.
+- **Close** stops the session (`aoe session stop`) and moves it to the aoe trash (`aoe rm`), where it can still be restored. It never purges.
+- **Blocked lanes** come from `aoe ps --json` plus the screen check, as `LANE_BLOCKED` lines from `dori watch`.
