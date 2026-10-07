@@ -31,14 +31,14 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
     const silentMin = Math.round((now - heard) / 60_000);
     let current = lane;
     if (silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
-      await sendVerified(deps.run, deps.clock, lane.pane, `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`);
+      await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`);
       current = { ...current, lastNudgeAt: now };
       await deps.registry.write(current);
       acts.push({ kind: "nudged", lane: lane.key, detail: `${silentMin} min silent` });
     }
     const hook = deps.config.hooks.threadReply;
     if (silentMin >= deps.config.postAfterMin && hook && lane.thread !== "none" && (current.lastAutoReplyAt ?? 0) < heard) {
-      const report = lastReportLine(await readScreen(deps.run, lane.pane, 200), lane.key);
+      const report = lastReportLine(await readScreen(deps.run, deps.config.backend, lane.pane, 200), lane.key);
       if (!report) {
         acts.push({ kind: "no-report", lane: lane.key, detail: "pane has no [REPORT] line" });
         continue;

@@ -17,7 +17,10 @@ export type GuardThresholds = {
   readonly panesMax: number;
 };
 
+export type Backend = "herdr" | "aoe";
+
 export type DoriConfig = {
+  readonly backend: Backend;
   readonly stateDir: string;
   readonly laneWorkspace: string;
   readonly workspaces: readonly string[];
@@ -39,6 +42,7 @@ export type DoriConfig = {
 };
 
 export const defaultConfig = (home = homedir()): DoriConfig => ({
+  backend: "herdr",
   stateDir: join(home, ".dori", "state"),
   laneWorkspace: "",
   workspaces: [],

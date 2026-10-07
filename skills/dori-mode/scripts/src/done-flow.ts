@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 
+import { closeAoeSession } from "./aoe.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import { type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
@@ -24,7 +25,7 @@ export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string): P
   await deps.registry.write(withStatus(lane, "done-claimed", evidence, at, { claim: { at, evidence, emitted: false } }));
   if (lane.pane) {
     const closesAt = new Date(deps.clock.now() + windowMs(deps)).toISOString().slice(11, 16);
-    await sendVerified(deps.run, deps.clock, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
+    await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
   }
   return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}`;
 };
@@ -32,7 +33,7 @@ export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string): P
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
   const at = iso(deps.clock);
   await deps.registry.write(withStatus(lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }));
-  if (lane.pane) await sendVerified(deps.run, deps.clock, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
+  if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
 };
 
@@ -75,7 +76,9 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promi
     const r = await deps.run(fill(hook, { thread: lane.thread, text: note, key: lane.key }));
     cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);
   }
-  if (lane.tab) cleanup.push((await deps.run(["herdr", "tab", "close", lane.tab])).code === 0 ? `tab ${lane.tab} closed` : `tab ${lane.tab} not closed`);
+  if (deps.config.backend === "aoe") {
+    if (lane.pane) cleanup.push(await closeAoeSession(deps.run, lane.pane));
+  } else if (lane.tab) cleanup.push((await deps.run(["herdr", "tab", "close", lane.tab])).code === 0 ? `tab ${lane.tab} closed` : `tab ${lane.tab} not closed`);
   else if (lane.pane) cleanup.push((await deps.run(["herdr", "pane", "close", lane.pane])).code === 0 ? `pane ${lane.pane} closed` : `pane ${lane.pane} not closed`);
   const root = lane.cwd ?? deps.config.defaultCwd;
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) {

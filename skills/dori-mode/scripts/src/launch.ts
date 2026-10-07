@@ -1,6 +1,7 @@
-import { fill } from "./config.ts";
+import { AoeError, openAoeSession, target, waitForPrompt } from "./aoe.ts";
+import { type Backend, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { readScreen } from "./panes.ts";
+import { readScreen, sendVerified } from "./panes.ts";
 import { LANE_KEY, type Lane } from "./registry.ts";
 import { iso } from "./run.ts";
 import { doneSyntaxErrors } from "./signals.ts";
@@ -26,12 +27,13 @@ export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promis
   if (errors.length) throw new LaunchError(`Done line is not checkable: ${errors.join("; ")}`);
 };
 
-export const footer = (lane: Lane, leadPane: string): string => [
+export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr"): string => [
   "",
   "## Lane footer (written by dori launch)",
   `- Key: ${lane.key}. Work thread: ${lane.thread}.`,
   `- Done = ${lane.done}. The lane closes only when every signal reads back live.`,
   `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <what, with links>, sent to pane ${leadPane || "(lead pane)"} as an argv array, never a shell string.`,
+  ...(backend === "aoe" ? [`- The lead pane is a tmux session: run ["tmux","send-keys","-t","${target(leadPane || "(lead pane)")}","-l","--","<report line>"], then ["tmux","send-keys","-t","${target(leadPane || "(lead pane)")}","Enter"].`] : []),
   `- When done: dori claim-done ${lane.key} --evidence "<merge SHA, closed issue, version>". See references/done-protocol.md.`,
   "",
 ].join("\n");
@@ -50,19 +52,40 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput): Promise<{ 
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
   const draft: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd, model, openedAt: iso(deps.clock) };
-  await Bun.write(input.brief, `${(await briefFile.text()).replace(/\s*$/, "")}\n${footer(draft, deps.config.leadPane)}`);
-  const created = await deps.run(["herdr", "tab", "create", ...(deps.config.laneWorkspace ? ["--workspace", deps.config.laneWorkspace] : []), "--cwd", cwd, "--label", input.key, "--no-focus"]);
+  await Bun.write(input.brief, `${(await briefFile.text()).replace(/\s*$/, "")}\n${footer(draft, deps.config.leadPane, deps.config.backend)}`);
+  const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
+  const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt) : await openHerdr(deps, input.key, cwd, model, prompt);
+  const lane: Lane = { ...draft, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}) };
+  await deps.registry.write(lane);
+  if (opened.failure) return { lane, startup: `STARTUP_ERROR ${input.key} ${opened.pane}: ${opened.failure}` };
+  await deps.clock.sleep(20_000);
+  const bad = STARTUP_FAILURE.exec(await readScreen(deps.run, deps.config.backend, opened.pane, 40));
+  return { lane, startup: bad ? `STARTUP_ERROR ${input.key} ${opened.pane}: ${bad[0]}` : `STARTUP_OK ${input.key} ${opened.pane}` };
+};
+
+type Opened = { readonly pane: string; readonly tab?: string; readonly failure?: string };
+
+const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string): Promise<Opened> => {
+  const created = await deps.run(["herdr", "tab", "create", ...(deps.config.laneWorkspace ? ["--workspace", deps.config.laneWorkspace] : []), "--cwd", cwd, "--label", key, "--no-focus"]);
   if (created.code !== 0) throw new LaunchError(`herdr tab create failed: ${created.err || created.out}`);
   const made = (JSON.parse(created.out) as { result: { root_pane: { pane_id: string; tab_id?: string }; tab_id?: string } }).result;
   const pane = made.root_pane.pane_id;
   const tab = made.tab_id ?? made.root_pane.tab_id;
-  const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   await deps.run(["herdr", "pane", "run", pane, fill(deps.config.agentCommand, { model, prompt }).map(quoteForPane).join(" ")]);
-  const lane: Lane = { ...draft, pane, ...(tab ? { tab } : {}) };
-  await deps.registry.write(lane);
-  await deps.clock.sleep(20_000);
-  const bad = STARTUP_FAILURE.exec(await readScreen(deps.run, pane, 40));
-  return { lane, startup: bad ? `STARTUP_ERROR ${input.key} ${pane}: ${bad[0]}` : `STARTUP_OK ${input.key} ${pane}` };
+  return { pane, ...(tab ? { tab } : {}) };
+};
+
+const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string): Promise<Opened> => {
+  let pane: string;
+  try {
+    pane = await openAoeSession(deps.run, deps.clock, { title: key, cwd, tool: deps.config.agentCommand[0] ?? "omo", model });
+  } catch (e) {
+    if (e instanceof AoeError) throw new LaunchError(e.message);
+    throw e;
+  }
+  if (!(await waitForPrompt(deps.run, deps.clock, pane, 90, 2_000))) return { pane, failure: "no ❯ prompt within 3 minutes" };
+  if (!(await sendVerified(deps.run, deps.clock, "aoe", pane, prompt))) return { pane, failure: "the launch prompt did not register (text still in the input line)" };
+  return { pane };
 };
 
 export const quoteForPane = (arg: string): string => (/^[\w./:@=-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);

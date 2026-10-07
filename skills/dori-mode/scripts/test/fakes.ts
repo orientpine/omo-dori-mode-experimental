@@ -15,18 +15,22 @@ export type World = {
   stuckReads: number;
   screen: string;
   panes: { pane_id: string; workspace_id: string; agent?: string; title?: string; cwd?: string }[];
+  aoe: { id: string; title: string; path: string; tool?: string; profile?: string }[];
+  tmux: string[];
   calls: string[][];
 };
 
+export const NEW_AOE_ID = "5e5e5e5e00aa11bb";
+
 export const WT = "/repo/.wt/demo-lane";
 
-export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", panes: [], calls: [] });
+export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", panes: [], aoe: [], tmux: [], calls: [] });
 
 export const fakeRunner = (w: World): Runner => async (argv) => {
   w.calls.push([...argv]);
   const ok = (out = ""): Ran => ({ code: 0, out, err: "" });
   const [cmd, a1, a2] = argv;
-  if (cmd === "herdr" && a1 === "pane" && a2 === "read") {
+  if ((cmd === "herdr" && a1 === "pane" && a2 === "read") || (cmd === "tmux" && a1 === "capture-pane")) {
     if (w.stuckReads > 0) {
       w.stuckReads--;
       return ok("❯ [LEAD] stuck text still here");
@@ -35,6 +39,17 @@ export const fakeRunner = (w: World): Runner => async (argv) => {
   }
   if (cmd === "herdr" && a1 === "pane" && a2 === "list") return ok(JSON.stringify({ result: { panes: w.panes } }));
   if (cmd === "herdr") return ok();
+  if (cmd === "aoe" && a1 === "list") return ok(JSON.stringify(w.aoe));
+  if (cmd === "aoe" && a1 === "add") {
+    const title = argv[argv.indexOf("-t") + 1] ?? "";
+    w.aoe.push({ id: NEW_AOE_ID, title, path: a2 ?? "", tool: "omo", profile: "main" });
+    w.tmux.push(`aoe_${title}_${NEW_AOE_ID.slice(0, 8)}`);
+    return ok();
+  }
+  if (cmd === "aoe") return ok();
+  if (cmd === "tmux" && a1 === "ls") return ok(w.tmux.join("\n"));
+  if (cmd === "tmux" && a1 === "display-message") return ok("10");
+  if (cmd === "tmux") return ok();
   if (cmd === "git" && argv.includes("worktree") && argv.includes("list")) return ok(`worktree /repo\nbranch refs/heads/main\n\nworktree ${WT}\nbranch refs/heads/demo-lane`);
   if (cmd === "git" && argv.includes("status")) return ok(w.dirty);
   if (cmd === "git" && argv.includes("rev-list")) return ok(w.aheadCount);
@@ -60,4 +75,4 @@ export const depsFor = (w: World, clock: Clock, stateDir: string, patch: Partial
   return { run: fakeRunner(w), clock, registry: new Registry(stateDir), config, exists: () => true };
 };
 
-export const sent = (w: World): string[] => w.calls.filter((c) => c[0] === "herdr" && c[2] === "send-text").map((c) => c[4] ?? "");
+export const sent = (w: World): string[] => w.calls.flatMap((c) => (c[0] === "herdr" && c[2] === "send-text" ? [c[4] ?? ""] : c[0] === "tmux" && c[1] === "send-keys" && c.includes("-l") ? [c.at(-1) ?? ""] : []));

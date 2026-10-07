@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 
+import { currentTmuxSession } from "./aoe.ts";
 import { loadConfig } from "./config.ts";
 import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./done-flow.ts";
@@ -27,7 +28,7 @@ const USAGE = `dori <command> [options]
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
   sync   [--write]                     registry vs live panes; read-only unless --write
-  claim-done [<key>] --evidence TEXT  key defaults to the lane registered for $HERDR_PANE_ID
+  claim-done [<key>] --evidence TEXT  key defaults to the lane registered for this pane ($HERDR_PANE_ID, or the tmux session with backend aoe)
   object-done <key> --reason TEXT [--reason TEXT ...]
   close  <key> [--note TEXT]           close now (Done signals must read back live)
   watch                                long-running: emits LANE_* lines every 30 s
@@ -72,7 +73,8 @@ const key = flags.positionals[0];
 const loopMin = Number(opt("loop") ?? 0);
 
 const lane = async (k: string | undefined) => {
-  const found = k ? await deps.registry.read(k) : await deps.registry.byPane(process.env.HERDR_PANE_ID ?? "");
+  const here = config.backend === "aoe" ? await currentTmuxSession(run) : (process.env.HERDR_PANE_ID ?? "");
+  const found = k ? await deps.registry.read(k) : await deps.registry.byPane(here);
   if (!found) return die(k ? `no registered lane "${k}"` : "no open lane is registered for this pane");
   if (statusOf(found) === "closed") return die(`lane ${found.key} is already closed`);
   return found;
@@ -143,7 +145,7 @@ try {
       const state = { alerting: false };
       console.log("HOST_GUARD_READY");
       await every(loopMin, async () => {
-        for (const line of guardTick(await sampleHost(run), config.guard, state)) console.log(line);
+        for (const line of guardTick(await sampleHost(run, config.backend), config.guard, state)) console.log(line);
       });
       break;
     }
@@ -152,7 +154,7 @@ try {
       const label = rest[0];
       const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
       if (!label || label === "--" || !cmd.length) die("usage: dori heavy <label> -- <command ...>");
-      const load = async () => (await sampleHost(run)).load1;
+      const load = async () => (await sampleHost(run, config.backend)).load1;
       const slot = await acquireSlot({ dir: `${config.stateDir}/heavy`, slots: config.heavySlots, maxLoad: config.heavyMaxLoad, clock: realClock, load, alive: pidAlive, pid: process.pid }, label ?? "");
       try {
         const child = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
@@ -163,7 +165,7 @@ try {
       break;
     }
     case "can-launch": {
-      const v = canLaunch(await sampleHost(run), config.guard);
+      const v = canLaunch(await sampleHost(run, config.backend), config.guard);
       console.log(v.ok ? "CAN_LAUNCH" : `HOLD ${v.reasons.join(" | ")}`);
       process.exit(v.ok ? 0 : 4);
     }

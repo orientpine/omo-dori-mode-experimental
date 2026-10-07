@@ -1,6 +1,8 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { tmuxPanePid } from "./aoe.ts";
+import type { Backend } from "./config.ts";
 import type { Runner } from "./run.ts";
 
 export type Proc = { readonly pid: number; readonly ppid: number; readonly cmd: string };
@@ -31,15 +33,20 @@ const descendants = (table: readonly Proc[], root: number): Proc[] => {
 
 export const sessionDirFor = (sessionsDir: string, cwd: string): string => join(sessionsDir, `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`);
 
-export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly listDir?: (dir: string) => readonly string[] };
+export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[] };
+
+const shellPidOf = async (pane: string, deps: SessionDeps): Promise<number> => {
+  if (deps.backend === "aoe") return tmuxPanePid(deps.run, pane);
+  const info = await deps.run(["herdr", "pane", "process-info", "--pane", pane]);
+  return info.code === 0 ? Number((JSON.parse(info.out) as { result?: { process_info?: { shell_pid?: number } } }).result?.process_info?.shell_pid ?? 0) : 0;
+};
 
 export const resolveSession = async (pane: string, cwd: string, table: readonly Proc[], deps: SessionDeps): Promise<SessionHit> => {
-  const info = await deps.run(["herdr", "pane", "process-info", "--pane", pane]);
-  const shellPid = info.code === 0 ? Number((JSON.parse(info.out) as { result?: { process_info?: { shell_pid?: number } } }).result?.process_info?.shell_pid ?? 0) : 0;
+  const shellPid = await shellPidOf(pane, deps);
   const agent = shellPid ? descendants(table, shellPid).find((p) => AGENT.test(p.cmd) && !/\bmcp\b/.test(p.cmd)) : undefined;
   if (!agent) return { id: "", via: "none" };
   const argv = agent.cmd.split(/\s+/);
-  const flagAt = argv.indexOf("--session");
+  const flagAt = argv.findIndex((a) => a === "--session" || a === "--session-id");
   const fromFlag = flagAt >= 0 ? (argv[flagAt + 1] ?? "") : "";
   if (fromFlag) return { id: fromFlag, via: "argv", pid: agent.pid };
   for (const child of descendants(table, agent.pid).slice(0, 40)) {

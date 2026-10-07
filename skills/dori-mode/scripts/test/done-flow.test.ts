@@ -93,11 +93,11 @@ test("closing directly refuses while a signal is not live and leaves the pane al
 
 test("text still sitting in the pane input gets another Enter until it is gone", async () => {
   world.stuckReads = 1;
-  expect(await sendVerified(at(T0).run, at(T0).clock, "w:p1", "[LEAD] stuck text still here")).toBe(true);
+  expect(await sendVerified(at(T0).run, at(T0).clock, "herdr", "w:p1", "[LEAD] stuck text still here")).toBe(true);
   expect(world.calls.filter((c) => c[2] === "send-keys")).toHaveLength(2);
 });
 
 test("text with a backtick never reaches a pane", async () => {
-  await expect(sendVerified(at(T0).run, at(T0).clock, "w:p1", "run `rm -rf`")).rejects.toBeInstanceOf(UnsafeTextError);
+  await expect(sendVerified(at(T0).run, at(T0).clock, "herdr", "w:p1", "run `rm -rf`")).rejects.toBeInstanceOf(UnsafeTextError);
   expect(world.calls).toHaveLength(0);
 });
