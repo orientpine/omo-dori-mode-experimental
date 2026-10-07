@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 
-import { closeAoeSession } from "./aoe.ts";
+import { closeAoeSession, paneActivity } from "./aoe.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import { type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
@@ -116,6 +116,28 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
     }
     if (deps.clock.now() - Date.parse(claim.at) < windowMs(deps)) continue;
     out.push(await settle(deps, lane, claim.evidence));
+  }
+  if (deps.config.backend === "aoe") out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
+  return out;
+};
+
+// a turn that ended counts as stopped only after it stays ended this long (a goal wake or the next step may follow)
+export const IDLE_SETTLE_MS = 45_000;
+
+// LANE_BLOCKED once each time a working lane's agent stops for a human: aoe says waiting or error, an omo question is
+// open, or the turn ended and stayed idle; never while the screen shows a running turn.
+export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
+  const lanes = (await deps.registry.open()).filter((l) => l.pane && (statusOf(l) === "working" || statusOf(l) === "not-done"));
+  const activity = await paneActivity(deps.run, lanes.map((l) => l.pane ?? ""));
+  const now = deps.clock.now();
+  const out: string[] = [];
+  for (const lane of lanes) {
+    const act = activity.get(lane.pane ?? "");
+    const idleSince = act === "idle" ? (lane.idleSince ?? now) : undefined;
+    const blocked = act === "waiting" || act === "error" || act === "question" ? act : idleSince !== undefined && now - idleSince >= IDLE_SETTLE_MS ? "idle" : undefined;
+    if (blocked === lane.blocked && idleSince === lane.idleSince) continue;
+    await deps.registry.write({ ...lane, blocked, idleSince });
+    if (blocked && blocked !== lane.blocked) out.push(`LANE_BLOCKED ${lane.key} ${blocked} ${lane.pane}`);
   }
   return out;
 };

@@ -30,6 +30,9 @@ export type Lane = {
   readonly lastReplyAt?: number;
   readonly lastNudgeAt?: number;
   readonly lastAutoReplyAt?: number;
+  readonly lastReport?: string;
+  readonly blocked?: string;
+  readonly idleSince?: number;
   readonly receipt?: unknown;
 };
 

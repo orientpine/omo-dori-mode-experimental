@@ -49,6 +49,8 @@ With `"backend": "aoe"` lanes run as [agent-of-empires](https://github.com/njbra
 - `close` runs `aoe session stop <id>` and `aoe rm <id>`: the session goes to the aoe trash and can be restored. It is never purged.
 - The session id comes from the agent's `--session-id` argument (aoe passes one to omo), found under the tmux pane's pid; the environment and session-file rules follow as with herdr.
 - `claim-done` without a key finds the lane by the tmux session it runs in. `guard` and `can-launch` count aoe sessions as panes.
+- `watch` also reads `aoe ps --json` and the lane screens and prints `LANE_BLOCKED <key> <state> <pane>` for a working lane whose agent waits for a human (see `dori watch` below).
+- `launch` reports `STARTUP_ERROR` with the agent's own message as soon as a startup error or `Pane is dead` shows while it waits for the prompt.
 
 Hooks are argv templates for your messenger CLI. `{thread}`, `{text}` and `{key}` are filled into each argument separately, so the text stays one argument whatever it contains.
 
@@ -93,8 +95,12 @@ Closes a lane now. Refuses (exit 2) unless every `Done =` signal reads back live
 ### `dori watch`
 Runs forever. Every 30 seconds it prints each new claim once (`LANE_DONE_CLAIMED`). Claims older than `closeAfterMin` are settled: unpushed or uncommitted work and failing signals turn into objections (`LANE_NOT_DONE`); otherwise the lane is closed (`LANE_CLOSED`). The deadline lives in the registry, so a restart picks up where it left off.
 
+With backend `aoe` it also prints `LANE_BLOCKED <key> <state> <pane>` once each time a working (or not-done) lane's agent stops for a human. Unless the screen shows a running turn (`esc to interrupt`) or a scheduled goal wake (`goal continues in`), `state` is `waiting` or `error` when `aoe ps --json` says so, `question` when omo's question UI (`Ask user ·`, `(0/1 answered)`) is on screen (aoe shows that as `idle`), and `idle` once the turn has stayed ended for 45 seconds. The state is kept in the lane's `blocked` and `idleSince` fields, so a restart does not repeat the line; when the lane runs again they clear and the next block is reported again. If `aoe ps` fails, the tick prints `LANE_WATCH_WARN blocked check: ...` and the done flow still runs.
+
 ### `dori freshness [--loop MIN]`
 For working lanes that have gone quiet: a nudge in the pane after `nudgeAfterMin`, then the lane's last `[REPORT]` line posted to its thread after `postAfterMin`, with home paths and pane ids scrubbed. Each happens once per silence.
+
+Lanes send `[REPORT]` lines to the lead pane, so the report is read from the last 3000 lines of `leadPane` first and from the lane's own screen second. A report the agent UI wrapped over several lines is joined up to the next blank line. A report that differs from the last one seen (kept in the lane's `lastReport`) counts as hearing from the lane and starts a new silence. Output lines: `NUDGED`, `NUDGE-FAILED` (the text stayed in the pane's input), `POSTED`, `NO-REPORT`.
 
 ### `dori dead-panes [--loop MIN]`
 Prints `DEAD_PANE <id>` once per hour for a pane whose last lines match `deadPanePatterns`.

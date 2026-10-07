@@ -14,6 +14,21 @@ herdr integration install pi        # or the integration for the agent you run i
 herdr --skill                       # load its skill unless it is already in your context
 ```
 
+### Or: aoe on tmux
+
+If the owner already runs agents with aoe (agent-of-empires), lanes can be aoe sessions instead of herdr tabs. You need `aoe`, `tmux`, and the agent available to `aoe add --tool <name>`: a built-in agent (`aoe agents` lists them) or a custom agent in aoe's settings, as omo is. Run the Dori itself in an aoe session too, and in step 4 set:
+
+```json
+{
+  "backend": "aoe",
+  "leadPane": "<your own tmux session, from: tmux display-message -p '#S'>",
+  "agentCommand": ["omo", "--model", "{model}", "{prompt}"],
+  "ignorePanes": ["<the owner's own sessions the sweeps should skip>"]
+}
+```
+
+With aoe, `agentCommand[0]` is the aoe tool name and the model goes in through `--extra-args`; `laneWorkspace` and `workspaces` are not used. How lanes differ under aoe: `references/sessions.md`, "The aoe backend".
+
 ## 2. Messenger
 
 Install agent-messenger (github.com/agent-messenger/agent-messenger) and read which platforms it supports. Ask the owner which one to use and wait for the answer.
@@ -57,7 +72,7 @@ cd skills/dori-mode/scripts && bun install && bun link    # puts `dori` on PATH
 mkdir -p ~/.dori && cp ../references/config.example.json ~/.dori/config.json
 ```
 
-Then edit `~/.dori/config.json`: at least `leadPane` (your own herdr pane, from `herdr pane current`), `laneWorkspace`, `defaultCwd`, and the two hooks if you want lane threads updated automatically. `references/scripts.md` explains every field.
+Then edit `~/.dori/config.json`: at least `leadPane` (your own herdr pane, from `herdr pane current`; with aoe, your tmux session name), `laneWorkspace` (herdr only), `defaultCwd`, and the two hooks if you want lane threads updated automatically. `references/scripts.md` explains every field.
 
 ## 5. Monitors
 
@@ -66,10 +81,10 @@ Arm these as persistent monitors in your own session:
 | Monitor | Command | Filter |
 |---|---|---|
 | inbound messages | your messenger's watch command | new owner messages |
-| done flow | `dori watch` | `^LANE_` |
+| done flow (and `LANE_BLOCKED` with aoe) | `dori watch` | `^LANE_` |
 | dead panes | `dori dead-panes --loop 3` | `^DEAD_PANE` |
 | host guard | `dori guard --loop 1` | `^HOST_GUARD` |
-| freshness | `dori freshness --loop 5` | `^(NUDGED\|POSTED\|NO-REPORT)` |
+| freshness | `dori freshness --loop 5` | `^(NUDGED\|NUDGE-FAILED\|POSTED\|NO-REPORT)` |
 | Slack inbound (Slack only) | `dori inbound slack --loop 1` | `^INBOUND` |
 | presence (optional) | `dori presence slack` or `dori presence discord` | `^PRESENCE_READY` |
 

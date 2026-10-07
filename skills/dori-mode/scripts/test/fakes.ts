@@ -14,6 +14,8 @@ export type World = {
   dirty: string;
   stuckReads: number;
   screen: string;
+  screens: Record<string, string>;
+  aoePs: { session: string; state: string }[];
   panes: { pane_id: string; workspace_id: string; agent?: string; title?: string; cwd?: string }[];
   aoe: { id: string; title: string; path: string; tool?: string; profile?: string }[];
   tmux: string[];
@@ -24,7 +26,7 @@ export const NEW_AOE_ID = "5e5e5e5e00aa11bb";
 
 export const WT = "/repo/.wt/demo-lane";
 
-export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", panes: [], aoe: [], tmux: [], calls: [] });
+export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", screens: {}, aoePs: [], panes: [], aoe: [], tmux: [], calls: [] });
 
 export const fakeRunner = (w: World): Runner => async (argv) => {
   w.calls.push([...argv]);
@@ -35,11 +37,13 @@ export const fakeRunner = (w: World): Runner => async (argv) => {
       w.stuckReads--;
       return ok("❯ [LEAD] stuck text still here");
     }
-    return ok(w.screen);
+    const pane = cmd === "tmux" ? (argv[argv.indexOf("-t") + 1] ?? "").replace(/^=|:$/g, "") : (a2 === "read" ? argv[3] : "") ?? "";
+    return ok(w.screens[pane] ?? w.screen);
   }
   if (cmd === "herdr" && a1 === "pane" && a2 === "list") return ok(JSON.stringify({ result: { panes: w.panes } }));
   if (cmd === "herdr") return ok();
   if (cmd === "aoe" && a1 === "list") return ok(JSON.stringify(w.aoe));
+  if (cmd === "aoe" && a1 === "ps") return ok(JSON.stringify(w.aoePs));
   if (cmd === "aoe" && a1 === "add") {
     const title = argv[argv.indexOf("-t") + 1] ?? "";
     w.aoe.push({ id: NEW_AOE_ID, title, path: a2 ?? "", tool: "omo", profile: "main" });

@@ -31,9 +31,41 @@ export const listAoePanes = async (run: Runner): Promise<Pane[]> => {
   });
 };
 
-export const aoeIdFor = async (run: Runner, pane: string): Promise<string | undefined> => {
-  const sessions = await aoeSessions(run);
-  return (sessions.find((s) => pane === `aoe_${s.title}${suffixOf(s)}`) ?? sessions.find((s) => pane.endsWith(suffixOf(s))))?.id;
+const idFor = (sessions: readonly AoeSession[], pane: string): string | undefined =>
+  (sessions.find((s) => pane === `aoe_${s.title}${suffixOf(s)}`) ?? sessions.find((s) => pane.endsWith(suffixOf(s))))?.id;
+
+export const aoeIdFor = async (run: Runner, pane: string): Promise<string | undefined> => idFor(await aoeSessions(run), pane);
+
+// aoe's runtime state per session id: idle, running, waiting (a question or approval is open) or error
+export const aoeStates = async (run: Runner): Promise<Map<string, string>> => {
+  const r = await run(["aoe", "ps", "--json"]);
+  if (r.code !== 0) throw new Error(`aoe ps failed: ${r.err || r.out}`);
+  return new Map((JSON.parse(r.out) as { session: string; state: string }[]).map((p) => [p.session, p.state]));
+};
+
+// omo prints "esc to interrupt" while its main turn runs, and "goal continues in" while a goal wake is scheduled.
+// aoe's state lags behind both, and shows an open omo question ("Ask user · ...") as idle.
+export const BUSY_MARKS = ["esc to interrupt", "goal continues in"];
+export const QUESTION_MARK = /Ask user ·|\(\d+\/\d+ answered\)/;
+
+export type Activity = "busy" | "running" | "waiting" | "error" | "question" | "idle";
+
+// What each live pane's agent is doing, from aoe ps plus its screen. Panes aoe does not list are left out.
+export const paneActivity = async (run: Runner, panes: readonly string[]): Promise<Map<string, Activity>> => {
+  const out = new Map<string, Activity>();
+  if (!panes.length) return out;
+  const [sessions, states] = await Promise.all([aoeSessions(run), aoeStates(run)]);
+  for (const pane of panes) {
+    const id = idFor(sessions, pane);
+    const state = id ? states.get(id) : undefined;
+    if (!state) continue;
+    const screen = await captureTmux(run, pane);
+    if (BUSY_MARKS.some((m) => screen.includes(m))) out.set(pane, "busy");
+    else if (state === "waiting" || state === "error") out.set(pane, state);
+    else if (QUESTION_MARK.test(screen)) out.set(pane, "question");
+    else out.set(pane, state === "idle" ? "idle" : "running");
+  }
+  return out;
 };
 
 export const captureTmux = async (run: Runner, pane: string, lines?: number): Promise<string> => {
