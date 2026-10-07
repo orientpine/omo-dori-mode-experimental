@@ -43,9 +43,11 @@ export const aoeStates = async (run: Runner): Promise<Map<string, string>> => {
   return new Map((JSON.parse(r.out) as { session: string; state: string }[]).map((p) => [p.session, p.state]));
 };
 
-// omo prints "esc to interrupt" while its main turn runs, and "goal continues in" while a goal wake is scheduled.
-// aoe's state lags behind both, and shows an open omo question ("Ask user · ...") as idle.
-export const BUSY_MARKS = ["esc to interrupt", "goal continues in"];
+// omo prints "esc to interrupt" while its main turn runs. Between turns its status line shows what will wake it:
+// a monitor ("◉ watching ..."), wake sources on duty, a scheduled goal continuation, an active goal.
+// aoe's state lags behind all of these, and shows an open omo question ("Ask user · ...") as idle.
+export const BUSY_MARK = "esc to interrupt";
+export const WAKE_MARKS = ["◉ watching", "wake source", "goal continues in", "Pursuing goal"];
 export const QUESTION_MARK = /Ask user ·|\(\d+\/\d+ answered\)/;
 
 export type Activity = "busy" | "running" | "waiting" | "error" | "question" | "idle";
@@ -60,9 +62,10 @@ export const paneActivity = async (run: Runner, panes: readonly string[]): Promi
     const state = id ? states.get(id) : undefined;
     if (!state) continue;
     const screen = await captureTmux(run, pane);
-    if (BUSY_MARKS.some((m) => screen.includes(m))) out.set(pane, "busy");
+    if (screen.includes(BUSY_MARK)) out.set(pane, "busy");
     else if (state === "waiting" || state === "error") out.set(pane, state);
     else if (QUESTION_MARK.test(screen)) out.set(pane, "question");
+    else if (WAKE_MARKS.some((m) => screen.includes(m))) out.set(pane, "running");
     else out.set(pane, state === "idle" ? "idle" : "running");
   }
   return out;
