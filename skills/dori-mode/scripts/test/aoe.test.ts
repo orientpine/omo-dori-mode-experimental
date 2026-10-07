@@ -16,23 +16,23 @@ const PANE = "aoe_fix-a_abcdef12";
 
 let state: ReturnType<typeof withState>;
 let world: World;
-const at = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { backend: "aoe", leadPane: "aoe_Dori_8d429737" });
+const at = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" });
 
 beforeEach(() => {
   state = withState();
   world = newWorld();
   world.aoe = [
     { id: LANE_ID, title: "fix-a", path: "/repo", tool: "omo", profile: "main" },
-    { id: "8d429737ddd245c8", title: "Dori", path: "/home/test/omomeow", tool: "omo", profile: "main" },
+    { id: "0a1b2c3d4e5f6a7b", title: "Dori", path: "/home/test/dori", tool: "omo", profile: "main" },
     { id: "0000ffff00000000", title: "stopped", path: "/repo", tool: "omo", profile: "main" },
   ];
-  world.tmux = [PANE, "aoe_term_fix-a_abcdef12", "aoe_Dori_8d429737", "0"];
+  world.tmux = [PANE, "aoe_term_fix-a_abcdef12", "aoe_Dori_0a1b2c3d", "0"];
 });
 afterEach(() => state.done());
 
 test("each running aoe session is one pane named by its tmux session; terminals and stopped sessions are not panes", async () => {
   const panes = await listPanes(at(T0).run, "aoe");
-  expect(panes.map((p) => p.pane_id)).toEqual([PANE, "aoe_Dori_8d429737"]);
+  expect(panes.map((p) => p.pane_id)).toEqual([PANE, "aoe_Dori_0a1b2c3d"]);
   expect(panes[0]).toEqual({ pane_id: PANE, workspace_id: "main", agent: "omo", title: "fix-a", cwd: "/repo" });
 });
 
@@ -46,7 +46,7 @@ test("a launch opens an aoe session, waits for the prompt and types the lane pro
   expect(r.startup).toBe(`STARTUP_OK smoke ${pane}`);
   expect(sent(world)).toEqual([`ulw set goal and work. Read and execute the lane brief at ${brief} in full. You are the smoke lane; report as the brief's footer says.`]);
   expect(world.calls).toContainEqual(["tmux", "send-keys", "-t", `=${pane}:`, "Enter"]);
-  expect(await Bun.file(brief).text()).toContain(`"tmux","send-keys","-t","=aoe_Dori_8d429737:","-l"`);
+  expect(await Bun.file(brief).text()).toContain(`"tmux","send-keys","-t","=aoe_Dori_0a1b2c3d:","-l"`);
 });
 
 test("five quiet minutes after a claim the lane's aoe session is stopped and trashed, never purged", async () => {
