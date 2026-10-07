@@ -27,6 +27,7 @@ test("a lane silent past the nudge time is nudged once, then its last report is 
   const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { hooks: { threadReply: ["notify", "{thread}", "{text}"] } });
   await deps(T0).registry.write(working);
   world.screen = "noise\n[REPORT] quiet-lane | milestone | tests green on /home/test/repo, PR open\n❯ ";
+  expect(await freshnessTick(deps(T0), "/home/test")).toEqual([]);
   expect(await freshnessTick(deps(T0 + 10 * MIN), "/home/test")).toEqual([]);
   expect((await freshnessTick(deps(T0 + 16 * MIN), "/home/test")).map((a) => a.kind)).toEqual(["nudged"]);
   expect((await freshnessTick(deps(T0 + 17 * MIN), "/home/test")).map((a) => a.kind)).toEqual([]);
@@ -36,6 +37,25 @@ test("a lane silent past the nudge time is nudged once, then its last report is 
   expect(call?.[1]).toBe("chat:team/9");
   expect(call?.[2]).toContain("tests green on ~/repo, PR open");
   expect(sent(world)).toHaveLength(1);
+});
+
+test("a report the lane sent to the lead pane is found there, wrapped lines joined, and a new report resets the silence", async () => {
+  const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { hooks: { threadReply: ["notify", "{thread}", "{text}"] } });
+  await deps(T0).registry.write(working);
+  world.screens["w:p7"] = "working on it\n❯ ";
+  world.screens["lead:p1"] = " [REPORT] quiet-lane | milestone | first step done\n\n [REPORT] other-lane | done | not ours\n [REPORT] quiet-lane | blocker | CI is red on the\n flaky e2e job, rerunning\n\n❯ ";
+  expect(await freshnessTick(deps(T0 + 14 * MIN), "/home/test")).toEqual([]);
+  expect((await freshnessTick(deps(T0 + 28 * MIN), "/home/test")).map((a) => a.kind)).toEqual([]);
+  const later = await freshnessTick(deps(T0 + 35 * MIN), "/home/test");
+  expect(later.map((a) => a.kind)).toEqual(["nudged", "posted"]);
+  expect(world.calls.find((c) => c[0] === "notify")?.[2]).toBe("Progress (from the lane's last report): CI is red on the flaky e2e job, rerunning");
+});
+
+test("a nudge that never reaches the lane's pane is reported as failed, not as sent", async () => {
+  const deps = depsFor(world, fakeClock(T0 + 16 * MIN), state.dir);
+  await deps.registry.write(working);
+  world.screens["w:p7"] = "❯ [LEAD] your work thread has had no update";
+  expect((await freshnessTick(deps, "/home/test")).map((a) => a.kind)).toEqual(["nudge-failed"]);
 });
 
 test("a stopped agent pane is reported once per hour and the lead pane is never reported", async () => {

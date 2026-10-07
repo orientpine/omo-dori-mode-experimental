@@ -31,9 +31,32 @@ export const listAoePanes = async (run: Runner): Promise<Pane[]> => {
   });
 };
 
-export const aoeIdFor = async (run: Runner, pane: string): Promise<string | undefined> => {
-  const sessions = await aoeSessions(run);
-  return (sessions.find((s) => pane === `aoe_${s.title}${suffixOf(s)}`) ?? sessions.find((s) => pane.endsWith(suffixOf(s))))?.id;
+const idFor = (sessions: readonly AoeSession[], pane: string): string | undefined =>
+  (sessions.find((s) => pane === `aoe_${s.title}${suffixOf(s)}`) ?? sessions.find((s) => pane.endsWith(suffixOf(s))))?.id;
+
+export const aoeIdFor = async (run: Runner, pane: string): Promise<string | undefined> => idFor(await aoeSessions(run), pane);
+
+// aoe's runtime state per session id: idle, running, waiting (a question or approval is open) or error
+export const aoeStates = async (run: Runner): Promise<Map<string, string>> => {
+  const r = await run(["aoe", "ps", "--json"]);
+  if (r.code !== 0) throw new Error(`aoe ps failed: ${r.err || r.out}`);
+  return new Map((JSON.parse(r.out) as { session: string; state: string }[]).map((p) => [p.session, p.state]));
+};
+
+// omo prints "esc to interrupt" while its main turn runs; aoe's state alone can lag behind it
+export const BUSY_MARK = "esc to interrupt";
+
+// Panes whose agent stopped for a human: aoe says waiting or error and the screen shows no running turn.
+export const blockedPanes = async (run: Runner, panes: readonly string[]): Promise<Map<string, string>> => {
+  const out = new Map<string, string>();
+  if (!panes.length) return out;
+  const [sessions, states] = await Promise.all([aoeSessions(run), aoeStates(run)]);
+  for (const pane of panes) {
+    const id = idFor(sessions, pane);
+    const state = id ? states.get(id) : undefined;
+    if ((state === "waiting" || state === "error") && !(await captureTmux(run, pane)).includes(BUSY_MARK)) out.set(pane, state);
+  }
+  return out;
 };
 
 export const captureTmux = async (run: Runner, pane: string, lines?: number): Promise<string> => {

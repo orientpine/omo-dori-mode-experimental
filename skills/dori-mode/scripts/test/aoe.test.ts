@@ -79,6 +79,25 @@ test("an aoe pane's session id is omo's --session-id under the tmux pane pid", a
   expect(world.calls).toContainEqual(["tmux", "display-message", "-p", "-t", `=${PANE}:`, "#{pane_pid}"]);
 });
 
+test("a working lane whose aoe session waits for a human is reported once as LANE_BLOCKED, not while its turn still runs", async () => {
+  const lane: Lane = { key: "fix-a", title: "fix-a", thread: "none", pane: PANE, brief: "/b.md", done: "file /etc/hostname", cwd: "/repo", openedAt: new Date(T0).toISOString() };
+  await at(T0).registry.write(lane);
+  world.aoePs = [{ session: LANE_ID, state: "running" }, { session: "0a1b2c3d4e5f6a7b", state: "waiting" }];
+  expect(await watchTick(at(T0))).toEqual([]);
+  world.aoePs[0] = { session: LANE_ID, state: "waiting" };
+  world.screen = "Working (12s • esc to interrupt)\n❯ ";
+  expect(await watchTick(at(T0))).toEqual([]);
+  world.screen = "Which option? 1) A 2) B\n❯ ";
+  expect(await watchTick(at(T0))).toEqual([`LANE_BLOCKED fix-a waiting ${PANE}`]);
+  expect(await watchTick(at(T0))).toEqual([]);
+  world.aoePs[0] = { session: LANE_ID, state: "error" };
+  expect(await watchTick(at(T0))).toEqual([`LANE_BLOCKED fix-a error ${PANE}`]);
+  world.aoePs[0] = { session: LANE_ID, state: "idle" };
+  expect(await watchTick(at(T0))).toEqual([]);
+  world.aoePs[0] = { session: LANE_ID, state: "waiting" };
+  expect(await watchTick(at(T0))).toEqual([`LANE_BLOCKED fix-a waiting ${PANE}`]);
+});
+
 test("a stopped agent in an aoe session is reported, and the lead's session is skipped", async () => {
   world.screen = "omo has stopped\n$ ";
   const deps = at(T0);

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 
-import { closeAoeSession } from "./aoe.ts";
+import { blockedPanes, closeAoeSession } from "./aoe.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import { type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
@@ -116,6 +116,21 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
     }
     if (deps.clock.now() - Date.parse(claim.at) < windowMs(deps)) continue;
     out.push(await settle(deps, lane, claim.evidence));
+  }
+  if (deps.config.backend === "aoe") out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
+  return out;
+};
+
+// LANE_BLOCKED once each time a working lane's agent stops for a human (aoe waiting or error, no running turn on screen).
+export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
+  const lanes = (await deps.registry.open()).filter((l) => l.pane && (statusOf(l) === "working" || statusOf(l) === "not-done"));
+  const blocked = await blockedPanes(deps.run, lanes.map((l) => l.pane ?? ""));
+  const out: string[] = [];
+  for (const lane of lanes) {
+    const state = blocked.get(lane.pane ?? "");
+    if (state === lane.blocked) continue;
+    await deps.registry.write({ ...lane, blocked: state });
+    if (state) out.push(`LANE_BLOCKED ${lane.key} ${state} ${lane.pane}`);
   }
   return out;
 };
