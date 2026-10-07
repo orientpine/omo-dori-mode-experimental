@@ -20,6 +20,7 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 
 | Field | Default | Used by |
 |---|---|---|
+| `backend` | `herdr` | every pane command; `aoe` runs lanes as aoe/tmux sessions (below) |
 | `stateDir` | `~/.dori/state` | registry, heavy slots |
 | `laneWorkspace` | current workspace | `launch` |
 | `workspaces` | all | `sync`, `dead-panes` |
@@ -34,6 +35,17 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `guard` | load 150/80, 20% memory, 50 GB disk, 20 panes | `guard` |
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
 | `hooks.transcribe` | none | `transcribe` (argv with `{file}`, prints the text) |
+
+### Backend `aoe`
+
+With `"backend": "aoe"` lanes run as [agent-of-empires](https://github.com/njbrake/agent-of-empires) sessions instead of herdr panes. Needs `aoe` and `tmux`. What differs:
+
+- A pane id is the session's tmux name, `aoe_<title>_<first 8 of the aoe id>`; `leadPane` and `ignorePanes` take these names. Panes are the live sessions in `aoe list` that have a tmux session; `aoe_term_*` terminals and stopped sessions are not panes. `workspace_id` is the aoe profile, so leave `workspaces` empty or list profiles.
+- `launch` runs `aoe add <cwd> -t <key> --tool <agentCommand[0]> -l --extra-args "--model <model>"`, waits up to 3 minutes for the agent's `❯` prompt, then types the lane prompt. `agentCommand`'s other arguments and `laneWorkspace` are not used. aoe refuses a title+path pair that already exists, even in its trash.
+- Text goes in with `tmux send-keys -t =<name>: -l -- <text>` and a separate `Enter`, each an argv array. Only the agent's input line (the last line starting with `❯`) counts as unsent text, so the same text echoed in the transcript does not trigger extra Enters.
+- `close` runs `aoe session stop <id>` and `aoe rm <id>`: the session goes to the aoe trash and can be restored. It is never purged.
+- The session id comes from the agent's `--session-id` argument (aoe passes one to omo), found under the tmux pane's pid; the environment and session-file rules follow as with herdr.
+- `claim-done` without a key finds the lane by the tmux session it runs in. `guard` and `can-launch` count aoe sessions as panes.
 
 Hooks are argv templates for your messenger CLI. `{thread}`, `{text}` and `{key}` are filled into each argument separately, so the text stays one argument whatever it contains.
 

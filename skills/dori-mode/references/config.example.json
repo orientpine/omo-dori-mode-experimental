@@ -1,4 +1,5 @@
 {
+  "backend": "herdr",
   "stateDir": "~/.dori/state",
   "laneWorkspace": "lanes",
   "workspaces": [
