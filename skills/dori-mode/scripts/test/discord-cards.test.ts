@@ -159,7 +159,16 @@ test("reply marks the thread working and wait marks it waiting, opening an archi
   expect(done.json(3)).toEqual({ name: "🔄 fix login", archived: false });
   const working = threadAs("🔄 fix login");
   await threadHook(working.dc, "wait", `discord:${T}`, "Q2 is waiting on you", emoji);
-  expect(working.json(3)).toEqual({ name: "⏸ fix login" });
+  expect(working.json(3)).toEqual({ name: "⏸️ fix login" });
+});
+
+test("a thread named with the old ⏸ (no U+FE0F) mark is still recognized: its mark is replaced, never doubled", async () => {
+  const legacy = threadAs("\u23F8 fix login");
+  await threadHook(legacy.dc, "reply", `discord:${T}`, "back on it", emoji);
+  expect(legacy.json(3)).toEqual({ name: "🔄 fix login" });
+  const waiting = threadAs("\u23F8 fix login");
+  await threadHook(waiting.dc, "wait", `discord:${T}`, "still waiting", emoji);
+  expect(waiting.json(3)).toEqual({ name: "\u23F8\uFE0F fix login" });
 });
 
 test("a status that already holds sends no rename, since Discord allows only about two per ten minutes", async () => {
