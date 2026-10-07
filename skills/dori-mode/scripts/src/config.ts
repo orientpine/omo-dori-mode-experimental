@@ -92,6 +92,18 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   discord: defaultDiscordWords,
 });
 
+export const envFilePath = (): string => process.env.DORI_ENV_FILE ?? join(homedir(), ".dori", "dori.env");
+
+// KEY=VALUE lines (tokens, Discord ids) for every dori command; a variable already set wins over the file.
+export const loadEnvFile = async (path: string, env: Record<string, string | undefined> = process.env): Promise<void> => {
+  const file = Bun.file(path);
+  if (!(await file.exists())) return;
+  for (const line of (await file.text()).split("\n")) {
+    const [, name, value] = /^\s*([A-Z][A-Z0-9_]*)=(.*)$/.exec(line) ?? [];
+    if (name && value !== undefined && env[name] === undefined) env[name] = value.trim().replace(/^(["'])(.*)\1$/, "$2");
+  }
+};
+
 export const configPath = (): string => process.env.DORI_CONFIG ?? join(homedir(), ".dori", "config.json");
 
 export const expandHome = (path: string, home = homedir()): string => (path === "~" ? home : path.startsWith("~/") ? join(home, path.slice(2)) : path);

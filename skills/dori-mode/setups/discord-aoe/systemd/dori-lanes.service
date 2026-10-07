@@ -1,0 +1,15 @@
+[Unit]
+Description=Dori lane sweeps (watch, freshness, dead-panes, guard) for aoe/tmux lanes
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.dori/dori.env
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash %h/.dori/src/skills/dori-mode/setups/discord-aoe/dori-lanes.sh
+Restart=always
+RestartSec=30
+StandardOutput=append:%h/.dori/dori-lanes.log
+StandardError=append:%h/.dori/dori-lanes.log
+
+[Install]
+WantedBy=default.target

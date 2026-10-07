@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
-import { loadConfig } from "./config.ts";
+import { envFilePath, loadConfig, loadEnvFile } from "./config.ts";
 import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./done-flow.ts";
 import { freshnessTick } from "./freshness.ts";
@@ -64,6 +64,7 @@ const die = (message: string, code = 1): never => {
   process.exit(code);
 };
 
+await loadEnvFile(envFilePath());
 const config = await loadConfig();
 const deps: FlowDeps = { run, clock: realClock, registry: new Registry(config.stateDir), config };
 const [command = "", ...rest] = process.argv.slice(2);

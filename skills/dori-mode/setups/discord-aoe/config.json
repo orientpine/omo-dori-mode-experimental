@@ -1,0 +1,46 @@
+{
+  "backend": "aoe",
+  "stateDir": "~/.dori/state",
+  "workspaces": [],
+  "ignorePanes": [],
+  "leadPane": "aoe_Dori_0a1b2c3d",
+  "defaultCwd": "~/code",
+  "agentCommand": [
+    "omo",
+    "--model",
+    "{model}",
+    "{prompt}"
+  ],
+  "defaultModel": "anthropic/claude-opus-5-5",
+  "launchKeywords": "ulw",
+  "sessionsDir": "~/.omo/agent/sessions",
+  "nudgeAfterMin": 15,
+  "postAfterMin": 20,
+  "closeAfterMin": 5,
+  "hooks": {
+    "threadReply": [
+      "dori",
+      "thread",
+      "reply",
+      "{thread}",
+      "{text}"
+    ],
+    "threadDone": [
+      "dori",
+      "thread",
+      "done",
+      "{thread}",
+      "{text}"
+    ],
+    "transcribe": [
+      "/home/you/.dori/src/skills/dori-mode/setups/discord-aoe/transcribe.sh",
+      "{file}"
+    ]
+  },
+  "discord": {
+    "working": "working",
+    "waiting": "waiting",
+    "done": "done",
+    "other": "Write my own"
+  }
+}
