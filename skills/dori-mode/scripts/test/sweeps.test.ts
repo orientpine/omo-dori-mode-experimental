@@ -3,6 +3,7 @@ import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { deadPaneTick } from "../src/dead-panes.ts";
+import { claimDone } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { acquireSlot, releaseSlot } from "../src/heavy-slot.ts";
 import { guardTick } from "../src/host-guard.ts";
@@ -49,6 +50,19 @@ test("a report the lane sent to the lead pane is found there, wrapped lines join
   const later = await freshnessTick(deps(T0 + 35 * MIN), "/home/test");
   expect(later.map((a) => a.kind)).toEqual(["nudged", "posted"]);
   expect(world.calls.find((c) => c[0] === "notify")?.[2]).toBe("Progress (from the lane's last report): CI is red on the flaky e2e job, rerunning");
+});
+
+test("a done claim written while a sweep is nudging the lane survives the sweep's own registry write", async () => {
+  const base = depsFor(world, fakeClock(T0 + 16 * MIN), state.dir);
+  await base.registry.write(working);
+  const run: typeof base.run = async (argv, opts) => {
+    if (argv[0] === "herdr" && argv[2] === "send-text") await claimDone({ ...base, run: async () => ({ code: 0, out: "❯ ", err: "" }) }, working, "merged acme/app#1");
+    return base.run(argv, opts);
+  };
+  expect((await freshnessTick({ ...base, run }, "/home/test")).map((a) => a.kind)).toEqual(["nudged"]);
+  const after = await base.registry.read("quiet-lane");
+  expect(after?.status).toBe("done-claimed");
+  expect(after?.lastNudgeAt).toBe(T0 + 16 * MIN);
 });
 
 test("a nudge that never reaches the lane's pane is reported as failed, not as sent", async () => {

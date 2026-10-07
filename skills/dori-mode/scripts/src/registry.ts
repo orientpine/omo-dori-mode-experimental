@@ -68,6 +68,13 @@ export class Registry {
     renameSync(tmp, this.path(lane.key));
   }
 
+  // Sweeps change only their own fields: merge them onto the lane as it is now, so a claim or an objection written
+  // by another process since the sweep read the lane is kept.
+  async patch(key: string, fields: Partial<Lane>): Promise<void> {
+    const fresh = await this.read(key);
+    if (fresh) await this.write({ ...fresh, ...fields });
+  }
+
   async list(): Promise<Lane[]> {
     mkdirSync(this.dir, { recursive: true });
     const lanes: Lane[] = [];

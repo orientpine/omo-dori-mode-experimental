@@ -43,14 +43,14 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
     let current = lane;
     if (report && report !== lane.lastReport) {
       current = { ...current, lastReport: report, lastReplyAt: now };
-      await deps.registry.write(current);
+      await deps.registry.patch(lane.key, { lastReport: report, lastReplyAt: now });
     }
     const heard = lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);
     if (silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
       const delivered = await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`);
       current = { ...current, lastNudgeAt: now };
-      await deps.registry.write(current);
+      await deps.registry.patch(lane.key, { lastNudgeAt: now });
       acts.push({ kind: delivered ? "nudged" : "nudge-failed", lane: lane.key, detail: delivered ? `${silentMin} min silent` : `${silentMin} min silent; the nudge did not reach pane ${lane.pane}` });
     }
     const hook = deps.config.hooks.threadReply;
@@ -61,7 +61,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
       }
       const text = `Progress (from the lane's last report): ${scrubForThread(report, home)}`;
       await deps.run(fill(hook, { thread: lane.thread, text, key: lane.key }));
-      await deps.registry.write({ ...current, lastAutoReplyAt: now });
+      await deps.registry.patch(lane.key, { lastAutoReplyAt: now });
       acts.push({ kind: "posted", lane: lane.key, detail: text });
     }
   }
