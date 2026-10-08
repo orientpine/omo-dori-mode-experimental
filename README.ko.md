@@ -6,24 +6,32 @@
 
 # omo-dori-mode-experimental
 
-Dori 모드는 코딩 에이전트 세션 하나를 늘 켜져 있는 메신저 에이전트로 바꿉니다. 사용자는 텔레그램이나 디스코드에서 봇 하나와 이야기합니다. Dori는 일마다 herdr 탭에 에이전트 세션을 따로 띄워 맡기고, 자기가 띄운 세션을 모두 기억하며, 일이 정말 끝났을 때만 닫습니다. PR이 머지되고, 이슈가 닫히고, 버전이 배포된 다음에요.
+Dori 모드는 코딩 에이전트 세션 하나를 늘 켜져 있는 메신저 에이전트로 바꿉니다. 사용자는 텔레그램이나 디스코드에서 봇 하나와 이야기합니다. Dori는 일마다 herdr 탭이나 aoe/tmux 세션에 에이전트를 따로 띄워 맡기고, 자기가 띄운 세션을 모두 기억하며, 일이 정말 끝났을 때만 닫습니다. PR이 머지되고, 이슈가 닫히고, 버전이 배포된 다음에요.
 
 스킬(`skills/dori-mode/SKILL.md`와 references)과 bun + TypeScript로 만든 작은 CLI `dori`로 구성됩니다. 아직 실험 단계라 거친 부분이 남아 있어요.
 
 ## 설치
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sisyphuslabs/omo-dori-mode-experimental/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | bash
 ```
 
 저장소를 `~/.dori/src`에 받고, 스킬을 `~/.agents/skills/dori-mode`에 링크하고, `bun link`로 `dori`를 PATH에 올리고, 예시 설정을 `~/.dori/config.json`에 복사합니다. 에이전트가 다른 곳에서 스킬을 읽는다면 `SKILLS_DIR`를 지정하세요.
 
-그다음 herdr 안에서 에이전트를 열고 "Dori mode"라고 말하면 됩니다.
+기본 백엔드는 herdr입니다. aoe/tmux를 쓰려면:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | DORI_BACKEND=aoe bash
+```
+
+`DORI_BACKEND=aoe`는 설정 파일이 없을 때 `backend: "aoe"`인 설정을 복사합니다. 기존 설정은 백엔드를 포함해 유지합니다. `leadPane`은 리드의 aoe/tmux 세션 이름으로 설정하세요. `DORI_REPO`로 복제 URL을 바꿀 수 있습니다. PATH에 herdr도 aoe + tmux도 없으면 설치 프로그램이 경고하며, `gh`와 `agent-messenger`가 없는 경우는 선택 사항 경고입니다. 기존 설치의 origin이 이 포크(또는 지정한 `DORI_REPO`)가 아니면 경고와 변경 명령을 보여 주고, 원격을 몰래 바꾸거나 예전 origin에서 pull하지 않습니다.
+
+그다음 herdr 안에서, aoe 백엔드라면 aoe 세션 안에서 에이전트를 열고 "Dori mode"라고 말하면 됩니다. 디스코드 + aoe/tmux 서비스 전체 설정은 [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md)에 있습니다.
 
 ## 필요한 것
 
 - [bun](https://bun.sh) 1.3 이상, git
-- [herdr](https://herdr.dev): 레인이 돌아가는 터미널 멀티플렉서
+- 레인 탭용 [herdr](https://herdr.dev), 또는 레인 세션용 [agent-of-empires (aoe)](https://github.com/njbrake/agent-of-empires)와 `tmux`
 - 스킬을 읽는 코딩 에이전트 ([OmO](https://github.com/code-yeongyu/oh-my-openagent) 기준으로 만들었고, 에이전트 실행 명령은 설정으로 바꿀 수 있습니다)
 - PR 머지와 이슈 종료 확인용 `gh`(GitHub CLI), 배포 버전 확인용 `npm`
 - 봇 자체를 위한 [agent-messenger](https://github.com/agent-messenger/agent-messenger)
@@ -43,7 +51,7 @@ Dori는 맨 처음에 자기를 뭐라고 부를지 묻습니다. 그냥 "Dori"�
 
 ## Dori의 말투
 
-Dori는 사용자의 말투를 따라갑니다. 짧고 편하게, 소문자로 쓰면 그대로 짧고 편하게 답합니다. 어떤 언어로 쓰든 이모지는 쓰지 않습니다. 할 말이 여러 갈래면 긴 글 하나 대신 짧은 메시지 몇 개로 나눠 보내고, 각 메시지는 준비되는 대로 바로 보냅니다. 일부러 뜸을 들이지 않아요. 계속 바뀌는 진행 상황 하나만은 예외라서, 메시지 하나를 그 자리에서 고쳐 갑니다.
+Dori는 사용자의 말투를 따라갑니다. 짧고 편하게, 소문자로 쓰면 그대로 짧고 편하게 답합니다. 메시지는 이모지 대신 말로 쓰지만, `discord.statusStyle`이 `"emoji"`이면 디스코드 상태 표시에 이모지를 쓸 수 있고 리스너는 눈 리액션으로 읽음 표시를 합니다. 할 말이 여러 갈래면 긴 글 하나 대신 짧은 메시지 몇 개로 나눠 보내고, 각 메시지는 준비되는 대로 바로 보냅니다. 일부러 뜸을 들이지 않아요. 계속 바뀌는 진행 상황 하나만은 예외라서, 메시지 하나를 그 자리에서 고쳐 갑니다.
 
 ## 설정
 
@@ -51,13 +59,52 @@ Dori는 사용자의 말투를 따라갑니다. 짧고 편하게, 소문자로 �
 
 | 항목 | 뜻 |
 |---|---|
-| `leadPane` | Dori 자신의 herdr pane (`herdr pane current`). 레인 보고가 여기로 옵니다. |
-| `laneWorkspace` | 새 레인 탭이 열릴 herdr workspace |
+| `backend` | `"herdr"`(기본값) 또는 `"aoe"` |
+| `leadPane` | Dori 자신의 herdr pane (`herdr pane current`), 또는 aoe의 tmux 세션 이름 (`tmux display-message -p '#S'`). 레인 보고가 여기로 옵니다. |
+| `laneWorkspace` | 새 레인 탭이 열릴 herdr workspace. aoe에서는 쓰지 않습니다 |
+| `ignorePanes`, `workspaces` | 감시에서 제외할 pane과 workspace 필터. aoe에서는 tmux 세션 이름과 프로필 이름을 쓰며, `workspaces`는 비워 둬도 됩니다 |
 | `defaultCwd` | 레인이 시작하는 디렉터리이자, 레인이 worktree를 만드는 저장소 |
 | `agentCommand` | 에이전트 실행 명령. `{model}`, `{prompt}`가 들어간 argv 목록 |
 | `hooks.threadReply`, `hooks.threadDone` | 메신저 CLI를 `{thread}`, `{text}`가 들어간 argv 목록으로. 레인 진행 상황을 올리고 완료 표시를 할 때 씁니다. |
+| `discord.statusStyle` | 디스코드 상태 표시를 `"words"`(기본값) 또는 `"emoji"`로 설정 |
 
 나머지(시간, 임계값, heavy 슬롯 수)는 기본값으로 충분합니다. 전체 표는 [`references/scripts.md`](skills/dori-mode/references/scripts.md)에 있습니다. `DORI_CONFIG`, `DORI_STATE_DIR`, `DORI_LEAD_PANE` 환경변수를 주면 파일 값 대신 그 값을 씁니다.
+
+### aoe/tmux 레인 열기
+
+리드도 aoe 안에서 실행하고, 예를 들어 이렇게 설정하세요.
+
+```json
+{
+  "backend": "aoe",
+  "leadPane": "aoe_Dori_0a1b2c3d",
+  "agentCommand": ["omo", "--model", "{model}", "{prompt}"],
+  "workspaces": [],
+  "discord": { "statusStyle": "emoji" }
+}
+```
+
+에이전트는 aoe 도구로 등록되어 있어야 합니다(`aoe agents`로 기본 도구를 확인하고, 사용자 도구는 aoe 설정에 등록). herdr에서는 `agentCommand`가 전체 argv 템플릿입니다. aoe에서는 `agentCommand[0]`만 도구를 고르고, 모델은 `--extra-args`로 전달하며 나머지 인자는 쓰지 않습니다.
+
+brief를 준비한 뒤 어느 백엔드에서든 같은 명령으로 레인을 엽니다.
+
+```sh
+dori launch fix-login --title "Fix login" --brief ~/.dori/briefs/fix-login.md \
+  --done "merged acme/app#412" --thread discord:100000000000000001
+```
+
+herdr는 탭을 엽니다. aoe는 `aoe add <cwd> -t <key> --tool <tool> -l --extra-args "--model <model>"`을 실행하고, 에이전트의 `❯` 프롬프트를 최대 3분 기다린 다음 레인 프롬프트를 입력합니다. 시작 실패는 `STARTUP_ERROR`로 나옵니다. 레지스트리의 pane은 `aoe_fix-login_1a2b3c4d` 같은 tmux 세션 이름이며, aoe는 휴지통에 있는 경우에도 같은 제목/경로 조합을 거부합니다.
+
+footer는 레인이 `[REPORT] <key> | <milestone|blocker|question|done> | <text>`를 리드에게 보내도록 안내합니다. aoe에서는 셸 문자열 대신 argv 배열 두 개로 보냅니다.
+
+```json
+["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "-l", "--", "[REPORT] fix-login | milestone | tests passed"]
+["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "Enter"]
+```
+
+`dori freshness`는 리드 화면에서 먼저 보고를 읽고, 없으면 레인 화면을 봅니다. 새 보고는 무응답 시간을 초기화합니다. 기본값으로 15분 뒤 알림을 보내고 20분 뒤 `hooks.threadReply`로 마지막 보고를 올리며, 무응답 구간마다 한 번씩 실행합니다.
+
+aoe에서 `dori watch`는 working 또는 not-done 레인이 사람을 기다리며 멈추면 `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>`을 출력합니다. `aoe ps --json`과 화면을 함께 확인하며, 턴이 실행 중이면 출력하지 않습니다. idle은 45초간 지속돼야 하고, 모니터나 wake source, 진행 중이거나 예약된 goal을 기다리는 경우는 idle이 아닙니다. 닫을 때는 aoe 세션을 멈추고 휴지통으로 옮기며 영구 삭제하지 않습니다.
 
 ## 온보딩
 
@@ -76,7 +123,7 @@ Dori는 사용자의 말투를 따라갑니다. 짧고 편하게, 소문자로 �
 
 ## 세션 레지스트리
 
-레인마다 `~/.dori/state/lanes/` 아래에 JSON 파일이 하나씩 생깁니다. 메신저 스레드와 herdr pane, pane과 에이전트 세션 id를 연결하고, 상태(`working`, `done-claimed`, `verified-done`, `not-done`, `closed`)와 그 변화 이력을 남깁니다.
+레인마다 `~/.dori/state/lanes/` 아래에 JSON 파일이 하나씩 생깁니다. 메신저 스레드와 herdr pane 또는 aoe tmux 세션 이름, pane과 에이전트 세션 id를 연결하고, 상태(`working`, `done-claimed`, `verified-done`, `not-done`, `closed`)와 그 변화 이력을 남깁니다.
 
 `dori sync`는 이 기록을 실제로 떠 있는 pane과 비교해서 어긋난 곳을 알려 줍니다. 사라진 pane, 바뀐 세션 id, 끝났다는 걸 증명할 방법이 없는 레인 같은 것들입니다. 아무것도 지우지 않습니다. `--write`를 붙이면 찾은 세션 id를 저장합니다.
 
@@ -114,11 +161,11 @@ watcher는 레인을 닫을 때 셸 없이 이 확인을 직접 다시 돌리고
 
 | 명령 | 하는 일 |
 |---|---|
-| `dori launch <key> ...` | brief에 레인 footer를 쓰고, 탭을 열고, 에이전트를 시작하고, 시작 오류를 확인 |
+| `dori launch <key> ...` | brief에 레인 footer를 쓰고, herdr 탭이나 aoe 세션을 열고, 에이전트를 시작하고, 시작 오류를 확인 |
 | `dori adopt <key> --pane ID ...` | 이미 돌고 있는 레인을 등록 |
 | `dori sync [--write]` | 레지스트리와 실제 pane 비교, 어긋난 곳 표시 |
 | `dori claim-done` / `object-done` / `close` | 완료 흐름 |
-| `dori watch` | 자동 닫기 watcher. 지속 모니터로 돌립니다 |
+| `dori watch` | 자동 닫기 watcher와 aoe `LANE_BLOCKED` 이벤트. 지속 모니터로 돌립니다 |
 | `dori freshness [--loop MIN]` | 조용해진 레인을 깨우고, 마지막 보고를 스레드에 올림 |
 | `dori dead-panes [--loop MIN]` | 멈춘 에이전트 pane 보고 |
 | `dori guard [--loop MIN]` | 부하, 메모리, 디스크, pane 수 경고 |
@@ -137,6 +184,9 @@ CLI에는 Dori에게 필요한 메신저 기능도 들어 있습니다. `scripts
 | `dori transcribe <file>` | `hooks.transcribe` 명령으로 음성 메시지를 글로 변환 |
 | `dori can-launch` | 레인을 하나 더 열 여유가 있는지 확인 |
 | `dori inbound slack [--loop MIN]` | 슬랙에서 Dori에게 온 것을 빠짐없이 잡기. Threads 화면의 읽지 않은 답글, Dori가 글을 쓴 스레드의 새 답글(태그가 없어도), 읽지 않은 멘션이 있는 DM과 채널 |
+| `dori inbound discord` | 사용자 메시지, 음성 변환, 질문 카드 답변을 받는 게이트웨이 리스너 |
+| `dori ask` / `questions [--open]` / `reopen <Qn>` / `resolve <Qn>` | 디스코드 질문 카드 게시, 목록 조회, 다시 열기, 처리 완료 |
+| `dori thread reply\|wait\|done discord:<id> <text>` | 작업 스레드에 글을 쓰고 작업 중/대기/완료 표시. 완료 시 보관 |
 
 명령은 없지만 모듈로 제공되는 기능도 있습니다.
 - 텔레그램: "Thinking…"으로 시작하는 `sendMessageDraft` 스트리밍, 포럼 토픽, HTML 표
@@ -148,6 +198,24 @@ CLI에는 Dori에게 필요한 메신저 기능도 들어 있습니다. `scripts
 
 토큰은 `DORI_SLACK_TOKEN`(사용자 토큰이면 `DORI_SLACK_COOKIE`도), `DORI_TELEGRAM_TOKEN`, `DORI_DISCORD_TOKEN`에서 읽습니다.
 
+### 디스코드 질문 카드와 스레드 상태
+
+환경변수나 `~/.dori/dori.env`에 `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL`, `DORI_DISCORD_OWNER`를 설정하세요(이미 설정된 환경변수가 우선). 봇의 Message Content intent를 켜고 버튼과 입력창 답변을 받도록 `dori inbound discord`를 계속 실행하세요.
+
+```sh
+dori ask --text "로그인 수정을 배포할까요?" --option "지금 배포" --option "QA 기다리기" \
+  --thread discord:100000000000000001 --tmux aoe_fix-login_1a2b3c4d
+dori questions --open
+dori reopen Q1
+dori resolve Q1
+```
+
+선택지 1–9개는 각각 짧은 `Pick N` 버튼 옆에 전체 내용으로 표시됩니다. 추천을 맨 앞에 두면 버튼이 강조됩니다. 직접 쓰기 버튼은 입력창을 엽니다. 소유자만 답할 수 있고 소유자만 멘션합니다. 답하면 카드는 기록으로 접히고, `~/.dori/state/discord/` 아래 `answers.jsonl`과 리스너 inbox에 저장됩니다. `--session`과 `--tmux` 정보로 답을 전달할 세션을 구분합니다.
+
+`--thread`를 주면 해당 작업 스레드 안에 카드를 올리고 대기 상태로 표시합니다. 답하면 그 자리에서 기록으로 접히며 별도 기록 메시지는 없습니다. 그 스레드에 열린 질문이 더 없으면 작업 중으로 돌아갑니다. `dori reopen`은 버튼을 복구하고 스레드를 다시 대기로 표시합니다. `--thread`가 없으면 새 카드는 설정된 채널에 올라갑니다. 스레드가 연결된 예전 채널 카드는 답변 기록을 그 스레드에 알림 없이 남깁니다. 후속 작업이 끝나면 `dori resolve`로 추적 목록에서 지우며, 접힌 카드는 채팅에 남습니다.
+
+`discord.statusStyle: "emoji"`는 스레드 이름 앞에 🔄 작업 중, ⏸️ 대기, ✅ 완료를 붙입니다. 기본 `"words"`는 `[working]`, `[waiting]`, `[done]`입니다. `dori thread reply` / `wait` / `done`이 상태를 바꾸며, done은 보관하고 reply/wait는 보관을 해제합니다. 완료 스레드에 소유자가 메시지를 쓰면 리스너가 작업 중으로 다시 엽니다. 서비스와 카드 문구 번역 설정은 [디스코드 + aoe 설정](skills/dori-mode/setups/discord-aoe/README.md)을 보세요.
+
 ## 테스트
 
 CI는 없습니다. 테스트는 로컬에서 돌립니다.
@@ -155,11 +223,11 @@ CI는 없습니다. 테스트는 로컬에서 돌립니다.
 ```sh
 cd skills/dori-mode/scripts
 bun install
-bun test           # 가짜 herdr, git, gh로 동작을 확인하는 테스트
+bun test           # 가짜 herdr, aoe, tmux, git, gh, Discord HTTP/게이트웨이로 동작 확인
 bunx tsc --noEmit  # 타입 검사
 ```
 
-실제 pane이나 저장소, GitHub는 건드리지 않아요.
+두 백엔드, 시작과 보고 전달, freshness, 멈춘 레인, 완료 흐름, 디스코드 카드와 상태를 테스트합니다. 외부 도구와 Discord HTTP/게이트웨이는 가짜로 대체하며 실제 pane, 저장소, GitHub, 디스코드 계정은 건드리지 않아요.
 
 ## 라이선스
 
