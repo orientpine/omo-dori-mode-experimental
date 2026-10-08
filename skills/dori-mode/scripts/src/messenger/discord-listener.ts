@@ -78,6 +78,8 @@ export type ListenerDeps = {
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 200);
 const newer = (a: string, b: string): boolean => BigInt(a) > BigInt(b);
+// the inbox may be shared with other listeners (other messengers, other channels); only rows this listener writes set its cursors
+const OWN_SCOPES = new Set(["dm", "channel", "thread"]);
 
 export class DiscordListener {
   private readonly seen = new Set<string>();
@@ -88,6 +90,7 @@ export class DiscordListener {
   // channel or thread id -> owner messages that still carry our eyes reaction
   private eyes: Record<string, string[]> = {};
   private self = "";
+  // newest owner message this listener has taken; everything missed while the socket was down is newer than it
   private cursor = "0";
   private seq: number | null = null;
   private backoff = 1_000;
@@ -99,9 +102,9 @@ export class DiscordListener {
     if (!existsSync(d.inboxFile)) return;
     for (const line of readFileSync(d.inboxFile, "utf8").split("\n")) {
       if (!line.trim()) continue;
-      const row = JSON.parse(line) as { id: string; kind?: string };
+      const row = JSON.parse(line) as { id: string; kind?: string; scope?: string; channel_id?: string };
       this.seen.add(row.id);
-      if (!row.kind && newer(row.id, this.cursor)) this.cursor = row.id;
+      if (!row.kind && OWN_SCOPES.has(row.scope ?? "") && newer(row.id, this.cursor)) this.cursor = row.id;
     }
   }
 
