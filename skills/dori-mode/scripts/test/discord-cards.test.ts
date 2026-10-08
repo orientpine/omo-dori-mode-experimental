@@ -45,14 +45,14 @@ const optionTexts = (card: unknown) => parts(card).filter((c) => c.type === 9).m
 
 test("a question card is a V2 message that pings only the owner, recommended option first and primary, write-my-own last", async () => {
   const { cards, store, calls, json } = setup();
-  const q = await cards.ask("Ship the fix today?", ["Ship it", "Wait for review"], { thread: "300", session: "sess-1", tmux: "aoe_demo_1234abcd" });
+  const q = await cards.ask("Ship the fix today?", ["Ship it", "Wait for review"], { session: "sess-1", tmux: "aoe_demo_1234abcd" });
   expect(q.id).toBe("Q1");
   expect(calls()).toEqual([`POST /channels/${CHANNEL}/messages`]);
   const body = json(0);
   expect(body.flags).toBe(1 << 15);
   expect(body.allowed_mentions).toEqual({ users: [OWNER] });
   expect(body.components[0].type).toBe(17);
-  expect(body.components[0].components[0].content).toBe(`<@${OWNER}> **Q1** Ship the fix today? · <#300>`);
+  expect(body.components[0].components[0].content).toBe(`<@${OWNER}> **Q1** Ship the fix today?`);
   expect(body.components[0].components.map((c: Part) => c.type)).toEqual([10, 9, 9, 1]);
   expect(optionTexts(body.components)).toEqual(["**1.** Ship it", "**2.** Wait for review"]);
   expect(rows(body.components)).toEqual([
@@ -146,14 +146,84 @@ test("a question with no options or with shell-substitution text is refused befo
   expect(seen).toHaveLength(0);
 });
 
-test("an answered question with a work thread leaves the answer there without pinging anyone", async () => {
-  const { cards, calls, json } = setup();
+// a work thread whose name the fake keeps current, so each status change is one rename
+const threadCards = (name = "🔄 fix login") => {
+  const thread = { name };
+  const f = setup((req) => {
+    if (req.method === "GET") return { name: thread.name };
+    if (req.method === "PATCH" && req.url.endsWith("/channels/300")) thread.name = JSON.parse(String(req.body)).name ?? thread.name;
+    return req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {};
+  });
+  const cards = new QuestionCards(f.dc, f.store, { channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji" } }, () => Date.parse("2026-01-02T03:04:00Z"));
+  return { ...f, cards, thread };
+};
+const threadTap = (customId: string): Interaction => ({ ...tap(customId), channel_id: "300" });
+
+test("with a work thread the card is posted inside it, with no link back, and the thread is marked ⏸️", async () => {
+  const { cards, store, calls, json, thread } = threadCards();
+  await cards.ask("Ship?", ["Yes", "No"], { thread: "300" });
+  expect(calls()).toEqual(["POST /channels/300/messages", "GET /channels/300", "PATCH /channels/300"]);
+  expect(json(0).components[0].components[0].content).toBe(`<@${OWNER}> **Q1** Ship?`);
+  expect(json(2)).toEqual({ name: "⏸️ fix login" });
+  expect(thread.name).toBe("⏸️ fix login");
+  expect(store.get("Q1")).toMatchObject({ channel: "300", thread: "300", message: "900" });
+});
+
+test("an answer to a card inside its thread posts no record line and marks the thread 🔄 again", async () => {
+  const { cards, calls, json } = threadCards();
   await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  const out = await cards.handle(threadTap("q:Q1:0"));
+  if (out.kind !== "answered") throw new Error(out.kind);
+  await cards.afterAnswer(out.question);
+  expect(calls().slice(3)).toEqual(["POST /interactions/i1/tok/callback", "GET /channels/300", "PATCH /channels/300"]);
+  expect(json(5)).toEqual({ name: "🔄 fix login" });
+});
+
+test("while another question in the same thread is still open, an answer leaves the thread ⏸️", async () => {
+  const { cards, calls, thread } = threadCards();
+  await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  await cards.ask("Deploy where?", ["Staging"], { thread: "300" });
+  const out = await cards.handle(threadTap("q:Q1:0"));
+  if (out.kind !== "answered") throw new Error(out.kind);
+  const before = calls().length;
+  await cards.afterAnswer(out.question);
+  expect(calls().slice(before)).toEqual([]);
+  expect(thread.name).toBe("⏸️ fix login");
+});
+
+test("a card posted in the channel for a work thread leaves a silent record line there, then marks the thread 🔄", async () => {
+  const { cards, store, calls, json } = threadCards("⏸️ fix login");
+  const asked = store.create("Ship?", ["Yes"], CHANNEL, { thread: "300" }, "2026-01-02T03:00:00Z");
+  store.setMessage(asked.id, "900");
   const out = await cards.handle(tap("q:Q1:0"));
   if (out.kind !== "answered") throw new Error(out.kind);
-  await cards.echo(out.question);
-  expect(calls()[2]).toBe("POST /channels/300/messages");
-  expect(json(2)).toEqual({ content: "Q1 Ship?\n→ Yes (1/2, 03:04)", flags: 1 << 12, allowed_mentions: { parse: [] } });
+  await cards.afterAnswer(out.question);
+  expect(calls()).toEqual(["POST /interactions/i1/tok/callback", "POST /channels/300/messages", "GET /channels/300", "PATCH /channels/300"]);
+  expect(json(1)).toEqual({ content: "Q1 Ship?\n→ Yes (1/2, 03:04)", flags: 1 << 12, allowed_mentions: { parse: [] } });
+  expect(json(3)).toEqual({ name: "🔄 fix login" });
+});
+
+test("reopening a card inside its thread patches it there and marks the thread ⏸️ again", async () => {
+  const { cards, calls, thread } = threadCards();
+  await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  const out = await cards.handle(threadTap("q:Q1:0"));
+  if (out.kind !== "answered") throw new Error(out.kind);
+  await cards.afterAnswer(out.question);
+  expect(thread.name).toBe("🔄 fix login");
+  const before = calls().length;
+  await cards.reopen("Q1");
+  expect(calls().slice(before)).toEqual(["PATCH /channels/300/messages/900", "GET /channels/300", "PATCH /channels/300"]);
+  expect(thread.name).toBe("⏸️ fix login");
+});
+
+test("a failed thread rename does not fail the ask: the card is already posted", async () => {
+  const { cards, store } = setup((req) => {
+    if (req.method === "GET") throw new Error("rate limited");
+    return req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {};
+  });
+  const q = await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  expect(q.message).toBe("900");
+  expect(store.get("Q1")?.status).toBe("open");
 });
 
 test("the done thread hook posts without emoji, swaps the status word in the thread name, then archives", async () => {

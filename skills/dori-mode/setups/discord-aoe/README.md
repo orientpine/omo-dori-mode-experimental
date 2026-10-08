@@ -82,9 +82,10 @@ dori ask --text "Lane fix-login asks: keep the old session cookie for 30 days?" 
 
 - Put your recommended option first; its button is the highlighted one. Each option is shown in full as a numbered line with a short `Pick N` button beside it (Discord clips long button labels to one line, so the text never goes on the button). A "write my own" button that opens a text box is always added last. Up to 9 options.
 - The card pings the owner and nobody else. Only the owner's tap counts; anyone else gets a private "only the owner can answer" note.
-- On the tap the card folds into a one-line record (`[answered] Q4 ... → Yes, 30 days`), the answer goes to `~/.dori/state/discord/answers.jsonl` and to the inbox as a `kind:"answer"` row, and it is echoed silently into the work thread.
+- With `--thread` the card is posted inside that work thread, which is marked ⏸️ until it is answered; without it the card goes to the Dori's channel.
+- On the tap the card folds into a one-line record (`[answered] Q4 ... → Yes, 30 days`), the answer goes to `~/.dori/state/discord/answers.jsonl` and to the inbox as a `kind:"answer"` row. A card inside the thread is the record there; a channel card leaves a silent record line in its thread. When no other question in the thread is open, the thread turns 🔄 again.
 - When the answer row arrives, act on it: relay it to the lane (`tmux send-keys -t =<tmux>: -l -- "<answer>"` then `Enter`, as argv, never a shell string), or do the work.
-- If a typed answer is not really an answer, `dori reopen Q4` puts the buttons back. When the follow-up is done, `dori resolve Q4` forgets the question; the folded card stays in the chat as the record.
+- If a typed answer is not really an answer, `dori reopen Q4` puts the buttons back and marks its thread ⏸️ again. When the follow-up is done, `dori resolve Q4` forgets the question; the folded card stays in the chat as the record.
 - `dori questions --open` lists what is still waiting.
 
 Card and thread wording is in the `discord` section of `config.json` (`statusStyle`, `working`, `waiting`, `done`, `other`, `pick`, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`, `locale`, `timeZone`), so a Dori that talks to its owner in another language can use that language's words and the owner's time zone.

@@ -126,15 +126,26 @@ test("a voice note is transcribed into the inbox row; a failed transcription sti
   expect(logs.some((l) => l.startsWith("DISCORD_TRANSCRIBE_FAIL 1002"))).toBe(true);
 });
 
-test("a card answer from the gateway lands in the inbox with its session and tmux, and is echoed to the work thread", async () => {
-  const { listener, cards, gw, inbox, calls } = setup((req) => (req.method === "POST" && req.url.endsWith(`/channels/${CHANNEL}/messages`) ? { id: "900" } : {}));
+test("a tap on a card inside its work thread is taken, lands in the inbox with its session and tmux, and turns the thread working; a tap from an unrelated channel is ignored", async () => {
+  const { listener, cards, gw, inbox, calls } = setup((req) => (req.method === "GET" ? { name: "⏸️ fix login" } : req.method === "POST" && req.url.endsWith(`/channels/${THREAD}/messages`) ? { id: "900" } : {}));
   await cards.ask("Ship?", ["Yes", "No"], { thread: THREAD, session: "sess-1", tmux: "aoe_demo_1234abcd" });
+  expect(calls()[0]).toBe(`POST /channels/${THREAD}/messages`);
+  const before = calls().length;
   listener.start();
-  gw.push({ op: 0, s: 1, t: "INTERACTION_CREATE", d: { id: "5001", token: "tok", type: 3, channel_id: "other", member: { user: { id: OWNER } }, data: { custom_id: "q:Q1:0" } } });
-  gw.push({ op: 0, s: 2, t: "INTERACTION_CREATE", d: { id: "5002", token: "tok", type: 3, channel_id: CHANNEL, member: { user: { id: OWNER } }, data: { custom_id: "q:Q1:1" } } });
+  gw.push({ op: 0, s: 1, t: "INTERACTION_CREATE", d: { id: "5001", token: "tok", type: 3, channel_id: "777", member: { user: { id: OWNER } }, data: { custom_id: "q:Q1:0" } } });
+  gw.push({ op: 0, s: 2, t: "INTERACTION_CREATE", d: { id: "5002", token: "tok", type: 3, channel_id: THREAD, member: { user: { id: OWNER } }, data: { custom_id: "q:Q1:1" } } });
   await listener.settled();
   expect(inbox()).toEqual([{ ts: "2026-01-02T03:04:00.000Z", id: "5002", kind: "answer", qid: "Q1", answer: "No", answer_kind: "button", question: "Ship?", thread: THREAD, session: "sess-1", tmux: "aoe_demo_1234abcd" }]);
-  expect(calls().slice(1)).toEqual(["POST /interactions/5002/tok/callback", `POST /channels/${THREAD}/messages`]);
+  expect(calls().slice(before)).toEqual(["POST /interactions/5002/tok/callback", `GET /channels/${THREAD}`, `PATCH /channels/${THREAD}`]);
+});
+
+test("a tap in the configured channel is still taken, and a tap on an unknown question from another channel is ignored", async () => {
+  const { listener, cards, inbox, calls } = setup((req) => (req.method === "POST" && req.url.endsWith(`/channels/${CHANNEL}/messages`) ? { id: "900" } : {}));
+  await cards.ask("Ship?", ["Yes"]);
+  await listener.onInteraction({ id: "5003", token: "tok", type: 3, channel_id: THREAD, member: { user: { id: OWNER } }, data: { custom_id: "q:Q9:0" } });
+  await listener.onInteraction({ id: "5004", token: "tok", type: 3, channel_id: CHANNEL, member: { user: { id: OWNER } }, data: { custom_id: "q:Q1:0" } });
+  expect(inbox().map((r) => r.id)).toEqual(["5004"]);
+  expect(calls().filter((c) => c.includes("/interactions/"))).toEqual(["POST /interactions/5004/tok/callback"]);
 });
 
 test("on READY it backfills owner messages newer than the inbox from the channel and its active threads, oldest first", async () => {
