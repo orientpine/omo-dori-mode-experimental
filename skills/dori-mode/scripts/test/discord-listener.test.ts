@@ -163,7 +163,7 @@ test("on READY it backfills owner messages newer than the inbox from the channel
     if (req.url.includes(`/channels/${THREAD}/messages?after=1000`)) return [msg("1003", { channel_id: THREAD, guild_id: undefined })];
     return {};
   };
-  const { listener, gw, inbox, calls, logs } = setup(route, { inbox: `${JSON.stringify({ id: "1000", ts: "x" })}\n${JSON.stringify({ id: "5000", kind: "answer" })}\n` });
+  const { listener, gw, inbox, calls, logs } = setup(route, { inbox: `${JSON.stringify({ id: "1000", ts: "x", channel_id: CHANNEL, scope: "channel" })}\n${JSON.stringify({ id: "5000", kind: "answer" })}\n` });
   listener.start();
   gw.push({ op: 0, s: 1, t: "READY", d: {} });
   await listener.settled();
@@ -256,6 +256,26 @@ test("another bot writing in the channel, or any message before READY names our 
   await listener.onMessage(msg("1003", { author: { id: OTHER_BOT, bot: true }, message_reference: { message_id: "1001" } }));
   expect(unreacts(calls)).toEqual([]);
   expect(eyesFile()).toEqual({ [CHANNEL]: ["1001"] });
+});
+
+test("rows other listeners share the inbox with, however large their ids, do not move the backfill cursor", async () => {
+  const route = (req: HttpRequest) => {
+    if (req.url.endsWith(`/guilds/${GUILD}/threads/active`)) return { threads: [] };
+    if (req.url.includes(`/channels/${CHANNEL}/messages?after=1000`)) return [msg("1001", { guild_id: undefined })];
+    return [];
+  };
+  const rows = [
+    { id: "1000", ts: "x", channel_id: CHANNEL, scope: "channel" },
+    { id: "9000000000000000001", ts: "x", channel_id: "12345", scope: "kakao" },
+    { id: "2000", ts: "x", channel_id: "888", scope: "shared" },
+  ];
+  const { listener, gw, inbox, calls, logs } = setup(route, { inbox: rows.map((r) => `${JSON.stringify(r)}\n`).join("") });
+  listener.start();
+  gw.push({ op: 0, s: 1, t: "READY", d: {} });
+  await listener.settled();
+  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1000&limit=100`]);
+  expect(inbox().map((r) => r.id)).toEqual(["1000", "9000000000000000001", "2000", "1001"]);
+  expect(logs).toContain("DISCORD_BACKFILL since=1000 added=1");
 });
 
 test("a dropped connection reconnects with growing backoff; a rejected token or intent stops the listener", () => {
