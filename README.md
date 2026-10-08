@@ -6,24 +6,32 @@
 
 # omo-dori-mode-experimental
 
-Dori mode turns one coding-agent session into an always-on messenger agent. You talk to a single bot on Telegram or Discord. The Dori hands each job to its own agent session in a herdr tab, keeps track of every session it started, and only closes one after the work is actually done: the PR merged, the issue closed, the version published.
+Dori mode turns one coding-agent session into an always-on messenger agent. You talk to a single bot on Telegram or Discord. The Dori hands each job to its own agent session in a herdr tab or an aoe/tmux session, keeps track of every session it started, and only closes one after the work is actually done: the PR merged, the issue closed, the version published.
 
 It ships as a skill (`skills/dori-mode/SKILL.md` plus references) and a small bun + TypeScript CLI called `dori`. Experimental: expect rough edges.
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sisyphuslabs/omo-dori-mode-experimental/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | bash
 ```
 
 This clones the repo to `~/.dori/src`, links the skill into `~/.agents/skills/dori-mode`, puts `dori` on your PATH with `bun link`, and copies an example config to `~/.dori/config.json`. Set `SKILLS_DIR` if your agent loads skills from somewhere else.
 
-Then open your agent inside herdr and say "Dori mode".
+The default backend is herdr. For aoe/tmux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | DORI_BACKEND=aoe bash
+```
+
+`DORI_BACKEND=aoe` copies a config with `backend: "aoe"` when no config exists; an existing config is kept, including its backend. Set `leadPane` to the lead's aoe/tmux session name. `DORI_REPO` overrides the clone URL. The installer warns when neither herdr nor aoe + tmux is on PATH; missing `gh` and `agent-messenger` are optional warnings. If an existing install's origin is not the fork (or your `DORI_REPO` override), it warns and shows the command to repoint it, without silently changing the remote or pulling from the old origin.
+
+Then open your agent inside herdr, or inside an aoe session for the aoe backend, and say "Dori mode". The complete Discord + aoe/tmux service setup is in [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md).
 
 ## Requirements
 
 - [bun](https://bun.sh) 1.3 or newer, and git
-- [herdr](https://herdr.dev), the terminal multiplexer the lanes run in
+- either [herdr](https://herdr.dev) for lane tabs, or [agent-of-empires (aoe)](https://github.com/njbrake/agent-of-empires) and `tmux` for lane sessions
 - a coding agent that loads skills (built for [OmO](https://github.com/code-yeongyu/oh-my-openagent); the agent command is configurable)
 - `gh` (the GitHub CLI) for checking merged PRs and closed issues; `npm` for published versions
 - [agent-messenger](https://github.com/agent-messenger/agent-messenger) for the bot itself
@@ -43,7 +51,7 @@ If you pick Slack, the Dori asks one more question and waits for your answer:
 
 ## How the Dori writes
 
-It talks the way you do. If you write short, casual and lowercase, it answers short, casual and lowercase. It uses no emojis, in any language. When a reply has several parts, it sends a few short messages instead of one long block, each sent as soon as it's ready, with no artificial pauses. A single status that keeps changing is the exception: that stays one message, edited in place.
+It talks the way you do. If you write short, casual and lowercase, it answers short, casual and lowercase. Messages use words, not emojis; Discord status marks can use emojis when `discord.statusStyle` is `"emoji"`, and the listener uses an eyes reaction as a read receipt. When a reply has several parts, it sends a few short messages instead of one long block, each sent as soon as it's ready, with no artificial pauses. A single status that keeps changing is the exception: that stays one message, edited in place.
 
 ## Configuration
 
@@ -51,13 +59,52 @@ Everything lives in `~/.dori/config.json`, and every field is optional. The ones
 
 | Field | What it is |
 |---|---|
-| `leadPane` | your Dori's own herdr pane (`herdr pane current`). Lanes report here. |
-| `laneWorkspace` | the herdr workspace new lane tabs open in |
+| `backend` | `"herdr"` (default) or `"aoe"` |
+| `leadPane` | your Dori's own herdr pane (`herdr pane current`), or its tmux session name with aoe (`tmux display-message -p '#S'`). Lanes report here. |
+| `laneWorkspace` | the herdr workspace new lane tabs open in; unused with aoe |
+| `ignorePanes`, `workspaces` | panes to skip and workspace filters; with aoe use tmux session names and profile names (or leave `workspaces` empty) |
 | `defaultCwd` | where lanes start, and the repo whose worktrees they own |
 | `agentCommand` | how to start an agent, as an argv list with `{model}` and `{prompt}` |
 | `hooks.threadReply`, `hooks.threadDone` | your messenger CLI, as argv lists with `{thread}` and `{text}`, so lanes can post progress and be marked done |
+| `discord.statusStyle` | `"words"` (default) or `"emoji"` for Discord status marks |
 
 The rest (timings, thresholds, heavy-slot count) has sensible defaults. The full table is in [`references/scripts.md`](skills/dori-mode/references/scripts.md). `DORI_CONFIG`, `DORI_STATE_DIR` and `DORI_LEAD_PANE` override the file.
+
+### Opening an aoe/tmux lane
+
+Run the lead inside aoe too, and configure, for example:
+
+```json
+{
+  "backend": "aoe",
+  "leadPane": "aoe_Dori_0a1b2c3d",
+  "agentCommand": ["omo", "--model", "{model}", "{prompt}"],
+  "workspaces": [],
+  "discord": { "statusStyle": "emoji" }
+}
+```
+
+The agent must be available as an aoe tool (`aoe agents` lists built-ins; custom tools go in aoe's settings). With herdr, `agentCommand` is the full argv template. With aoe, only `agentCommand[0]` selects the tool; the model is passed through `--extra-args`, and the remaining arguments are unused.
+
+Prepare a brief, then open a lane with either backend:
+
+```sh
+dori launch fix-login --title "Fix login" --brief ~/.dori/briefs/fix-login.md \
+  --done "merged acme/app#412" --thread discord:100000000000000001
+```
+
+herdr opens a tab. aoe runs `aoe add <cwd> -t <key> --tool <tool> -l --extra-args "--model <model>"`, waits up to three minutes for the agent's `❯` prompt, then types the lane prompt. Startup failures produce `STARTUP_ERROR`. The registry's pane is a tmux session name such as `aoe_fix-login_1a2b3c4d`; aoe refuses a title/path pair that already exists, even in its trash.
+
+The footer tells lanes to send `[REPORT] <key> | <milestone|blocker|question|done> | <text>` to the lead. With aoe, send these as two argv arrays, not a shell string:
+
+```json
+["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "-l", "--", "[REPORT] fix-login | milestone | tests passed"]
+["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "Enter"]
+```
+
+`dori freshness` reads reports from the lead first, then the lane screen. A new report resets the silence timer; by default it nudges after 15 minutes and posts the last report through `hooks.threadReply` after 20, once per silence.
+
+With aoe, `dori watch` emits `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` when a working or not-done lane stops for a human. It combines `aoe ps --json` with the screen: no blocked event during a running turn; idle must last 45 seconds, and a monitor, wake source or active/scheduled goal is not idle. Closing stops the aoe session and moves it to trash, never purges it.
 
 ## Onboarding
 
@@ -76,7 +123,7 @@ The Dori decides on its own how to handle each message.
 
 ## The session registry
 
-Every lane gets one JSON file under `~/.dori/state/lanes/`. It maps the messenger thread to the herdr pane, the pane to the agent's own session id, and records a status: `working`, `done-claimed`, `verified-done`, `not-done` or `closed`. Each change is kept in a history.
+Every lane gets one JSON file under `~/.dori/state/lanes/`. It maps the messenger thread to the herdr pane or aoe tmux session name, the pane to the agent's own session id, and records a status: `working`, `done-claimed`, `verified-done`, `not-done` or `closed`. Each change is kept in a history.
 
 `dori sync` compares that against the panes that are actually running and tells you what drifted: a pane that went away, a session id that changed, a lane with no way to prove it's finished. It never deletes anything. Add `--write` and it saves the session ids it found.
 
@@ -114,11 +161,11 @@ The watcher runs each check itself when it closes the lane, with no shell, and n
 
 | Command | What it does |
 |---|---|
-| `dori launch <key> ...` | write the lane footer into the brief, open a tab, start the agent, check for startup errors |
+| `dori launch <key> ...` | write the lane footer into the brief, open a herdr tab or aoe session, start the agent, check for startup errors |
 | `dori adopt <key> --pane ID ...` | register a lane that's already running |
 | `dori sync [--write]` | registry against live panes, plus drift |
 | `dori claim-done` / `object-done` / `close` | the done flow |
-| `dori watch` | the auto-close watcher; run it as a persistent monitor |
+| `dori watch` | the auto-close watcher, plus aoe `LANE_BLOCKED` events; run it as a persistent monitor |
 | `dori freshness [--loop MIN]` | nudge lanes that went quiet, then post their last report to their thread |
 | `dori dead-panes [--loop MIN]` | report agent panes that stopped |
 | `dori guard [--loop MIN]` | alert on load, memory, disk and pane count |
@@ -137,6 +184,9 @@ The CLI also carries the messenger pieces a Dori needs. You can import them as t
 | `dori transcribe <file>` | turn a voice note into text through your `hooks.transcribe` command |
 | `dori can-launch` | tell whether there's room for another lane |
 | `dori inbound slack [--loop MIN]` | catch everything addressed to the Dori on Slack: unread replies from the Threads view, new replies in any thread it posted in (even untagged ones), and DMs or channels with unread mentions |
+| `dori inbound discord` | gateway listener for owner messages, voice transcription and question-card answers |
+| `dori ask` / `questions [--open]` / `reopen <Qn>` / `resolve <Qn>` | post, list, reopen and resolve Discord question cards |
+| `dori thread reply\|wait\|done discord:<id> <text>` | post in a work thread and mark working, waiting or done; done archives it |
 
 The modules also cover a few things that have no command:
 - Telegram: `sendMessageDraft` streaming that starts at "Thinking…", forum topics, and HTML tables.
@@ -148,6 +198,24 @@ Every message the Dori posts on Slack records its thread, whichever helper sent 
 
 Tokens come from `DORI_SLACK_TOKEN` (with `DORI_SLACK_COOKIE` for a user token), `DORI_TELEGRAM_TOKEN` and `DORI_DISCORD_TOKEN`.
 
+### Discord question cards and thread status
+
+Set `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL` and `DORI_DISCORD_OWNER` in the environment or `~/.dori/dori.env` (already-set variables win). Enable the bot's Message Content intent and keep `dori inbound discord` running to receive button and text-box answers.
+
+```sh
+dori ask --text "Ship the login fix?" --option "Ship now" --option "Wait for QA" \
+  --thread discord:100000000000000001 --tmux aoe_fix-login_1a2b3c4d
+dori questions --open
+dori reopen Q1
+dori resolve Q1
+```
+
+Each of 1–9 options appears in full beside a short `Pick N` button; put the recommendation first for the highlighted button. A write-my-own button opens a text box. Only the owner can answer, and only the owner is pinged. Answers fold the card into a record and are written to `answers.jsonl` and the listener's inbox under `~/.dori/state/discord/`; `--session` and `--tmux` metadata identify where to relay them.
+
+With `--thread`, the card is posted inside that work thread and marks it waiting. The answer folds into the record right there, with no separate record line; the thread returns to working once no other question in it is open. `dori reopen` restores the buttons and marks the thread waiting again. Without `--thread`, new cards go to the configured channel. Older channel cards associated with a thread still leave a silent answer record in that thread. `dori resolve` removes the tracked question after its follow-up is done; the folded card remains in chat.
+
+`discord.statusStyle: "emoji"` uses 🔄 working, ⏸️ waiting and ✅ done at the start of thread names; the default `"words"` uses `[working]`, `[waiting]`, `[done]`. `dori thread reply` / `wait` / `done` set these states; done archives, and reply/wait unarchive. An owner message in a done thread makes the listener reopen it as working. See the [Discord + aoe setup](skills/dori-mode/setups/discord-aoe/README.md) for services and localized card wording.
+
 ## Tests
 
 There's no CI. Run the tests locally:
@@ -155,11 +223,11 @@ There's no CI. Run the tests locally:
 ```sh
 cd skills/dori-mode/scripts
 bun install
-bun test           # behaviour tests against fake herdr, git and gh
+bun test           # behaviour tests against fake herdr, aoe, tmux, git, gh and Discord HTTP/gateway
 bunx tsc --noEmit  # typecheck
 ```
 
-The tests never touch a real pane, repo or GitHub.
+The tests cover both backends, launch/report delivery, freshness, blocked lanes, done flow and Discord cards/status. External tools and Discord HTTP/gateway are faked; no real pane, repo, GitHub or Discord account is touched.
 
 ## License
 

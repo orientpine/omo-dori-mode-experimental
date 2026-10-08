@@ -6,24 +6,32 @@
 
 # omo-dori-mode-experimental
 
-Dori 模式把一个编程智能体会话变成常驻的消息智能体。你只需要在 Telegram 或 Discord 上和一个机器人对话。Dori 把每件事交给 herdr 标签页里单独启动的智能体会话，记住自己启动过的每个会话，只有在工作真正完成后才关闭它:PR 已合并、issue 已关闭、版本已发布。
+Dori 模式把一个编程智能体会话变成常驻的消息智能体。你只需要在 Telegram 或 Discord 上和一个机器人对话。Dori 把每件事交给 herdr 标签页或 aoe/tmux 会话里单独启动的智能体，记住自己启动过的每个会话，只有在工作真正完成后才关闭它:PR 已合并、issue 已关闭、版本已发布。
 
 它由一个技能(`skills/dori-mode/SKILL.md` 和 references)以及一个用 bun + TypeScript 写的小 CLI `dori` 组成。目前还是实验版本，会有不完善的地方。
 
 ## 安装
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sisyphuslabs/omo-dori-mode-experimental/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | bash
 ```
 
 它会把仓库克隆到 `~/.dori/src`,把技能链接到 `~/.agents/skills/dori-mode`,用 `bun link` 把 `dori` 放进 PATH,并把示例配置复制到 `~/.dori/config.json`。如果你的智能体从别的目录加载技能，请设置 `SKILLS_DIR`。
 
-然后在 herdr 里打开智能体，说一句 "Dori mode" 就行。
+默认后端是 herdr。使用 aoe/tmux 时:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | DORI_BACKEND=aoe bash
+```
+
+`DORI_BACKEND=aoe` 在没有配置文件时复制 `backend: "aoe"` 的配置；已有配置及其后端保持不变。把 `leadPane` 设置为 lead 的 aoe/tmux 会话名。`DORI_REPO` 可覆盖克隆 URL。PATH 中既没有 herdr 也没有 aoe + tmux 时，安装程序会警告；缺少 `gh` 和 `agent-messenger` 只会给出可选工具警告。如果已有安装的 origin 不是这个 fork(或指定的 `DORI_REPO`),会显示警告和重新指向的命令，不会悄悄修改远端，也不会从旧 origin 拉取。
+
+然后在 herdr 里打开智能体；使用 aoe 后端时在 aoe 会话里打开，说一句 "Dori mode" 就行。完整的 Discord + aoe/tmux 服务设置见 [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md)。
 
 ## 依赖
 
 - [bun](https://bun.sh) 1.3 或更新版本，以及 git
-- [herdr](https://herdr.dev):运行各条 lane 的终端复用器
+- 用于 lane 标签页的 [herdr](https://herdr.dev),或用于 lane 会话的 [agent-of-empires (aoe)](https://github.com/njbrake/agent-of-empires) 和 `tmux`
 - 能加载技能的编程智能体(按 [OmO](https://github.com/code-yeongyu/oh-my-openagent) 设计，启动命令可以在配置里改)
 - 用来确认 PR 合并和 issue 关闭的 `gh`(GitHub CLI),以及确认已发布版本的 `npm`
 - 机器人本身用的 [agent-messenger](https://github.com/agent-messenger/agent-messenger)
@@ -43,7 +51,7 @@ Dori 第一件事就是问你该怎么称呼它。直接叫 "Dori" 可以，用 
 
 ## Dori 怎么说话
 
-Dori 会跟着你的说话方式走。你写得简短、随意、用小写，它也这样回。无论用哪种语言，它都不用表情符号。一条回复有好几部分时，它会拆成几条短消息发，而不是一大段;每条准备好就立刻发，不故意停顿。唯一的例外是不断变化的进度：那始终是一条消息，原地修改。
+Dori 会跟着你的说话方式走。你写得简短、随意、用小写，它也这样回。消息用文字，不用表情符号；但 `discord.statusStyle` 为 `"emoji"` 时，Discord 状态标记可以用表情符号，监听器也会用眼睛反应表示已读。一条回复有好几部分时，它会拆成几条短消息发，而不是一大段;每条准备好就立刻发，不故意停顿。唯一的例外是不断变化的进度：那始终是一条消息，原地修改。
 
 ## 配置
 
@@ -51,13 +59,52 @@ Dori 会跟着你的说话方式走。你写得简短、随意、用小写，它
 
 | 字段 | 含义 |
 |---|---|
-| `leadPane` | Dori 自己的 herdr pane(`herdr pane current`)。各条 lane 的汇报会发到这里。 |
-| `laneWorkspace` | 新 lane 标签页打开的 herdr workspace |
+| `backend` | `"herdr"`(默认)或 `"aoe"` |
+| `leadPane` | Dori 自己的 herdr pane(`herdr pane current`),或 aoe 的 tmux 会话名(`tmux display-message -p '#S'`)。各条 lane 的汇报会发到这里。 |
+| `laneWorkspace` | 新 lane 标签页打开的 herdr workspace;aoe 不使用此项 |
+| `ignorePanes`, `workspaces` | 要跳过的 pane 和 workspace 筛选；aoe 使用 tmux 会话名和 profile 名，`workspaces` 也可留空 |
 | `defaultCwd` | lane 的起始目录，也是 lane 创建 worktree 的仓库 |
 | `agentCommand` | 启动智能体的命令，写成含 `{model}` 和 `{prompt}` 的 argv 列表 |
 | `hooks.threadReply`, `hooks.threadDone` | 你的消息 CLI,写成含 `{thread}` 和 `{text}` 的 argv 列表，用来发布 lane 进度和标记完成 |
+| `discord.statusStyle` | Discord 状态标记使用 `"words"`(默认)或 `"emoji"` |
 
 其余项(时间、阈值、heavy 槽位数)用默认值就够了。完整表格见 [`references/scripts.md`](skills/dori-mode/references/scripts.md)。环境变量 `DORI_CONFIG`、`DORI_STATE_DIR`、`DORI_LEAD_PANE` 优先于配置文件。
+
+### 打开 aoe/tmux lane
+
+lead 也在 aoe 中运行，例如这样配置:
+
+```json
+{
+  "backend": "aoe",
+  "leadPane": "aoe_Dori_0a1b2c3d",
+  "agentCommand": ["omo", "--model", "{model}", "{prompt}"],
+  "workspaces": [],
+  "discord": { "statusStyle": "emoji" }
+}
+```
+
+智能体必须是可用的 aoe 工具(`aoe agents` 列出内置工具，自定义工具在 aoe 设置中注册)。herdr 使用完整的 `agentCommand` argv 模板。aoe 只用 `agentCommand[0]` 选择工具，通过 `--extra-args` 传入模型，其余参数不使用。
+
+准备好 brief 后，两种后端都用同一条命令打开 lane:
+
+```sh
+dori launch fix-login --title "Fix login" --brief ~/.dori/briefs/fix-login.md \
+  --done "merged acme/app#412" --thread discord:100000000000000001
+```
+
+herdr 打开标签页。aoe 运行 `aoe add <cwd> -t <key> --tool <tool> -l --extra-args "--model <model>"`,最多等待三分钟让智能体显示 `❯` 提示符，再输入 lane 提示词。启动失败会输出 `STARTUP_ERROR`。登记表中的 pane 是 `aoe_fix-login_1a2b3c4d` 这样的 tmux 会话名；aoe 会拒绝已有的标题/路径组合，即使它还在回收站中。
+
+footer 要求 lane 向 lead 发送 `[REPORT] <key> | <milestone|blocker|question|done> | <text>`。aoe 用两个 argv 数组发送，不经过 shell 字符串:
+
+```json
+["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "-l", "--", "[REPORT] fix-login | milestone | tests passed"]
+["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "Enter"]
+```
+
+`dori freshness` 先从 lead 屏幕读取报告，再看 lane 屏幕。新报告会重置静默计时；默认 15 分钟后提醒，20 分钟后通过 `hooks.threadReply` 发布最后一条报告，每段静默期各执行一次。
+
+aoe 下，working 或 not-done 的 lane 停下来等人时，`dori watch` 输出 `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>`。它结合 `aoe ps --json` 和屏幕判断：回合运行中不会输出，idle 必须持续 45 秒，等待 monitor、wake source 或正在执行/已安排的 goal 不算 idle。关闭时会停止 aoe 会话并移入回收站，绝不永久删除。
 
 ## 初次了解(Onboarding)
 
@@ -76,7 +123,7 @@ Dori 会跟着你的说话方式走。你写得简短、随意、用小写，它
 
 ## 会话登记表
 
-每条 lane 在 `~/.dori/state/lanes/` 下有一个 JSON 文件。它把消息线程对应到 herdr pane,把 pane 对应到智能体自己的会话 id,并记录状态(`working`、`done-claimed`、`verified-done`、`not-done`、`closed`)以及每次变化的历史。
+每条 lane 在 `~/.dori/state/lanes/` 下有一个 JSON 文件。它把消息线程对应到 herdr pane 或 aoe tmux 会话名，把 pane 对应到智能体自己的会话 id,并记录状态(`working`、`done-claimed`、`verified-done`、`not-done`、`closed`)以及每次变化的历史。
 
 `dori sync` 会把登记表和实际在运行的 pane 对照，告诉你哪里对不上：消失的 pane、变了的会话 id、没有办法证明已完成的 lane。它不会删除任何东西。加上 `--write` 会把找到的会话 id 存下来。
 
@@ -114,11 +161,11 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 
 | 命令 | 作用 |
 |---|---|
-| `dori launch <key> ...` | 在 brief 里写入 lane footer,打开标签页，启动智能体，检查启动错误 |
+| `dori launch <key> ...` | 在 brief 里写入 lane footer,打开 herdr 标签页或 aoe 会话，启动智能体，检查启动错误 |
 | `dori adopt <key> --pane ID ...` | 登记一条已经在运行的 lane |
 | `dori sync [--write]` | 对照登记表和实际 pane,列出不一致 |
 | `dori claim-done` / `object-done` / `close` | 完成流程 |
-| `dori watch` | 自动关闭的 watcher,作为常驻监控运行 |
+| `dori watch` | 自动关闭的 watcher,以及 aoe `LANE_BLOCKED` 事件，作为常驻监控运行 |
 | `dori freshness [--loop MIN]` | 提醒变安静的 lane,再把它最后一条汇报发到线程里 |
 | `dori dead-panes [--loop MIN]` | 报告已停止的智能体 pane |
 | `dori guard [--loop MIN]` | 负载、内存、磁盘和 pane 数量告警 |
@@ -137,6 +184,9 @@ CLI 还带有 Dori 需要的消息相关功能，也可以作为 `scripts/src/me
 | `dori transcribe <file>` | 用 `hooks.transcribe` 的命令把语音消息转成文字 |
 | `dori can-launch` | 看看还有没有余量再开一条 lane |
 | `dori inbound slack [--loop MIN]` | 不漏掉 Slack 上发给 Dori 的任何消息:Threads 视图里的未读回复、Dori 发过言的线程里的新回复(没 @ 也算)、有未读提及的私信和频道 |
+| `dori inbound discord` | 接收所有者消息、语音转录和问题卡片答案的网关监听器 |
+| `dori ask` / `questions [--open]` / `reopen <Qn>` / `resolve <Qn>` | 发布、列出、重新打开、解决 Discord 问题卡片 |
+| `dori thread reply\|wait\|done discord:<id> <text>` | 在工作线程发消息并标记工作中、等待或完成；完成时归档 |
 
 没有对应命令、但模块里提供的功能:
 - Telegram:以 "Thinking…" 开头的 `sendMessageDraft` 流式输出、论坛话题、HTML 表格
@@ -148,6 +198,24 @@ Dori 在 Slack 上发的每条消息，不管是哪个函数发出的，都会�
 
 令牌从 `DORI_SLACK_TOKEN`(用户令牌还需要 `DORI_SLACK_COOKIE`)、`DORI_TELEGRAM_TOKEN` 和 `DORI_DISCORD_TOKEN` 读取。
 
+### Discord 问题卡片和线程状态
+
+在环境变量或 `~/.dori/dori.env` 中设置 `DORI_DISCORD_TOKEN`、`DORI_DISCORD_GUILD`、`DORI_DISCORD_CHANNEL` 和 `DORI_DISCORD_OWNER`(已有环境变量优先)。开启机器人的 Message Content intent,持续运行 `dori inbound discord` 才能接收按钮和输入框答案。
+
+```sh
+dori ask --text "发布登录修复吗?" --option "现在发布" --option "等 QA" \
+  --thread discord:100000000000000001 --tmux aoe_fix-login_1a2b3c4d
+dori questions --open
+dori reopen Q1
+dori resolve Q1
+```
+
+1–9 个选项各自在短 `Pick N` 按钮旁显示全文；把推荐选项放在第一位，它的按钮会突出显示。“自己填写”按钮打开输入框。只有所有者可以回答，也只会 @ 所有者。回答后卡片折叠成记录，答案写入 `~/.dori/state/discord/` 下的 `answers.jsonl` 和监听器 inbox;`--session` 和 `--tmux` 信息用于确定要把答案转交给哪个会话。
+
+带 `--thread` 时，卡片发布在对应工作线程内，并把线程标为等待。回答就在原处折叠成记录，不另发记录行；该线程没有其他未回答问题时回到工作中。`dori reopen` 恢复按钮并再次把线程标为等待。不带 `--thread` 时，新卡片发布到配置的频道。以前发布在频道且关联线程的卡片，仍会在该线程留下不发通知的答案记录。后续工作完成后，`dori resolve` 从跟踪列表移除问题，折叠后的卡片仍留在聊天中。
+
+`discord.statusStyle: "emoji"` 在线程名开头使用 🔄 工作中、⏸️ 等待、✅ 完成；默认 `"words"` 使用 `[working]`、`[waiting]`、`[done]`。`dori thread reply` / `wait` / `done` 设置这些状态；done 归档，reply/wait 取消归档。所有者在完成线程发消息时，监听器会把它重新打开并标为工作中。服务及卡片文字本地化设置见 [Discord + aoe 设置](skills/dori-mode/setups/discord-aoe/README.md)。
+
 ## 测试
 
 没有 CI,测试在本地运行:
@@ -155,11 +223,11 @@ Dori 在 Slack 上发的每条消息，不管是哪个函数发出的，都会�
 ```sh
 cd skills/dori-mode/scripts
 bun install
-bun test           # 用假的 herdr、git、gh 验证行为
+bun test           # 用假的 herdr、aoe、tmux、git、gh 和 Discord HTTP/网关验证行为
 bunx tsc --noEmit  # 类型检查
 ```
 
-测试不会碰真实的 pane、仓库或 GitHub。
+测试覆盖两种后端、启动与报告传递、freshness、阻塞的 lane、完成流程及 Discord 卡片/状态。外部工具和 Discord HTTP/网关均使用替身，不会碰真实的 pane、仓库、GitHub 或 Discord 账号。
 
 ## 许可证
 

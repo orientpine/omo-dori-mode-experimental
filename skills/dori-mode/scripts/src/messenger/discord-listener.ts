@@ -157,14 +157,17 @@ export class DiscordListener {
   }
 
   async onInteraction(i: Interaction): Promise<void> {
-    if (i.channel_id !== this.d.channel) return;
+    // a card sits in the channel or inside its work thread: take a tap only where its card was posted,
+    // looked up locally since the interaction must be answered within 3 seconds
+    const qid = /^[qm]:([^:]+)/.exec(i.data?.custom_id ?? "")?.[1];
+    if (i.channel_id !== this.d.channel && (!qid || i.channel_id !== this.d.cards.store.get(qid)?.channel)) return;
     const outcome = await this.d.cards.handle(i);
     if (outcome.kind === "refused") this.d.log(`CARD_REFUSED ${outcome.user}`);
     if (outcome.kind !== "answered") return;
     const q = outcome.question;
     this.append({ ts: new Date(this.d.now()).toISOString(), id: i.id, kind: "answer", qid: q.id, answer: q.answer ?? "", answer_kind: q.answerKind ?? "button", question: q.text, thread: q.thread, session: q.session, tmux: q.tmux });
     this.d.log(`ANSWER ${q.id} ${q.answerKind} ${JSON.stringify(q.answer ?? "")} thread=${q.thread ?? "-"} session=${q.session ?? "-"} tmux=${q.tmux ?? "-"}`);
-    await this.d.cards.echo(q).catch((e: unknown) => this.d.log(`DISCORD_ECHO_FAIL ${q.id} ${errText(e)}`));
+    await this.d.cards.afterAnswer(q).catch((e: unknown) => this.d.log(`DISCORD_ECHO_FAIL ${q.id} ${errText(e)}`));
   }
 
   // after a reconnect, read what the owner wrote in the channel and its open threads while the socket was down

@@ -1,17 +1,47 @@
 #!/usr/bin/env bash
 # Installs the dori-mode skill and the `dori` CLI.
-# Usage: curl -fsSL https://raw.githubusercontent.com/sisyphuslabs/omo-dori-mode-experimental/main/install.sh | bash
-# Needs: git, bun 1.3+. Optional env: DORI_SRC (clone dir), SKILLS_DIR (where your agent loads skills).
+# Usage: curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | bash
+#        curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | DORI_BACKEND=aoe bash
+# Needs: git, bun 1.3+, and the lane backend: herdr, or aoe and tmux.
+# Optional env: DORI_BACKEND (herdr or aoe, default herdr), DORI_REPO (clone URL), DORI_SRC (clone dir),
+# SKILLS_DIR (where your agent loads skills).
 set -euo pipefail
 
-repo="https://github.com/sisyphuslabs/omo-dori-mode-experimental.git"
+repo="${DORI_REPO:-https://github.com/orientpine/omo-dori-mode-experimental.git}"
+backend="${DORI_BACKEND:-herdr}"
 src="${DORI_SRC:-$HOME/.dori/src}"
 skills="${SKILLS_DIR:-$HOME/.agents/skills}"
+
+case "$backend" in
+  herdr) config_example="config.example.json" ;;
+  aoe) config_example="config.aoe.example.json" ;;
+  *) echo "DORI_BACKEND must be herdr or aoe, got: $backend" >&2; exit 1 ;;
+esac
 
 command -v bun >/dev/null || { echo "bun is required: https://bun.sh" >&2; exit 1; }
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 
-if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only --quiet; else git clone --quiet --depth 1 "$repo" "$src"; fi
+have() { command -v "$1" >/dev/null; }
+if [ "$backend" = aoe ]; then
+  for tool in aoe tmux; do have "$tool" || echo "warning: backend aoe needs $tool on PATH; lanes cannot open until it is installed" >&2; done
+else
+  have herdr || echo "warning: backend herdr needs herdr on PATH; lanes cannot open until it is installed (or rerun with DORI_BACKEND=aoe for aoe/tmux)" >&2
+fi
+have herdr || { have aoe && have tmux; } || echo "warning: no lane backend found: install herdr, or aoe and tmux" >&2
+have gh || echo "note: gh not found; the done checks that read PRs and issues need it" >&2
+have agent-messenger || echo "note: agent-messenger not found; it is optional for Slack, Telegram and Discord messaging" >&2
+
+if [ -d "$src/.git" ]; then
+  origin="$(git -C "$src" remote get-url origin 2>/dev/null || true)"
+  if [ "${origin%.git}" != "${repo%.git}" ]; then
+    echo "warning: $src pulls from ${origin:-no origin}, not $repo; not updating it." >&2
+    echo "  To follow $repo: git -C \"$src\" remote set-url origin \"$repo\" && git -C \"$src\" pull --ff-only" >&2
+  else
+    git -C "$src" pull --ff-only --quiet
+  fi
+else
+  git clone --quiet --depth 1 "$repo" "$src"
+fi
 
 mkdir -p "$skills"
 if [ -e "$skills/dori-mode" ] && [ ! -L "$skills/dori-mode" ]; then
@@ -23,7 +53,15 @@ fi
 (cd "$src/skills/dori-mode/scripts" && bun install --silent && bun link --silent)
 
 mkdir -p "$HOME/.dori"
-[ -f "$HOME/.dori/config.json" ] || cp "$src/skills/dori-mode/references/config.example.json" "$HOME/.dori/config.json"
+if [ -f "$HOME/.dori/config.json" ]; then
+  echo "Keeping the existing ~/.dori/config.json; its backend setting is left as it is"
+else
+  cp "$src/skills/dori-mode/references/$config_example" "$HOME/.dori/config.json"
+fi
 
-echo "Installed. Skill: $skills/dori-mode  CLI: dori  Config: ~/.dori/config.json"
-echo "Next: edit ~/.dori/config.json, then tell your agent: Dori mode"
+echo "Installed. Skill: $skills/dori-mode  CLI: dori  Config: ~/.dori/config.json  Backend: $backend"
+if [ "$backend" = aoe ]; then
+  echo "Next: set leadPane in ~/.dori/config.json to the tmux session name of the lead's aoe session, then open your agent inside that aoe session and tell it: Dori mode"
+else
+  echo "Next: set leadPane in ~/.dori/config.json to your herdr pane id (herdr pane current), then tell your agent: Dori mode"
+fi
