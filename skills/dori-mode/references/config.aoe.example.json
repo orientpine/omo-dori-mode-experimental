@@ -1,0 +1,58 @@
+{
+  "backend": "aoe",
+  "stateDir": "~/.dori/state",
+  "workspaces": [],
+  "ignorePanes": [],
+  "leadPane": "<the lead's aoe/tmux session name, from: tmux display-message -p '#S' inside the lead's aoe session>",
+  "defaultCwd": "~/code/my-project",
+  "agentCommand": [
+    "omo",
+    "--model",
+    "{model}",
+    "{prompt}"
+  ],
+  "defaultModel": "anthropic/claude-opus-5-5",
+  "launchKeywords": "ulw set goal and work",
+  "sessionsDir": "~/.omo/agent/sessions",
+  "nudgeAfterMin": 15,
+  "postAfterMin": 20,
+  "closeAfterMin": 5,
+  "heavySlots": 1,
+  "heavyMaxLoad": 80,
+  "deadPanePatterns": [
+    "has stopped",
+    "no suitable jobs"
+  ],
+  "guard": {
+    "loadAlert": 150,
+    "loadOk": 80,
+    "memFreeMinPct": 20,
+    "diskFreeMinGb": 50,
+    "panesMax": 20
+  },
+  "hooks": {
+    "threadReply": [
+      "my-messenger",
+      "reply",
+      "--thread",
+      "{thread}",
+      "--text",
+      "{text}"
+    ],
+    "threadDone": [
+      "my-messenger",
+      "set-status",
+      "--thread",
+      "{thread}",
+      "--status",
+      "done",
+      "--note",
+      "{text}"
+    ],
+    "transcribe": [
+      "my-stt",
+      "--file",
+      "{file}"
+    ]
+  }
+}
