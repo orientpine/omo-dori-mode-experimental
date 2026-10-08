@@ -29,6 +29,8 @@ export type DiscordWords = {
   readonly waiting: string;
   readonly done: string;
   readonly other: string;
+  readonly pick: string;
+  readonly recommended: string;
   readonly answered: string;
   readonly ownerOnly: string;
   readonly byButton: string;
@@ -43,6 +45,8 @@ export const defaultDiscordWords: DiscordWords = {
   waiting: "waiting",
   done: "done",
   other: "Write my own",
+  pick: "Pick {n}",
+  recommended: "recommended",
   answered: "answered",
   ownerOnly: "Only the owner can answer this.",
   byButton: "button",
