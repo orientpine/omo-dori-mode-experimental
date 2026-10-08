@@ -1,5 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
@@ -31,7 +31,7 @@ export type DiscordMessage = {
   readonly timestamp: string;
   readonly author: { readonly id: string; readonly bot?: boolean };
   readonly attachments?: readonly { readonly url: string; readonly filename: string; readonly content_type?: string }[];
-  readonly message_reference?: { readonly message_id?: string };
+  readonly message_reference?: { readonly message_id?: string; readonly channel_id?: string };
 };
 
 export type InboxMessage = {
@@ -83,12 +83,19 @@ export class DiscordListener {
   private readonly seen = new Set<string>();
   private readonly parents = new Map<string, string>();
   private readonly inflight = new Set<Promise<void>>();
+  private readonly sweeps = new Map<string, Promise<void>>();
+  private readonly eyesFile: string;
+  // channel or thread id -> owner messages that still carry our eyes reaction
+  private eyes: Record<string, string[]> = {};
+  private self = "";
   private cursor = "0";
   private seq: number | null = null;
   private backoff = 1_000;
 
   constructor(private readonly d: ListenerDeps) {
     mkdirSync(dirname(d.inboxFile), { recursive: true, mode: 0o700 });
+    this.eyesFile = join(dirname(d.inboxFile), "eyes.json");
+    if (existsSync(this.eyesFile)) this.eyes = JSON.parse(readFileSync(this.eyesFile, "utf8")) as Record<string, string[]>;
     if (!existsSync(d.inboxFile)) return;
     for (const line of readFileSync(d.inboxFile, "utf8").split("\n")) {
       if (!line.trim()) continue;
@@ -119,7 +126,48 @@ export class DiscordListener {
     return c.parent_id ?? "";
   }
 
+  private saveEyes(): void {
+    writeFileSync(this.eyesFile, JSON.stringify(this.eyes), { mode: 0o600 });
+  }
+
+  // our bot wrote in a channel: take the eyes off the owner's earlier messages there, and off the message it replies to.
+  // Sweeps of one channel run one after another; Discord.call waits out a 429's retry_after.
+  private clearEyes(m: DiscordMessage): Promise<void> {
+    const prev = this.sweeps.get(m.channel_id) ?? Promise.resolve();
+    const next = prev.then(() => this.sweep(m));
+    const tail = next.catch(() => {});
+    this.sweeps.set(m.channel_id, tail);
+    void tail.then(() => this.sweeps.get(m.channel_id) === tail && this.sweeps.delete(m.channel_id));
+    return next;
+  }
+
+  private async sweep(m: DiscordMessage): Promise<void> {
+    const targets = (this.eyes[m.channel_id] ?? []).filter((id) => newer(m.id, id)).map((id) => [m.channel_id, id] as const);
+    const ref = m.message_reference?.message_id;
+    if (ref && !targets.some(([, id]) => id === ref)) {
+      const tracked = Object.keys(this.eyes).find((ch) => this.eyes[ch]?.includes(ref));
+      targets.push([tracked ?? m.message_reference?.channel_id ?? m.channel_id, ref]);
+    }
+    const cleared: string[] = [];
+    for (const [ch, id] of targets) {
+      await this.d.dc.unreact(ch, id, EYES).then(
+        () => cleared.push(id),
+        (e: unknown) => this.d.log(`DISCORD_UNREACT_FAIL ${id} ${errText(e)}`),
+      );
+      // a message deleted or already cleared by hand is dropped too, so it is not retried forever
+      const left = (this.eyes[ch] ?? []).filter((x) => x !== id);
+      if (left.length) this.eyes[ch] = left;
+      else delete this.eyes[ch];
+      this.saveEyes();
+    }
+    if (cleared.length) this.d.log(`EYES_CLEARED ${m.channel_id} by=${m.id} ${cleared.join(",")}`);
+  }
+
   async onMessage(m: DiscordMessage): Promise<void> {
+    if (this.self && m.author.id === this.self) {
+      if (this.d.words.autoUnEye) await this.clearEyes(m);
+      return;
+    }
     if (this.seen.has(m.id) || m.author.bot || m.author.id !== this.d.owner) return;
     let scope: InboxMessage["scope"];
     if (!m.guild_id) scope = "dm";
@@ -129,7 +177,13 @@ export class DiscordListener {
     else return;
     this.seen.add(m.id);
     if (newer(m.id, this.cursor)) this.cursor = m.id;
-    await this.d.dc.react(m.channel_id, m.id, EYES).catch((e: unknown) => this.d.log(`DISCORD_REACT_FAIL ${m.id} ${errText(e)}`));
+    await this.d.dc.react(m.channel_id, m.id, EYES).then(
+      () => {
+        this.eyes[m.channel_id] = [...(this.eyes[m.channel_id] ?? []), m.id];
+        this.saveEyes();
+      },
+      (e: unknown) => this.d.log(`DISCORD_REACT_FAIL ${m.id} ${errText(e)}`),
+    );
     let transcript: string | null = null;
     const audio = (m.attachments ?? []).find((a) => (a.content_type ?? "").startsWith("audio/"));
     if (audio && this.d.transcribe) transcript = await this.d.transcribe(audio.url, audio.filename).catch((e: unknown) => (this.d.log(`DISCORD_TRANSCRIBE_FAIL ${m.id} ${errText(e)}`), null));
@@ -193,6 +247,7 @@ export class DiscordListener {
   private dispatch(type: string | null, data: Record<string, unknown>): void {
     if (type === "READY") {
       this.backoff = 1_000;
+      this.self = String((data.user as { id?: string } | undefined)?.id ?? "");
       this.d.log("DISCORD_LISTENER_READY");
       this.track(this.backfill().then(() => {}), "backfill");
     } else if (type === "GUILD_CREATE" && data.id === this.d.guild) {

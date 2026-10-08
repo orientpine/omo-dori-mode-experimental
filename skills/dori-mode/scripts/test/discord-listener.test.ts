@@ -5,13 +5,15 @@ import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { QuestionCards, QuestionStore } from "../src/messenger/discord-cards.ts";
 import { type DiscordMessage, DiscordListener, type GatewayConnection, LISTENER_INTENTS } from "../src/messenger/discord-listener.ts";
-import type { Http, HttpRequest } from "../src/messenger/http.ts";
+import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const OWNER = "100000000000000001";
 const GUILD = "400000000000000004";
 const CHANNEL = "200000000000000002";
 const THREAD = "300000000000000003";
+const SELF = "600000000000000006";
+const OTHER_BOT = "700000000000000007";
 
 const fakeGateway = () => {
   const sent: string[] = [];
@@ -36,15 +38,18 @@ const fakeTimers = () => {
 let state: ReturnType<typeof withState>;
 afterEach(() => state?.done());
 
-const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string> } = {}) => {
+const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean } = {}) => {
   state = withState();
   const seen: HttpRequest[] = [];
   const http: Http = async (req) => {
     seen.push(req);
+    const special = opts.respond?.(req);
+    if (special) return special;
     const body = req.url.includes("/interactions/") || req.method === "PUT" ? "" : JSON.stringify(route(req));
     return { status: body ? 200 : 204, headers: {}, body };
   };
-  const dc = new Discord(http, fakeClock(0), "bot");
+  const sleeps: number[] = [];
+  const dc = new Discord(http, { ...fakeClock(0), sleep: async (ms: number) => { sleeps.push(ms); } }, "bot");
   const cards = new QuestionCards(dc, new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
   const inboxFile = `${state.dir}/discord/inbox.jsonl`;
   if (opts.inbox) {
@@ -55,11 +60,14 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const t = fakeTimers();
   const logs: string[] = [];
   const fatal: number[] = [];
-  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji" }, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
+  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji", autoUnEye: opts.autoUnEye ?? true }, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
   const inbox = () => (existsSync(inboxFile) ? readFileSync(inboxFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}`);
-  return { listener, cards, gw, t, logs, fatal, inbox, calls, seen };
+  const eyesFile = () => JSON.parse(readFileSync(`${state.dir}/discord/eyes.json`, "utf8"));
+  return { listener, cards, gw, t, logs, fatal, inbox, calls, seen, sleeps, eyesFile };
 };
+
+const unreacts = (calls: () => string[]) => calls().filter((c) => c.startsWith("DELETE")).map((c) => c.replace("DELETE /channels/", "").replace("/reactions/%F0%9F%91%80/@me", ""));
 
 const msg = (id: string, patch: Partial<DiscordMessage> = {}): DiscordMessage => ({ id, channel_id: CHANNEL, guild_id: GUILD, content: `hello ${id}`, timestamp: "2026-01-02T03:00:00Z", author: { id: OWNER }, ...patch });
 
@@ -162,6 +170,92 @@ test("on READY it backfills owner messages newer than the inbox from the channel
   expect(inbox().map((r) => r.id)).toEqual(["1000", "5000", "1001", "1002", "1003"]);
   expect(calls().filter((c) => c.startsWith("GET")).some((c) => c.includes("/channels/666/"))).toBe(false);
   expect(logs).toContain("DISCORD_BACKFILL since=1000 added=3");
+});
+
+// the listener learns its own bot id from READY; only that bot's messages clear eyes
+const ready = (gw: ReturnType<typeof fakeGateway>) => gw.push({ op: 0, s: 1, t: "READY", d: { user: { id: SELF } } });
+const fromBot = (id: string, patch: Partial<DiscordMessage> = {}) => msg(id, { author: { id: SELF, bot: true }, ...patch });
+
+test("our bot's reply takes the eyes off the message it answers, tracked or marked before the state file existed", async () => {
+  const { listener, gw, calls, eyesFile, logs } = setup();
+  listener.start();
+  ready(gw);
+  await listener.onMessage(msg("1001"));
+  expect(eyesFile()).toEqual({ [CHANNEL]: ["1001"] });
+  await listener.onMessage(fromBot("1002", { message_reference: { message_id: "1001" } }));
+  expect(unreacts(calls)).toEqual([`${CHANNEL}/messages/1001`]);
+  expect(eyesFile()).toEqual({});
+  expect(logs).toContain(`EYES_CLEARED ${CHANNEL} by=1002 1001`);
+  await listener.onMessage(fromBot("1003", { message_reference: { message_id: "0999" } }));
+  expect(unreacts(calls)).toEqual([`${CHANNEL}/messages/1001`, `${CHANNEL}/messages/0999`]);
+});
+
+test("any message from our bot clears every earlier eyed owner message in that channel, but not a later one", async () => {
+  const { listener, gw, calls, eyesFile } = setup();
+  listener.start();
+  ready(gw);
+  for (const id of ["1001", "1002", "1005"]) await listener.onMessage(msg(id));
+  gw.push({ op: 0, s: 2, t: "MESSAGE_CREATE", d: fromBot("1004") });
+  await listener.settled();
+  expect(unreacts(calls)).toEqual([`${CHANNEL}/messages/1001`, `${CHANNEL}/messages/1002`]);
+  expect(eyesFile()).toEqual({ [CHANNEL]: ["1005"] });
+});
+
+test("a bot message in one channel leaves the eyes in another channel", async () => {
+  const { listener, gw, calls, eyesFile } = setup();
+  listener.start();
+  ready(gw);
+  await listener.onMessage(msg("1001"));
+  await listener.onMessage(msg("1002", { channel_id: "dm1", guild_id: undefined }));
+  await listener.onMessage(fromBot("1003", { channel_id: "dm1", guild_id: undefined }));
+  expect(unreacts(calls)).toEqual(["dm1/messages/1002"]);
+  expect(eyesFile()).toEqual({ [CHANNEL]: ["1001"] });
+});
+
+test("a bot message inside a thread clears only that thread, and one in the channel only the channel", async () => {
+  const { listener, gw, calls } = setup((req) => (req.url.endsWith(`/channels/${THREAD}`) ? { parent_id: CHANNEL, name: "🔄 work" } : {}));
+  listener.start();
+  ready(gw);
+  await listener.onMessage(msg("1001", { channel_id: THREAD }));
+  await listener.onMessage(msg("1002"));
+  await listener.onMessage(fromBot("1003", { channel_id: THREAD }));
+  expect(unreacts(calls)).toEqual([`${THREAD}/messages/1001`]);
+  await listener.onMessage(fromBot("1004"));
+  expect(unreacts(calls)).toEqual([`${THREAD}/messages/1001`, `${CHANNEL}/messages/1002`]);
+});
+
+test("with discord.autoUnEye off the eyes stay", async () => {
+  const { listener, gw, calls } = setup(() => ({}), { autoUnEye: false });
+  listener.start();
+  ready(gw);
+  await listener.onMessage(msg("1001"));
+  await listener.onMessage(fromBot("1002", { message_reference: { message_id: "1001" } }));
+  expect(unreacts(calls)).toEqual([]);
+});
+
+test("a rate-limited unreact waits out retry_after and is retried", async () => {
+  let limited = 0;
+  const respond = (req: HttpRequest): HttpResponse | undefined => (req.method === "DELETE" && limited++ === 0 ? { status: 429, headers: {}, body: JSON.stringify({ retry_after: 2.5 }) } : undefined);
+  const { listener, gw, calls, sleeps, eyesFile, logs } = setup(() => ({}), { respond });
+  listener.start();
+  ready(gw);
+  await listener.onMessage(msg("1001"));
+  await listener.onMessage(fromBot("1002"));
+  expect(unreacts(calls)).toEqual([`${CHANNEL}/messages/1001`, `${CHANNEL}/messages/1001`]);
+  expect(sleeps).toEqual([2500]);
+  expect(eyesFile()).toEqual({});
+  expect(logs).toContain(`EYES_CLEARED ${CHANNEL} by=1002 1001`);
+});
+
+test("another bot writing in the channel, or any message before READY names our bot, clears nothing", async () => {
+  const { listener, gw, calls, eyesFile } = setup();
+  listener.start();
+  await listener.onMessage(msg("1001"));
+  await listener.onMessage(fromBot("1002"));
+  ready(gw);
+  await listener.onMessage(msg("1003", { author: { id: OTHER_BOT, bot: true }, message_reference: { message_id: "1001" } }));
+  expect(unreacts(calls)).toEqual([]);
+  expect(eyesFile()).toEqual({ [CHANNEL]: ["1001"] });
 });
 
 test("a dropped connection reconnects with growing backoff; a rejected token or intent stops the listener", () => {

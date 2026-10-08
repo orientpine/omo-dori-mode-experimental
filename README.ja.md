@@ -67,6 +67,7 @@ Dori はあなたの話し方に合わせます。短く、くだけた調子で
 | `agentCommand` | エージェントの起動コマンド。`{model}` と `{prompt}` を含む argv のリスト |
 | `hooks.threadReply`, `hooks.threadDone` | メッセンジャー CLI を `{thread}` と `{text}` を含む argv のリストで。レーンの進捗投稿と完了表示に使います。 |
 | `discord.statusStyle` | Discord の状態マークを `"words"`(既定)または `"emoji"` に設定 |
+| `discord.autoUnEye` | `true`(既定)ならボットがそのチャンネルやスレッドに書き込んだとき、`dori inbound discord` が所有者のそれ以前のメッセージから目のリアクションを外す。`false` なら残す |
 
 残り(時間、しきい値、heavy スロット数)は既定値で十分です。全項目の表は [`references/scripts.md`](skills/dori-mode/references/scripts.md) にあります。環境変数 `DORI_CONFIG`、`DORI_STATE_DIR`、`DORI_LEAD_PANE` はファイルより優先されます。
 
