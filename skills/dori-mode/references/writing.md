@@ -24,7 +24,7 @@ Each piece of work gets its own thread (or topic) with:
 
 With `discord.statusStyle: "emoji"` the same marks are emoji: the status message reads `⏳ · <work>` while working and `✅ <work>` when done, and the thread name starts with 🔄 (working), ⏸️ (waiting) or ✅ (done). Only these marks are emoji; the text stays words.
 
-When the work is done, remove your "eyes" reaction and close (archive) the thread. If the owner writes in a closed thread, reopen it, set it back to working, and carry on there. Threads the owner started get the same treatment.
+When the work is done, remove your "eyes" reaction and close (archive) the thread. On Discord, `dori inbound discord` removes the eyes for you as soon as your bot writes in that channel or thread (`discord.autoUnEye`, on by default). If the owner writes in a closed thread, reopen it, set it back to working, and carry on there. Threads the owner started get the same treatment.
 
 ## Files
 

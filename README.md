@@ -51,7 +51,7 @@ If you pick Slack, the Dori asks one more question and waits for your answer:
 
 ## How the Dori writes
 
-It talks the way you do. If you write short, casual and lowercase, it answers short, casual and lowercase. Messages use words, not emojis; Discord status marks can use emojis when `discord.statusStyle` is `"emoji"`, and the listener uses an eyes reaction as a read receipt. When a reply has several parts, it sends a few short messages instead of one long block, each sent as soon as it's ready, with no artificial pauses. A single status that keeps changing is the exception: that stays one message, edited in place.
+It talks the way you do. If you write short, casual and lowercase, it answers short, casual and lowercase. Messages use words, not emojis; Discord status marks can use emojis when `discord.statusStyle` is `"emoji"`, and the listener uses an eyes reaction as a read receipt, which it takes off again once the bot writes back in that channel or thread. When a reply has several parts, it sends a few short messages instead of one long block, each sent as soon as it's ready, with no artificial pauses. A single status that keeps changing is the exception: that stays one message, edited in place.
 
 ## Configuration
 
@@ -67,6 +67,7 @@ Everything lives in `~/.dori/config.json`, and every field is optional. The ones
 | `agentCommand` | how to start an agent, as an argv list with `{model}` and `{prompt}` |
 | `hooks.threadReply`, `hooks.threadDone` | your messenger CLI, as argv lists with `{thread}` and `{text}`, so lanes can post progress and be marked done |
 | `discord.statusStyle` | `"words"` (default) or `"emoji"` for Discord status marks |
+| `discord.autoUnEye` | `true` (default): `dori inbound discord` removes its eyes reaction from the owner's earlier messages once the bot writes in that channel or thread; `false` leaves it on |
 
 The rest (timings, thresholds, heavy-slot count) has sensible defaults. The full table is in [`references/scripts.md`](skills/dori-mode/references/scripts.md). `DORI_CONFIG`, `DORI_STATE_DIR` and `DORI_LEAD_PANE` override the file.
 

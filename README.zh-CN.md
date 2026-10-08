@@ -67,6 +67,7 @@ Dori 会跟着你的说话方式走。你写得简短、随意、用小写，它
 | `agentCommand` | 启动智能体的命令，写成含 `{model}` 和 `{prompt}` 的 argv 列表 |
 | `hooks.threadReply`, `hooks.threadDone` | 你的消息 CLI,写成含 `{thread}` 和 `{text}` 的 argv 列表，用来发布 lane 进度和标记完成 |
 | `discord.statusStyle` | Discord 状态标记使用 `"words"`(默认)或 `"emoji"` |
+| `discord.autoUnEye` | `true`(默认)时，机器人在某个频道或线程里发言后，`dori inbound discord` 会移除所有者在那里更早消息上的眼睛反应；`false` 则保留 |
 
 其余项(时间、阈值、heavy 槽位数)用默认值就够了。完整表格见 [`references/scripts.md`](skills/dori-mode/references/scripts.md)。环境变量 `DORI_CONFIG`、`DORI_STATE_DIR`、`DORI_LEAD_PANE` 优先于配置文件。
 

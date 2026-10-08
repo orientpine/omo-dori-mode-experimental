@@ -35,7 +35,7 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `guard` | load 150/80, 20% memory, 50 GB disk, 20 panes | `guard` |
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
 | `hooks.transcribe` | none | `transcribe` (argv with `{file}`, prints the text), `inbound discord` voice notes |
-| `discord` | English words, `en-US`, `UTC`, `statusStyle: "words"` | `statusStyle` (`words` for `[working]`-style marks, `emoji` for 🔄 ⏸️ ✅ and ⏳), thread status words (`working`, `waiting`, `done`) and question-card wording (`other`, `pick` with `{n}` for the option number, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`), plus `locale` and `timeZone` for answer times |
+| `discord` | English words, `en-US`, `UTC`, `statusStyle: "words"`, `autoUnEye: true` | `autoUnEye` (`dori inbound discord` takes its eyes reaction off once its bot writes back, see below; `false` leaves that to you), `statusStyle` (`words` for `[working]`-style marks, `emoji` for 🔄 ⏸️ ✅ and ⏳), thread status words (`working`, `waiting`, `done`) and question-card wording (`other`, `pick` with `{n}` for the option number, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`), plus `locale` and `timeZone` for answer times |
 
 Tokens and ids come from the environment. Every command first reads `~/.dori/dori.env` (or the file in `DORI_ENV_FILE`), `KEY=VALUE` per line; a variable already set wins. The Discord commands need `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL` (the one channel the Dori talks in) and `DORI_DISCORD_OWNER`.
 
@@ -132,6 +132,7 @@ The Dori's own messages and bot messages are skipped. Every message the Dori pos
 Runs until stopped (run it as a service, see `setups/discord-aoe/`). It connects to the gateway with the message-content intent and handles:
 - the owner's messages in `DORI_DISCORD_CHANNEL`, its threads, and DMs; everyone else, bots included, is skipped. Each gets the eyes reaction at once, a voice note is transcribed through `hooks.transcribe`, and one row is appended to the inbox file (`DORI_DISCORD_INBOX`, default `<stateDir>/discord/inbox.jsonl`) and printed as `INBOUND discord-<scope> <channel> <id> <author> <text>`;
 - question-card taps and write-my-own submissions (below), appended as `kind:"answer"` rows and printed as `ANSWER <Qn> <kind> <answer> thread=… session=… tmux=…`;
+- the bot's own messages (with `discord.autoUnEye`, on by default): when the bot it runs as writes in a channel, thread or DM, by any helper, the eyes come off every earlier owner message in that same channel, thread or DM, and off the message it replies to. Other bots' messages clear nothing. The messages still carrying eyes are kept in `eyes.json` beside the inbox file; the removals for one channel run one at a time and wait out a 429's `retry_after`. It prints `EYES_CLEARED <channel> by=<bot message> <ids>`, or `DISCORD_UNREACT_FAIL <id> <error>` for a message it could not clear;
 - after each reconnect, the owner's messages it missed in the channel and its active threads, oldest first;
 - an owner message in a done thread (✅ or `[done]`) reopens it: the thread is unarchived, marked working, and `THREAD_REOPENED <thread>` is printed.
 

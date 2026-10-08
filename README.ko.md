@@ -67,6 +67,7 @@ Dori는 사용자의 말투를 따라갑니다. 짧고 편하게, 소문자로 �
 | `agentCommand` | 에이전트 실행 명령. `{model}`, `{prompt}`가 들어간 argv 목록 |
 | `hooks.threadReply`, `hooks.threadDone` | 메신저 CLI를 `{thread}`, `{text}`가 들어간 argv 목록으로. 레인 진행 상황을 올리고 완료 표시를 할 때 씁니다. |
 | `discord.statusStyle` | 디스코드 상태 표시를 `"words"`(기본값) 또는 `"emoji"`로 설정 |
+| `discord.autoUnEye` | `true`(기본값)면 봇이 그 채널이나 스레드에 글을 쓸 때 `dori inbound discord`가 소유자의 앞선 메시지에서 눈 리액션을 지움. `false`면 그대로 둠 |
 
 나머지(시간, 임계값, heavy 슬롯 수)는 기본값으로 충분합니다. 전체 표는 [`references/scripts.md`](skills/dori-mode/references/scripts.md)에 있습니다. `DORI_CONFIG`, `DORI_STATE_DIR`, `DORI_LEAD_PANE` 환경변수를 주면 파일 값 대신 그 값을 씁니다.
 
