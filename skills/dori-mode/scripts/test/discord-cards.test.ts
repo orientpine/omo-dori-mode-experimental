@@ -36,7 +36,12 @@ const setup = (route?: (req: HttpRequest) => unknown) => {
 
 const tap = (customId: string, user = OWNER): Interaction => ({ id: "i1", token: "tok", type: 3, channel_id: CHANNEL, member: { user: { id: user } }, data: { custom_id: customId } });
 
-const rows = (card: unknown) => ((card as { components: { type: number; components?: { style: number; label: string; custom_id: string }[] }[] }[])[0]?.components ?? []).filter((c) => c.type === 1).map((c) => c.components?.[0]);
+type Button = { style: number; label: string; custom_id: string };
+type Part = { type: number; content?: string; components?: (Button & { type: number; content?: string })[]; accessory?: Button };
+const parts = (card: unknown) => (card as { components: Part[] }[])[0]?.components ?? [];
+// every button in order: an option's pick button beside its section text, then the write-my-own row
+const rows = (card: unknown) => parts(card).flatMap((c) => (c.type === 9 ? [c.accessory] : c.type === 1 ? [c.components?.[0]] : []));
+const optionTexts = (card: unknown) => parts(card).filter((c) => c.type === 9).map((c) => c.components?.[0]?.content);
 
 test("a question card is a V2 message that pings only the owner, recommended option first and primary, write-my-own last", async () => {
   const { cards, store, calls, json } = setup();
@@ -48,12 +53,34 @@ test("a question card is a V2 message that pings only the owner, recommended opt
   expect(body.allowed_mentions).toEqual({ users: [OWNER] });
   expect(body.components[0].type).toBe(17);
   expect(body.components[0].components[0].content).toBe(`<@${OWNER}> **Q1** Ship the fix today? · <#300>`);
+  expect(body.components[0].components.map((c: Part) => c.type)).toEqual([10, 9, 9, 1]);
+  expect(optionTexts(body.components)).toEqual(["**1.** Ship it", "**2.** Wait for review"]);
   expect(rows(body.components)).toEqual([
-    { type: 2, style: 1, label: "Ship it", custom_id: "q:Q1:0" },
-    { type: 2, style: 2, label: "Wait for review", custom_id: "q:Q1:1" },
+    { type: 2, style: 1, label: "Pick 1 (recommended)", custom_id: "q:Q1:0" },
+    { type: 2, style: 2, label: "Pick 2", custom_id: "q:Q1:1" },
     { type: 2, style: 2, label: "Write my own", custom_id: "q:Q1:other" },
   ] as never);
   expect(store.get("Q1")).toMatchObject({ status: "open", message: "900", session: "sess-1", tmux: "aoe_demo_1234abcd" });
+});
+
+test("a long option is shown in full in its section text, not clipped into a button label, and its tap answers with the full text", async () => {
+  const { cards, store, json } = setup();
+  const long = `Keep the old session cookie for thirty days, then log everyone out on the next deploy and send a notice ${"x".repeat(40)}`;
+  expect(long.length).toBeGreaterThan(100);
+  await cards.ask("Ship?", ["Yes", long]);
+  const card = json(0).components;
+  expect(optionTexts(card)[1]).toBe(`**2.** ${long}`);
+  expect(rows(card).every((b) => (b?.label.length ?? 0) <= 80)).toBe(true);
+  expect(rows(card)[1]).toMatchObject({ label: "Pick 2", custom_id: "q:Q1:1" });
+  await cards.handle(tap("q:Q1:1"));
+  expect(store.get("Q1")?.answer).toBe(long);
+});
+
+test("pick-button wording comes from the discord words", async () => {
+  const { dc, store, json } = setup();
+  const words = { ...defaultDiscordWords, pick: "{n} 선택", recommended: "추천", other: "직접 입력" };
+  await new QuestionCards(dc, store, { channel: CHANNEL, owner: OWNER, words }, () => 0).ask("배포?", ["예", "아니오"]);
+  expect(rows(json(0).components).map((b) => b?.label)).toEqual(["1 선택 (추천)", "2 선택", "직접 입력"]);
 });
 
 test("the owner's tap folds the card into a record in the same response and logs the answer once; a second tap changes nothing", async () => {

@@ -133,23 +133,26 @@ const where = (q: Question): string => (q.thread ? ` · <#${q.thread}>` : "");
 
 export const customId = { option: (id: string, n: number) => `q:${id}:${n}`, other: (id: string) => `q:${id}:other`, modal: (id: string) => `m:${id}` };
 
+const pickLabel = (n: number, w: DiscordWords): string => `${w.pick.replace("{n}", String(n))}${n === 1 ? ` (${w.recommended})` : ""}`.slice(0, 80);
+
 // The first option renders as the primary button, so put the recommended answer first.
-export const openCard = (q: Question, ownerId: string, w: DiscordWords): object[] => {
-  const labels = [...q.options, w.other].map((l) => l.slice(0, 80));
-  return [
-    {
-      type: 17,
-      accent_color: OPEN_ACCENT,
-      components: [
-        { type: 10, content: `<@${ownerId}> **${q.id}** ${q.text}${where(q)}`.slice(0, 3000) },
-        ...labels.map((label, i) => {
-          const other = i === labels.length - 1;
-          return { type: 1, components: [{ type: 2, style: i === 0 && !other ? 1 : 2, label, custom_id: other ? customId.other(q.id) : customId.option(q.id, i) }] };
-        }),
-      ],
-    },
-  ];
-};
+// Discord clips a button label to one line, so each option's full text sits in a section
+// text (type 9 + 10, wraps freely) with a short pick button beside it.
+export const openCard = (q: Question, ownerId: string, w: DiscordWords): object[] => [
+  {
+    type: 17,
+    accent_color: OPEN_ACCENT,
+    components: [
+      { type: 10, content: `<@${ownerId}> **${q.id}** ${q.text}${where(q)}`.slice(0, 3000) },
+      ...q.options.map((option, i) => ({
+        type: 9,
+        components: [{ type: 10, content: `**${i + 1}.** ${option}`.slice(0, 1000) }],
+        accessory: { type: 2, style: i === 0 ? 1 : 2, label: pickLabel(i + 1, w), custom_id: customId.option(q.id, i) },
+      })),
+      { type: 1, components: [{ type: 2, style: 2, label: w.other.slice(0, 80), custom_id: customId.other(q.id) }] },
+    ],
+  },
+];
 
 export const doneCard = (q: Question, w: DiscordWords): object[] => [
   {
