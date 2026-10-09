@@ -217,6 +217,10 @@ dori resolve Q1
 
 `discord.statusStyle: "emoji"` 在线程名开头使用 🔄 工作中、⏸️ 等待、✅ 完成；默认 `"words"` 使用 `[working]`、`[waiting]`、`[done]`。`dori thread reply` / `wait` / `done` 设置这些状态；done 归档，reply/wait 取消归档。所有者在完成线程发消息时，监听器会把它重新打开并标为工作中。服务及卡片文字本地化设置见 [Discord + aoe 设置](skills/dori-mode/setups/discord-aoe/README.md)。
 
+### 用 iPhone 快捷指令发语音指令
+
+Discord 的 iOS 应用无法被快捷指令操控，所以想一键发送语音指令需要绕个路：iOS 快捷指令录音，再把录音发到 Dori 频道里的 Discord Webhook。把该 Webhook 的 ID 设为 `DORI_DISCORD_OWNER_WEBHOOK` 后，`dori inbound discord` 会把它的消息当作所有者本人的语音消息：加上眼睛表情回应、转写成文字，并以带 `"via":"owner-webhook"` 的行写入 inbox。设置 ID 之前，Webhook 消息只会记录到日志(`DISCORD_WEBHOOK_UNKNOWN id=...`)。创建 Webhook、快捷指令动作设置、通过操作按钮/轻点背面/Siri 调用以及安全注意事项，见 [iOS 快捷指令语音指令指南](skills/dori-mode/setups/discord-aoe/ios-shortcut-voice.md)。
+
 ## 测试
 
 没有 CI,测试在本地运行:

@@ -217,6 +217,10 @@ dori resolve Q1
 
 `discord.statusStyle: "emoji"` はスレッド名の先頭に 🔄 作業中、⏸️ 待機、✅ 完了を付けます。既定の `"words"` は `[working]`、`[waiting]`、`[done]` です。`dori thread reply` / `wait` / `done` が状態を設定し、done はアーカイブ、reply/wait はアーカイブ解除します。完了スレッドに所有者が書き込むと、リスナーが作業中として開き直します。サービスやカード文言の翻訳設定は [Discord + aoe セットアップ](skills/dori-mode/setups/discord-aoe/README.md) を参照してください。
 
+### iPhone のショートカットで音声指示
+
+Discord の iOS アプリはショートカットから操作できないため、ボタン一つで音声指示を送るには回り道をします。iOS のショートカットで録音し、その音声を Dori のチャンネルの Discord Webhook に投稿します。`DORI_DISCORD_OWNER_WEBHOOK` にその Webhook の ID を設定すると、`dori inbound discord` はその投稿を所有者本人のボイスメッセージとして扱います。目の絵文字のリアクションを付けて文字起こしし、`"via":"owner-webhook"` 付きの行として inbox に書き込みます。ID を設定するまでは、Webhook の投稿はログ(`DISCORD_WEBHOOK_UNKNOWN id=...`)に記録されるだけです。Webhook の作成、ショートカットのアクション設定、アクションボタン・背面タップ・Siri からの起動、セキュリティの注意点は [iOS ショートカット音声指示ガイド](skills/dori-mode/setups/discord-aoe/ios-shortcut-voice.md) を参照してください。
+
 ## テスト
 
 CI はありません。テストはローカルで回します。

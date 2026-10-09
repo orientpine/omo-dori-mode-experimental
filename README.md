@@ -218,6 +218,10 @@ With `--thread`, the card is posted inside that work thread and marks it waiting
 
 `discord.statusStyle: "emoji"` uses 🔄 working, ⏸️ waiting and ✅ done at the start of thread names; the default `"words"` uses `[working]`, `[waiting]`, `[done]`. `dori thread reply` / `wait` / `done` set these states; done archives, and reply/wait unarchive. An owner message in a done thread makes the listener reopen it as working. See the [Discord + aoe setup](skills/dori-mode/setups/discord-aoe/README.md) for services and localized card wording.
 
+### Voice requests from an iPhone Shortcut
+
+The Discord iOS app can't be driven by Shortcuts, so a one-button voice request takes a detour: an iOS Shortcut records audio and posts it to a Discord webhook in the Dori's channel. Set `DORI_DISCORD_OWNER_WEBHOOK` to that webhook's id and `dori inbound discord` treats its posts as the owner's own voice notes. They get the eyes reaction, are transcribed, and land in the inbox with `"via":"owner-webhook"`. Until the id is set, webhook posts are only logged (`DISCORD_WEBHOOK_UNKNOWN id=...`). Step-by-step guide covering the webhook, the Shortcut actions, the Action Button, Back Tap and Siri, and security: [iOS Shortcut voice requests](skills/dori-mode/setups/discord-aoe/ios-shortcut-voice.md).
+
 ## Tests
 
 There's no CI. Run the tests locally:
