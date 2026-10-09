@@ -78,7 +78,7 @@ Each row in `session-events.jsonl` has `kind` (`session-idle`, `session-waiting`
 {"at":"...","kind":"session-idle","session":"<aoe id>","tmux":"aoe_fix-login_1a2b3c4d","thread":"discord:<id>","tail":["..."],"said":{"at":"2026-01-02T03:00:00Z","text":"PR #12 is open; CI is running."}}
 ```
 
-`said` is the last assistant text in the session's own transcript (`--session <file.jsonl>` in its argv, else `PI_SESSION_FILE` in a child's environment), up to 3000 characters; read it rather than the screen for what the session reported. It is `null` when no transcript is found, with a `SESSION-WATCH-SAID-FAIL` line in the log on an error. `tail` and the state (busy, idle) still come from the screen, with omo's side panel block cut out.
+`said` is the last assistant text in the session's own transcript (`--session <file.jsonl>` in its argv, else `PI_SESSION_FILE` in a child's environment, else the file in `~/.omo/agent/sessions/--<cwd>--/` created closest to the omo process start, within 2 minutes), up to 3000 characters; read it rather than the screen for what the session reported. It is `null` when no transcript is found, with a `SESSION-WATCH-SAID-FAIL` line in the log on an error. `tail` and the state (busy, idle) still come from the screen, with omo's side panel block cut out.
 
 If you turn on omo's side panel (`side_panel.enabled`), give detached tmux sessions room for it, e.g. `set -g default-size 200x50` in `~/.tmux.conf`; in an 80x24 pane the panel covers the newest lines of the conversation.
 

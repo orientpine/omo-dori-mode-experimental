@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { clockFree, dropSidePanel, lastSaid } from "../../setups/discord-aoe/session-watch-lib.ts";
+import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir } from "../../setups/discord-aoe/session-watch-lib.ts";
 
 let dir: string;
 beforeEach(() => {
@@ -60,6 +60,18 @@ test("lastSaid: newest assistant text from the transcript, skipping tool-only ro
   ];
   writeFileSync(file, `${rows.map((r) => JSON.stringify(r)).join("\n")}\n{"truncated":`);
   expect(lastSaid(file)).toEqual({ at: "2026-01-01T00:01:00Z", text: "PR opened.\nWaiting on CI." });
+});
+
+test("byStartTime: the transcript in the cwd's session dir created closest to the process start, within 2 minutes", () => {
+  const sessions = sessionDir(dir, "/home/ana/work/app");
+  expect(sessions).toBe(join(dir, "--home-ana-work-app--"));
+  mkdirSync(sessions);
+  for (const name of ["2026-01-01T10-00-01-000Z_aaa.jsonl", "2026-01-01T10-01-30-000Z_ccc.jsonl", "2026-01-01T10-05-02-500Z_bbb.jsonl", "notes.txt"]) writeFileSync(join(sessions, name), "");
+  expect(byStartTime(sessions, Date.parse("2026-01-01T10:00:00Z"))).toBe(join(sessions, "2026-01-01T10-00-01-000Z_aaa.jsonl"));
+  expect(byStartTime(sessions, Date.parse("2026-01-01T10:01:20Z"))).toBe(join(sessions, "2026-01-01T10-01-30-000Z_ccc.jsonl"));
+  expect(byStartTime(sessions, Date.parse("2026-01-01T10:04:00Z"))).toBe(join(sessions, "2026-01-01T10-05-02-500Z_bbb.jsonl"));
+  expect(byStartTime(sessions, Date.parse("2026-01-01T10:08:00Z"))).toBeNull();
+  expect(byStartTime(join(dir, "missing"), Date.parse("2026-01-01T10:00:00Z"))).toBeNull();
 });
 
 test("lastSaid: reads only the file's last 512 KB, caps the text at 3000 characters, null without assistant text", () => {

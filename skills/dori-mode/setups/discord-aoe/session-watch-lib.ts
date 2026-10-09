@@ -1,5 +1,6 @@
 // Pure pieces of session-watch.ts, kept apart so they can be tested without tmux or aoe.
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
+import { join } from "node:path";
 
 export type Said = { at: string; text: string };
 
@@ -14,6 +15,24 @@ export const dropSidePanel = (lines: string[]): string[] => {
   const promptAt = lines.findLastIndex((l) => l.startsWith("❯"));
   const panelAt = lines.findLastIndex((l, i) => i < promptAt && /^SESSION {2}/.test(l));
   return panelAt >= 0 ? [...lines.slice(0, panelAt), ...lines.slice(promptAt)] : lines;
+};
+
+// omo keeps transcripts in <sessionsRoot>/--<cwd without the leading /, every / turned into ->--/, each named
+// <created as YYYY-MM-DDTHH-MM-SS-mmmZ>_<id>.jsonl. A fresh, idle omo names its file nowhere, so take the one in
+// its cwd's dir created closest to the process start, within 2 minutes; sessions sharing a cwd started apart.
+export const sessionDir = (sessionsRoot: string, cwd: string): string =>
+  join(sessionsRoot, `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`);
+
+export const byStartTime = (dir: string, startedMs: number): string | null => {
+  if (!existsSync(dir)) return null;
+  let best: { file: string; gap: number } | null = null;
+  for (const name of readdirSync(dir)) {
+    const m = name.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z_.*\.jsonl$/);
+    if (!m) continue;
+    const gap = Math.abs(Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`) - startedMs);
+    if (gap < 120_000 && (!best || gap < best.gap)) best = { file: join(dir, name), gap };
+  }
+  return best?.file ?? null;
 };
 
 // What a session last said, from its transcript jsonl: the newest assistant row with text, read from the

@@ -5,13 +5,14 @@
 // 20 lines, the lane's thread from the dori registry and what the session last said (from its transcript),
 // so the Dori can answer or ask the owner.
 // Output: <stateDir>/session-events.jsonl, one JSON object per line, also printed to stdout.
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { loadConfig, loadEnvFile, envFilePath } from "../../scripts/src/config.ts";
 import { Registry } from "../../scripts/src/registry.ts";
 import { run } from "../../scripts/src/run.ts";
-import { clockFree, dropSidePanel, lastSaid, type Said } from "./session-watch-lib.ts";
+import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir, type Said } from "./session-watch-lib.ts";
 
 const INTERVAL_MS = 15_000;
 const IDLE_SETTLE_MS = 45_000;
@@ -33,8 +34,9 @@ const sh = async (argv: string[]): Promise<string> => {
 };
 
 // The screen is for state only; what a session last said comes from its own transcript, which no panel or wrap can hide.
-// A resumed omo carries `--session <file>` in its argv; otherwise its tool children carry PI_SESSION_FILE.
-// Either way sessions sharing a cwd are told apart.
+// A resumed omo carries `--session <file>` in its argv; otherwise its tool children carry PI_SESSION_FILE;
+// a fresh idle omo has neither, so fall back to the transcript in its cwd's session dir created closest to its start.
+// Every way tells apart sessions sharing a cwd.
 const sessionFile = async (tmux: string): Promise<string | null> => {
   const panePid = (await sh(["tmux", "display", "-p", "-t", `=${tmux}:`, "#{pane_pid}"])).trim();
   const kids = new Map<string, string[]>();
@@ -56,7 +58,16 @@ const sessionFile = async (tmux: string): Promise<string | null> => {
     }
     queue.push(...(kids.get(pid) ?? []));
   }
-  return null;
+  const omo = (kids.get(panePid) ?? []).find((pid) => {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("senpi");
+    } catch {
+      return false;
+    }
+  });
+  if (!omo) return null;
+  const startedMs = Date.now() - Number((await sh(["ps", "-o", "etimes=", "-p", omo])).trim()) * 1000;
+  return byStartTime(sessionDir(join(homedir(), ".omo", "agent", "sessions"), readlinkSync(`/proc/${omo}/cwd`)), startedMs);
 };
 
 const said = async (tmux: string): Promise<Said | null> => {
