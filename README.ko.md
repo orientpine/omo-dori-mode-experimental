@@ -164,8 +164,9 @@ watcher는 레인을 닫을 때 셸 없이 이 확인을 직접 다시 돌리고
 |---|---|
 | `dori launch <key> ...` | brief에 레인 footer를 쓰고, herdr 탭이나 aoe 세션을 열고, 에이전트를 시작하고, 시작 오류를 확인 |
 | `dori adopt <key> --pane ID ...` | 이미 돌고 있는 레인을 등록 |
+| `dori set-thread <key> <adapter>:<id>` | 레인의 작업 스레드를 바꿈; `launch`, `adopt`, `set-thread`는 `discord:`처럼 빈 값이나 틀린 형식을 거부 |
 | `dori sync [--write]` | 레지스트리와 실제 pane 비교, 어긋난 곳 표시 |
-| `dori claim-done` / `object-done` / `close` | 완료 흐름 |
+| `dori claim-done` / `object-done` / `close` | 완료 흐름; 쓸 수 있는 스레드가 없으면 스레드 훅을 조용히 건너뛰지 않고 `THREAD_MISSING <key>`를 출력 |
 | `dori watch` | 자동 닫기 watcher와 aoe `LANE_BLOCKED` 이벤트. 지속 모니터로 돌립니다 |
 | `dori freshness [--loop MIN]` | 조용해진 레인을 깨우고, 마지막 보고를 스레드에 올림 |
 | `dori dead-panes [--loop MIN]` | 멈춘 에이전트 pane 보고 |

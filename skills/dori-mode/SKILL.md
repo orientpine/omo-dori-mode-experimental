@@ -88,7 +88,8 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 
 | Command | Does |
 |---|---|
-| `dori launch` / `dori adopt` | open a lane in a new tab, or register one already running |
+| `dori launch` / `dori adopt` | open a lane in a new tab, or register one already running; an empty or malformed `--thread` (e.g. `discord:`) is refused |
+| `dori set-thread <key> <adapter>:<id>` | point a lane at another work thread; a close with no usable thread prints `THREAD_MISSING` |
 | `dori sync [--write]` | rebuild the registry from live panes, report drift |
 | `dori claim-done` / `dori object-done` / `dori close` | the done flow |
 | `dori watch` | the 5-minute auto-close watcher, plus `LANE_BLOCKED` with aoe (run it as a persistent monitor) |
