@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { QuestionCards, QuestionStore } from "../src/messenger/discord-cards.ts";
-import { type DiscordMessage, DiscordListener, type GatewayConnection, LISTENER_INTENTS } from "../src/messenger/discord-listener.ts";
+import { audioAttachment, type DiscordMessage, DiscordListener, type GatewayConnection, LISTENER_INTENTS, webhookVerdict } from "../src/messenger/discord-listener.ts";
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
@@ -38,7 +38,7 @@ const fakeTimers = () => {
 let state: ReturnType<typeof withState>;
 afterEach(() => state?.done());
 
-const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean } = {}) => {
+const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string } = {}) => {
   state = withState();
   const seen: HttpRequest[] = [];
   const http: Http = async (req) => {
@@ -60,7 +60,7 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const t = fakeTimers();
   const logs: string[] = [];
   const fatal: number[] = [];
-  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji", autoUnEye: opts.autoUnEye ?? true }, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
+  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), words: { ...defaultDiscordWords, statusStyle: "emoji", autoUnEye: opts.autoUnEye ?? true }, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
   const inbox = () => (existsSync(inboxFile) ? readFileSync(inboxFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}`);
   const eyesFile = () => JSON.parse(readFileSync(`${state.dir}/discord/eyes.json`, "utf8"));
@@ -132,6 +132,54 @@ test("a voice note is transcribed into the inbox row; a failed transcription sti
   await listener.onMessage(msg("1002", { content: "", ...voice }));
   expect(inbox().map((r) => r.transcript)).toEqual(["ship it", null]);
   expect(logs.some((l) => l.startsWith("DISCORD_TRANSCRIBE_FAIL 1002"))).toBe(true);
+});
+
+test("webhookVerdict: the registered webhook in the channel is the owner, other webhooks and channels are ignored, an unset one is unknown", () => {
+  const cfg = { guild: GUILD, channel: CHANNEL, ownerWebhook: "w1" };
+  expect(webhookVerdict({ webhook_id: "w1", channel_id: CHANNEL, guild_id: GUILD }, cfg)).toBe("owner");
+  expect(webhookVerdict({ webhook_id: "w2", channel_id: CHANNEL, guild_id: GUILD }, cfg)).toBe("ignore");
+  expect(webhookVerdict({ webhook_id: "w1", channel_id: THREAD, guild_id: GUILD }, cfg)).toBe("ignore");
+  expect(webhookVerdict({ webhook_id: "w1", channel_id: CHANNEL, guild_id: "999" }, cfg)).toBe("ignore");
+  expect(webhookVerdict({ webhook_id: "w9", channel_id: CHANNEL, guild_id: GUILD }, { ...cfg, ownerWebhook: "" })).toBe("unknown");
+  expect(webhookVerdict({ channel_id: CHANNEL, guild_id: GUILD }, cfg)).toBeNull();
+});
+
+test.each([
+  ["voice-message.ogg", "audio/ogg"],
+  ["Recording.m4a", "audio/x-m4a"],
+  ["Recording.m4a", "audio/mp4"],
+  ["Recording.m4a", "video/mp4"],
+  ["Recording.m4a", undefined],
+  ["rec.mp4", "video/mp4"],
+  ["rec.caf", "application/octet-stream"],
+  ["a.wav", "audio/wav"],
+])("audioAttachment: %s (%p) is audio", (filename, content_type) => {
+  expect(audioAttachment([{ url: "u", filename, ...(content_type ? { content_type } : {}) }])?.filename).toBe(filename);
+});
+
+test("audioAttachment: images and text are not audio", () => {
+  expect(audioAttachment([{ url: "u", filename: "a.png", content_type: "image/png" }, { url: "u", filename: "n.txt" }])).toBeUndefined();
+});
+
+const hook = (id: string, webhook_id: string) => msg(id, { content: "", webhook_id, author: { id: webhook_id, bot: true, username: "Voice" }, attachments: [{ url: "https://cdn.example/r.m4a", filename: "Recording.m4a", content_type: "video/mp4" }] });
+
+test("the owner's webhook posting an iOS Shortcut recording (video/mp4 .m4a) is the owner's voice note; another webhook is not", async () => {
+  const { listener, inbox, logs } = setup(() => ({}), { ownerWebhook: "800000000000000008", transcribe: async () => "ship it" });
+  await listener.onMessage(hook("1001", "800000000000000008"));
+  await listener.onMessage(hook("1002", "900000000000000009"));
+  await listener.onMessage(hook("1003", "800000000000000008"));
+  expect(inbox()).toEqual([
+    expect.objectContaining({ id: "1001", scope: "channel", author_id: OWNER, transcript: "ship it", via: "owner-webhook", webhook_id: "800000000000000008" }),
+    expect.objectContaining({ id: "1003", author_id: OWNER, via: "owner-webhook" }),
+  ]);
+  expect(logs.some((l) => l.startsWith("DISCORD_WEBHOOK_UNKNOWN"))).toBe(false);
+});
+
+test("with no owner webhook set, a webhook post is not a request; its id is logged so it can be registered", async () => {
+  const { listener, inbox, logs } = setup(() => ({}), { transcribe: async () => "ship it" });
+  await listener.onMessage(hook("1004", "800000000000000008"));
+  expect(inbox()).toEqual([]);
+  expect(logs).toContain(`DISCORD_WEBHOOK_UNKNOWN id=800000000000000008 name="Voice" message=1004`);
 });
 
 test("a tap on a card inside its work thread is taken, lands in the inbox with its session and tmux, and turns the thread working; a tap from an unrelated channel is ignored", async () => {

@@ -29,10 +29,34 @@ export type DiscordMessage = {
   readonly guild_id?: string;
   readonly content: string;
   readonly timestamp: string;
-  readonly author: { readonly id: string; readonly bot?: boolean };
-  readonly attachments?: readonly { readonly url: string; readonly filename: string; readonly content_type?: string }[];
+  readonly author: { readonly id: string; readonly bot?: boolean; readonly username?: string };
+  readonly webhook_id?: string;
+  readonly attachments?: readonly Attachment[];
   readonly message_reference?: { readonly message_id?: string; readonly channel_id?: string };
 };
+
+export type Attachment = { readonly url: string; readonly filename: string; readonly content_type?: string };
+
+// "owner": the owner's registered webhook posting in the Dori's channel (e.g. an iOS Shortcut voice upload).
+// "unknown": a webhook post there while no owner webhook is registered; log its id so it can be registered.
+// "ignore": any other webhook post. null: not a webhook post.
+export function webhookVerdict(
+  m: Pick<DiscordMessage, "webhook_id" | "channel_id" | "guild_id">,
+  cfg: { readonly guild: string; readonly channel: string; readonly ownerWebhook: string },
+): "owner" | "unknown" | "ignore" | null {
+  if (!m.webhook_id) return null;
+  if (m.guild_id !== cfg.guild || m.channel_id !== cfg.channel) return "ignore";
+  if (!cfg.ownerWebhook) return "unknown";
+  return m.webhook_id === cfg.ownerWebhook ? "owner" : "ignore";
+}
+
+const AUDIO_EXT = /\.(m4a|mp4|caf|wav|mp3|ogg|oga|opus|aac|flac|webm)$/i;
+
+// Discord voice notes are audio/ogg; an iOS Shortcuts recording arrives as a .m4a with audio/x-m4a, audio/mp4,
+// video/mp4 or no content type at all, so fall back to the file extension.
+export function audioAttachment(atts: readonly Attachment[] = []): Attachment | undefined {
+  return atts.find((a) => (a.content_type ?? "").startsWith("audio/") || AUDIO_EXT.test(a.filename));
+}
 
 export type InboxMessage = {
   readonly ts: string;
@@ -44,6 +68,8 @@ export type InboxMessage = {
   readonly transcript: string | null;
   readonly attachments: readonly { readonly url: string; readonly filename: string; readonly content_type: string | null }[];
   readonly reply_to: string | null;
+  readonly via?: "owner-webhook";
+  readonly webhook_id?: string;
 };
 
 export type InboxAnswer = {
@@ -67,6 +93,8 @@ export type ListenerDeps = {
   readonly guild: string;
   readonly channel: string;
   readonly owner: string;
+  // id of the owner's own webhook in the channel; its posts count as the owner's. Empty or unset: webhook posts are only logged.
+  readonly ownerWebhook?: string;
   readonly words: DiscordWords;
   readonly inboxFile: string;
   readonly timers: ListenerTimers;
@@ -171,7 +199,10 @@ export class DiscordListener {
       if (this.d.words.autoUnEye) await this.clearEyes(m);
       return;
     }
-    if (this.seen.has(m.id) || m.author.bot || m.author.id !== this.d.owner) return;
+    const hook = webhookVerdict(m, { guild: this.d.guild, channel: this.d.channel, ownerWebhook: this.d.ownerWebhook ?? "" });
+    if (hook === "unknown" && !this.seen.has(m.id)) this.d.log(`DISCORD_WEBHOOK_UNKNOWN id=${m.webhook_id} name=${JSON.stringify(m.author.username ?? "")} message=${m.id}`);
+    const viaWebhook = hook === "owner";
+    if (this.seen.has(m.id) || (!viaWebhook && (m.author.bot || m.author.id !== this.d.owner))) return;
     let scope: InboxMessage["scope"];
     if (!m.guild_id) scope = "dm";
     else if (m.guild_id !== this.d.guild) return;
@@ -188,20 +219,21 @@ export class DiscordListener {
       (e: unknown) => this.d.log(`DISCORD_REACT_FAIL ${m.id} ${errText(e)}`),
     );
     let transcript: string | null = null;
-    const audio = (m.attachments ?? []).find((a) => (a.content_type ?? "").startsWith("audio/"));
+    const audio = audioAttachment(m.attachments);
     if (audio && this.d.transcribe) transcript = await this.d.transcribe(audio.url, audio.filename).catch((e: unknown) => (this.d.log(`DISCORD_TRANSCRIBE_FAIL ${m.id} ${errText(e)}`), null));
     this.append({
       ts: m.timestamp,
       id: m.id,
       channel_id: m.channel_id,
       scope,
-      author_id: m.author.id,
+      author_id: viaWebhook ? this.d.owner : m.author.id,
       content: m.content,
       transcript,
       attachments: (m.attachments ?? []).map((a) => ({ url: a.url, filename: a.filename, content_type: a.content_type ?? null })),
       reply_to: m.message_reference?.message_id ?? null,
+      ...(viaWebhook ? { via: "owner-webhook" as const, webhook_id: m.webhook_id } : {}),
     });
-    this.d.log(`INBOUND discord-${scope} ${m.channel_id} ${m.id} ${m.author.id} ${JSON.stringify((transcript ?? m.content).slice(0, 200))}`);
+    this.d.log(`INBOUND discord-${scope} ${m.channel_id} ${m.id} ${viaWebhook ? `${this.d.owner} via=owner-webhook` : m.author.id} ${JSON.stringify((transcript ?? m.content).slice(0, 200))}`);
     if (scope === "thread") await this.reopenIfDone(m.channel_id).catch((e: unknown) => this.d.log(`DISCORD_REOPEN_FAIL ${m.channel_id} ${errText(e)}`));
   }
 

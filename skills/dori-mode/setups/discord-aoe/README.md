@@ -29,7 +29,7 @@ What you get:
    cp $S/config.json ~/.dori/config.json                                   # set leadPane, defaultCwd, the transcribe path
    ```
    Every `dori` command reads `~/.dori/dori.env` (or `DORI_ENV_FILE`); a variable already set in the environment wins.
-4. **Voice (optional).** `bash $S/setup-asr.sh`, then check `$S/transcribe.sh some-note.ogg` prints the text. Set `DORI_ASR_LANG` to the owner's language for better accuracy.
+4. **Voice (optional).** `bash $S/setup-asr.sh`, then check `$S/transcribe.sh some-note.ogg` prints the text. Set `DORI_ASR_LANG` to the owner's language for better accuracy. To send voice requests from an iPhone with one button (Action Button, Back Tap, Siri), see [ios-shortcut-voice.md](ios-shortcut-voice.md).
 5. **The Dori's own session.** `aoe add <dir> -t Dori --tool omo`, start it, and put its id and tmux name into `DORI_LEAD_AOE_ID` / `DORI_LEAD_TMUX`, and the tmux name into `leadPane`.
 6. **Services.**
    ```sh
@@ -62,7 +62,7 @@ A message:
 {"ts":"2026-01-02T03:00:00Z","id":"<message id>","channel_id":"<id>","scope":"channel","author_id":"<owner id>","content":"ship it","transcript":null,"attachments":[],"reply_to":null}
 ```
 
-`scope` is `channel`, `thread` or `dm`. A voice note has `transcript` filled. A reply has `reply_to`: read that message first.
+`scope` is `channel`, `thread` or `dm`. A voice note has `transcript` filled. A post from the owner's registered webhook (`DORI_DISCORD_OWNER_WEBHOOK`, see [ios-shortcut-voice.md](ios-shortcut-voice.md)) has `author_id` set to the owner and also carries `"via":"owner-webhook"` and `webhook_id`. A reply has `reply_to`: read that message first.
 
 A card answer:
 

@@ -218,6 +218,10 @@ dori resolve Q1
 
 `discord.statusStyle: "emoji"`는 스레드 이름 앞에 🔄 작업 중, ⏸️ 대기, ✅ 완료를 붙입니다. 기본 `"words"`는 `[working]`, `[waiting]`, `[done]`입니다. `dori thread reply` / `wait` / `done`이 상태를 바꾸며, done은 보관하고 reply/wait는 보관을 해제합니다. 완료 스레드에 소유자가 메시지를 쓰면 리스너가 작업 중으로 다시 엽니다. 서비스와 카드 문구 번역 설정은 [디스코드 + aoe 설정](skills/dori-mode/setups/discord-aoe/README.md)을 보세요.
 
+### 아이폰 단축어로 음성 지시
+
+디스코드 iOS 앱은 단축어로 조작할 수 없어서, 버튼 하나로 음성 지시를 보내려면 우회합니다. iOS 단축어가 녹음한 파일을 Dori 채널의 디스코드 웹후크로 올리고, `DORI_DISCORD_OWNER_WEBHOOK`에 그 웹후크 ID를 넣으면 `dori inbound discord`가 그 글을 소유자의 음성 메시지로 받습니다. 눈 반응을 달고 받아쓴 뒤 `"via":"owner-webhook"`가 붙은 행으로 inbox에 남깁니다. ID를 넣기 전에는 웹후크 글을 로그(`DISCORD_WEBHOOK_UNKNOWN id=...`)에만 남깁니다. 웹후크 만들기, 단축어 동작 설정, 동작 버튼·뒷면 탭·시리 호출, 보안 주의는 [iOS 단축어 음성 지시 안내](skills/dori-mode/setups/discord-aoe/ios-shortcut-voice.md)를 따라 하세요.
+
 ## 테스트
 
 CI는 없습니다. 테스트는 로컬에서 돌립니다.
