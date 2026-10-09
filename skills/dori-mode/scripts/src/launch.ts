@@ -2,7 +2,7 @@ import { AoeError, inputLine, openAoeSession, target } from "./aoe.ts";
 import { type Backend, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen, sendVerified } from "./panes.ts";
-import { LANE_KEY, type Lane } from "./registry.ts";
+import { LANE_KEY, type Lane, NO_THREAD, threadRefProblem } from "./registry.ts";
 import { iso } from "./run.ts";
 import { doneSyntaxErrors } from "./signals.ts";
 
@@ -23,6 +23,10 @@ const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API ke
 export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promise<void> => {
   if (!LANE_KEY.test(input.key)) throw new LaunchError(`key must match ${LANE_KEY}`);
   if (await deps.registry.read(input.key)) throw new LaunchError(`lane ${input.key} is already registered`);
+  if (input.thread !== undefined && input.thread !== NO_THREAD) {
+    const problem = threadRefProblem(input.thread);
+    if (problem) throw new LaunchError(`${problem}; pass --thread <adapter>:<id>, or leave --thread out`);
+  }
   const errors = doneSyntaxErrors(input.done);
   if (errors.length) throw new LaunchError(`Done line is not checkable: ${errors.join("; ")}`);
 };
@@ -43,6 +47,14 @@ export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly 
   const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, openedAt: iso(deps.clock) };
   await deps.registry.write(lane);
   return lane;
+};
+
+// Points an existing lane at another work thread, e.g. one made after the lane was launched.
+export const setThread = async (deps: FlowDeps, lane: Lane, ref: string): Promise<string> => {
+  const problem = threadRefProblem(ref);
+  if (problem) throw new LaunchError(problem);
+  await deps.registry.patch(lane.key, { thread: ref });
+  return `THREAD_SET ${lane.key} ${lane.thread || "-"} -> ${ref}`;
 };
 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput): Promise<{ readonly lane: Lane; readonly startup: string }> => {

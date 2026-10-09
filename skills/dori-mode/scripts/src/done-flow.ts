@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 
 import { closeAoeSession, paneActivity } from "./aoe.ts";
 import { type DoriConfig, fill } from "./config.ts";
-import { type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
+import { hasThread, type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
 import { sendVerified } from "./panes.ts";
 import { checkDone, type SignalIo } from "./signals.ts";
@@ -71,10 +71,15 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promi
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
   if (checks.some((c) => !c.ok)) return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };
   const cleanup: string[] = [];
+  const warnings: string[] = [];
   const hook = deps.config.hooks.threadDone;
-  if (hook && lane.thread !== "none") {
+  if (hook && hasThread(lane)) {
     const r = await deps.run(fill(hook, { thread: lane.thread, text: note, key: lane.key }));
     cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);
+  } else if (hook) {
+    // a missing or broken thread ref would leave the work thread open without a word; say so
+    warnings.push(`THREAD_MISSING ${lane.key} thread=${JSON.stringify(lane.thread ?? null)}; threadDone not run, close the thread by hand or set it with dori set-thread first`);
+    cleanup.push("thread missing: threadDone not run");
   }
   if (deps.config.backend === "aoe") {
     if (lane.pane) cleanup.push(await closeAoeSession(deps.run, lane.pane));
@@ -88,19 +93,19 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promi
   const at = iso(deps.clock);
   const receipt = { checks, note, cleanup };
   await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
-  return { closed: true, lines: [...lines, `CLOSED ${lane.key} ${JSON.stringify(receipt)}`] };
+  return { closed: true, lines: [...lines, ...warnings, `CLOSED ${lane.key} ${JSON.stringify(receipt)}`] };
 };
 
-const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<string> => {
+const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<string[]> => {
   const blocked = await unpushedWork(deps, lane);
-  if (blocked.length) return objectDone(deps, lane, blocked);
+  if (blocked.length) return [await objectDone(deps, lane, blocked)];
   const failing = (await checkDone(lane.done, deps.run, signalIo(deps, lane))).filter((c) => !c.ok).map((c) => `${c.signal} -> ${c.detail}`);
-  if (failing.length) return objectDone(deps, lane, failing);
+  if (failing.length) return [await objectDone(deps, lane, failing)];
   const verified = withStatus(lane, "verified-done", "Done signals read back live", iso(deps.clock));
   await deps.registry.write(verified);
   const result = await closeLane(deps, verified, `Done: ${evidence}`);
-  if (!result.closed) return objectDone(deps, (await deps.registry.read(lane.key)) ?? verified, result.lines.filter((l) => l.startsWith("SIGNAL NOT")));
-  return `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`;
+  if (!result.closed) return [await objectDone(deps, (await deps.registry.read(lane.key)) ?? verified, result.lines.filter((l) => l.startsWith("SIGNAL NOT")))];
+  return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
 };
 
 export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
@@ -115,7 +120,7 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
       await deps.registry.write(lane);
     }
     if (deps.clock.now() - Date.parse(claim.at) < windowMs(deps)) continue;
-    out.push(await settle(deps, lane, claim.evidence));
+    out.push(...(await settle(deps, lane, claim.evidence)));
   }
   if (deps.config.backend === "aoe") out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
   return out;

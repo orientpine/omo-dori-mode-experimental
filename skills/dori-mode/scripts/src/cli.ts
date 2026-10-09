@@ -11,7 +11,7 @@ import { claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./do
 import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
-import { adoptLane, launchLane, LaunchError } from "./launch.ts";
+import { adoptLane, launchLane, LaunchError, setThread } from "./launch.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
 import { syncRegistry } from "./sync.ts";
@@ -33,6 +33,8 @@ const USAGE = `dori <command> [options]
 
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
+                                       REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
+  set-thread <key> <adapter>:<id>      point an open lane at another work thread
   sync   [--write]                     registry vs live panes; read-only unless --write
   claim-done [<key>] --evidence TEXT  key defaults to the lane registered for this pane ($HERDR_PANE_ID, or the tmux session with backend aoe)
   object-done <key> --reason TEXT [--reason TEXT ...]
@@ -87,6 +89,8 @@ const opt = (name: string): string | undefined => {
   return typeof v === "string" ? v.trim() : undefined;
 };
 const need = (name: string): string => opt(name) || die(`--${name} is required`);
+// a bare --thread (no value) is a thread ref that came out empty, not a lane without a thread
+const threadOpt = (): string | undefined => (flags.values.thread === true ? "" : opt("thread"));
 const key = flags.positionals[0];
 const loopMin = Number(opt("loop") ?? 0);
 
@@ -126,13 +130,13 @@ const every = async (minutes: number, tick: () => Promise<void>): Promise<void> 
 try {
   switch (command) {
     case "launch": {
-      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), model: opt("model"), cwd: opt("cwd") });
+      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd") });
       console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
       console.log(r.startup);
       process.exit(r.startup.startsWith("STARTUP_OK") ? 0 : 3);
     }
     case "adopt": {
-      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), pane: need("pane") });
+      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), pane: need("pane") });
       console.log(`ADOPTED ${l.key} pane=${l.pane} thread=${l.thread}`);
       break;
     }
@@ -142,6 +146,11 @@ try {
       for (const row of [...r.rows, ...r.unregistered]) console.log([row.key, row.thread, row.pane, row.session, row.status].join(" | "));
       console.log(r.drift.length ? `DRIFT (${r.drift.length}):\n${r.drift.map((d) => `- ${d}`).join("\n")}` : "DRIFT none");
       console.log(flags.values.write ? "WROTE session ids" : "READ_ONLY");
+      break;
+    }
+    case "set-thread": {
+      const ref = flags.positionals[1]?.trim() ?? die("usage: dori set-thread <key> <adapter>:<id>");
+      console.log(await setThread(deps, await lane(key ?? die("set-thread needs a lane key")), ref));
       break;
     }
     case "claim-done":
