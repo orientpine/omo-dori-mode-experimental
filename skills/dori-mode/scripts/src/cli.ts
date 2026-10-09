@@ -280,6 +280,7 @@ try {
           guild: env("DORI_DISCORD_GUILD"),
           channel: env("DORI_DISCORD_CHANNEL"),
           owner: env("DORI_DISCORD_OWNER"),
+          ownerWebhook: process.env.DORI_DISCORD_OWNER_WEBHOOK?.trim() ?? "",
           words: config.discord,
           inboxFile: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
           timers: { ...realTimers, setTimeout: (cb, ms) => setTimeout(cb, ms) },
