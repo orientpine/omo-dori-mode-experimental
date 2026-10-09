@@ -10,7 +10,7 @@ What you get:
 | `dori ask` / `questions` / `reopen` / `resolve` | Question cards: one tap answers a decision the owner has to make. |
 | `dori thread reply\|wait\|done` | The thread hooks: posts lane reports into the work thread and sets its status mark (🔄, ⏸️, ✅ with this setup's emoji style); `done` archives the thread. |
 | `dori-lanes.sh` (unit `dori-lanes`) | `dori watch`, `freshness`, `dead-panes` and `guard` in one unit and one log, each line stamped and tagged. |
-| `session-watch.ts` (unit `dori-session-watch`) | Notices when another aoe session stops for a human (waiting, error, idle after a turn, a new `MILESTONE` line) and writes the event with the pane's tail and the lane's thread. |
+| `session-watch.ts` (unit `dori-session-watch`) | Notices when another aoe session stops for a human (waiting, error, idle after a turn, a new `MILESTONE` line) and writes the event with the pane's tail, the lane's thread and what the session last said. |
 | `self-restart.sh` | The one safe way to restart an aoe session, the Dori's own included, e.g. after an agent update. |
 | `transcribe.sh`, `setup-asr.sh` | Local speech-to-text with whisper.cpp (CUDA when available) for `hooks.transcribe`. |
 | `systemd/` | User units for the above, plus `dori-lead` to start the Dori's own aoe session at boot. |
@@ -69,6 +69,18 @@ A card answer:
 ```json
 {"ts":"...","id":"<interaction id>","kind":"answer","qid":"Q4","answer":"Ship it","answer_kind":"button","question":"Ship the fix today?","thread":"<thread id>","session":"<agent session id>","tmux":"aoe_fix-login_1a2b3c4d"}
 ```
+
+## Session events
+
+Each row in `session-events.jsonl` has `kind` (`session-idle`, `session-waiting`, `session-error`, `session-milestone`), `session`, `title`, `path`, `tmux`, `thread`, `tail` (the pane's last 20 lines) and `said`:
+
+```json
+{"at":"...","kind":"session-idle","session":"<aoe id>","tmux":"aoe_fix-login_1a2b3c4d","thread":"discord:<id>","tail":["..."],"said":{"at":"2026-01-02T03:00:00Z","text":"PR #12 is open; CI is running."}}
+```
+
+`said` is the last assistant text in the session's own transcript (`--session <file.jsonl>` in its argv, else `PI_SESSION_FILE` in a child's environment, else the file in `~/.omo/agent/sessions/--<cwd>--/` created closest to the omo process start, within 2 minutes), up to 3000 characters; read it rather than the screen for what the session reported. It is `null` when no transcript is found, with a `SESSION-WATCH-SAID-FAIL` line in the log on an error. `tail` and the state (busy, idle) still come from the screen, with omo's side panel block cut out.
+
+If you turn on omo's side panel (`side_panel.enabled`), give detached tmux sessions room for it, e.g. `set -g default-size 200x50` in `~/.tmux.conf`; in an 80x24 pane the panel covers the newest lines of the conversation.
 
 ## Question cards: when and how
 

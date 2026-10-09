@@ -2,14 +2,17 @@
 // Watches the other aoe/tmux agent sessions and appends an event when one stops for a human:
 // aoe reports `waiting` or `error`, a turn ended and the pane stayed idle (no goal continuation),
 // or a briefed session printed a new `MILESTONE <id>:` line. Each event carries the pane's last
-// 20 lines and the lane's thread from the dori registry, so the Dori can answer or ask the owner.
+// 20 lines, the lane's thread from the dori registry and what the session last said (from its transcript),
+// so the Dori can answer or ask the owner.
 // Output: <stateDir>/session-events.jsonl, one JSON object per line, also printed to stdout.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { loadConfig, loadEnvFile, envFilePath } from "../../scripts/src/config.ts";
 import { Registry } from "../../scripts/src/registry.ts";
 import { run } from "../../scripts/src/run.ts";
+import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir, type Said } from "./session-watch-lib.ts";
 
 const INTERVAL_MS = 15_000;
 const IDLE_SETTLE_MS = 45_000;
@@ -28,6 +31,53 @@ const sh = async (argv: string[]): Promise<string> => {
   const r = await run(argv);
   if (r.code !== 0) throw new Error(`${argv.slice(0, 3).join(" ")} failed: ${r.err.slice(0, 200)}`);
   return r.out;
+};
+
+// The screen is for state only; what a session last said comes from its own transcript, which no panel or wrap can hide.
+// A resumed omo carries `--session <file>` in its argv; otherwise its tool children carry PI_SESSION_FILE;
+// a fresh idle omo has neither, so fall back to the transcript in its cwd's session dir created closest to its start.
+// Every way tells apart sessions sharing a cwd.
+const sessionFile = async (tmux: string): Promise<string | null> => {
+  const panePid = (await sh(["tmux", "display", "-p", "-t", `=${tmux}:`, "#{pane_pid}"])).trim();
+  const kids = new Map<string, string[]>();
+  for (const row of (await sh(["ps", "-eo", "pid=,ppid="])).split("\n")) {
+    const [pid, ppid] = row.trim().split(/\s+/);
+    if (pid && ppid) kids.set(ppid, [...(kids.get(ppid) ?? []), pid]);
+  }
+  const queue = [panePid];
+  for (let pid = queue.shift(); pid; pid = queue.shift()) {
+    try {
+      const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      const at = argv.indexOf("--session");
+      const file = at >= 0 ? argv[at + 1] : undefined;
+      if (file?.endsWith(".jsonl")) return file;
+      const env = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").find((v) => v.startsWith("PI_SESSION_FILE="));
+      if (env) return env.slice("PI_SESSION_FILE=".length);
+    } catch {
+      // the process exited or belongs to another user; its children are still walked
+    }
+    queue.push(...(kids.get(pid) ?? []));
+  }
+  const omo = (kids.get(panePid) ?? []).find((pid) => {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("senpi");
+    } catch {
+      return false;
+    }
+  });
+  if (!omo) return null;
+  const startedMs = Date.now() - Number((await sh(["ps", "-o", "etimes=", "-p", omo])).trim()) * 1000;
+  return byStartTime(sessionDir(join(homedir(), ".omo", "agent", "sessions"), readlinkSync(`/proc/${omo}/cwd`)), startedMs);
+};
+
+const said = async (tmux: string): Promise<Said | null> => {
+  try {
+    const file = await sessionFile(tmux);
+    return file && existsSync(file) ? lastSaid(file) : null;
+  } catch (e) {
+    console.error(`SESSION-WATCH-SAID-FAIL ${tmux} ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
 };
 
 const emit = (row: Record<string, unknown>): void => {
@@ -49,14 +99,16 @@ const tick = async (): Promise<void> => {
       seen.delete(s.id);
       continue;
     }
-    const pane = await sh(["tmux", "capture-pane", "-p", "-t", `=${tmux}:`]);
+    // -S -40: the omo side panel (5.1.27+) stacks under the transcript on narrow panes and can push the last report into scrollback
+    const pane = await sh(["tmux", "capture-pane", "-p", "-S", "-40", "-t", `=${tmux}:`]);
+    // state is judged on the visible screen only; scrollback can hold an old "esc to interrupt"
+    const visible = pane.split("\n").slice(-24).join("\n");
     // omo shows "esc to interrupt" only while the main turn runs; aoe says `running` even when only background children do
-    const busy = pane.includes("esc to interrupt");
-    const goalContinuing = pane.includes("goal continues in");
-    const lines = pane.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim() && !/^[─━\s]+$/.test(l));
+    const busy = visible.includes("esc to interrupt");
+    const goalContinuing = visible.includes("goal continues in");
+    const lines = dropSidePanel(pane.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim() && !/^[─━\s]+$/.test(l)));
     const promptAt = lines.findLastIndex((l) => l.startsWith("❯"));
-    // elapsed-time counters ("4m ago", "(18h 31m)") tick while a pane waits; they are not new output
-    const body = (promptAt >= 0 ? lines.slice(0, promptAt) : lines).join("\n").replace(/\b\d+(?:\.\d+)?(?:ms|s|m|h|d)\b/g, "#").replace(/\b(?:retry|resets) \d{1,2}:\d{2}\b/g, "#");
+    const body = clockFree((promptAt >= 0 ? lines.slice(0, promptAt) : lines).join("\n"));
     // the milestone id ("3", "4-auth") is the identity: sessions restate the same milestone in new words on each wake
     const milestone = lines.findLast((l) => /^\s*MILESTONE\b/.test(l) && !/in progress/i.test(l))?.match(/MILESTONE\s+([^\s:(]+)/)?.[1] ?? "";
     const base = { session: s.id, title: s.title, path: s.path, tmux, thread: lanes.find((l) => l.pane === tmux)?.thread ?? null, tail: lines.slice(-20).map((l) => l.slice(0, 200)) };
@@ -66,12 +118,12 @@ const tick = async (): Promise<void> => {
       continue;
     }
     if (milestone && milestone !== prev.milestone && !busy && goalContinuing) {
-      emit({ kind: "session-milestone", ...base });
+      emit({ kind: "session-milestone", ...base, said: await said(tmux) });
       prev.notified = true;
     }
     if (!busy) prev.milestone = milestone;
     if ((aoeState === "waiting" || aoeState === "error") && prev.aoeState !== aoeState) {
-      emit({ kind: `session-${aoeState}`, ...base });
+      emit({ kind: `session-${aoeState}`, ...base, said: await said(tmux) });
       prev.notified = true;
     }
     if (busy) prev.notified = false;
@@ -80,7 +132,7 @@ const tick = async (): Promise<void> => {
       prev.notified = false;
     }
     if (!busy && !prev.notified && !goalContinuing && now - prev.idleSince >= IDLE_SETTLE_MS) {
-      emit({ kind: "session-idle", ...base });
+      emit({ kind: "session-idle", ...base, said: await said(tmux) });
       prev.notified = true;
     }
     prev.busy = busy;
