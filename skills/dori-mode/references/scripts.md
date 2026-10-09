@@ -80,8 +80,13 @@ Every module takes its HTTP, clock and timers as arguments. That is how the test
 ### `dori launch <key> --title T --brief FILE --done "..." [--thread REF] [--model M] [--cwd DIR]`
 Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and checks the pane for startup errors after 20 seconds. Exit 3 on `STARTUP_ERROR`.
 
+`REF` is `<adapter>:<id>`, e.g. `discord:<thread id>` (digits only) or `telegram:<chat>/<topic>`. An empty id (`discord:`), a bare `--thread`, a ref without an adapter, or whitespace in the id is refused before anything opens: exit 1 with a one-line reason, and no lane is registered. Leaving `--thread` out is fine; the lane is registered with thread `none`. `adopt` checks `--thread` the same way.
+
 ### `dori adopt <key> --pane ID --title T --brief FILE --done "..." [--thread REF]`
 Registers a lane that is already running.
+
+### `dori set-thread <key> <adapter>:<id>`
+Points an open lane at another work thread, for example one created after the lane was launched. The ref is checked as for `launch`; a bad one exits 1 and leaves the lane unchanged. Prints `THREAD_SET <key> <old> -> <new>`.
 
 ### `dori sync [--write]`
 Prints `key | thread | pane | session | status` for every open lane and every unregistered agent pane, followed by drift. Read-only unless `--write`, which stores session ids.
@@ -90,7 +95,7 @@ Prints `key | thread | pane | session | status` for every open lane and every un
 The two halves of the done flow. Both message the lane's pane and check that Enter registered.
 
 ### `dori close <key> [--note TEXT]`
-Closes a lane now. Refuses (exit 2) unless every `Done =` signal reads back live. On success it marks the thread done through `hooks.threadDone`, closes the tab, and removes the lane's worktrees with a plain `git worktree remove`, which refuses a dirty worktree.
+Closes a lane now. Refuses (exit 2) unless every `Done =` signal reads back live. On success it marks the thread done through `hooks.threadDone`, closes the tab, and removes the lane's worktrees with a plain `git worktree remove`, which refuses a dirty worktree. When `hooks.threadDone` is set but the lane has no usable thread (`none`, empty, or malformed), the hook is not run and `THREAD_MISSING <key> thread=...` is printed before `CLOSED`, and the receipt records `thread missing`; close that thread by hand, or run `dori set-thread` before closing. The automatic close in `dori watch` prints the same line before `LANE_CLOSED`.
 
 ### `dori watch`
 Runs forever. Every 30 seconds it prints each new claim once (`LANE_DONE_CLAIMED`). Claims older than `closeAfterMin` are settled: unpushed or uncommitted work and failing signals turn into objections (`LANE_NOT_DONE`); otherwise the lane is closed (`LANE_CLOSED`). The deadline lives in the registry, so a restart picks up where it left off.

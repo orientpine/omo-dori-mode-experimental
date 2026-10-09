@@ -3,6 +3,22 @@ import { join } from "node:path";
 
 export const LANE_KEY = /^[a-z0-9][a-z0-9._-]{1,60}$/;
 
+// A lane's work thread: <adapter>:<id>, or "none" for a lane without one. Discord ids are numeric snowflakes.
+export const NO_THREAD = "none";
+
+export const threadRefProblem = (ref: string): string | undefined => {
+  const m = /^([a-z][a-z0-9_-]*):(.*)$/.exec(ref);
+  if (!m) return `thread "${ref}" is not <adapter>:<id>`;
+  const [, adapter, id = ""] = m;
+  if (!id) return `thread "${ref}" has an empty id`;
+  if (/\s/.test(id)) return `thread "${ref}" has whitespace in its id`;
+  if (adapter === "discord" && !/^\d{5,25}$/.test(id)) return `thread "${ref}" is not a Discord thread id (digits only)`;
+  return undefined;
+};
+
+// true when the lane has a thread that a threadDone hook can act on
+export const hasThread = (lane: Lane): boolean => typeof lane.thread === "string" && lane.thread !== NO_THREAD && threadRefProblem(lane.thread) === undefined;
+
 export type LaneStatus = "working" | "done-claimed" | "verified-done" | "not-done" | "closed";
 export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };

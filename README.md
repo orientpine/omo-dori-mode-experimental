@@ -164,8 +164,9 @@ The watcher runs each check itself when it closes the lane, with no shell, and n
 |---|---|
 | `dori launch <key> ...` | write the lane footer into the brief, open a herdr tab or aoe session, start the agent, check for startup errors |
 | `dori adopt <key> --pane ID ...` | register a lane that's already running |
+| `dori set-thread <key> <adapter>:<id>` | point a lane at another work thread; `launch`, `adopt` and `set-thread` refuse an empty or malformed ref such as `discord:` |
 | `dori sync [--write]` | registry against live panes, plus drift |
-| `dori claim-done` / `object-done` / `close` | the done flow |
+| `dori claim-done` / `object-done` / `close` | the done flow; a close with no usable thread prints `THREAD_MISSING <key>` instead of skipping the thread hook silently |
 | `dori watch` | the auto-close watcher, plus aoe `LANE_BLOCKED` events; run it as a persistent monitor |
 | `dori freshness [--loop MIN]` | nudge lanes that went quiet, then post their last report to their thread |
 | `dori dead-panes [--loop MIN]` | report agent panes that stopped |
