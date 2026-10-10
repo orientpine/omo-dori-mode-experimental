@@ -234,7 +234,7 @@ try {
     case "scorecard": {
       const window = dayWindow(opt("date") ?? "today", config.scorecard.timeZone, Date.now());
       const data = await computeScorecard({
-        sessionsDir: config.sessionsDir,
+        sessionsDir: config.scorecard.sessions,
         lanes: await deps.registry.list(),
         settings: config.scorecard,
         inbox: config.scorecard.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),

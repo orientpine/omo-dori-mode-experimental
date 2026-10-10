@@ -66,6 +66,8 @@ export type SameFix = { readonly after: number; readonly sendToLane: boolean; re
 export type Scorecard = {
   readonly timeZone: string;
   readonly language: "en" | "ko";
+  // session files whose cost line ① counts; empty means sessionsDir (every session on the host)
+  readonly sessions: string;
   readonly lanesLog: string;
   readonly leadSessions: string;
   readonly inbox: string;
@@ -136,6 +138,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   scorecard: {
     timeZone: "UTC",
     language: "en",
+    sessions: "",
     lanesLog: "",
     leadSessions: "",
     inbox: "",
@@ -177,7 +180,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
     stateDir: expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home),
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
-    scorecard: { ...merged.scorecard, lanesLog: expandHome(merged.scorecard.lanesLog, home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
+    scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog, home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
     leadPane: process.env.DORI_LEAD_PANE ?? merged.leadPane,
   };
 };
