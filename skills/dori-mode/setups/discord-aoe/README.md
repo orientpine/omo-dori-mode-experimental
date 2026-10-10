@@ -46,7 +46,7 @@ What you get:
    systemctl --user daemon-reload && systemctl --user enable --now dori-scorecard.timer
    systemctl --user list-timers dori-scorecard.timer
    ```
-   The timer posts yesterday's card every morning at 08:30 host time; put a time zone after the time in `OnCalendar=` (e.g. `08:30:00 Asia/Seoul`) to pin it.
+   The timer saves yesterday's card every morning at 08:30 host time to `~/.dori/state/scorecard/<date>.json` and `latest.md`, for the Dori to read; nothing is posted to the owner. Add `--post` to `ExecStart=` only if the owner wants the card in the channel. Put a time zone after the time in `OnCalendar=` (e.g. `08:30:00 Asia/Seoul`) to pin it.
 7. **Smoke test.** Write in the channel: the eyes reaction appears within a second and a row lands in `~/.dori/state/discord/inbox.jsonl`. Then `dori ask --text "Smoke test: does the card work?" --option Yes --option No` and tap a button: the card folds into `[answered] ... → Yes` and an `answer` row follows in the inbox.
 
 ## Switching an existing listener over

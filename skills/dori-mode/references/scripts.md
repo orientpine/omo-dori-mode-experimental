@@ -36,7 +36,8 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
 | `hooks.transcribe` | none | `transcribe` (argv with `{file}`, prints the text), `inbound discord` voice notes |
 | `sameFix` | `after: 3`, `sendToLane: false`, an English `laneText` | `freshness`, `fix-attempt`: from the `after`-th fix attempt on one metric with one hypothesis print `SAME_FIX_3`; with `sendToLane` also type `laneText` (`{n}`, `{metric}`, `{hypothesis}` filled in) into the lane |
-| `scorecard` | `timeZone: "UTC"`, `language: "en"`, no paths | `scorecard`: `timeZone` (the calendar day counted), `language` (`en` or `ko`), `lanesLog` (the file the `dori-lanes` sweeps write, for nudges), `leadSessions` (the folder of the lead agent's session files, for re-sends, reply times and context tax), `inbox` (default `DORI_DISCORD_INBOX`, then `<stateDir>/discord/inbox.jsonl`), `replyPattern` (regex a tool result matches when the lead posted a reply; default `^(SENT\|POSTED) \d`), `leadSendPattern` (regex for a lead message to a lane, `{pane}` is the lane's pane; default matches `tmux send-keys -t =<pane>: -l` and `herdr pane send-text <pane>`), `postTo` (`discord:<channel or thread id>`, default `DORI_DISCORD_CHANNEL`) |
+| `scorecard` | `timeZone: "UTC"`, `language: "en"`, no paths | `scorecard`: `timeZone` (the calendar day counted), `language` (`en` or `ko`), `lanesLog` (the file the `dori-lanes` sweeps write, for nudges), `leadSessions` (the folder of the lead agent's session files, for re-sends, reply times and context tax), `inbox` (default `DORI_DISCORD_INBOX`, then `<stateDir>/discord/inbox.jsonl`), `replyPattern` (regex a tool result matches when the lead posted a reply; default `^(SENT\|POSTED) \d`), `leadSendPattern` (regex for a lead message to a lane, `{pane}` is the lane's pane; default matches `tmux send-keys -t =<pane>: -l` and `herdr pane send-text <pane>`), `postTo` (`discord:<channel or thread id>`, default `DORI_DISCORD_CHANNEL`), `keepDays` (30: saved cards older than this are removed). `signals` reads `lanesLog`, `leadSessions` and `leadSendPattern` too |
+| `signals` | `launchLanes: 5`, English and Korean patterns | `signals`, `launch`, `fix-attempt`, `sync`: `launchLanes` (how many earlier lanes the "Past signals" section of a new brief lists), `attemptPattern` (regex for a numbered fix attempt in a `[REPORT]` line or a lead message, group 1 = the number; default `fix`, `attempt`, `adjustment`, `조정`, `땜질` followed by a number up to 20), `rootCausePattern` (regex for the switch to a root-cause hunt; default `root cause`, `근본 원인`) |
 | `discord` | English words, `en-US`, `UTC`, `statusStyle: "words"`, `autoUnEye: true` | `autoUnEye` (`dori inbound discord` takes its eyes reaction off once its bot writes back, see below; `false` leaves that to you), `statusStyle` (`words` for `[working]`-style marks, `emoji` for 🔄 ⏸️ ✅ and ⏳), thread status words (`working`, `waiting`, `done`) and question-card wording (`other`, `pick` with `{n}` for the option number, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`), plus `locale` and `timeZone` for answer times |
 
 Tokens and ids come from the environment. Every command first reads `~/.dori/dori.env` (or the file in `DORI_ENV_FILE`), `KEY=VALUE` per line; a variable already set wins. The Discord commands need `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL` (the one channel the Dori talks in) and `DORI_DISCORD_OWNER`.
@@ -79,21 +80,23 @@ Every module takes its HTTP, clock and timers as arguments. That is how the test
 
 ## Commands
 
-### `dori launch <key> --title T --brief FILE --done "..." [--thread REF] [--model M] [--cwd DIR] [--done-weak-ok]`
+### `dori launch <key> --title T --brief FILE --done "..." [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]`
 Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and checks the pane for startup errors after 20 seconds. Exit 3 on `STARTUP_ERROR`.
+
+Before the footer it adds a `## Past signals (written by dori launch)` section when earlier lanes in the same area have a record: lanes with the same `--cwd` (unless it is `defaultCwd`) or a shared tag. The key's first word is always a tag (`rl-e8` shares `rl` with `rl-e7`); `--tag` adds more and is stored in the lane. Up to `signals.launchLanes` lanes, newest first, one line each (numbered attempts, root-cause switch, fixes, rejected claims, re-sends and nudges) plus their warnings, so the new lane does not repeat a fix that already failed.
 
 When every `Done =` signal only checks that files exist or contain text (a `file` signal, or a command that is only `grep`/`test`/`cat`/`ls`/`wc`/`jq`..., directly, via `sh -c` or in a readable shell script), it first prints `LAUNCH_DONE_WEAK <key>: ...` asking for a signal that measures behavior, then launches anyway. `--done-weak-ok` silences it. A script it cannot read is not called weak.
 
 `REF` is `<adapter>:<id>`, e.g. `discord:<thread id>` (digits only) or `telegram:<chat>/<topic>`. An empty id (`discord:`), a bare `--thread`, a ref without an adapter, or whitespace in the id is refused before anything opens: exit 1 with a one-line reason, and no lane is registered. Leaving `--thread` out is fine; the lane is registered with thread `none`. `adopt` checks `--thread` the same way.
 
-### `dori adopt <key> --pane ID --title T --brief FILE --done "..." [--thread REF]`
+### `dori adopt <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...]`
 Registers a lane that is already running.
 
 ### `dori set-thread <key> <adapter>:<id>`
 Points an open lane at another work thread, for example one created after the lane was launched. The ref is checked as for `launch`; a bad one exits 1 and leaves the lane unchanged. Prints `THREAD_SET <key> <old> -> <new>`.
 
 ### `dori sync [--write]`
-Prints `key | thread | pane | session | status` for every open lane and every unregistered agent pane, followed by drift. Read-only unless `--write`, which stores session ids.
+Prints `key | thread | pane | session | status` for every open lane and every unregistered agent pane, followed by a `SIGNALS <key> [<outcome>] ...` line for each open lane that has a record (see `dori signals`) and drift. Read-only unless `--write`, which stores session ids.
 
 ### `dori claim-done [<key>] --evidence TEXT` / `dori object-done <key> --reason TEXT ...`
 The two halves of the done flow. Both message the lane's pane and check that Enter registered. A claim on a paused lane is recorded and printed as `LANE_DONE_CLAIMED_PAUSED <key> <pane> <evidence>` (and once by `dori watch`), but it never closes the lane on a timer; the lead closes it or objects.
@@ -102,7 +105,19 @@ The two halves of the done flow. Both message the lane's pane and check that Ent
 Parks a working or not-done lane that waits on a human, for example on the owner's approval. The status becomes `paused`, the previous one is kept in `pausedFrom`, and `PAUSED: <reason>` goes into the lane's history. While paused, `dori freshness` neither nudges nor posts for it, `dori watch` reports no `LANE_BLOCKED` and does not auto-close it, and `dori dead-panes` skips its pane. `dori resume` restores the previous status with a `RESUMED` history entry and restarts the silence clock, so the first nudge comes a full `nudgeAfterMin` later; when a claim arrived during the pause it prints a `NOTE` saying so. Pausing a lane that is not working or not-done, or resuming one that is not paused, exits 1.
 
 ### `dori fix-attempt <key> --metric M --hypothesis H`
-Records a fix you asked the lane for, in the lane's `fixes`. Prints `FIX_RECORDED <key> attempt=<n>`, and `SAME_FIX_3 <key> ...` from attempt `sameFix.after` (3) on that metric and hypothesis. `dori freshness` records the lane's own reports tagged `(fix: <metric> / <hypothesis>)` the same way; a fix you recorded that the lane then reports counts once. See `sessions.md`, "Repeated fixes".
+Records a fix you asked the lane for, in the lane's `fixes`. Prints `FIX_RECORDED <key> attempt=<n>`, and `SAME_FIX_3 <key> ...` from attempt `sameFix.after` (3) on that metric and hypothesis. `dori freshness` records the lane's own reports tagged `(fix: <metric> / <hypothesis>)` the same way; a fix you recorded that the lane then reports counts once. Before it records, it prints what the area already tried on that metric: `PRIOR_FIX <lane> "<metric>": <hypothesis> xN, ...` per lane (this lane, its cwd, its tags), or `PRIOR_FIX none on "<metric>" in this area`, and `PRIOR_ATTEMPTS <key> numbered attempts 1-N, root-cause switch: <time|none>` when the lane's reports number their attempts. See `sessions.md`, "Repeated fixes".
+
+### `dori signals [--lane K | --cwd DIR | --tag T ...]`
+What earlier lanes in one area tried and how it went, from records only (no model call). Read it before you re-instruct a lane. The options combine as "any of". The first line is the area: lanes, done claims rejected over claims, and rework (your messages to the lanes plus freshness nudges, per lane). Then per lane, newest first:
+
+- its outcome (`open`, `paused`, `not-done`, `done-claimed`, `closed, verified`, `closed by the lead`), cwd, tags, re-sends (`scorecard.leadSendPattern` in `scorecard.leadSessions`) and nudges (`scorecard.lanesLog`);
+- numbered fix attempts: a `[REPORT]` line or a message you typed into the lane matching `signals.attemptPattern` ("adjustment 2", "조정 2/2욌째"), with the words around the first mention and the latest mention before the root-cause switch;
+- the root-cause switch: the first such message after an attempt that matches `signals.rootCausePattern` (a message about the root cause is never itself an attempt);
+- tagged fixes by metric with each hypothesis and its count (the lane's `fixes`, or the `(fix: M / H)` tags in its reports when the sweep never recorded them);
+- rejected done claims with the reasons;
+- warnings: `SAME_FIX` (one metric and hypothesis `sameFix.after` times), `REPEAT` (one metric over several hypotheses, or numbered attempts up to `sameFix.after` with no root-cause switch), `REJECTED` (two or more rejected claims).
+
+Without an option it prints one `SIGNALS <key> [<outcome>] fixes N, attempts 1-N, rejected R/C, re-sends S, nudges U` line per open lane with a record. Session files older than the oldest lane asked about are not read.
 
 ### `dori scorecard [--date YYYY-MM-DD|today|yesterday] [--post] [--to discord:<id>]`
 Prints the day's token scorecard, computed from records only (no model call), for the calendar day in `scorecard.timeZone` (default today):
@@ -112,7 +127,7 @@ Prints the day's token scorecard, computed from records only (no model call), fo
 3. the three lanes with most rework: the lead's messages to the lane (`leadSendPattern` in `leadSessions`) plus freshness nudges (`lanesLog`);
 4. first reply to the owner: median and p90 seconds from an owner message in the inbox to the first lead tool result matching `replyPattern` after the message reached the lead session;
 
-plus the lead's context tax: its cost, the share spent re-reading cache, and its median context size. A line whose source is not configured says so. `--post` sends the card to `--to`, `scorecard.postTo` or `DORI_DISCORD_CHANNEL`.
+plus the lead's context tax: its cost, the share spent re-reading cache, and its median context size. A line whose source is not configured says so. Each run saves the card for the lead to read (`SAVED <path>`): `<stateDir>/scorecard/<date>.json` (the numbers and the card) and `latest.md` (the card); day files older than `scorecard.keepDays` are removed. Nothing is posted unless `--post` is given, which sends the card to `--to`, `scorecard.postTo` or `DORI_DISCORD_CHANNEL`.
 
 ### `dori close <key> [--note TEXT]`
 Closes a lane now. Refuses (exit 2) unless every `Done =` signal reads back live. On success it marks the thread done through `hooks.threadDone`, then, when `DORI_DISCORD_TOKEN` is set and the thread is `discord:<id>`, sets the thread's name to the done mark (`✅` or `[done]`, per `discord.statusStyle`) and archives it. An archived thread is unarchived, renamed and archived again, because Discord refuses to rename an archived thread; a thread that already shows done and is archived is left alone. If that fails, `THREAD_DONE_WARN <key> <thread>: <error>` is printed and the close still succeeds. A thread that another open lane also uses is left open (`thread left open` in the receipt). Then it closes the tab, and removes the lane's worktrees with a plain `git worktree remove`, which refuses a dirty worktree. When `hooks.threadDone` is set but the lane has no usable thread (`none`, empty, or malformed), the hook is not run and `THREAD_MISSING <key> thread=...` is printed before `CLOSED`, and the receipt records `thread missing`; close that thread by hand, or run `dori set-thread` before closing. The automatic close in `dori watch` prints the same line before `LANE_CLOSED`.

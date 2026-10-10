@@ -172,8 +172,9 @@ watcher는 레인을 닫을 때 셸 없이 이 확인을 직접 다시 돌리고
 | `dori freshness [--loop MIN]` | 조용해진 레인을 깨우고, 마지막 보고를 스레드에 올림 |
 | `dori dead-panes [--loop MIN]` | 멈춘 에이전트 pane 보고 |
 | `dori guard [--loop MIN]` | 부하, 메모리, 디스크, pane 수 경고 |
-| `dori fix-attempt <key> --metric M --hypothesis H` | 레인에 시킨 수정 한 번을 셈; 레인은 그런 보고에 `(fix: M / H)`를 붙이고, 같은 지표·같은 가설로 세 번째가 되면 `SAME_FIX_3`이 근본 원인 조사로 바꾸라고 알림 |
-| `dori scorecard [--date D] [--post]` | 기록만으로 내는 하루 토큰 성적표(모델 호출 없음): 검증 완료당 비용과 완료 주장 거부율을 나란히, 재작업 상위 레인, 첫 답글 중앙값/p90, 리드 컨텍스트 세금; `--post`는 디스코드로 보냄(매일 도는 systemd timer는 Discord + aoe 설정에 있음) |
+| `dori fix-attempt <key> --metric M --hypothesis H` | 레인에 시킨 수정 한 번을 셈; 레인은 그런 보고에 `(fix: M / H)`를 붙이고, 같은 지표·같은 가설로 세 번째가 되면 `SAME_FIX_3`이 근본 원인 조사로 바꾸라고 알림; 기록하기 전에 그 지표에 이미 시도한 가설 목록(`PRIOR_FIX`)을 먼저 출력 |
+| `dori signals [--lane K \| --cwd DIR \| --tag T]` | 한 작업 영역의 지난 레인들이 무엇을 시도했고 어떻게 됐는지: 번호 붙은 수정 시도와 근본 원인 조사로의 전환(`[REPORT]` 줄과 리드의 재지시에서도 읽음), 지표별 태그 수정, 이유가 붙은 완료 주장 거부, 재지시·독촉 수, 결과, 영역의 거부율·재작업, 경고. 레인에 재지시하기 전에 읽는다 |
+| `dori scorecard [--date D] [--post]` | 기록만으로 내는 하루 토큰 성적표(모델 호출 없음): 검증 완료당 비용과 완료 주장 거부율을 나란히, 재작업 상위 레인, 첫 답글 중앙값/p90, 리드 컨텍스트 세금; 리드가 읽도록 `<stateDir>/scorecard/<날짜>.json`과 `latest.md`에 저장, `--post`는 디스코드에도 보냄(기본 꺼짐; 매일 저장하는 systemd timer는 Discord + aoe 설정에 있음) |
 | `dori heavy <label> -- <cmd>` | 슬롯이 비고 부하가 낮을 때만 빌드나 테스트 실행 |
 
 pane에 보내는 글은 항상 인자 하나로 넘기고 셸 문자열을 거치지 않습니다. Enter가 실제로 들어갔는지도 확인합니다.
