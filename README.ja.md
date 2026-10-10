@@ -201,7 +201,7 @@ Slack で Dori が送るメッセージは、どの関数から送ってもそ�
 
 ### Discord の質問カードとスレッド状態
 
-環境変数か `~/.dori/dori.env` に `DORI_DISCORD_TOKEN`、`DORI_DISCORD_GUILD`、`DORI_DISCORD_CHANNEL`、`DORI_DISCORD_OWNER` を設定します(設定済みの環境変数が優先)。ボットの Message Content intent を有効にし、ボタンや入力欄の回答を受けるため `dori inbound discord` を常駐させます。
+環境変数か `~/.dori/dori.env` に `DORI_DISCORD_TOKEN`、`DORI_DISCORD_GUILD`、`DORI_DISCORD_CHANNEL`、`DORI_DISCORD_OWNER` を設定します(設定済みの環境変数が優先)。ボットの Message Content intent を有効にし、ボタンや入力欄の回答を受けるため `dori inbound discord` を常駐させます。 任意: `DORI_DISCORD_PAIR_CHANNEL` と `DORI_DISCORD_PAIR_BOT` は二つ目の Dori と共有するチャンネルを指します。そこでの所有者の投稿は `scope:"pair"`、その Dori のボットの投稿は `scope:"pair-bot"` の行(情報であり依頼ではない)になります。`DORI_DISCORD_STATE_DIR` は質問カードの保存先を変えます(既定 `<stateDir>/discord`)。`DORI_DISCORD_SHADOW_INBOX=<ファイル>` を指定すると、そのファイルにinbox の行だけを書き Discord には何も書かない二つ目のリスナーが動き、切り替え前に稼働中のリスナーと突き合わせられます。
 
 ```sh
 dori ask --text "ログイン修正を公開しますか?" --option "今すぐ公開" --option "QA を待つ" \

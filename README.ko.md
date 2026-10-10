@@ -202,7 +202,7 @@ CLI에는 Dori에게 필요한 메신저 기능도 들어 있습니다. `scripts
 
 ### 디스코드 질문 카드와 스레드 상태
 
-환경변수나 `~/.dori/dori.env`에 `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL`, `DORI_DISCORD_OWNER`를 설정하세요(이미 설정된 환경변수가 우선). 봇의 Message Content intent를 켜고 버튼과 입력창 답변을 받도록 `dori inbound discord`를 계속 실행하세요.
+환경변수나 `~/.dori/dori.env`에 `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL`, `DORI_DISCORD_OWNER`를 설정하세요(이미 설정된 환경변수가 우선). 봇의 Message Content intent를 켜고 버튼과 입력창 답변을 받도록 `dori inbound discord`를 계속 실행하세요. 선택: `DORI_DISCORD_PAIR_CHANNEL`과 `DORI_DISCORD_PAIR_BOT`은 두 번째 Dori와 함께 쓰는 채널을 가리킵니다. 그 채널의 소유자 글은 `scope:"pair"`, 그 Dori 봇의 글은 `scope:"pair-bot"` 행(정보일 뿐 요청이 아님)으로 남습니다. `DORI_DISCORD_STATE_DIR`은 질문 카드 저장 위치를 바꿉니다(기본 `<stateDir>/discord`). `DORI_DISCORD_SHADOW_INBOX=<파일>`을 주면 그 파일에 inbox 행만 쓰고 디스코드에는 아무것도 쓰지 않는 두 번째 리스너가 돌아, 전환 전에 기존 리스너와 대조할 수 있습니다.
 
 ```sh
 dori ask --text "로그인 수정을 배포할까요?" --option "지금 배포" --option "QA 기다리기" \

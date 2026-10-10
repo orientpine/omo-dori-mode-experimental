@@ -62,7 +62,7 @@ export type InboxMessage = {
   readonly ts: string;
   readonly id: string;
   readonly channel_id: string;
-  readonly scope: "dm" | "channel" | "thread";
+  readonly scope: "dm" | "channel" | "thread" | "pair" | "pair-bot";
   readonly author_id: string;
   readonly content: string;
   readonly transcript: string | null;
@@ -95,6 +95,12 @@ export type ListenerDeps = {
   readonly owner: string;
   // id of the owner's own webhook in the channel; its posts count as the owner's. Empty or unset: webhook posts are only logged.
   readonly ownerWebhook?: string;
+  // a channel shared with another Dori: the owner's messages there are "pair" rows, that Dori's bot's are "pair-bot" rows
+  // (information, not requests). Unset: no pair channel.
+  readonly pairChannel?: string;
+  readonly pairBot?: string;
+  // shadow: write inbox rows only, never to Discord (no reaction, no thread reopen, no card answers), to compare with a live listener
+  readonly shadow?: boolean;
   readonly words: DiscordWords;
   readonly inboxFile: string;
   readonly timers: ListenerTimers;
@@ -107,7 +113,7 @@ export type ListenerDeps = {
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 200);
 const newer = (a: string, b: string): boolean => BigInt(a) > BigInt(b);
 // the inbox may be shared with other listeners (other messengers, other channels); only rows this listener writes set its cursors
-const OWN_SCOPES = new Set(["dm", "channel", "thread"]);
+const OWN_SCOPES = new Set(["dm", "channel", "thread", "pair", "pair-bot"]);
 
 export class DiscordListener {
   private readonly seen = new Set<string>();
@@ -158,6 +164,7 @@ export class DiscordListener {
   }
 
   private saveEyes(): void {
+    if (this.d.shadow) return;
     writeFileSync(this.eyesFile, JSON.stringify(this.eyes), { mode: 0o600 });
   }
 
@@ -196,22 +203,26 @@ export class DiscordListener {
 
   async onMessage(m: DiscordMessage): Promise<void> {
     if (this.self && m.author.id === this.self) {
-      if (this.d.words.autoUnEye) await this.clearEyes(m);
+      if (this.d.words.autoUnEye && !this.d.shadow) await this.clearEyes(m);
       return;
     }
+    const pair = this.d.pairChannel ?? "";
+    const fromPairBot = !!pair && !!this.d.pairBot && m.channel_id === pair && m.author.id === this.d.pairBot;
     const hook = webhookVerdict(m, { guild: this.d.guild, channel: this.d.channel, ownerWebhook: this.d.ownerWebhook ?? "" });
     if (hook === "unknown" && !this.seen.has(m.id)) this.d.log(`DISCORD_WEBHOOK_UNKNOWN id=${m.webhook_id} name=${JSON.stringify(m.author.username ?? "")} message=${m.id}`);
     const viaWebhook = hook === "owner";
-    if (this.seen.has(m.id) || (!viaWebhook && (m.author.bot || m.author.id !== this.d.owner))) return;
+    if (this.seen.has(m.id) || (!viaWebhook && !fromPairBot && (m.author.bot || m.author.id !== this.d.owner))) return;
     let scope: InboxMessage["scope"];
     if (!m.guild_id) scope = "dm";
     else if (m.guild_id !== this.d.guild) return;
     else if (m.channel_id === this.d.channel) scope = "channel";
+    else if (pair && m.channel_id === pair) scope = fromPairBot ? "pair-bot" : "pair";
     else if ((await this.parentOf(m.channel_id)) === this.d.channel) scope = "thread";
     else return;
     this.seen.add(m.id);
     if (newer(m.id, this.cursor)) this.cursor = m.id;
-    await this.d.dc.react(m.channel_id, m.id, EYES).then(
+    if (!this.d.shadow)
+      await this.d.dc.react(m.channel_id, m.id, EYES).then(
       () => {
         this.eyes[m.channel_id] = [...(this.eyes[m.channel_id] ?? []), m.id];
         this.saveEyes();
@@ -234,7 +245,7 @@ export class DiscordListener {
       ...(viaWebhook ? { via: "owner-webhook" as const, webhook_id: m.webhook_id } : {}),
     });
     this.d.log(`INBOUND discord-${scope} ${m.channel_id} ${m.id} ${viaWebhook ? `${this.d.owner} via=owner-webhook` : m.author.id} ${JSON.stringify((transcript ?? m.content).slice(0, 200))}`);
-    if (scope === "thread") await this.reopenIfDone(m.channel_id).catch((e: unknown) => this.d.log(`DISCORD_REOPEN_FAIL ${m.channel_id} ${errText(e)}`));
+    if (scope === "thread" && !this.d.shadow) await this.reopenIfDone(m.channel_id).catch((e: unknown) => this.d.log(`DISCORD_REOPEN_FAIL ${m.channel_id} ${errText(e)}`));
   }
 
   // the owner writing in a closed thread brings the work back: unarchive it and mark it working again
@@ -249,6 +260,8 @@ export class DiscordListener {
     // a card sits in the channel or inside its work thread: take a tap only where its card was posted,
     // looked up locally since the interaction must be answered within 3 seconds
     const qid = /^[qm]:([^:]+)/.exec(i.data?.custom_id ?? "")?.[1];
+    // only the live listener may answer a tap; a shadow one must not touch the shared card state
+    if (this.d.shadow) return this.d.log(`SHADOW_INTERACTION_SKIPPED ${i.id} ${qid ?? "-"}`);
     if (i.channel_id !== this.d.channel && (!qid || i.channel_id !== this.d.cards.store.get(qid)?.channel)) return;
     const outcome = await this.d.cards.handle(i);
     if (outcome.kind === "refused") this.d.log(`CARD_REFUSED ${outcome.user}`);
@@ -264,7 +277,7 @@ export class DiscordListener {
     if (this.cursor === "0") return 0;
     const since = this.cursor;
     const active = await this.d.dc.call<{ threads?: { id: string; parent_id: string }[] }>("GET", `/guilds/${this.d.guild}/threads/active`);
-    const channels = [this.d.channel, ...(active.threads ?? []).filter((t) => t.parent_id === this.d.channel).map((t) => t.id)];
+    const channels = [this.d.channel, ...(this.d.pairChannel ? [this.d.pairChannel] : []), ...(active.threads ?? []).filter((t) => t.parent_id === this.d.channel).map((t) => t.id)];
     for (const t of active.threads ?? []) this.parents.set(t.id, t.parent_id);
     let added = 0;
     for (const ch of channels) {
@@ -283,7 +296,7 @@ export class DiscordListener {
     if (type === "READY") {
       this.backoff = 1_000;
       this.self = String((data.user as { id?: string } | undefined)?.id ?? "");
-      this.d.log("DISCORD_LISTENER_READY");
+      this.d.log(this.d.shadow ? "DISCORD_LISTENER_READY shadow" : "DISCORD_LISTENER_READY");
       this.track(this.backfill().then(() => {}), "backfill");
     } else if (type === "GUILD_CREATE" && data.id === this.d.guild) {
       for (const t of (data.threads as { id: string; parent_id: string }[] | undefined) ?? []) this.parents.set(t.id, t.parent_id);

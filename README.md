@@ -202,7 +202,7 @@ Tokens come from `DORI_SLACK_TOKEN` (with `DORI_SLACK_COOKIE` for a user token),
 
 ### Discord question cards and thread status
 
-Set `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL` and `DORI_DISCORD_OWNER` in the environment or `~/.dori/dori.env` (already-set variables win). Enable the bot's Message Content intent and keep `dori inbound discord` running to receive button and text-box answers.
+Set `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL` and `DORI_DISCORD_OWNER` in the environment or `~/.dori/dori.env` (already-set variables win). Enable the bot's Message Content intent and keep `dori inbound discord` running to receive button and text-box answers. Optional: `DORI_DISCORD_PAIR_CHANNEL` and `DORI_DISCORD_PAIR_BOT` name a channel shared with a second Dori; the owner's messages there land as `scope:"pair"` rows and that Dori's bot's as `scope:"pair-bot"` rows (information, never requests). `DORI_DISCORD_STATE_DIR` moves the question-card store (default `<stateDir>/discord`). `DORI_DISCORD_SHADOW_INBOX=<file>` runs a second listener that only writes inbox rows and never writes to Discord, so you can compare it with a live one before switching.
 
 ```sh
 dori ask --text "Ship the login fix?" --option "Ship now" --option "Wait for QA" \

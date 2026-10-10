@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
@@ -104,7 +104,9 @@ const lane = async (k: string | undefined) => {
 
 const env = (name: string): string => process.env[name]?.trim() || die(`${name} is not set`);
 const discordClient = () => new Discord(fetchHttp, realClock, env("DORI_DISCORD_TOKEN"));
-const questionCards = (dc: Discord) => new QuestionCards(dc, new QuestionStore(join(config.stateDir, "discord")), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now);
+// question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
+const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
+const questionCards = (dc: Discord) => new QuestionCards(dc, new QuestionStore(cardDir()), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now);
 
 const transcribeUrl = async (url: string, filename: string): Promise<string> => {
   const dir = mkdtempSync(join(tmpdir(), "dori-voice-"));
@@ -263,6 +265,10 @@ try {
     }
     case "inbound": {
       if (key === "discord") {
+        // a shadow run writes only to its own inbox, never the live one (which dori.env may also name)
+        const shadowInbox = process.env.DORI_DISCORD_SHADOW_INBOX?.trim() ?? "";
+        const liveInbox = process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+        if (shadowInbox && resolve(shadowInbox) === resolve(liveInbox)) die("DORI_DISCORD_SHADOW_INBOX must differ from the live inbox");
         const dc = discordClient();
         const listener = new DiscordListener({
           dc,
@@ -281,8 +287,11 @@ try {
           channel: env("DORI_DISCORD_CHANNEL"),
           owner: env("DORI_DISCORD_OWNER"),
           ownerWebhook: process.env.DORI_DISCORD_OWNER_WEBHOOK?.trim() ?? "",
+          pairChannel: process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "",
+          pairBot: process.env.DORI_DISCORD_PAIR_BOT?.trim() ?? "",
+          shadow: !!shadowInbox,
           words: config.discord,
-          inboxFile: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+          inboxFile: shadowInbox || liveInbox,
           timers: { ...realTimers, setTimeout: (cb, ms) => setTimeout(cb, ms) },
           now: realClock.now,
           log: (line) => console.log(line),
@@ -310,7 +319,7 @@ try {
       break;
     }
     case "questions": {
-      const all = new QuestionStore(join(config.stateDir, "discord")).all().filter((q) => !flags.values.open || q.status === "open");
+      const all = new QuestionStore(cardDir()).all().filter((q) => !flags.values.open || q.status === "open");
       for (const q of all) console.log(`${q.id} ${q.status} ${JSON.stringify(q.text)}${q.answer ? ` -> ${JSON.stringify(q.answer)} (${q.answerKind})` : ""} thread=${q.thread ?? "-"} session=${q.session ?? "-"} tmux=${q.tmux ?? "-"}`);
       if (!all.length) console.log("NO_QUESTIONS");
       break;
