@@ -99,6 +99,6 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 | `dori heavy <label> -- <cmd>` | run a heavy command only when a slot is free and load is low |
 | `dori can-launch` | is there room for a new lane? exit 4 with the reasons if not |
 | `dori send` / `dori presence` / `dori transcribe` | messenger utilities: post or edit on Slack, Telegram or Discord; stay shown online; voice note to text |
-| `dori inbound discord` | Discord listener: owner messages with the eyes reaction, voice transcripts, question-card answers, into one inbox file |
+| `dori inbound discord` | Discord listener: owner messages with the eyes reaction, voice transcripts, question-card answers, into one inbox file; optional pair channel with a second Dori, and a shadow run (`DORI_DISCORD_SHADOW_INBOX`) that writes inbox rows only |
 | `dori ask` / `questions` / `reopen` / `resolve` | Discord question cards: buttons plus a write-my-own box, owner-only, folded into a record when answered; resolving an unanswered card returns its thread to working when no other card there is open |
 | `dori thread reply\|wait\|done` | Discord thread hooks: post a lane report and set the thread status; done archives it |

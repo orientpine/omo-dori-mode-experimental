@@ -201,7 +201,7 @@ Dori 在 Slack 上发的每条消息，不管是哪个函数发出的，都会�
 
 ### Discord 问题卡片和线程状态
 
-在环境变量或 `~/.dori/dori.env` 中设置 `DORI_DISCORD_TOKEN`、`DORI_DISCORD_GUILD`、`DORI_DISCORD_CHANNEL` 和 `DORI_DISCORD_OWNER`(已有环境变量优先)。开启机器人的 Message Content intent,持续运行 `dori inbound discord` 才能接收按钮和输入框答案。
+在环境变量或 `~/.dori/dori.env` 中设置 `DORI_DISCORD_TOKEN`、`DORI_DISCORD_GUILD`、`DORI_DISCORD_CHANNEL` 和 `DORI_DISCORD_OWNER`(已有环境变量优先)。开启机器人的 Message Content intent,持续运行 `dori inbound discord` 才能接收按钮和输入框答案。可选：`DORI_DISCORD_PAIR_CHANNEL` 和 `DORI_DISCORD_PAIR_BOT` 指向与第二个 Dori 共用的频道；所有者在那里的消息记为 `scope:"pair"` 行，那个 Dori 的机器人消息记为 `scope:"pair-bot"` 行(只是信息，不是请求)。`DORI_DISCORD_STATE_DIR` 改变问题卡片的存放目录(默认 `<stateDir>/discord`)。设置 `DORI_DISCORD_SHADOW_INBOX=<文件>` 会运行第二个只写 inbox 行、从不写入 Discord 的监听器，便于切换前与正在运行的监听器对照。
 
 ```sh
 dori ask --text "发布登录修复吗?" --option "现在发布" --option "等 QA" \

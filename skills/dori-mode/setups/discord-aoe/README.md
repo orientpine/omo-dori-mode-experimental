@@ -41,6 +41,17 @@ What you get:
    The unit files are the source of truth: after changing one, copy it again, `daemon-reload`, and restart that unit.
 7. **Smoke test.** Write in the channel: the eyes reaction appears within a second and a row lands in `~/.dori/state/discord/inbox.jsonl`. Then `dori ask --text "Smoke test: does the card work?" --option Yes --option No` and tap a button: the card folds into `[answered] ... → Yes` and an `answer` row follows in the inbox.
 
+## Switching an existing listener over
+
+To move from another listener to `dori-inbound` without losing or doubling a message: point `DORI_DISCORD_INBOX` (and `DORI_DISCORD_STATE_DIR` for an existing card store) at the files the Dori already watches, then start a shadow copy beside the live listener:
+
+```sh
+systemd-run --user --unit dori-inbound-shadow \
+  -E DORI_DISCORD_SHADOW_INBOX=$HOME/.dori/shadow/inbox.jsonl ~/.bun/bin/dori inbound discord   # dori reads ~/.dori/dori.env itself
+```
+
+Have the owner write a few messages (channel, a thread, a voice note), check that every shadow row parses equal to the live row with the same `id`, stop the shadow (`systemctl --user stop dori-inbound-shadow`), then stop the old listener and start `dori-inbound` in that order. Rollback is the reverse.
+
 ## The Dori's monitors
 
 In the Dori's own session, arm these as persistent monitors (`references/setup.md` §5 lists the general ones):
@@ -62,7 +73,7 @@ A message:
 {"ts":"2026-01-02T03:00:00Z","id":"<message id>","channel_id":"<id>","scope":"channel","author_id":"<owner id>","content":"ship it","transcript":null,"attachments":[],"reply_to":null}
 ```
 
-`scope` is `channel`, `thread` or `dm`. A voice note has `transcript` filled. A post from the owner's registered webhook (`DORI_DISCORD_OWNER_WEBHOOK`, see [ios-shortcut-voice.md](ios-shortcut-voice.md)) has `author_id` set to the owner and also carries `"via":"owner-webhook"` and `webhook_id`. A reply has `reply_to`: read that message first.
+`scope` is `channel`, `thread` or `dm`. With a pair channel set (`DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT`) it can also be `pair` (the owner there) or `pair-bot` (the other Dori's bot: information, not a request). A voice note has `transcript` filled. A post from the owner's registered webhook (`DORI_DISCORD_OWNER_WEBHOOK`, see [ios-shortcut-voice.md](ios-shortcut-voice.md)) has `author_id` set to the owner and also carries `"via":"owner-webhook"` and `webhook_id`. A reply has `reply_to`: read that message first.
 
 A card answer:
 
