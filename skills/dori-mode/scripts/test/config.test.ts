@@ -25,6 +25,13 @@ test("a missing config file falls back to defaults and DORI_STATE_DIR wins over 
   expect(c.agentCommand).toEqual(["omo", "--model", "{model}", "{prompt}"]);
 });
 
+test("the scorecard counts sessionsDir unless scorecard.sessions names one Dori's own sessions", async () => {
+  expect((await loadConfig("/nonexistent/config.json", "/home/ana")).scorecard.sessions).toBe("/home/ana/.omo/agent/sessions");
+  const path = join(state.dir, "second-dori.json");
+  writeFileSync(path, JSON.stringify({ scorecard: { sessions: "~/.omo/agent/sessions/--home-ana-second--" } }));
+  expect((await loadConfig(path, "/home/ana")).scorecard.sessions).toBe("/home/ana/.omo/agent/sessions/--home-ana-second--");
+});
+
 test("the discord-aoe setup's config loads as the aoe backend with built-in thread hooks, and unset Discord words keep their defaults", async () => {
   const c = await loadConfig(join(import.meta.dir, "../../setups/discord-aoe/config.json"), "/home/ana");
   expect(c.backend).toBe("aoe");
