@@ -329,14 +329,14 @@ test("rows other listeners share the inbox with, however large their ids, do not
 const PAIR = "110000000000000011";
 const PAIR_BOT = "120000000000000012";
 
-test("in the pair channel the owner's messages are pair rows and the paired Dori's bot's are pair-bot rows; other bots are skipped", async () => {
+test("in the pair channel the owner's messages are pair rows with the eyes reaction and the paired Dori's bot's are pair-bot rows without it; other bots are skipped", async () => {
   const { listener, inbox, calls } = setup(() => ({}), { pairChannel: PAIR, pairBot: PAIR_BOT });
   await listener.onMessage(msg("1001", { channel_id: PAIR }));
   await listener.onMessage(msg("1002", { channel_id: PAIR, author: { id: PAIR_BOT, bot: true } }));
   await listener.onMessage(msg("1003", { channel_id: PAIR, author: { id: OTHER_BOT, bot: true } }));
   await listener.onMessage(msg("1004", { author: { id: PAIR_BOT, bot: true } }));
   expect(inbox().map((r) => [r.id, r.scope, r.author_id])).toEqual([["1001", "pair", OWNER], ["1002", "pair-bot", PAIR_BOT]]);
-  expect(calls()).toEqual([`PUT /channels/${PAIR}/messages/1001/reactions/%F0%9F%91%80/@me`, `PUT /channels/${PAIR}/messages/1002/reactions/%F0%9F%91%80/@me`]);
+  expect(calls()).toEqual([`PUT /channels/${PAIR}/messages/1001/reactions/%F0%9F%91%80/@me`]);
 });
 
 test("without a pair channel set, a channel that is not the Dori's or under it is skipped", async () => {

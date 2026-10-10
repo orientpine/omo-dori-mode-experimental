@@ -221,7 +221,8 @@ export class DiscordListener {
     else return;
     this.seen.add(m.id);
     if (newer(m.id, this.cursor)) this.cursor = m.id;
-    if (!this.d.shadow)
+    // the other Dori's posts are information the Dori rarely answers, so eyes there would never come off
+    if (!this.d.shadow && scope !== "pair-bot")
       await this.d.dc.react(m.channel_id, m.id, EYES).then(
       () => {
         this.eyes[m.channel_id] = [...(this.eyes[m.channel_id] ?? []), m.id];
