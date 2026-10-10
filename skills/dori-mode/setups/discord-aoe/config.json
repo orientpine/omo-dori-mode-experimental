@@ -43,5 +43,12 @@
     "waiting": "waiting",
     "done": "done",
     "other": "Write my own"
+  },
+  "scorecard": {
+    "timeZone": "UTC",
+    "language": "en",
+    "lanesLog": "~/.dori/dori-lanes.log",
+    "leadSessions": "",
+    "replyPattern": "^(SENT|POSTED) \\d"
   }
 }

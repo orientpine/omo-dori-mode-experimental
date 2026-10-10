@@ -162,7 +162,7 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 
 | 命令 | 作用 |
 |---|---|
-| `dori launch <key> ...` | 在 brief 里写入 lane footer,打开 herdr 标签页或 aoe 会话，启动智能体，检查启动错误 |
+| `dori launch <key> ...` | 在 brief 里写入 lane footer,打开 herdr 标签页或 aoe 会话，启动智能体，检查启动错误；如果 `Done =` 的信号全都只检查文件或文字，会警告 `LAUNCH_DONE_WEAK`(lane 照样打开),`--done-weak-ok` 可关掉 |
 | `dori adopt <key> --pane ID ...` | 登记一条已经在运行的 lane |
 | `dori sync [--write]` | 对照登记表和实际 pane,列出不一致 |
 | `dori claim-done` / `object-done` / `close` | 完成流程；设置了 `DORI_DISCORD_TOKEN` 时，close 会把 `discord:` 工作线程标为完成并归档 |
@@ -171,6 +171,8 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 | `dori freshness [--loop MIN]` | 提醒变安静的 lane,再把它最后一条汇报发到线程里 |
 | `dori dead-panes [--loop MIN]` | 报告已停止的智能体 pane |
 | `dori guard [--loop MIN]` | 负载、内存、磁盘和 pane 数量告警 |
+| `dori fix-attempt <key> --metric M --hypothesis H` | 记一次你让 lane 做的修复;lane 在这类汇报里加 `(fix: M / H)`,同一指标、同一假设到第三次时,`SAME_FIX_3` 提醒你让 lane 转去查根因 |
+| `dori scorecard [--date D] [--post]` | 只用记录算出的每日 token 成绩单(不调用模型):每个验证完成的成本和完成声明的驳回率并排，返工最多的 lane、首次回复中位数/p90、lead 的上下文税;`--post` 发到 Discord(每天跑的 systemd timer 在 Discord + aoe 配置里) |
 | `dori heavy <label> -- <cmd>` | 只在有空闲槽位且负载低时运行构建或测试 |
 
 发给 pane 的文字总是作为一个参数传入，从不经过 shell 字符串，并且会确认 Enter 真的生效了。

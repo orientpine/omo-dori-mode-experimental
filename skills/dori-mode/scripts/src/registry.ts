@@ -24,6 +24,8 @@ export type LaneStatus = "working" | "done-claimed" | "verified-done" | "not-don
 export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };
 export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; readonly note: string };
+// one fix attempt on a failing metric, from a tagged [REPORT] or from the lead (dori fix-attempt)
+export type FixAttempt = { readonly at: string; readonly metric: string; readonly hypothesis: string; readonly via: "report" | "lead" };
 
 export type Lane = {
   readonly key: string;
@@ -49,6 +51,7 @@ export type Lane = {
   readonly lastNudgeAt?: number;
   readonly lastAutoReplyAt?: number;
   readonly lastReport?: string;
+  readonly fixes?: readonly FixAttempt[];
   readonly blocked?: string;
   readonly idleSince?: number;
   readonly receipt?: unknown;

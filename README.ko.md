@@ -162,7 +162,7 @@ watcher는 레인을 닫을 때 셸 없이 이 확인을 직접 다시 돌리고
 
 | 명령 | 하는 일 |
 |---|---|
-| `dori launch <key> ...` | brief에 레인 footer를 쓰고, herdr 탭이나 aoe 세션을 열고, 에이전트를 시작하고, 시작 오류를 확인 |
+| `dori launch <key> ...` | brief에 레인 footer를 쓰고, herdr 탭이나 aoe 세션을 열고, 에이전트를 시작하고, 시작 오류를 확인; `Done =` 신호가 모두 파일·글자만 확인하면 `LAUNCH_DONE_WEAK` 경고(레인은 그대로 열림), `--done-weak-ok`로 끔 |
 | `dori adopt <key> --pane ID ...` | 이미 돌고 있는 레인을 등록 |
 | `dori set-thread <key> <adapter>:<id>` | 레인의 작업 스레드를 바꿈; `launch`, `adopt`, `set-thread`는 `discord:`처럼 빈 값이나 틀린 형식을 거부 |
 | `dori sync [--write]` | 레지스트리와 실제 pane 비교, 어긋난 곳 표시 |
@@ -172,6 +172,8 @@ watcher는 레인을 닫을 때 셸 없이 이 확인을 직접 다시 돌리고
 | `dori freshness [--loop MIN]` | 조용해진 레인을 깨우고, 마지막 보고를 스레드에 올림 |
 | `dori dead-panes [--loop MIN]` | 멈춘 에이전트 pane 보고 |
 | `dori guard [--loop MIN]` | 부하, 메모리, 디스크, pane 수 경고 |
+| `dori fix-attempt <key> --metric M --hypothesis H` | 레인에 시킨 수정 한 번을 셈; 레인은 그런 보고에 `(fix: M / H)`를 붙이고, 같은 지표·같은 가설로 세 번째가 되면 `SAME_FIX_3`이 근본 원인 조사로 바꾸라고 알림 |
+| `dori scorecard [--date D] [--post]` | 기록만으로 내는 하루 토큰 성적표(모델 호출 없음): 검증 완료당 비용과 완료 주장 거부율을 나란히, 재작업 상위 레인, 첫 답글 중앙값/p90, 리드 컨텍스트 세금; `--post`는 디스코드로 보냄(매일 도는 systemd timer는 Discord + aoe 설정에 있음) |
 | `dori heavy <label> -- <cmd>` | 슬롯이 비고 부하가 낮을 때만 빌드나 테스트 실행 |
 
 pane에 보내는 글은 항상 인자 하나로 넘기고 셸 문자열을 거치지 않습니다. Enter가 실제로 들어갔는지도 확인합니다.

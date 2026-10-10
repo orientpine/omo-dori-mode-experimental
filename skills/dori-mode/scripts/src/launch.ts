@@ -4,7 +4,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { LANE_KEY, type Lane, NO_THREAD, threadRefProblem } from "./registry.ts";
 import { iso } from "./run.ts";
-import { doneSyntaxErrors } from "./signals.ts";
+import { doneSyntaxErrors, weakDone } from "./signals.ts";
 
 export type LaunchInput = {
   readonly key: string;
@@ -14,6 +14,8 @@ export type LaunchInput = {
   readonly thread?: string;
   readonly model?: string;
   readonly cwd?: string;
+  // launch without the LAUNCH_DONE_WEAK warning
+  readonly doneWeakOk?: boolean;
 };
 
 export class LaunchError extends Error {}
@@ -31,6 +33,15 @@ export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promis
   if (errors.length) throw new LaunchError(`Done line is not checkable: ${errors.join("; ")}`);
 };
 
+// A warning, never a refusal: a Done line that only checks files or text proves the files are there, not that the work behaves.
+export const doneWeakWarning = async (input: LaunchInput, cwd: string): Promise<string | undefined> => {
+  if (input.doneWeakOk) return undefined;
+  const weak = await weakDone(input.done, { cwd });
+  return weak
+    ? `LAUNCH_DONE_WEAK ${input.key}: every Done signal only checks files or text (${weak}). Add at least one that measures the behavior: a command that runs it or its tests (command ["bun","test"] stdout~" 0 fail"), or a url with status= and body~. --done-weak-ok silences this.`
+    : undefined;
+};
+
 export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr"): string => [
   "",
   "## Lane footer (written by dori launch)",
@@ -38,6 +49,7 @@ export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr")
   `- Done = ${lane.done}. The lane closes only when every signal reads back live.`,
   `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <what, with links>, sent to pane ${leadPane || "(lead pane)"} as an argv array, never a shell string.`,
   ...(backend === "aoe" ? [`- The lead pane is a tmux session: run ["tmux","send-keys","-t","${target(leadPane || "(lead pane)")}","-l","--","<report line>"], then ["tmux","send-keys","-t","${target(leadPane || "(lead pane)")}","Enter"].`] : []),
+  `- A report that is a fix attempt for a failing check or metric carries (fix: <metric> / <hypothesis>). The third attempt on the same metric with the same hypothesis alerts the lead (SAME_FIX_3): stop patching, find the root cause. A blocker, an impossible or an ambiguous task is a fine report (| blocker |), better than another retry.`,
   `- When done: dori claim-done ${lane.key} --evidence "<merge SHA, closed issue, version>". See references/done-protocol.md.`,
   "",
 ].join("\n");
@@ -57,10 +69,12 @@ export const setThread = async (deps: FlowDeps, lane: Lane, ref: string): Promis
   return `THREAD_SET ${lane.key} ${lane.thread || "-"} -> ${ref}`;
 };
 
-export const launchLane = async (deps: FlowDeps, input: LaunchInput): Promise<{ readonly lane: Lane; readonly startup: string }> => {
+export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
   const model = input.model ?? deps.config.defaultModel;
   const cwd = input.cwd ?? deps.config.defaultCwd;
+  const weak = await doneWeakWarning(input, cwd);
+  if (weak) warn(weak);
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
   const draft: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd, model, openedAt: iso(deps.clock) };

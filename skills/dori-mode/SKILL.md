@@ -69,6 +69,8 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 - **Registry** is the source of truth: platform:thread → pane (herdr pane id, or the aoe session's tmux name) → the agent's session id → status (`working`, `done-claimed`, `verified-done`, `not-done`, `closed`) with history. `dori sync` rebuilds it from live state and reports drift; it never deletes anything.
 - **Done** is a claim, not a fact. A lane claims with `dori claim-done <key> --evidence "..."`. You check the evidence against live state. If it holds, close; if not, `dori object-done <key> --reason "..."` within 5 minutes. An unanswered claim closes the lane automatically, unless its worktree has unpushed or uncommitted work or a `Done =` signal fails, which turns the claim into not-done with that reason. Full protocol for lanes: `references/done-protocol.md`; tell every lane this rule when you hand it work.
 - **Before messaging a session**, confirm its pane runs a live agent with an empty input line, send once, and verify the text left the input. Never send to a shell, a stopped agent or an approval prompt.
+- **Done has to measure behavior.** `dori launch` warns `LAUNCH_DONE_WEAK` when every `Done =` signal only checks that files exist or contain text; add a signal that runs the thing (its tests, a command, an HTTP answer). It still launches; `--done-weak-ok` is for work where a file really is the result.
+- **Count repeated fixes.** Lanes tag a fix attempt `(fix: <metric> / <hypothesis>)` in their `[REPORT]`; when you re-instruct a lane to fix the same thing, record it with `dori fix-attempt <key> --metric M --hypothesis H`. From the third attempt on one metric with one hypothesis, `dori freshness` (or `fix-attempt`) prints `SAME_FIX_3 <key> ...`: tell the lane to stop patching and find the root cause by reproducing and reading logs. Nothing is sent to the lane unless `sameFix.sendToLane` is true, and the lane is never stopped.
 - Watch for sessions that turn blocked or ask a question; answer them or bring them to the owner. With aoe, `dori watch` prints `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` when a lane's agent stops for a human.
 - Lessons from day-to-day operation (more work after a done claim, pausing a lane that waits on the owner, a lane thread's first post, applying script updates, swapping a listener): `references/operating-lessons.md`.
 
@@ -94,6 +96,8 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 | `dori sync [--write]` | rebuild the registry from live panes, report drift |
 | `dori claim-done` / `dori object-done` / `dori close` | the done flow; with `DORI_DISCORD_TOKEN`, a close sets a `discord:` work thread done and archives it |
 | `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on the owner (no nudges, posts, `LANE_BLOCKED` or auto-close), then put it back |
+| `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked for; `SAME_FIX_3` from the third attempt on one metric with one hypothesis |
+| `dori scorecard [--date D] [--post]` | the day's token scorecard from records (no model call); `--post` sends it to Discord |
 | `dori watch` | the 5-minute auto-close watcher, plus `LANE_BLOCKED` with aoe (run it as a persistent monitor) |
 | `dori freshness` | nudge silent lanes, post their last report (read from the lead pane) to their thread |
 | `dori dead-panes` | report agent panes that stopped |

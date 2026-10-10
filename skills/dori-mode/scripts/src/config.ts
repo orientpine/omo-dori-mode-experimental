@@ -58,6 +58,22 @@ export const defaultDiscordWords: DiscordWords = {
   timeZone: "UTC",
 };
 
+// SAME_FIX_3: from the `after`-th fix attempt on one metric with one hypothesis the lead is told; the lane gets laneText
+// ({n}, {metric}, {hypothesis} filled in) only when sendToLane is true.
+export type SameFix = { readonly after: number; readonly sendToLane: boolean; readonly laneText: string };
+
+// dori scorecard: where the day's numbers come from and how the card reads. Empty paths leave that line as n/a.
+export type Scorecard = {
+  readonly timeZone: string;
+  readonly language: "en" | "ko";
+  readonly lanesLog: string;
+  readonly leadSessions: string;
+  readonly inbox: string;
+  readonly replyPattern: string;
+  readonly leadSendPattern: string;
+  readonly postTo: string;
+};
+
 export type DoriConfig = {
   readonly backend: Backend;
   readonly stateDir: string;
@@ -79,6 +95,8 @@ export type DoriConfig = {
   readonly guard: GuardThresholds;
   readonly hooks: Hooks;
   readonly discord: DiscordWords;
+  readonly sameFix: SameFix;
+  readonly scorecard: Scorecard;
 };
 
 export const defaultConfig = (home = homedir()): DoriConfig => ({
@@ -102,6 +120,21 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   guard: { loadAlert: 150, loadOk: 80, memFreeMinPct: 20, diskFreeMinGb: 50, panesMax: 20 },
   hooks: {},
   discord: defaultDiscordWords,
+  sameFix: {
+    after: 3,
+    sendToLane: false,
+    laneText: "[LEAD] This is fix attempt {n} on {metric} with the same hypothesis ({hypothesis}). Stop patching: reproduce the failure and read the logs for the root cause first, then report what you found.",
+  },
+  scorecard: {
+    timeZone: "UTC",
+    language: "en",
+    lanesLog: "",
+    leadSessions: "",
+    inbox: "",
+    replyPattern: "^(SENT|POSTED) \\d",
+    leadSendPattern: "send-keys\\W+-t\\W+={pane}:\\W+-l|send-text\\W+{pane}\\b",
+    postTo: "",
+  },
 });
 
 export const envFilePath = (): string => process.env.DORI_ENV_FILE ?? join(homedir(), ".dori", "dori.env");
@@ -124,12 +157,13 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const base = defaultConfig(home);
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
-  const merged: DoriConfig = { ...base, ...raw, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord } };
+  const merged: DoriConfig = { ...base, ...raw, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard } };
   return {
     ...merged,
     stateDir: expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home),
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
+    scorecard: { ...merged.scorecard, lanesLog: expandHome(merged.scorecard.lanesLog, home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
     leadPane: process.env.DORI_LEAD_PANE ?? merged.leadPane,
   };
 };

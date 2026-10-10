@@ -49,6 +49,19 @@ test("a launch opens an aoe session, waits for the prompt and types the lane pro
   expect(await Bun.file(brief).text()).toContain(`"tmux","send-keys","-t","=aoe_Dori_0a1b2c3d:","-l"`);
 });
 
+test("a launch whose Done only checks a file warns LAUNCH_DONE_WEAK and still launches; --done-weak-ok and a behavior signal stay quiet", async () => {
+  const brief = join(state.dir, "brief.md");
+  const warned: string[] = [];
+  await Bun.write(brief, "# brief\n");
+  const r = await launchLane(at(T0), { key: "weak", title: "weak", brief, done: "file /tmp/ok", cwd: "/tmp/w" }, (l) => warned.push(l));
+  expect(r.startup).toStartWith("STARTUP_OK weak");
+  expect(warned).toHaveLength(1);
+  expect(warned[0]).toStartWith("LAUNCH_DONE_WEAK weak: every Done signal only checks files or text (file)");
+  await launchLane(at(T0), { key: "weak-ok", title: "weak", brief, done: "file /tmp/ok", cwd: "/tmp/w", doneWeakOk: true }, (l) => warned.push(l));
+  await launchLane(at(T0), { key: "strong", title: "strong", brief, done: 'file /tmp/ok; command ["bun","test"] stdout~" 0 fail"', cwd: "/tmp/w" }, (l) => warned.push(l));
+  expect(warned).toHaveLength(1);
+});
+
 test("an agent that exits at start is a STARTUP_ERROR with its own message, without waiting out the prompt timeout", async () => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");

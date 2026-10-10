@@ -240,6 +240,69 @@ export const checkDone = async (done: string, run: Runner, io: SignalIo = {}): P
   return Promise.all(parts.map((p) => checkSignal(p, run, io)));
 };
 
+// Commands that only look at files or text: a Done line made of nothing else proves the files are there, not that the
+// work behaves.
+const TEXT_ONLY = new Set(["grep", "egrep", "fgrep", "rg", "test", "[", "[[", "ls", "cat", "stat", "head", "tail", "wc", "find", "diff", "cmp", "jq", "sha256sum", "shasum", "md5sum", "true", ":"]);
+// Shell keywords in front of a command, and commands that neither check nor run anything themselves.
+const PREFIX = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "("]);
+const NEUTRAL = new Set(["fi", "done", "esac", "}", ")", "cd", "set", "exit", "return", "local", "export", "echo", "printf", "shift", "readonly"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+const base = (p: string) => p.split("/").pop() ?? p;
+
+// The commands a shell script runs: the first word of every simple command, skipping comments and assignments.
+export const scriptCommands = (script: string): string[] =>
+  script
+    .split("\n")
+    .map((l) => l.replace(/(^|\s)#.*$/, ""))
+    .flatMap((l) => l.split(/&&|\|\||[;|]|\$\(|`/))
+    .flatMap((seg) => {
+      const words = seg.trim().split(/\s+/).filter(Boolean);
+      while (words.length && (PREFIX.has(words[0] ?? "") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? ""))) words.shift();
+      const w = base((words[0] ?? "").replace(/^["']|["']$/g, ""));
+      return w && !NEUTRAL.has(w) && !w.startsWith("$") ? [w] : [];
+    });
+
+// "text" when the command only reads files or text, "behavior" when it runs something, undefined when it cannot tell.
+const commandKind = async (argv: readonly string[], io: SignalIo): Promise<"text" | "behavior" | undefined> => {
+  const [cmd = "", a1, a2] = argv;
+  let script: string | undefined;
+  if (SHELLS.has(base(cmd)) && a1 === "-c") script = a2 ?? "";
+  else if (SHELLS.has(base(cmd)) && a1 && !a1.startsWith("-")) script = await readScript(resolvePath(a1, io));
+  else if (cmd.includes("/") || cmd.endsWith(".sh")) script = await readScript(resolvePath(cmd, io), true);
+  else return TEXT_ONLY.has(base(cmd)) ? "text" : "behavior";
+  if (script === undefined) return SHELLS.has(base(cmd)) ? undefined : "behavior";
+  return scriptCommands(script).every((c) => TEXT_ONLY.has(c)) ? "text" : "behavior";
+};
+
+const readScript = async (path: string, needShebang = false): Promise<string | undefined> => {
+  const f = Bun.file(path);
+  if (!(await f.exists()) || f.size > 65_536) return undefined;
+  const text = await f.text();
+  if (needShebang && !/^#!.*\b(sh|bash|zsh|dash)\b/.test(text)) return undefined;
+  return text;
+};
+
+// A Done line whose every signal only checks that files exist or contain some text (a file signal, or a command that is
+// only grep/test/cat..., directly or in a shell script). Returns the reason, or undefined when some signal measures
+// behavior or when it cannot tell. It never blocks a launch: it is a warning to add a signal that runs the thing.
+export const weakDone = async (done: string, io: SignalIo = {}): Promise<string | undefined> => {
+  const parts = splitDone(done);
+  if (!parts.length) return undefined;
+  const kinds: string[] = [];
+  for (const p of parts) {
+    let sig: Signal;
+    try {
+      sig = parseSignal(p);
+    } catch {
+      return undefined;
+    }
+    if (sig.kind === "file") kinds.push("file");
+    else if (sig.kind === "command" && (await commandKind(sig.argv, io)) === "text") kinds.push(`command ${base(sig.argv[0] ?? "")}${SHELLS.has(base(sig.argv[0] ?? "")) ? " (grep/test-only script)" : ""}`);
+    else return undefined;
+  }
+  return kinds.join(", ");
+};
+
 export const doneSyntaxErrors = (done: string): string[] => {
   const parts = splitDone(done);
   if (!parts.length) return ["(empty Done line)"];
