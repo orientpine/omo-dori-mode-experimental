@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experiment
 
 `DORI_BACKEND=aoe` copies a config with `backend: "aoe"` when no config exists; an existing config is kept, including its backend. Set `leadPane` to the lead's aoe/tmux session name. `DORI_REPO` overrides the clone URL. The installer warns when neither herdr nor aoe + tmux is on PATH; missing `gh` and `agent-messenger` are optional warnings. If an existing install's origin is not the fork (or your `DORI_REPO` override), it warns and shows the command to repoint it, without silently changing the remote or pulling from the old origin.
 
-Then open your agent inside herdr, or inside an aoe session for the aoe backend, and say "Dori mode". The complete Discord + aoe/tmux service setup is in [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md).
+Then open your agent inside herdr, or inside an aoe session for the aoe backend, and say "Dori mode". The complete Discord + aoe/tmux service setup is in [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md). Lessons from running a Dori day to day (a done claim closes the lane, pausing a lane that waits on the owner, applying script updates, swapping a listener through a shadow run) are in [`references/operating-lessons.md`](skills/dori-mode/references/operating-lessons.md).
 
 ## Requirements
 

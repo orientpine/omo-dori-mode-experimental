@@ -43,14 +43,64 @@ What you get:
 
 ## Switching an existing listener over
 
-To move from another listener to `dori-inbound` without losing or doubling a message: point `DORI_DISCORD_INBOX` (and `DORI_DISCORD_STATE_DIR` for an existing card store) at the files the Dori already watches, then start a shadow copy beside the live listener:
+To move from another listener to `dori-inbound` without losing or doubling a message, run the new one as a shadow beside the old one, compare what both wrote message by message, and only then swap them. The old listener keeps serving the owner until the swap, and the rollback is one line.
+
+**1. Prepare (nothing is written to Discord).**
+
+- Put the values the old listener used into `~/.dori/dori.env` (mode 600, absolute paths): token, guild, channel, owner, and where they apply `DORI_DISCORD_OWNER_WEBHOOK`, `DORI_DISCORD_PAIR_CHANNEL` / `DORI_DISCORD_PAIR_BOT`.
+- Point `DORI_DISCORD_INBOX` at the inbox file the Dori already watches, `DORI_DISCORD_STATE_DIR` at the directory that holds the existing card store, and `DORI_ASR_DIR` / `DORI_ASR_LANG` at the existing whisper model and language. Then the Dori's monitors and open cards carry on unchanged.
+- Point `hooks.transcribe` in `config.json` at this setup's `transcribe.sh`, and set the `discord` wording, `locale` and `timeZone` the owner already sees.
+- If the old card store names fields differently (this setup reads `message` for the card's message id), back it up and add the field to each card once; keep the old field too if an old tool still reads it.
+
+**2. Shadow run (Discord writes: zero).**
 
 ```sh
+mkdir -p ~/.dori/shadow
 systemd-run --user --unit dori-inbound-shadow \
-  -E DORI_DISCORD_SHADOW_INBOX=$HOME/.dori/shadow/inbox.jsonl ~/.bun/bin/dori inbound discord   # dori reads ~/.dori/dori.env itself
+  -p StandardOutput=append:$HOME/.dori/shadow/inbound.log \
+  -E PATH=$HOME/.bun/bin:/usr/bin:/bin \
+  -E DORI_DISCORD_SHADOW_INBOX=$HOME/.dori/shadow/inbox.jsonl \
+  ~/.bun/bin/dori inbound discord          # dori reads ~/.dori/dori.env itself
 ```
 
-Have the owner write a few messages (channel, a thread, a voice note), check that every shadow row parses equal to the live row with the same `id`, stop the shadow (`systemctl --user stop dori-inbound-shadow`), then stop the old listener and start `dori-inbound` in that order. Rollback is the reverse.
+Wait for `DISCORD_LISTENER_READY shadow` in the shadow log. A shadow writes inbox rows to its own file and nothing else: no eyes reaction, no thread reopen, no card reply, no `eyes.json`. A card tap gives a `SHADOW_ANSWER` log line and the answer row, while the live listener does the real answer.
+
+**3. Test messages.** Have the owner send one of each kind you use: a channel message, a message in a thread, a voice note, a webhook voice post if `DORI_DISCORD_OWNER_WEBHOOK` is set, a tap on a card button, and a pair-channel message if a pair channel is set.
+
+**4. Comparison table.** For every row in the shadow inbox, find the live row with the same `id`, parse both as JSON, and compare them field by field (key order does not matter). Write the result down as a table, one row per id:
+
+| id | kind | live row | fields equal | differing fields | eyes now |
+|---|---|---|---|---|---|
+| `<message id>` | thread | yes | yes | - | 0 |
+| `<interaction id>` | card button | yes | yes | `ts` only (each listener stamps its own clock) | - |
+
+It passes when all of these hold:
+
+- every shadow row has a live row with the same `id` and no field differs except a card answer's `ts`;
+- each test id has exactly one live row and one shadow row (no duplicates on either side);
+- the shadow wrote nothing to Discord: no `eyes.json` next to the shadow inbox, and no `EYES_CLEARED` or `THREAD_REOPENED` lines in its log. If both listeners use the same bot account, the eyes count on a message cannot tell whose reaction it is, so judge by the shadow log, not by the count;
+- in a pair channel, a message from the other Dori's bot gets no eyes from ours (`pair-bot` rows are information, not requests).
+
+Then `systemctl --user stop dori-inbound-shadow` and remove `~/.dori/shadow`.
+
+**5. Switch in one line.** Never run both listeners live: that gives every message two eyes and two inbox rows.
+
+```sh
+cp ~/.dori/src/skills/dori-mode/setups/discord-aoe/systemd/dori-inbound.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+systemctl --user disable --now <old-listener> && systemctl --user enable --now dori-inbound
+```
+
+A message sent in the few seconds between the two is not lost: right after `DISCORD_LISTENER_READY`, the listener backfills from the newest inbox row of its own scope.
+
+**6. Check with a real message.** `~/.dori/inbound.log` shows `DISCORD_LISTENER_READY`; one owner message gets exactly one eyes reaction and one inbox row; the Dori's reply takes the eyes off by itself. Move the Dori's listener-health monitor to `~/.dori/inbound.log` with this setup's filter (`FATAL|_FAIL`), since the old listener's log and line names no longer apply.
+
+**7. Rollback** is the same line reversed. The inbox and card store keep one format, so no data needs converting back:
+
+```sh
+systemctl --user disable --now dori-inbound && systemctl --user enable --now <old-listener>
+```
+
+Lessons from running a Dori day to day, this switch among them, are in [`../../references/operating-lessons.md`](../../references/operating-lessons.md).
 
 ## The Dori's monitors
 
