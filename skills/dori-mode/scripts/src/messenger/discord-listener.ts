@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
-import type { Interaction, QuestionCards } from "./discord-cards.ts";
+import { type Interaction, modalValue, type QuestionCards } from "./discord-cards.ts";
 import { isDoneName, setThreadStatus, type ThreadInfo } from "./discord-thread.ts";
 import type { Timers } from "./typing.ts";
 
@@ -260,9 +260,8 @@ export class DiscordListener {
     // a card sits in the channel or inside its work thread: take a tap only where its card was posted,
     // looked up locally since the interaction must be answered within 3 seconds
     const qid = /^[qm]:([^:]+)/.exec(i.data?.custom_id ?? "")?.[1];
-    // only the live listener may answer a tap; a shadow one must not touch the shared card state
-    if (this.d.shadow) return this.d.log(`SHADOW_INTERACTION_SKIPPED ${i.id} ${qid ?? "-"}`);
     if (i.channel_id !== this.d.channel && (!qid || i.channel_id !== this.d.cards.store.get(qid)?.channel)) return;
+    if (this.d.shadow) return this.shadowAnswer(i);
     const outcome = await this.d.cards.handle(i);
     if (outcome.kind === "refused") this.d.log(`CARD_REFUSED ${outcome.user}`);
     if (outcome.kind !== "answered") return;
@@ -270,6 +269,19 @@ export class DiscordListener {
     this.append({ ts: new Date(this.d.now()).toISOString(), id: i.id, kind: "answer", qid: q.id, answer: q.answer ?? "", answer_kind: q.answerKind ?? "button", question: q.text, thread: q.thread, session: q.session, tmux: q.tmux });
     this.d.log(`ANSWER ${q.id} ${q.answerKind} ${JSON.stringify(q.answer ?? "")} thread=${q.thread ?? "-"} session=${q.session ?? "-"} tmux=${q.tmux ?? "-"}`);
     await this.d.cards.afterAnswer(q).catch((e: unknown) => this.d.log(`DISCORD_ECHO_FAIL ${q.id} ${errText(e)}`));
+  }
+
+  // A shadow listener writes the answer row the live one would, read-only: no response to Discord and no change to the
+  // shared card store (the live listener may already have marked the question answered). Opening the text box writes nothing.
+  private shadowAnswer(i: Interaction): void {
+    const cid = i.data?.custom_id ?? "";
+    const option = /^q:([^:]+):(\d+)$/.exec(cid);
+    const modal = /^m:(.+)$/.exec(cid);
+    const q = this.d.cards.store.get(option?.[1] ?? modal?.[1] ?? "");
+    const value = option ? q?.options[Number(option[2])] : modal ? modalValue(i.data?.components).trim() : undefined;
+    if ((i.member?.user.id ?? i.user?.id) !== this.d.owner || !q || !value) return this.d.log(`SHADOW_INTERACTION_SKIPPED ${i.id} ${cid}`);
+    this.append({ ts: new Date(this.d.now()).toISOString(), id: i.id, kind: "answer", qid: q.id, answer: value, answer_kind: option ? "button" : "text", question: q.text, thread: q.thread, session: q.session, tmux: q.tmux });
+    this.d.log(`SHADOW_ANSWER ${q.id} ${JSON.stringify(value)}`);
   }
 
   // after a reconnect, read what the owner wrote in the channel and its open threads while the socket was down
