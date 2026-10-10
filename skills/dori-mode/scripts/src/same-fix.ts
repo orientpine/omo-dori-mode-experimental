@@ -2,6 +2,7 @@ import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { sendVerified } from "./panes.ts";
 import type { FixAttempt, Lane } from "./registry.ts";
+import { watchLog } from "./watch-log.ts";
 
 // A lane tags a report that is a fix attempt: "(fix: <metric> / <hypothesis>)", e.g. "(fix: deadlock count / reward too small)".
 // (lastReportLine trims a trailing ")", so a tag that ends the report may have lost it)
@@ -49,5 +50,6 @@ export const recordFix = async (deps: FlowDeps, key: string, attempt: FixAttempt
     const delivered = await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, text);
     alert += delivered ? " (sent to the lane)" : ` (the note did not reach pane ${lane.pane})`;
   }
+  watchLog(deps.config.watchLog, deps.clock, { source: "fix-attempt", line: `SAME_FIX_3 ${key} ${alert}` });
   return { count, alert };
 };

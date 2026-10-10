@@ -60,6 +60,9 @@ test("a launch whose Done only checks a file warns LAUNCH_DONE_WEAK and still la
   await launchLane(at(T0), { key: "weak-ok", title: "weak", brief, done: "file /tmp/ok", cwd: "/tmp/w", doneWeakOk: true }, (l) => warned.push(l));
   await launchLane(at(T0), { key: "strong", title: "strong", brief, done: 'file /tmp/ok; command ["bun","test"] stdout~" 0 fail"', cwd: "/tmp/w" }, (l) => warned.push(l));
   expect(warned).toHaveLength(1);
+  const logged = (await Bun.file(at(T0).config.watchLog).text()).trim().split("\n");
+  expect(logged).toHaveLength(1);
+  expect(logged[0]).toMatch(/^\S+ launch LAUNCH_DONE_WEAK weak:/);
 });
 
 test("an agent that exits at start is a STARTUP_ERROR with its own message, without waiting out the prompt timeout", async () => {

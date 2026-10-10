@@ -37,15 +37,13 @@ The eyes reaction promises "I read this and will answer". When two Doris share a
 git -C ~/.dori/src pull --ff-only
 ```
 
-One-shot commands (`dori ask`, `dori launch`, `dori send`, ...) use the new code at once. Long-running processes do not: they keep the code they started with until restarted. Restart each unit whose code changed and check its log for its ready line:
+One-shot commands (`dori ask`, `dori launch`, `dori send`, ...) use the new code at once. Long-running processes keep the code they started with until restarted. Configure `update.services` with their source prefixes, logs and ready patterns, then baseline `dori update` before the next pull. After a pull:
 
 ```sh
-systemctl --user restart dori-lanes            # watch, freshness, dead-panes, guard
-systemctl --user restart dori-inbound          # the Discord listener
-systemctl --user restart dori-session-watch
+dori update
 ```
 
-Skipping the restart is easy to miss: merged fixes then sit unused in a loop that still runs the old code, for as long as nobody restarts it.
+`dori update` replaces the manual restarts and ready-line checks, logs new unset config keys, and tells the lead what changed. The `dori-update.path` user unit runs it automatically when the clone's checked-out branch ref changes; see the setup's "Auto-apply updates" step. `dori update --pull` combines the pull and apply. A rejected pull logs and alerts `UPDATE_FAIL` rather than silently leaving stale code running.
 
 ## 7. Replacing a listener: shadow first
 

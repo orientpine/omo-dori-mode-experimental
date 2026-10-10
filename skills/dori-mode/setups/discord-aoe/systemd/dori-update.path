@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply Dori script updates when checkout references change
+
+[Path]
+PathChanged=%h/.dori/src/.git/HEAD
+PathChanged=%h/.dori/src/.git/refs/heads
+PathChanged=%h/.dori/src/.git/refs/heads/main
+PathChanged=%h/.dori/src/.git/packed-refs
+Unit=dori-update.service
+
+[Install]
+WantedBy=default.target

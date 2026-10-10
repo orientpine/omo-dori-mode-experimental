@@ -22,6 +22,8 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 |---|---|---|
 | `backend` | `herdr` | every pane command; `aoe` runs lanes as aoe/tmux sessions (below) |
 | `stateDir` | `~/.dori/state` | registry, heavy slots |
+| `watchLog` | `<stateDir>/lanes.log` | timestamped `fix-attempt SAME_FIX_3`, `launch LAUNCH_DONE_WEAK` and `update` results; `~` is expanded |
+| `update` | running CLI's git toplevel, no services | `update`, `notify-change`; fields below |
 | `laneWorkspace` | current workspace | `launch` |
 | `workspaces` | all | `sync`, `dead-panes` |
 | `ignorePanes`, `leadPane` | none | panes the sweeps skip; `leadPane` is also where lanes report |
@@ -34,6 +36,7 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `deadPanePatterns` | `has stopped`, `no suitable jobs` | `dead-panes` |
 | `guard` | load 150/80, 20% memory, 50 GB disk, 20 panes | `guard` |
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
+| `hooks` | empty | argv templates; fields below |
 | `hooks.transcribe` | none | `transcribe` (argv with `{file}`, prints the text), `inbound discord` voice notes |
 | `sameFix` | `after: 3`, `sendToLane: false`, an English `laneText` | `freshness`, `fix-attempt`: from the `after`-th fix attempt on one metric with one hypothesis print `SAME_FIX_3`; with `sendToLane` also type `laneText` (`{n}`, `{metric}`, `{hypothesis}` filled in) into the lane |
 | `scorecard` | `timeZone: "UTC"`, `language: "en"`, no paths | `scorecard`: `timeZone` (the calendar day counted), `language` (`en` or `ko`), `sessions` (the session files whose cost line 1 counts; default `sessionsDir`, every session on the host; a second Dori on the same host sets its own folder), `lanesLog` (the file the `dori-lanes` sweeps write, for nudges), `leadSessions` (the folder of the lead agent's session files, for re-sends, reply times and context tax), `inbox` (default `DORI_DISCORD_INBOX`, then `<stateDir>/discord/inbox.jsonl`), `replyPattern` (regex a tool result matches when the lead posted a reply; default `^(SENT\|POSTED) \d`), `leadSendPattern` (regex for a lead message to a lane, `{pane}` is the lane's pane; default matches `tmux send-keys -t =<pane>: -l` and `herdr pane send-text <pane>`), `postTo` (`discord:<channel or thread id>`, default `DORI_DISCORD_CHANNEL`), `keepDays` (30: saved cards older than this are removed). `signals` reads `lanesLog`, `leadSessions` and `leadSendPattern` too |
@@ -41,6 +44,26 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `discord` | English words, `en-US`, `UTC`, `statusStyle: "words"`, `autoUnEye: true` | `autoUnEye` (`dori inbound discord` takes its eyes reaction off once its bot writes back, see below; `false` leaves that to you), `statusStyle` (`words` for `[working]`-style marks, `emoji` for 🔄 ⏸️ ✅ and ⏳), thread status words (`working`, `waiting`, `done`) and question-card wording (`other`, `pick` with `{n}` for the option number, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`), plus `locale` and `timeZone` for answer times |
 
 Tokens and ids come from the environment. Every command first reads `~/.dori/dori.env` (or the file in `DORI_ENV_FILE`), `KEY=VALUE` per line; a variable already set wins. The Discord commands need `DORI_DISCORD_TOKEN`, `DORI_DISCORD_GUILD`, `DORI_DISCORD_CHANNEL` (the one channel the Dori talks in) and `DORI_DISCORD_OWNER`.
+
+### Nested configuration keys
+
+The fields of `sameFix` are `sameFix.after`, `sameFix.sendToLane`, `sameFix.laneText`. The fields of `signals` are `signals.launchLanes`, `signals.attemptPattern`, `signals.rootCausePattern`.
+
+The fields of `scorecard` are `scorecard.timeZone`, `scorecard.language`, `scorecard.sessions`, `scorecard.lanesLog`, `scorecard.leadSessions`, `scorecard.inbox`, `scorecard.replyPattern`, `scorecard.leadSendPattern`, `scorecard.postTo`, `scorecard.keepDays`; their meanings and defaults are in the table above.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `update.repo` | git toplevel of the running CLI | clone whose HEAD is applied; `~` is expanded |
+| `update.services` | `[]` | user services to restart when their source paths change |
+| `update.services.unit` | required | systemd user unit name |
+| `update.services.paths` | `["skills/dori-mode/scripts/src/"]` | file path prefixes relative to `update.repo` |
+| `update.services.log` | `""` | ready-line log path; `~` is expanded |
+| `update.services.ready` | `""` | regex for a new complete log line after restart; empty checks `systemctl --user is-active` only |
+| `update.readyTimeoutSec` | `60` | bounded restart and readiness timeout per service |
+| `update.alertPane` | `leadPane` | restart and update failure alerts, sent through the configured backend |
+| `update.announce` | `"Tell the owner in your own channel, briefly, what changed and how your behaviour changes because of it."` | instruction at the end of each change summary sent to `leadPane` |
+
+A new config key: run `dori update` on every Dori on the host (or read its CONFIG_NEW_KEY lines) and set the key in each config.json that needs it.
 
 ### Backend `aoe`
 
@@ -79,6 +102,22 @@ The CLI is a thin layer over typed modules you can import in your own scripts:
 Every module takes its HTTP, clock and timers as arguments. That is how the tests run without the network.
 
 ## Commands
+
+### `dori update [--pull] [--dry-run]`
+
+Applies the clone's current HEAD. `--pull` first runs `git -C <update.repo> pull --ff-only`. The first run saves HEAD and sorted known dotted config keys to `<stateDir>/update.json`, prints and logs `UPDATED first-run`, and restarts and announces nothing. If HEAD equals the saved `applied` SHA, it prints `UP_TO_DATE` without writing a watch-log line.
+
+On a new HEAD it diffs the saved SHA against HEAD. Every service with a matching `update.services.paths` prefix is restarted once. It notes the service log's byte size before restarting and waits only for a new complete line matching `ready`, not an old ready line. With an empty `ready`, it checks user-unit activity instead. Each attempt prints and logs `RESTARTED <unit> <sha7>` or `RESTART_FAIL <unit> <reason>`; it attempts every affected service and then records the HEAD even when readiness failed. `UPDATED <old7>..<new7> changed=<n> restarted=<units>` lists successful restarts.
+
+Keys this code knows but the saved code did not, and which are not set in the raw config file, print and log `CONFIG_NEW_KEY <key> unset in <config path> (default used)`. The known keys are saved for the next run. A restart failure sends `[ALERT] dori update: RESTART_FAIL ...` to `update.alertPane`, including new-key notices; without a restart failure the key notices do not trigger an alert. Git failures (including rejected pulls) print and log `UPDATE_FAIL` with stderr and alert the same pane, preserving the previously applied SHA.
+
+After restarts, one `[UPDATE]` summary goes to `leadPane` (`DORI_LEAD_PANE` overrides it). It contains merged PR titles from old..new (or commit subjects if there are no merges), changed `references/`, `SKILL.md`, and `setups/**/README.md` paths under this skill, new config keys, restart results, and `update.announce`. Delivery prints and logs `ANNOUNCED <pane>` or `ANNOUNCE_FAIL <pane> <reason>`. A missing lead pane logs `ANNOUNCE_FAIL` without sending anything. Alerts and announcements use the same argv pane-send helper as lanes.
+
+`--dry-run` prints planned local changes and restarts with a `DRY_RUN` prefix; it does not pull, restart, send, or write state/watch logs. A failed update/restart exits 1. The generic systemd path unit can run `dori update` after a pull; see the Discord + aoe setup.
+
+### `dori notify-change --summary TEXT [--file PATH ...]`
+
+Sends one `[UPDATE]` message containing the supplied summary and changed guidance paths, followed by `update.announce`, to `leadPane`. Use it when a Dori's own memory or AGENTS guidance changes outside the script clone. Prints and logs `ANNOUNCED <pane>` or `ANNOUNCE_FAIL <pane> <reason>`; failed delivery exits 1.
 
 ### `dori launch <key> --title T --brief FILE --done "..." [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]`
 Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and checks the pane for startup errors after 20 seconds. Exit 3 on `STARTUP_ERROR`.
