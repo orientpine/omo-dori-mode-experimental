@@ -80,6 +80,8 @@ test("the card is four lines and one more, with cost per verified completion nex
   const d = await computeScorecard(setup(), dayWindow("2026-03-01", "UTC", 0));
   const ko = formatScorecard(d, "ko").split("\n");
   expect(ko).toHaveLength(6);
+  expect(ko[0]).toBe("토큰 성적표 2026-03-01 00:00~24:00 (UTC)");
+  expect(formatScorecard({ ...d, window: dayWindow("2026-03-01", "Asia/Seoul", 0) }, "ko", Date.parse("2026-03-01T05:30:00Z")).split("\n")[0]).toBe("토큰 성적표 2026-03-01 00:00~14:30 (Asia/Seoul)");
   expect(ko[1]).toBe("① 검증 완료당 비용 $4.50 (전체 $9.00, 호출 4회 ÷ 검증 완료 2개)");
   expect(ko[2]).toBe("② 완료 주장 거부율 50% (거부 1 / 주장 2)");
   expect(ko[4]).toBe("④ 첫 답글 중앙값 120.0초 · p90 120.0초 (소유자 메시지 2건)");

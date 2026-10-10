@@ -221,7 +221,7 @@ try {
         inbox: config.scorecard.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
         owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "",
       }, window);
-      const text = formatScorecard(data, config.scorecard.language);
+      const text = formatScorecard(data, config.scorecard.language, Date.now());
       console.log(text);
       if (flags.values.post) {
         const ref = opt("to") || config.scorecard.postTo || `discord:${env("DORI_DISCORD_CHANNEL")}`;

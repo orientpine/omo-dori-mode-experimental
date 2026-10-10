@@ -233,11 +233,14 @@ const sec = (x: number | null) => (x === null ? "-" : x.toFixed(1));
 
 // Four lines and one more. Cost per verified completion and the claim rejection rate always come together: either alone
 // can be gamed (stop early to save tokens, or use weaker checks to pass).
-export const formatScorecard = (d: ScorecardData, language: "en" | "ko"): string => {
+export const formatScorecard = (d: ScorecardData, language: "en" | "ko", now = Number.POSITIVE_INFINITY): string => {
   const ko = language === "ko";
   const w = d.window;
   const lines: string[] = [];
-  lines.push(ko ? `토큰 성적표 ${w.date} (${w.timeZone})` : `Token scorecard ${w.date} (${w.timeZone})`);
+  // the head says which hours were counted: the whole local day, or up to now for a day still running
+  const until = now < w.end ? new Intl.DateTimeFormat("en-GB", { timeZone: w.timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(now)) : "24:00";
+  const range = `${w.date} 00:00~${until} (${w.timeZone})`;
+  lines.push(ko ? `토큰 성적표 ${range}` : `Token scorecard ${range}`);
   const per = d.verified ? usd(d.cost / d.verified) : ko ? "없음" : "n/a";
   lines.push(ko ? `① 검증 완료당 비용 ${per} (전체 ${usd(d.cost)}, 호출 ${d.calls}회 ÷ 검증 완료 ${d.verified}개)` : `① Cost per verified completion ${per} (total ${usd(d.cost)} over ${d.calls} calls ÷ ${d.verified} verified)`);
   lines.push(ko ? `② 완료 주장 거부율 ${pct(d.rejected, d.claims)}% (거부 ${d.rejected} / 주장 ${d.claims})` : `② Done-claim rejection rate ${pct(d.rejected, d.claims)}% (${d.rejected} rejected / ${d.claims} claims)`);
