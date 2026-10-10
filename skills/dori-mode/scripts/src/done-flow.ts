@@ -14,7 +14,11 @@ export type FlowDeps = {
   readonly config: DoriConfig;
   readonly exists?: (path: string) => boolean;
   readonly signalIo?: SignalIo;
+  // sets a discord:<id> work thread to done and archives it (cli wires it when DORI_DISCORD_TOKEN is set)
+  readonly markThreadDone?: (ref: string) => Promise<void>;
 };
+
+export class LaneStateError extends Error {}
 
 const signalIo = (deps: FlowDeps, lane: Lane): SignalIo => ({ cwd: lane.cwd ?? deps.config.defaultCwd, ...deps.signalIo });
 
@@ -22,6 +26,12 @@ const windowMs = (deps: FlowDeps): number => deps.config.closeAfterMin * 60_000;
 
 export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<string> => {
   const at = iso(deps.clock);
+  // A paused lane waits on a human, so its claim is recorded and announced but never closes it on a timer.
+  if (statusOf(lane) === "paused") {
+    await deps.registry.write({ ...lane, claim: { at, evidence, emitted: false }, history: [...(lane.history ?? []), { at, status: "paused", note: `done claimed while paused: ${evidence}` }] });
+    if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, `[LEAD] done claim recorded for ${lane.key}, but the lane is paused, so it does not close automatically; the lead decides. Stay idle until then.`);
+    return `LANE_DONE_CLAIMED_PAUSED ${lane.key} ${lane.pane ?? "-"} ${evidence}`;
+  }
   await deps.registry.write(withStatus(lane, "done-claimed", evidence, at, { claim: { at, evidence, emitted: false } }));
   if (lane.pane) {
     const closesAt = new Date(deps.clock.now() + windowMs(deps)).toISOString().slice(11, 16);
@@ -35,6 +45,27 @@ export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly s
   await deps.registry.write(withStatus(lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }));
   if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
+};
+
+const pausedAt = (lane: Lane): string => lane.history?.findLast((h) => h.status === "paused" && h.note.startsWith("PAUSED:"))?.at ?? "";
+
+// Parks a lane that waits on the owner: freshness, LANE_BLOCKED and dead-pane alerts skip it until it is resumed.
+export const pauseLane = async (deps: FlowDeps, lane: Lane, reason: string): Promise<string> => {
+  const from = statusOf(lane);
+  if (from !== "working" && from !== "not-done") throw new LaneStateError(`lane ${lane.key} is ${from}; only a working or not-done lane can be paused`);
+  await deps.registry.write(withStatus(lane, "paused", `PAUSED: ${reason}`, iso(deps.clock), { pausedFrom: from, blocked: undefined, idleSince: undefined }));
+  return `LANE_PAUSED ${lane.key} (was ${from}) ${reason}`;
+};
+
+// Back to the status it had before the pause; the silence clock restarts now, so the first nudge comes a full interval later.
+export const resumeLane = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
+  if (statusOf(lane) !== "paused") throw new LaneStateError(`lane ${lane.key} is ${statusOf(lane)}, not paused`);
+  const to = lane.pausedFrom ?? "working";
+  const { pausedFrom: _, ...rest } = lane;
+  await deps.registry.write(withStatus(rest, to, "RESUMED", iso(deps.clock), { lastReplyAt: deps.clock.now() }));
+  const out = [`LANE_RESUMED ${lane.key} ${to}`];
+  if (lane.claim && lane.claim.at >= pausedAt(lane)) out.push(`NOTE ${lane.key} claimed done while paused (${lane.claim.evidence}); close it with dori close ${lane.key}, or object with dori object-done`);
+  return out;
 };
 
 export const discoverWorktrees = async (lane: Lane, run: Runner, extraRoots: readonly string[] = []): Promise<string[]> => {
@@ -81,6 +112,21 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promi
     warnings.push(`THREAD_MISSING ${lane.key} thread=${JSON.stringify(lane.thread ?? null)}; threadDone not run, close the thread by hand or set it with dori set-thread first`);
     cleanup.push("thread missing: threadDone not run");
   }
+  if (deps.markThreadDone && hasThread(lane) && lane.thread.startsWith("discord:")) {
+    const sharing = (await deps.registry.open()).filter((l) => l.key !== lane.key && l.thread === lane.thread).map((l) => l.key);
+    if (sharing.length) cleanup.push(`thread left open: open lane ${sharing.join(", ")} uses it too`);
+    else {
+      try {
+        await deps.markThreadDone(lane.thread);
+        cleanup.push("thread set done and archived");
+      } catch (e) {
+        // the lane is finished either way; a thread that could not be renamed is the lead's to fix by hand
+        const why = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+        warnings.push(`THREAD_DONE_WARN ${lane.key} ${lane.thread}: ${why}`);
+        cleanup.push(`thread not set done: ${why}`);
+      }
+    }
+  }
   if (deps.config.backend === "aoe") {
     if (lane.pane) cleanup.push(await closeAoeSession(deps.run, lane.pane));
   } else if (lane.tab) cleanup.push((await deps.run(["herdr", "tab", "close", lane.tab])).code === 0 ? `tab ${lane.tab} closed` : `tab ${lane.tab} not closed`);
@@ -105,12 +151,17 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   await deps.registry.write(verified);
   const result = await closeLane(deps, verified, `Done: ${evidence}`);
   if (!result.closed) return [await objectDone(deps, (await deps.registry.read(lane.key)) ?? verified, result.lines.filter((l) => l.startsWith("SIGNAL NOT")))];
-  return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
+  return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
 };
 
 export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
   const out: string[] = [];
   for (const listed of await deps.registry.list()) {
+    if (statusOf(listed) === "paused" && listed.claim && !listed.claim.emitted) {
+      out.push(`LANE_DONE_CLAIMED_PAUSED ${listed.key} ${listed.pane ?? "-"} ${listed.claim.evidence}`);
+      await deps.registry.patch(listed.key, { claim: { ...listed.claim, emitted: true } });
+      continue;
+    }
     if (statusOf(listed) !== "done-claimed" || !listed.claim) continue;
     let lane = listed;
     const claim = listed.claim;

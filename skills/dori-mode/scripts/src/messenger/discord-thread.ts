@@ -38,7 +38,12 @@ export const setThreadStatus = async (dc: Discord, threadId: string, status: Thr
   const next = `${statusMark(status, words)} ${name.replace(STATUS_PREFIX, "")}`;
   const archived = info.thread_metadata?.archived === true;
   if (status === "done") {
-    if (next !== name) await dc.setThread(threadId, { name: next });
+    if (next === name && archived) return;
+    if (next !== name) {
+      // Discord refuses to rename an archived thread (50083), so it is opened, renamed, then archived again
+      if (archived) await dc.setThread(threadId, { archived: false });
+      await dc.setThread(threadId, { name: next });
+    }
     await dc.setThread(threadId, { archived: true });
     return;
   }

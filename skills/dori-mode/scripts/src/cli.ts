@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { currentTmuxSession } from "./aoe.ts";
 import { envFilePath, loadConfig, loadEnvFile } from "./config.ts";
 import { deadPaneTick } from "./dead-panes.ts";
-import { claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./done-flow.ts";
+import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
 import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
@@ -25,7 +25,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
 import { QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
-import { progressText, threadHook, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { discordThreadId, progressText, setThreadStatus, threadHook, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
@@ -38,7 +38,11 @@ const USAGE = `dori <command> [options]
   sync   [--write]                     registry vs live panes; read-only unless --write
   claim-done [<key>] --evidence TEXT  key defaults to the lane registered for this pane ($HERDR_PANE_ID, or the tmux session with backend aoe)
   object-done <key> --reason TEXT [--reason TEXT ...]
-  close  <key> [--note TEXT]           close now (Done signals must read back live)
+  pause  <key> <reason>                park a lane that waits on a human: no freshness nudge or post, LANE_BLOCKED or
+                                       DEAD_PANE for it, and a done claim does not close it; the reason goes in its history
+  resume <key>                         back to the status it had before the pause
+  close  <key> [--note TEXT]           close now (Done signals must read back live); a discord:<id> work thread is set
+                                       done and archived when DORI_DISCORD_TOKEN is set
   watch                                long-running: emits LANE_* lines every 30 s
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
@@ -69,7 +73,14 @@ const die = (message: string, code = 1): never => {
 
 await loadEnvFile(envFilePath());
 const config = await loadConfig();
-const deps: FlowDeps = { run, clock: realClock, registry: new Registry(config.stateDir), config };
+const discordToken = process.env.DORI_DISCORD_TOKEN?.trim();
+const deps: FlowDeps = {
+  run,
+  clock: realClock,
+  registry: new Registry(config.stateDir),
+  config,
+  ...(discordToken ? { markThreadDone: (ref: string) => setThreadStatus(new Discord(fetchHttp, realClock, discordToken), discordThreadId(ref), "done", config.discord) } : {}),
+};
 const [command = "", ...rest] = process.argv.slice(2);
 
 const flags = parseArgs({
@@ -164,6 +175,14 @@ try {
       console.log(await objectDone(deps, await lane(key ?? die("object-done needs a lane key")), reasons));
       break;
     }
+    case "pause": {
+      const reason = flags.positionals.slice(1).join(" ").trim() || die("usage: dori pause <key> <reason>");
+      console.log(await pauseLane(deps, await lane(key ?? die("pause needs a lane key")), reason));
+      break;
+    }
+    case "resume":
+      for (const line of await resumeLane(deps, await lane(key ?? die("resume needs a lane key")))) console.log(line);
+      break;
     case "close": {
       const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead");
       for (const line of r.lines) console.log(line);
@@ -183,7 +202,8 @@ try {
     case "dead-panes": {
       const seen = new Set<string>();
       await every(loopMin, async () => {
-        for (const line of await deadPaneTick(run, config, seen, new Date().toISOString().slice(0, 13))) console.log(line);
+        const paused = (await deps.registry.open()).flatMap((l) => (statusOf(l) === "paused" && l.pane ? [l.pane] : []));
+        for (const line of await deadPaneTick(run, config, seen, new Date().toISOString().slice(0, 13), paused)) console.log(line);
       });
       break;
     }
@@ -348,6 +368,6 @@ try {
       process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError) die(e.message);
+  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError) die(e.message);
   throw e;
 }

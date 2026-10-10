@@ -19,7 +19,8 @@ export const threadRefProblem = (ref: string): string | undefined => {
 // true when the lane has a thread that a threadDone hook can act on
 export const hasThread = (lane: Lane): boolean => typeof lane.thread === "string" && lane.thread !== NO_THREAD && threadRefProblem(lane.thread) === undefined;
 
-export type LaneStatus = "working" | "done-claimed" | "verified-done" | "not-done" | "closed";
+// "paused": the lead parked the lane (e.g. it waits on the owner); no sweep nudges, posts for, or flags it until resumed.
+export type LaneStatus = "working" | "done-claimed" | "verified-done" | "not-done" | "paused" | "closed";
 export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };
 export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; readonly note: string };
@@ -38,6 +39,7 @@ export type Lane = {
   readonly model?: string;
   readonly worktrees?: readonly string[];
   readonly status?: LaneStatus;
+  readonly pausedFrom?: LaneStatus;
   readonly claim?: Claim;
   readonly objection?: Objection;
   readonly history?: readonly HistoryEntry[];
