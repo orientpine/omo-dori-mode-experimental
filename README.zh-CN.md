@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experiment
 
 `DORI_BACKEND=aoe` 在没有配置文件时复制 `backend: "aoe"` 的配置；已有配置及其后端保持不变。把 `leadPane` 设置为 lead 的 aoe/tmux 会话名。`DORI_REPO` 可覆盖克隆 URL。PATH 中既没有 herdr 也没有 aoe + tmux 时，安装程序会警告；缺少 `gh` 和 `agent-messenger` 只会给出可选工具警告。如果已有安装的 origin 不是这个 fork(或指定的 `DORI_REPO`),会显示警告和重新指向的命令，不会悄悄修改远端，也不会从旧 origin 拉取。
 
-然后在 herdr 里打开智能体；使用 aoe 后端时在 aoe 会话里打开，说一句 "Dori mode" 就行。完整的 Discord + aoe/tmux 服务设置见 [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md)。
+然后在 herdr 里打开智能体；使用 aoe 后端时在 aoe 会话里打开，说一句 "Dori mode" 就行。完整的 Discord + aoe/tmux 服务设置见 [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md)。日常运行中总结的经验(完成声明会关闭 lane、暂停等待所有者答复的 lane、应用脚本更新、用影子运行替换监听器)见 [`references/operating-lessons.md`](skills/dori-mode/references/operating-lessons.md)。
 
 ## 依赖
 

@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experiment
 
 `DORI_BACKEND=aoe`는 설정 파일이 없을 때 `backend: "aoe"`인 설정을 복사합니다. 기존 설정은 백엔드를 포함해 유지합니다. `leadPane`은 리드의 aoe/tmux 세션 이름으로 설정하세요. `DORI_REPO`로 복제 URL을 바꿀 수 있습니다. PATH에 herdr도 aoe + tmux도 없으면 설치 프로그램이 경고하며, `gh`와 `agent-messenger`가 없는 경우는 선택 사항 경고입니다. 기존 설치의 origin이 이 포크(또는 지정한 `DORI_REPO`)가 아니면 경고와 변경 명령을 보여 주고, 원격을 몰래 바꾸거나 예전 origin에서 pull하지 않습니다.
 
-그다음 herdr 안에서, aoe 백엔드라면 aoe 세션 안에서 에이전트를 열고 "Dori mode"라고 말하면 됩니다. 디스코드 + aoe/tmux 서비스 전체 설정은 [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md)에 있습니다.
+그다음 herdr 안에서, aoe 백엔드라면 aoe 세션 안에서 에이전트를 열고 "Dori mode"라고 말하면 됩니다. 디스코드 + aoe/tmux 서비스 전체 설정은 [`setups/discord-aoe`](skills/dori-mode/setups/discord-aoe/README.md)에 있습니다. 매일 운영하며 얻은 교훈(완료 주장이 레인을 닫는다는 점, 소유자 답을 기다리는 레인 멈추기, 스크립트 업데이트 반영, 섀도 실행으로 수신기 교체)은 [`references/operating-lessons.md`](skills/dori-mode/references/operating-lessons.md)에 있습니다.
 
 ## 필요한 것
 
