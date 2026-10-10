@@ -16,6 +16,8 @@ import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
 import { syncRegistry } from "./sync.ts";
 import { canLaunch } from "./routing.ts";
+import { normFix, recordFix } from "./same-fix.ts";
+import { computeScorecard, dayWindow, formatScorecard, ScorecardError } from "./scorecard.ts";
 import { fetchHttp, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
@@ -31,7 +33,9 @@ import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
 const USAGE = `dori <command> [options]
 
-  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
+  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR] [--done-weak-ok]
+                                       prints LAUNCH_DONE_WEAK (and still launches) when every Done signal only checks
+                                       files or text; --done-weak-ok silences it
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
                                        REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
   set-thread <key> <adapter>:<id>      point an open lane at another work thread
@@ -41,9 +45,15 @@ const USAGE = `dori <command> [options]
   pause  <key> <reason>                park a lane that waits on a human: no freshness nudge or post, LANE_BLOCKED or
                                        DEAD_PANE for it, and a done claim does not close it; the reason goes in its history
   resume <key>                         back to the status it had before the pause
+  fix-attempt <key> --metric M --hypothesis H
+                                       record that you asked the lane for another fix of M on hypothesis H; from the 3rd
+                                       attempt it prints SAME_FIX_3 (lanes tag reports "(fix: M / H)" for the same count)
   close  <key> [--note TEXT]           close now (Done signals must read back live); a discord:<id> work thread is set
                                        done and archived when DORI_DISCORD_TOKEN is set
   watch                                long-running: emits LANE_* lines every 30 s
+  scorecard [--date YYYY-MM-DD|today|yesterday] [--post] [--to discord:<id>]
+                                       the day's token scorecard from session usage, the registry, the lanes log and the
+                                       inbox (no model call); --post sends it to scorecard.postTo or DORI_DISCORD_CHANNEL
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
@@ -93,6 +103,7 @@ const flags = parseArgs({
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
     to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" },
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
+    "done-weak-ok": { type: "boolean" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -143,7 +154,7 @@ const every = async (minutes: number, tick: () => Promise<void>): Promise<void> 
 try {
   switch (command) {
     case "launch": {
-      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd") });
+      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), doneWeakOk: Boolean(flags.values["done-weak-ok"]) }, (line) => console.log(line));
       console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
       console.log(r.startup);
       process.exit(r.startup.startsWith("STARTUP_OK") ? 0 : 3);
@@ -180,6 +191,13 @@ try {
       console.log(await pauseLane(deps, await lane(key ?? die("pause needs a lane key")), reason));
       break;
     }
+    case "fix-attempt": {
+      const l = await lane(key ?? die("fix-attempt needs a lane key"));
+      const r = await recordFix(deps, l.key, { at: new Date().toISOString(), metric: normFix(need("metric")), hypothesis: normFix(need("hypothesis")), via: "lead" });
+      console.log(`FIX_RECORDED ${l.key} attempt=${r.count}`);
+      if (r.alert) console.log(`SAME_FIX_3 ${l.key} ${r.alert}`);
+      break;
+    }
     case "resume":
       for (const line of await resumeLane(deps, await lane(key ?? die("resume needs a lane key")))) console.log(line);
       break;
@@ -194,6 +212,24 @@ try {
         for (const line of await watchTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN ${String(e).slice(0, 200)}`])) console.log(line);
         await Bun.sleep(30_000);
       }
+    case "scorecard": {
+      const window = dayWindow(opt("date") ?? "today", config.scorecard.timeZone, Date.now());
+      const data = await computeScorecard({
+        sessionsDir: config.sessionsDir,
+        lanes: await deps.registry.list(),
+        settings: config.scorecard,
+        inbox: config.scorecard.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+        owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "",
+      }, window);
+      const text = formatScorecard(data, config.scorecard.language, Date.now());
+      console.log(text);
+      if (flags.values.post) {
+        const ref = opt("to") || config.scorecard.postTo || `discord:${env("DORI_DISCORD_CHANNEL")}`;
+        const id = /^discord:(\d{5,25})$/.exec(ref)?.[1] ?? die(`scorecard posts to discord:<channel or thread id>, not ${ref}`);
+        console.log(`SENT ${await discordClient().send(id, text)}`);
+      }
+      break;
+    }
     case "freshness":
       await every(loopMin, async () => {
         for (const a of await freshnessTick(deps, process.env.HOME ?? "")) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
@@ -368,6 +404,6 @@ try {
       process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError) die(e.message);
+  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError) die(e.message);
   throw e;
 }

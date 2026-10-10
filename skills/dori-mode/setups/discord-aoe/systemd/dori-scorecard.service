@@ -1,0 +1,10 @@
+[Unit]
+Description=Dori daily token scorecard, posted to the Dori's Discord channel
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.dori/dori.env
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.bun/bin/dori scorecard --date yesterday --post
+StandardOutput=append:%h/.dori/scorecard.log
+StandardError=append:%h/.dori/scorecard.log

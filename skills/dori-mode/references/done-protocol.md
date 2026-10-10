@@ -19,6 +19,13 @@ The key is in your brief's lane footer. If you leave it out, the lane registered
 
 If the lead has paused your lane (`dori pause`, e.g. while it waits on the owner), your claim is recorded but nothing closes on a timer; you get a `[LEAD]` line saying so, and the lead closes the lane or objects.
 
+## Reporting honestly
+
+- A blocker, an impossible task or an ambiguous request is a fine report: `[REPORT] <key> | blocker | <what blocks, what you tried, what you need>`. Say it plainly instead of retrying or claiming done.
+- Cap your retries: after two or three failed attempts at the same step, report a blocker.
+- Tag a report that is a fix attempt for a failing check or metric with `(fix: <metric> / <hypothesis>)`. The third attempt on the same metric with the same hypothesis alerts the lead (`SAME_FIX_3`): stop patching, reproduce the failure and read the logs for the root cause.
+- When you make or change a yardstick (a metric, a threshold, a check), write one line on how it could get better while the real goal gets worse.
+
 ## If the Dori objects, or a check fails
 
 You get `[LEAD] not done: <reasons>; keep working, claim again when fixed` in your pane, and the lane goes back to not-done. This happens when:

@@ -7,7 +7,7 @@ import { adoptLane, LaunchError } from "../src/launch.ts";
 import type { Http } from "../src/messenger/http.ts";
 import { statusOf } from "../src/registry.ts";
 import { run } from "../src/run.ts";
-import { checkDone, checkSignal, doneSyntaxErrors, splitDone } from "../src/signals.ts";
+import { checkDone, checkSignal, doneSyntaxErrors, splitDone, weakDone } from "../src/signals.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
 const state = withState();
@@ -96,6 +96,21 @@ test("a QA-only lane's claim is re-checked at close time: the lane says done, bu
   const after = await deps.registry.read("local-setup");
   expect(after && statusOf(after)).toBe("not-done");
   expect(after?.objection?.reasons[0]).toContain("exit 1");
+});
+
+test("a Done line is weak only when every signal just checks files or text, including grep/test-only shell scripts", async () => {
+  writeFileSync(join(state.dir, "grep-only.sh"), "#!/bin/bash\n# only looks\ntest -f out/report.md || exit 1\ngrep -q median out/report.md && [ $(wc -l < out/report.md) -gt 3 ]\n");
+  writeFileSync(join(state.dir, "runs.sh"), "#!/bin/bash\ncd /repo && git fetch -q origin || exit 1\ngrep -q x file\n");
+  expect(await weakDone("file out/report.md", io)).toBe("file");
+  expect(await weakDone('file a.json json:.ok=true; command ["grep","-q","median","r.md"]', io)).toBe("file, command grep");
+  expect(await weakDone('command ["bash","grep-only.sh"]', io)).toBe("command bash (grep/test-only script)");
+  expect(await weakDone('command ["sh","-c","test -f a && grep -q b a"]', io)).toBe("command sh (grep/test-only script)");
+  // something that runs, answers or lands is behavior
+  for (const strong of ['command ["bash","runs.sh"]', 'command ["bun","test"]', 'command ["sh","-c","curl -sf localhost:3000/health"]', "url http://localhost:3000/health", "merged acme/app#1", 'file a.md; command ["bun","test"]']) {
+    expect(await weakDone(strong, io)).toBeUndefined();
+  }
+  // a script it cannot read is not called weak
+  expect(await weakDone('command ["bash","missing.sh"]', io)).toBeUndefined();
 });
 
 test("checkDone reports every signal, so one passing signal never hides a failing one", async () => {

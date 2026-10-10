@@ -2,6 +2,7 @@ import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
+import { fixTag, recordFix } from "./same-fix.ts";
 
 // A report the agent UI wrapped over several lines continues until the next blank line.
 export const lastReportLine = (screen: string, key: string): string | null => {
@@ -26,7 +27,7 @@ export const scrubForThread = (line: string, home: string): string =>
     .replace(/`/g, "'")
     .trim();
 
-export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "no-report"; readonly lane: string; readonly detail: string };
+export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "no-report" | "same_fix_3"; readonly lane: string; readonly detail: string };
 
 const lastHeard = (lane: Lane): number => lane.lastReplyAt ?? Date.parse(lane.openedAt);
 
@@ -44,6 +45,11 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
     if (report && report !== lane.lastReport) {
       current = { ...current, lastReport: report, lastReplyAt: now };
       await deps.registry.patch(lane.key, { lastReport: report, lastReplyAt: now });
+      const tag = fixTag(report);
+      if (tag) {
+        const { alert } = await recordFix(deps, lane.key, { at: new Date(now).toISOString(), ...tag, via: "report" });
+        if (alert) acts.push({ kind: "same_fix_3", lane: lane.key, detail: alert });
+      }
     }
     const heard = lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);

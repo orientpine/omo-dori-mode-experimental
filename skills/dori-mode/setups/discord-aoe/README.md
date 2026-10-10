@@ -39,6 +39,14 @@ What you get:
    loginctl enable-linger "$USER"     # keep them running when you are logged out
    ```
    The unit files are the source of truth: after changing one, copy it again, `daemon-reload`, and restart that unit.
+
+   **Daily scorecard (optional).** In `~/.dori/config.json` set `scorecard.leadSessions` to the folder holding the Dori's own session files (under `~/.omo/agent/sessions/`), and `scorecard.timeZone`/`language` to the owner's. Run `dori scorecard --date yesterday` once and read it, then:
+   ```sh
+   cp $S/systemd/dori-scorecard.service $S/systemd/dori-scorecard.timer ~/.config/systemd/user/
+   systemctl --user daemon-reload && systemctl --user enable --now dori-scorecard.timer
+   systemctl --user list-timers dori-scorecard.timer
+   ```
+   The timer posts yesterday's card every morning at 08:30 host time; put a time zone after the time in `OnCalendar=` (e.g. `08:30:00 Asia/Seoul`) to pin it.
 7. **Smoke test.** Write in the channel: the eyes reaction appears within a second and a row lands in `~/.dori/state/discord/inbox.jsonl`. Then `dori ask --text "Smoke test: does the card work?" --option Yes --option No` and tap a button: the card folds into `[answered] ... → Yes` and an `answer` row follows in the inbox.
 
 ## Switching an existing listener over
@@ -110,7 +118,7 @@ In the Dori's own session, arm these as persistent monitors (`references/setup.m
 |---|---|---|
 | owner messages and answers | `tail -n 0 -F ~/.dori/state/discord/inbox.jsonl` | `^\{` |
 | sessions waiting on a human | `tail -n 0 -F ~/.dori/state/session-events.jsonl` | `^\{` |
-| lane sweeps | `tail -n 0 -F ~/.dori/dori-lanes.log` | `LANE_\|DEAD_PANE\|HOST_GUARD ALERT\|NUDGED\|POSTED\|NO-REPORT\|FAIL` |
+| lane sweeps | `tail -n 0 -F ~/.dori/dori-lanes.log` | `LANE_\|DEAD_PANE\|HOST_GUARD ALERT\|NUDGED\|POSTED\|NO-REPORT\|FAIL\|SAME_FIX` |
 | listener health | `tail -n 0 -F ~/.dori/inbound.log ~/.dori/session-watch.log` | `FATAL\|_FAIL\|SESSION-WATCH-FAIL` |
 
 `DISCORD_LISTENER_CLOSED` alone is not worth a ping: the gateway asks for reconnects several times a day. Only alert when no `DISCORD_LISTENER_READY` follows within a minute.

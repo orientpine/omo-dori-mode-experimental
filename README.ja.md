@@ -162,7 +162,7 @@ watcher はレーンを閉じるときに、シェルを通さずこの確認を
 
 | コマンド | やること |
 |---|---|
-| `dori launch <key> ...` | brief にレーンの footer を書き、herdr タブか aoe セッションを開き、エージェントを起動し、起動エラーを確認 |
+| `dori launch <key> ...` | brief にレーンの footer を書き、herdr タブか aoe セッションを開き、エージェントを起動し、起動エラーを確認。`Done =` のシグナルがすべてファイルや文字列の確認だけなら `LAUNCH_DONE_WEAK` を警告(レーンはそのまま開く)、`--done-weak-ok` で止める |
 | `dori adopt <key> --pane ID ...` | すでに動いているレーンを登録 |
 | `dori sync [--write]` | レジストリと実際の pane を比べ、ずれを表示 |
 | `dori claim-done` / `object-done` / `close` | 完了フロー。`DORI_DISCORD_TOKEN` があれば、close は `discord:` の作業スレッドを完了にしてアーカイブする |
@@ -171,6 +171,8 @@ watcher はレーンを閉じるときに、シェルを通さずこの確認を
 | `dori freshness [--loop MIN]` | 静かになったレーンに声をかけ、最後の報告をスレッドに投稿 |
 | `dori dead-panes [--loop MIN]` | 止まったエージェントの pane を報告 |
 | `dori guard [--loop MIN]` | 負荷、メモリ、ディスク、pane 数の警告 |
+| `dori fix-attempt <key> --metric M --hypothesis H` | レーンに頼んだ修正を 1 回数える。レーンはそうした報告に `(fix: M / H)` を付け、同じ指標・同じ仮説で 3 回目になると `SAME_FIX_3` が根本原因の調査に切り替えるよう知らせる |
+| `dori scorecard [--date D] [--post]` | 記録だけから出す 1 日のトークン成績表(モデル呼び出しなし): 検証済み完了あたりのコストと完了申告の却下率を並べて、手戻りの多いレーン上位、最初の返信の中央値/p90、リードのコンテキスト税。`--post` で Discord に送る(毎日の systemd timer は Discord + aoe セットアップにある) |
 | `dori heavy <label> -- <cmd>` | スロットが空いて負荷が低いときだけビルドやテストを実行 |
 
 pane に送る文字列は必ず引数ひとつとして渡し、シェル文字列を通しません。Enter が本当に入ったかも確認します。

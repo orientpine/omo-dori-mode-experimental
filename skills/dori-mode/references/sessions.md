@@ -18,7 +18,10 @@ Write the brief like a careful prompt:
 - where the code is and what has been learned so far;
 - the ideal end state, from the point of view of whoever uses the result;
 - what not to touch;
-- how and when to report.
+- how and when to report;
+- when the lane makes or changes a yardstick (a metric, a threshold, a pass/fail check), one line on how that yardstick could get better while the real goal gets worse;
+- that a blocker, an impossible task or an ambiguous request is a fine report (`| blocker |`), not a failure to hide;
+- a retry cap: after a set number of failed attempts at the same step (two or three), report a blocker instead of trying again.
 
 **Why the `Done =` line has to be checkable:** the watcher closes lanes on its own, so it can only trust what it can read back itself. `launch` and `adopt` refuse any signal outside this list. Signals are joined with `;`, and every one has to pass.
 
@@ -40,6 +43,18 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 ```
 
 Work no script can check (a design review, a judgement call) stays in the lane's own plan. You judge it yourself before the claim.
+
+**Measure behavior, not files.** A Done line that only proves files exist or contain some text lets a lane pass without the thing working. `launch` prints `LAUNCH_DONE_WEAK <key>: ...` when every signal is a `file` signal or a command that only reads files or text (`grep`, `test`, `cat`, `ls`, `wc`, `jq` and the like, given directly, through `sh -c`, or in a shell script it can read). Add at least one signal that runs the thing: its tests, a command that exercises it, a `url` with the expected status and body. The lane still launches; pass `--done-weak-ok` when a file really is the deliverable (a report, a dataset).
+
+## Repeated fixes
+
+Fixing the same symptom again and again on the same idea burns tokens without moving. A lane tags a report that is a fix attempt with `(fix: <metric> / <hypothesis>)`, e.g. `[REPORT] e7 | milestone | raised the reward again (fix: deadlock count / reward too small)`. When you re-instruct a lane to fix something, record it yourself:
+
+```sh
+dori fix-attempt e7 --metric "deadlock count" --hypothesis "reward too small"
+```
+
+From the third attempt on one metric with one hypothesis (`sameFix.after`, default 3), `dori freshness` prints `SAME_FIX_3 <key> attempt N on "<metric>" with the same hypothesis "<hypothesis>": ...` (and `fix-attempt` prints it too). Counting is conservative: only tagged reports and recorded re-instructions count, metric and hypothesis must match (case and spacing aside), a report read again is not a new attempt, and a fix you asked for that the lane then reports counts once. Then tell the lane to stop patching and find the root cause, by reproducing the failure and reading the logs. With `sameFix.sendToLane: true` that note (`sameFix.laneText`) goes to the lane automatically; by default only you are told. The lane is never stopped.
 
 ## The registry
 
