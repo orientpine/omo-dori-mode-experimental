@@ -104,7 +104,9 @@ const lane = async (k: string | undefined) => {
 
 const env = (name: string): string => process.env[name]?.trim() || die(`${name} is not set`);
 const discordClient = () => new Discord(fetchHttp, realClock, env("DORI_DISCORD_TOKEN"));
-const questionCards = (dc: Discord) => new QuestionCards(dc, new QuestionStore(join(config.stateDir, "discord")), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now);
+// question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
+const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
+const questionCards = (dc: Discord) => new QuestionCards(dc, new QuestionStore(cardDir()), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now);
 
 const transcribeUrl = async (url: string, filename: string): Promise<string> => {
   const dir = mkdtempSync(join(tmpdir(), "dori-voice-"));
@@ -310,7 +312,7 @@ try {
       break;
     }
     case "questions": {
-      const all = new QuestionStore(join(config.stateDir, "discord")).all().filter((q) => !flags.values.open || q.status === "open");
+      const all = new QuestionStore(cardDir()).all().filter((q) => !flags.values.open || q.status === "open");
       for (const q of all) console.log(`${q.id} ${q.status} ${JSON.stringify(q.text)}${q.answer ? ` -> ${JSON.stringify(q.answer)} (${q.answerKind})` : ""} thread=${q.thread ?? "-"} session=${q.session ?? "-"} tmux=${q.tmux ?? "-"}`);
       if (!all.length) console.log("NO_QUESTIONS");
       break;
