@@ -38,7 +38,7 @@ const fakeTimers = () => {
 let state: ReturnType<typeof withState>;
 afterEach(() => state?.done());
 
-const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string } = {}) => {
+const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBot?: string; shadow?: boolean } = {}) => {
   state = withState();
   const seen: HttpRequest[] = [];
   const http: Http = async (req) => {
@@ -60,7 +60,7 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const t = fakeTimers();
   const logs: string[] = [];
   const fatal: number[] = [];
-  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), words: { ...defaultDiscordWords, statusStyle: "emoji", autoUnEye: opts.autoUnEye ?? true }, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
+  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBot: opts.pairBot ?? "" } : {}), ...(opts.shadow ? { shadow: true } : {}), words: { ...defaultDiscordWords, statusStyle: "emoji", autoUnEye: opts.autoUnEye ?? true }, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
   const inbox = () => (existsSync(inboxFile) ? readFileSync(inboxFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}`);
   const eyesFile = () => JSON.parse(readFileSync(`${state.dir}/discord/eyes.json`, "utf8"));
@@ -324,6 +324,58 @@ test("rows other listeners share the inbox with, however large their ids, do not
   expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1000&limit=100`]);
   expect(inbox().map((r) => r.id)).toEqual(["1000", "9000000000000000001", "2000", "1001"]);
   expect(logs).toContain("DISCORD_BACKFILL since=1000 added=1");
+});
+
+const PAIR = "110000000000000011";
+const PAIR_BOT = "120000000000000012";
+
+test("in the pair channel the owner's messages are pair rows and the paired Dori's bot's are pair-bot rows; other bots are skipped", async () => {
+  const { listener, inbox, calls } = setup(() => ({}), { pairChannel: PAIR, pairBot: PAIR_BOT });
+  await listener.onMessage(msg("1001", { channel_id: PAIR }));
+  await listener.onMessage(msg("1002", { channel_id: PAIR, author: { id: PAIR_BOT, bot: true } }));
+  await listener.onMessage(msg("1003", { channel_id: PAIR, author: { id: OTHER_BOT, bot: true } }));
+  await listener.onMessage(msg("1004", { author: { id: PAIR_BOT, bot: true } }));
+  expect(inbox().map((r) => [r.id, r.scope, r.author_id])).toEqual([["1001", "pair", OWNER], ["1002", "pair-bot", PAIR_BOT]]);
+  expect(calls()).toEqual([`PUT /channels/${PAIR}/messages/1001/reactions/%F0%9F%91%80/@me`, `PUT /channels/${PAIR}/messages/1002/reactions/%F0%9F%91%80/@me`]);
+});
+
+test("without a pair channel set, a channel that is not the Dori's or under it is skipped", async () => {
+  const { listener, inbox } = setup((req) => (req.url.endsWith(`/channels/${PAIR}`) ? { parent_id: "777" } : {}));
+  await listener.onMessage(msg("1001", { channel_id: PAIR }));
+  expect(inbox()).toEqual([]);
+});
+
+test("backfill reads the pair channel too, after the newest pair row", async () => {
+  const route = (req: HttpRequest) => {
+    if (req.url.endsWith(`/guilds/${GUILD}/threads/active`)) return { threads: [] };
+    if (req.url.includes(`/channels/${PAIR}/messages?after=1500`)) return [msg("1601", { channel_id: PAIR, guild_id: undefined, author: { id: PAIR_BOT, bot: true } })];
+    return [];
+  };
+  const rows = [{ id: "1000", ts: "x", channel_id: CHANNEL, scope: "channel" }, { id: "1500", ts: "x", channel_id: PAIR, scope: "pair-bot" }];
+  const { listener, gw, inbox, calls } = setup(route, { pairChannel: PAIR, pairBot: PAIR_BOT, inbox: rows.map((r) => `${JSON.stringify(r)}\n`).join("") });
+  listener.start();
+  gw.push({ op: 0, s: 1, t: "READY", d: {} });
+  await listener.settled();
+  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1500&limit=100`, `GET /channels/${PAIR}/messages?after=1500&limit=100`]);
+  expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1000", "channel"], ["1500", "pair-bot"], ["1601", "pair-bot"]]);
+});
+
+test("a shadow listener writes the same inbox row but never writes to Discord: no eyes, no reopen, no card answer, no unreact", async () => {
+  const { listener, gw, inbox, seen, logs } = setup((req) => (req.url.endsWith(`/channels/${THREAD}`) ? { parent_id: CHANNEL, name: "✅ fix login", thread_metadata: { archived: true } } : {}), { shadow: true });
+  listener.start();
+  ready(gw);
+  await listener.onMessage(msg("1001"));
+  await listener.onMessage(msg("1002", { channel_id: THREAD }));
+  await listener.onMessage(fromBot("1003", { message_reference: { message_id: "1001" } }));
+  await listener.onInteraction({ id: "5001", token: "tok", type: 3, channel_id: CHANNEL, member: { user: { id: OWNER } }, data: { custom_id: "q:Q1:0" } });
+  expect(inbox()).toEqual([
+    { ts: "2026-01-02T03:00:00Z", id: "1001", channel_id: CHANNEL, scope: "channel", author_id: OWNER, content: "hello 1001", transcript: null, attachments: [], reply_to: null },
+    { ts: "2026-01-02T03:00:00Z", id: "1002", channel_id: THREAD, scope: "thread", author_id: OWNER, content: "hello 1002", transcript: null, attachments: [], reply_to: null },
+  ]);
+  expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
+  expect(existsSync(`${state.dir}/discord/eyes.json`)).toBe(false);
+  expect(logs).toContain("DISCORD_LISTENER_READY shadow");
+  expect(logs).toContain("SHADOW_INTERACTION_SKIPPED 5001 Q1");
 });
 
 test("a dropped connection reconnects with growing backoff; a rejected token or intent stops the listener", () => {

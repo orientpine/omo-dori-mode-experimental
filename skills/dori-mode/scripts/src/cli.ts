@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
@@ -265,6 +265,10 @@ try {
     }
     case "inbound": {
       if (key === "discord") {
+        // a shadow run writes only to its own inbox, never the live one (which dori.env may also name)
+        const shadowInbox = process.env.DORI_DISCORD_SHADOW_INBOX?.trim() ?? "";
+        const liveInbox = process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+        if (shadowInbox && resolve(shadowInbox) === resolve(liveInbox)) die("DORI_DISCORD_SHADOW_INBOX must differ from the live inbox");
         const dc = discordClient();
         const listener = new DiscordListener({
           dc,
@@ -283,8 +287,11 @@ try {
           channel: env("DORI_DISCORD_CHANNEL"),
           owner: env("DORI_DISCORD_OWNER"),
           ownerWebhook: process.env.DORI_DISCORD_OWNER_WEBHOOK?.trim() ?? "",
+          pairChannel: process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "",
+          pairBot: process.env.DORI_DISCORD_PAIR_BOT?.trim() ?? "",
+          shadow: !!shadowInbox,
           words: config.discord,
-          inboxFile: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+          inboxFile: shadowInbox || liveInbox,
           timers: { ...realTimers, setTimeout: (cb, ms) => setTimeout(cb, ms) },
           now: realClock.now,
           log: (line) => console.log(line),
