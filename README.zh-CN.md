@@ -171,8 +171,9 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 | `dori freshness [--loop MIN]` | 提醒变安静的 lane,再把它最后一条汇报发到线程里 |
 | `dori dead-panes [--loop MIN]` | 报告已停止的智能体 pane |
 | `dori guard [--loop MIN]` | 负载、内存、磁盘和 pane 数量告警 |
-| `dori fix-attempt <key> --metric M --hypothesis H` | 记一次你让 lane 做的修复;lane 在这类汇报里加 `(fix: M / H)`,同一指标、同一假设到第三次时,`SAME_FIX_3` 提醒你让 lane 转去查根因 |
-| `dori scorecard [--date D] [--post]` | 只用记录算出的每日 token 成绩单(不调用模型):每个验证完成的成本和完成声明的驳回率并排，返工最多的 lane、首次回复中位数/p90、lead 的上下文税;`--post` 发到 Discord(每天跑的 systemd timer 在 Discord + aoe 配置里) |
+| `dori fix-attempt <key> --metric M --hypothesis H` | 记一次你让 lane 做的修复;lane 在这类汇报里加 `(fix: M / H)`,同一指标、同一假设到第三次时,`SAME_FIX_3` 提醒你让 lane 转去查根因;记录之前先列出该指标上已经试过的假设(`PRIOR_FIX`) |
+| `dori signals [--lane K \| --cwd DIR \| --tag T]` | 同一工作领域里以前的 lane 试过什么、结果如何:编号的修复尝试和转去查根因的时刻(也从 `[REPORT]` 行和 lead 的重新指示里读取)、按指标的标记修复、带理由的完成声明驳回、重发和催促次数、结果、该领域的驳回率和返工、警告。重新指示 lane 之前先看它 |
+| `dori scorecard [--date D] [--post]` | 只用记录算出的每日 token 成绩单(不调用模型):每个验证完成的成本和完成声明的驳回率并排，返工最多的 lane、首次回复中位数/p90、lead 的上下文税;保存到 `<stateDir>/scorecard/<日期>.json` 和 `latest.md` 供 lead 查看,`--post` 也发到 Discord(默认关闭;每天保存的 systemd timer 在 Discord + aoe 配置里) |
 | `dori heavy <label> -- <cmd>` | 只在有空闲槽位且负载低时运行构建或测试 |
 
 发给 pane 的文字总是作为一个参数传入，从不经过 shell 字符串，并且会确认 Enter 真的生效了。

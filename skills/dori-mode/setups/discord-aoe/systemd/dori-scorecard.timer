@@ -1,5 +1,5 @@
 [Unit]
-Description=Post the Dori token scorecard every morning
+Description=Save the Dori token scorecard every morning
 
 [Timer]
 OnCalendar=*-*-* 08:30:00

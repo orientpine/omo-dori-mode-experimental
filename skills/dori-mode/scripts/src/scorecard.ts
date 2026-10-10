@@ -1,7 +1,8 @@
-import { readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Scorecard } from "./config.ts";
+import { claimEvents } from "./lane-signals.ts";
 import type { Lane } from "./registry.ts";
 
 // The daily scorecard: what the day's tokens bought, read from records only (no model call).
@@ -132,20 +133,10 @@ export const computeScorecard = async (src: ScorecardSources, window: DayWindow)
   let rejected = 0;
   for (const lane of src.lanes) {
     if (lane.closedAt && inDay(ms(lane.closedAt))) verified++;
-    // A rejection is a not-done that answers a claim; a lead parking a lane as not-done ("waiting on the owner") is not.
-    // A second claim while the first is still open is the same claim.
-    let claimOpen = false;
-    for (const h of lane.history ?? []) {
-      const counted = inDay(ms(h.at));
-      const claim = h.status === "done-claimed" || (h.status === "paused" && h.note.startsWith("done claimed while paused"));
-      if (claim) {
-        if (counted && !claimOpen) claims++;
-        claimOpen = true;
-      } else if (h.status === "verified-done") continue;
-      else {
-        if (h.status === "not-done" && claimOpen && counted) rejected++;
-        claimOpen = false;
-      }
+    for (const e of claimEvents(lane)) {
+      if (!inDay(ms(e.at))) continue;
+      if (e.kind === "claim") claims++;
+      else rejected++;
     }
   }
 
@@ -225,6 +216,21 @@ export const computeScorecard = async (src: ScorecardSources, window: DayWindow)
     reply,
     lead: leadFiles.length ? { cost: leadCost, cacheReadCost, contextMedian: quantile(context, 0.5) } : null,
   };
+};
+
+// Keeps the card as a record the lead and lanes read (dori signals, the lead's notes) instead of a post to the owner:
+// <dir>/<date>.json with the numbers and latest.md with the card. Files of days older than keepDays are removed.
+export const saveScorecard = async (dir: string, d: ScorecardData, text: string, keepDays: number): Promise<string> => {
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${d.window.date}.json`);
+  await Bun.write(file, JSON.stringify({ ...d, text }, null, 1));
+  await Bun.write(join(dir, "latest.md"), `${text}\n`);
+  const oldest = new Date(Date.parse(`${d.window.date}T00:00:00Z`) - keepDays * 86_400_000).toISOString().slice(0, 10);
+  for (const n of readdirSync(dir)) {
+    const day = /^(\d{4}-\d{2}-\d{2})\.json$/.exec(n)?.[1];
+    if (day && day < oldest) rmSync(join(dir, n));
+  }
+  return file;
 };
 
 const usd = (x: number) => `$${x >= 100 ? x.toFixed(0) : x.toFixed(2)}`;

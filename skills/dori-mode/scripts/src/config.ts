@@ -72,7 +72,14 @@ export type Scorecard = {
   readonly replyPattern: string;
   readonly leadSendPattern: string;
   readonly postTo: string;
+  // days of <stateDir>/scorecard/YYYY-MM-DD.json kept; older files are removed when a new one is written
+  readonly keepDays: number;
 };
+
+// dori signals: the failure record of earlier lanes. launchLanes caps how many lanes the "Past signals" section of a new
+// brief lists. A report or lead message matching attemptPattern (group 1 = the attempt number) is a numbered fix attempt;
+// one matching rootCausePattern after the first attempt is the switch to a root-cause hunt.
+export type Signals = { readonly launchLanes: number; readonly attemptPattern: string; readonly rootCausePattern: string };
 
 export type DoriConfig = {
   readonly backend: Backend;
@@ -97,6 +104,7 @@ export type DoriConfig = {
   readonly discord: DiscordWords;
   readonly sameFix: SameFix;
   readonly scorecard: Scorecard;
+  readonly signals: Signals;
 };
 
 export const defaultConfig = (home = homedir()): DoriConfig => ({
@@ -134,6 +142,12 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     replyPattern: "^(SENT|POSTED) \\d",
     leadSendPattern: "send-keys\\W+-t\\W+={pane}:\\W+-l|send-text\\W+{pane}\\b",
     postTo: "",
+    keepDays: 30,
+  },
+  signals: {
+    launchLanes: 5,
+    attemptPattern: "(?:fix(?: attempt)?|attempt|adjustment|조정|땜질)\\s*#?(\\d{1,2})(?:\\s*/\\s*\\d+)?(?![\\d.a-z])",
+    rootCausePattern: "root[ -]cause|근본 원인",
   },
 });
 
@@ -157,7 +171,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const base = defaultConfig(home);
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
-  const merged: DoriConfig = { ...base, ...raw, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard } };
+  const merged: DoriConfig = { ...base, ...raw, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals } };
   return {
     ...merged,
     stateDir: expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home),

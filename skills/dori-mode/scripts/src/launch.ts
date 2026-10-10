@@ -3,6 +3,7 @@ import { type Backend, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { LANE_KEY, type Lane, NO_THREAD, threadRefProblem } from "./registry.ts";
+import { areaLabel, type AreaQuery, areaSignals, pastSignalsSection, tagsOf } from "./lane-signals.ts";
 import { iso } from "./run.ts";
 import { doneSyntaxErrors, weakDone } from "./signals.ts";
 
@@ -14,6 +15,7 @@ export type LaunchInput = {
   readonly thread?: string;
   readonly model?: string;
   readonly cwd?: string;
+  readonly tags?: readonly string[];
   // launch without the LAUNCH_DONE_WEAK warning
   readonly doneWeakOk?: boolean;
 };
@@ -56,7 +58,7 @@ export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr")
 
 export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly pane: string }): Promise<Lane> => {
   await validateLaunch(deps, input);
-  const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, openedAt: iso(deps.clock) };
+  const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, ...(input.tags?.length ? { tags: input.tags } : {}), openedAt: iso(deps.clock) };
   await deps.registry.write(lane);
   return lane;
 };
@@ -69,6 +71,13 @@ export const setThread = async (deps: FlowDeps, lane: Lane, ref: string): Promis
   return `THREAD_SET ${lane.key} ${lane.thread || "-"} -> ${ref}`;
 };
 
+// Earlier lanes in the same repo (a cwd other than the default one) or with a shared tag, for the new brief.
+export const pastSignals = async (deps: FlowDeps, input: LaunchInput, cwd: string): Promise<string | undefined> => {
+  const q: AreaQuery = { ...(cwd !== deps.config.defaultCwd ? { cwd } : {}), tags: tagsOf({ key: input.key, tags: input.tags }) };
+  const list = await areaSignals(await deps.registry.list(), q, deps.config);
+  return pastSignalsSection(areaLabel(q), list, deps.config.signals.launchLanes);
+};
+
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
   const model = input.model ?? deps.config.defaultModel;
@@ -77,8 +86,9 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   if (weak) warn(weak);
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
-  const draft: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd, model, openedAt: iso(deps.clock) };
-  await Bun.write(input.brief, `${(await briefFile.text()).replace(/\s*$/, "")}\n${footer(draft, deps.config.leadPane, deps.config.backend)}`);
+  const draft: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd, model, ...(input.tags?.length ? { tags: input.tags } : {}), openedAt: iso(deps.clock) };
+  const past = await pastSignals(deps, input, cwd);
+  await Bun.write(input.brief, `${(await briefFile.text()).replace(/\s*$/, "")}\n${past ? `${past}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}`);
   const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt) : await openHerdr(deps, input.key, cwd, model, prompt);
   const lane: Lane = { ...draft, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}) };

@@ -11,13 +11,14 @@ import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseL
 import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
+import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
 import { adoptLane, launchLane, LaunchError, setThread } from "./launch.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
 import { syncRegistry } from "./sync.ts";
 import { canLaunch } from "./routing.ts";
 import { normFix, recordFix } from "./same-fix.ts";
-import { computeScorecard, dayWindow, formatScorecard, ScorecardError } from "./scorecard.ts";
+import { computeScorecard, dayWindow, formatScorecard, saveScorecard, ScorecardError } from "./scorecard.ts";
 import { fetchHttp, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
@@ -33,27 +34,34 @@ import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
 const USAGE = `dori <command> [options]
 
-  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR] [--done-weak-ok]
+  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
                                        prints LAUNCH_DONE_WEAK (and still launches) when every Done signal only checks
-                                       files or text; --done-weak-ok silences it
-  adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
+                                       files or text; --done-weak-ok silences it. The brief gets a "Past signals" section
+                                       from earlier lanes in the same cwd or with a shared tag (the key's first word is one)
+  adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...]
                                        REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
   set-thread <key> <adapter>:<id>      point an open lane at another work thread
-  sync   [--write]                     registry vs live panes; read-only unless --write
+  sync   [--write]                     registry vs live panes; read-only unless --write; a SIGNALS line per open lane with a record
   claim-done [<key>] --evidence TEXT  key defaults to the lane registered for this pane ($HERDR_PANE_ID, or the tmux session with backend aoe)
   object-done <key> --reason TEXT [--reason TEXT ...]
   pause  <key> <reason>                park a lane that waits on a human: no freshness nudge or post, LANE_BLOCKED or
                                        DEAD_PANE for it, and a done claim does not close it; the reason goes in its history
   resume <key>                         back to the status it had before the pause
   fix-attempt <key> --metric M --hypothesis H
-                                       record that you asked the lane for another fix of M on hypothesis H; from the 3rd
-                                       attempt it prints SAME_FIX_3 (lanes tag reports "(fix: M / H)" for the same count)
+                                       record that you asked the lane for another fix of M on hypothesis H; first prints
+                                       PRIOR_FIX lines (hypotheses already tried on M in this area), from the 3rd attempt
+                                       SAME_FIX_3 (lanes tag reports "(fix: M / H)" for the same count)
+  signals [--lane K | --cwd DIR | --tag T]
+                                       what earlier lanes tried and how it went: numbered fix attempts and the root-cause
+                                       switch, tagged fixes by metric, rejected done claims, re-sends, nudges, outcome,
+                                       warnings; no option = one SIGNALS line per open lane. Read it before re-instructing
   close  <key> [--note TEXT]           close now (Done signals must read back live); a discord:<id> work thread is set
                                        done and archived when DORI_DISCORD_TOKEN is set
   watch                                long-running: emits LANE_* lines every 30 s
   scorecard [--date YYYY-MM-DD|today|yesterday] [--post] [--to discord:<id>]
                                        the day's token scorecard from session usage, the registry, the lanes log and the
-                                       inbox (no model call); --post sends it to scorecard.postTo or DORI_DISCORD_CHANNEL
+                                       inbox (no model call), saved to <stateDir>/scorecard/<date>.json and latest.md;
+                                       --post also sends it to scorecard.postTo or DORI_DISCORD_CHANNEL (off by default)
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
@@ -103,7 +111,7 @@ const flags = parseArgs({
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
     to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" },
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
-    "done-weak-ok": { type: "boolean" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
+    "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -114,6 +122,7 @@ const need = (name: string): string => opt(name) || die(`--${name} is required`)
 // a bare --thread (no value) is a thread ref that came out empty, not a lane without a thread
 const threadOpt = (): string | undefined => (flags.values.thread === true ? "" : opt("thread"));
 const key = flags.positionals[0];
+const tags = (): string[] => ((flags.values.tag as string[] | undefined) ?? []).map((t) => t.trim()).filter(Boolean);
 const loopMin = Number(opt("loop") ?? 0);
 
 const lane = async (k: string | undefined) => {
@@ -143,6 +152,12 @@ const transcribeUrl = async (url: string, filename: string): Promise<string> => 
   }
 };
 
+// one SIGNALS line per open lane that has a record, for the lead's status view (dori sync, dori signals)
+const openSignals = async (): Promise<string[]> => {
+  const open = await deps.registry.open();
+  return (await areaSignals(open, { tags: [...new Set(open.flatMap((l) => tagsOf(l)))] }, config)).filter(hasSignals).map(oneLine);
+};
+
 const every = async (minutes: number, tick: () => Promise<void>): Promise<void> => {
   for (;;) {
     await tick().catch((e: unknown) => console.log(`WARN ${e instanceof Error ? e.message : String(e)}`.slice(0, 300)));
@@ -154,13 +169,13 @@ const every = async (minutes: number, tick: () => Promise<void>): Promise<void> 
 try {
   switch (command) {
     case "launch": {
-      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), doneWeakOk: Boolean(flags.values["done-weak-ok"]) }, (line) => console.log(line));
+      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]) }, (line) => console.log(line));
       console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
       console.log(r.startup);
       process.exit(r.startup.startsWith("STARTUP_OK") ? 0 : 3);
     }
     case "adopt": {
-      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), pane: need("pane") });
+      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), pane: need("pane"), tags: tags() });
       console.log(`ADOPTED ${l.key} pane=${l.pane} thread=${l.thread}`);
       break;
     }
@@ -168,6 +183,7 @@ try {
       const r = await syncRegistry(deps, Boolean(flags.values.write));
       console.log("key | thread | pane | session | status");
       for (const row of [...r.rows, ...r.unregistered]) console.log([row.key, row.thread, row.pane, row.session, row.status].join(" | "));
+      for (const s of await openSignals()) console.log(s);
       console.log(r.drift.length ? `DRIFT (${r.drift.length}):\n${r.drift.map((d) => `- ${d}`).join("\n")}` : "DRIFT none");
       console.log(flags.values.write ? "WROTE session ids" : "READ_ONLY");
       break;
@@ -193,7 +209,10 @@ try {
     }
     case "fix-attempt": {
       const l = await lane(key ?? die("fix-attempt needs a lane key"));
-      const r = await recordFix(deps, l.key, { at: new Date().toISOString(), metric: normFix(need("metric")), hypothesis: normFix(need("hypothesis")), via: "lead" });
+      const metric = normFix(need("metric"));
+      const area: AreaQuery = { lane: l.key, ...(l.cwd && l.cwd !== config.defaultCwd ? { cwd: l.cwd } : {}), tags: tagsOf(l) };
+      for (const line of priorFixLines(await areaSignals(await deps.registry.list(), area, config), l.key, metric)) console.log(line);
+      const r = await recordFix(deps, l.key, { at: new Date().toISOString(), metric, hypothesis: normFix(need("hypothesis")), via: "lead" });
       console.log(`FIX_RECORDED ${l.key} attempt=${r.count}`);
       if (r.alert) console.log(`SAME_FIX_3 ${l.key} ${r.alert}`);
       break;
@@ -223,11 +242,23 @@ try {
       }, window);
       const text = formatScorecard(data, config.scorecard.language, Date.now());
       console.log(text);
+      console.log(`SAVED ${await saveScorecard(join(config.stateDir, "scorecard"), data, text, config.scorecard.keepDays)}`);
       if (flags.values.post) {
         const ref = opt("to") || config.scorecard.postTo || `discord:${env("DORI_DISCORD_CHANNEL")}`;
         const id = /^discord:(\d{5,25})$/.exec(ref)?.[1] ?? die(`scorecard posts to discord:<channel or thread id>, not ${ref}`);
         console.log(`SENT ${await discordClient().send(id, text)}`);
       }
+      break;
+    }
+    case "signals": {
+      const q: AreaQuery = { ...(opt("lane") ? { lane: opt("lane") } : {}), ...(opt("cwd") ? { cwd: resolve(opt("cwd") ?? "") } : {}), ...(tags().length ? { tags: tags() } : {}) };
+      if (!q.lane && !q.cwd && !q.tags) {
+        const lines = await openSignals();
+        console.log(lines.length ? lines.join("\n") : "SIGNALS none for open lanes");
+        break;
+      }
+      const list = await areaSignals(await deps.registry.list(), q, config);
+      console.log(list.length ? formatSignals(areaLabel(q), list) : `SIGNALS no lane in ${areaLabel(q)}`);
       break;
     }
     case "freshness":

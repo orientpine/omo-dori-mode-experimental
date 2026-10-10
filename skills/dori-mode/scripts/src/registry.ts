@@ -39,6 +39,8 @@ export type Lane = {
   readonly done: string;
   readonly cwd?: string;
   readonly model?: string;
+  // topic tags (dori launch --tag); the key's first word (rl in rl-e7) is always a tag too
+  readonly tags?: readonly string[];
   readonly worktrees?: readonly string[];
   readonly status?: LaneStatus;
   readonly pausedFrom?: LaneStatus;

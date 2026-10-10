@@ -162,18 +162,19 @@ The watcher runs each check itself when it closes the lane, with no shell, and n
 
 | Command | What it does |
 |---|---|
-| `dori launch <key> ...` | write the lane footer into the brief, open a herdr tab or aoe session, start the agent, check for startup errors; warns `LAUNCH_DONE_WEAK` (and still launches) when every `Done =` signal only checks files or text, `--done-weak-ok` silences it |
+| `dori launch <key> ...` | write the lane footer into the brief, open a herdr tab or aoe session, start the agent, check for startup errors; warns `LAUNCH_DONE_WEAK` (and still launches) when every `Done =` signal only checks files or text, `--done-weak-ok` silences it; adds a "Past signals" section from earlier lanes in the same repo or topic (`--tag`, and the key's first word) so a new lane doesn't repeat a failed fix |
 | `dori adopt <key> --pane ID ...` | register a lane that's already running |
 | `dori set-thread <key> <adapter>:<id>` | point a lane at another work thread; `launch`, `adopt` and `set-thread` refuse an empty or malformed ref such as `discord:` |
-| `dori sync [--write]` | registry against live panes, plus drift |
+| `dori sync [--write]` | registry against live panes, plus drift and a `SIGNALS` line per open lane with a record |
 | `dori claim-done` / `object-done` / `close` | the done flow; a close with no usable thread prints `THREAD_MISSING <key>` instead of skipping the thread hook silently; with `DORI_DISCORD_TOKEN` set, a close also marks a `discord:` work thread done and archives it |
 | `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on you: no freshness nudge or post, `LANE_BLOCKED` or `DEAD_PANE` for it, and a done claim doesn't close it; `resume` puts back the status it had |
 | `dori watch` | the auto-close watcher, plus aoe `LANE_BLOCKED` events; run it as a persistent monitor |
 | `dori freshness [--loop MIN]` | nudge lanes that went quiet, then post their last report to their thread |
 | `dori dead-panes [--loop MIN]` | report agent panes that stopped |
 | `dori guard [--loop MIN]` | alert on load, memory, disk and pane count |
-| `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked a lane for; lanes tag such reports `(fix: M / H)`, and from the third attempt on one metric with one hypothesis `SAME_FIX_3` tells you to switch the lane to a root-cause hunt |
-| `dori scorecard [--date D] [--post]` | the day's token scorecard from records, no model call: cost per verified completion beside the claim rejection rate, the lanes with most rework, first-reply median/p90, the lead's context tax; `--post` sends it to Discord (a daily systemd timer is in the Discord + aoe setup) |
+| `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked a lane for; lanes tag such reports `(fix: M / H)`, and from the third attempt on one metric with one hypothesis `SAME_FIX_3` tells you to switch the lane to a root-cause hunt; it first prints the hypotheses already tried on that metric (`PRIOR_FIX`) |
+| `dori signals [--lane K \| --cwd DIR \| --tag T]` | what earlier lanes in one area tried and how it went: numbered fix attempts and the switch to a root-cause hunt (also read back from `[REPORT]` lines and your re-instructions), tagged fixes by metric, rejected done claims with reasons, re-sends, nudges, outcome, the area's rejection rate and rework, warnings. Read it before you re-instruct a lane |
+| `dori scorecard [--date D] [--post]` | the day's token scorecard from records, no model call: cost per verified completion beside the claim rejection rate, the lanes with most rework, first-reply median/p90, the lead's context tax; saved to `<stateDir>/scorecard/<date>.json` and `latest.md` for the lead to read, `--post` also sends it to Discord (off by default; a daily systemd timer that saves it is in the Discord + aoe setup) |
 | `dori heavy <label> -- <cmd>` | run a build or test suite only when a slot is free and load is low |
 
 Text sent to a pane always goes as one argument, never through a shell string, and the CLI checks that Enter actually landed.
