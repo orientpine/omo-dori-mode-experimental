@@ -320,7 +320,7 @@ try {
       break;
     case "resolve": {
       const id = key ?? die("resolve needs a question id");
-      if (!new QuestionStore(join(config.stateDir, "discord")).resolve(id)) die(`no question ${id}`);
+      if (!(await questionCards(discordClient()).resolve(id))) die(`no question ${id}`);
       console.log(`RESOLVED ${id}`);
       break;
     }

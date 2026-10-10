@@ -134,7 +134,7 @@ test("reopen puts the buttons back on the posted card; resolve forgets the quest
   expect(calls()[2]).toBe(`PATCH /channels/${CHANNEL}/messages/900`);
   expect(rows(json(2).components).map((b) => b?.custom_id)).toEqual(["q:Q1:0", "q:Q1:1", "q:Q1:other"]);
   expect(store.get("Q1")?.answer).toBeUndefined();
-  expect(cards.resolve("Q1")).toBe(true);
+  expect(await cards.resolve("Q1")).toBe(true);
   expect(store.all()).toEqual([]);
   await expect(cards.reopen("Q1")).rejects.toBeInstanceOf(QuestionError);
 });
@@ -214,6 +214,48 @@ test("reopening a card inside its thread patches it there and marks the thread �
   await cards.reopen("Q1");
   expect(calls().slice(before)).toEqual(["PATCH /channels/300/messages/900", "GET /channels/300", "PATCH /channels/300"]);
   expect(thread.name).toBe("⏸️ fix login");
+});
+
+test("resolving the last open card in a thread without an answer marks the thread 🔄", async () => {
+  const { cards, thread } = threadCards();
+  await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  await cards.ask("Deploy where?", ["Staging"], { thread: "300" });
+  const out = await cards.handle(threadTap("q:Q2:0"));
+  if (out.kind !== "answered") throw new Error(out.kind);
+  await cards.afterAnswer(out.question);
+  expect(thread.name).toBe("⏸️ fix login");
+  expect(await cards.resolve("Q1")).toBe(true);
+  expect(thread.name).toBe("🔄 fix login");
+});
+
+test("with word status the same resolve marks the thread [working]", async () => {
+  const { dc, store, thread } = threadCards("[waiting] fix login");
+  const cards = new QuestionCards(dc, store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => 0);
+  await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  expect(await cards.resolve("Q1")).toBe(true);
+  expect(thread.name).toBe("[working] fix login");
+});
+
+test("resolving an open card while another card in the thread is still open leaves the thread ⏸️", async () => {
+  const { cards, calls, thread } = threadCards();
+  await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  await cards.ask("Deploy where?", ["Staging"], { thread: "300" });
+  const before = calls().length;
+  expect(await cards.resolve("Q1")).toBe(true);
+  expect(calls().slice(before)).toEqual([]);
+  expect(thread.name).toBe("⏸️ fix login");
+});
+
+test("resolving an answered card does not touch the thread status", async () => {
+  const { cards, calls, thread } = threadCards();
+  await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  await cards.handle(threadTap("q:Q1:0"));
+  thread.name = "⏸️ fix login";
+  const before = calls().length;
+  expect(await cards.resolve("Q1")).toBe(true);
+  expect(calls().slice(before)).toEqual([]);
+  expect(thread.name).toBe("⏸️ fix login");
+  expect(await cards.resolve("Q9")).toBe(false);
 });
 
 test("a failed thread rename does not fail the ask: the card is already posted", async () => {

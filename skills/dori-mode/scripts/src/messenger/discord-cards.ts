@@ -237,8 +237,13 @@ export class QuestionCards {
     return q;
   }
 
-  resolve(id: string): boolean {
-    return this.store.resolve(id);
+  // Resolving a card nobody answered would otherwise leave its thread waiting on a question that is gone,
+  // so the thread goes back to working once none of its questions is open. An answered card changes nothing.
+  async resolve(id: string): Promise<boolean> {
+    const q = this.store.get(id);
+    if (!q || !this.store.resolve(id)) return false;
+    if (q.status === "open" && q.thread && !this.store.all().some((x) => x.status === "open" && x.thread === q.thread)) await this.mark(q.thread, "working");
+    return true;
   }
 
   private respond(i: Interaction, body: Record<string, unknown>): Promise<unknown> {
