@@ -1,11 +1,15 @@
 #!/usr/bin/env bun
+// allow: SIZE_OK — existing command dispatcher; command behavior lives in separate modules.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
-import { envFilePath, loadConfig, loadEnvFile } from "./config.ts";
+import { configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
+import { sendVerified } from "./panes.ts";
+import { applyUpdate } from "./update.ts";
+import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
 import { freshnessTick } from "./freshness.ts";
@@ -58,6 +62,9 @@ const USAGE = `dori <command> [options]
   close  <key> [--note TEXT]           close now (Done signals must read back live); a discord:<id> work thread is set
                                        done and archived when DORI_DISCORD_TOKEN is set
   watch                                long-running: emits LANE_* lines every 30 s
+  update [--pull] [--dry-run]           apply changed scripts to configured services and report unset new config keys
+  notify-change --summary TEXT [--file PATH ...]
+                                       tell the lead about changed guidance using update.announce
   scorecard [--date YYYY-MM-DD|today|yesterday] [--post] [--to discord:<id>]
                                        the day's token scorecard from session usage, the registry, the lanes log and the
                                        inbox (no model call), saved to <stateDir>/scorecard/<date>.json and latest.md;
@@ -112,6 +119,8 @@ const flags = parseArgs({
     to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" },
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
+    pull: { type: "boolean" }, "dry-run": { type: "boolean" },
+    summary: { type: "string" }, file: { type: "string", multiple: true },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -168,6 +177,14 @@ const every = async (minutes: number, tick: () => Promise<void>): Promise<void> 
 
 try {
   switch (command) {
+    case "notify-change": {
+      const files = flags.values.file;
+      process.exitCode = await announceChange({ config, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config.backend, pane, text), print: (line) => console.log(line) }, { summary: need("summary"), files: Array.isArray(files) ? files.filter((file): file is string => typeof file === "string") : [] }) ? 0 : 1;
+      break;
+    }
+    case "update":
+      process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config.backend, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
+      break;
     case "launch": {
       const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]) }, (line) => console.log(line));
       console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);

@@ -75,7 +75,7 @@ export const withState = (): { dir: string; done: () => void } => {
 };
 
 export const depsFor = (w: World, clock: Clock, stateDir: string, patch: Partial<DoriConfig> = {}): FlowDeps => {
-  const config: DoriConfig = { ...defaultConfig("/home/test"), stateDir, defaultCwd: "/repo", leadPane: "lead:p1", ...patch };
+  const config: DoriConfig = { ...defaultConfig("/home/test"), stateDir, watchLog: join(stateDir, "lanes.log"), defaultCwd: "/repo", leadPane: "lead:p1", ...patch };
   return { run: fakeRunner(w), clock, registry: new Registry(stateDir), config, exists: () => true };
 };
 

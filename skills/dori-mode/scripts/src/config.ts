@@ -1,5 +1,20 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { run } from "./run.ts";
+
+export type UpdateService = {
+  readonly unit: string;
+  readonly paths: readonly string[];
+  readonly log: string;
+  readonly ready: string;
+};
+export type UpdateConfig = {
+  readonly repo: string;
+  readonly services: readonly UpdateService[];
+  readonly readyTimeoutSec: number;
+  readonly alertPane: string;
+  readonly announce: string;
+};
 
 export type ArgvTemplate = readonly string[];
 
@@ -86,6 +101,8 @@ export type Signals = { readonly launchLanes: number; readonly attemptPattern: s
 export type DoriConfig = {
   readonly backend: Backend;
   readonly stateDir: string;
+  readonly watchLog: string;
+  readonly update: UpdateConfig;
   readonly laneWorkspace: string;
   readonly workspaces: readonly string[];
   readonly ignorePanes: readonly string[];
@@ -112,6 +129,8 @@ export type DoriConfig = {
 export const defaultConfig = (home = homedir()): DoriConfig => ({
   backend: "herdr",
   stateDir: join(home, ".dori", "state"),
+  watchLog: join(home, ".dori", "state", "lanes.log"),
+  update: { repo: resolve(import.meta.dir, "../../../.."), services: [], readyTimeoutSec: 60, alertPane: "", announce: "Tell the owner in your own channel, briefly, what changed and how your behaviour changes because of it." },
   laneWorkspace: "",
   workspaces: [],
   ignorePanes: [],
@@ -174,14 +193,19 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const base = defaultConfig(home);
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
-  const merged: DoriConfig = { ...base, ...raw, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals } };
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals } };
+  const stateDir = expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home);
+  const leadPane = process.env.DORI_LEAD_PANE ?? merged.leadPane;
+  const repo = raw.update?.repo ? expandHome(raw.update.repo, home) : (await run(["git", "-C", import.meta.dir, "rev-parse", "--show-toplevel"])).out || base.update.repo;
   return {
     ...merged,
-    stateDir: expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home),
+    stateDir,
+    watchLog: expandHome(raw.watchLog ?? join(stateDir, "lanes.log"), home),
+    update: { ...merged.update, repo, alertPane: raw.update?.alertPane ?? leadPane, services: merged.update.services.map((s) => ({ ...s, paths: s.paths ?? ["skills/dori-mode/scripts/src/"], log: expandHome(s.log ?? "", home), ready: s.ready ?? "" })) },
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
     scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog, home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
-    leadPane: process.env.DORI_LEAD_PANE ?? merged.leadPane,
+    leadPane,
   };
 };
 

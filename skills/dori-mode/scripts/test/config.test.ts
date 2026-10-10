@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { fill, loadConfig, loadEnvFile } from "../src/config.ts";
+import { defaultConfig, fill, loadConfig, loadEnvFile } from "../src/config.ts";
+import { configKeys } from "../src/config-keys.ts";
 import { withState } from "./fakes.ts";
 
 const state = withState();
@@ -54,4 +55,36 @@ test("the env file fills unset variables only, skips comments and strips quotes"
 test("hook templates fill each argument separately, so text with spaces or quotes stays one argument", () => {
   const argv = fill(["notify", "--thread", "{thread}", "--text", "{text}"], { thread: "chat:1/2", text: `it's "done"; rm -rf /` });
   expect(argv).toEqual(["notify", "--thread", "chat:1/2", "--text", `it's "done"; rm -rf /`]);
+});
+
+test("documents every configuration field when defaultConfig defines it", async () => {
+  // Given
+  const defaults = defaultConfig();
+  const text = await Bun.file(join(import.meta.dir, "../../references/scripts.md")).text();
+  const documented = new Set([...text.matchAll(/`([a-zA-Z][\w.]*)`/g)].map((match) => match[1]));
+  const required = [
+    ...Object.keys(defaults),
+    ...configKeys({ scorecard: defaults.scorecard, update: defaults.update, sameFix: defaults.sameFix, signals: defaults.signals }),
+  ];
+  // When
+  const missing = required.filter((key) => !documented.has(key));
+  // Then
+  expect(missing).toEqual([]);
+});
+
+test("expands update paths and defaults watchLog and alertPane when config overrides state and lead", async () => {
+  // Given
+  const fixture = withState();
+  try {
+    const file = join(fixture.dir, "config.json");
+    writeFileSync(file, JSON.stringify({ stateDir: "~/custom-state", leadPane: "lead", update: { repo: "~/clone", services: [{ unit: "test", log: "~/service.log" }] } }));
+    // When
+    const config = await loadConfig(file, "/home/ana");
+    // Then
+    expect(config.watchLog).toBe("/home/ana/custom-state/lanes.log");
+    expect(config.update.repo).toBe("/home/ana/clone");
+    expect(config.update.alertPane).toBe("lead");
+    expect(config.update.services).toEqual([{ unit: "test", log: "/home/ana/service.log", paths: ["skills/dori-mode/scripts/src/"], ready: "" }]);
+    expect(config.update.readyTimeoutSec).toBe(60);
+  } finally { fixture.done(); }
 });

@@ -49,6 +49,33 @@ What you get:
    The timer saves yesterday's card every morning at 08:30 host time to `~/.dori/state/scorecard/<date>.json` and `latest.md`, for the Dori to read; nothing is posted to the owner. Add `--post` to `ExecStart=` only if the owner wants the card in the channel. Put a time zone after the time in `OnCalendar=` (e.g. `08:30:00 Asia/Seoul`) to pin it.
 7. **Smoke test.** Write in the channel: the eyes reaction appears within a second and a row lands in `~/.dori/state/discord/inbox.jsonl`. Then `dori ask --text "Smoke test: does the card work?" --option Yes --option No` and tap a button: the card folds into `[answered] ... → Yes` and an `answer` row follows in the inbox.
 
+## Auto-apply updates
+
+Set `watchLog` to the log your Dori monitors (default `<stateDir>/lanes.log`) and configure `update.services` in its config. For example:
+
+```json
+{
+  "update": {
+    "services": [
+      { "unit": "dori-inbound", "paths": ["skills/dori-mode/scripts/src/"], "log": "~/.dori/inbound.log", "ready": "DISCORD_LISTENER_READY" },
+      { "unit": "dori-lanes", "paths": ["skills/dori-mode/scripts/src/", "skills/dori-mode/setups/discord-aoe/dori-lanes.sh"], "log": "~/.dori/dori-lanes.log", "ready": "LANE_WATCH_READY" },
+      { "unit": "dori-session-watch", "paths": ["skills/dori-mode/setups/discord-aoe/session-watch.ts"], "log": "~/.dori/session-watch.log", "ready": "" }
+    ]
+  }
+}
+```
+
+Baseline the current checkout before the next pull, then install the optional path unit:
+
+```sh
+dori update
+cp $S/systemd/dori-update.service $S/systemd/dori-update.path ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now dori-update.path
+```
+
+The shipped unit watches `.git/HEAD`, `refs/heads`, `packed-refs`, and specifically `PathChanged=%h/.dori/src/.git/refs/heads/main`: fast-forward pulls update the branch ref, not HEAD. Replace `main` with the checked-out branch in the installed unit. These paths are for an ordinary clone, not a linked worktree with a `.git` file. Use `dori update --pull` to pull and apply explicitly. Restart results and new config-key notices land in `watchLog`; update command output also lands in `~/.dori/update.log`. The lead gets one change summary and the `update.announce` instruction after each applied HEAD; first-run sends nothing.
+
 ## Switching an existing listener over
 
 To move from another listener to `dori-inbound` without losing or doubling a message, run the new one as a shadow beside the old one, compare what both wrote message by message, and only then swap them. The old listener keeps serving the owner until the swap, and the rollback is one line.

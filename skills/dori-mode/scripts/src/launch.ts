@@ -6,6 +6,7 @@ import { LANE_KEY, type Lane, NO_THREAD, threadRefProblem } from "./registry.ts"
 import { areaLabel, type AreaQuery, areaSignals, pastSignalsSection, tagsOf } from "./lane-signals.ts";
 import { iso } from "./run.ts";
 import { doneSyntaxErrors, weakDone } from "./signals.ts";
+import { watchLog } from "./watch-log.ts";
 
 export type LaunchInput = {
   readonly key: string;
@@ -83,7 +84,10 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const model = input.model ?? deps.config.defaultModel;
   const cwd = input.cwd ?? deps.config.defaultCwd;
   const weak = await doneWeakWarning(input, cwd);
-  if (weak) warn(weak);
+  if (weak) {
+    warn(weak);
+    watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: weak });
+  }
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
   const draft: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd, model, ...(input.tags?.length ? { tags: input.tags } : {}), openedAt: iso(deps.clock) };
