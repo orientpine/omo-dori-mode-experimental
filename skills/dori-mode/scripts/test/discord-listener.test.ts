@@ -375,7 +375,25 @@ test("a shadow listener writes the same inbox row but never writes to Discord: n
   expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
   expect(existsSync(`${state.dir}/discord/eyes.json`)).toBe(false);
   expect(logs).toContain("DISCORD_LISTENER_READY shadow");
-  expect(logs).toContain("SHADOW_INTERACTION_SKIPPED 5001 Q1");
+  expect(logs).toContain("SHADOW_INTERACTION_SKIPPED 5001 q:Q1:0");
+});
+
+test("a shadow listener writes the answer row the live one would for a tap or a typed answer, without answering Discord or touching the card store", async () => {
+  const { listener, cards, inbox, seen } = setup(() => ({}), { shadow: true });
+  const q = cards.store.create("Ship?", ["Yes", "No"], THREAD, { thread: THREAD, session: "sess-1", tmux: "aoe_demo_1234abcd" }, "2026-01-02T03:00:00Z");
+  cards.store.answer(q.id, "No", "button", "2026-01-02T03:03:59Z");
+  const before = JSON.stringify(cards.store.all());
+  const tap = (id: string, custom_id: string, user = OWNER, components?: unknown[]) => listener.onInteraction({ id, token: "tok", type: custom_id.startsWith("m:") ? 5 : 3, channel_id: THREAD, member: { user: { id: user } }, data: { custom_id, ...(components ? { components } : {}) } });
+  await tap("5001", "q:Q1:1");
+  await tap("5002", "q:Q1:other");
+  await tap("5003", "m:Q1", OWNER, [{ type: 1, components: [{ type: 4, custom_id: "answer", value: " next week " }] }]);
+  await tap("5004", "q:Q1:0", "555");
+  expect(inbox()).toEqual([
+    { ts: "2026-01-02T03:04:00.000Z", id: "5001", kind: "answer", qid: "Q1", answer: "No", answer_kind: "button", question: "Ship?", thread: THREAD, session: "sess-1", tmux: "aoe_demo_1234abcd" },
+    { ts: "2026-01-02T03:04:00.000Z", id: "5003", kind: "answer", qid: "Q1", answer: "next week", answer_kind: "text", question: "Ship?", thread: THREAD, session: "sess-1", tmux: "aoe_demo_1234abcd" },
+  ]);
+  expect(seen).toEqual([]);
+  expect(JSON.stringify(cards.store.all())).toBe(before);
 });
 
 test("a dropped connection reconnects with growing backoff; a rejected token or intent stops the listener", () => {

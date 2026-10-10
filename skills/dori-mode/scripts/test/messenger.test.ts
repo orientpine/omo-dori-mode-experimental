@@ -6,6 +6,7 @@ import { Slack } from "../src/messenger/slack.ts";
 import { slackPresence } from "../src/messenger/slack-presence.ts";
 import { htmlTable, startThinking, Telegram, THINKING } from "../src/messenger/telegram.ts";
 import { typingWhile } from "../src/messenger/typing.ts";
+import { run as realRun } from "../src/run.ts";
 import { transcribe, TranscriptionError } from "../src/messenger/voice.ts";
 import { fakeClock } from "./fakes.ts";
 
@@ -140,6 +141,15 @@ test("a voice note becomes text through the configured hook, and a failing or em
   expect(calls[0]).toEqual(["stt", "--file", "/tmp/v 1.ogg"]);
   await expect(transcribe(async () => ({ code: 0, out: "", err: "" }), ["stt", "{file}"], "/a.ogg")).rejects.toBeInstanceOf(TranscriptionError);
   await expect(transcribe(run, undefined, "/a.ogg")).rejects.toBeInstanceOf(TranscriptionError);
+});
+
+test("a hook sees variables dori loaded from dori.env after start-up (e.g. the speech-to-text install dir)", async () => {
+  process.env.DORI_TEST_FROM_ENV_FILE = "loaded-later";
+  try {
+    expect((await realRun(["sh", "-c", "printf %s \"$DORI_TEST_FROM_ENV_FILE\""])).out).toBe("loaded-later");
+  } finally {
+    delete process.env.DORI_TEST_FROM_ENV_FILE;
+  }
 });
 
 test("Slack presence opens one client-type socket with the cookie, then only tickles it; release closes it and sets away", async () => {
