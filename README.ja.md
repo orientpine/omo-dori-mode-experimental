@@ -124,7 +124,7 @@ aoe では `dori watch` が、working または not-done のレーンが人を�
 
 ## セッションレジストリ
 
-レーンごとに `~/.dori/state/lanes/` の下に JSON ファイルがひとつできます。メッセンジャーのスレッドと herdr の pane または aoe の tmux セッション名、pane とエージェントのセッション id を結びつけ、状態(`working`、`done-claimed`、`verified-done`、`not-done`、`closed`)とその変化の履歴を残します。
+レーンごとに `~/.dori/state/lanes/` の下に JSON ファイルがひとつできます。メッセンジャーのスレッドと herdr の pane または aoe の tmux セッション名、pane とエージェントのセッション id を結びつけ、状態(`working`、`done-claimed`、`verified-done`、`not-done`、`paused`、`closed`)とその変化の履歴を残します。
 
 `dori sync` はこの記録を実際に動いている pane と突き合わせて、ずれを教えてくれます。消えた pane、変わったセッション id、完了を証明する手段がないレーンなどです。何も削除しません。`--write` を付けると、見つけたセッション id を保存します。
 
@@ -165,7 +165,8 @@ watcher はレーンを閉じるときに、シェルを通さずこの確認を
 | `dori launch <key> ...` | brief にレーンの footer を書き、herdr タブか aoe セッションを開き、エージェントを起動し、起動エラーを確認 |
 | `dori adopt <key> --pane ID ...` | すでに動いているレーンを登録 |
 | `dori sync [--write]` | レジストリと実際の pane を比べ、ずれを表示 |
-| `dori claim-done` / `object-done` / `close` | 完了フロー |
+| `dori claim-done` / `object-done` / `close` | 完了フロー。`DORI_DISCORD_TOKEN` があれば、close は `discord:` の作業スレッドを完了にしてアーカイブする |
+| `dori pause <key> <理由>` / `dori resume <key>` | 人を待っているレーンを止めておく。freshness の催促・投稿、`LANE_BLOCKED`、`DEAD_PANE` を出さず、完了申告が来ても自動では閉じない。`resume` で止める前の状態に戻す |
 | `dori watch` | 自動クローズの watcher と aoe の `LANE_BLOCKED` イベント。常駐モニターとして動かします |
 | `dori freshness [--loop MIN]` | 静かになったレーンに声をかけ、最後の報告をスレッドに投稿 |
 | `dori dead-panes [--loop MIN]` | 止まったエージェントの pane を報告 |

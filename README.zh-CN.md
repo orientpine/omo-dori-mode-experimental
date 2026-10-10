@@ -124,7 +124,7 @@ aoe 下，working 或 not-done 的 lane 停下来等人时，`dori watch` 输出
 
 ## 会话登记表
 
-每条 lane 在 `~/.dori/state/lanes/` 下有一个 JSON 文件。它把消息线程对应到 herdr pane 或 aoe tmux 会话名，把 pane 对应到智能体自己的会话 id,并记录状态(`working`、`done-claimed`、`verified-done`、`not-done`、`closed`)以及每次变化的历史。
+每条 lane 在 `~/.dori/state/lanes/` 下有一个 JSON 文件。它把消息线程对应到 herdr pane 或 aoe tmux 会话名，把 pane 对应到智能体自己的会话 id,并记录状态(`working`、`done-claimed`、`verified-done`、`not-done`、`paused`、`closed`)以及每次变化的历史。
 
 `dori sync` 会把登记表和实际在运行的 pane 对照，告诉你哪里对不上：消失的 pane、变了的会话 id、没有办法证明已完成的 lane。它不会删除任何东西。加上 `--write` 会把找到的会话 id 存下来。
 
@@ -165,7 +165,8 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 | `dori launch <key> ...` | 在 brief 里写入 lane footer,打开 herdr 标签页或 aoe 会话，启动智能体，检查启动错误 |
 | `dori adopt <key> --pane ID ...` | 登记一条已经在运行的 lane |
 | `dori sync [--write]` | 对照登记表和实际 pane,列出不一致 |
-| `dori claim-done` / `object-done` / `close` | 完成流程 |
+| `dori claim-done` / `object-done` / `close` | 完成流程；设置了 `DORI_DISCORD_TOKEN` 时，close 会把 `discord:` 工作线程标为完成并归档 |
+| `dori pause <key> <原因>` / `dori resume <key>` | 暂停一条在等人的 lane:不再催促或代发进度、不报 `LANE_BLOCKED` 和 `DEAD_PANE`,完成声明也不会自动关闭它；`resume` 恢复暂停前的状态 |
 | `dori watch` | 自动关闭的 watcher,以及 aoe `LANE_BLOCKED` 事件，作为常驻监控运行 |
 | `dori freshness [--loop MIN]` | 提醒变安静的 lane,再把它最后一条汇报发到线程里 |
 | `dori dead-panes [--loop MIN]` | 报告已停止的智能体 pane |

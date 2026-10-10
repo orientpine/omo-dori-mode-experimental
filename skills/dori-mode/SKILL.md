@@ -92,7 +92,8 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 | `dori launch` / `dori adopt` | open a lane in a new tab, or register one already running; an empty or malformed `--thread` (e.g. `discord:`) is refused |
 | `dori set-thread <key> <adapter>:<id>` | point a lane at another work thread; a close with no usable thread prints `THREAD_MISSING` |
 | `dori sync [--write]` | rebuild the registry from live panes, report drift |
-| `dori claim-done` / `dori object-done` / `dori close` | the done flow |
+| `dori claim-done` / `dori object-done` / `dori close` | the done flow; with `DORI_DISCORD_TOKEN`, a close sets a `discord:` work thread done and archives it |
+| `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on the owner (no nudges, posts, `LANE_BLOCKED` or auto-close), then put it back |
 | `dori watch` | the 5-minute auto-close watcher, plus `LANE_BLOCKED` with aoe (run it as a persistent monitor) |
 | `dori freshness` | nudge silent lanes, post their last report (read from the lead pane) to their thread |
 | `dori dead-panes` | report agent panes that stopped |

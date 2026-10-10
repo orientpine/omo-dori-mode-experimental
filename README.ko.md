@@ -124,7 +124,7 @@ aoe에서 `dori watch`는 working 또는 not-done 레인이 사람을 기다리�
 
 ## 세션 레지스트리
 
-레인마다 `~/.dori/state/lanes/` 아래에 JSON 파일이 하나씩 생깁니다. 메신저 스레드와 herdr pane 또는 aoe tmux 세션 이름, pane과 에이전트 세션 id를 연결하고, 상태(`working`, `done-claimed`, `verified-done`, `not-done`, `closed`)와 그 변화 이력을 남깁니다.
+레인마다 `~/.dori/state/lanes/` 아래에 JSON 파일이 하나씩 생깁니다. 메신저 스레드와 herdr pane 또는 aoe tmux 세션 이름, pane과 에이전트 세션 id를 연결하고, 상태(`working`, `done-claimed`, `verified-done`, `not-done`, `paused`, `closed`)와 그 변화 이력을 남깁니다.
 
 `dori sync`는 이 기록을 실제로 떠 있는 pane과 비교해서 어긋난 곳을 알려 줍니다. 사라진 pane, 바뀐 세션 id, 끝났다는 걸 증명할 방법이 없는 레인 같은 것들입니다. 아무것도 지우지 않습니다. `--write`를 붙이면 찾은 세션 id를 저장합니다.
 
@@ -166,7 +166,8 @@ watcher는 레인을 닫을 때 셸 없이 이 확인을 직접 다시 돌리고
 | `dori adopt <key> --pane ID ...` | 이미 돌고 있는 레인을 등록 |
 | `dori set-thread <key> <adapter>:<id>` | 레인의 작업 스레드를 바꿈; `launch`, `adopt`, `set-thread`는 `discord:`처럼 빈 값이나 틀린 형식을 거부 |
 | `dori sync [--write]` | 레지스트리와 실제 pane 비교, 어긋난 곳 표시 |
-| `dori claim-done` / `object-done` / `close` | 완료 흐름; 쓸 수 있는 스레드가 없으면 스레드 훅을 조용히 건너뛰지 않고 `THREAD_MISSING <key>`를 출력 |
+| `dori claim-done` / `object-done` / `close` | 완료 흐름; 쓸 수 있는 스레드가 없으면 스레드 훅을 조용히 건너뛰지 않고 `THREAD_MISSING <key>`를 출력; `DORI_DISCORD_TOKEN`이 있으면 close가 `discord:` 작업 스레드를 완료로 표시하고 보관 |
+| `dori pause <key> <이유>` / `dori resume <key>` | 사람을 기다리는 레인을 멈춰 둠: freshness 알림·게시, `LANE_BLOCKED`, `DEAD_PANE`이 나오지 않고 완료 요청이 와도 자동으로 닫지 않음; `resume`은 멈추기 전 상태로 되돌림 |
 | `dori watch` | 자동 닫기 watcher와 aoe `LANE_BLOCKED` 이벤트. 지속 모니터로 돌립니다 |
 | `dori freshness [--loop MIN]` | 조용해진 레인을 깨우고, 마지막 보고를 스레드에 올림 |
 | `dori dead-panes [--loop MIN]` | 멈춘 에이전트 pane 보고 |
