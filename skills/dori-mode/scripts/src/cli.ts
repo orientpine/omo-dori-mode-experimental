@@ -16,9 +16,9 @@ import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
-import { adoptLane, doneWeakWarning, goalWarning, launchLane, LaunchError, renderBrief, setThread, validateLaunch } from "./launch.ts";
+import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchLane, LaunchError, renderBrief, setThread, validateLaunch } from "./launch.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchHint, setStatus, type TreeArea, TreeError, updateTree } from "./explore.ts";
-import { challengeMissing, ChallengeError, runChallenge } from "./challenge.ts";
+import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
 import { branchesFrom, ForkError, forkExplore, type Mode } from "./fork-explore.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
@@ -36,7 +36,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
-import { discordThreadId, progressText, threadHook, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { discordThreadId, postLaneStart, progressText, threadHook, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
 import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
@@ -75,12 +75,14 @@ const USAGE = `dori <command> [options]
                                        directions (--kind direction), findings, research due, attempts tried. add takes
                                        --kind hypothesis|direction|finding|research --text; falsify/support/close take
                                        an ID and --result. No area option: this pane's lane, else the current directory
-  challenge <key> --plan FILE [--model M]
-                                       a model of another family than the lane's reviews the plan in a fresh context:
-                                       reasons it will fail, missing alternatives, the cheapest falsifying test. Saved
-                                       under <stateDir>/challenges/<key>/ and recorded on the lane (CHALLENGE_SAVED).
-                                       A reply without the three headings gets one stricter retry, an unreachable
-                                       provider/model one try as the bare model id, then the next reviewer
+  challenge <key> --plan FILE [--model M] [--all]
+                                       a model of another family than the lane's reviews the plan in a fresh context,
+                                       with read-only access to the plan's repository: reasons it will fail, missing
+                                       alternatives, the cheapest falsifying test. Saved under <stateDir>/challenges/<key>/
+                                       and recorded on the lane (CHALLENGE_SAVED). Reviewers go in explore.challengeModels
+                                       order (best GPT, Claude, Grok); the first that writes a review wins, --all asks one
+                                       of each family in turn. Ids this host cannot call are skipped before any call
+  challenge --check [<key>]            each reviewer id: REVIEWER_OK (and the id it is called as) or REVIEWER_SKIP and why
   fork-explore <key> --metric M --hypotheses H1 --test T1 --hypotheses H2 --test T2 ... [--gpu N ...|--gpu-all]
                [--mode agent|cmd] [--minutes N] [--model M]
                                        one time-boxed task per hypothesis, in parallel, all on metric M; GPU branches
@@ -167,7 +169,7 @@ const flags = parseArgs({
     hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" },
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
-    summary: { type: "string" }, file: { type: "string", multiple: true },
+    summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -267,8 +269,16 @@ try {
         console.log(`DRY_RUN ${input.key}: brief not written, no pane opened, nothing registered`);
         break;
       }
+      const leadBrief = await Bun.file(input.brief).text().catch(() => "");
       const r = await launchLane(deps, input, (line) => console.log(line));
       console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
+      if (r.lane.thread.startsWith("discord:")) {
+        if (!discordToken) console.log(`THREAD_START_NO_TOKEN ${r.lane.thread}: DORI_DISCORD_TOKEN is not set, so no first message was posted`);
+        else {
+          const started = await postLaneStart(new Discord(fetchHttp, realClock, discordToken), r.lane.thread, laneStartText(config.discord.laneStartText, r.lane, leadBrief)).catch((e: unknown) => `THREAD_START_FAILED ${r.lane.thread}: ${e instanceof Error ? e.message : String(e)}`);
+          console.log(started);
+        }
+      }
       console.log(r.startup);
       process.exit(r.startup.startsWith("STARTUP_OK") ? 0 : 3);
     }
@@ -364,11 +374,21 @@ try {
       break;
     }
     case "challenge": {
+      if (flags.values.check) {
+        const own = key ? ((await lane(key)).model ?? config.defaultModel) : undefined;
+        const listed = own ? reviewers(own, config.explore.challengeModels) : [...config.explore.challengeModels];
+        const checks = await checkReviewers(deps, listed);
+        for (const c of checks) console.log(c.call ? `REVIEWER_OK ${c.listed}${c.call !== c.listed ? ` -> ${c.call}` : ""} (${familyOf(c.listed)}): ${c.note}` : `REVIEWER_SKIP ${c.listed} (${familyOf(c.listed)}): ${c.note}`);
+        if (!checks.some((c) => c.call)) die("no reviewer in explore.challengeModels can be called on this host");
+        break;
+      }
       const l = await lane(key ?? die("challenge needs a lane key"));
-      const r = await runChallenge(deps, l, resolve(need("plan")), opt("model"));
+      const r = await runChallenge(deps, l, resolve(need("plan")), { model: opt("model"), all: Boolean(flags.values.all) });
       for (const f of r.failures) console.log(`CHALLENGE_SKIP ${f}`);
-      console.log(r.text);
-      console.log(`CHALLENGE_SAVED ${r.record.file} reviewer=${r.record.model}`);
+      for (const v of r.reviews) {
+        console.log(v.text);
+        console.log(`CHALLENGE_SAVED ${v.record.file} reviewer=${v.record.model}`);
+      }
       break;
     }
     case "fork-explore": {

@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { bareId, ChallengeError, challengeMissing, familyOf, REVIEWER_SYSTEM, reviewers, runChallenge } from "../src/challenge.ts";
+import { ChallengeError, challengeMissing, checkReviewers, familyOf, REVIEWER_SYSTEM, reviewers, runChallenge } from "../src/challenge.ts";
 import { defaultConfig } from "../src/config.ts";
 import { addNode, formatTree, gateFix, intentView, laneArea, loadTree, metricAttempts, researchHint, saveTree, setStatus, type Tree } from "../src/explore.ts";
 import { branchesFrom, forkExplore, parseBranch } from "../src/fork-explore.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { footer, renderBrief } from "../src/launch.ts";
 import type { FixAttempt, Lane } from "../src/registry.ts";
-import { run, type Runner } from "../src/run.ts";
+import { type Ran, run, type Runner } from "../src/run.ts";
 import { recordFix } from "../src/same-fix.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
 
@@ -108,55 +108,106 @@ test("a lane's own unbranched second fix report tells the lead hypotheses are re
 
 const REVIEW = "## Reasons this will fail\nx\n## Missing alternatives\ny\n## Cheapest falsifying test\nz";
 const PREAMBLE = "계획 문서와 관련 파일을 확인한 뒤 세 절만 쓰겠다.";
-// the model a fake reviewer was called with, and the prompt it got
+const PLAN_REPO = "/work/plans";
+const LISTED = ["provider model context", "chatgpt-subscription gpt-6-astra 600K", "chatgpt-subscription gpt-6.1-sol 400K", "anthropic-subscription claude-fable-5-1 1M", "anthropic-subscription claude-opus-5-5 1M", "xai grok-4.7 500K", "xai grok-4.6 500K", "github-copilot gpt-6-astra 600K", "google gemini-3.1-pro-preview 1M"].join("\n");
+// what omo auth check --json said on the host the reviewers failed on (anthropic-subscription: provider_not_found, yet logged in)
+const AUTH: Record<string, object> = {
+  "chatgpt-subscription": { status: "ready", accounts: [{ name: "default", blocked: false }] },
+  xai: { status: "ready", accounts: [{ name: "default", blocked: false }] },
+  "anthropic-subscription": { status: "not_ready", reason: "provider_not_found", accounts: [{ name: "default", source: "login", blocked: false }] },
+  "github-copilot": { status: "not_ready", reason: "credentials_not_configured", accounts: [] },
+  google: { status: "not_ready", reason: "credentials_not_configured", accounts: [] },
+};
+// the model a fake reviewer was called with
 const modelOf = (argv: readonly string[]): string => argv[argv.indexOf("--model") + 1] ?? "";
-const challengeWorld = async (fake: Runner, models?: readonly string[]) => {
+type Call = { readonly model: string; readonly argv: readonly string[]; readonly cwd?: string };
+// A fake host: omo --list-models, omo auth check, git, and reviewers that act as the real ones did on a plan that cites
+// evidence: run with no tools, the reply is only an announcement that it will read the files; with read-only tools in the
+// plan's repository it reads them and writes the review. A provider that is not logged in exits 1.
+const hostRunner = (calls: Call[], reviewer?: (model: string) => Ran | undefined): Runner => async (argv, opts) => {
+  if (argv[0] === "git") return { code: 0, out: PLAN_REPO, err: "" };
+  if (argv[1] === "--list-models") return { code: 0, out: LISTED, err: "" };
+  if (argv[1] === "auth") return { code: 0, out: JSON.stringify(AUTH[argv[argv.indexOf("--provider") + 1] ?? ""] ?? { status: "not_ready", accounts: [] }), err: "" };
+  const model = modelOf(argv);
+  calls.push({ model, argv, ...(opts?.cwd ? { cwd: opts.cwd } : {}) });
+  const own = reviewer?.(model);
+  if (own) return own;
+  if (!(AUTH[model.split("/")[0] ?? ""] as { accounts?: unknown[] } | undefined)?.accounts?.length) return { code: 1, out: "", err: "No API key found.\nUse /login to log into a provider via OAuth or API key. See:\n  /rt/docs/models.md" };
+  const readOnly = argv.includes("--tools") && (argv[argv.indexOf("--tools") + 1] ?? "").split(",").includes("read") && !argv.includes("--no-tools");
+  return { code: 0, out: readOnly && opts?.cwd === PLAN_REPO ? REVIEW : PREAMBLE, err: "" };
+};
+const challengeWorld = async (fake: Runner, models?: readonly string[], laneModel = "anthropic/claude-opus-5-5") => {
   const base = depsFor(world, fakeClock(T0), state.dir);
   const deps = { ...base, run: fake, config: { ...base.config, explore: { ...base.config.explore, ...(models ? { challengeModels: models } : {}) } } };
-  const l: Lane = { ...lane, model: "anthropic/claude-opus-5-5", challengeBefore: ["the full 9-seed run"] };
+  const l: Lane = { ...lane, model: laneModel, challengeBefore: ["the full 9-seed run"] };
   await deps.registry.write(l);
   const plan = join(state.dir, "plan.md");
-  await Bun.write(plan, "Raise the dump reward to 3x and run 9 seeds.");
+  await Bun.write(plan, "Raise the dump reward to 3x (see docs/reward.md and the B2 eval) and run 9 seeds.");
   return { deps, l, plan };
 };
 
-test("challenge asks a reviewer of another family, saves a complete review and records it on the lane", async () => {
-  expect(familyOf("anthropic-subscription/claude-opus-5-5:medium")).toBe("anthropic");
+test("by default the best GPT, then Claude, then Grok model reviews; on a Claude lane GPT goes first", () => {
+  const order = defaultConfig("/home/test").explore.challengeModels;
+  expect(order.slice(0, 3).map(familyOf)).toEqual(["openai", "anthropic", "xai"]);
+  expect(reviewers("anthropic-subscription/claude-opus-5-5:medium", order)[0]).toBe("chatgpt-subscription/gpt-6-astra");
   expect(familyOf("github-copilot/gpt-6.1-sol")).toBe("openai");
   expect(reviewers("anthropic/claude-opus-5-5", ["github-copilot/claude-opus-5.5", "xai/grok-4", "google/gemini-3"])).toEqual(["xai/grok-4", "google/gemini-3"]);
-  expect(bareId("github-copilot/gpt-6.1-sol")).toBe("gpt-6.1-sol");
-  expect(bareId("gpt-6.1-sol")).toBeUndefined();
-  const calls: string[][] = [];
-  const { deps, l, plan } = await challengeWorld(async (argv) => {
-    calls.push([...argv]);
-    return { code: 0, out: REVIEW, err: "" };
-  });
-  expect(challengeMissing(l)).toStartWith("CHALLENGE_MISSING rl-e7");
-  const r = await runChallenge(deps, l, plan, undefined);
-  expect(calls.map(modelOf)).toEqual(["xai/grok-4.7"]);
-  expect(r.failures).toEqual([]);
-  expect(calls[0]).toContain(REVIEWER_SYSTEM);
-  expect(calls[0]?.at(-1)).toContain("Raise the dump reward to 3x");
-  const file = await Bun.file(r.record.file).text();
-  for (const h of ["## Reasons this will fail", "## Missing alternatives", "## Cheapest falsifying test"]) expect(file).toContain(h);
-  const saved = (await deps.registry.read("rl-e7")) as Lane;
-  expect(saved.challenges?.[0]?.file).toBe(r.record.file);
-  expect(challengeMissing(saved)).toBeUndefined();
-  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/challenge CHALLENGE rl-e7 reviewer=xai\/grok-4.7 /);
-  await expect(runChallenge(deps, l, plan, "github-copilot/claude-sonnet-5")).rejects.toThrow("the lane's own family");
 });
 
-test("a reviewer that only announces what it will read gets one stricter retry, then fails clearly with its raw replies saved", async () => {
-  const calls: string[][] = [];
-  const { deps, l, plan } = await challengeWorld(async (argv) => {
-    calls.push([...argv]);
-    return { code: 0, out: PREAMBLE, err: "" };
-  });
-  const err = await runChallenge(deps, l, plan, "xai/grok-4.7").catch((e: unknown) => e);
+test("the reviewer reads the plan's repository with read-only tools and writes the review in its first run", async () => {
+  const calls: Call[] = [];
+  const { deps, l, plan } = await challengeWorld(hostRunner(calls));
+  expect(challengeMissing(l)).toStartWith("CHALLENGE_MISSING rl-e7");
+  const r = await runChallenge(deps, l, plan);
+  expect(calls.map((c) => c.model)).toEqual(["chatgpt-subscription/gpt-6-astra"]);
+  expect(calls[0]?.cwd).toBe(PLAN_REPO);
+  expect(calls[0]?.argv).toContain(REVIEWER_SYSTEM);
+  expect(calls[0]?.argv.at(-1)).toContain("Raise the dump reward to 3x");
+  expect(r.failures).toEqual([]);
+  const file = await Bun.file(r.reviews[0]?.record.file ?? "").text();
+  for (const h of ["## Reasons this will fail", "## Missing alternatives", "## Cheapest falsifying test", `- Read access: ${PLAN_REPO}`]) expect(file).toContain(h);
+  const saved = (await deps.registry.read("rl-e7")) as Lane;
+  expect(saved.challenges?.[0]?.file).toBe(r.reviews[0]?.record.file);
+  expect(challengeMissing(saved)).toBeUndefined();
+  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/challenge CHALLENGE rl-e7 reviewer=chatgpt-subscription\/gpt-6-astra /);
+  await expect(runChallenge(deps, l, plan, { model: "github-copilot/claude-sonnet-5" })).rejects.toThrow("the lane's own family");
+});
+
+test("reviewer ids the host cannot call are skipped before any call; one on a provider that is not logged in is called on one that is", async () => {
+  const calls: Call[] = [];
+  const { deps, l, plan } = await challengeWorld(hostRunner(calls), ["google/gemini-3.1-pro-preview", "nosuch/model-x", "github-copilot/gpt-6-astra", "anthropic-subscription/claude-fable-5-1:high"], "xai/grok-4.7");
+  const checks = await checkReviewers(deps, deps.config.explore.challengeModels);
+  expect(checks.map((c) => c.call)).toEqual([undefined, undefined, "chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-fable-5-1:high"]);
+  expect(checks[0]?.note).toBe("google is not logged in, and no logged-in provider offers gemini-3.1-pro-preview");
+  expect(checks[1]?.note).toBe("omo knows no provider nosuch, and no logged-in provider offers model-x");
+  const r = await runChallenge(deps, l, plan);
+  expect(calls.map((c) => c.model)).toEqual(["chatgpt-subscription/gpt-6-astra"]);
+  expect(r.failures.map((f) => f.split(":")[0])).toEqual(["google/gemini-3.1-pro-preview", "nosuch/model-x"]);
+  expect((await Bun.file(deps.config.watchLog).text()).match(/CHALLENGE_SKIP rl-e7 \S+: not callable on this host/g)).toHaveLength(2);
+});
+
+test("--all collects one review per family in list order, the next model of a family standing in for one that fails", async () => {
+  const calls: Call[] = [];
+  const order = defaultConfig("/home/test").explore.challengeModels;
+  const { deps, l, plan } = await challengeWorld(hostRunner(calls, (m) => (m.endsWith("claude-fable-5-1") ? { code: 124, out: "", err: "killed by SIGKILL (timeout)" } : undefined)), order, "qwen/qwen3.8-max");
+  const r = await runChallenge(deps, l, plan, { all: true });
+  expect(calls.map((c) => c.model)).toEqual(["chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-fable-5-1", "anthropic-subscription/claude-opus-5-5", "xai/grok-4.7"]);
+  expect(r.reviews.map((v) => v.record.model)).toEqual(["chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-opus-5-5", "xai/grok-4.7"]);
+  expect(new Set(r.reviews.map((v) => v.record.file)).size).toBe(3);
+  expect(r.failures).toEqual(["anthropic-subscription/claude-fable-5-1: exit 124 killed by SIGKILL (timeout)"]);
+  expect(((await deps.registry.read("rl-e7")) as Lane).challenges).toHaveLength(3);
+  const one = await runChallenge(deps, l, plan, { all: true, model: "xai/grok-4.6" });
+  expect(one.reviews.map((v) => v.record.model)).toEqual(["xai/grok-4.6"]);
+});
+
+test("a reviewer that ends with only an announcement gets one stricter retry, then fails clearly with its raw replies saved", async () => {
+  const calls: Call[] = [];
+  const { deps, l, plan } = await challengeWorld(hostRunner(calls, () => ({ code: 0, out: PREAMBLE, err: "" })));
+  const err = await runChallenge(deps, l, plan, { model: "xai/grok-4.7" }).catch((e: unknown) => e);
   expect(err).toBeInstanceOf(ChallengeError);
-  expect(calls.map(modelOf)).toEqual(["xai/grok-4.7", "xai/grok-4.7"]);
-  expect(calls[1]?.at(-1)).toContain("Your previous reply was not the review");
-  expect(calls[1]?.at(-1)).toContain(PREAMBLE);
+  expect(calls.map((c) => c.model)).toEqual(["xai/grok-4.7", "xai/grok-4.7"]);
+  expect(calls[1]?.argv.at(-1)).toContain("ended with a reply that was not the review");
+  expect(calls[1]?.argv.at(-1)).toContain(PREAMBLE);
   const message = (err as Error).message;
   expect(message).toContain("no reviewer wrote a complete review: xai/grok-4.7: no complete review after a stricter retry");
   const raw = /raw replies: (\S+)/.exec(message)?.[1] ?? "";
@@ -168,39 +219,12 @@ test("a reviewer that only announces what it will read gets one stricter retry, 
 
 test("a stricter retry that writes the three sections is saved as the review", async () => {
   let n = 0;
-  const { deps, l, plan } = await challengeWorld(async () => ({ code: 0, out: n++ ? REVIEW : PREAMBLE, err: "" }));
-  const r = await runChallenge(deps, l, plan, undefined);
+  const { deps, l, plan } = await challengeWorld(hostRunner([], () => ({ code: 0, out: n++ ? REVIEW : PREAMBLE, err: "" })));
+  const r = await runChallenge(deps, l, plan);
   expect(n).toBe(2);
-  expect(r.record.model).toBe("xai/grok-4.7");
-  expect(r.text).toBe(REVIEW);
-  expect(await Bun.file(r.record.file).text()).toContain("- Attempts: 2");
-});
-
-test("a provider the host cannot call is retried as the bare model id, and a family that fails hands over to the next one", async () => {
-  const calls: string[] = [];
-  const { deps, l, plan } = await challengeWorld(async (argv) => {
-    const m = modelOf(argv);
-    calls.push(m);
-    if (m.includes("grok")) return { code: 0, out: PREAMBLE, err: "" };
-    if (m.startsWith("google/") || m.startsWith("github-copilot/")) return { code: 1, out: "", err: "No API key found.\nUse /login to log into a provider via OAuth or API key. See:\n  /rt/docs/providers.md\n  /rt/docs/models.md" };
-    if (m === "gemini-3.1-pro-preview") return { code: 1, out: "", err: 'Error: Model "gemini-3.1-pro-preview" is ambiguous across providers. No matching provider is authenticated.' };
-    return m === "gpt-6.1-sol" ? { code: 0, out: REVIEW, err: "" } : { code: 1, out: "", err: "unexpected" };
-  }, ["xai/grok-4.7", "google/gemini-3.1-pro-preview", "github-copilot/gpt-6.1-sol", "anthropic/claude-opus-5-5"]);
-  const r = await runChallenge(deps, l, plan, undefined);
-  expect(calls).toEqual(["xai/grok-4.7", "xai/grok-4.7", "google/gemini-3.1-pro-preview", "gemini-3.1-pro-preview", "github-copilot/gpt-6.1-sol", "gpt-6.1-sol"]);
-  expect(r.record.model).toBe("gpt-6.1-sol");
-  expect(familyOf(r.record.model)).toBe("openai");
-  expect(r.failures[1]).toBe("google/gemini-3.1-pro-preview: exit 1 No API key found.; trying gemini-3.1-pro-preview");
-  expect(r.failures[2]).toContain("gemini-3.1-pro-preview: exit 1 Error: Model");
-  expect(r.failures[3]).toStartWith("github-copilot/gpt-6.1-sol: exit 1 ");
-  expect((await Bun.file(deps.config.watchLog).text()).match(/CHALLENGE_SKIP rl-e7 /g)).toHaveLength(4);
-  const timedOut: string[] = [];
-  const slow = await challengeWorld(async (argv) => {
-    timedOut.push(modelOf(argv));
-    return { code: 124, out: "", err: "killed by SIGKILL (timeout)" };
-  }, ["github-copilot/gpt-6.1-sol"]);
-  await expect(runChallenge(slow.deps, slow.l, slow.plan, undefined)).rejects.toThrow("github-copilot/gpt-6.1-sol: exit 124 killed by SIGKILL (timeout)");
-  expect(timedOut).toEqual(["github-copilot/gpt-6.1-sol"]);
+  expect(r.reviews[0]?.record.model).toBe("chatgpt-subscription/gpt-6-astra");
+  expect(r.reviews[0]?.text).toBe(REVIEW);
+  expect(await Bun.file(r.reviews[0]?.record.file ?? "").text()).toContain("- Attempts: 2");
 });
 
 test("fork-explore runs CPU branches at once, queues GPU branches on the slot, prints one table and feeds the tree", async () => {

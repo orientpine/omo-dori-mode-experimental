@@ -2,7 +2,11 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
 import { closeLane, claimDone, watchTick } from "../src/done-flow.ts";
-import { launchLane, LaunchError, setThread } from "../src/launch.ts";
+import { defaultDiscordWords } from "../src/config.ts";
+import { laneStartText, launchLane, LaunchError, setThread } from "../src/launch.ts";
+import { Discord } from "../src/messenger/discord.ts";
+import { postLaneStart } from "../src/messenger/discord-thread.ts";
+import type { HttpRequest } from "../src/messenger/http.ts";
 import type { Lane } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
 
@@ -83,4 +87,32 @@ test("the claim-done auto close also prints THREAD_MISSING for a lane with an em
   expect(lines.find((l) => l.startsWith("THREAD_MISSING"))).toStartWith("THREAD_MISSING demo-lane ");
   expect(lines.at(-1)).toStartWith("LANE_CLOSED demo-lane");
   expect(hookCalls()).toEqual([]);
+});
+
+const BRIEF = "# Lane brief: fix login\n\nOwner asked for the login page to accept SSO.\n\nDo:\n1. Add the SSO button.\n2. Keep password login.\n3. Tests.\n";
+// a Discord whose thread holds `messages`; every request is kept
+const threadDiscord = (messages: readonly unknown[]) => {
+  const seen: HttpRequest[] = [];
+  const dc = new Discord(async (req) => {
+    seen.push(req);
+    return { status: 200, headers: {}, body: JSON.stringify(req.method === "GET" ? messages : { id: "900" }) };
+  }, fakeClock(0), "bot");
+  return { dc, seen };
+};
+
+test("launch posts the lane's first message in an empty work thread: title, goal, brief lines, Done, key and pane", async () => {
+  const r = await launch(THREAD);
+  const text = laneStartText(defaultDiscordWords.laneStartText, { ...r.lane, goal: "SSO on the login page" }, BRIEF);
+  expect(text.split("\n")).toEqual(["new", "Goal, in your words: SSO on the login page", "Owner asked for the login page to accept SSO.", "Do:", "1. Add the SSO button.", "2. Keep password login.", "Done when: merged acme/app#1", `Lane new-lane, pane ${r.lane.pane}`]);
+  const { dc, seen } = threadDiscord([]);
+  expect(await postLaneStart(dc, THREAD, text)).toBe(`THREAD_START_POSTED ${THREAD} message=900`);
+  expect(seen.map((q) => `${q.method} ${q.url.replace(/^.*\/api\/v10/, "")}`)).toEqual(["GET /channels/100000000000000001/messages?limit=1", "POST /channels/100000000000000001/messages"]);
+  expect(JSON.parse(String(seen[1]?.body ?? "{}")).content).toBe(text);
+});
+
+test("a work thread that already has a message is left as it is, and a lane without --goal has no goal line", async () => {
+  const { dc, seen } = threadDiscord([{ id: "1", content: "the lead wrote first" }]);
+  expect(await postLaneStart(dc, THREAD, "x")).toBe(`THREAD_START_SKIP ${THREAD}: the thread already has a message`);
+  expect(seen.map((q) => q.method)).toEqual(["GET"]);
+  expect(laneStartText(defaultDiscordWords.laneStartText, lane, BRIEF)).not.toContain("Goal");
 });
