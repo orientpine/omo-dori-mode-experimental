@@ -118,7 +118,7 @@ Everything is read-only. It writes what it learns to memory as it goes and ends 
 
 The Dori decides on its own how to handle each message.
 
-- Questions, status checks, lookups and small edits get answered directly, with no new session.
+- Questions, status checks and lookups get answered directly, with no new session. Every change, even a one-line edit or a config value, goes to a lane, so you see it with its own thread and Done check.
 - Code that ends in a PR, multi-step work, and anything long or parallel gets a lane. If an idle lane already owns that repo, the work goes there instead.
 - When the host is short on memory, disk or panes (`dori can-launch` says HOLD), nothing new opens. The work is queued and the Dori tells you why.
 - New work gets a new thread. A follow-up goes back to its original thread, reopening the old session if its lane was closed. A quick question is answered where you asked it.
