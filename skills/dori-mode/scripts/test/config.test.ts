@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { defaultConfig, fill, loadConfig, loadEnvFile } from "../src/config.ts";
+import { ConfigError, defaultConfig, fill, loadConfig, loadEnvFile } from "../src/config.ts";
+import { run } from "../src/run.ts";
 import { configKeys } from "../src/config-keys.ts";
 import { withState } from "./fakes.ts";
 
@@ -50,6 +51,19 @@ test("the env file fills unset variables only, skips comments and strips quotes"
   await loadEnvFile(file, env);
   expect(env).toEqual({ DORI_DISCORD_TOKEN: "from-env", DORI_DISCORD_OWNER: "111", DORI_DISCORD_CHANNEL: "222" });
   await loadEnvFile(join(state.dir, "missing.env"), env);
+});
+
+test("a researchText that does not start with 'ulw research ' or lacks {question} is refused, and dori says why", async () => {
+  expect(defaultConfig().explore.researchText).toStartWith("ulw research {question} ");
+  const path = join(state.dir, "research.json");
+  writeFileSync(path, JSON.stringify({ explore: { researchText: "[LEAD] ulw research {question}" } }));
+  await expect(loadConfig(path, "/home/ana")).rejects.toThrow(ConfigError);
+  await expect(loadConfig(path, "/home/ana")).rejects.toThrow('must start with "ulw research "');
+  writeFileSync(path, JSON.stringify({ explore: { researchText: "ulw research the symptom" } }));
+  await expect(loadConfig(path, "/home/ana")).rejects.toThrow("must contain {question}");
+  const cli = await run(["env", `DORI_CONFIG=${path}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "bun", join(import.meta.dir, "../src/cli.ts"), "signals"]);
+  expect(cli.code).toBe(2);
+  expect(cli.err).toContain("CONFIG_INVALID");
 });
 
 test("hook templates fill each argument separately, so text with spaces or quotes stays one argument", () => {

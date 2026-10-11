@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 import { type DoriConfig, type Explore, expandHome, fill } from "./config.ts";
@@ -8,6 +8,7 @@ import { sendVerified } from "./panes.ts";
 import type { FixAttempt, Lane } from "./registry.ts";
 import { iso } from "./run.ts";
 import { normFix } from "./same-fix.ts";
+import { sessionDirFor } from "./session-id.ts";
 import { watchLog } from "./watch-log.ts";
 
 // The hypothesis tree: what one area of work (a repo, or a topic tag) tried, which hypotheses are open, which a test
@@ -238,7 +239,7 @@ export const afterFix = async (deps: FlowDeps, lane: Lane, fixes: readonly FixAt
   const signal = stuckSignal(n, cfg);
   const out: string[] = [];
   const due = signal === cfg.researchAt;
-  await updateTree(deps.config.stateDir, area, (t) => {
+  const tree = await updateTree(deps.config.stateDir, area, (t) => {
     let tree = addNode(t, { kind: "tried", text: attempt.hypothesis, metric: attempt.metric, lane: lane.key, source: `${attempt.via} attempt ${n}` }, attempt.at).tree;
     if (due) tree = addNode(tree, { kind: "research", text: `external search on the symptom "${attempt.metric}" (stuck signal ${signal}, lane ${lane.key})`, metric: attempt.metric, lane: lane.key, source: "stuck signal" }, attempt.at).tree;
     return tree;
@@ -252,9 +253,8 @@ export const afterFix = async (deps: FlowDeps, lane: Lane, fixes: readonly FixAt
   if (due) {
     let line = `RESEARCH_DUE ${lane.key} stuck signal ${signal} on "${attempt.metric}": an external search on the exact symptom comes before the next patch (dori research-hint ${lane.key})`;
     if (cfg.sendResearchToLane && lane.pane) {
-      const text = fill([cfg.researchText], { n: String(signal), metric: attempt.metric, key: lane.key })[0] ?? cfg.researchText;
-      const delivered = await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, text);
-      line += delivered ? " (sent to the lane)" : ` (the note did not reach pane ${lane.pane})`;
+      const delivered = await sendResearch(deps, { ...lane, fixes }, tree, signal, attempt.metric);
+      line += delivered ? " (ulw research sent to the lane)" : ` (the note did not reach pane ${lane.pane})`;
     }
     watchLog(deps.config.watchLog, deps.clock, { source: "fix-attempt", line });
     out.push(line);
@@ -267,15 +267,25 @@ export const afterFix = async (deps: FlowDeps, lane: Lane, fixes: readonly FixAt
 const STOP = new Set(["the", "a", "an", "of", "to", "and", "or", "in", "on", "for", "with", "is", "are", "not", "no", "from", "at", "by", "after", "before", "too", "fix", "lane"]);
 const words = (s: string, n: number): string => s.toLowerCase().replace(/[^\p{L}\p{N}._ -]+/gu, " ").split(/\s+/).filter((w) => w.length > 1 && !STOP.has(w)).slice(0, n).join(" ");
 
-// A search plan built from the lane's records only: the failing metric, the hypotheses tried and falsified, the domain.
-export const researchHint = (lane: Lane, tree: Tree): string[] => {
+// What the lane's records say about its stuck symptom: the failing metric, the hypotheses tried, falsified and open.
+export const researchFacts = (lane: Lane, tree: Tree) => {
   const fixes = lane.fixes ?? [];
   const metric = fixes.at(-1)?.metric ?? tree.nodes.findLast((n) => n.metric)?.metric ?? "";
   const tried = [...new Set(fixes.filter((f) => f.metric === metric).map((f) => f.hypothesis))];
-  const falsified = tree.nodes.filter((n) => n.kind === "hypothesis" && n.status === "falsified" && (!metric || n.metric === metric)).map((n) => n.text);
-  const open = tree.nodes.filter((n) => n.kind === "hypothesis" && n.status === "open" && (!metric || n.metric === metric)).map((n) => n.text);
+  const hyps = (status: NodeStatus) => tree.nodes.filter((n) => n.kind === "hypothesis" && n.status === status && (!metric || n.metric === metric));
   const domain = words(`${lane.title} ${lane.cwd ? basename(lane.cwd) : ""}`, 6);
   const symptom = words(metric, 8) || words(lane.lastReport ?? lane.title, 8);
+  return { fixes, metric, tried, falsified: hyps("falsified"), open: hyps("open"), domain, symptom };
+};
+
+const lastReportText = (lane: Lane): string => (lane.lastReport ?? "").replace(/^\[REPORT\][^|]*\|[^|]*\|\s*/, "");
+
+// A search plan built from the lane's records only: the failing metric, the hypotheses tried and falsified, the domain.
+export const researchHint = (lane: Lane, tree: Tree): string[] => {
+  const f = researchFacts(lane, tree);
+  const { fixes, metric, tried, domain, symptom } = f;
+  const falsified = f.falsified.map((n) => n.text);
+  const open = f.open.map((n) => n.text);
   const top = open[0] ?? tried.at(-1) ?? "";
   const queries = [
     `"${symptom}" ${domain} (papers: arxiv, Semantic Scholar, Google Scholar)`,
@@ -286,13 +296,146 @@ export const researchHint = (lane: Lane, tree: Tree): string[] => {
   ];
   return [
     `RESEARCH_HINT ${lane.key} on "${metric || "(no metric on record)"}": ${fixes.filter((f) => f.metric === metric).length} attempts, ${tried.length} hypotheses tried, ${falsified.length} falsified, ${open.length} open`,
-    `Symptom: ${symptom || "(unknown)"}${lane.lastReport ? `; last report: ${clip(lane.lastReport.replace(/^\[REPORT\][^|]*\|[^|]*\|\s*/, ""), 160)}` : ""}`,
+    `Symptom: ${symptom || "(unknown)"}${lane.lastReport ? `; last report: ${clip(lastReportText(lane), 160)}` : ""}`,
     ...(tried.length ? [`Already tried: ${tried.map((t) => clip(t, 80)).join("; ")}`] : []),
     "Search (10-15 minutes, stop at the first source that names this exact symptom):",
     ...queries.map((q, i) => `  ${i + 1}. ${q}`),
     `Record each useful finding: dori tree add --lane ${lane.key} --kind finding --text "<source url>: <what it says, and which hypothesis it supports or rules out>"`,
     "Then turn the best finding into a hypothesis with a cheap test (dori tree add --kind hypothesis --test ...) and report what it changes about the next step.",
   ];
+};
+
+// ---- the external-search step, run through omo's ulw research ----
+
+// Text typed into a pane stays one line, and sendVerified refuses backticks and $(.
+const typeable = (s: string): string => s.replace(/\s+/g, " ").replace(/`/g, "'").replaceAll("$(", "$ (").trim();
+
+// The research question for ulw research, from the lane's records: the exact symptom, what was tried, what a test ruled
+// out (and how), what is still open, and what sources to look for.
+export const researchQuestion = (lane: Lane, tree: Tree): string => {
+  const f = researchFacts(lane, tree);
+  const report = lastReportText(lane);
+  const symptom = f.metric ? `"${f.metric}" does not improve` : `${clip(report || lane.title, 160)}`;
+  const parts = [
+    `Lane ${lane.key} (${clip(lane.title, 80)}${lane.cwd ? `, repo ${basename(lane.cwd)}` : ""}) is stuck. Exact symptom: ${symptom}${f.fixes.length ? ` after ${f.fixes.filter((x) => x.metric === f.metric).length} fix attempts` : ""}${report && f.metric ? `; last report: ${clip(report, 160)}` : ""}.`,
+    ...(f.tried.length ? [`Tried: ${f.tried.map((t) => clip(t, 80)).join("; ")}.`] : []),
+    ...(f.falsified.length ? [`Ruled out by a test: ${f.falsified.map((n) => `${clip(n.text, 80)}${n.result ? ` (${clip(n.result, 80)})` : ""}`).join("; ")}.`] : []),
+    ...(f.open.length ? [`Still open: ${f.open.map((n) => clip(n.text, 80)).join("; ")}.`] : []),
+    `Look for papers (arxiv, Semantic Scholar), GitHub issues and discussions, and repos that hit this exact symptom${f.domain ? ` in ${f.domain}` : ""}: what caused it there, what fixed it, and causes other than the ones ruled out.`,
+  ];
+  return typeable(parts.join(" "));
+};
+
+// explore.researchText with the question filled in; it starts with "ulw research " (loadConfig refuses a template that does not)
+export const researchMessage = (cfg: Pick<Explore, "researchText">, lane: Lane, tree: Tree, signal: number, metric: string): string =>
+  typeable(fill([cfg.researchText], { question: researchQuestion(lane, tree), n: String(signal), metric, key: lane.key })[0] ?? cfg.researchText);
+
+// Types the ulw research text into the lane and records when, so researchCheck can find it in the lane's session log.
+export const sendResearch = async (deps: FlowDeps, lane: Lane, tree: Tree, signal: number, metric: string): Promise<boolean> => {
+  if (!lane.pane) return false;
+  const text = researchMessage(deps.config.explore, lane, tree, signal, metric);
+  const sentAt = deps.clock.now();
+  const delivered = await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, text);
+  if (delivered) await deps.registry.patch(lane.key, { research: { at: new Date(sentAt).toISOString(), sentAt, probe: text.slice(0, 80), metric, signal } });
+  return delivered;
+};
+
+// Markers of a started ulw research in an omo session log (jsonl), counted from `since` (ms) on:
+// - seen: a user message whose text starts with the probe (the start of the text dori typed)
+// - pointer: a {"type":"custom_message","customType":"omo-ulw-research:skill-pointer"} entry, or the pointer block
+//   <omo-ulw-research-pointer> inside that user message (omo appends it there when the agent was busy)
+// - read: a tool call (read, or an eval cell) whose arguments name ulw-research/SKILL.md
+// - readEarlier: the same read before `since`: a lane that already holds the skill may not read it again, and then
+//   tends to answer without the skill's protocol (seen live on a second send in one session)
+export const RESEARCH_POINTER = "omo-ulw-research:skill-pointer";
+export const RESEARCH_SKILL = "ulw-research/SKILL.md";
+export type ResearchStart = { readonly seen: boolean; readonly pointer: boolean; readonly read: boolean; readonly readEarlier: boolean };
+
+type LogEntry = { type?: string; customType?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
+const blocks = (content: unknown): { type?: string; text?: string; arguments?: unknown }[] => (Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : []);
+
+export const parseResearchStart = (jsonl: string, probe: string, since: number): ResearchStart => {
+  let seen = false;
+  let pointer = false;
+  let read = false;
+  let readEarlier = false;
+  for (const line of jsonl.split("\n")) {
+    let e: LogEntry;
+    try {
+      e = JSON.parse(line) as LogEntry;
+    } catch {
+      continue; // a blank line, or the last line while omo is still writing it
+    }
+    const after = Date.parse(e.timestamp ?? "") >= since;
+    if (after && e.type === "custom_message" && e.customType === RESEARCH_POINTER) pointer = true;
+    if (e.type !== "message") continue;
+    for (const b of blocks(e.message?.content)) {
+      const readsSkill = e.message?.role === "assistant" && b.type === "toolCall" && JSON.stringify(b.arguments ?? {}).includes(RESEARCH_SKILL);
+      if (!after) {
+        readEarlier ||= readsSkill;
+        continue;
+      }
+      if (e.message?.role === "user" && b.type === "text" && b.text?.startsWith(probe)) {
+        seen = true;
+        if (b.text.includes("<omo-ulw-research-pointer>")) pointer = true;
+      }
+      if (readsSkill) read = true;
+    }
+  }
+  return { seen, pointer, read, readEarlier };
+};
+
+// The lane's session log is the one in its cwd's session directory, written since the send, that holds the typed text.
+export const findResearchStart = (sessionsDir: string, cwd: string, probe: string, since: number): ResearchStart & { readonly file?: string } => {
+  const dir = sessionDirFor(sessionsDir, cwd);
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
+  } catch {
+    return { seen: false, pointer: false, read: false, readEarlier: false };
+  }
+  // a file omo removed since the listing has no stat and is skipped
+  const recent = names.map((n) => ({ file: join(dir, n), at: statSync(join(dir, n), { throwIfNoEntry: false })?.mtimeMs ?? 0 })).filter((f) => f.at >= since).sort((a, b) => b.at - a.at);
+  for (const { file } of recent) {
+    const r = parseResearchStart(readFileSync(file, "utf8"), probe, since);
+    if (r.seen) return { ...r, file };
+  }
+  return { seen: false, pointer: false, read: false, readEarlier: false };
+};
+
+export type ResearchCheck = { readonly verdict: "started" | "not-started" | "pending" | "none"; readonly line: string };
+
+// RESEARCH_STARTED once the lane's session log shows the skill pointer and a read of its SKILL.md; RESEARCH_NOT_STARTED
+// when explore.researchVerifyMin passed without both. Either goes to the watch log once and is kept on the lane.
+export const researchCheck = async (deps: FlowDeps, lane: Lane): Promise<ResearchCheck> => {
+  const r = lane.research;
+  if (!r) return { verdict: "none", line: `RESEARCH_NONE ${lane.key}: no ulw research text was sent to this lane (dori research-hint ${lane.key} --send)` };
+  if (r.result) return { verdict: r.result, line: `RESEARCH_${r.result === "started" ? "STARTED" : "NOT_STARTED"} ${lane.key}: already decided for the text sent ${r.at}` };
+  const cwd = expandHome(lane.cwd ?? deps.config.defaultCwd);
+  const found = findResearchStart(deps.config.sessionsDir, cwd, r.probe, r.sentAt);
+  const min = Math.round((deps.clock.now() - r.sentAt) / 60_000);
+  const where = found.file ? ` (${basename(found.file)})` : ` (no session log in ${sessionDirFor(deps.config.sessionsDir, cwd)} holds it)`;
+  let verdict: ResearchCheck["verdict"] = "pending";
+  let line = `RESEARCH_PENDING ${lane.key} ${min} min after the ulw research text: seen=${found.seen} pointer=${found.pointer} skill-read=${found.read}${where}`;
+  if (found.pointer && found.read) {
+    verdict = "started";
+    line = `RESEARCH_STARTED ${lane.key} stuck signal ${r.signal} on "${r.metric}": the session log shows the ${RESEARCH_POINTER} and a read of ${RESEARCH_SKILL}${where}`;
+  } else if (deps.clock.now() - r.sentAt >= deps.config.explore.researchVerifyMin * 60_000) {
+    verdict = "not-started";
+    const missing = !found.seen
+      ? "the typed text never reached the lane's session log"
+      : !found.pointer
+        ? `omo attached no ${RESEARCH_POINTER} (check the omo version and that the text starts with "ulw research ")`
+        : found.readEarlier
+          ? `the pointer came, but the lane did not read ${RESEARCH_SKILL} again (it read it earlier in this session) and may be answering without the skill's protocol; tell it to follow the ulw-research SKILL.md for this question`
+          : `the pointer came but the lane did not read ${RESEARCH_SKILL}`;
+    line = `RESEARCH_NOT_STARTED ${lane.key} ${min} min after the ulw research text: ${missing}${where}. Re-send with dori research-hint ${lane.key} --send, or tell the lane to read the ulw-research SKILL.md`;
+  }
+  if (verdict !== "pending") {
+    watchLog(deps.config.watchLog, deps.clock, { source: "research", line });
+    await deps.registry.patch(lane.key, { research: { ...r, result: verdict } });
+  }
+  return { verdict, line };
 };
 
 // ---- dori intent-check ----

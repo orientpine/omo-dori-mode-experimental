@@ -31,6 +31,9 @@ export type FixAttempt = { readonly at: string; readonly metric: string; readonl
 export type ChallengeRecord = { readonly at: string; readonly model: string; readonly plan: string; readonly file: string };
 // one dori fork-explore run: its saved result table
 export type ExplorationRecord = { readonly at: string; readonly metric: string; readonly branches: number; readonly file: string };
+// the last ulw research text sent to the lane: sentAt (ms) and probe (its start) find it in the lane's session log;
+// result is set once the check decided (RESEARCH_STARTED or RESEARCH_NOT_STARTED)
+export type ResearchSent = { readonly at: string; readonly sentAt: number; readonly probe: string; readonly metric: string; readonly signal: number; readonly result?: "started" | "not-started" };
 
 export type Lane = {
   readonly key: string;
@@ -66,6 +69,7 @@ export type Lane = {
   readonly challengeBefore?: readonly string[];
   readonly challenges?: readonly ChallengeRecord[];
   readonly explorations?: readonly ExplorationRecord[];
+  readonly research?: ResearchSent;
   readonly blocked?: string;
   readonly idleSince?: number;
   readonly receipt?: unknown;

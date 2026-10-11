@@ -1,5 +1,6 @@
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { researchCheck } from "./explore.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { fixTag, recordFix } from "./same-fix.ts";
@@ -28,7 +29,7 @@ export const scrubForThread = (line: string, home: string): string =>
     .replace(/`/g, "'")
     .trim();
 
-export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "no-report" | "same_fix_3" | "stuck" | "intent_check"; readonly lane: string; readonly detail: string };
+export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "no-report" | "same_fix_3" | "stuck" | "intent_check" | "research_started" | "research_not_started"; readonly lane: string; readonly detail: string };
 
 // A milestone report that announces a new stage or phase is the moment to compare the lane's direction with the owner's goal.
 export const stageChange = (report: string, pattern: string): boolean => /\| milestone \|/.test(report) && new RegExp(pattern, "i").test(report.replace(/^\[REPORT\][^|]*\|[^|]*\|/, ""));
@@ -60,6 +61,11 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
         watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `INTENT_CHECK ${lane.key} ${detail}` });
         acts.push({ kind: "intent_check", lane: lane.key, detail });
       }
+    }
+    // a ulw research text sent to the lane: does its session log show the skill starting (RESEARCH_STARTED / _NOT_STARTED)
+    if (lane.research && !lane.research.result) {
+      const r = await researchCheck(deps, lane);
+      if (r.verdict === "started" || r.verdict === "not-started") acts.push({ kind: r.verdict === "started" ? "research_started" : "research_not_started", lane: lane.key, detail: r.line.replace(/^RESEARCH_\w+ \S+ /, "") });
     }
     const heard = lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
-import { configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
+import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
 import { sendVerified } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
@@ -17,7 +17,7 @@ import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
 import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchLane, LaunchError, renderBrief, setThread, validateLaunch } from "./launch.ts";
-import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchHint, setStatus, type TreeArea, TreeError, updateTree } from "./explore.ts";
+import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, metricAttempts, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckSignal, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
 import { branchesFrom, ForkError, forkExplore, type Mode } from "./fork-explore.ts";
 import { Registry, statusOf } from "./registry.ts";
@@ -88,7 +88,13 @@ const USAGE = `dori <command> [options]
                                        one time-boxed task per hypothesis, in parallel, all on metric M; GPU branches
                                        (--gpu <branch number>) wait for a heavy slot. agent: an omo -p run per branch;
                                        cmd: each --test is a command. Prints a comparison table, feeds the tree
-  research-hint <key>                  a search plan for the lane's stuck symptom (papers, issues, repos), from its records
+  research-hint <key> [--send]         a search plan for the lane's stuck symptom (papers, issues, repos), from its records;
+                                       --send types explore.researchText into the lane: "ulw research " and a question
+                                       built from its records, so omo starts its ulw-research skill (RESEARCH_SENT)
+  research-check <key>                 did the last ulw research text start the skill: the lane's session log holds the
+                                       omo-ulw-research:skill-pointer and a read of ulw-research/SKILL.md (RESEARCH_STARTED),
+                                       not yet (RESEARCH_PENDING), or not within explore.researchVerifyMin (RESEARCH_NOT_STARTED,
+                                       exit 6). freshness runs the same check on every tick
   intent-check <key> [--direction TEXT] [--next TEXT] [--goal "owner words"]
                                        the owner's goal next to the lane's current direction and next step;
                                        INTENT_OK, INTENT_DRIFT or INTENT_NO_GOAL. --direction/--next record what the
@@ -135,7 +141,7 @@ const die = (message: string, code = 1): never => {
 };
 
 await loadEnvFile(envFilePath());
-const config = await loadConfig();
+const config = await loadConfig().catch((e: unknown) => (e instanceof ConfigError ? die(`CONFIG_INVALID ${e.message}`, 2) : Promise.reject(e)));
 const discordToken = process.env.DORI_DISCORD_TOKEN?.trim();
 const deps: FlowDeps = {
   run,
@@ -169,7 +175,7 @@ const flags = parseArgs({
     hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" },
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
-    summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" },
+    summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -411,7 +417,25 @@ try {
     }
     case "research-hint": {
       const l = (await deps.registry.read(key ?? die("research-hint needs a lane key"))) ?? die(`no registered lane "${key}"`);
-      for (const line of researchHint(l, await loadTree(config.stateDir, laneArea(l, config)))) console.log(line);
+      const tree = await loadTree(config.stateDir, laneArea(l, config));
+      for (const line of researchHint(l, tree)) console.log(line);
+      if (flags.values.send) {
+        if (!l.pane) die(`lane ${l.key} has no pane to send the ulw research text to`);
+        const { metric } = researchFacts(l, tree);
+        const signal = stuckSignal(metricAttempts(l.fixes ?? [], metric), config.explore);
+        const delivered = await sendResearch(deps, l, tree, signal, metric);
+        const line = delivered ? `RESEARCH_SENT ${l.key}: ulw research text typed into pane ${l.pane}; dori research-check ${l.key} (or freshness) confirms the skill started` : `RESEARCH_SEND_FAILED ${l.key}: the text did not reach pane ${l.pane}`;
+        watchLog(config.watchLog, realClock, { source: "research", line });
+        console.log(line);
+        if (!delivered) process.exit(1);
+      }
+      break;
+    }
+    case "research-check": {
+      const l = (await deps.registry.read(key ?? die("research-check needs a lane key"))) ?? die(`no registered lane "${key}"`);
+      const r = await researchCheck(deps, l);
+      console.log(r.line);
+      if (r.verdict === "not-started") process.exit(6);
       break;
     }
     case "intent-check": {

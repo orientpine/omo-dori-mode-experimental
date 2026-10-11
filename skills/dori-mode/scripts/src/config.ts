@@ -114,7 +114,10 @@ export type Signals = { readonly launchLanes: number; readonly attemptPattern: s
 // Exploration when a lane is stuck (dori fix-attempt, tree, challenge, fork-explore, research-hint, intent-check).
 // hypothesesFrom: from this attempt on one metric with no improvement, fix-attempt needs minHypotheses competing hypotheses,
 // each with a cheap discriminating test. researchAt: the stuck signal (1 = the first attempt that needed hypotheses) that
-// adds an external-search step; researchText goes to the lane when sendResearchToLane is on ({n}, {metric}, {key}).
+// adds an external-search step; researchText goes to the lane when sendResearchToLane is on ({question}, {n}, {metric},
+// {key}). It must start with "ulw research " (RESEARCH_PREFIX): omo attaches its ulw-research skill only to typed input that
+// names it, and not when the text starts with a [TAG]. researchVerifyMin: how long after sending the lane's session log may
+// take to show the skill pointer and a read of its SKILL.md before RESEARCH_NOT_STARTED.
 // stagePattern: a milestone report matching it announces a new stage, and the lead is told to run dori intent-check.
 // driftBelow: intent-check flags drift when the direction shares less than this share of the goal's word pairs.
 // challengeModels: reviewers for dori challenge in order, by default the best GPT, then Claude, then Grok model, then a
@@ -129,6 +132,7 @@ export type Explore = {
   readonly researchAt: number;
   readonly sendResearchToLane: boolean;
   readonly researchText: string;
+  readonly researchVerifyMin: number;
   readonly stagePattern: string;
   readonly driftBelow: number;
   readonly treeLines: number;
@@ -220,7 +224,8 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     minHypotheses: 3,
     researchAt: 2,
     sendResearchToLane: true,
-    researchText: "[LEAD] Stuck signal {n} on {metric}. Before the next patch, spend 10-15 minutes on an external search for this exact symptom: papers, GitHub issues, repos that hit it. dori research-hint {key} prints a search plan. Record each useful finding with dori tree add --lane {key} --kind finding --text '<source>: <what it says>', then report what it changes about your next step.",
+    researchText: "ulw research {question} First read the ulw-research SKILL.md (the omo-ulw-research pointer names its path) and follow it, kept on this one symptom (stuck signal {n} on {metric}). Record each useful finding with dori tree add --lane {key} --kind finding --text '<source url>: <what it says, which hypothesis it supports or rules out>', then report back to the lead what it changes about your next step.",
+    researchVerifyMin: 5,
     stagePattern: "\\b(?:stage|phase|pivot|switch(?:ing)? to|next step)\\b|단계|국면|방향 전환|다음 단계",
     driftBelow: 0.12,
     treeLines: 6,
@@ -233,6 +238,18 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     branchMinutes: 15,
   },
 });
+
+export class ConfigError extends Error {}
+
+// the start of every text typed into a lane for its external-search step: omo's trigger for the ulw-research skill
+export const RESEARCH_PREFIX = "ulw research ";
+
+export const researchTextProblem = (text: string): string | undefined =>
+  !text.startsWith(RESEARCH_PREFIX)
+    ? `explore.researchText must start with "${RESEARCH_PREFIX}" (omo starts its ulw-research skill only for typed text that begins that way here), got "${text.slice(0, 40)}"`
+    : !text.includes("{question}")
+      ? "explore.researchText must contain {question}, where the research question built from the lane's records goes"
+      : undefined;
 
 export const envFilePath = (): string => process.env.DORI_ENV_FILE ?? join(homedir(), ".dori", "dori.env");
 
@@ -255,6 +272,8 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
   const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore } };
+  const researchProblem = researchTextProblem(merged.explore.researchText);
+  if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const stateDir = expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home);
   const leadPane = process.env.DORI_LEAD_PANE ?? merged.leadPane;
   const repo = raw.update?.repo ? expandHome(raw.update.repo, home) : (await run(["git", "-C", import.meta.dir, "rev-parse", "--show-toplevel"])).out || base.update.repo;
