@@ -114,7 +114,7 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 | `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on the owner (no nudges, posts, `LANE_BLOCKED` or auto-close), then put it back |
 | `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked for; `SAME_FIX_3` from the third attempt on one metric with one hypothesis; from the second with no improvement it needs 3+ `--hypotheses` with a `--test` each (`HYPOTHESES_REQUIRED`, `STUCK_BRANCH`), and the third sends an external-search step (`RESEARCH_DUE`) |
 | `dori tree [show\|add\|falsify\|support\|close]` | the area's hypothesis tree: open, falsified and supported hypotheses, untried directions, findings, attempts |
-| `dori challenge <key> --plan FILE` | a model of another family reviews a plan: reasons it will fail, missing alternatives, cheapest falsifying test; saved on the lane |
+| `dori challenge <key> --plan FILE` | a model of another family reviews a plan: reasons it will fail, missing alternatives, cheapest falsifying test; saved on the lane. A reply without the three headings gets one stricter retry, an unreachable provider id one try as the bare model id, then the next reviewer |
 | `dori fork-explore <key> --metric M --hypotheses ... --test ...` | one time-boxed branch per hypothesis in parallel (GPU branches queue on the heavy slot), one comparison table, results into the tree |
 | `dori research-hint <key>` | a search plan for the lane's stuck symptom |
 | `dori intent-check <key>` | the owner's goal next to the lane's current direction and next step; flags drift |

@@ -92,3 +92,12 @@ Three question cards went up in one thread in quick succession. The owner answer
 - The mark comes from the truth, not the last event: a closed lane is ✅, any open card in the thread is ⏸️, otherwise 🔄. A reply or an answer while another card is still open leaves ⏸️.
 - When the owner answers in text in a thread where a card is still open, the inbox row carries `open_cards` and a `note` (`card Qn still open, owner replied in text`), and the listener prints `CARD_STILL_OPEN`. It never resolves the card on a guess. Read the reply, then `dori resolve <Qn>`. Resolving the last open card turns the thread 🔄.
 - A local script that renames threads directly (a `kit.ts` `setThread`) must not retry inside the 429 window either. Write the rename to the same `thread-status.json` and let the listener apply it.
+
+## 13. A reviewer that never writes the review
+
+The E7 lane ran `dori challenge` on its next-run design three times and got no review each time (exit 1). The grok reviewers answered with one line, roughly "I will check the files first, then write the three sections", and stopped: the reviewer runs with no tools and one reply, the plan cited other files, and the model spent its only reply announcing that it would read them. The lane tried another model, a "this file is self-contained, write the three sections now" note inside the plan, and another working directory; none helped. The gpt and gemini reviewers failed for a different reason: their provider ids (`github-copilot/...`, `google/...`) were not logged in on that machine, and omo exits 1 with a pointer to its docs.
+
+- The reviewer prompt now says up front that there are no tools, no files and no second turn, and asks for the reply to start with the first heading. With it, grok-4.7 wrote the full review of the same E7 plan on the first try.
+- A reply without the three headings gets one stricter retry that quotes the bad reply. If that also fails, both replies are saved as a `-raw.md` file next to the reviews and the next reviewer is asked; the command fails only when every reviewer did, with each reason and raw file.
+- A provider id that exits with an error is tried once more as the bare model id, which omo resolves to the provider that is logged in; then the next reviewer, which is usually another family. Each skip is in the watch log as `CHALLENGE_SKIP`.
+- Check which reviewers your machine can call before you depend on one: `omo auth check --model <id>` and a one-line `omo -p --no-tools --model <id> "Reply PONG"`.

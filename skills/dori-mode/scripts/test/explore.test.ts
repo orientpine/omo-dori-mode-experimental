@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { challengeMissing, familyOf, REVIEWER_SYSTEM, reviewers, runChallenge } from "../src/challenge.ts";
+import { bareId, ChallengeError, challengeMissing, familyOf, REVIEWER_SYSTEM, reviewers, runChallenge } from "../src/challenge.ts";
 import { defaultConfig } from "../src/config.ts";
 import { addNode, formatTree, gateFix, intentView, laneArea, loadTree, metricAttempts, researchHint, saveTree, setStatus, type Tree } from "../src/explore.ts";
 import { branchesFrom, forkExplore, parseBranch } from "../src/fork-explore.ts";
@@ -106,35 +106,101 @@ test("a lane's own unbranched second fix report tells the lead hypotheses are re
   expect((await recordFix(deps, "rl-e7", fix("b", { via: "report" }))).notes[0]).toStartWith("HYPOTHESES_REQUIRED rl-e7 reported attempt 2");
 });
 
-test("challenge asks a reviewer of another family, skips one that fails, saves the review and records it on the lane", async () => {
+const REVIEW = "## Reasons this will fail\nx\n## Missing alternatives\ny\n## Cheapest falsifying test\nz";
+const PREAMBLE = "계획 문서와 관련 파일을 확인한 뒤 세 절만 쓰겠다.";
+// the model a fake reviewer was called with, and the prompt it got
+const modelOf = (argv: readonly string[]): string => argv[argv.indexOf("--model") + 1] ?? "";
+const challengeWorld = async (fake: Runner, models?: readonly string[]) => {
+  const base = depsFor(world, fakeClock(T0), state.dir);
+  const deps = { ...base, run: fake, config: { ...base.config, explore: { ...base.config.explore, ...(models ? { challengeModels: models } : {}) } } };
+  const l: Lane = { ...lane, model: "anthropic/claude-opus-5-5", challengeBefore: ["the full 9-seed run"] };
+  await deps.registry.write(l);
+  const plan = join(state.dir, "plan.md");
+  await Bun.write(plan, "Raise the dump reward to 3x and run 9 seeds.");
+  return { deps, l, plan };
+};
+
+test("challenge asks a reviewer of another family, saves a complete review and records it on the lane", async () => {
   expect(familyOf("anthropic-subscription/claude-opus-5-5:medium")).toBe("anthropic");
   expect(familyOf("github-copilot/gpt-6.1-sol")).toBe("openai");
   expect(reviewers("anthropic/claude-opus-5-5", ["github-copilot/claude-opus-5.5", "xai/grok-4", "google/gemini-3"])).toEqual(["xai/grok-4", "google/gemini-3"]);
+  expect(bareId("github-copilot/gpt-6.1-sol")).toBe("gpt-6.1-sol");
+  expect(bareId("gpt-6.1-sol")).toBeUndefined();
   const calls: string[][] = [];
-  const fake: Runner = async (argv) => {
+  const { deps, l, plan } = await challengeWorld(async (argv) => {
     calls.push([...argv]);
-    if (argv.includes("xai/grok-4")) return { code: 0, out: "I read this as a review request.", err: "" };
-    return argv.some((a) => a.startsWith("xai/")) ? { code: 1, out: "", err: "no key" } : { code: 0, out: "## Reasons this will fail\nx\n## Missing alternatives\ny\n## Cheapest falsifying test\nz", err: "" };
-  };
-  const deps = { ...depsFor(world, fakeClock(T0), state.dir), run: fake };
-  const l: Lane = { ...lane, model: "anthropic/claude-opus-5-5", challengeBefore: ["the full 9-seed run"] };
-  await deps.registry.write(l);
+    return { code: 0, out: REVIEW, err: "" };
+  });
   expect(challengeMissing(l)).toStartWith("CHALLENGE_MISSING rl-e7");
-  const plan = join(state.dir, "plan.md");
-  await Bun.write(plan, "Raise the dump reward to 3x and run 9 seeds.");
   const r = await runChallenge(deps, l, plan, undefined);
-  expect(r.record.model).not.toContain("claude");
-  expect(r.failures.map((f) => f.split(":")[0])).toEqual(["xai/grok-4.7", "xai/grok-4"]);
-  expect(r.failures[1]).toContain("none of the three sections");
+  expect(calls.map(modelOf)).toEqual(["xai/grok-4.7"]);
+  expect(r.failures).toEqual([]);
   expect(calls[0]).toContain(REVIEWER_SYSTEM);
-  expect(r.missing).toEqual([]);
-  expect(calls.every((c) => !c.some((a) => a.includes("claude")))).toBe(true);
-  expect(calls.at(-1)?.at(-1)).toContain("Raise the dump reward to 3x");
-  expect(await Bun.file(r.record.file).text()).toContain("## Cheapest falsifying test");
+  expect(calls[0]?.at(-1)).toContain("Raise the dump reward to 3x");
+  const file = await Bun.file(r.record.file).text();
+  for (const h of ["## Reasons this will fail", "## Missing alternatives", "## Cheapest falsifying test"]) expect(file).toContain(h);
   const saved = (await deps.registry.read("rl-e7")) as Lane;
   expect(saved.challenges?.[0]?.file).toBe(r.record.file);
   expect(challengeMissing(saved)).toBeUndefined();
+  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/challenge CHALLENGE rl-e7 reviewer=xai\/grok-4.7 /);
   await expect(runChallenge(deps, l, plan, "github-copilot/claude-sonnet-5")).rejects.toThrow("the lane's own family");
+});
+
+test("a reviewer that only announces what it will read gets one stricter retry, then fails clearly with its raw replies saved", async () => {
+  const calls: string[][] = [];
+  const { deps, l, plan } = await challengeWorld(async (argv) => {
+    calls.push([...argv]);
+    return { code: 0, out: PREAMBLE, err: "" };
+  });
+  const err = await runChallenge(deps, l, plan, "xai/grok-4.7").catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ChallengeError);
+  expect(calls.map(modelOf)).toEqual(["xai/grok-4.7", "xai/grok-4.7"]);
+  expect(calls[1]?.at(-1)).toContain("Your previous reply was not the review");
+  expect(calls[1]?.at(-1)).toContain(PREAMBLE);
+  const message = (err as Error).message;
+  expect(message).toContain("no reviewer wrote a complete review: xai/grok-4.7: no complete review after a stricter retry");
+  const raw = /raw replies: (\S+)/.exec(message)?.[1] ?? "";
+  expect(raw).toEndWith("-xai-grok-4.7-raw.md");
+  expect((await Bun.file(raw).text()).split(PREAMBLE)).toHaveLength(3);
+  expect(((await deps.registry.read("rl-e7")) as Lane).challenges).toBeUndefined();
+  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/challenge CHALLENGE_FAILED rl-e7 /);
+});
+
+test("a stricter retry that writes the three sections is saved as the review", async () => {
+  let n = 0;
+  const { deps, l, plan } = await challengeWorld(async () => ({ code: 0, out: n++ ? REVIEW : PREAMBLE, err: "" }));
+  const r = await runChallenge(deps, l, plan, undefined);
+  expect(n).toBe(2);
+  expect(r.record.model).toBe("xai/grok-4.7");
+  expect(r.text).toBe(REVIEW);
+  expect(await Bun.file(r.record.file).text()).toContain("- Attempts: 2");
+});
+
+test("a provider the host cannot call is retried as the bare model id, and a family that fails hands over to the next one", async () => {
+  const calls: string[] = [];
+  const { deps, l, plan } = await challengeWorld(async (argv) => {
+    const m = modelOf(argv);
+    calls.push(m);
+    if (m.includes("grok")) return { code: 0, out: PREAMBLE, err: "" };
+    if (m.startsWith("google/") || m.startsWith("github-copilot/")) return { code: 1, out: "", err: "No API key found.\nUse /login to log into a provider via OAuth or API key. See:\n  /rt/docs/providers.md\n  /rt/docs/models.md" };
+    if (m === "gemini-3.1-pro-preview") return { code: 1, out: "", err: 'Error: Model "gemini-3.1-pro-preview" is ambiguous across providers. No matching provider is authenticated.' };
+    return m === "gpt-6.1-sol" ? { code: 0, out: REVIEW, err: "" } : { code: 1, out: "", err: "unexpected" };
+  }, ["xai/grok-4.7", "google/gemini-3.1-pro-preview", "github-copilot/gpt-6.1-sol", "anthropic/claude-opus-5-5"]);
+  const r = await runChallenge(deps, l, plan, undefined);
+  expect(calls).toEqual(["xai/grok-4.7", "xai/grok-4.7", "google/gemini-3.1-pro-preview", "gemini-3.1-pro-preview", "github-copilot/gpt-6.1-sol", "gpt-6.1-sol"]);
+  expect(r.record.model).toBe("gpt-6.1-sol");
+  expect(familyOf(r.record.model)).toBe("openai");
+  expect(r.failures[1]).toBe("google/gemini-3.1-pro-preview: exit 1 No API key found.; trying gemini-3.1-pro-preview");
+  expect(r.failures[2]).toContain("gemini-3.1-pro-preview: exit 1 Error: Model");
+  expect(r.failures[3]).toStartWith("github-copilot/gpt-6.1-sol: exit 1 ");
+  expect((await Bun.file(deps.config.watchLog).text()).match(/CHALLENGE_SKIP rl-e7 /g)).toHaveLength(4);
+  const timedOut: string[] = [];
+  const slow = await challengeWorld(async (argv) => {
+    timedOut.push(modelOf(argv));
+    return { code: 124, out: "", err: "killed by SIGKILL (timeout)" };
+  }, ["github-copilot/gpt-6.1-sol"]);
+  await expect(runChallenge(slow.deps, slow.l, slow.plan, undefined)).rejects.toThrow("github-copilot/gpt-6.1-sol: exit 124 killed by SIGKILL (timeout)");
+  expect(timedOut).toEqual(["github-copilot/gpt-6.1-sol"]);
 });
 
 test("fork-explore runs CPU branches at once, queues GPU branches on the slot, prints one table and feeds the tree", async () => {
