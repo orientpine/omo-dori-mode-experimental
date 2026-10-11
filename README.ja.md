@@ -243,15 +243,15 @@ bunx tsc --noEmit  # 型チェック
 
 MIT
 
-## OmOMeow からの移行
+## ZzangDori からの移行
 
-以前の gist で OmOMeow モードを使っていたなら、ボットはそのまま動きます。次の 4 つを変えれば Dori になります。
+以前の gist で ZzangDori モードを使っていたなら、ボットはそのまま動きます。次の 4 つを変えれば Dori になります。
 
-1. **Dori の名前を決める。**「Dori」だけでも、ShipDori や WorkDori のように Dori で終わる名前でも構いません。エージェントに「これからきみの名前は ShipDori で、これは ShipDori mode だよ」と伝えてください。それ以降は「OmOMeow mode」ではなく「ShipDori mode」がモードを呼び出す言葉になります。
+1. **Dori の名前を決める。**「Dori」だけでも、ShipDori や WorkDori のように Dori で終わる名前でも構いません。エージェントに「これからきみの名前は ShipDori で、これは ShipDori mode だよ」と伝えてください。それ以降は「ZzangDori mode」ではなく「ShipDori mode」がモードを呼び出す言葉になります。
 2. **ボットの名前とプロフィール画像を変える。**
    - Telegram:@BotFather で `/setname` を送り、ボットを選んで新しい名前を送ります。続けて `/setuserpic` を送り、ボットを選んで新しい画像を送ります。既定の Dori の絵は [`skills/dori-mode/assets/dori-avatar.png`](skills/dori-mode/assets/dori-avatar.png) です。好きな画像に替えても構いません。ボットの名前と画像は BotFather からしか変えられません。
    - Discord:Developer Portal でアプリケーションを開きます。**Bot** ページでユーザー名とアイコンを、**General Information** でアプリ名とアイコンを変えて(同じ既定の絵が使えます)保存します。
 3. **このリポジトリを入れる。** 上の 1 行インストールを実行し、エージェントに「ShipDori mode」と言えば、以前貼り付けていたプロンプトの代わりにスキルと `dori` CLI を使います。
-4. **オンボーディングをする。** OmOMeow のときにやっていなければ「オンボーディングして」と言うだけです。
+4. **オンボーディングをする。** ZzangDori のときにやっていなければ「オンボーディングして」と言うだけです。
 
 これまでのスレッド、トピック、メモリはそのまま残ります。

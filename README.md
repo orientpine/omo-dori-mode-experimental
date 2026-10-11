@@ -244,15 +244,15 @@ The tests cover both backends, launch/report delivery, freshness, blocked lanes,
 
 MIT
 
-## Migrate from OmOMeow
+## Migrate from ZzangDori
 
-If you set up the older OmOMeow mode from the gist, your bot keeps working. Four changes turn it into a Dori.
+If you set up the older ZzangDori mode from the gist, your bot keeps working. Four changes turn it into a Dori.
 
-1. **Pick a Dori name.** "Dori" on its own, or one that ends in Dori, like ShipDori or WorkDori. Tell your agent: "From now on your name is ShipDori and this is ShipDori mode." From then on, "ShipDori mode" is the keyword that turns it on, in place of "OmOMeow mode".
+1. **Pick a Dori name.** "Dori" on its own, or one that ends in Dori, like ShipDori or WorkDori. Tell your agent: "From now on your name is ShipDori and this is ShipDori mode." From then on, "ShipDori mode" is the keyword that turns it on, in place of "ZzangDori mode".
 2. **Rename the bot and change its picture.**
    - Telegram: open @BotFather, send `/setname`, pick the bot and send the new name. Then send `/setuserpic`, pick the bot and send the new image. The default Dori picture is [`skills/dori-mode/assets/dori-avatar.png`](skills/dori-mode/assets/dori-avatar.png); use any image you like. A bot's name and picture can only be changed through BotFather.
    - Discord: in the Developer Portal, open your application. On the **Bot** page change the username and the icon, and on **General Information** change the app name and icon as well (the same default picture works), then save.
 3. **Install this repo** with the one-line install above, and tell your agent "ShipDori mode". It picks up the skill and the `dori` CLI in place of the old pasted prompt.
-4. **Run onboarding** if your OmOMeow never did. Just say "run onboarding".
+4. **Run onboarding** if your ZzangDori never did. Just say "run onboarding".
 
 Your existing threads, topics and memory stay as they are.
