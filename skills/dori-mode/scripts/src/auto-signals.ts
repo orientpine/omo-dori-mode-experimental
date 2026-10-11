@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { type AutoSignals, type DoriConfig, expandHome } from "./config.ts";
@@ -324,20 +324,33 @@ export type RepeatTick = { readonly lines: readonly string[]; readonly inferred:
 // On a new report (freshness): the untagged repeats in the lane's current session. A metric whose count grew to
 // repeatAfter or more gets one REPEAT_SUSPECT line in the watch log; the counts are kept on the lane so the next report
 // alerts only on a new cycle. Returns the lines and the largest count (for ROLLOVER_DUE). Nothing is sent to the lane.
+// the full fail/attempt chain behind each alert, appended to <stateDir>/auto-signals/<key>.md; the watch-log line names it
+export const evidenceFile = (stateDir: string, key: string): string => join(stateDir, "auto-signals", `${key}.md`);
+
 export const repeatTick = async (deps: FlowDeps, lane: Lane, files?: readonly string[]): Promise<RepeatTick> => {
   const cfg = deps.config.autoSignals;
   const scan = await laneEvents(deps, lane, { since: sessionStart(lane), ...(files ? { files } : {}) });
-  const state = inferRepeats(scan.events, cfg);
+  const lastAt = lane.inferred?.lastEventAt;
+  // after the first scan, every crossing of repeatAfter in events newer than the last scan alerts, even when a PASS reset the
+  // count before this sweep; the first scan alerts on the final counts only (not the whole session's history again)
+  const crossings = new Map<string, MetricRepeat>();
+  const state = inferRepeats(scan.events, cfg, (r, e) => {
+    if (lastAt && r.n >= cfg.repeatAfter && e.at > lastAt) crossings.set(r.metric, r);
+  });
   const before = lane.inferred?.counts ?? {};
+  const fresh = lastAt ? [...crossings.values()] : suspects(state, cfg.repeatAfter).filter((r) => (before[r.metric] ?? 0) < r.n);
   const tagged = repeatsOf(lane);
   const lines: string[] = [];
-  for (const r of suspects(state, cfg.repeatAfter)) {
-    if ((before[r.metric] ?? 0) >= r.n) continue;
-    const line = suspectLine(lane.key, r, tagged);
+  const file = evidenceFile(deps.config.stateDir, lane.key);
+  for (const r of fresh) {
+    const line = `${suspectLine(lane.key, r, tagged)} evidence: ${file}`;
     lines.push(line);
+    mkdirSync(join(deps.config.stateDir, "auto-signals"), { recursive: true });
+    appendFileSync(file, [`## ${iso(deps.clock)} ${JSON.stringify(r.metric)} ${r.n}`, ...evidenceLines(r), ""].join("\n"));
     watchLog(deps.config.watchLog, deps.clock, { source: "auto-signals", line });
   }
   const counts = Object.fromEntries([...state.counts.values()].map((r) => [r.metric, r.n]));
-  if (JSON.stringify(counts) !== JSON.stringify(before)) await deps.registry.patch(lane.key, { inferred: { at: iso(deps.clock), counts } });
+  const newest = scan.events.reduce((m, e) => (e.at > m ? e.at : m), lastAt ?? "");
+  if (JSON.stringify(counts) !== JSON.stringify(before) || newest !== (lastAt ?? "")) await deps.registry.patch(lane.key, { inferred: { at: iso(deps.clock), counts, ...(newest ? { lastEventAt: newest } : {}) } });
   return { lines, inferred: maxInferred(state) };
 };

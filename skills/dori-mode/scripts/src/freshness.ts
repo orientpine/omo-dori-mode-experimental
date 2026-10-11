@@ -50,16 +50,21 @@ const leadDueFile = (stateDir: string): string => join(stateDir, "handover", "le
 
 // A session past a threshold is due for a rollover. Freshness says so once per pane and only suggests: the lead asks the
 // owner (dori rollover-propose) and runs the handover with their approval, unless the owner turned the auto key on.
-const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: string, pane: string, model: string, seenPane: string | undefined, save: (pane: string, at: string, crossed: string[]) => Promise<void>, extra: Signals = {}): Promise<SweepAct[]> => {
+// seen: the last mark for this pane; auto false means only an inferred repeat crossed then, so a crossing that may start an
+// automatic rollover (a tagged repeat, context, compactions, age) is still announced and acted on once (a mark written
+// before auto existed counts as handled)
+const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: string, pane: string, model: string, seen: { readonly pane?: string; readonly auto?: boolean } | undefined, save: (pane: string, at: string, crossed: string[], auto: boolean) => Promise<void>, extra: Signals = {}): Promise<SweepAct[]> => {
   const h = deps.config.handover;
-  if (deps.config.backend !== "aoe" || seenPane === pane) return [];
+  const marked = seen?.pane === pane;
+  if (deps.config.backend !== "aoe" || (marked && seen?.auto !== false)) return [];
   const limits = who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH, repeats: h.laneRepeats } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH };
   const signals = { ...(await hooks.signals(pane, model).catch(() => ({}))), ...extra };
   const hit = crossed(signals, limits);
   if (!hit.length) return [];
   // an inferred repeat (REPEAT_SUSPECT) may make a rollover due, but only tagged or measured signals may start one alone
   const autoHit = crossed({ ...signals, inferredRepeats: undefined }, limits);
-  await save(pane, new Date(deps.clock.now()).toISOString(), hit);
+  if (marked && !autoHit.length) return [];
+  await save(pane, new Date(deps.clock.now()).toISOString(), hit, autoHit.length > 0);
   const run = who === "lane" ? `dori handover --lane ${key} --approved-by <card>` : "dori handover --approved-by <card>";
   const acts: SweepAct[] = [{ kind: "rollover_due", lane: key, detail: `${hit.join(", ")} in ${pane}: ask the owner with dori rollover-propose ${key} (a card with the note preview); with a yes, ${who === "lane" ? `once the lane is at a safe point (dori handover ready ${key}), ` : ""}run ${run}` }];
   const autoOn = who === "lane" ? h.autoRolloverLanes : h.autoRolloverLead;
@@ -119,7 +124,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, hooks: Rollove
       const r = await researchCheck(deps, lane);
       if (r.verdict === "started" || r.verdict === "not-started") acts.push({ kind: r.verdict === "started" ? "research_started" : "research_not_started", lane: lane.key, detail: r.line.replace(/^RESEARCH_\w+ \S+ /, "") });
     }
-    acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue?.pane, (pane, at, hit) => deps.registry.patch(lane.key, { rolloverDue: { pane, at, crossed: hit } }), { repeats: repeatsOf(current), ...inferredOf(current) })));
+    acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue, (pane, at, hit, auto) => deps.registry.patch(lane.key, { rolloverDue: { pane, at, crossed: hit, auto } }), { repeats: repeatsOf(current), ...inferredOf(current) })));
     const heard = lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);
     if (silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
@@ -167,10 +172,10 @@ export const freshnessTick = async (deps: FlowDeps, home: string, hooks: Rollove
   const lead = deps.config.leadPane;
   if (lead) {
     const file = leadDueFile(deps.config.stateDir);
-    const seen = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { pane?: string }).pane : undefined;
-    acts.push(...(await rolloverDue(deps, hooks, "lead", "lead", lead, deps.config.handover.model || deps.config.defaultModel, seen, async (pane, at, hit) => {
+    const seen = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { pane?: string; auto?: boolean }) : undefined;
+    acts.push(...(await rolloverDue(deps, hooks, "lead", "lead", lead, deps.config.handover.model || deps.config.defaultModel, seen, async (pane, at, hit, auto) => {
       mkdirSync(join(deps.config.stateDir, "handover"), { recursive: true });
-      writeFileSync(file, JSON.stringify({ pane, at, crossed: hit }));
+      writeFileSync(file, JSON.stringify({ pane, at, crossed: hit, auto }));
     })));
   }
   return acts;

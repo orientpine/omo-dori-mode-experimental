@@ -92,6 +92,28 @@ test("an inferred repeat crosses laneRepeats with both counts shown; alone it ma
   }
 });
 
+test("an inferred-only ROLLOVER_DUE does not use up the pane: a later context crossing still starts the automatic rollover (challenge, gpt-6-astra)", async () => {
+  const st = withState();
+  try {
+    const w = newWorld();
+    const handover = { ...defaultConfig("/home/test").handover, autoRolloverLanes: true, laneContextPct: 80 };
+    const deps = depsFor(w, fakeClock(T0 + 60_000), st.dir, { backend: "aoe", handover });
+    await deps.registry.write({ ...lane(st.dir), pane: "aoe_rl_1", lastReplyAt: T0 + 60_000, inferred: { at: at(0), counts: { "\uad50\ucc29": 3 } } });
+    let started = 0;
+    let context = 10;
+    const hooks = { signals: async () => ({ contextPct: context }), auto: async () => `started ${++started}` };
+    expect((await freshnessTick(deps, "/home/test", hooks)).map((a) => a.kind)).toEqual(["rollover_due"]);
+    expect(started).toBe(0);
+    context = 95;
+    const second = await freshnessTick(deps, "/home/test", hooks);
+    expect(second.map((a) => a.kind)).toEqual(["rollover_due", "rollover_auto"]);
+    expect(started).toBe(1);
+    expect((await freshnessTick(deps, "/home/test", hooks)).map((a) => a.kind)).toEqual([]);
+  } finally {
+    st.done();
+  }
+});
+
 const lane = (dir: string): Lane => ({ key: "rl-e7", title: "E7", thread: "none", pane: "w:p1", brief: join(dir, "brief.md"), done: "x", cwd: "/repo", openedAt: at(-60), model: "anthropic/claude-opus-5-5" });
 
 const sessionLine = (min: number, role: "assistant" | "user", text: string): string =>
@@ -125,6 +147,45 @@ test("freshness raises REPEAT_SUSPECT once per new cycle from the lane's untagge
   expect((await deps.registry.read("rl-e7"))?.inferred?.counts).toEqual({ "\uad50\ucc29": 3 });
   world.screens["lead:p1"] = " [REPORT] rl-e7 | milestone | \ub2e4\uc74c run \uc900\ube44 \uc911\n\n\u276f ";
   expect((await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "repeat_suspect")).toEqual([]);
+});
+
+test("a third cycle followed by a PASS between two sweeps still alerts, with the whole chain in the evidence file (challenge, gpt-6-astra)", async () => {
+  const line = (e: LaneEvent) => sessionLine((Date.parse(e.at) - T0) / 60_000, "assistant", `[REPORT] rl-e7 | milestone | ${e.text}`);
+  const file = writeSession(loop.slice(0, 2).map(line));
+  const deps = depsFor(world, fakeClock(T0 + 20 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions") });
+  await deps.registry.write(lane(state.dir));
+  world.screens["lead:p1"] = ` [REPORT] rl-e7 | milestone | ${loop[1]?.text}\n\n\u276f `;
+  expect((await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "repeat_suspect")).toEqual([]);
+  const pass = ev(260, "model_800 F1: \uad50\ucc29 1 PASS");
+  writeFileSync(file, `${[...loop, pass].map(line).join("\n")}\n`);
+  world.screens["lead:p1"] = ` [REPORT] rl-e7 | milestone | ${pass.text}\n\n\u276f `;
+  const later = { ...deps, clock: fakeClock(T0 + 270 * 60_000) };
+  const acts = (await freshnessTick(later, "/home/test")).filter((a) => a.kind === "repeat_suspect");
+  expect(acts.map((a) => a.detail.split(" (")[0])).toEqual(['"\uad50\ucc29" 3']);
+  expect(acts[0]?.detail).toContain(join(state.dir, "auto-signals", "rl-e7.md"));
+  const evidence = await Bun.file(join(state.dir, "auto-signals", "rl-e7.md")).text();
+  expect(evidence.match(/ (fail|attempt): /g)).toHaveLength(6);
+  expect((await deps.registry.read("rl-e7"))?.inferred?.counts).toEqual({});
+});
+
+test("owner-check reads every report since the last check, not only the newest six (challenge, gpt-6-astra)", async () => {
+  writeFileSync(join(state.dir, "brief.md"), "# \ube0c\ub9ac\ud504\n\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0");
+  const reports = Array.from({ length: 9 }, (_, i) => sessionLine(10 + i, "assistant", `[REPORT] rl-e7 | milestone | \uc9c4\ud589 ${i}: ${i === 0 ? "\ud559\uc2b5\uc744 \uba48\ucda4" : "\uc815\uc0c1 \uc9c4\ud589"}`));
+  const file = writeSession([sessionLine(1, "assistant", "[REPORT] rl-e7 | milestone | \uc2dc\uc791"), ...reports]);
+  const prompts: string[] = [];
+  const base = fakeRunner(world);
+  const run: Runner = async (argv, opts) => {
+    if (argv[0] !== "omo") return base(argv, opts);
+    prompts.push(argv.at(-1) ?? "");
+    return { code: 0, out: "VERDICT: OK", err: "" };
+  };
+  const explore = { ...defaultConfig("/home/test").explore, modelsCommand: [] };
+  const deps = { ...depsFor(world, fakeClock(T0 + 60 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions"), explore }), run };
+  const checked = { ...lane(state.dir), ownerCheck: { at: at(5), lastReportAt: at(1), day: at(0).slice(0, 10), today: 1, model: "m", kinds: ["OK"] } };
+  await deps.registry.write(checked);
+  const r = await runOwnerCheck(deps, checked, { files: [file] });
+  expect(r.lines[0]).toContain("OWNER_CHECK rl-e7 OK 9 recent reports");
+  expect(prompts[0]).toContain("\uc9c4\ud589 0: \ud559\uc2b5\uc744 \uba48\ucda4");
 });
 
 test("reports are read once each, from the lane's typing and the lead's copy, without template leftovers", async () => {

@@ -109,7 +109,12 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   const now = deps.clock.now();
   const files = opts.files ?? laneSessionFiles(deps.config, lane);
   const since = Date.parse(lane.openedAt) || 0;
-  const reports = (await readReports(files, lane.key, since)).slice(-cfg.reports);
+  // every report since the last check (up to maxReports, newest kept), and at least the newest `reports` for context: a
+  // violation followed by routine reports before the next check is still read
+  const all = await readReports(files, lane.key, since);
+  const unseen = lane.ownerCheck ? all.filter((r) => r.at > (lane.ownerCheck?.lastReportAt ?? "")).length : all.length;
+  const reports = all.slice(-Math.min(Math.max(cfg.reports, unseen), cfg.maxReports));
+  const unread = Math.max(0, unseen - cfg.maxReports);
   const newest = reports.at(-1)?.at;
   const why = ownerDue(lane.ownerCheck, newest, now, opts.force ? { minIntervalMin: 0, maxPerDay: Number.POSITIVE_INFINITY } : cfg);
   if (why) return { skipped: `OWNER_CHECK_SKIP ${lane.key} ${why}`, findings: [], lines: [] };
@@ -142,7 +147,8 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
     const day = new Date(now).toISOString().slice(0, 10);
     const today = lane.ownerCheck?.day === day ? lane.ownerCheck.today + 1 : 1;
     await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: newest ?? "", day, today, model: c.call, kinds: findings.length ? findings.map((f) => f.kind) : ["OK"] } });
-    const lines = findings.length ? findings.map((f) => findingLine(lane.key, f, c.call ?? "")) : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief and ${relays.length} owner relays [reviewer ${c.call} (${familyOf(c.call)})]`];
+    const gap = unread ? ` (${unread} older unchecked reports not read: autoSignals.ownerCheck.maxReports ${cfg.maxReports})` : "";
+    const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief and ${relays.length} owner relays${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
     for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
     return { findings, lines, model: c.call };
   }

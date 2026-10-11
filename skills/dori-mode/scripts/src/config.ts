@@ -157,7 +157,8 @@ export type Explore = {
 // CONTRADICTION / GOAL_LOSS / OK. enabled: freshness runs it on new reports; models: in order, GPT first (gpt-6.1-sol: on live
 // Korean lane logs the cheaper gpt-6-luna misread a relayed order's scope; it stays as the fallback); command: argv
 // template ({model}, {prompt}, {system}); minutes: time limit; minIntervalMin: at most one check per lane in this time;
-// maxPerDay: per lane; reports / relays: how many recent reports and [LEAD] relays it reads; perTick: checks per sweep.
+// maxPerDay: per lane; reports: the newest reports it reads at least; maxReports: at most this many of the reports since the
+// last check (all of them up to that); relays: how many owner [LEAD] relays it reads; perTick: checks per sweep.
 export type OwnerCheck = {
   readonly enabled: boolean;
   readonly models: readonly string[];
@@ -166,6 +167,7 @@ export type OwnerCheck = {
   readonly minIntervalMin: number;
   readonly maxPerDay: number;
   readonly reports: number;
+  readonly maxReports: number;
   readonly relays: number;
   readonly perTick: number;
 };
@@ -338,8 +340,9 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
       command: ["omo", "-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files", "--omo-senpi-disabled", "--system-prompt", "{system}", "--model", "{model}", "{prompt}"],
       minutes: 4,
       minIntervalMin: 30,
-      maxPerDay: 24,
+      maxPerDay: 48,
       reports: 6,
+      maxReports: 20,
       relays: 8,
       perTick: 1,
     },

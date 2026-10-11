@@ -73,9 +73,10 @@ export type Lane = {
   readonly blocked?: string;
   readonly idleSince?: number;
   // the last ROLLOVER_DUE freshness gave: one per pane, so a lane's new session can get its own
-  readonly rolloverDue?: { readonly pane: string; readonly at: string; readonly crossed: readonly string[] };
+  // auto: a signal that may start an automatic rollover crossed (false: only an inferred repeat did)
+  readonly rolloverDue?: { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean };
   // untagged repeats freshness inferred in the current session (REPEAT_SUSPECT): cycles per metric, so each new count alerts once
-  readonly inferred?: { readonly at: string; readonly counts: Readonly<Record<string, number>> };
+  readonly inferred?: { readonly at: string; readonly counts: Readonly<Record<string, number>>; readonly lastEventAt?: string };
   // the last dori owner-check: when, up to which report, how many today, by which reviewer, what it found
   readonly ownerCheck?: { readonly at: string; readonly lastReportAt: string; readonly day: string; readonly today: number; readonly model: string; readonly kinds: readonly string[] };
   readonly receipt?: unknown;
