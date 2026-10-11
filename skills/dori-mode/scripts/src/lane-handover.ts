@@ -110,9 +110,10 @@ const section = (text: string, heading: string): string => {
 // goal (independent of the summary), and the owner's quoted words and the decisions of the old session's summary.
 export type Missing = { readonly kind: "restatement" | "heading" | "tried fix" | "owner goal" | "owner's words" | "decision"; readonly text: string; readonly under: string; readonly source: string };
 
-const flat = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
-const QUOTE = /"([^"\n]{6,})"|“([^”\n]{6,})”|「([^」\n]{6,})」/g;
-const quotesIn = (text: string): string[] => [...new Set([...text.matchAll(QUOTE)].map((m) => (m[1] ?? m[2] ?? m[3] ?? "").trim()).filter(Boolean))];
+// an escaped quote (\") counts as a plain one on both sides, so a quote inside a quote stays one line
+const flat = (s: string): string => s.replace(/\\"/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
+const QUOTE = /"((?:[^"\\\n]|\\.){6,})"|“([^”\n]{6,})”|「([^」\n]{6,})」/g;
+const quotesIn = (text: string): string[] => [...new Set([...text.matchAll(QUOTE)].map((m) => (m[1] ?? m[2] ?? m[3] ?? "").replace(/\\"/g, '"').trim()).filter(Boolean))];
 const words = (s: string): string[] => [...new Set(s.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]{3,}/gu) ?? [])];
 // a decision bullet without its "Why: ..." tail; one with fewer than 3 words is too short to check
 const decisionsIn = (summary: string): string[] =>

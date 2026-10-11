@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
-import { laneHandover, type LaneHandoverDeps, markReady, pendingFile, readyFile, statusLine } from "../src/lane-handover.ts";
+import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine } from "../src/lane-handover.ts";
 import { approvalProblem, compactionsIn, crossed, repeatsOf, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { Lane } from "../src/registry.ts";
@@ -748,6 +748,15 @@ test("a restatement without the owner's goal gets it from the registry and commi
   expect(r.code).toBe(0);
   expect(printed.find((l) => l.startsWith("HANDOVER_SUPPLEMENT demo round 1/2: 1 left out (owner goal: 레인에도 적용)"))).toBeDefined();
   expect(readFileSync((r.note ?? "").replace(/\.md$/, ".supplement-1.md"), "utf8")).toContain("Source: the lane's registry entry (the owner's words at launch). Goes under: ## Goal.");
+});
+
+test("an owner's line with escaped quotes inside is one item, and it counts as restated either way", () => {
+  // Given
+  const facts = { lane: { ...lane(), goal: "" }, laneNote: `## Owner's words and constraints\n- Brief: "put only \\"none\\" under Ruled out on purpose"\n` } as unknown as LaneFacts;
+  // Then
+  expect(missingFrom(RESTATE, facts).map((m) => m.text)).toEqual(['put only "none" under Ruled out on purpose']);
+  expect(missingFrom(`${RESTATE}- "put only \\"none\\" under Ruled out on purpose"\n`, facts)).toEqual([]);
+  expect(missingFrom(`${RESTATE}- put only "none" under Ruled out on purpose\n`, facts)).toEqual([]);
 });
 
 test("a new session that does not answer a supplement fails the check", async () => {
