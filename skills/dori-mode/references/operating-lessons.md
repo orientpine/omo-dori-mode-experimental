@@ -57,3 +57,15 @@ A lane's `[REPORT]` is a note for the lead: abbreviations, numbered items, an En
 - The automatic close in `dori watch` posts `discord.doneText` through `hooks.threadDone`, not `Done: <evidence>`. The evidence stays in the lane's record; sum up the result for the owner yourself.
 - Set both in the owner's language, for example Korean in casual speech: `"quietText": "진행 중이야 — 마지막 보고는 {min}분 전. 정리해서 곧 알려 줄게."`.
 - `discord.postRawReports: true` brings back posting the raw report and evidence. Leave it off unless the owner reads those notes directly.
+
+## 9. Stuck on one metric: branch the explanations, do not repeat the patch
+
+An RL lane (E7) training an excavator to dump soil into a bank kept failing on one metric: the policy picked up a load and stood still instead of dumping. The lead re-instructed it with reward patches, one after another: a dump credit, then a small reward for dumping waste in the spoil band. Each patch had a plausible story and none moved the metric. What found the cause was a forced four-way diagnosis: four competing explanations (the reward is too weak; exploration has collapsed; the critic undervalues the states after a dump; the geometry of the target makes dumping unreachable), each with one cheap test that only that explanation predicts. The exploration test answered first: the swing action's sigma had collapsed to 0.0068, so the policy could no longer try the swing that leads to a dump. Reward patches could never have fixed that.
+
+What the scripts now do so this happens on the second failed patch instead of after many:
+
+- `dori fix-attempt` refuses a second attempt on one metric with no improvement unless it comes with at least three competing hypotheses and one discriminating test each (`HYPOTHESES_REQUIRED`, exit 5). With them it logs `STUCK_BRANCH` and puts them into the area's hypothesis tree. `--improved` resets the count after a fix that did move the metric.
+- `dori fork-explore` runs the tests side by side (GPU ones queue on the heavy slot) and prints one table; for E7 that is reward x2, a swing-sigma log, a value probe before and after a dump, and a reachability check of the dump point, all reporting the dump count.
+- At the third attempt the lane is told to search outside first (`dori research-hint`: here, "policy gradient action std collapse" is a known failure mode with known remedies such as an entropy bonus or a std floor).
+- The tree goes into every new brief for that repo, so the next lane sees "reward too small: falsified" and does not start from it again.
+- Before the next expensive step (a nine-seed run), `dori challenge` gets a model of another family to argue against the plan, and `dori intent-check` compares the lane's new direction with the owner's goal in their own words, which catches a lane that has started optimizing a proxy.

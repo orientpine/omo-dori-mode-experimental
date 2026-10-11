@@ -16,11 +16,14 @@ beforeEach(() => {
 });
 afterEach(() => state.done());
 
+// the external-search note at the second stuck signal is explore.test.ts's; these tests watch SAME_FIX_3 alone
+const quiet = { explore: { ...defaultConfig().explore, sendResearchToLane: false } };
+
 const lane: Lane = { key: "e7", title: "e7", thread: "none", pane: "w:p7", brief: "/b.md", done: "merged acme/app#1", openedAt: new Date(T0).toISOString(), lastReplyAt: T0 };
 const report = (n: number, tag: string) => ` [REPORT] e7 | milestone | round ${n}: raised the reward ${tag}\n\n❯ `;
 
 test("the third tagged report fixing one metric on one hypothesis alerts the lead once, and nothing reaches the lane by default", async () => {
-  const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir);
+  const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, quiet);
   await deps(T0).registry.write(lane);
   const tick = async (n: number, tag: string) => {
     world.screens["lead:p1"] = report(n, tag);
@@ -40,7 +43,7 @@ test("the third tagged report fixing one metric on one hypothesis alerts the lea
 
 test("with sameFix.sendToLane on, the lane gets the stop-patching note; the lane keeps working", async () => {
   const sameFix = { ...defaultConfig().sameFix, sendToLane: true };
-  const deps = depsFor(world, fakeClock(T0), state.dir, { sameFix });
+  const deps = depsFor(world, fakeClock(T0), state.dir, { sameFix, ...quiet });
   await deps.registry.write(lane);
   for (let i = 0; i < 2; i++) expect((await recordFix(deps, "e7", { at: "t", metric: "m", hypothesis: "h", via: "report" })).alert).toBeUndefined();
   const r = await recordFix(deps, "e7", { at: "t", metric: "m", hypothesis: "h", via: "report" });
