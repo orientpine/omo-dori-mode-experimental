@@ -243,15 +243,15 @@ bunx tsc --noEmit  # 类型检查
 
 MIT
 
-## 从 ZzangDori 迁移
+## 从 Dori 迁移
 
-如果你之前用 gist 设置过 ZzangDori 模式，机器人照常能用。改下面四处，它就成了 Dori。
+如果你之前用 gist 设置过 Dori 模式，机器人照常能用。改下面四处，它就成了 Dori。
 
-1. **起一个 Dori 名字。** 就叫 "Dori",或者用 Dori 结尾的名字，比如 ShipDori、WorkDori。对智能体说:"从现在起你叫 ShipDori,这是 ShipDori mode。"之后开启模式的说法就从 "ZzangDori mode" 换成 "ShipDori mode"。
+1. **起一个 Dori 名字。** 就叫 "Dori",或者用 Dori 结尾的名字，比如 ShipDori、WorkDori。对智能体说:"从现在起你叫 ShipDori,这是 ShipDori mode。"之后开启模式的说法就从 "Dori mode" 换成 "ShipDori mode"。
 2. **改机器人的名字和头像。**
    - Telegram:在 @BotFather 里发送 `/setname`,选中机器人，再发新名字。接着发送 `/setuserpic`,选中机器人，再发新图片。默认的 Dori 头像是 [`skills/dori-mode/assets/dori-avatar.png`](skills/dori-mode/assets/dori-avatar.png),也可以换成你喜欢的图片。机器人的名字和头像只能通过 BotFather 修改。
    - Discord:在 Developer Portal 打开你的应用。在 **Bot** 页面改用户名和图标，在 **General Information** 页面改应用名和图标(可以用同一张默认头像),然后保存。
 3. **安装这个仓库。** 运行上面的一行安装命令，再对智能体说 "ShipDori mode",它就会用这个技能和 `dori` CLI,不再用以前粘贴的提示词。
-4. **做一次初次了解。** 如果 ZzangDori 时期没做过，说一句"做一下 onboarding"就行。
+4. **做一次初次了解。** 如果 Dori 时期没做过，说一句"做一下 onboarding"就行。
 
 原有的线程、话题和记忆都会保留。
