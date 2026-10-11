@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
-import { defaultDiscordWords } from "../src/config.ts";
+import { defaultDiscordWords, type DiscordWords } from "../src/config.ts";
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, pauseLane, resumeLane, watchTick } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { Discord } from "../src/messenger/discord.ts";
-import { discordThreadId, setThreadStatus } from "../src/messenger/discord-thread.ts";
+import { discordThreadId, setThreadStatus, type ThreadStatus } from "../src/messenger/discord-thread.ts";
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -112,6 +112,31 @@ test("an archived thread is opened, renamed and archived again, since Discord wi
   const done = fakeThread("✅ fix login", true);
   await closeLane(at(T0, { markThreadDone: done.markThreadDone }), lane, "closed");
   expect(done.calls()).toEqual([`GET ${T}`]);
+});
+
+test("close strips every stacked status mark from a thread name, so it ends with one", async () => {
+  const f = fakeThread("🔄 🔄 fix login", false);
+  await closeLane(at(T0, { markThreadDone: f.markThreadDone }), lane, "closed");
+  expect(f.calls()).toEqual([`GET ${T}`, `PATCH ${T} {"name":"✅ fix login"}`, `PATCH ${T} {"archived":true}`]);
+});
+
+// the name setThreadStatus sends for a thread currently called `name`
+const renamed = async (name: string, status: ThreadStatus, words: DiscordWords = { ...defaultDiscordWords, statusStyle: "emoji" }) => {
+  let sent: string | undefined;
+  const http: Http = async (req) => {
+    if (req.method === "PATCH") sent = (JSON.parse(String(req.body ?? "{}")) as { name?: string }).name ?? sent;
+    return { status: 200, headers: {}, body: "{}" };
+  };
+  await setThreadStatus(new Discord(http, fakeClock(0), "bot"), THREAD_ID, status, words, { name });
+  return sent ?? name;
+};
+
+test("every status change leaves exactly one status mark in front of the title", async () => {
+  expect(await renamed("✅ 🔄 fix login", "working")).toBe("🔄 fix login");
+  expect(await renamed("fix login", "working")).toBe("🔄 fix login");
+  expect(await renamed("⏸️⏳ ⏸ 🔄  fix login", "waiting")).toBe("⏸️ fix login");
+  expect(await renamed("[working] [working] [api] fix login", "done", defaultDiscordWords)).toBe("[done] [api] fix login");
+  expect(await renamed("🔄 [done] fix login", "working", defaultDiscordWords)).toBe("[working] fix login");
 });
 
 test("a thread that cannot be renamed is a warning, the lane still closes; a lane without a thread or sharing it with an open lane is not touched", async () => {

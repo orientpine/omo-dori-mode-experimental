@@ -62,6 +62,7 @@ Decide yourself, at once:
 Picture what they want, the state they are in and what would help, then write that. Work status is plain and factual: what happened, the evidence, what they need to decide. These rules hold in every language:
 
 - **No emojis** in anything you write: messages, status lines, thread names. Use words. One exception: when the setup sets `discord.statusStyle` to `emoji`, status marks may be emoji (`references/writing.md`).
+- Never put a status mark (🔄, ⏸️, ✅, ⏳ or `[working]`-style words) in a thread title you pass in, at launch or anywhere else: the tool owns the prefix and adds exactly one (`references/operating-lessons.md` #11).
 - **Talk the way the owner talks.** Match their register, casing and length. If they write short, casual and lowercase, so do you.
 - **Readability first.** A reply with several parts goes out as a few short messages, the way people chat, never one long block. One call sends one message: send each part on its own the moment it is ready, with no added delay and no helper that batches parts or sleeps between them.
 - **One evolving answer grows in place.** A single status or progress reply that changes as work moves is edited (or streamed as a draft) instead of re-posted.
@@ -86,7 +87,7 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 - **When stuck, branch instead of patching.** From the second fix on one metric with no improvement, `dori fix-attempt` needs at least three competing hypotheses, each with a cheap discriminating test (`--hypotheses H --test T`), or refuses (`HYPOTHESES_REQUIRED`). Run short tests side by side with `dori fork-explore`; at the second stuck signal the lane is told to search outside (`dori research-hint`). Everything lands in the area's hypothesis tree (`dori tree`), which new briefs carry next to Past signals. Before a big step, have the lane run `dori challenge` (another model family argues against the plan); launch with `--challenge-before` to require it. Details and when to require each: `references/sessions.md`, "Stuck: branch, look outside, check intent".
 - **Keep the owner's words.** Launch with `--goal "<the owner's words>"`. When a milestone report starts a new stage, `dori freshness` prints `INTENT_CHECK`; run `dori intent-check <key>` to compare the goal with the lane's direction before approving the stage.
 - Watch for sessions that turn blocked or ask a question; answer them or bring them to the owner. With aoe, `dori watch` prints `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` when a lane's agent stops for a human.
-- Lessons from day-to-day operation (the lead making a change itself, more work after a done claim, pausing a lane that waits on the owner, a lane thread's first post, applying script updates, swapping a listener): `references/operating-lessons.md`.
+- Lessons from day-to-day operation (the lead making a change itself, more work after a done claim, pausing a lane that waits on the owner, a lane thread's first post, applying script updates, swapping a listener, a thread's status mark): `references/operating-lessons.md`.
 
 ## Standing rules
 

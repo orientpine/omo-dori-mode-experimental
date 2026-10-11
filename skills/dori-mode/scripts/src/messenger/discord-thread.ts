@@ -21,8 +21,25 @@ export const STATUS_EMOJI: Readonly<Record<ThreadStatus, string>> = { working: "
 
 // either style's mark, so switching statusStyle never leaves two marks on one name
 const STATUS_PREFIX = /^(?:\[[^\]]{1,20}\]|(?:🔄|⏸|✅|⏳)\uFE0F?)\s*/u;
+const EMOJI_PREFIX = /^(?:🔄|⏸|✅|⏳)\uFE0F?\s*/u;
 
 export const statusMark = (status: ThreadStatus, words: DiscordWords): string => (words.statusStyle === "emoji" ? STATUS_EMOJI[status] : `[${words[status]}]`);
+
+// The name without any leading status marks: "🔄 🔄 x" and "✅ 🔄 x" both give "x". A title passed in with its own
+// mark, or an earlier rename that kept one, would otherwise stack marks. Any one bracket in front goes (an older
+// words setting); after that only emoji and this setting's [word] marks do, so a title's own "[tag]" stays.
+export const bareThreadName = (name: string, words: DiscordWords): string => {
+  const marks = new Set<string>(["working", "waiting", "done"].map((s) => `[${words[s as ThreadStatus]}]`));
+  let rest = name.trimStart().replace(STATUS_PREFIX, "");
+  for (;;) {
+    const word = /^\[[^\]]{1,20}\]/u.exec(rest)?.[0];
+    const next = word && marks.has(word) ? rest.slice(word.length).trimStart() : rest.replace(EMOJI_PREFIX, "");
+    if (next === rest) return rest;
+    rest = next;
+  }
+};
+
+export const threadName = (status: ThreadStatus, title: string, words: DiscordWords): string => `${statusMark(status, words)} ${bareThreadName(title, words)}`;
 
 export const isDoneName = (name: string, words: DiscordWords): boolean => name.startsWith(STATUS_EMOJI.done) || name.startsWith(`[${words.done}]`);
 
@@ -35,7 +52,7 @@ export type ThreadInfo = { readonly name?: string; readonly thread_metadata?: { 
 export const setThreadStatus = async (dc: Discord, threadId: string, status: ThreadStatus, words: DiscordWords, current?: ThreadInfo): Promise<void> => {
   const info = current ?? (await dc.call<ThreadInfo>("GET", `/channels/${threadId}`));
   const name = info.name ?? "";
-  const next = `${statusMark(status, words)} ${name.replace(STATUS_PREFIX, "")}`;
+  const next = threadName(status, name, words);
   const archived = info.thread_metadata?.archived === true;
   if (status === "done") {
     if (next === name && archived) return;
