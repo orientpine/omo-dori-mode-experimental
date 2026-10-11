@@ -344,8 +344,9 @@ export const sendResearch = async (deps: FlowDeps, lane: Lane, tree: Tree, signa
 // - seen: a user message whose text starts with the probe (the start of the text dori typed)
 // - pointer: a {"type":"custom_message","customType":"omo-ulw-research:skill-pointer"} entry, or the pointer block
 //   <omo-ulw-research-pointer> inside that user message (omo appends it there when the agent was busy)
-// - read: an assistant tool call that really reads ulw-research/SKILL.md (skillRead), not one that only mentions it
-// - readEarlier: the same read before `since`: a lane that already holds the skill may not read it again, and then
+// - read: an assistant tool call that really reads ulw-research/SKILL.md (skillRead), not one that only mentions it,
+//   after the typed message reached the session
+// - readEarlier: the same read before that (before `since`, or while the lane was still busy with an earlier send): a lane that already holds the skill may not read it again, and then
 //   tends to answer without the skill's protocol (seen live on a second send in one session)
 export const RESEARCH_POINTER = "omo-ulw-research:skill-pointer";
 export const RESEARCH_SKILL = "ulw-research/SKILL.md";
@@ -398,7 +399,9 @@ export const parseResearchStart = (jsonl: string, probe: string, since: number):
         seen = true;
         if (b.text.includes("<omo-ulw-research-pointer>")) pointer = true;
       }
-      if (readsSkill) read = true;
+      // a read before the typed text reached the session (the lane still busy with an earlier send) is not this send's
+      if (readsSkill && seen) read = true;
+      else if (readsSkill) readEarlier = true;
     }
   }
   return { seen, pointer, read, readEarlier };

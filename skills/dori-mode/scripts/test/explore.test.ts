@@ -202,6 +202,11 @@ test("only a real read of ulw-research/SKILL.md counts as the skill starting, no
   // the same re-send with a real read (read tool, or eval Bun.file) -> started
   expect((await check([...firstSend, resend, readLine(60)])).verdict).toBe("started");
   expect((await check([...firstSend, resend, evalRead(60)])).verdict).toBe("started");
+  // seen live: the lane, still busy with the first send, read the skill after the re-send but before the re-sent text
+  // reached the session, then only quoted the path in a finding -> that read belongs to the first send
+  const busy = await check([...firstSend, pointerLine(1), readLine(5), userLine(6, `${PROBE} again`), treeMention(20)]);
+  expect(busy.verdict).toBe("not-started");
+  expect(busy.line).toContain("it read it earlier in this session");
   // the pointer only from the earlier send: a read now does not make this send started
   const oldPointer = await check([...firstSend, userLine(1, `${PROBE} again`), evalRead(60)]);
   expect(oldPointer.verdict).toBe("not-started");
