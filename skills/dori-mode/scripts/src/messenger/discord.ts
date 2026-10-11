@@ -1,5 +1,5 @@
 import type { Clock } from "../run.ts";
-import { guardText, type Http, MessengerError, withBackoff } from "./http.ts";
+import { DEFAULT_RETRY, guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
 
 const retryAfter = (body: string): number | undefined => {
   try {
@@ -16,11 +16,22 @@ export class Discord {
     private readonly clock: Clock,
     private readonly botToken: string,
     private readonly base = "https://discord.com/api/v10",
+    private readonly policy: RetryPolicy = DEFAULT_RETRY,
   ) {}
 
+  // One attempt and no waiting: a 429 comes back at once as a MessengerError carrying retry_after, for a caller
+  // that schedules its own retry (a thread rename can be told to wait several minutes).
+  once(): Discord {
+    return new Discord(this.http, this.clock, this.botToken, this.base, { ...this.policy, attempts: 1 });
+  }
+
   async call<T = unknown>(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: Record<string, unknown>): Promise<T> {
-    const res = await withBackoff(this.http, this.clock, { method, url: `${this.base}${path}`, headers: { Authorization: `Bot ${this.botToken}`, "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }, undefined, retryAfter);
-    if (res.status >= 300) throw new MessengerError(`discord ${method} ${path}: ${res.status} ${res.body.slice(0, 160)}`, res.status);
+    const res = await withBackoff(this.http, this.clock, { method, url: `${this.base}${path}`, headers: { Authorization: `Bot ${this.botToken}`, "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }, this.policy, retryAfter);
+    if (res.status >= 300) {
+      const header = Number(res.headers["retry-after"]);
+      const wait = res.status === 429 ? (retryAfter(res.body) ?? (Number.isFinite(header) && header > 0 ? header : undefined)) : undefined;
+      throw new MessengerError(`discord ${method} ${path}: ${res.status} ${res.body.slice(0, 160)}`, res.status, undefined, wait);
+    }
     return (res.body ? JSON.parse(res.body) : {}) as T;
   }
 

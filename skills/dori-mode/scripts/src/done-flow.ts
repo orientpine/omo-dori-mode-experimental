@@ -15,7 +15,7 @@ export type FlowDeps = {
   readonly exists?: (path: string) => boolean;
   readonly signalIo?: SignalIo;
   // sets a discord:<id> work thread to done and archives it (cli wires it when DORI_DISCORD_TOKEN is set)
-  readonly markThreadDone?: (ref: string) => Promise<void>;
+  readonly markThreadDone?: (ref: string) => Promise<unknown>;
 };
 
 export class LaneStateError extends Error {}

@@ -34,9 +34,10 @@ import { ThreadLedger } from "./messenger/thread-ledger.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
-import { QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
+import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
-import { discordThreadId, progressText, setThreadStatus, threadHook, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { discordThreadId, progressText, threadHook, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
@@ -137,7 +138,15 @@ const deps: FlowDeps = {
   clock: realClock,
   registry: new Registry(config.stateDir),
   config,
-  ...(discordToken ? { markThreadDone: (ref: string) => setThreadStatus(new Discord(fetchHttp, realClock, discordToken), discordThreadId(ref), "done", config.discord) } : {}),
+  ...(discordToken
+    ? {
+        markThreadDone: async (ref: string) => {
+          // a rename left pending (429) is applied later by the listener; the close still says it did not happen yet
+          const outcome = await threadStatuses(new Discord(fetchHttp, realClock, discordToken)).request(discordThreadId(ref), "done");
+          if (outcome === "pending" || outcome === "dropped") throw new Error(`thread rename ${outcome}, see the THREAD_STATUS line`);
+        },
+      }
+    : {}),
 };
 const [command = "", ...rest] = process.argv.slice(2);
 
@@ -200,7 +209,12 @@ const env = (name: string): string => process.env[name]?.trim() || die(`${name} 
 const discordClient = () => new Discord(fetchHttp, realClock, env("DORI_DISCORD_TOKEN"));
 // question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
 const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
-const questionCards = (dc: Discord) => new QuestionCards(dc, new QuestionStore(cardDir()), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now);
+// every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards
+const threadStatuses = (dc: Discord, log: (line: string) => void = (line) => console.error(line)) => {
+  const store = new QuestionStore(cardDir());
+  return new ThreadStatusQueue({ dc, words: config.discord, file: join(cardDir(), "thread-status.json"), openCards: (t) => openCardIds(store, t), now: realClock.now, log });
+};
+const questionCards = (dc: Discord, statuses?: ThreadStatusQueue) => new QuestionCards(dc, new QuestionStore(cardDir()), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now, statuses);
 
 const transcribeUrl = async (url: string, filename: string): Promise<string> => {
   const dir = mkdtempSync(join(tmpdir(), "dori-voice-"));
@@ -536,9 +550,12 @@ try {
         const liveInbox = process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
         if (shadowInbox && resolve(shadowInbox) === resolve(liveInbox)) die("DORI_DISCORD_SHADOW_INBOX must differ from the live inbox");
         const dc = discordClient();
+        const statuses = threadStatuses(dc, (line) => console.log(line));
+        // the listener owns the delayed renames: a burst becomes one rename, and a 429 waits out retry_after
+        if (!shadowInbox) statuses.watch({ setTimeout: (cb, ms) => setTimeout(cb, ms), setInterval: (cb, ms) => setInterval(cb, ms) });
         const listener = new DiscordListener({
           dc,
-          cards: questionCards(dc),
+          cards: questionCards(dc, statuses),
           open: () => {
             const ws = new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
             return {
@@ -602,7 +619,9 @@ try {
     case "thread": {
       const [verb, ref, text] = flags.positionals;
       if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|wait|done> discord:<thread id> <text>");
-      const posted = await threadHook(discordClient(), verb as ThreadVerb, ref ?? "", text ?? "", config.discord);
+      const dc = discordClient();
+      const statuses = threadStatuses(dc);
+      const posted = await threadHook(dc, verb as ThreadVerb, ref ?? "", text ?? "", config.discord, (t, s) => statuses.request(t, s));
       console.log(`POSTED ${posted}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
       break;
     }

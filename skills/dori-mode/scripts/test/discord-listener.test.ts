@@ -50,7 +50,9 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   };
   const sleeps: number[] = [];
   const dc = new Discord(http, { ...fakeClock(0), sleep: async (ms: number) => { sleeps.push(ms); } }, "bot");
-  const cards = new QuestionCards(dc, new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  // one words setting for the cards and the listener, as the CLI builds them from one config
+  const words = { ...defaultDiscordWords, statusStyle: "emoji" as const, autoUnEye: opts.autoUnEye ?? true };
+  const cards = new QuestionCards(dc, new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words }, () => Date.parse("2026-01-02T03:04:00Z"));
   const inboxFile = `${state.dir}/discord/inbox.jsonl`;
   if (opts.inbox) {
     mkdirSync(`${state.dir}/discord`, { recursive: true });
@@ -60,7 +62,7 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const t = fakeTimers();
   const logs: string[] = [];
   const fatal: number[] = [];
-  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBot: opts.pairBot ?? "" } : {}), ...(opts.shadow ? { shadow: true } : {}), words: { ...defaultDiscordWords, statusStyle: "emoji", autoUnEye: opts.autoUnEye ?? true }, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
+  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBot: opts.pairBot ?? "" } : {}), ...(opts.shadow ? { shadow: true } : {}), words, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
   const inbox = () => (existsSync(inboxFile) ? readFileSync(inboxFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}`);
   const eyesFile = () => JSON.parse(readFileSync(`${state.dir}/discord/eyes.json`, "utf8"));

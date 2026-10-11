@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
-import { type Interaction, modalValue, type QuestionCards } from "./discord-cards.ts";
-import { isDoneName, setThreadStatus, type ThreadInfo } from "./discord-thread.ts";
+import { type Interaction, modalValue, openCardIds, type QuestionCards } from "./discord-cards.ts";
+import { isDoneName, type ThreadInfo } from "./discord-thread.ts";
 import type { Timers } from "./typing.ts";
 
 export const EYES = "👀";
@@ -70,6 +70,10 @@ export type InboxMessage = {
   readonly reply_to: string | null;
   readonly via?: "owner-webhook";
   readonly webhook_id?: string;
+  // a thread message while question cards are still open there: the owner may have answered in text, so the lead
+  // resolves the card (dori resolve <Qn>); the listener never resolves it on a guess
+  readonly open_cards?: readonly string[];
+  readonly note?: string;
 };
 
 export type InboxAnswer = {
@@ -233,6 +237,8 @@ export class DiscordListener {
     let transcript: string | null = null;
     const audio = audioAttachment(m.attachments);
     if (audio && this.d.transcribe) transcript = await this.d.transcribe(audio.url, audio.filename).catch((e: unknown) => (this.d.log(`DISCORD_TRANSCRIBE_FAIL ${m.id} ${errText(e)}`), null));
+    const open = scope === "thread" ? openCardIds(this.d.cards.store, m.channel_id) : [];
+    const note = open.length ? `card ${open.join(", ")} still open, owner replied in text: resolve it with dori resolve ${open[0]}` : "";
     this.append({
       ts: m.timestamp,
       id: m.id,
@@ -244,16 +250,23 @@ export class DiscordListener {
       attachments: (m.attachments ?? []).map((a) => ({ url: a.url, filename: a.filename, content_type: a.content_type ?? null })),
       reply_to: m.message_reference?.message_id ?? null,
       ...(viaWebhook ? { via: "owner-webhook" as const, webhook_id: m.webhook_id } : {}),
+      ...(open.length ? { open_cards: open, note } : {}),
     });
     this.d.log(`INBOUND discord-${scope} ${m.channel_id} ${m.id} ${viaWebhook ? `${this.d.owner} via=owner-webhook` : m.author.id} ${JSON.stringify((transcript ?? m.content).slice(0, 200))}`);
-    if (scope === "thread" && !this.d.shadow) await this.reopenIfDone(m.channel_id).catch((e: unknown) => this.d.log(`DISCORD_REOPEN_FAIL ${m.channel_id} ${errText(e)}`));
+    if (open.length) this.d.log(`CARD_STILL_OPEN ${open.join(",")} thread=${m.channel_id} ${note}`);
+    if (scope === "thread" && !this.d.shadow) await this.recheckThread(m.channel_id, open).catch((e: unknown) => this.d.log(`DISCORD_REOPEN_FAIL ${m.channel_id} ${errText(e)}`));
   }
 
-  // the owner writing in a closed thread brings the work back: unarchive it and mark it working again
-  private async reopenIfDone(threadId: string): Promise<void> {
+  // The owner writing in a closed thread brings the work back: unarchive it and mark it working again. Writing in a
+  // thread with an open question card re-checks its mark, which follows the card (waiting), not the reply.
+  private async recheckThread(threadId: string, openCards: readonly string[]): Promise<void> {
+    if (openCards.length) {
+      await this.d.cards.statuses.request(threadId, "working");
+      return;
+    }
     const info = await this.d.dc.call<ThreadInfo>("GET", `/channels/${threadId}`);
     if (!isDoneName(info.name ?? "", this.d.words)) return;
-    await setThreadStatus(this.d.dc, threadId, "working", this.d.words, info);
+    await this.d.cards.statuses.request(threadId, "working");
     this.d.log(`THREAD_REOPENED ${threadId}`);
   }
 

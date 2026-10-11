@@ -83,3 +83,12 @@ The owner asked why a thread was called "🔄 🔄 Dori ...". The lead had opene
 - Pass a plain title. Never start it with 🔄, ⏸️, ✅, ⏳ or a `[working]`-style word.
 - Every status change (reply, wait, done, a card asked or answered, a reopen, `dori close`, the automatic close) now strips all leading marks and writes exactly one, so a name that already stacked marks heals at its next status change.
 - A local thread opener of your own (a `kit.ts` `openThread`) must do the same: strip every leading mark from the title before it adds one.
+
+## 12. Tangled card answers and the rename limit
+
+Three question cards went up in one thread in quick succession. The owner answered two by button and the third by voice in the thread, and the lead resolved that one by hand. Every ask, answer and resolve renamed the thread (⏸️ and 🔄). Discord allows about two renames per ten minutes per thread, so one rename came back 429 with `retry_after` 340 s. It was logged and dropped, and the title stayed wrong.
+
+- Thread status renames now go through one queue per thread, persisted in `thread-status.json` next to `questions.json`. A burst becomes one rename. A 429 keeps the rename with the time Discord gave (`THREAD_STATUS_PENDING`), and `dori inbound discord` applies it then (`THREAD_STATUS_APPLIED`), also after a restart. Only a refusal that waiting cannot fix is dropped (`THREAD_STATUS_DROPPED`). A one-shot command never waits out the limit itself: it leaves the rename for the listener.
+- The mark comes from the truth, not the last event: a closed lane is ✅, any open card in the thread is ⏸️, otherwise 🔄. A reply or an answer while another card is still open leaves ⏸️.
+- When the owner answers in text in a thread where a card is still open, the inbox row carries `open_cards` and a `note` (`card Qn still open, owner replied in text`), and the listener prints `CARD_STILL_OPEN`. It never resolves the card on a guess. Read the reply, then `dori resolve <Qn>`. Resolving the last open card turns the thread 🔄.
+- A local script that renames threads directly (a `kit.ts` `setThread`) must not retry inside the 429 window either. Write the rename to the same `thread-status.json` and let the listener apply it.
