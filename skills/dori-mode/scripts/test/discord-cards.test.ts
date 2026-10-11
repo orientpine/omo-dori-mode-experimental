@@ -187,7 +187,7 @@ test("while another question in the same thread is still open, an answer leaves 
   if (out.kind !== "answered") throw new Error(out.kind);
   const before = calls().length;
   await cards.afterAnswer(out.question);
-  expect(calls().slice(before)).toEqual([]);
+  expect(calls().slice(before).filter((c) => c.startsWith("PATCH"))).toEqual([]);
   expect(thread.name).toBe("⏸️ fix login");
 });
 
@@ -242,7 +242,7 @@ test("resolving an open card while another card in the thread is still open leav
   await cards.ask("Deploy where?", ["Staging"], { thread: "300" });
   const before = calls().length;
   expect(await cards.resolve("Q1")).toBe(true);
-  expect(calls().slice(before)).toEqual([]);
+  expect(calls().slice(before).filter((c) => c.startsWith("PATCH"))).toEqual([]);
   expect(thread.name).toBe("⏸️ fix login");
 });
 

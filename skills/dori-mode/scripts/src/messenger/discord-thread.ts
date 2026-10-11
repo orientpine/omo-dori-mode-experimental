@@ -48,34 +48,43 @@ export const progressText = (status: "working" | "done", text: string, words: Di
 
 export type ThreadInfo = { readonly name?: string; readonly thread_metadata?: { readonly archived?: boolean } };
 
+// The status a thread should show, from the truth rather than the last event: a closed lane is done; otherwise any
+// open question card in the thread makes it waiting; otherwise the event's own status (working, or an explicit wait).
+export const desiredStatus = (hint: ThreadStatus, openCards: readonly string[]): ThreadStatus => (hint === "done" ? "done" : openCards.length ? "waiting" : hint);
+
 // Discord rate-limits thread renames (about two per ten minutes), so nothing is sent when the status already holds.
-export const setThreadStatus = async (dc: Discord, threadId: string, status: ThreadStatus, words: DiscordWords, current?: ThreadInfo): Promise<void> => {
+// Resolves true when it sent a change.
+export const setThreadStatus = async (dc: Discord, threadId: string, status: ThreadStatus, words: DiscordWords, current?: ThreadInfo): Promise<boolean> => {
   const info = current ?? (await dc.call<ThreadInfo>("GET", `/channels/${threadId}`));
   const name = info.name ?? "";
   const next = threadName(status, name, words);
   const archived = info.thread_metadata?.archived === true;
   if (status === "done") {
-    if (next === name && archived) return;
+    if (next === name && archived) return false;
     if (next !== name) {
       // Discord refuses to rename an archived thread (50083), so it is opened, renamed, then archived again
       if (archived) await dc.setThread(threadId, { archived: false });
       await dc.setThread(threadId, { name: next });
     }
     await dc.setThread(threadId, { archived: true });
-    return;
+    return true;
   }
-  if (next !== name || archived) await dc.setThread(threadId, { ...(next !== name ? { name: next } : {}), ...(archived ? { archived: false } : {}) });
+  if (next === name && !archived) return false;
+  await dc.setThread(threadId, { ...(next !== name ? { name: next } : {}), ...(archived ? { archived: false } : {}) });
+  return true;
 };
 
 export type ThreadVerb = "reply" | "wait" | "done";
 const VERB_STATUS: Readonly<Record<ThreadVerb, ThreadStatus>> = { reply: "working", wait: "waiting", done: "done" };
 
-export const threadHook = async (dc: Discord, verb: ThreadVerb, ref: string, text: string, words: DiscordWords): Promise<string> => {
+// With `mark` (the thread status queue) the status goes through it, so it is coalesced, survives a 429 and an open
+// question card keeps the thread waiting; without it the status is set directly.
+export const threadHook = async (dc: Discord, verb: ThreadVerb, ref: string, text: string, words: DiscordWords, mark?: (thread: string, status: ThreadStatus) => Promise<unknown>): Promise<string> => {
   const id = discordThreadId(ref);
   const plain = withoutEmoji(text);
   if (!plain) throw new ThreadRefError("nothing to post after removing emoji");
   await dc.typing(id).catch(() => {});
   const posted = await dc.send(id, plain);
-  await setThreadStatus(dc, id, VERB_STATUS[verb], words);
+  await (mark ? mark(id, VERB_STATUS[verb]) : setThreadStatus(dc, id, VERB_STATUS[verb], words));
   return posted;
 };

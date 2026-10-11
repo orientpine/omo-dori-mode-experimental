@@ -1,10 +1,11 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
-import { setThreadStatus } from "./discord-thread.ts";
+import type { ThreadStatus } from "./discord-thread.ts";
 import { guardText } from "./http.ts";
+import { ThreadStatusQueue } from "./thread-status-queue.ts";
 
 export const IS_COMPONENTS_V2 = 1 << 15;
 export const SUPPRESS_NOTIFICATIONS = 1 << 12;
@@ -193,13 +194,20 @@ export const modalValue = (components: readonly unknown[] = []): string => {
 
 export type CardSettings = { readonly channel: string; readonly owner: string; readonly words: DiscordWords };
 
+export const openCardIds = (store: QuestionStore, thread: string): string[] => store.all().filter((q) => q.status === "open" && q.thread === thread).map((q) => q.id);
+
 export class QuestionCards {
+  readonly statuses: ThreadStatusQueue;
+
   constructor(
     private readonly dc: Discord,
     readonly store: QuestionStore,
     private readonly settings: CardSettings,
     private readonly now: () => number,
-  ) {}
+    statuses?: ThreadStatusQueue,
+  ) {
+    this.statuses = statuses ?? new ThreadStatusQueue({ dc, words: settings.words, file: join(dirname(store.file), "thread-status.json"), openCards: (t) => openCardIds(store, t), now, log: (line) => console.error(line) });
+  }
 
   private at(): string {
     return new Date(this.now()).toISOString();
@@ -210,9 +218,9 @@ export class QuestionCards {
   }
 
   // The card is already posted when the thread is renamed, so a failed rename is reported, not thrown:
-  // throwing would invite a second card for the same question.
-  private async mark(thread: string, status: "working" | "waiting"): Promise<void> {
-    await setThreadStatus(this.dc, thread, status, this.settings.words).catch((e: unknown) => console.error(`THREAD_STATUS_FAIL ${thread} ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`));
+  // throwing would invite a second card for the same question. The queue decides the mark from the open cards.
+  private async mark(thread: string, status: ThreadStatus): Promise<void> {
+    await this.statuses.request(thread, status).catch((e: unknown) => console.error(`THREAD_STATUS_FAIL ${thread} ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`));
   }
 
   // With a work thread the card goes inside it and the thread is marked waiting until the question is answered;
@@ -238,11 +246,11 @@ export class QuestionCards {
   }
 
   // Resolving a card nobody answered would otherwise leave its thread waiting on a question that is gone,
-  // so the thread goes back to working once none of its questions is open. An answered card changes nothing.
+  // so its thread is re-checked: working once none of its questions is open. An answered card changes nothing.
   async resolve(id: string): Promise<boolean> {
     const q = this.store.get(id);
     if (!q || !this.store.resolve(id)) return false;
-    if (q.status === "open" && q.thread && !this.store.all().some((x) => x.status === "open" && x.thread === q.thread)) await this.mark(q.thread, "working");
+    if (q.status === "open" && q.thread) await this.mark(q.thread, "working");
     return true;
   }
 
@@ -284,12 +292,12 @@ export class QuestionCards {
   }
 
   // A card inside its work thread already folded into the record there; a card in the channel leaves a
-  // silent record line in the thread. The thread goes back to working once none of its questions is open.
+  // silent record line in the thread. The thread is re-checked: working once none of its questions is open.
   async afterAnswer(q: Question): Promise<void> {
     if (!q.thread) return;
     if (q.channel !== q.thread) {
       await this.dc.call("POST", `/channels/${q.thread}/messages`, { content: `${q.id} ${q.text}\n→ ${q.answer ?? ""} (${stamp(q.answeredAt, this.settings.words)})`.slice(0, 2000), flags: SUPPRESS_NOTIFICATIONS, allowed_mentions: { parse: [] } });
     }
-    if (!this.store.all().some((x) => x.status === "open" && x.thread === q.thread)) await this.mark(q.thread, "working");
+    await this.mark(q.thread, "working");
   }
 }

@@ -23,6 +23,8 @@ export class MessengerError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    // seconds a 429 asked to wait, when the platform said
+    readonly retryAfterS?: number,
   ) {
     super(message);
   }
