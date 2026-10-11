@@ -3,7 +3,10 @@ import { join } from "node:path";
 
 import { ChallengeError, challengeMissing, checkReviewers, familyOf, REVIEWER_SYSTEM, reviewers, runChallenge } from "../src/challenge.ts";
 import { defaultConfig } from "../src/config.ts";
-import { addNode, formatTree, gateFix, intentView, laneArea, loadTree, metricAttempts, researchHint, saveTree, setStatus, type Tree } from "../src/explore.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+
+import { addNode, formatTree, gateFix, intentView, laneArea, loadTree, metricAttempts, parseResearchStart, researchCheck, researchHint, saveTree, setStatus, type Tree } from "../src/explore.ts";
+import { sessionDirFor } from "../src/session-id.ts";
 import { branchesFrom, forkExplore, parseBranch } from "../src/fork-explore.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { footer, renderBrief } from "../src/launch.ts";
@@ -87,16 +90,73 @@ test("the tree keeps one entry per idea, records falsified and supported results
 test("the second stuck signal sends the lane an external-search step and puts it in the tree; research-hint plans the search", async () => {
   const deps = depsFor(world, fakeClock(T0), state.dir);
   await deps.registry.write(lane);
+  let ruledOut: Tree = { area: "cwd /work/rl", nodes: [] };
+  ruledOut = addNode(ruledOut, { kind: "hypothesis", text: "reward too small", test: "double it", metric: "dumps", source: "x" }, "t1").tree;
+  await saveTree(state.dir, { cwd: "/work/rl" }, setStatus(ruledOut, "H1", "falsified", "x2 reward changed nothing", "t2").tree);
   for (const h of ["a", "b"]) expect((await recordFix(deps, "rl-e7", fix(h))).notes).toEqual([]);
   const third = await recordFix(deps, "rl-e7", fix("c"));
   expect(third.notes[0]).toStartWith('RESEARCH_DUE rl-e7 stuck signal 2 on "dumps"');
-  expect(sent(world)[0]).toContain("external search for this exact symptom");
+  expect(third.notes[0]).toEndWith("(ulw research sent to the lane)");
+  // omo starts its ulw-research skill only for typed text that begins with "ulw research"; the rest is the lane's own question
+  const typed = sent(world)[0] ?? "";
+  expect(typed).toStartWith("ulw research ");
+  for (const part of ['Exact symptom: "dumps" does not improve after 3 fix attempts', "Tried: a; b; c.", "Ruled out by a test: reward too small (x2 reward changed nothing).", "papers", "GitHub issues", "repos", "read the ulw-research SKILL.md", "dori tree add --lane rl-e7 --kind finding"]) expect(typed).toContain(part);
+  expect(typed).not.toContain("\n");
+  expect(((await deps.registry.read("rl-e7")) as Lane).research).toEqual({ at: new Date(T0).toISOString(), sentAt: T0, probe: typed.slice(0, 80), metric: "dumps", signal: 2 });
   const tree = await loadTree(state.dir, { cwd: "/work/rl" });
   expect(tree.nodes.filter((n) => n.kind === "research").length).toBe(1);
   expect(tree.nodes.filter((n) => n.kind === "tried").map((n) => n.text)).toEqual(["a", "b", "c"]);
   const hint = researchHint((await deps.registry.read("rl-e7")) as Lane, tree);
-  expect(hint[0]).toBe('RESEARCH_HINT rl-e7 on "dumps": 3 attempts, 3 hypotheses tried, 0 falsified, 0 open');
+  expect(hint[0]).toBe('RESEARCH_HINT rl-e7 on "dumps": 3 attempts, 3 hypotheses tried, 1 falsified, 0 open');
   expect(hint.some((l) => l.includes("dori tree add --lane rl-e7 --kind finding"))).toBe(true);
+});
+
+// session log lines as omo writes them: the typed message, the skill pointer it attaches, the lane reading the skill
+const PROBE = "ulw research Lane rl-e7 (E7 dump policy, repo rl) is stuck.";
+const at = (s: number) => new Date(T0 + s * 1000).toISOString();
+const userLine = (s: number, text: string) => JSON.stringify({ type: "message", id: `u${s}`, timestamp: at(s), message: { role: "user", content: [{ type: "text", text }] } });
+const pointerLine = (s: number) => JSON.stringify({ type: "custom_message", customType: "omo-ulw-research:skill-pointer", content: "<omo-ulw-research-pointer>This message mentions ulw-research.</omo-ulw-research-pointer>", display: false, id: `p${s}`, timestamp: at(s) });
+const readLine = (s: number) => JSON.stringify({ type: "message", id: `r${s}`, timestamp: at(s), message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "/opt/omo-ai/plugin/skills/ulw-research/SKILL.md" } }] } });
+
+test("the research check reads the lane's session log: pointer and SKILL.md read give RESEARCH_STARTED, else RESEARCH_NOT_STARTED after the limit", async () => {
+  const sessions = join(state.dir, "sessions");
+  const dir = sessionDirFor(sessions, "/work/rl");
+  mkdirSync(dir, { recursive: true });
+  const research = { at: at(0), sentAt: T0, probe: PROBE, metric: "dumps", signal: 2 };
+  // a pointer from an earlier message (before the send) does not count
+  const without = [pointerLine(-60), readLine(-59), userLine(1, `${PROBE} Exact symptom: dumps.`), readLine(5)].join("\n");
+  const started = [userLine(1, `${PROBE} Exact symptom: dumps.`), pointerLine(1), readLine(8), '{"type":"message","timest'].join("\n");
+  expect(parseResearchStart(without, PROBE, T0)).toEqual({ seen: true, pointer: false, read: true, readEarlier: true });
+  expect(parseResearchStart(started, PROBE, T0)).toEqual({ seen: true, pointer: true, read: true, readEarlier: false });
+  // omo appends the pointer to the typed message itself when the agent was busy
+  expect(parseResearchStart(userLine(2, `${PROBE}\n<omo-ulw-research-pointer>x</omo-ulw-research-pointer>`), PROBE, T0).pointer).toBe(true);
+
+  const clock = fakeClock(T0 + 60_000);
+  const deps = depsFor(world, clock, state.dir, { sessionsDir: sessions });
+  await deps.registry.write({ ...lane, research });
+  writeFileSync(join(dir, "2026-01-01T12-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000000.jsonl"), started);
+  const acts = await freshnessTick(deps, "/home/test");
+  expect(acts.filter((a) => a.kind === "research_started").map((a) => a.lane)).toEqual(["rl-e7"]);
+  expect(((await deps.registry.read("rl-e7")) as Lane).research?.result).toBe("started");
+  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/research RESEARCH_STARTED rl-e7 stuck signal 2 on "dumps": the session log shows the omo-ulw-research:skill-pointer/);
+
+  writeFileSync(join(dir, "2026-01-01T12-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000000.jsonl"), without);
+  await deps.registry.write({ ...lane, research });
+  expect((await researchCheck(deps, (await deps.registry.read("rl-e7")) as Lane)).verdict).toBe("pending");
+  expect(await Bun.file(deps.config.watchLog).text()).not.toContain("RESEARCH_NOT_STARTED");
+  clock.at = T0 + 6 * 60_000;
+  const late = await researchCheck(deps, (await deps.registry.read("rl-e7")) as Lane);
+  expect(late.verdict).toBe("not-started");
+  expect(late.line).toStartWith("RESEARCH_NOT_STARTED rl-e7 6 min after the ulw research text: omo attached no omo-ulw-research:skill-pointer");
+  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/research RESEARCH_NOT_STARTED rl-e7 /);
+  expect(((await deps.registry.read("rl-e7")) as Lane).research?.result).toBe("not-started");
+
+  // a second send in one session: the pointer comes, the lane holds the skill from before and does not read it again
+  writeFileSync(join(dir, "2026-01-01T12-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000000.jsonl"), [readLine(-59), pointerLine(1), userLine(1, `${PROBE} again`)].join("\n"));
+  await deps.registry.write({ ...lane, research });
+  const again = await researchCheck(deps, (await deps.registry.read("rl-e7")) as Lane);
+  expect(again.verdict).toBe("not-started");
+  expect(again.line).toContain("did not read ulw-research/SKILL.md again (it read it earlier in this session)");
 });
 
 test("a lane's own unbranched second fix report tells the lead hypotheses are required", async () => {
