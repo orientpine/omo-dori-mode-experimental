@@ -1,5 +1,6 @@
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { afterFix } from "./explore.ts";
 import { sendVerified } from "./panes.ts";
 import type { FixAttempt, Lane } from "./registry.ts";
 import { watchLog } from "./watch-log.ts";
@@ -35,15 +36,18 @@ export const fixCount = (fixes: readonly FixAttempt[], metric: string, hypothesi
 
 // Records one fix attempt. From the configured attempt on (3rd by default) it returns an alert for the lead, and, only when
 // sameFix.sendToLane is on, tells the lane to stop patching and look for the root cause. It never stops the lane.
-export const recordFix = async (deps: FlowDeps, key: string, attempt: FixAttempt): Promise<{ readonly count: number; readonly alert?: string }> => {
+// Every attempt also goes into the area's hypothesis tree; notes are the stuck-signal lines (HYPOTHESES_REQUIRED for a
+// lane's own unbranched report, RESEARCH_DUE at explore.researchAt).
+export const recordFix = async (deps: FlowDeps, key: string, attempt: FixAttempt): Promise<{ readonly count: number; readonly alert?: string; readonly notes: readonly string[] }> => {
   const lane: Lane | null = await deps.registry.read(key);
-  if (!lane) return { count: 0 };
+  if (!lane) return { count: 0, notes: [] };
   const before = fixCount(lane.fixes ?? [], attempt.metric, attempt.hypothesis);
   const fixes = [...(lane.fixes ?? []), attempt];
   await deps.registry.patch(key, { fixes });
+  const notes = await afterFix(deps, lane, fixes, attempt);
   const count = fixCount(fixes, attempt.metric, attempt.hypothesis);
   const cfg = deps.config.sameFix;
-  if (count === before || count < cfg.after) return { count };
+  if (count === before || count < cfg.after) return { count, notes };
   let alert = `attempt ${count} on "${attempt.metric}" with the same hypothesis "${attempt.hypothesis}": stop patching; reproduce it and read the logs for the root cause first`;
   if (cfg.sendToLane && lane.pane) {
     const text = fill([cfg.laneText], { n: String(count), metric: attempt.metric, hypothesis: attempt.hypothesis })[0] ?? cfg.laneText;
@@ -51,5 +55,5 @@ export const recordFix = async (deps: FlowDeps, key: string, attempt: FixAttempt
     alert += delivered ? " (sent to the lane)" : ` (the note did not reach pane ${lane.pane})`;
   }
   watchLog(deps.config.watchLog, deps.clock, { source: "fix-attempt", line: `SAME_FIX_3 ${key} ${alert}` });
-  return { count, alert };
+  return { count, alert, notes };
 };

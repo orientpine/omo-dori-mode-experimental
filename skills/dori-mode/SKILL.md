@@ -72,6 +72,8 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 - **Done has to measure behavior.** `dori launch` warns `LAUNCH_DONE_WEAK` when every `Done =` signal only checks that files exist or contain text; add a signal that runs the thing (its tests, a command, an HTTP answer). It still launches; `--done-weak-ok` is for work where a file really is the result.
 - **Count repeated fixes.** Lanes tag a fix attempt `(fix: <metric> / <hypothesis>)` in their `[REPORT]`; when you re-instruct a lane to fix the same thing, record it with `dori fix-attempt <key> --metric M --hypothesis H`. From the third attempt on one metric with one hypothesis, `dori freshness` (or `fix-attempt`) prints `SAME_FIX_3 <key> ...`: tell the lane to stop patching and find the root cause by reproducing and reading logs. Nothing is sent to the lane unless `sameFix.sendToLane` is true, and the lane is never stopped.
 - **Read the signals before you re-instruct.** `dori signals --lane <key>` (or `--cwd`, `--tag`) shows what was already tried in that area and how it went: numbered fix attempts and whether anyone switched to the root cause, fixes by metric and hypothesis, rejected done claims, re-sends and nudges. Don't send a fix that is already on that list; after two failed patches on one metric, ask for the root cause. `dori launch` adds the same record to a new lane's brief as "Past signals", and `fix-attempt` prints `PRIOR_FIX` lines first.
+- **When stuck, branch instead of patching.** From the second fix on one metric with no improvement, `dori fix-attempt` needs at least three competing hypotheses, each with a cheap discriminating test (`--hypotheses H --test T`), or refuses (`HYPOTHESES_REQUIRED`). Run short tests side by side with `dori fork-explore`; at the second stuck signal the lane is told to search outside (`dori research-hint`). Everything lands in the area's hypothesis tree (`dori tree`), which new briefs carry next to Past signals. Before a big step, have the lane run `dori challenge` (another model family argues against the plan); launch with `--challenge-before` to require it. Details and when to require each: `references/sessions.md`, "Stuck: branch, look outside, check intent".
+- **Keep the owner's words.** Launch with `--goal "<the owner's words>"`. When a milestone report starts a new stage, `dori freshness` prints `INTENT_CHECK`; run `dori intent-check <key>` to compare the goal with the lane's direction before approving the stage.
 - Watch for sessions that turn blocked or ask a question; answer them or bring them to the owner. With aoe, `dori watch` prints `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` when a lane's agent stops for a human.
 - Lessons from day-to-day operation (more work after a done claim, pausing a lane that waits on the owner, a lane thread's first post, applying script updates, swapping a listener): `references/operating-lessons.md`.
 
@@ -92,12 +94,17 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 
 | Command | Does |
 |---|---|
-| `dori launch` / `dori adopt` | open a lane in a new tab, or register one already running; an empty or malformed `--thread` (e.g. `discord:`) is refused |
+| `dori launch` / `dori adopt` | open a lane in a new tab, or register one already running; an empty or malformed `--thread` (e.g. `discord:`) is refused; `--goal`, `--challenge-before`, and `launch --dry-run` to print the brief with Past signals and the hypothesis tree |
 | `dori set-thread <key> <adapter>:<id>` | point a lane at another work thread; a close with no usable thread prints `THREAD_MISSING` |
 | `dori sync [--write]` | rebuild the registry from live panes, report drift; a `SIGNALS` line per open lane with a record |
 | `dori claim-done` / `dori object-done` / `dori close` | the done flow; with `DORI_DISCORD_TOKEN`, a close sets a `discord:` work thread done and archives it |
 | `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on the owner (no nudges, posts, `LANE_BLOCKED` or auto-close), then put it back |
-| `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked for; `SAME_FIX_3` from the third attempt on one metric with one hypothesis |
+| `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked for; `SAME_FIX_3` from the third attempt on one metric with one hypothesis; from the second with no improvement it needs 3+ `--hypotheses` with a `--test` each (`HYPOTHESES_REQUIRED`, `STUCK_BRANCH`), and the third sends an external-search step (`RESEARCH_DUE`) |
+| `dori tree [show\|add\|falsify\|support\|close]` | the area's hypothesis tree: open, falsified and supported hypotheses, untried directions, findings, attempts |
+| `dori challenge <key> --plan FILE` | a model of another family reviews a plan: reasons it will fail, missing alternatives, cheapest falsifying test; saved on the lane |
+| `dori fork-explore <key> --metric M --hypotheses ... --test ...` | one time-boxed branch per hypothesis in parallel (GPU branches queue on the heavy slot), one comparison table, results into the tree |
+| `dori research-hint <key>` | a search plan for the lane's stuck symptom |
+| `dori intent-check <key>` | the owner's goal next to the lane's current direction and next step; flags drift |
 | `dori signals [--lane K \| --cwd DIR \| --tag T]` | what earlier lanes in an area tried and how it went; read it before re-instructing |
 | `dori scorecard [--date D] [--post]` | the day's token scorecard from records (no model call), saved under `<stateDir>/scorecard/`; `--post` also sends it to Discord |
 | `dori watch` | the 5-minute auto-close watcher, plus `LANE_BLOCKED` with aoe (run it as a persistent monitor) |

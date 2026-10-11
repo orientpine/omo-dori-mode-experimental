@@ -25,7 +25,12 @@ export type Claim = { readonly at: string; readonly evidence: string; readonly e
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };
 export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; readonly note: string };
 // one fix attempt on a failing metric, from a tagged [REPORT] or from the lead (dori fix-attempt)
-export type FixAttempt = { readonly at: string; readonly metric: string; readonly hypothesis: string; readonly via: "report" | "lead" };
+// improved: the attempt before this one moved the metric, so the stuck count (dori fix-attempt --improved) starts again here
+export type FixAttempt = { readonly at: string; readonly metric: string; readonly hypothesis: string; readonly via: "report" | "lead"; readonly improved?: boolean };
+// a review of a lane's plan by another model family (dori challenge); file holds the review
+export type ChallengeRecord = { readonly at: string; readonly model: string; readonly plan: string; readonly file: string };
+// one dori fork-explore run: its saved result table
+export type ExplorationRecord = { readonly at: string; readonly metric: string; readonly branches: number; readonly file: string };
 
 export type Lane = {
   readonly key: string;
@@ -54,6 +59,13 @@ export type Lane = {
   readonly lastAutoReplyAt?: number;
   readonly lastReport?: string;
   readonly fixes?: readonly FixAttempt[];
+  // the owner's goal in their own words (dori launch --goal), and the lane's latest stated direction (dori intent-check)
+  readonly goal?: string;
+  readonly direction?: { readonly at: string; readonly text: string; readonly next?: string };
+  // big steps this lane must put through dori challenge first (dori launch --challenge-before)
+  readonly challengeBefore?: readonly string[];
+  readonly challenges?: readonly ChallengeRecord[];
+  readonly explorations?: readonly ExplorationRecord[];
   readonly blocked?: string;
   readonly idleSince?: number;
   readonly receipt?: unknown;

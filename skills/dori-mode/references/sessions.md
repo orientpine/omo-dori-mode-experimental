@@ -58,6 +58,17 @@ From the third attempt on one metric with one hypothesis (`sameFix.after`, defau
 
 Before you re-instruct a lane, read its record: `dori signals --lane <key>` (or `--cwd <repo>`, `--tag <topic>` for the whole area). It lists the numbered attempts the lane and you already made ("adjustment 1" .. "adjustment 4", read from the `[REPORT]` lines and your messages to it), whether and when the work switched to a root-cause hunt, the fixes by metric and hypothesis, rejected done claims with their reasons, and how often you re-sent or the sweep nudged. A fix on that list is not a new idea; after two failed patches on one metric, ask for the root cause instead of a third. `dori fix-attempt` prints the same per-metric list (`PRIOR_FIX`) before it records, and `dori launch` puts a short version into a new lane's brief as "Past signals" so the next lane in that repo or topic starts from it.
 
+## Stuck: branch, look outside, check intent
+
+Counting repeated fixes stops the same patch; it does not say what to do instead. When a fix did not move a metric, the next step is to find out which explanation is true:
+
+1. **Branch.** From the second attempt on one metric with no improvement, `dori fix-attempt` refuses unless you give at least three competing hypotheses, each with one cheap experiment whose result tells it apart from the others (`--hypotheses H --test T`, repeated). Make them really compete: reward, exploration, value estimate, the setup itself, not three versions of one idea. The lane runs the tests before any patch. `--improved` when the last fix did move the metric; `--no-hypotheses "<reason>"` when you go on anyway, which is logged.
+2. **Run the branches side by side** when the tests are short: `dori fork-explore <key> --metric M --hypotheses ... --test ...` runs one bounded task per hypothesis, queues GPU ones on the heavy slot, and prints one comparison table.
+3. **Keep the tree.** Every attempt, hypothesis and result lands in the area's hypothesis tree (`dori tree`), and every new brief in that repo or tag gets its compact form next to Past signals, so the next lane starts from what was falsified instead of retrying it.
+4. **Look outside.** At the second stuck signal (the third attempt), the lane gets an instruction to search papers, issues and repos for the exact symptom (`dori research-hint <key>` writes the search plan) and to record findings in the tree.
+5. **Challenge big steps.** Before a step that costs hours or a GPU queue, changes the approach, or follows a falsified hypothesis, have the lane run `dori challenge <key> --plan FILE`: a model of another family lists why it will fail, what alternatives are missing, and the cheapest test that would show it. Launch such lanes with `--challenge-before "<step>"`; their done claim is refused until a challenge is on record.
+6. **Check the owner's intent at stage changes.** Launch with `--goal "<the owner's words>"`. When a milestone report announces a new stage or phase, `dori freshness` prints `INTENT_CHECK <key>`; run `dori intent-check <key>` and compare the goal with the lane's direction and next step before you approve the new stage. Lanes run it themselves at each stage change (the footer says so).
+
 ## The registry
 
 One JSON file per lane under `<stateDir>/lanes/`, written atomically (temp file + rename), so two writers never leave a half-written file. Each lane records:

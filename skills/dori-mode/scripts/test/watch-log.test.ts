@@ -10,8 +10,8 @@ test("writes exactly one SAME_FIX_3 line when the CLI records three identical fi
     const deps = depsFor(newWorld(), fakeClock(0), state.dir);
     await deps.registry.write({ key: "test-fix", title: "test", thread: "none", brief: "", done: "", openedAt: new Date(0).toISOString() });
     const config = join(state.dir, "config.json");
-    await Bun.write(config, JSON.stringify({ stateDir: state.dir, watchLog: deps.config.watchLog }));
-    // When
+    await Bun.write(config, JSON.stringify({ stateDir: state.dir, watchLog: deps.config.watchLog, explore: { hypothesesFrom: 99 } }));
+    // When (the hypotheses gate is off here; explore.test.ts covers it)
     for (let i = 0; i < 3; i++) {
       const result = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "bun", join(import.meta.dir, "../src/cli.ts"), "fix-attempt", "test-fix", "--metric", "latency", "--hypothesis", "cache"]);
       expect(result.code).toBe(0);

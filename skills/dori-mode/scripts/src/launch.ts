@@ -6,6 +6,7 @@ import { LANE_KEY, type Lane, NO_THREAD, threadRefProblem } from "./registry.ts"
 import { areaLabel, type AreaQuery, areaSignals, pastSignalsSection, tagsOf } from "./lane-signals.ts";
 import { iso } from "./run.ts";
 import { doneSyntaxErrors, weakDone } from "./signals.ts";
+import { laneArea, loadTree, treeSection } from "./explore.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type LaunchInput = {
@@ -19,6 +20,10 @@ export type LaunchInput = {
   readonly tags?: readonly string[];
   // launch without the LAUNCH_DONE_WEAK warning
   readonly doneWeakOk?: boolean;
+  // the owner's goal in their own words, kept in the registry for dori intent-check
+  readonly goal?: string;
+  // big steps the lane must put through dori challenge first
+  readonly challengeBefore?: readonly string[];
 };
 
 export class LaunchError extends Error {}
@@ -53,13 +58,18 @@ export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr")
   `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <what, with links>, sent to pane ${leadPane || "(lead pane)"} as an argv array, never a shell string.`,
   ...(backend === "aoe" ? [`- The lead pane is a tmux session: run ["tmux","send-keys","-t","${target(leadPane || "(lead pane)")}","-l","--","<report line>"], then ["tmux","send-keys","-t","${target(leadPane || "(lead pane)")}","Enter"].`] : []),
   `- A report that is a fix attempt for a failing check or metric carries (fix: <metric> / <hypothesis>). The third attempt on the same metric with the same hypothesis alerts the lead (SAME_FIX_3): stop patching, find the root cause. A blocker, an impossible or an ambiguous task is a fine report (| blocker |), better than another retry.`,
+  `- Stuck after a fix that did not move the metric: before the next patch, write at least 3 competing hypotheses with one cheap discriminating test each, run the tests, and record what they showed (dori tree add|falsify|support --lane ${lane.key}). The lead's dori fix-attempt refuses a second attempt on one metric without them.`,
+  ...(lane.goal ? [`- Goal (owner words): "${lane.goal}". At each stage change (a new phase, a pivot, before a big step) run dori intent-check ${lane.key} --direction "<what you do now>" --next "<next step>" and say in your report how the step serves this goal.`] : []),
+  ...(lane.challengeBefore?.length ? [`- Before ${lane.challengeBefore.map((s) => `"${s}"`).join(" or ")}: write the plan to a file and run dori challenge ${lane.key} --plan <file> (a model of another family reviews it); answer its reasons in your next report. A done claim is refused until a challenge is on record.`] : []),
   `- When done: dori claim-done ${lane.key} --evidence "<merge SHA, closed issue, version>". See references/done-protocol.md.`,
   "",
 ].join("\n");
 
+const intentFields = (input: LaunchInput): Partial<Lane> => ({ ...(input.goal?.trim() ? { goal: input.goal.trim() } : {}), ...(input.challengeBefore?.length ? { challengeBefore: input.challengeBefore } : {}) });
+
 export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly pane: string }): Promise<Lane> => {
   await validateLaunch(deps, input);
-  const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, ...(input.tags?.length ? { tags: input.tags } : {}), openedAt: iso(deps.clock) };
+  const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock) };
   await deps.registry.write(lane);
   return lane;
 };
@@ -79,6 +89,32 @@ export const pastSignals = async (deps: FlowDeps, input: LaunchInput, cwd: strin
   return pastSignalsSection(areaLabel(q), list, deps.config.signals.launchLanes);
 };
 
+// The hypothesis trees of the new lane's area (its repo, else its first tag) and of its other tags, in compact form.
+export const treeContext = async (deps: FlowDeps, draft: Lane): Promise<string | undefined> => {
+  const main = laneArea(draft, deps.config);
+  const areas = [main, ...tagsOf(draft).filter((t) => t !== main.tag).map((tag) => ({ tag }))];
+  const trees = await Promise.all(areas.map((a) => loadTree(deps.config.stateDir, a)));
+  return treeSection(trees, deps.config.explore.treeLines, `dori tree --lane ${draft.key}`);
+};
+
+const draftLane = (deps: FlowDeps, input: LaunchInput): Lane => ({
+  key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, model: input.model ?? deps.config.defaultModel,
+  ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock),
+});
+
+// The brief as the lane will read it: the lead's text, then Past signals, the hypothesis tree, and the footer.
+export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<{ readonly draft: Lane; readonly text: string }> => {
+  const briefFile = Bun.file(input.brief);
+  if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
+  const draft = draftLane(deps, input);
+  const past = await pastSignals(deps, input, draft.cwd ?? deps.config.defaultCwd);
+  const tree = await treeContext(deps, draft);
+  return { draft, text: `${(await briefFile.text()).replace(/\s*$/, "")}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}` };
+};
+
+export const goalWarning = (input: LaunchInput): string | undefined =>
+  input.goal?.trim() ? undefined : `LAUNCH_NO_GOAL ${input.key}: no --goal "<the owner's words>"; dori intent-check cannot compare the lane's direction with what the owner asked`;
+
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
   const model = input.model ?? deps.config.defaultModel;
@@ -88,11 +124,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     warn(weak);
     watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: weak });
   }
-  const briefFile = Bun.file(input.brief);
-  if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
-  const draft: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd, model, ...(input.tags?.length ? { tags: input.tags } : {}), openedAt: iso(deps.clock) };
-  const past = await pastSignals(deps, input, cwd);
-  await Bun.write(input.brief, `${(await briefFile.text()).replace(/\s*$/, "")}\n${past ? `${past}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}`);
+  const { draft, text } = await renderBrief(deps, input);
+  await Bun.write(input.brief, text);
   const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt) : await openHerdr(deps, input.key, cwd, model, prompt);
   const lane: Lane = { ...draft, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}) };

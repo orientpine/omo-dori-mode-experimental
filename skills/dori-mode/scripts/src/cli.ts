@@ -16,9 +16,13 @@ import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
-import { adoptLane, launchLane, LaunchError, setThread } from "./launch.ts";
+import { adoptLane, doneWeakWarning, goalWarning, launchLane, LaunchError, renderBrief, setThread, validateLaunch } from "./launch.ts";
+import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchHint, setStatus, type TreeArea, TreeError, updateTree } from "./explore.ts";
+import { challengeMissing, ChallengeError, runChallenge } from "./challenge.ts";
+import { branchesFrom, ForkError, forkExplore, type Mode } from "./fork-explore.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
+import { watchLog } from "./watch-log.ts";
 import { syncRegistry } from "./sync.ts";
 import { canLaunch } from "./routing.ts";
 import { normFix, recordFix } from "./same-fix.ts";
@@ -39,10 +43,15 @@ import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 const USAGE = `dori <command> [options]
 
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
+         [--goal "owner words"] [--challenge-before STEP ...] [--dry-run]
                                        prints LAUNCH_DONE_WEAK (and still launches) when every Done signal only checks
                                        files or text; --done-weak-ok silences it. The brief gets a "Past signals" section
                                        from earlier lanes in the same cwd or with a shared tag (the key's first word is one)
-  adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...]
+                                       and the area's "Hypothesis tree". --goal keeps the owner's words for intent-check
+                                       (LAUNCH_NO_GOAL without it); --challenge-before makes the lane run dori challenge
+                                       before that step (claim-done is refused until it did); --dry-run prints the brief
+                                       as the lane would read it and opens nothing
+  adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...]
                                        REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
   set-thread <key> <adapter>:<id>      point an open lane at another work thread
   sync   [--write]                     registry vs live panes; read-only unless --write; a SIGNALS line per open lane with a record
@@ -51,10 +60,34 @@ const USAGE = `dori <command> [options]
   pause  <key> <reason>                park a lane that waits on a human: no freshness nudge or post, LANE_BLOCKED or
                                        DEAD_PANE for it, and a done claim does not close it; the reason goes in its history
   resume <key>                         back to the status it had before the pause
-  fix-attempt <key> --metric M --hypothesis H
+  fix-attempt <key> --metric M --hypothesis H [--hypotheses H1 --test T1 ...] [--improved] [--no-hypotheses REASON]
                                        record that you asked the lane for another fix of M on hypothesis H; first prints
                                        PRIOR_FIX lines (hypotheses already tried on M in this area), from the 3rd attempt
-                                       SAME_FIX_3 (lanes tag reports "(fix: M / H)" for the same count)
+                                       SAME_FIX_3 (lanes tag reports "(fix: M / H)" for the same count). From the 2nd
+                                       attempt on M with no improvement it refuses (HYPOTHESES_REQUIRED, exit 5) unless
+                                       3+ competing --hypotheses each have a cheap --test (STUCK_BRANCH, into the tree);
+                                       --improved: the last fix moved M, the count starts again; --no-hypotheses REASON
+                                       goes on anyway (HYPOTHESES_OVERRIDE, logged). At the 2nd stuck signal RESEARCH_DUE
+                                       sends the lane an external-search step
+  tree [show|add|falsify|support|close|reopen] [ID] [--lane K | --cwd DIR | --tag T] [--kind K] [--text T] [--test X] [--metric M] [--result R]
+                                       the area's hypothesis tree: open, supported and falsified hypotheses, untried
+                                       directions (--kind direction), findings, research due, attempts tried. add takes
+                                       --kind hypothesis|direction|finding|research --text; falsify/support/close take
+                                       an ID and --result. No area option: this pane's lane, else the current directory
+  challenge <key> --plan FILE [--model M]
+                                       a model of another family than the lane's reviews the plan in a fresh context:
+                                       reasons it will fail, missing alternatives, the cheapest falsifying test. Saved
+                                       under <stateDir>/challenges/<key>/ and recorded on the lane (CHALLENGE_SAVED)
+  fork-explore <key> --metric M --hypotheses H1 --test T1 --hypotheses H2 --test T2 ... [--gpu N ...|--gpu-all]
+               [--mode agent|cmd] [--minutes N] [--model M]
+                                       one time-boxed task per hypothesis, in parallel, all on metric M; GPU branches
+                                       (--gpu <branch number>) wait for a heavy slot. agent: an omo -p run per branch;
+                                       cmd: each --test is a command. Prints a comparison table, feeds the tree
+  research-hint <key>                  a search plan for the lane's stuck symptom (papers, issues, repos), from its records
+  intent-check <key> [--direction TEXT] [--next TEXT] [--goal "owner words"]
+                                       the owner's goal next to the lane's current direction and next step;
+                                       INTENT_OK, INTENT_DRIFT or INTENT_NO_GOAL. --direction/--next record what the
+                                       lane says it does now; --goal sets a missing goal
   signals [--lane K | --cwd DIR | --tag T]
                                        what earlier lanes tried and how it went: numbered fix attempts and the root-cause
                                        switch, tagged fixes by metric, rejected done claims, re-sends, nudges, outcome,
@@ -119,7 +152,10 @@ const flags = parseArgs({
     to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" },
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
-    pull: { type: "boolean" }, "dry-run": { type: "boolean" },
+    pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" },
+    hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" },
+    goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
+    direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
     summary: { type: "string" }, file: { type: "string", multiple: true },
   },
 });
@@ -132,6 +168,24 @@ const need = (name: string): string => opt(name) || die(`--${name} is required`)
 const threadOpt = (): string | undefined => (flags.values.thread === true ? "" : opt("thread"));
 const key = flags.positionals[0];
 const tags = (): string[] => ((flags.values.tag as string[] | undefined) ?? []).map((t) => t.trim()).filter(Boolean);
+const many = (name: string): string[] => ((flags.values[name] as string[] | undefined) ?? []).map((t) => t.trim()).filter(Boolean);
+
+// `dori <command> --help`: that command's lines of USAGE
+const helpFor = (cmd: string): string => {
+  const lines = USAGE.split("\n");
+  const at = lines.findIndex((l) => new RegExp(`^  ${cmd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`).test(l));
+  if (!cmd || at < 0) return USAGE;
+  const out = [lines[at] ?? ""];
+  for (const l of lines.slice(at + 1)) {
+    if (/^  \S/.test(l)) break;
+    out.push(l);
+  }
+  return `dori ${out.join("\n").trim()}`;
+};
+if (flags.values.help) {
+  console.log(helpFor(command));
+  process.exit(0);
+}
 const loopMin = Number(opt("loop") ?? 0);
 
 const lane = async (k: string | undefined) => {
@@ -186,13 +240,24 @@ try {
       process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config.backend, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
       break;
     case "launch": {
-      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]) }, (line) => console.log(line));
+      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before") };
+      const noGoal = goalWarning(input);
+      if (noGoal) console.log(noGoal);
+      if (flags.values["dry-run"]) {
+        await validateLaunch(deps, input);
+        const weak = await doneWeakWarning(input, input.cwd ?? config.defaultCwd);
+        if (weak) console.log(weak);
+        console.log((await renderBrief(deps, input)).text);
+        console.log(`DRY_RUN ${input.key}: brief not written, no pane opened, nothing registered`);
+        break;
+      }
+      const r = await launchLane(deps, input, (line) => console.log(line));
       console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
       console.log(r.startup);
       process.exit(r.startup.startsWith("STARTUP_OK") ? 0 : 3);
     }
     case "adopt": {
-      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), pane: need("pane"), tags: tags() });
+      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), pane: need("pane"), tags: tags(), goal: opt("goal"), challengeBefore: many("challenge-before") });
       console.log(`ADOPTED ${l.key} pane=${l.pane} thread=${l.thread}`);
       break;
     }
@@ -210,9 +275,13 @@ try {
       console.log(await setThread(deps, await lane(key ?? die("set-thread needs a lane key")), ref));
       break;
     }
-    case "claim-done":
-      console.log(await claimDone(deps, await lane(key), need("evidence")));
+    case "claim-done": {
+      const l = await lane(key);
+      const missing = challengeMissing(l);
+      if (missing) die(missing, 5);
+      console.log(await claimDone(deps, l, need("evidence")));
       break;
+    }
     case "object-done": {
       const reasons = (flags.values.reason as string[] | undefined)?.map((r) => r.trim()).filter(Boolean) ?? [];
       if (!reasons.length) die("--reason is required");
@@ -229,9 +298,102 @@ try {
       const metric = normFix(need("metric"));
       const area: AreaQuery = { lane: l.key, ...(l.cwd && l.cwd !== config.defaultCwd ? { cwd: l.cwd } : {}), tags: tagsOf(l) };
       for (const line of priorFixLines(await areaSignals(await deps.registry.list(), area, config), l.key, metric)) console.log(line);
-      const r = await recordFix(deps, l.key, { at: new Date().toISOString(), metric, hypothesis: normFix(need("hypothesis")), via: "lead" });
-      console.log(`FIX_RECORDED ${l.key} attempt=${r.count}`);
+      const attempt = { at: new Date().toISOString(), metric, hypothesis: normFix(need("hypothesis")), via: "lead" as const, ...(flags.values.improved ? { improved: true } : {}) };
+      const branch = { hypotheses: many("hypotheses"), tests: many("test"), override: opt("no-hypotheses") };
+      const gate = gateFix(l.fixes ?? [], attempt, branch, config.explore);
+      if (gate.verdict === "required") {
+        const msg = requiredMessage(l.key, metric, gate, config.explore);
+        recordRefusal(deps, msg);
+        die(msg, 5);
+      }
+      if (gate.verdict === "override") console.log(recordOverride(deps, l.key, metric, gate, branch.override ?? ""));
+      if (gate.verdict === "branch") console.log(await recordBranch(deps, l, metric, branch, gate));
+      const r = await recordFix(deps, l.key, attempt);
+      console.log(`FIX_RECORDED ${l.key} attempt=${r.count} on-metric=${gate.attempt}`);
       if (r.alert) console.log(`SAME_FIX_3 ${l.key} ${r.alert}`);
+      for (const n of r.notes) console.log(n);
+      break;
+    }
+    case "tree": {
+      const verb = key ?? "show";
+      const anyLane = async (k: string) => (await deps.registry.read(k)) ?? die(`no registered lane "${k}"`);
+      const here = config.backend === "aoe" ? await currentTmuxSession(run).catch(() => "") : (process.env.HERDR_PANE_ID ?? "");
+      const paneLane = here ? await deps.registry.byPane(here) : null;
+      const laneKey = opt("lane");
+      const area: TreeArea = laneKey ? laneArea(await anyLane(laneKey), config) : opt("cwd") ? { cwd: resolve(opt("cwd") ?? "") } : tags()[0] ? { tag: tags()[0] } : paneLane ? laneArea(paneLane, config) : { cwd: resolve(process.cwd()) };
+      const at = new Date().toISOString();
+      const id = flags.positionals[1] ?? "";
+      if (verb === "show") console.log(formatTree(await loadTree(config.stateDir, area)));
+      else if (verb === "add") {
+        const kind = (opt("kind") ?? "hypothesis") as NodeKind;
+        if (!NODE_KINDS.includes(kind)) die(`--kind is one of ${NODE_KINDS.join(", ")}`);
+        let added: { id: string; isNew: boolean } = { id: "", isNew: false };
+        await updateTree(config.stateDir, area, (t) => {
+          const r = addNode(t, { kind, text: need("text"), test: opt("test"), metric: opt("metric") ? normFix(opt("metric") ?? "") : undefined, lane: laneKey ?? paneLane?.key, source: "dori tree add", result: opt("result") }, at);
+          added = { id: r.node.id, isNew: r.added };
+          return r.tree;
+        });
+        console.log(`TREE_${added.isNew ? "ADDED" : "EXISTS"} ${added.id} in ${area.cwd ? `cwd ${area.cwd}` : `tag ${area.tag}`}`);
+      } else if (verb === "falsify" || verb === "support" || verb === "close" || verb === "reopen") {
+        if (!id) die(`usage: dori tree ${verb} <ID> [--result TEXT]`);
+        const status = verb === "falsify" ? "falsified" : verb === "support" ? "supported" : verb === "close" ? "closed" : "open";
+        let shown = "";
+        await updateTree(config.stateDir, area, (t) => {
+          const r = setStatus(t, id, status, opt("result"), at);
+          shown = `${r.node.id} ${r.node.status}${r.node.result ? ` -> ${r.node.result}` : ""}`;
+          return r.tree;
+        });
+        console.log(`TREE_SET ${shown}`);
+      } else die("usage: dori tree [show|add|falsify|support|close|reopen] [ID] [--lane K | --cwd DIR | --tag T]");
+      break;
+    }
+    case "challenge": {
+      const l = await lane(key ?? die("challenge needs a lane key"));
+      const r = await runChallenge(deps, l, resolve(need("plan")), opt("model"));
+      for (const f of r.failures) console.log(`CHALLENGE_SKIP ${f}`);
+      console.log(r.text);
+      if (r.missing.length) console.log(`CHALLENGE_WARN the review lacks: ${r.missing.join(", ")}`);
+      console.log(`CHALLENGE_SAVED ${r.record.file} reviewer=${r.record.model}`);
+      break;
+    }
+    case "fork-explore": {
+      const l = await lane(key ?? die("fork-explore needs a lane key"));
+      const mode = (opt("mode") ?? "agent") as Mode;
+      if (mode !== "agent" && mode !== "cmd") die("--mode is agent or cmd");
+      const minutes = Number(opt("minutes") ?? config.explore.branchMinutes);
+      if (!(minutes > 0)) die("--minutes must be a positive number");
+      const branches = branchesFrom(many("hypotheses"), many("test"), many("gpu").map(Number), Boolean(flags.values["gpu-all"]));
+      const load = async () => (await sampleHost(run, config.backend)).load1;
+      const takeSlot = async (label: string) => {
+        const slot = await acquireSlot({ dir: `${config.stateDir}/heavy`, slots: config.heavySlots, maxLoad: config.heavyMaxLoad, clock: realClock, load, alive: pidAlive, pid: process.pid }, label);
+        return () => releaseSlot(slot);
+      };
+      console.log(`FORK_START ${l.key} ${branches.length} branches on "${need("metric")}" (${branches.filter((b) => b.gpu).length} gpu, queued on the heavy slot), ${minutes} min each, mode ${mode}`);
+      const r = await forkExplore(deps, l, { metric: normFix(need("metric")), branches, mode, minutes, model: opt("model") }, takeSlot);
+      console.log(r.table);
+      console.log(`FORK_SAVED ${r.file}; tree updated (dori tree --lane ${l.key})`);
+      break;
+    }
+    case "research-hint": {
+      const l = (await deps.registry.read(key ?? die("research-hint needs a lane key"))) ?? die(`no registered lane "${key}"`);
+      for (const line of researchHint(l, await loadTree(config.stateDir, laneArea(l, config)))) console.log(line);
+      break;
+    }
+    case "intent-check": {
+      let l = await lane(key ?? die("intent-check needs a lane key"));
+      const at = new Date().toISOString();
+      const patch = {
+        ...(opt("goal") ? { goal: opt("goal") } : {}),
+        ...(opt("direction") || opt("next") ? { direction: { at, text: opt("direction") ?? l.direction?.text ?? "", ...(opt("next") ? { next: opt("next") } : {}) } } : {}),
+      };
+      if (Object.keys(patch).length) {
+        await deps.registry.patch(l.key, patch);
+        l = { ...l, ...patch };
+      }
+      const v = intentView(l, await loadTree(config.stateDir, laneArea(l, config)), config.explore.driftBelow);
+      const lines = formatIntent(l, v);
+      for (const line of lines) console.log(line);
+      watchLog(config.watchLog, realClock, { source: "intent-check", line: lines.at(-1) ?? "" });
       break;
     }
     case "resume":
@@ -452,6 +614,6 @@ try {
       process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError) die(e.message);
+  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof ForkError) die(e.message);
   throw e;
 }
