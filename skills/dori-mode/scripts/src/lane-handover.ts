@@ -91,7 +91,7 @@ export const SUMMARY_TEMPLATE = [
   "## Ruled out",
   "(approaches, hypotheses and fixes already tried and rejected, with the result that rejected each; the new session must not try them again without a new reason)",
   "## In progress",
-  "(what is half done: files touched, runs going, results awaited, and the judgment you were forming)",
+  "(what is half done: files touched, commands and tests run with their results (verified apart from only attempted), runs going, results awaited, and the judgment you were forming)",
   "## Next step",
   "(the exact next action, and the check that tells it worked)",
   "",
