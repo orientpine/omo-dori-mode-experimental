@@ -121,6 +121,8 @@ const logOf = (dir: string, session: string): string | undefined => {
 export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[]; readonly agentPid?: number };
 
 const POLL_MS = 5_000;
+// how long the new session gets to add the tried fixes its restatement left out (polls of POLL_MS)
+const GAP_TRIES = 36;
 const THINKING = /^(.*):(off|minimal|low|medium|high|xhigh|max)$/;
 // processes every omo session runs besides the work: MCP servers, the subagent RPC host, the provider's own CLI
 const INFRA = /\bmcp\b|--internal-rpc-host-supervisor|--mode rpc|claude-agent-sdk/;
@@ -250,7 +252,7 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   "",
   "## Do this first",
   "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once.",
-  `2. A [LEAD] line with ${PROBE} <id> is a check of this handover. Before you answer it, read this whole note and your brief, then write what you understood to the file the line names, under the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")} (under Questions, what the note leaves unclear, or none). Then run the dori handover ack command it gives (with its --state) and nothing else for that line.`,
+  `2. A [LEAD] line with ${PROBE} <id> is a check of this handover. Before you answer it, read this whole note and your brief, then write what you understood to the file the line names, under the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")} (under Questions, only what neither the note nor the old log answers after you searched it, or none). Then run the dori handover ack command it gives (with its --state) and nothing else for that line.`,
   `3. Read your brief ${f.lane.brief} in full. It still holds: same Done, same footer, and reports still go to the lead.`,
   `4. Until a [LEAD] ${COMMITTED} line arrives, do nothing else: change no file, start no process besides the monitors of step 1, post nothing. Until then the handover can still roll back and close this session.`,
   `5. After ${COMMITTED}: ${f.goal ? "register the goal under Goal again with your goal tool, same objective, and rebuild the todo list from Todos." : "rebuild the todo list from Todos."} Then continue the work from where Last reports and the lane's notes leave it.`,
@@ -282,7 +284,7 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   ...(f.lane.history ?? []).slice(-3).map((h) => `- ${h.at} ${h.status}: ${h.note}`),
   "",
   "## Conversation summary (written by the old session)",
-  f.laneNote.trim() || "(none: the move was forced before the old session wrote one; read the old conversation below before you act on a guess)",
+  f.laneNote.trim() || "(none: the old session did not write one with dori handover ready --note FILE; read the old conversation below before you act on a guess)",
   "",
   `## Fix attempts in the old session (${sessionFixes(f.lane).length})`,
   ...(sessionFixes(f.lane).length
@@ -376,7 +378,7 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
     ...(QUESTION_MARK.test(screen) ? ["a question is open in the pane"] : []),
   ];
   const blocked = blockers.length > 0 && !opts.force;
-  const blockedWhy = `${blockers.join("; ")}. Ask the lane to reach a safe point and run dori handover ready ${key} [--note FILE] in its own pane, or pass --force`;
+  const blockedWhy = `${blockers.join("; ")}. Ask the lane to reach a safe point and write its conversation summary and run dori handover ready ${key} --note FILE in its own pane, or pass --force`;
   // a dry run still writes the note, so a rollover proposal can show it with what blocks the move
   if (blocked && !opts.dryRun) return refuse(blockedWhy);
   if (blocked) emit(`HANDOVER_REFUSED ${key}: ${blockedWhy}`);
@@ -475,6 +477,15 @@ const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string
   if (gaps.length) {
     await tell(deps, pane, `[LEAD] HANDOVER_GAPS: your restatement leaves out these fixes the old session already tried: ${gaps.join("; ")}. Add them under ## Ruled out in ${understood} and do not try them again without a new reason.`);
     emit(`HANDOVER_GAPS ${facts.lane.key}: ${gaps.join("; ")} (told to the new session)`);
+    // the commit waits until the restatement has them: a known gap is not waved through
+    let left = gaps;
+    for (let j = 0; j < GAP_TRIES && left.length; j++) {
+      await deps.clock.sleep(POLL_MS);
+      const again = section(existsSync(understood) ? readFileSync(understood, "utf8") : "", "Ruled out").toLowerCase();
+      left = left.filter((h) => !again.includes(h.toLowerCase()));
+    }
+    if (left.length) return { reasons: [`the new session's restatement still leaves out the tried fixes: ${left.join("; ")}`], session };
+    emit(`HANDOVER_GAPS_FIXED ${facts.lane.key}`);
   }
   const asks = section(text, "Questions");
   if (asks && !/^none\.?$/i.test(asks)) emit(`HANDOVER_QUESTIONS ${facts.lane.key}: ${asks.replace(/\s+/g, " ").slice(0, 400)} (the lead answers them in the new pane; the old log is ${facts.oldLog ?? "not found"})`);

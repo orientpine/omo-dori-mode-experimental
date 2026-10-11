@@ -24,7 +24,7 @@ const status = (model: string, pct = "9.0", account = "x") => `old transcript li
 const HIGH = status("claude-opus-5-5 • effort high", "72.0");
 const OK = { approvedBy: "https://discord.com/channels/1/2/3" };
 
-type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
+type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; fixGaps?: boolean; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
 
 let state: { dir: string; done: () => void };
 let w: World;
@@ -77,8 +77,10 @@ const simulate = () => {
   if (sim.ack && probe) {
     // the new session writes what it understood, then acks
     const file = /write what you understood to (\S+)/.exec(probe)?.[1];
-    if (file && sim.restate !== "") writeFileSync(file, sim.restate ?? "## Goal\nship it\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nnone\n");
+    if (file && sim.restate !== "" && !existsSync(file)) writeFileSync(file, sim.restate ?? "## Goal\nship it\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nnone\n");
     ackHandover(state.dir, "n1", sim.ackPane, "2026-10-11T16:40:00Z");
+    // told what it left out, it adds it
+    if (file && sim.fixGaps && sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_GAPS"))) writeFileSync(file, readFileSync(file, "utf8").replace("## Ruled out\nnone", "## Ruled out\nlr too high: already tried"));
   }
 };
 
@@ -658,6 +660,7 @@ test("the new session must restate what it understood before the commit; questio
   ready(deps, [15]);
   await deps.registry.patch("demo", { fixes: [{ at: "2026-10-11T16:00:00Z", metric: "loss", hypothesis: "lr too high", via: "report" }] });
   sim.restate = "## Goal\nship it\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nwhich seed is the baseline?\n";
+  sim.fixGaps = true;
   // When
   const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
   // Then
@@ -668,6 +671,21 @@ test("the new session must restate what it understood before the commit; questio
   expect(printed.find((l) => l.startsWith("HANDOVER_QUESTIONS demo: which seed is the baseline?"))).toBeDefined();
   expect(printed).toContain("HANDOVER_GAPS demo: lr too high (told to the new session)");
   expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_GAPS: your restatement leaves out these fixes the old session already tried: lr too high."))).toBe(true);
+  expect(printed).toContain("HANDOVER_GAPS_FIXED demo");
+});
+
+test("a restatement that keeps leaving out a tried fix fails the check, and everything moves back", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  await deps.registry.patch("demo", { fixes: [{ at: "2026-10-11T16:00:00Z", metric: "loss", hypothesis: "lr too high", via: "report" }] });
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
+  // Then
+  expect(r.code).toBe(3);
+  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("still leaves out the tried fixes: lr too high");
+  expect((await readLane(deps)).pane).toBe(OLD);
+  expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_COMMITTED"))).toBe(false);
 });
 
 test("no restatement means the check fails and everything moves back", async () => {
