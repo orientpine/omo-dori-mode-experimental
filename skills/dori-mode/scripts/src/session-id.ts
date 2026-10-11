@@ -8,7 +8,7 @@ import type { Runner } from "./run.ts";
 export type Proc = { readonly pid: number; readonly ppid: number; readonly cmd: string };
 export type SessionHit = { readonly id: string; readonly via: "argv" | "child-env" | "start-time" | "none"; readonly pid?: number };
 
-const AGENT = /senpi\/dist\/bundle\/cli\.js|(^|\/)omo(\s|$)/;
+export const AGENT = /senpi\/dist\/bundle\/cli\.js|(^|\/)omo(\s|$)/;
 const ENV_ID = /(?:^|\s)PI_SESSION_ID=([0-9a-f-]{36})(?:\s|$)/;
 const SESSION_FILE = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z_([0-9a-f-]{36})\.jsonl$/;
 const START_WINDOW_MS = 180_000;
@@ -19,7 +19,7 @@ export const procTable = async (run: Runner): Promise<Proc[]> =>
     return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), cmd: m[3] ?? "" }] : [];
   });
 
-const descendants = (table: readonly Proc[], root: number): Proc[] => {
+export const descendants = (table: readonly Proc[], root: number): Proc[] => {
   const byParent = new Map<number, Proc[]>();
   for (const p of table) byParent.set(p.ppid, [...(byParent.get(p.ppid) ?? []), p]);
   const out: Proc[] = [];

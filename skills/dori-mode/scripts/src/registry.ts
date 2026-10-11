@@ -72,6 +72,8 @@ export type Lane = {
   readonly research?: ResearchSent;
   readonly blocked?: string;
   readonly idleSince?: number;
+  // the last ROLLOVER_DUE freshness gave: one per pane, so a lane's new session can get its own
+  readonly rolloverDue?: { readonly pane: string; readonly at: string; readonly crossed: readonly string[] };
   readonly receipt?: unknown;
 };
 
