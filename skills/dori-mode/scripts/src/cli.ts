@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // allow: SIZE_OK — existing command dispatcher; command behavior lives in separate modules.
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -727,6 +727,13 @@ try {
         routedPane: async () => (await loadConfig()).leadPane,
         envLeadPane: process.env.DORI_LEAD_PANE?.trim() ?? "",
         alive: pidAlive,
+        realpath: (path) => {
+          try {
+            return realpathSync(path);
+          } catch {
+            return path;
+          }
+        },
         timers: async () => {
           const pattern = new RegExp(config.handover.timers);
           return (await run(["systemctl", "--user", "list-timers", "--all", "--no-legend", "--no-pager"])).out.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter((l) => l && pattern.test(l));

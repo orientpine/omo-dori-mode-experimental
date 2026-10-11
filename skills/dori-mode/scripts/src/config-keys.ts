@@ -14,4 +14,5 @@ export const knownConfigKeys = (): string[] => configKeys({
   ...defaultConfig(),
   hooks: { threadReply: [], threadDone: [], transcribe: [] },
   update: { ...defaultConfig().update, services: [{ unit: "", paths: [], log: "", ready: "" }] },
+  handover: { ...defaultConfig().handover, watchers: [{ name: "", check: [], arm: "" }] },
 });

@@ -106,6 +106,13 @@ test("an aoe pane's session id is omo's --session-id under the tmux pane pid", a
   expect(world.calls).toContainEqual(["tmux", "display-message", "-p", "-t", `=${PANE}:`, "#{pane_pid}"]);
 });
 
+test("an aoe pane resumed with --session <session file> gets the uuid from the file name, not the path", async () => {
+  const file = "/home/u/.omo/agent/sessions/--home-u-Documents-kakaodori--/2026-10-08T13-31-43-234Z_01a11bb6-6f02-7f43-932d-4f19bae69e1c.jsonl";
+  const table = [{ pid: 10, ppid: 1, cmd: "/bin/bash /tmp/aoe-pane-env-fLuABz" }, { pid: 11, ppid: 10, cmd: `/home/u/.bun/bin/bun /x/senpi/dist/bundle/cli.js --extension /x/plugin --session ${file}` }];
+  const hit = await resolveSession(PANE, "/repo", table, { run: at(T0).run, sessionsDir: "/s", backend: "aoe" });
+  expect(hit).toEqual({ id: "01a11bb6-6f02-7f43-932d-4f19bae69e1c", via: "argv", pid: 11 });
+});
+
 test("a working lane whose aoe session waits for a human is reported once as LANE_BLOCKED, never while its turn still runs", async () => {
   const lane: Lane = { key: "fix-a", title: "fix-a", thread: "none", pane: PANE, brief: "/b.md", done: "file /etc/hostname", cwd: "/repo", openedAt: new Date(T0).toISOString() };
   await at(T0).registry.write(lane);

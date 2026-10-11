@@ -149,7 +149,12 @@ export type Explore = {
 // path follows); title names it (empty: the old title plus MMDDhhmm); model (empty: defaultModel); services are the user
 // units restarted after leadPane moves, so long-running sweeps read it again (empty: the update.services units); timers is
 // a regex for `systemctl --user list-timers` lines listed in the note; verifyMin bounds the checks; inbox is the file the
-// inbox probe goes to (empty: DORI_DISCORD_INBOX, else <stateDir>/discord/inbox.jsonl).
+// inbox probe goes to (empty: DORI_DISCORD_INBOX, else <stateDir>/discord/inbox.jsonl); cwd is where the new session opens
+// (empty: the old lead's path with symlinks resolved); watchers are the watches that are not omo monitors of the old
+// session (a host guard, a separate listener): check is an argv ({pane}, {session} filled in) whose exit 0 means it runs,
+// before the move for the old lead and after it for the new one; arm tells the new session how to start it, if it must.
+export type HandoverWatcher = { readonly name: string; readonly check: readonly string[]; readonly arm?: string };
+
 export type Handover = {
   readonly prompt: string;
   readonly title: string;
@@ -158,6 +163,8 @@ export type Handover = {
   readonly timers: string;
   readonly verifyMin: number;
   readonly inbox: string;
+  readonly cwd: string;
+  readonly watchers: readonly HandoverWatcher[];
 };
 
 export type DoriConfig = {
@@ -253,7 +260,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     branchCommand: ["omo", "-p", "--no-session", "--model", "{model}", "{prompt}"],
     branchMinutes: 15,
   },
-  handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "" },
+  handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [] },
 });
 
 export class ConfigError extends Error {}
@@ -302,7 +309,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
     scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog, home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
-    handover: { ...merged.handover, inbox: expandHome(merged.handover.inbox, home) },
+    handover: { ...merged.handover, inbox: expandHome(merged.handover.inbox, home), cwd: expandHome(merged.handover.cwd, home) },
     leadPane,
   };
 };
