@@ -244,15 +244,15 @@ bunx tsc --noEmit  # 타입 검사
 
 MIT
 
-## ZzangDori에서 옮겨 오기
+## Dori에서 옮겨 오기
 
-예전 gist로 ZzangDori 모드를 쓰고 있었다면 봇은 그대로 동작합니다. 네 가지만 바꾸면 Dori가 됩니다.
+예전 gist로 Dori 모드를 쓰고 있었다면 봇은 그대로 동작합니다. 네 가지만 바꾸면 Dori가 됩니다.
 
-1. **Dori 이름 정하기.** 그냥 "Dori"나 ShipDori, WorkDori처럼 Dori로 끝나는 이름이면 됩니다. 에이전트에게 "이제부터 네 이름은 ShipDori고, 이건 ShipDori mode야"라고 말하세요. 그다음부터는 "ZzangDori mode" 대신 "ShipDori mode"가 모드를 켜는 말이 됩니다.
+1. **Dori 이름 정하기.** 그냥 "Dori"나 ShipDori, WorkDori처럼 Dori로 끝나는 이름이면 됩니다. 에이전트에게 "이제부터 네 이름은 ShipDori고, 이건 ShipDori mode야"라고 말하세요. 그다음부터는 "Dori mode" 대신 "ShipDori mode"가 모드를 켜는 말이 됩니다.
 2. **봇 이름과 프로필 사진 바꾸기.**
    - 텔레그램: @BotFather에서 `/setname`을 보내고 봇을 고른 뒤 새 이름을 보냅니다. 이어서 `/setuserpic`을 보내고 봇을 고른 뒤 새 이미지를 보냅니다. 기본 Dori 그림은 [`skills/dori-mode/assets/dori-avatar.png`](skills/dori-mode/assets/dori-avatar.png)이고, 원하는 이미지로 바꿔도 됩니다. 봇 이름과 사진은 BotFather에서만 바꿀 수 있습니다.
    - 디스코드: Developer Portal에서 애플리케이션을 엽니다. **Bot** 페이지에서 사용자 이름과 아이콘을, **General Information**에서 앱 이름과 아이콘을 바꾸고(같은 기본 그림을 쓰면 됩니다) 저장합니다.
 3. **이 저장소 설치하기.** 위의 한 줄 설치를 실행하고 에이전트에게 "ShipDori mode"라고 말하면, 예전에 붙여 넣던 프롬프트 대신 스킬과 `dori` CLI를 씁니다.
-4. **온보딩 하기.** ZzangDori 때 한 적이 없다면 "온보딩 해 줘"라고 하면 됩니다.
+4. **온보딩 하기.** Dori 때 한 적이 없다면 "온보딩 해 줘"라고 하면 됩니다.
 
 기존 스레드, 토픽, 메모리는 그대로 남습니다.
