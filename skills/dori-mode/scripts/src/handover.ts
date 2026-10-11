@@ -220,7 +220,7 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
     const fresh = (await deps.registry.read(lane.key)) ?? lane;
     await deps.registry.write({ ...fresh, history: [...(fresh.history ?? []), { at, status: statusOf(fresh), note: `lead moved ${from.pane} -> ${to.pane} (dori handover)` }] });
     const told = lane.pane
-      ? await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, `[LEAD] The lead moved to tmux session ${to.pane}. Send every [REPORT] there from now on: ["tmux","send-keys","-t","=${to.pane}:","-l","--","<report line>"], then ["tmux","send-keys","-t","=${to.pane}:","Enter"]. Your brief's footer says the same now.`)
+      ? await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] The lead moved to tmux session ${to.pane}. Send every [REPORT] there from now on: ["tmux","send-keys","-t","=${to.pane}:","-l","--","<report line>"], then ["tmux","send-keys","-t","=${to.pane}:","Enter"]. Your brief's footer says the same now.`)
       : false;
     out.push(`HANDOVER_LANE ${lane.key} brief=${brief} told=${told ? "yes" : "no"}`);
   }
@@ -269,7 +269,7 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
   const inbox = deps.nonce();
   const ack = (id: string) => `dori handover ack ${id} --state ${deps.config.stateDir}`;
   const line = `[REPORT] handover-probe | milestone | ${PROBE} ${report}: run ${ack(report)}`;
-  if (!(await sendVerified(deps.run, deps.clock, deps.config.backend, routed, line))) return { reasons: [`the report probe did not reach ${routed}`], session };
+  if (!(await sendVerified(deps.run, deps.clock, deps.config, routed, line))) return { reasons: [`the report probe did not reach ${routed}`], session };
   appendFileSync(deps.inbox, `${JSON.stringify({ ts: iso(deps.clock), id: `handover-${inbox}`, kind: "handover-probe", content: `${PROBE} ${inbox}: run ${ack(inbox)}` })}\n`);
   emit(`HANDOVER_PROBES_SENT report=${report} inbox=${inbox} (${deps.inbox})`);
   let problems: string[] = [];
@@ -367,7 +367,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
 const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: HandoverFacts, ctx: MoveContext): Promise<HandoverResult> => {
   const { config } = deps;
   const { note, stamp, dir, title, model, units, emit } = ctx;
-  const tell = (pane: string, text: string) => sendVerified(deps.run, deps.clock, config.backend, pane, text).catch(() => false);
+  const tell = (pane: string, text: string) => sendVerified(deps.run, deps.clock, config, pane, text).catch(() => false);
   let pane: string;
   try {
     pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.from.cwd, tool: config.agentCommand[0] ?? "omo", model });
@@ -381,7 +381,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     return { code: 3, note, to: pane };
   }
   await tell(config.leadPane, `[LEAD] Handover to ${pane} started (note ${note}). Stay quiet now: do not answer the owner or act on inbox, lane or session events, and ignore ${PROBE} lines. If the handover fails you are told and stay the lead.`);
-  if (!(await sendVerified(deps.run, deps.clock, config.backend, pane, `${config.handover.prompt}. Read the handover note at ${note} in full and do what it says, starting with its first section.`))) {
+  if (!(await sendVerified(deps.run, deps.clock, config, pane, `${config.handover.prompt}. Read the handover note at ${note} in full and do what it says, starting with its first section.`))) {
     await tell(config.leadPane, `[LEAD] Handover to ${pane} failed before anything moved: its first message did not register. You stay the lead.`);
     emit(`HANDOVER_FAIL the first message did not register in ${pane}; nothing moved, ${config.leadPane} stays the lead`);
     return { code: 3, note, to: pane };

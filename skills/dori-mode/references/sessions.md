@@ -99,12 +99,12 @@ Before you type into a pane:
 
 1. check it runs a live agent (`herdr pane process-info --pane <id>`), not a shell, a stopped agent or a startup screen;
 2. read it (`herdr pane read <id> --source recent-unwrapped --lines 40`) and confirm the input line is empty and no approval or question prompt is open;
-3. send once, as one argument (the scripts' `sendVerified` does this);
-4. read the pane again: if your text is still on the input line, press Enter again, then re-check.
+3. send with `dori type <pane> --text "<text>"` (or `--text-file FILE` for a long one): it types the text as one argument, presses Enter, waits for the input box to be empty (one more Enter if not) and for a running turn, and prints `SUBMITTED` or `NOT_SUBMITTED <reason>` (exit 1, also in the watch log). Every script that types into a pane uses the same check;
+4. on `NOT_SUBMITTED`, read the pane before typing again: the text may still be in the box.
 
-Exit code 0 and echoed input are not proof the agent got the message. A reply from the session, or its record of handling the message, is.
+Exit code 0 of a send and echoed input are not proof the agent got the message. The input box is the lines between the last two `─` borders, not only the `❯` line: a long or multi-line text folds into `[paste #1 +13 lines]`, and a tall box scrolls its `❯` line out of view. A reply from the session, or its record of handling the message, is the final proof.
 
-With aoe the same steps read: `aoe ps --json` shows the session's state (`waiting` means a question or approval is open), `tmux capture-pane -p -J -t =<name>:` reads it, the input line is the last line starting with `❯`, and text goes in with `tmux send-keys -t =<name>: -l -- <text>` followed by a separate `Enter`. The `=` and trailing `:` make tmux match the exact session name; an empty name would hit whatever pane you are in.
+With aoe the same steps read: `aoe ps --json` shows the session's state (`waiting` means a question or approval is open), `tmux capture-pane -p -J -t =<name>:` reads it, the input box sits between the last two `─` borders with its `❯` line, `esc to interrupt` on or above the top border means a turn runs, and `dori type` sends text with `tmux send-keys -t =<name>: -l -- <text>` followed by a separate `Enter`. The `=` and trailing `:` make tmux match the exact session name; an empty name would hit whatever pane you are in.
 
 ## Watching
 

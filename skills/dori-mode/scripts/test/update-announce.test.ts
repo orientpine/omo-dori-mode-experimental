@@ -54,7 +54,7 @@ test("logs ANNOUNCE_FAIL when pane delivery fails", async () => {
     // When
     expect(await announceChange({ config, clock: fakeClock(0), print: () => {}, send: async () => false }, { summary: "Changed", files: [] })).toBe(false);
     // Then
-    expect(await Bun.file(config.watchLog).text()).toContain("update ANNOUNCE_FAIL lead message did not reach pane");
+    expect(await Bun.file(config.watchLog).text()).toContain("update ANNOUNCE_FAIL lead message was not submitted");
   } finally { state.done(); }
 });
 

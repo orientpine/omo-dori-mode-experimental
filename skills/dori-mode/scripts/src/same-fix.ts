@@ -51,7 +51,7 @@ export const recordFix = async (deps: FlowDeps, key: string, attempt: FixAttempt
   let alert = `attempt ${count} on "${attempt.metric}" with the same hypothesis "${attempt.hypothesis}": stop patching; reproduce it and read the logs for the root cause first`;
   if (cfg.sendToLane && lane.pane) {
     const text = fill([cfg.laneText], { n: String(count), metric: attempt.metric, hypothesis: attempt.hypothesis })[0] ?? cfg.laneText;
-    const delivered = await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, text);
+    const delivered = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
     alert += delivered ? " (sent to the lane)" : ` (the note did not reach pane ${lane.pane})`;
   }
   watchLog(deps.config.watchLog, deps.clock, { source: "fix-attempt", line: `SAME_FIX_3 ${key} ${alert}` });

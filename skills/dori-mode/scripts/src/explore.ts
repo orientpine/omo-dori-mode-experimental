@@ -335,7 +335,7 @@ export const sendResearch = async (deps: FlowDeps, lane: Lane, tree: Tree, signa
   if (!lane.pane) return false;
   const text = researchMessage(deps.config.explore, lane, tree, signal, metric);
   const sentAt = deps.clock.now();
-  const delivered = await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, text);
+  const delivered = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
   if (delivered) await deps.registry.patch(lane.key, { research: { at: new Date(sentAt).toISOString(), sentAt, probe: text.slice(0, 80), metric, signal } });
   return delivered;
 };

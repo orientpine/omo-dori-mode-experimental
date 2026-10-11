@@ -77,7 +77,7 @@ With `"backend": "aoe"` lanes run as [agent-of-empires](https://github.com/njbra
 
 - A pane id is the session's tmux name, `aoe_<title>_<first 8 of the aoe id>`; `leadPane` and `ignorePanes` take these names. Panes are the live sessions in `aoe list` that have a tmux session; `aoe_term_*` terminals and stopped sessions are not panes. `workspace_id` is the aoe profile, so leave `workspaces` empty or list profiles.
 - `launch` runs `aoe add <cwd> -t <key> --tool <agentCommand[0]> -l --extra-args "--model <model>"`, waits up to 3 minutes for the agent's `❯` prompt, then types the lane prompt. `agentCommand`'s other arguments and `laneWorkspace` are not used. aoe refuses a title+path pair that already exists, even in its trash.
-- Text goes in with `tmux send-keys -t =<name>: -l -- <text>` and a separate `Enter`, each an argv array. Only the agent's input line (the last line starting with `❯`) counts as unsent text, so the same text echoed in the transcript does not trigger extra Enters.
+- Text goes in with `tmux send-keys -t =<name>: -l -- <text>` and a separate `Enter`, each an argv array (see `dori type`). Only the agent's input box (the lines between the last two `─` borders) counts as unsent text, so the same text echoed in the transcript does not trigger extra Enters, while a paste folded into `[paste #1 +13 lines]` or a tall box whose `❯` line scrolled away does.
 - `close` runs `aoe session stop <id>` and `aoe rm <id>`: the session goes to the aoe trash and can be restored. It is never purged.
 - The session id comes from the agent's `--session-id` argument (aoe passes one to omo), found under the tmux pane's pid; the environment and session-file rules follow as with herdr.
 - `claim-done` without a key finds the lane by the tmux session it runs in. `guard` and `can-launch` count aoe sessions as panes.
@@ -118,7 +118,7 @@ On a new HEAD it diffs the saved SHA against HEAD. Every service with a matching
 
 Keys this code knows but the saved code did not, and which are not set in the raw config file, print and log `CONFIG_NEW_KEY <key> unset in <config path> (default used)`. The known keys are saved for the next run. A restart failure sends `[ALERT] dori update: RESTART_FAIL ...` to `update.alertPane`, including new-key notices; without a restart failure the key notices do not trigger an alert. Git failures (including rejected pulls) print and log `UPDATE_FAIL` with stderr and alert the same pane, preserving the previously applied SHA.
 
-After restarts, one `[UPDATE]` summary goes to `leadPane` (`DORI_LEAD_PANE` overrides it). It contains merged PR titles from old..new (or commit subjects if there are no merges), changed `references/`, `SKILL.md`, and `setups/**/README.md` paths under this skill, new config keys, restart results, and `update.announce`. Delivery prints and logs `ANNOUNCED <pane>` or `ANNOUNCE_FAIL <pane> <reason>`. A missing lead pane logs `ANNOUNCE_FAIL` without sending anything. Alerts and announcements use the same argv pane-send helper as lanes.
+After restarts, one `[UPDATE]` summary goes to `leadPane` (`DORI_LEAD_PANE` overrides it). It contains merged PR titles from old..new (or commit subjects if there are no merges), changed `references/`, `SKILL.md`, and `setups/**/README.md` paths under this skill, new config keys, restart results, and `update.announce`. Delivery prints and logs `ANNOUNCED <pane>` only after the pane-send helper saw the text submitted (see `dori type`), else `ANNOUNCE_FAIL <pane> <reason>` next to the helper's `NOT_SUBMITTED` line. A missing lead pane logs `ANNOUNCE_FAIL` without sending anything. Alerts and announcements use the same argv pane-send helper as lanes.
 
 `--dry-run` prints planned local changes and restarts with a `DRY_RUN` prefix; it does not pull, restart, send, or write state/watch logs. A failed update/restart exits 1. The generic systemd path unit can run `dori update` after a pull; see the Discord + aoe setup.
 
@@ -265,6 +265,16 @@ Prints `HOST_GUARD ALERT <reasons>` when load, free memory, free disk or the pan
 
 ### `dori can-launch`
 Prints `CAN_LAUNCH` and exits 0 when the host has room for another lane. Otherwise it prints `HOLD <reasons>` and exits 4. The reasons come from the guard's memory, disk and pane-count thresholds. CPU load alone never holds a launch, because it moves too fast to plan around.
+
+### `dori type <pane> --text TEXT | --text-file FILE`
+
+Types text into an agent pane and confirms the agent took it. Every script that types into a pane (launch prompts, `[LEAD]` notes from `claim-done`, `object-done` and `freshness`, `update` announcements and alerts, `research-hint --send`, same-fix notes, handover prompts, `setups/discord-aoe/self-restart.sh`) goes through the same helper; use this command for your own relays to lanes.
+
+1. Waits for the `❯` prompt (aoe), types the text as one argv argument, waits 1.5 s so a long text lands whole (it arrives as a paste), presses Enter.
+2. Reads the input box, the lines between the last two `─` borders. Folded pastes (`[paste #1 +13 lines]`) and a tall box whose `❯` line scrolled out of view count as text still there; the same text in the transcript above does not. Still there after 3 s: one more Enter, and 3 s more.
+3. An empty box must show a running turn (`esc to interrupt` on or just above the box) within 15 s.
+
+Prints `SUBMITTED <pane>` (exit 0) or `NOT_SUBMITTED <pane> <reason>` (exit 1); `NOT_SUBMITTED` also goes to the watch log as `submit NOT_SUBMITTED <pane> <reason>`. Text with a backtick or `$(` is refused. `scorecard.leadSendPattern` counts `dori type <pane>` as a lead message to that lane.
 
 ### `dori send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID]`
 Posts a message, or edits one with `--edit`. Tokens come from `DORI_SLACK_TOKEN` (plus `DORI_SLACK_COOKIE` for a user token), `DORI_TELEGRAM_TOKEN` or `DORI_DISCORD_TOKEN`. Text containing `$(` is refused, since it can only come from a shell string. Rate limits are retried with the server's wait time; other errors fail at once.

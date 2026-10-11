@@ -173,7 +173,7 @@ const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, 
   }
   const failure = await awaitPrompt(deps, pane);
   if (failure) return { pane, failure };
-  if (!(await sendVerified(deps.run, deps.clock, "aoe", pane, prompt))) return { pane, failure: "the launch prompt did not register (text still in the input line)" };
+  if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, prompt))) return { pane, failure: "the launch prompt was not submitted (see NOT_SUBMITTED in the watch log)" };
   return { pane };
 };
 

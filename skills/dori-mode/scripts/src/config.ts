@@ -226,7 +226,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     leadSessions: "",
     inbox: "",
     replyPattern: "^(SENT|POSTED) \\d",
-    leadSendPattern: "send-keys\\W+-t\\W+={pane}:\\W+-l|send-text\\W+{pane}\\b",
+    leadSendPattern: "send-keys\\W+-t\\W+={pane}:\\W+-l|send-text\\W+{pane}\\b|dori\\W+type\\W+{pane}\\b",
     postTo: "",
     keepDays: 30,
   },

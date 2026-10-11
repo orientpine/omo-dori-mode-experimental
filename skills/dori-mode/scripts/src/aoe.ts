@@ -94,19 +94,6 @@ export const waitForPrompt = async (run: Runner, clock: Clock, pane: string, tri
   return false;
 };
 
-export const sendTmuxVerified = async (run: Runner, clock: Clock, pane: string, text: string): Promise<boolean> => {
-  if (!(await waitForPrompt(run, clock, pane, 10, 1_000))) return false;
-  if ((await run(["tmux", "send-keys", "-t", target(pane), "-l", "--", text])).code !== 0) return false;
-  await run(["tmux", "send-keys", "-t", target(pane), "Enter"]);
-  const probe = text.slice(0, 24);
-  for (let attempt = 0; attempt < 4; attempt++) {
-    await clock.sleep(700);
-    if (!inputLine(await captureTmux(run, pane))?.includes(probe)) return true;
-    if (attempt < 3) await run(["tmux", "send-keys", "-t", target(pane), "Enter"]);
-  }
-  return false;
-};
-
 export class AoeError extends Error {}
 
 // aoe add refuses a title+path pair that already exists, even in the trash (aoe rm --purge clears it)

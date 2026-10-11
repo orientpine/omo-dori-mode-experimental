@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import { claimDone, closeLane, objectDone, watchTick } from "../src/done-flow.ts";
 import { sendVerified, UnsafeTextError } from "../src/panes.ts";
+import { SUBMIT_TIMING } from "../src/submit.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World, WT } from "./fakes.ts";
 
@@ -94,13 +95,13 @@ test("closing directly refuses while a signal is not live and leaves the pane al
   expect(closedVia()).toHaveLength(0);
 });
 
-test("text still sitting in the pane input gets another Enter until it is gone", async () => {
-  world.stuckReads = 1;
-  expect(await sendVerified(at(T0).run, at(T0).clock, "herdr", "w:p1", "[LEAD] stuck text still here")).toBe(true);
+test("text still sitting in the pane input after a poll window gets one more Enter", async () => {
+  world.stuckReads = SUBMIT_TIMING.clearPolls;
+  expect(await sendVerified(at(T0).run, at(T0).clock, { ...at(T0).config, backend: "herdr" }, "w:p1", "[LEAD] stuck text still here")).toBe(true);
   expect(world.calls.filter((c) => c[2] === "send-keys")).toHaveLength(2);
 });
 
 test("text with a backtick never reaches a pane", async () => {
-  await expect(sendVerified(at(T0).run, at(T0).clock, "herdr", "w:p1", "run `rm -rf`")).rejects.toBeInstanceOf(UnsafeTextError);
+  await expect(sendVerified(at(T0).run, at(T0).clock, { ...at(T0).config, backend: "herdr" }, "w:p1", "run `rm -rf`")).rejects.toBeInstanceOf(UnsafeTextError);
   expect(world.calls).toHaveLength(0);
 });
