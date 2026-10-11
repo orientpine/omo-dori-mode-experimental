@@ -10,7 +10,7 @@ import { ackHandover, handover } from "./handover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
-import { sendVerified } from "./panes.ts";
+import { sendVerified, submitToPane } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
@@ -124,6 +124,10 @@ const USAGE = `dori <command> [options]
   send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID] [--status working|done]
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN);
                                        --status (discord) writes it as the progress message, in discord.statusStyle
+  type <pane> --text TEXT | --text-file FILE
+                                       type text into an agent pane and confirm it was submitted: Enter, an empty input
+                                       box (one more Enter if not), a running turn. Prints SUBMITTED, or NOT_SUBMITTED
+                                       <reason> (also in the watch log) and exits 1. Use it for every [LEAD] relay
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file>              run hooks.transcribe and print the text
   inbound slack [--loop MIN]           print INBOUND lines: unread thread replies (threads view), replies in threads
@@ -188,7 +192,7 @@ const flags = parseArgs({
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
-    "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" },
+    "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -270,11 +274,21 @@ try {
   switch (command) {
     case "notify-change": {
       const files = flags.values.file;
-      process.exitCode = await announceChange({ config, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config.backend, pane, text), print: (line) => console.log(line) }, { summary: need("summary"), files: Array.isArray(files) ? files.filter((file): file is string => typeof file === "string") : [] }) ? 0 : 1;
+      process.exitCode = await announceChange({ config, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { summary: need("summary"), files: Array.isArray(files) ? files.filter((file): file is string => typeof file === "string") : [] }) ? 0 : 1;
+      break;
+    }
+    case "type": {
+      const pane = key ?? die("type needs a pane (tmux session with backend aoe, herdr pane id otherwise)");
+      const file = opt("text-file");
+      const text = file ? (await Bun.file(file).text()).trim() : need("text");
+      if (!text) die("type needs non-empty text");
+      const r = await submitToPane(run, realClock, config, pane, text);
+      console.log(r.status === "SUBMITTED" ? `SUBMITTED ${pane}` : `NOT_SUBMITTED ${pane} ${r.reason}`);
+      process.exitCode = r.status === "SUBMITTED" ? 0 : 1;
       break;
     }
     case "update":
-      process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config.backend, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
+      process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
       break;
     case "launch": {
       const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before") };

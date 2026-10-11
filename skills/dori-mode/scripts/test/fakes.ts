@@ -20,13 +20,17 @@ export type World = {
   aoe: { id: string; title: string; path: string; tool?: string; profile?: string }[];
   tmux: string[];
   calls: string[][];
+  // panes that got an Enter: their next screen read shows a running turn, the one after it does not
+  started: string[];
 };
+
+export const RUNNING = " • Working (esc to interrupt)";
 
 export const NEW_AOE_ID = "5e5e5e5e00aa11bb";
 
 export const WT = "/repo/.wt/demo-lane";
 
-export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", screens: {}, aoePs: [], panes: [], aoe: [], tmux: [], calls: [] });
+export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", screens: {}, aoePs: [], panes: [], aoe: [], tmux: [], calls: [], started: [] });
 
 export const fakeRunner = (w: World): Runner => async (argv) => {
   w.calls.push([...argv]);
@@ -38,8 +42,13 @@ export const fakeRunner = (w: World): Runner => async (argv) => {
       return ok("❯ [LEAD] stuck text still here");
     }
     const pane = cmd === "tmux" ? (argv[argv.indexOf("-t") + 1] ?? "").replace(/^=|:$/g, "") : (a2 === "read" ? argv[3] : "") ?? "";
-    return ok(w.screens[pane] ?? w.screen);
+    const screen = w.screens[pane] ?? w.screen;
+    if (!w.started.includes(pane)) return ok(screen);
+    w.started = w.started.filter((p) => p !== pane);
+    return ok(`${screen}\n${RUNNING}`);
   }
+  if (cmd === "tmux" && a1 === "send-keys" && argv.at(-1) === "Enter") w.started.push((argv[argv.indexOf("-t") + 1] ?? "").replace(/^=|:$/g, ""));
+  if (cmd === "herdr" && a1 === "pane" && a2 === "send-keys" && argv.at(-1) === "enter") w.started.push(argv[3] ?? "");
   if (cmd === "herdr" && a1 === "pane" && a2 === "list") return ok(JSON.stringify({ result: { panes: w.panes } }));
   if (cmd === "herdr") return ok();
   if (cmd === "aoe" && a1 === "list") return ok(JSON.stringify(w.aoe));

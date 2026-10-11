@@ -192,7 +192,7 @@ dori ask --text "Lane fix-login asks: keep the old session cookie for 30 days?" 
 - The card pings the owner and nobody else. Only the owner's tap counts; anyone else gets a private "only the owner can answer" note.
 - With `--thread` the card is posted inside that work thread, which is marked ⏸️ until it is answered; without it the card goes to the Dori's channel.
 - On the tap the card folds into a one-line record (`[answered] Q4 ... → Yes, 30 days`), the answer goes to `~/.dori/state/discord/answers.jsonl` and to the inbox as a `kind:"answer"` row. A card inside the thread is the record there; a channel card leaves a silent record line in its thread. When no other question in the thread is open, the thread turns 🔄 again.
-- When the answer row arrives, act on it: relay it to the lane (`tmux send-keys -t =<tmux>: -l -- "<answer>"` then `Enter`, as argv, never a shell string), or do the work.
+- When the answer row arrives, act on it: relay it to the lane (`dori type <tmux> --text "<answer>"` as argv, never a shell string; it prints `SUBMITTED` only when the lane took it), or do the work.
 - If a typed answer is not really an answer, `dori reopen Q4` puts the buttons back and marks its thread ⏸️ again. When the follow-up is done, `dori resolve Q4` forgets the question; the folded card stays in the chat as the record.
 - `dori questions --open` lists what is still waiting.
 
@@ -209,7 +209,7 @@ These are the general rules from `SKILL.md` and `references/writing.md`, as they
 - **One progress message per piece of work**, edited in place: `dori send discord --to <thread> --edit <message id> --status working --text "14:05 edited"` posts `⏳ · 14:05 edited`, and `--status done --text "login fixed"` posts `✅ login fixed`.
 - **When the work is done**, close (archive) the thread; your answer has already taken the eyes off.
 - **Done is a claim.** Lanes claim with `dori claim-done`; `dori watch` (inside `dori-lanes`) reads every `Done =` signal back live and closes the lane after 5 quiet minutes, which runs `hooks.threadDone` and so posts the closing note and archives the thread. Object within the 5 minutes if the evidence does not hold. See `../../references/done-protocol.md`.
-- **Talk to other sessions as argv**: `tmux send-keys -t =<name>: -l -- <text>` and a separate `Enter`. Never through a shell string.
+- **Talk to other sessions as argv**: `dori type <name> --text <text>` (it types with `tmux send-keys -t =<name>: -l -- <text>`, presses Enter, and checks the input box emptied and a turn started). Never through a shell string. `NOT_SUBMITTED` means the text may still sit in the box: read the pane before sending again.
 - **Only bot-token sends.** Never send as the owner's own user account; a self-bot can get that account banned.
 - **One Dori per inbox.** Two sessions reading the same inbox answer twice. Before (re)starting, check that no other Dori session is up.
 - **Restart only through `self-restart.sh`**, scheduled with `systemd-run --user --on-active=20 ...` so it survives the restart.

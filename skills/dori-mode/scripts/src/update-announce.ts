@@ -27,7 +27,7 @@ export const announceChange = async (deps: AnnounceDeps, notice: ChangeNotice): 
   let reason = "";
   try {
     if (!pane) reason = "leadPane is not configured";
-    else if (!(await deps.send(pane, text))) reason = "message did not reach pane";
+    else if (!(await deps.send(pane, text))) reason = "message was not submitted (NOT_SUBMITTED in the watch log)";
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     reason = error.message;

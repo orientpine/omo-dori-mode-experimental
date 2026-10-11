@@ -5,6 +5,7 @@ import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, watchTick } from "../src/done-flow.ts";
 import { launchLane } from "../src/launch.ts";
 import { listPanes, sendVerified } from "../src/panes.ts";
+import { SUBMIT_TIMING } from "../src/submit.ts";
 import type { Lane } from "../src/registry.ts";
 import { resolveSession } from "../src/session-id.ts";
 import { depsFor, fakeClock, NEW_AOE_ID, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -87,14 +88,14 @@ test("five quiet minutes after a claim the lane's aoe session is stopped and tra
   expect(world.calls.some((c) => c.includes("--purge"))).toBe(false);
 });
 
-test("only omo's input line counts as unsent text: a transcript line above it does not, a stuck input line gets another Enter", async () => {
+test("only omo's input box counts as unsent text: a transcript line above it does not, text still in the box after a poll window gets one more Enter", async () => {
   const enters = () => world.calls.filter((c) => c[0] === "tmux" && c.at(-1) === "Enter").length;
   world.screen = "❯ [LEAD] stuck text still here\nworking...\n────\n❯ \n────";
-  expect(await sendVerified(at(T0).run, at(T0).clock, "aoe", PANE, "[LEAD] stuck text still here")).toBe(true);
+  expect(await sendVerified(at(T0).run, at(T0).clock, at(T0).config, PANE, "[LEAD] stuck text still here")).toBe(true);
   expect(enters()).toBe(1);
   world.screen = "❯ ";
-  world.stuckReads = 2;
-  expect(await sendVerified(at(T0).run, at(T0).clock, "aoe", PANE, "[LEAD] stuck text still here")).toBe(true);
+  world.stuckReads = SUBMIT_TIMING.clearPolls + 1; // the first read is the wait for the ❯ prompt
+  expect(await sendVerified(at(T0).run, at(T0).clock, at(T0).config, PANE, "[LEAD] stuck text still here")).toBe(true);
   expect(enters()).toBe(3);
 });
 

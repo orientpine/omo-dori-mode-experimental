@@ -70,7 +70,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
     const heard = lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);
     if (silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
-      const delivered = await sendVerified(deps.run, deps.clock, deps.config.backend, lane.pane, `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`);
+      const delivered = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`);
       current = { ...current, lastNudgeAt: now };
       await deps.registry.patch(lane.key, { lastNudgeAt: now });
       acts.push({ kind: delivered ? "nudged" : "nudge-failed", lane: lane.key, detail: delivered ? `${silentMin} min silent` : `${silentMin} min silent; the nudge did not reach pane ${lane.pane}` });
@@ -90,7 +90,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
       if (!words.postRawReports) {
         const pane = deps.config.leadPane;
         const note = `[DORI] ${lane.key}: ${silentMin} min without a new report, so its thread got a short status line instead of the report. Tell the owner where it stands in plain words. Last report: ${report.replace(/`/g, "'").replaceAll("$(", "$ (")}`;
-        lead = !pane ? "; lead not told: leadPane is not configured" : (await sendVerified(deps.run, deps.clock, deps.config.backend, pane, note)) ? "; lead told" : `; lead not told: the note did not reach pane ${pane}`;
+        lead = !pane ? "; lead not told: leadPane is not configured" : (await sendVerified(deps.run, deps.clock, deps.config, pane, note)) ? "; lead told" : `; lead not told: the note did not reach pane ${pane}`;
       }
       acts.push({ kind: "posted", lane: lane.key, detail: `${text}${lead}` });
     }
