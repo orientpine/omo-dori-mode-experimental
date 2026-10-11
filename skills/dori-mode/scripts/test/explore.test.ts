@@ -159,6 +159,60 @@ test("the research check reads the lane's session log: pointer and SKILL.md read
   expect(again.line).toContain("did not read ulw-research/SKILL.md again (it read it earlier in this session)");
 });
 
+const SKILL = "/opt/omo-ai/plugin/skills/ulw-research/SKILL.md";
+const callLine = (s: number, name: string, args: Record<string, unknown>) =>
+  JSON.stringify({ type: "message", id: `c${s}`, timestamp: at(s), message: { role: "assistant", content: [{ type: "toolCall", id: `t${s}`, name, arguments: args }] } });
+// the eval cell a lane runs to read the skill (seen live: the path in a template literal, read with Bun.file)
+const evalRead = (s: number) => callLine(s, "eval", { language: "js", code: 'const base = "/opt/omo-ai/plugin/skills";\nconst text = await Bun.file(`${base}/ulw-research/SKILL.md`).text();' });
+// the live false positive: after a re-send the lane did not read the skill, it recorded a finding whose text quotes the path
+const treeMention = (s: number) =>
+  callLine(s, "eval", { language: "js", code: "const findings = [\"the lane's session log shows ulw-research/SKILL.md was read\"];\nfor (const text of findings) await Bun.$`dori tree add --kind finding --text ${text}`;" });
+
+test("only a real read of ulw-research/SKILL.md counts as the skill starting, not a mention of the path", async () => {
+  const after = (call: string) => parseResearchStart([userLine(1, PROBE), pointerLine(1), call].join("\n"), PROBE, T0).read;
+  // reads: the read tool, an eval cell reading the file, a shell read command on the path or on a variable holding it
+  expect(after(readLine(8))).toBe(true);
+  expect(after(callLine(8, "read", { file_path: SKILL }))).toBe(true);
+  expect(after(evalRead(8))).toBe(true);
+  expect(after(callLine(8, "bash", { command: `sed -n 1,200p ${SKILL}` }))).toBe(true);
+  expect(after(callLine(8, "eval", { code: `const sh = (c) => Bun.$\`bash -lc \${c}\`.text();\nawait sh('cat ${SKILL}');` }))).toBe(true);
+  expect(after(callLine(8, "eval", { code: `const skill = '${SKILL}';\nconsole.log(await Bun.$\`cat \${skill}\`.text());` }))).toBe(true);
+  // mentions: a finding text, an echo into notes, a memory note, a log search for the bare name, a pipe through tail
+  expect(after(treeMention(8))).toBe(false);
+  expect(after(callLine(8, "bash", { command: `echo "read ${SKILL} first" >> notes.md` }))).toBe(false);
+  expect(after(callLine(8, "memory", { command: "create", file_text: `the lane read ${SKILL}` }))).toBe(false);
+  expect(after(callLine(8, "eval", { code: 'const log = await Bun.file("s.jsonl").text();\nconsole.log(log.includes("ulw-research/SKILL.md"));' }))).toBe(false);
+  expect(after(callLine(8, "bash", { command: `dori can-launch | tail -1; echo ${SKILL}` }))).toBe(false);
+
+  const sessions = join(state.dir, "sessions");
+  const dir = sessionDirFor(sessions, "/work/rl");
+  mkdirSync(dir, { recursive: true });
+  const deps = depsFor(world, fakeClock(T0 + 6 * 60_000), state.dir, { sessionsDir: sessions });
+  const check = async (lines: string[]) => {
+    writeFileSync(join(dir, "2026-01-01T11-58-00-000Z_bbbbbbbb-0000-0000-0000-000000000000.jsonl"), lines.join("\n"));
+    await deps.registry.write({ ...lane, research: { at: at(0), sentAt: T0, probe: PROBE, metric: "dumps", signal: 2 } });
+    return researchCheck(deps, (await deps.registry.read("rl-e7")) as Lane);
+  };
+  const firstSend = [pointerLine(-60), userLine(-60, `${PROBE} first`), evalRead(-50)];
+  const resend = userLine(1, `${PROBE} again\n<omo-ulw-research-pointer>x</omo-ulw-research-pointer>`);
+  // the re-send seen live (negB): the pointer came, the lane only quoted the path in a finding -> not started
+  const negB = await check([...firstSend, resend, treeMention(60)]);
+  expect(negB.verdict).toBe("not-started");
+  expect(negB.line).toContain("did not read ulw-research/SKILL.md again (it read it earlier in this session)");
+  // the same re-send with a real read (read tool, or eval Bun.file) -> started
+  expect((await check([...firstSend, resend, readLine(60)])).verdict).toBe("started");
+  expect((await check([...firstSend, resend, evalRead(60)])).verdict).toBe("started");
+  // seen live: the lane, still busy with the first send, read the skill after the re-send but before the re-sent text
+  // reached the session, then only quoted the path in a finding -> that read belongs to the first send
+  const busy = await check([...firstSend, pointerLine(1), readLine(5), userLine(6, `${PROBE} again`), treeMention(20)]);
+  expect(busy.verdict).toBe("not-started");
+  expect(busy.line).toContain("it read it earlier in this session");
+  // the pointer only from the earlier send: a read now does not make this send started
+  const oldPointer = await check([...firstSend, userLine(1, `${PROBE} again`), evalRead(60)]);
+  expect(oldPointer.verdict).toBe("not-started");
+  expect(oldPointer.line).toContain("omo attached no omo-ulw-research:skill-pointer");
+});
+
 test("a lane's own unbranched second fix report tells the lead hypotheses are required", async () => {
   const deps = depsFor(world, fakeClock(T0), state.dir);
   await deps.registry.write(lane);

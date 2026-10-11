@@ -344,15 +344,35 @@ export const sendResearch = async (deps: FlowDeps, lane: Lane, tree: Tree, signa
 // - seen: a user message whose text starts with the probe (the start of the text dori typed)
 // - pointer: a {"type":"custom_message","customType":"omo-ulw-research:skill-pointer"} entry, or the pointer block
 //   <omo-ulw-research-pointer> inside that user message (omo appends it there when the agent was busy)
-// - read: a tool call (read, or an eval cell) whose arguments name ulw-research/SKILL.md
-// - readEarlier: the same read before `since`: a lane that already holds the skill may not read it again, and then
+// - read: an assistant tool call that really reads ulw-research/SKILL.md (skillRead), not one that only mentions it,
+//   after the typed message reached the session
+// - readEarlier: the same read before that (before `since`, or while the lane was still busy with an earlier send): a lane that already holds the skill may not read it again, and then
 //   tends to answer without the skill's protocol (seen live on a second send in one session)
 export const RESEARCH_POINTER = "omo-ulw-research:skill-pointer";
 export const RESEARCH_SKILL = "ulw-research/SKILL.md";
 export type ResearchStart = { readonly seen: boolean; readonly pointer: boolean; readonly read: boolean; readonly readEarlier: boolean };
 
+// A read of the skill file, not a mention of it (a lane that records a finding quoting the path did not read it):
+// - the read tool with that path, or
+// - an eval/bash call whose code holds the file's path (/..., ~/..., ./..., ${dir}/...) as a whole string literal and
+//   reads a file (Bun.file, readFile, ... or a shell cat, sed, head, ...), or runs such a shell command on the path.
+// A bare "ulw-research/SKILL.md" in a string, or the path inside a sentence, is a mention.
+const SKILL_PATH = /ulw-research\/SKILL\.md(?![\w.-])/;
+const SKILL_LITERAL = /(["'`])(?:\/|~|\.|\$\{)[^"'`\s]*ulw-research\/SKILL\.md\1/;
+const READ_API = /\b(?:Bun\.file|readFileSync|readFile|createReadStream|openSync|tool\.read)\s*\(/;
+// a shell read command on an interpolated path (cat ${skill}); a bare `| tail -1` reads a pipe, not a file
+const SHELL_VAR = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|nl|awk)\b[^\n;&|`]*?\s["']?\$\{/;
+const SHELL_READ = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|nl|awk)\b[^\n;&|`]*?[\s"'][^\s"';&|`]*ulw-research\/SKILL\.md(?![\w.-])/;
+export const skillRead = (name: string | undefined, args: unknown): boolean => {
+  const a = (args ?? {}) as Record<string, unknown>;
+  if (name?.toLowerCase() === "read") return [a.path, a.file_path, a.filePath].some((p) => typeof p === "string" && SKILL_PATH.test(p));
+  const code = [a.code, a.command, a.cmd].find((c): c is string => typeof c === "string");
+  if (!code) return false;
+  return (SKILL_LITERAL.test(code) && (READ_API.test(code) || SHELL_VAR.test(code))) || SHELL_READ.test(code);
+};
+
 type LogEntry = { type?: string; customType?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
-const blocks = (content: unknown): { type?: string; text?: string; arguments?: unknown }[] => (Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : []);
+const blocks = (content: unknown): { type?: string; text?: string; name?: string; arguments?: unknown }[] => (Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : []);
 
 export const parseResearchStart = (jsonl: string, probe: string, since: number): ResearchStart => {
   let seen = false;
@@ -370,7 +390,7 @@ export const parseResearchStart = (jsonl: string, probe: string, since: number):
     if (after && e.type === "custom_message" && e.customType === RESEARCH_POINTER) pointer = true;
     if (e.type !== "message") continue;
     for (const b of blocks(e.message?.content)) {
-      const readsSkill = e.message?.role === "assistant" && b.type === "toolCall" && JSON.stringify(b.arguments ?? {}).includes(RESEARCH_SKILL);
+      const readsSkill = e.message?.role === "assistant" && b.type === "toolCall" && skillRead(b.name, b.arguments);
       if (!after) {
         readEarlier ||= readsSkill;
         continue;
@@ -379,7 +399,9 @@ export const parseResearchStart = (jsonl: string, probe: string, since: number):
         seen = true;
         if (b.text.includes("<omo-ulw-research-pointer>")) pointer = true;
       }
-      if (readsSkill) read = true;
+      // a read before the typed text reached the session (the lane still busy with an earlier send) is not this send's
+      if (readsSkill && seen) read = true;
+      else if (readsSkill) readEarlier = true;
     }
   }
   return { seen, pointer, read, readEarlier };
