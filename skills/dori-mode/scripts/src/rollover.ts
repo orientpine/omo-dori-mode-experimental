@@ -11,7 +11,9 @@ import { fixCount } from "./same-fix.ts";
 
 // repeats: the most attempts of one fix (same metric and hypothesis, counted as dori fix-attempt counts them) in the
 // lane's current session
-export type Signals = { readonly contextPct?: number; readonly compactions?: number; readonly ageH?: number; readonly repeats?: number };
+// inferredRepeats: the most cycles of one untagged repeat (REPEAT_SUSPECT, auto-signals.ts) in the same session; it is shown
+// next to the tagged count and crosses the same laneRepeats line, but never starts an automatic rollover
+export type Signals = { readonly contextPct?: number; readonly compactions?: number; readonly ageH?: number; readonly repeats?: number; readonly inferredRepeats?: number };
 
 export type Step = { readonly step: string; readonly ms: number; readonly ok: boolean };
 // one round of filling in what the new session's restatement left out: the items, how many old-log lines were quoted, the file
@@ -48,12 +50,21 @@ export const crossed = (s: Signals, h: Limits): string[] => [
   ...(h.contextPct > 0 && s.contextPct !== undefined && s.contextPct >= h.contextPct ? [`context ${s.contextPct}% >= ${h.contextPct}%`] : []),
   ...(h.compactions > 0 && s.compactions !== undefined && s.compactions >= h.compactions ? [`compactions ${s.compactions} >= ${h.compactions}`] : []),
   ...(h.ageH > 0 && s.ageH !== undefined && s.ageH >= h.ageH ? [`age ${s.ageH.toFixed(1)} h >= ${h.ageH} h`] : []),
-  ...((h.repeats ?? 0) > 0 && s.repeats !== undefined && s.repeats >= (h.repeats ?? 0) ? [`same fix ${s.repeats} times >= ${h.repeats}`] : []),
+  ...repeatsCrossed(s, h.repeats ?? 0),
 ];
 
+const repeatsCrossed = (s: Signals, limit: number): string[] => {
+  if (limit <= 0 || (s.repeats === undefined && s.inferredRepeats === undefined)) return [];
+  const n = Math.max(s.repeats ?? 0, s.inferredRepeats ?? 0);
+  if (n < limit) return [];
+  return [s.inferredRepeats === undefined ? `same fix ${n} times >= ${limit}` : `same fix ${n} times >= ${limit} (tagged ${s.repeats ?? 0}, inferred ${s.inferredRepeats})`];
+};
+
 // The lane's current session began when it moved to its pane (a handover) or, before any move, when it opened.
+export const sessionStart = (lane: Lane): string => lane.history?.findLast((h) => h.note.startsWith("pane moved") && h.note.includes(`-> ${lane.pane} `))?.at ?? lane.openedAt ?? "";
+
 export const sessionFixes = (lane: Lane): FixAttempt[] => {
-  const since = lane.history?.findLast((h) => h.note.startsWith("pane moved") && h.note.includes(`-> ${lane.pane} `))?.at ?? lane.openedAt ?? "";
+  const since = sessionStart(lane);
   return (lane.fixes ?? []).filter((f) => f.at >= since);
 };
 
@@ -190,7 +201,7 @@ export const lastProposal = (entries: readonly RolloverEntry[], key: string): Ex
   entries.findLast((e): e is Extract<RolloverEntry, { kind: "proposal" }> => e.kind === "proposal" && e.key === key);
 
 // Watch-log kinds that show a lane going wrong: silence (NUDGED, NO-REPORT), repeated fixes, drift, lost input.
-export const QUALITY_KINDS = ["NUDGED", "NO-REPORT", "SAME_FIX_3", "STUCK", "INTENT_DRIFT", "NOT_SUBMITTED", "LANE_BLOCKED"] as const;
+export const QUALITY_KINDS = ["NUDGED", "NO-REPORT", "SAME_FIX_3", "REPEAT_SUSPECT", "STUCK", "INTENT_DRIFT", "NOT_SUBMITTED", "LANE_BLOCKED"] as const;
 
 type Counts = Record<string, number>;
 

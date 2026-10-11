@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { currentTmuxSession } from "./aoe.ts";
 import { ackHandover, handover, type HandoverDeps } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
-import { appendRollover, crossed, quietReason, readRollovers, repeatsOf, rolloverStats } from "./rollover.ts";
+import { appendRollover, crossed, quietReason, readRollovers, repeatsOf, rolloverStats, sessionStart } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
@@ -24,6 +24,8 @@ import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneL
 import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchLane, LaunchError, renderBrief, setThread, validateLaunch } from "./launch.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, metricAttempts, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckSignal, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
+import { evidenceLines, inferRepeats, laneEvents, type MetricRepeat, suspectLine, suspects } from "./auto-signals.ts";
+import { runOwnerCheck } from "./owner-check.ts";
 import { branchesFrom, ForkError, forkExplore, type Mode } from "./fork-explore.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
@@ -104,6 +106,17 @@ const USAGE = `dori <command> [options]
                                        the owner's goal next to the lane's current direction and next step;
                                        INTENT_OK, INTENT_DRIFT or INTENT_NO_GOAL. --direction/--next record what the
                                        lane says it does now; --goal sets a missing goal
+  repeat-check <key> [--since ISO|Nd|Nh] [--until ISO] [--repo DIR ...] [--backtest]
+                                       untagged repeats: a gate line (metric) that failed and was re-targeted by a new
+                                       prescription or patch, from the lane's [REPORT] lines, its branch commits (worktrees,
+                                       cwd, --repo) and tree entries; REPEAT_SUSPECT <key> "<metric>" <n> with the evidence
+                                       from autoSignals.repeatAfter cycles. Default window: the lane's current session.
+                                       --backtest prints every alert freshness would have raised, with its time
+  owner-check <key> [--force]          a reviewer of another family (autoSignals.ownerCheck.models, GPT first) reads the
+                                       brief, the owner's words in it and in the lead's [LEAD] relays, and the newest reports:
+                                       OWNER_CHECK <key> VIOLATION|CONTRADICTION|GOAL_LOSS|OK with quoted evidence (a quote
+                                       not found in the inputs is marked unverified). Only on a report newer than the last
+                                       check; --force skips the interval and daily limit. freshness runs it on new reports
   signals [--lane K | --cwd DIR | --tag T]
                                        what earlier lanes tried and how it went: numbered fix attempts and the root-cause
                                        switch, tagged fixes by metric, rejected done claims, re-sends, nudges, outcome,
@@ -216,6 +229,7 @@ const flags = parseArgs({
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
     "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
     force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" },
+    repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -565,6 +579,46 @@ try {
       const lines = formatIntent(l, v);
       for (const line of lines) console.log(line);
       watchLog(config.watchLog, realClock, { source: "intent-check", line: lines.at(-1) ?? "" });
+      break;
+    }
+    case "repeat-check": {
+      const l = (await deps.registry.read(key ?? die("repeat-check needs a lane key"))) ?? die(`no registered lane "${key}"`);
+      const ago = /^(\d+(?:\.\d+)?)([dh])$/.exec(opt("since") ?? "");
+      const since = ago ? new Date(Date.now() - Number(ago[1]) * (ago[2] === "d" ? 86_400_000 : 3_600_000)).toISOString() : (opt("since") ?? sessionStart(l));
+      if (Number.isNaN(Date.parse(since))) die(`--since takes an ISO time or Nd / Nh, not ${opt("since")}`);
+      const scan = await laneEvents(deps, l, { since, ...(opt("until") ? { until: opt("until") } : {}), repos: many("repo") });
+      const cfg = config.autoSignals;
+      console.log(`REPEAT_SCAN ${l.key} since ${since}${opt("until") ? ` until ${opt("until")}` : ""}: ${scan.reports} reports, ${scan.commits} commits, ${scan.tree} tree entries; scope ${cfg.targetScope}, aliases ${Object.keys(cfg.aliases).length}, after ${cfg.repeatAfter}`);
+      const tagged = repeatsOf(l);
+      if (flags.values.backtest) {
+        // what freshness would have said, report by report: every time a metric's count reached repeatAfter or grew past it
+        const fired: { at: string; r: MetricRepeat }[] = [];
+        inferRepeats(scan.events, cfg, (r, e) => r.n >= cfg.repeatAfter && fired.push({ at: e.at, r }));
+        for (const f of fired) {
+          console.log(`${f.at} ${suspectLine(l.key, f.r, tagged)}`);
+          for (const line of evidenceLines(f.r).slice(-4)) console.log(line);
+        }
+        console.log(`REPEAT_BACKTEST ${l.key} ${fired.length} alerts on ${new Set(fired.map((f) => f.r.metric)).size} metrics`);
+        break;
+      }
+      const state = inferRepeats(scan.events, cfg);
+      const hits = suspects(state, cfg.repeatAfter);
+      for (const r of hits) {
+        console.log(suspectLine(l.key, r, tagged));
+        for (const line of evidenceLines(r)) console.log(line);
+      }
+      if (!hits.length) console.log(`REPEAT_NONE ${l.key} no metric re-targeted ${cfg.repeatAfter}+ times after failing (counts: ${[...state.counts.values()].map((r) => `${r.metric} ${r.n}`).join(", ") || "none"}; tagged fixes ${tagged})`);
+      break;
+    }
+    case "owner-check": {
+      const l = await lane(key ?? die("owner-check needs a lane key"));
+      const r = await runOwnerCheck(deps, l, { force: Boolean(flags.values.force) });
+      if (r.skipped) {
+        console.log(r.skipped);
+        if (r.skipped.startsWith("OWNER_CHECK_FAILED")) process.exit(1);
+        break;
+      }
+      for (const line of r.lines) console.log(line);
       break;
     }
     case "resume":
