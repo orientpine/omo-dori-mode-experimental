@@ -57,7 +57,8 @@ type ManifestEntry = {
   readonly event?: string;
   readonly persistent?: boolean;
   readonly suspended?: boolean;
-  readonly expiresAt?: number;
+  // omo writes null for a monitor that is not persistent: it has no expiry
+  readonly expiresAt?: number | null;
   readonly runtime?: { readonly pid?: number };
 };
 
@@ -101,7 +102,7 @@ const spec = (e: ManifestEntry): MonitorSpec => ({
   persistent: !!e.persistent,
 });
 
-const running = (e: ManifestEntry, now: number): boolean => !e.suspended && (e.expiresAt === undefined || e.expiresAt > now) && !!(e.command || e.path);
+const running = (e: ManifestEntry, now: number): boolean => !e.suspended && (e.expiresAt == null || e.expiresAt > now) && !!(e.command || e.path);
 
 // Every watch the old session still runs, persistent or not: the new session must run each one. A command monitor whose
 // recorded process is gone has ended and is left out.

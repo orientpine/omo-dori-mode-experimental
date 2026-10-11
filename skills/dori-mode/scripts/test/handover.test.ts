@@ -254,7 +254,8 @@ const withWatcher = (deps: HandoverDeps, patch: Partial<HandoverDeps["config"]["
 test("a lead whose monitors are all non-persistent (as OkDori's were) still hands them over, each listed and checked", async () => {
   // Given
   const deps = await setup();
-  writeManifest("old-sid", [monitor("inbox", INBOX_CMD, { persistent: false })]);
+  // as omo writes a monitor that is not persistent: no expiry (null) and a deadline
+  writeManifest("old-sid", [monitor("inbox", INBOX_CMD, { persistent: false, expiresAt: null, durabilityClass: "ephemeral", deadlineMs: Date.parse("2026-10-11T16:40:00Z") })]);
   sim.arm = [{ description: "inbox", command: INBOX_CMD, pid: 201 }];
   // When
   const r = await handover(deps, { title: "lead2" });
