@@ -14,6 +14,8 @@ import { fixCount } from "./same-fix.ts";
 export type Signals = { readonly contextPct?: number; readonly compactions?: number; readonly ageH?: number; readonly repeats?: number };
 
 export type Step = { readonly step: string; readonly ms: number; readonly ok: boolean };
+// one round of filling in what the new session's restatement left out: the items, how many old-log lines were quoted, the file
+export type Supplement = { readonly round: number; readonly items: readonly { readonly kind: string; readonly text: string }[]; readonly evidence: number; readonly file: string };
 
 export type Who = "lead" | "lane";
 
@@ -35,6 +37,8 @@ export type RolloverEntry =
       readonly reasons: readonly string[];
       // the subscription accounts of the old and new session ("" when the status line did not show one)
       readonly accounts?: { readonly from: string; readonly to: string };
+      readonly supplementRounds?: number;
+      readonly supplements?: readonly Supplement[];
     };
 
 export type Limits = { readonly contextPct: number; readonly compactions: number; readonly ageH: number; readonly repeats?: number };
@@ -227,7 +231,7 @@ export const rolloverStats = (entries: readonly RolloverEntry[], watchLines: rea
     const at = Date.parse(r.at);
     const span = windowH * 3_600_000;
     const afterH = Math.round((Math.min(now, at + span) - at) / 360_000) / 10;
-    out.push(`ROLLOVER ${r.who} ${r.key} ${r.at} ${r.result} ${r.from} -> ${r.to ?? "-"} ${fmtSignals(r.signals)}; approval ${r.approvalMin ?? "-"} min (by ${r.approvedBy ?? "-"}); steps ${r.steps.map((s) => `${s.step} ${Math.round(s.ms / 1000)}s${s.ok ? "" : " FAIL"}`).join(", ") || "-"}${r.reasons.length ? `; reasons: ${r.reasons.join("; ")}` : ""}${r.accounts && r.accounts.from !== r.accounts.to ? `; account ${r.accounts.from || "?"} -> ${r.accounts.to || "?"}` : ""}`);
+    out.push(`ROLLOVER ${r.who} ${r.key} ${r.at} ${r.result} ${r.from} -> ${r.to ?? "-"} ${fmtSignals(r.signals)}; approval ${r.approvalMin ?? "-"} min (by ${r.approvedBy ?? "-"}); steps ${r.steps.map((s) => `${s.step} ${Math.round(s.ms / 1000)}s${s.ok ? "" : " FAIL"}`).join(", ") || "-"}${r.reasons.length ? `; reasons: ${r.reasons.join("; ")}` : ""}${r.accounts && r.accounts.from !== r.accounts.to ? `; account ${r.accounts.from || "?"} -> ${r.accounts.to || "?"}` : ""}${r.supplementRounds ? `; supplements ${r.supplementRounds} (${(r.supplements ?? []).map((s) => s.items.length).join("+")} items)` : ""}`);
     out.push(`QUALITY ${r.key} ${r.at} before ${windowH}h: ${fmtCounts(countsIn(watchLines, r.key, at - span, at))} | after ${afterH}h: ${fmtCounts(countsIn(watchLines, r.key, at, at + span))}`);
   }
   return out;

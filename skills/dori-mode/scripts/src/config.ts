@@ -159,7 +159,8 @@ export type Explore = {
 // fix in the current session (dori fix-attempt's count); 0 turns one off. Nothing switches on a threshold: the
 // lead asks the owner (dori rollover-propose posts proposalText with proposalOptions, the first meaning yes) and runs the
 // handover with --approved-by. autoRolloverLanes / autoRolloverLead let freshness start it without asking; off until the
-// owner decides from dori rollover-stats.
+// owner decides from dori rollover-stats. supplementRounds is how many times a lane handover fills in what the new session's
+// restatement left out (from the note and the old log) and asks again before it rolls back; 0 rolls back at the first gap.
 export type HandoverWatcher = { readonly name: string; readonly check: readonly string[]; readonly arm?: string };
 
 export type Handover = {
@@ -182,6 +183,7 @@ export type Handover = {
   readonly leadAgeH: number;
   readonly autoRolloverLanes: boolean;
   readonly autoRolloverLead: boolean;
+  readonly supplementRounds: number;
   readonly proposalText: string;
   readonly proposalOptions: readonly string[];
 };
@@ -280,7 +282,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     branchMinutes: 15,
   },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
-    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneRepeats: 3, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false,
+    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneRepeats: 3, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false, supplementRounds: 2,
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}", proposalOptions: ["Yes, roll over", "Not yet"] },
 });
 

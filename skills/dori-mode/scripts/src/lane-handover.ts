@@ -16,7 +16,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { AGENT, descendants, type Proc, sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, clearQuiet, COMMITTED, lastProposal, readRollovers, repeatsOf, sessionFixes, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
+import { appendRollover, approvalProblem, clearQuiet, COMMITTED, lastProposal, readRollovers, repeatsOf, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type LaneHandoverDeps = FlowDeps & {
@@ -85,7 +85,7 @@ export type LaneFacts = {
 export const SUMMARY_HEADINGS = ["Owner's words and constraints", "Decisions and why", "Ruled out", "In progress", "Next step"] as const;
 export const SUMMARY_TEMPLATE = [
   "## Owner's words and constraints",
-  "(every instruction and constraint from the owner or the lead that still holds, how the work must be done included, quoted exactly, newest last, with the message link when you have it; summaries lose these first)",
+  "(every instruction and constraint from the owner or the lead that still holds, how the work must be done included, quoted exactly in \"double quotes\", newest last, with the message link when you have it; summaries lose these first)",
   "## Decisions and why",
   "(each decision made in this conversation and the evidence it rests on)",
   "## Ruled out",
@@ -97,7 +97,7 @@ export const SUMMARY_TEMPLATE = [
   "",
 ].join("\n");
 // The headings the new session's restatement needs (written before it acks the probe).
-export const UNDERSTOOD_HEADINGS = ["Goal", "Next step", "Ruled out", "Questions"] as const;
+export const UNDERSTOOD_HEADINGS = ["Goal", "Owner's words", "Decisions", "Next step", "Ruled out", "Questions"] as const;
 
 const missingHeadings = (text: string, headings: readonly string[]): string[] => headings.filter((h) => !new RegExp(`^##\\s+${escape(h)}\\s*$`, "mi").test(text));
 
@@ -105,6 +105,85 @@ const section = (text: string, heading: string): string => {
   const m = new RegExp(`^##\\s+${escape(heading)}\\s*$([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "mi").exec(text);
   return m?.[1]?.trim() ?? "";
 };
+
+// What the new session's restatement left out, measured against what the handover holds: the fix ledger and the lane's
+// goal (independent of the summary), and the owner's quoted words and the decisions of the old session's summary.
+export type Missing = { readonly kind: "restatement" | "heading" | "tried fix" | "owner goal" | "owner's words" | "decision"; readonly text: string; readonly under: string; readonly source: string };
+
+const flat = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
+const QUOTE = /"([^"\n]{6,})"|“([^”\n]{6,})”|「([^」\n]{6,})」/g;
+const quotesIn = (text: string): string[] => [...new Set([...text.matchAll(QUOTE)].map((m) => (m[1] ?? m[2] ?? m[3] ?? "").trim()).filter(Boolean))];
+const words = (s: string): string[] => [...new Set(s.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]{3,}/gu) ?? [])];
+// a decision bullet without its "Why: ..." tail; one with fewer than 3 words is too short to check
+const decisionsIn = (summary: string): string[] =>
+  section(summary, "Decisions and why").split("\n").map((l) => /^\s*[-*]\s+(.*)$/.exec(l)?.[1]?.split(/\s+why:|\s+because\s/i)[0]?.trim() ?? "").filter((d) => words(d).length >= 3);
+
+export const missingFrom = (text: string, facts: LaneFacts): Missing[] => {
+  if (!text.trim()) return [{ kind: "restatement", text: "the restatement file is missing or empty", under: "", source: "the probe" }];
+  const all = flat(text);
+  const ruled = flat(section(text, "Ruled out"));
+  // a long quote counts when its first 80 characters are there
+  const has = (s: string) => all.includes(flat(s).slice(0, 80));
+  const goal = facts.lane.goal?.trim() ?? "";
+  const out: Missing[] = missingHeadings(text, UNDERSTOOD_HEADINGS).map((h) => ({ kind: "heading", text: `## ${h}`, under: h, source: "the restatement format" }));
+  for (const h of new Set(sessionFixes(facts.lane).map((x) => x.hypothesis))) if (!ruled.includes(flat(h))) out.push({ kind: "tried fix", text: h, under: "Ruled out", source: "the fix ledger (dori fix-attempt), kept apart from the summary" });
+  if (goal && !has(goal)) out.push({ kind: "owner goal", text: goal, under: "Goal", source: "the lane's registry entry (the owner's words at launch)" });
+  for (const q of quotesIn(section(facts.laneNote, "Owner's words and constraints"))) if (!has(q) && flat(q) !== flat(goal)) out.push({ kind: "owner's words", text: q, under: "Owner's words", source: "the old session's summary, Owner's words and constraints" });
+  for (const d of decisionsIn(facts.laneNote)) {
+    const ws = words(d);
+    if (ws.filter((x) => all.includes(x)).length * 2 < ws.length) out.push({ kind: "decision", text: d, under: "Decisions", source: "the old session's summary, Decisions and why" });
+  }
+  return out;
+};
+
+const stringsOf = (v: unknown, out: string[] = []): string[] => {
+  if (typeof v === "string") out.push(v);
+  else if (Array.isArray(v)) for (const x of v) stringsOf(x, out);
+  else if (v && typeof v === "object") for (const x of Object.values(v)) stringsOf(x, out);
+  return out;
+};
+
+// The old conversation's lines behind a left-out item (the owner's messages first): the supplement quotes them, so the
+// new session gets the source, not only the old session's summary of it.
+export const evidenceFor = (log: string | undefined, item: Missing, max = 2): string[] => {
+  if (!log || !existsSync(log) || item.kind === "restatement" || item.kind === "heading") return [];
+  const ws = item.kind === "decision" ? words(item.text) : [];
+  const needle = (item.kind === "decision" ? [...ws].sort((a, b) => b.length - a.length)[0] ?? "" : item.text.slice(0, 60)).toLowerCase();
+  if (!needle) return [];
+  const raw = JSON.stringify(needle).slice(1, -1);
+  const hits: { line: number; role: string; text: string }[] = [];
+  readFileSync(log, "utf8").split("\n").forEach((line, i) => {
+    if (!line.toLowerCase().includes(raw)) return;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      return;
+    }
+    const s = stringsOf(obj).find((x) => (ws.length ? ws.filter((w) => x.toLowerCase().includes(w)).length * 2 >= ws.length : x.toLowerCase().includes(needle)));
+    if (!s) return;
+    const at = Math.max(0, s.toLowerCase().indexOf(needle));
+    const a = Math.max(0, at - 100);
+    const b = at + needle.length + 100;
+    const o = obj as { message?: { role?: string }; type?: string };
+    hits.push({ line: i + 1, role: o.message?.role ?? o.type ?? "?", text: `${a ? "…" : ""}${s.slice(a, b).replace(/\s+/g, " ").trim()}${b < s.length ? "…" : ""}` });
+  });
+  return [...hits.filter((h) => h.role === "user"), ...hits.filter((h) => h.role !== "user")].slice(0, max).map((h) => `old log line ${h.line} (${h.role}): "${h.text}"`);
+};
+
+const renderSupplement = (key: string, round: number, rounds: number, items: readonly Missing[], evidence: readonly string[][], understood: string, ack: string): string =>
+  [
+    `# Supplement ${round}/${rounds} for the ${key} handover`,
+    "",
+    `Your restatement ${understood} left out what follows. It comes from the handover's own records and the old session's summary; the log lines are quoted from the old conversation (frozen, still on disk). Add each item to ${understood} under the heading named (the owner's words quoted exactly), keep the rest, then run: ${ack}`,
+    "",
+    ...items.flatMap((it, i) => [
+      `## ${i + 1}. ${it.kind}: ${it.text}`,
+      `Source: ${it.source}. Goes under: ${it.under ? `## ${it.under}` : `the whole file, with the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")}`}.`,
+      ...(evidence[i]?.length ? ["Evidence:", ...(evidence[i] ?? []).map((e) => `- ${e}`)] : ["Evidence: no matching line in the old log."]),
+      "",
+    ]),
+  ].join("\n");
 
 const logOf = (dir: string, session: string): string | undefined => {
   if (!session) return undefined;
@@ -121,8 +200,8 @@ const logOf = (dir: string, session: string): string | undefined => {
 export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[]; readonly agentPid?: number };
 
 const POLL_MS = 5_000;
-// how long the new session gets to add the tried fixes its restatement left out (polls of POLL_MS)
-const GAP_TRIES = 36;
+// how long the new session gets to answer one supplement round (polls of POLL_MS)
+const ROUND_TRIES = 36;
 const THINKING = /^(.*):(off|minimal|low|medium|high|xhigh|max)$/;
 // processes every omo session runs besides the work: MCP servers, the subagent RPC host, the provider's own CLI
 const INFRA = /\bmcp\b|--internal-rpc-host-supervisor|--mode rpc|claude-agent-sdk/;
@@ -252,7 +331,7 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   "",
   "## Do this first",
   "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once.",
-  `2. A [LEAD] line with ${PROBE} <id> is a check of this handover. Before you answer it, read this whole note and your brief, then write what you understood to the file the line names, under the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")} (under Questions, only what neither the note nor the old log answers after you searched it, or none). Then run the dori handover ack command it gives (with its --state) and nothing else for that line.`,
+  `2. A [LEAD] line with ${PROBE} <id> is a check of this handover. Before you answer it, read this whole note and your brief, then write what you understood to the file the line names, under the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")} (under Goal and Owner's words, the owner's goal and words quoted exactly as the note gives them; under Questions, only what neither the note nor the old log answers after you searched it, or none). Then run the dori handover ack command it gives (with its --state) and nothing else for that line. A [LEAD] HANDOVER_SUPPLEMENT <id> line names a file with what your restatement left out and the old log lines behind it: add those items to the same file, keep the rest, and run the ack command it gives.`,
   `3. Read your brief ${f.lane.brief} in full. It still holds: same Done, same footer, and reports still go to the lead.`,
   `4. Until a [LEAD] ${COMMITTED} line arrives, do nothing else: change no file, start no process besides the monitors of step 1, post nothing. Until then the handover can still roll back and close this session.`,
   `5. After ${COMMITTED}: ${f.goal ? "register the goal under Goal again with your goal tool, same objective, and rebuild the todo list from Todos." : "rebuild the todo list from Todos."} Then continue the work from where Last reports and the lane's notes leave it.`,
@@ -416,13 +495,15 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
       last = t;
     };
     const accounts: { to?: string } = {};
-    const r = await moveLane(deps, opts, facts, { note, title, emit, steps, mark, accounts });
+    const supplements: Supplement[] = [];
+    const r = await moveLane(deps, opts, facts, { note, title, emit, steps, mark, accounts, supplements });
     const proposal = lastProposal(readRollovers(config.stateDir), key);
     const result = r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back";
     appendRollover(config.stateDir, {
       kind: "rollover", who: "lane", at, key, from: lane.pane, ...(r.to ? { to: r.to } : {}), ...(facts.approvedBy ? { approvedBy: facts.approvedBy } : {}),
       ...(proposal ? { proposedAt: proposal.at, approvalMin: Math.round((Date.parse(at) - Date.parse(proposal.at)) / 6_000) / 10 } : {}),
       signals: facts.signals, steps, result, reasons: steps.filter((st) => !st.ok).map((st) => st.step), accounts: { from: facts.account ?? "", to: accounts.to ?? "" },
+      ...(supplements.length ? { supplementRounds: supplements.length, supplements } : {}),
     });
     return r;
   } finally {
@@ -430,7 +511,9 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   }
 };
 
-type Check = { readonly reasons: string[]; readonly session: string; readonly account?: string };
+type Check = { readonly reasons: string[]; readonly session: string; readonly account?: string; readonly supplements?: readonly Supplement[] };
+
+const readText = (file: string): string => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
 const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, understood: string, emit: (line: string) => void): Promise<Check> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
@@ -466,30 +549,40 @@ const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string
   }
   if (by === undefined) return { reasons: [`no ack for the probe ${id}`], session };
   if (by !== pane) return { reasons: [`the probe was acked from ${by || "an unknown pane"}, not ${pane}`], session };
-  // the new session says what it understood: a gap shows before the old session is gone
-  const text = existsSync(understood) ? readFileSync(understood, "utf8") : "";
-  const lacking = missingHeadings(text, UNDERSTOOD_HEADINGS);
-  if (!text.trim() || lacking.length) return { reasons: [`the new session's restatement ${understood} is ${text.trim() ? `missing ${lacking.map((h) => `## ${h}`).join(", ")}` : "not written"}`], session };
-  emit(`HANDOVER_UNDERSTOOD ${understood}`);
-  // checked against what the handover knows on its own, not against the summary: each recorded fix attempt must be in Ruled out
-  const ruledOut = section(text, "Ruled out").toLowerCase();
-  const gaps = [...new Set(sessionFixes(facts.lane).map((x) => x.hypothesis))].filter((h) => !ruledOut.includes(h.toLowerCase()));
-  if (gaps.length) {
-    await tell(deps, pane, `[LEAD] HANDOVER_GAPS: your restatement leaves out these fixes the old session already tried: ${gaps.join("; ")}. Add them under ## Ruled out in ${understood} and do not try them again without a new reason.`);
-    emit(`HANDOVER_GAPS ${facts.lane.key}: ${gaps.join("; ")} (told to the new session)`);
-    // the commit waits until the restatement has them: a known gap is not waved through
-    let left = gaps;
-    for (let j = 0; j < GAP_TRIES && left.length; j++) {
+  // the new session says what it understood: a gap shows before the old session is gone. A gap is filled in, not rolled
+  // back: the left-out items go to it with the old log lines behind them and it restates; only a gap that outlasts the
+  // supplement rounds rolls back (it no longer takes in what it is given)
+  const key = facts.lane.key;
+  const rounds = deps.config.handover.supplementRounds;
+  const supplements: Supplement[] = [];
+  let text = readText(understood);
+  let left = missingFrom(text, facts);
+  const fmt = (items: readonly Missing[]) => items.map((it) => `${it.kind}: ${it.text.replace(/\s+/g, " ").slice(0, 80)}`).join("; ");
+  for (let round = 1; round <= rounds && left.length; round++) {
+    const evidence = left.map((it) => evidenceFor(facts.oldLog, it));
+    const sid = deps.nonce();
+    const file = understood.replace(/\.understood\.md$/, `.supplement-${round}.md`);
+    const ack = `dori handover ack ${sid} --state ${deps.config.stateDir}`;
+    writeFileSync(file, renderSupplement(key, round, rounds, left, evidence, understood, ack));
+    supplements.push({ round, items: left.map((it) => ({ kind: it.kind, text: it.text })), evidence: evidence.flat().length, file });
+    emit(`HANDOVER_SUPPLEMENT ${key} round ${round}/${rounds}: ${left.length} left out (${fmt(left)}); ${file}`);
+    if (!(await tell(deps, pane, `[LEAD] HANDOVER_SUPPLEMENT ${sid} (round ${round}/${rounds}): your restatement left out ${left.length} item(s). Read ${file}, add them to ${understood}, then run ${ack} and nothing else for this line.`)))
+      return { reasons: [`the supplement ${sid} did not reach ${pane}`], session, supplements };
+    let acked: string | undefined;
+    for (let j = 0; j < ROUND_TRIES && acked === undefined; j++) {
       await deps.clock.sleep(POLL_MS);
-      const again = section(existsSync(understood) ? readFileSync(understood, "utf8") : "", "Ruled out").toLowerCase();
-      left = left.filter((h) => !again.includes(h.toLowerCase()));
+      acked = ackedBy(deps.config.stateDir, sid);
     }
-    if (left.length) return { reasons: [`the new session's restatement still leaves out the tried fixes: ${left.join("; ")}`], session };
-    emit(`HANDOVER_GAPS_FIXED ${facts.lane.key}`);
+    if (acked !== pane) return { reasons: [acked === undefined ? `no ack for the supplement ${sid}` : `the supplement ${sid} was acked from ${acked || "an unknown pane"}, not ${pane}`], session, supplements };
+    text = readText(understood);
+    left = missingFrom(text, facts);
   }
+  if (left.length) return { reasons: [`the new session's restatement ${understood} still leaves out after ${supplements.length} supplement round(s): ${fmt(left)}`], session, supplements };
+  if (supplements.length) emit(`HANDOVER_SUPPLEMENT_OK ${key} after ${supplements.length} round(s)`);
+  emit(`HANDOVER_UNDERSTOOD ${understood}`);
   const asks = section(text, "Questions");
   if (asks && !/^none\.?$/i.test(asks)) emit(`HANDOVER_QUESTIONS ${facts.lane.key}: ${asks.replace(/\s+/g, " ").slice(0, 400)} (the lead answers them in the new pane; the old log is ${facts.oldLog ?? "not found"})`);
-  return { reasons: [], session, ...(shown.account ? { account: shown.account } : {}) };
+  return { reasons: [], session, supplements, ...(shown.account ? { account: shown.account } : {}) };
 };
 
 // Only once the old session's local chains are gone may the new session restart them: two copies of one chain would run
@@ -513,7 +606,7 @@ const chainsEnded = async (deps: LaneHandoverDeps, key: string, chains: readonly
   }
 };
 
-type MoveContext = { readonly note: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string } };
+type MoveContext = { readonly note: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string }; readonly supplements: Supplement[] };
 
 const tell = (deps: LaneHandoverDeps, pane: string, text: string) => sendVerified(deps.run, deps.clock, deps.config, pane, text).catch(() => false);
 
@@ -623,6 +716,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   await pointLane(deps, lane.key, from.pane, pane, `pane moved ${from.pane} -> ${pane} (dori handover --lane; approved by ${facts.approvedBy ?? "-"})`, emit);
   emit(`HANDOVER_STARTED ${lane.key} ${from.pane} -> ${pane}`);
   const checked = await verifyLane(deps, facts, pane, opts.verifyMin ?? config.handover.verifyMin, note.replace(/\.md$/, ".understood.md"), emit);
+  ctx.supplements.push(...(checked.supplements ?? []));
   mark("verify", !checked.reasons.length);
   if (checked.reasons.length && !sessionFor(await aoeSessions(deps.run), from.pane)) {
     // nothing to go back to: the old session ended during the checks, so the new one stays the lane

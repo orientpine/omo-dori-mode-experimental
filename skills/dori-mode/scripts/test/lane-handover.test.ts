@@ -24,7 +24,10 @@ const status = (model: string, pct = "9.0", account = "x") => `old transcript li
 const HIGH = status("claude-opus-5-5 • effort high", "72.0");
 const OK = { approvedBy: "https://discord.com/channels/1/2/3" };
 
-type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; fixGaps?: boolean; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
+// a restatement that covers the lane's goal under every heading the new session must write
+const RESTATE = "## Goal\n레인에도 적용: ship it\n## Owner's words\nnone\n## Decisions\nnone\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nnone\n";
+
+type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; supplement: "fix" | "ignore" | "silent"; handled: string[]; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
 
 let state: { dir: string; done: () => void };
 let w: World;
@@ -77,10 +80,26 @@ const simulate = () => {
   if (sim.ack && probe) {
     // the new session writes what it understood, then acks
     const file = /write what you understood to (\S+)/.exec(probe)?.[1];
-    if (file && sim.restate !== "" && !existsSync(file)) writeFileSync(file, sim.restate ?? "## Goal\nship it\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nnone\n");
+    if (file && sim.restate !== "" && !existsSync(file)) writeFileSync(file, sim.restate ?? RESTATE);
     ackHandover(state.dir, "n1", sim.ackPane, "2026-10-11T16:40:00Z");
-    // told what it left out, it adds it
-    if (file && sim.fixGaps && sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_GAPS"))) writeFileSync(file, readFileSync(file, "utf8").replace("## Ruled out\nnone", "## Ruled out\nlr too high: already tried"));
+  }
+  // a supplement round: it adds the items under the headings named ("fix"), acks without adding ("ignore"), or stays silent
+  for (const line of sent(w)) {
+    const m = /^\[LEAD\] HANDOVER_SUPPLEMENT (\S+) .*Read (\S+), add them to (\S+), then run/.exec(line);
+    if (!m?.[1] || !m[2] || !m[3] || sim.handled.includes(m[1])) continue;
+    sim.handled.push(m[1]);
+    if (sim.supplement === "silent") continue;
+    if (sim.supplement === "fix") {
+      let text = existsSync(m[3]) ? readFileSync(m[3], "utf8") : "";
+      for (const it of readFileSync(m[2], "utf8").matchAll(/^## \d+\. ([^:\n]+): (.*)\nSource: .*Goes under: (.*)\.$/gm)) {
+        const [, kind, item = "", under = ""] = it;
+        if (!under.startsWith("## ")) text = RESTATE;
+        else if (kind === "heading") text += `\n${under}\nnone\n`;
+        else text = text.includes(`${under}\n`) ? text.replace(`${under}\n`, `${under}\n${item}\n`) : `${text}\n${under}\n${item}\n`;
+      }
+      writeFileSync(m[3], text);
+    }
+    ackHandover(state.dir, m[1], NEW, "2026-10-11T16:41:00Z");
   }
 };
 
@@ -128,15 +147,17 @@ const setup = async (): Promise<LaneHandoverDeps> => {
 const opened = () => w.calls.some((c) => c[0] === "aoe" && c[1] === "add");
 const stoppedIds = () => w.calls.filter((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop").map((c) => c[3]);
 const readLane = async (deps: LaneHandoverDeps) => (await deps.registry.read("demo")) as Lane;
-const ready = (deps: LaneHandoverDeps, chains: number[], at = "2026-10-11T16:30:00Z", pane = OLD) => {
+const ready = (deps: LaneHandoverDeps, chains: number[], at = "2026-10-11T16:30:00Z", pane = OLD, note = "E7 seed 3 is mid-eval; rerun eval only") => {
   mkdirSync(join(deps.config.stateDir, "handover", "lanes"), { recursive: true });
-  writeFileSync(readyFile(deps.config.stateDir, "demo"), JSON.stringify({ key: "demo", pane, at, chains, note: "E7 seed 3 is mid-eval; rerun eval only" }));
+  writeFileSync(readyFile(deps.config.stateDir, "demo"), JSON.stringify({ key: "demo", pane, at, chains, note }));
 };
+// a message of the old conversation, appended to its log (the log starts with one line, so this is line 2)
+const oldSays = (text: string) => appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), `\n${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text }] } })}`);
 
 beforeEach(() => {
   state = withState();
   w = newWorld();
-  sim = { arm: [{ description: "scratch events", command: EVENTS, pid: 201 }, { description: "digest", command: "until false; do sleep 60; done", pid: 202 }], thinking: "high", ackPane: NEW, ack: true, account: "x", chainSurvives: false, doubleRun: false, restarted: false };
+  sim = { arm: [{ description: "scratch events", command: EVENTS, pid: 201 }, { description: "digest", command: "until false; do sleep 60; done", pid: 202 }], thinking: "high", ackPane: NEW, ack: true, supplement: "fix", handled: [], account: "x", chainSurvives: false, doubleRun: false, restarted: false };
   printed = [];
   sigs = [];
   live = new Set([14, 15, 16, 17, 40, 41, 201, 202]);
@@ -654,13 +675,13 @@ test("a chain that outlives the close is not restarted, and a new account is log
   expect(readRollovers(state.dir)[0]).toMatchObject({ accounts: { from: "x", to: "orientpine" } });
 });
 
-test("the new session must restate what it understood before the commit; questions go to the lead, and missed fix attempts are told to it", async () => {
+test("a tried fix the restatement leaves out is filled in from the fix ledger and the old log, and one supplement round commits; questions go to the lead", async () => {
   // Given
   const deps = await setup();
   ready(deps, [15]);
   await deps.registry.patch("demo", { fixes: [{ at: "2026-10-11T16:00:00Z", metric: "loss", hypothesis: "lr too high", via: "report" }] });
-  sim.restate = "## Goal\nship it\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nwhich seed is the baseline?\n";
-  sim.fixGaps = true;
+  oldSays("the owner: lr too high was already tried, do not retry it");
+  sim.restate = RESTATE.replace("## Questions\nnone", "## Questions\nwhich seed is the baseline?");
   // When
   const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
   // Then
@@ -669,23 +690,78 @@ test("the new session must restate what it understood before the commit; questio
   expect(note).toContain("## Fix attempts in the old session (1)");
   expect(note).toContain("- 2026-10-11T16:00:00Z loss / lr too high (report)");
   expect(printed.find((l) => l.startsWith("HANDOVER_QUESTIONS demo: which seed is the baseline?"))).toBeDefined();
-  expect(printed).toContain("HANDOVER_GAPS demo: lr too high (told to the new session)");
-  expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_GAPS: your restatement leaves out these fixes the old session already tried: lr too high."))).toBe(true);
-  expect(printed).toContain("HANDOVER_GAPS_FIXED demo");
+  const sup = (r.note ?? "").replace(/\.md$/, ".supplement-1.md");
+  expect(printed).toContain(`HANDOVER_SUPPLEMENT demo round 1/2: 1 left out (tried fix: lr too high); ${sup}`);
+  expect(sent(w).some((x) => x.startsWith(`[LEAD] HANDOVER_SUPPLEMENT n2 (round 1/2): your restatement left out 1 item(s). Read ${sup}, add them to`))).toBe(true);
+  const text = readFileSync(sup, "utf8");
+  expect(text).toContain("## 1. tried fix: lr too high");
+  expect(text).toContain('- old log line 2 (user): "the owner: lr too high was already tried, do not retry it"');
+  expect(printed).toContain("HANDOVER_SUPPLEMENT_OK demo after 1 round(s)");
+  expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_COMMITTED"))).toBe(true);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "done", supplementRounds: 1, supplements: [{ round: 1, items: [{ kind: "tried fix", text: "lr too high" }], evidence: 1, file: sup }] });
 });
 
-test("a restatement that keeps leaving out a tried fix fails the check, and everything moves back", async () => {
+test("the owner's words and decisions the restatement leaves out are filled in from the summary, the owner's line quoted from the old log", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15], undefined, OLD, `## Owner's words and constraints\n- Owner: "never restart the sleep chain while an old copy runs"\n## Decisions and why\n- Keep the eval seed fixed at three for every rerun. Why: the owner asked\n## Ruled out\nnone\n## In progress\nE7\n## Next step\ntrain E7\n`);
+  oldSays("never restart the sleep chain while an old copy runs");
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  // Then
+  expect(r.code).toBe(0);
+  expect(printed.find((l) => l.startsWith("HANDOVER_SUPPLEMENT demo round 1/2: 2 left out (owner's words: never restart the sleep chain while an old copy runs; decision: Keep the eval seed fixed at three for every rerun.)"))).toBeDefined();
+  const sup = readFileSync((r.note ?? "").replace(/\.md$/, ".supplement-1.md"), "utf8");
+  expect(sup).toContain('- old log line 2 (user): "never restart the sleep chain while an old copy runs"');
+  expect(sup).toContain("Evidence: no matching line in the old log.");
+  const understood = readFileSync((r.note ?? "").replace(/\.md$/, ".understood.md"), "utf8");
+  expect(understood).toContain("never restart the sleep chain while an old copy runs");
+  expect(understood).toContain("Keep the eval seed fixed at three");
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "done", supplementRounds: 1 });
+});
+
+test("a restatement that still leaves out a tried fix after the supplement rounds fails the check, and everything moves back", async () => {
   // Given
   const deps = await setup();
   ready(deps, [15]);
   await deps.registry.patch("demo", { fixes: [{ at: "2026-10-11T16:00:00Z", metric: "loss", hypothesis: "lr too high", via: "report" }] });
+  sim.supplement = "ignore";
   // When
-  const r = await laneHandover(deps, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
   // Then
   expect(r.code).toBe(3);
-  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("still leaves out the tried fixes: lr too high");
+  expect(printed.filter((l) => l.startsWith("HANDOVER_SUPPLEMENT demo round ")).map((l) => l.split(":")[0])).toEqual(["HANDOVER_SUPPLEMENT demo round 1/2", "HANDOVER_SUPPLEMENT demo round 2/2"]);
+  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("still leaves out after 2 supplement round(s): tried fix: lr too high");
   expect((await readLane(deps)).pane).toBe(OLD);
   expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_COMMITTED"))).toBe(false);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "rolled-back", supplementRounds: 2 });
+});
+
+test("a restatement without the owner's goal gets it from the registry and commits after the round", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  sim.restate = RESTATE.replace("레인에도 적용: ", "");
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  // Then
+  expect(r.code).toBe(0);
+  expect(printed.find((l) => l.startsWith("HANDOVER_SUPPLEMENT demo round 1/2: 1 left out (owner goal: 레인에도 적용)"))).toBeDefined();
+  expect(readFileSync((r.note ?? "").replace(/\.md$/, ".supplement-1.md"), "utf8")).toContain("Source: the lane's registry entry (the owner's words at launch). Goes under: ## Goal.");
+});
+
+test("a new session that does not answer a supplement fails the check", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  await deps.registry.patch("demo", { fixes: [{ at: "2026-10-11T16:00:00Z", metric: "loss", hypothesis: "lr too high", via: "report" }] });
+  sim.supplement = "silent";
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  // Then
+  expect(r.code).toBe(3);
+  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("no ack for the supplement n2");
+  expect((await readLane(deps)).pane).toBe(OLD);
 });
 
 test("no restatement means the check fails and everything moves back", async () => {
@@ -693,10 +769,12 @@ test("no restatement means the check fails and everything moves back", async () 
   const deps = await setup();
   ready(deps, [15]);
   sim.restate = "";
+  sim.supplement = "ignore";
   // When
   const r = await laneHandover(deps, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
   // Then
   expect(r.code).toBe(3);
+  expect(printed.find((l) => l.startsWith("HANDOVER_SUPPLEMENT demo round 1/2: 1 left out (restatement: the restatement file is missing or empty)"))).toBeDefined();
   expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("restatement");
   expect((await readLane(deps)).pane).toBe(OLD);
   expect(sigs).toEqual(["SIGSTOP 11", "SIGCONT 11"]);
