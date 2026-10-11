@@ -92,6 +92,9 @@ Each row is a point where a rollover can break, what is left, how it is put righ
 | Closing the old session fails | the lane points at the new pane, the old idle | `HANDOVER_CLOSE_FAIL`, exit 1; close it with `aoe rm` | (closeAoeSession path) |
 | An owner message arrives during the switch | the listener routes by the registry | before the repoint (seconds) it reaches the old pane, which keeps it if the handover rolls back; after it, the new pane | (by design) |
 | A ready mark older than `readyMin`, or from another pane | - | ignored (`HANDOVER_READY_STALE`) | L "a ready mark covers only..." |
+| The lane marks ready from omo's eval kernel, which stays alive while it idles | the kernel would count as a live chain and block the move | the ready mark also covers the process that ran `dori handover ready` | L "dori handover ready runs only in the lane's own pane and also covers..." |
+| The new session starts a local chain again while the old copy still runs (the first live try did this) | the same work twice | the note says not to start them; after the close the handover checks the pids: all ended -> `[LEAD] HANDOVER_CHAINS_ENDED` (restart from checkpoints, skip finished steps); one still alive -> `HANDOVER_CHAIN_SURVIVED` (do not restart). Live re-check: never two copies in 84 samples | L "moves the lane..." (no double run), L "a chain that outlives the close is not restarted..." |
+| The account pool gives the new session another account | - | `HANDOVER_ACCOUNT` line; the rollover log keeps both accounts | L "a chain that outlives the close... and a new account is logged" |
 
 ## Configuration
 
