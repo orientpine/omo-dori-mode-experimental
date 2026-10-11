@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { ackHandover, handover, type HandoverDeps, manifestPath } from "../src/handover.ts";
@@ -12,10 +12,12 @@ const OLD = "aoe_lead_0a0a0a0a";
 const OLD_ID = "0a0a0a0a11112222";
 const NEW = `aoe_lead2_${NEW_AOE_ID.slice(0, 8)}`;
 const CWD = "/work/lead";
+const LINK = "/work/lead-link";
+const GUARD = { name: "host guard", check: ["guard-check", "{pane}"], arm: "systemctl --user start dori-lanes" };
 const INBOX_CMD = "tail -n 0 -F /home/test/.dori/inbox.jsonl";
 const LANES_CMD = "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_";
 
-type Sim = { arm: { command: string; description: string; pid: number }[]; ackPane: string; ackReport: boolean; ackInbox: boolean };
+type Sim = { arm: { command: string; description: string; pid: number }[]; ackPane: string; ackReport: boolean; ackInbox: boolean; guardFor: Set<string> };
 
 let state: { dir: string; done: () => void };
 let w: World;
@@ -26,8 +28,8 @@ let live: Set<number>;
 
 const monitor = (description: string, command: string, extra: Record<string, unknown> = {}) => ({ description, command, filter: "^\\{", persistent: true, suspended: false, expiresAt: Date.parse("2026-10-20T00:00:00Z"), runtime: { pid: 101 }, ...extra });
 
-const writeManifest = (session: string, monitors: unknown[]) => {
-  const file = manifestPath(join(state.dir, "sessions"), CWD, session);
+const writeManifest = (session: string, monitors: unknown[], cwd = CWD) => {
+  const file = manifestPath(join(state.dir, "sessions"), cwd, session);
   mkdirSync(join(file, ".."), { recursive: true });
   writeFileSync(file, JSON.stringify({ version: 1, sessionId: session, monitors }));
 };
@@ -45,6 +47,7 @@ const setup = async (): Promise<HandoverDeps> => {
     monitor("paused watch", "tail -F /tmp/suspended", { suspended: true }),
     monitor("expired watch", "tail -F /tmp/expired", { expiresAt: Date.parse("2026-10-01T00:00:00Z") }),
     monitor("digest due", "until false; do sleep 60; done", { persistent: false }),
+    monitor("ended watch", "tail -F /tmp/ended", { persistent: false, runtime: { pid: 999 } }),
   ]);
   const sessionDir = sessionDirFor(join(state.dir, "sessions"), CWD);
   writeFileSync(join(sessionDir, "2026-10-08T08-13-21-349Z_old-sid.jsonl"), [
@@ -59,6 +62,12 @@ const setup = async (): Promise<HandoverDeps> => {
   let n = 0;
   return {
     ...base,
+    // a configured watcher's check: ["guard-check", <pane>] exits 0 while the guard runs for that pane
+    run: async (argv, opts) => {
+      if (argv[0] !== "guard-check") return base.run(argv, opts);
+      w.calls.push([...argv]);
+      return { code: sim.guardFor.has(argv[1] ?? "") ? 0 : 1, out: "", err: "" };
+    },
     configPath: join(state.dir, "config.json"),
     envPath: join(state.dir, "dori.env"),
     cardDir: join(state.dir, "discord"),
@@ -68,6 +77,7 @@ const setup = async (): Promise<HandoverDeps> => {
     routedPane: async () => (JSON.parse(readFileSync(join(state.dir, "config.json"), "utf8")) as { leadPane: string }).leadPane,
     envLeadPane: "",
     alive: (pid) => live.has(pid),
+    realpath: (path) => (path === LINK ? CWD : path),
     timers: async () => ["Sat 2026-10-17 08:30:00 UTC 5 days - - dori-remind-droneshow.timer dori-remind-droneshow.service"],
     restart: async (unit) => {
       restarted.push(unit);
@@ -94,10 +104,10 @@ const leadPaneInConfig = () => (JSON.parse(readFileSync(join(state.dir, "config.
 beforeEach(() => {
   state = withState();
   w = newWorld();
-  sim = { arm: [{ description: "inbox", command: INBOX_CMD, pid: 201 }, { description: "lanes", command: LANES_CMD.replace("~/", "/home/test/"), pid: 202 }], ackPane: NEW, ackReport: true, ackInbox: true };
+  sim = { arm: [{ description: "inbox", command: INBOX_CMD, pid: 201 }, { description: "lanes", command: LANES_CMD.replace("~/", "/home/test/"), pid: 202 }, { description: "digest due", command: "until false; do sleep 60; done", pid: 203 }], ackPane: NEW, ackReport: true, ackInbox: true, guardFor: new Set([OLD, NEW]) };
   printed = [];
   restarted = [];
-  live = new Set([101, 102, 201, 202]);
+  live = new Set([101, 102, 201, 202, 203]);
 });
 afterEach(() => state.done());
 
@@ -114,7 +124,8 @@ test("the note lists open lanes, the running monitors, open cards, unfinished to
   expect(note).toContain(`- lanes: command ${JSON.stringify(LANES_CMD)}`);
   expect(note).not.toContain("/tmp/suspended");
   expect(note).not.toContain("/tmp/expired");
-  expect(note).toMatch(/One-shot watches[^\n]*\n- digest due/);
+  expect(note).toContain(`- digest due: command "until false; do sleep 60; done" filter "^\\\\{" (was not persistent in the old session; arm it as persistent)`);
+  expect(note).not.toContain("/tmp/ended");
   expect(note).toContain("- Q1: Ship it?");
   expect(note).toContain("- Work: watch the E7 run (in_progress)");
   expect(note).not.toContain("finished task");
@@ -125,7 +136,7 @@ test("the note lists open lanes, the running monitors, open cards, unfinished to
   expect(leadPaneInConfig()).toBe(OLD);
 });
 
-test("refuses before changing anything when the old lead runs no persistent monitor", async () => {
+test("refuses before changing anything when the old lead runs no monitor", async () => {
   // Given
   const deps = await setup();
   writeManifest("old-sid", [monitor("paused watch", "tail -F /tmp/suspended", { suspended: true })]);
@@ -133,7 +144,7 @@ test("refuses before changing anything when the old lead runs no persistent moni
   const r = await handover(deps, { title: "lead2" });
   // Then
   expect(r.code).toBe(2);
-  expect(printed[0]).toStartWith("HANDOVER_REFUSED no running persistent monitor found for aoe_lead_0a0a0a0a");
+  expect(printed[0]).toStartWith(`HANDOVER_REFUSED no running monitor found for aoe_lead_0a0a0a0a in ${manifestPath(join(state.dir, "sessions"), CWD, "old-sid")}`);
   expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);
   expect(leadPaneInConfig()).toBe(OLD);
 });
@@ -187,7 +198,7 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   expect(probeAt).toBeGreaterThan(-1);
   expect(stopAt).toBeGreaterThan(probeAt);
   expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "rm" && c[2] === OLD_ID)).toBe(true);
-  expect(printed).toContain("HANDOVER_MONITORS_OK 2 in aoe_lead2_5e5e5e5e (session new-sid)");
+  expect(printed).toContain("HANDOVER_MONITORS_OK 3 in aoe_lead2_5e5e5e5e (session new-sid)");
   expect(printed.some((l) => l.startsWith(`HANDOVER_DONE ${OLD} -> ${NEW}`))).toBe(true);
   expect(readFileSync(r.note ?? "", "utf8")).toContain("## The old lead's notes\nDo the work.");
 });
@@ -236,4 +247,97 @@ test("a monitor whose process died in the new session counts as missing, so the 
   expect(leadPaneInConfig()).toBe(OLD);
   expect(w.calls.some((c) => c[1] === "send-keys" && (c.at(-1) ?? "").startsWith("[REPORT] handover-probe"))).toBe(false);
   expect(existsSync(join(state.dir, "inbox.jsonl"))).toBe(false);
+});
+
+const withWatcher = (deps: HandoverDeps, patch: Partial<HandoverDeps["config"]["handover"]> = {}): HandoverDeps => ({ ...deps, config: { ...deps.config, handover: { ...deps.config.handover, watchers: [GUARD], ...patch } } });
+
+test("a lead whose monitors are all non-persistent (as OkDori's were) still hands them over, each listed and checked", async () => {
+  // Given
+  const deps = await setup();
+  writeManifest("old-sid", [monitor("inbox", INBOX_CMD, { persistent: false })]);
+  sim.arm = [{ description: "inbox", command: INBOX_CMD, pid: 201 }];
+  // When
+  const r = await handover(deps, { title: "lead2" });
+  // Then
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(readFileSync(r.note ?? "", "utf8")).toContain("## Monitors (1)\n- inbox: command");
+  expect(printed).toContain("HANDOVER_MONITORS_OK 1 in aoe_lead2_5e5e5e5e (session new-sid)");
+});
+
+test("a configured watcher is listed in the note and checked for the old lead first: one that is down refuses before anything moves", async () => {
+  // Given
+  const deps = withWatcher(await setup());
+  sim.guardFor = new Set();
+  // When
+  const r = await handover(deps, { title: "lead2" });
+  // Then
+  expect(r.code).toBe(2);
+  expect(printed[0]).toStartWith(`HANDOVER_REFUSED configured watchers not running for ${OLD}: host guard (["guard-check","${OLD}"] exit 1)`);
+  expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);
+  expect(leadPaneInConfig()).toBe(OLD);
+});
+
+test("a configured watcher counts as a watch, and it must run for the new session before the old one closes", async () => {
+  // Given
+  const deps = withWatcher(await setup());
+  writeManifest("old-sid", []);
+  // When
+  const dry = await handover(deps, { dryRun: true });
+  const r = await handover(deps, { title: "lead2" });
+  // Then
+  expect(dry.code).toBe(0);
+  expect(readFileSync(dry.note ?? "", "utf8")).toContain('## Watchers (1, from handover.watchers)\n- host guard: check ["guard-check","{pane}"]; to start it: systemctl --user start dori-lanes');
+  expect(printed.find((l) => l.startsWith("HANDOVER_DRY_RUN"))).toContain("0 monitors (none), 1 watchers (host guard)");
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(printed).toContain(`HANDOVER_WATCHERS_OK host guard for ${NEW}`);
+  expect(w.calls).toContainEqual(["guard-check", NEW]);
+});
+
+test("a configured watcher that does not run for the new session moves everything back", async () => {
+  // Given
+  const deps = withWatcher(await setup());
+  sim.guardFor = new Set([OLD]);
+  // When
+  const r = await handover(deps, { title: "lead2", verifyMin: 1 });
+  // Then
+  expect(r.code).toBe(3);
+  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain(`watchers not running for ${NEW}: host guard`);
+  expect(stopped()).toBe(false);
+  expect(leadPaneInConfig()).toBe(OLD);
+});
+
+test("an old lead running from a symlinked path is warned about, and the new session opens (and is checked) in the real path", async () => {
+  // Given
+  const deps = await setup();
+  w.aoe[0] = { ...w.aoe[0], path: LINK } as World["aoe"][number];
+  const oldManifest = manifestPath(join(state.dir, "sessions"), CWD, "old-sid");
+  writeManifest("old-sid", JSON.parse(readFileSync(oldManifest, "utf8")).monitors, LINK);
+  rmSync(oldManifest);
+  // When
+  const r = await handover(deps, { title: "lead2" });
+  // Then
+  expect(printed[0]).toBe(`HANDOVER_CWD_SYMLINK the old lead runs from ${LINK}, a symlink to ${CWD}; the new session opens in ${CWD} (set handover.cwd to choose another)`);
+  expect(w.calls.find((c) => c[0] === "aoe" && c[1] === "add")?.[2]).toBe(CWD);
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(readFileSync(r.note ?? "", "utf8")).toContain(`cwd ${LINK}). You are the new lead session, opened in ${CWD}:`);
+});
+
+test("handover.cwd picks where the new session opens", async () => {
+  // Given
+  const deps = withWatcher(await setup(), { watchers: [], cwd: "/work/elsewhere" });
+  // When
+  await handover(deps, { dryRun: true });
+  // Then
+  expect(printed.find((l) => l.startsWith("HANDOVER_DRY_RUN"))).toStartWith('HANDOVER_DRY_RUN would open aoe session "lead-10111635" in /work/elsewhere (');
+});
+
+test("dori.env without DORI_LEAD_* lines gets them, so the listener learns the new lead", async () => {
+  // Given
+  const deps = await setup();
+  writeFileSync(join(state.dir, "dori.env"), "DORI_DISCORD_CHANNEL=1");
+  // When
+  const r = await handover(deps, { title: "lead2" });
+  // Then
+  expect(r.code).toBe(0);
+  expect(readFileSync(join(state.dir, "dori.env"), "utf8")).toBe(`DORI_DISCORD_CHANNEL=1\nDORI_LEAD_TMUX=${NEW}\nDORI_LEAD_AOE_ID=${NEW_AOE_ID}\n`);
 });

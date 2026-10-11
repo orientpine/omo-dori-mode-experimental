@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { join } from "node:path";
 
 import { aoeSessions, closeAoeSession, openAoeSession, sessionFor } from "./aoe.ts";
+import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
@@ -27,6 +28,8 @@ export type HandoverDeps = FlowDeps & {
   // DORI_LEAD_PANE as this process got it: it overrides the config file, so a handover cannot move it
   readonly envLeadPane: string;
   readonly alive: (pid: number) => boolean;
+  // the path with symlinks resolved (the path itself when it cannot be resolved)
+  readonly realpath: (path: string) => string;
   readonly timers: () => Promise<string[]>;
   // restart a user unit; a reason when it failed
   readonly restart: (unit: string) => Promise<string | undefined>;
@@ -44,7 +47,7 @@ export type HandoverOptions = {
   readonly verifyMin?: number;
 };
 
-export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string };
+export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string; readonly persistent: boolean };
 
 type ManifestEntry = {
   readonly description?: string;
@@ -62,9 +65,11 @@ type Target = { readonly pane: string; readonly aoeId: string; readonly session:
 
 export type HandoverFacts = {
   readonly from: Target & { readonly title: string; readonly cwd: string };
+  // where the new session opens: handover.cwd, else the old lead's path with symlinks resolved
+  readonly cwd: string;
   readonly lanes: readonly Lane[];
   readonly monitors: readonly MonitorSpec[];
-  readonly oneShots: readonly MonitorSpec[];
+  readonly watchers: readonly HandoverWatcher[];
   readonly cards: readonly Question[];
   readonly todos: readonly string[];
   readonly goal?: string;
@@ -93,13 +98,29 @@ const spec = (e: ManifestEntry): MonitorSpec => ({
   ...(e.filter ? { filter: e.filter } : {}),
   ...(e.path ? { path: e.path } : {}),
   ...(e.event ? { event: e.event } : {}),
+  persistent: !!e.persistent,
 });
 
 const running = (e: ManifestEntry, now: number): boolean => !e.suspended && (e.expiresAt === undefined || e.expiresAt > now) && !!(e.command || e.path);
 
-// persistent: the standing watches the new session must run; otherwise the one-shot watches still running
-export const liveMonitors = (entries: readonly ManifestEntry[], now: number, persistent: boolean): MonitorSpec[] =>
-  entries.filter((e) => running(e, now) && !!e.persistent === persistent).map(spec);
+// Every watch the old session still runs, persistent or not: the new session must run each one. A command monitor whose
+// recorded process is gone has ended and is left out.
+export const liveMonitors = (entries: readonly ManifestEntry[], now: number, alive: (pid: number) => boolean): MonitorSpec[] =>
+  entries.filter((e) => running(e, now) && (!!e.path || e.runtime?.pid === undefined || alive(e.runtime.pid))).map(spec);
+
+const fillTarget = (argv: readonly string[], target: { readonly pane: string; readonly session: string }): string[] =>
+  argv.map((a) => a.replaceAll("{pane}", target.pane).replaceAll("{session}", target.session));
+
+// A configured watcher runs when its check command exits 0; the names (with the failed command) of those that do not.
+export const missingWatchers = async (deps: Pick<HandoverDeps, "run">, watchers: readonly HandoverWatcher[], target: { readonly pane: string; readonly session: string }): Promise<string[]> => {
+  const out: string[] = [];
+  for (const w of watchers) {
+    const argv = fillTarget(w.check, target);
+    const r = await deps.run(argv);
+    if (r.code !== 0) out.push(`${w.name} (${JSON.stringify(argv)} exit ${r.code}${r.err.trim() ? `: ${r.err.trim().slice(0, 120)}` : ""})`);
+  }
+  return out;
+};
 
 const norm = (text: string, home: string): string => text.replace(/(^|[\s=:'"])~\//g, `$1${home}/`).replace(/\s+/g, " ").trim();
 
@@ -148,21 +169,24 @@ export const openGoal = (sessionDir: string, session: string): string | undefine
 
 const cell = (text: string): string => text.replace(/\s*\|\s*/g, " / ").replace(/\s*[\r\n]+\s*/g, " ").slice(0, 160);
 const monitorLine = (m: MonitorSpec): string =>
-  `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}`;
+  `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}`;
+const watcherLine = (w: HandoverWatcher): string => `- ${w.name}: check ${JSON.stringify(w.check)}${w.arm ? `; to start it: ${w.arm}` : "; runs outside omo, nothing to arm"}`;
 
 export const renderNote = (f: HandoverFacts, at: string): string => [
   `# Dori handover ${at}`,
   "",
-  `From ${f.from.pane} (aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}, cwd ${f.from.cwd}). You are the new lead session: dori handover points leadPane, the open lanes and the open question cards at you.`,
+  `From ${f.from.pane} (aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}, cwd ${f.from.cwd}). You are the new lead session${f.cwd === f.from.cwd ? "" : `, opened in ${f.cwd}`}: dori handover points leadPane, the open lanes and the open question cards at you.`,
   "",
   "## Do this first",
-  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once. The handover checks that they run in this session.",
+  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
   `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
   "3. Then read the rest and carry on: open lanes, owner questions, todos, timers and the old lead's notes. The old session stays quiet and is closed once the checks pass.",
   "",
   `## Monitors (${f.monitors.length})`,
   ...(f.monitors.length ? f.monitors.map(monitorLine) : ["none"]),
-  ...(f.oneShots.length ? ["", "One-shot watches the old session still had (arm again only if still needed):", ...f.oneShots.map(monitorLine)] : []),
+  "",
+  `## Watchers (${f.watchers.length}, from handover.watchers)`,
+  ...(f.watchers.length ? f.watchers.map(watcherLine) : ["none"]),
   "",
   `## Open lanes (${f.lanes.length})`,
   ...(f.lanes.length
@@ -201,9 +225,13 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
   out.push(`HANDOVER_CONFIG leadPane ${from.pane} -> ${to.pane} in ${deps.configPath}`);
   if (existsSync(deps.envPath)) {
     const text = readFileSync(deps.envPath, "utf8");
-    const next = text
-      .replace(/^DORI_LEAD_TMUX=.*$/m, `DORI_LEAD_TMUX=${to.pane}`)
-      .replace(/^DORI_LEAD_AOE_ID=.*$/m, to.aoeId ? `DORI_LEAD_AOE_ID=${to.aoeId}` : "$&");
+    // a line the file lacks is added, so the listener that reads dori.env learns the new lead too
+    const set = (body: string, key: string, value: string): string => {
+      const line = new RegExp(`^${key}=.*$`, "m");
+      return line.test(body) ? body.replace(line, `${key}=${value}`) : `${body}${body && !body.endsWith("\n") ? "\n" : ""}${key}=${value}\n`;
+    };
+    const tmux = set(text, "DORI_LEAD_TMUX", to.pane);
+    const next = to.aoeId ? set(tmux, "DORI_LEAD_AOE_ID", to.aoeId) : tmux;
     if (next !== text) {
       backup(deps.envPath);
       writeFileSync(deps.envPath, next);
@@ -249,19 +277,21 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
   let session = "";
-  if (facts.monitors.length) {
+  if (facts.monitors.length || facts.watchers.length) {
     let missing = facts.monitors.map((m) => m.description);
+    let down: string[] = facts.watchers.map((w) => w.name);
     for (; i < tries; i++) {
-      session ||= await deps.sessionOf(to.pane, facts.from.cwd).catch(() => "");
-      if (session) {
-        missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.from.cwd, session)), deps.alive, deps.home, deps.clock.now());
-        if (!missing.length) break;
-      }
+      session ||= await deps.sessionOf(to.pane, facts.cwd).catch(() => "");
+      if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now());
+      down = await missingWatchers(deps, facts.watchers, { pane: to.pane, session });
+      if ((session || !facts.monitors.length) && !missing.length && !down.length) break;
       await deps.clock.sleep(POLL_MS);
     }
-    if (!session) return { reasons: [`the omo session of ${to.pane} was not found, so its monitors could not be checked`], session };
-    if (missing.length) return { reasons: [`monitors not running in ${to.pane}: ${missing.join(", ")}`], session };
-    emit(`HANDOVER_MONITORS_OK ${facts.monitors.length} in ${to.pane} (session ${session})`);
+    if (facts.monitors.length && !session) return { reasons: [`the omo session of ${to.pane} was not found under ${facts.cwd}, so its monitors could not be checked`], session };
+    const reasons = [...(missing.length ? [`monitors not running in ${to.pane}: ${missing.join(", ")}`] : []), ...(down.length ? [`watchers not running for ${to.pane}: ${down.join(", ")}`] : [])];
+    if (reasons.length) return { reasons, session };
+    if (facts.monitors.length) emit(`HANDOVER_MONITORS_OK ${facts.monitors.length} in ${to.pane} (session ${session})`);
+    if (facts.watchers.length) emit(`HANDOVER_WATCHERS_OK ${facts.watchers.map((w) => w.name).join(",")} for ${to.pane}`);
   }
   const routed = await deps.routedPane();
   if (routed !== to.pane) return { reasons: [`lanes would still report to ${routed || "(no leadPane)"}, not ${to.pane}`], session };
@@ -326,32 +356,44 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
   const old = sessionFor(await aoeSessions(deps.run), config.leadPane);
   if (!old) return refuse(`no live aoe session for leadPane ${config.leadPane}`);
+  const bad = config.handover.watchers.find((w) => !w.name || !Array.isArray(w.check) || !w.check.length);
+  if (bad) return refuse(`handover.watchers entry ${JSON.stringify(bad)} needs a name and a check argv`);
   const session = await deps.sessionOf(config.leadPane, old.path).catch(() => "");
   const sessionDir = sessionDirFor(config.sessionsDir, old.path);
-  const entries = session ? readManifest(manifestPath(config.sessionsDir, old.path, session)) : [];
+  const manifest = session ? manifestPath(config.sessionsDir, old.path, session) : "";
+  const entries = manifest ? readManifest(manifest) : [];
   const now = deps.clock.now();
+  const real = deps.realpath(old.path);
+  const cwd = config.handover.cwd || real;
+  if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK the old lead runs from ${old.path}, a symlink to ${real}; the new session opens in ${cwd}${config.handover.cwd ? " (handover.cwd)" : " (set handover.cwd to choose another)"}`);
   const facts: HandoverFacts = {
     from: { pane: config.leadPane, aoeId: old.id, session, title: old.title, cwd: old.path },
+    cwd,
     lanes: await deps.registry.open(),
-    monitors: liveMonitors(entries, now, true),
-    oneShots: liveMonitors(entries, now, false),
+    monitors: liveMonitors(entries, now, deps.alive),
+    watchers: config.handover.watchers,
     cards: new QuestionStore(deps.cardDir).all().filter((q) => q.status === "open"),
     todos: session ? openTodos(sessionDir, session) : [],
     goal: session ? openGoal(sessionDir, session) : undefined,
     timers: await deps.timers().catch(() => []),
     leadNote: opts.note ? readFileSync(opts.note, "utf8") : "",
   };
-  if (!facts.monitors.length && !opts.noMonitors) return refuse(`no running persistent monitor found for ${config.leadPane} (omo session ${session || "unknown"}); arm them first, or pass --no-monitors`);
+  const down = await missingWatchers(deps, facts.watchers, { pane: config.leadPane, session });
+  if (down.length) return refuse(`configured watchers not running for ${config.leadPane}: ${down.join(", ")}; start them or fix handover.watchers before the handover`);
+  if (!facts.monitors.length && !facts.watchers.length && !opts.noMonitors) {
+    const where = session ? `in ${manifest}` : `(its omo session could not be told from the process under ${config.leadPane})`;
+    return refuse(`no running monitor found for ${config.leadPane} ${where}; arm them first, list outside watchers in handover.watchers, or pass --no-monitors`);
+  }
   mkdirSync(dir, { recursive: true });
   const note = join(dir, `${stamp}.md`);
   writeFileSync(note, renderNote(facts, at));
   writeFileSync(join(dir, `${stamp}.json`), JSON.stringify(facts, null, 1));
-  emit(`HANDOVER_NOTE ${note}: ${facts.lanes.length} lanes, ${facts.monitors.length} monitors, ${facts.cards.length} open questions, ${facts.todos.length} todos, ${facts.timers.length} timers${opts.note ? "" : "; HANDOVER_NO_LEAD_NOTE (pass --note FILE with your own notes)"}`);
+  emit(`HANDOVER_NOTE ${note}: ${facts.lanes.length} lanes, ${facts.monitors.length} monitors, ${facts.watchers.length} watchers, ${facts.cards.length} open questions, ${facts.todos.length} todos, ${facts.timers.length} timers${opts.note ? "" : "; HANDOVER_NO_LEAD_NOTE (pass --note FILE with your own notes)"}`);
   const units = config.handover.services.length ? config.handover.services : config.update.services.map((s) => s.unit);
   const model = opts.model || config.handover.model || config.defaultModel;
   const title = opts.title || config.handover.title || `${old.title.replace(/-\d{8}$/, "")}-${stamp.slice(4, 8)}${stamp.slice(9, 13)}`;
   if (opts.dryRun) {
-    deps.print(`HANDOVER_DRY_RUN would open aoe session "${title}" in ${old.path} (${model}), point leadPane and ${facts.lanes.length} lanes at it, restart ${units.join(",") || "no units"}, check ${facts.monitors.length} monitors and two probes within ${opts.verifyMin ?? config.handover.verifyMin} min, then ${opts.keepOld ? "keep" : "close"} ${config.leadPane}`);
+    deps.print(`HANDOVER_DRY_RUN would open aoe session "${title}" in ${cwd} (${model}), point leadPane and ${facts.lanes.length} lanes at it, restart ${units.join(",") || "no units"}, check ${facts.monitors.length} monitors (${facts.monitors.map((m) => m.description || m.command || m.path).join(", ") || "none"}), ${facts.watchers.length} watchers (${facts.watchers.map((w) => w.name).join(", ") || "none"}) and two probes within ${opts.verifyMin ?? config.handover.verifyMin} min, then ${opts.keepOld ? "keep" : "close"} ${config.leadPane}`);
     return { code: 0, note };
   }
   const lockFile = join(dir, "lock");
@@ -370,7 +412,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   const tell = (pane: string, text: string) => sendVerified(deps.run, deps.clock, config.backend, pane, text).catch(() => false);
   let pane: string;
   try {
-    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.from.cwd, tool: config.agentCommand[0] ?? "omo", model });
+    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", model });
   } catch (e) {
     emit(`HANDOVER_FAIL could not open the new session: ${e instanceof Error ? e.message : String(e)}; nothing moved, ${config.leadPane} stays the lead`);
     return { code: 3, note };

@@ -1,5 +1,5 @@
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { tmuxPanePid } from "./aoe.ts";
 import type { Backend } from "./config.ts";
@@ -47,7 +47,9 @@ export const resolveSession = async (pane: string, cwd: string, table: readonly 
   if (!agent) return { id: "", via: "none" };
   const argv = agent.cmd.split(/\s+/);
   const flagAt = argv.findIndex((a) => a === "--session" || a === "--session-id");
-  const fromFlag = flagAt >= 0 ? (argv[flagAt + 1] ?? "") : "";
+  // omo also takes --session <path to the session .jsonl>; the id is the uuid at the end of that file name
+  const flagValue = flagAt >= 0 ? (argv[flagAt + 1] ?? "") : "";
+  const fromFlag = flagValue.endsWith(".jsonl") ? (SESSION_FILE.exec(basename(flagValue))?.[5] ?? "") : flagValue;
   if (fromFlag) return { id: fromFlag, via: "argv", pid: agent.pid };
   for (const child of descendants(table, agent.pid).slice(0, 40)) {
     const env = await deps.run(["ps", "eww", "-o", "command=", "-p", String(child.pid)]);
