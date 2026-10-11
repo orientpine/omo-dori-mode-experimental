@@ -22,9 +22,9 @@ const EVENTS = "tail -n 0 -F /tmp/events.log";
 
 const status = (model: string, pct = "9.0", account = "x") => `old transcript line\n❯ \n────\n Claude·${account} ▕██▏ 60%\n~/work • CH85.0% • $0.5 • 90K/1M (${pct}%) (auto)    (anthropic-subscription@${account}) ${model} (shift+tab)\n(OmO) mem:x`;
 const HIGH = status("claude-opus-5-5 • effort high", "72.0");
-const OK = { approvedBy: "https://discord.com/channels/1/2/3 (owner: go)" };
+const OK = { approvedBy: "https://discord.com/channels/1/2/3" };
 
-type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; account: string; chainSurvives: boolean; doubleRun: boolean; restarted: boolean };
+type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
 
 let state: { dir: string; done: () => void };
 let w: World;
@@ -95,7 +95,7 @@ const setup = async (): Promise<LaneHandoverDeps> => {
     run: async (argv, opts) => {
       if (argv[0] === "aoe" && argv[1] === "session" && argv[2] === "stop" && argv[3] === OLD_ID) {
         for (const pid of [11, 12, 13, 14, 20, 21, 17]) live.delete(pid);
-        if (!sim.chainSurvives) for (const pid of [15, 16]) live.delete(pid);
+        if (!sim.chainSurvives) for (const pid of sim.grandchildSurvives ? [15] : [15, 16]) live.delete(pid);
       }
       simulate();
       return base.run(argv, opts);
@@ -254,6 +254,11 @@ test("moves the lane: same cwd, model and thinking, registry and cards repointed
   expect(note).toContain("Do NOT start these again now");
   const endedAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_CHAINS_ENDED: the old session is closed and its local chains ended (15 bash -c sleep 7200"));
   expect(endedAt).toBeGreaterThan(stopAt);
+  // the new session works only after the commit, which comes after the old session closed
+  expect(note).toContain("4. Until a [LEAD] HANDOVER_COMMITTED line arrives, do nothing else");
+  const commitAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_COMMITTED: the handover is checked and the old session is closed"));
+  expect(commitAt).toBeGreaterThan(stopAt);
+  expect(endedAt).toBeGreaterThan(commitAt);
   expect(sim.restarted).toBe(true);
   expect(sim.doubleRun).toBe(false);
   expect(printed.some((l) => l.startsWith("HANDOVER_ACCOUNT"))).toBe(false);
@@ -273,6 +278,7 @@ test("rolls back when the new session runs at another thinking level: lane and c
   expect(new QuestionStore(join(state.dir, "discord")).get("Q1")).toMatchObject({ tmux: OLD });
   expect(stoppedIds()).toEqual([NEW_AOE_ID]);
   expect(sent(w).some((t) => t.startsWith("[LEAD] Handover of demo failed") && t.includes("You stay the demo lane"))).toBe(true);
+  expect(sent(w).some((t) => t.includes("HANDOVER_COMMITTED"))).toBe(false);
 });
 
 test("rolls back when a monitor is not re-armed or the probe is acked from another pane", async () => {
@@ -418,7 +424,7 @@ const killedRun = async (deps: LaneHandoverDeps, pid: number) => {
   await deps.registry.patch("demo", { pane: NEW });
   new QuestionStore(join(state.dir, "discord")).retarget({ tmux: OLD }, { tmux: NEW });
   mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
-  writeFileSync(pendingFile(state.dir, "demo"), JSON.stringify({ key: "demo", pid, at: "2026-10-11T16:20:00Z", from: OLD, to: NEW, note: "/x.md" }));
+  writeFileSync(pendingFile(state.dir, "demo"), JSON.stringify({ key: "demo", pid, at: "2026-10-11T16:20:00Z", from: OLD, to: NEW, note: "/x.md", chains: [{ pid: 15, cmd: "bash -c sleep 7200; echo chain-done", pids: [15, 16] }] }));
 };
 
 test("a run killed midway (crash, reboot) is repaired by the next run: old session alive -> back to it, new one closed", async () => {
@@ -451,6 +457,9 @@ test("a killed run whose old session is already gone keeps the lane on the new o
   // Then
   expect(r.code).toBe(3);
   expect(printed).toContain(`HANDOVER_RECOVERED demo kept on ${NEW}: the old session ${OLD} is gone`);
+  // the new session is released, and told whether the old chains still run (here they do: no restart)
+  expect(sent(w).some((t) => t.startsWith(`[LEAD] HANDOVER_COMMITTED: the handover was interrupted after the old session ${OLD} closed`))).toBe(true);
+  expect(printed).toContain("HANDOVER_CHAIN_SURVIVED demo 15; the new session was told not to restart them");
   expect((await readLane(deps)).pane).toBe(NEW);
   expect(stoppedIds()).toEqual([]);
   expect(running.code).toBe(2);
@@ -467,6 +476,23 @@ test("--keep-old leaves the old session open and tells it it is no longer the la
   expect(r).toMatchObject({ code: 0, to: NEW });
   expect(stoppedIds()).toEqual([]);
   expect(sent(w).some((t) => t.startsWith(`[LEAD] Handover of demo to ${NEW} is done and checked. You are no longer the lane`))).toBe(true);
+  expect(sent(w).some((t) => t.startsWith(`[LEAD] HANDOVER_COMMITTED: the handover is checked and the old session ${OLD} stays open but idle`))).toBe(true);
+  // the old session is still open, so it stays quiet until the mark expires
+  expect(quietReason(state.dir, OLD, deps.clock.now())).toContain("the handover of demo");
+});
+
+test("a chain whose parent ended but whose child still runs counts as running: no restart", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  sim.grandchildSurvives = true;
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  // Then
+  expect(r.code).toBe(0);
+  expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_CHAINS_ENDED"))).toBe(false);
+  expect(printed).toContain("HANDOVER_CHAIN_SURVIVED demo 15; the new session was told not to restart them");
+  expect(sim.restarted).toBe(false);
 });
 
 test("a threshold is crossed at its value, not just above it, and 0 turns it off", () => {
@@ -490,34 +516,40 @@ test("repeats counts one fix's attempts in the lane's current session only, the 
   expect(repeatsOf({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), fix("2026-10-11T11:30:00Z", "lr"), fix("2026-10-11T11:40:00Z", "seed")] })).toBe(3);
   expect(repeatsOf({ ...moved, fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), fix("2026-10-11T13:00:00Z", "lr")] })).toBe(1);
   expect(repeatsOf({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr", "lead"), fix("2026-10-11T10:05:00Z", "lr")] })).toBe(1);
+  // a fix marked improved (the one before it moved the metric) starts that metric's count again
+  expect(repeatsOf({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), { ...fix("2026-10-11T11:30:00Z", "lr"), improved: true }] })).toBe(1);
   expect(repeatsOf(lane())).toBe(0);
 });
 
-test("an approval is an answered card's first option, a link or words, or auto only with the key on", () => {
+test("an approval is an answered rollover card for this lane's current session, a Discord message link, or auto only with the key on", () => {
   // Given
-  const cards: Record<string, { id: string; status: "open" | "answered"; options: string[]; answer?: string }> = {
-    Q1: { id: "Q1", status: "answered", options: ["Yes, roll over", "Not yet"], answer: "Yes, roll over" },
-    Q2: { id: "Q2", status: "answered", options: ["Yes, roll over", "Not yet"], answer: "Not yet" },
+  const yes = { status: "answered", options: ["Yes, roll over", "Not yet"], answer: "Yes, roll over" };
+  const cards: Record<string, object> = {
+    Q1: { id: "Q1", ...yes },
+    Q2: { id: "Q2", ...yes, answer: "Not yet" },
     Q3: { id: "Q3", status: "open", options: ["Yes, roll over", "Not yet"] },
+    Q4: { id: "Q4", ...yes },
+    Q5: { id: "Q5", status: "answered", options: ["Yes", "No"], answer: "Yes" },
+    Q6: { id: "Q6", ...yes },
   };
   const card = (id: string) => cards[id] as never;
-  const proposal = (key: string, id: string) => ({ kind: "proposal" as const, who: "lane" as const, at: "2026-10-11T00:00:00Z", key, card: id, pane: "p", signals: {}, crossed: [], blockers: "" });
-  const log = [proposal("demo", "Q1"), proposal("demo", "Q2"), proposal("demo", "Q3"), proposal("other", "Q4")];
-  cards.Q4 = { id: "Q4", status: "answered", options: ["Yes, roll over", "Not yet"], answer: "Yes, roll over" };
-  cards.Q5 = { id: "Q5", status: "answered", options: ["Yes", "No"], answer: "Yes" };
+  const proposal = (key: string, id: string, pane = "p1") => ({ kind: "proposal" as const, who: "lane" as const, at: "2026-10-11T00:00:00Z", key, card: id, pane, signals: {}, crossed: [], blockers: "" });
+  const log = [proposal("demo", "Q1"), proposal("demo", "Q2"), proposal("demo", "Q3"), proposal("other", "Q4"), proposal("demo", "Q6", "p0")];
+  const check = (ref: string | undefined, autoOn = false) => approvalProblem(ref, card, autoOn, "demo", "p1", log);
   // When / Then
-  expect(approvalProblem("Q4", card, false, "demo", log)).toBe("card Q4 is not a rollover proposal for demo; post one with dori rollover-propose demo");
-  expect(approvalProblem("Q5", card, false, "demo", log)).toBe("card Q5 is not a rollover proposal for demo; post one with dori rollover-propose demo");
-  expect(approvalProblem("Q1", card, false, "demo", log)).toBeUndefined();
-  expect(approvalProblem("q1", card, false, "demo", log)).toBeUndefined();
-  expect(approvalProblem("Q2", card, false, "demo", log)).toBe('card Q2 was answered "Not yet", not "Yes, roll over"');
-  expect(approvalProblem("Q3", card, false, "demo", log)).toBe("card Q3 is not answered yet");
-  expect(approvalProblem("Q9", card, false, "demo", log)).toBe("card Q9 not found");
-  expect(approvalProblem("https://discord.com/channels/1/2/3", card, false, "demo", log)).toBeUndefined();
-  expect(approvalProblem("ok", card, false, "demo", log)).toContain("too short");
-  expect(approvalProblem(undefined, card, false, "demo", log)).toStartWith("no approval");
-  expect(approvalProblem("auto:handover.autoRolloverLanes", card, false, "demo", log)).toContain("the automation key is off");
-  expect(approvalProblem("auto:handover.autoRolloverLanes", card, true, "demo", log)).toBeUndefined();
+  expect(check("Q1")).toBeUndefined();
+  expect(check("q1")).toBeUndefined();
+  expect(check("Q2")).toBe('card Q2 was answered "Not yet", not "Yes, roll over"');
+  expect(check("Q3")).toBe("card Q3 is not answered yet");
+  expect(check("Q9")).toBe("card Q9 not found");
+  expect(check("Q4")).toBe("card Q4 is not a rollover proposal for demo; post one with dori rollover-propose demo");
+  expect(check("Q5")).toBe("card Q5 is not a rollover proposal for demo; post one with dori rollover-propose demo");
+  expect(check("Q6")).toBe("card Q6 was about p0, not the session demo runs in now (p1); post a new one with dori rollover-propose demo");
+  expect(check("https://discord.com/channels/1/2/3")).toBeUndefined();
+  for (const words of ["not approved", "owner said yes", "https://discord.com/channels/1/2", "https://example.com/channels/1/2/3"]) expect(check(words)).toContain("neither an answered rollover card");
+  expect(check(undefined)).toStartWith("no approval");
+  expect(check("auto:handover.autoRolloverLanes")).toContain("the automation key is off");
+  expect(check("auto:handover.autoRolloverLanes", true)).toBeUndefined();
 });
 
 test("the old lane is quiet while it is replaced and may talk again after; every real attempt is logged with signals and steps", async () => {

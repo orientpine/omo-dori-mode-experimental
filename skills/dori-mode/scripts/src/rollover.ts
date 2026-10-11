@@ -51,28 +51,40 @@ export const crossed = (s: Signals, h: Limits): string[] => [
 export const repeatsOf = (lane: Lane): number => {
   const since = lane.history?.findLast((h) => h.note.startsWith("pane moved") && h.note.includes(`-> ${lane.pane} `))?.at ?? lane.openedAt ?? "";
   const fixes = (lane.fixes ?? []).filter((f) => f.at >= since);
-  return Math.max(0, ...fixes.map((f) => fixCount(fixes, f.metric, f.hypothesis)));
+  // an attempt marked improved means the one before it moved the metric: that metric's count starts again there
+  const restart = new Map<string, number>();
+  fixes.forEach((f, i) => f.improved && restart.set(f.metric, i));
+  const current = fixes.filter((f, i) => i >= (restart.get(f.metric) ?? 0));
+  return Math.max(0, ...current.map((f) => fixCount(current, f.metric, f.hypothesis)));
 };
 
 export const AUTO_PREFIX = "auto:";
 
-// What makes a rollover approved: a question card (Qn) the owner answered with its first option, a link to or the words
-// of their message, or "auto:..." when the automation key for that side is on. A card counts only when dori rollover-propose
-// posted it for this key (the rollover log says so), so a yes to another lane's card, or to any other question, moves nothing.
-// Undefined when the reference holds.
-export const approvalProblem = (ref: string | undefined, card: (id: string) => Question | undefined, autoOn: boolean, key: string, proposals: readonly RolloverEntry[]): string | undefined => {
+// A new session (lane or lead) does nothing but re-arm monitors and ack the probe until it gets this line: before it the
+// handover may still roll back, and work done by a session that is then closed would be lost or done twice.
+export const COMMITTED = "HANDOVER_COMMITTED";
+
+const DISCORD_LINK = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/\d+\/\d+\/\d+$/;
+
+// What makes a rollover approved: a question card (Qn) the owner answered with its first option, a link to the owner's
+// Discord message, or "auto:..." when the automation key for that side is on. A card counts only when dori rollover-propose
+// posted it for this key and for the session it runs in now (the rollover log says so), so a yes on another lane's card,
+// on any other question, or on a card about an earlier session moves nothing. Undefined when the reference holds.
+export const approvalProblem = (ref: string | undefined, card: (id: string) => Question | undefined, autoOn: boolean, key: string, pane: string, proposals: readonly RolloverEntry[]): string | undefined => {
   const r = ref?.trim() ?? "";
-  if (!r) return "no approval: pass --approved-by <the owner's answered card Qn, or their message link or words>";
+  if (!r) return "no approval: pass --approved-by <the owner's answered rollover card Qn, or the link to their Discord message>";
   if (r.startsWith(AUTO_PREFIX)) return autoOn ? undefined : `${r} is an automatic approval, but the automation key is off (the owner turns it on)`;
   if (/^Q\d+$/i.test(r)) {
     const q = card(r.toUpperCase());
     if (!q) return `card ${r} not found`;
-    if (!proposals.some((e) => e.kind === "proposal" && e.key === key && e.card === q.id)) return `card ${q.id} is not a rollover proposal for ${key}; post one with dori rollover-propose ${key}`;
+    const p = proposals.findLast((e): e is Extract<RolloverEntry, { kind: "proposal" }> => e.kind === "proposal" && e.card === q.id);
+    if (!p || p.key !== key) return `card ${q.id} is not a rollover proposal for ${key}; post one with dori rollover-propose ${key}`;
+    if (p.pane !== pane) return `card ${q.id} was about ${p.pane}, not the session ${key} runs in now (${pane}); post a new one with dori rollover-propose ${key}`;
     if (q.status !== "answered") return `card ${q.id} is not answered yet`;
     if (q.answer !== q.options[0]) return `card ${q.id} was answered ${JSON.stringify(q.answer ?? "")}, not ${JSON.stringify(q.options[0] ?? "")}`;
     return undefined;
   }
-  return r.length >= 3 ? undefined : `approval reference ${JSON.stringify(r)} is too short to point at anything`;
+  return DISCORD_LINK.test(r) ? undefined : `approval reference ${JSON.stringify(r)} is neither an answered rollover card Qn nor a link to the owner's Discord message`;
 };
 
 // While a session is being replaced it must not talk to the owner: the new one may already answer. dori send, ask and
