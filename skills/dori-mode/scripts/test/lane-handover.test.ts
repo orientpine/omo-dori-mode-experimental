@@ -221,7 +221,7 @@ test("dori handover ready runs only in the lane's own pane and also covers the c
   const deps = await setup();
   table = [...baseTable(), { pid: 18, ppid: 11, cmd: "bash -lc dori handover ready demo" }, { pid: 19, ppid: 18, cmd: "bun cli.ts handover ready demo" }];
   const noteFile = join(state.dir, "lane-note.md");
-  writeFileSync(noteFile, "## Owner's words\n\"레인에도 적용\"\n## Decisions and why\nseed 3 first\n## Ruled out\nlr too high\n## In progress\nseed 3 eval pending\n## Next step\nrerun eval\n");
+  writeFileSync(noteFile, "## Owner's words and constraints\n\"레인에도 적용\"\n## Decisions and why\nseed 3 first\n## Ruled out\nlr too high\n## In progress\nseed 3 eval pending\n## Next step\nrerun eval\n");
   const bare = join(state.dir, "bare-note.md");
   writeFileSync(bare, "seed 3 eval pending");
   // When
@@ -235,7 +235,7 @@ test("dori handover ready runs only in the lane's own pane and also covers the c
   expect(JSON.parse(readFileSync(readyFile(state.dir, "demo"), "utf8"))).toMatchObject({ pane: OLD, chains: [15, 18], note: readFileSync(noteFile, "utf8") });
   // the conversation summary is required, with its headings
   expect((await markReady(deps, lane(), OLD, 19)).line).toStartWith("HANDOVER_READY_REFUSED demo: write the conversation summary first");
-  expect((await markReady(deps, lane(), OLD, 19, bare)).line).toBe(`HANDOVER_READY_REFUSED demo: the summary ${bare} lacks ## Owner's words, ## Decisions and why, ## Ruled out, ## In progress, ## Next step (dori handover ready --template)`);
+  expect((await markReady(deps, lane(), OLD, 19, bare)).line).toBe(`HANDOVER_READY_REFUSED demo: the summary ${bare} lacks ## Owner's words and constraints, ## Decisions and why, ## Ruled out, ## In progress, ## Next step (dori handover ready --template)`);
   // the runner (here a shell; in omo the eval kernel) is still alive when the lead moves the lane: not a blocker
   expect((await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true })).code).toBe(0);
 });

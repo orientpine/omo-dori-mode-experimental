@@ -82,10 +82,10 @@ export type LaneFacts = {
 
 // The headings of the conversation summary the old session writes at its safe point (dori handover ready --note FILE):
 // what only its conversation knows. The new session reads it; dori handover ready --template prints them.
-export const SUMMARY_HEADINGS = ["Owner's words", "Decisions and why", "Ruled out", "In progress", "Next step"] as const;
+export const SUMMARY_HEADINGS = ["Owner's words and constraints", "Decisions and why", "Ruled out", "In progress", "Next step"] as const;
 export const SUMMARY_TEMPLATE = [
-  "## Owner's words",
-  "(the owner's instructions that still hold, quoted exactly, newest last; with the message link when you have it)",
+  "## Owner's words and constraints",
+  "(every instruction and constraint from the owner or the lead that still holds, how the work must be done included, quoted exactly, newest last, with the message link when you have it; summaries lose these first)",
   "## Decisions and why",
   "(each decision made in this conversation and the evidence it rests on)",
   "## Ruled out",
