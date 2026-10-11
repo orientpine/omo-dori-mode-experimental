@@ -48,7 +48,9 @@ export const recordFix = async (deps: FlowDeps, key: string, attempt: FixAttempt
   const count = fixCount(fixes, attempt.metric, attempt.hypothesis);
   const cfg = deps.config.sameFix;
   if (count === before || count < cfg.after) return { count, notes };
-  let alert = `attempt ${count} on "${attempt.metric}" with the same hypothesis "${attempt.hypothesis}": stop patching; reproduce it and read the logs for the root cause first`;
+  // the untagged count (REPEAT_SUSPECT) is shown next to the tagged one, counted separately
+  const inferred = lane.inferred ? Math.max(0, ...Object.values(lane.inferred.counts)) : undefined;
+  let alert = `attempt ${count} on "${attempt.metric}" with the same hypothesis "${attempt.hypothesis}" (tagged ${count}${inferred !== undefined ? `, inferred ${inferred}` : ""}): stop patching; reproduce it and read the logs for the root cause first`;
   if (cfg.sendToLane && lane.pane) {
     const text = fill([cfg.laneText], { n: String(count), metric: attempt.metric, hypothesis: attempt.hypothesis })[0] ?? cfg.laneText;
     const delivered = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);

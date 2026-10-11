@@ -8,6 +8,7 @@ import { freshnessTick } from "../src/freshness.ts";
 import { ownerDue, parseOwnerReply, quoted, runOwnerCheck } from "../src/owner-check.ts";
 import type { Lane } from "../src/registry.ts";
 import { crossed } from "../src/rollover.ts";
+import { recordFix } from "../src/same-fix.ts";
 import type { Runner } from "../src/run.ts";
 import { sessionDirFor } from "../src/session-id.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -113,6 +114,19 @@ test("an inferred-only ROLLOVER_DUE does not use up the pane: a later context cr
     expect(second.map((a) => a.kind)).toEqual(["rollover_due", "rollover_auto"]);
     expect(started).toBe(1);
     expect((await freshnessTick(deps, "/home/test", hooks)).map((a) => a.kind)).toEqual([]);
+  } finally {
+    st.done();
+  }
+});
+
+test("SAME_FIX_3 shows the lane's inferred count next to the tagged one, counted separately", async () => {
+  const st = withState();
+  try {
+    const deps = depsFor(newWorld(), fakeClock(T0), st.dir);
+    await deps.registry.write({ ...lane(st.dir), inferred: { at: at(0), counts: { "\uad50\ucc29": 4 } } });
+    let alert: string | undefined;
+    for (let i = 0; i < 3; i++) alert = (await recordFix(deps, "rl-e7", { at: at(i), metric: "deadlocks", hypothesis: "reward", via: "report" })).alert;
+    expect(alert).toContain('"deadlocks" with the same hypothesis "reward" (tagged 3, inferred 4)');
   } finally {
     st.done();
   }

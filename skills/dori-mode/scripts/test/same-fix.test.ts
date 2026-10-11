@@ -34,7 +34,7 @@ test("the third tagged report fixing one metric on one hypothesis alerts the lea
   // another hypothesis on the same metric is a different line of attack
   expect(await tick(3, "(fix: deadlock count / bank too old)")).toEqual([]);
   const third = await tick(4, "(fix: deadlock count / reward too small)");
-  expect(third).toEqual([{ kind: "same_fix_3", lane: "e7", detail: 'attempt 3 on "deadlock count" with the same hypothesis "reward too small": stop patching; reproduce it and read the logs for the root cause first' }]);
+  expect(third).toEqual([{ kind: "same_fix_3", lane: "e7", detail: 'attempt 3 on "deadlock count" with the same hypothesis "reward too small" (tagged 3, inferred 0): stop patching; reproduce it and read the logs for the root cause first' }]);
   // the same report read again on the next sweep is not another attempt
   expect((await freshnessTick(deps(T0 + 5 * MIN), "/home/test")).filter((a) => a.kind === "same_fix_3")).toEqual([]);
   expect(sent(world)).toEqual([]);
