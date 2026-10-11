@@ -66,6 +66,7 @@ const setup = async (): Promise<HandoverDeps> => {
     home: "/home/test",
     sessionOf: async (pane) => (pane === OLD ? "old-sid" : pane === NEW ? "new-sid" : ""),
     routedPane: async () => (JSON.parse(readFileSync(join(state.dir, "config.json"), "utf8")) as { leadPane: string }).leadPane,
+    envLeadPane: "",
     alive: (pid) => live.has(pid),
     timers: async () => ["Sat 2026-10-17 08:30:00 UTC 5 days - - dori-remind-droneshow.timer dori-remind-droneshow.service"],
     restart: async (unit) => {
@@ -137,6 +138,33 @@ test("refuses before changing anything when the old lead runs no persistent moni
   expect(leadPaneInConfig()).toBe(OLD);
 });
 
+test("refuses while DORI_LEAD_PANE overrides the config, since lanes would keep reporting to the old pane", async () => {
+  // Given
+  const deps = { ...(await setup()), envLeadPane: OLD };
+  // When
+  const r = await handover(deps, { title: "lead2" });
+  // Then
+  expect(r.code).toBe(2);
+  expect(printed[0]).toStartWith(`HANDOVER_REFUSED DORI_LEAD_PANE=${OLD} is set`);
+  expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);
+});
+
+test("refuses while another handover holds the lock, and takes over a lock whose process is gone", async () => {
+  // Given
+  const deps = await setup();
+  mkdirSync(join(state.dir, "handover"), { recursive: true });
+  writeFileSync(join(state.dir, "handover", "lock"), JSON.stringify({ pid: 101, at: "2026-10-11T16:30:00Z" }));
+  // When
+  const busy = await handover(deps, { title: "lead2" });
+  live.delete(101);
+  const after = await handover(deps, { title: "lead2", noMonitors: true, verifyMin: 1 });
+  // Then
+  expect(busy.code).toBe(2);
+  expect(printed.find((l) => l.startsWith("HANDOVER_REFUSED another handover is running (pid 101"))).toBeDefined();
+  expect(after.to).toBe(NEW);
+  expect(existsSync(join(state.dir, "handover", "lock"))).toBe(false);
+});
+
 test("moves config, env, lanes and cards to the new session, checks monitors and both probes, and only then closes the old one", async () => {
   // Given
   const deps = await setup();
@@ -154,7 +182,7 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   const card = new QuestionStore(join(state.dir, "discord")).get("Q1");
   expect(card).toMatchObject({ tmux: NEW, session: "new-sid" });
   expect(restarted).toEqual(["dori-lanes"]);
-  const probeAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[REPORT] handover-probe | milestone | HANDOVER_PROBE n1"));
+  const probeAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "") === `[REPORT] handover-probe | milestone | HANDOVER_PROBE n1: run dori handover ack n1 --state ${state.dir}`);
   const stopAt = w.calls.findIndex((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop" && c[3] === OLD_ID);
   expect(probeAt).toBeGreaterThan(-1);
   expect(stopAt).toBeGreaterThan(probeAt);

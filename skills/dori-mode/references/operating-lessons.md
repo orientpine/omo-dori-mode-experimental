@@ -104,3 +104,13 @@ The E7 lane ran `dori challenge` on its next-run design three times and got no r
 - Reviewer ids are checked against `omo --list-models` and the logged-in providers before any call. A model on a provider that is not logged in is called on one that is; one no logged-in provider offers is skipped with the reason. `omo auth check` alone is not enough: it reports a subscription provider served by an extension as `not_ready` (`provider_not_found`) while its accounts are logged in, so an account that is not blocked also counts.
 - The default order is the best GPT, Claude and Grok model a subscription login offers, then a second model of each. The first that writes a review wins; `--all` asks one of each family when one review is not enough.
 - Check which reviewers your machine can call before you depend on one: `dori challenge --check`.
+
+## 14. Switching the lead to a new session
+
+A long conversation gets slow and expensive, so the lead moves to a fresh session from time to time. The work itself does not stop: lanes are their own sessions, and the registry, inbox and logs are files. What breaks is everything that names the old session:
+
+- **Monitors.** omo restores persistent monitors only when the same session restarts (`self-restart.sh` restarts the same aoe session). A new session starts with none and hears nothing from the inbox, the lanes log or session events until it arms them again.
+- **Reports.** Every running lane has the lead's tmux name written into its brief footer at launch, and `dori watch`, `freshness` and `dead-panes` read `leadPane` once when they start. Changing `config.json` alone leaves both pointing at the old session. `DORI_LEAD_PANE` set by a wrapper script wins over the file.
+- **Cards and boot.** Open question cards keep the asking session's tmux name, and `dori-lead.service` and `self-restart.sh` start the pane in `DORI_LEAD_AOE_ID`/`DORI_LEAD_TMUX`.
+
+`dori handover` does the switch in that order: a note, the new session, every pointer moved, then checks in the new session (its monitors run, a `[REPORT]` probe and an inbox probe are acked from it) before the old session is closed. If a check fails, everything moves back and the old session stays the lead. Before you run it, put what lives only in your head into a file and pass it with `--note`: promises to the owner, things you wait for, one-off reminders. Started from inside the lead, it detaches itself, because closing the old session ends the processes in it. The new session does not continue your conversation; the note is all it knows.

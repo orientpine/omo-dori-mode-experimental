@@ -142,7 +142,7 @@ const USAGE = `dori <command> [options]
                                        [REPORT] probe and an inbox probe are acked from it. Only then is the old session
                                        closed (HANDOVER_DONE); a failed check moves everything back (HANDOVER_VERIFY_FAIL,
                                        exit 3). Run from inside the lead it detaches itself (systemd-run)
-  handover ack <id>                    the new lead answers a HANDOVER_PROBE line with this
+  handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE line with this (the line gives --state)
   thread <reply|wait|done> discord:<id> <text>
                                        post in a work thread and set its status (working, waiting, done); done archives it
                                        (Discord env: DORI_DISCORD_TOKEN, DORI_DISCORD_GUILD, DORI_DISCORD_CHANNEL, DORI_DISCORD_OWNER)`;
@@ -188,7 +188,7 @@ const flags = parseArgs({
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
-    "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" },
+    "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -686,7 +686,7 @@ try {
     case "handover": {
       const here = config.backend === "aoe" ? await currentTmuxSession(run) : (process.env.HERDR_PANE_ID ?? "");
       if (key === "ack") {
-        console.log(ackHandover(config.stateDir, flags.positionals[1]?.trim() || die("usage: dori handover ack <id>"), here, new Date().toISOString()));
+        console.log(ackHandover(opt("state") ? resolve(opt("state") ?? "") : config.stateDir, flags.positionals[1]?.trim() || die("usage: dori handover ack <id> [--state DIR]"), here, new Date().toISOString()));
         break;
       }
       // closing the old lead ends every process in its tmux session, so a handover started there continues as a user unit
@@ -711,6 +711,7 @@ try {
         home: process.env.HOME ?? "",
         sessionOf: async (pane, cwd) => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id,
         routedPane: async () => (await loadConfig()).leadPane,
+        envLeadPane: process.env.DORI_LEAD_PANE?.trim() ?? "",
         alive: pidAlive,
         timers: async () => {
           const pattern = new RegExp(config.handover.timers);

@@ -1,7 +1,7 @@
 // dori handover: move the lead to a new agent session without losing work, monitors or notifications.
 // Order: write the note -> open the new session -> point leadPane, lanes and cards at it -> check that its monitors run and
 // that a [REPORT] and an inbox event reach it -> only then close the old session. A failed check moves everything back.
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { aoeSessions, closeAoeSession, openAoeSession, sessionFor } from "./aoe.ts";
@@ -24,6 +24,8 @@ export type HandoverDeps = FlowDeps & {
   readonly sessionOf: (pane: string, cwd: string) => Promise<string>;
   // leadPane as a freshly started dori process reads it (config file plus DORI_LEAD_PANE)
   readonly routedPane: () => Promise<string>;
+  // DORI_LEAD_PANE as this process got it: it overrides the config file, so a handover cannot move it
+  readonly envLeadPane: string;
   readonly alive: (pid: number) => boolean;
   readonly timers: () => Promise<string[]>;
   // restart a user unit; a reason when it failed
@@ -155,7 +157,7 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   "",
   "## Do this first",
   "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once. The handover checks that they run in this session.",
-  `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run dori handover ack <id> for it and nothing else.`,
+  `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
   "3. Then read the rest and carry on: open lanes, owner questions, todos, timers and the old lead's notes. The old session stays quiet and is closed once the checks pass.",
   "",
   `## Monitors (${f.monitors.length})`,
@@ -265,9 +267,10 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
   if (routed !== to.pane) return { reasons: [`lanes would still report to ${routed || "(no leadPane)"}, not ${to.pane}`], session };
   const report = deps.nonce();
   const inbox = deps.nonce();
-  const line = `[REPORT] handover-probe | milestone | ${PROBE} ${report}: run dori handover ack ${report}`;
+  const ack = (id: string) => `dori handover ack ${id} --state ${deps.config.stateDir}`;
+  const line = `[REPORT] handover-probe | milestone | ${PROBE} ${report}: run ${ack(report)}`;
   if (!(await sendVerified(deps.run, deps.clock, deps.config.backend, routed, line))) return { reasons: [`the report probe did not reach ${routed}`], session };
-  appendFileSync(deps.inbox, `${JSON.stringify({ ts: iso(deps.clock), id: `handover-${inbox}`, kind: "handover-probe", content: `${PROBE} ${inbox}: run dori handover ack ${inbox}` })}\n`);
+  appendFileSync(deps.inbox, `${JSON.stringify({ ts: iso(deps.clock), id: `handover-${inbox}`, kind: "handover-probe", content: `${PROBE} ${inbox}: run ${ack(inbox)}` })}\n`);
   emit(`HANDOVER_PROBES_SENT report=${report} inbox=${inbox} (${deps.inbox})`);
   let problems: string[] = [];
   for (; i < tries; i++) {
@@ -279,6 +282,30 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
 };
 
 export type HandoverResult = { readonly code: number; readonly note?: string; readonly to?: string };
+
+// One handover at a time per state dir: two would each open a session and repoint the lead to their own.
+const takeLock = (file: string, alive: (pid: number) => boolean, at: string): string | undefined => {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(file, JSON.stringify({ pid: process.pid, at }), { flag: "wx" });
+      return undefined;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    const held = (() => {
+      try {
+        return JSON.parse(readFileSync(file, "utf8")) as { pid?: number; at?: string };
+      } catch {
+        return {};
+      }
+    })();
+    if (held.pid && alive(held.pid)) return `another handover is running (pid ${held.pid}, started ${held.at ?? "?"}); ${file}`;
+    rmSync(file, { force: true });
+  }
+  return `could not take the handover lock ${file}`;
+};
+
+type MoveContext = { readonly note: string; readonly stamp: string; readonly dir: string; readonly title: string; readonly model: string; readonly units: readonly string[]; readonly emit: (line: string) => void };
 
 export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): Promise<HandoverResult> => {
   const { config } = deps;
@@ -295,6 +322,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   };
   if (config.backend !== "aoe") return refuse("dori handover needs backend aoe");
   if (!config.leadPane) return refuse("leadPane is not set");
+  if (deps.envLeadPane) return refuse(`DORI_LEAD_PANE=${deps.envLeadPane} is set in the environment and overrides leadPane in ${deps.configPath}, so lanes would keep reporting there; remove it (also from any wrapper script) and keep the pane in the config file`);
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
   const old = sessionFor(await aoeSessions(deps.run), config.leadPane);
   if (!old) return refuse(`no live aoe session for leadPane ${config.leadPane}`);
@@ -326,10 +354,23 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
     deps.print(`HANDOVER_DRY_RUN would open aoe session "${title}" in ${old.path} (${model}), point leadPane and ${facts.lanes.length} lanes at it, restart ${units.join(",") || "no units"}, check ${facts.monitors.length} monitors and two probes within ${opts.verifyMin ?? config.handover.verifyMin} min, then ${opts.keepOld ? "keep" : "close"} ${config.leadPane}`);
     return { code: 0, note };
   }
+  const lockFile = join(dir, "lock");
+  const busy = takeLock(lockFile, deps.alive, at);
+  if (busy) return refuse(busy);
+  try {
+    return await moveLead(deps, opts, facts, { note, stamp, dir, title, model, units, emit });
+  } finally {
+    rmSync(lockFile, { force: true });
+  }
+};
+
+const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: HandoverFacts, ctx: MoveContext): Promise<HandoverResult> => {
+  const { config } = deps;
+  const { note, stamp, dir, title, model, units, emit } = ctx;
   const tell = (pane: string, text: string) => sendVerified(deps.run, deps.clock, config.backend, pane, text).catch(() => false);
   let pane: string;
   try {
-    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: old.path, tool: config.agentCommand[0] ?? "omo", model });
+    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.from.cwd, tool: config.agentCommand[0] ?? "omo", model });
   } catch (e) {
     emit(`HANDOVER_FAIL could not open the new session: ${e instanceof Error ? e.message : String(e)}; nothing moved, ${config.leadPane} stays the lead`);
     return { code: 3, note };
