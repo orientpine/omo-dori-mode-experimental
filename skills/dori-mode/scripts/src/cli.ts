@@ -78,7 +78,9 @@ const USAGE = `dori <command> [options]
   challenge <key> --plan FILE [--model M]
                                        a model of another family than the lane's reviews the plan in a fresh context:
                                        reasons it will fail, missing alternatives, the cheapest falsifying test. Saved
-                                       under <stateDir>/challenges/<key>/ and recorded on the lane (CHALLENGE_SAVED)
+                                       under <stateDir>/challenges/<key>/ and recorded on the lane (CHALLENGE_SAVED).
+                                       A reply without the three headings gets one stricter retry, an unreachable
+                                       provider/model one try as the bare model id, then the next reviewer
   fork-explore <key> --metric M --hypotheses H1 --test T1 --hypotheses H2 --test T2 ... [--gpu N ...|--gpu-all]
                [--mode agent|cmd] [--minutes N] [--model M]
                                        one time-boxed task per hypothesis, in parallel, all on metric M; GPU branches
@@ -366,7 +368,6 @@ try {
       const r = await runChallenge(deps, l, resolve(need("plan")), opt("model"));
       for (const f of r.failures) console.log(`CHALLENGE_SKIP ${f}`);
       console.log(r.text);
-      if (r.missing.length) console.log(`CHALLENGE_WARN the review lacks: ${r.missing.join(", ")}`);
       console.log(`CHALLENGE_SAVED ${r.record.file} reviewer=${r.record.model}`);
       break;
     }
