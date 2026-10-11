@@ -75,3 +75,11 @@ What the scripts now do so this happens on the second failed patch instead of af
 One day a Dori worked through a run of small requests by doing them itself: it renamed folders and the services that pointed at them, swapped a bot token in an env file, edited its agent config, and handed a few pieces to in-process child tasks. Each step was quick and each one worked. The owner still told it to stop and open a session for every job, however simple: none of those changes had a thread, a brief or a Done check, so the owner could not see what had changed or whether anyone had checked it, and while the Dori was busy editing, new messages waited.
 
 Open a lane with `dori launch` for every change, even a one-line one, with a `Done =` signal that reads the result back. Keep for yourself only what changes nothing: reading to answer, launching, pausing and closing lanes, checking a done claim live, and messaging. A child task or subagent inside your own session is not a lane. The rule is in `SKILL.md`, "Every change goes to a lane".
+
+## 11. The tool owns a thread's status mark
+
+The owner asked why a thread was called "🔄 🔄 Dori ...". The lead had opened it with a title that already began with "🔄 ", and the code that opens a thread adds its own "🔄 ". On close only the first mark was swapped, which gave "✅ 🔄 ...".
+
+- Pass a plain title. Never start it with 🔄, ⏸️, ✅, ⏳ or a `[working]`-style word.
+- Every status change (reply, wait, done, a card asked or answered, a reopen, `dori close`, the automatic close) now strips all leading marks and writes exactly one, so a name that already stacked marks heals at its next status change.
+- A local thread opener of your own (a `kit.ts` `openThread`) must do the same: strip every leading mark from the title before it adds one.
