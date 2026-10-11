@@ -65,10 +65,18 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
         acts.push({ kind: "no-report", lane: lane.key, detail: "pane has no [REPORT] line" });
         continue;
       }
-      const text = `Progress (from the lane's last report): ${scrubForThread(report, home)}`;
+      // the report is the lane's note to the lead; the owner gets a plain status line and the lead the note to retell
+      const words = deps.config.discord;
+      const text = words.postRawReports ? `Progress (from the lane's last report): ${scrubForThread(report, home)}` : words.quietText.replaceAll("{min}", String(silentMin));
       await deps.run(fill(hook, { thread: lane.thread, text, key: lane.key }));
       await deps.registry.patch(lane.key, { lastAutoReplyAt: now });
-      acts.push({ kind: "posted", lane: lane.key, detail: text });
+      let lead = "";
+      if (!words.postRawReports) {
+        const pane = deps.config.leadPane;
+        const note = `[DORI] ${lane.key}: ${silentMin} min without a new report, so its thread got a short status line instead of the report. Tell the owner where it stands in plain words. Last report: ${report.replace(/`/g, "'").replaceAll("$(", "$ (")}`;
+        lead = !pane ? "; lead not told: leadPane is not configured" : (await sendVerified(deps.run, deps.clock, deps.config.backend, pane, note)) ? "; lead told" : `; lead not told: the note did not reach pane ${pane}`;
+      }
+      acts.push({ kind: "posted", lane: lane.key, detail: `${text}${lead}` });
     }
   }
   return acts;

@@ -101,7 +101,7 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 | `dori signals [--lane K \| --cwd DIR \| --tag T]` | what earlier lanes in an area tried and how it went; read it before re-instructing |
 | `dori scorecard [--date D] [--post]` | the day's token scorecard from records (no model call), saved under `<stateDir>/scorecard/`; `--post` also sends it to Discord |
 | `dori watch` | the 5-minute auto-close watcher, plus `LANE_BLOCKED` with aoe (run it as a persistent monitor) |
-| `dori freshness` | nudge silent lanes, post their last report (read from the lead pane) to their thread |
+| `dori freshness` | nudge silent lanes, post a short status line in the owner's words to their thread, and hand their last report (read from the lead pane) to you to retell |
 | `dori dead-panes` | report agent panes that stopped |
 | `dori guard` | host load, memory, disk and pane-count alerts |
 | `dori heavy <label> -- <cmd>` | run a heavy command only when a slot is free and load is low |

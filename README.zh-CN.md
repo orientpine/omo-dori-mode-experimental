@@ -68,6 +68,7 @@ Dori 会跟着你的说话方式走。你写得简短、随意、用小写，它
 | `hooks.threadReply`, `hooks.threadDone` | 你的消息 CLI,写成含 `{thread}` 和 `{text}` 的 argv 列表，用来发布 lane 进度和标记完成 |
 | `discord.statusStyle` | Discord 状态标记使用 `"words"`(默认)或 `"emoji"` |
 | `discord.autoUnEye` | `true`(默认)时，机器人在某个频道或线程里发言后，`dori inbound discord` 会移除所有者在那里更早消息上的眼睛反应；`false` 则保留 |
+| `discord.quietText`、`discord.doneText`、`discord.postRawReports` | `freshness` 和自动关闭发到所有者线程里的话(`{min}` = 距最后一条报告的分钟数)，用所有者的语言；lane 的报告或完成证据原文交给 lead,不进线程。`postRawReports: true`(默认 `false`)时原样发布 |
 
 其余项(时间、阈值、heavy 槽位数)用默认值就够了。完整表格见 [`references/scripts.md`](skills/dori-mode/references/scripts.md)。环境变量 `DORI_CONFIG`、`DORI_STATE_DIR`、`DORI_LEAD_PANE` 优先于配置文件。
 
@@ -103,7 +104,7 @@ footer 要求 lane 向 lead 发送 `[REPORT] <key> | <milestone|blocker|question
 ["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "Enter"]
 ```
 
-`dori freshness` 先从 lead 屏幕读取报告，再看 lane 屏幕。新报告会重置静默计时；默认 15 分钟后提醒，20 分钟后通过 `hooks.threadReply` 发布最后一条报告，每段静默期各执行一次。
+`dori freshness` 先从 lead 屏幕读取报告，再看 lane 屏幕。新报告会重置静默计时；默认 15 分钟后提醒，20 分钟后通过 `hooks.threadReply` 发布一行用所有者语言写的简短状态(`discord.quietText`)，每段静默期各执行一次。lane 的报告原文发到 lead 屏幕，由 lead 用人话转述；`discord.postRawReports: true` 时照旧发布原文。
 
 aoe 下，working 或 not-done 的 lane 停下来等人时，`dori watch` 输出 `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>`。它结合 `aoe ps --json` 和屏幕判断：回合运行中不会输出，idle 必须持续 45 秒，等待 monitor、wake source 或正在执行/已安排的 goal 不算 idle。关闭时会停止 aoe 会话并移入回收站，绝不永久删除。
 
@@ -168,7 +169,7 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 | `dori claim-done` / `object-done` / `close` | 完成流程；设置了 `DORI_DISCORD_TOKEN` 时，close 会把 `discord:` 工作线程标为完成并归档 |
 | `dori pause <key> <原因>` / `dori resume <key>` | 暂停一条在等人的 lane:不再催促或代发进度、不报 `LANE_BLOCKED` 和 `DEAD_PANE`,完成声明也不会自动关闭它；`resume` 恢复暂停前的状态 |
 | `dori watch` | 自动关闭的 watcher,以及 aoe `LANE_BLOCKED` 事件，作为常驻监控运行 |
-| `dori freshness [--loop MIN]` | 提醒变安静的 lane,再把它最后一条汇报发到线程里 |
+| `dori freshness [--loop MIN]` | 提醒变安静的 lane,在线程里发一行简短状态，把最后一条汇报交给 lead |
 | `dori dead-panes [--loop MIN]` | 报告已停止的智能体 pane |
 | `dori guard [--loop MIN]` | 负载、内存、磁盘和 pane 数量告警 |
 | `dori fix-attempt <key> --metric M --hypothesis H` | 记一次你让 lane 做的修复;lane 在这类汇报里加 `(fix: M / H)`,同一指标、同一假设到第三次时,`SAME_FIX_3` 提醒你让 lane 转去查根因;记录之前先列出该指标上已经试过的假设(`PRIOR_FIX`) |

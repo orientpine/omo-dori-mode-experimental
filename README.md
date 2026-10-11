@@ -68,6 +68,7 @@ Everything lives in `~/.dori/config.json`, and every field is optional. The ones
 | `hooks.threadReply`, `hooks.threadDone` | your messenger CLI, as argv lists with `{thread}` and `{text}`, so lanes can post progress and be marked done |
 | `discord.statusStyle` | `"words"` (default) or `"emoji"` for Discord status marks |
 | `discord.autoUnEye` | `true` (default): `dori inbound discord` removes its eyes reaction from the owner's earlier messages once the bot writes in that channel or thread; `false` leaves it on |
+| `discord.quietText`, `discord.doneText`, `discord.postRawReports` | what `freshness` and the automatic close post in the owner's thread (`{min}` = minutes since the last report), in the owner's language; the lane's own report or claim goes to the lead, not the thread. `postRawReports: true` (default `false`) posts those as they are |
 
 The rest (timings, thresholds, heavy-slot count) has sensible defaults. The full table is in [`references/scripts.md`](skills/dori-mode/references/scripts.md). `DORI_CONFIG`, `DORI_STATE_DIR` and `DORI_LEAD_PANE` override the file.
 
@@ -103,7 +104,7 @@ The footer tells lanes to send `[REPORT] <key> | <milestone|blocker|question|don
 ["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "Enter"]
 ```
 
-`dori freshness` reads reports from the lead first, then the lane screen. A new report resets the silence timer; by default it nudges after 15 minutes and posts the last report through `hooks.threadReply` after 20, once per silence.
+`dori freshness` reads reports from the lead first, then the lane screen. A new report resets the silence timer; by default it nudges after 15 minutes and after 20 posts a short status line in the owner's words (`discord.quietText`) through `hooks.threadReply`, once per silence. The lane's report itself goes to the lead pane for the lead to retell in plain words; `discord.postRawReports: true` posts the report as before.
 
 With aoe, `dori watch` emits `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` when a working or not-done lane stops for a human. It combines `aoe ps --json` with the screen: no blocked event during a running turn; idle must last 45 seconds, and a monitor, wake source or active/scheduled goal is not idle. Closing stops the aoe session and moves it to trash, never purges it.
 
@@ -169,7 +170,7 @@ The watcher runs each check itself when it closes the lane, with no shell, and n
 | `dori claim-done` / `object-done` / `close` | the done flow; a close with no usable thread prints `THREAD_MISSING <key>` instead of skipping the thread hook silently; with `DORI_DISCORD_TOKEN` set, a close also marks a `discord:` work thread done and archives it |
 | `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on you: no freshness nudge or post, `LANE_BLOCKED` or `DEAD_PANE` for it, and a done claim doesn't close it; `resume` puts back the status it had |
 | `dori watch` | the auto-close watcher, plus aoe `LANE_BLOCKED` events; run it as a persistent monitor |
-| `dori freshness [--loop MIN]` | nudge lanes that went quiet, then post their last report to their thread |
+| `dori freshness [--loop MIN]` | nudge lanes that went quiet, then post a short status line to their thread and hand the last report to the lead |
 | `dori dead-panes [--loop MIN]` | report agent panes that stopped |
 | `dori guard [--loop MIN]` | alert on load, memory, disk and pane count |
 | `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked a lane for; lanes tag such reports `(fix: M / H)`, and from the third attempt on one metric with one hypothesis `SAME_FIX_3` tells you to switch the lane to a root-cause hunt; it first prints the hypotheses already tried on that metric (`PRIOR_FIX`) |

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { defaultDiscordWords } from "../src/config.ts";
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
@@ -36,8 +37,9 @@ test("a lane silent past the nudge time is nudged once, then its last report is 
   expect(posted.map((a) => a.kind)).toEqual(["posted"]);
   const call = world.calls.find((c) => c[0] === "notify");
   expect(call?.[1]).toBe("chat:team/9");
-  expect(call?.[2]).toContain("tests green on ~/repo, PR open");
-  expect(sent(world)).toHaveLength(1);
+  expect(call?.[2]).toBe("Still working on it. The last report came 21 min ago; I'll sum it up for you soon.");
+  // one nudge to the lane, one note to the lead carrying the report
+  expect(sent(world)).toHaveLength(2);
 });
 
 test("a report the lane sent to the lead pane is found there, wrapped lines joined, and a new report resets the silence", async () => {
@@ -49,7 +51,33 @@ test("a report the lane sent to the lead pane is found there, wrapped lines join
   expect((await freshnessTick(deps(T0 + 28 * MIN), "/home/test")).map((a) => a.kind)).toEqual([]);
   const later = await freshnessTick(deps(T0 + 35 * MIN), "/home/test");
   expect(later.map((a) => a.kind)).toEqual(["nudged", "posted"]);
-  expect(world.calls.find((c) => c[0] === "notify")?.[2]).toBe("Progress (from the lane's last report): CI is red on the flaky e2e job, rerunning");
+  // the owner's thread gets a plain status line in the configured words; the raw report goes to the lead pane
+  expect(world.calls.find((c) => c[0] === "notify")?.[2]).toBe("Still working on it. The last report came 21 min ago; I'll sum it up for you soon.");
+  const toLead = world.calls.find((c) => c[0] === "herdr" && c[2] === "send-text" && c[3] === "lead:p1")?.[4];
+  expect(toLead).toContain("[DORI] quiet-lane: 21 min without a new report");
+  expect(toLead).toContain("Last report: [REPORT] quiet-lane | blocker | CI is red on the flaky e2e job, rerunning");
+  expect(later[1]?.detail).toEndWith("; lead told");
+});
+
+test("quietText is the configured words, and postRawReports posts the lane's report as before without telling the lead", async () => {
+  const korean = { ...defaultDiscordWords, quietText: "진행 중이야 — 마지막 보고는 {min}분 전. 정리해서 곧 알려 줄게." };
+  await depsFor(world, fakeClock(T0), state.dir).registry.write(working);
+  world.screens["lead:p1"] = " [REPORT] quiet-lane | milestone | (a) 승인 조건대로 ① `bun test` green, $(x) gone\n\n❯ ";
+  const ko = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { hooks: { threadReply: ["notify", "{thread}", "{text}"] }, discord: korean });
+  await freshnessTick(ko(T0 + MIN), "/home/test");
+  await freshnessTick(ko(T0 + 22 * MIN), "/home/test");
+  expect(world.calls.find((c) => c[0] === "notify")?.[2]).toBe("진행 중이야 — 마지막 보고는 21분 전. 정리해서 곧 알려 줄게.");
+  // a report with a backtick or $( still reaches the lead, defused, instead of failing the sweep
+  expect(sent(world).find((t) => t.startsWith("[DORI] quiet-lane"))).toContain("① 'bun test' green, $ (x) gone");
+
+  world.calls = [];
+  await depsFor(world, fakeClock(T0), state.dir).registry.write({ ...working, key: "raw-lane" });
+  world.screens["lead:p1"] = " [REPORT] raw-lane | milestone | tests green on /home/test/repo, PR open\n\n❯ ";
+  const raw = { hooks: { threadReply: ["notify", "{thread}", "{text}"] }, discord: { ...defaultDiscordWords, postRawReports: true } };
+  await freshnessTick(depsFor(world, fakeClock(T0 + MIN), state.dir, raw), "/home/test");
+  await freshnessTick(depsFor(world, fakeClock(T0 + 22 * MIN), state.dir, raw), "/home/test");
+  expect(world.calls.filter((c) => c[0] === "notify").map((c) => c[2])).toContain("Progress (from the lane's last report): tests green on ~/repo, PR open");
+  expect(world.calls.some((c) => c[0] === "herdr" && c[2] === "send-text" && c[3] === "lead:p1")).toBe(false);
 });
 
 test("a done claim written while a sweep is nudging the lane survives the sweep's own registry write", async () => {
