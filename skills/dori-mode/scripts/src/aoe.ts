@@ -31,8 +31,10 @@ export const listAoePanes = async (run: Runner): Promise<Pane[]> => {
   });
 };
 
-const idFor = (sessions: readonly AoeSession[], pane: string): string | undefined =>
-  (sessions.find((s) => pane === `aoe_${s.title}${suffixOf(s)}`) ?? sessions.find((s) => pane.endsWith(suffixOf(s))))?.id;
+export const sessionFor = (sessions: readonly AoeSession[], pane: string): AoeSession | undefined =>
+  sessions.find((s) => pane === `aoe_${s.title}${suffixOf(s)}`) ?? sessions.find((s) => pane.endsWith(suffixOf(s)));
+
+const idFor = (sessions: readonly AoeSession[], pane: string): string | undefined => sessionFor(sessions, pane)?.id;
 
 export const aoeIdFor = async (run: Runner, pane: string): Promise<string | undefined> => idFor(await aoeSessions(run), pane);
 

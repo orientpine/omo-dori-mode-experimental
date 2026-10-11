@@ -78,7 +78,7 @@ test("documents every configuration field when defaultConfig defines it", async 
   const documented = new Set([...text.matchAll(/`([a-zA-Z][\w.]*)`/g)].map((match) => match[1]));
   const required = [
     ...Object.keys(defaults),
-    ...configKeys({ scorecard: defaults.scorecard, update: defaults.update, sameFix: defaults.sameFix, signals: defaults.signals, explore: defaults.explore }),
+    ...configKeys({ scorecard: defaults.scorecard, update: defaults.update, sameFix: defaults.sameFix, signals: defaults.signals, explore: defaults.explore, handover: defaults.handover }),
   ];
   // When
   const missing = required.filter((key) => !documented.has(key));

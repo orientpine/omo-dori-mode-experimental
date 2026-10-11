@@ -145,6 +145,21 @@ export type Explore = {
   readonly branchMinutes: number;
 };
 
+// dori handover: switch the lead to a new agent session. prompt starts the first message of the new session (the note's
+// path follows); title names it (empty: the old title plus MMDDhhmm); model (empty: defaultModel); services are the user
+// units restarted after leadPane moves, so long-running sweeps read it again (empty: the update.services units); timers is
+// a regex for `systemctl --user list-timers` lines listed in the note; verifyMin bounds the checks; inbox is the file the
+// inbox probe goes to (empty: DORI_DISCORD_INBOX, else <stateDir>/discord/inbox.jsonl).
+export type Handover = {
+  readonly prompt: string;
+  readonly title: string;
+  readonly model: string;
+  readonly services: readonly string[];
+  readonly timers: string;
+  readonly verifyMin: number;
+  readonly inbox: string;
+};
+
 export type DoriConfig = {
   readonly backend: Backend;
   readonly stateDir: string;
@@ -172,6 +187,7 @@ export type DoriConfig = {
   readonly scorecard: Scorecard;
   readonly signals: Signals;
   readonly explore: Explore;
+  readonly handover: Handover;
 };
 
 export const defaultConfig = (home = homedir()): DoriConfig => ({
@@ -237,6 +253,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     branchCommand: ["omo", "-p", "--no-session", "--model", "{model}", "{prompt}"],
     branchMinutes: 15,
   },
+  handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "" },
 });
 
 export class ConfigError extends Error {}
@@ -271,7 +288,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const base = defaultConfig(home);
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
-  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore } };
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, handover: { ...base.handover, ...raw.handover } };
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const stateDir = expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home);
@@ -285,6 +302,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
     scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog, home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
+    handover: { ...merged.handover, inbox: expandHome(merged.handover.inbox, home) },
     leadPane,
   };
 };
