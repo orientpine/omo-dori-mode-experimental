@@ -69,3 +69,9 @@ What the scripts now do so this happens on the second failed patch instead of af
 - At the third attempt the lane is told to search outside first (`dori research-hint`: here, "policy gradient action std collapse" is a known failure mode with known remedies such as an entropy bonus or a std floor).
 - The tree goes into every new brief for that repo, so the next lane sees "reward too small: falsified" and does not start from it again.
 - Before the next expensive step (a nine-seed run), `dori challenge` gets a model of another family to argue against the plan, and `dori intent-check` compares the lane's new direction with the owner's goal in their own words, which catches a lane that has started optimizing a proxy.
+
+## 10. The lead routes; it does not make the change itself
+
+One day a Dori worked through a run of small requests by doing them itself: it renamed folders and the services that pointed at them, swapped a bot token in an env file, edited its agent config, and handed a few pieces to in-process child tasks. Each step was quick and each one worked. The owner still told it to stop and open a session for every job, however simple: none of those changes had a thread, a brief or a Done check, so the owner could not see what had changed or whether anyone had checked it, and while the Dori was busy editing, new messages waited.
+
+Open a lane with `dori launch` for every change, even a one-line one, with a `Done =` signal that reads the result back. Keep for yourself only what changes nothing: reading to answer, launching, pausing and closing lanes, checking a done claim live, and messaging. A child task or subagent inside your own session is not a lane. The rule is in `SKILL.md`, "Every change goes to a lane".
