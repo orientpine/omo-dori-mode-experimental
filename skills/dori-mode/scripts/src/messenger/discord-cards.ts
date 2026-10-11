@@ -118,6 +118,22 @@ export class QuestionStore {
     });
   }
 
+  // open cards asked from one session belong to another from now on (dori handover); returns the ids moved
+  retarget(from: QuestionMeta, to: QuestionMeta): string[] {
+    const s = this.load();
+    const moved: string[] = [];
+    for (const q of s.questions) {
+      if (q.status !== "open") continue;
+      const tmux = !!from.tmux && q.tmux === from.tmux;
+      const session = !!from.session && q.session === from.session;
+      if (tmux) q.tmux = to.tmux ?? null;
+      if (session) q.session = to.session ?? null;
+      if (tmux || session) moved.push(q.id);
+    }
+    if (moved.length) this.save(s);
+    return moved;
+  }
+
   resolve(id: string): boolean {
     const s = this.load();
     const before = s.questions.length;

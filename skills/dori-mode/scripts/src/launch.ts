@@ -178,7 +178,7 @@ const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, 
 };
 
 // The agent's ❯ prompt, or the first startup error on screen: an agent that exits at once never shows a prompt.
-const awaitPrompt = async (deps: FlowDeps, pane: string): Promise<string | undefined> => {
+export const awaitPrompt = async (deps: FlowDeps, pane: string): Promise<string | undefined> => {
   for (let i = 0; i < 90; i++) {
     const screen = await readScreen(deps.run, "aoe", pane);
     if (inputLine(screen) !== undefined) return undefined;

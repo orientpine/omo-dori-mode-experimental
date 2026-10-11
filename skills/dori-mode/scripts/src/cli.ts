@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
 // allow: SIZE_OK — existing command dispatcher; command behavior lives in separate modules.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
+import { ackHandover, handover } from "./handover.ts";
+import { procTable, resolveSession } from "./session-id.ts";
+import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
 import { sendVerified } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
@@ -131,6 +134,15 @@ const USAGE = `dori <command> [options]
                                        post a Discord question card; the first option is the recommended one
   questions [--open]                   list tracked question cards
   reopen <Qn> / resolve <Qn>           put a card's buttons back / forget a settled question
+  handover [--note FILE] [--title T] [--model M] [--keep-old] [--no-monitors] [--minutes N] [--dry-run]
+                                       move the lead to a new session (backend aoe): write a note (open lanes, the old
+                                       session's running monitors, open question cards, todos, timers, --note), open the
+                                       new session on it, point leadPane, dori.env DORI_LEAD_*, the lanes and the cards at
+                                       it, restart handover.services, then check that its monitors run and that a
+                                       [REPORT] probe and an inbox probe are acked from it. Only then is the old session
+                                       closed (HANDOVER_DONE); a failed check moves everything back (HANDOVER_VERIFY_FAIL,
+                                       exit 3). Run from inside the lead it detaches itself (systemd-run)
+  handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE line with this (the line gives --state)
   thread <reply|wait|done> discord:<id> <text>
                                        post in a work thread and set its status (working, waiting, done); done archives it
                                        (Discord env: DORI_DISCORD_TOKEN, DORI_DISCORD_GUILD, DORI_DISCORD_CHANNEL, DORI_DISCORD_OWNER)`;
@@ -176,6 +188,7 @@ const flags = parseArgs({
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
+    "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -669,6 +682,46 @@ try {
       const posted = await threadHook(dc, verb as ThreadVerb, ref ?? "", text ?? "", config.discord, (t, s) => statuses.request(t, s));
       console.log(`POSTED ${posted}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
       break;
+    }
+    case "handover": {
+      const here = config.backend === "aoe" ? await currentTmuxSession(run) : (process.env.HERDR_PANE_ID ?? "");
+      if (key === "ack") {
+        console.log(ackHandover(opt("state") ? resolve(opt("state") ?? "") : config.stateDir, flags.positionals[1]?.trim() || die("usage: dori handover ack <id> [--state DIR]"), here, new Date().toISOString()));
+        break;
+      }
+      // closing the old lead ends every process in its tmux session, so a handover started there continues as a user unit
+      if (here && here === config.leadPane && !flags.values["dry-run"] && !flags.values["keep-old"] && !process.env.DORI_HANDOVER_DETACHED) {
+        const unit = `dori-handover-${Date.now()}`;
+        const log = join(config.stateDir, "handover", "run.log");
+        mkdirSync(join(config.stateDir, "handover"), { recursive: true });
+        const pass = ["PATH", "DORI_CONFIG", "DORI_STATE_DIR", "DORI_ENV_FILE", "DORI_LEAD_PANE", "DORI_DISCORD_INBOX", "DORI_DISCORD_STATE_DIR"].filter((n) => process.env[n] !== undefined).map((n) => `--setenv=${n}`);
+        const r = await run(["systemd-run", "--user", "--collect", `--unit=${unit}`, "--setenv=DORI_HANDOVER_DETACHED=1", ...pass, `--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`, process.execPath, import.meta.path, "handover", ...rest]);
+        if (r.code !== 0) die(`HANDOVER_DETACH_FAIL ${r.err || r.out}`);
+        console.log(`HANDOVER_DETACHED unit=${unit} log=${log}; progress also goes to ${config.watchLog}`);
+        break;
+      }
+      const minutes = opt("minutes") ? Number(opt("minutes")) : undefined;
+      if (minutes !== undefined && !(minutes > 0)) die("--minutes must be a positive number");
+      const r = await handover({
+        ...deps,
+        configPath: configPath(),
+        envPath: envFilePath(),
+        cardDir: cardDir(),
+        inbox: config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+        home: process.env.HOME ?? "",
+        sessionOf: async (pane, cwd) => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id,
+        routedPane: async () => (await loadConfig()).leadPane,
+        envLeadPane: process.env.DORI_LEAD_PANE?.trim() ?? "",
+        alive: pidAlive,
+        timers: async () => {
+          const pattern = new RegExp(config.handover.timers);
+          return (await run(["systemctl", "--user", "list-timers", "--all", "--no-legend", "--no-pager"])).out.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter((l) => l && pattern.test(l));
+        },
+        restart: (unit) => restartService({ systemctl: run, clock: realClock, timeoutSec: config.update.readyTimeoutSec }, config.update.services.find((s) => s.unit === unit) ?? { unit, paths: [], log: "", ready: "" }),
+        nonce: () => crypto.randomUUID().slice(0, 8),
+        print: (line) => console.log(line),
+      }, { note: opt("note"), title: opt("title"), model: opt("model"), keepOld: Boolean(flags.values["keep-old"]), dryRun: Boolean(flags.values["dry-run"]), noMonitors: Boolean(flags.values["no-monitors"]), verifyMin: minutes });
+      process.exit(r.code);
     }
     case "transcribe":
       console.log(await transcribe(run, config.hooks.transcribe, key ?? die("transcribe needs an audio file path")));
