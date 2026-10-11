@@ -145,6 +145,48 @@ export type Explore = {
   readonly branchMinutes: number;
 };
 
+// Signals that need no tag from the lane (REPEAT_SUSPECT, OWNER_CHECK); both only alert the lead. repeatAfter: cycles of
+// "a gate line failed, then a new attempt targets it" on one metric before REPEAT_SUSPECT; repeatGapMin: attempts on one
+// metric closer than this are one attempt told twice. failPattern / passPattern: a gate line's verdict; verdictPattern: a
+// prescription's verdict (fails every known metric the text names); attemptPattern: a new attempt (a prescription, an
+// adjustment, a patch; "시작"/"반영" alone are not, they also start evals and record decisions);
+// prescriptionPattern: words that make it an attempt even when the text also reads as a diagnosis (diagnosticPattern).
+// aliases: metric names that mean the same gate ({ "교착": ["deadlock"] }); the key is the name shown. targetScope: an
+// attempt targets a metric named in the same "sentence" (the default: reports name the target a few words from the prescription)
+// or the same "clause" (between commas: quieter, misses more).
+// ownerCheck: a reviewer of another family reads the brief, the owner's words and recent reports and answers VIOLATION /
+// CONTRADICTION / GOAL_LOSS / OK. enabled: freshness runs it on new reports; models: in order, GPT first (gpt-6.1-sol: on live
+// Korean lane logs the cheaper gpt-6-luna misread a relayed order's scope; it stays as the fallback); command: argv
+// template ({model}, {prompt}, {system}); minutes: time limit; minIntervalMin: at most one check per lane in this time;
+// maxPerDay: per lane; reports: the newest reports it reads at least; maxReports: at most this many of the reports since the
+// last check (all of them up to that); relays: how many owner [LEAD] relays it reads; perTick: checks per sweep.
+export type OwnerCheck = {
+  readonly enabled: boolean;
+  readonly models: readonly string[];
+  readonly command: ArgvTemplate;
+  readonly minutes: number;
+  readonly minIntervalMin: number;
+  readonly maxPerDay: number;
+  readonly reports: number;
+  readonly maxReports: number;
+  readonly relays: number;
+  readonly perTick: number;
+};
+
+export type AutoSignals = {
+  readonly repeatAfter: number;
+  readonly repeatGapMin: number;
+  readonly failPattern: string;
+  readonly passPattern: string;
+  readonly verdictPattern: string;
+  readonly attemptPattern: string;
+  readonly prescriptionPattern: string;
+  readonly diagnosticPattern: string;
+  readonly aliases: Readonly<Record<string, readonly string[]>>;
+  readonly targetScope: "clause" | "sentence";
+  readonly ownerCheck: OwnerCheck;
+};
+
 // dori handover: switch the lead to a new agent session. prompt starts the first message of the new session (the note's
 // path follows); title names it (empty: the old title plus MMDDhhmm); model (empty: defaultModel); services are the user
 // units restarted after leadPane moves, so long-running sweeps read it again (empty: the update.services units); timers is
@@ -215,6 +257,7 @@ export type DoriConfig = {
   readonly scorecard: Scorecard;
   readonly signals: Signals;
   readonly explore: Explore;
+  readonly autoSignals: AutoSignals;
   readonly handover: Handover;
 };
 
@@ -281,6 +324,30 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     branchCommand: ["omo", "-p", "--no-session", "--model", "{model}", "{prompt}"],
     branchMinutes: 15,
   },
+  autoSignals: {
+    repeatAfter: 3,
+    repeatGapMin: 30,
+    failPattern: "\\bFAIL(?:ED|S)?\\b|불합격|미달|✗|❌",
+    passPattern: "\\bPASS(?:ED|ES)?\\b|(?<!불)합격|✓|✅",
+    verdictPattern: "\\bREJECTED\\b|\\bNOT[ _]JUDGEABLE\\b|\\bUNCLEAR\\b|\\bno effect\\b|\\bdid not (?:move|improve)\\b|기각|판정 불가|지지 안 함|효과 없음|개선 없음",
+    attemptPattern: "처방|조정|수정|패치|재학습|벌점|\\bprescri|\\bpatch|\\bretrain|\\btweak|\\badjust|\\bpenalt|\\bfix(?:ed|es)?\\b|^(?:fix|feat|perf)\\(",
+    prescriptionPattern: "처방|조정|수정|패치|재학습|벌점|\\bprescri|\\bpatch|\\bretrain|\\btweak|\\badjust|\\bpenalt|^(?:fix|feat|perf)\\(",
+    diagnosticPattern: "탐침|probe|판독|readout|재생|replay|진단|diagnos|가설|hypothes|평가|\\beval|측정|measure|비교|compar|예선|결선|^(?:qa|docs|test)\\(",
+    aliases: {},
+    targetScope: "sentence",
+    ownerCheck: {
+      enabled: true,
+      models: ["chatgpt-subscription/gpt-6.1-sol", "chatgpt-subscription/gpt-6-luna", "xai/grok-4.7", "anthropic-subscription/claude-opus-5-5"],
+      command: ["omo", "-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files", "--omo-senpi-disabled", "--system-prompt", "{system}", "--model", "{model}", "{prompt}"],
+      minutes: 4,
+      minIntervalMin: 30,
+      maxPerDay: 48,
+      reports: 6,
+      maxReports: 20,
+      relays: 8,
+      perTick: 1,
+    },
+  },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
     laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneRepeats: 3, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false, supplementRounds: 2,
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}", proposalOptions: ["Yes, roll over", "Not yet"] },
@@ -318,7 +385,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const base = defaultConfig(home);
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
-  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, handover: { ...base.handover, ...raw.handover } };
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover } };
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const stateDir = expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home);

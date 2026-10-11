@@ -381,7 +381,10 @@ test("intent-check flags a direction that drifted from the owner's goal; a stage
   const empty: Tree = { area: "x", nodes: [] };
   const goal = "굴착기가 흙을 퍼서 적치띠에 덤프하는 정책을 학습";
   expect(intentView({ ...lane, goal, direction: { at: "t", text: "적치띠 덤프 보상 정책 학습 재개", next: "9-seed 평가" } }, empty, 0.12).verdict).toBe("INTENT_OK");
-  expect(intentView({ ...lane, goal, direction: { at: "t", text: "rewrite the Discord bot README", next: "publish docs" } }, empty, 0.12).verdict).toBe("INTENT_DRIFT");
+  // a Korean goal: low word overlap is no evidence either way (dori owner-check reads it), so never INTENT_DRIFT
+  expect(intentView({ ...lane, goal, direction: { at: "t", text: "rewrite the Discord bot README", next: "publish docs" } }, empty, 0.12).verdict).toBe("INTENT_UNCHECKED");
+  const ko = "같은 실수 3번과 형 지시 위반·상태 모순·목표 상실을 자동으로 잡는 보완 만들기";
+  expect(intentView({ ...lane, goal: ko, direction: { at: "t", text: "build REPEAT_SUSPECT and OWNER_CHECK as alert-only signals", next: "backtest on hr35-e7" } }, empty, 0.12).verdict).toBe("INTENT_UNCHECKED");
   const en = "make the excavator dump soil into the bank reliably";
   expect(intentView({ ...lane, goal: en, direction: { at: "t", text: "add a swing std floor so the policy keeps exploring the dump swing", next: "count dumps into the bank" } }, empty, 0.12).verdict).toBe("INTENT_OK");
   expect(intentView({ ...lane, goal: en, direction: { at: "t", text: "rewrite the README for the Discord bot", next: "publish docs" } }, empty, 0.12).verdict).toBe("INTENT_DRIFT");

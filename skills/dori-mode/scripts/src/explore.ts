@@ -491,7 +491,7 @@ export const overlap = (goal: string, direction: string): number => {
 
 const NEXT = /(?:next(?: step)?|다음(?: 단계)?)\s*[:：=-]\s*([^|;\n]+)/i;
 
-export type IntentView = { readonly goal?: string; readonly direction: string; readonly next: string; readonly score: number; readonly verdict: "INTENT_OK" | "INTENT_DRIFT" | "INTENT_NO_GOAL" };
+export type IntentView = { readonly goal?: string; readonly direction: string; readonly next: string; readonly score: number; readonly verdict: "INTENT_OK" | "INTENT_DRIFT" | "INTENT_UNCHECKED" | "INTENT_NO_GOAL" };
 
 export const intentView = (lane: Lane, tree: Tree, driftBelow: number): IntentView => {
   const report = (lane.lastReport ?? "").replace(/^\[REPORT\][^|]*\|[^|]*\|\s*/, "");
@@ -500,7 +500,10 @@ export const intentView = (lane: Lane, tree: Tree, driftBelow: number): IntentVi
   const next = lane.direction?.next ?? NEXT.exec(report)?.[1]?.trim() ?? (openTest ? `test ${openTest.id}: ${openTest.test}` : "(not stated; pass --next)");
   if (!lane.goal) return { direction, next, score: 0, verdict: "INTENT_NO_GOAL" };
   const score = overlap(lane.goal, `${direction} ${next}`);
-  return { goal: lane.goal, direction, next, score, verdict: score < driftBelow ? "INTENT_DRIFT" : "INTENT_OK" };
+  // A Korean (or Chinese, Japanese) goal shares few character pairs with an English report or a paraphrase in the same
+  // language, so low overlap there is no evidence of drift: it is left to dori owner-check, which reads the words.
+  const low = score < driftBelow;
+  return { goal: lane.goal, direction, next, score, verdict: !low ? "INTENT_OK" : CJK.test(lane.goal) ? "INTENT_UNCHECKED" : "INTENT_DRIFT" };
 };
 
 export const formatIntent = (lane: Lane, v: IntentView): string[] => [
@@ -512,5 +515,7 @@ export const formatIntent = (lane: Lane, v: IntentView): string[] => [
     ? `INTENT_OK ${lane.key} overlap ${v.score.toFixed(2)}: the direction still names the goal; say in the report how this step serves it`
     : v.verdict === "INTENT_DRIFT"
       ? `INTENT_DRIFT ${lane.key} overlap ${v.score.toFixed(2)}: the current direction shares little with the owner's goal. Restate how this step serves the goal, change course, or ask the owner`
-      : `INTENT_NO_GOAL ${lane.key}: no owner goal on record, so drift cannot be checked`,
+      : v.verdict === "INTENT_UNCHECKED"
+        ? `INTENT_UNCHECKED ${lane.key} overlap ${v.score.toFixed(2)}: the goal is in Korean (or another CJK language), where word overlap cannot tell drift; dori owner-check ${lane.key} has a reviewer model read the goal and reports. Say in the report how this step serves the goal`
+        : `INTENT_NO_GOAL ${lane.key}: no owner goal on record, so drift cannot be checked`,
 ];
