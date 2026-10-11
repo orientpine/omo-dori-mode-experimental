@@ -4,7 +4,7 @@ A session that runs for a long time grows its context, compacts it again and aga
 
 ## The rule: a rollover needs the owner's approval
 
-- `dori handover` and `dori handover --lane <key>` refuse a real run without `--approved-by <ref>` (`--dry-run` needs none). The ref is either a question card `Qn` that the owner answered with its first option (the card must exist and be answered, and the answer must be that option), a link to the owner's message, or their words (3 characters or more). The ref goes into the note, the lane history and the rollover log.
+- `dori handover` and `dori handover --lane <key>` refuse a real run without `--approved-by <ref>` (`--dry-run` needs none). The ref is either a question card `Qn` that the owner answered with its first option (the card must exist, be the one `dori rollover-propose` posted for this lane or the lead, as the rollover log records, and be answered with that option, so a yes on another lane's card or on any other question moves nothing), a link to the owner's message, or their words (3 characters or more). A link or words are the lead's own statement, not checked: use them only when the owner said yes outside a card. The ref goes into the note, the lane history and the rollover log.
 - `auto:<key>` is accepted only while `handover.autoRolloverLanes` (for lanes) or `handover.autoRolloverLead` (for the lead) is on. Both are off by default. Turn one on only after the owner looked at `dori rollover-stats` and said so.
 - Never move a real lane or the lead without that approval, not even to test. Tests run on a scratch lane (`dori launch` one, `dori pause` it so freshness leaves it alone, close it afterwards).
 

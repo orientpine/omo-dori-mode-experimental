@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 
 import { ackHandover, handover, type HandoverDeps, manifestPath } from "../src/handover.ts";
-import { quietReason, readRollovers } from "../src/rollover.ts";
+import { quietReason, readRollovers, appendRollover } from "../src/rollover.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { Lane } from "../src/registry.ts";
 import { sessionDirFor } from "../src/session-id.ts";
@@ -350,13 +350,16 @@ test("refuses without the owner's approval before opening anything; an approval 
   const deps = await setup();
   // When
   const bare = await handover(deps, { title: "lead2" });
+  const notProposed = await handover(deps, { title: "lead2", approvedBy: "Q1" });
+  appendRollover(state.dir, { kind: "proposal", who: "lead", at: "2026-10-11T00:00:00Z", key: "lead", card: "Q1", pane: "lead", signals: {}, crossed: [], blockers: "" });
   const openCard = await handover(deps, { title: "lead2", approvedBy: "Q1" });
   // Then
-  expect([bare.code, openCard.code]).toEqual([2, 2]);
+  expect([bare.code, notProposed.code, openCard.code]).toEqual([2, 2, 2]);
   expect(printed[0]).toStartWith("HANDOVER_REFUSED the lead moves to a new session only with the owner's approval: no approval");
-  expect(printed[1]).toContain("card Q1 is not answered yet");
+  expect(printed[1]).toContain("card Q1 is not a rollover proposal for lead");
+  expect(printed[2]).toContain("card Q1 is not answered yet");
   expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);
-  expect(readRollovers(state.dir).map((e) => e.kind === "rollover" && e.result)).toEqual(["refused"]);
+  expect(readRollovers(state.dir).map((e) => (e.kind === "rollover" ? e.result : e.kind))).toEqual(["refused", "proposal", "refused"]);
 });
 
 test("the old lead is quiet from the moment the new lead takes over until the checks end, then the log has the rollover", async () => {

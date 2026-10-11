@@ -501,17 +501,23 @@ test("an approval is an answered card's first option, a link or words, or auto o
     Q3: { id: "Q3", status: "open", options: ["Yes, roll over", "Not yet"] },
   };
   const card = (id: string) => cards[id] as never;
+  const proposal = (key: string, id: string) => ({ kind: "proposal" as const, who: "lane" as const, at: "2026-10-11T00:00:00Z", key, card: id, pane: "p", signals: {}, crossed: [], blockers: "" });
+  const log = [proposal("demo", "Q1"), proposal("demo", "Q2"), proposal("demo", "Q3"), proposal("other", "Q4")];
+  cards.Q4 = { id: "Q4", status: "answered", options: ["Yes, roll over", "Not yet"], answer: "Yes, roll over" };
+  cards.Q5 = { id: "Q5", status: "answered", options: ["Yes", "No"], answer: "Yes" };
   // When / Then
-  expect(approvalProblem("Q1", card, false)).toBeUndefined();
-  expect(approvalProblem("q1", card, false)).toBeUndefined();
-  expect(approvalProblem("Q2", card, false)).toBe('card Q2 was answered "Not yet", not "Yes, roll over"');
-  expect(approvalProblem("Q3", card, false)).toBe("card Q3 is not answered yet");
-  expect(approvalProblem("Q9", card, false)).toBe("card Q9 not found");
-  expect(approvalProblem("https://discord.com/channels/1/2/3", card, false)).toBeUndefined();
-  expect(approvalProblem("ok", card, false)).toContain("too short");
-  expect(approvalProblem(undefined, card, false)).toStartWith("no approval");
-  expect(approvalProblem("auto:handover.autoRolloverLanes", card, false)).toContain("the automation key is off");
-  expect(approvalProblem("auto:handover.autoRolloverLanes", card, true)).toBeUndefined();
+  expect(approvalProblem("Q4", card, false, "demo", log)).toBe("card Q4 is not a rollover proposal for demo; post one with dori rollover-propose demo");
+  expect(approvalProblem("Q5", card, false, "demo", log)).toBe("card Q5 is not a rollover proposal for demo; post one with dori rollover-propose demo");
+  expect(approvalProblem("Q1", card, false, "demo", log)).toBeUndefined();
+  expect(approvalProblem("q1", card, false, "demo", log)).toBeUndefined();
+  expect(approvalProblem("Q2", card, false, "demo", log)).toBe('card Q2 was answered "Not yet", not "Yes, roll over"');
+  expect(approvalProblem("Q3", card, false, "demo", log)).toBe("card Q3 is not answered yet");
+  expect(approvalProblem("Q9", card, false, "demo", log)).toBe("card Q9 not found");
+  expect(approvalProblem("https://discord.com/channels/1/2/3", card, false, "demo", log)).toBeUndefined();
+  expect(approvalProblem("ok", card, false, "demo", log)).toContain("too short");
+  expect(approvalProblem(undefined, card, false, "demo", log)).toStartWith("no approval");
+  expect(approvalProblem("auto:handover.autoRolloverLanes", card, false, "demo", log)).toContain("the automation key is off");
+  expect(approvalProblem("auto:handover.autoRolloverLanes", card, true, "demo", log)).toBeUndefined();
 });
 
 test("the old lane is quiet while it is replaced and may talk again after; every real attempt is logged with signals and steps", async () => {

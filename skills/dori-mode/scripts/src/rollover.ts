@@ -57,14 +57,17 @@ export const repeatsOf = (lane: Lane): number => {
 export const AUTO_PREFIX = "auto:";
 
 // What makes a rollover approved: a question card (Qn) the owner answered with its first option, a link to or the words
-// of their message, or "auto:..." when the automation key for that side is on. Undefined when the reference holds.
-export const approvalProblem = (ref: string | undefined, card: (id: string) => Question | undefined, autoOn: boolean): string | undefined => {
+// of their message, or "auto:..." when the automation key for that side is on. A card counts only when dori rollover-propose
+// posted it for this key (the rollover log says so), so a yes to another lane's card, or to any other question, moves nothing.
+// Undefined when the reference holds.
+export const approvalProblem = (ref: string | undefined, card: (id: string) => Question | undefined, autoOn: boolean, key: string, proposals: readonly RolloverEntry[]): string | undefined => {
   const r = ref?.trim() ?? "";
   if (!r) return "no approval: pass --approved-by <the owner's answered card Qn, or their message link or words>";
   if (r.startsWith(AUTO_PREFIX)) return autoOn ? undefined : `${r} is an automatic approval, but the automation key is off (the owner turns it on)`;
   if (/^Q\d+$/i.test(r)) {
     const q = card(r.toUpperCase());
     if (!q) return `card ${r} not found`;
+    if (!proposals.some((e) => e.kind === "proposal" && e.key === key && e.card === q.id)) return `card ${q.id} is not a rollover proposal for ${key}; post one with dori rollover-propose ${key}`;
     if (q.status !== "answered") return `card ${q.id} is not answered yet`;
     if (q.answer !== q.options[0]) return `card ${q.id} was answered ${JSON.stringify(q.answer ?? "")}, not ${JSON.stringify(q.options[0] ?? "")}`;
     return undefined;
