@@ -153,6 +153,14 @@ export type Explore = {
 // (empty: the old lead's path with symlinks resolved); watchers are the watches that are not omo monitors of the old
 // session (a host guard, a separate listener): check is an argv ({pane}, {session} filled in) whose exit 0 means it runs,
 // before the move for the old lead and after it for the new one; arm tells the new session how to start it, if it must.
+// Rollover (moving a session to a new one): readyMin is how long a lane's `dori handover ready` mark stays valid. lane* and
+// lead* are the thresholds at which freshness says a rollover is due (ROLLOVER_DUE): context use in percent (status line),
+// compactions in the session log, hours since the session began, and (lanes only) laneRepeats, the attempts of one same
+// fix in the current session (dori fix-attempt's count); 0 turns one off. Nothing switches on a threshold: the
+// lead asks the owner (dori rollover-propose posts proposalText with proposalOptions, the first meaning yes) and runs the
+// handover with --approved-by. autoRolloverLanes / autoRolloverLead let freshness start it without asking; off until the
+// owner decides from dori rollover-stats. supplementRounds is how many times a lane handover fills in what the new session's
+// restatement left out (from the note and the old log) and asks again before it rolls back; 0 rolls back at the first gap.
 export type HandoverWatcher = { readonly name: string; readonly check: readonly string[]; readonly arm?: string };
 
 export type Handover = {
@@ -165,6 +173,19 @@ export type Handover = {
   readonly inbox: string;
   readonly cwd: string;
   readonly watchers: readonly HandoverWatcher[];
+  readonly readyMin: number;
+  readonly laneContextPct: number;
+  readonly laneRepeats: number;
+  readonly laneCompactions: number;
+  readonly laneAgeH: number;
+  readonly leadContextPct: number;
+  readonly leadCompactions: number;
+  readonly leadAgeH: number;
+  readonly autoRolloverLanes: boolean;
+  readonly autoRolloverLead: boolean;
+  readonly supplementRounds: number;
+  readonly proposalText: string;
+  readonly proposalOptions: readonly string[];
 };
 
 export type DoriConfig = {
@@ -260,7 +281,9 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     branchCommand: ["omo", "-p", "--no-session", "--model", "{model}", "{prompt}"],
     branchMinutes: 15,
   },
-  handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [] },
+  handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
+    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneRepeats: 3, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false, supplementRounds: 2,
+    proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}", proposalOptions: ["Yes, roll over", "Not yet"] },
 });
 
 export class ConfigError extends Error {}

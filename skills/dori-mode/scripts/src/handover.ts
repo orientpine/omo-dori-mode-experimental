@@ -4,7 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { aoeSessions, closeAoeSession, openAoeSession, sessionFor } from "./aoe.ts";
+import { aoeSessions, captureTmux, closeAoeSession, inputLine, openAoeSession, sessionFor } from "./aoe.ts";
 import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { awaitPrompt } from "./launch.ts";
@@ -13,6 +13,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
+import { appendRollover, approvalProblem, clearQuiet, COMMITTED, lastProposal, readRollovers, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type HandoverDeps = FlowDeps & {
@@ -38,6 +39,8 @@ export type HandoverDeps = FlowDeps & {
 };
 
 export type HandoverOptions = {
+  // the owner's approval: an answered card Qn, a message link or their words (rollover.ts approvalProblem); --dry-run needs none
+  readonly approvedBy?: string;
   readonly title?: string;
   readonly model?: string;
   readonly note?: string;
@@ -131,9 +134,10 @@ export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonl
   const live = entries.filter((e) => e.persistent && running(e, now) && (e.path || (e.runtime?.pid !== undefined && alive(e.runtime.pid))));
   return wanted
     .filter((m) => !live.some((e) =>
-      (m.command && e.command && norm(m.command, home) === norm(e.command, home)) ||
-      (m.path && e.path && norm(m.path, home) === norm(e.path, home)) ||
-      (m.description && e.description === m.description)))
+      // the same watch, not just the same name: the command (and its filter) or the path; the description only for a monitor that has neither
+      m.command ? !!e.command && norm(m.command, home) === norm(e.command, home) && (!m.filter || e.filter === m.filter)
+        : m.path ? !!e.path && norm(m.path, home) === norm(e.path, home)
+        : !!m.description && e.description === m.description))
     .map((m) => m.description || m.command || m.path || "?");
 };
 
@@ -181,7 +185,8 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   "## Do this first",
   "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
   `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
-  "3. Then read the rest and carry on: open lanes, owner questions, todos, timers and the old lead's notes. The old session stays quiet and is closed once the checks pass.",
+  `3. Read the rest, but until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,
+  `4. After ${COMMITTED}, carry on: open lanes, owner questions, todos, timers and the old lead's notes.`,
   "",
   `## Monitors (${f.monitors.length})`,
   ...(f.monitors.length ? f.monitors.map(monitorLine) : ["none"]),
@@ -315,7 +320,7 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
 export type HandoverResult = { readonly code: number; readonly note?: string; readonly to?: string };
 
 // One handover at a time per state dir: two would each open a session and repoint the lead to their own.
-const takeLock = (file: string, alive: (pid: number) => boolean, at: string): string | undefined => {
+export const takeLock = (file: string, alive: (pid: number) => boolean, at: string): string | undefined => {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       writeFileSync(file, JSON.stringify({ pid: process.pid, at }), { flag: "wx" });
@@ -336,7 +341,7 @@ const takeLock = (file: string, alive: (pid: number) => boolean, at: string): st
   return `could not take the handover lock ${file}`;
 };
 
-type MoveContext = { readonly note: string; readonly stamp: string; readonly dir: string; readonly title: string; readonly model: string; readonly units: readonly string[]; readonly emit: (line: string) => void };
+type MoveContext = { readonly note: string; readonly stamp: string; readonly dir: string; readonly title: string; readonly model: string; readonly units: readonly string[]; readonly emit: (line: string) => void; readonly mark: (step: string, ok: boolean) => void };
 
 export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): Promise<HandoverResult> => {
   const { config } = deps;
@@ -349,12 +354,15 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   };
   const refuse = (why: string): HandoverResult => {
     emit(`HANDOVER_REFUSED ${why}`);
+    if (!opts.dryRun && opts.approvedBy?.trim()) appendRollover(config.stateDir, { kind: "rollover", who: "lead", at, key: "lead", from: config.leadPane, approvedBy: opts.approvedBy.trim(), signals: {}, steps: [], result: "refused", reasons: [why] });
     return { code: 2 };
   };
   if (config.backend !== "aoe") return refuse("dori handover needs backend aoe");
   if (!config.leadPane) return refuse("leadPane is not set");
   if (deps.envLeadPane) return refuse(`DORI_LEAD_PANE=${deps.envLeadPane} is set in the environment and overrides leadPane in ${deps.configPath}, so lanes would keep reporting there; remove it (also from any wrapper script) and keep the pane in the config file`);
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
+  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLead, key: "handover.autoRolloverLead" }, "lead", config.leadPane, readRollovers(config.stateDir));
+  if (unapproved) return refuse(`the lead moves to a new session only with the owner's approval: ${unapproved} (--dry-run needs none)`);
   const old = sessionFor(await aoeSessions(deps.run), config.leadPane);
   if (!old) return refuse(`no live aoe session for leadPane ${config.leadPane}`);
   const bad = config.handover.watchers.find((w) => !w.name || !Array.isArray(w.check) || !w.check.length);
@@ -364,6 +372,10 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   const manifest = session ? manifestPath(config.sessionsDir, old.path, session) : "";
   const entries = manifest ? readManifest(manifest) : [];
   const now = deps.clock.now();
+  const leadScreen = await captureTmux(deps.run, config.leadPane);
+  const status = leadScreen.split("\n").slice(leadScreen.split("\n").findLastIndex((l) => l === inputLine(leadScreen)) + 1).join("\n");
+  const pct = /\b\d+(?:\.\d+)?[KMG]?\/\d+(?:\.\d+)?[KMG]?\s+\((\d+(?:\.\d+)?)%\)/.exec(status)?.[1];
+  const signals: Signals = { ...(pct ? { contextPct: Number(pct) } : {}), ...sessionSignals(sessionDir, session, now) };
   const real = deps.realpath(old.path);
   const cwd = config.handover.cwd || real;
   if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK the old lead runs from ${old.path}, a symlink to ${real}; the new session opens in ${cwd}${config.handover.cwd ? " (handover.cwd)" : " (set handover.cwd to choose another)"}`);
@@ -400,29 +412,51 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   const lockFile = join(dir, "lock");
   const busy = takeLock(lockFile, deps.alive, at);
   if (busy) return refuse(busy);
+  const steps: Step[] = [];
+  let last = deps.clock.now();
+  const mark = (step: string, ok: boolean) => {
+    const t = deps.clock.now();
+    steps.push({ step, ms: t - last, ok });
+    last = t;
+  };
+  let r: HandoverResult = { code: 3, note };
   try {
-    return await moveLead(deps, opts, facts, { note, stamp, dir, title, model, units, emit });
+    r = await moveLead(deps, opts, facts, { note, stamp, dir, title, model, units, emit, mark });
+    return r;
   } finally {
     rmSync(lockFile, { force: true });
+    // the old lead may talk again once it is closed or stays the lead; with --keep-old it stays quiet until the mark expires
+    // (and when the close failed: it is still open but no longer the lead)
+    if (!(r.code === 1 || (r.code === 0 && opts.keepOld))) clearQuiet(config.stateDir, config.leadPane);
+    const proposal = lastProposal(readRollovers(config.stateDir), "lead");
+    appendRollover(config.stateDir, {
+      kind: "rollover", who: "lead", at, key: "lead", from: config.leadPane, ...(r.to ? { to: r.to } : {}), ...(opts.approvedBy?.trim() ? { approvedBy: opts.approvedBy.trim() } : {}),
+      ...(proposal ? { proposedAt: proposal.at, approvalMin: Math.round((Date.parse(at) - Date.parse(proposal.at)) / 6_000) / 10 } : {}),
+      signals, steps, result: r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back", reasons: steps.filter((st) => !st.ok).map((st) => st.step),
+    });
   }
 };
 
 const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: HandoverFacts, ctx: MoveContext): Promise<HandoverResult> => {
   const { config } = deps;
-  const { note, stamp, dir, title, model, units, emit } = ctx;
+  const { note, stamp, dir, title, model, units, emit, mark } = ctx;
   const tell = (pane: string, text: string) => sendVerified(deps.run, deps.clock, config, pane, text).catch(() => false);
   let pane: string;
   try {
     pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", model });
+    mark("open", true);
   } catch (e) {
+    mark("open", false);
     emit(`HANDOVER_FAIL could not open the new session: ${e instanceof Error ? e.message : String(e)}; nothing moved, ${config.leadPane} stays the lead`);
     return { code: 3, note };
   }
   const startup = await awaitPrompt(deps, pane);
+  mark("startup", !startup);
   if (startup) {
     emit(`HANDOVER_FAIL new session ${pane}: ${startup}; nothing moved, ${config.leadPane} stays the lead`);
     return { code: 3, note, to: pane };
   }
+  setQuiet(config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
   await tell(config.leadPane, `[LEAD] Handover to ${pane} started (note ${note}). Stay quiet now: do not answer the owner or act on inbox, lane or session events, and ignore ${PROBE} lines. If the handover fails you are told and stay the lead.`);
   if (!(await sendVerified(deps.run, deps.clock, config, pane, `${config.handover.prompt}. Read the handover note at ${note} in full and do what it says, starting with its first section.`))) {
     await tell(config.leadPane, `[LEAD] Handover to ${pane} failed before anything moved: its first message did not register. You stay the lead.`);
@@ -442,13 +476,16 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   };
   for (const line of await pointLead(deps, facts.from, to, stamp)) emit(line);
   const restartFailures = await restartAll();
+  mark("repoint", !restartFailures.length);
   const checked = restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, emit);
+  if (!restartFailures.length) mark("verify", !checked.reasons.length);
   const record = (result: string, reasons: readonly string[]) => writeFileSync(join(dir, `${stamp}.result.json`), JSON.stringify({ at: iso(deps.clock), from: facts.from, to: { ...to, session: checked.session }, note, result, reasons }, null, 1));
   if (checked.reasons.length) {
     emit(`HANDOVER_VERIFY_FAIL ${pane}: ${checked.reasons.join("; ")}`);
     for (const line of await pointLead(deps, to, facts.from, stamp)) emit(line);
     await restartAll();
     await tell(config.leadPane, `[LEAD] Handover to ${pane} failed (${checked.reasons.join("; ")}). You stay the lead: answer the owner and handle events again.`);
+    await tell(pane, `[LEAD] HANDOVER_ROLLED_BACK: the handover failed (${checked.reasons.join("; ")}); ${config.leadPane} stays the lead. You are not the lead: do nothing more.`);
     emit(`HANDOVER_ROLLED_BACK ${config.leadPane} stays the lead; ${pane} is left open to look at (aoe rm it when done)`);
     record("rolled-back", checked.reasons);
     return { code: 3, note, to: pane };
@@ -456,6 +493,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   if (facts.from.session && checked.session) new QuestionStore(deps.cardDir).retarget({ session: facts.from.session }, { session: checked.session });
   if (opts.keepOld) {
     await tell(config.leadPane, `[LEAD] Handover to ${pane} is done and checked. You are no longer the lead; stay idle until the lead closes you.`);
+    await tell(pane, `[LEAD] ${COMMITTED}: the handover is checked and ${config.leadPane} stays open but idle; you are the lead now. Go on with step 4 of the note.`);
     emit(`HANDOVER_DONE ${config.leadPane} -> ${pane}; old session kept (--keep-old)`);
     record("done-kept-old", []);
     return { code: 0, note, to: pane };
@@ -464,6 +502,9 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   record("done", []);
   const closed = await closeAoeSession(deps.run, config.leadPane);
   const ok = closed.includes("stopped and trashed");
+  mark("close", ok);
   emit(ok ? `HANDOVER_CLOSED ${closed}` : `HANDOVER_CLOSE_FAIL ${closed}`);
+  await tell(pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${ok ? "is closed" : `${config.leadPane} did not close but stays idle`}; you are the lead now. Go on with step 4 of the note.`);
+  emit(`${COMMITTED} lead ${pane}`);
   return { code: ok ? 0 : 1, note, to: pane };
 };

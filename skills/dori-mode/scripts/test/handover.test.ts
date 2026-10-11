@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { ackHandover, handover, type HandoverDeps, manifestPath } from "../src/handover.ts";
+import { ackHandover, handover, type HandoverDeps, manifestPath, missingMonitors } from "../src/handover.ts";
+import { quietReason, readRollovers, appendRollover } from "../src/rollover.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { Lane } from "../src/registry.ts";
 import { sessionDirFor } from "../src/session-id.ts";
@@ -15,6 +16,7 @@ const CWD = "/work/lead";
 const LINK = "/work/lead-link";
 const GUARD = { name: "host guard", check: ["guard-check", "{pane}"], arm: "systemctl --user start dori-lanes" };
 const INBOX_CMD = "tail -n 0 -F /home/test/.dori/inbox.jsonl";
+const APPROVED = "https://discord.com/channels/1/2/3";
 const LANES_CMD = "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_";
 
 type Sim = { arm: { command: string; description: string; pid: number }[]; ackPane: string; ackReport: boolean; ackInbox: boolean; guardFor: Set<string> };
@@ -141,7 +143,7 @@ test("refuses before changing anything when the old lead runs no monitor", async
   const deps = await setup();
   writeManifest("old-sid", [monitor("paused watch", "tail -F /tmp/suspended", { suspended: true })]);
   // When
-  const r = await handover(deps, { title: "lead2" });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
   // Then
   expect(r.code).toBe(2);
   expect(printed[0]).toStartWith(`HANDOVER_REFUSED no running monitor found for aoe_lead_0a0a0a0a in ${manifestPath(join(state.dir, "sessions"), CWD, "old-sid")}`);
@@ -153,7 +155,7 @@ test("refuses while DORI_LEAD_PANE overrides the config, since lanes would keep 
   // Given
   const deps = { ...(await setup()), envLeadPane: OLD };
   // When
-  const r = await handover(deps, { title: "lead2" });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
   // Then
   expect(r.code).toBe(2);
   expect(printed[0]).toStartWith(`HANDOVER_REFUSED DORI_LEAD_PANE=${OLD} is set`);
@@ -166,9 +168,9 @@ test("refuses while another handover holds the lock, and takes over a lock whose
   mkdirSync(join(state.dir, "handover"), { recursive: true });
   writeFileSync(join(state.dir, "handover", "lock"), JSON.stringify({ pid: 101, at: "2026-10-11T16:30:00Z" }));
   // When
-  const busy = await handover(deps, { title: "lead2" });
+  const busy = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
   live.delete(101);
-  const after = await handover(deps, { title: "lead2", noMonitors: true, verifyMin: 1 });
+  const after = await handover(deps, { approvedBy: APPROVED, title: "lead2", noMonitors: true, verifyMin: 1 });
   // Then
   expect(busy.code).toBe(2);
   expect(printed.find((l) => l.startsWith("HANDOVER_REFUSED another handover is running (pid 101"))).toBeDefined();
@@ -180,7 +182,7 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   // Given
   const deps = await setup();
   // When
-  const r = await handover(deps, { title: "lead2", note: lane().brief });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2", note: lane().brief });
   // Then
   expect(r).toMatchObject({ code: 0, to: NEW });
   expect(leadPaneInConfig()).toBe(NEW);
@@ -201,6 +203,10 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   expect(printed).toContain("HANDOVER_MONITORS_OK 3 in aoe_lead2_5e5e5e5e (session new-sid)");
   expect(printed.some((l) => l.startsWith(`HANDOVER_DONE ${OLD} -> ${NEW}`))).toBe(true);
   expect(readFileSync(r.note ?? "", "utf8")).toContain("## The old lead's notes\nDo the work.");
+  // the new lead acts only after the commit, which comes once the old session is closed
+  expect(readFileSync(r.note ?? "", "utf8")).toContain("until a [LEAD] HANDOVER_COMMITTED line arrives answer no one");
+  const commitAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_COMMITTED: the handover is checked and the old session is closed"));
+  expect(commitAt).toBeGreaterThan(stopAt);
 });
 
 test("an inbox probe acked by the old lead does not count: nothing is closed and everything moves back", async () => {
@@ -221,7 +227,7 @@ test("an inbox probe acked by the old lead does not count: nothing is closed and
     },
   };
   // When
-  const r = await handover(withOldAck, { title: "lead2", verifyMin: 1 });
+  const r = await handover(withOldAck, { approvedBy: APPROVED, title: "lead2", verifyMin: 1 });
   // Then
   expect(r.code).toBe(3);
   expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain(`the inbox probe was acked from ${OLD}, not ${NEW}`);
@@ -232,6 +238,8 @@ test("an inbox probe acked by the old lead does not count: nothing is closed and
   expect(new QuestionStore(join(state.dir, "discord")).get("Q1")?.tmux).toBe(OLD);
   expect(sent(w).some((t) => t.startsWith(`[LEAD] Handover to ${NEW} failed`))).toBe(true);
   expect(printed.some((l) => l.startsWith(`HANDOVER_ROLLED_BACK ${OLD} stays the lead`))).toBe(true);
+  expect(sent(w).some((t) => t.startsWith("[LEAD] HANDOVER_ROLLED_BACK: the handover failed") && t.includes("You are not the lead"))).toBe(true);
+  expect(sent(w).some((t) => t.includes("HANDOVER_COMMITTED:"))).toBe(false);
 });
 
 test("a monitor whose process died in the new session counts as missing, so the old lead stays", async () => {
@@ -239,7 +247,7 @@ test("a monitor whose process died in the new session counts as missing, so the 
   const deps = await setup();
   live.delete(202);
   // When
-  const r = await handover(deps, { title: "lead2", verifyMin: 1 });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2", verifyMin: 1 });
   // Then
   expect(r.code).toBe(3);
   expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("monitors not running in aoe_lead2_5e5e5e5e: lanes");
@@ -258,7 +266,7 @@ test("a lead whose monitors are all non-persistent (as OkDori's were) still hand
   writeManifest("old-sid", [monitor("inbox", INBOX_CMD, { persistent: false, expiresAt: null, durabilityClass: "ephemeral", deadlineMs: Date.parse("2026-10-11T16:40:00Z") })]);
   sim.arm = [{ description: "inbox", command: INBOX_CMD, pid: 201 }];
   // When
-  const r = await handover(deps, { title: "lead2" });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
   // Then
   expect(r).toMatchObject({ code: 0, to: NEW });
   expect(readFileSync(r.note ?? "", "utf8")).toContain("## Monitors (1)\n- inbox: command");
@@ -270,7 +278,7 @@ test("a configured watcher is listed in the note and checked for the old lead fi
   const deps = withWatcher(await setup());
   sim.guardFor = new Set();
   // When
-  const r = await handover(deps, { title: "lead2" });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
   // Then
   expect(r.code).toBe(2);
   expect(printed[0]).toStartWith(`HANDOVER_REFUSED configured watchers not running for ${OLD}: host guard (["guard-check","${OLD}"] exit 1)`);
@@ -284,7 +292,7 @@ test("a configured watcher counts as a watch, and it must run for the new sessio
   writeManifest("old-sid", []);
   // When
   const dry = await handover(deps, { dryRun: true });
-  const r = await handover(deps, { title: "lead2" });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
   // Then
   expect(dry.code).toBe(0);
   expect(readFileSync(dry.note ?? "", "utf8")).toContain('## Watchers (1, from handover.watchers)\n- host guard: check ["guard-check","{pane}"]; to start it: systemctl --user start dori-lanes');
@@ -299,7 +307,7 @@ test("a configured watcher that does not run for the new session moves everythin
   const deps = withWatcher(await setup());
   sim.guardFor = new Set([OLD]);
   // When
-  const r = await handover(deps, { title: "lead2", verifyMin: 1 });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2", verifyMin: 1 });
   // Then
   expect(r.code).toBe(3);
   expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain(`watchers not running for ${NEW}: host guard`);
@@ -315,7 +323,7 @@ test("an old lead running from a symlinked path is warned about, and the new ses
   writeManifest("old-sid", JSON.parse(readFileSync(oldManifest, "utf8")).monitors, LINK);
   rmSync(oldManifest);
   // When
-  const r = await handover(deps, { title: "lead2" });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
   // Then
   expect(printed[0]).toBe(`HANDOVER_CWD_SYMLINK the old lead runs from ${LINK}, a symlink to ${CWD}; the new session opens in ${CWD} (set handover.cwd to choose another)`);
   expect(w.calls.find((c) => c[0] === "aoe" && c[1] === "add")?.[2]).toBe(CWD);
@@ -337,8 +345,58 @@ test("dori.env without DORI_LEAD_* lines gets them, so the listener learns the n
   const deps = await setup();
   writeFileSync(join(state.dir, "dori.env"), "DORI_DISCORD_CHANNEL=1");
   // When
-  const r = await handover(deps, { title: "lead2" });
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
   // Then
   expect(r.code).toBe(0);
   expect(readFileSync(join(state.dir, "dori.env"), "utf8")).toBe(`DORI_DISCORD_CHANNEL=1\nDORI_LEAD_TMUX=${NEW}\nDORI_LEAD_AOE_ID=${NEW_AOE_ID}\n`);
+});
+
+test("refuses without the owner's approval before opening anything; an approval card must be answered yes", async () => {
+  // Given
+  const deps = await setup();
+  // When
+  const bare = await handover(deps, { title: "lead2" });
+  const notProposed = await handover(deps, { title: "lead2", approvedBy: "Q1" });
+  appendRollover(state.dir, { kind: "proposal", who: "lead", at: "2026-10-11T00:00:00Z", key: "lead", card: "Q1", pane: deps.config.leadPane, signals: {}, crossed: [], blockers: "" });
+  const openCard = await handover(deps, { title: "lead2", approvedBy: "Q1" });
+  // Then
+  expect([bare.code, notProposed.code, openCard.code]).toEqual([2, 2, 2]);
+  expect(printed[0]).toStartWith("HANDOVER_REFUSED the lead moves to a new session only with the owner's approval: no approval");
+  expect(printed[1]).toContain("card Q1 is not a rollover proposal for lead");
+  expect(printed[2]).toContain("card Q1 is not answered yet");
+  expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);
+  expect(readRollovers(state.dir).map((e) => (e.kind === "rollover" ? e.result : e.kind))).toEqual(["refused", "proposal", "refused"]);
+});
+
+test("the old lead is quiet from the moment the new lead takes over until the checks end, then the log has the rollover", async () => {
+  // Given
+  const deps = await setup();
+  const quietSeen: (string | undefined)[] = [];
+  const sleep = deps.clock.sleep;
+  const watched = { ...deps, clock: { ...deps.clock, sleep: async (ms: number) => { quietSeen.push(quietReason(state.dir, OLD, deps.clock.now())); await sleep(ms); } } };
+  // When
+  const r = await handover(watched, { title: "lead2", approvedBy: APPROVED });
+  // Then
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(quietSeen.length).toBeGreaterThan(0);
+  expect(quietSeen.every((q) => q?.startsWith(`HANDOVER_QUIET ${OLD}: the handover of the lead to ${NEW} is running`))).toBe(true);
+  expect(quietReason(state.dir, OLD, deps.clock.now())).toBeUndefined();
+  expect(quietReason(state.dir, NEW, deps.clock.now())).toBeUndefined();
+  const log = readRollovers(state.dir);
+  expect(log[0]).toMatchObject({ kind: "rollover", who: "lead", key: "lead", from: OLD, to: NEW, approvedBy: APPROVED, result: "done" });
+  expect(log[0]?.kind === "rollover" && log[0].steps.map((s) => s.step)).toEqual(["open", "startup", "repoint", "verify", "close"]);
+});
+
+test("a monitor counts as re-armed only with the same command and filter, or the same path; a name alone is enough only without either", () => {
+  // Given
+  const entry = (e: Record<string, unknown>) => ({ persistent: true, suspended: false, expiresAt: null, runtime: { pid: 1 }, ...e }) as never;
+  const events = { description: "events", command: "tail -n 0 -F /x/events.log", filter: "^EV", persistent: true };
+  const check = (wanted: object, entries: object[]) => missingMonitors([wanted as never], entries as never, () => true, "/home/test", 0);
+  // When / Then
+  expect(check(events, [entry({ description: "events", command: "sleep 3600", filter: "^EV" })])).toEqual(["events"]);
+  expect(check(events, [entry({ description: "x", command: "tail -n 0 -F /x/events.log", filter: "^ANY" })])).toEqual(["events"]);
+  expect(check(events, [entry({ description: "x", command: "tail -n 0 -F /x/events.log", filter: "^EV" })])).toEqual([]);
+  expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "inbox", path: "/x/other" })])).toEqual(["inbox"]);
+  expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "y", path: "/x/inbox" })])).toEqual([]);
+  expect(check({ description: "named", persistent: true }, [entry({ description: "named", command: "anything" })])).toEqual([]);
 });

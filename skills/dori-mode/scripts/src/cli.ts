@@ -1,12 +1,14 @@
 #!/usr/bin/env bun
 // allow: SIZE_OK — existing command dispatcher; command behavior lives in separate modules.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
-import { ackHandover, handover } from "./handover.ts";
+import { ackHandover, handover, type HandoverDeps } from "./handover.ts";
+import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
+import { appendRollover, crossed, quietReason, readRollovers, repeatsOf, rolloverStats } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
@@ -138,7 +140,7 @@ const USAGE = `dori <command> [options]
                                        post a Discord question card; the first option is the recommended one
   questions [--open]                   list tracked question cards
   reopen <Qn> / resolve <Qn>           put a card's buttons back / forget a settled question
-  handover [--note FILE] [--title T] [--model M] [--keep-old] [--no-monitors] [--minutes N] [--dry-run]
+  handover --approved-by REF [--note FILE] [--title T] [--model M] [--keep-old] [--no-monitors] [--minutes N] [--dry-run]
                                        move the lead to a new session (backend aoe): write a note (open lanes, the old
                                        session's running monitors, open question cards, todos, timers, --note), open the
                                        new session on it, point leadPane, dori.env DORI_LEAD_*, the lanes and the cards at
@@ -147,6 +149,26 @@ const USAGE = `dori <command> [options]
                                        closed (HANDOVER_DONE); a failed check moves everything back (HANDOVER_VERIFY_FAIL,
                                        exit 3). Run from inside the lead it detaches itself (systemd-run)
   handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE line with this (the line gives --state)
+  handover --lane <key> --approved-by REF [--note FILE] [--model M] [--thinking L] [--force] [--keep-old] [--minutes N] [--dry-run]
+                                       move a lane to a new session (run by the lead, only with the owner's approval: REF is
+                                       an answered card Qn or their message link or words, kept in the note and log): refuses while a local chain of the
+                                       lane's agent, a running turn or an open question would die, unless the lane ran
+                                       handover ready (or --force); writes a note (brief, owner goal, Done, todos, goal,
+                                       monitors, local chains, detached jobs, last reports, model and thinking), opens a
+                                       session in the same real path with --model and --thinking, points the registry and
+                                       cards at it, checks its status line, monitors and a [LEAD] probe ack, then closes the
+                                       old session (HANDOVER_DONE); a failed check moves back and closes the new one (exit 3);
+                                       a run killed midway is repaired by the next run for that lane (HANDOVER_RECOVERED)
+  rollover-propose <lead|key> [--dry-run]
+                                       ask the owner whether to move the lead or a lane to a new session: a question card
+                                       (handover.proposalText, proposalOptions; the first option is yes) with the length
+                                       signals, the thresholds crossed and the note a dry-run handover writes; logged to
+                                       <stateDir>/rollover-log.jsonl. Its card id is the --approved-by of the handover
+  rollover-stats [--window H]          proposals and rollovers from the log: signal values, approval time, each step's time
+                                       and result, and the lane's watch-log quality signals H hours (24) before and after
+  handover ready [<key>] --note FILE   run by a lane in its own pane at a safe point: the local chains running now may end
+                                       with the old session; FILE is the lane's conversation summary (its headings: handover
+                                       ready --template) and goes into the note (valid handover.readyMin minutes)
   thread <reply|wait|done> discord:<id> <text>
                                        post in a work thread and set its status (working, waiting, done); done archives it
                                        (Discord env: DORI_DISCORD_TOKEN, DORI_DISCORD_GUILD, DORI_DISCORD_CHANNEL, DORI_DISCORD_OWNER)`;
@@ -188,11 +210,12 @@ const flags = parseArgs({
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
     pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" },
-    hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" },
+    hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" }, template: { type: "boolean" },
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
     "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
+    force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -223,6 +246,68 @@ if (flags.values.help) {
   process.exit(0);
 }
 const loopMin = Number(opt("loop") ?? 0);
+
+const realpathOr = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+const sessionOfPane = async (pane: string, cwd: string): Promise<string> => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id;
+const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)): LaneHandoverDeps => ({
+  ...deps,
+  cardDir: cardDir(),
+  home: process.env.HOME ?? "",
+  sessionOf: sessionOfPane,
+  procs: () => procTable(run),
+  envOf: (pid) => {
+    try {
+      return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").join("\n");
+    } catch {
+      return "";
+    }
+  },
+  alive: pidAlive,
+  signal: (pid, sig) => {
+    try {
+      process.kill(pid, sig);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  realpath: realpathOr,
+  nonce: () => crypto.randomUUID().slice(0, 8),
+  print,
+});
+const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
+  ...deps,
+  configPath: configPath(),
+  envPath: envFilePath(),
+  cardDir: cardDir(),
+  inbox: config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+  home: process.env.HOME ?? "",
+  sessionOf: sessionOfPane,
+  routedPane: async () => (await loadConfig()).leadPane,
+  envLeadPane: process.env.DORI_LEAD_PANE?.trim() ?? "",
+  alive: pidAlive,
+  realpath: realpathOr,
+  timers: async () => {
+    const pattern = new RegExp(config.handover.timers);
+    return (await run(["systemctl", "--user", "list-timers", "--all", "--no-legend", "--no-pager"])).out.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter((l) => l && pattern.test(l));
+  },
+  restart: (unit) => restartService({ systemctl: run, clock: realClock, timeoutSec: config.update.readyTimeoutSec }, config.update.services.find((s) => s.unit === unit) ?? { unit, paths: [], log: "", ready: "" }),
+  nonce: () => crypto.randomUUID().slice(0, 8),
+  print,
+});
+// dori commands that talk to the owner refuse from a session that a running handover is replacing (no double replies)
+const quietGuard = async (): Promise<void> => {
+  const here = config.backend === "aoe" ? await currentTmuxSession(run) : (process.env.HERDR_PANE_ID ?? "");
+  const why = quietReason(config.stateDir, here, Date.now());
+  if (why) die(why, 4);
+};
+const passEnv = (): string[] => ["PATH", "HOME", "DORI_CONFIG", "DORI_STATE_DIR", "DORI_ENV_FILE", "DORI_DISCORD_INBOX", "DORI_DISCORD_STATE_DIR"].filter((n) => process.env[n] !== undefined).map((n) => `--setenv=${n}`);
 
 const lane = async (k: string | undefined) => {
   const here = config.backend === "aoe" ? await currentTmuxSession(run) : (process.env.HERDR_PANE_ID ?? "");
@@ -528,7 +613,19 @@ try {
     }
     case "freshness":
       await every(loopMin, async () => {
-        for (const a of await freshnessTick(deps, process.env.HOME ?? "")) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
+        const laneDeps = laneDepsFor(() => {});
+        const hooks = {
+          signals: (pane: string, model: string) => paneSignals(laneDeps, pane, model),
+          // automatic rollover (handover.autoRolloverLanes / autoRolloverLead): a detached run, approved as auto:<key>
+          auto: async (who: "lead" | "lane", k: string) => {
+            const unit = `dori-rollover-${k}-${Date.now()}`;
+            const log = join(config.stateDir, "handover", "run.log");
+            mkdirSync(join(config.stateDir, "handover"), { recursive: true });
+            const r = await run(["systemd-run", "--user", "--collect", `--unit=${unit}`, "--setenv=DORI_HANDOVER_DETACHED=1", ...passEnv(), `--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`, process.execPath, import.meta.path, "handover", ...(who === "lane" ? ["--lane", k] : []), "--approved-by", `auto:handover.autoRollover${who === "lane" ? "Lanes" : "Lead"}`]);
+            return r.code === 0 ? `started unit=${unit} log=${log}` : `could not start: ${(r.err || r.out).trim().slice(0, 160)}`;
+          },
+        };
+        for (const a of await freshnessTick(deps, process.env.HOME ?? "", hooks)) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
       });
       break;
     case "dead-panes": {
@@ -568,6 +665,7 @@ try {
       process.exit(v.ok ? 0 : 4);
     }
     case "send": {
+      await quietGuard();
       const platform = key ?? die("send needs slack, telegram or discord");
       const to = need("to");
       const status = opt("status");
@@ -668,6 +766,7 @@ try {
       break;
     }
     case "ask": {
+      await quietGuard();
       const thread = opt("thread")?.replace(/^discord:/, "");
       const q = await questionCards(discordClient()).ask(need("text"), (flags.values.option as string[] | undefined) ?? [], { thread: thread || null, session: opt("session") || null, tmux: opt("tmux") || null });
       console.log(`ASKED ${q.id} message=${q.message}`);
@@ -689,6 +788,7 @@ try {
       break;
     }
     case "thread": {
+      await quietGuard();
       const [verb, ref, text] = flags.positionals;
       if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|wait|done> discord:<thread id> <text>");
       const dc = discordClient();
@@ -703,6 +803,22 @@ try {
         console.log(ackHandover(opt("state") ? resolve(opt("state") ?? "") : config.stateDir, flags.positionals[1]?.trim() || die("usage: dori handover ack <id> [--state DIR]"), here, new Date().toISOString()));
         break;
       }
+      if (key === "ready" || opt("lane")) {
+        const laneDeps = laneDepsFor();
+        if (key === "ready") {
+          if (flags.values.template) {
+            console.log(SUMMARY_TEMPLATE);
+            break;
+          }
+          const r = await markReady(laneDeps, await lane(flags.positionals[1]), here, process.pid, opt("note"));
+          console.log(r.line);
+          process.exit(r.code);
+        }
+        const minutes = opt("minutes") ? Number(opt("minutes")) : undefined;
+        if (minutes !== undefined && !(minutes > 0)) die("--minutes must be a positive number");
+        const r = await laneHandover(laneDeps, opt("lane") ?? "", here, { approvedBy: opt("approved-by"), note: opt("note"), model: opt("model"), thinking: opt("thinking"), force: Boolean(flags.values.force), keepOld: Boolean(flags.values["keep-old"]), dryRun: Boolean(flags.values["dry-run"]), verifyMin: minutes });
+        process.exit(r.code);
+      }
       // closing the old lead ends every process in its tmux session, so a handover started there continues as a user unit
       if (here && here === config.leadPane && !flags.values["dry-run"] && !flags.values["keep-old"] && !process.env.DORI_HANDOVER_DETACHED) {
         const unit = `dori-handover-${Date.now()}`;
@@ -716,33 +832,38 @@ try {
       }
       const minutes = opt("minutes") ? Number(opt("minutes")) : undefined;
       if (minutes !== undefined && !(minutes > 0)) die("--minutes must be a positive number");
-      const r = await handover({
-        ...deps,
-        configPath: configPath(),
-        envPath: envFilePath(),
-        cardDir: cardDir(),
-        inbox: config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
-        home: process.env.HOME ?? "",
-        sessionOf: async (pane, cwd) => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id,
-        routedPane: async () => (await loadConfig()).leadPane,
-        envLeadPane: process.env.DORI_LEAD_PANE?.trim() ?? "",
-        alive: pidAlive,
-        realpath: (path) => {
-          try {
-            return realpathSync(path);
-          } catch {
-            return path;
-          }
-        },
-        timers: async () => {
-          const pattern = new RegExp(config.handover.timers);
-          return (await run(["systemctl", "--user", "list-timers", "--all", "--no-legend", "--no-pager"])).out.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter((l) => l && pattern.test(l));
-        },
-        restart: (unit) => restartService({ systemctl: run, clock: realClock, timeoutSec: config.update.readyTimeoutSec }, config.update.services.find((s) => s.unit === unit) ?? { unit, paths: [], log: "", ready: "" }),
-        nonce: () => crypto.randomUUID().slice(0, 8),
-        print: (line) => console.log(line),
-      }, { note: opt("note"), title: opt("title"), model: opt("model"), keepOld: Boolean(flags.values["keep-old"]), dryRun: Boolean(flags.values["dry-run"]), noMonitors: Boolean(flags.values["no-monitors"]), verifyMin: minutes });
+      const r = await handover(leadDepsFor((line) => console.log(line)), { approvedBy: opt("approved-by"), note: opt("note"), title: opt("title"), model: opt("model"), keepOld: Boolean(flags.values["keep-old"]), dryRun: Boolean(flags.values["dry-run"]), noMonitors: Boolean(flags.values["no-monitors"]), verifyMin: minutes });
       process.exit(r.code);
+    }
+    case "rollover-propose": {
+      const who = key === "lead" ? "lead" : "lane";
+      const l = who === "lane" ? await lane(key) : undefined;
+      const pane = l ? (l.pane ?? die(`lane ${l.key} has no pane`)) : config.leadPane || die("leadPane is not set");
+      const model = l ? (l.model ?? config.defaultModel) : config.handover.model || config.defaultModel;
+      const signals = { ...(await paneSignals(laneDepsFor(() => {}), pane, model)), ...(l ? { repeats: repeatsOf(l) } : {}) };
+      const h = config.handover;
+      const hit = crossed(signals, who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH, repeats: h.laneRepeats } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH });
+      const lines: string[] = [];
+      const preview = l ? await laneHandover(laneDepsFor((line) => lines.push(line)), l.key, "", { dryRun: true }) : await handover(leadDepsFor((line) => lines.push(line)), { dryRun: true });
+      const blockers = lines.filter((x) => x.startsWith("HANDOVER_REFUSED")).map((x) => x.replace(/^HANDOVER_REFUSED\s*/, "")).join("; ");
+      const shown = [signals.contextPct !== undefined ? `context ${signals.contextPct}%` : "", signals.compactions !== undefined ? `${signals.compactions} compactions` : "", signals.ageH !== undefined ? `${signals.ageH} h old` : "", "repeats" in signals && signals.repeats ? `same fix ${signals.repeats} times` : ""].filter(Boolean).join(", ");
+      const text = h.proposalText.replaceAll("{who}", l ? `lane ${l.key} (${l.title})` : "the lead").replaceAll("{signals}", hit.length ? `${shown} (${hit.join(", ")})` : `${shown || "no signals"} (no threshold crossed)`).replaceAll("{note}", preview.note ?? "(no note)").replaceAll("{blockers}", blockers ? `. Blocked now: ${blockers}` : "");
+      if (flags.values["dry-run"]) {
+        console.log(`ROLLOVER_PROPOSAL_DRY_RUN ${who} ${l?.key ?? "lead"} would post: ${text} [${h.proposalOptions.join(" / ")}]`);
+        break;
+      }
+      const thread = l?.thread?.startsWith("discord:") ? l.thread.slice("discord:".length) : null;
+      const q = await questionCards(discordClient()).ask(text, [...h.proposalOptions], { thread, session: null, tmux: config.leadPane || null });
+      appendRollover(config.stateDir, { kind: "proposal", who, at: new Date().toISOString(), key: l?.key ?? "lead", pane, card: q.id, signals, crossed: hit, ...(preview.note ? { note: preview.note } : {}), blockers });
+      console.log(`ROLLOVER_PROPOSED ${who} ${l?.key ?? "lead"} card ${q.id} message=${q.message} note=${preview.note ?? "-"}; when the owner answers "${h.proposalOptions[0]}": dori handover ${l ? `--lane ${l.key} ` : ""}--approved-by ${q.id}`);
+      break;
+    }
+    case "rollover-stats": {
+      const window = opt("window") ? Number(opt("window")) : 24;
+      if (!(window > 0)) die("--window must be a positive number of hours");
+      const watch = existsSync(config.watchLog) ? readFileSync(config.watchLog, "utf8").split("\n") : [];
+      for (const line of rolloverStats(readRollovers(config.stateDir), watch, Date.now(), window)) console.log(line);
+      break;
     }
     case "transcribe":
       console.log(await transcribe(run, config.hooks.transcribe, key ?? die("transcribe needs an audio file path")));

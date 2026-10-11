@@ -96,9 +96,10 @@ export const waitForPrompt = async (run: Runner, clock: Clock, pane: string, tri
 
 export class AoeError extends Error {}
 
-// aoe add refuses a title+path pair that already exists, even in the trash (aoe rm --purge clears it)
-export const openAoeSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly tool: string; readonly model: string }): Promise<string> => {
-  const added = await run(["aoe", "add", opts.cwd, "-t", opts.title, "--tool", opts.tool, "-l", "--extra-args", `--model ${opts.model}`]);
+// aoe add refuses a title+path pair that already exists, even in the trash (aoe rm --purge clears it).
+// thinking goes in as its own --thinking flag: omo 5.1.30 can start a session at medium although the model id ends in :high.
+export const openAoeSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly tool: string; readonly model: string; readonly thinking?: string }): Promise<string> => {
+  const added = await run(["aoe", "add", opts.cwd, "-t", opts.title, "--tool", opts.tool, "-l", "--extra-args", `--model ${opts.model}${opts.thinking ? ` --thinking ${opts.thinking}` : ""}`]);
   if (added.code !== 0) throw new AoeError(`aoe add failed: ${added.err || added.out}`);
   for (let i = 0; i < 30; i++) {
     const s = (await aoeSessions(run)).find((x) => x.title === opts.title && x.path === opts.cwd);
