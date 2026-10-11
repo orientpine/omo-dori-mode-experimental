@@ -176,12 +176,13 @@ export const inferRepeats = (events: readonly LaneEvent[], cfg: AutoSignals, onC
     for (const m of failedHere) if (!failedSince.has(m)) failedSince.set(m, { at: e.at, source: e.source, role: "fail", text: clipLine(text) });
     // an attempt targets a metric when one clause holds both the attempt word and the metric ("조정 4 = 평균 행동 교착 진입
     // 벌점"), not when the metric is only context elsewhere in the report ("model_795, 씨앗 200~223 ... 시작"); the clause
-    // must not itself be a verdict or say the attempt is not made. A report may give a verdict and start the next attempt.
+    // must not itself be a verdict or say the attempt is not made. A failure first seen in this very event is not consumed by
+// it: an eval report that states a FAIL and plans the next step is not yet a new attempt (challenge, grok-4.7).
     const fail = re(cfg.failPattern);
     const acts = text.split(cfg.targetScope === "sentence" ? SENTENCE_WIDE : CLAUSE).filter((c) => attempt.test(c) && !NEGATED.test(c) && !fail.test(c) && !verdict.test(c) && (strong.test(c) || !diag.test(c)));
     if (!acts.length) continue;
     for (const [m, failEv] of failedSince) {
-      if (!acts.some((c) => mentions(c, m, cfg.aliases))) continue;
+      if (failEv.at === e.at || !acts.some((c) => mentions(c, m, cfg.aliases))) continue;
       const prev = counts.get(m);
       if (prev && Date.parse(e.at) - Date.parse(prev.lastAt) < gap) continue;
       const next: MetricRepeat = { metric: m, n: (prev?.n ?? 0) + 1, lastAt: e.at, evidence: [...(prev?.evidence ?? []), failEv, { at: e.at, source: e.source, role: "attempt", text: clipLine(text) }] };

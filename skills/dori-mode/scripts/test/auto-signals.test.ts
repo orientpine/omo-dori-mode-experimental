@@ -52,6 +52,10 @@ test("an attempt counts only after a new failure, outside the duplicate gap, whe
   expect(inferRepeats(negated, cfg).counts.size).toBe(0);
   const diagnosis = [loop[0] as LaneEvent, ev(10, "\uad50\ucc29 \uc7ac\uc0dd \ud0d0\uce68 \uc2dc\uc791")];
   expect(inferRepeats(diagnosis, cfg).counts.size).toBe(0);
+  // "\uc2dc\uc791" alone starts evals too; it is no attempt without a prescription word
+  expect(inferRepeats([loop[0] as LaneEvent, ev(40, "F1 24\ud310 \uc2dc\uc791, \uad50\ucc29 \ub2e4\uc2dc \uc7ac\uae30")], cfg).counts.size).toBe(0);
+  // an eval report that states the FAIL and plans the next adjustment is not yet a new attempt (challenge, grok-4.7)
+  expect(inferRepeats([ev(0, "model_993 F1: \uad50\ucc29 136 FAIL. \ub2e4\uc74c \uc870\uc815: \uad50\ucc29 \uc9c4\uc785 \ubc8c\uc810")], cfg).counts.size).toBe(0);
   const passed = [...loop.slice(0, 4), ev(150, "model_600 F1: \uad50\ucc29 2 PASS"), ...loop.slice(4)];
   expect(inferRepeats(passed, cfg).counts.get("\uad50\ucc29")?.n).toBe(1);
 });

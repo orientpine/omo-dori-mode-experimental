@@ -148,7 +148,8 @@ export type Explore = {
 // Signals that need no tag from the lane (REPEAT_SUSPECT, OWNER_CHECK); both only alert the lead. repeatAfter: cycles of
 // "a gate line failed, then a new attempt targets it" on one metric before REPEAT_SUSPECT; repeatGapMin: attempts on one
 // metric closer than this are one attempt told twice. failPattern / passPattern: a gate line's verdict; verdictPattern: a
-// prescription's verdict (fails every known metric the text names); attemptPattern: a new attempt (a run, a patch);
+// prescription's verdict (fails every known metric the text names); attemptPattern: a new attempt (a prescription, an
+// adjustment, a patch; "시작"/"반영" alone are not, they also start evals and record decisions);
 // prescriptionPattern: words that make it an attempt even when the text also reads as a diagnosis (diagnosticPattern).
 // aliases: metric names that mean the same gate ({ "교착": ["deadlock"] }); the key is the name shown. targetScope: an
 // attempt targets a metric named in the same "sentence" (the default: reports name the target a few words from the prescription)
@@ -329,7 +330,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     failPattern: "\\bFAIL(?:ED|S)?\\b|불합격|미달|✗|❌",
     passPattern: "\\bPASS(?:ED|ES)?\\b|(?<!불)합격|✓|✅",
     verdictPattern: "\\bREJECTED\\b|\\bNOT[ _]JUDGEABLE\\b|\\bUNCLEAR\\b|\\bno effect\\b|\\bdid not (?:move|improve)\\b|기각|판정 불가|지지 안 함|효과 없음|개선 없음",
-    attemptPattern: "처방|조정|반영|적용|시작|띄우|도입|변경|수정|패치|재학습|벌점|TRAIN_START|\\bprescri|\\bpatch|\\bapply|\\bapplied|\\blaunch|\\bstart(?:ed|s)?\\b|\\bretrain|\\btweak|\\badjust|\\bpenalt|\\bfix(?:ed|es)?\\b|^(?:fix|feat|perf)\\(",
+    attemptPattern: "처방|조정|수정|패치|재학습|벌점|\\bprescri|\\bpatch|\\bretrain|\\btweak|\\badjust|\\bpenalt|\\bfix(?:ed|es)?\\b|^(?:fix|feat|perf)\\(",
     prescriptionPattern: "처방|조정|수정|패치|재학습|벌점|\\bprescri|\\bpatch|\\bretrain|\\btweak|\\badjust|\\bpenalt|^(?:fix|feat|perf)\\(",
     diagnosticPattern: "탐침|probe|판독|readout|재생|replay|진단|diagnos|가설|hypothes|평가|\\beval|측정|measure|비교|compar|예선|결선|^(?:qa|docs|test)\\(",
     aliases: {},
