@@ -77,6 +77,15 @@ export const setThreadStatus = async (dc: Discord, threadId: string, status: Thr
 export type ThreadVerb = "reply" | "wait" | "done";
 const VERB_STATUS: Readonly<Record<ThreadVerb, ThreadStatus>> = { reply: "working", wait: "waiting", done: "done" };
 
+// dori launch writes the lane's first message in its work thread, so a thread opened for a lane never sits empty;
+// a thread that already has a message (the lead wrote first, or it was started from a message) is left as it is.
+export const postLaneStart = async (dc: Discord, ref: string, text: string): Promise<string> => {
+  const id = discordThreadId(ref);
+  const existing = await dc.call<readonly unknown[]>("GET", `/channels/${id}/messages?limit=1`);
+  if (existing.length) return `THREAD_START_SKIP ${ref}: the thread already has a message`;
+  return `THREAD_START_POSTED ${ref} message=${await dc.send(id, text)}`;
+};
+
 // With `mark` (the thread status queue) the status goes through it, so it is coalesced, survives a 429 and an open
 // question card keeps the thread waiting; without it the status is set directly.
 export const threadHook = async (dc: Discord, verb: ThreadVerb, ref: string, text: string, words: DiscordWords, mark?: (thread: string, status: ThreadStatus) => Promise<unknown>): Promise<string> => {

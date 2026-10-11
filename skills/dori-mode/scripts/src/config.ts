@@ -41,11 +41,14 @@ export type StatusStyle = "words" | "emoji";
 // autoUnEye: the listener takes its eyes reaction off the owner's earlier messages once its bot writes in that channel.
 // quietText ({min} = minutes since the lane's last report) and doneText are what freshness and the automatic close post in
 // the owner's thread (hooks.threadReply / threadDone, any messenger), instead of the lane's own report or claim, which are
-// notes for the lead. postRawReports brings back posting those notes as they are.
+// notes for the lead. postRawReports brings back posting those notes as they are. laneStartText is the first message
+// dori launch posts in a discord:<id> work thread that has none ({title}, {goal}, {brief}, {done}, {key}, {pane}; a line
+// whose placeholder is empty is left out).
 export type DiscordWords = {
   readonly statusStyle: StatusStyle;
   readonly autoUnEye: boolean;
   readonly quietText: string;
+  readonly laneStartText: string;
   readonly doneText: string;
   readonly postRawReports: boolean;
   readonly working: string;
@@ -66,6 +69,7 @@ export const defaultDiscordWords: DiscordWords = {
   statusStyle: "words",
   autoUnEye: true,
   quietText: "Still working on it. The last report came {min} min ago; I'll sum it up for you soon.",
+  laneStartText: "{title}\nGoal, in your words: {goal}\n{brief}\nDone when: {done}\nLane {key}, pane {pane}",
   doneText: "Done: the checks passed and the work is closed. I'll sum up what changed for you soon.",
   postRawReports: false,
   working: "working",
@@ -113,7 +117,10 @@ export type Signals = { readonly launchLanes: number; readonly attemptPattern: s
 // adds an external-search step; researchText goes to the lane when sendResearchToLane is on ({n}, {metric}, {key}).
 // stagePattern: a milestone report matching it announces a new stage, and the lead is told to run dori intent-check.
 // driftBelow: intent-check flags drift when the direction shares less than this share of the goal's word pairs.
-// challengeModels: reviewers for dori challenge, first one of another family than the lane's model that answers wins;
+// challengeModels: reviewers for dori challenge in order, by default the best GPT, then Claude, then Grok model, then a
+// second model of each family; the first of another family than the lane's model that writes a review wins (--all: one
+// review per family). Before a call each id is checked against modelsCommand (the host's models) and authCommand
+// ({provider}: is it logged in); an id the host cannot call is skipped or moved to a logged-in provider of the same model.
 // challengeCommand / branchCommand: argv templates ({model}, {prompt}, and {system}, the reviewer's system prompt, for
 // challengeCommand); branchMinutes: time limit per fork-explore branch.
 export type Explore = {
@@ -126,6 +133,8 @@ export type Explore = {
   readonly driftBelow: number;
   readonly treeLines: number;
   readonly challengeModels: readonly string[];
+  readonly modelsCommand: ArgvTemplate;
+  readonly authCommand: ArgvTemplate;
   readonly challengeCommand: ArgvTemplate;
   readonly challengeMinutes: number;
   readonly branchCommand: ArgvTemplate;
@@ -215,9 +224,11 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     stagePattern: "\\b(?:stage|phase|pivot|switch(?:ing)? to|next step)\\b|단계|국면|방향 전환|다음 단계",
     driftBelow: 0.12,
     treeLines: 6,
-    challengeModels: ["xai/grok-4.7", "xai/grok-4", "github-copilot/gpt-6.1-sol", "google/gemini-3.1-pro-preview", "anthropic/claude-opus-5-5"],
-    challengeCommand: ["omo", "-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files", "--omo-senpi-disabled", "--system-prompt", "{system}", "--model", "{model}", "{prompt}"],
-    challengeMinutes: 5,
+    challengeModels: ["chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-fable-5-1", "xai/grok-4.7", "chatgpt-subscription/gpt-6.1-sol", "anthropic-subscription/claude-opus-5-5", "xai/grok-4.6"],
+    modelsCommand: ["omo", "--list-models"],
+    authCommand: ["omo", "auth", "check", "--provider", "{provider}", "--json"],
+    challengeCommand: ["omo", "-p", "--no-session", "--tools", "read,grep,find,ls", "--no-extensions", "--no-skills", "--no-context-files", "--omo-senpi-disabled", "--system-prompt", "{system}", "--model", "{model}", "{prompt}"],
+    challengeMinutes: 10,
     branchCommand: ["omo", "-p", "--no-session", "--model", "{model}", "{prompt}"],
     branchMinutes: 15,
   },

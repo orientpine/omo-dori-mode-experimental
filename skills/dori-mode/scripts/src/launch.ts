@@ -112,6 +112,21 @@ export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<{
   return { draft, text: `${(await briefFile.text()).replace(/\s*$/, "")}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}` };
 };
 
+// The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.
+export const briefSummary = (brief: string, lines = 4): string =>
+  brief.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")).slice(0, lines).map((l) => (l.length > 200 ? `${l.slice(0, 199)}…` : l)).join("\n");
+
+// discord.laneStartText filled in; a line whose placeholder has nothing to fill (a lane without --goal) is left out.
+export const laneStartText = (template: string, lane: Lane, brief: string): string => {
+  const values: Record<string, string> = { title: lane.title, goal: lane.goal ?? "", brief: briefSummary(brief), done: lane.done, key: lane.key, pane: lane.pane ?? "" };
+  const text = template
+    .split("\n")
+    .filter((line) => [...line.matchAll(/\{(\w+)\}/g)].every(([, k]) => !(k && k in values) || values[k]))
+    .map((line) => line.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m))
+    .join("\n");
+  return text.length > 1900 ? `${text.slice(0, 1899)}…` : text;
+};
+
 export const goalWarning = (input: LaunchInput): string | undefined =>
   input.goal?.trim() ? undefined : `LAUNCH_NO_GOAL ${input.key}: no --goal "<the owner's words>"; dori intent-check cannot compare the lane's direction with what the owner asked`;
 

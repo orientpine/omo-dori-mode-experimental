@@ -107,14 +107,14 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 
 | Command | Does |
 |---|---|
-| `dori launch` / `dori adopt` | open a lane in a new tab, or register one already running; an empty or malformed `--thread` (e.g. `discord:`) is refused; `--goal`, `--challenge-before`, and `launch --dry-run` to print the brief with Past signals and the hypothesis tree |
+| `dori launch` / `dori adopt` | open a lane in a new tab, or register one already running; an empty or malformed `--thread` (e.g. `discord:`) is refused, and an empty `discord:<id>` thread gets the lane's first message (title, goal, brief lines, Done, key, pane); `--goal`, `--challenge-before`, and `launch --dry-run` to print the brief with Past signals and the hypothesis tree |
 | `dori set-thread <key> <adapter>:<id>` | point a lane at another work thread; a close with no usable thread prints `THREAD_MISSING` |
 | `dori sync [--write]` | rebuild the registry from live panes, report drift; a `SIGNALS` line per open lane with a record |
 | `dori claim-done` / `dori object-done` / `dori close` | the done flow; with `DORI_DISCORD_TOKEN`, a close sets a `discord:` work thread done and archives it |
 | `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on the owner (no nudges, posts, `LANE_BLOCKED` or auto-close), then put it back |
 | `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked for; `SAME_FIX_3` from the third attempt on one metric with one hypothesis; from the second with no improvement it needs 3+ `--hypotheses` with a `--test` each (`HYPOTHESES_REQUIRED`, `STUCK_BRANCH`), and the third sends an external-search step (`RESEARCH_DUE`) |
 | `dori tree [show\|add\|falsify\|support\|close]` | the area's hypothesis tree: open, falsified and supported hypotheses, untried directions, findings, attempts |
-| `dori challenge <key> --plan FILE` | a model of another family reviews a plan: reasons it will fail, missing alternatives, cheapest falsifying test; saved on the lane. A reply without the three headings gets one stricter retry, an unreachable provider id one try as the bare model id, then the next reviewer |
+| `dori challenge <key> --plan FILE [--all]` | a model of another family reviews a plan, reading the plan's repository with read-only tools: reasons it will fail, missing alternatives, cheapest falsifying test; saved on the lane. Reviewers go in this order: the best GPT, then the best Claude, then the best Grok model (the lane's own family skipped). By default the first one that writes a review is the only review (the others are fallbacks); `--all` collects one review from each of the three, in that order. Ids this host cannot call are skipped before any call; `dori challenge --check` lists them |
 | `dori fork-explore <key> --metric M --hypotheses ... --test ...` | one time-boxed branch per hypothesis in parallel (GPU branches queue on the heavy slot), one comparison table, results into the tree |
 | `dori research-hint <key>` | a search plan for the lane's stuck symptom |
 | `dori intent-check <key>` | the owner's goal next to the lane's current direction and next step; flags drift |
