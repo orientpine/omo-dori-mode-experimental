@@ -361,7 +361,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   if (!config.leadPane) return refuse("leadPane is not set");
   if (deps.envLeadPane) return refuse(`DORI_LEAD_PANE=${deps.envLeadPane} is set in the environment and overrides leadPane in ${deps.configPath}, so lanes would keep reporting there; remove it (also from any wrapper script) and keep the pane in the config file`);
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
-  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), config.handover.autoRolloverLead, "lead", config.leadPane, readRollovers(config.stateDir));
+  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLead, key: "handover.autoRolloverLead" }, "lead", config.leadPane, readRollovers(config.stateDir));
   if (unapproved) return refuse(`the lead moves to a new session only with the owner's approval: ${unapproved} (--dry-run needs none)`);
   const old = sessionFor(await aoeSessions(deps.run), config.leadPane);
   if (!old) return refuse(`no live aoe session for leadPane ${config.leadPane}`);

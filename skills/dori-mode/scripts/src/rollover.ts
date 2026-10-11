@@ -6,7 +6,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync
 import { dirname, join } from "node:path";
 
 import type { Question } from "./messenger/discord-cards.ts";
-import type { Lane } from "./registry.ts";
+import type { FixAttempt, Lane } from "./registry.ts";
 import { fixCount } from "./same-fix.ts";
 
 // repeats: the most attempts of one fix (same metric and hypothesis, counted as dori fix-attempt counts them) in the
@@ -48,9 +48,13 @@ export const crossed = (s: Signals, h: Limits): string[] => [
 ];
 
 // The lane's current session began when it moved to its pane (a handover) or, before any move, when it opened.
-export const repeatsOf = (lane: Lane): number => {
+export const sessionFixes = (lane: Lane): FixAttempt[] => {
   const since = lane.history?.findLast((h) => h.note.startsWith("pane moved") && h.note.includes(`-> ${lane.pane} `))?.at ?? lane.openedAt ?? "";
-  const fixes = (lane.fixes ?? []).filter((f) => f.at >= since);
+  return (lane.fixes ?? []).filter((f) => f.at >= since);
+};
+
+export const repeatsOf = (lane: Lane): number => {
+  const fixes = sessionFixes(lane);
   // an attempt marked improved means the one before it moved the metric: that metric's count starts again there
   const restart = new Map<string, number>();
   fixes.forEach((f, i) => f.improved && restart.set(f.metric, i));
@@ -70,10 +74,13 @@ const DISCORD_LINK = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/chan
 // Discord message, or "auto:..." when the automation key for that side is on. A card counts only when dori rollover-propose
 // posted it for this key and for the session it runs in now (the rollover log says so), so a yes on another lane's card,
 // on any other question, or on a card about an earlier session moves nothing. Undefined when the reference holds.
-export const approvalProblem = (ref: string | undefined, card: (id: string) => Question | undefined, autoOn: boolean, key: string, pane: string, proposals: readonly RolloverEntry[]): string | undefined => {
+export const approvalProblem = (ref: string | undefined, card: (id: string) => Question | undefined, auto: { readonly on: boolean; readonly key: string }, key: string, pane: string, proposals: readonly RolloverEntry[]): string | undefined => {
   const r = ref?.trim() ?? "";
   if (!r) return "no approval: pass --approved-by <the owner's answered rollover card Qn, or the link to their Discord message>";
-  if (r.startsWith(AUTO_PREFIX)) return autoOn ? undefined : `${r} is an automatic approval, but the automation key is off (the owner turns it on)`;
+  if (r.startsWith(AUTO_PREFIX)) {
+    if (r !== `${AUTO_PREFIX}${auto.key}`) return `${r} is not the automatic approval of this side; only ${AUTO_PREFIX}${auto.key} is`;
+    return auto.on ? undefined : `${r} is an automatic approval, but the automation key is off (the owner turns it on)`;
+  }
   if (/^Q\d+$/i.test(r)) {
     const q = card(r.toUpperCase());
     if (!q) return `card ${r} not found`;
@@ -202,7 +209,7 @@ const median = (xs: readonly number[]): number | undefined => {
   const mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
 };
-const fmtSignals = (s: Signals): string => [s.contextPct !== undefined ? `context ${s.contextPct}%` : "", s.compactions !== undefined ? `compactions ${s.compactions}` : "", s.ageH !== undefined ? `age ${s.ageH} h` : ""].filter(Boolean).join(", ") || "no signals";
+const fmtSignals = (s: Signals): string => [s.contextPct !== undefined ? `context ${s.contextPct}%` : "", s.compactions !== undefined ? `compactions ${s.compactions}` : "", s.ageH !== undefined ? `age ${s.ageH} h` : "", s.repeats !== undefined ? `same fix ${s.repeats}x` : ""].filter(Boolean).join(", ") || "no signals";
 
 // The summary the owner sets automation parameters from: how often a proposal came and at which signal values, how long
 // approval took, how each rollover went step by step, and the lane's quality signals in windowH hours before and after.

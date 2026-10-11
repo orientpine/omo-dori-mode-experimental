@@ -24,12 +24,13 @@ const status = (model: string, pct = "9.0", account = "x") => `old transcript li
 const HIGH = status("claude-opus-5-5 • effort high", "72.0");
 const OK = { approvedBy: "https://discord.com/channels/1/2/3" };
 
-type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
+type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
 
 let state: { dir: string; done: () => void };
 let w: World;
 let sim: Sim;
 let printed: string[];
+let sigs: string[];
 let live: Set<number>;
 let table: Proc[];
 
@@ -72,7 +73,13 @@ const simulate = () => {
   }
   if (live.has(301) && live.has(15)) sim.doubleRun = true;
   writeManifest("new-sid", sim.arm.map((m) => monitor(m.description, m.command, m.pid)));
-  if (sim.ack && w.calls.some((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").includes("HANDOVER_PROBE n1"))) ackHandover(state.dir, "n1", sim.ackPane, "2026-10-11T16:40:00Z");
+  const probe = w.calls.find((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").includes("HANDOVER_PROBE n1"))?.at(-1);
+  if (sim.ack && probe) {
+    // the new session writes what it understood, then acks
+    const file = /write what you understood to (\S+)/.exec(probe)?.[1];
+    if (file && sim.restate !== "") writeFileSync(file, sim.restate ?? "## Goal\nship it\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nnone\n");
+    ackHandover(state.dir, "n1", sim.ackPane, "2026-10-11T16:40:00Z");
+  }
 };
 
 const setup = async (): Promise<LaneHandoverDeps> => {
@@ -106,6 +113,10 @@ const setup = async (): Promise<LaneHandoverDeps> => {
     procs: async () => table,
     envOf: (pid) => (pid === 40 ? "HOME=/home/test\nPI_SESSION_ID=old-sid" : pid === 41 ? "PI_SESSION_ID=other-sid" : ""),
     alive: (pid) => live.has(pid),
+    signal: (pid, sig) => {
+      sigs.push(`${sig} ${pid}`);
+      return true;
+    },
     realpath: (path) => path,
     nonce: () => `n${++n}`,
     print: (line) => printed.push(line),
@@ -125,6 +136,7 @@ beforeEach(() => {
   w = newWorld();
   sim = { arm: [{ description: "scratch events", command: EVENTS, pid: 201 }, { description: "digest", command: "until false; do sleep 60; done", pid: 202 }], thinking: "high", ackPane: NEW, ack: true, account: "x", chainSurvives: false, doubleRun: false, restarted: false };
   printed = [];
+  sigs = [];
   live = new Set([14, 15, 16, 17, 40, 41, 201, 202]);
   table = baseTable();
 });
@@ -209,7 +221,9 @@ test("dori handover ready runs only in the lane's own pane and also covers the c
   const deps = await setup();
   table = [...baseTable(), { pid: 18, ppid: 11, cmd: "bash -lc dori handover ready demo" }, { pid: 19, ppid: 18, cmd: "bun cli.ts handover ready demo" }];
   const noteFile = join(state.dir, "lane-note.md");
-  writeFileSync(noteFile, "seed 3 eval pending");
+  writeFileSync(noteFile, "## Owner's words\n\"레인에도 적용\"\n## Decisions and why\nseed 3 first\n## Ruled out\nlr too high\n## In progress\nseed 3 eval pending\n## Next step\nrerun eval\n");
+  const bare = join(state.dir, "bare-note.md");
+  writeFileSync(bare, "seed 3 eval pending");
   // When
   const elsewhere = await markReady(deps, lane(), "aoe_lead_x", 19);
   const r = await markReady(deps, lane(), OLD, 19, noteFile);
@@ -218,7 +232,10 @@ test("dori handover ready runs only in the lane's own pane and also covers the c
   expect(r.code).toBe(0);
   expect(r.line).toStartWith(`HANDOVER_READY demo pane=${OLD} chains=1 (15 bash -c sleep 7200; echo chain-done;`);
   expect(r.line).toContain("runner=18 (runs this command; covered too)");
-  expect(JSON.parse(readFileSync(readyFile(state.dir, "demo"), "utf8"))).toMatchObject({ pane: OLD, chains: [15, 18], note: "seed 3 eval pending" });
+  expect(JSON.parse(readFileSync(readyFile(state.dir, "demo"), "utf8"))).toMatchObject({ pane: OLD, chains: [15, 18], note: readFileSync(noteFile, "utf8") });
+  // the conversation summary is required, with its headings
+  expect((await markReady(deps, lane(), OLD, 19)).line).toStartWith("HANDOVER_READY_REFUSED demo: write the conversation summary first");
+  expect((await markReady(deps, lane(), OLD, 19, bare)).line).toBe(`HANDOVER_READY_REFUSED demo: the summary ${bare} lacks ## Owner's words, ## Decisions and why, ## Ruled out, ## In progress, ## Next step (dori handover ready --template)`);
   // the runner (here a shell; in omo the eval kernel) is still alive when the lead moves the lane: not a blocker
   expect((await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true })).code).toBe(0);
 });
@@ -237,13 +254,13 @@ test("moves the lane: same cwd, model and thinking, registry and cards repointed
   const add = w.calls.find((c) => c[0] === "aoe" && c[1] === "add") ?? [];
   expect(add.slice(0, 4)).toEqual(["aoe", "add", CWD, "-t"]);
   expect(add.at(-1)).toBe("--model anthropic-subscription/claude-opus-5-5 --thinking high");
-  expect(sent(w).some((t) => t.startsWith("ulw set goal and work. You are the demo lane in a new session") && t.includes(r.note ?? "?"))).toBe(true);
+  expect(sent(w).some((t) => t.startsWith("You are the demo lane in a new session") && t.includes(r.note ?? "?"))).toBe(true);
   const now = await readLane(deps);
   expect(now).toMatchObject({ pane: NEW, session: "new-sid", thread: "discord:12345678", brief: lane().brief });
   expect(new QuestionStore(join(state.dir, "discord")).get("Q1")).toMatchObject({ tmux: NEW });
   expect(printed).toContain(`HANDOVER_STATUS_OK ${NEW} claude-opus-5-5 thinking high`);
   expect(printed).toContain(`HANDOVER_MONITORS_OK 2 in ${NEW} (session new-sid)`);
-  const probeAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_PROBE n1: run dori handover ack n1"));
+  const probeAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_PROBE n1: write what you understood to"));
   const stopAt = w.calls.findIndex((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop" && c[3] === OLD_ID);
   expect(probeAt).toBeGreaterThan(-1);
   expect(stopAt).toBeGreaterThan(probeAt);
@@ -262,6 +279,16 @@ test("moves the lane: same cwd, model and thinking, registry and cards repointed
   expect(sim.restarted).toBe(true);
   expect(sim.doubleRun).toBe(false);
   expect(printed.some((l) => l.startsWith("HANDOVER_ACCOUNT"))).toBe(false);
+  // the old agent is frozen while both sessions live, and resumed only to be closed
+  expect(sigs).toEqual(["SIGSTOP 11", "SIGCONT 11"]);
+  const firstAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("You are the demo lane"));
+  expect(firstAt).toBeGreaterThan(-1);
+  expect(printed).toContain(`HANDOVER_FROZEN demo agent 11 in ${OLD}`);
+  expect(printed.indexOf("HANDOVER_THAWED demo agent 11")).toBeGreaterThan(printed.findIndex((l) => l.startsWith("HANDOVER_DONE")));
+  // the new session restated what it understood before the commit
+  expect(printed).toContain(`HANDOVER_UNDERSTOOD ${(r.note ?? "").replace(/\.md$/, ".understood.md")}`);
+  expect(note).toContain("## Conversation summary (written by the old session)");
+  expect(note).toContain(`Its full log is ${join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl")}`);
 });
 
 test("rolls back when the new session runs at another thinking level: lane and cards back, the new session closed, the old one kept and told", async () => {
@@ -278,7 +305,9 @@ test("rolls back when the new session runs at another thinking level: lane and c
   expect(new QuestionStore(join(state.dir, "discord")).get("Q1")).toMatchObject({ tmux: OLD });
   expect(stoppedIds()).toEqual([NEW_AOE_ID]);
   expect(sent(w).some((t) => t.startsWith("[LEAD] Handover of demo failed") && t.includes("You stay the demo lane"))).toBe(true);
-  expect(sent(w).some((t) => t.includes("HANDOVER_COMMITTED"))).toBe(false);
+  expect(sent(w).some((t) => t.startsWith("[LEAD] HANDOVER_COMMITTED"))).toBe(false);
+  // the old agent was frozen for the switch and resumed when it stayed the lane
+  expect(sigs).toEqual(["SIGSTOP 11", "SIGCONT 11"]);
 });
 
 test("rolls back when a monitor is not re-armed or the probe is acked from another pane", async () => {
@@ -535,7 +564,7 @@ test("an approval is an answered rollover card for this lane's current session, 
   const card = (id: string) => cards[id] as never;
   const proposal = (key: string, id: string, pane = "p1") => ({ kind: "proposal" as const, who: "lane" as const, at: "2026-10-11T00:00:00Z", key, card: id, pane, signals: {}, crossed: [], blockers: "" });
   const log = [proposal("demo", "Q1"), proposal("demo", "Q2"), proposal("demo", "Q3"), proposal("other", "Q4"), proposal("demo", "Q6", "p0")];
-  const check = (ref: string | undefined, autoOn = false) => approvalProblem(ref, card, autoOn, "demo", "p1", log);
+  const check = (ref: string | undefined, on = false) => approvalProblem(ref, card, { on, key: "handover.autoRolloverLanes" }, "demo", "p1", log);
   // When / Then
   expect(check("Q1")).toBeUndefined();
   expect(check("q1")).toBeUndefined();
@@ -550,6 +579,7 @@ test("an approval is an answered rollover card for this lane's current session, 
   expect(check(undefined)).toStartWith("no approval");
   expect(check("auto:handover.autoRolloverLanes")).toContain("the automation key is off");
   expect(check("auto:handover.autoRolloverLanes", true)).toBeUndefined();
+  expect(check("auto:anything", true)).toBe("auto:anything is not the automatic approval of this side; only auto:handover.autoRolloverLanes is");
 });
 
 test("the old lane is quiet while it is replaced and may talk again after; every real attempt is logged with signals and steps", async () => {
@@ -620,4 +650,114 @@ test("a chain that outlives the close is not restarted, and a new account is log
   expect(sim.doubleRun).toBe(false);
   expect(printed).toContain("HANDOVER_ACCOUNT demo x -> orientpine (the account pool chose it for the new session)");
   expect(readRollovers(state.dir)[0]).toMatchObject({ accounts: { from: "x", to: "orientpine" } });
+});
+
+test("the new session must restate what it understood before the commit; questions go to the lead, and missed fix attempts are told to it", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  await deps.registry.patch("demo", { fixes: [{ at: "2026-10-11T16:00:00Z", metric: "loss", hypothesis: "lr too high", via: "report" }] });
+  sim.restate = "## Goal\nship it\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nwhich seed is the baseline?\n";
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  // Then
+  expect(r.code).toBe(0);
+  const note = readFileSync(r.note ?? "", "utf8");
+  expect(note).toContain("## Fix attempts in the old session (1)");
+  expect(note).toContain("- 2026-10-11T16:00:00Z loss / lr too high (report)");
+  expect(printed.find((l) => l.startsWith("HANDOVER_QUESTIONS demo: which seed is the baseline?"))).toBeDefined();
+  expect(printed).toContain("HANDOVER_GAPS demo: lr too high (told to the new session)");
+  expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_GAPS: your restatement leaves out these fixes the old session already tried: lr too high."))).toBe(true);
+});
+
+test("no restatement means the check fails and everything moves back", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  sim.restate = "";
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
+  // Then
+  expect(r.code).toBe(3);
+  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("restatement");
+  expect((await readLane(deps)).pane).toBe(OLD);
+  expect(sigs).toEqual(["SIGSTOP 11", "SIGCONT 11"]);
+});
+
+test("a job started from the pane's shell dies with it too: it counts as a local chain", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  table = [...baseTable(), { pid: 50, ppid: 10, cmd: "sleep 300" }];
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  // Then
+  expect(r.code).toBe(2);
+  expect(printed[0]).toStartWith("HANDOVER_REFUSED demo: 1 local chain(s) would die: 50 sleep 300");
+});
+
+test("a ready mark covers chains only: a turn that started after it still refuses", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  w.screens[OLD] = `${HIGH}\n • Working (esc to interrupt)`;
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  // Then
+  expect(r.code).toBe(2);
+  expect(printed[0]).toContain("a turn is running");
+  expect(opened()).toBe(false);
+});
+
+test("when the old session ends during the checks, the new one stays the lane instead of moving back to a dead pane", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  sim.thinking = "medium";
+  const run = deps.run;
+  const dying = { ...deps, run: async (argv: readonly string[], opts?: never) => {
+    if (firstMessageSent()) w.aoe = w.aoe.filter((s) => s.id !== OLD_ID);
+    return run(argv, opts);
+  } } as LaneHandoverDeps;
+  // When
+  const r = await laneHandover(dying, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
+  // Then
+  expect(r).toMatchObject({ code: 1, to: NEW });
+  expect(printed.find((l) => l.startsWith("HANDOVER_OLD_GONE demo"))).toBeDefined();
+  expect((await readLane(deps)).pane).toBe(NEW);
+  expect(stoppedIds()).toEqual([]);
+  expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_COMMITTED: the old session ended during the checks"))).toBe(true);
+});
+
+test("a job an earlier handover listed (detached, or a chain that outlived its session) is listed again while it runs", async () => {
+  // Given
+  const deps = await setup();
+  mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
+  writeFileSync(join(state.dir, "handover", "lanes", "demo-20261010-120000.json"), JSON.stringify({ detached: [{ pid: 41, cmd: "sleep 9999" }], chains: [{ pid: 77, cmd: "gone" }] }));
+  ready(deps, [15]);
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // Then
+  const note = readFileSync(r.note ?? "", "utf8");
+  expect(note).toContain("- 41: `sleep 9999`");
+  expect(note).not.toContain("- 77:");
+});
+
+test("a lane whose omo session lives under the real path of a symlinked cwd is still found: monitors, todos and log", async () => {
+  // Given
+  const deps = await setup();
+  const REAL = "/real/demo";
+  const realDeps: LaneHandoverDeps = { ...deps, realpath: (p) => (p === CWD ? REAL : p), sessionOf: async (pane, cwd) => (pane === OLD && cwd === REAL ? "old-sid" : pane === NEW ? "new-sid" : "") };
+  const file = manifestPath(join(state.dir, "sessions"), REAL, "old-sid");
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, JSON.stringify({ version: 1, sessionId: "old-sid", monitors: [monitor("scratch events", EVENTS, 14)] }));
+  writeFileSync(join(sessionDirFor(join(state.dir, "sessions"), REAL), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), "");
+  ready(deps, [15]);
+  // When
+  const r = await laneHandover(realDeps, "demo", "aoe_lead_x", { dryRun: true });
+  // Then
+  const note = readFileSync(r.note ?? "", "utf8");
+  expect(note).toContain("## Monitors (1)");
+  expect(note).toContain(`Its full log is ${join(sessionDirFor(join(state.dir, "sessions"), REAL), "2026-10-11T10-00-00-000Z_old-sid.jsonl")}`);
+  expect(printed.some((l) => l.startsWith("HANDOVER_SESSION_UNSEEN"))).toBe(false);
 });

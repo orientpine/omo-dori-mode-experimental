@@ -4,7 +4,7 @@
 // lane's model and thinking level -> point the registry and the question cards at it -> check its status line, its
 // monitors and a [LEAD] probe ack -> only then close the old session. A failed check moves everything back and closes
 // the new session; the old one stays the lane. Detached jobs (outside the pane's process tree) are listed, never touched.
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, inputLine, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
@@ -16,7 +16,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { AGENT, descendants, type Proc, sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, clearQuiet, COMMITTED, lastProposal, readRollovers, repeatsOf, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
+import { appendRollover, approvalProblem, clearQuiet, COMMITTED, lastProposal, readRollovers, repeatsOf, sessionFixes, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type LaneHandoverDeps = FlowDeps & {
@@ -28,6 +28,8 @@ export type LaneHandoverDeps = FlowDeps & {
   // a process's environment as NAME=value lines ("" when it cannot be read)
   readonly envOf: (pid: number) => string;
   readonly alive: (pid: number) => boolean;
+  // stops or resumes a process (the old agent is frozen while it is replaced); false when the signal could not be sent
+  readonly signal: (pid: number, sig: "SIGSTOP" | "SIGCONT") => boolean;
   // the path with symlinks resolved (the path itself when it cannot be resolved)
   readonly realpath: (path: string) => string;
   readonly nonce: () => string;
@@ -73,11 +75,50 @@ export type LaneFacts = {
   readonly laneNote: string;
   readonly approvedBy?: string;
   readonly signals: Signals;
+  // the old agent's process (frozen during the switch) and the old conversation's log file
+  readonly agentPid?: number;
+  readonly oldLog?: string;
+};
+
+// The headings of the conversation summary the old session writes at its safe point (dori handover ready --note FILE):
+// what only its conversation knows. The new session reads it; dori handover ready --template prints them.
+export const SUMMARY_HEADINGS = ["Owner's words", "Decisions and why", "Ruled out", "In progress", "Next step"] as const;
+export const SUMMARY_TEMPLATE = [
+  "## Owner's words",
+  "(the owner's instructions that still hold, quoted exactly, newest last; with the message link when you have it)",
+  "## Decisions and why",
+  "(each decision made in this conversation and the evidence it rests on)",
+  "## Ruled out",
+  "(approaches, hypotheses and fixes already tried and rejected, with the result that rejected each; the new session must not try them again without a new reason)",
+  "## In progress",
+  "(what is half done: files touched, runs going, results awaited, and the judgment you were forming)",
+  "## Next step",
+  "(the exact next action, and the check that tells it worked)",
+  "",
+].join("\n");
+// The headings the new session's restatement needs (written before it acks the probe).
+export const UNDERSTOOD_HEADINGS = ["Goal", "Next step", "Ruled out", "Questions"] as const;
+
+const missingHeadings = (text: string, headings: readonly string[]): string[] => headings.filter((h) => !new RegExp(`^##\\s+${escape(h)}\\s*$`, "mi").test(text));
+
+const section = (text: string, heading: string): string => {
+  const m = new RegExp(`^##\\s+${escape(heading)}\\s*$([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "mi").exec(text);
+  return m?.[1]?.trim() ?? "";
+};
+
+const logOf = (dir: string, session: string): string | undefined => {
+  if (!session) return undefined;
+  try {
+    const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
+    return name ? join(dir, name) : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 // Written once the new session exists and removed when the run ends either way: a run killed in between (crash, reboot,
 // SIGKILL) leaves it behind, and the next dori handover --lane for that lane repairs the state from it first.
-export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[] };
+export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[]; readonly agentPid?: number };
 
 const POLL_MS = 5_000;
 const THINKING = /^(.*):(off|minimal|low|medium|high|xhigh|max)$/;
@@ -115,8 +156,9 @@ export const localChains = (table: readonly Proc[], shellPid: number, monitorPid
   const agent = tree.find((p) => AGENT.test(p.cmd) && !/\bmcp\b/.test(p.cmd));
   const ids = new Set([shellPid, ...tree.map((p) => p.pid)]);
   if (!agent) return { chains: [], tree: ids };
+  // the agent's children, and jobs started from the pane's shell itself (they die with the pane too)
   const chains = table
-    .filter((p) => p.ppid === agent.pid && !INFRA.test(p.cmd) && !monitorPids.includes(p.pid) && !exclude.has(p.pid))
+    .filter((p) => (p.ppid === agent.pid || (p.ppid === shellPid && p.pid !== agent.pid)) && !INFRA.test(p.cmd) && !monitorPids.includes(p.pid) && !exclude.has(p.pid))
     .map((p) => ({ pid: p.pid, cmd: p.cmd, pids: [p.pid, ...descendants(table, p.pid).map((d) => d.pid)] }));
   return { agent, chains, tree: ids };
 };
@@ -130,6 +172,20 @@ export const detachedJobs = (table: readonly Proc[], tree: ReadonlySet<number>, 
     const env = envOf(p.pid);
     return env && marks.some((m) => env.split("\n").some((line) => line === m || line.endsWith(m))) ? [{ pid: p.pid, cmd: p.cmd }] : [];
   });
+};
+
+// Jobs an earlier handover of the lane listed (detached, or chains that outlived their session) that still run: their
+// environment names an older session, so detachedJobs alone would lose them from one handover to the next.
+const carried = (dir: string, key: string, alive: (pid: number) => boolean, known: ReadonlySet<number>): Job[] => {
+  let files: string[] = [];
+  try {
+    files = readdirSync(dir).filter((n) => new RegExp(`^${escape(key)}-\\d{8}-\\d{6}\\.json$`).test(n)).sort();
+  } catch {
+    return [];
+  }
+  const last = files.at(-1);
+  const prev = last ? readJson<{ readonly detached?: Job[]; readonly chains?: Job[] }>(join(dir, last)) : undefined;
+  return [...(prev?.detached ?? []), ...(prev?.chains ?? [])].filter((j) => alive(j.pid) && !known.has(j.pid)).map((j) => ({ pid: j.pid, cmd: j.cmd }));
 };
 
 const ancestors = (table: readonly Proc[], pid: number): Set<number> => {
@@ -163,7 +219,10 @@ const readPending = (stateDir: string, key: string): Pending | undefined => read
 // chain running this command is left out) and the lane's own notes for the new session.
 export const markReady = async (deps: LaneHandoverDeps, lane: Lane, here: string, self: number, noteFile?: string): Promise<{ readonly code: number; readonly line: string }> => {
   if (!lane.pane || here !== lane.pane) return { code: 2, line: `HANDOVER_READY_REFUSED ${lane.key}: run it inside the lane's own pane ${lane.pane ?? "(none)"}, not ${here || "outside tmux"}` };
-  if (noteFile && !existsSync(noteFile)) return { code: 2, line: `HANDOVER_READY_REFUSED ${lane.key}: note file not found: ${noteFile}` };
+  if (!noteFile) return { code: 2, line: `HANDOVER_READY_REFUSED ${lane.key}: write the conversation summary first (dori handover ready --template prints its headings), then dori handover ready ${lane.key} --note FILE` };
+  if (!existsSync(noteFile)) return { code: 2, line: `HANDOVER_READY_REFUSED ${lane.key}: note file not found: ${noteFile}` };
+  const lacking = missingHeadings(readFileSync(noteFile, "utf8"), SUMMARY_HEADINGS);
+  if (lacking.length) return { code: 2, line: `HANDOVER_READY_REFUSED ${lane.key}: the summary ${noteFile} lacks ${lacking.map((h) => `## ${h}`).join(", ")} (dori handover ready --template)` };
   const old = sessionFor(await aoeSessions(deps.run), lane.pane);
   const { pids } = await monitorPidsOf(deps, lane.pane, old?.path ?? lane.cwd ?? deps.config.defaultCwd);
   const table = await deps.procs();
@@ -191,9 +250,9 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   "",
   "## Do this first",
   "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once.",
-  `2. A [LEAD] line with ${PROBE} <id> is a check of this handover: run the dori handover ack command it gives (with its --state) and nothing else for that line.`,
+  `2. A [LEAD] line with ${PROBE} <id> is a check of this handover. Before you answer it, read this whole note and your brief, then write what you understood to the file the line names, under the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")} (under Questions, what the note leaves unclear, or none). Then run the dori handover ack command it gives (with its --state) and nothing else for that line.`,
   `3. Read your brief ${f.lane.brief} in full. It still holds: same Done, same footer, and reports still go to the lead.`,
-  `4. Until a [LEAD] ${COMMITTED} line arrives, do nothing else: change no file, start no process, post nothing. Until then the handover can still roll back and close this session.`,
+  `4. Until a [LEAD] ${COMMITTED} line arrives, do nothing else: change no file, start no process besides the monitors of step 1, post nothing. Until then the handover can still roll back and close this session.`,
   `5. After ${COMMITTED}: ${f.goal ? "register the goal under Goal again with your goal tool, same objective, and rebuild the todo list from Todos." : "rebuild the todo list from Todos."} Then continue the work from where Last reports and the lane's notes leave it.`,
   "",
   "## Lane",
@@ -222,8 +281,16 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   ...(f.lane.direction ? [`- Direction (intent-check ${f.lane.direction.at}): ${f.lane.direction.text}${f.lane.direction.next ? `; next: ${f.lane.direction.next}` : ""}`] : []),
   ...(f.lane.history ?? []).slice(-3).map((h) => `- ${h.at} ${h.status}: ${h.note}`),
   "",
-  "## The lane's notes",
-  f.laneNote.trim() || "(none: the old session can leave notes with dori handover ready --note FILE, the lead with --note FILE)",
+  "## Conversation summary (written by the old session)",
+  f.laneNote.trim() || "(none: the move was forced before the old session wrote one; read the old conversation below before you act on a guess)",
+  "",
+  `## Fix attempts in the old session (${sessionFixes(f.lane).length})`,
+  ...(sessionFixes(f.lane).length
+    ? ["Already tried; do not try one again without a new reason, and at the 3rd of one same fix change the hypothesis instead.", ...sessionFixes(f.lane).map((x) => `- ${x.at} ${x.metric} / ${x.hypothesis} (${x.via}${x.improved ? ", the one before it moved the metric" : ""})`)]
+    : ["none"]),
+  "",
+  "## The old conversation",
+  f.oldLog ? `Its full log is ${f.oldLog} (JSONL; it stays on disk after the old session closes). When this note leaves something out, search it (the owner's words, a file name, an error) before you ask.` : "Its log was not found.",
   "",
   `State dir for acks: ${stateDir}`,
   "",
@@ -270,18 +337,28 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
     await recover(deps, pending, emit);
     return { code: 3 };
   }
-  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), config.handover.autoRolloverLanes, key, lane.pane ?? "", readRollovers(config.stateDir));
+  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLanes, key: "handover.autoRolloverLanes" }, key, lane.pane ?? "", readRollovers(config.stateDir));
   if (unapproved) return refuse(`a lane moves to a new session only with the owner's approval: ${unapproved} (--dry-run needs none)`);
   const old = sessionFor(await aoeSessions(deps.run), lane.pane);
   if (!old) return refuse(`no live aoe session for pane ${lane.pane}`);
-  const { session, entries, pids: monitorPids } = await monitorPidsOf(deps, lane.pane, old.path);
+  const real = deps.realpath(old.path);
+  // omo may keep the session under the path aoe shows or under the real one (a symlinked cwd): use whichever names the session
+  let base = old.path;
+  let found = await monitorPidsOf(deps, lane.pane, base);
+  if (!found.session && real !== old.path) {
+    const byReal = await monitorPidsOf(deps, lane.pane, real);
+    if (byReal.session) [base, found] = [real, byReal];
+  }
+  const { session, entries, pids: monitorPids } = found;
+  if (!session) emit(`HANDOVER_SESSION_UNSEEN ${key}: the omo session of ${lane.pane} was not found under ${old.path}${real !== old.path ? ` or ${real}` : ""}; the note has no monitors, todos, goal or old log`);
   const now = deps.clock.now();
   const monitors = liveMonitors(entries, now, deps.alive);
   const table = await deps.procs();
   const shell = await tmuxPanePid(deps.run, lane.pane);
   const { agent, chains, tree } = localChains(table, shell, monitorPids);
   if (!agent) return refuse(`no omo agent process under pane ${lane.pane} (shell pid ${shell || "?"})`);
-  const detached = detachedJobs(table, tree, session, old.id, deps.envOf);
+  const marked = detachedJobs(table, tree, session, old.id, deps.envOf);
+  const detached = [...marked, ...carried(dir, key, deps.alive, new Set([...marked.map((d) => d.pid), ...chains.flatMap((c) => c.pids ?? [c.pid]), ...monitorPids]))];
   const model = opts.model || lane.model || config.defaultModel;
   const screen = await captureTmux(deps.run, lane.pane);
   const shown = statusLine(screen, model);
@@ -294,8 +371,9 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   const uncovered = chains.filter((c) => !ready?.chains.includes(c.pid));
   const blockers = [
     ...(uncovered.length ? [`${uncovered.length} local chain(s) would die: ${uncovered.map((c) => `${c.pid} ${c.cmd.slice(0, 80)}`).join("; ")}`] : []),
-    ...(!ready && screen.includes(BUSY_MARK) ? ["a turn is running (esc to interrupt on screen)"] : []),
-    ...(!ready && QUESTION_MARK.test(screen) ? ["a question is open in the pane"] : []),
+    // a ready mark covers chains only: a turn that started after it (a nudge, a message) still blocks
+    ...(screen.includes(BUSY_MARK) ? ["a turn is running (esc to interrupt on screen)"] : []),
+    ...(QUESTION_MARK.test(screen) ? ["a question is open in the pane"] : []),
   ];
   const blocked = blockers.length > 0 && !opts.force;
   const blockedWhy = `${blockers.join("; ")}. Ask the lane to reach a safe point and run dori handover ready ${key} [--note FILE] in its own pane, or pass --force`;
@@ -303,15 +381,15 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   if (blocked && !opts.dryRun) return refuse(blockedWhy);
   if (blocked) emit(`HANDOVER_REFUSED ${key}: ${blockedWhy}`);
   else if (blockers.length) emit(`HANDOVER_FORCED ${key}: ${blockers.join("; ")}`);
-  const real = deps.realpath(old.path);
   if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK ${key}: the lane runs from ${old.path}, a symlink to ${real}; the new session opens in ${real}`);
-  const sessionDir = sessionDirFor(config.sessionsDir, old.path);
+  const sessionDir = sessionDirFor(config.sessionsDir, base);
   const repeats = repeatsOf(lane);
   const signals: Signals = { ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...sessionSignals(sessionDir, session, now), ...(repeats ? { repeats } : {}) };
   const laneNote = [ready?.note ?? "", opts.note ? readFileSync(opts.note, "utf8") : ""].filter((t) => t.trim()).join("\n\n");
   const facts: LaneFacts = {
     lane, from: { pane: lane.pane, aoeId: old.id, session, title: old.title, cwd: old.path }, cwd: real, model: splitModel(model).base, thinking, ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(shown.account ? { account: shown.account } : {}),
     monitors, todos: session ? openTodos(sessionDir, session) : [], goal: session ? openGoal(sessionDir, session) : undefined, chains, detached, ...(ready ? { ready } : {}), laneNote, signals, ...(opts.approvedBy?.trim() ? { approvedBy: opts.approvedBy.trim() } : {}),
+    agentPid: agent.pid, ...(logOf(sessionDir, session) ? { oldLog: logOf(sessionDir, session) } : {}),
   };
   mkdirSync(dir, { recursive: true });
   const note = join(dir, `${key}-${stamp}.md`);
@@ -352,7 +430,7 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
 
 type Check = { readonly reasons: string[]; readonly session: string; readonly account?: string };
 
-const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, emit: (line: string) => void): Promise<Check> => {
+const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, understood: string, emit: (line: string) => void): Promise<Check> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
   let session = "";
@@ -376,7 +454,7 @@ const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string
   emit(`HANDOVER_STATUS_OK ${pane} ${shown.model}${shown.thinking ? ` thinking ${shown.thinking}` : ""}`);
   if (facts.monitors.length) emit(`HANDOVER_MONITORS_OK ${facts.monitors.length} in ${pane} (session ${session})`);
   const id = deps.nonce();
-  if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, `[LEAD] ${PROBE} ${id}: run dori handover ack ${id} --state ${deps.config.stateDir} and nothing else for this line.`))) return { reasons: [`the probe did not reach ${pane}`], session };
+  if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, `[LEAD] ${PROBE} ${id}: write what you understood to ${understood} (${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")}), then run dori handover ack ${id} --state ${deps.config.stateDir} and nothing else for this line.`))) return { reasons: [`the probe did not reach ${pane}`], session };
   emit(`HANDOVER_PROBE_SENT ${id} -> ${pane}`);
   let by: string | undefined;
   for (; i < tries; i++) {
@@ -386,6 +464,20 @@ const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string
   }
   if (by === undefined) return { reasons: [`no ack for the probe ${id}`], session };
   if (by !== pane) return { reasons: [`the probe was acked from ${by || "an unknown pane"}, not ${pane}`], session };
+  // the new session says what it understood: a gap shows before the old session is gone
+  const text = existsSync(understood) ? readFileSync(understood, "utf8") : "";
+  const lacking = missingHeadings(text, UNDERSTOOD_HEADINGS);
+  if (!text.trim() || lacking.length) return { reasons: [`the new session's restatement ${understood} is ${text.trim() ? `missing ${lacking.map((h) => `## ${h}`).join(", ")}` : "not written"}`], session };
+  emit(`HANDOVER_UNDERSTOOD ${understood}`);
+  // checked against what the handover knows on its own, not against the summary: each recorded fix attempt must be in Ruled out
+  const ruledOut = section(text, "Ruled out").toLowerCase();
+  const gaps = [...new Set(sessionFixes(facts.lane).map((x) => x.hypothesis))].filter((h) => !ruledOut.includes(h.toLowerCase()));
+  if (gaps.length) {
+    await tell(deps, pane, `[LEAD] HANDOVER_GAPS: your restatement leaves out these fixes the old session already tried: ${gaps.join("; ")}. Add them under ## Ruled out in ${understood} and do not try them again without a new reason.`);
+    emit(`HANDOVER_GAPS ${facts.lane.key}: ${gaps.join("; ")} (told to the new session)`);
+  }
+  const asks = section(text, "Questions");
+  if (asks && !/^none\.?$/i.test(asks)) emit(`HANDOVER_QUESTIONS ${facts.lane.key}: ${asks.replace(/\s+/g, " ").slice(0, 400)} (the lead answers them in the new pane; the old log is ${facts.oldLog ?? "not found"})`);
   return { reasons: [], session, ...(shown.account ? { account: shown.account } : {}) };
 };
 
@@ -429,13 +521,14 @@ export const recover = async (deps: LaneHandoverDeps, p: Pending, emit: (line: s
   const oldAlive = !!sessionFor(sessions, p.from);
   const newAlive = !!sessionFor(sessions, p.to);
   if (oldAlive) {
+    if (p.agentPid) deps.signal(p.agentPid, "SIGCONT");
     await pointLane(deps, p.key, p.to, p.from, `pane back to ${p.from}: interrupted handover repaired`, emit);
     const closed = newAlive ? await closeAoeSession(deps.run, p.to) : `${p.to} already gone`;
     await tell(deps, p.from, `[LEAD] The handover of ${p.key} was stopped before it finished. You stay the ${p.key} lane: carry on where you were.`);
     emit(`HANDOVER_RECOVERED ${p.key} back on ${p.from}; new session: ${closed}`);
   } else if (newAlive) {
     await pointLane(deps, p.key, p.from, p.to, `pane kept on ${p.to}: interrupted handover repaired, the old session is gone`, emit);
-    await tell(deps, p.to, `[LEAD] ${COMMITTED}: the handover was interrupted after the old session ${p.from} closed; you are the ${p.key} lane now. Go on with step 5 of the note ${p.note}.`);
+    await tell(deps, p.to, `[LEAD] ${COMMITTED}: the handover was interrupted after the old session ${p.from} closed; you are the ${p.key} lane now. ${deps.config.launchKeywords}: go on with step 5 of the note ${p.note}.`);
     emit(`HANDOVER_RECOVERED ${p.key} kept on ${p.to}: the old session ${p.from} is gone`);
     if (p.chains?.length) await chainsEnded(deps, p.key, p.chains, p.to, emit);
   } else {
@@ -458,7 +551,7 @@ const moveLane = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, facts
     emit(`HANDOVER_FAIL ${lane.key}: could not open the new session: ${e instanceof Error ? e.message : String(e)}; nothing moved, ${from.pane} stays the lane`);
     return { code: 3, note };
   }
-  const pending: Pending = { key: lane.key, pid: process.pid, at: iso(deps.clock), from: from.pane, to: pane, note, chains: facts.chains };
+  const pending: Pending = { key: lane.key, pid: process.pid, at: iso(deps.clock), from: from.pane, to: pane, note, chains: facts.chains, ...(facts.agentPid ? { agentPid: facts.agentPid } : {}) };
   writeFileSync(pendingFile(config.stateDir, lane.key), JSON.stringify(pending, null, 1));
   // the old pane stays quiet when it is still open after a finished move (--keep-old, or the close failed); the mark expires
   let keepQuiet = false;
@@ -483,7 +576,13 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   const { lane, from } = facts;
   const record = (result: string, reasons: readonly string[]) =>
     writeFileSync(note.replace(/\.md$/, ".result.json"), JSON.stringify({ at: iso(deps.clock), key: lane.key, from, to: pane, note, approvedBy: facts.approvedBy, signals: facts.signals, result, reasons }, null, 1));
+  let frozen = false;
+  const thaw = (): void => {
+    if (frozen && facts.agentPid) emit(deps.signal(facts.agentPid, "SIGCONT") ? `HANDOVER_THAWED ${lane.key} agent ${facts.agentPid}` : `HANDOVER_THAW_FAIL ${lane.key} agent ${facts.agentPid}`);
+    frozen = false;
+  };
   const discard = async (why: string): Promise<LaneHandoverResult> => {
+    thaw();
     const closed = await closeAoeSession(deps.run, pane);
     await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} failed (${why}). You stay the ${lane.key} lane: carry on where you were.`);
     emit(`HANDOVER_ROLLED_BACK ${lane.key}: ${from.pane} stays the lane; new session ${pane}: ${closed}`);
@@ -498,7 +597,13 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   }
   setQuiet(config.stateDir, from.pane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of ${lane.key} to ${pane} is running`);
   await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} to ${pane} started (note ${note}). Stop here: start no new tool call, leave running processes alone, and ignore ${PROBE} lines. If it fails you are told and stay the lane.`);
-  const first = await sendVerified(deps.run, deps.clock, config, pane, `${config.launchKeywords}. You are the ${lane.key} lane in a new session; the old session hands its work over to you. Read the handover note at ${note} in full and do what it says, starting with its first section.`);
+  // frozen, the old agent cannot answer, report or start a second copy of the work while both sessions live
+  if (facts.agentPid) {
+    frozen = deps.signal(facts.agentPid, "SIGSTOP");
+    emit(frozen ? `HANDOVER_FROZEN ${lane.key} agent ${facts.agentPid} in ${from.pane}` : `HANDOVER_FREEZE_FAIL ${lane.key} agent ${facts.agentPid}: it stays told and quiet only`);
+  }
+  // no work keyword here: the new session only arms monitors and answers the probe until it is committed
+  const first = await sendVerified(deps.run, deps.clock, config, pane, `You are the ${lane.key} lane in a new session; the old session hands its work over to you. Read the handover note at ${note} in full and do steps 1 to 4 of its first section; start the work only when a [LEAD] ${COMMITTED} line tells you to.`);
   mark("first-message", first);
   if (!first) {
     emit(`HANDOVER_FAIL ${lane.key}: the first message did not register in ${pane}`);
@@ -506,8 +611,16 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   }
   await pointLane(deps, lane.key, from.pane, pane, `pane moved ${from.pane} -> ${pane} (dori handover --lane; approved by ${facts.approvedBy ?? "-"})`, emit);
   emit(`HANDOVER_STARTED ${lane.key} ${from.pane} -> ${pane}`);
-  const checked = await verifyLane(deps, facts, pane, opts.verifyMin ?? config.handover.verifyMin, emit);
+  const checked = await verifyLane(deps, facts, pane, opts.verifyMin ?? config.handover.verifyMin, note.replace(/\.md$/, ".understood.md"), emit);
   mark("verify", !checked.reasons.length);
+  if (checked.reasons.length && !sessionFor(await aoeSessions(deps.run), from.pane)) {
+    // nothing to go back to: the old session ended during the checks, so the new one stays the lane
+    emit(`HANDOVER_OLD_GONE ${lane.key}: ${from.pane} ended during the checks (${checked.reasons.join("; ")}); the lane stays on ${pane}`);
+    await tell(deps, pane, `[LEAD] ${COMMITTED}: the old session ended during the checks, so you are the ${lane.key} lane now although a check failed (${checked.reasons.join("; ")}); tell the lead what you see. ${config.launchKeywords}: go on with step 5 of the note.`);
+    record("kept-new-old-gone", checked.reasons);
+    if (facts.chains.length) await chainsEnded(deps, lane.key, facts.chains, pane, emit);
+    return { code: 1, note, to: pane };
+  }
   if (checked.reasons.length) {
     emit(`HANDOVER_VERIFY_FAIL ${lane.key} ${pane}: ${checked.reasons.join("; ")}`);
     await pointLane(deps, lane.key, pane, from.pane, `pane moved back to ${from.pane}: handover check failed`, emit);
@@ -518,8 +631,9 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   await deps.registry.patch(lane.key, { session: checked.session, sessionVia: "handover" });
   rmSync(readyFile(config.stateDir, lane.key), { force: true });
   if (opts.keepOld) {
+    thaw();
     await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} to ${pane} is done and checked. You are no longer the lane; stay idle until the lead closes you.`);
-    await tell(deps, pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${from.pane} stays open but idle; you are the ${lane.key} lane now. Go on with step 5 of the note.`);
+    await tell(deps, pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${from.pane} stays open but idle; you are the ${lane.key} lane now. ${config.launchKeywords}: go on with step 5 of the note.`);
     if (facts.chains.length) await tell(deps, pane, `[LEAD] HANDOVER_CHAINS_KEPT: the old session ${from.pane} stays open, so its local chains (${facts.chains.map((c) => c.pid).join(", ")}) still run. Do not start them again.`);
     emit(`HANDOVER_DONE ${lane.key} ${from.pane} -> ${pane}; old session kept (--keep-old)`);
     record("done-kept-old", []);
@@ -527,11 +641,13 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   }
   emit(`HANDOVER_DONE ${lane.key} ${from.pane} -> ${pane}; closing ${from.pane}`);
   record("done", []);
+  // resumed only to be closed: a stopped process does not act on the hangup
+  thaw();
   const closed = await closeAoeSession(deps.run, from.pane);
   const ok = closed.includes("stopped and trashed");
   mark("close", ok);
   emit(ok ? `HANDOVER_CLOSED ${closed}` : `HANDOVER_CLOSE_FAIL ${closed}`);
-  await tell(deps, pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${ok ? "is closed" : `${from.pane} did not close but stays idle`}; you are the ${lane.key} lane now. Go on with step 5 of the note.`);
+  await tell(deps, pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${ok ? "is closed" : `${from.pane} did not close but stays idle`}; you are the ${lane.key} lane now. ${config.launchKeywords}: go on with step 5 of the note.`);
   emit(`${COMMITTED} ${lane.key} ${pane}`);
   if (facts.chains.length) await chainsEnded(deps, lane.key, facts.chains, pane, emit);
   if (facts.detached.length) emit(`HANDOVER_DETACHED_ALIVE ${facts.detached.filter((d) => deps.alive(d.pid)).length}/${facts.detached.length} (${facts.detached.map((d) => d.pid).join(",")})`);

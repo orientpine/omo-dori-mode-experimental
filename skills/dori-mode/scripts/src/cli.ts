@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
 import { ackHandover, handover, type HandoverDeps } from "./handover.ts";
-import { laneHandover, type LaneHandoverDeps, markReady, paneSignals } from "./lane-handover.ts";
+import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
 import { appendRollover, crossed, quietReason, readRollovers, repeatsOf, rolloverStats } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
@@ -166,8 +166,9 @@ const USAGE = `dori <command> [options]
                                        <stateDir>/rollover-log.jsonl. Its card id is the --approved-by of the handover
   rollover-stats [--window H]          proposals and rollovers from the log: signal values, approval time, each step's time
                                        and result, and the lane's watch-log quality signals H hours (24) before and after
-  handover ready [<key>] [--note FILE] run by a lane in its own pane at a safe point: the local chains running now may end
-                                       with the old session, FILE goes into the note (valid handover.readyMin minutes)
+  handover ready [<key>] --note FILE   run by a lane in its own pane at a safe point: the local chains running now may end
+                                       with the old session; FILE is the lane's conversation summary (its headings: handover
+                                       ready --template) and goes into the note (valid handover.readyMin minutes)
   thread <reply|wait|done> discord:<id> <text>
                                        post in a work thread and set its status (working, waiting, done); done archives it
                                        (Discord env: DORI_DISCORD_TOKEN, DORI_DISCORD_GUILD, DORI_DISCORD_CHANNEL, DORI_DISCORD_OWNER)`;
@@ -209,7 +210,7 @@ const flags = parseArgs({
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
     pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" },
-    hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" },
+    hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" }, template: { type: "boolean" },
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
@@ -268,6 +269,14 @@ const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)
     }
   },
   alive: pidAlive,
+  signal: (pid, sig) => {
+    try {
+      process.kill(pid, sig);
+      return true;
+    } catch {
+      return false;
+    }
+  },
   realpath: realpathOr,
   nonce: () => crypto.randomUUID().slice(0, 8),
   print,
@@ -797,6 +806,10 @@ try {
       if (key === "ready" || opt("lane")) {
         const laneDeps = laneDepsFor();
         if (key === "ready") {
+          if (flags.values.template) {
+            console.log(SUMMARY_TEMPLATE);
+            break;
+          }
           const r = await markReady(laneDeps, await lane(flags.positionals[1]), here, process.pid, opt("note"));
           console.log(r.line);
           process.exit(r.code);
