@@ -196,7 +196,7 @@ dori ask --text "Lane fix-login asks: keep the old session cookie for 30 days?" 
 - If a typed answer is not really an answer, `dori reopen Q4` puts the buttons back and marks its thread ⏸️ again. When the follow-up is done, `dori resolve Q4` forgets the question; the folded card stays in the chat as the record.
 - `dori questions --open` lists what is still waiting.
 
-Card and thread wording is in the `discord` section of `config.json` (`statusStyle`, `autoUnEye`, `working`, `waiting`, `done`, `other`, `pick`, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`, `locale`, `timeZone`), so a Dori that talks to its owner in another language can use that language's words and the owner's time zone.
+Card and thread wording is in the `discord` section of `config.json` (`statusStyle`, `autoUnEye`, `quietText`, `doneText`, `postRawReports`, `working`, `waiting`, `done`, `other`, `pick`, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`, `locale`, `timeZone`), so a Dori that talks to its owner in another language can use that language's words and the owner's time zone.
 
 ## Operating rules for this setup
 

@@ -13,7 +13,7 @@ If you want the lane to do one more thing after it claimed:
 
 ## 2. Pausing a lane that waits on the owner
 
-`dori freshness` nudges every lane whose status is `working` and has been silent too long, and posts its last report to the thread. For a lane that is deliberately waiting on an owner decision, that repeats a ping nobody can act on.
+`dori freshness` nudges every lane whose status is `working` and has been silent too long, and posts a short status line to the thread. For a lane that is deliberately waiting on an owner decision, that repeats a ping nobody can act on.
 
 Pause it instead: `dori pause <key> "waiting on the owner's decision about X"`. The lane's status becomes `paused` and the reason goes into its history. From then on freshness neither nudges nor posts for it, `dori watch` reports no `LANE_BLOCKED` for it, `dori dead-panes` skips its pane, and a done claim it makes is announced (`LANE_DONE_CLAIMED_PAUSED`) but does not close it on a timer. When the owner answers, `dori resume <key>` puts back the status it had (working or not-done) and restarts its silence clock. Don't edit the registry file by hand for this any more.
 
@@ -48,3 +48,12 @@ dori update
 ## 7. Replacing a listener: shadow first
 
 To swap one inbound listener for another, run the new one as a shadow that writes only to its own inbox file and never to the messenger, compare the two inboxes id by id in a written table, then switch in one command that stops the old one before starting the new one, so the two never receive live at the same time, and keep the one-line rollback ready. The full procedure with the checks is in [`../setups/discord-aoe/README.md`](../setups/discord-aoe/README.md#switching-an-existing-listener-over).
+
+## 8. What goes to the owner is in plain words
+
+A lane's `[REPORT]` is a note for the lead: abbreviations, numbered items, an English head, written for someone who knows the plan. Posted as it is in the owner's thread it reads like an office memo, and the owner asked why it was written like that. Anything a script posts to the owner on its own must be in plain words, in the owner's language, and short.
+
+- `dori freshness` posts `discord.quietText` (`{min}` = minutes since the last report) after `postAfterMin`, not the report. The report goes to the lead pane as `[DORI] <key>: ... Last report: ...`; when you see it, tell the owner where the lane stands in your own words.
+- The automatic close in `dori watch` posts `discord.doneText` through `hooks.threadDone`, not `Done: <evidence>`. The evidence stays in the lane's record; sum up the result for the owner yourself.
+- Set both in the owner's language, for example Korean in casual speech: `"quietText": "진행 중이야 — 마지막 보고는 {min}분 전. 정리해서 곧 알려 줄게."`.
+- `discord.postRawReports: true` brings back posting the raw report and evidence. Leave it off unless the owner reads those notes directly.

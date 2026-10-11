@@ -39,9 +39,15 @@ export type StatusStyle = "words" | "emoji";
 
 // Words the Discord helpers write: thread status words, question-card labels, and how answer times are shown.
 // autoUnEye: the listener takes its eyes reaction off the owner's earlier messages once its bot writes in that channel.
+// quietText ({min} = minutes since the lane's last report) and doneText are what freshness and the automatic close post in
+// the owner's thread (hooks.threadReply / threadDone, any messenger), instead of the lane's own report or claim, which are
+// notes for the lead. postRawReports brings back posting those notes as they are.
 export type DiscordWords = {
   readonly statusStyle: StatusStyle;
   readonly autoUnEye: boolean;
+  readonly quietText: string;
+  readonly doneText: string;
+  readonly postRawReports: boolean;
   readonly working: string;
   readonly waiting: string;
   readonly done: string;
@@ -59,6 +65,9 @@ export type DiscordWords = {
 export const defaultDiscordWords: DiscordWords = {
   statusStyle: "words",
   autoUnEye: true,
+  quietText: "Still working on it. The last report came {min} min ago; I'll sum it up for you soon.",
+  doneText: "Done: the checks passed and the work is closed. I'll sum up what changed for you soon.",
+  postRawReports: false,
   working: "working",
   waiting: "waiting",
   done: "done",

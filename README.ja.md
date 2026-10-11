@@ -68,6 +68,7 @@ Dori はあなたの話し方に合わせます。短く、くだけた調子で
 | `hooks.threadReply`, `hooks.threadDone` | メッセンジャー CLI を `{thread}` と `{text}` を含む argv のリストで。レーンの進捗投稿と完了表示に使います。 |
 | `discord.statusStyle` | Discord の状態マークを `"words"`(既定)または `"emoji"` に設定 |
 | `discord.autoUnEye` | `true`(既定)ならボットがそのチャンネルやスレッドに書き込んだとき、`dori inbound discord` が所有者のそれ以前のメッセージから目のリアクションを外す。`false` なら残す |
+| `discord.quietText`、`discord.doneText`、`discord.postRawReports` | `freshness` と自動クローズが所有者のスレッドに投稿する文(`{min}` = 最後の報告からの分数)を所有者の言語で。レーンの報告や完了の証拠はスレッドではなくリードへ。`postRawReports: true`(既定 `false`)ならそのまま投稿 |
 
 残り(時間、しきい値、heavy スロット数)は既定値で十分です。全項目の表は [`references/scripts.md`](skills/dori-mode/references/scripts.md) にあります。環境変数 `DORI_CONFIG`、`DORI_STATE_DIR`、`DORI_LEAD_PANE` はファイルより優先されます。
 
@@ -103,7 +104,7 @@ footer はレーンに `[REPORT] <key> | <milestone|blocker|question|done> | <te
 ["tmux", "send-keys", "-t", "=aoe_Dori_0a1b2c3d:", "Enter"]
 ```
 
-`dori freshness` はまずリードの画面から報告を読み、次にレーンの画面を見ます。新しい報告は沈黙のタイマーをリセットします。既定では 15 分後に声をかけ、20 分後に `hooks.threadReply` で最後の報告を投稿し、それぞれ沈黙の期間につき 1 回実行します。
+`dori freshness` はまずリードの画面から報告を読み、次にレーンの画面を見ます。新しい報告は沈黙のタイマーをリセットします。既定では 15 分後に声をかけ、20 分後に `hooks.threadReply` で所有者の言葉の短い状況一行(`discord.quietText`)を投稿し、それぞれ沈黙の期間につき 1 回実行します。レーンの報告そのものはリードの画面に送り、リードが人の言葉でまとめます。`discord.postRawReports: true` なら以前のように報告をそのまま投稿します。
 
 aoe では `dori watch` が、working または not-done のレーンが人を待って止まると `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` を出力します。`aoe ps --json` と画面を合わせて判断し、ターンの実行中は出力しません。idle は 45 秒続く必要があり、モニター、wake source、実行中や予約済みの goal を待つ状態は idle ではありません。閉じると aoe セッションを停止してゴミ箱に移し、完全削除はしません。
 
@@ -168,7 +169,7 @@ watcher はレーンを閉じるときに、シェルを通さずこの確認を
 | `dori claim-done` / `object-done` / `close` | 完了フロー。`DORI_DISCORD_TOKEN` があれば、close は `discord:` の作業スレッドを完了にしてアーカイブする |
 | `dori pause <key> <理由>` / `dori resume <key>` | 人を待っているレーンを止めておく。freshness の催促・投稿、`LANE_BLOCKED`、`DEAD_PANE` を出さず、完了申告が来ても自動では閉じない。`resume` で止める前の状態に戻す |
 | `dori watch` | 自動クローズの watcher と aoe の `LANE_BLOCKED` イベント。常駐モニターとして動かします |
-| `dori freshness [--loop MIN]` | 静かになったレーンに声をかけ、最後の報告をスレッドに投稿 |
+| `dori freshness [--loop MIN]` | 静かになったレーンに声をかけ、スレッドに短い状況一行を投稿し、最後の報告はリードに渡す |
 | `dori dead-panes [--loop MIN]` | 止まったエージェントの pane を報告 |
 | `dori guard [--loop MIN]` | 負荷、メモリ、ディスク、pane 数の警告 |
 | `dori fix-attempt <key> --metric M --hypothesis H` | レーンに頼んだ修正を 1 回数える。レーンはそうした報告に `(fix: M / H)` を付け、同じ指標・同じ仮説で 3 回目になると `SAME_FIX_3` が根本原因の調査に切り替えるよう知らせる。記録の前に、その指標で既に試した仮説(`PRIOR_FIX`)を表示する |

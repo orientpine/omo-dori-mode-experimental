@@ -38,10 +38,13 @@ test("five quiet minutes after a claim the lane is closed, its thread marked don
   const lines = await watchTick(at(T0 + 5 * MIN + 1));
   expect(lines[0]).toStartWith("LANE_CLOSED demo-lane");
   expect(closedVia()).toEqual([["herdr", "pane", "close", "w:p1"]]);
-  expect(world.calls).toContainEqual(["notify", "chat:team/123", "Done: merged acme/app#1 abc123"]);
+  // the owner's thread gets the plain done words; the claim's evidence stays in the lane's record
+  expect(world.calls).toContainEqual(["notify", "chat:team/123", "Done: the checks passed and the work is closed. I'll sum up what changed for you soon."]);
+  expect(world.calls.some((c) => c[0] === "notify" && c[2]?.includes("abc123"))).toBe(false);
   expect(world.calls).toContainEqual(["git", "-C", "/repo", "worktree", "remove", WT]);
   const after = await at(T0).registry.read("demo-lane");
   expect(after && statusOf(after)).toBe("closed");
+  expect(after?.history?.at(-1)?.note).toBe("Done: merged acme/app#1 abc123");
   expect(await watchTick(at(T0 + 9 * MIN))).toEqual([]);
 });
 

@@ -96,7 +96,8 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
   return reasons;
 };
 
-export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+// note goes into the lane's record; threadText (the note unless given) is what the owner's thread gets
+export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, threadText = note): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
   const exists = deps.exists ?? existsSync;
   const checks = await checkDone(lane.done, deps.run, signalIo(deps, lane));
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
@@ -105,7 +106,7 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promi
   const warnings: string[] = [];
   const hook = deps.config.hooks.threadDone;
   if (hook && hasThread(lane)) {
-    const r = await deps.run(fill(hook, { thread: lane.thread, text: note, key: lane.key }));
+    const r = await deps.run(fill(hook, { thread: lane.thread, text: threadText, key: lane.key }));
     cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);
   } else if (hook) {
     // a missing or broken thread ref would leave the work thread open without a word; say so
@@ -149,7 +150,8 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   if (failing.length) return [await objectDone(deps, lane, failing)];
   const verified = withStatus(lane, "verified-done", "Done signals read back live", iso(deps.clock));
   await deps.registry.write(verified);
-  const result = await closeLane(deps, verified, `Done: ${evidence}`);
+  const note = `Done: ${evidence}`;
+  const result = await closeLane(deps, verified, note, deps.config.discord.postRawReports ? note : deps.config.discord.doneText);
   if (!result.closed) return [await objectDone(deps, (await deps.registry.read(lane.key)) ?? verified, result.lines.filter((l) => l.startsWith("SIGNAL NOT")))];
   return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
 };
