@@ -37,13 +37,15 @@ const NOT_METRICS = new Set(["pass", "fail", "failed", "line", "lines", "gate", 
 
 // The metric a gate item names: its leading words, up to the first number, comparison or bracket ("교착 58(벽 2/한계 56)" is
 // 교착, "spec 침투 최대 0.169" is 침투, "over-trench 2" is over-trench). Qualifiers (최대, max, spec, 판 ...) are dropped.
-export const metricName = (item: string): string | undefined => {
+export const metricName = (item: string, conditions: readonly string[] = []): string | undefined => {
   const m = /^[\s(*\-–—:>|·,;]*([\p{L}][\p{L}\p{M}' -]*?)\s*(?=[\d(<>≤≥=~.:%/_]|$)/u.exec(item.replace(/[*`]/g, ""));
   const head = m?.[1] ?? "";
   // an identifier (model_1625, GPU-13) or a short acronym (qa, cpu) names a thing, not a gate line
   const rest = item.replace(/[*`]/g, "").slice((m?.index ?? 0) + (m?.[0].length ?? 0));
   if (/^[_-]\d/.test(rest) || /[_-]$/.test(head)) return undefined;
   const words = head.toLowerCase().split(/\s+/).filter((w) => w && !QUALIFIERS.has(w));
+  // a condition the report breaks results down by (양토 1.0, seed 101) names a cell, not a gate line
+  if (words[0] && conditions.some((c) => c.toLowerCase() === words[0])) return undefined;
   const name = words.join(" ").replace(/^[-_']+|[-_']+$/g, "");
   // a gate line is named in a few words (교착, 도랑 위 덤프, dump success); longer is prose around a verdict
   if (words.length > 3 || name.length > 24) return undefined;
@@ -59,7 +61,7 @@ const SEGMENT = /\n|(?<=[.!?。])\s+(?=[A-Z가-힣(*])|\s[—–-]\s|\s?→\s?/u
 
 // The metrics a text says failed: "교착 554 FAIL(≤2)" (the item that holds the verdict) and "FAIL 도랑 위 덤프 1·교착 58"
 // or "FAIL: 교착 136, 깊음 0" (the items after a bare FAIL that carry no verdict of their own).
-export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern">): string[] => {
+export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern" | "conditionWords">): string[] => {
   const fail = re(cfg.failPattern);
   const pass = re(cfg.passPattern);
   const out = new Set<string>();
@@ -77,14 +79,14 @@ export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern"
         let named: string | undefined;
         for (const h of hits) {
           const tail = nameTail(item.slice(from, h.index));
-          const n = /\d/.test(tail) ? metricName(tail) : undefined;
+          const n = /\d/.test(tail) ? metricName(tail, cfg.conditionWords) : undefined;
           if (n) out.add(n);
           named ??= n;
           from = (h.index ?? 0) + h[0].length;
         }
         const after = item.slice(from).replace(/^\s*\d*\s*[:：]?\s*/, "");
         // a bare "FAIL:" or "FAIL 2:" or "FAIL 교착 145" opens a list of failed lines
-        const next = metricName(after);
+        const next = metricName(after, cfg.conditionWords);
         if (next && !pass.test(after)) out.add(next);
         listOpen = !named || after.trim().length > 0 || /[:：]\s*$/.test(item);
         continue;
@@ -95,7 +97,7 @@ export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern"
           listOpen = false;
           continue;
         }
-        const named = /\d/.test(item) ? metricName(item) : undefined;
+        const named = /\d/.test(item) ? metricName(item, cfg.conditionWords) : undefined;
         if (named) out.add(named);
       }
     }
@@ -109,7 +111,7 @@ const NEGATED = /안 |않|없음|없이|중단|보류|대신|아니라|\bnot\b|\
 const CLAUSE = /[,;·|()[\]{}]|\s[—–-]\s|→|=>|\n|(?<=[.!?。])\s+/u;
 const SENTENCE_WIDE = /\n|(?<=[.!?。])\s+|\s[—–]\s|;/u;
 
-export const passedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern">): string[] => {
+export const passedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern" | "conditionWords">): string[] => {
   const fail = re(cfg.failPattern);
   const pass = re(cfg.passPattern);
   const out = new Set<string>();
@@ -117,7 +119,7 @@ export const passedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern"
     const item = raw.replace(/[*`]/g, "");
     const m = pass.exec(item);
     if (!m || fail.test(item)) continue;
-    const named = metricName(nameTail(item.slice(0, m.index)));
+    const named = metricName(nameTail(item.slice(0, m.index)), cfg.conditionWords);
     if (named) out.add(named);
   }
   return [...out];
@@ -158,6 +160,7 @@ export const inferRepeats = (events: readonly LaneEvent[], cfg: AutoSignals, onC
   const attempt = rei(cfg.inferAttemptPattern);
   const strong = rei(cfg.prescriptionPattern);
   const diag = rei(cfg.diagnosticPattern);
+  const disc = rei(cfg.discriminationPattern);
   const vocab = new Set<string>(Object.keys(cfg.aliases).map(normText));
   const failedSince = new Map<string, Evidence>();
   const counts = new Map<string, MetricRepeat>();
@@ -177,6 +180,12 @@ export const inferRepeats = (events: readonly LaneEvent[], cfg: AutoSignals, onC
       passes.set(m, e.at);
     }
     for (const m of failedHere) if (!failedSince.has(m)) failedSince.set(m, { at: e.at, source: e.source, role: "fail", text: clipLine(text) });
+    // a report or tree entry that tells hypotheses apart (dori tree H.., 가설 판별, a falsified or supported entry) investigates
+    // the failed lines: the next attempt on them follows a root-cause hunt, not a repeat, and it is never an attempt itself
+    if (disc.test(text) || (e.source === "tree" && /\s기각|\s->\s/.test(text))) {
+      failedSince.clear();
+      continue;
+    }
     // an attempt targets a metric when one clause holds both the attempt word and the metric ("조정 4 = 평균 행동 교착 진입
     // 벌점"), not when the metric is only context elsewhere in the report ("model_795, 씨앗 200~223 ... 시작"); the clause
     // must not itself be a verdict or say the attempt is not made. A failure first seen in this very event is not consumed by

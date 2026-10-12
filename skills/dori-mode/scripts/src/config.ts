@@ -152,7 +152,10 @@ export type Explore = {
 // prescription's verdict (fails every known metric the text names); inferAttemptPattern: a new attempt (a prescription, an
 // adjustment, a patch; "시작"/"반영" alone are not, they also start evals and record decisions);
 // prescriptionPattern: words that make it an attempt even when the text also reads as a diagnosis (diagnosticPattern).
-// aliases: metric names that mean the same gate ({ "교착": ["deadlock"] }); the key is the name shown. targetScope: an
+// aliases: metric names that mean the same gate ({ "교착": ["deadlock"] }); the key is the name shown. conditionWords: names
+// of conditions a report breaks results down by (soil, seed, depth, cell: "교착 113(양토 1.0 61 ...)"), never a metric.
+// discriminationPattern: a report or tree entry that tells hypotheses apart (dori tree H.., 가설 판별); the next attempt on a
+// metric it investigated is not a repeat. targetScope: an
 // attempt targets a metric named in the same "sentence" (the default: reports name the target a few words from the prescription)
 // or the same "clause" (between commas: quieter, misses more).
 // ownerCheck: a reviewer of another family reads the brief, the owner's words and recent reports and answers VIOLATION /
@@ -183,6 +186,8 @@ export type AutoSignals = {
   readonly prescriptionPattern: string;
   readonly diagnosticPattern: string;
   readonly aliases: Readonly<Record<string, readonly string[]>>;
+  readonly conditionWords: readonly string[];
+  readonly discriminationPattern: string;
   readonly targetScope: "clause" | "sentence";
   readonly ownerCheck: OwnerCheck;
 };
@@ -334,6 +339,8 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     prescriptionPattern: "처방|조정|수정|패치|재학습|벌점|\\bprescri|\\bpatch|\\bretrain|\\btweak|\\badjust|\\bpenalt|^(?:fix|feat|perf)\\(",
     diagnosticPattern: "탐침|probe|판독|readout|재생|replay|진단|diagnos|가설|hypothes|평가|\\beval|측정|measure|비교|compar|예선|결선|^(?:qa|docs|test)\\(",
     aliases: {},
+    conditionWords: ["양토", "점토", "사토", "모래", "흙", "씨앗", "깊이", "셀", "seed", "seeds", "depth", "soil", "clay", "loam", "sand", "cell"],
+    discriminationPattern: "dori tree [HFD]\\d|가설 판별|판별|\\bdiscriminat|\\bfalsif|\\bablation",
     targetScope: "sentence",
     ownerCheck: {
       enabled: true,

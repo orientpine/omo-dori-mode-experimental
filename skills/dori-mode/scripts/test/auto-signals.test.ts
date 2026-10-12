@@ -362,3 +362,16 @@ test("a report is read only where one is sent or received: a template in a goal'
   const file = writeSession([goalCall, ownText, typed, sessionLine(4, "user", "[REPORT] rl-e7 | milestone | lead copy of step 3")]);
   expect((await readReports([file], "rl-e7")).map((r) => r.text)).toEqual(['step 2 done"])', "lead copy of step 3"].map((t) => t.replace(/"\]\)$/, "")));
 });
+
+test("a condition name is no metric, and a failure investigated by hypothesis discrimination is no repeat (live false alarm REPEAT_SUSPECT hr35-e7 \"양토\" 3, 2026-10-12 01:05:19Z)", async () => {
+  const chain = (await Bun.file(join(import.meta.dir, "fixtures/hr35-e7-yangto-chain.json")).json()) as LaneEvent[];
+  const state = inferRepeats(chain, cfg);
+  expect([...state.counts.keys()]).not.toContain("\uc591\ud1a0");
+  expect(failedMetrics("FAIL 2: \uad50\ucc29 113(\uc591\ud1a0 1.0 61\u00b7\uc591\ud1a0 0.8 33\u00b7\uc810\ud1a0 0.8 14)", cfg)).toEqual(["\uad50\ucc29"]);
+  // without the condition list the old reading comes back: the soil type becomes a metric counted 3 times
+  expect(inferRepeats(chain, { ...cfg, conditionWords: [], discriminationPattern: "$^" }).counts.get("\uc591\ud1a0")?.n).toBe(3);
+  // a fail, then a discrimination (dori tree H1~H6), then an attempt: not a cycle; a new fail and a new attempt are
+  const loop = [ev(0, "\uad50\ucc29 9 FAIL"), ev(40, "\uac00\uc124 \ud310\ubcc4(dori tree H1~H3): H1 \uae30\uac01"), ev(80, "\uc870\uc815 5: \uad50\ucc29 \ubc8c\uc810")];
+  expect(inferRepeats(loop, cfg).counts.size).toBe(0);
+  expect(inferRepeats([...loop, ev(120, "\uad50\ucc29 7 FAIL"), ev(160, "\uc870\uc815 6: \uad50\ucc29 \ubc8c\uc810")], cfg).counts.get("\uad50\ucc29")?.n).toBe(1);
+});
