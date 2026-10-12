@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
+import { findLead, LeadError } from "./lead.ts";
 import { ackHandover, handover, type HandoverDeps } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
 import { appendRollover, crossed, quietReason, readRollovers, repeatsOf, rolloverStats, sessionStart } from "./rollover.ts";
@@ -43,13 +44,15 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
-import { discordThreadId, postLaneStart, progressText, threadHook, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { bareThreadName, discordThreadId, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { mapThread, threads } from "./messenger/thread-map.ts";
 import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
 const USAGE = `dori <command> [options]
 
+  lead                                 print the live lead as "<aoe-id> <tmux-session>"
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
          [--goal "owner words"] [--challenge-before STEP ...] [--dry-run]
                                        prints LAUNCH_DONE_WEAK (and still launches) when every Done signal only checks
@@ -182,6 +185,13 @@ const USAGE = `dori <command> [options]
   handover ready [<key>] --note FILE   run by a lane in its own pane at a safe point: the local chains running now may end
                                        with the old session; FILE is the lane's conversation summary (its headings: handover
                                        ready --template) and goes into the note (valid handover.readyMin minutes)
+  thread open <title> [--from MSG_ID] [--first TEXT] [--session S]
+                                       open and map a work thread; standalone threads require --first
+  thread map discord:<id> <session|none>
+                                       set the mapped session, preserving the title
+  thread list                          print mapped thread ids, sessions and titles
+  thread set discord:<id> working|waiting|done [--open-card]
+                                       queue its status; done archives it and removes its mapping
   thread <reply|wait|done> discord:<id> <text>
                                        post in a work thread and set its status (working, waiting, done); done archives it
                                        (Discord env: DORI_DISCORD_TOKEN, DORI_DISCORD_GUILD, DORI_DISCORD_CHANNEL, DORI_DISCORD_OWNER)`;
@@ -221,6 +231,7 @@ const flags = parseArgs({
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
     to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" },
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
+    from: { type: "string" }, first: { type: "string" }, "open-card": { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
     pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" },
     hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" }, template: { type: "boolean" },
@@ -841,9 +852,40 @@ try {
       console.log(`RESOLVED ${id}`);
       break;
     }
+    case "lead":
+      console.log(await findLead(run, config));
+      break;
     case "thread": {
       await quietGuard();
       const [verb, ref, text] = flags.positionals;
+      if (verb === "list") {
+        for (const [id, entry] of Object.entries(threads(cardDir()))) console.log(`${id} ${entry.session ?? "none"} ${entry.title}`);
+        break;
+      }
+      if (verb === "map") {
+        if (!ref || !text?.trim()) die("usage: dori thread map discord:<id> <session|none>");
+        mapThread(cardDir(), discordThreadId(ref ?? ""), text === "none" ? null : text ?? null);
+        console.log(`THREAD_MAPPED ${ref} ${text}`);
+        break;
+      }
+      if (verb === "open") {
+        const title = bareThreadName(ref ?? "", config.discord).trim();
+        const from = opt("from")?.trim();
+        const first = opt("first")?.trim();
+        if (!title || (!from && !first)) die("usage: dori thread open <title> [--from MSG_ID] [--first TEXT] [--session S]; standalone threads need --first");
+        const dc = discordClient();
+        const id = await dc.startThread(env("DORI_DISCORD_CHANNEL"), from, threadName("working", title, config.discord));
+        if (!from && first) await dc.send(id, first);
+        mapThread(cardDir(), id, opt("session") ?? null, title);
+        console.log(`THREAD_OPENED discord:${id}`);
+        break;
+      }
+      if (verb === "set") {
+        if (!ref || (text !== "working" && text !== "waiting" && text !== "done")) die("usage: dori thread set discord:<id> working|waiting|done [--open-card]");
+        const status = text === "done" ? "done" : flags.values["open-card"] ? "waiting" : text === "waiting" ? "waiting" : "working";
+        await threadStatuses(discordClient()).request(discordThreadId(ref ?? ""), status);
+        break;
+      }
       if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|wait|done> discord:<thread id> <text>");
       const dc = discordClient();
       const statuses = threadStatuses(dc);
@@ -927,6 +969,6 @@ try {
       process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof ForkError) die(e.message);
+  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof ForkError) die(e.message);
   throw e;
 }

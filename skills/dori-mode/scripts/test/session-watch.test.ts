@@ -1,15 +1,67 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir } from "../../setups/discord-aoe/session-watch-lib.ts";
+import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir, watchContext } from "../../setups/discord-aoe/session-watch-lib.ts";
+import { loadConfig } from "../src/config.ts";
+import { mapThread } from "../src/messenger/thread-map.ts";
 
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "session-watch-"));
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+test("watch ticks re-read the lead and ignore panes after a handover", async () => {
+  const file = join(dir, "config.json");
+  writeFileSync(file, JSON.stringify({ stateDir: dir, leadPane: "old-lead", ignorePanes: ["old-ignore"] }));
+  const first = await watchContext(() => loadConfig(file), []);
+  writeFileSync(file, JSON.stringify({ stateDir: dir, leadPane: "new-lead", ignorePanes: ["new-ignore"] }));
+  const second = await watchContext(() => loadConfig(file), []);
+  expect({ first: [...first.skip], second: [...second.skip] }).toEqual({ first: ["old-lead", "old-ignore"], second: ["new-lead", "new-ignore"] });
+});
+
+test("watch ticks pick up non-lane mappings and prefer a registered lane thread", async () => {
+  const file = join(dir, "config.json");
+  writeFileSync(file, JSON.stringify({ stateDir: dir }));
+  const previous = process.env.DORI_DISCORD_STATE_DIR;
+  process.env.DORI_DISCORD_STATE_DIR = join(dir, "cards");
+  try {
+    const first = await watchContext(() => loadConfig(file), []);
+    mapThread(join(dir, "cards"), "300000000000000003", "session-1", "fix login");
+    const second = await watchContext(() => loadConfig(file), [{ key: "lane", title: "lane", pane: "lane-pane", thread: "discord:400000000000000004", brief: "", done: "", openedAt: "" }]);
+    expect({ before: first.thread("session-1", "other-pane"), mapped: second.thread("session-1", "other-pane"), lane: second.thread("session-1", "lane-pane") }).toEqual({
+      before: null, mapped: "discord:300000000000000003", lane: "discord:400000000000000004",
+    });
+  } finally {
+    if (previous === undefined) delete process.env.DORI_DISCORD_STATE_DIR;
+    else process.env.DORI_DISCORD_STATE_DIR = previous;
+  }
+});
+
+test("the watcher switches its skipped panes between actual ticks and emits a mapped non-lane event", async () => {
+  const file = join(dir, "config.json");
+  writeFileSync(file, JSON.stringify({ stateDir: dir, leadPane: "aoe_old_11111111", ignorePanes: ["aoe_before_33333333"], update: { repo: dir } }));
+  mapThread(join(dir, "cards"), "300000000000000003", "11111111-old", "fix login");
+  const env: Record<string, string | undefined> = { ...process.env, DORI_CONFIG: file, DORI_STATE_DIR: dir, DORI_ENV_FILE: join(dir, "missing.env"), DORI_DISCORD_STATE_DIR: join(dir, "cards") };
+  delete env.DORI_LEAD_PANE;
+  const p = Bun.spawn(["bun", "--preload", join(import.meta.dir, "session-watch-cli-fake.ts"), join(import.meta.dir, "../../setups/discord-aoe/session-watch.ts")], { env, stdout: "pipe", stderr: "pipe", timeout: 5000 });
+  const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  const events: { kind: string; session: string; thread: string | null }[] = readFileSync(join(dir, "session-events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  expect({ code, ready: out.startsWith("SESSION_WATCH_READY\n"), err, captures: readFileSync(join(dir, "captures.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)), events: events.map(({ kind, session, thread }) => ({ kind, session, thread })) }).toEqual({
+    code: 0, ready: true, err: "",
+    captures: [
+      { tick: 0, pane: "=aoe_new_22222222:" }, { tick: 0, pane: "=aoe_after_44444444:" },
+      { tick: 1, pane: "=aoe_old_11111111:" }, { tick: 1, pane: "=aoe_before_33333333:" },
+      { tick: 2, pane: "=aoe_old_11111111:" }, { tick: 2, pane: "=aoe_before_33333333:" },
+    ],
+    events: [
+      { kind: "session-waiting", session: "11111111-old", thread: "discord:300000000000000003" },
+      { kind: "session-waiting", session: "33333333-before", thread: null },
+    ],
+  });
+});
 
 test("clockFree: elapsed counters with trailing seconds are clock text, not new output", () => {
   for (const [a, b] of [

@@ -1,0 +1,92 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { findLead, LeadError } from "../src/lead.ts";
+import { fakeRunner, newWorld, withState } from "./fakes.ts";
+
+const ID = "12345678-abcd";
+const TMUX = "aoe_Dori_12345678";
+
+test("lead uses a matching env id and env tmux before configured leadPane", async () => {
+  const world = newWorld();
+  const lead = await findLead(fakeRunner(world), { leadPane: "other-pane" }, { DORI_LEAD_TMUX: TMUX, DORI_LEAD_AOE_ID: ID });
+  expect({ lead, calls: world.calls }).toEqual({ lead: `${ID} ${TMUX}`, calls: [["tmux", "has-session", "-t", `=${TMUX}`]] });
+});
+
+test("lead resolves a stale env id from aoe list using the configured pane", async () => {
+  const world = newWorld();
+  world.aoe = [{ id: ID, title: "Dori", path: "/repo" }];
+  const lead = await findLead(fakeRunner(world), { leadPane: TMUX }, { DORI_LEAD_AOE_ID: "deadbeef-old" });
+  expect({ lead, calls: world.calls }).toEqual({ lead: `${ID} ${TMUX}`, calls: [["tmux", "has-session", "-t", `=${TMUX}`], ["aoe", "list", "--json"]] });
+});
+
+test("lead refuses a missing pane, dead tmux or unmatched aoe session", async () => {
+  const world = newWorld();
+  const missing = await findLead(fakeRunner(world), { leadPane: "" }, {}).catch((e: unknown) => e instanceof LeadError);
+  const dead = await findLead(async () => ({ code: 1, out: "", err: "no session" }), { leadPane: TMUX }, { DORI_LEAD_AOE_ID: ID }).catch((e: unknown) => e instanceof LeadError);
+  const unmatched = await findLead(fakeRunner(world), { leadPane: TMUX }, {}).catch((e: unknown) => e instanceof LeadError);
+  expect({ missing, dead, unmatched }).toEqual({ missing: true, dead: true, unmatched: true });
+});
+
+let state: ReturnType<typeof withState>;
+beforeEach(() => { state = withState(); });
+afterEach(() => state.done());
+
+const executable = (path: string, body: string) => {
+  writeFileSync(path, `#!/bin/sh\n${body}\n`);
+  chmodSync(path, 0o700);
+};
+
+const leadCli = async (live: boolean, override = "") => {
+  const bin = join(state.dir, "bin");
+  mkdirSync(bin);
+  executable(join(bin, "tmux"), `case "$*" in 'has-session -t =${TMUX}') exit ${live ? 0 : 1};; *) exit 2;; esac`);
+  executable(join(bin, "aoe"), `case "$*" in 'list --json') printf '%s\\n' '[{"id":"${ID}","title":"Dori","path":"/repo"}]';; *) exit 2;; esac`);
+  const config = join(state.dir, "config.json");
+  writeFileSync(config, JSON.stringify({ leadPane: override ? "wrong-pane" : TMUX }));
+  const envFile = join(state.dir, "dori.env");
+  writeFileSync(envFile, "DORI_LEAD_AOE_ID=deadbeef-old\n");
+  const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DORI_CONFIG: config, DORI_ENV_FILE: envFile, DORI_STATE_DIR: state.dir, DORI_LEAD_TMUX: "", DORI_LEAD_AOE_ID: "" };
+  // The env file must supply the stale id, not the host environment.
+  delete env.DORI_LEAD_AOE_ID;
+  if (override) env.DORI_LEAD_PANE = override;
+  else delete env.DORI_LEAD_PANE;
+  const p = Bun.spawn(["bun", join(import.meta.dir, "../src/cli.ts"), "lead"], { env, stdout: "pipe", stderr: "pipe" });
+  const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  return { code, out: out.trim(), err: err.trim() };
+};
+
+test("dori lead resolves a stale env-file id with fake aoe and tmux and honors DORI_LEAD_PANE", async () => {
+  expect(await leadCli(true, TMUX)).toEqual({ code: 0, out: `${ID} ${TMUX}`, err: "" });
+});
+
+test("dori lead exits one with a reason when fake tmux has no live lead", async () => {
+  expect(await leadCli(false)).toEqual({ code: 1, out: "", err: `no live lead tmux session: ${TMUX}` });
+});
+
+test("the boot service resolves the lead before starting its aoe session", async () => {
+  const bin = join(state.dir, "bin");
+  mkdirSync(bin);
+  const log = join(state.dir, "commands");
+  executable(join(bin, "dori"), `printf '%s\\n' "dori $*" >> "${log}"\nprintf '%s\\n' '${ID} ${TMUX}'`);
+  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $*" >> "${log}"`);
+  const service = readFileSync(join(import.meta.dir, "../../setups/discord-aoe/systemd/dori-lead.service"), "utf8");
+  const command = /^ExecStart=\/bin\/bash -lc '(.*)'$/m.exec(service)?.[1] ?? "";
+  const p = Bun.spawn(["bash", "-c", command], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DORI_LEAD_AOE_ID: "stale" }, stdout: "pipe", stderr: "pipe" });
+  expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: ["dori lead", `aoe session start ${ID}`] });
+});
+
+test("no-argument self-restart resolves dori lead before checking the agent, without restarting in the check", async () => {
+  const bin = join(state.dir, ".bun/bin");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(state.dir, ".dori"));
+  const log = join(state.dir, "commands");
+  executable(join(bin, "dori"), `printf '%s\\n' "dori $*" >> "${log}"\n[ "$1" != lead ] || printf '%s\\n' '${ID} ${TMUX}'`);
+  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $*" >> "${log}"\nexit 2`);
+  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh")], {
+    env: { ...process.env, HOME: state.dir, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_AGENT_BIN: "nonexistent-dori-test-agent", DORI_LEAD_AOE_ID: "stale", DORI_LEAD_TMUX: "wrong", DORI_DISCORD_CHANNEL: "fake" }, stdout: "pipe", stderr: "pipe",
+  });
+  const code = await p.exited;
+  expect({ code, commands: readFileSync(log, "utf8").trim().split("\n").map((l) => l.split(" --")[0]) }).toEqual({ code: 1, commands: ["dori lead", "dori send discord"] });
+});

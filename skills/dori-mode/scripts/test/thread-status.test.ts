@@ -7,6 +7,7 @@ import { type Interaction, openCardIds, QuestionCards, QuestionStore } from "../
 import { type DiscordMessage, DiscordListener } from "../src/messenger/discord-listener.ts";
 import type { Http, HttpResponse } from "../src/messenger/http.ts";
 import { DEBOUNCE_MS, ThreadStatusQueue } from "../src/messenger/thread-status-queue.ts";
+import { mapThread, threads } from "../src/messenger/thread-map.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const OWNER = "100000000000000001";
@@ -110,6 +111,21 @@ test("a rename left pending by a one-shot command is applied by a listener start
   await advance(listener, 31_000);
   expect(w.patches).toEqual([{ name: "🔄 fix login" }]);
   expect(pending()).toEqual({});
+});
+
+test("done keeps its mapping while rate limited and drops it when the listener archives the thread", async () => {
+  const { w, queue, timers, advance } = world("🔄 fix login");
+  const dir = `${state.dir}/discord`;
+  mapThread(dir, THREAD, "session-1", "fix login");
+  w.limited.push(120);
+  const result = await queue().request(THREAD, "done");
+  const waiting = threads(dir);
+  const listener = queue();
+  listener.watch(timers);
+  await advance(listener, 121_000);
+  expect({ result, waiting, archived: w.archived, finished: threads(dir) }).toEqual({
+    result: "pending", waiting: { [THREAD]: { session: "session-1", title: "fix login" } }, archived: true, finished: {},
+  });
 });
 
 // the listener and cards as `dori inbound discord` builds them, sharing one queue

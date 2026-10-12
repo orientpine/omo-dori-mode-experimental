@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { loadConfig, loadEnvFile, envFilePath } from "../../scripts/src/config.ts";
 import { Registry } from "../../scripts/src/registry.ts";
 import { run } from "../../scripts/src/run.ts";
-import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir, type Said } from "./session-watch-lib.ts";
+import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir, watchContext, type Said } from "./session-watch-lib.ts";
 
 const INTERVAL_MS = 15_000;
 const IDLE_SETTLE_MS = 45_000;
@@ -21,7 +21,6 @@ await loadEnvFile(envFilePath());
 const config = await loadConfig();
 const registry = new Registry(config.stateDir);
 const out = join(config.stateDir, "session-events.jsonl");
-const skip = new Set([config.leadPane, process.env.DORI_LEAD_TMUX ?? "", ...config.ignorePanes].filter(Boolean));
 
 type Listed = { id: string; title: string; path: string };
 type Seen = { busy: boolean; idleSince: number; notified: boolean; aoeState: string; body: string; milestone: string };
@@ -91,11 +90,12 @@ const tick = async (): Promise<void> => {
   const ps = new Map((JSON.parse(await sh(["aoe", "ps", "--json"])) as { session: string; state: string }[]).map((p) => [p.session, p.state]));
   const tmuxNames = (await sh(["tmux", "ls", "-F", "#S"])).split("\n").filter(Boolean);
   const lanes = await registry.open();
+  const context = await watchContext(loadConfig, lanes);
   const now = Date.now();
   for (const s of listed) {
     const aoeState = ps.get(s.id);
     const tmux = tmuxNames.find((n) => n.startsWith("aoe_") && !n.startsWith("aoe_term_") && n.endsWith(`_${s.id.slice(0, 8)}`));
-    if (!aoeState || !tmux || skip.has(tmux)) {
+    if (!aoeState || !tmux || context.skip.has(tmux)) {
       seen.delete(s.id);
       continue;
     }
@@ -111,7 +111,7 @@ const tick = async (): Promise<void> => {
     const body = clockFree((promptAt >= 0 ? lines.slice(0, promptAt) : lines).join("\n"));
     // the milestone id ("3", "4-auth") is the identity: sessions restate the same milestone in new words on each wake
     const milestone = lines.findLast((l) => /^\s*MILESTONE\b/.test(l) && !/in progress/i.test(l))?.match(/MILESTONE\s+([^\s:(]+)/)?.[1] ?? "";
-    const base = { session: s.id, title: s.title, path: s.path, tmux, thread: lanes.find((l) => l.pane === tmux)?.thread ?? null, tail: lines.slice(-20).map((l) => l.slice(0, 200)) };
+    const base = { session: s.id, title: s.title, path: s.path, tmux, thread: context.thread(s.id, tmux), tail: lines.slice(-20).map((l) => l.slice(0, 200)) };
     const prev = seen.get(s.id);
     if (!prev) {
       seen.set(s.id, { busy, idleSince: now, notified: true, aoeState, body, milestone });

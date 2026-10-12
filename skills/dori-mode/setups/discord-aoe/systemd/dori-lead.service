@@ -8,7 +8,7 @@ RemainAfterExit=yes
 KillMode=none
 EnvironmentFile=%h/.dori/dori.env
 Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -lc 'aoe session start "$DORI_LEAD_AOE_ID" || true'
+ExecStart=/bin/bash -lc 'lead=$(dori lead) && aoe session start "${lead%% *}"'
 
 [Install]
 WantedBy=default.target
