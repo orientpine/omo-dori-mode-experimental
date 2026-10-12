@@ -6,7 +6,7 @@ import { failedMetrics, inferRepeats, type LaneEvent, passedMetrics, readReports
 import { stuckView } from "../src/explore.ts";
 import { defaultConfig } from "../src/config.ts";
 import { freshnessTick } from "../src/freshness.ts";
-import { ownerDue, parseOwnerReply, quoted, runOwnerCheck, sendReread } from "../src/owner-check.ts";
+import { claimCheck, ownerDue, parseOwnerReply, quoted, runOwnerCheck, sendReread } from "../src/owner-check.ts";
 import type { Lane } from "../src/registry.ts";
 import { crossed, dueReasons } from "../src/rollover.ts";
 import { recordFix } from "../src/same-fix.ts";
@@ -288,4 +288,37 @@ test("intent-check's call needs no new report; a finding again in the next check
   expect(((await deps.registry.read("rl-e7")) as Lane).stuck?.["@context"]).toBeUndefined();
   expect((await sendReread(deps, (await deps.registry.read("rl-e7")) as Lane)).line).toStartWith("REREAD_REFUSED rl-e7: the last owner check found nothing");
   expect(sent(world)).toHaveLength(1);
+});
+
+test("a quoted report template is no report, and a CONTRADICTION that only names claim-done with no claim on record stays off the ladder (live false alarm, 2026-10-12 00:48:02Z)", async () => {
+  writeFileSync(join(state.dir, "brief.md"), "# 로컨 정리\nDone = steps 0, 7a, 6, 5, 7b done and verified");
+  // the lane's goal quoted its own report template; the reader took it for a done report
+  const template = "[REPORT] rl-e7 | done | ...` (KST) is sent to the lead pane via tmux send-keys argv, and `dori claim-done rl-e7 --evidence ...` ran.";
+  const file = writeSession([sessionLine(1, "assistant", template), sessionLine(2, "assistant", "[REPORT] rl-e7 | milestone | 7a 완료, 남은 일: 5단계. 끝나면 dori claim-done rl-e7 --evidence ... 실행 예정")]);
+  expect((await readReports([file], "rl-e7")).map((r) => r.text)).toEqual(["7a 완료, 남은 일: 5단계. 끝나면 dori claim-done rl-e7 --evidence ... 실행 예정"]);
+  const reply = 'VERDICT: CONTRADICTION\nOWNER: "Done = steps 0, 7a, 6, 5, 7b done and verified"\nREPORT: "끝나면 dori claim-done rl-e7 --evidence ... 실행 예정"\nWHY: 완료를 선언했지만 직전 보고에서 5단계를 남은 작업으로 명시했다.';
+  const prompts: string[] = [];
+  const base = fakeRunner(world);
+  const run: Runner = async (argv, opts) => {
+    if (argv[0] !== "omo") return base(argv, opts);
+    prompts.push(argv.at(-1) ?? "");
+    return { code: 0, out: reply, err: "" };
+  };
+  const explore = { ...defaultConfig("/home/test").explore, modelsCommand: [] };
+  const deps = { ...depsFor(world, fakeClock(T0 + 10 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions"), explore }), run };
+  await deps.registry.write(lane(state.dir));
+  const r = await runOwnerCheck(deps, lane(state.dir), { files: [file] });
+  expect(prompts[0]).toContain("Done claim on record: none: the lane has not run dori claim-done (status working)");
+  expect(prompts[0]).not.toContain("| done | ...");
+  expect(r.findings[0]).toMatchObject({ kind: "CONTRADICTION", verified: false });
+  expect(r.lines).toHaveLength(1);
+  const log = await Bun.file(deps.config.watchLog).text();
+  expect(log).toContain("owner-check OWNER_CHECK rl-e7 CONTRADICTION");
+  expect(log).toContain("[no done claim is on record; the quote only names the claim-done command]");
+  expect(log).not.toContain("STUCK");
+  expect(((await deps.registry.read("rl-e7")) as Lane).stuck).toBeUndefined();
+  // with a claim on record the same finding stands
+  const claimed = { claim: { at: at(3), evidence: "merged o/r#1" } };
+  expect(claimCheck({ kind: "CONTRADICTION", owner: "x", report: "dori claim-done rl-e7 ran", why: "w", verified: true }, claimed).verified).toBe(true);
+  expect(claimCheck({ kind: "CONTRADICTION", owner: "x", report: "dori claim-done rl-e7 ran", why: "w", verified: true }, {}).verified).toBe(false);
 });

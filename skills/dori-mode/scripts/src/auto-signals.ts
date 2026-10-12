@@ -245,7 +245,8 @@ export const readReports = async (files: readonly string[], key: string, since =
       for (const s of strings(e.message?.content ?? e.content)) {
         for (const m of s.matchAll(grammar)) {
           const text = (m[1] ?? "").replace(/\\n/g, " ").trim();
-          if (!text || text.includes("${")) continue;
+          // a template quoted in a goal or a brief ("| done | ...` is sent ...") is not a report
+          if (!text || text.includes("${") || /^(?:\.\.\.|…)/.test(text)) continue;
           const k = reportKey(text);
           const old = seen.get(k);
           if (!old || old.at > at) seen.set(k, { at, text });

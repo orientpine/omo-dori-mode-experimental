@@ -37,15 +37,20 @@ const OWNER_WORDS = /discord(?:app)?\.com\/channels\/\d+\/\d+\/\d+|원문|verbat
 // own working orders are not the owner's words)
 export const ownerRelays = (relays: readonly ReportLine[], n: number): ReportLine[] => relays.filter((r) => OWNER_WORDS.test(r.text)).slice(-n);
 
-export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "direction">, brief: string, relays: readonly ReportLine[], reports: readonly ReportLine[]): string => [
+// Whether the lane claimed done, from the registry: a report that names `dori claim-done` or quotes the footer is not a claim.
+export const doneClaimFact = (lane: Pick<Lane, "claim" | "status" | "closedAt">): string =>
+  lane.claim ? `the lane claimed done at ${lane.claim.at} (status ${lane.status ?? "working"}): ${lane.claim.evidence.slice(0, 300)}` : `none: the lane has not run dori claim-done (status ${lane.closedAt ? "closed" : (lane.status ?? "working")})`;
+
+export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "direction" | "claim" | "status" | "closedAt">, brief: string, relays: readonly ReportLine[], reports: readonly ReportLine[]): string => [
   "Check the worker's recent reports against the owner's instructions below. The owner and the worker mostly write Korean. Read it as it is; quote exactly as written, in the original language.",
   "Kinds:",
   "- VIOLATION: a report shows the worker doing something the owner said not to do, or skipping or changing something the owner required (a constraint, an order of steps, an approval to wait for).",
   "- CONTRADICTION: a report states something that contradicts what the owner or the brief states as fact or state, or contradicts an earlier report (claims done while the brief's done condition is unmet, a number or status that conflicts).",
   "- GOAL_LOSS: the recent reports, taken together, no longer work toward the owner's goal: the work drifted to something the owner did not ask for.",
   "- OK: none of these.",
-  "Rules: flag only with a direct quote from the owner's material AND a direct quote from a report that itself shows the problem. The reports are only the newest few: earlier steps of the brief were reported before them, so a step that is merely absent from these reports is not a violation. The brief is the starting order; a later relay from the lead carrying the owner's words overrides it. An instruction applies to the subject it was given about: do not carry a constraint from one experiment or step over to another. A report in another language than the goal is not drift. Following a step the lead relayed is following the owner. Waiting, measuring or asking before a step the owner gated is not a violation. When unsure, answer OK.",
+  "Rules: flag only with a direct quote from the owner's material AND a direct quote from a report that itself shows the problem. The reports are only the newest few: earlier steps of the brief were reported before them, so a step that is merely absent from these reports is not a violation. The brief is the starting order; a later relay from the lead carrying the owner's words overrides it. An instruction applies to the subject it was given about: do not carry a constraint from one experiment or step over to another. A report in another language than the goal is not drift. Following a step the lead relayed is following the owner. Waiting, measuring or asking before a step the owner gated is not a violation. When unsure, answer OK. Whether the lane claimed done is the fact line below, from the registry: a report that names the claim-done command, quotes the footer or a template, or plans to claim is not a done claim.",
   `Lane: ${lane.key} (${lane.title})`,
+  `Done claim on record: ${doneClaimFact(lane)}`,
   ...(lane.goal ? [`The owner's goal, in their words: "${lane.goal}"`] : []),
   ...(lane.direction?.text ? [`The worker's stated direction now (${lane.direction.at}): ${lane.direction.text}${lane.direction.next ? `; next: ${lane.direction.next}` : ""}`] : []),
   "<<<BRIEF (the lane's brief; the owner's words are quoted in it)",
@@ -109,6 +114,11 @@ export const ownerDue = (state: OwnerState | undefined, newest: string | undefin
 
 export type OwnerResult = { readonly skipped?: string; readonly findings: readonly OwnerFinding[]; readonly lines: readonly string[]; readonly model?: string };
 
+// A CONTRADICTION that rests on the claim-done command while no claim is on record reads a mention as a claim (seen live:
+// "`dori claim-done <key> --evidence ...` ran." from a quoted template): it is kept, but unverified.
+export const claimCheck = (f: OwnerFinding, lane: Pick<Lane, "claim">): OwnerFinding =>
+  f.kind === "CONTRADICTION" && !lane.claim && /claim-done/.test(f.report) ? { ...f, verified: false, why: `${f.why} [no done claim is on record; the quote only names the claim-done command]` } : f;
+
 // reviewers.models with ownerCheck.first in front (it reads Korean relays best); another family than the lane's is picked later
 export const ownerModels = (models: readonly string[], first: string): string[] => (first ? [first, ...models.filter((m) => m !== first)] : [...models]);
 
@@ -149,7 +159,7 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
       continue;
     }
     const r = await deps.run(fill(cfg.command, { model: c.call, prompt, system: OWNER_SYSTEM }), { timeoutMs: cfg.minutes * 60_000 });
-    const findings = r.code === 0 ? parseOwnerReply(r.out, ownerSource, reportSource) : undefined;
+    const findings = r.code === 0 ? parseOwnerReply(r.out, ownerSource, reportSource)?.map((f) => claimCheck(f, lane)) : undefined;
     if (!findings) {
       failures.push(`${c.call}: ${r.code !== 0 ? `exit ${r.code} ${r.err.split("\n").find((l) => l.trim())?.slice(0, 120) ?? ""}` : `no VERDICT line in "${r.out.trim().slice(0, 80)}"`}`);
       continue;
@@ -159,9 +169,12 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
     const gap = unread ? ` (${unread} older unchecked reports not read: autoSignals.ownerCheck.maxReports ${cfg.maxReports})` : "";
     const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief and ${relays.length} owner relays${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
     await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: (newest ?? lane.ownerCheck?.lastReportAt) ?? "", day, today, model: c.call, kinds: findings.length ? findings.map((f) => f.kind) : ["OK"], ...(findings[0] ? { finding: lines[0]?.slice(0, 600) } : {}) } });
-    // a clean check goes to the log as is; a finding is the stuck ladder's context rung, one STUCK line
-    if (!findings.length) for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
-    const stuck = await stuckContext(deps, lane.key, findings, c.call);
+    // a clean check and an unverified finding (a quote not in the inputs, a claim that is not on record) go to the log as
+    // OWNER_CHECK lines; a verified finding is the stuck ladder's context rung, one STUCK line
+    const verified = findings.filter((f) => f.verified);
+    if (!verified.length) for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
+    // only unverified findings: nothing for the ladder, and an earlier context rung stays as it was
+    const stuck = verified.length || !findings.length ? await stuckContext(deps, lane.key, verified, c.call) : [];
     return { findings, lines: [...lines, ...stuck], model: c.call };
   }
   const line = `OWNER_CHECK_FAILED ${lane.key} no reviewer answered in the format: ${failures.join(" | ") || "no reviewer of another family in reviewers.models"}`;
