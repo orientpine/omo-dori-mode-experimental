@@ -16,7 +16,7 @@ export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 if [ -z "${1:-}" ]; then
   LEAD=$(dori lead) || exit 1
-  read -r ID T <<<"$LEAD"
+  read -r ID T _ <<<"$LEAD"
 else
   ID=$1
   T=${2:-${DORI_LEAD_TMUX:?set DORI_LEAD_TMUX or pass the tmux session}}
