@@ -197,3 +197,26 @@ test("a thread with an open question card is not marked done when its only lane 
   expect(f.calls()).toEqual([]);
   expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open card Q7; result posted");
 });
+
+test("the reply hook a closing lane runs is told which lane closes, so the lane is not counted as working there", async () => {
+  const deps = bothHooks(at(T0, { openCards: (ref) => (ref === lane.thread ? ["Q7"] : []) }));
+  const envs: unknown[] = [];
+  await closeLane({ ...deps, run: (argv, opts) => (argv[0] === "notify" && envs.push(opts?.env), deps.run(argv, opts)) }, lane, "closed");
+  expect(envs).toEqual([{ DORI_CLOSING_LANE: "fix-a" }]);
+});
+
+test("a card answered while the lane's close cleans up gives the thread back to work: no waiting is asked for", async () => {
+  let cards = ["Q7"];
+  const asked: string[] = [];
+  const deps = at(T0, {
+    openCards: () => cards,
+    postInThread: async () => { cards = []; },
+    requestThreadStatus: async (_ref, status) => (asked.push(status), "applied"),
+  });
+  expect((await closeLane(deps, lane, "closed")).closed).toBe(true);
+  expect(asked).toEqual([]);
+  cards = ["Q7"];
+  await at(T0).registry.write(lane);
+  await closeLane({ ...deps, postInThread: async () => {} }, lane, "closed");
+  expect(asked).toEqual(["waiting"]);
+});

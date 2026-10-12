@@ -234,6 +234,7 @@ const deps: FlowDeps = {
           if (outcome === "pending" || outcome === "dropped") throw new Error(`thread rename ${outcome}, see the THREAD_STATUS line`);
         },
         postInThread: (ref: string, text: string) => postInThread(new Discord(fetchHttp, realClock, discordToken), ref, text),
+        requestThreadStatus: async (ref: string, status: "working" | "waiting") => String(await threadStatuses(new Discord(fetchHttp, realClock, discordToken)).request(discordThreadId(ref), status)),
       }
     : {}),
 };
@@ -373,7 +374,9 @@ const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join
 // every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards and
 // the lanes still working in the thread
 // working, or sent back to work by an objection (not-done); a lane that claimed done or is paused waits like the thread
-const workingLanes = async (t: string): Promise<string[]> => (await deps.registry.open()).filter((l) => l.thread === `discord:${t}` && (statusOf(l) === "working" || statusOf(l) === "not-done")).map((l) => l.key);
+// The lane whose close runs a thread hook (DORI_CLOSING_LANE) is still open in the registry then, but no longer works there.
+const workingLanes = async (t: string): Promise<string[]> =>
+  (await deps.registry.open()).filter((l) => l.key !== process.env.DORI_CLOSING_LANE && l.thread === `discord:${t}` && (statusOf(l) === "working" || statusOf(l) === "not-done")).map((l) => l.key);
 const threadStatuses = (dc: Discord, log: (line: string) => void = (line) => console.error(line)) => {
   const store = new QuestionStore(cardDir());
   return new ThreadStatusQueue({ dc, words: config.discord, file: join(cardDir(), "thread-status.json"), openCards: (t) => openCardIds(store, t), workingLanes, now: realClock.now, log });

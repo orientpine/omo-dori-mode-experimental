@@ -20,6 +20,9 @@ export type FlowDeps = {
   readonly postInThread?: (ref: string, text: string) => Promise<unknown>;
   // ids of the question cards still open in a work thread (cli reads the card store for discord:<id> threads)
   readonly openCards?: (ref: string) => readonly string[];
+  // asks the thread status queue for a status on a discord:<id> work thread; the queue keeps it working while a lane there
+  // still works. Resolves with the queue's outcome (cli wires it when DORI_DISCORD_TOKEN is set)
+  readonly requestThreadStatus?: (ref: string, status: "working" | "waiting") => Promise<string>;
 };
 
 export class LaneStateError extends Error {}
@@ -68,6 +71,10 @@ export const resumeLane = async (deps: FlowDeps, lane: Lane): Promise<string[]> 
   const { pausedFrom: _, ...rest } = lane;
   await deps.registry.write(withStatus(rest, to, "RESUMED", iso(deps.clock), { lastReplyAt: deps.clock.now() }));
   const out = [`LANE_RESUMED ${lane.key} ${to}`];
+  // a thread left ⏸️ while this lane was paused (its last working lane closed) is worked in again
+  if (deps.requestThreadStatus && hasThread(lane) && lane.thread.startsWith("discord:")) {
+    await deps.requestThreadStatus(lane.thread, "working").catch((e: unknown) => out.push(`THREAD_STATUS_WARN ${lane.key} ${lane.thread}: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`));
+  }
   if (lane.claim && lane.claim.at >= pausedAt(lane)) out.push(`NOTE ${lane.key} claimed done while paused (${lane.claim.evidence}); close it with dori close ${lane.key}, or object with dori object-done`);
   return out;
 };
@@ -125,7 +132,8 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
         (e: unknown) => `result not posted: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`,
       );
     } else if (reply) {
-      const r = await deps.run(fill(reply, { thread: lane.thread, text, key: lane.key }));
+      // the closing lane is still open while its hook runs: DORI_CLOSING_LANE tells dori thread reply not to count it as working
+      const r = await deps.run(fill(reply, { thread: lane.thread, text, key: lane.key }), { env: { DORI_CLOSING_LANE: lane.key } });
       posted = r.code === 0 ? "result posted" : `reply hook failed: ${r.err.slice(0, 160)}`;
     } else posted = "no threadReply hook, nothing posted";
     cleanup.push(`thread left open: ${holders.join("; ")}; ${posted}`);
@@ -161,6 +169,22 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
   const at = iso(deps.clock);
   const receipt = { checks, note, cleanup };
   await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
+  // Only now, with this lane recorded closed, is it no longer working there. The thread turns waiting when what is left
+  // waits on the owner: an open card or a paused lane. A lane still working keeps it working, and a done-claimed one is
+  // still ours (the lead decides), so then the mark is left alone. Read again here, since a card answered during the
+  // cleanup gives the thread back to work.
+  const left = holders.length ? (await deps.registry.open()).filter((l) => l.key !== lane.key && l.thread === lane.thread) : [];
+  const ownersTurn = holders.length && left.every((l) => statusOf(l) === "paused") && (left.length > 0 || (deps.openCards?.(lane.thread) ?? []).length > 0);
+  if (ownersTurn && deps.requestThreadStatus && lane.thread.startsWith("discord:")) {
+    const status = await deps.requestThreadStatus(lane.thread, "waiting").then(
+      (outcome) => `waiting requested: ${outcome}`,
+      (e: unknown) => `waiting not requested: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`,
+    );
+    cleanup.push(status);
+    // a rate-limited rename is kept and applied later by the listener; say that the mark has not moved yet
+    if (!/: (applied|unchanged)$/.test(status)) warnings.push(`THREAD_STATUS_WARN ${lane.key} ${lane.thread}: ${status}`);
+    await deps.registry.patch(lane.key, { receipt });
+  }
   return { closed: true, lines: [...lines, ...warnings, `CLOSED ${lane.key} ${JSON.stringify(receipt)}`] };
 };
 
@@ -174,7 +198,7 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   const note = `Done: ${evidence}`;
   const result = await closeLane(deps, verified, note, deps.config.discord.postRawReports ? note : deps.config.discord.doneText);
   if (!result.closed) return [await objectDone(deps, (await deps.registry.read(lane.key)) ?? verified, result.lines.filter((l) => l.startsWith("SIGNAL NOT")))];
-  return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
+  return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ") || l.startsWith("THREAD_STATUS_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
 };
 
 export const watchTick = async (deps: FlowDeps): Promise<string[]> => {

@@ -30,16 +30,17 @@ test("a new mapping accepts a null session and a later drop removes it", () => {
   expect({ opened, closed: threads(state.dir) }).toEqual({ opened: { [ID]: { session: null, title: "fix login" } }, closed: {} });
 });
 
-const cli = async (...args: string[]) => {
+const dori = async (...args: string[]) => {
   const config = join(state.dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: state.dir, discord: { statusStyle: "emoji" } }));
-  const p = Bun.spawn(["bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "thread", ...args], {
+  writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, discord: { statusStyle: "emoji" } }));
+  const p = Bun.spawn(["bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args], {
     env: { ...process.env, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_STATE_DIR: state.dir, DORI_DISCORD_STATE_DIR: join(state.dir, "cards"), DORI_DISCORD_TOKEN: "fake", DORI_DISCORD_CHANNEL: "200000000000000002", DORI_TEST_HTTP: join(state.dir, "http.json") },
     stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
   return { code, out: out.trim(), err: err.trim() };
 };
+const cli = (...args: string[]) => dori("thread", ...args);
 const http = (): { name: string; archived: boolean; calls: { method: string; path: string; body: Record<string, unknown> }[] } => JSON.parse(readFileSync(join(state.dir, "http.json"), "utf8"));
 const map = () => threads(join(state.dir, "cards"));
 
@@ -100,10 +101,13 @@ test("thread done keeps its existing posted output and removes the archived mapp
 });
 
 // another user of the thread, as the registry and the card store keep them
-const openLane = (key: string) => {
+const openLane = (key: string, fields: Record<string, unknown> = {}) => {
   mkdirSync(join(state.dir, "lanes"), { recursive: true });
-  writeFileSync(join(state.dir, "lanes", `${key}.json`), JSON.stringify({ key, title: key, brief: "/b.md", done: "file x", thread: REF, pane: `w:${key}`, openedAt: "2026-10-12T00:00:00Z" }));
+  writeFileSync(join(state.dir, "lanes", `${key}.json`), JSON.stringify({ key, title: key, brief: "/b.md", done: "file x", thread: REF, pane: `w:${key}`, openedAt: "2026-10-12T00:00:00Z", ...fields }));
 };
+// a lane dori close can close: no pane or tab to close, a Done signal that reads back live
+const closable = (key: string) => openLane(key, { done: "file /etc/hostname", pane: undefined, cwd: state.dir });
+const named = () => http().calls.filter((c) => c.method === "PATCH" && c.body.name).map((c) => c.body.name);
 const openCard = (id: string) => {
   mkdirSync(join(state.dir, "cards"), { recursive: true });
   writeFileSync(join(state.dir, "cards", "questions.json"), JSON.stringify({ seq: 1, questions: [{ id, text: "Ship?", options: ["Yes", "No"], status: "open", thread: ID, askedAt: "2026-10-12T00:00:00Z" }] }));
@@ -145,4 +149,82 @@ test("thread set done makes the same check: an open lane keeps the thread, --for
   expect({ forced, archived: http().archived }).toEqual({
     forced: { code: 0, out: `THREAD_DONE_FORCED ${REF}: open lane lane-b uses it; marking it done anyway`, err: `THREAD_STATUS_APPLIED ${ID} done` }, archived: true,
   });
+});
+
+// feature-reverify 2026-10-13: the last working lane closed while a card stayed open, and the thread kept 🔄
+test("closing the last working lane of a thread with an open card turns it waiting, not done", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openCard("Q1");
+  closable("lane-a");
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
+    code: 0, err: `THREAD_STATUS_APPLIED ${ID} waiting`, names: ["⏸️ fix login"], archived: false,
+  });
+  expect(closed.out).toContain("thread left open: open card Q1; result posted\",\"waiting requested: applied");
+});
+
+test("a lane still working in the thread keeps it working when another lane closes, open card or not", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openCard("Q1");
+  openLane("lane-b");
+  closable("lane-a");
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
+    code: 0, err: "", names: [], archived: false,
+  });
+});
+
+test("a waiting rename still held back by Discord's rate limit is kept for the listener, and the close warns that the mark has not moved yet", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openCard("Q1");
+  closable("lane-a");
+  const queued = join(state.dir, "cards", "thread-status.json");
+  const due = Date.now() + 10 * 60_000;
+  writeFileSync(queued, JSON.stringify({ [ID]: { status: "working", due, tries: 1, rev: 1 } }));
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, names: named(), queued: JSON.parse(readFileSync(queued, "utf8")) }).toEqual({ code: 0, names: [], queued: { [ID]: { status: "waiting", due, tries: 1, rev: 2 } } });
+  expect(closed.out).toContain(`THREAD_STATUS_WARN lane-a ${REF}: waiting requested: pending`);
+});
+
+test("a done-claimed lane left in the thread is still ours: the mark stays until it settles, no ⏸️ in between", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openCard("Q1");
+  openLane("lane-b", { status: "done-claimed" });
+  closable("lane-a");
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({ code: 0, err: "", names: [], archived: false });
+});
+
+test("a paused lane is not working: when the last working lane closes beside it, the thread turns waiting", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openLane("lane-b", { status: "paused" });
+  closable("lane-a");
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
+    code: 0, err: `THREAD_STATUS_APPLIED ${ID} waiting`, names: ["⏸️ fix login"], archived: false,
+  });
+  expect(closed.out).toContain("thread left open: open lane lane-b uses it too");
+  // the paused lane is worked in again: the thread goes back to 🔄
+  const resumed = await dori("resume", "lane-b");
+  expect({ code: resumed.code, out: resumed.out, err: resumed.err, names: named() }).toEqual({
+    code: 0, out: "LANE_RESUMED lane-b working", err: `THREAD_STATUS_APPLIED ${ID} working`, names: ["⏸️ fix login", "🔄 fix login"],
+  });
+});
+
+test("closing the only lane with no card left marks the thread done and archives it", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  closable("lane-a");
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
+    code: 0, err: `THREAD_STATUS_APPLIED ${ID} done`, names: ["✅ fix login"], archived: true,
+  });
+});
+
+test("the reply hook a closing lane runs does not count that lane as working (DORI_CLOSING_LANE)", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openCard("Q1");
+  openLane("lane-a");
+  process.env.DORI_CLOSING_LANE = "lane-a";
+  const own = await cli("reply", REF, "lane-a: done").finally(() => delete process.env.DORI_CLOSING_LANE);
+  expect({ err: own.err, names: named() }).toEqual({ err: `THREAD_STATUS_APPLIED ${ID} waiting open=Q1`, names: ["⏸️ fix login"] });
 });
