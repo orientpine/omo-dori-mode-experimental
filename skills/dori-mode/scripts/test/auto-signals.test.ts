@@ -275,24 +275,121 @@ test("intent-check's call needs no new report; a finding again in the next check
   expect(first.lines.at(-1)).toContain('"@context" rung context');
   // no new report since: a regular check skips, the intent-check call (direction) runs anyway
   expect((await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file], force: true })).skipped).toContain("no new report");
-  // the same finding again before the lead confirmed a re-read: still the context rung, no new line (challenge, grok-4.7)
+  // the same report flagged again by the intent-check call: it was read by the first check, so it is dropped (STALE) and
+  // the context rung and the finding on record stay as they were
   const second = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file], direction: true });
   expect(second.lines).toHaveLength(1);
+  expect(second.lines[0]).toStartWith("OWNER_CHECK_STALE rl-e7 VIOLATION report");
   const reread = await sendReread(deps, (await deps.registry.read("rl-e7")) as Lane);
   expect(reread.ok).toBe(true);
   expect(sent(world)).toHaveLength(1);
-  // after the confirmed re-read the lane is still off the owner's words: rung 4
-  const third = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file], direction: true });
-  expect(third.lines.at(-1)).toMatch(/^STUCK rl-e7 "@context" rung 4 \(VIOLATION: .*the owner check found the lane off the owner's words again \(3 checks in a row\).*\[OWNER_CHECK_VIOLATION ROLLOVER_DUE\]$/);
+  // after the confirmed re-read a new report is still off the owner's words: rung 4
+  const file2 = writeSession([sessionLine(1, "assistant", "[REPORT] rl-e7 | milestone | 진행: 학습을 멈추고 비교표를 만듦"), sessionLine(3, "assistant", "[REPORT] rl-e7 | milestone | n3: 학습을 다시 멈추고 표를 고침")]);
+  reply = 'VERDICT: VIOLATION\nOWNER: "학습은 멈추지 말고"\nREPORT: "학습을 다시 멈추고 표를 고침"\nWHY: still stopped.';
+  const third = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file2], direction: true });
+  expect(third.lines.at(-1)).toMatch(/^STUCK rl-e7 "@context" rung 4 \(VIOLATION: .*the owner check found the lane off the owner's words again \(2 checks in a row\).*\[OWNER_CHECK_VIOLATION ROLLOVER_DUE\]$/);
   expect(sent(world)[0]).toStartWith("[LEAD] Your last report breaks what the owner asked (VIOLATION owner");
   expect(sent(world)[0]).toContain(join(state.dir, "brief.md"));
   reply = "VERDICT: OK";
-  const clean = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file], direction: true });
+  const clean = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file2], direction: true });
   expect(clean.lines).toHaveLength(1);
   expect(clean.lines[0]).toStartWith("OWNER_CHECK rl-e7 OK");
   expect(((await deps.registry.read("rl-e7")) as Lane).stuck?.["@context"]).toBeUndefined();
   expect((await sendReread(deps, (await deps.registry.read("rl-e7")) as Lane)).line).toStartWith("REREAD_REFUSED rl-e7: the last owner check found nothing");
   expect(sent(world)).toHaveLength(1);
+});
+
+// hr35-e7, 2026-10-12: the relay of 10-11 21:46 quotes the owner's question, then goes on in the lead's words; the reviewer
+// quoted that lead text as the owner's, against a report the owner's card Q96 ("학습 전 형 확인") had asked for
+const E7_RELAY = '[LEAD] 형 질문(원문 https://discord.com/channels/1528936606264856737/1558257428561137764/1558958668404232243): "정지한 상태에서 목표 지형으로 가는 걸 학습하는 게 이렇게 어려운가? E6까지만 해도 이동을 넣었을 때 어느 정도 굴착이 잘 됐는데 이번엔 왜 진도가 안 나가는지 알려줘". 학습은 멈추지 말고, 이미 있는 기록·문서만으로(새 GPU 없이) 짧은 비교표를 만들어라';
+const E7_WAIT = "진행(17:34 KST): Q96 설계 한 장 완료·보고(88328e5). 진행 중인 GPU 작업·감시 없음, 학습 없음. 다음: 형의 (가) 노출+P4 시험 학습 / (나) H8 진단 / (다) 쏟기 경로+장부 비교 선택을 기다림 — 고르시면 바로 착수.";
+const E7_LINE1 = 'VERDICT: VIOLATION\nOWNER: "학습은 멈추지 말고"\nREPORT: "진행 중인 GPU 작업·감시 없음, 학습 없음."\nWHY: 학습을 멈추지 말라는 지시와 달리, 작업자는 자신이 제시한 선택지의 결정을 기다리며 학습이 중단된 상태라고 보고했다.';
+const E7_LINE2 = 'VERDICT: VIOLATION\nOWNER: "학습은 멈추지 말고"\nREPORT: "진행 중인 GPU 작업·감시 없음, 학습 없음. 다음: 형의 (가) 노출+P4 시험 학습 / (나) H8 진단 / (다) 쏟기 경로+장부 비교 선택을 기다림 — 고르시면 바로 착수."\nWHY: 학습을 멈추지 말라는 지시와 달리, 학습 없이 선택을 기다리고 있다고 보고했다.';
+
+const ownerCheckDeps = (minute: number, reply: string, prompts: string[]) => {
+  const base = fakeRunner(world);
+  const run: Runner = async (argv, opts) => {
+    if (argv[0] !== "omo") return base(argv, opts);
+    prompts.push(argv.at(-1) ?? "");
+    return { code: 0, out: reply, err: "" };
+  };
+  const explore = { ...defaultConfig("/home/test").explore, modelsCommand: [] };
+  return { ...depsFor(world, fakeClock(T0 + minute * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions"), explore }), run };
+};
+
+test("replay hr35-e7 09:46:57Z: an owner quote that is only the lead's words around a relayed quote is dropped as OWNER_CHECK_UNGROUNDED, no rung, and the reviewer gets the owner's later card answer", async () => {
+  writeFileSync(join(state.dir, "brief.md"), "# HR35 E7\n\"정지된 상태에서 작업을 잘 한 후에 이동하는 거를 한번 만들어 보자\"");
+  const file = writeSession([sessionLine(10, "user", E7_RELAY), sessionLine(30, "assistant", `[REPORT] rl-e7 | milestone | ${E7_WAIT}`)]);
+  const inbox = join(state.dir, "inbox.jsonl");
+  writeFileSync(inbox, [
+    { ts: "2026-10-10T00:20:00.123000+00:00", kind: "answer", qid: "Q96", answer: "두 처방 접고, \"관절 한계로 미는 교착\"을 겨냥한 처방을 설계(학습 전 형 확인) (추천)", question: "E7 다음 방향 어떻게 할까?", thread: "1558257428561137764" },
+    { ts: "2026-10-10T00:21:00.000000+00:00", channel_id: "1558257428561137764", author_id: "owner-1", content: "설계 먼저 보여줘" },
+    { ts: "2026-10-10T00:22:00.000000+00:00", channel_id: "1558257428561137764", author_id: "bot-2", content: "봇 메시지" },
+  ].map((e) => JSON.stringify(e)).join("\n"));
+  const prompts: string[] = [];
+  const deps = ownerCheckDeps(40, E7_LINE1, prompts);
+  const l = { ...lane(state.dir), thread: "discord:1558257428561137764" };
+  await deps.registry.write(l);
+  const r = await runOwnerCheck(deps, l, { files: [file], inbox, owner: "owner-1" });
+  expect(r.lines).toHaveLength(1);
+  expect(r.lines[0]).toStartWith('OWNER_CHECK_UNGROUNDED rl-e7 VIOLATION owner "학습은 멈추지 말고"');
+  expect(r.findings).toEqual([]);
+  const log = await Bun.file(deps.config.watchLog).text();
+  expect(log).toContain("owner-check OWNER_CHECK_UNGROUNDED rl-e7");
+  expect(log).not.toContain("STUCK");
+  const after = (await deps.registry.read("rl-e7")) as Lane;
+  expect(after.stuck?.["@context"]).toBeUndefined();
+  expect(after.ownerCheck?.kinds).toEqual(["OK"]);
+  // the owner's own decisions in the lane's thread, dated, and only the owner's
+  expect(prompts[0]).toContain("[2026-10-10T00:20:00.123Z] card Q96");
+  expect(prompts[0]).toContain("(학습 전 형 확인)");
+  expect(prompts[0]).toContain("[2026-10-10T00:21:00.000Z] 설계 먼저 보여줘");
+  expect(prompts[0]).not.toContain("봇 메시지");
+  // the owner's words inside the relay's quote still ground a finding
+  const quotedOwner = await runOwnerCheck(ownerCheckDeps(41, E7_LINE1.replace("학습은 멈추지 말고", "왜 진도가 안 나가는지 알려줘"), []), l, { files: [file], inbox, owner: "owner-1", force: true });
+  expect(quotedOwner.findings.map((f) => f.verified)).toEqual([true]);
+});
+
+test("replay hr35-e7 11:18:41Z: a finding on a report an earlier check already read is OWNER_CHECK_STALE and moves no rung, even after a confirmed re-read", async () => {
+  // the owner's quote is made to hold here, so only the superseded report decides
+  writeFileSync(join(state.dir, "brief.md"), "# HR35 E7\n학습은 멈추지 말고");
+  const file = writeSession([
+    sessionLine(30, "assistant", `[REPORT] rl-e7 | milestone | ${E7_WAIT}`),
+    sessionLine(44, "assistant", "[REPORT] rl-e7 | milestone | Q99 n3 학습 시작(19:46 KST): 등록·코드 fb96b1c"),
+    sessionLine(46, "assistant", "[REPORT] rl-e7 | milestone | Q99 n3 시작 보고(20:02 KST, 문서 0e76616)"),
+  ]);
+  const deps = ownerCheckDeps(80, E7_LINE2, []);
+  // the 09:46 finding is the context rung, the lead confirmed a re-read, and the 10:48 check read up to the 19:46 report
+  const context = { rung: 1, n: 1, at: at(32), pane: "w:p1" };
+  const l: Lane = { ...lane(state.dir), stuck: { "@context": context }, ownerCheck: { at: at(48), lastReportAt: at(44), day: at(48).slice(0, 10), today: 13, model: "m", kinds: ["VIOLATION"], finding: "OWNER_CHECK rl-e7 VIOLATION owner ...", rereadAt: at(35) } };
+  await deps.registry.write(l);
+  const r = await runOwnerCheck(deps, l, { files: [file], inbox: join(state.dir, "none.jsonl") });
+  expect(r.lines).toHaveLength(1);
+  expect(r.lines[0]).toStartWith("OWNER_CHECK_STALE rl-e7 VIOLATION report");
+  expect(r.lines.join("\n")).not.toContain("ROLLOVER_DUE");
+  expect(await Bun.file(deps.config.watchLog).text()).not.toContain("STUCK");
+  const after = (await deps.registry.read("rl-e7")) as Lane;
+  expect(after.stuck?.["@context"]).toEqual(context);
+  expect(after.ownerCheck?.lastReportAt).toBe(at(46));
+});
+
+test("a finding on the same stated direction moves the context rung once; a new direction after a confirmed re-read is rung 4", async () => {
+  writeFileSync(join(state.dir, "brief.md"), "# 브리프\n학습은 멈추지 말고");
+  const reply = 'VERDICT: VIOLATION\nOWNER: "학습은 멈추지 말고"\nREPORT: "학습을 멈추고 비교표만 만든다"\nWHY: stops training.';
+  const deps = ownerCheckDeps(10, reply, []);
+  const l = { ...lane(state.dir), direction: { at: at(2), text: "학습을 멈추고 비교표만 만든다" } };
+  await deps.registry.write(l);
+  const opts = { files: [], inbox: join(state.dir, "none.jsonl"), direction: true };
+  expect((await runOwnerCheck(deps, l, opts)).lines.at(-1)).toContain('"@context" rung context');
+  expect((await sendReread(deps, (await deps.registry.read("rl-e7")) as Lane)).ok).toBe(true);
+  // the same direction again: the report under the finding did not change, so no rung 4
+  const same = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, opts);
+  expect(same.lines.join("\n")).not.toContain("STUCK");
+  expect(((await deps.registry.read("rl-e7")) as Lane).stuck?.["@context"]?.n).toBe(1);
+  // the lane states the direction again, later: a new report under the same words, after the re-read
+  const restated = { ...((await deps.registry.read("rl-e7")) as Lane), direction: { at: at(8), text: "학습을 멈추고 비교표만 만든다" } };
+  await deps.registry.write(restated);
+  expect((await runOwnerCheck(deps, restated, opts)).lines.at(-1)).toMatch(/^STUCK rl-e7 "@context" rung 4 .*ROLLOVER_DUE\]$/);
 });
 
 test("a quoted report template is no report, and a CONTRADICTION that only names claim-done with no claim on record stays off the ladder (live false alarm, 2026-10-12 00:48:02Z)", async () => {

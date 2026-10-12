@@ -35,8 +35,9 @@ export type ExplorationRecord = { readonly at: string; readonly metric: string; 
 // result is set once the check decided (RESEARCH_STARTED or RESEARCH_NOT_STARTED)
 // signal: the failed attempts on that metric when it was sent (the stuck count at rung 3)
 export type ResearchSent = { readonly at: string; readonly sentAt: number; readonly probe: string; readonly metric: string; readonly signal: number; readonly result?: "started" | "not-started" };
-// the rung one metric (or "@context", the owner check) reached on the stuck ladder, at count n, in the session of pane
-export type StuckMark = { readonly rung: number; readonly n: number; readonly at: string; readonly pane?: string };
+// the rung one metric (or "@context", the owner check) reached on the stuck ladder, at count n, in the session of pane;
+// report: for "@context", the report the last finding rested on (one report moves the rung once)
+export type StuckMark = { readonly rung: number; readonly n: number; readonly at: string; readonly pane?: string; readonly report?: string };
 
 export type Lane = {
   readonly key: string;

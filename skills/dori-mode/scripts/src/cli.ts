@@ -119,9 +119,13 @@ const USAGE = `dori <command> [options]
                                        lane's current session. --backtest prints each time a count reached it, with its time
   owner-check <key> [--force | --reread]
                                        a reviewer of another family (reviewers.models, autoSignals.ownerCheck.first first)
-                                       reads the brief, the owner's words in it and in the lead's [LEAD] relays, and the
+                                       reads the brief, the owner's words in it and in the lead's [LEAD] relays, his card
+                                       answers and messages in the lane's thread (dated, the newest wins), and the
                                        newest reports: OWNER_CHECK <key> VIOLATION|CONTRADICTION|GOAL_LOSS|OK with quoted
-                                       evidence (a quote not found in the inputs is marked unverified). A finding is the
+                                       evidence. An owner quote not in his words (goal, brief, quoted part of a relay,
+                                       his decisions) is dropped (OWNER_CHECK_UNGROUNDED); a report an earlier check read
+                                       is not flagged again (OWNER_CHECK_STALE); a report quote not found is marked
+                                       unverified. A finding is the
                                        stuck ladder's context rung (STUCK "@context"); again in the next check, rung 4.
                                        Only on a report newer than the last check; --force skips the interval and daily
                                        limit. --reread: you confirmed the last finding, so the lane gets stuck.rereadText
