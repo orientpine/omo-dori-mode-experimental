@@ -372,7 +372,8 @@ const discordClient = () => new Discord(fetchHttp, realClock, env("DORI_DISCORD_
 const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
 // every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards and
 // the lanes still working in the thread
-const workingLanes = async (t: string): Promise<string[]> => (await deps.registry.open()).filter((l) => l.thread === `discord:${t}` && statusOf(l) === "working").map((l) => l.key);
+// working, or sent back to work by an objection (not-done); a lane that claimed done or is paused waits like the thread
+const workingLanes = async (t: string): Promise<string[]> => (await deps.registry.open()).filter((l) => l.thread === `discord:${t}` && (statusOf(l) === "working" || statusOf(l) === "not-done")).map((l) => l.key);
 const threadStatuses = (dc: Discord, log: (line: string) => void = (line) => console.error(line)) => {
   const store = new QuestionStore(cardDir());
   return new ThreadStatusQueue({ dc, words: config.discord, file: join(cardDir(), "thread-status.json"), openCards: (t) => openCardIds(store, t), workingLanes, now: realClock.now, log });
@@ -923,23 +924,34 @@ try {
         console.log(`THREAD_OPENED discord:${id}`);
         break;
       }
+      // Marking a thread done by hand (thread done, thread set done) makes the same check as closing a lane (#47): while
+      // another open lane or an open question card uses the thread, it is left as it is. The lane whose close runs this
+      // (hooks.threadDone, which sets DORI_CLOSING_LANE, or --lane) is not another user. --force marks it done anyway.
+      const holdersOf = async (thread: string): Promise<string> => {
+        const closing = opt("lane") ?? process.env.DORI_CLOSING_LANE ?? "";
+        const sharing = (await deps.registry.open()).filter((l) => l.key !== closing && l.thread === thread).map((l) => l.key);
+        const cards = deps.openCards?.(thread) ?? [];
+        return [...(sharing.length ? [`open lane ${sharing.join(", ")} uses it`] : []), ...(cards.length ? [`open card ${cards.join(", ")}`] : [])].join("; ");
+      };
       if (verb === "set") {
-        if (!ref || (text !== "working" && text !== "waiting" && text !== "done")) die("usage: dori thread set discord:<id> working|waiting|done [--open-card]");
+        if (!ref || (text !== "working" && text !== "waiting" && text !== "done")) die("usage: dori thread set discord:<id> working|waiting|done [--open-card] [--force]");
         const status = text === "done" ? "done" : flags.values["open-card"] ? "waiting" : text === "waiting" ? "waiting" : "working";
-        await threadStatuses(discordClient()).request(discordThreadId(ref ?? ""), status);
+        const id = discordThreadId(ref ?? "");
+        const holders = status === "done" ? await holdersOf(`discord:${id}`) : "";
+        if (holders && !flags.values.force) {
+          console.log(`THREAD_LEFT_OPEN discord:${id}: ${holders}; not marked done (--force marks it done anyway)`);
+          break;
+        }
+        if (holders) console.log(`THREAD_DONE_FORCED discord:${id}: ${holders}; marking it done anyway`);
+        await threadStatuses(discordClient()).request(id, status);
         break;
       }
       if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|wait|done> discord:<thread id> <text>");
       const dc = discordClient();
       if (verb === "done") {
-        // The same check as closing a lane (#47): while another open lane or an open question card uses the thread, the
-        // text is posted and the thread is left as it is. The lane whose close runs this (hooks.threadDone, which sets
-        // DORI_CLOSING_LANE, or --lane) is not another user. --force marks it done anyway, with a warning.
+        // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;
-        const closing = opt("lane") ?? process.env.DORI_CLOSING_LANE ?? "";
-        const sharing = (await deps.registry.open()).filter((l) => l.key !== closing && l.thread === thread).map((l) => l.key);
-        const cards = deps.openCards?.(thread) ?? [];
-        const holders = [...(sharing.length ? [`open lane ${sharing.join(", ")} uses it`] : []), ...(cards.length ? [`open card ${cards.join(", ")}`] : [])].join("; ");
+        const holders = await holdersOf(thread);
         if (holders && !flags.values.force) {
           console.log(`POSTED ${await postInThread(dc, ref ?? "", text ?? "")} THREAD_LEFT_OPEN ${thread}: ${holders}; not marked done (--force marks it done anyway)`);
           break;

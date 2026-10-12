@@ -168,17 +168,17 @@ test("three cards answered out of step stay ⏸️ until the last open one is re
   expect(w.name).toBe("🔄 fix login");
 });
 
-test("a lane still working in the thread keeps it 🔄 while a card is open; ⏸️ only once no lane works there (feature-verify 2026-10-12, follow-up a)", async () => {
+test("a lane still working in the thread keeps it 🔄 past an open card and a wait; ⏸️ only once no lane works there (feature-verify 2026-10-12, follow-up a)", async () => {
   const working = new Set(["lane-a"]);
   const { w, q, cards, listener, say } = live("🔄 fix login", async () => [...working]);
   await cards.ask("Ship to prod?", ["Yes", "No"], { thread: THREAD });
-  // the card's own wait is an explicit wait and is kept
-  expect(w.name).toBe("⏸️ fix login");
-  // the lane reports (dori thread reply / thread set working): it is working, so the thread shows it
-  await q.request(THREAD, "working");
+  // waiting means nothing is left on our side: the card does not show it while lane-a works (challenge, gpt-6-astra and grok-4.7)
   expect(w.name).toBe("🔄 fix login");
-  expect(w.logs).toContain(`THREAD_STATUS_APPLIED ${THREAD} working open=Q1 working=lane-a`);
-  // no lane works there any more: the open card makes it waiting again
+  expect(w.patches).toEqual([]);
+  await q.request(THREAD, "waiting");
+  expect(w.name).toBe("🔄 fix login");
+  expect(w.logs).toContain(`THREAD_STATUS_APPLIED ${THREAD} working unchanged open=Q1 working=lane-a`);
+  // no lane works there any more: the open card makes it waiting
   working.clear();
   await listener.onMessage(say("1003", "still thinking"));
   expect(w.name).toBe("⏸️ fix login");

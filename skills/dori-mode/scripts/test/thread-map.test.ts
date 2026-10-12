@@ -133,3 +133,16 @@ test("thread done with an open card is left open, and --force marks it done with
     forced: { code: 0, out: `THREAD_DONE_FORCED ${REF}: open card Q1; marking it done anyway\nPOSTED 900 THREAD_DONE`, err: `THREAD_STATUS_APPLIED ${ID} done` }, name: "✅ fix login", archived: true,
   });
 });
+
+test("thread set done makes the same check: an open lane keeps the thread, --force marks it done with a warning", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openLane("lane-b");
+  const left = await cli("set", REF, "done");
+  expect({ left, renames: renamed(), archived: http().archived }).toEqual({
+    left: { code: 0, out: `THREAD_LEFT_OPEN ${REF}: open lane lane-b uses it; not marked done (--force marks it done anyway)`, err: "" }, renames: 0, archived: false,
+  });
+  const forced = await cli("set", REF, "done", "--force");
+  expect({ forced, archived: http().archived }).toEqual({
+    forced: { code: 0, out: `THREAD_DONE_FORCED ${REF}: open lane lane-b uses it; marking it done anyway`, err: `THREAD_STATUS_APPLIED ${ID} done` }, archived: true,
+  });
+});

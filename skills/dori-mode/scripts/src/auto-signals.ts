@@ -193,6 +193,8 @@ export const inferRepeats = (events: readonly LaneEvent[], cfg: AutoSignals, onC
     // same report prescribes again on the line did not change the action; it is an attempt like any other (hr35-e7 정지
     // loop, 2026-10-11: "판별 결과: ... 둘 다 기각" next to "처방안 한 장 확정").
     if (!acts.length) {
+      // every pending line, not only the ones it names: a hypothesis entry rarely names its gate line ("H1 기각"), and the
+      // design report after the X1'-X5 probes would count again (hr35-e7 2026-10-12 08:13, challenge reply)
       if (disc.test(text) || (e.source === "tree" && /\s기각|\s->\s/.test(text))) failedSince.clear();
       continue;
     }
