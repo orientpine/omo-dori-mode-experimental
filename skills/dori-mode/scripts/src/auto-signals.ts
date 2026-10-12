@@ -133,7 +133,7 @@ export const canonical = (metric: string, aliases: AutoSignals["aliases"]): stri
   return m;
 };
 
-const mentions = (text: string, metric: string, aliases: AutoSignals["aliases"]): boolean => {
+export const mentions = (text: string, metric: string, aliases: AutoSignals["aliases"]): boolean => {
   const t = normText(text);
   const names = [metric, ...(aliases[metric] ?? Object.entries(aliases).find(([k]) => normText(k) === metric)?.[1] ?? [])];
   return names.some((n) => {
@@ -382,7 +382,7 @@ export const repeatTick = async (deps: FlowDeps, lane: Lane, files?: readonly st
       mkdirSync(join(deps.config.stateDir, "auto-signals"), { recursive: true });
       appendFileSync(file, [`## ${iso(deps.clock)} ${JSON.stringify(r.metric)} ${r.n}`, ...evidenceLines(r), ""].join("\n"));
     }
-    lines.push(...(await stuckStep(deps, lane.key, m)));
+    lines.push(...(await stuckStep(deps, lane.key, m, r?.evidence.filter((e) => e.role === "attempt").map((e) => e.at))));
   }
   return { lines, inferred: maxInferred(state) };
 };
