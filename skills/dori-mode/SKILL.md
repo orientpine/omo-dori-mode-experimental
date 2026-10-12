@@ -106,6 +106,7 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 - Work that spends someone's subscription or money needs that person's go for that spend, and the go is revocable until the work starts.
 - Secrets, tokens, internal hostnames and personal data never go into a public issue, PR, gist or message.
 - Build memory as you work and consult it before asking the owner something it already answers.
+- File every instruction the owner gives as it arrives: common (true for every Dori: write it into this skill's `SKILL.md` or `references/` in the fork and push it) or local (only this Dori or this host: write it into the local agent instructions or handoff file). When it is not clear which, ask the owner. Why: `references/operating-lessons.md` #20.
 - Keep going until the work is done. Stop only when nothing can move without the owner.
 
 ## Scripts
