@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { failedMetrics, inferRepeats, type LaneEvent, passedMetrics, readReports, suspects } from "../src/auto-signals.ts";
-import { stuckView } from "../src/explore.ts";
+import { loadTree, researchDone, stuckView } from "../src/explore.ts";
 import { defaultConfig } from "../src/config.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { briefForCheck, claimCheck, groundFindings, linkedWords, ownerDecisions, ownerDue, ownerWords, parseOwnerReply, quoted, runOwnerCheck, sendReread } from "../src/owner-check.ts";
@@ -129,8 +129,8 @@ beforeEach(() => {
 });
 afterEach(() => state.done());
 
-const writeSession = (lines: readonly string[]): string => {
-  const dir = sessionDirFor(join(state.dir, "sessions"), "/repo");
+const writeSession = (lines: readonly string[], cwd = "/repo"): string => {
+  const dir = sessionDirFor(join(state.dir, "sessions"), cwd);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "2026-10-10T00-00-00-000Z_00000000-0000-0000-0000-000000000000.jsonl");
   writeFileSync(file, `${lines.join("\n")}\n`);
@@ -170,6 +170,92 @@ test("a PASS between two sweeps ends the run: no STUCK line, and the PASS time i
   const after = (await deps.registry.read("rl-e7")) as Lane;
   expect(after.inferred?.counts).toEqual({});
   expect(after.inferred?.passedAt).toEqual({ "교착": at(260) });
+  expect(sent(world)).toEqual([]);
+});
+
+// rung 3 already done: the lane's own read of the ulw-research skill, its research folder, its dori challenge
+const skillReadLine = (min: number): string => JSON.stringify({ type: "message", timestamp: at(min), message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: "/opt/omo-ai/plugin/skills/ulw-research/SKILL.md" } }] } });
+const reportLine = (e: LaneEvent): string => sessionLine((Date.parse(e.at) - T0) / 60_000, "assistant", `[REPORT] rl-e7 | milestone | ${e.text}`);
+const planFile = (name: string, text: string): string => {
+  const p = join(state.dir, name);
+  writeFileSync(p, text);
+  return p;
+};
+const cycle4 = [ev(300, "model_797 F1: 교착 500 FAIL"), ev(310, "조정 4: 교착 벌점 구간 추가")];
+
+test("rung 3 is already done when the lane ran ulw research and a dori challenge on the symptom after the third repeat: nothing is typed and the ladder waits; one more failed cycle is rung 4 (hr35-e7 정지, 2026-10-12 14:33Z)", async () => {
+  const file = writeSession([...loop.map(reportLine), skillReadLine(215)]);
+  const deps = depsFor(world, fakeClock(T0 + 240 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions") });
+  const plan = planFile("plan.md", "# 교착 처방 설계");
+  await deps.registry.write({ ...lane(state.dir), challenges: [{ at: at(230), model: "openai/gpt-x", plan, file: "c.md" }] });
+  world.screens["lead:p1"] = ` [REPORT] rl-e7 | milestone | ${loop.at(-1)?.text}\n\n❯ `;
+  const acts = (await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "stuck");
+  expect(acts.map((a) => a.detail)).toEqual([
+    `"교착" rung 3 (tagged 0, inferred 3, hypotheses 0, inferred only, first count) -> already done after attempt 3: ulw research (ulw-research/SKILL.md read ${at(215)}, ${file.split("/").at(-1)}) and dori challenge (openai/gpt-x ${at(230)}, plan ${plan}); nothing sent, wait for the next attempt's result (one more failed attempt is rung 4) [HYPOTHESES_REQUIRED RESEARCH_DONE REPEAT_SUSPECT]`,
+  ]);
+  expect(sent(world)).toEqual([]);
+  expect((await loadTree(state.dir, { cwd: "/repo" })).nodes.filter((n) => n.kind === "research")).toEqual([]);
+  expect((await deps.registry.read("rl-e7"))?.stuck?.["교착"]).toMatchObject({ rung: 3, n: 3 });
+  writeFileSync(file, `${[...loop.map(reportLine), skillReadLine(215), ...cycle4.map(reportLine)].join("\n")}\n`);
+  world.screens["lead:p1"] = ` [REPORT] rl-e7 | milestone | ${cycle4[1]?.text}\n\n❯ `;
+  const next = (await freshnessTick({ ...deps, clock: fakeClock(T0 + 320 * 60_000) }, "/home/test")).filter((a) => a.kind === "stuck");
+  expect(next.map((a) => a.detail.split(" -> ")[0])).toEqual(['"교착" rung 4 (tagged 0, inferred 4, hypotheses 0, inferred only)']);
+  expect(next[0]?.detail).toEndWith("[ROLLOVER_DUE REPEAT_SUSPECT]");
+  expect(sent(world)).toEqual([]);
+});
+
+test("a failed cycle after research the lane already did (its research folder) and a challenge is rung 4 at the first scan, not a second research; the folder's brief names the symptom", async () => {
+  const cwd = join(state.dir, "repo");
+  const started = new Date(T0 + 250 * 60_000);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  // the ulw-research skill names its folder by the local time (date +%Y%m%d-%H%M%S)
+  const folder = join(cwd, ".omo", "ulw-research", `${started.getFullYear()}${pad(started.getMonth() + 1)}${pad(started.getDate())}-${pad(started.getHours())}${pad(started.getMinutes())}${pad(started.getSeconds())}`);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "brief.md"), "# 교착 루프의 원인");
+  writeSession([...loop, ...cycle4].map(reportLine), cwd);
+  const deps = depsFor(world, fakeClock(T0 + 320 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions") });
+  await deps.registry.write({ ...lane(state.dir), cwd, challenges: [{ at: at(260), model: "openai/gpt-x", plan: planFile("plan.md", "# next run"), file: "c.md" }] });
+  world.screens["lead:p1"] = ` [REPORT] rl-e7 | milestone | ${cycle4[1]?.text}\n\n❯ `;
+  const acts = (await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "stuck");
+  expect(acts.map((a) => a.detail.split(" -> ")[0])).toEqual(['"교착" rung 4 (tagged 0, inferred 4, hypotheses 0, inferred only, first count)']);
+  expect(acts[0]?.detail).toContain(`-> 1 failed attempt after the ulw research (${folder}) and dori challenge (openai/gpt-x ${at(260)}`);
+  expect(acts[0]?.detail).toEndWith("[HYPOTHESES_REQUIRED RESEARCH_DONE ROLLOVER_DUE REPEAT_SUSPECT]");
+  expect(sent(world)).toEqual([]);
+});
+
+test("research read before the third repeat is not rung 3 done: the ulw research text is typed as before", async () => {
+  writeSession([...loop.slice(0, 4).map(reportLine), skillReadLine(150), ...loop.slice(4).map(reportLine)]);
+  const deps = depsFor(world, fakeClock(T0 + 240 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions") });
+  await deps.registry.write({ ...lane(state.dir), challenges: [{ at: at(230), model: "openai/gpt-x", plan: planFile("plan.md", "# 교착 처방"), file: "c.md" }] });
+  world.screens["lead:p1"] = ` [REPORT] rl-e7 | milestone | ${loop.at(-1)?.text}\n\n❯ `;
+  const acts = (await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "stuck");
+  expect(acts[0]?.detail).toEndWith("ulw research sent to the lane [HYPOTHESES_REQUIRED RESEARCH_DUE REPEAT_SUSPECT]");
+  expect(sent(world)).toHaveLength(1);
+});
+
+test("rung 3 done needs both research and a challenge after the repeat, on the symptom (the metric or an alias)", () => {
+  const config = { ...defaultConfig("/home/test"), sessionsDir: join(state.dir, "sessions"), autoSignals: { ...cfg, aliases: { "정지": ["멈춤", "hold"] } } };
+  writeSession([skillReadLine(215)]);
+  const base = { ...lane(state.dir), cwd: "/repo" };
+  const challenge = (plan: string) => [{ at: at(230), model: "m", plan, file: "c.md" }];
+  expect(researchDone(config, base, "정지", at(210))).toBeUndefined();
+  expect(researchDone(config, { ...base, challenges: challenge(planFile("a.md", "# 교착 처방")) }, "정지", at(210))).toBeUndefined();
+  expect(researchDone(config, { ...base, challenges: challenge(planFile("b.md", "한 번 퍼 담고 멈춤")) }, "정지", at(210))?.at).toBe(at(230));
+  expect(researchDone(config, { ...base, challenges: challenge(planFile("c.md", "early holds")) }, "정지", at(210))).toBeUndefined();
+  expect(researchDone(config, { ...base, challenges: challenge(planFile("d.md", "the hold loop")) }, "정지", at(220))).toBeUndefined();
+  // done when the challenge on the symptom was, not at an earlier one of another plan (challenge, gpt-6-astra)
+  const two = [{ at: at(220), model: "m", plan: planFile("e.md", "# 교착 처방"), file: "c.md" }, { at: at(230), model: "m", plan: planFile("f.md", "한 번 퍼 담고 멈춤"), file: "c.md" }];
+  expect(researchDone(config, { ...base, challenges: two }, "정지", at(210))?.at).toBe(at(230));
+});
+
+test("a fix the lead records (dori fix-attempt) sees the research and challenge done after the inferred cycles too: rung 3 done, nothing typed (challenge, gpt-6-astra)", async () => {
+  writeSession([skillReadLine(215)]);
+  const deps = depsFor(world, fakeClock(T0 + 240 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions") });
+  const cycles = { "교착": [at(10), at(110), at(210)] };
+  await deps.registry.write({ ...lane(state.dir), inferred: { at: at(220), counts: { "교착": 3 }, cycles }, challenges: [{ at: at(230), model: "openai/gpt-x", plan: planFile("plan.md", "# 교착 처방 설계"), file: "c.md" }] });
+  const r = await recordFix(deps, "rl-e7", { at: at(235), metric: "교착", hypothesis: "벌점 구간", via: "lead" });
+  expect(r.notes[0]).toStartWith('STUCK rl-e7 "교착" rung 3 (tagged 1, inferred 3, hypotheses 1, inferred only, first count) -> already done after attempt 3:');
+  expect(r.notes[0]).toEndWith("[HYPOTHESES_REQUIRED RESEARCH_DONE REPEAT_SUSPECT]");
   expect(sent(world)).toEqual([]);
 });
 

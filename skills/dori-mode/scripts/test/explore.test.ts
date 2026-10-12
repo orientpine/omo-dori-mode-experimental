@@ -122,6 +122,17 @@ test("rung 3 (the third failed attempt) sends the lane an external-search step a
   expect(hint.some((l) => l.includes("dori tree add --lane rl-e7 --kind finding"))).toBe(true);
 });
 
+test("a paused lane at rung 3 gets nothing typed: the STUCK line says so and how to send it after resume", async () => {
+  const deps = depsFor(world, fakeClock(T0), state.dir);
+  await deps.registry.write({ ...lane, status: "paused" });
+  await recordFix(deps, "rl-e7", fix("a"));
+  await recordFix(deps, "rl-e7", fix("b"));
+  const third = await recordFix(deps, "rl-e7", fix("c"));
+  expect(third.notes[0]).toEndWith("; the lane is paused, so nothing was typed (after dori resume: dori research-hint rl-e7 --send) [RESEARCH_DUE]");
+  expect(sent(world)).toEqual([]);
+  expect(((await deps.registry.read("rl-e7")) as Lane).research).toBeUndefined();
+});
+
 // session log lines as omo writes them: the typed message, the skill pointer it attaches, the lane reading the skill
 const PROBE = "ulw research Lane rl-e7 (E7 dump policy, repo rl) is stuck.";
 const at = (s: number) => new Date(T0 + s * 1000).toISOString();

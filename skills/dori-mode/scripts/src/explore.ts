@@ -1,12 +1,12 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-import { canonical } from "./auto-signals.ts";
+import { canonical, mentions } from "./auto-signals.ts";
 import { type DoriConfig, type Explore, expandHome, fill, type Stuck } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { tagsOf } from "./lane-signals.ts";
 import { sendVerified } from "./panes.ts";
-import type { FixAttempt, Lane, StuckMark } from "./registry.ts";
+import { type FixAttempt, type Lane, statusOf, type StuckMark } from "./registry.ts";
 import { sessionStart } from "./rollover.ts";
 import { iso } from "./run.ts";
 import { fixCount, normFix } from "./same-fix.ts";
@@ -161,21 +161,24 @@ export const updateTree = async (stateDir: string, a: TreeArea, change: (t: Tree
 
 // Failed attempts on one metric, whatever the hypothesis, since the last attempt marked improved. A fix the lead asked for and
 // the lane then reported is one attempt, as in fixCount.
-export const metricAttempts = (fixes: readonly FixAttempt[], metric: string): number => {
-  let n = 0;
+export const metricAttempts = (fixes: readonly FixAttempt[], metric: string): number => attemptTimes(fixes, metric).length;
+
+// When each of those attempts was made (the lead's ask for one it asked and the lane reported), oldest first.
+export const attemptTimes = (fixes: readonly FixAttempt[], metric: string): string[] => {
+  let times: string[] = [];
   let askedByLead = false;
   for (const f of fixes) {
     if (f.metric !== metric) continue;
     if (f.improved) {
-      n = 1;
+      times = [f.at];
       askedByLead = f.via === "lead";
     } else if (f.via === "report" && askedByLead) askedByLead = false;
     else {
-      n++;
+      times.push(f.at);
       askedByLead = f.via === "lead";
     }
   }
-  return n;
+  return times;
 };
 
 export type GateInput = { readonly hypotheses: readonly string[]; readonly tests: readonly string[]; readonly override?: string };
@@ -235,7 +238,8 @@ export const recordRefusal = (deps: FlowDeps, message: string): void => watchLog
 // last --improved and since the last PASS the reports showed) and the inferred cycles (untagged reports, commits, tree;
 // auto-signals), counted under one name (autoSignals.aliases). fixated: one hypothesis tried fixatedAfter times.
 // sameFix: one hypothesis tried fixatedAfter times; fixated: that, after the lane branched (two or more hypotheses tried)
-export type StuckView = { readonly metric: string; readonly tagged: number; readonly inferred: number; readonly n: number; readonly hypotheses: number; readonly sameFix: boolean; readonly fixated: boolean };
+// taggedAt: when each tagged attempt was made
+export type StuckView = { readonly metric: string; readonly tagged: number; readonly inferred: number; readonly n: number; readonly hypotheses: number; readonly sameFix: boolean; readonly fixated: boolean; readonly taggedAt: readonly string[] };
 
 export const stuckView = (lane: Lane, metric: string, config: Pick<DoriConfig, "stuck" | "autoSignals">): StuckView => {
   const aliases = config.autoSignals.aliases;
@@ -246,11 +250,81 @@ export const stuckView = (lane: Lane, metric: string, config: Pick<DoriConfig, "
   const restart = fixes.findLastIndex((f) => f.improved);
   const current = restart >= 0 ? fixes.slice(restart) : fixes;
   const hyps = [...new Set(current.map((f) => f.hypothesis))];
-  const tagged = metricAttempts(fixes, key);
+  const taggedAt = attemptTimes(fixes, key);
+  const tagged = taggedAt.length;
   // an --improved attempt also starts the inferred half again: only cycles counted after it (baseline) are stuck ones
   const inferred = Math.max(0, (lane.inferred?.counts[key] ?? 0) - (lane.inferred?.baseline?.[key] ?? 0));
   const sameFix = hyps.some((h) => fixCount(current, key, h) >= config.stuck.fixatedAfter);
-  return { metric: key, tagged, inferred, n: Math.max(tagged, inferred), hypotheses: hyps.length, sameFix, fixated: sameFix && hyps.length >= 2 };
+  return { metric: key, tagged, inferred, n: Math.max(tagged, inferred), hypotheses: hyps.length, sameFix, fixated: sameFix && hyps.length >= 2, taggedAt };
+};
+
+// Rung 3 already done: the ulw research and the dori challenge a lane ran on one symptom after `after` (the repeat that made
+// rung 3 due), whoever asked for them. Research: a read of the ulw-research SKILL.md in the lane's session log, or a research
+// session folder <cwd>/.omo/ulw-research/<YYYYMMDD-HHMMSS> (the skill names it by local time) started after it. Challenge:
+// a dori challenge on record after it on the symptom: the first whose plan names the metric or one of its aliases, or, when a
+// research folder's brief.md names it, the first at or after that folder. at: when both were done (the later of the two).
+export type ResearchDone = { readonly at: string; readonly research: string; readonly challenge: string };
+
+const RESEARCH_DIR = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/;
+const textOf = (path: string): string => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return ""; // a plan or brief that is gone names nothing
+  }
+};
+const namesIn = (dir: string): string[] => {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return []; // no research folder, no session folder
+  }
+};
+
+// the first real read of the ulw-research SKILL.md (skillRead) at or after `since` in a session folder
+const firstSkillRead = (dir: string, since: number): { readonly at: number; readonly file: string } | undefined => {
+  let first: { at: number; file: string } | undefined;
+  for (const n of namesIn(dir).filter((x) => x.endsWith(".jsonl"))) {
+    const file = join(dir, n);
+    if ((statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0) < since) continue;
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (!line.includes(RESEARCH_SKILL)) continue;
+      let e: LogEntry;
+      try {
+        e = JSON.parse(line) as LogEntry;
+      } catch {
+        continue; // the last line while omo is still writing it
+      }
+      const at = Date.parse(e.timestamp ?? "");
+      if (!(at >= since) || (first && at >= first.at) || e.message?.role !== "assistant") continue;
+      if (blocks(e.message.content).some((b) => b.type === "toolCall" && skillRead(b.name, b.arguments))) first = { at, file: n };
+    }
+  }
+  return first;
+};
+
+export const researchDone = (config: Pick<DoriConfig, "sessionsDir" | "defaultCwd" | "autoSignals">, lane: Lane, metric: string, after: string): ResearchDone | undefined => {
+  const since = Date.parse(after);
+  if (!Number.isFinite(since)) return undefined;
+  const cwd = expandHome(lane.cwd ?? config.defaultCwd);
+  const root = join(cwd, ".omo", "ulw-research");
+  const folders = namesIn(root).flatMap((n) => {
+    const m = RESEARCH_DIR.exec(n)?.slice(1).map(Number);
+    const at = m ? new Date(m[0] ?? 0, (m[1] ?? 1) - 1, m[2], m[3], m[4], m[5]).getTime() : Number.NaN;
+    return at >= since ? [{ at, name: n }] : [];
+  });
+  const read = firstSkillRead(sessionDirFor(config.sessionsDir, cwd), since);
+  const challenges = (lane.challenges ?? []).filter((c) => Date.parse(c.at) >= since).sort((a, b) => a.at.localeCompare(b.at));
+  const researchAt = Math.min(read?.at ?? Number.POSITIVE_INFINITY, ...folders.map((f) => f.at));
+  if (!Number.isFinite(researchAt)) return undefined;
+  const named = (text: string): boolean => mentions(text, metric, config.autoSignals.aliases);
+  const onSymptom = folders.filter((f) => named(textOf(join(root, f.name, "brief.md")))).sort((a, b) => a.at - b.at)[0];
+  // an earlier challenge of another plan is not this symptom's: its time would credit attempts made before the real one
+  const challenge = challenges.find((c) => named(textOf(c.plan))) ?? (onSymptom ? challenges.find((c) => Date.parse(c.at) >= onSymptom.at) : undefined);
+  if (!challenge) return undefined;
+  const folder = folders.sort((a, b) => a.at - b.at)[0];
+  const research = read && read.at <= (folder?.at ?? Number.POSITIVE_INFINITY) ? `ulw research (${RESEARCH_SKILL} read ${new Date(read.at).toISOString()}, ${read.file})` : `ulw research (${join(root, folder?.name ?? "")})`;
+  return { at: new Date(Math.max(researchAt, Date.parse(challenge.at))).toISOString(), research, challenge: `dori challenge (${challenge.model} ${challenge.at}, plan ${challenge.plan})` };
 };
 
 // The rung a count reaches: 4 when one hypothesis is fixated or an attempt failed after rung 3, 3 from researchAt, 2 from
@@ -287,8 +361,10 @@ const rolloverAction = (key: string, why: string): string =>
 
 // After a tagged attempt or a grown inferred count: the metric's rung now. A rung above the one this metric reached in this
 // session gives one STUCK line (rung 2 and up); rung 3 also types the ulw research text into the lane (research and a
-// challenge of the next plan, in this session: no rollover at this rung). A count that went down (PASS, --improved) only
-// lowers the mark. Returns the lines written to the watch log.
+// challenge of the next plan, in this session: no rollover at this rung), unless the lane is paused or already ran both on
+// this symptom after the repeat that made rung 3 due (researchDone): then rung 3 is done and the ladder waits for the next
+// attempt, and a repeat after that research and challenge is rung 4. A count that went down (PASS, --improved) only lowers
+// the mark. Returns the lines written to the watch log.
 export const stuckStep = async (deps: FlowDeps, key: string, metric: string): Promise<string[]> => {
   const lane = await deps.registry.read(key);
   if (!lane) return [];
@@ -296,22 +372,32 @@ export const stuckStep = async (deps: FlowDeps, key: string, metric: string): Pr
   const v = stuckView(lane, metric, deps.config);
   const marks = lane.stuck ?? {};
   const prev = marks[v.metric]?.pane === lane.pane ? (marks[v.metric]?.rung ?? 0) : 0;
-  const rung = rungOf(v, prev, cfg);
+  let rung = rungOf(v, prev, cfg);
+  // the times of the attempts the count stands on (the larger half), so research done after the third is seen
+  const times = v.inferred > v.tagged ? (lane.inferred?.cycles?.[v.metric] ?? []).slice(-v.inferred) : v.taggedAt;
+  const third = times[cfg.researchAt - 1];
+  const done = rung === 3 && prev < 3 && third ? researchDone(deps.config, lane, v.metric, third) : undefined;
+  const failedAfter = done ? times.filter((t) => Date.parse(t) > Date.parse(done.at)).length : 0;
+  if (failedAfter) rung = 4;
   if (rung === prev && marks[v.metric]?.n === v.n) return [];
   await deps.registry.patch(key, { stuck: { ...marks, [v.metric]: { rung, n: v.n, at: iso(deps.clock), ...(lane.pane ? { pane: lane.pane } : {}) } } });
   if (rung <= prev || rung < 2) return [];
   let action: string;
   if (rung === 2) action = `branch before the next patch: ${deps.config.explore.minHypotheses} competing hypotheses, each with a cheap discriminating test (dori fix-attempt ${key} --metric "${v.metric}" --hypotheses ... --test ..., or dori tree add --lane ${key})`;
+  else if (rung === 3 && done) action = `already done after attempt ${cfg.researchAt}: ${done.research} and ${done.challenge}; nothing sent, wait for the next attempt's result (one more failed attempt is rung 4)`;
   else if (rung === 3) {
     action = "ulw research on the exact symptom and a dori challenge of the next plan, in this session, before the next patch (no rollover at this rung)";
     const area = laneArea(lane, deps.config);
     const tree = await updateTree(deps.config.stateDir, area, (t) => addNode(t, { kind: "research", text: `external search on the symptom "${v.metric}" (stuck rung 3, ${v.n} failed attempts, lane ${key})`, metric: v.metric, lane: key, source: "stuck rung 3" }, iso(deps.clock)).tree);
-    if (deps.config.explore.sendResearchToLane && lane.pane) {
+    if (deps.config.explore.sendResearchToLane && lane.pane && statusOf(lane) === "paused") action += `; the lane is paused, so nothing was typed (after dori resume: dori research-hint ${key} --send)`;
+    else if (deps.config.explore.sendResearchToLane && lane.pane) {
       const delivered = await sendResearch(deps, lane, tree, v.n, v.metric);
       action += delivered ? "; ulw research sent to the lane" : `; the research text did not reach pane ${lane.pane}`;
     }
-  } else action = rolloverAction(key, v.fixated ? `hypothesis tried ${cfg.fixatedAfter}+ times on "${v.metric}"` : `attempt ${v.n} failed after rung 3`);
-  const line = stuckLine(key, v.metric, rung, `${counts(v)}${rung > prev + 1 && prev > 0 ? `, from rung ${prev}` : rung > 2 && prev === 0 ? ", first count" : ""}`, action, oldNames(rung, prev, v, cfg));
+  } else action = rolloverAction(key, v.fixated ? `hypothesis tried ${cfg.fixatedAfter}+ times on "${v.metric}"` : done ? `${failedAfter} failed attempt${failedAfter === 1 ? "" : "s"} after the ${done.research} and ${done.challenge} the lane already ran` : `attempt ${v.n} failed after rung 3`);
+  // research already done is RESEARCH_DONE, never RESEARCH_DUE (a monitor on that name would ask for it again)
+  const names = oldNames(rung, prev, v, cfg).map((n) => (done && n === "RESEARCH_DUE" ? "RESEARCH_DONE" : n));
+  const line = stuckLine(key, v.metric, rung, `${counts(v)}${rung > prev + 1 && prev > 0 ? `, from rung ${prev}` : rung > 2 && prev === 0 ? ", first count" : ""}`, action, names);
   watchLog(deps.config.watchLog, deps.clock, { source: "stuck", line });
   return [line];
 };
