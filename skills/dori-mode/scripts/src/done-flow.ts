@@ -20,6 +20,9 @@ export type FlowDeps = {
   readonly postInThread?: (ref: string, text: string) => Promise<unknown>;
   // ids of the question cards still open in a work thread (cli reads the card store for discord:<id> threads)
   readonly openCards?: (ref: string) => readonly string[];
+  // asks for waiting on a discord:<id> work thread through the thread status queue, which keeps it working while a lane
+  // there still works; resolves with the queue's outcome (cli wires it when DORI_DISCORD_TOKEN is set)
+  readonly markThreadWaiting?: (ref: string) => Promise<string>;
 };
 
 export class LaneStateError extends Error {}
@@ -125,7 +128,8 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
         (e: unknown) => `result not posted: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`,
       );
     } else if (reply) {
-      const r = await deps.run(fill(reply, { thread: lane.thread, text, key: lane.key }));
+      // the closing lane is still open while its hook runs: DORI_CLOSING_LANE tells dori thread reply not to count it as working
+      const r = await deps.run(fill(reply, { thread: lane.thread, text, key: lane.key }), { env: { DORI_CLOSING_LANE: lane.key } });
       posted = r.code === 0 ? "result posted" : `reply hook failed: ${r.err.slice(0, 160)}`;
     } else posted = "no threadReply hook, nothing posted";
     cleanup.push(`thread left open: ${holders.join("; ")}; ${posted}`);
@@ -161,6 +165,16 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
   const at = iso(deps.clock);
   const receipt = { checks, note, cleanup };
   await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
+  if (holders.length && deps.markThreadWaiting && lane.thread.startsWith("discord:")) {
+    // Only now, with this lane closed, is it no longer working: the thread turns waiting when no lane there works any
+    // more (an open card, or a paused or done-claimed lane, is left), and stays working while one does.
+    const status = await deps.markThreadWaiting(lane.thread).then(
+      (outcome) => `waiting requested: ${outcome}`,
+      (e: unknown) => `waiting not requested: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`,
+    );
+    cleanup.push(status);
+    await deps.registry.patch(lane.key, { receipt });
+  }
   return { closed: true, lines: [...lines, ...warnings, `CLOSED ${lane.key} ${JSON.stringify(receipt)}`] };
 };
 

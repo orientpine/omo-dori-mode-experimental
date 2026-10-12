@@ -197,3 +197,10 @@ test("a thread with an open question card is not marked done when its only lane 
   expect(f.calls()).toEqual([]);
   expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open card Q7; result posted");
 });
+
+test("the reply hook a closing lane runs is told which lane closes, so the lane is not counted as working there", async () => {
+  const deps = bothHooks(at(T0, { openCards: (ref) => (ref === lane.thread ? ["Q7"] : []) }));
+  const envs: unknown[] = [];
+  await closeLane({ ...deps, run: (argv, opts) => (argv[0] === "notify" && envs.push(opts?.env), deps.run(argv, opts)) }, lane, "closed");
+  expect(envs).toEqual([{ DORI_CLOSING_LANE: "fix-a" }]);
+});
