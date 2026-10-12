@@ -261,8 +261,8 @@ export const stuckView = (lane: Lane, metric: string, config: Pick<DoriConfig, "
 // Rung 3 already done: the ulw research and the dori challenge a lane ran on one symptom after `after` (the repeat that made
 // rung 3 due), whoever asked for them. Research: a read of the ulw-research SKILL.md in the lane's session log, or a research
 // session folder <cwd>/.omo/ulw-research/<YYYYMMDD-HHMMSS> (the skill names it by local time) started after it. Challenge:
-// a dori challenge on record after it. The symptom (the metric or one of its aliases) must be named by a plan one of those
-// challenges reviewed or by a research folder's brief.md. at: when both were done (the later of the first of each).
+// a dori challenge on record after it on the symptom: the first whose plan names the metric or one of its aliases, or, when a
+// research folder's brief.md names it, the first at or after that folder. at: when both were done (the later of the two).
 export type ResearchDone = { readonly at: string; readonly research: string; readonly challenge: string };
 
 const RESEARCH_DIR = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/;
@@ -315,11 +315,13 @@ export const researchDone = (config: Pick<DoriConfig, "sessionsDir" | "defaultCw
   });
   const read = firstSkillRead(sessionDirFor(config.sessionsDir, cwd), since);
   const challenges = (lane.challenges ?? []).filter((c) => Date.parse(c.at) >= since).sort((a, b) => a.at.localeCompare(b.at));
-  const challenge = challenges[0];
   const researchAt = Math.min(read?.at ?? Number.POSITIVE_INFINITY, ...folders.map((f) => f.at));
-  if (!challenge || !Number.isFinite(researchAt)) return undefined;
+  if (!Number.isFinite(researchAt)) return undefined;
   const named = (text: string): boolean => mentions(text, metric, config.autoSignals.aliases);
-  if (!challenges.some((c) => named(textOf(c.plan))) && !folders.some((f) => named(textOf(join(root, f.name, "brief.md"))))) return undefined;
+  const onSymptom = folders.filter((f) => named(textOf(join(root, f.name, "brief.md")))).sort((a, b) => a.at - b.at)[0];
+  // an earlier challenge of another plan is not this symptom's: its time would credit attempts made before the real one
+  const challenge = challenges.find((c) => named(textOf(c.plan))) ?? (onSymptom ? challenges.find((c) => Date.parse(c.at) >= onSymptom.at) : undefined);
+  if (!challenge) return undefined;
   const folder = folders.sort((a, b) => a.at - b.at)[0];
   const research = read && read.at <= (folder?.at ?? Number.POSITIVE_INFINITY) ? `ulw research (${RESEARCH_SKILL} read ${new Date(read.at).toISOString()}, ${read.file})` : `ulw research (${join(root, folder?.name ?? "")})`;
   return { at: new Date(Math.max(researchAt, Date.parse(challenge.at))).toISOString(), research, challenge: `dori challenge (${challenge.model} ${challenge.at}, plan ${challenge.plan})` };
@@ -362,9 +364,8 @@ const rolloverAction = (key: string, why: string): string =>
 // challenge of the next plan, in this session: no rollover at this rung), unless the lane is paused or already ran both on
 // this symptom after the repeat that made rung 3 due (researchDone): then rung 3 is done and the ladder waits for the next
 // attempt, and a repeat after that research and challenge is rung 4. A count that went down (PASS, --improved) only lowers
-// the mark. cycles: when each inferred cycle on the metric was made (repeatTick), oldest first. Returns the lines written to
-// the watch log.
-export const stuckStep = async (deps: FlowDeps, key: string, metric: string, cycles: readonly string[] = []): Promise<string[]> => {
+// the mark. Returns the lines written to the watch log.
+export const stuckStep = async (deps: FlowDeps, key: string, metric: string): Promise<string[]> => {
   const lane = await deps.registry.read(key);
   if (!lane) return [];
   const cfg = deps.config.stuck;
@@ -373,7 +374,7 @@ export const stuckStep = async (deps: FlowDeps, key: string, metric: string, cyc
   const prev = marks[v.metric]?.pane === lane.pane ? (marks[v.metric]?.rung ?? 0) : 0;
   let rung = rungOf(v, prev, cfg);
   // the times of the attempts the count stands on (the larger half), so research done after the third is seen
-  const times = v.inferred > v.tagged ? cycles.slice(-v.inferred) : v.taggedAt;
+  const times = v.inferred > v.tagged ? (lane.inferred?.cycles?.[v.metric] ?? []).slice(-v.inferred) : v.taggedAt;
   const third = times[cfg.researchAt - 1];
   const done = rung === 3 && prev < 3 && third ? researchDone(deps.config, lane, v.metric, third) : undefined;
   const failedAfter = done ? times.filter((t) => Date.parse(t) > Date.parse(done.at)).length : 0;

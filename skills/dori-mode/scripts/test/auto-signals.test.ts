@@ -243,6 +243,20 @@ test("rung 3 done needs both research and a challenge after the repeat, on the s
   expect(researchDone(config, { ...base, challenges: challenge(planFile("b.md", "한 번 퍼 담고 멈춤")) }, "정지", at(210))?.at).toBe(at(230));
   expect(researchDone(config, { ...base, challenges: challenge(planFile("c.md", "early holds")) }, "정지", at(210))).toBeUndefined();
   expect(researchDone(config, { ...base, challenges: challenge(planFile("d.md", "the hold loop")) }, "정지", at(220))).toBeUndefined();
+  // done when the challenge on the symptom was, not at an earlier one of another plan (challenge, gpt-6-astra)
+  const two = [{ at: at(220), model: "m", plan: planFile("e.md", "# 교착 처방"), file: "c.md" }, { at: at(230), model: "m", plan: planFile("f.md", "한 번 퍼 담고 멈춤"), file: "c.md" }];
+  expect(researchDone(config, { ...base, challenges: two }, "정지", at(210))?.at).toBe(at(230));
+});
+
+test("a fix the lead records (dori fix-attempt) sees the research and challenge done after the inferred cycles too: rung 3 done, nothing typed (challenge, gpt-6-astra)", async () => {
+  writeSession([skillReadLine(215)]);
+  const deps = depsFor(world, fakeClock(T0 + 240 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions") });
+  const cycles = { "교착": [at(10), at(110), at(210)] };
+  await deps.registry.write({ ...lane(state.dir), inferred: { at: at(220), counts: { "교착": 3 }, cycles }, challenges: [{ at: at(230), model: "openai/gpt-x", plan: planFile("plan.md", "# 교착 처방 설계"), file: "c.md" }] });
+  const r = await recordFix(deps, "rl-e7", { at: at(235), metric: "교착", hypothesis: "벌점 구간", via: "lead" });
+  expect(r.notes[0]).toStartWith('STUCK rl-e7 "교착" rung 3 (tagged 1, inferred 3, hypotheses 1, inferred only, first count) -> already done after attempt 3:');
+  expect(r.notes[0]).toEndWith("[HYPOTHESES_REQUIRED RESEARCH_DONE REPEAT_SUSPECT]");
+  expect(sent(world)).toEqual([]);
 });
 
 test("owner-check reads every report since the last check, not only the newest six (challenge, gpt-6-astra)", async () => {

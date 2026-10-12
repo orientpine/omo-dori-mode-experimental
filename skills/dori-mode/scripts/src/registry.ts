@@ -82,7 +82,8 @@ export type Lane = {
   // untagged repeats freshness inferred in the current session: cycles per metric (the inferred half of the stuck count) and
   // when the reports last showed each metric PASS (the tagged half counts only attempts after that), and the count at the
   // last --improved of a metric (baseline: only cycles after it count)
-  readonly inferred?: { readonly at: string; readonly counts: Readonly<Record<string, number>>; readonly passedAt?: Readonly<Record<string, string>>; readonly baseline?: Readonly<Record<string, number>>; readonly lastEventAt?: string };
+  // cycles: when each counted cycle's attempt was made, per metric, so the ladder sees what the lane did after them
+  readonly inferred?: { readonly at: string; readonly counts: Readonly<Record<string, number>>; readonly cycles?: Readonly<Record<string, readonly string[]>>; readonly passedAt?: Readonly<Record<string, string>>; readonly baseline?: Readonly<Record<string, number>>; readonly lastEventAt?: string };
   // the stuck ladder: the rung each metric reached, so each rung change alerts once
   readonly stuck?: Readonly<Record<string, StuckMark>>;
   // the last dori owner-check: when, up to which report, how many today, by which reviewer, what it found (finding: the first

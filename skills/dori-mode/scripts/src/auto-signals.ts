@@ -366,6 +366,7 @@ export const repeatTick = async (deps: FlowDeps, lane: Lane, files?: readonly st
   const state = inferRepeats(scan.events, cfg);
   const before = lane.inferred?.counts ?? {};
   const counts = Object.fromEntries([...state.counts.values()].map((r) => [r.metric, r.n]));
+  const cycles = Object.fromEntries([...state.counts.values()].map((r) => [r.metric, r.evidence.filter((e) => e.role === "attempt").map((e) => e.at)]));
   const passedAt = Object.fromEntries(state.passes);
   const newest = scan.events.reduce((m, e) => (e.at > m ? e.at : m), lastAt ?? "");
   // a metric whose count changed or that passed again takes a ladder step (a PASS lowers a tagged-only metric's rung too)
@@ -373,7 +374,7 @@ export const repeatTick = async (deps: FlowDeps, lane: Lane, files?: readonly st
   const changed = [...new Set([...Object.keys(before), ...Object.keys(counts), ...passedNow])].filter((m) => (before[m] ?? 0) !== (counts[m] ?? 0) || passedNow.includes(m));
   // a PASS started the count again from 0, so an --improved baseline from before it no longer applies
   const baseline = Object.fromEntries(Object.entries(lane.inferred?.baseline ?? {}).filter(([m]) => !passedNow.includes(m)));
-  if (changed.length || newest !== (lastAt ?? "")) await deps.registry.patch(lane.key, { inferred: { at: iso(deps.clock), counts, passedAt, ...(Object.keys(baseline).length ? { baseline } : {}), ...(newest ? { lastEventAt: newest } : {}) } });
+  if (changed.length || newest !== (lastAt ?? "")) await deps.registry.patch(lane.key, { inferred: { at: iso(deps.clock), counts, cycles, passedAt, ...(Object.keys(baseline).length ? { baseline } : {}), ...(newest ? { lastEventAt: newest } : {}) } });
   const file = evidenceFile(deps.config.stateDir, lane.key);
   const lines: string[] = [];
   for (const m of changed) {
@@ -382,7 +383,7 @@ export const repeatTick = async (deps: FlowDeps, lane: Lane, files?: readonly st
       mkdirSync(join(deps.config.stateDir, "auto-signals"), { recursive: true });
       appendFileSync(file, [`## ${iso(deps.clock)} ${JSON.stringify(r.metric)} ${r.n}`, ...evidenceLines(r), ""].join("\n"));
     }
-    lines.push(...(await stuckStep(deps, lane.key, m, r?.evidence.filter((e) => e.role === "attempt").map((e) => e.at))));
+    lines.push(...(await stuckStep(deps, lane.key, m)));
   }
   return { lines, inferred: maxInferred(state) };
 };
