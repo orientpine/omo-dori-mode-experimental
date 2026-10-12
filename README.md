@@ -167,7 +167,7 @@ The watcher runs each check itself when it closes the lane, with no shell, and n
 | `dori adopt <key> --pane ID ...` | register a lane that's already running |
 | `dori set-thread <key> <adapter>:<id>` | point a lane at another work thread; `launch`, `adopt` and `set-thread` refuse an empty or malformed ref such as `discord:` |
 | `dori sync [--write]` | registry against live panes, plus drift and a `SIGNALS` line per open lane with a record |
-| `dori claim-done` / `object-done` / `close` | the done flow; a close with no usable thread prints `THREAD_MISSING <key>` instead of skipping the thread hook silently; with `DORI_DISCORD_TOKEN` set, a close also marks a `discord:` work thread done and archives it |
+| `dori claim-done` / `object-done` / `close` | the done flow; a close with no usable thread prints `THREAD_MISSING <key>` instead of skipping the thread hook silently; with `DORI_DISCORD_TOKEN` set, a close also marks a `discord:` work thread done and archives it, unless another open lane or an open question card still uses it: then it only posts the lane's result there |
 | `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on you: no freshness nudge or post, `LANE_BLOCKED` or `DEAD_PANE` for it, and a done claim doesn't close it; `resume` puts back the status it had |
 | `dori watch` | the auto-close watcher, plus aoe `LANE_BLOCKED` events; run it as a persistent monitor |
 | `dori freshness [--loop MIN]` | nudge lanes that went quiet, then post a short status line to their thread and hand the last report to the lead |
