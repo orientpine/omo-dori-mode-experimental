@@ -181,6 +181,8 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
       (e: unknown) => `waiting not requested: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`,
     );
     cleanup.push(status);
+    // a rate-limited rename is kept and applied later by the listener; say that the mark has not moved yet
+    if (!/: (applied|unchanged)$/.test(status)) warnings.push(`THREAD_STATUS_WARN ${lane.key} ${lane.thread}: ${status}`);
     await deps.registry.patch(lane.key, { receipt });
   }
   return { closed: true, lines: [...lines, ...warnings, `CLOSED ${lane.key} ${JSON.stringify(receipt)}`] };
@@ -196,7 +198,7 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   const note = `Done: ${evidence}`;
   const result = await closeLane(deps, verified, note, deps.config.discord.postRawReports ? note : deps.config.discord.doneText);
   if (!result.closed) return [await objectDone(deps, (await deps.registry.read(lane.key)) ?? verified, result.lines.filter((l) => l.startsWith("SIGNAL NOT")))];
-  return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
+  return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ") || l.startsWith("THREAD_STATUS_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
 };
 
 export const watchTick = async (deps: FlowDeps): Promise<string[]> => {

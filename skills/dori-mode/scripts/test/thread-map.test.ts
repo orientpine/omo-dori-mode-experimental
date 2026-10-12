@@ -174,6 +174,18 @@ test("a lane still working in the thread keeps it working when another lane clos
   });
 });
 
+test("a waiting rename still held back by Discord's rate limit is kept for the listener, and the close warns that the mark has not moved yet", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openCard("Q1");
+  closable("lane-a");
+  const queued = join(state.dir, "cards", "thread-status.json");
+  const due = Date.now() + 10 * 60_000;
+  writeFileSync(queued, JSON.stringify({ [ID]: { status: "working", due, tries: 1, rev: 1 } }));
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, names: named(), queued: JSON.parse(readFileSync(queued, "utf8")) }).toEqual({ code: 0, names: [], queued: { [ID]: { status: "waiting", due, tries: 1, rev: 2 } } });
+  expect(closed.out).toContain(`THREAD_STATUS_WARN lane-a ${REF}: waiting requested: pending`);
+});
+
 test("a done-claimed lane left in the thread is still ours: the mark stays until it settles, no ⏸️ in between", async () => {
   await cli("open", "fix login", "--first", "Start");
   openCard("Q1");
