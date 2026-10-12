@@ -18,6 +18,8 @@ Write the brief like a careful prompt:
 - where the code is and what has been learned so far;
 - the ideal end state, from the point of view of whoever uses the result;
 - what not to touch;
+- when the work is the same as or continues earlier work, the thread it already has: launch with `--thread` on that ref instead of opening a new thread (`references/operating-lessons.md` #17);
+- when the work adds a feature (a command, flag, hook, service or rule), which existing feature does the same job and why it cannot be fixed instead (`references/operating-lessons.md` #18);
 - how and when to report;
 - when the lane makes or changes a yardstick (a metric, a threshold, a pass/fail check), one line on how that yardstick could get better while the real goal gets worse;
 - that a blocker, an impossible task or an ambiguous request is a fine report (`| blocker |`), not a failure to hide;
