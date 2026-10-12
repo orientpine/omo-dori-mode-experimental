@@ -170,8 +170,17 @@ test("a lane still working in the thread keeps it working when another lane clos
   closable("lane-a");
   const closed = await dori("close", "lane-a");
   expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
-    code: 0, err: `THREAD_STATUS_APPLIED ${ID} working unchanged open=Q1 working=lane-b`, names: [], archived: false,
+    code: 0, err: "", names: [], archived: false,
   });
+});
+
+test("a done-claimed lane left in the thread is still ours: the mark stays until it settles, no ⏸️ in between", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openCard("Q1");
+  openLane("lane-b", { status: "done-claimed" });
+  closable("lane-a");
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({ code: 0, err: "", names: [], archived: false });
 });
 
 test("a paused lane is not working: when the last working lane closes beside it, the thread turns waiting", async () => {
@@ -183,6 +192,11 @@ test("a paused lane is not working: when the last working lane closes beside it,
     code: 0, err: `THREAD_STATUS_APPLIED ${ID} waiting`, names: ["⏸️ fix login"], archived: false,
   });
   expect(closed.out).toContain("thread left open: open lane lane-b uses it too");
+  // the paused lane is worked in again: the thread goes back to 🔄
+  const resumed = await dori("resume", "lane-b");
+  expect({ code: resumed.code, out: resumed.out, err: resumed.err, names: named() }).toEqual({
+    code: 0, out: "LANE_RESUMED lane-b working", err: `THREAD_STATUS_APPLIED ${ID} working`, names: ["⏸️ fix login", "🔄 fix login"],
+  });
 });
 
 test("closing the only lane with no card left marks the thread done and archives it", async () => {

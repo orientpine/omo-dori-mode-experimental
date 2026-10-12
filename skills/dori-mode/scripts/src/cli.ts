@@ -234,7 +234,7 @@ const deps: FlowDeps = {
           if (outcome === "pending" || outcome === "dropped") throw new Error(`thread rename ${outcome}, see the THREAD_STATUS line`);
         },
         postInThread: (ref: string, text: string) => postInThread(new Discord(fetchHttp, realClock, discordToken), ref, text),
-        markThreadWaiting: async (ref: string) => String(await threadStatuses(new Discord(fetchHttp, realClock, discordToken)).request(discordThreadId(ref), "waiting")),
+        requestThreadStatus: async (ref: string, status: "working" | "waiting") => String(await threadStatuses(new Discord(fetchHttp, realClock, discordToken)).request(discordThreadId(ref), status)),
       }
     : {}),
 };
