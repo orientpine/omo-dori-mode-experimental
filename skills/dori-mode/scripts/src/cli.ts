@@ -9,7 +9,7 @@ import { currentTmuxSession } from "./aoe.ts";
 import { findLead, LeadError } from "./lead.ts";
 import { ackHandover, handover, type HandoverDeps } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
-import { appendRollover, crossed, quietReason, readRollovers, repeatsOf, rolloverStats, sessionStart } from "./rollover.ts";
+import { appendRollover, dueReasons, LEAD_PREFIX, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
@@ -23,10 +23,10 @@ import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
 import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchLane, LaunchError, renderBrief, setThread, validateLaunch } from "./launch.ts";
-import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, metricAttempts, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckSignal, type TreeArea, TreeError, updateTree } from "./explore.ts";
+import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
-import { evidenceLines, inferRepeats, laneEvents, type MetricRepeat, suspectLine, suspects } from "./auto-signals.ts";
-import { runOwnerCheck } from "./owner-check.ts";
+import { evidenceLines, inferredLine, inferRepeats, laneEvents, type MetricRepeat, suspects } from "./auto-signals.ts";
+import { runOwnerCheck, sendReread } from "./owner-check.ts";
 import { branchesFrom, ForkError, forkExplore, type Mode } from "./fork-explore.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
@@ -73,13 +73,14 @@ const USAGE = `dori <command> [options]
   resume <key>                         back to the status it had before the pause
   fix-attempt <key> --metric M --hypothesis H [--hypotheses H1 --test T1 ...] [--improved] [--no-hypotheses REASON]
                                        record that you asked the lane for another fix of M on hypothesis H; first prints
-                                       PRIOR_FIX lines (hypotheses already tried on M in this area), from the 3rd attempt
-                                       SAME_FIX_3 (lanes tag reports "(fix: M / H)" for the same count). From the 2nd
-                                       attempt on M with no improvement it refuses (HYPOTHESES_REQUIRED, exit 5) unless
-                                       3+ competing --hypotheses each have a cheap --test (STUCK_BRANCH, into the tree);
-                                       --improved: the last fix moved M, the count starts again; --no-hypotheses REASON
-                                       goes on anyway (HYPOTHESES_OVERRIDE, logged). At the 2nd stuck signal RESEARCH_DUE
-                                       sends the lane an external-search step
+                                       PRIOR_FIX lines (hypotheses already tried on M in this area). One step of the stuck
+                                       ladder (lanes tag reports "(fix: M / H)" for the same count; untagged repeats count
+                                       too): from stuck.hypothesesAt (2) failed attempts on M it refuses (HYPOTHESES_REQUIRED,
+                                       exit 5) unless 3+ competing --hypotheses each have a cheap --test (STUCK_BRANCH, into
+                                       the tree); at stuck.researchAt (3) STUCK rung 3 sends the lane ulw research and a
+                                       challenge of its next plan; after that, or one hypothesis fixatedAfter (3) times,
+                                       STUCK rung 4 (the lead may roll it over). --improved: the last fix moved M, the count
+                                       starts again; --no-hypotheses REASON goes on anyway (HYPOTHESES_OVERRIDE, logged)
   tree [show|add|falsify|support|close|reopen] [ID] [--lane K | --cwd DIR | --tag T] [--kind K] [--text T] [--test X] [--metric M] [--result R]
                                        the area's hypothesis tree: open, supported and falsified hypotheses, untried
                                        directions (--kind direction), findings, research due, attempts tried. add takes
@@ -89,7 +90,7 @@ const USAGE = `dori <command> [options]
                                        a model of another family than the lane's reviews the plan in a fresh context,
                                        with read-only access to the plan's repository: reasons it will fail, missing
                                        alternatives, the cheapest falsifying test. Saved under <stateDir>/challenges/<key>/
-                                       and recorded on the lane (CHALLENGE_SAVED). Reviewers go in explore.challengeModels
+                                       and recorded on the lane (CHALLENGE_SAVED). Reviewers go in reviewers.models
                                        order (best GPT, Claude, Grok); the first that writes a review wins, --all asks one
                                        of each family in turn. Ids this host cannot call are skipped before any call
   challenge --check [<key>]            each reviewer id: REVIEWER_OK (and the id it is called as) or REVIEWER_SKIP and why
@@ -106,20 +107,25 @@ const USAGE = `dori <command> [options]
                                        not yet (RESEARCH_PENDING), or not within explore.researchVerifyMin (RESEARCH_NOT_STARTED,
                                        exit 6). freshness runs the same check on every tick
   intent-check <key> [--direction TEXT] [--next TEXT] [--goal "owner words"]
-                                       the owner's goal next to the lane's current direction and next step;
-                                       INTENT_OK, INTENT_DRIFT or INTENT_NO_GOAL. --direction/--next record what the
-                                       lane says it does now; --goal sets a missing goal
+                                       the owner's goal next to the lane's current direction and next step, then the
+                                       owner check on them at once (no interval): OWNER_CHECK <key> OK, or a finding as the
+                                       stuck ladder's context rung (STUCK). --direction/--next record what the lane says it
+                                       does now; --goal sets a missing goal
   repeat-check <key> [--since ISO|Nd|Nh] [--until ISO] [--repo DIR ...] [--backtest]
                                        untagged repeats: a gate line (metric) that failed and was re-targeted by a new
                                        prescription or patch, from the lane's [REPORT] lines, its branch commits (worktrees,
-                                       cwd, --repo) and tree entries; REPEAT_SUSPECT <key> "<metric>" <n> with the evidence
-                                       from autoSignals.repeatAfter cycles. Default window: the lane's current session.
-                                       --backtest prints every alert freshness would have raised, with its time
-  owner-check <key> [--force]          a reviewer of another family (autoSignals.ownerCheck.models, GPT first) reads the
-                                       brief, the owner's words in it and in the lead's [LEAD] relays, and the newest reports:
-                                       OWNER_CHECK <key> VIOLATION|CONTRADICTION|GOAL_LOSS|OK with quoted evidence (a quote
-                                       not found in the inputs is marked unverified). Only on a report newer than the last
-                                       check; --force skips the interval and daily limit. freshness runs it on new reports
+                                       cwd, --repo) and tree entries; INFERRED <key> "<metric>" <n> with the evidence from
+                                       stuck.researchAt cycles (the inferred half of the stuck count). Default window: the
+                                       lane's current session. --backtest prints each time a count reached it, with its time
+  owner-check <key> [--force | --reread]
+                                       a reviewer of another family (reviewers.models, autoSignals.ownerCheck.first first)
+                                       reads the brief, the owner's words in it and in the lead's [LEAD] relays, and the
+                                       newest reports: OWNER_CHECK <key> VIOLATION|CONTRADICTION|GOAL_LOSS|OK with quoted
+                                       evidence (a quote not found in the inputs is marked unverified). A finding is the
+                                       stuck ladder's context rung (STUCK "@context"); again in the next check, rung 4.
+                                       Only on a report newer than the last check; --force skips the interval and daily
+                                       limit. --reread: you confirmed the last finding, so the lane gets stuck.rereadText
+                                       (its brief and the owner's words to re-read; REREAD_SENT). freshness runs it on new reports
   signals [--lane K | --cwd DIR | --tag T]
                                        what earlier lanes tried and how it went: numbered fix attempts and the root-cause
                                        switch, tagged fixes by metric, rejected done claims, re-sends, nudges, outcome,
@@ -167,8 +173,10 @@ const USAGE = `dori <command> [options]
                                        exit 3). Run from inside the lead it detaches itself (systemd-run)
   handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE line with this (the line gives --state)
   handover --lane <key> --approved-by REF [--note FILE] [--model M] [--thinking L] [--force] [--keep-old] [--minutes N] [--dry-run]
-                                       move a lane to a new session (run by the lead, only with the owner's approval: REF is
-                                       an answered card Qn or their message link or words, kept in the note and log): refuses while a local chain of the
+                                       move a lane to a new session (run by the lead): REF is lead:<reason and the signal behind
+                                       it> (the lead decides; the owner gets a line afterwards, its message id goes to the
+                                       log, ROLLOVER_OWNER_REPORT_MISSING when it cannot be sent), or the owner's answered card
+                                       Qn or message link, kept in the note and log: refuses while a local chain of the
                                        lane's agent, a running turn or an open question would die, unless the lane ran
                                        handover ready (or --force); writes a note (brief, owner goal, Done, todos, goal,
                                        monitors, local chains, detached jobs, last reports, model and thinking), opens a
@@ -177,10 +185,10 @@ const USAGE = `dori <command> [options]
                                        old session (HANDOVER_DONE); a failed check moves back and closes the new one (exit 3);
                                        a run killed midway is repaired by the next run for that lane (HANDOVER_RECOVERED)
   rollover-propose <lead|key> [--dry-run]
-                                       ask the owner whether to move the lead or a lane to a new session: a question card
-                                       (handover.proposalText, proposalOptions; the first option is yes) with the length
-                                       signals, the thresholds crossed and the note a dry-run handover writes; logged to
-                                       <stateDir>/rollover-log.jsonl. Its card id is the --approved-by of the handover
+                                       the rollover proposal for the lead to decide: handover.proposalText with the length
+                                       signals, the thresholds crossed, the lane's stuck rung and the note a dry-run handover
+                                       writes (ROLLOVER_PROPOSAL), logged to <stateDir>/rollover-log.jsonl; then run the
+                                       handover with --approved-by "lead:<reason and signal>"
   rollover-stats [--window H]          proposals and rollovers from the log: signal values, approval time, each step's time
                                        and result, and the lane's watch-log quality signals H hours (24) before and after
   handover ready [<key>] --note FILE   run by a lane in its own pane at a safe point: the local chains running now may end
@@ -240,7 +248,7 @@ const flags = parseArgs({
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
     "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
-    force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" },
+    force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
     repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
   },
 });
@@ -280,6 +288,10 @@ const realpathOr = (path: string): string => {
     return path;
   }
 };
+// the owner's after-the-fact line of a rollover the lead decided: in the given Discord thread, else DORI_DISCORD_CHANNEL
+const reportOwner = discordToken && process.env.DORI_DISCORD_CHANNEL?.trim()
+  ? { reportOwner: async (thread: string | null, text: string): Promise<string> => discordClient().send(thread ?? env("DORI_DISCORD_CHANNEL"), text) }
+  : {};
 const sessionOfPane = async (pane: string, cwd: string): Promise<string> => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id;
 const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)): LaneHandoverDeps => ({
   ...deps,
@@ -306,6 +318,7 @@ const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)
   realpath: realpathOr,
   nonce: () => crypto.randomUUID().slice(0, 8),
   print,
+  ...reportOwner,
 });
 const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
   ...deps,
@@ -326,6 +339,7 @@ const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
   restart: (unit) => restartService({ systemctl: run, clock: realClock, timeoutSec: config.update.readyTimeoutSec }, config.update.services.find((s) => s.unit === unit) ?? { unit, paths: [], log: "", ready: "" }),
   nonce: () => crypto.randomUUID().slice(0, 8),
   print,
+  ...reportOwner,
 });
 // dori commands that talk to the owner refuse from a session that a running handover is replacing (no double replies)
 const quietGuard = async (): Promise<void> => {
@@ -470,7 +484,7 @@ try {
       for (const line of priorFixLines(await areaSignals(await deps.registry.list(), area, config), l.key, metric)) console.log(line);
       const attempt = { at: new Date().toISOString(), metric, hypothesis: normFix(need("hypothesis")), via: "lead" as const, ...(flags.values.improved ? { improved: true } : {}) };
       const branch = { hypotheses: many("hypotheses"), tests: many("test"), override: opt("no-hypotheses") };
-      const gate = gateFix(l.fixes ?? [], attempt, branch, config.explore);
+      const gate = gateFix(l, attempt, branch, config);
       if (gate.verdict === "required") {
         const msg = requiredMessage(l.key, metric, gate, config.explore);
         recordRefusal(deps, msg);
@@ -479,8 +493,8 @@ try {
       if (gate.verdict === "override") console.log(recordOverride(deps, l.key, metric, gate, branch.override ?? ""));
       if (gate.verdict === "branch") console.log(await recordBranch(deps, l, metric, branch, gate));
       const r = await recordFix(deps, l.key, attempt);
-      console.log(`FIX_RECORDED ${l.key} attempt=${r.count} on-metric=${gate.attempt}`);
-      if (r.alert) console.log(`SAME_FIX_3 ${l.key} ${r.alert}`);
+      const v = stuckView((await deps.registry.read(l.key)) ?? l, metric, config);
+      console.log(`FIX_RECORDED ${l.key} attempt=${r.count} on-metric=${gate.attempt} stuck=${v.n} (tagged ${v.tagged}, inferred ${v.inferred})`);
       for (const n of r.notes) console.log(n);
       break;
     }
@@ -520,10 +534,10 @@ try {
     case "challenge": {
       if (flags.values.check) {
         const own = key ? ((await lane(key)).model ?? config.defaultModel) : undefined;
-        const listed = own ? reviewers(own, config.explore.challengeModels) : [...config.explore.challengeModels];
+        const listed = own ? reviewers(own, config.reviewers.models) : [...config.reviewers.models];
         const checks = await checkReviewers(deps, listed);
         for (const c of checks) console.log(c.call ? `REVIEWER_OK ${c.listed}${c.call !== c.listed ? ` -> ${c.call}` : ""} (${familyOf(c.listed)}): ${c.note}` : `REVIEWER_SKIP ${c.listed} (${familyOf(c.listed)}): ${c.note}`);
-        if (!checks.some((c) => c.call)) die("no reviewer in explore.challengeModels can be called on this host");
+        if (!checks.some((c) => c.call)) die("no reviewer in reviewers.models can be called on this host");
         break;
       }
       const l = await lane(key ?? die("challenge needs a lane key"));
@@ -560,8 +574,7 @@ try {
       if (flags.values.send) {
         if (!l.pane) die(`lane ${l.key} has no pane to send the ulw research text to`);
         const { metric } = researchFacts(l, tree);
-        const signal = stuckSignal(metricAttempts(l.fixes ?? [], metric), config.explore);
-        const delivered = await sendResearch(deps, l, tree, signal, metric);
+        const delivered = await sendResearch(deps, l, tree, stuckView(l, metric, config).n, metric);
         const line = delivered ? `RESEARCH_SENT ${l.key}: ulw research text typed into pane ${l.pane}; dori research-check ${l.key} (or freshness) confirms the skill started` : `RESEARCH_SEND_FAILED ${l.key}: the text did not reach pane ${l.pane}`;
         watchLog(config.watchLog, realClock, { source: "research", line });
         console.log(line);
@@ -587,10 +600,15 @@ try {
         await deps.registry.patch(l.key, patch);
         l = { ...l, ...patch };
       }
-      const v = intentView(l, await loadTree(config.stateDir, laneArea(l, config)), config.explore.driftBelow);
-      const lines = formatIntent(l, v);
-      for (const line of lines) console.log(line);
-      watchLog(config.watchLog, realClock, { source: "intent-check", line: lines.at(-1) ?? "" });
+      for (const line of formatIntent(l, intentView(l, await loadTree(config.stateDir, laneArea(l, config))))) console.log(line);
+      // the verdict is the owner check's, run now on the direction just stated
+      const r = await runOwnerCheck(deps, l, { force: true, direction: true });
+      if (r.skipped) {
+        console.log(r.skipped);
+        if (r.skipped.startsWith("OWNER_CHECK_FAILED")) process.exit(1);
+        break;
+      }
+      for (const line of r.lines) console.log(line);
       break;
     }
     case "repeat-check": {
@@ -600,30 +618,37 @@ try {
       if (Number.isNaN(Date.parse(since))) die(`--since takes an ISO time or Nd / Nh, not ${opt("since")}`);
       const scan = await laneEvents(deps, l, { since, ...(opt("until") ? { until: opt("until") } : {}), repos: many("repo") });
       const cfg = config.autoSignals;
-      console.log(`REPEAT_SCAN ${l.key} since ${since}${opt("until") ? ` until ${opt("until")}` : ""}: ${scan.reports} reports, ${scan.commits} commits, ${scan.tree} tree entries; scope ${cfg.targetScope}, aliases ${Object.keys(cfg.aliases).length}, after ${cfg.repeatAfter}`);
-      const tagged = repeatsOf(l);
+      const after = config.stuck.researchAt;
+      console.log(`REPEAT_SCAN ${l.key} since ${since}${opt("until") ? ` until ${opt("until")}` : ""}: ${scan.reports} reports, ${scan.commits} commits, ${scan.tree} tree entries; scope ${cfg.targetScope}, aliases ${Object.keys(cfg.aliases).length}, after ${after} (stuck.researchAt)`);
+      const tagged = (metric: string): number => stuckView(l, metric, config).tagged;
       if (flags.values.backtest) {
-        // what freshness would have said, report by report: every time a metric's count reached repeatAfter or grew past it
+        // each time a metric's inferred count reached stuck.researchAt or grew past it, report by report
         const fired: { at: string; r: MetricRepeat }[] = [];
-        inferRepeats(scan.events, cfg, (r, e) => r.n >= cfg.repeatAfter && fired.push({ at: e.at, r }));
+        inferRepeats(scan.events, cfg, (r, e) => r.n >= after && fired.push({ at: e.at, r }));
         for (const f of fired) {
-          console.log(`${f.at} ${suspectLine(l.key, f.r, tagged)}`);
+          console.log(`${f.at} ${inferredLine(l.key, f.r, tagged(f.r.metric))}`);
           for (const line of evidenceLines(f.r).slice(-4)) console.log(line);
         }
         console.log(`REPEAT_BACKTEST ${l.key} ${fired.length} alerts on ${new Set(fired.map((f) => f.r.metric)).size} metrics`);
         break;
       }
       const state = inferRepeats(scan.events, cfg);
-      const hits = suspects(state, cfg.repeatAfter);
+      const hits = suspects(state, after);
       for (const r of hits) {
-        console.log(suspectLine(l.key, r, tagged));
+        console.log(inferredLine(l.key, r, tagged(r.metric)));
         for (const line of evidenceLines(r)) console.log(line);
       }
-      if (!hits.length) console.log(`REPEAT_NONE ${l.key} no metric re-targeted ${cfg.repeatAfter}+ times after failing (counts: ${[...state.counts.values()].map((r) => `${r.metric} ${r.n}`).join(", ") || "none"}; tagged fixes ${tagged})`);
+      if (!hits.length) console.log(`REPEAT_NONE ${l.key} no metric re-targeted ${after}+ times after failing (counts: ${[...state.counts.values()].map((r) => `${r.metric} ${r.n}`).join(", ") || "none"})`);
       break;
     }
     case "owner-check": {
       const l = await lane(key ?? die("owner-check needs a lane key"));
+      if (flags.values.reread) {
+        const sent = await sendReread(deps, l);
+        console.log(sent.line);
+        if (!sent.ok) process.exit(1);
+        break;
+      }
       const r = await runOwnerCheck(deps, l, { force: Boolean(flags.values.force) });
       if (r.skipped) {
         console.log(r.skipped);
@@ -937,22 +962,22 @@ try {
       const l = who === "lane" ? await lane(key) : undefined;
       const pane = l ? (l.pane ?? die(`lane ${l.key} has no pane`)) : config.leadPane || die("leadPane is not set");
       const model = l ? (l.model ?? config.defaultModel) : config.handover.model || config.defaultModel;
-      const signals = { ...(await paneSignals(laneDepsFor(() => {}), pane, model)), ...(l ? { repeats: repeatsOf(l) } : {}) };
+      const stuck = l ? stuckTop(l) : undefined;
+      const signals = { ...(await paneSignals(laneDepsFor(() => {}), pane, model)), ...(stuck ? { stuck } : {}) };
       const h = config.handover;
-      const hit = crossed(signals, who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH, repeats: h.laneRepeats } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH });
+      const hit = dueReasons(signals, who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH });
       const lines: string[] = [];
       const preview = l ? await laneHandover(laneDepsFor((line) => lines.push(line)), l.key, "", { dryRun: true }) : await handover(leadDepsFor((line) => lines.push(line)), { dryRun: true });
       const blockers = lines.filter((x) => x.startsWith("HANDOVER_REFUSED")).map((x) => x.replace(/^HANDOVER_REFUSED\s*/, "")).join("; ");
-      const shown = [signals.contextPct !== undefined ? `context ${signals.contextPct}%` : "", signals.compactions !== undefined ? `${signals.compactions} compactions` : "", signals.ageH !== undefined ? `${signals.ageH} h old` : "", "repeats" in signals && signals.repeats ? `same fix ${signals.repeats} times` : ""].filter(Boolean).join(", ");
+      const shown = [signals.contextPct !== undefined ? `context ${signals.contextPct}%` : "", signals.compactions !== undefined ? `${signals.compactions} compactions` : "", signals.ageH !== undefined ? `${signals.ageH} h old` : "", stuck ? `stuck rung ${stuck.rung} on "${stuck.metric}" (${stuck.n} attempts)` : ""].filter(Boolean).join(", ");
       const text = h.proposalText.replaceAll("{who}", l ? `lane ${l.key} (${l.title})` : "the lead").replaceAll("{signals}", hit.length ? `${shown} (${hit.join(", ")})` : `${shown || "no signals"} (no threshold crossed)`).replaceAll("{note}", preview.note ?? "(no note)").replaceAll("{blockers}", blockers ? `. Blocked now: ${blockers}` : "");
+      const run = `dori handover ${l ? `--lane ${l.key} ` : ""}--approved-by "${LEAD_PREFIX}<your reason>, ${(hit[0] ?? "<the signal>").replaceAll('"', "'")}"`;
       if (flags.values["dry-run"]) {
-        console.log(`ROLLOVER_PROPOSAL_DRY_RUN ${who} ${l?.key ?? "lead"} would post: ${text} [${h.proposalOptions.join(" / ")}]`);
+        console.log(`ROLLOVER_PROPOSAL_DRY_RUN ${who} ${l?.key ?? "lead"}: ${text}; to go ahead: ${run}`);
         break;
       }
-      const thread = l?.thread?.startsWith("discord:") ? l.thread.slice("discord:".length) : null;
-      const q = await questionCards(discordClient()).ask(text, [...h.proposalOptions], { thread, session: null, tmux: config.leadPane || null });
-      appendRollover(config.stateDir, { kind: "proposal", who, at: new Date().toISOString(), key: l?.key ?? "lead", pane, card: q.id, signals, crossed: hit, ...(preview.note ? { note: preview.note } : {}), blockers });
-      console.log(`ROLLOVER_PROPOSED ${who} ${l?.key ?? "lead"} card ${q.id} message=${q.message} note=${preview.note ?? "-"}; when the owner answers "${h.proposalOptions[0]}": dori handover ${l ? `--lane ${l.key} ` : ""}--approved-by ${q.id}`);
+      appendRollover(config.stateDir, { kind: "proposal", who, at: new Date().toISOString(), key: l?.key ?? "lead", pane, signals, crossed: hit, ...(preview.note ? { note: preview.note } : {}), blockers });
+      console.log(`ROLLOVER_PROPOSAL ${who} ${l?.key ?? "lead"}: ${text}; logged. Your decision: to go ahead, ${run} (the owner is told afterwards)`);
       break;
     }
     case "rollover-stats": {

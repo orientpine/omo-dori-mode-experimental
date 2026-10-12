@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
 import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine } from "../src/lane-handover.ts";
-import { approvalProblem, compactionsIn, crossed, repeatsOf, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
+import { approvalProblem, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
+import { stuckTop, stuckView } from "../src/explore.ts";
+import { recordFix } from "../src/same-fix.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { Lane } from "../src/registry.ts";
 import type { Proc } from "../src/session-id.ts";
@@ -381,8 +383,9 @@ test("freshness says a rollover is due once per pane for lanes and the lead, and
   // Then
   expect(off).toEqual([]);
   expect(first.map((a) => [a.kind, a.lane])).toEqual([["rollover_due", "demo"], ["rollover_due", "lead"]]);
-  expect(first[0]?.detail).toStartWith(`context 85% >= 80% in ${OLD}: ask the owner with dori rollover-propose demo`);
-  expect(first[1]?.detail).toStartWith(`age 50.0 h >= 48 h in ${deps.config.leadPane}: ask the owner with dori rollover-propose lead`);
+  expect(first[0]?.detail).toStartWith(`context 85% >= 80% in ${OLD}: decide it (dori rollover-propose demo shows the note)`);
+  expect(first[0]?.detail).toContain(`--approved-by "lead:<reason and this signal>"`);
+  expect(first[1]?.detail).toStartWith(`age 50.0 h >= 48 h in ${deps.config.leadPane}: decide it (dori rollover-propose lead shows the note)`);
   expect(second).toEqual([]);
   expect(below).toEqual([]);
   expect(auto.map((a) => [a.kind, a.lane])).toEqual([["rollover_due", "demo"], ["rollover_auto", "demo"]]);
@@ -409,19 +412,29 @@ test("a paused lane gets no rollover proposal, and pausing does not make it safe
   expect(opened()).toBe(false);
 });
 
-test("freshness says a lane's rollover is due at the 3rd attempt of one same fix in its session, with length thresholds off", async () => {
+test("a lane's stuck rollover point is rung 4 of the ladder: its STUCK line, not a ROLLOVER_DUE of its own, and the rung goes into the handover log", async () => {
   // Given
   const deps = await setup();
-  const fix = (at: string) => ({ at, metric: "loss", hypothesis: "lr too high", via: "report" as const });
-  await deps.registry.patch("demo", { lastReplyAt: deps.clock.now(), fixes: [fix("2026-10-11T10:00:00Z"), fix("2026-10-11T11:00:00Z")] });
-  const hooks = { signals: async () => ({ contextPct: 99, compactions: 99, ageH: 999 }) };
+  const fix = (at: string, hypothesis = "lr too high") => ({ at, metric: "loss", hypothesis, via: "report" as const });
+  const quiet = { ...deps, config: { ...deps.config, explore: { ...deps.config.explore, sendResearchToLane: false } } };
+  await recordFix(quiet, "demo", fix("2026-10-11T10:00:00Z"));
+  await recordFix(quiet, "demo", fix("2026-10-11T11:00:00Z", "seed"));
+  await recordFix(quiet, "demo", fix("2026-10-11T11:30:00Z"));
+  const third = await recordFix(quiet, "demo", fix("2026-10-11T12:00:00Z"));
+  await deps.registry.patch("demo", { lastReplyAt: deps.clock.now() });
   // When
-  const two = await freshnessTick(deps, "/home/test", hooks);
-  await deps.registry.patch("demo", { fixes: [fix("2026-10-11T10:00:00Z"), fix("2026-10-11T11:00:00Z"), fix("2026-10-11T12:00:00Z")] });
-  const three = await freshnessTick(deps, "/home/test", hooks);
+  const due = await freshnessTick(deps, "/home/test", { signals: async () => ({ contextPct: 99, compactions: 99, ageH: 999 }) });
+  const top = stuckTop(await readLane(deps));
+  ready(deps, [15]);
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
   // Then
-  expect(two.filter((a) => a.kind === "rollover_due")).toEqual([]);
-  expect(three.filter((a) => a.kind === "rollover_due").map((a) => [a.lane, a.detail.split(" in ")[0]])).toEqual([["demo", "same fix 3 times >= 3"]]);
+  expect(third.notes[0]).toContain('"loss" rung 4 (tagged 4, inferred 0, hypotheses 2, fixated)');
+  expect(due.filter((a) => a.kind === "rollover_due")).toEqual([]);
+  expect(top).toEqual({ metric: "loss", n: 4, rung: 4 });
+  expect(r.code).toBe(0);
+  // the new session starts its own ladder
+  expect(stuckTop(await readLane(deps))).toBeUndefined();
+  expect(readRollovers(state.dir)[0]).toMatchObject({ kind: "rollover", signals: { stuck: { metric: "loss", n: 4, rung: 4 } } });
 });
 
 test("refuses without the owner's approval and opens nothing; --dry-run needs none", async () => {
@@ -434,7 +447,7 @@ test("refuses without the owner's approval and opens nothing; --dry-run needs no
   const dry = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
   // Then
   expect([bare.code, blank.code, dry.code]).toEqual([2, 2, 0]);
-  expect(printed[0]).toStartWith("HANDOVER_REFUSED demo: a lane moves to a new session only with the owner's approval");
+  expect(printed[0]).toStartWith("HANDOVER_REFUSED demo: a lane moves to a new session only with an approval");
   expect(opened()).toBe(false);
 });
 
@@ -555,22 +568,22 @@ test("a threshold is crossed at its value, not just above it, and 0 turns it off
   expect(crossed({ contextPct: 79.9, compactions: 3, ageH: 23.9 }, limits)).toEqual([]);
   expect(crossed({ contextPct: 100, compactions: 99, ageH: 999 }, { contextPct: 0, compactions: 0, ageH: 0 })).toEqual([]);
   expect(crossed({}, limits)).toEqual([]);
-  expect(crossed({ repeats: 3 }, { ...limits, repeats: 3 })).toEqual(["same fix 3 times >= 3"]);
-  expect(crossed({ repeats: 2 }, { ...limits, repeats: 3 })).toEqual([]);
   expect(crossed({ repeats: 9 }, limits)).toEqual([]);
 });
 
-test("repeats counts one fix's attempts in the lane's current session only, the way fix-attempt counts them", () => {
+test("the tagged half of the stuck count counts the lane's current session only, the way fix-attempt counts them", () => {
   // Given
   const fix = (at: string, hypothesis: string, via: "report" | "lead" = "report") => ({ at, metric: "loss", hypothesis, via });
   const moved = { ...lane(), history: [{ at: "2026-10-11T12:00:00Z", status: "working" as const, note: `pane moved aoe_old_1 -> ${OLD} (dori handover --lane)` }] };
+  const cfg = { stuck: { hypothesesAt: 2, researchAt: 3, fixatedAfter: 3, rereadText: "" }, autoSignals: { aliases: {} } } as never;
+  const view = (l: Lane) => stuckView(l, "loss", cfg);
   // When / Then
-  expect(repeatsOf({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), fix("2026-10-11T11:30:00Z", "lr"), fix("2026-10-11T11:40:00Z", "seed")] })).toBe(3);
-  expect(repeatsOf({ ...moved, fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), fix("2026-10-11T13:00:00Z", "lr")] })).toBe(1);
-  expect(repeatsOf({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr", "lead"), fix("2026-10-11T10:05:00Z", "lr")] })).toBe(1);
+  expect(view({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), fix("2026-10-11T11:30:00Z", "lr"), fix("2026-10-11T11:40:00Z", "seed")] })).toMatchObject({ tagged: 4, hypotheses: 2, fixated: true });
+  expect(view({ ...moved, fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), fix("2026-10-11T13:00:00Z", "lr")] })).toMatchObject({ tagged: 1, fixated: false });
+  expect(view({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr", "lead"), fix("2026-10-11T10:05:00Z", "lr")] }).tagged).toBe(1);
   // a fix marked improved (the one before it moved the metric) starts that metric's count again
-  expect(repeatsOf({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), { ...fix("2026-10-11T11:30:00Z", "lr"), improved: true }] })).toBe(1);
-  expect(repeatsOf(lane())).toBe(0);
+  expect(view({ ...lane(), fixes: [fix("2026-10-11T10:00:00Z", "lr"), fix("2026-10-11T11:00:00Z", "lr"), { ...fix("2026-10-11T11:30:00Z", "lr"), improved: true }] })).toMatchObject({ tagged: 1, fixated: false });
+  expect(view(lane()).n).toBe(0);
 });
 
 test("an approval is an answered rollover card for this lane's current session, a Discord message link, or auto only with the key on", () => {
@@ -587,7 +600,7 @@ test("an approval is an answered rollover card for this lane's current session, 
   const card = (id: string) => cards[id] as never;
   const proposal = (key: string, id: string, pane = "p1") => ({ kind: "proposal" as const, who: "lane" as const, at: "2026-10-11T00:00:00Z", key, card: id, pane, signals: {}, crossed: [], blockers: "" });
   const log = [proposal("demo", "Q1"), proposal("demo", "Q2"), proposal("demo", "Q3"), proposal("other", "Q4"), proposal("demo", "Q6", "p0")];
-  const check = (ref: string | undefined, on = false) => approvalProblem(ref, card, { on, key: "handover.autoRolloverLanes" }, "demo", "p1", log);
+  const check = (ref: string | undefined, on = false, canReport = false) => approvalProblem(ref, card, { on, key: "handover.autoRolloverLanes" }, "demo", "p1", log, canReport);
   // When / Then
   expect(check("Q1")).toBeUndefined();
   expect(check("q1")).toBeUndefined();
@@ -603,6 +616,17 @@ test("an approval is an answered rollover card for this lane's current session, 
   expect(check("auto:handover.autoRolloverLanes")).toContain("the automation key is off");
   expect(check("auto:handover.autoRolloverLanes", true)).toBeUndefined();
   expect(check("auto:anything", true)).toBe("auto:anything is not the automatic approval of this side; only auto:handover.autoRolloverLanes is");
+  // the lead decides with a reason and the signal behind it, and only when the owner can be told afterwards
+  expect(check("lead:STUCK rung 4 on loss, research did not help", false, true)).toBeUndefined();
+  expect(check("lead:막힘 4단, 리서치 뒤에도 실패", false, true)).toBeUndefined();
+  expect(check("lead:STUCK rung 4 on loss, research did not help")).toContain("needs a way to tell the owner afterwards");
+  expect(check("lead:because", false, true)).toContain("does not say the reason and the signal behind it");
+  expect(check("lead:it seems a good idea to me now", false, true)).toContain("does not say the reason and the signal behind it");
+  // whole tokens only (challenge, grok-4.7): a word that only contains a signal name is no signal
+  expect(check("lead:context is fine, the message page looks right", false, true)).toContain("does not say the reason");
+  expect(check("lead:\ub2e8\uacc4\ub97c \ud310\ub2e8\ud574 \ubcf4\ub2c8 \uc62e\uae38 \ub54c", false, true)).toContain("does not say the reason");
+  expect(check("lead:after the outage 3 h ago it looked off", false, true)).toContain("does not say the reason");
+  expect(check("lead:context 85% after 6 compactions", false, true)).toBeUndefined();
 });
 
 test("the old lane is quiet while it is replaced and may talk again after; every real attempt is logged with signals and steps", async () => {
@@ -631,13 +655,16 @@ test("rollover-stats gives counts, approval time, step times and the lane's qual
     { kind: "proposal", who: "lane", at: "2026-10-11T10:00:00Z", key: "demo", pane: OLD, card: "Q4", signals: { contextPct: 75 }, crossed: ["context 75% >= 70%"], blockers: "" },
     { kind: "rollover", who: "lane", at: "2026-10-11T10:30:00Z", key: "demo", from: OLD, to: NEW, approvedBy: "Q4", proposedAt: "2026-10-11T10:00:00Z", approvalMin: 30, signals: { contextPct: 75, compactions: 2 }, steps: [{ step: "open", ms: 4000, ok: true }, { step: "verify", ms: 60000, ok: true }], result: "done", reasons: [] },
   ] as const;
-  const watch = ["2026-10-11T09:00:00Z freshness NUDGED demo 16 min silent", "2026-10-11T09:30:00Z freshness NUDGED demo 20 min silent", "2026-10-11T11:00:00Z freshness NO-REPORT demo pane", "2026-10-11T11:00:00Z freshness NUDGED other 1"];
+  const watch = ["2026-10-11T09:00:00Z freshness NUDGED demo 16 min silent", "2026-10-11T09:30:00Z freshness NUDGED demo 20 min silent", "2026-10-11T09:40:00Z owner-check OWNER_CHECK demo OK 6 recent reports", "2026-10-11T09:45:00Z owner-check OWNER_CHECK demo GOAL_LOSS owner x", "2026-10-11T09:50:00Z stuck STUCK demo \"loss\" rung 3 (tagged 3)", "2026-10-11T11:00:00Z freshness NO-REPORT demo pane", "2026-10-11T11:00:00Z freshness NUDGED other 1"];
   // When
   const out = rolloverStats(entries as never, watch, Date.parse("2026-10-11T12:30:00Z"));
   // Then
   expect(out[0]).toBe("ROLLOVER_STATS proposals=1 rollovers=1 (done 1) approval_median_min=30 window=24h");
   expect(out[1]).toBe("ROLLOVER_STEPS open median 4s fail 0; verify median 60s fail 0");
-  expect(out).toContain(`QUALITY demo 2026-10-11T10:30:00Z before 24h: NUDGED 2 | after 2h: NO-REPORT 1`);
+  expect(out).toContain(`QUALITY demo 2026-10-11T10:30:00Z before 24h: NUDGED 2, OWNER_CHECK 1, STUCK 1 | after 2h: NO-REPORT 1`);
+  const lead = rolloverStats([{ ...entries[1], approvedBy: "lead:STUCK rung 4", decidedBy: "lead", reason: "STUCK rung 4", ownerReport: { message: "m1" } }, { ...entries[1], decidedBy: "lead", ownerReport: { error: "429" } }] as never, [], Date.parse("2026-10-11T12:30:00Z"));
+  expect(lead[2]).toContain("; decided by the lead (STUCK rung 4), owner told: m1");
+  expect(lead[4]).toContain("owner told: MISSING (429)");
 });
 
 test("compactions are counted from the session log, reading only what was added since the last count", () => {
@@ -865,4 +892,35 @@ test("a lane whose omo session lives under the real path of a symlinked cwd is s
   expect(note).toContain("## Monitors (1)");
   expect(note).toContain(`Its full log is ${join(sessionDirFor(join(state.dir, "sessions"), REAL), "2026-10-11T10-00-00-000Z_old-sid.jsonl")}`);
   expect(printed.some((l) => l.startsWith("HANDOVER_SESSION_UNSEEN"))).toBe(false);
+});
+
+test("a rollover the lead decided tells the owner afterwards in the lane's thread and logs that message id; a failed message is ROLLOVER_OWNER_REPORT_MISSING", async () => {
+  // Given
+  const posted: [string | null, string][] = [];
+  const base = await setup();
+  const deps: LaneHandoverDeps = { ...base, reportOwner: async (thread, text) => { posted.push([thread, text]); return "msg-1"; } };
+  ready(deps, [15]);
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: "lead:STUCK rung 4 on loss after research" });
+  // Then
+  expect(r.code).toBe(0);
+  expect(posted).toEqual([["12345678", `I moved lane demo (Demo lane) to a new session (${OLD} -> ${NEW}). Why: STUCK rung 4 on loss after research`]]);
+  expect(readRollovers(state.dir)[0]).toMatchObject({ kind: "rollover", result: "done", decidedBy: "lead", reason: "STUCK rung 4 on loss after research", ownerReport: { message: "msg-1" } });
+  expect(printed).toContain("ROLLOVER_OWNER_REPORTED demo message msg-1");
+});
+
+test("without a way to reach the owner a lead's rollover is refused before anything opens; a message that fails after the move is logged as missing", async () => {
+  // Given
+  const base = await setup();
+  ready(base, [15]);
+  // When
+  const refused = await laneHandover(base, "demo", "aoe_lead_x", { approvedBy: "lead:STUCK rung 4 on loss" });
+  const failing: LaneHandoverDeps = { ...base, reportOwner: async () => { throw new Error("429 rate limited"); } };
+  const moved = await laneHandover(failing, "demo", "aoe_lead_x", { approvedBy: "lead:STUCK rung 4 on loss" });
+  // Then
+  expect(refused.code).toBe(2);
+  expect(printed[0]).toContain("needs a way to tell the owner afterwards");
+  expect(moved.code).toBe(0);
+  expect(printed.some((l) => l.startsWith("ROLLOVER_OWNER_REPORT_MISSING demo: 429 rate limited; tell the owner yourself: I moved lane demo"))).toBe(true);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ decidedBy: "lead", ownerReport: { error: "429 rate limited" } });
 });

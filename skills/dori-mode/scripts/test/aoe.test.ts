@@ -47,7 +47,8 @@ test("a launch opens an aoe session, waits for the prompt and types the lane pro
   expect(r.startup).toBe(`STARTUP_OK smoke ${pane}`);
   expect(sent(world)).toEqual([`ulw set goal and work. Read and execute the lane brief at ${brief} in full. You are the smoke lane; report as the brief's footer says.`]);
   expect(world.calls).toContainEqual(["tmux", "send-keys", "-t", `=${pane}:`, "Enter"]);
-  expect(await Bun.file(brief).text()).toContain(`"tmux","send-keys","-t","=aoe_Dori_0a1b2c3d:","-l"`);
+  expect(await Bun.file(brief).text()).toContain(`run ["dori","type","aoe_Dori_0a1b2c3d","--text","<report line>"]`);
+  expect(await Bun.file(brief).text()).not.toContain("send-keys");
 });
 
 test("a launch whose Done only checks a file warns LAUNCH_DONE_WEAK and still launches; --done-weak-ok and a behavior signal stay quiet", async () => {

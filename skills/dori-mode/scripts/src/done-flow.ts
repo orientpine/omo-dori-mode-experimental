@@ -5,7 +5,7 @@ import { type DoriConfig, fill } from "./config.ts";
 import { hasThread, type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
 import { sendVerified } from "./panes.ts";
-import { checkDone, type SignalIo } from "./signals.ts";
+import { checkDone, type SignalIo } from "./done-signals.ts";
 
 export type FlowDeps = {
   readonly run: Runner;

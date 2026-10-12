@@ -5,7 +5,7 @@ import { readScreen, sendVerified } from "./panes.ts";
 import { LANE_KEY, type Lane, NO_THREAD, threadRefProblem } from "./registry.ts";
 import { areaLabel, type AreaQuery, areaSignals, pastSignalsSection, tagsOf } from "./lane-signals.ts";
 import { iso } from "./run.ts";
-import { doneSyntaxErrors, weakDone } from "./signals.ts";
+import { doneSyntaxErrors, weakDone } from "./done-signals.ts";
 import { laneArea, loadTree, treeSection } from "./explore.ts";
 import { watchLog } from "./watch-log.ts";
 
@@ -55,11 +55,10 @@ export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr")
   "## Lane footer (written by dori launch)",
   `- Key: ${lane.key}. Work thread: ${lane.thread}.`,
   `- Done = ${lane.done}. The lane closes only when every signal reads back live.`,
-  `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <what, with links>, sent to pane ${leadPane || "(lead pane)"} as an argv array, never a shell string.`,
-  ...(backend === "aoe" ? [`- The lead pane is a tmux session: run ["tmux","send-keys","-t","${target(leadPane || "(lead pane)")}","-l","--","<report line>"], then ["tmux","send-keys","-t","${target(leadPane || "(lead pane)")}","Enter"].`] : []),
-  `- A report that is a fix attempt for a failing check or metric carries (fix: <metric> / <hypothesis>). The third attempt on the same metric with the same hypothesis alerts the lead (SAME_FIX_3): stop patching, find the root cause. A blocker, an impossible or an ambiguous task is a fine report (| blocker |), better than another retry.`,
+  `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <what, with links>, typed into ${backend === "aoe" ? "tmux session" : "pane"} ${leadPane || "(lead pane)"} with dori type, as an argv array, never a shell string: run ["dori","type","${leadPane || "(lead pane)"}","--text","<report line>"]. It prints SUBMITTED once the lead took it; NOT_SUBMITTED <reason> (exit 1) means it did not arrive: send it once more. Keep backticks and $( out of the text (dori type refuses them).`,
+  `- A report that is a fix attempt for a failing check or metric carries (fix: <metric> / <hypothesis>). The lead's stuck ladder counts failed attempts on one metric, tagged or not: from the 2nd, competing hypotheses before the next patch; at the 3rd, ulw research and a dori challenge of your next plan (sent to you, in this session); after that, or with one hypothesis tried 3 times, the lead may move you to a new session. A blocker, an impossible or an ambiguous task is a fine report (| blocker |), better than another retry.`,
   `- Stuck after a fix that did not move the metric: before the next patch, write at least 3 competing hypotheses with one cheap discriminating test each, run the tests, and record what they showed (dori tree add|falsify|support --lane ${lane.key}). The lead's dori fix-attempt refuses a second attempt on one metric without them.`,
-  ...(lane.goal ? [`- Goal (owner words): "${lane.goal}". At each stage change (a new phase, a pivot, before a big step) run dori intent-check ${lane.key} --direction "<what you do now>" --next "<next step>" and say in your report how the step serves this goal.`] : []),
+  ...(lane.goal ? [`- Goal (owner words): "${lane.goal}". At each stage change (a new phase, a pivot, before a big step) run dori intent-check ${lane.key} --direction "<what you do now>" --next "<next step>" (a reviewer model reads it against the owner's words) and say in your report how the step serves this goal.`] : []),
   ...(lane.challengeBefore?.length ? [`- Before ${lane.challengeBefore.map((s) => `"${s}"`).join(" or ")}: write the plan to a file and run dori challenge ${lane.key} --plan <file> (a model of another family reviews it); answer its reasons in your next report. A done claim is refused until a challenge is on record.`] : []),
   `- When done: dori claim-done ${lane.key} --evidence "<merge SHA, closed issue, version>". See references/done-protocol.md.`,
   "",

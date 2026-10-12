@@ -3,19 +3,19 @@ import { join, resolve } from "node:path";
 
 import { type AutoSignals, type DoriConfig, expandHome } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { laneArea, loadTree, type Tree } from "./explore.ts";
+import { laneArea, loadTree, stuckStep, type Tree } from "./explore.ts";
 import type { Lane } from "./registry.ts";
-import { repeatsOf, sessionStart } from "./rollover.ts";
+import { sessionStart } from "./rollover.ts";
 import { iso, type Runner } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
 import { watchLog } from "./watch-log.ts";
 
-// Untagged repeat detection (REPEAT_SUSPECT). SAME_FIX_3 counts only fixes a lane tags "(fix: metric / hypothesis)" or the
-// lead records with dori fix-attempt, and lanes rarely tag. This reads what a lane leaves anyway: its [REPORT] lines, the
-// commits on its branch and its hypothesis-tree entries, and infers the same loop: a gate line (metric) fails, a new
-// prescription or patch targets that metric, it fails again, another one targets it. Each "fail, then a new attempt on the
-// same metric" is one cycle; a PASS of the metric ends the run of cycles (the direction changed: the gate was met). From
-// autoSignals.repeatAfter cycles on one metric it is a suspect. It only ever raises an alert.
+// Untagged repeat detection: the inferred half of the stuck ladder's count. The tagged half counts only fixes a lane tags
+// "(fix: metric / hypothesis)" or the lead records with dori fix-attempt, and lanes rarely tag. This reads what a lane leaves
+// anyway: its [REPORT] lines, the commits on its branch and its hypothesis-tree entries, and infers the same loop: a gate
+// line (metric) fails, a new prescription or patch targets that metric, it fails again, another one targets it. Each
+// "fail, then a new attempt on the same metric" is one cycle; a PASS of the metric ends the run of cycles (the direction
+// changed: the gate was met). The stuck ladder (explore.ts stuckStep) takes the larger of the two counts.
 
 export type EventSource = "report" | "commit" | "tree";
 export type LaneEvent = { readonly at: string; readonly source: EventSource; readonly text: string };
@@ -37,13 +37,15 @@ const NOT_METRICS = new Set(["pass", "fail", "failed", "line", "lines", "gate", 
 
 // The metric a gate item names: its leading words, up to the first number, comparison or bracket ("교착 58(벽 2/한계 56)" is
 // 교착, "spec 침투 최대 0.169" is 침투, "over-trench 2" is over-trench). Qualifiers (최대, max, spec, 판 ...) are dropped.
-export const metricName = (item: string): string | undefined => {
+export const metricName = (item: string, conditions: readonly string[] = []): string | undefined => {
   const m = /^[\s(*\-–—:>|·,;]*([\p{L}][\p{L}\p{M}' -]*?)\s*(?=[\d(<>≤≥=~.:%/_]|$)/u.exec(item.replace(/[*`]/g, ""));
   const head = m?.[1] ?? "";
   // an identifier (model_1625, GPU-13) or a short acronym (qa, cpu) names a thing, not a gate line
   const rest = item.replace(/[*`]/g, "").slice((m?.index ?? 0) + (m?.[0].length ?? 0));
   if (/^[_-]\d/.test(rest) || /[_-]$/.test(head)) return undefined;
   const words = head.toLowerCase().split(/\s+/).filter((w) => w && !QUALIFIERS.has(w));
+  // a condition the report breaks results down by (양토 1.0, seed 101) names a cell, not a gate line
+  if (words[0] && conditions.some((c) => c.toLowerCase() === words[0])) return undefined;
   const name = words.join(" ").replace(/^[-_']+|[-_']+$/g, "");
   // a gate line is named in a few words (교착, 도랑 위 덤프, dump success); longer is prose around a verdict
   if (words.length > 3 || name.length > 24) return undefined;
@@ -59,7 +61,7 @@ const SEGMENT = /\n|(?<=[.!?。])\s+(?=[A-Z가-힣(*])|\s[—–-]\s|\s?→\s?/u
 
 // The metrics a text says failed: "교착 554 FAIL(≤2)" (the item that holds the verdict) and "FAIL 도랑 위 덤프 1·교착 58"
 // or "FAIL: 교착 136, 깊음 0" (the items after a bare FAIL that carry no verdict of their own).
-export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern">): string[] => {
+export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern" | "conditionWords">): string[] => {
   const fail = re(cfg.failPattern);
   const pass = re(cfg.passPattern);
   const out = new Set<string>();
@@ -77,14 +79,14 @@ export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern"
         let named: string | undefined;
         for (const h of hits) {
           const tail = nameTail(item.slice(from, h.index));
-          const n = /\d/.test(tail) ? metricName(tail) : undefined;
+          const n = /\d/.test(tail) ? metricName(tail, cfg.conditionWords) : undefined;
           if (n) out.add(n);
           named ??= n;
           from = (h.index ?? 0) + h[0].length;
         }
         const after = item.slice(from).replace(/^\s*\d*\s*[:：]?\s*/, "");
         // a bare "FAIL:" or "FAIL 2:" or "FAIL 교착 145" opens a list of failed lines
-        const next = metricName(after);
+        const next = metricName(after, cfg.conditionWords);
         if (next && !pass.test(after)) out.add(next);
         listOpen = !named || after.trim().length > 0 || /[:：]\s*$/.test(item);
         continue;
@@ -95,7 +97,7 @@ export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern"
           listOpen = false;
           continue;
         }
-        const named = /\d/.test(item) ? metricName(item) : undefined;
+        const named = /\d/.test(item) ? metricName(item, cfg.conditionWords) : undefined;
         if (named) out.add(named);
       }
     }
@@ -109,7 +111,7 @@ const NEGATED = /안 |않|없음|없이|중단|보류|대신|아니라|\bnot\b|\
 const CLAUSE = /[,;·|()[\]{}]|\s[—–-]\s|→|=>|\n|(?<=[.!?。])\s+/u;
 const SENTENCE_WIDE = /\n|(?<=[.!?。])\s+|\s[—–]\s|;/u;
 
-export const passedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern">): string[] => {
+export const passedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern" | "conditionWords">): string[] => {
   const fail = re(cfg.failPattern);
   const pass = re(cfg.passPattern);
   const out = new Set<string>();
@@ -117,7 +119,7 @@ export const passedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern"
     const item = raw.replace(/[*`]/g, "");
     const m = pass.exec(item);
     if (!m || fail.test(item)) continue;
-    const named = metricName(nameTail(item.slice(0, m.index)));
+    const named = metricName(nameTail(item.slice(0, m.index)), cfg.conditionWords);
     if (named) out.add(named);
   }
   return [...out];
@@ -145,21 +147,24 @@ const clipLine = (s: string, n = 160): string => {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 
-export type RepeatState = { readonly counts: ReadonlyMap<string, MetricRepeat>; readonly vocab: ReadonlySet<string> };
+// passes: when each metric last passed (its count started again there)
+export type RepeatState = { readonly counts: ReadonlyMap<string, MetricRepeat>; readonly vocab: ReadonlySet<string>; readonly passes: ReadonlyMap<string, string> };
 
 // Walks the events in time order and counts, per metric, the cycles "failed, then a new attempt targets it". A new attempt
-// is an event that matches attemptPattern (a prescription, adjustment, patch, fix/feat commit, a new run) and is not only
+// is an event that matches inferAttemptPattern (a prescription, adjustment, patch, fix/feat commit, a new run) and is not only
 // a diagnosis (diagnosticPattern, unless it also names a prescription); an event that reports a metric failing is never
 // also an attempt on it. Attempts on one metric closer than repeatGapMin to the last counted one are the same attempt
 // told twice (a commit and the report about it). A PASS of the metric starts its count again.
 export const inferRepeats = (events: readonly LaneEvent[], cfg: AutoSignals, onCycle?: (r: MetricRepeat, e: LaneEvent) => void): RepeatState => {
   const verdict = re(cfg.verdictPattern);
-  const attempt = rei(cfg.attemptPattern);
+  const attempt = rei(cfg.inferAttemptPattern);
   const strong = rei(cfg.prescriptionPattern);
   const diag = rei(cfg.diagnosticPattern);
+  const disc = rei(cfg.discriminationPattern);
   const vocab = new Set<string>(Object.keys(cfg.aliases).map(normText));
   const failedSince = new Map<string, Evidence>();
   const counts = new Map<string, MetricRepeat>();
+  const passes = new Map<string, string>();
   const gap = cfg.repeatGapMin * 60_000;
   for (const e of [...events].sort((a, b) => a.at.localeCompare(b.at))) {
     const text = e.text;
@@ -172,8 +177,15 @@ export const inferRepeats = (events: readonly LaneEvent[], cfg: AutoSignals, onC
       if (failedHere.has(m)) continue;
       counts.delete(m);
       failedSince.delete(m);
+      passes.set(m, e.at);
     }
     for (const m of failedHere) if (!failedSince.has(m)) failedSince.set(m, { at: e.at, source: e.source, role: "fail", text: clipLine(text) });
+    // a report or tree entry that tells hypotheses apart (dori tree H.., 가설 판별, a falsified or supported entry) investigates
+    // the failed lines: the next attempt on them follows a root-cause hunt, not a repeat, and it is never an attempt itself
+    if (disc.test(text) || (e.source === "tree" && /\s기각|\s->\s/.test(text))) {
+      failedSince.clear();
+      continue;
+    }
     // an attempt targets a metric when one clause holds both the attempt word and the metric ("조정 4 = 평균 행동 교착 진입
     // 벌점"), not when the metric is only context elsewhere in the report ("model_795, 씨앗 200~223 ... 시작"); the clause
     // must not itself be a verdict or say the attempt is not made. A failure first seen in this very event is not consumed by
@@ -191,15 +203,16 @@ export const inferRepeats = (events: readonly LaneEvent[], cfg: AutoSignals, onC
       onCycle?.(next, e);
     }
   }
-  return { counts, vocab };
+  return { counts, vocab, passes };
 };
 
 export const suspects = (state: RepeatState, after: number): MetricRepeat[] => [...state.counts.values()].filter((r) => r.n >= after).sort((a, b) => b.n - a.n);
 
 export const maxInferred = (state: RepeatState): number => Math.max(0, ...[...state.counts.values()].map((r) => r.n));
 
-export const suspectLine = (key: string, r: MetricRepeat, tagged: number): string =>
-  `REPEAT_SUSPECT ${key} ${JSON.stringify(r.metric)} ${r.n} (inferred from untagged reports/commits/tree; tagged fixes ${tagged}): the same gate line re-targeted after failing ${r.n} times; stop patching it, find the root cause. last: ${clipLine(r.evidence.at(-1)?.text ?? "", 140)}`;
+// dori repeat-check's line for one metric (an analysis printout; the alert is the stuck ladder's STUCK line)
+export const inferredLine = (key: string, r: MetricRepeat, tagged: number): string =>
+  `INFERRED ${key} ${JSON.stringify(r.metric)} ${r.n} (from untagged reports/commits/tree; tagged ${tagged}): the same gate line re-targeted after failing ${r.n} times. last: ${clipLine(r.evidence.at(-1)?.text ?? "", 140)}`;
 
 export const evidenceLines = (r: MetricRepeat): string[] => r.evidence.map((e) => `  ${e.at.slice(0, 16).replace("T", " ")} ${e.source} ${e.role}: ${e.text}`);
 
@@ -221,6 +234,16 @@ export const reportKey = (text: string): string => text.replace(/\$\{[^}]*\}|\{k
 
 export type ReportLine = { readonly at: string; readonly text: string };
 
+// Where a report can be: text the session received (a lane's report typed into the lead, a lead copy), or a tool call that
+// sends one (send-keys, send-text, dori type). A report template quoted in a goal, a brief or a note is not a report.
+const SENDS = /send-keys|send-text|\bdori\b["',\s\\]+type\b/;
+const reportStrings = (e: Entry): string[] => {
+  const c = e.message?.content;
+  if (e.message?.role === "user") return strings(c);
+  if (e.message?.role !== "assistant" || !Array.isArray(c)) return [];
+  return (c as { type?: string; arguments?: unknown }[]).flatMap((b) => (b?.type === "toolCall" && SENDS.test(JSON.stringify(b.arguments ?? {})) ? strings(b.arguments) : []));
+};
+
 // [REPORT] <key> lines in session files (the lane's own tool calls that typed them, and the lead's copy), oldest first.
 // Files not written since `since` are skipped.
 export const readReports = async (files: readonly string[], key: string, since = 0): Promise<ReportLine[]> => {
@@ -238,10 +261,11 @@ export const readReports = async (files: readonly string[], key: string, since =
       }
       const at = e.timestamp ?? "";
       if (Date.parse(at) < since) continue;
-      for (const s of strings(e.message?.content ?? e.content)) {
+      for (const s of reportStrings(e)) {
         for (const m of s.matchAll(grammar)) {
           const text = (m[1] ?? "").replace(/\\n/g, " ").trim();
-          if (!text || text.includes("${")) continue;
+          // a template quoted in a goal or a brief ("| done | ...` is sent ...") is not a report
+          if (!text || text.includes("${") || /^(?:\.\.\.|…)/.test(text)) continue;
           const k = reportKey(text);
           const old = seen.get(k);
           if (!old || old.at > at) seen.set(k, { at, text });
@@ -322,36 +346,38 @@ export const laneEvents = async (deps: FlowDeps, lane: Lane, opts: { readonly si
 
 export type RepeatTick = { readonly lines: readonly string[]; readonly inferred: number };
 
-// On a new report (freshness): the untagged repeats in the lane's current session. A metric whose count grew to
-// repeatAfter or more gets one REPEAT_SUSPECT line in the watch log; the counts are kept on the lane so the next report
-// alerts only on a new cycle. Returns the lines and the largest count (for ROLLOVER_DUE). Nothing is sent to the lane.
-// the full fail/attempt chain behind each alert, appended to <stateDir>/auto-signals/<key>.md; the watch-log line names it
+// the full fail/attempt chain behind each grown count, appended to <stateDir>/auto-signals/<key>.md
 export const evidenceFile = (stateDir: string, key: string): string => join(stateDir, "auto-signals", `${key}.md`);
+
+// On a new report (freshness): the untagged repeats in the lane's current session. The counts and the last PASS of each
+// metric are kept on the lane; every metric whose count changed takes one step of the stuck ladder, which writes the STUCK
+// line when its rung goes up (rung 3, research and a challenge, may type into the lane). Returns those lines and the
+// largest count.
 
 export const repeatTick = async (deps: FlowDeps, lane: Lane, files?: readonly string[]): Promise<RepeatTick> => {
   const cfg = deps.config.autoSignals;
   const scan = await laneEvents(deps, lane, { since: sessionStart(lane), ...(files ? { files } : {}) });
   const lastAt = lane.inferred?.lastEventAt;
-  // after the first scan, every crossing of repeatAfter in events newer than the last scan alerts, even when a PASS reset the
-  // count before this sweep; the first scan alerts on the final counts only (not the whole session's history again)
-  const crossings = new Map<string, MetricRepeat>();
-  const state = inferRepeats(scan.events, cfg, (r, e) => {
-    if (lastAt && r.n >= cfg.repeatAfter && e.at > lastAt) crossings.set(r.metric, r);
-  });
+  const state = inferRepeats(scan.events, cfg);
   const before = lane.inferred?.counts ?? {};
-  const fresh = lastAt ? [...crossings.values()] : suspects(state, cfg.repeatAfter).filter((r) => (before[r.metric] ?? 0) < r.n);
-  const tagged = repeatsOf(lane);
-  const lines: string[] = [];
-  const file = evidenceFile(deps.config.stateDir, lane.key);
-  for (const r of fresh) {
-    const line = `${suspectLine(lane.key, r, tagged)} evidence: ${file}`;
-    lines.push(line);
-    mkdirSync(join(deps.config.stateDir, "auto-signals"), { recursive: true });
-    appendFileSync(file, [`## ${iso(deps.clock)} ${JSON.stringify(r.metric)} ${r.n}`, ...evidenceLines(r), ""].join("\n"));
-    watchLog(deps.config.watchLog, deps.clock, { source: "auto-signals", line });
-  }
   const counts = Object.fromEntries([...state.counts.values()].map((r) => [r.metric, r.n]));
+  const passedAt = Object.fromEntries(state.passes);
   const newest = scan.events.reduce((m, e) => (e.at > m ? e.at : m), lastAt ?? "");
-  if (JSON.stringify(counts) !== JSON.stringify(before) || newest !== (lastAt ?? "")) await deps.registry.patch(lane.key, { inferred: { at: iso(deps.clock), counts, ...(newest ? { lastEventAt: newest } : {}) } });
+  // a metric whose count changed or that passed again takes a ladder step (a PASS lowers a tagged-only metric's rung too)
+  const passedNow = Object.keys(passedAt).filter((m) => passedAt[m] !== lane.inferred?.passedAt?.[m]);
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(counts), ...passedNow])].filter((m) => (before[m] ?? 0) !== (counts[m] ?? 0) || passedNow.includes(m));
+  // a PASS started the count again from 0, so an --improved baseline from before it no longer applies
+  const baseline = Object.fromEntries(Object.entries(lane.inferred?.baseline ?? {}).filter(([m]) => !passedNow.includes(m)));
+  if (changed.length || newest !== (lastAt ?? "")) await deps.registry.patch(lane.key, { inferred: { at: iso(deps.clock), counts, passedAt, ...(Object.keys(baseline).length ? { baseline } : {}), ...(newest ? { lastEventAt: newest } : {}) } });
+  const file = evidenceFile(deps.config.stateDir, lane.key);
+  const lines: string[] = [];
+  for (const m of changed) {
+    const r = state.counts.get(m);
+    if (r && r.n > (before[m] ?? 0)) {
+      mkdirSync(join(deps.config.stateDir, "auto-signals"), { recursive: true });
+      appendFileSync(file, [`## ${iso(deps.clock)} ${JSON.stringify(r.metric)} ${r.n}`, ...evidenceLines(r), ""].join("\n"));
+    }
+    lines.push(...(await stuckStep(deps, lane.key, m)));
+  }
   return { lines, inferred: maxInferred(state) };
 };

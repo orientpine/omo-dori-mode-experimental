@@ -16,7 +16,8 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { AGENT, descendants, type Proc, sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, clearQuiet, COMMITTED, lastProposal, readRollovers, repeatsOf, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
+import { appendRollover, approvalProblem, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
+import { stuckTop } from "./explore.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type LaneHandoverDeps = FlowDeps & {
@@ -34,10 +35,13 @@ export type LaneHandoverDeps = FlowDeps & {
   readonly realpath: (path: string) => string;
   readonly nonce: () => string;
   readonly print: (line: string) => void;
+  // posts the owner's after-the-fact note of a rollover the lead decided (in the lane's discord thread, else the owner's
+  // channel) and returns its message id; absent when no messenger is set up, and then a lead: approval is refused
+  readonly reportOwner?: (thread: string | null, text: string) => Promise<string>;
 };
 
 export type LaneHandoverOptions = {
-  // the owner's approval: an answered card Qn, a message link or their words (rollover.ts approvalProblem); --dry-run needs none
+  // the approval: lead:<reason and signal>, the owner's answered card Qn, a message link or their words (rollover.ts approvalProblem); --dry-run needs none
   readonly approvedBy?: string;
   readonly note?: string;
   readonly model?: string;
@@ -419,8 +423,8 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
     await recover(deps, pending, emit);
     return { code: 3 };
   }
-  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLanes, key: "handover.autoRolloverLanes" }, key, lane.pane ?? "", readRollovers(config.stateDir));
-  if (unapproved) return refuse(`a lane moves to a new session only with the owner's approval: ${unapproved} (--dry-run needs none)`);
+  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLanes, key: "handover.autoRolloverLanes" }, key, lane.pane ?? "", readRollovers(config.stateDir), Boolean(deps.reportOwner));
+  if (unapproved) return refuse(`a lane moves to a new session only with an approval: ${unapproved} (--dry-run needs none)`);
   const old = sessionFor(await aoeSessions(deps.run), lane.pane);
   if (!old) return refuse(`no live aoe session for pane ${lane.pane}`);
   const real = deps.realpath(old.path);
@@ -465,8 +469,8 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   else if (blockers.length) emit(`HANDOVER_FORCED ${key}: ${blockers.join("; ")}`);
   if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK ${key}: the lane runs from ${old.path}, a symlink to ${real}; the new session opens in ${real}`);
   const sessionDir = sessionDirFor(config.sessionsDir, base);
-  const repeats = repeatsOf(lane);
-  const signals: Signals = { ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...sessionSignals(sessionDir, session, now), ...(repeats ? { repeats } : {}) };
+  const stuck = stuckTop(lane);
+  const signals: Signals = { ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...sessionSignals(sessionDir, session, now), ...(stuck ? { stuck } : {}) };
   const laneNote = [ready?.note ?? "", opts.note ? readFileSync(opts.note, "utf8") : ""].filter((t) => t.trim()).join("\n\n");
   const facts: LaneFacts = {
     lane, from: { pane: lane.pane, aoeId: old.id, session, title: old.title, cwd: old.path }, cwd: real, model: splitModel(model).base, thinking, ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(shown.account ? { account: shown.account } : {}),
@@ -500,8 +504,12 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
     const r = await moveLane(deps, opts, facts, { note, title, emit, steps, mark, accounts, supplements });
     const proposal = lastProposal(readRollovers(config.stateDir), key);
     const result = r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back";
+    const by = facts.approvedBy ? decidedBy(facts.approvedBy) : undefined;
+    const reason = by === "lead" ? (facts.approvedBy ?? "").slice(LEAD_PREFIX.length).trim() : undefined;
+    const ownerReport = by === "lead" && r.to && r.code !== 3 ? await reportToOwner(deps, key, lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : null, { who: `lane ${key} (${lane.title})`, from: lane.pane, to: r.to, reason: reason ?? "" }, emit) : undefined;
     appendRollover(config.stateDir, {
       kind: "rollover", who: "lane", at, key, from: lane.pane, ...(r.to ? { to: r.to } : {}), ...(facts.approvedBy ? { approvedBy: facts.approvedBy } : {}),
+      ...(by ? { decidedBy: by } : {}), ...(reason ? { reason } : {}), ...(ownerReport ? { ownerReport } : {}),
       ...(proposal ? { proposedAt: proposal.at, approvalMin: Math.round((Date.parse(at) - Date.parse(proposal.at)) / 6_000) / 10 } : {}),
       signals: facts.signals, steps, result, reasons: steps.filter((st) => !st.ok).map((st) => st.step), accounts: { from: facts.account ?? "", to: accounts.to ?? "" },
       ...(supplements.length ? { supplementRounds: supplements.length, supplements } : {}),

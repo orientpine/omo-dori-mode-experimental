@@ -113,7 +113,7 @@ const planRoot = async (deps: FlowDeps, planFile: string): Promise<string> => (a
 export type Review = { readonly record: ChallengeRecord; readonly text: string };
 export type ChallengeResult = { readonly reviews: readonly Review[]; readonly failures: readonly string[] };
 
-// Tries each callable reviewer of another family in order (explore.challengeModels, or the one --model) until one writes
+// Tries each callable reviewer of another family in order (reviewers.models, or the one --model) until one writes
 // all three sections; with all, goes on until each family in the list has written one. One that answers without the
 // sections gets one stricter retry; if that still lacks them both replies are saved as <time>-<model>-raw.md and the
 // next reviewer is asked.
@@ -125,8 +125,8 @@ export const runChallenge = async (deps: FlowDeps, lane: Lane, planFile: string,
   const cfg = deps.config.explore;
   const own = lane.model ?? deps.config.defaultModel;
   if (opts.model && familyOf(opts.model) === familyOf(own)) throw new ChallengeError(`--model ${opts.model} is the lane's own family (${familyOf(own)}); pick another family`);
-  const candidates = opts.model ? [opts.model] : reviewers(own, cfg.challengeModels);
-  if (!candidates.length) throw new ChallengeError(`no reviewer in explore.challengeModels is of another family than the lane's model ${own} (${familyOf(own)})`);
+  const candidates = opts.model ? [opts.model] : reviewers(own, deps.config.reviewers.models);
+  if (!candidates.length) throw new ChallengeError(`no reviewer in reviewers.models is of another family than the lane's model ${own} (${familyOf(own)})`);
   const failures: string[] = [];
   const skip = (line: string): void => {
     failures.push(line);

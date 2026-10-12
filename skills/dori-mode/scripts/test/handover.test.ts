@@ -361,7 +361,7 @@ test("refuses without the owner's approval before opening anything; an approval 
   const openCard = await handover(deps, { title: "lead2", approvedBy: "Q1" });
   // Then
   expect([bare.code, notProposed.code, openCard.code]).toEqual([2, 2, 2]);
-  expect(printed[0]).toStartWith("HANDOVER_REFUSED the lead moves to a new session only with the owner's approval: no approval");
+  expect(printed[0]).toStartWith("HANDOVER_REFUSED the lead moves to a new session only with an approval: no approval");
   expect(printed[1]).toContain("card Q1 is not a rollover proposal for lead");
   expect(printed[2]).toContain("card Q1 is not answered yet");
   expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);

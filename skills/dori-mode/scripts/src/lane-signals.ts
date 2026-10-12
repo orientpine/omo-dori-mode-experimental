@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { type DoriConfig, expandHome } from "./config.ts";
 import { type FixAttempt, type Lane, statusOf } from "./registry.ts";
 import { fixCount, fixTag } from "./same-fix.ts";
+import { parseWatchLine } from "./watch-log.ts";
 
 // dori signals: what earlier lanes in one area of work (a lane, a repo, a topic tag) tried and how it went, read from
 // records only: the registry (fix attempts, done claims and their rejections, the outcome), the lead's session files
@@ -130,8 +131,8 @@ export const readLaneLogs = async (lanes: readonly Lane[], src: LogSources, sinc
     log = "";
   }
   for (const line of log.split("\n")) {
-    const m = /^\S+ freshness NUDGED (\S+) /.exec(line);
-    const a = m?.[1] ? acc.get(m[1]) : undefined;
+    const w = parseWatchLine(line);
+    const a = w?.source === "freshness" && w.kind === "NUDGED" ? acc.get(w.key) : undefined;
     if (a) a.nudges++;
   }
   return new Map([...acc].map(([k, a]) => [k, { mentions: [...a.mentions.values()].sort((x, y) => x.at.localeCompare(y.at)), sends: a.sends, nudges: a.nudges }]));
@@ -160,7 +161,7 @@ const outcomeOf = (lane: Lane): string => {
   return s === "working" ? "open" : s;
 };
 
-export const laneSignals = (lane: Lane, logs: LaneLogs | undefined, cfg: Pick<DoriConfig, "signals" | "sameFix">): LaneSignals => {
+export const laneSignals = (lane: Lane, logs: LaneLogs | undefined, cfg: Pick<DoriConfig, "signals" | "stuck">): LaneSignals => {
   const mentions = logs?.mentions ?? [];
   // tagged reports the freshness sweep missed (it reads only the latest report); the registry wins when it has them
   const registryFixes = lane.fixes ?? [];
@@ -171,7 +172,7 @@ export const laneSignals = (lane: Lane, logs: LaneLogs | undefined, cfg: Pick<Do
         return tag ? [{ at: m.at, ...tag, via: "report" as const }] : [];
       });
   const fixes = [...registryFixes, ...minedFixes].sort((a, b) => a.at.localeCompare(b.at));
-  const attemptRe = new RegExp(cfg.signals.attemptPattern, "gi");
+  const attemptRe = new RegExp(cfg.signals.numberedAttemptPattern, "gi");
   const rootRe = new RegExp(cfg.signals.rootCausePattern, "i");
   const byN = new Map<number, { first: Mention; last: Mention }>();
   let rootCause: Mention | undefined;
@@ -197,7 +198,7 @@ export const laneSignals = (lane: Lane, logs: LaneLogs | undefined, cfg: Pick<Do
   const attempts = [...byN].map(([n, v]) => ({ n, ...v })).sort((a, b) => a.n - b.n);
   const events = claimEvents(lane);
   const rejections = events.filter((e) => e.kind === "rejected");
-  const after = cfg.sameFix.after;
+  const after = cfg.stuck.fixatedAfter;
   const warnings: string[] = [];
   const pairs = new Map<string, FixAttempt>();
   for (const f of fixes) pairs.set(`${f.metric}\u0000${f.hypothesis}`, f);
