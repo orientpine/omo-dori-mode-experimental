@@ -43,13 +43,14 @@ const OWNER_WORDS = /discord(?:app)?\.com\/channels\/\d+\/\d+\/\d+|원문|verbat
 // own working orders are not the owner's words)
 export const ownerRelays = (relays: readonly ReportLine[], n: number): ReportLine[] => relays.filter((r) => OWNER_WORDS.test(r.text)).slice(-n);
 
-const QUOTED = /"([^"\n]{2,})"|“([^”]{2,})”|「([^」]{2,})」/g;
+// a quote of 6+ characters (shorter is a word the lead marks, not the owner's sentence; quoted() needs 6 anyway)
+const QUOTED = /"([^"\n]{6,})"|“([^”]{6,})”|‘([^’]{6,})’|「([^」]{6,})」/g;
 
 // The owner's own words in a relay: its quoted parts. A relay like `형 질문(원문 <link>): "...". 학습은 멈추지 말고, ...` goes on
 // in the lead's words after the quote (seen live on hr35-e7: a finding quoted that lead text as the owner's). A relay with
 // no quote marks (`원문 <link>: ...`) is the owner's words as a whole.
 export const ownerWords = (relay: string): string => {
-  const parts = [...relay.matchAll(QUOTED)].map((m) => m[1] ?? m[2] ?? m[3] ?? "");
+  const parts = [...relay.matchAll(QUOTED)].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4] ?? "");
   return parts.length ? parts.join("\n") : relay;
 };
 
@@ -57,10 +58,12 @@ type InboxRow = { ts?: string; kind?: string; thread?: string; channel_id?: stri
 
 // The owner's decisions in the lane's discord:<id> thread since `since`, from the inbox the listener writes, oldest first,
 // the newest n: question-card answers (only the owner answers a card) and the owner's own messages (author `owner`).
-export const ownerDecisions = (inbox: string, thread: string, owner: string, since: string, n: number): ReportLine[] => {
+// words: what the owner wrote or chose (a card's question is the lead's, context only, never grounds a quote).
+export type OwnerDecision = ReportLine & { readonly words: string };
+export const ownerDecisions = (inbox: string, thread: string, owner: string, since: string, n: number): OwnerDecision[] => {
   const id = /^discord:(\d+)$/.exec(thread)?.[1];
   if (!id || n <= 0) return [];
-  const out: ReportLine[] = [];
+  const out: OwnerDecision[] = [];
   for (const line of inbox.split("\n")) {
     if (!line.includes(id)) continue;
     let e: InboxRow;
@@ -74,10 +77,10 @@ export const ownerDecisions = (inbox: string, thread: string, owner: string, sin
     if (Number.isNaN(ms)) continue;
     const at = new Date(ms).toISOString();
     if (at < since) continue;
-    if (e.kind === "answer" && e.thread === id && e.answer) out.push({ at, text: `card ${e.qid ?? ""} "${e.question ?? ""}": the owner chose "${e.answer}"` });
+    if (e.kind === "answer" && e.thread === id && e.answer) out.push({ at, text: `card ${e.qid ?? ""} "${e.question ?? ""}": the owner chose "${e.answer}"`, words: e.answer });
     else if (!e.kind && e.channel_id === id && owner && e.author_id === owner) {
       const text = (e.transcript || e.content || "").trim();
-      if (text) out.push({ at, text });
+      if (text) out.push({ at, text, words: text });
     }
   }
   return out.sort((a, b) => a.at.localeCompare(b.at)).slice(-n);
@@ -170,11 +173,13 @@ export const groundFindings = (findings: readonly OwnerFinding[], src: { readonl
       dropped.push({ finding: f, why: "UNGROUNDED" });
       continue;
     }
-    if (said && quoted(f.report, said)) {
+    // a quote joined with an ellipsis may span reports: each report holding one of its pieces is under the finding
+    const parts = f.report.split(/…|\.\.\./).map(squash).filter((p) => p.length >= 6);
+    if (said && parts.some((p) => squash(said).includes(p))) {
       kept.push({ ...f, reportAt: `direction@${src.direction?.at ?? ""}` });
       continue;
     }
-    const from = src.reports.filter((r) => quoted(f.report, r.text));
+    const from = src.reports.filter((r) => parts.some((p) => squash(r.text).includes(p)));
     const fresh = from.filter((r) => !src.checkedUpTo || r.at > src.checkedUpTo);
     if (from.length && !fresh.length) {
       dropped.push({ finding: f, why: "STALE" });
@@ -234,7 +239,7 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   const inbox = Bun.file(opts.inbox ?? inboxPath(deps.config));
   const decisions = ownerDecisions((await inbox.exists()) ? await inbox.text() : "", lane.thread, opts.owner ?? process.env.DORI_DISCORD_OWNER?.trim() ?? "", lane.openedAt, cfg.relays);
   const prompt = ownerPrompt(lane, brief, relays, reports, decisions);
-  const ownerSource = [lane.goal ?? "", brief, ...relays.map((r) => ownerWords(r.text)), ...decisions.map((d) => d.text)].join("\n");
+  const ownerSource = [lane.goal ?? "", brief, ...relays.map((r) => ownerWords(r.text)), ...decisions.map((d) => d.words)].join("\n");
   // the direction the lane stated (dori intent-check) is evidence too: a finding may quote it
   const reportSource = [...reports.map((r) => r.text), lane.direction?.text ?? "", lane.direction?.next ?? ""].join("\n");
   const ground = { ownerSource, reports, direction: lane.direction, checkedUpTo: lane.ownerCheck?.lastReportAt };
@@ -266,7 +271,10 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
     const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : dropped.length ? [] : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief, ${relays.length} owner relays and ${decisions.length} owner decisions${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
     // a check whose findings were all dropped leaves the last finding on record (the lead may still confirm it with --reread)
     const last = lane.ownerCheck;
-    const record = findings.length ? { kinds: findings.map((f) => f.kind), finding: lines[0]?.slice(0, 600) } : dropped.length && last ? { kinds: last.kinds, ...(last.finding ? { finding: last.finding } : {}) } : { kinds: ["OK"] };
+    // ... only while its own owner quote still holds (a finding recorded before this check could rest on lead text)
+    const lastOwner = /owner "(.*?)" vs report/.exec(last?.finding ?? "")?.[1];
+    const pending = !findings.length && dropped.length && last?.finding && lastOwner && quoted(lastOwner, ownerSource);
+    const record = findings.length ? { kinds: findings.map((f) => f.kind), finding: lines[0]?.slice(0, 600) } : pending && last?.finding ? { kinds: last.kinds, finding: last.finding } : { kinds: ["OK"] };
     // a re-read the lead sent stays on record: the context rung reads it
     const rereadAt = (await deps.registry.read(lane.key))?.ownerCheck?.rereadAt ?? lane.ownerCheck?.rereadAt;
     await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: (newest ?? lane.ownerCheck?.lastReportAt) ?? "", day, today, model: c.call, ...record, ...(rereadAt ? { rereadAt } : {}) } });

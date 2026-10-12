@@ -230,7 +230,7 @@ const strings = (v: unknown, out: string[] = []): string[] => {
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // one report told twice (the lane's typing and the lead's copy, or a template still holding ${kst()}) is one report
-export const reportKey = (text: string): string => text.replace(/\$\{[^}]*\}|\{kst\(\)\}/g, "").replace(/\d{1,2}:\d\d(?::\d\d)? ?KST/g, "").replace(/^\W*(?:진행|progress)\W*/i, "").replace(/\s+/g, " ").trim().slice(0, 200);
+export const reportKey = (text: string): string => text.replace(/\$\{[^}]*\}|\{kst\(\)\}/g, "").replace(/\d{1,2}:\d\d(?::\d\d)? ?KST/g, "").replace(/^[^\p{L}\p{N}]*(?:진행|progress)[^\p{L}\p{N}]*/iu, "").replace(/\s+/g, " ").trim().slice(0, 200);
 
 export type ReportLine = { readonly at: string; readonly text: string };
 

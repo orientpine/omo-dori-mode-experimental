@@ -334,7 +334,9 @@ export const stuckContext = async (deps: FlowDeps, key: string, findings: readon
   // the report under the last finding did not change: not a new finding (seen live: an older report flagged again)
   if (prev && report && prev.report === report) return [];
   // rung 4 only when the lead confirmed a re-read after the first finding and the lane is still off the owner's words
-  const reread = lane.ownerCheck?.rereadAt && prev ? lane.ownerCheck.rereadAt >= prev.at : false;
+  // ... and the finding rests on a report (or a stated direction) from after that re-read
+  const evidenceAt = report?.replace(/^direction@/, "");
+  const reread = lane.ownerCheck?.rereadAt && prev ? lane.ownerCheck.rereadAt >= prev.at && (!evidenceAt || evidenceAt > lane.ownerCheck.rereadAt) : false;
   const rung = prev ? (reread ? 4 : prev.rung) : 1;
   const n = (prev?.n ?? 0) + 1;
   await deps.registry.patch(key, { stuck: { ...marks, [CONTEXT]: { rung, n, at: iso(deps.clock), ...(lane.pane ? { pane: lane.pane } : {}), ...(report ? { report } : {}) } } });
