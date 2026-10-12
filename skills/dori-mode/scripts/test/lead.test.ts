@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findLead, LeadError } from "../src/lead.ts";
@@ -74,16 +74,48 @@ test("dori lead prints the stopped lead with exit 0 when fake tmux has no live s
   expect(await leadCli(false)).toEqual({ code: 0, out: `${ID} ${TMUX} stopped`, err: "" });
 });
 
-test("the boot service resolves the lead before starting its aoe session", async () => {
+test("the boot service executes the existing self-restart script in start mode", async () => {
   const bin = join(state.dir, "bin");
   mkdirSync(bin);
   const log = join(state.dir, "commands");
-  executable(join(bin, "dori"), `printf '%s\\n' "dori $*" >> "${log}"\nprintf '%s\\n' '${ID} ${TMUX}'`);
-  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $*" >> "${log}"`);
+  const script = join(state.dir, ".dori/src/skills/dori-mode/setups/discord-aoe/self-restart.sh");
+  mkdirSync(join(script, ".."), { recursive: true });
+  executable(script, `printf '%s\\n' "self-restart.sh $*" >> "${log}"`);
   const service = readFileSync(join(import.meta.dir, "../../setups/discord-aoe/systemd/dori-lead.service"), "utf8");
-  const command = /^ExecStart=\/bin\/bash -lc '(.*)'$/m.exec(service)?.[1] ?? "";
+  const command = (/^ExecStart=(.*)$/m.exec(service)?.[1] ?? "").replaceAll("%h", state.dir);
   const p = Bun.spawn(["bash", "-c", command], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DORI_LEAD_AOE_ID: "stale" }, stdout: "pipe", stderr: "pipe" });
-  expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: ["dori lead", `aoe session start ${ID}`] });
+  expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: ["self-restart.sh --start"] });
+});
+
+const startScript = async (stopped: boolean, args: string[] = []) => {
+  const bin = join(state.dir, ".bun/bin");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(state.dir, ".dori"));
+  const log = join(state.dir, "commands");
+  executable(join(bin, "dori"), `printf '%s\\n' "dori $*" >> "${log}"\n[ "$1" != lead ] || printf '%s\\n' '${ID} ${TMUX}${stopped ? " stopped" : ""}'`);
+  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $*" >> "${log}"`);
+  executable(join(bin, "tmux"), `printf '%s\\n' '❯'`);
+  executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "agent"), "exit 0");
+  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ...args], {
+    env: { ...process.env, HOME: state.dir, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_AGENT_BIN: "agent", DORI_LEAD_AOE_ID: "stale", DORI_LEAD_TMUX: "wrong" }, stdout: "pipe", stderr: "pipe",
+  });
+  const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  return { code, out: out.trim(), err: err.trim(), commands: readFileSync(log, "utf8").trim().split("\n"), logged: existsSync(join(state.dir, ".dori/self-restart.log")) };
+};
+
+test("start mode leaves an already running lead untouched", async () => {
+  expect(await startScript(false, ["--start"])).toEqual({ code: 0, out: `LEAD_ALREADY_RUNNING ${TMUX}`, err: "", commands: ["dori lead"], logged: false });
+});
+
+test("start mode starts a stopped lead then submits the default first message", async () => {
+  const result = await startScript(true, ["--start"]);
+  expect(result).toEqual({ code: 0, out: "", err: "", commands: ["dori lead", `aoe session start ${ID}`, `dori type ${TMUX} --text Dori mode`], logged: true });
+});
+
+test("default mode still restarts the lead and submits an explicit first message", async () => {
+  const result = await startScript(false, [ID, TMUX, "configured first message"]);
+  expect(result).toEqual({ code: 0, out: "", err: "", commands: [`aoe session restart ${ID}`, `dori type ${TMUX} --text configured first message`], logged: true });
 });
 
 test("no-argument self-restart resolves dori lead before checking the agent, without restarting in the check", async () => {

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 
@@ -20,3 +21,37 @@ test("Discord CLI enables typing by default, skips it on request, and leaves edi
     state.done();
   }
 });
+
+for (const [text, ping, content] of [
+  ["hello @everyone <@456>", "123", "<@123> hello @everyone <@456>"],
+  ["hello <@123>", "123", "hello <@123>"],
+  ["hello <@123>", undefined, "hello <@123>"],
+] as const) {
+  test(`Discord CLI request body with ping ${ping} and text ${text}`, async () => {
+    const state = withState();
+    try {
+      const file = join(state.dir, "http.json");
+      const result = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+        "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--thread", "thread", "--text", text, "--no-typing", ...(ping === undefined ? [] : ["--ping", ping])]);
+      expect({ code: result.code, out: result.out, calls: JSON.parse(readFileSync(file, "utf8")).calls }).toEqual({
+        code: 0, out: "SENT 900", calls: [{ method: "POST", path: "/channels/thread/messages", body: { content, allowed_mentions: { parse: [], ...(ping === undefined ? {} : { users: [ping] }) } } }],
+      });
+    } finally {
+      state.done();
+    }
+  });
+}
+
+for (const ping of ["abc", "123x", "", " 123", "123\n"]) {
+  test(`Discord CLI refuses invalid ping ${JSON.stringify(ping)} before HTTP`, async () => {
+    const state = withState();
+    try {
+      const file = join(state.dir, "http.json");
+      const result = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+        "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--ping", ping]);
+      expect({ code: result.code, sent: existsSync(file) }).toEqual({ code: 1, sent: false });
+    } finally {
+      state.done();
+    }
+  });
+}

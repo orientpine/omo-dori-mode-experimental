@@ -35,14 +35,16 @@ export class Discord {
     return (res.body ? JSON.parse(res.body) : {}) as T;
   }
 
-  async send(channelId: string, content: string, typing = false): Promise<string> {
+  async send(channelId: string, content: string, typing = false, ping?: string): Promise<string> {
     guardText(content);
+    if (ping !== undefined && (ping.length === 0 || /[^0-9]/.test(ping))) throw new MessengerError("--ping takes a digits-only user id", 400);
+    if (ping !== undefined && !content.includes(`<@${ping}>`)) content = `<@${ping}> ${content}`;
     if (typing) {
       await this.once().typing(channelId).catch((e: unknown) => {
         console.error(`DISCORD_TYPING_FAIL ${e instanceof Error ? e.message : String(e)}`);
       });
     }
-    return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages`, { content: guardText(content), allowed_mentions: { parse: [] } })).id;
+    return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages`, { content: guardText(content), allowed_mentions: { parse: [], ...(ping !== undefined ? { users: [ping] } : {}) } })).id;
   }
 
   async edit(channelId: string, messageId: string, content: string): Promise<void> {

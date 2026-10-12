@@ -3,7 +3,7 @@
 # Schedule it detached so it outlives the session it restarts:
 #   systemd-run --user --on-active=20 --unit=dori-self-restart-$(date +%s) \
 #     ~/.dori/src/skills/dori-mode/setups/discord-aoe/self-restart.sh
-# usage: self-restart.sh [aoe-id] [tmux-session] [prompt]     (prompt "" types nothing)
+# usage: self-restart.sh [--start] [aoe-id] [tmux-session] [prompt]     (prompt "" types nothing)
 #
 # systemd user units get a bare PATH without ~/.bun/bin, so a restarted pane can fail to find the agent
 # and die at once. This script pins PATH, refuses to restart when the agent binary is broken, waits for
@@ -14,9 +14,19 @@ set -uo pipefail
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 [ -f "${DORI_ENV_FILE:-$HOME/.dori/dori.env}" ] && set -a && . "${DORI_ENV_FILE:-$HOME/.dori/dori.env}" && set +a
 
+MODE=restart
+if [ "${1:-}" = --start ]; then
+  MODE=start
+  shift
+fi
+
 if [ -z "${1:-}" ]; then
   LEAD=$(dori lead) || exit 1
   read -r ID T _ <<<"$LEAD"
+  if [ "$MODE" = start ] && [[ "$LEAD" != *" stopped" ]]; then
+    echo "LEAD_ALREADY_RUNNING $T"
+    exit 0
+  fi
 else
   ID=$1
   T=${2:-${DORI_LEAD_TMUX:?set DORI_LEAD_TMUX or pass the tmux session}}
@@ -38,8 +48,8 @@ if ! command -v "$AGENT" >/dev/null || ! "$AGENT" --version >>"$LOG" 2>&1; then
 fi
 
 for attempt in 1 2 3; do
-  log "attempt $attempt: aoe session restart $ID"
-  aoe session restart "$ID" >>"$LOG" 2>&1 || log "aoe restart rc=$?"
+  log "attempt $attempt: aoe session $MODE $ID"
+  aoe session "$MODE" "$ID" >>"$LOG" 2>&1 || log "aoe $MODE rc=$?"
   for _ in $(seq 90); do ready && break; sleep 2; done
   if ready; then
     sleep 10 # let aoe's own wake-up message land first
