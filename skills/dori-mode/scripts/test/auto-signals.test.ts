@@ -6,7 +6,7 @@ import { failedMetrics, inferRepeats, type LaneEvent, passedMetrics, readReports
 import { stuckView } from "../src/explore.ts";
 import { defaultConfig } from "../src/config.ts";
 import { freshnessTick } from "../src/freshness.ts";
-import { claimCheck, groundFindings, ownerDecisions, ownerDue, ownerWords, parseOwnerReply, quoted, runOwnerCheck, sendReread } from "../src/owner-check.ts";
+import { briefForCheck, claimCheck, groundFindings, linkedWords, ownerDecisions, ownerDue, ownerWords, parseOwnerReply, quoted, runOwnerCheck, sendReread } from "../src/owner-check.ts";
 import type { Lane } from "../src/registry.ts";
 import { crossed, dueReasons } from "../src/rollover.ts";
 import { recordFix } from "../src/same-fix.ts";
@@ -174,7 +174,7 @@ test("a PASS between two sweeps ends the run: no STUCK line, and the PASS time i
 });
 
 test("owner-check reads every report since the last check, not only the newest six (challenge, gpt-6-astra)", async () => {
-  writeFileSync(join(state.dir, "brief.md"), "# \ube0c\ub9ac\ud504\n\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0");
+  writeFileSync(join(state.dir, "brief.md"), "# \ube0c\ub9ac\ud504\n\ud615: \"\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0\"");
   const reports = Array.from({ length: 9 }, (_, i) => sessionLine(10 + i, "assistant", `[REPORT] rl-e7 | milestone | \uc9c4\ud589 ${i}: ${i === 0 ? "\ud559\uc2b5\uc744 \uba48\ucda4" : "\uc815\uc0c1 \uc9c4\ud589"}`));
   const file = writeSession([sessionLine(1, "assistant", "[REPORT] rl-e7 | milestone | \uc2dc\uc791"), ...reports]);
   const prompts: string[] = [];
@@ -229,7 +229,7 @@ test("owner-check runs only on a newer report, past the interval and under the d
 });
 
 test("owner-check asks a reviewer of another family from the one reviewers list, ownerCheck.first in front, and skips the next run until a new report", async () => {
-  writeFileSync(join(state.dir, "brief.md"), "# \ube0c\ub9ac\ud504\n\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0 \ube44\uad50\ud45c\ub97c \ub9cc\ub4e4\uc5b4\ub77c\n\n## Past signals (written by dori launch)\n- \uc9c0\ub09c lane \uae30\ub85d");
+  writeFileSync(join(state.dir, "brief.md"), "# \ube0c\ub9ac\ud504\n\ud615: \"\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0 \ube44\uad50\ud45c\ub97c \ub9cc\ub4e4\uc5b4\ub77c\"\n\n## Past signals (written by dori launch)\n- \uc9c0\ub09c lane \uae30\ub85d");
   const file = writeSession([sessionLine(1, "assistant", "[REPORT] rl-e7 | milestone | \uc9c4\ud589: \ud559\uc2b5\uc744 \uba48\ucd94\uace0 \ube44\uad50\ud45c\ub97c \ub9cc\ub4e6"), sessionLine(2, "user", "[LEAD] \ud615 \uc9c0\uc2dc(\uc6d0\ubb38 https://discord.com/channels/1/2/3): \ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0")]);
   const asked: string[][] = [];
   const base = fakeRunner(world);
@@ -264,7 +264,7 @@ test("owner-check asks a reviewer of another family from the one reviewers list,
 });
 
 test("intent-check's call needs no new report; a finding again in the next check is rung 4, a clean check ends the context rung, and --reread sends the lane its brief only on a finding", async () => {
-  writeFileSync(join(state.dir, "brief.md"), "# 브리프\n학습은 멈추지 말고");
+  writeFileSync(join(state.dir, "brief.md"), "# 브리프\n형: \"학습은 멈추지 말고\"");
   const file = writeSession([sessionLine(1, "assistant", "[REPORT] rl-e7 | milestone | 진행: 학습을 멈추고 비교표를 만듦")]);
   let reply = VIOLATION;
   const base = fakeRunner(world);
@@ -336,7 +336,10 @@ test("replay hr35-e7 09:46:57Z: an owner quote that is only the lead's words aro
   // on record: the live 09:46 finding (the fake quote), from a check before this report
   const l: Lane = { ...lane(state.dir), thread: "discord:1558257428561137764", ownerCheck: { at: at(5), lastReportAt: at(1), day: at(5).slice(0, 10), today: 1, model: "m", kinds: ["VIOLATION"], finding: 'OWNER_CHECK rl-e7 VIOLATION owner "학습은 멈추지 말고" vs report "진행 중인 GPU 작업·감시 없음, 학습 없음.": ... [reviewer m]' } };
   await deps.registry.write(l);
-  const r = await runOwnerCheck(deps, l, { files: [file], inbox, owner: "owner-1" });
+  // another lane in the same cwd got a relay that quotes the phrase: not this lane's
+  const other = join(file, "..", "2026-10-10T00-00-00-000Z_11111111-1111-1111-1111-111111111111.jsonl");
+  writeFileSync(other, `${sessionLine(12, "user", '[LEAD] 형 원문 https://discord.com/channels/1/2/3: "학습은 멈추지 말고 계속 돌려"')}\n${sessionLine(13, "assistant", "[REPORT] rl-other | milestone | 진행")}\n`);
+  const r = await runOwnerCheck(deps, l, { files: [file, other], inbox, owner: "owner-1" });
   expect(r.lines).toHaveLength(1);
   expect(r.lines[0]).toStartWith('OWNER_CHECK_UNGROUNDED rl-e7 VIOLATION owner "학습은 멈추지 말고"');
   expect(r.findings).toEqual([]);
@@ -360,7 +363,7 @@ test("replay hr35-e7 09:46:57Z: an owner quote that is only the lead's words aro
 
 test("replay hr35-e7 11:18:41Z: a finding on a report an earlier check already read is OWNER_CHECK_STALE and moves no rung, even after a confirmed re-read", async () => {
   // the owner's quote is made to hold here, so only the superseded report decides
-  writeFileSync(join(state.dir, "brief.md"), "# HR35 E7\n학습은 멈추지 말고");
+  writeFileSync(join(state.dir, "brief.md"), "# HR35 E7\n형: \"학습은 멈추지 말고\"");
   const file = writeSession([
     sessionLine(30, "assistant", `[REPORT] rl-e7 | milestone | ${E7_WAIT}`),
     sessionLine(44, "assistant", "[REPORT] rl-e7 | milestone | Q99 n3 학습 시작(19:46 KST): 등록·코드 fb96b1c"),
@@ -369,7 +372,8 @@ test("replay hr35-e7 11:18:41Z: a finding on a report an earlier check already r
   const deps = ownerCheckDeps(80, E7_LINE2, []);
   // the 09:46 finding is the context rung, the lead confirmed a re-read, and the 10:48 check read up to the 19:46 report
   const context = { rung: 1, n: 1, at: at(32), pane: "w:p1" };
-  const l: Lane = { ...lane(state.dir), stuck: { "@context": context }, ownerCheck: { at: at(48), lastReportAt: at(44), day: at(48).slice(0, 10), today: 13, model: "m", kinds: ["VIOLATION"], finding: "OWNER_CHECK rl-e7 VIOLATION owner ...", rereadAt: at(35) } };
+  // and the lane states, after that check, that it waits for the owner's choice (a piece of the old report; challenge, grok-4.7)
+  const l: Lane = { ...lane(state.dir), direction: { at: at(49), text: "형의 선택을 기다림" }, stuck: { "@context": context }, ownerCheck: { at: at(48), lastReportAt: at(44), day: at(48).slice(0, 10), today: 13, model: "m", kinds: ["VIOLATION"], finding: "OWNER_CHECK rl-e7 VIOLATION owner ...", rereadAt: at(35) } };
   await deps.registry.write(l);
   const r = await runOwnerCheck(deps, l, { files: [file], inbox: join(state.dir, "none.jsonl") });
   expect(r.lines).toHaveLength(1);
@@ -382,7 +386,7 @@ test("replay hr35-e7 11:18:41Z: a finding on a report an earlier check already r
 });
 
 test("a finding on the same stated direction moves the context rung once; a new direction after a confirmed re-read is rung 4", async () => {
-  writeFileSync(join(state.dir, "brief.md"), "# 브리프\n학습은 멈추지 말고");
+  writeFileSync(join(state.dir, "brief.md"), "# 브리프\n형: \"학습은 멈추지 말고\"");
   const reply = 'VERDICT: VIOLATION\nOWNER: "학습은 멈추지 말고"\nREPORT: "학습을 멈추고 비교표만 만든다"\nWHY: stops training.';
   const deps = ownerCheckDeps(10, reply, []);
   const l = { ...lane(state.dir), direction: { at: at(2), text: "학습을 멈추고 비교표만 만든다" } };
@@ -392,6 +396,8 @@ test("a finding on the same stated direction moves the context rung once; a new 
   expect((await sendReread(deps, (await deps.registry.read("rl-e7")) as Lane)).ok).toBe(true);
   // the same direction again: the report under the finding did not change, so no rung 4
   const same = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, opts);
+  // the direction was read by the first check: stale
+  expect(same.lines[0]).toStartWith("OWNER_CHECK_STALE rl-e7 VIOLATION");
   expect(same.lines.join("\n")).not.toContain("STUCK");
   expect(((await deps.registry.read("rl-e7")) as Lane).stuck?.["@context"]?.n).toBe(1);
   // restated at minute 8, before the re-read of minute 10: not evidence that the lane ignored the re-read
@@ -406,9 +412,21 @@ test("a finding on the same stated direction moves the context rung once; a new 
 });
 
 test("only the owner's own words ground a quote, and a report quote stitched from already-read reports is stale (challenge, gpt-6-astra)", () => {
-  // curly single quotes are quotes too; a 1-word mark is not the owner's sentence, so that relay counts whole
+  // curly and straight single quotes are quotes too; a 1-word mark is not the owner's sentence, and text outside quote marks
+  // is never his (no whole-relay fallback)
   expect(ownerWords("[LEAD] 형 원문 <link>: ‘왜 진도가 안 나가는지 알려줘’. 학습은 멈추지 말고")).toBe("왜 진도가 안 나가는지 알려줘");
-  expect(ownerWords('[LEAD] 형 원문 <link>: "표" 부터 고치고 학습은 그대로 두자')).toContain("학습은 그대로 두자");
+  expect(ownerWords("[LEAD] 형 원문 <link>: '왜 진도가 안 나가는지 알려줘'. 학습은 멈추지 말고")).toBe("왜 진도가 안 나가는지 알려줘");
+  expect(ownerWords('[LEAD] 형 원문 <link>: "표" 부터 고치고 학습은 그대로 두자')).toBe("");
+  // a relay's link resolves to the owner's message in the inbox: his words even with no quote marks
+  const inbox = [JSON.stringify({ id: "555", author_id: "owner-1", content: "학습은 그대로 두자" }), JSON.stringify({ id: "556", author_id: "bot-2", content: "봇이 쓴 문장 여섯 자 넘음" })].join("\n");
+  expect(linkedWords("[LEAD] 원문 https://discord.com/channels/1/2/555: 학습은 그대로 두자, 그리고 표 고쳐", inbox, "owner-1")).toEqual(["학습은 그대로 두자"]);
+  expect(linkedWords("[LEAD] 원문 https://discord.com/channels/1/2/556", inbox, "owner-1")).toEqual([]);
+  // the launch footer is not the brief's text
+  expect(briefForCheck('# b\n형: "정지 상태 작업"\n\n## Lane footer (written by dori launch)\n- Goal (owner words): "x"')).not.toContain("Lane footer");
+  // the brief's prose grounds a CONTRADICTION (a fact it states), never a VIOLATION (an order the owner gave)
+  const prose = [{ kind: "VIOLATION", owner: "GPU 두 대를 함께 쓴다", report: "n3 학습 시작", why: "x", verified: true }, { kind: "CONTRADICTION", owner: "GPU 두 대를 함께 쓴다", report: "n3 학습 시작", why: "x", verified: true }] as const;
+  const pg = groundFindings(prose, { ownerSource: "", briefSource: "GPU 두 대를 함께 쓴다", reports: [{ at: at(30), text: "n3 학습 시작" }] });
+  expect([pg.kept.map((f) => f.kind), pg.dropped.map((d) => d.why)]).toEqual([["CONTRADICTION"], ["UNGROUNDED"]]);
   // a card's question is the lead's text: only the owner's choice grounds
   const card = JSON.stringify({ ts: "2026-10-10T00:20:00.000000+00:00", kind: "answer", qid: "Q1", question: "학습을 멈추지 말고 계속할까?", answer: "아니, 먼저 설계부터", thread: "9" });
   expect(ownerDecisions(card, "discord:9", "", at(0), 8).map((d) => d.words)).toEqual(["아니, 먼저 설계부터"]);
@@ -469,7 +487,7 @@ test("a PASS in a report lowers a tagged-only metric's rung, and clears an --imp
 });
 
 test("intent-check's direction is evidence: a finding that quotes it is verified and climbs the ladder (challenge, gpt-6-astra)", async () => {
-  writeFileSync(join(state.dir, "brief.md"), "# \ube0c\ub9ac\ud504\n\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0");
+  writeFileSync(join(state.dir, "brief.md"), "# \ube0c\ub9ac\ud504\n\ud615: \"\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0\"");
   const reply = 'VERDICT: VIOLATION\nOWNER: "\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0"\nREPORT: "\ud559\uc2b5\uc744 \uba48\ucd94\uace0 \ube44\uad50\ud45c\ub9cc \ub9cc\ub4e0\ub2e4"\nWHY: the owner said keep training.';
   const base = fakeRunner(world);
   const run: Runner = async (argv, opts) => (argv[0] !== "omo" ? base(argv, opts) : { code: 0, out: reply, err: "" });
