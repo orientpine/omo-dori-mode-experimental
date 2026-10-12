@@ -55,8 +55,9 @@ export class Discord {
     await this.call("POST", `/channels/${channelId}/typing`);
   }
 
-  async startThread(channelId: string, messageId: string, name: string): Promise<string> {
-    return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages/${messageId}/threads`, { name: guardText(name).slice(0, 100) })).id;
+  async startThread(channelId: string, messageId: string | undefined, name: string): Promise<string> {
+    const path = messageId ? `/channels/${channelId}/messages/${messageId}/threads` : `/channels/${channelId}/threads`;
+    return (await this.call<{ id: string }>("POST", path, { name: guardText(name).slice(0, 100), ...(!messageId ? { type: 11, auto_archive_duration: 10080 } : {}) })).id;
   }
 
   async setThread(threadId: string, patch: { readonly name?: string; readonly archived?: boolean }): Promise<void> {

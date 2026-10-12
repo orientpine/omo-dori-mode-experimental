@@ -142,3 +142,5 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 | `dori inbound discord` | Discord listener: owner messages with the eyes reaction, voice transcripts, question-card answers, into one inbox file; optional pair channel with a second Dori, and a shadow run (`DORI_DISCORD_SHADOW_INBOX`) that writes inbox rows only |
 | `dori ask` / `questions` / `reopen` / `resolve` | Discord question cards: buttons plus a write-my-own box, owner-only, folded into a record when answered; resolving an unanswered card returns its thread to working when no other card there is open |
 | `dori thread reply\|wait\|done` | Discord thread hooks: post a lane report and set the thread status; done archives it |
+| `dori thread open\|set\|map\|list` | open a marked work thread (standalone requires `--first`), queue its status, map a session or list mappings; done archives and removes the mapping |
+| `dori lead` | find the live lead's aoe id and tmux name; a stale configured id is resolved through aoe |

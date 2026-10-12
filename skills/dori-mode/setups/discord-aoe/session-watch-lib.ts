@@ -1,6 +1,23 @@
 // Pure pieces of session-watch.ts, kept apart so they can be tested without tmux or aoe.
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { join } from "node:path";
+import type { DoriConfig } from "../../scripts/src/config.ts";
+import { threads } from "../../scripts/src/messenger/thread-map.ts";
+import type { Lane } from "../../scripts/src/registry.ts";
+
+// Called each tick: handover and config edits must take effect without restarting the watcher.
+export const watchContext = async (load: () => Promise<DoriConfig>, lanes: readonly Lane[]) => {
+  const config = await load();
+  const mapped = threads(process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord"));
+  const skip = new Set([config.leadPane, ...config.ignorePanes].filter(Boolean));
+  const thread = (session: string, tmux: string): string | null => {
+    const lane = lanes.find((l) => l.pane === tmux);
+    if (lane?.thread && lane.thread !== "none") return lane.thread;
+    const id = Object.entries(mapped).find(([, entry]) => entry.session === session)?.[0];
+    return id ? `discord:${id}` : null;
+  };
+  return { skip, thread };
+};
 
 export type Said = { at: string; text: string };
 

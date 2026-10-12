@@ -14,8 +14,13 @@ set -uo pipefail
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 [ -f "${DORI_ENV_FILE:-$HOME/.dori/dori.env}" ] && set -a && . "${DORI_ENV_FILE:-$HOME/.dori/dori.env}" && set +a
 
-ID=${1:-${DORI_LEAD_AOE_ID:?set DORI_LEAD_AOE_ID or pass the aoe id}}
-T=${2:-${DORI_LEAD_TMUX:?set DORI_LEAD_TMUX or pass the tmux session}}
+if [ -z "${1:-}" ]; then
+  LEAD=$(dori lead) || exit 1
+  read -r ID T <<<"$LEAD"
+else
+  ID=$1
+  T=${2:-${DORI_LEAD_TMUX:?set DORI_LEAD_TMUX or pass the tmux session}}
+fi
 PROMPT=${3-Dori mode}
 AGENT=${DORI_AGENT_BIN:-omo}
 LOG=$HOME/.dori/self-restart.log

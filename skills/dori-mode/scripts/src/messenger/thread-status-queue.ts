@@ -5,6 +5,7 @@ import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
 import { desiredStatus, setThreadStatus, type ThreadStatus } from "./discord-thread.ts";
 import { MessengerError } from "./http.ts";
+import { dropThread } from "./thread-map.ts";
 
 // One entry per thread: the status the latest event asked for, the earliest time the rename may run, and how many
 // rate-limited tries it took so far. `rev` grows with every request, so a rename that finishes after a newer request
@@ -127,6 +128,7 @@ export class ThreadStatusQueue {
     const status = desiredStatus(e.status, cards);
     try {
       const changed = await setThreadStatus(this.d.dc.once(), thread, status, this.d.words);
+      if (status === "done") dropThread(dirname(this.d.file), thread);
       this.forget(thread, e.rev);
       this.d.log(`THREAD_STATUS_APPLIED ${thread} ${status}${changed ? "" : " unchanged"}${status !== e.status ? ` open=${cards.join(",")}` : ""}`);
       return changed ? "applied" : "unchanged";

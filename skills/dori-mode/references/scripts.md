@@ -321,6 +321,18 @@ Posts a question card, pinging only the owner, and prints `ASKED <Qn> message=<i
 ### `dori questions [--open]` / `dori reopen <Qn>` / `dori resolve <Qn>`
 List tracked questions; put a card's buttons back where it was posted (when a typed answer was not really an answer), marking its thread waiting again; forget a question once its follow-up is done. The folded card stays in the chat as the record. Resolving a card that is still open (dropped without an answer) marks its thread working again once no other question in it is open; resolving an answered card leaves the thread status alone.
 
+### `dori lead`
+Prints `<aoe-id> <tmux-session>` for the live lead. The tmux name comes from `DORI_LEAD_TMUX`, else `leadPane` (`DORI_LEAD_PANE` overrides the config). `DORI_LEAD_AOE_ID` is accepted only when its first eight characters match the tmux name's final eight characters; otherwise the id is found with `aoe list --json`. No configured or live lead, or no matching aoe session, exits 1 with a reason. `src/lead.ts` exports `findLead` for other callers.
+
+### `dori thread open <title> [--from MSG_ID] [--first TEXT] [--session S]`
+Opens a thread in `DORI_DISCORD_CHANNEL`, named with exactly one working mark in `discord.statusStyle`. `--from` starts it from that message; without it, `--first` is required and posted as the standalone thread's first message. Records the bare title and session (null when omitted) in `<cardDir>/threads.json` and prints `THREAD_OPENED discord:<id>`.
+
+### `dori thread map discord:<id> <session|none>` / `dori thread list`
+`map` sets the session, keeping the recorded title, and prints `THREAD_MAPPED discord:<id> <session|none>`. `none` stores null. `list` prints one line per mapping: `<id> <session|none> <title>`. The map uses `{"<id>":{"session":null,"title":"..."}}`; `cardDir` is `DORI_DISCORD_STATE_DIR`, else `<stateDir>/discord`, so an existing map there needs no migration. Writes use a temporary file and rename. The exported `threads`, `mapThread` and `dropThread` in `src/messenger/thread-map.ts` take the directory as their first argument and can be imported by a JS kernel.
+
+### `dori thread set discord:<id> working|waiting|done [--open-card]`
+Requests the status through the existing `ThreadStatusQueue`, without posting a message. Open question cards (or `--open-card`) keep a non-done thread waiting; done wins, archives it and drops its mapping after the status is applied. A rate-limited rename stays queued until the listener applies it; the mapping stays until then.
+
 ### `dori thread <reply|wait|done> discord:<thread id> <text>`
 A ready `hooks.threadReply` / `hooks.threadDone` for Discord: `["dori", "thread", "reply", "{thread}", "{text}"]`. It shows typing, posts the text with emoji removed, and sets the status mark at the start of the thread name: `reply` working, `wait` waiting, `done` done. `done` archives the thread; the others unarchive it. Nothing is renamed when the mark already holds, because Discord allows only about two renames per ten minutes.
 
