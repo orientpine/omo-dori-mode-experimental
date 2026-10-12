@@ -258,7 +258,8 @@ export class DiscordListener {
   }
 
   // The owner writing in a closed thread brings the work back: unarchive it and mark it working again. Writing in a
-  // thread with an open question card re-checks its mark, which follows the card (waiting), not the reply.
+  // thread with an open question card re-checks its mark, which follows the card (waiting) unless a lane in the thread
+  // is working, not the reply.
   private async recheckThread(threadId: string, openCards: readonly string[]): Promise<void> {
     if (openCards.length) {
       await this.d.cards.statuses.request(threadId, "working");

@@ -48,9 +48,12 @@ export const progressText = (status: "working" | "done", text: string, words: Di
 
 export type ThreadInfo = { readonly name?: string; readonly thread_metadata?: { readonly archived?: boolean } };
 
-// The status a thread should show, from the truth rather than the last event: a closed lane is done; otherwise any
-// open question card in the thread makes it waiting; otherwise the event's own status (working, or an explicit wait).
-export const desiredStatus = (hint: ThreadStatus, openCards: readonly string[]): ThreadStatus => (hint === "done" ? "done" : openCards.length ? "waiting" : hint);
+// The status a thread should show, from the truth rather than the last event: a closed lane is done; otherwise an open
+// question card in the thread makes it waiting, unless a lane on the thread is still working (waiting means nothing is
+// left on our side, so a working lane keeps it working while its card is open); otherwise the event's own status
+// (working, or an explicit wait).
+export const desiredStatus = (hint: ThreadStatus, openCards: readonly string[], workingLanes: readonly string[] = []): ThreadStatus =>
+  hint === "done" ? "done" : openCards.length && !workingLanes.length ? "waiting" : hint;
 
 // Discord rate-limits thread renames (about two per ten minutes), so nothing is sent when the status already holds.
 // Resolves true when it sent a change.

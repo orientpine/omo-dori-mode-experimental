@@ -118,3 +118,16 @@ test("checkDone reports every signal, so one passing signal never hides a failin
   const checks = await checkDone('file ok.txt; command ["false"]', run, io);
   expect(checks.map((c) => c.ok)).toEqual([true, false]);
 });
+
+test("a command signal that greps git's output for a Korean path matches: git runs with core.quotepath off (feature-verify 2026-10-12, defect 5)", async () => {
+  const repo = join(state.dir, "kr-repo");
+  const git = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe" });
+  Bun.spawnSync(["git", "init", "-q", repo]);
+  writeFileSync(join(repo, "\ubcf4\uace0\uc11c.md"), "x");
+  git("add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "add");
+  const signal = 'command ["git","log","-1","--name-only","--format="] stdout~"^\ubcf4\uace0\uc11c\\\\.md$"';
+  expect(await checkSignal(signal, run, { cwd: repo })).toMatchObject({ ok: true });
+  // the same command as git prints it to anything else: the quoted path never matches
+  expect(git("log", "-1", "--name-only", "--format=").stdout.toString().trim()).toStartWith('"\\');
+});

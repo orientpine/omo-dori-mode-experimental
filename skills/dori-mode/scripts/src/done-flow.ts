@@ -130,7 +130,8 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
     } else posted = "no threadReply hook, nothing posted";
     cleanup.push(`thread left open: ${holders.join("; ")}; ${posted}`);
   } else if (hook && hasThread(lane)) {
-    const r = await deps.run(fill(hook, { thread: lane.thread, text: threadText, key: lane.key }));
+    // the closing lane is still open while its hook runs: DORI_CLOSING_LANE tells dori thread done not to count it as a user
+    const r = await deps.run(fill(hook, { thread: lane.thread, text: threadText, key: lane.key }), { env: { DORI_CLOSING_LANE: lane.key } });
     cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);
   } else if (hook) {
     // a missing or broken thread ref would leave the work thread open without a word; say so

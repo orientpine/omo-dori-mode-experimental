@@ -154,8 +154,9 @@ export type Explore = {
 // prescriptionPattern: words that make it an attempt even when the text also reads as a diagnosis (diagnosticPattern).
 // aliases: metric names that mean the same gate ({ "교착": ["deadlock"] }); the key is the name shown. conditionWords: names
 // of conditions a report breaks results down by (soil, seed, depth, cell: "교착 113(양토 1.0 61 ...)"), never a metric.
-// discriminationPattern: a report or tree entry that tells hypotheses apart (dori tree H.., 가설 판별); the next attempt on a
-// metric it investigated is not a repeat. targetScope: an
+// discriminationPattern: a report or tree entry that tells hypotheses apart (dori tree H.., 가설 판별); when it makes no new
+// attempt itself (its result changed the next action), the next attempt on a metric it investigated is not a repeat; one that
+// prescribes again in the same report counts as an attempt. targetScope: an
 // attempt targets a metric named in the same "sentence" (the default: reports name the target a few words from the prescription)
 // or the same "clause" (between commas: quieter, misses more).
 // ownerCheck: a reviewer of another family reads the brief, the owner's words and recent reports and answers VIOLATION /

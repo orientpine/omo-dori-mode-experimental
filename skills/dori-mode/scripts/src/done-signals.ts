@@ -17,6 +17,13 @@ export type SignalIo = { readonly http?: Http; readonly cwd?: string; readonly h
 
 export const COMMAND_TIMEOUT_MS = 120_000;
 
+// git quotes a non-ASCII path ("\352\270\260...") unless core.quotepath is off, so a command signal that greps git's
+// output for a Korean path never matches. Added after any GIT_CONFIG_* entries the environment already has.
+export const gitQuotepathOff = (env: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> => {
+  const n = Number(env.GIT_CONFIG_COUNT) || 0;
+  return { GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "core.quotepath", [`GIT_CONFIG_VALUE_${n}`]: "off" };
+};
+
 export const UNREADABLE = [
   "unreadable signal; use one of:",
   "merged <owner/repo>#N | closed <owner/repo>#N | published <pkg>@<version>",
@@ -193,7 +200,7 @@ export const checkSignal = async (signal: string, run: Runner, io: SignalIo = {}
       return { signal: s, ok, detail: ok ? `registry has ${sig.pkg}@${sig.version}` : r.err || r.out || "not published" };
     }
     case "command": {
-      const r = await run(sig.argv, { ...(io.cwd ? { cwd: io.cwd } : {}), timeoutMs: COMMAND_TIMEOUT_MS });
+      const r = await run(sig.argv, { ...(io.cwd ? { cwd: io.cwd } : {}), timeoutMs: COMMAND_TIMEOUT_MS, env: gitQuotepathOff() });
       if (r.code !== 0) return { signal: s, ok: false, detail: `exit ${r.code}: ${short(r.err || r.out) || "no output"}` };
       if (sig.stdout && !sig.stdout.test(r.out)) return { signal: s, ok: false, detail: `exit 0 but stdout does not match ${sig.stdout}: ${short(r.out) || "(empty)"}` };
       return { signal: s, ok: true, detail: sig.stdout ? `exit 0, stdout matches ${sig.stdout}` : "exit 0" };

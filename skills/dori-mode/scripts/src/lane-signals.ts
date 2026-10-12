@@ -2,7 +2,8 @@ import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { type DoriConfig, expandHome } from "./config.ts";
+import { canonical } from "./auto-signals.ts";
+import { type AutoSignals, type DoriConfig, expandHome } from "./config.ts";
 import { type FixAttempt, type Lane, statusOf } from "./registry.ts";
 import { fixCount, fixTag } from "./same-fix.ts";
 import { parseWatchLine } from "./watch-log.ts";
@@ -307,10 +308,12 @@ export const pastSignalsSection = (label: string, list: readonly LaneSignals[], 
   return lines.join("\n");
 };
 
-// For dori fix-attempt, before it records: every hypothesis already tried on this metric in the area, by lane.
-export const priorFixLines = (list: readonly LaneSignals[], key: string, metric: string): string[] => {
+// For dori fix-attempt, before it records: every hypothesis already tried on this metric in the area, by lane. A fix
+// recorded under another name of the metric (autoSignals.aliases: deadlocks for 교착) is the same metric, as in the stuck count.
+export const priorFixLines = (list: readonly LaneSignals[], key: string, metric: string, aliases: AutoSignals["aliases"] = {}): string[] => {
+  const name = canonical(metric, aliases);
   const lines = list.flatMap((s) => {
-    const on = s.fixes.filter((f) => f.metric === metric);
+    const on = s.fixes.filter((f) => canonical(f.metric, aliases) === name).map((f) => ({ ...f, metric: name }));
     return on.length ? [`PRIOR_FIX ${s.lane.key} ${hypotheses(on).join("; ")}`] : [];
   });
   if (!lines.length) lines.push(`PRIOR_FIX none on "${metric}" in this area`);

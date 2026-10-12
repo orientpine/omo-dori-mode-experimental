@@ -520,3 +520,19 @@ test("a condition name is no metric, and a failure investigated by hypothesis di
   expect(inferRepeats(loop, cfg).counts.size).toBe(0);
   expect(inferRepeats([...loop, ev(120, "\uad50\ucc29 7 FAIL"), ev(160, "\uc870\uc815 6: \uad50\ucc29 \ubc8c\uc810")], cfg).counts.get("\uad50\ucc29")?.n).toBe(1);
 });
+
+test("replay hr35-e7 2026-10-11..12: a discrimination that prescribes again in the same report is an attempt, so the owner-confirmed 정지 loop is caught; the registered probes X1'-X5 that made no new attempt stay exempt (feature-verify 2026-10-12, defect 1)", async () => {
+  const chain = (await Bun.file(join(import.meta.dir, "fixtures/hr35-e7-hold-chain.json")).json()) as LaneEvent[];
+  const aliases = { "\uad50\ucc29": ["deadlock", "deadlocks"], "\uc815\uc9c0": ["\ubb34\uc791\uc5c5", "\uba48\ucda4", "hold", "idle"] };
+  const fired = (c: typeof cfg): string[] => {
+    const out: string[] = [];
+    inferRepeats(chain, c, (r, e) => r.n >= 3 && out.push(`${e.at.slice(0, 16)} ${r.metric} ${r.n}`));
+    return out;
+  };
+  expect(fired({ ...cfg, aliases })).toEqual(["2026-10-11T20:53 \uc815\uc9c0 3"]);
+  // the X-probe reports are what keeps the design report after them from counting
+  expect(fired({ ...cfg, aliases, discriminationPattern: "$^" })).toContain("2026-10-12T08:13 \uc815\uc9c0 4");
+  // "\ucc98\ubc29\uc548 \ud55c \uc7a5 \ud655\uc815" is a prescription; "\ucc98\ubc29 \uc548 \ub744\uc6c0" says none is made
+  expect(inferRepeats([ev(0, "\uc815\uc9c0 9 FAIL"), ev(40, "\ucc98\ubc29\uc548 \ud55c \uc7a5 \ud655\uc815: \uc815\uc9c0 \ubc8c\uc810")], cfg).counts.get("\uc815\uc9c0")?.n).toBe(1);
+  expect(inferRepeats([ev(0, "\uc815\uc9c0 9 FAIL"), ev(40, "\uc815\uc9c0 \ubc8c\uc810 \ucc98\ubc29 \uc548 \ub744\uc6c0")], cfg).counts.size).toBe(0);
+});
