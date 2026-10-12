@@ -1,12 +1,13 @@
 export type Ran = { readonly code: number; readonly out: string; readonly err: string };
-export type RunOptions = { readonly cwd?: string; readonly timeoutMs?: number };
+// env: variables set for this one command on top of the process environment
+export type RunOptions = { readonly cwd?: string; readonly timeoutMs?: number; readonly env?: Readonly<Record<string, string>> };
 export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran>;
 
 export const run: Runner = async (argv, opts = {}) => {
   let p: ReturnType<typeof Bun.spawn>;
   try {
     // env: process.env explicitly, or Bun hands the child its start-up environment without what loadEnvFile added from dori.env
-    p = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe", env: process.env, ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}) });
+    p = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe", env: opts.env ? { ...process.env, ...opts.env } : process.env, ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}) });
   } catch (e) {
     return { code: 127, out: "", err: e instanceof Error ? e.message : String(e) };
   }

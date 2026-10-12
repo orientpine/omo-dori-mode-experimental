@@ -24,6 +24,9 @@ export type QueueDeps = {
   readonly file: string;
   // ids of the question cards still open in a thread: any of them keeps the thread waiting
   readonly openCards: (thread: string) => readonly string[];
+  // keys of the open lanes working in a thread: any of them keeps it working, past an open card or a wait (none: the cards
+  // and the event decide)
+  readonly workingLanes?: (thread: string) => Promise<readonly string[]>;
   readonly now: () => number;
   readonly log: (line: string) => void;
   readonly jitterMs?: () => number;
@@ -125,12 +128,15 @@ export class ThreadStatusQueue {
       return "pending";
     }
     const cards = this.d.openCards(thread);
-    const status = desiredStatus(e.status, cards);
+    const lanes = e.status === "done" ? [] : ((await this.d.workingLanes?.(thread)) ?? []);
+    const status = desiredStatus(e.status, cards, lanes);
+    // what decided it, when not the event: the open cards, the lanes that kept it working past them
+    const why = status !== e.status || (cards.length && lanes.length) ? [cards.length ? ` open=${cards.join(",")}` : "", lanes.length ? ` working=${lanes.join(",")}` : ""].join("") : "";
     try {
       const changed = await setThreadStatus(this.d.dc.once(), thread, status, this.d.words);
       if (status === "done") dropThread(dirname(this.d.file), thread);
       this.forget(thread, e.rev);
-      this.d.log(`THREAD_STATUS_APPLIED ${thread} ${status}${changed ? "" : " unchanged"}${status !== e.status ? ` open=${cards.join(",")}` : ""}`);
+      this.d.log(`THREAD_STATUS_APPLIED ${thread} ${status}${changed ? "" : " unchanged"}${why}`);
       return changed ? "applied" : "unchanged";
     } catch (err) {
       const status429 = err instanceof MessengerError && err.status === 429;

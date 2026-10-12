@@ -44,7 +44,7 @@ const world = (name: string) => {
   const dc = new Discord(http, fakeClock(0), "bot");
   const store = new QuestionStore(`${state.dir}/discord`);
   const file = `${state.dir}/discord/thread-status.json`;
-  const queue = () => new ThreadStatusQueue({ dc, words: WORDS, file, openCards: (t) => openCardIds(store, t), now: () => w.t, log: (l) => w.logs.push(l), jitterMs: () => 500 });
+  const queue = (workingLanes?: (t: string) => Promise<readonly string[]>) => new ThreadStatusQueue({ dc, words: WORDS, file, openCards: (t) => openCardIds(store, t), ...(workingLanes ? { workingLanes } : {}), now: () => w.t, log: (l) => w.logs.push(l), jitterMs: () => 500 });
   const timers = { setTimeout: (cb: () => void, ms: number) => w.timers.push({ at: w.t + ms, cb }), setInterval: () => 0 };
   // runs every timer due within `ms`, in order, letting each rename finish before the next
   const advance = async (q: ThreadStatusQueue, ms: number) => {
@@ -129,9 +129,9 @@ test("done keeps its mapping while rate limited and drops it when the listener a
 });
 
 // the listener and cards as `dori inbound discord` builds them, sharing one queue
-const live = (name: string) => {
+const live = (name: string, workingLanes?: (t: string) => Promise<readonly string[]>) => {
   const wd = world(name);
-  const q = wd.queue();
+  const q = wd.queue(workingLanes);
   const cards = new QuestionCards(wd.dc, wd.store, { channel: CHANNEL, owner: OWNER, words: WORDS }, () => wd.w.t, q);
   const inboxFile = `${state.dir}/discord/inbox.jsonl`;
   const listener = new DiscordListener({ dc: wd.dc, cards, open: () => { throw new Error("no gateway in this test"); }, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, words: WORDS, inboxFile, timers: { setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0 }, now: () => wd.w.t, log: (l) => wd.w.logs.push(l), fatal: () => {} });
@@ -166,4 +166,20 @@ test("three cards answered out of step stay ⏸️ until the last open one is re
   expect(w.name).toBe("⏸️ fix login");
   expect(await cards.resolve("Q3")).toBe(true);
   expect(w.name).toBe("🔄 fix login");
+});
+
+test("a lane still working in the thread keeps it 🔄 past an open card and a wait; ⏸️ only once no lane works there (feature-verify 2026-10-12, follow-up a)", async () => {
+  const working = new Set(["lane-a"]);
+  const { w, q, cards, listener, say } = live("🔄 fix login", async () => [...working]);
+  await cards.ask("Ship to prod?", ["Yes", "No"], { thread: THREAD });
+  // waiting means nothing is left on our side: the card does not show it while lane-a works (challenge, gpt-6-astra and grok-4.7)
+  expect(w.name).toBe("🔄 fix login");
+  expect(w.patches).toEqual([]);
+  await q.request(THREAD, "waiting");
+  expect(w.name).toBe("🔄 fix login");
+  expect(w.logs).toContain(`THREAD_STATUS_APPLIED ${THREAD} working unchanged open=Q1 working=lane-a`);
+  // no lane works there any more: the open card makes it waiting
+  working.clear();
+  await listener.onMessage(say("1003", "still thinking"));
+  expect(w.name).toBe("⏸️ fix login");
 });

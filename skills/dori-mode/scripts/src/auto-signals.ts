@@ -106,8 +106,9 @@ export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern"
 };
 
 const SENTENCE = /\n|(?<=[.!?。])\s+/u;
-// "T-reward not launched", "조정 5 없음", "보상 조정 중단": a clause that says an attempt is not made
-const NEGATED = /안 |않|없음|없이|중단|보류|대신|아니라|\bnot\b|\bno\b|\bnever\b|\bwithout\b|\bstop(?:ped)?\b|\binstead\b/iu;
+// "T-reward not launched", "조정 5 없음", "보상 조정 중단": a clause that says an attempt is not made; 안 is the word "not"
+// ("학습 안 띄움"), not the end of 방안/처방안 ("처방안 한 장 확정" is a prescription)
+const NEGATED = /(?<![\p{L}])안 |않|없음|없이|중단|보류|대신|아니라|\bnot\b|\bno\b|\bnever\b|\bwithout\b|\bstop(?:ped)?\b|\binstead\b/iu;
 const CLAUSE = /[,;·|()[\]{}]|\s[—–-]\s|→|=>|\n|(?<=[.!?。])\s+/u;
 const SENTENCE_WIDE = /\n|(?<=[.!?。])\s+|\s[—–]\s|;/u;
 
@@ -180,19 +181,23 @@ export const inferRepeats = (events: readonly LaneEvent[], cfg: AutoSignals, onC
       passes.set(m, e.at);
     }
     for (const m of failedHere) if (!failedSince.has(m)) failedSince.set(m, { at: e.at, source: e.source, role: "fail", text: clipLine(text) });
-    // a report or tree entry that tells hypotheses apart (dori tree H.., 가설 판별, a falsified or supported entry) investigates
-    // the failed lines: the next attempt on them follows a root-cause hunt, not a repeat, and it is never an attempt itself
-    if (disc.test(text) || (e.source === "tree" && /\s기각|\s->\s/.test(text))) {
-      failedSince.clear();
-      continue;
-    }
     // an attempt targets a metric when one clause holds both the attempt word and the metric ("조정 4 = 평균 행동 교착 진입
     // 벌점"), not when the metric is only context elsewhere in the report ("model_795, 씨앗 200~223 ... 시작"); the clause
     // must not itself be a verdict or say the attempt is not made. A failure first seen in this very event is not consumed by
 // it: an eval report that states a FAIL and plans the next step is not yet a new attempt (challenge, grok-4.7).
     const fail = re(cfg.failPattern);
     const acts = text.split(cfg.targetScope === "sentence" ? SENTENCE_WIDE : CLAUSE).filter((c) => attempt.test(c) && !NEGATED.test(c) && !fail.test(c) && !verdict.test(c) && (strong.test(c) || !diag.test(c)));
-    if (!acts.length) continue;
+    // a report or tree entry that tells hypotheses apart (dori tree H.., 가설 판별, a falsified or supported entry) and makes
+    // no new attempt itself changed the next action: its result ruled a prescription out or sent the lane on a root-cause
+    // hunt, so the next attempt on the failed lines is not a repeat. One that states its discrimination result and in the
+    // same report prescribes again on the line did not change the action; it is an attempt like any other (hr35-e7 정지
+    // loop, 2026-10-11: "판별 결과: ... 둘 다 기각" next to "처방안 한 장 확정").
+    if (!acts.length) {
+      // every pending line, not only the ones it names: a hypothesis entry rarely names its gate line ("H1 기각"), and the
+      // design report after the X1'-X5 probes would count again (hr35-e7 2026-10-12 08:13, challenge reply)
+      if (disc.test(text) || (e.source === "tree" && /\s기각|\s->\s/.test(text))) failedSince.clear();
+      continue;
+    }
     for (const [m, failEv] of failedSince) {
       if (failEv.at === e.at || !acts.some((c) => mentions(c, m, cfg.aliases))) continue;
       const prev = counts.get(m);

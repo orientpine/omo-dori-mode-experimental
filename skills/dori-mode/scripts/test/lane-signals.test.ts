@@ -89,6 +89,11 @@ test("three numbered attempts with no root-cause switch, a third same fix and tw
   expect({ claims: s.claims, rejected: s.rejections.length }).toEqual({ claims: 2, rejected: 2 });
   expect(priorFixLines([s], "hr9-e7", "deadlock count")).toEqual(['PRIOR_FIX hr9-e7 "deadlock count": reward too small x3, std too wide x1', "PRIOR_ATTEMPTS hr9-e7 numbered attempts 1-3, root-cause switch: none"]);
   expect(priorFixLines([s], "hr9-e7", "dump rate")).toEqual(['PRIOR_FIX none on "dump rate" in this area', "PRIOR_ATTEMPTS hr9-e7 numbered attempts 1-3, root-cause switch: none"]);
+  // a fix recorded under another name of the metric is the same metric, as in the stuck count (feature-verify 2026-10-12, defect 2)
+  const aliases = { "deadlock count": ["deadlocks", "deadlock"] };
+  const mixed = laneSignals({ ...e7, fixes: [fix("reward too small"), { ...fix("std too wide"), metric: "deadlocks" }] }, { mentions: [], sends: 0, nudges: 0 }, cfg);
+  expect(priorFixLines([mixed], "hr9-e7", "deadlocks", aliases)[0]).toBe('PRIOR_FIX hr9-e7 "deadlock count": reward too small x1, std too wide x1');
+  expect(priorFixLines([mixed], "hr9-e7", "deadlocks")[0]).toBe('PRIOR_FIX hr9-e7 "deadlocks": std too wide x1');
 });
 
 test("a launch in the same repo or topic gets a Past signals section from the earlier lanes; an unrelated launch does not", async () => {

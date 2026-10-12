@@ -25,7 +25,7 @@ import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneL
 import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchLane, LaunchError, renderBrief, setThread, validateLaunch } from "./launch.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
-import { evidenceLines, inferredLine, inferRepeats, laneEvents, type MetricRepeat, suspects } from "./auto-signals.ts";
+import { canonical, evidenceLines, inferredLine, inferRepeats, laneEvents, type MetricRepeat, suspects } from "./auto-signals.ts";
 import { runOwnerCheck, sendReread } from "./owner-check.ts";
 import { branchesFrom, ForkError, forkExplore, type Mode } from "./fork-explore.ts";
 import { Registry, statusOf } from "./registry.ts";
@@ -370,12 +370,15 @@ const env = (name: string): string => process.env[name]?.trim() || die(`${name} 
 const discordClient = () => new Discord(fetchHttp, realClock, env("DORI_DISCORD_TOKEN"));
 // question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
 const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
-// every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards
+// every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards and
+// the lanes still working in the thread
+// working, or sent back to work by an objection (not-done); a lane that claimed done or is paused waits like the thread
+const workingLanes = async (t: string): Promise<string[]> => (await deps.registry.open()).filter((l) => l.thread === `discord:${t}` && (statusOf(l) === "working" || statusOf(l) === "not-done")).map((l) => l.key);
 const threadStatuses = (dc: Discord, log: (line: string) => void = (line) => console.error(line)) => {
   const store = new QuestionStore(cardDir());
-  return new ThreadStatusQueue({ dc, words: config.discord, file: join(cardDir(), "thread-status.json"), openCards: (t) => openCardIds(store, t), now: realClock.now, log });
+  return new ThreadStatusQueue({ dc, words: config.discord, file: join(cardDir(), "thread-status.json"), openCards: (t) => openCardIds(store, t), workingLanes, now: realClock.now, log });
 };
-const questionCards = (dc: Discord, statuses?: ThreadStatusQueue) => new QuestionCards(dc, new QuestionStore(cardDir()), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now, statuses);
+const questionCards = (dc: Discord, statuses: ThreadStatusQueue = threadStatuses(dc)) => new QuestionCards(dc, new QuestionStore(cardDir()), { channel: env("DORI_DISCORD_CHANNEL"), owner: env("DORI_DISCORD_OWNER"), words: config.discord }, realClock.now, statuses);
 
 const transcribeUrl = async (url: string, filename: string): Promise<string> => {
   const dir = mkdtempSync(join(tmpdir(), "dori-voice-"));
@@ -489,18 +492,20 @@ try {
     case "fix-attempt": {
       const l = await lane(key ?? die("fix-attempt needs a lane key"));
       const metric = normFix(need("metric"));
+      // the name the stuck count uses (autoSignals.aliases), so PRIOR_FIX and the gate lines name what STUCK counts
+      const shown = canonical(metric, config.autoSignals.aliases);
       const area: AreaQuery = { lane: l.key, ...(l.cwd && l.cwd !== config.defaultCwd ? { cwd: l.cwd } : {}), tags: tagsOf(l) };
-      for (const line of priorFixLines(await areaSignals(await deps.registry.list(), area, config), l.key, metric)) console.log(line);
+      for (const line of priorFixLines(await areaSignals(await deps.registry.list(), area, config), l.key, metric, config.autoSignals.aliases)) console.log(line);
       const attempt = { at: new Date().toISOString(), metric, hypothesis: normFix(need("hypothesis")), via: "lead" as const, ...(flags.values.improved ? { improved: true } : {}) };
       const branch = { hypotheses: many("hypotheses"), tests: many("test"), override: opt("no-hypotheses") };
       const gate = gateFix(l, attempt, branch, config);
       if (gate.verdict === "required") {
-        const msg = requiredMessage(l.key, metric, gate, config.explore);
+        const msg = requiredMessage(l.key, shown, gate, config.explore);
         recordRefusal(deps, msg);
         die(msg, 5);
       }
-      if (gate.verdict === "override") console.log(recordOverride(deps, l.key, metric, gate, branch.override ?? ""));
-      if (gate.verdict === "branch") console.log(await recordBranch(deps, l, metric, branch, gate));
+      if (gate.verdict === "override") console.log(recordOverride(deps, l.key, shown, gate, branch.override ?? ""));
+      if (gate.verdict === "branch") console.log(await recordBranch(deps, l, shown, branch, gate));
       const r = await recordFix(deps, l.key, attempt);
       const v = stuckView((await deps.registry.read(l.key)) ?? l, metric, config);
       console.log(`FIX_RECORDED ${l.key} attempt=${r.count} on-metric=${gate.attempt} stuck=${v.n} (tagged ${v.tagged}, inferred ${v.inferred})`);
@@ -919,14 +924,40 @@ try {
         console.log(`THREAD_OPENED discord:${id}`);
         break;
       }
+      // Marking a thread done by hand (thread done, thread set done) makes the same check as closing a lane (#47): while
+      // another open lane or an open question card uses the thread, it is left as it is. The lane whose close runs this
+      // (hooks.threadDone, which sets DORI_CLOSING_LANE, or --lane) is not another user. --force marks it done anyway.
+      const holdersOf = async (thread: string): Promise<string> => {
+        const closing = opt("lane") ?? process.env.DORI_CLOSING_LANE ?? "";
+        const sharing = (await deps.registry.open()).filter((l) => l.key !== closing && l.thread === thread).map((l) => l.key);
+        const cards = deps.openCards?.(thread) ?? [];
+        return [...(sharing.length ? [`open lane ${sharing.join(", ")} uses it`] : []), ...(cards.length ? [`open card ${cards.join(", ")}`] : [])].join("; ");
+      };
       if (verb === "set") {
-        if (!ref || (text !== "working" && text !== "waiting" && text !== "done")) die("usage: dori thread set discord:<id> working|waiting|done [--open-card]");
+        if (!ref || (text !== "working" && text !== "waiting" && text !== "done")) die("usage: dori thread set discord:<id> working|waiting|done [--open-card] [--force]");
         const status = text === "done" ? "done" : flags.values["open-card"] ? "waiting" : text === "waiting" ? "waiting" : "working";
-        await threadStatuses(discordClient()).request(discordThreadId(ref ?? ""), status);
+        const id = discordThreadId(ref ?? "");
+        const holders = status === "done" ? await holdersOf(`discord:${id}`) : "";
+        if (holders && !flags.values.force) {
+          console.log(`THREAD_LEFT_OPEN discord:${id}: ${holders}; not marked done (--force marks it done anyway)`);
+          break;
+        }
+        if (holders) console.log(`THREAD_DONE_FORCED discord:${id}: ${holders}; marking it done anyway`);
+        await threadStatuses(discordClient()).request(id, status);
         break;
       }
       if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|wait|done> discord:<thread id> <text>");
       const dc = discordClient();
+      if (verb === "done") {
+        // the text is posted either way; with users left the thread keeps its mark and stays open
+        const thread = `discord:${discordThreadId(ref ?? "")}`;
+        const holders = await holdersOf(thread);
+        if (holders && !flags.values.force) {
+          console.log(`POSTED ${await postInThread(dc, ref ?? "", text ?? "")} THREAD_LEFT_OPEN ${thread}: ${holders}; not marked done (--force marks it done anyway)`);
+          break;
+        }
+        if (holders) console.log(`THREAD_DONE_FORCED ${thread}: ${holders}; marking it done anyway`);
+      }
       const statuses = threadStatuses(dc);
       const posted = await threadHook(dc, verb as ThreadVerb, ref ?? "", text ?? "", config.discord, (t, s) => statuses.request(t, s));
       console.log(`POSTED ${posted}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);

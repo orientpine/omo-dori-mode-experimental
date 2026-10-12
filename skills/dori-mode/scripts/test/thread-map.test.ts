@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { dropThread, mapThread, threads } from "../src/messenger/thread-map.ts";
@@ -96,5 +96,53 @@ test("thread done keeps its existing posted output and removes the archived mapp
   const result = await cli("done", REF, "Finished");
   expect({ result, archived: http().archived, map: map() }).toEqual({
     result: { code: 0, out: "POSTED 900 THREAD_DONE", err: `THREAD_STATUS_APPLIED ${ID} done` }, archived: true, map: {},
+  });
+});
+
+// another user of the thread, as the registry and the card store keep them
+const openLane = (key: string) => {
+  mkdirSync(join(state.dir, "lanes"), { recursive: true });
+  writeFileSync(join(state.dir, "lanes", `${key}.json`), JSON.stringify({ key, title: key, brief: "/b.md", done: "file x", thread: REF, pane: `w:${key}`, openedAt: "2026-10-12T00:00:00Z" }));
+};
+const openCard = (id: string) => {
+  mkdirSync(join(state.dir, "cards"), { recursive: true });
+  writeFileSync(join(state.dir, "cards", "questions.json"), JSON.stringify({ seq: 1, questions: [{ id, text: "Ship?", options: ["Yes", "No"], status: "open", thread: ID, askedAt: "2026-10-12T00:00:00Z" }] }));
+};
+const renamed = () => http().calls.filter((c) => c.method === "PATCH").length;
+
+test("thread done leaves a thread that another open lane uses as it is, but the closing lane itself is no other user (feature-verify 2026-10-12, follow-up b)", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openLane("lane-b");
+  const left = await cli("done", REF, "lane-a finished");
+  expect({ left, renames: renamed(), name: http().name, archived: http().archived }).toEqual({
+    left: { code: 0, out: `POSTED 900 THREAD_LEFT_OPEN ${REF}: open lane lane-b uses it; not marked done (--force marks it done anyway)`, err: "" }, renames: 0, name: "🔄 fix login", archived: false,
+  });
+  // lane-b's own close runs hooks.threadDone with DORI_CLOSING_LANE=lane-b (--lane says the same): that marks it done
+  process.env.DORI_CLOSING_LANE = "lane-b";
+  const own = await cli("done", REF, "lane-b finished").finally(() => delete process.env.DORI_CLOSING_LANE);
+  expect({ own, archived: http().archived }).toEqual({ own: { code: 0, out: "POSTED 900 THREAD_DONE", err: `THREAD_STATUS_APPLIED ${ID} done` }, archived: true });
+});
+
+test("thread done with an open card is left open, and --force marks it done with a warning", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openCard("Q1");
+  const left = await cli("done", REF, "finished");
+  expect({ out: left.out, renames: renamed() }).toEqual({ out: `POSTED 900 THREAD_LEFT_OPEN ${REF}: open card Q1; not marked done (--force marks it done anyway)`, renames: 0 });
+  const forced = await cli("done", REF, "finished", "--force");
+  expect({ forced, name: http().name, archived: http().archived }).toEqual({
+    forced: { code: 0, out: `THREAD_DONE_FORCED ${REF}: open card Q1; marking it done anyway\nPOSTED 900 THREAD_DONE`, err: `THREAD_STATUS_APPLIED ${ID} done` }, name: "✅ fix login", archived: true,
+  });
+});
+
+test("thread set done makes the same check: an open lane keeps the thread, --force marks it done with a warning", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  openLane("lane-b");
+  const left = await cli("set", REF, "done");
+  expect({ left, renames: renamed(), archived: http().archived }).toEqual({
+    left: { code: 0, out: `THREAD_LEFT_OPEN ${REF}: open lane lane-b uses it; not marked done (--force marks it done anyway)`, err: "" }, renames: 0, archived: false,
+  });
+  const forced = await cli("set", REF, "done", "--force");
+  expect({ forced, archived: http().archived }).toEqual({
+    forced: { code: 0, out: `THREAD_DONE_FORCED ${REF}: open lane lane-b uses it; marking it done anyway`, err: `THREAD_STATUS_APPLIED ${ID} done` }, archived: true,
   });
 });
