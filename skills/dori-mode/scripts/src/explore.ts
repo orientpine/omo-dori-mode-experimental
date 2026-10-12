@@ -318,8 +318,8 @@ export const stuckStep = async (deps: FlowDeps, key: string, metric: string): Pr
 
 // After an owner check: a finding (VIOLATION, CONTRADICTION, GOAL_LOSS) is the context rung, a re-read of the brief and the
 // owner's words that the lead confirms first (dori owner-check <key> --reread); the same in the next check is rung 4. A
-// clean check ends it. Returns the watch-log lines.
-export const stuckContext = async (deps: FlowDeps, key: string, findings: readonly { readonly kind: string; readonly owner: string; readonly report: string; readonly why: string; readonly verified: boolean }[], model: string): Promise<string[]> => {
+// clean check ends it. A finding on the report the last one rested on (report) is not counted again. Returns the watch-log lines.
+export const stuckContext = async (deps: FlowDeps, key: string, findings: readonly { readonly kind: string; readonly owner: string; readonly report: string; readonly why: string; readonly verified: boolean }[], model: string, report?: string): Promise<string[]> => {
   const lane = await deps.registry.read(key);
   if (!lane) return [];
   const marks = { ...(lane.stuck ?? {}) };
@@ -331,11 +331,15 @@ export const stuckContext = async (deps: FlowDeps, key: string, findings: readon
     }
     return [];
   }
+  // the report under the last finding did not change: not a new finding (seen live: an older report flagged again)
+  if (prev && report && prev.report === report) return [];
   // rung 4 only when the lead confirmed a re-read after the first finding and the lane is still off the owner's words
-  const reread = lane.ownerCheck?.rereadAt && prev ? lane.ownerCheck.rereadAt >= prev.at : false;
+  // ... and the finding rests on a report (or a stated direction) from after that re-read
+  const evidenceAt = report?.replace(/^direction@/, "");
+  const reread = lane.ownerCheck?.rereadAt && prev ? lane.ownerCheck.rereadAt >= prev.at && (!evidenceAt || evidenceAt > lane.ownerCheck.rereadAt) : false;
   const rung = prev ? (reread ? 4 : prev.rung) : 1;
   const n = (prev?.n ?? 0) + 1;
-  await deps.registry.patch(key, { stuck: { ...marks, [CONTEXT]: { rung, n, at: iso(deps.clock), ...(lane.pane ? { pane: lane.pane } : {}) } } });
+  await deps.registry.patch(key, { stuck: { ...marks, [CONTEXT]: { rung, n, at: iso(deps.clock), ...(lane.pane ? { pane: lane.pane } : {}), ...(report ? { report } : {}) } } });
   if (prev && (prev.rung === 4 || rung !== 4)) return [];
   const f = findings[0];
   const detail = `${findings.map((x) => x.kind).join(", ")}: owner "${clip(f?.owner ?? "", 160)}" vs report "${clip(f?.report ?? "", 160)}": ${clip(f?.why ?? "", 160)}${f?.verified ? "" : " (unverified quote)"}; reviewer ${model}`;

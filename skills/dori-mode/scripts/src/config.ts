@@ -163,7 +163,7 @@ export type Explore = {
 // (gpt-6.1-sol: on live Korean lane logs the cheaper gpt-6-luna misread a relayed order's scope); command: argv
 // template ({model}, {prompt}, {system}); minutes: time limit; minIntervalMin: at most one check per lane in this time;
 // maxPerDay: per lane; reports: the newest reports it reads at least; maxReports: at most this many of the reports since the
-// last check (all of them up to that); relays: how many owner [LEAD] relays it reads; perTick: checks per sweep.
+// last check (all of them up to that); relays: how many owner [LEAD] relays it reads, and how many of the owner's decisions in the lane's thread (card answers, his messages); perTick: checks per sweep.
 export type OwnerCheck = {
   readonly enabled: boolean;
   readonly first: string;

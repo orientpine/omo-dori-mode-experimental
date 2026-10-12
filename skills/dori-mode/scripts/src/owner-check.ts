@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import { readLeadRelays, readReports, laneSessionFiles, type ReportLine } from "./auto-signals.ts";
 import { ChallengeError, checkReviewers, familyOf, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
@@ -11,15 +13,19 @@ import { watchLog } from "./watch-log.ts";
 // dori owner-check: a model of another family than the lane's reads the lane brief, the owner's own words for the lane (the
 // brief and the lead's [LEAD] relays that link or quote them) and the lane's recent reports, and answers in a fixed format
 // whether a report breaks an owner instruction (VIOLATION), contradicts a stated fact or state (CONTRADICTION), or no longer
-// works toward the owner's goal (GOAL_LOSS). Korean stays Korean: quotes are checked against the inputs, so a finding whose
-// quotes are not in them is marked unverified. A finding is the context rung of the stuck ladder (a STUCK line for the lead;
+// works toward the owner's goal (GOAL_LOSS). Korean stays Korean: quotes are checked against the inputs. A finding whose
+// owner quote is not in the owner's words (the goal, the brief, the quoted part of a relay, the owner's own decisions) is
+// dropped (OWNER_CHECK_UNGROUNDED), and one whose report quote is only in reports an earlier check already read is dropped
+// too (OWNER_CHECK_STALE); a report quote not in the reports marks it unverified. The owner's decisions in the lane's thread
+// (question-card answers, the owner's messages) go to the reviewer dated, newest wins. A finding is the context rung of the stuck ladder (a STUCK line for the lead;
 // the same in the next check is rung 4); it never stops or moves a lane, and the re-read goes to the lane only when the lead
 // confirms it (--reread). It runs on new reports only, at most once per ownerCheck.minIntervalMin and ownerCheck.maxPerDay
 // per lane; dori intent-check runs it at once on the direction the lane states.
 
 export const OWNER_KINDS = ["VIOLATION", "CONTRADICTION", "GOAL_LOSS", "OK"] as const;
 export type OwnerKind = (typeof OWNER_KINDS)[number];
-export type OwnerFinding = { readonly kind: OwnerKind; readonly owner: string; readonly report: string; readonly why: string; readonly verified: boolean };
+// reportAt: the report the finding rests on (its time, or direction@<time> for the stated direction), set once grounded
+export type OwnerFinding = { readonly kind: OwnerKind; readonly owner: string; readonly report: string; readonly why: string; readonly verified: boolean; readonly reportAt?: string };
 
 export const OWNER_SYSTEM = "You audit a worker agent's progress reports against its owner's instructions. You answer only in the requested block format. You never ask questions and never translate quotes.";
 
@@ -28,8 +34,8 @@ const MAX_ITEM = 1_500;
 
 const cut = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)} [cut]` : s);
 
-// the sections dori launch appends (past signals, the tree) are not the owner's words
-export const briefForCheck = (brief: string): string => cut(brief.split(/\n## (?:Past signals|Hypothesis tree) \(written by dori launch\)/)[0] ?? brief, MAX_BRIEF);
+// the sections dori launch appends (past signals, the tree, the footer) are not the owner's words
+export const briefForCheck = (brief: string): string => cut(brief.split(/\n## (?:Past signals|Hypothesis tree|Lane footer) \(written by dori launch\)/)[0] ?? brief, MAX_BRIEF);
 
 const OWNER_WORDS = /discord(?:app)?\.com\/channels\/\d+\/\d+\/\d+|원문|verbatim/i;
 
@@ -37,11 +43,72 @@ const OWNER_WORDS = /discord(?:app)?\.com\/channels\/\d+\/\d+\/\d+|원문|verbat
 // own working orders are not the owner's words)
 export const ownerRelays = (relays: readonly ReportLine[], n: number): ReportLine[] => relays.filter((r) => OWNER_WORDS.test(r.text)).slice(-n);
 
+// a quote of 6+ characters (shorter is a word the lead marks, not the owner's sentence; quoted() needs 6 anyway)
+const QUOTED = /"([^"\n]{6,})"|“([^”]{6,})”|‘([^’]{6,})’|「([^」]{6,})」|'([^'\n]{6,})'/g;
+
+// The owner's own words in a relay or a brief: its quoted parts. A relay like `형 질문(원문 <link>): "...". 학습은 멈추지 말고, ...`
+// goes on in the lead's words after the quote (seen live on hr35-e7: a finding quoted that lead text as the owner's), and
+// a brief is the lead's prose around the owner's quoted words. Text outside quote marks is never the owner's.
+export const ownerWords = (text: string): string => [...text.matchAll(QUOTED)].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? "").join("\n");
+
+// The owner's messages a text links (discord.com/channels/<guild>/<channel>/<message id>), as the inbox recorded them: his
+// words as he wrote or spoke them (author `owner` when known).
+export const linkedWords = (text: string, inbox: string, owner: string): string[] => {
+  const out: string[] = [];
+  for (const m of text.matchAll(/discord(?:app)?\.com\/channels\/\d+\/\d+\/(\d+)/g)) {
+    const line = inbox.split("\n").find((l) => l.includes(`"id":"${m[1]}"`));
+    if (!line) continue;
+    try {
+      const e = JSON.parse(line) as InboxRow;
+      const words = (e.transcript || e.content || "").trim();
+      if (words && !e.kind && (!owner || e.author_id === owner)) out.push(words);
+    } catch {
+      continue;
+    }
+  }
+  return out;
+};
+
+type InboxRow = { ts?: string; kind?: string; thread?: string; channel_id?: string; author_id?: string; content?: string; transcript?: string | null; qid?: string; question?: string; answer?: string };
+
+// The owner's decisions in the lane's discord:<id> thread since `since`, from the inbox the listener writes, oldest first,
+// the newest n: question-card answers (only the owner answers a card) and the owner's own messages (author `owner`).
+// words: what the owner wrote or chose (a card's question is the lead's, context only, never grounds a quote).
+export type OwnerDecision = ReportLine & { readonly words: string };
+export const ownerDecisions = (inbox: string, thread: string, owner: string, since: string, n: number): OwnerDecision[] => {
+  const id = /^discord:(\d+)$/.exec(thread)?.[1];
+  if (!id || n <= 0) return [];
+  const out: OwnerDecision[] = [];
+  for (const line of inbox.split("\n")) {
+    if (!line.includes(id)) continue;
+    let e: InboxRow;
+    try {
+      e = JSON.parse(line) as InboxRow;
+    } catch {
+      continue;
+    }
+    // the listener writes microseconds (2026-10-12T05:55:44.123000+00:00)
+    const ms = Date.parse((e.ts ?? "").replace(/(\.\d{3})\d+/, "$1"));
+    if (Number.isNaN(ms)) continue;
+    const at = new Date(ms).toISOString();
+    if (at < since) continue;
+    if (e.kind === "answer" && e.thread === id && e.answer) out.push({ at, text: `card ${e.qid ?? ""} "${e.question ?? ""}": the owner chose "${e.answer}"`, words: e.answer });
+    else if (!e.kind && e.channel_id === id && owner && e.author_id === owner) {
+      const text = (e.transcript || e.content || "").trim();
+      if (text) out.push({ at, text, words: text });
+    }
+  }
+  return out.sort((a, b) => a.at.localeCompare(b.at)).slice(-n);
+};
+
+// the inbox the listener writes (the same file handover probes): handover.inbox, DORI_DISCORD_INBOX, <stateDir>/discord
+const inboxPath = (config: FlowDeps["config"]): string => config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+
 // Whether the lane claimed done, from the registry: a report that names `dori claim-done` or quotes the footer is not a claim.
 export const doneClaimFact = (lane: Pick<Lane, "claim" | "status" | "closedAt">): string =>
   lane.claim ? `the lane claimed done at ${lane.claim.at} (status ${lane.status ?? "working"}): ${lane.claim.evidence.slice(0, 300)}` : `none: the lane has not run dori claim-done (status ${lane.closedAt ? "closed" : (lane.status ?? "working")})`;
 
-export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "direction" | "claim" | "status" | "closedAt">, brief: string, relays: readonly ReportLine[], reports: readonly ReportLine[]): string => [
+export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "direction" | "claim" | "status" | "closedAt">, brief: string, relays: readonly ReportLine[], reports: readonly ReportLine[], decisions: readonly ReportLine[] = []): string => [
   "Check the worker's recent reports against the owner's instructions below. The owner and the worker mostly write Korean. Read it as it is; quote exactly as written, in the original language.",
   "Kinds:",
   "- VIOLATION: a report shows the worker doing something the owner said not to do, or skipping or changing something the owner required (a constraint, an order of steps, an approval to wait for).",
@@ -49,6 +116,8 @@ export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "directi
   "- GOAL_LOSS: the recent reports, taken together, no longer work toward the owner's goal: the work drifted to something the owner did not ask for.",
   "- OK: none of these.",
   "Rules: flag only with a direct quote from the owner's material AND a direct quote from a report that itself shows the problem. The reports are only the newest few: earlier steps of the brief were reported before them, so a step that is merely absent from these reports is not a violation. The brief is the starting order; a later relay from the lead carrying the owner's words overrides it. An instruction applies to the subject it was given about: do not carry a constraint from one experiment or step over to another. A report in another language than the goal is not drift. Following a step the lead relayed is following the owner. Waiting, measuring or asking before a step the owner gated is not a violation. When unsure, answer OK. Whether the lane claimed done is the fact line below, from the registry: a report that names the claim-done command, quotes the footer or a template, or plans to claim is not a done claim.",
+  "Time: every relay, owner decision and report is dated. On one subject the newest owner decision wins: an owner decision (a card answer or the owner's message) or a relay newer than an instruction replaces it, so following the newer one is not a violation of the older. A later report replaces an earlier report's state: do not flag a state (stopped, waiting, running) that a later report shows changed.",
+  "OWNER must quote the owner's own words: the goal, an owner decision, or a part of the brief or a relay inside quote marks (the lead's words around a quote are not the owner's). For a CONTRADICTION it may also quote a fact the brief states. A finding whose OWNER quote is not there is dropped.",
   `Lane: ${lane.key} (${lane.title})`,
   `Done claim on record: ${doneClaimFact(lane)}`,
   ...(lane.goal ? [`The owner's goal, in their words: "${lane.goal}"`] : []),
@@ -59,12 +128,15 @@ export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "directi
   "<<<RELAYS (the lead's messages to the worker that carry the owner's words, oldest first)",
   ...(relays.length ? relays.map((r) => `[${r.at}] ${cut(r.text, MAX_ITEM)}`) : ["(none)"]),
   "RELAYS>>>",
+  "<<<OWNER DECISIONS (the owner's own messages and question-card answers in the lane's thread, oldest first; the newest wins)",
+  ...(decisions.length ? decisions.map((d) => `[${d.at}] ${cut(d.text, MAX_ITEM)}`) : ["(none)"]),
+  "OWNER DECISIONS>>>",
   "<<<REPORTS (the worker's recent reports, oldest first)",
   ...reports.map((r) => `[${r.at}] ${cut(r.text, MAX_ITEM)}`),
   "REPORTS>>>",
   "Reply with one block per finding, most serious first, and nothing else:",
   "VERDICT: VIOLATION | CONTRADICTION | GOAL_LOSS",
-  'OWNER: "<exact quote from the brief, the goal or a relay>"',
+  'OWNER: "<exact quote of the owner\'s words: the goal, an owner decision, or the quoted part of the brief or a relay; for a CONTRADICTION also a fact in the brief>"',
   'REPORT: "<exact quote from a report>"',
   "WHY: <one sentence>",
   "If there is nothing to flag, reply exactly: VERDICT: OK",
@@ -98,9 +170,49 @@ export const parseOwnerReply = (reply: string, ownerSource: string, reportSource
 };
 
 export const findingLine = (key: string, f: OwnerFinding, model: string): string =>
-  `OWNER_CHECK ${key} ${f.kind} owner "${f.owner.slice(0, 200)}" vs report "${f.report.slice(0, 200)}": ${f.why.slice(0, 200)}${f.verified ? "" : " (unverified: a quote is not in the brief, relays or reports)"} [reviewer ${model}]`;
+  `OWNER_CHECK ${key} ${f.kind} owner "${f.owner.slice(0, 200)}" vs report "${f.report.slice(0, 200)}": ${f.why.slice(0, 200)}${f.verified ? "" : " (unverified: the report quote is not in the reports read, or it names a claim not on record)"} [reviewer ${model}]`;
 
 export type OwnerState = NonNullable<Lane["ownerCheck"]>;
+
+export type Dropped = { readonly finding: OwnerFinding; readonly why: "UNGROUNDED" | "STALE" };
+
+// After the reviewer answers: a finding stands only on the owner's words (ownerSource) and on a report no earlier check
+// read (newer than checkedUpTo, the last check's lastReportAt) or the direction the lane stated. Kept findings carry the
+// report they rest on (reportAt), so the context rung moves once per report. A report quote found nowhere stays, unverified.
+// briefSource: the whole brief, which a CONTRADICTION may also quote (a fact or state the brief gives). checkedAt: when the
+// last check ran (a direction stated before it was read by it).
+export const groundFindings = (findings: readonly OwnerFinding[], src: { readonly ownerSource: string; readonly briefSource?: string; readonly reports: readonly ReportLine[]; readonly direction?: Lane["direction"]; readonly checkedUpTo?: string; readonly checkedAt?: string }): { readonly kept: OwnerFinding[]; readonly dropped: Dropped[] } => {
+  const kept: OwnerFinding[] = [];
+  const dropped: Dropped[] = [];
+  const said = src.direction?.text ? [src.direction.text, src.direction.next ?? ""].join("\n") : "";
+  for (const f of findings) {
+    if (!quoted(f.owner, src.ownerSource) && !(f.kind === "CONTRADICTION" && quoted(f.owner, src.briefSource ?? ""))) {
+      dropped.push({ finding: f, why: "UNGROUNDED" });
+      continue;
+    }
+    // a quote joined with an ellipsis may span reports: each report holding one of its pieces is under the finding
+    const parts = f.report.split(/…|\.\.\./).map(squash).filter((p) => p.length >= 6);
+    // the stated direction is under the finding only when it holds the whole quote; it is new when stated after the last check
+    const inDirection = !!said && quoted(f.report, said);
+    if (inDirection && (!src.checkedAt || (src.direction?.at ?? "") > src.checkedAt)) {
+      kept.push({ ...f, reportAt: `direction@${src.direction?.at ?? ""}` });
+      continue;
+    }
+    const from = src.reports.filter((r) => parts.some((p) => squash(r.text).includes(p)));
+    const fresh = from.filter((r) => !src.checkedUpTo || r.at > src.checkedUpTo);
+    if ((from.length || inDirection) && !fresh.length) {
+      dropped.push({ finding: f, why: "STALE" });
+      continue;
+    }
+    kept.push(fresh.length ? { ...f, reportAt: fresh.at(-1)?.at ?? "" } : f);
+  }
+  return { kept, dropped };
+};
+
+export const droppedLine = (key: string, d: Dropped, model: string, last?: OwnerState): string =>
+  d.why === "UNGROUNDED"
+    ? `OWNER_CHECK_UNGROUNDED ${key} ${d.finding.kind} owner "${d.finding.owner.slice(0, 200)}" is not in the owner's words given to the check (goal, quoted parts of the brief and relays, linked owner messages, owner decisions); dropped, no rung [reviewer ${model}]`
+    : `OWNER_CHECK_STALE ${key} ${d.finding.kind} report "${d.finding.report.slice(0, 200)}" was read by an earlier check (${last?.at ?? ""}, reports up to ${last?.lastReportAt ?? ""}); not flagged again, no rung [reviewer ${model}]`;
 
 // Due when a report newer than the last checked one exists, minIntervalMin has passed and today's count is under maxPerDay.
 export const ownerDue = (state: OwnerState | undefined, newest: string | undefined, now: number, cfg: { readonly minIntervalMin: number; readonly maxPerDay: number }): string | undefined => {
@@ -112,7 +224,7 @@ export const ownerDue = (state: OwnerState | undefined, newest: string | undefin
   return undefined;
 };
 
-export type OwnerResult = { readonly skipped?: string; readonly findings: readonly OwnerFinding[]; readonly lines: readonly string[]; readonly model?: string };
+export type OwnerResult = { readonly skipped?: string; readonly findings: readonly OwnerFinding[]; readonly dropped?: readonly Dropped[]; readonly lines: readonly string[]; readonly model?: string };
 
 // A CONTRADICTION that rests on the claim-done command while no claim is on record reads a mention as a claim (seen live:
 // "`dori claim-done <key> --evidence ...` ran." from a quoted template): it is kept, but unverified.
@@ -123,7 +235,7 @@ export const claimCheck = (f: OwnerFinding, lane: Pick<Lane, "claim">): OwnerFin
 export const ownerModels = (models: readonly string[], first: string): string[] => (first ? [first, ...models.filter((m) => m !== first)] : [...models]);
 
 // direction: dori intent-check's call, on the direction the lane just stated: no limits, and no new report needed
-export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly force?: boolean; readonly direction?: boolean; readonly files?: readonly string[] } = {}): Promise<OwnerResult> => {
+export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly force?: boolean; readonly direction?: boolean; readonly files?: readonly string[]; readonly inbox?: string; readonly owner?: string } = {}): Promise<OwnerResult> => {
   const cfg = deps.config.autoSignals.ownerCheck;
   const now = deps.clock.now();
   const files = opts.files ?? laneSessionFiles(deps.config, lane);
@@ -142,16 +254,24 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   if (why) return { skipped: `OWNER_CHECK_SKIP ${lane.key} ${why}`, findings: [], lines: [] };
   const briefFile = Bun.file(lane.brief);
   const brief = briefForCheck((await briefFile.exists()) ? await briefFile.text() : "");
-  const relays = ownerRelays(await readLeadRelays(files, since), cfg.relays);
-  const prompt = ownerPrompt(lane, brief, relays, reports);
-  const ownerSource = [lane.goal ?? "", brief, ...relays.map((r) => r.text)].join("\n");
+  // relays from the lane's own sessions only (those that carry its reports): lanes sharing a cwd share a session folder
+  const laneFiles: string[] = [];
+  for (const f of files) if ((await Bun.file(f).text()).includes(`[REPORT] ${lane.key} |`)) laneFiles.push(f);
+  const relays = ownerRelays(await readLeadRelays(laneFiles, since), cfg.relays);
+  const inboxFile = Bun.file(opts.inbox ?? inboxPath(deps.config));
+  const inbox = (await inboxFile.exists()) ? await inboxFile.text() : "";
+  const owner = opts.owner ?? process.env.DORI_DISCORD_OWNER?.trim() ?? "";
+  const decisions = ownerDecisions(inbox, lane.thread, owner, lane.openedAt, cfg.relays);
+  const prompt = ownerPrompt(lane, brief, relays, reports, decisions);
+  const ownerSource = [lane.goal ?? "", ownerWords(brief), ...linkedWords(brief, inbox, owner), ...relays.flatMap((r) => [ownerWords(r.text), ...linkedWords(r.text, inbox, owner)]), ...decisions.map((d) => d.words)].join("\n");
   // the direction the lane stated (dori intent-check) is evidence too: a finding may quote it
   const reportSource = [...reports.map((r) => r.text), lane.direction?.text ?? "", lane.direction?.next ?? ""].join("\n");
-  const own = lane.model ?? deps.config.defaultModel;
+  const ground = { ownerSource, briefSource: brief, reports, direction: lane.direction, checkedUpTo: lane.ownerCheck?.lastReportAt, checkedAt: lane.ownerCheck?.at };
+  const family = lane.model ?? deps.config.defaultModel;
   const failures: string[] = [];
   let checks: Awaited<ReturnType<typeof checkReviewers>> = [];
   try {
-    checks = await checkReviewers(deps, reviewers(own, ownerModels(deps.config.reviewers.models, cfg.first)));
+    checks = await checkReviewers(deps, reviewers(family, ownerModels(deps.config.reviewers.models, cfg.first)));
   } catch (e) {
     if (!(e instanceof ChallengeError)) throw e;
     failures.push(e.message);
@@ -162,24 +282,33 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
       continue;
     }
     const r = await deps.run(fill(cfg.command, { model: c.call, prompt, system: OWNER_SYSTEM }), { timeoutMs: cfg.minutes * 60_000 });
-    const findings = r.code === 0 ? parseOwnerReply(r.out, ownerSource, reportSource)?.map((f) => claimCheck(f, lane)) : undefined;
-    if (!findings) {
+    const answer = r.code === 0 ? parseOwnerReply(r.out, `${ownerSource}\n${brief}`, reportSource)?.map((f) => claimCheck(f, lane)) : undefined;
+    if (!answer) {
       failures.push(`${c.call}: ${r.code !== 0 ? `exit ${r.code} ${r.err.split("\n").find((l) => l.trim())?.slice(0, 120) ?? ""}` : `no VERDICT line in "${r.out.trim().slice(0, 80)}"`}`);
       continue;
     }
+    const { kept: findings, dropped } = groundFindings(answer, ground);
     const today = lane.ownerCheck?.day === day ? lane.ownerCheck.today + 1 : 1;
     const gap = unread ? ` (${unread} older unchecked reports not read: autoSignals.ownerCheck.maxReports ${cfg.maxReports})` : "";
-    const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief and ${relays.length} owner relays${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
+    const drops = dropped.map((d) => droppedLine(lane.key, d, c.call ?? "", lane.ownerCheck));
+    for (const line of drops) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
+    const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : dropped.length ? [] : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief, ${relays.length} owner relays and ${decisions.length} owner decisions${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
+    // a check whose findings were all dropped leaves the last finding on record (the lead may still confirm it with --reread)
+    const last = lane.ownerCheck;
+    // ... only while its own owner quote still holds (a finding recorded before this check could rest on lead text)
+    const lastOwner = /owner "(.*?)" vs report/.exec(last?.finding ?? "")?.[1];
+    const pending = !findings.length && dropped.length && last?.finding && lastOwner && quoted(lastOwner, ownerSource);
+    const record = findings.length ? { kinds: findings.map((f) => f.kind), finding: lines[0]?.slice(0, 600) } : pending && last?.finding ? { kinds: last.kinds, finding: last.finding } : { kinds: ["OK"] };
     // a re-read the lead sent stays on record: the context rung reads it
     const rereadAt = (await deps.registry.read(lane.key))?.ownerCheck?.rereadAt ?? lane.ownerCheck?.rereadAt;
-    await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: (newest ?? lane.ownerCheck?.lastReportAt) ?? "", day, today, model: c.call, kinds: findings.length ? findings.map((f) => f.kind) : ["OK"], ...(findings[0] ? { finding: lines[0]?.slice(0, 600) } : {}), ...(rereadAt ? { rereadAt } : {}) } });
+    await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: (newest ?? lane.ownerCheck?.lastReportAt) ?? "", day, today, model: c.call, ...record, ...(rereadAt ? { rereadAt } : {}) } });
     // a clean check and an unverified finding (a quote not in the inputs, a claim that is not on record) go to the log as
     // OWNER_CHECK lines; a verified finding is the stuck ladder's context rung, one STUCK line
     const verified = findings.filter((f) => f.verified);
     if (!verified.length) for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
-    // only unverified findings: nothing for the ladder, and an earlier context rung stays as it was
-    const stuck = verified.length || !findings.length ? await stuckContext(deps, lane.key, verified, c.call) : [];
-    return { findings, lines: [...lines, ...stuck], model: c.call };
+    // only unverified or dropped findings: nothing for the ladder, and an earlier context rung stays as it was
+    const stuck = verified.length || (!findings.length && !dropped.length) ? await stuckContext(deps, lane.key, verified, c.call, verified[0]?.reportAt) : [];
+    return { findings, dropped, lines: [...drops, ...lines, ...stuck], model: c.call };
   }
   const line = `OWNER_CHECK_FAILED ${lane.key} no reviewer answered in the format: ${failures.join(" | ") || "no reviewer of another family in reviewers.models"}`;
   watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
