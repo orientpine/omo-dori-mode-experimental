@@ -134,6 +134,31 @@ test("the typing indicator is sent at once, repeats while work runs, and stops w
   expect(t.live.size).toBe(0);
 });
 
+test("a Discord post requests typing immediately before sending when enabled", async () => {
+  const { http, seen } = fakeHttp(() => ok({ id: "M1" }));
+  await new Discord(http, fakeClock(0), "b").send("T1", "hello", true);
+  expect(seen.map((r) => r.url.replace("https://discord.com/api/v10", ""))).toEqual(["/channels/T1/typing", "/channels/T1/messages"]);
+});
+
+test("a Discord post skips typing when disabled", async () => {
+  const { http, seen } = fakeHttp(() => ok({ id: "M1" }));
+  await new Discord(http, fakeClock(0), "b").send("T1", "hello", false);
+  expect(seen.map((r) => r.url.replace("https://discord.com/api/v10", ""))).toEqual(["/channels/T1/messages"]);
+});
+
+test("failed Discord typing is logged once and the post still lands", async () => {
+  const { http } = fakeHttp((req) => req.url.endsWith("/typing") ? ok({ retry_after: 300 }, 429) : ok({ id: "M1" }));
+  const logs: string[] = [];
+  const original = console.error;
+  console.error = (line: string) => { logs.push(line); };
+  try {
+    const result = await new Discord(http, fakeClock(0), "b").send("T1", "hello", true);
+    expect({ result, logs: logs.map((s) => s.split(" ")[0]) }).toEqual({ result: "M1", logs: ["DISCORD_TYPING_FAIL"] });
+  } finally {
+    console.error = original;
+  }
+});
+
 test("a voice note becomes text through the configured hook, and a failing or empty transcription is an error", async () => {
   const calls: string[][] = [];
   const run = async (argv: readonly string[]) => { calls.push([...argv]); return { code: 0, out: "  ship it  ", err: "" }; };

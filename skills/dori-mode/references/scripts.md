@@ -111,6 +111,12 @@ The CLI is a thin layer over typed modules you can import in your own scripts:
 
 Every module takes its HTTP, clock and timers as arguments. That is how the tests run without the network.
 
+`dori send discord --to CHANNEL --text TEXT [--thread ID] [--no-typing]` sends the existing
+Discord typing indicator immediately before posting (to the thread when given).
+Typing is best effort: one attempt, a `DISCORD_TYPING_FAIL` log on failure, then the message is still posted.
+`--no-typing` skips the indicator; `--edit` does not send one.
+Library calls to `Discord.send` retain their existing behavior unless their third argument is `true`.
+
 ## Commands
 
 ### `dori update [--pull] [--dry-run]`
