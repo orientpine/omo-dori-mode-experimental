@@ -162,3 +162,12 @@ What changed, all in existing code (`recordFix`/`afterFix`, `repeatTick`, `rollo
 - **The lead decides rollovers.** `--approved-by lead:<reason and signal>`; the handover tells the owner afterwards and logs the message id.
 - **Old keys keep working.** `sameFix.after`, `explore.researchAt`, `explore.hypothesesFrom`, `handover.laneRepeats`, `autoSignals.repeatAfter`, the two `attemptPattern`s and the two reviewer lists move to `stuck.*`, `reviewers.models` and the renamed patterns with one `CONFIG_OLD_KEY` line each.
 - **Monitors follow the names.** After a change like this, the lead's watch filters grep `STUCK|OWNER_CHECK` (and keep `SAME_FIX` until the old names go); a new alert name that no monitor greps is an alert nobody reads.
+
+## 20. Owner instructions: common rules go into the fork, local ones stay local
+
+Rules the owner gave piled up in one Dori's local handoff notes, where every other Dori running this skill never saw them, and some host-specific notes leaked into the shared skill. The owner's rule since: each instruction is filed when it arrives, as common (it holds for every Dori) or local (it holds for this Dori or this host only), and the owner is asked when that is unclear.
+
+- **Common** goes into the fork's `SKILL.md` (or the `references/` file it belongs in), generalized: no names, ids, hosts or paths of one setup. It reaches every Dori with the next update, and the local copy is deleted once it is merged.
+- **Local** goes into the local agent instructions or handoff file next to that Dori's config: a host's paths, an account, a person's preferences that are not a rule about how a Dori works.
+- **Unclear** (a rule that might be a preference of this owner, or a fix for one host's quirk): ask the owner which it is before filing it, with your pick.
+- The fork is the original and the local layer keeps configuration only, so a common rule left in local notes is a rule the other Dori break.
