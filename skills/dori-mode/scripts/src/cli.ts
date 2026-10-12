@@ -145,10 +145,11 @@ const USAGE = `dori <command> [options]
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
   heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
-  send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID] [--status working|done] [--no-typing]
+  send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID] [--status working|done] [--no-typing] [--ping USER_ID]
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN);
                                        --status (discord) writes it as the progress message, in discord.statusStyle;
                                        Discord posts show typing first (best effort); --no-typing skips it
+                                       --ping USER_ID (digits only) mentions and pings only that user on a new Discord post
   type <pane> --text TEXT | --text-file FILE
                                        type text into an agent pane and confirm it was submitted: Enter, an empty input
                                        box (one more Enter if not), a running turn. Prints SUBMITTED, or NOT_SUBMITTED
@@ -238,7 +239,7 @@ const flags = parseArgs({
     title: { type: "string" }, brief: { type: "string" }, done: { type: "string" }, thread: { type: "string" },
     model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string" },
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
-    to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" }, "no-typing": { type: "boolean" },
+    to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" }, "no-typing": { type: "boolean" }, ping: { type: "string" },
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
     from: { type: "string" }, first: { type: "string" }, "open-card": { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
@@ -764,6 +765,10 @@ try {
       const text = status === "working" || status === "done" ? progressText(status, need("text"), config.discord) : need("text");
       const thread = opt("thread");
       const edit = opt("edit");
+      const rawPing = flags.values.ping;
+      if (rawPing !== undefined && (typeof rawPing !== "string" || rawPing.length === 0 || /[^0-9]/.test(rawPing))) die("--ping takes a digits-only user id");
+      const ping = typeof rawPing === "string" ? rawPing : undefined;
+      if (ping !== undefined && (platform !== "discord" || edit)) die("--ping is only supported for new Discord messages");
       const token = (name: string) => process.env[name] ?? die(`${name} is not set`);
       if (platform === "slack") {
         const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env.DORI_SLACK_COOKIE }, undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
@@ -777,7 +782,7 @@ try {
       } else if (platform === "discord") {
         const dc = new Discord(fetchHttp, realClock, token("DORI_DISCORD_TOKEN"));
         if (edit) await dc.edit(to, edit, text);
-        else console.log(`SENT ${await dc.send(thread ?? to, text, !flags.values["no-typing"])}`);
+        else console.log(`SENT ${await dc.send(thread ?? to, text, !flags.values["no-typing"], ping)}`);
       } else die(`unknown platform ${platform}`);
       break;
     }
