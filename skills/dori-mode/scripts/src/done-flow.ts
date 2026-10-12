@@ -16,6 +16,8 @@ export type FlowDeps = {
   readonly signalIo?: SignalIo;
   // sets a discord:<id> work thread to done and archives it (cli wires it when DORI_DISCORD_TOKEN is set)
   readonly markThreadDone?: (ref: string) => Promise<unknown>;
+  // ids of the question cards still open in a work thread (cli reads the card store for discord:<id> threads)
+  readonly openCards?: (ref: string) => readonly string[];
 };
 
 export class LaneStateError extends Error {}
@@ -105,7 +107,16 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
   const cleanup: string[] = [];
   const warnings: string[] = [];
   const hook = deps.config.hooks.threadDone;
-  if (hook && hasThread(lane)) {
+  // A thread another open lane or an open question card still uses stays as it is: this lane's result is posted as a
+  // reply, and the thread is not marked done, renamed or archived. The last lane to close it marks it done.
+  const sharing = hasThread(lane) ? (await deps.registry.open()).filter((l) => l.key !== lane.key && l.thread === lane.thread).map((l) => l.key) : [];
+  const cards = hasThread(lane) ? (deps.openCards?.(lane.thread) ?? []) : [];
+  const holders = [...(sharing.length ? [`open lane ${sharing.join(", ")} uses it too`] : []), ...(cards.length ? [`open card ${cards.join(", ")}`] : [])];
+  if (holders.length) {
+    const reply = deps.config.hooks.threadReply;
+    const r = reply ? await deps.run(fill(reply, { thread: lane.thread, text: `${lane.title}: ${threadText}`, key: lane.key })) : undefined;
+    cleanup.push(`thread left open: ${holders.join("; ")}${!r ? " (no threadReply hook, nothing posted)" : r.code === 0 ? "; result posted" : `; reply hook failed: ${r.err.slice(0, 160)}`}`);
+  } else if (hook && hasThread(lane)) {
     const r = await deps.run(fill(hook, { thread: lane.thread, text: threadText, key: lane.key }));
     cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);
   } else if (hook) {
@@ -113,19 +124,15 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
     warnings.push(`THREAD_MISSING ${lane.key} thread=${JSON.stringify(lane.thread ?? null)}; threadDone not run, close the thread by hand or set it with dori set-thread first`);
     cleanup.push("thread missing: threadDone not run");
   }
-  if (deps.markThreadDone && hasThread(lane) && lane.thread.startsWith("discord:")) {
-    const sharing = (await deps.registry.open()).filter((l) => l.key !== lane.key && l.thread === lane.thread).map((l) => l.key);
-    if (sharing.length) cleanup.push(`thread left open: open lane ${sharing.join(", ")} uses it too`);
-    else {
-      try {
-        await deps.markThreadDone(lane.thread);
-        cleanup.push("thread set done and archived");
-      } catch (e) {
-        // the lane is finished either way; a thread that could not be renamed is the lead's to fix by hand
-        const why = (e instanceof Error ? e.message : String(e)).slice(0, 200);
-        warnings.push(`THREAD_DONE_WARN ${lane.key} ${lane.thread}: ${why}`);
-        cleanup.push(`thread not set done: ${why}`);
-      }
+  if (deps.markThreadDone && !holders.length && hasThread(lane) && lane.thread.startsWith("discord:")) {
+    try {
+      await deps.markThreadDone(lane.thread);
+      cleanup.push("thread set done and archived");
+    } catch (e) {
+      // the lane is finished either way; a thread that could not be renamed is the lead's to fix by hand
+      const why = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+      warnings.push(`THREAD_DONE_WARN ${lane.key} ${lane.thread}: ${why}`);
+      cleanup.push(`thread not set done: ${why}`);
     }
   }
   if (deps.config.backend === "aoe") {

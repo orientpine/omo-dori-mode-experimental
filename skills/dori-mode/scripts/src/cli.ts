@@ -131,7 +131,8 @@ const USAGE = `dori <command> [options]
                                        switch, tagged fixes by metric, rejected done claims, re-sends, nudges, outcome,
                                        warnings; no option = one SIGNALS line per open lane. Read it before re-instructing
   close  <key> [--note TEXT]           close now (Done signals must read back live); a discord:<id> work thread is set
-                                       done and archived when DORI_DISCORD_TOKEN is set
+                                       done and archived when DORI_DISCORD_TOKEN is set; a thread another open
+                                       lane or an open card uses only gets the result posted
   watch                                long-running: emits LANE_* lines every 30 s
   update [--pull] [--dry-run]           apply changed scripts to configured services and report unset new config keys
   notify-change --summary TEXT [--file PATH ...]
@@ -219,6 +220,8 @@ const deps: FlowDeps = {
   clock: realClock,
   registry: new Registry(config.stateDir),
   config,
+  // a close leaves a thread with an open question card as it is (cards are kept per Discord thread id)
+  openCards: (ref: string) => (ref.startsWith("discord:") ? openCardIds(new QuestionStore(cardDir()), discordThreadId(ref)) : []),
   ...(discordToken
     ? {
         markThreadDone: async (ref: string) => {

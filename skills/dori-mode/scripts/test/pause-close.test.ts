@@ -155,3 +155,33 @@ test("a thread that cannot be renamed is a warning, the lane still closes; a lan
   expect(none.calls()).toEqual([]);
   expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too");
 });
+
+// both thread hooks, told apart in the recorded argv
+const bothHooks = (deps: FlowDeps): FlowDeps => ({ ...deps, config: { ...deps.config, hooks: { ...deps.config.hooks, threadReply: ["notify", "reply", "{thread}", "{text}"], threadDone: ["notify", "done", "{thread}", "{text}"] } } });
+const hookCalls = () => world.calls.filter((c) => c[0] === "notify").map((c) => `${c[1]} ${c[3]}`);
+
+test("two lanes in one thread: the automatic close of the first posts its result and leaves the thread working; closing the last marks it done", async () => {
+  const f = fakeThread("🔄 dedup", false);
+  const deps = (ms: number) => bothHooks(at(ms, { markThreadDone: f.markThreadDone }));
+  await deps(T0).registry.write({ ...lane, key: "fix-b", title: "fix-b", pane: "aoe_fix-b_00000000" });
+  await claimDone(deps(T0), lane, "merged #47");
+  const out = await watchTick(deps(T0 + 10 * MIN));
+  expect(out.some((l) => l.startsWith("LANE_CLOSED fix-a "))).toBe(true);
+  expect(hookCalls()).toEqual([`reply fix-a: ${deps(T0).config.discord.doneText}`]);
+  expect(f.calls()).toEqual([]);
+  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too; result posted");
+
+  const last = (await deps(T0).registry.read("fix-b")) ?? lane;
+  expect((await closeLane(deps(T0 + 11 * MIN), last, "closed by the lead")).closed).toBe(true);
+  expect(hookCalls().at(-1)).toBe("done closed by the lead");
+  expect(f.calls()).toEqual([`GET ${T}`, `PATCH ${T} {"name":"✅ dedup"}`, `PATCH ${T} {"archived":true}`]);
+});
+
+test("a thread with an open question card is not marked done when its only lane closes; the result is posted", async () => {
+  const f = fakeThread("⏸️ dedup", false);
+  const r = await closeLane(bothHooks(at(T0, { markThreadDone: f.markThreadDone, openCards: (ref) => (ref === lane.thread ? ["Q7"] : []) })), lane, "closed");
+  expect(r.closed).toBe(true);
+  expect(hookCalls()).toEqual(["reply fix-a: closed"]);
+  expect(f.calls()).toEqual([]);
+  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open card Q7; result posted");
+});
