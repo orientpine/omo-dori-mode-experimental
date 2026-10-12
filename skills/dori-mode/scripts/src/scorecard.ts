@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Scorecard } from "./config.ts";
 import { claimEvents } from "./lane-signals.ts";
 import type { Lane } from "./registry.ts";
+import { parseWatchLine } from "./watch-log.ts";
 
 // The daily scorecard: what the day's tokens bought, read from records only (no model call).
 
@@ -142,8 +143,8 @@ export const computeScorecard = async (src: ScorecardSources, window: DayWindow)
 
   const nudges = new Map<string, number>();
   for (const line of ((await readText(src.settings.lanesLog)) ?? "").split("\n")) {
-    const m = /^(\S+) freshness NUDGED (\S+) /.exec(line);
-    if (m?.[1] && m[2] && inDay(ms(m[1]))) nudges.set(m[2], (nudges.get(m[2]) ?? 0) + 1);
+    const w = parseWatchLine(line);
+    if (w?.source === "freshness" && w.kind === "NUDGED" && w.key && inDay(ms(w.at))) nudges.set(w.key, (nudges.get(w.key) ?? 0) + 1);
   }
 
   const leadFiles = src.settings.leadSessions ? recentFiles(src.settings.leadSessions, window.start, false) : [];

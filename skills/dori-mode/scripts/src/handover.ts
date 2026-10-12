@@ -13,7 +13,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, clearQuiet, COMMITTED, lastProposal, readRollovers, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
+import { appendRollover, approvalProblem, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type HandoverDeps = FlowDeps & {
@@ -36,10 +36,12 @@ export type HandoverDeps = FlowDeps & {
   readonly restart: (unit: string) => Promise<string | undefined>;
   readonly nonce: () => string;
   readonly print: (line: string) => void;
+  // posts the owner's after-the-fact note of a rollover the lead decided and returns its message id (rollover.ts reportToOwner)
+  readonly reportOwner?: (thread: string | null, text: string) => Promise<string>;
 };
 
 export type HandoverOptions = {
-  // the owner's approval: an answered card Qn, a message link or their words (rollover.ts approvalProblem); --dry-run needs none
+  // the approval: lead:<reason and signal>, the owner's answered card Qn, a message link or their words (rollover.ts approvalProblem); --dry-run needs none
   readonly approvedBy?: string;
   readonly title?: string;
   readonly model?: string;
@@ -254,7 +256,7 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
     const fresh = (await deps.registry.read(lane.key)) ?? lane;
     await deps.registry.write({ ...fresh, history: [...(fresh.history ?? []), { at, status: statusOf(fresh), note: `lead moved ${from.pane} -> ${to.pane} (dori handover)` }] });
     const told = lane.pane
-      ? await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] The lead moved to tmux session ${to.pane}. Send every [REPORT] there from now on: ["tmux","send-keys","-t","=${to.pane}:","-l","--","<report line>"], then ["tmux","send-keys","-t","=${to.pane}:","Enter"]. Your brief's footer says the same now.`)
+      ? await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] The lead moved to tmux session ${to.pane}. Send every [REPORT] there from now on: ["dori","type","${to.pane}","--text","<report line>"]. Your brief's footer says the same now.`)
       : false;
     out.push(`HANDOVER_LANE ${lane.key} brief=${brief} told=${told ? "yes" : "no"}`);
   }
@@ -361,8 +363,8 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   if (!config.leadPane) return refuse("leadPane is not set");
   if (deps.envLeadPane) return refuse(`DORI_LEAD_PANE=${deps.envLeadPane} is set in the environment and overrides leadPane in ${deps.configPath}, so lanes would keep reporting there; remove it (also from any wrapper script) and keep the pane in the config file`);
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
-  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLead, key: "handover.autoRolloverLead" }, "lead", config.leadPane, readRollovers(config.stateDir));
-  if (unapproved) return refuse(`the lead moves to a new session only with the owner's approval: ${unapproved} (--dry-run needs none)`);
+  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLead, key: "handover.autoRolloverLead" }, "lead", config.leadPane, readRollovers(config.stateDir), Boolean(deps.reportOwner));
+  if (unapproved) return refuse(`the lead moves to a new session only with an approval: ${unapproved} (--dry-run needs none)`);
   const old = sessionFor(await aoeSessions(deps.run), config.leadPane);
   if (!old) return refuse(`no live aoe session for leadPane ${config.leadPane}`);
   const bad = config.handover.watchers.find((w) => !w.name || !Array.isArray(w.check) || !w.check.length);
@@ -429,8 +431,13 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
     // (and when the close failed: it is still open but no longer the lead)
     if (!(r.code === 1 || (r.code === 0 && opts.keepOld))) clearQuiet(config.stateDir, config.leadPane);
     const proposal = lastProposal(readRollovers(config.stateDir), "lead");
+    const ref = opts.approvedBy?.trim() ?? "";
+    const by = ref ? decidedBy(ref) : undefined;
+    const reason = by === "lead" ? ref.slice(LEAD_PREFIX.length).trim() : undefined;
+    const ownerReport = by === "lead" && r.to && r.code !== 3 ? await reportToOwner(deps, "lead", null, { who: "the lead", from: config.leadPane, to: r.to, reason: reason ?? "" }, emit) : undefined;
     appendRollover(config.stateDir, {
-      kind: "rollover", who: "lead", at, key: "lead", from: config.leadPane, ...(r.to ? { to: r.to } : {}), ...(opts.approvedBy?.trim() ? { approvedBy: opts.approvedBy.trim() } : {}),
+      kind: "rollover", who: "lead", at, key: "lead", from: config.leadPane, ...(r.to ? { to: r.to } : {}), ...(ref ? { approvedBy: ref } : {}),
+      ...(by ? { decidedBy: by } : {}), ...(reason ? { reason } : {}), ...(ownerReport ? { ownerReport } : {}),
       ...(proposal ? { proposedAt: proposal.at, approvalMin: Math.round((Date.parse(at) - Date.parse(proposal.at)) / 6_000) / 10 } : {}),
       signals, steps, result: r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back", reasons: steps.filter((st) => !st.ok).map((st) => st.step),
     });

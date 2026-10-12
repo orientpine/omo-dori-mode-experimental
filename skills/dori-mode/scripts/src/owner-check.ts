@@ -2,6 +2,8 @@ import { readLeadRelays, readReports, laneSessionFiles, type ReportLine } from "
 import { ChallengeError, checkReviewers, familyOf, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { stuckContext } from "./explore.ts";
+import { sendVerified } from "./panes.ts";
 import type { Lane } from "./registry.ts";
 import { iso } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
@@ -10,8 +12,10 @@ import { watchLog } from "./watch-log.ts";
 // brief and the lead's [LEAD] relays that link or quote them) and the lane's recent reports, and answers in a fixed format
 // whether a report breaks an owner instruction (VIOLATION), contradicts a stated fact or state (CONTRADICTION), or no longer
 // works toward the owner's goal (GOAL_LOSS). Korean stays Korean: quotes are checked against the inputs, so a finding whose
-// quotes are not in them is marked unverified. It only alerts the lead; it never stops or moves a lane. It runs on new
-// reports only, at most once per ownerCheck.minIntervalMin and ownerCheck.maxPerDay per lane.
+// quotes are not in them is marked unverified. A finding is the context rung of the stuck ladder (a STUCK line for the lead;
+// the same in the next check is rung 4); it never stops or moves a lane, and the re-read goes to the lane only when the lead
+// confirms it (--reread). It runs on new reports only, at most once per ownerCheck.minIntervalMin and ownerCheck.maxPerDay
+// per lane; dori intent-check runs it at once on the direction the lane states.
 
 export const OWNER_KINDS = ["VIOLATION", "CONTRADICTION", "GOAL_LOSS", "OK"] as const;
 export type OwnerKind = (typeof OWNER_KINDS)[number];
@@ -105,7 +109,11 @@ export const ownerDue = (state: OwnerState | undefined, newest: string | undefin
 
 export type OwnerResult = { readonly skipped?: string; readonly findings: readonly OwnerFinding[]; readonly lines: readonly string[]; readonly model?: string };
 
-export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly force?: boolean; readonly files?: readonly string[] } = {}): Promise<OwnerResult> => {
+// reviewers.models with ownerCheck.first in front (it reads Korean relays best); another family than the lane's is picked later
+export const ownerModels = (models: readonly string[], first: string): string[] => (first ? [first, ...models.filter((m) => m !== first)] : [...models]);
+
+// direction: dori intent-check's call, on the direction the lane just stated: no limits, and no new report needed
+export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly force?: boolean; readonly direction?: boolean; readonly files?: readonly string[] } = {}): Promise<OwnerResult> => {
   const cfg = deps.config.autoSignals.ownerCheck;
   const now = deps.clock.now();
   const files = opts.files ?? laneSessionFiles(deps.config, lane);
@@ -118,7 +126,7 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   const reports = all.slice(-Math.min(Math.max(cfg.reports, unseen), cfg.maxReports));
   const unread = Math.max(0, unseen - cfg.maxReports);
   const newest = reports.at(-1)?.at;
-  const why = ownerDue(lane.ownerCheck, newest, now, opts.force ? { minIntervalMin: 0, maxPerDay: Number.POSITIVE_INFINITY } : cfg);
+  const why = opts.direction ? (newest || lane.direction?.text ? undefined : "no report and no stated direction on record") : ownerDue(lane.ownerCheck, newest, now, opts.force ? { minIntervalMin: 0, maxPerDay: Number.POSITIVE_INFINITY } : cfg);
   if (why) return { skipped: `OWNER_CHECK_SKIP ${lane.key} ${why}`, findings: [], lines: [] };
   const briefFile = Bun.file(lane.brief);
   const brief = briefForCheck((await briefFile.exists()) ? await briefFile.text() : "");
@@ -130,7 +138,7 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   const failures: string[] = [];
   let checks: Awaited<ReturnType<typeof checkReviewers>> = [];
   try {
-    checks = await checkReviewers(deps, reviewers(own, cfg.models));
+    checks = await checkReviewers(deps, reviewers(own, ownerModels(deps.config.reviewers.models, cfg.first)));
   } catch (e) {
     if (!(e instanceof ChallengeError)) throw e;
     failures.push(e.message);
@@ -148,13 +156,29 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
     }
     const day = new Date(now).toISOString().slice(0, 10);
     const today = lane.ownerCheck?.day === day ? lane.ownerCheck.today + 1 : 1;
-    await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: newest ?? "", day, today, model: c.call, kinds: findings.length ? findings.map((f) => f.kind) : ["OK"] } });
     const gap = unread ? ` (${unread} older unchecked reports not read: autoSignals.ownerCheck.maxReports ${cfg.maxReports})` : "";
     const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief and ${relays.length} owner relays${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
-    for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
-    return { findings, lines, model: c.call };
+    await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: (newest ?? lane.ownerCheck?.lastReportAt) ?? "", day, today, model: c.call, kinds: findings.length ? findings.map((f) => f.kind) : ["OK"], ...(findings[0] ? { finding: lines[0]?.slice(0, 600) } : {}) } });
+    // a clean check goes to the log as is; a finding is the stuck ladder's context rung, one STUCK line
+    if (!findings.length) for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
+    const stuck = await stuckContext(deps, lane.key, findings, c.call);
+    return { findings, lines: [...lines, ...stuck], model: c.call };
   }
-  const line = `OWNER_CHECK_FAILED ${lane.key} no reviewer answered in the format: ${failures.join(" | ") || "no reviewer of another family in autoSignals.ownerCheck.models"}`;
+  const line = `OWNER_CHECK_FAILED ${lane.key} no reviewer answered in the format: ${failures.join(" | ") || "no reviewer of another family in reviewers.models"}`;
   watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
   return { skipped: line, findings: [], lines: [] };
+};
+
+// dori owner-check <key> --reread: the lead confirmed the last finding, so the lane gets stuck.rereadText (its brief and the
+// owner's words to read again, the finding quoted). Refused when the last check found nothing.
+export const sendReread = async (deps: FlowDeps, lane: Lane): Promise<{ readonly ok: boolean; readonly line: string }> => {
+  const last = lane.ownerCheck;
+  if (!last || !last.kinds.some((k) => k !== "OK")) return { ok: false, line: `REREAD_REFUSED ${lane.key}: the last owner check found nothing to re-read for (${last ? `${last.at}: ${last.kinds.join(",")}` : "no check on record"})` };
+  if (!lane.pane) return { ok: false, line: `REREAD_REFUSED ${lane.key}: the lane has no pane` };
+  const finding = (last.finding ?? last.kinds.join(", ")).replace(/^OWNER_CHECK \S+ /, "").replace(/`/g, "'").replaceAll("$(", "$ (").slice(0, 400);
+  const text = fill([deps.config.stuck.rereadText], { key: lane.key, brief: lane.brief, finding })[0] ?? deps.config.stuck.rereadText;
+  const ok = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
+  const line = ok ? `REREAD_SENT ${lane.key}: the lead confirmed the owner-check finding of ${last.at}; the lane got its brief and the owner's words to re-read` : `REREAD_FAILED ${lane.key}: the re-read did not reach pane ${lane.pane}`;
+  watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
+  return { ok, line };
 };

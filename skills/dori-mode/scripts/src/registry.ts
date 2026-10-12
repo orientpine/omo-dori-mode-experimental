@@ -33,7 +33,10 @@ export type ChallengeRecord = { readonly at: string; readonly model: string; rea
 export type ExplorationRecord = { readonly at: string; readonly metric: string; readonly branches: number; readonly file: string };
 // the last ulw research text sent to the lane: sentAt (ms) and probe (its start) find it in the lane's session log;
 // result is set once the check decided (RESEARCH_STARTED or RESEARCH_NOT_STARTED)
+// signal: the failed attempts on that metric when it was sent (the stuck count at rung 3)
 export type ResearchSent = { readonly at: string; readonly sentAt: number; readonly probe: string; readonly metric: string; readonly signal: number; readonly result?: "started" | "not-started" };
+// the rung one metric (or "@context", the owner check) reached on the stuck ladder, at count n, in the session of pane
+export type StuckMark = { readonly rung: number; readonly n: number; readonly at: string; readonly pane?: string };
 
 export type Lane = {
   readonly key: string;
@@ -72,13 +75,17 @@ export type Lane = {
   readonly research?: ResearchSent;
   readonly blocked?: string;
   readonly idleSince?: number;
-  // the last ROLLOVER_DUE freshness gave: one per pane, so a lane's new session can get its own
-  // auto: a signal that may start an automatic rollover crossed (false: only an inferred repeat did)
+  // the last ROLLOVER_DUE freshness gave for a measured threshold (context, compactions, age): one per pane, so a lane's new
+  // session can get its own (auto: written by older versions, not read)
   readonly rolloverDue?: { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean };
-  // untagged repeats freshness inferred in the current session (REPEAT_SUSPECT): cycles per metric, so each new count alerts once
-  readonly inferred?: { readonly at: string; readonly counts: Readonly<Record<string, number>>; readonly lastEventAt?: string };
-  // the last dori owner-check: when, up to which report, how many today, by which reviewer, what it found
-  readonly ownerCheck?: { readonly at: string; readonly lastReportAt: string; readonly day: string; readonly today: number; readonly model: string; readonly kinds: readonly string[] };
+  // untagged repeats freshness inferred in the current session: cycles per metric (the inferred half of the stuck count) and
+  // when the reports last showed each metric PASS (the tagged half counts only attempts after that)
+  readonly inferred?: { readonly at: string; readonly counts: Readonly<Record<string, number>>; readonly passedAt?: Readonly<Record<string, string>>; readonly lastEventAt?: string };
+  // the stuck ladder: the rung each metric reached, so each rung change alerts once
+  readonly stuck?: Readonly<Record<string, StuckMark>>;
+  // the last dori owner-check: when, up to which report, how many today, by which reviewer, what it found (finding: the first
+  // finding, for the re-read the lead may send)
+  readonly ownerCheck?: { readonly at: string; readonly lastReportAt: string; readonly day: string; readonly today: number; readonly model: string; readonly kinds: readonly string[]; readonly finding?: string };
   readonly receipt?: unknown;
 };
 

@@ -23,7 +23,7 @@ If the lead has paused your lane (`dori pause`, e.g. while it waits on the owner
 
 - A blocker, an impossible task or an ambiguous request is a fine report: `[REPORT] <key> | blocker | <what blocks, what you tried, what you need>`. Say it plainly instead of retrying or claiming done.
 - Cap your retries: after two or three failed attempts at the same step, report a blocker.
-- Tag a report that is a fix attempt for a failing check or metric with `(fix: <metric> / <hypothesis>)`. The third attempt on the same metric with the same hypothesis alerts the lead (`SAME_FIX_3`): stop patching, reproduce the failure and read the logs for the root cause.
+- Tag a report that is a fix attempt for a failing check or metric with `(fix: <metric> / <hypothesis>)`. The lead's stuck ladder counts failed attempts on one metric (untagged ones too): at the 2nd, competing hypotheses before the next patch; at the 3rd you get ulw research and a challenge of your next plan; with one hypothesis tried 3 times, or a failure after that, the lead may move you to a new session. Stop patching, reproduce the failure and read the logs for the root cause.
 - If your brief has a "Past signals" section, read it before you plan: it lists what earlier lanes in the same repo or topic tried and what failed. Don't repeat a fix listed there without a new reason.
 - When you make or change a yardstick (a metric, a threshold, a check), write one line on how it could get better while the real goal gets worse.
 

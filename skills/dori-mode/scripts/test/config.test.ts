@@ -78,7 +78,7 @@ test("documents every configuration field when defaultConfig defines it", async 
   const documented = new Set([...text.matchAll(/`([a-zA-Z][\w.]*)`/g)].map((match) => match[1]));
   const required = [
     ...Object.keys(defaults),
-    ...configKeys({ scorecard: defaults.scorecard, update: defaults.update, sameFix: defaults.sameFix, signals: defaults.signals, explore: defaults.explore, autoSignals: defaults.autoSignals, handover: defaults.handover }),
+    ...configKeys({ scorecard: defaults.scorecard, update: defaults.update, stuck: defaults.stuck, reviewers: defaults.reviewers, signals: defaults.signals, explore: defaults.explore, autoSignals: defaults.autoSignals, handover: defaults.handover }),
   ];
   // When
   const missing = required.filter((key) => !documented.has(key));
@@ -101,4 +101,41 @@ test("expands update paths and defaults watchLog and alertPane when config overr
     expect(config.update.services).toEqual([{ unit: "test", log: "/home/ana/service.log", paths: ["skills/dori-mode/scripts/src/"], ready: "" }]);
     expect(config.update.readyTimeoutSec).toBe(60);
   } finally { fixture.done(); }
+});
+
+test("old keys of the stuck ladder, the reviewer list and the attempt patterns still work, each with one CONFIG_OLD_KEY line; a key with no new home is ignored", async () => {
+  // Given
+  const fixture = withState();
+  try {
+    const file = join(fixture.dir, "config.json");
+    writeFileSync(file, JSON.stringify({
+      sameFix: { after: 4, sendToLane: true },
+      explore: { hypothesesFrom: 3, researchAt: 2, driftBelow: 0.2, challengeModels: ["xai/grok-4.7"] },
+      handover: { laneRepeats: 3 },
+      signals: { attemptPattern: "try (\\d)" },
+      autoSignals: { repeatAfter: 5, attemptPattern: "처방", ownerCheck: { models: ["chatgpt-subscription/gpt-6-luna"], minutes: 2 } },
+      stuck: { fixatedAfter: 5 },
+    }));
+    const warned: string[] = [];
+    // When
+    const config = await loadConfig(file, "/home/ana", (line) => warned.push(line));
+    // Then
+    expect(config.stuck).toMatchObject({ hypothesesAt: 3, researchAt: 4, fixatedAfter: 5 });
+    expect(config.signals.numberedAttemptPattern).toBe("try (\\d)");
+    expect(config.autoSignals.inferAttemptPattern).toBe("처방");
+    expect(config.reviewers.models).toEqual(["xai/grok-4.7"]);
+    expect(config.autoSignals.ownerCheck).toMatchObject({ first: "chatgpt-subscription/gpt-6-luna", minutes: 2 });
+    expect("models" in config.autoSignals.ownerCheck).toBe(false);
+    expect("laneRepeats" in config.handover).toBe(false);
+    expect(warned.map((w) => w.split(" ")[1])).toEqual(["sameFix.after", "sameFix.sendToLane", "explore.hypothesesFrom", "explore.researchAt", "explore.driftBelow", "handover.laneRepeats", "autoSignals.repeatAfter", "signals.attemptPattern", "autoSignals.attemptPattern", "explore.challengeModels", "autoSignals.ownerCheck.models"]);
+    expect(warned[0]).toBe(`CONFIG_OLD_KEY sameFix.after -> stuck.fixatedAfter (both set: the new key wins); rename it in the config (${file})`);
+    expect(warned.every((w) => w.startsWith("CONFIG_OLD_KEY "))).toBe(true);
+    // a config without old keys loads quietly, and scorecard.lanesLog defaults to the watch log
+    writeFileSync(file, JSON.stringify({ watchLog: "~/w.log" }));
+    const clean: string[] = [];
+    expect((await loadConfig(file, "/home/ana", (line) => clean.push(line))).scorecard.lanesLog).toBe("/home/ana/w.log");
+    expect(clean).toEqual([]);
+  } finally {
+    fixture.done();
+  }
 });

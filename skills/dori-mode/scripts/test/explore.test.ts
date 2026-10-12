@@ -13,7 +13,7 @@ import { footer, renderBrief } from "../src/launch.ts";
 import type { FixAttempt, Lane } from "../src/registry.ts";
 import { type Ran, run, type Runner } from "../src/run.ts";
 import { recordFix } from "../src/same-fix.ts";
-import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
+import { depsFor, fakeClock, fakeRunner, newWorld, sent, withState, type World } from "./fakes.ts";
 
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
 let state: ReturnType<typeof withState>;
@@ -57,14 +57,17 @@ test("the second fix on one metric with no improvement is refused without three 
   expect(await Bun.file(deps.config.watchLog).text()).toMatch(/HYPOTHESES_OVERRIDE rl-e7 attempt 3 .*owner asked for this exact patch/);
 });
 
-test("the gate counts attempts on a metric across hypotheses, once per lead-asked-then-reported fix, and --improved starts again", () => {
-  const cfg = defaultConfig().explore;
+test("the gate counts attempts on a metric across hypotheses, once per lead-asked-then-reported fix, the inferred count too, and --improved starts again", () => {
+  const cfg = { ...defaultConfig().explore, ...defaultConfig().stuck };
   expect(gateFix([], fix("a"), { hypotheses: [], tests: [] }, cfg).verdict).toBe("ok");
   expect(gateFix([fix("a")], fix("b"), { hypotheses: [], tests: [] }, cfg).verdict).toBe("required");
   expect(gateFix([fix("a")], fix("b"), { hypotheses: three.hypotheses, tests: three.tests.slice(0, 2) }, cfg).verdict).toBe("required");
   expect(gateFix([fix("a")], fix("b"), three, cfg).verdict).toBe("branch");
   expect(gateFix([fix("a")], fix("b", { improved: true }), { hypotheses: [], tests: [] }, cfg).verdict).toBe("ok");
   expect(metricAttempts([fix("a"), fix("a", { via: "report" }), fix("b")], "dumps")).toBe(2);
+  // untagged repeats count as attempts: the first lead-asked fix after two inferred cycles already needs hypotheses
+  expect(gateFix([], fix("a"), { hypotheses: [], tests: [] }, cfg, 2).verdict).toBe("required");
+  expect(gateFix([], fix("a"), { hypotheses: [], tests: [] }, cfg, 1).verdict).toBe("ok");
 });
 
 test("the tree keeps one entry per idea, records falsified and supported results, and a new brief carries it before the footer", async () => {
@@ -87,22 +90,24 @@ test("the tree keeps one entry per idea, records falsified and supported results
   expect(await Bun.file(brief).text()).toBe("# Do the thing\n");
 });
 
-test("the second stuck signal sends the lane an external-search step and puts it in the tree; research-hint plans the search", async () => {
+test("rung 3 (the third failed attempt) sends the lane an external-search step and puts it in the tree; research-hint plans the search", async () => {
   const deps = depsFor(world, fakeClock(T0), state.dir);
   await deps.registry.write(lane);
   let ruledOut: Tree = { area: "cwd /work/rl", nodes: [] };
   ruledOut = addNode(ruledOut, { kind: "hypothesis", text: "reward too small", test: "double it", metric: "dumps", source: "x" }, "t1").tree;
   await saveTree(state.dir, { cwd: "/work/rl" }, setStatus(ruledOut, "H1", "falsified", "x2 reward changed nothing", "t2").tree);
-  for (const h of ["a", "b"]) expect((await recordFix(deps, "rl-e7", fix(h))).notes).toEqual([]);
+  expect((await recordFix(deps, "rl-e7", fix("a"))).notes).toEqual([]);
+  expect((await recordFix(deps, "rl-e7", fix("b"))).notes[0]).toContain('"dumps" rung 2 ');
+  expect(sent(world)).toEqual([]);
   const third = await recordFix(deps, "rl-e7", fix("c"));
-  expect(third.notes[0]).toStartWith('RESEARCH_DUE rl-e7 stuck signal 2 on "dumps"');
-  expect(third.notes[0]).toEndWith("(ulw research sent to the lane)");
+  expect(third.notes[0]).toStartWith('STUCK rl-e7 "dumps" rung 3 (tagged 3, inferred 0, hypotheses 3) -> ulw research on the exact symptom and a dori challenge of the next plan');
+  expect(third.notes[0]).toEndWith("; ulw research sent to the lane [RESEARCH_DUE]");
   // omo starts its ulw-research skill only for typed text that begins with "ulw research"; the rest is the lane's own question
   const typed = sent(world)[0] ?? "";
   expect(typed).toStartWith("ulw research ");
-  for (const part of ['Exact symptom: "dumps" does not improve after 3 fix attempts', "Tried: a; b; c.", "Ruled out by a test: reward too small (x2 reward changed nothing).", "papers", "GitHub issues", "repos", "read the ulw-research SKILL.md", "dori tree add --lane rl-e7 --kind finding"]) expect(typed).toContain(part);
+  for (const part of ['Exact symptom: "dumps" does not improve after 3 fix attempts', "Tried: a; b; c.", "Ruled out by a test: reward too small (x2 reward changed nothing).", "papers", "GitHub issues", "repos", "read the ulw-research SKILL.md", "dori tree add --lane rl-e7 --kind finding", "dori challenge rl-e7 --plan <file>"]) expect(typed).toContain(part);
   expect(typed).not.toContain("\n");
-  expect(((await deps.registry.read("rl-e7")) as Lane).research).toEqual({ at: new Date(T0).toISOString(), sentAt: T0, probe: typed.slice(0, 80), metric: "dumps", signal: 2 });
+  expect(((await deps.registry.read("rl-e7")) as Lane).research).toEqual({ at: new Date(T0).toISOString(), sentAt: T0, probe: typed.slice(0, 80), metric: "dumps", signal: 3 });
   const tree = await loadTree(state.dir, { cwd: "/work/rl" });
   expect(tree.nodes.filter((n) => n.kind === "research").length).toBe(1);
   expect(tree.nodes.filter((n) => n.kind === "tried").map((n) => n.text)).toEqual(["a", "b", "c"]);
@@ -138,7 +143,7 @@ test("the research check reads the lane's session log: pointer and SKILL.md read
   const acts = await freshnessTick(deps, "/home/test");
   expect(acts.filter((a) => a.kind === "research_started").map((a) => a.lane)).toEqual(["rl-e7"]);
   expect(((await deps.registry.read("rl-e7")) as Lane).research?.result).toBe("started");
-  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/research RESEARCH_STARTED rl-e7 stuck signal 2 on "dumps": the session log shows the omo-ulw-research:skill-pointer/);
+  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/research RESEARCH_STARTED rl-e7 failed attempt 2 on "dumps": the session log shows the omo-ulw-research:skill-pointer/);
 
   writeFileSync(join(dir, "2026-01-01T12-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000000.jsonl"), without);
   await deps.registry.write({ ...lane, research });
@@ -213,17 +218,19 @@ test("only a real read of ulw-research/SKILL.md counts as the skill starting, no
   expect(oldPointer.line).toContain("omo attached no omo-ulw-research:skill-pointer");
 });
 
-test("a lane's own unbranched second fix report tells the lead hypotheses are required", async () => {
+test("a lane's own unbranched second fix report is rung 2: the lead is told hypotheses come before the next patch", async () => {
   const deps = depsFor(world, fakeClock(T0), state.dir);
   await deps.registry.write(lane);
   await recordFix(deps, "rl-e7", fix("a", { via: "report" }));
-  expect((await recordFix(deps, "rl-e7", fix("b", { via: "report" }))).notes[0]).toStartWith("HYPOTHESES_REQUIRED rl-e7 reported attempt 2");
+  const note = (await recordFix(deps, "rl-e7", fix("b", { via: "report" }))).notes[0];
+  expect(note).toStartWith('STUCK rl-e7 "dumps" rung 2 (tagged 2, inferred 0, hypotheses 2) -> branch before the next patch: 3 competing hypotheses');
+  expect(note).toEndWith("[HYPOTHESES_REQUIRED]");
 });
 
 const REVIEW = "## Reasons this will fail\nx\n## Missing alternatives\ny\n## Cheapest falsifying test\nz";
 const PREAMBLE = "계획 문서와 관련 파일을 확인한 뒤 세 절만 쓰겠다.";
 const PLAN_REPO = "/work/plans";
-const LISTED = ["provider model context", "chatgpt-subscription gpt-6-astra 600K", "chatgpt-subscription gpt-6.1-sol 400K", "anthropic-subscription claude-fable-5-1 1M", "anthropic-subscription claude-opus-5-5 1M", "xai grok-4.7 500K", "xai grok-4.6 500K", "github-copilot gpt-6-astra 600K", "google gemini-3.1-pro-preview 1M"].join("\n");
+const LISTED = ["provider model context", "chatgpt-subscription gpt-6-astra 600K", "chatgpt-subscription gpt-6.1-sol 400K", "anthropic-subscription claude-fable-5-1 1M", "anthropic-subscription claude-opus-5-5 1M", "xai grok-4.7 500K", "xai grok-4.6 500K", "chatgpt-subscription gpt-6-luna 400K", "github-copilot gpt-6-astra 600K", "google gemini-3.1-pro-preview 1M"].join("\n");
 // what omo auth check --json said on the host the reviewers failed on (anthropic-subscription: provider_not_found, yet logged in)
 const AUTH: Record<string, object> = {
   "chatgpt-subscription": { status: "ready", accounts: [{ name: "default", blocked: false }] },
@@ -252,7 +259,7 @@ const hostRunner = (calls: Call[], reviewer?: (model: string) => Ran | undefined
 };
 const challengeWorld = async (fake: Runner, models?: readonly string[], laneModel = "anthropic/claude-opus-5-5") => {
   const base = depsFor(world, fakeClock(T0), state.dir);
-  const deps = { ...base, run: fake, config: { ...base.config, explore: { ...base.config.explore, ...(models ? { challengeModels: models } : {}) } } };
+  const deps = { ...base, run: fake, config: { ...base.config, ...(models ? { reviewers: { models } } : {}) } };
   const l: Lane = { ...lane, model: laneModel, challengeBefore: ["the full 9-seed run"] };
   await deps.registry.write(l);
   const plan = join(state.dir, "plan.md");
@@ -261,7 +268,7 @@ const challengeWorld = async (fake: Runner, models?: readonly string[], laneMode
 };
 
 test("by default the best GPT, then Claude, then Grok model reviews; on a Claude lane GPT goes first", () => {
-  const order = defaultConfig("/home/test").explore.challengeModels;
+  const order = defaultConfig("/home/test").reviewers.models;
   expect(order.slice(0, 3).map(familyOf)).toEqual(["openai", "anthropic", "xai"]);
   expect(reviewers("anthropic-subscription/claude-opus-5-5:medium", order)[0]).toBe("chatgpt-subscription/gpt-6-astra");
   expect(familyOf("github-copilot/gpt-6.1-sol")).toBe("openai");
@@ -290,7 +297,7 @@ test("the reviewer reads the plan's repository with read-only tools and writes t
 test("reviewer ids the host cannot call are skipped before any call; one on a provider that is not logged in is called on one that is", async () => {
   const calls: Call[] = [];
   const { deps, l, plan } = await challengeWorld(hostRunner(calls), ["google/gemini-3.1-pro-preview", "nosuch/model-x", "github-copilot/gpt-6-astra", "anthropic-subscription/claude-fable-5-1:high"], "xai/grok-4.7");
-  const checks = await checkReviewers(deps, deps.config.explore.challengeModels);
+  const checks = await checkReviewers(deps, deps.config.reviewers.models);
   expect(checks.map((c) => c.call)).toEqual([undefined, undefined, "chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-fable-5-1:high"]);
   expect(checks[0]?.note).toBe("google is not logged in, and no logged-in provider offers gemini-3.1-pro-preview");
   expect(checks[1]?.note).toBe("omo knows no provider nosuch, and no logged-in provider offers model-x");
@@ -302,7 +309,7 @@ test("reviewer ids the host cannot call are skipped before any call; one on a pr
 
 test("--all collects one review per family in list order, the next model of a family standing in for one that fails", async () => {
   const calls: Call[] = [];
-  const order = defaultConfig("/home/test").explore.challengeModels;
+  const order = defaultConfig("/home/test").reviewers.models;
   const { deps, l, plan } = await challengeWorld(hostRunner(calls, (m) => (m.endsWith("claude-fable-5-1") ? { code: 124, out: "", err: "killed by SIGKILL (timeout)" } : undefined)), order, "qwen/qwen3.8-max");
   const r = await runChallenge(deps, l, plan, { all: true });
   expect(calls.map((c) => c.model)).toEqual(["chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-fable-5-1", "anthropic-subscription/claude-opus-5-5", "xai/grok-4.7"]);
@@ -377,23 +384,36 @@ test("fork-explore runs CPU branches at once, queues GPU branches on the slot, p
   expect(() => branchesFrom(["a"], ["t"], [], false)).toThrow("at least 2");
 });
 
-test("intent-check flags a direction that drifted from the owner's goal; a stage-change milestone tells the lead to run it", async () => {
+test("intent-check shows the owner's goal, the lane's direction and next step; a stage-change milestone puts that lane's owner check first and writes no INTENT line", async () => {
   const empty: Tree = { area: "x", nodes: [] };
   const goal = "굴착기가 흙을 퍼서 적치띠에 덤프하는 정책을 학습";
-  expect(intentView({ ...lane, goal, direction: { at: "t", text: "적치띠 덤프 보상 정책 학습 재개", next: "9-seed 평가" } }, empty, 0.12).verdict).toBe("INTENT_OK");
-  // a Korean goal: low word overlap is no evidence either way (dori owner-check reads it), so never INTENT_DRIFT
-  expect(intentView({ ...lane, goal, direction: { at: "t", text: "rewrite the Discord bot README", next: "publish docs" } }, empty, 0.12).verdict).toBe("INTENT_UNCHECKED");
-  const ko = "같은 실수 3번과 형 지시 위반·상태 모순·목표 상실을 자동으로 잡는 보완 만들기";
-  expect(intentView({ ...lane, goal: ko, direction: { at: "t", text: "build REPEAT_SUSPECT and OWNER_CHECK as alert-only signals", next: "backtest on hr35-e7" } }, empty, 0.12).verdict).toBe("INTENT_UNCHECKED");
-  const en = "make the excavator dump soil into the bank reliably";
-  expect(intentView({ ...lane, goal: en, direction: { at: "t", text: "add a swing std floor so the policy keeps exploring the dump swing", next: "count dumps into the bank" } }, empty, 0.12).verdict).toBe("INTENT_OK");
-  expect(intentView({ ...lane, goal: en, direction: { at: "t", text: "rewrite the README for the Discord bot", next: "publish docs" } }, empty, 0.12).verdict).toBe("INTENT_DRIFT");
-  expect(intentView(lane, empty, 0.12).verdict).toBe("INTENT_NO_GOAL");
-  const deps = depsFor(world, fakeClock(T0 + 60_000), state.dir);
-  await deps.registry.write({ ...lane, goal });
-  world.screens["lead:p1"] = " [REPORT] rl-e7 | milestone | phase 2 starts: switch to curriculum training\n\n❯ ";
-  const acts = (await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "intent_check");
-  expect(acts).toHaveLength(1);
-  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/freshness INTENT_CHECK rl-e7 /);
+  expect(intentView({ ...lane, goal, direction: { at: "t", text: "적치띠 덤프 보상 정책 학습 재개", next: "9-seed 평가" } }, empty)).toEqual({ goal, direction: "적치띠 덤프 보상 정책 학습 재개", next: "9-seed 평가" });
+  expect(intentView({ ...lane, lastReport: "[REPORT] rl-e7 | milestone | swing floor added; next: count dumps" }, empty)).toEqual({ direction: "swing floor added; next: count dumps", next: "count dumps" });
+  const checked: string[] = [];
+  const omo: Runner = async (argv, opts) => {
+    if (argv[0] !== "omo") return fakeRunner(world)(argv, opts);
+    checked.push((argv.at(-1) ?? "").match(/Lane: (\S+)/)?.[1] ?? "");
+    return { code: 0, out: "VERDICT: OK", err: "" };
+  };
+  const sessions = join(state.dir, "sessions");
+  for (const [key, cwd] of [["rl-a", "/work/a"], ["rl-b", "/work/b"]] as const) {
+    const dir = sessionDirFor(sessions, cwd);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `2026-01-01T11-00-00-000Z_00000000-0000-0000-0000-00000000000${key === "rl-a" ? 1 : 2}.jsonl`), `${JSON.stringify({ type: "message", timestamp: new Date(T0 + 30_000).toISOString(), message: { role: "assistant", content: [{ type: "text", text: `[REPORT] ${key} | milestone | working` }] } })}\n`);
+  }
+  // whichever lane the registry lists first, the one that announced a new stage is checked (one check per sweep)
+  for (const staged of ["rl-a", "rl-b"]) {
+    const dir = join(state.dir, `st-${staged}`);
+    checked.length = 0;
+    const base = depsFor(world, fakeClock(T0 + 60_000), dir, { sessionsDir: sessions, explore: { ...defaultConfig().explore, modelsCommand: [] } });
+    const deps = { ...base, run: omo };
+    await deps.registry.write({ ...lane, key: "rl-a", pane: "w:pa", cwd: "/work/a", goal });
+    await deps.registry.write({ ...lane, key: "rl-b", pane: "w:pb", cwd: "/work/b", goal });
+    const line = (k: string) => ` [REPORT] ${k} | milestone | ${k === staged ? "phase 2 starts: switch to curriculum training" : "still tuning"}`;
+    world.screens["lead:p1"] = `${line("rl-a")}\n${line("rl-b")}\n\n❯ `;
+    await freshnessTick(deps, "/home/test");
+    expect(checked).toEqual([staged]);
+    expect(await Bun.file(deps.config.watchLog).text()).not.toMatch(/INTENT_/);
+  }
   expect(footer({ ...lane, goal }, "lead:p1")).toContain(`Goal (owner words): "${goal}"`);
 });

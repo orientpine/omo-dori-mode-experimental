@@ -1,13 +1,15 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-import { type DoriConfig, type Explore, expandHome, fill } from "./config.ts";
+import { canonical } from "./auto-signals.ts";
+import { type DoriConfig, type Explore, expandHome, fill, type Stuck } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { tagsOf } from "./lane-signals.ts";
 import { sendVerified } from "./panes.ts";
-import type { FixAttempt, Lane } from "./registry.ts";
+import type { FixAttempt, Lane, StuckMark } from "./registry.ts";
+import { sessionStart } from "./rollover.ts";
 import { iso } from "./run.ts";
-import { normFix } from "./same-fix.ts";
+import { fixCount, normFix } from "./same-fix.ts";
 import { sessionDirFor } from "./session-id.ts";
 import { watchLog } from "./watch-log.ts";
 
@@ -155,9 +157,9 @@ export const updateTree = async (stateDir: string, a: TreeArea, change: (t: Tree
   return next;
 };
 
-// ---- the stuck gate of dori fix-attempt ----
+// ---- the stuck ladder: one count per metric, one rung, one STUCK line ----
 
-// Attempts on one metric, whatever the hypothesis, since the last attempt marked improved. A fix the lead asked for and
+// Failed attempts on one metric, whatever the hypothesis, since the last attempt marked improved. A fix the lead asked for and
 // the lane then reported is one attempt, as in fixCount.
 export const metricAttempts = (fixes: readonly FixAttempt[], metric: string): number => {
   let n = 0;
@@ -176,18 +178,15 @@ export const metricAttempts = (fixes: readonly FixAttempt[], metric: string): nu
   return n;
 };
 
-// the stuck signal an attempt is: 0 below hypothesesFrom, 1 at the first attempt that needs hypotheses, and so on
-export const stuckSignal = (attempt: number, cfg: Pick<Explore, "hypothesesFrom">): number => Math.max(0, attempt - cfg.hypothesesFrom + 1);
-
 export type GateInput = { readonly hypotheses: readonly string[]; readonly tests: readonly string[]; readonly override?: string };
-export type Gate = { readonly verdict: "ok" | "branch" | "override" | "required"; readonly attempt: number; readonly signal: number; readonly problem?: string };
+export type Gate = { readonly verdict: "ok" | "branch" | "override" | "required"; readonly attempt: number; readonly problem?: string };
 
-// From the hypothesesFrom-th attempt on one metric with no improvement, a fix needs minHypotheses competing hypotheses,
-// each with a cheap discriminating test, or an explicit override with a reason.
-export const gateFix = (fixes: readonly FixAttempt[], next: FixAttempt, input: GateInput, cfg: Pick<Explore, "hypothesesFrom" | "minHypotheses">): Gate => {
-  const attempt = metricAttempts([...fixes, next], next.metric);
-  const signal = stuckSignal(attempt, cfg);
-  if (!signal) return { verdict: "ok", attempt, signal };
+// Rung 2 as dori fix-attempt enforces it: from stuck.hypothesesAt failed attempts on one metric (the tagged count with this
+// attempt, or the inferred count, whichever is larger) a fix needs minHypotheses competing hypotheses, each with a cheap
+// discriminating test, or an explicit override with a reason.
+export const gateFix = (fixes: readonly FixAttempt[], next: FixAttempt, input: GateInput, cfg: Pick<Explore, "minHypotheses"> & Pick<Stuck, "hypothesesAt">, inferred = 0): Gate => {
+  const attempt = Math.max(metricAttempts([...fixes, next], next.metric), next.improved ? 0 : inferred);
+  if (attempt < cfg.hypothesesAt) return { verdict: "ok", attempt };
   const hyps = input.hypotheses.map((h) => h.trim()).filter(Boolean);
   const tests = input.tests.map((t) => t.trim()).filter(Boolean);
   const distinct = new Set(hyps.map(normFix)).size;
@@ -195,9 +194,9 @@ export const gateFix = (fixes: readonly FixAttempt[], next: FixAttempt, input: G
     ...(distinct < cfg.minHypotheses ? [`${distinct} competing hypothes${distinct === 1 ? "is" : "es"} given, at least ${cfg.minHypotheses} needed (--hypotheses, once per hypothesis)`] : []),
     ...(tests.length !== hyps.length ? [`${tests.length} --test for ${hyps.length} --hypotheses: give one cheap discriminating experiment per hypothesis, in the same order`] : []),
   ];
-  if (!problems.length) return { verdict: "branch", attempt, signal };
-  if (input.override?.trim()) return { verdict: "override", attempt, signal, problem: problems.join("; ") };
-  return { verdict: "required", attempt, signal, problem: problems.join("; ") };
+  if (!problems.length) return { verdict: "branch", attempt };
+  if (input.override?.trim()) return { verdict: "override", attempt, problem: problems.join("; ") };
+  return { verdict: "required", attempt, problem: problems.join("; ") };
 };
 
 export const requiredMessage = (key: string, metric: string, g: Gate, cfg: Pick<Explore, "minHypotheses">): string =>
@@ -230,36 +229,122 @@ export const recordOverride = (deps: FlowDeps, key: string, metric: string, g: G
 
 export const recordRefusal = (deps: FlowDeps, message: string): void => watchLog(deps.config.watchLog, deps.clock, { source: "fix-attempt", line: message });
 
-// ---- after every recorded fix: tree feed, and the external-search step at the researchAt-th stuck signal ----
+// One metric's stuck count: tagged failed attempts (fix tags and dori fix-attempt, in the lane's current session, since the
+// last --improved and since the last PASS the reports showed) and the inferred cycles (untagged reports, commits, tree;
+// auto-signals), counted under one name (autoSignals.aliases). fixated: one hypothesis tried fixatedAfter times.
+export type StuckView = { readonly metric: string; readonly tagged: number; readonly inferred: number; readonly n: number; readonly hypotheses: number; readonly fixated: boolean };
+
+export const stuckView = (lane: Lane, metric: string, config: Pick<DoriConfig, "stuck" | "autoSignals">): StuckView => {
+  const aliases = config.autoSignals.aliases;
+  const key = canonical(metric, aliases);
+  const passed = lane.inferred?.passedAt?.[key] ?? "";
+  const since = sessionStart(lane);
+  const fixes = (lane.fixes ?? []).filter((f) => f.at >= since && f.at > passed && canonical(f.metric, aliases) === key).map((f) => ({ ...f, metric: key }));
+  const restart = fixes.findLastIndex((f) => f.improved);
+  const current = restart >= 0 ? fixes.slice(restart) : fixes;
+  const hyps = [...new Set(current.map((f) => f.hypothesis))];
+  const tagged = metricAttempts(fixes, key);
+  const inferred = lane.inferred?.counts[key] ?? 0;
+  return { metric: key, tagged, inferred, n: Math.max(tagged, inferred), hypotheses: hyps.length, fixated: hyps.some((h) => fixCount(current, key, h) >= config.stuck.fixatedAfter) };
+};
+
+// The rung a count reaches: 4 when one hypothesis is fixated or an attempt failed after rung 3, 3 from researchAt, 2 from
+// hypothesesAt, 1 for any failed attempt. prev is the rung this metric already reached in this session.
+export const rungOf = (v: StuckView, prev: number, cfg: Stuck): number =>
+  v.fixated || (v.n > cfg.researchAt && prev >= 3) ? 4 : v.n >= cfg.researchAt ? 3 : v.n >= cfg.hypothesesAt ? 2 : v.n >= 1 ? 1 : 0;
+
+export const CONTEXT = "@context";
+
+// the rungs of the lane's current session (a handover starts a new one)
+const rungsNow = (lane: Lane): Record<string, StuckMark> => Object.fromEntries(Object.entries(lane.stuck ?? {}).filter(([, m]) => m.pane === lane.pane));
+
+// The highest rung the lane reached in its current session, for the rollover log and dori rollover-propose.
+export const stuckTop = (lane: Lane): { readonly metric: string; readonly n: number; readonly rung: number } | undefined =>
+  Object.entries(rungsNow(lane)).map(([metric, m]) => ({ metric, n: m.n, rung: m.rung })).sort((x, y) => y.rung - x.rung || y.n - x.n)[0];
+
+const counts = (v: StuckView): string => `tagged ${v.tagged}, inferred ${v.inferred}, hypotheses ${v.hypotheses}${v.fixated ? ", fixated" : ""}${v.inferred > v.tagged ? ", inferred only" : ""}`;
+
+// the signal names this one line replaces, kept at its end for one release so old monitors and stats still match
+const oldNames = (rung: number, v: StuckView, cfg: Stuck): string[] => [
+  ...(rung === 2 ? ["HYPOTHESES_REQUIRED"] : []),
+  ...(rung === 3 ? ["RESEARCH_DUE"] : []),
+  ...(rung === 4 ? ["ROLLOVER_DUE"] : []),
+  ...(v.fixated ? ["SAME_FIX_3"] : []),
+  ...(v.inferred >= cfg.researchAt ? ["REPEAT_SUSPECT"] : []),
+];
+
+export const stuckLine = (key: string, metric: string, rung: number | "context", detail: string, action: string, names: readonly string[]): string =>
+  `STUCK ${key} ${JSON.stringify(metric)} rung ${rung} (${detail}) -> ${action}${names.length ? ` [${names.join(" ")}]` : ""}`;
+
+const rolloverAction = (key: string, why: string): string =>
+  `${why}: the cheap rungs are spent, so a new session may help; decide it (dori rollover-propose ${key} shows the note; dori handover --lane ${key} --approved-by "lead:<your reason and this signal>"; the owner is told afterwards), or re-instruct the lane`;
+
+// After a tagged attempt or a grown inferred count: the metric's rung now. A rung above the one this metric reached in this
+// session gives one STUCK line (rung 2 and up); rung 3 also types the ulw research text into the lane (research and a
+// challenge of the next plan, in this session: no rollover at this rung). A count that went down (PASS, --improved) only
+// lowers the mark. Returns the lines written to the watch log.
+export const stuckStep = async (deps: FlowDeps, key: string, metric: string): Promise<string[]> => {
+  const lane = await deps.registry.read(key);
+  if (!lane) return [];
+  const cfg = deps.config.stuck;
+  const v = stuckView(lane, metric, deps.config);
+  const marks = lane.stuck ?? {};
+  const prev = marks[v.metric]?.pane === lane.pane ? (marks[v.metric]?.rung ?? 0) : 0;
+  const rung = rungOf(v, prev, cfg);
+  if (rung === prev && marks[v.metric]?.n === v.n) return [];
+  await deps.registry.patch(key, { stuck: { ...marks, [v.metric]: { rung, n: v.n, at: iso(deps.clock), ...(lane.pane ? { pane: lane.pane } : {}) } } });
+  if (rung <= prev || rung < 2) return [];
+  let action: string;
+  if (rung === 2) action = `branch before the next patch: ${deps.config.explore.minHypotheses} competing hypotheses, each with a cheap discriminating test (dori fix-attempt ${key} --metric "${v.metric}" --hypotheses ... --test ..., or dori tree add --lane ${key})`;
+  else if (rung === 3) {
+    action = "ulw research on the exact symptom and a dori challenge of the next plan, in this session, before the next patch (no rollover at this rung)";
+    const area = laneArea(lane, deps.config);
+    const tree = await updateTree(deps.config.stateDir, area, (t) => addNode(t, { kind: "research", text: `external search on the symptom "${v.metric}" (stuck rung 3, ${v.n} failed attempts, lane ${key})`, metric: v.metric, lane: key, source: "stuck rung 3" }, iso(deps.clock)).tree);
+    if (deps.config.explore.sendResearchToLane && lane.pane) {
+      const delivered = await sendResearch(deps, lane, tree, v.n, v.metric);
+      action += delivered ? "; ulw research sent to the lane" : `; the research text did not reach pane ${lane.pane}`;
+    }
+  } else action = rolloverAction(key, v.fixated ? `hypothesis tried ${cfg.fixatedAfter}+ times on "${v.metric}"` : `attempt ${v.n} failed after rung 3`);
+  const line = stuckLine(key, v.metric, rung, counts(v), action, oldNames(rung, v, cfg));
+  watchLog(deps.config.watchLog, deps.clock, { source: "stuck", line });
+  return [line];
+};
+
+// After an owner check: a finding (VIOLATION, CONTRADICTION, GOAL_LOSS) is the context rung, a re-read of the brief and the
+// owner's words that the lead confirms first (dori owner-check <key> --reread); the same in the next check is rung 4. A
+// clean check ends it. Returns the watch-log lines.
+export const stuckContext = async (deps: FlowDeps, key: string, findings: readonly { readonly kind: string; readonly owner: string; readonly report: string; readonly why: string; readonly verified: boolean }[], model: string): Promise<string[]> => {
+  const lane = await deps.registry.read(key);
+  if (!lane) return [];
+  const marks = { ...(lane.stuck ?? {}) };
+  const prev = marks[CONTEXT]?.pane === lane.pane ? marks[CONTEXT] : undefined;
+  if (!findings.length) {
+    if (marks[CONTEXT]) {
+      delete marks[CONTEXT];
+      await deps.registry.patch(key, { stuck: marks });
+    }
+    return [];
+  }
+  const rung = prev ? 4 : 1;
+  const n = (prev?.n ?? 0) + 1;
+  await deps.registry.patch(key, { stuck: { ...marks, [CONTEXT]: { rung, n, at: iso(deps.clock), ...(lane.pane ? { pane: lane.pane } : {}) } } });
+  if (prev?.rung === 4) return [];
+  const f = findings[0];
+  const detail = `${findings.map((x) => x.kind).join(", ")}: owner "${clip(f?.owner ?? "", 160)}" vs report "${clip(f?.report ?? "", 160)}": ${clip(f?.why ?? "", 160)}${f?.verified ? "" : " (unverified quote)"}; reviewer ${model}`;
+  const action = rung === 4
+    ? rolloverAction(key, `the owner check found the lane off the owner's words again (${n} checks in a row)`)
+    : `confirm the finding, then dori owner-check ${key} --reread sends the lane its brief and the owner's words to re-read; the same finding in the next check is rung 4`;
+  const line = stuckLine(key, CONTEXT, rung === 4 ? 4 : "context", detail, action, [...findings.map((x) => `OWNER_CHECK_${x.kind}`), ...(rung === 4 ? ["ROLLOVER_DUE"] : [])]);
+  watchLog(deps.config.watchLog, deps.clock, { source: "stuck", line });
+  return [line];
+};
+
+// ---- after every recorded fix: tree feed, then the ladder ----
 
 export const afterFix = async (deps: FlowDeps, lane: Lane, fixes: readonly FixAttempt[], attempt: FixAttempt): Promise<string[]> => {
-  const cfg = deps.config.explore;
-  const area = laneArea(lane, deps.config);
   const n = metricAttempts(fixes, attempt.metric);
-  const signal = stuckSignal(n, cfg);
-  const out: string[] = [];
-  const due = signal === cfg.researchAt;
-  const tree = await updateTree(deps.config.stateDir, area, (t) => {
-    let tree = addNode(t, { kind: "tried", text: attempt.hypothesis, metric: attempt.metric, lane: lane.key, source: `${attempt.via} attempt ${n}` }, attempt.at).tree;
-    if (due) tree = addNode(tree, { kind: "research", text: `external search on the symptom "${attempt.metric}" (stuck signal ${signal}, lane ${lane.key})`, metric: attempt.metric, lane: lane.key, source: "stuck signal" }, attempt.at).tree;
-    return tree;
-  });
-  // a lane that reports its own second attempt without branching is the lead's to re-instruct
-  if (attempt.via === "report" && signal === 1) {
-    const line = `HYPOTHESES_REQUIRED ${lane.key} reported attempt ${n} on "${attempt.metric}" with no improvement and no competing hypotheses; re-instruct it with dori fix-attempt ${lane.key} --metric "${attempt.metric}" --hypotheses ... --test ...`;
-    watchLog(deps.config.watchLog, deps.clock, { source: "fix-attempt", line });
-    out.push(line);
-  }
-  if (due) {
-    let line = `RESEARCH_DUE ${lane.key} stuck signal ${signal} on "${attempt.metric}": an external search on the exact symptom comes before the next patch (dori research-hint ${lane.key})`;
-    if (cfg.sendResearchToLane && lane.pane) {
-      const delivered = await sendResearch(deps, { ...lane, fixes }, tree, signal, attempt.metric);
-      line += delivered ? " (ulw research sent to the lane)" : ` (the note did not reach pane ${lane.pane})`;
-    }
-    watchLog(deps.config.watchLog, deps.clock, { source: "fix-attempt", line });
-    out.push(line);
-  }
-  return out;
+  await updateTree(deps.config.stateDir, laneArea(lane, deps.config), (t) => addNode(t, { kind: "tried", text: attempt.hypothesis, metric: attempt.metric, lane: lane.key, source: `${attempt.via} attempt ${n}` }, attempt.at).tree);
+  return stuckStep(deps, lane.key, attempt.metric);
 };
 
 // ---- dori research-hint ----
@@ -441,7 +526,7 @@ export const researchCheck = async (deps: FlowDeps, lane: Lane): Promise<Researc
   let line = `RESEARCH_PENDING ${lane.key} ${min} min after the ulw research text: seen=${found.seen} pointer=${found.pointer} skill-read=${found.read}${where}`;
   if (found.pointer && found.read) {
     verdict = "started";
-    line = `RESEARCH_STARTED ${lane.key} stuck signal ${r.signal} on "${r.metric}": the session log shows the ${RESEARCH_POINTER} and a read of ${RESEARCH_SKILL}${where}`;
+    line = `RESEARCH_STARTED ${lane.key} failed attempt ${r.signal} on "${r.metric}": the session log shows the ${RESEARCH_POINTER} and a read of ${RESEARCH_SKILL}${where}`;
   } else if (deps.clock.now() - r.sentAt >= deps.config.explore.researchVerifyMin * 60_000) {
     verdict = "not-started";
     const missing = !found.seen
@@ -462,60 +547,22 @@ export const researchCheck = async (deps: FlowDeps, lane: Lane): Promise<Researc
 
 // ---- dori intent-check ----
 
-const CJK = /[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
-const INTENT_STOP = new Set([...STOP, "make", "into", "this", "that", "then", "run", "new", "get"]);
-
-// Korean, Chinese or Japanese words as character pairs (particles stay attached to the stem); other words as their
-// first four letters, a crude stem (dump, dumps, dumping and dumped all give "dump")
-const terms = (s: string): Set<string> => {
-  const out = new Set<string>();
-  for (const w of s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ")) {
-    if (!w || INTENT_STOP.has(w)) continue;
-    if (CJK.test(w)) {
-      if (w.length < 2) out.add(w);
-      for (let i = 0; i + 2 <= w.length; i++) out.add(w.slice(i, i + 2));
-    } else if (w.length >= 3) out.add(w.slice(0, 4));
-  }
-  return out;
-};
-
-// share of the goal's terms the direction also has: crude, but enough to flag a lane drifting away from the owner's words
-export const overlap = (goal: string, direction: string): number => {
-  const g = terms(goal);
-  if (!g.size) return 0;
-  const d = terms(direction);
-  let hit = 0;
-  for (const p of g) if (d.has(p)) hit++;
-  return hit / g.size;
-};
-
 const NEXT = /(?:next(?: step)?|다음(?: 단계)?)\s*[:：=-]\s*([^|;\n]+)/i;
 
-export type IntentView = { readonly goal?: string; readonly direction: string; readonly next: string; readonly score: number; readonly verdict: "INTENT_OK" | "INTENT_DRIFT" | "INTENT_UNCHECKED" | "INTENT_NO_GOAL" };
+// What dori intent-check shows next to the owner check's verdict: the owner's goal, the lane's direction and next step.
+export type IntentView = { readonly goal?: string; readonly direction: string; readonly next: string };
 
-export const intentView = (lane: Lane, tree: Tree, driftBelow: number): IntentView => {
+export const intentView = (lane: Lane, tree: Tree): IntentView => {
   const report = (lane.lastReport ?? "").replace(/^\[REPORT\][^|]*\|[^|]*\|\s*/, "");
   const direction = lane.direction?.text ?? (report || lane.title);
   const openTest = tree.nodes.find((n) => n.kind === "hypothesis" && n.status === "open" && n.lane === lane.key && n.test);
   const next = lane.direction?.next ?? NEXT.exec(report)?.[1]?.trim() ?? (openTest ? `test ${openTest.id}: ${openTest.test}` : "(not stated; pass --next)");
-  if (!lane.goal) return { direction, next, score: 0, verdict: "INTENT_NO_GOAL" };
-  const score = overlap(lane.goal, `${direction} ${next}`);
-  // A Korean (or Chinese, Japanese) goal shares few character pairs with an English report or a paraphrase in the same
-  // language, so low overlap there is no evidence of drift: it is left to dori owner-check, which reads the words.
-  const low = score < driftBelow;
-  return { goal: lane.goal, direction, next, score, verdict: !low ? "INTENT_OK" : CJK.test(lane.goal) ? "INTENT_UNCHECKED" : "INTENT_DRIFT" };
+  return { ...(lane.goal ? { goal: lane.goal } : {}), direction, next };
 };
 
 export const formatIntent = (lane: Lane, v: IntentView): string[] => [
   `INTENT ${lane.key} (${lane.title})`,
-  `Goal (owner words): ${v.goal ?? "(none recorded; set it with dori intent-check <key> --goal \"<the owner's words>\")"}`,
+  `Goal (owner words): ${v.goal ?? "(none recorded; the brief's owner words are read; set one with dori intent-check <key> --goal \"<the owner's words>\")"}`,
   `Direction now:      ${clip(v.direction, 300)}`,
   `Next step:          ${clip(v.next, 300)}`,
-  v.verdict === "INTENT_OK"
-    ? `INTENT_OK ${lane.key} overlap ${v.score.toFixed(2)}: the direction still names the goal; say in the report how this step serves it`
-    : v.verdict === "INTENT_DRIFT"
-      ? `INTENT_DRIFT ${lane.key} overlap ${v.score.toFixed(2)}: the current direction shares little with the owner's goal. Restate how this step serves the goal, change course, or ask the owner`
-      : v.verdict === "INTENT_UNCHECKED"
-        ? `INTENT_UNCHECKED ${lane.key} overlap ${v.score.toFixed(2)}: the goal is in Korean (or another CJK language), where word overlap cannot tell drift; dori owner-check ${lane.key} has a reviewer model read the goal and reports. Say in the report how this step serves the goal`
-        : `INTENT_NO_GOAL ${lane.key}: no owner goal on record, so drift cannot be checked`,
 ];

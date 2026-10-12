@@ -216,13 +216,14 @@ Lessons from running a Dori day to day, this switch among them, are in [`../../r
 
 ## The Dori's monitors
 
-In the Dori's own session, arm these as persistent monitors (`references/setup.md` §5 lists the general ones):
+In the Dori's own session, arm these as persistent monitors (`references/setup.md` §5 lists the general ones). Keep them few: when two watches tail the same log or wait on the same event, merge them into one with a combined filter instead of arming both.
+
 
 | Monitor | Command | Filter |
 |---|---|---|
 | owner messages and answers | `tail -n 0 -F ~/.dori/state/discord/inbox.jsonl` | `^\{` |
 | sessions waiting on a human | `tail -n 0 -F ~/.dori/state/session-events.jsonl` | `^\{` |
-| lane sweeps | `tail -n 0 -F ~/.dori/dori-lanes.log` | `LANE_\|DEAD_PANE\|HOST_GUARD ALERT\|NUDGED\|POSTED\|NO-REPORT\|FAIL\|SAME_FIX` |
+| lane sweeps | `tail -n 0 -F ~/.dori/dori-lanes.log` | `LANE_\|DEAD_PANE\|HOST_GUARD ALERT\|NUDGED\|POSTED\|NO-REPORT\|FAIL\|STUCK\|OWNER_CHECK\|ROLLOVER_\|NOT_SUBMITTED\|SAME_FIX` |
 | listener health | `tail -n 0 -F ~/.dori/inbound.log ~/.dori/session-watch.log` | `FATAL\|_FAIL\|SESSION-WATCH-FAIL` |
 
 `DISCORD_LISTENER_CLOSED` alone is not worth a ping: the gateway asks for reconnects several times a day. Only alert when no `DISCORD_LISTENER_READY` follows within a minute.

@@ -86,9 +86,18 @@ export const defaultDiscordWords: DiscordWords = {
   timeZone: "UTC",
 };
 
-// SAME_FIX_3: from the `after`-th fix attempt on one metric with one hypothesis the lead is told; the lane gets laneText
-// ({n}, {metric}, {hypothesis} filled in) only when sendToLane is true.
-export type SameFix = { readonly after: number; readonly sendToLane: boolean; readonly laneText: string };
+// The stuck ladder (dori fix-attempt, freshness): one count per metric, the failed attempts since the last PASS or
+// --improved, the larger of the tagged count (fix tags, dori fix-attempt) and the inferred one (untagged reports, commits,
+// tree). Rung 2 from hypothesesAt attempts: competing hypotheses with cheap tests before the next patch. Rung 3 from
+// researchAt attempts: ulw research and a dori challenge of the next plan, in the same session, no rollover. Rung 4: a
+// failure after rung 3, the same hypothesis fixatedAfter times, or an owner-check finding that comes back: the lead may
+// roll the lane over. rereadText ({key}, {brief}, {finding}) goes to a lane whose report broke the owner's words, only when
+// the lead confirms it with dori owner-check <key> --reread.
+export type Stuck = { readonly hypothesesAt: number; readonly researchAt: number; readonly fixatedAfter: number; readonly rereadText: string };
+
+// Reviewer models of another family for dori challenge and dori owner-check, in order (best GPT, Claude, Grok, then a
+// second model of each family). Each command takes the first callable one of another family than the lane's.
+export type Reviewers = { readonly models: readonly string[] };
 
 // dori scorecard: where the day's numbers come from and how the card reads. Empty paths leave that line as n/a.
 export type Scorecard = {
@@ -107,36 +116,28 @@ export type Scorecard = {
 };
 
 // dori signals: the failure record of earlier lanes. launchLanes caps how many lanes the "Past signals" section of a new
-// brief lists. A report or lead message matching attemptPattern (group 1 = the attempt number) is a numbered fix attempt;
-// one matching rootCausePattern after the first attempt is the switch to a root-cause hunt.
-export type Signals = { readonly launchLanes: number; readonly attemptPattern: string; readonly rootCausePattern: string };
+// brief lists. A report or lead message matching numberedAttemptPattern (group 1 = the attempt number) is a numbered fix
+// attempt; one matching rootCausePattern after the first attempt is the switch to a root-cause hunt.
+export type Signals = { readonly launchLanes: number; readonly numberedAttemptPattern: string; readonly rootCausePattern: string };
 
-// Exploration when a lane is stuck (dori fix-attempt, tree, challenge, fork-explore, research-hint, intent-check).
-// hypothesesFrom: from this attempt on one metric with no improvement, fix-attempt needs minHypotheses competing hypotheses,
-// each with a cheap discriminating test. researchAt: the stuck signal (1 = the first attempt that needed hypotheses) that
-// adds an external-search step; researchText goes to the lane when sendResearchToLane is on ({question}, {n}, {metric},
-// {key}). It must start with "ulw research " (RESEARCH_PREFIX): omo attaches its ulw-research skill only to typed input that
-// names it, and not when the text starts with a [TAG]. researchVerifyMin: how long after sending the lane's session log may
-// take to show the skill pointer and a read of its SKILL.md before RESEARCH_NOT_STARTED.
-// stagePattern: a milestone report matching it announces a new stage, and the lead is told to run dori intent-check.
-// driftBelow: intent-check flags drift when the direction shares less than this share of the goal's word pairs.
-// challengeModels: reviewers for dori challenge in order, by default the best GPT, then Claude, then Grok model, then a
-// second model of each family; the first of another family than the lane's model that writes a review wins (--all: one
-// review per family). Before a call each id is checked against modelsCommand (the host's models) and authCommand
+// Exploration when a lane is stuck (dori fix-attempt, tree, challenge, fork-explore, research-hint).
+// minHypotheses: competing hypotheses, each with a cheap discriminating test, that rung 2 of the stuck ladder asks for.
+// researchText goes to the lane at rung 3 when sendResearchToLane is on ({question}, {n}, {metric}, {key}). It must start
+// with "ulw research " (RESEARCH_PREFIX): omo attaches its ulw-research skill only to typed input that names it, and not
+// when the text starts with a [TAG]. researchVerifyMin: how long after sending the lane's session log may take to show the
+// skill pointer and a read of its SKILL.md before RESEARCH_NOT_STARTED.
+// stagePattern: a milestone report matching it announces a new stage, and freshness runs the owner check on that lane first.
+// Before a review each reviewers.models id is checked against modelsCommand (the host's models) and authCommand
 // ({provider}: is it logged in); an id the host cannot call is skipped or moved to a logged-in provider of the same model.
 // challengeCommand / branchCommand: argv templates ({model}, {prompt}, and {system}, the reviewer's system prompt, for
 // challengeCommand); branchMinutes: time limit per fork-explore branch.
 export type Explore = {
-  readonly hypothesesFrom: number;
   readonly minHypotheses: number;
-  readonly researchAt: number;
   readonly sendResearchToLane: boolean;
   readonly researchText: string;
   readonly researchVerifyMin: number;
   readonly stagePattern: string;
-  readonly driftBelow: number;
   readonly treeLines: number;
-  readonly challengeModels: readonly string[];
   readonly modelsCommand: ArgvTemplate;
   readonly authCommand: ArgvTemplate;
   readonly challengeCommand: ArgvTemplate;
@@ -145,24 +146,24 @@ export type Explore = {
   readonly branchMinutes: number;
 };
 
-// Signals that need no tag from the lane (REPEAT_SUSPECT, OWNER_CHECK); both only alert the lead. repeatAfter: cycles of
-// "a gate line failed, then a new attempt targets it" on one metric before REPEAT_SUSPECT; repeatGapMin: attempts on one
+// Signals that need no tag from the lane: the inferred count of the stuck ladder and OWNER_CHECK. The inferred count is
+// the cycles of "a gate line failed, then a new attempt targets it" on one metric; repeatGapMin: attempts on one
 // metric closer than this are one attempt told twice. failPattern / passPattern: a gate line's verdict; verdictPattern: a
-// prescription's verdict (fails every known metric the text names); attemptPattern: a new attempt (a prescription, an
+// prescription's verdict (fails every known metric the text names); inferAttemptPattern: a new attempt (a prescription, an
 // adjustment, a patch; "시작"/"반영" alone are not, they also start evals and record decisions);
 // prescriptionPattern: words that make it an attempt even when the text also reads as a diagnosis (diagnosticPattern).
 // aliases: metric names that mean the same gate ({ "교착": ["deadlock"] }); the key is the name shown. targetScope: an
 // attempt targets a metric named in the same "sentence" (the default: reports name the target a few words from the prescription)
 // or the same "clause" (between commas: quieter, misses more).
 // ownerCheck: a reviewer of another family reads the brief, the owner's words and recent reports and answers VIOLATION /
-// CONTRADICTION / GOAL_LOSS / OK. enabled: freshness runs it on new reports; models: in order, GPT first (gpt-6.1-sol: on live
-// Korean lane logs the cheaper gpt-6-luna misread a relayed order's scope; it stays as the fallback); command: argv
+// CONTRADICTION / GOAL_LOSS / OK. enabled: freshness runs it on new reports; first: the reviewers.models id it tries first
+// (gpt-6.1-sol: on live Korean lane logs the cheaper gpt-6-luna misread a relayed order's scope); command: argv
 // template ({model}, {prompt}, {system}); minutes: time limit; minIntervalMin: at most one check per lane in this time;
 // maxPerDay: per lane; reports: the newest reports it reads at least; maxReports: at most this many of the reports since the
 // last check (all of them up to that); relays: how many owner [LEAD] relays it reads; perTick: checks per sweep.
 export type OwnerCheck = {
   readonly enabled: boolean;
-  readonly models: readonly string[];
+  readonly first: string;
   readonly command: ArgvTemplate;
   readonly minutes: number;
   readonly minIntervalMin: number;
@@ -174,12 +175,11 @@ export type OwnerCheck = {
 };
 
 export type AutoSignals = {
-  readonly repeatAfter: number;
   readonly repeatGapMin: number;
   readonly failPattern: string;
   readonly passPattern: string;
   readonly verdictPattern: string;
-  readonly attemptPattern: string;
+  readonly inferAttemptPattern: string;
   readonly prescriptionPattern: string;
   readonly diagnosticPattern: string;
   readonly aliases: Readonly<Record<string, readonly string[]>>;
@@ -197,11 +197,12 @@ export type AutoSignals = {
 // before the move for the old lead and after it for the new one; arm tells the new session how to start it, if it must.
 // Rollover (moving a session to a new one): readyMin is how long a lane's `dori handover ready` mark stays valid. lane* and
 // lead* are the thresholds at which freshness says a rollover is due (ROLLOVER_DUE): context use in percent (status line),
-// compactions in the session log, hours since the session began, and (lanes only) laneRepeats, the attempts of one same
-// fix in the current session (dori fix-attempt's count); 0 turns one off. Nothing switches on a threshold: the
-// lead asks the owner (dori rollover-propose posts proposalText with proposalOptions, the first meaning yes) and runs the
-// handover with --approved-by. autoRolloverLanes / autoRolloverLead let freshness start it without asking; off until the
-// owner decides from dori rollover-stats. supplementRounds is how many times a lane handover fills in what the new session's
+// compactions in the session log, hours since the session began; 0 turns one off. A stuck lane is due at rung 4 of the
+// stuck ladder (stuck.*). Nothing switches on a threshold: the lead decides (dori rollover-propose prints proposalText
+// for the lead and logs it), runs the handover with --approved-by lead:<reason and signal>, and the handover tells the
+// owner afterwards and logs that message's id. autoRolloverLanes / autoRolloverLead let freshness start it on a measured
+// threshold without asking; off until the owner decides from dori rollover-stats. reportText ({who}, {from}, {to},
+// {reason}) is that message to the owner, posted in the lane's discord thread or DORI_DISCORD_CHANNEL. supplementRounds is how many times a lane handover fills in what the new session's
 // restatement left out (from the note and the old log) and asks again before it rolls back; 0 rolls back at the first gap.
 export type HandoverWatcher = { readonly name: string; readonly check: readonly string[]; readonly arm?: string };
 
@@ -217,7 +218,6 @@ export type Handover = {
   readonly watchers: readonly HandoverWatcher[];
   readonly readyMin: number;
   readonly laneContextPct: number;
-  readonly laneRepeats: number;
   readonly laneCompactions: number;
   readonly laneAgeH: number;
   readonly leadContextPct: number;
@@ -227,7 +227,7 @@ export type Handover = {
   readonly autoRolloverLead: boolean;
   readonly supplementRounds: number;
   readonly proposalText: string;
-  readonly proposalOptions: readonly string[];
+  readonly reportText: string;
 };
 
 export type DoriConfig = {
@@ -253,7 +253,8 @@ export type DoriConfig = {
   readonly guard: GuardThresholds;
   readonly hooks: Hooks;
   readonly discord: DiscordWords;
-  readonly sameFix: SameFix;
+  readonly stuck: Stuck;
+  readonly reviewers: Reviewers;
   readonly scorecard: Scorecard;
   readonly signals: Signals;
   readonly explore: Explore;
@@ -284,10 +285,14 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   guard: { loadAlert: 150, loadOk: 80, memFreeMinPct: 20, diskFreeMinGb: 50, panesMax: 20 },
   hooks: {},
   discord: defaultDiscordWords,
-  sameFix: {
-    after: 3,
-    sendToLane: false,
-    laneText: "[LEAD] This is fix attempt {n} on {metric} with the same hypothesis ({hypothesis}). Stop patching: reproduce the failure and read the logs for the root cause first, then report what you found.",
+  stuck: {
+    hypothesesAt: 2,
+    researchAt: 3,
+    fixatedAfter: 3,
+    rereadText: "[LEAD] Your last report breaks what the owner asked ({finding}). Before the next step, read your brief again ({brief}) and the owner's words in it and in my relays, quote the line you broke, say how you correct course, and report.",
+  },
+  reviewers: {
+    models: ["chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-fable-5-1", "xai/grok-4.7", "chatgpt-subscription/gpt-6.1-sol", "anthropic-subscription/claude-opus-5-5", "xai/grok-4.6", "chatgpt-subscription/gpt-6-luna"],
   },
   scorecard: {
     timeZone: "UTC",
@@ -303,20 +308,16 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   },
   signals: {
     launchLanes: 5,
-    attemptPattern: "(?:fix(?: attempt)?|attempt|adjustment|조정|땜질)\\s*#?(\\d{1,2})(?:\\s*/\\s*\\d+)?(?![\\d.a-z])",
+    numberedAttemptPattern: "(?:fix(?: attempt)?|attempt|adjustment|조정|땜질)\\s*#?(\\d{1,2})(?:\\s*/\\s*\\d+)?(?![\\d.a-z])",
     rootCausePattern: "root[ -]cause|근본 원인",
   },
   explore: {
-    hypothesesFrom: 2,
     minHypotheses: 3,
-    researchAt: 2,
     sendResearchToLane: true,
-    researchText: "ulw research {question} First read the ulw-research SKILL.md (the omo-ulw-research pointer names its path) and follow it, kept on this one symptom (stuck signal {n} on {metric}). Record each useful finding with dori tree add --lane {key} --kind finding --text '<source url>: <what it says, which hypothesis it supports or rules out>', then report back to the lead what it changes about your next step.",
+    researchText: "ulw research {question} First read the ulw-research SKILL.md (the omo-ulw-research pointer names its path) and follow it, kept on this one symptom (failed attempt {n} on {metric}). Record each useful finding with dori tree add --lane {key} --kind finding --text '<source url>: <what it says, which hypothesis it supports or rules out>'. Then write your next plan to a file, have it challenged with dori challenge {key} --plan <file>, and report back to the lead what the research and the challenge change about your next step, before the next patch.",
     researchVerifyMin: 5,
     stagePattern: "\\b(?:stage|phase|pivot|switch(?:ing)? to|next step)\\b|단계|국면|방향 전환|다음 단계",
-    driftBelow: 0.12,
     treeLines: 6,
-    challengeModels: ["chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-fable-5-1", "xai/grok-4.7", "chatgpt-subscription/gpt-6.1-sol", "anthropic-subscription/claude-opus-5-5", "xai/grok-4.6"],
     modelsCommand: ["omo", "--list-models"],
     authCommand: ["omo", "auth", "check", "--provider", "{provider}", "--json"],
     challengeCommand: ["omo", "-p", "--no-session", "--tools", "read,grep,find,ls", "--no-extensions", "--no-skills", "--no-context-files", "--omo-senpi-disabled", "--system-prompt", "{system}", "--model", "{model}", "{prompt}"],
@@ -325,19 +326,18 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     branchMinutes: 15,
   },
   autoSignals: {
-    repeatAfter: 3,
     repeatGapMin: 30,
     failPattern: "\\bFAIL(?:ED|S)?\\b|불합격|미달|✗|❌",
     passPattern: "\\bPASS(?:ED|ES)?\\b|(?<!불)합격|✓|✅",
     verdictPattern: "\\bREJECTED\\b|\\bNOT[ _]JUDGEABLE\\b|\\bUNCLEAR\\b|\\bno effect\\b|\\bdid not (?:move|improve)\\b|기각|판정 불가|지지 안 함|효과 없음|개선 없음",
-    attemptPattern: "처방|조정|수정|패치|재학습|벌점|\\bprescri|\\bpatch|\\bretrain|\\btweak|\\badjust|\\bpenalt|\\bfix(?:ed|es)?\\b|^(?:fix|feat|perf)\\(",
+    inferAttemptPattern: "처방|조정|수정|패치|재학습|벌점|\\bprescri|\\bpatch|\\bretrain|\\btweak|\\badjust|\\bpenalt|\\bfix(?:ed|es)?\\b|^(?:fix|feat|perf)\\(",
     prescriptionPattern: "처방|조정|수정|패치|재학습|벌점|\\bprescri|\\bpatch|\\bretrain|\\btweak|\\badjust|\\bpenalt|^(?:fix|feat|perf)\\(",
     diagnosticPattern: "탐침|probe|판독|readout|재생|replay|진단|diagnos|가설|hypothes|평가|\\beval|측정|measure|비교|compar|예선|결선|^(?:qa|docs|test)\\(",
     aliases: {},
     targetScope: "sentence",
     ownerCheck: {
       enabled: true,
-      models: ["chatgpt-subscription/gpt-6.1-sol", "chatgpt-subscription/gpt-6-luna", "xai/grok-4.7", "anthropic-subscription/claude-opus-5-5"],
+      first: "chatgpt-subscription/gpt-6.1-sol",
       command: ["omo", "-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files", "--omo-senpi-disabled", "--system-prompt", "{system}", "--model", "{model}", "{prompt}"],
       minutes: 4,
       minIntervalMin: 30,
@@ -349,8 +349,9 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     },
   },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
-    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneRepeats: 3, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false, supplementRounds: 2,
-    proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}", proposalOptions: ["Yes, roll over", "Not yet"] },
+    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false, supplementRounds: 2,
+    proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
+    reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },
 });
 
 export class ConfigError extends Error {}
@@ -381,11 +382,66 @@ export const configPath = (): string => process.env.DORI_CONFIG ?? join(homedir(
 
 export const expandHome = (path: string, home = homedir()): string => (path === "~" ? home : path.startsWith("~/") ? join(home, path.slice(2)) : path);
 
-export const loadConfig = async (path = configPath(), home = homedir()): Promise<DoriConfig> => {
+type Raw = Record<string, Record<string, unknown> | undefined>;
+
+// Keys this consolidation replaced (the stuck ladder, one reviewer list, the attempt patterns' names). An old key still
+// works where it has a new home, moved there unless the new key is set too; one with none is ignored. Each gives one
+// CONFIG_OLD_KEY line, so a config can be fixed at leisure.
+export const migrateOldKeys = (input: Raw): { readonly raw: Raw; readonly warnings: readonly string[] } => {
+  const raw: Raw = Object.fromEntries(Object.entries(input).map(([k, v]) => [k, v && typeof v === "object" && !Array.isArray(v) ? { ...v } : v]));
+  const warnings: string[] = [];
+  const section = (name: string): Record<string, unknown> => (raw[name] ??= {});
+  const take = (from: string, key: string): unknown => {
+    const s = raw[from];
+    if (!s || !(key in s)) return undefined;
+    const v = s[key];
+    delete s[key];
+    return v;
+  };
+  const move = (from: string, key: string, to: string, toKey: string, convert: (v: unknown) => unknown = (v) => v): void => {
+    const v = take(from, key);
+    if (v === undefined) return;
+    const target = section(to);
+    const kept = toKey in target;
+    if (!kept) target[toKey] = convert(v);
+    warnings.push(`CONFIG_OLD_KEY ${from}.${key} -> ${to}.${toKey}${kept ? " (both set: the new key wins)" : ""}; rename it in the config`);
+  };
+  const drop = (from: string, key: string, why: string): void => {
+    if (take(from, key) !== undefined) warnings.push(`CONFIG_OLD_KEY ${from}.${key} is no longer read: ${why}; remove it from the config`);
+  };
+  const hypothesesAt = Number(raw.stuck?.hypothesesAt ?? raw.explore?.hypothesesFrom ?? 2);
+  move("sameFix", "after", "stuck", "fixatedAfter");
+  drop("sameFix", "sendToLane", "the stuck ladder sends a lane research at rung 3 and a re-read only when the lead confirms it (stuck.rereadText)");
+  drop("sameFix", "laneText", "stuck.rereadText is the text the lead confirms");
+  move("explore", "hypothesesFrom", "stuck", "hypothesesAt");
+  // researchAt counted stuck signals (1 = the first attempt that needed hypotheses); stuck.researchAt counts failed attempts
+  move("explore", "researchAt", "stuck", "researchAt", (v) => Number(v) + hypothesesAt - 1);
+  drop("explore", "driftBelow", "dori intent-check reads the owner's words with a reviewer model (owner-check) instead of counting shared words");
+  drop("handover", "laneRepeats", "a stuck lane is due for a rollover at rung 4 of the stuck ladder");
+  drop("handover", "proposalOptions", "dori rollover-propose no longer posts an owner card; the lead decides");
+  drop("autoSignals", "repeatAfter", "the inferred count is one input of the stuck ladder (stuck.researchAt)");
+  move("signals", "attemptPattern", "signals", "numberedAttemptPattern");
+  move("autoSignals", "attemptPattern", "autoSignals", "inferAttemptPattern");
+  move("explore", "challengeModels", "reviewers", "models");
+  const oc = raw.autoSignals?.ownerCheck as Record<string, unknown> | undefined;
+  if (oc && "models" in oc) {
+    const models = oc.models;
+    const rest = { ...oc };
+    delete rest.models;
+    section("autoSignals").ownerCheck = { ...(Array.isArray(models) && models[0] && !("first" in oc) ? { first: models[0] } : {}), ...rest };
+    if (Array.isArray(models) && !("models" in section("reviewers"))) section("reviewers").models = [...new Set([...models, ...defaultConfig().reviewers.models])];
+    warnings.push("CONFIG_OLD_KEY autoSignals.ownerCheck.models -> reviewers.models (one list for challenge and owner-check) and autoSignals.ownerCheck.first; rename it in the config");
+  }
+  return { raw, warnings };
+};
+
+export const loadConfig = async (path = configPath(), home = homedir(), warn: (line: string) => void = (line) => console.error(line)): Promise<DoriConfig> => {
   const base = defaultConfig(home);
   const file = Bun.file(path);
-  const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
-  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, sameFix: { ...base.sameFix, ...raw.sameFix }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover } };
+  const migrated = migrateOldKeys((await file.exists()) ? ((await file.json()) as Raw) : {});
+  for (const w of migrated.warnings) warn(`${w} (${path})`);
+  const raw = migrated.raw as Partial<DoriConfig>;
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover } };
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const stateDir = expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home);
@@ -398,7 +454,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
     update: { ...merged.update, repo, alertPane: raw.update?.alertPane ?? leadPane, services: merged.update.services.map((s) => ({ ...s, paths: s.paths ?? ["skills/dori-mode/scripts/src/"], log: expandHome(s.log ?? "", home), ready: s.ready ?? "" })) },
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
-    scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog, home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
+    scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog || (raw.watchLog ?? join(stateDir, "lanes.log")), home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
     handover: { ...merged.handover, inbox: expandHome(merged.handover.inbox, home), cwd: expandHome(merged.handover.cwd, home) },
     leadPane,
   };
