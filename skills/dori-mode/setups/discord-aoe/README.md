@@ -14,6 +14,9 @@ What you get:
 | `dori-lanes.sh` (unit `dori-lanes`) | `dori watch`, `freshness`, `dead-panes` and `guard` in one unit and one log, each line stamped and tagged. |
 | `session-watch.ts` (unit `dori-session-watch`) | Notices when another aoe session stops for a human (waiting, error, idle after a turn, a new `MILESTONE` line) and writes the event with the pane's tail, the lane's thread and what the session last said. |
 | `self-restart.sh` | The one safe way to restart an aoe session, the Dori's own included, e.g. after an agent update. |
+| `google-watch.ts` (unit `dori-google-watch`) | Read-only zele polling for new unread mail and upcoming calendar events; writes JSONL and remembers notified ids. |
+| `usage-snapshot.ts` | Captures the omo-usage TUI with ANSI colors and renders a PNG using headless Firefox. |
+| `dori.sh` | Starts `dori-inbound` and `dori-google-watch`, starts the current lead session if needed, then attaches to it. Requires the separate `dori lead` PR. |
 | `transcribe.sh`, `setup-asr.sh` | Local speech-to-text with whisper.cpp (CUDA when available) for `hooks.transcribe`. |
 | `systemd/` | User units for the above, plus `dori-lead` to start the Dori's own aoe session at boot. |
 
@@ -50,6 +53,78 @@ What you get:
    ```
    The timer saves yesterday's card every morning at 08:30 host time to `~/.dori/state/scorecard/<date>.json` and `latest.md`, for the Dori to read; nothing is posted to the owner. Add `--post` to `ExecStart=` only if the owner wants the card in the channel. Put a time zone after the time in `OnCalendar=` (e.g. `08:30:00 Asia/Seoul`) to pin it.
 7. **Smoke test.** Write in the channel: the eyes reaction appears within a second and a row lands in `~/.dori/state/discord/inbox.jsonl`. Then `dori ask --text "Smoke test: does the card work?" --option Yes --option No` and tap a button: the card folds into `[answered] ... → Yes` and an `answer` row follows in the inbox.
+
+## Optional local helpers
+
+The fork owns these scripts; the host keeps only settings, unit symlinks and drop-ins.
+All TypeScript helpers load `~/.dori/dori.env` (or `DORI_ENV_FILE`), with existing environment values taking precedence.
+Paths in that file must be absolute; neither systemd nor these helpers expands `~` or `$HOME`.
+
+### Google mail and calendar
+
+Install and authenticate `zele` on the host. The watcher only calls `mail list`, `cal events` and `cal get`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DORI_GOOGLE_ACCOUNT` | zele's configured accounts | Account passed as `--account` on every zele call |
+| `DORI_GOOGLE_EVENTS` | `<DORI_STATE_DIR or ~/.dori/state>/google-events.jsonl` | Output JSONL |
+| `DORI_GOOGLE_STATE` | `google-watch.state.json` beside the output | Deduplication state |
+| `DORI_GOOGLE_INTERVAL_MS` | `120000` | Poll interval in milliseconds |
+| `DORI_GOOGLE_WINDOW_MIN` | `35` | Calendar lookup window in minutes |
+| `DORI_GOOGLE_TIME_ZONE` | `UTC` | Weekday and EXDATE interpretation for recurring events; set the calendar's zone |
+
+The first successful tick remembers existing unread mail without announcing it; calendar events are announced immediately.
+Rows retain the local helper's `mail` and `calendar-soon` kinds, `at`, id, and mail/calendar fields.
+Recurring DAILY/WEEKLY rules with interval 1 are supported; COUNT and other rules are skipped.
+`bun "$S/google-watch.ts" --once` performs one tick, writes output/state, prints `GOOGLE_WATCH_ONCE`, and exits;
+point both paths at a temporary directory for a scratch check. Failures exit nonzero in one-shot mode.
+
+The unit's `EnvironmentFile` overrides its default PATH. Set a full literal `PATH=/.../bin:/...`
+in `dori.env` to include the host's zele and Node locations (including nvm's versioned Node bin directory).
+Alternatively put `Environment="PATH=..."` in a host drop-in when PATH is not set in `dori.env`.
+The unit does not source shell profiles or pin a Node version.
+
+Link the unit to the fork copy rather than copying the script:
+
+```sh
+ln -s "$S/systemd/dori-google-watch.service" ~/.config/systemd/user/dori-google-watch.service
+```
+
+The shipped `ExecStart` uses `~/.dori/src`. For a different checkout, add a
+`~/.config/systemd/user/dori-google-watch.service.d/host.conf` with:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/absolute/path/to/bun /absolute/path/to/fork/skills/dori-mode/setups/discord-aoe/google-watch.ts
+```
+
+The same symlink/drop-in pattern applies to the other units. At installation time,
+reload user units and enable the watcher if wanted; merely adding the files does not change running units.
+Watch the output JSONL in the lead session and include `~/.dori/google-watch.log` in its health monitor.
+
+### Usage screenshot
+
+Set `DORI_USAGE_DIR` to the omo-usage checkout (required) and optionally `DORI_USAGE_SNAP_DIR`
+to a Firefox-accessible working directory (default `~/snap/firefox/common/omo-usage`).
+Needs bun, tmux, Firefox, and omo-usage's authenticated accounts.
+Run `bun "$S/usage-snapshot.ts" /absolute/path/to/usage.png`; it prints the PNG path.
+The default output is the OS temporary directory's `omo-usage.png`.
+It creates a temporary tmux session, waits up to 30 seconds for the loaded TUI, captures its colors,
+and removes the session and intermediate HTML/PNG. Run once per request: repeated quota queries may hit rate limits.
+
+### Start and attach
+
+Run `bash "$S/dori.sh"` with `dori`, `systemctl`, and `aoe` on PATH.
+It resolves the lead via `dori lead` before starting units, so a missing lead fails without touching services.
+This launcher depends on the separate lead-resolution PR that adds `dori lead` with `<aoe-id> <tmux>` output;
+until that PR is installed, the launcher cannot run. It intentionally does not resolve the lead a second way.
+Test it without services or real sessions using `bash "$S/test-dori.sh"`.
+
+`dori send discord` shows typing immediately before a new post by default; a failed typing call is logged
+and does not prevent the post. Use `--no-typing` to skip it. Edits do not send typing.
+The scorecard timer remains at 08:30 host time; use an `OnCalendar` drop-in with an explicit time zone
+(for example `Asia/Seoul`) when the host zone differs from the owner's.
 
 ## Auto-apply updates
 

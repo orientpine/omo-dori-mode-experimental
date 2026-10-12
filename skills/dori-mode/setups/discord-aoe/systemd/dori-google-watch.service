@@ -1,0 +1,15 @@
+[Unit]
+Description=Dori Gmail/Calendar watcher (zele, read-only)
+After=network-online.target
+
+[Service]
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.dori/dori.env
+ExecStart=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/discord-aoe/google-watch.ts
+Restart=always
+RestartSec=30
+StandardOutput=append:%h/.dori/google-watch.log
+StandardError=append:%h/.dori/google-watch.log
+
+[Install]
+WantedBy=default.target

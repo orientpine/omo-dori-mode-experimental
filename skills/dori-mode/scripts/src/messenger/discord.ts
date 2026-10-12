@@ -35,7 +35,13 @@ export class Discord {
     return (res.body ? JSON.parse(res.body) : {}) as T;
   }
 
-  async send(channelId: string, content: string): Promise<string> {
+  async send(channelId: string, content: string, typing = false): Promise<string> {
+    guardText(content);
+    if (typing) {
+      await this.once().typing(channelId).catch((e: unknown) => {
+        console.error(`DISCORD_TYPING_FAIL ${e instanceof Error ? e.message : String(e)}`);
+      });
+    }
     return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages`, { content: guardText(content), allowed_mentions: { parse: [] } })).id;
   }
 
