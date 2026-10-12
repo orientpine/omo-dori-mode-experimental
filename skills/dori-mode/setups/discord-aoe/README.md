@@ -250,6 +250,14 @@ Each tick re-reads `leadPane` (with the usual `DORI_LEAD_PANE` override) and `ig
 
 Lead discovery for restarts is shared by `dori lead`: `DORI_LEAD_TMUX` from `dori.env`, else configured `leadPane`; the configured aoe id is used only when its first eight characters match the tmux name's suffix. Otherwise `aoe list --json` (stopped sessions included) supplies the id. A lead whose tmux session is not running yet (boot) still resolves, printed with ` stopped`; no matching session exits 1 rather than starting a stale one. Pass an explicit aoe id and tmux name to `self-restart.sh` to restart another session.
 
+`dori-lead.service` runs the existing `self-restart.sh --start` at boot. With no aoe id or tmux
+arguments, start mode resolves `dori lead` and, if it is already running, prints
+`LEAD_ALREADY_RUNNING <tmux>` and exits 0 without starting, typing or writing a restart log.
+A stopped lead uses `aoe session start <id>`, then the same prompt wait, `dori type` submission,
+three attempts and failure alert as a restart. The first message defaults to `Dori mode`;
+`self-restart.sh --start <aoe-id> <tmux-session> <prompt>` supplies another prompt (an empty
+prompt types nothing). Without `--start`, the script still uses `aoe session restart`.
+
 Each row in `session-events.jsonl` has `kind` (`session-idle`, `session-waiting`, `session-error`, `session-milestone`), `session`, `title`, `path`, `tmux`, `thread`, `tail` (the pane's last 20 lines) and `said`:
 
 ```json
