@@ -16,6 +16,8 @@ export type FlowDeps = {
   readonly signalIo?: SignalIo;
   // sets a discord:<id> work thread to done and archives it (cli wires it when DORI_DISCORD_TOKEN is set)
   readonly markThreadDone?: (ref: string) => Promise<unknown>;
+  // posts in a discord:<id> work thread without changing its status mark (cli wires it when DORI_DISCORD_TOKEN is set)
+  readonly postInThread?: (ref: string, text: string) => Promise<unknown>;
   // ids of the question cards still open in a work thread (cli reads the card store for discord:<id> threads)
   readonly openCards?: (ref: string) => readonly string[];
 };
@@ -113,9 +115,20 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
   const cards = hasThread(lane) ? (deps.openCards?.(lane.thread) ?? []) : [];
   const holders = [...(sharing.length ? [`open lane ${sharing.join(", ")} uses it too`] : []), ...(cards.length ? [`open card ${cards.join(", ")}`] : [])];
   if (holders.length) {
+    const text = `${lane.title}: ${threadText}`;
     const reply = deps.config.hooks.threadReply;
-    const r = reply ? await deps.run(fill(reply, { thread: lane.thread, text: `${lane.title}: ${threadText}`, key: lane.key })) : undefined;
-    cleanup.push(`thread left open: ${holders.join("; ")}${!r ? " (no threadReply hook, nothing posted)" : r.code === 0 ? "; result posted" : `; reply hook failed: ${r.err.slice(0, 160)}`}`);
+    let posted: string;
+    if (deps.postInThread && lane.thread.startsWith("discord:")) {
+      // straight to Discord, so a waiting (or any) mark stays; the reply hook would mark the thread working
+      posted = await deps.postInThread(lane.thread, text).then(
+        () => "result posted",
+        (e: unknown) => `result not posted: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`,
+      );
+    } else if (reply) {
+      const r = await deps.run(fill(reply, { thread: lane.thread, text, key: lane.key }));
+      posted = r.code === 0 ? "result posted" : `reply hook failed: ${r.err.slice(0, 160)}`;
+    } else posted = "no threadReply hook, nothing posted";
+    cleanup.push(`thread left open: ${holders.join("; ")}; ${posted}`);
   } else if (hook && hasThread(lane)) {
     const r = await deps.run(fill(hook, { thread: lane.thread, text: threadText, key: lane.key }));
     cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);

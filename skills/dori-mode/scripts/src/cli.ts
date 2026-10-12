@@ -44,7 +44,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
-import { bareThreadName, discordThreadId, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
 import { mapThread, threads } from "./messenger/thread-map.ts";
 import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
 import { realTimers } from "./messenger/typing.ts";
@@ -229,6 +229,7 @@ const deps: FlowDeps = {
           const outcome = await threadStatuses(new Discord(fetchHttp, realClock, discordToken)).request(discordThreadId(ref), "done");
           if (outcome === "pending" || outcome === "dropped") throw new Error(`thread rename ${outcome}, see the THREAD_STATUS line`);
         },
+        postInThread: (ref: string, text: string) => postInThread(new Discord(fetchHttp, realClock, discordToken), ref, text),
       }
     : {}),
 };
