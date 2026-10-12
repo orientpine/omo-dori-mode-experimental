@@ -415,10 +415,11 @@ test("a paused lane gets no rollover proposal, and pausing does not make it safe
 test("a lane's stuck rollover point is rung 4 of the ladder: its STUCK line, not a ROLLOVER_DUE of its own, and the rung goes into the handover log", async () => {
   // Given
   const deps = await setup();
-  const fix = (at: string) => ({ at, metric: "loss", hypothesis: "lr too high", via: "report" as const });
+  const fix = (at: string, hypothesis = "lr too high") => ({ at, metric: "loss", hypothesis, via: "report" as const });
   const quiet = { ...deps, config: { ...deps.config, explore: { ...deps.config.explore, sendResearchToLane: false } } };
   await recordFix(quiet, "demo", fix("2026-10-11T10:00:00Z"));
-  await recordFix(quiet, "demo", fix("2026-10-11T11:00:00Z"));
+  await recordFix(quiet, "demo", fix("2026-10-11T11:00:00Z", "seed"));
+  await recordFix(quiet, "demo", fix("2026-10-11T11:30:00Z"));
   const third = await recordFix(quiet, "demo", fix("2026-10-11T12:00:00Z"));
   await deps.registry.patch("demo", { lastReplyAt: deps.clock.now() });
   // When
@@ -427,13 +428,13 @@ test("a lane's stuck rollover point is rung 4 of the ladder: its STUCK line, not
   ready(deps, [15]);
   const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
   // Then
-  expect(third.notes[0]).toContain('"loss" rung 4 (tagged 3, inferred 0, hypotheses 1, fixated)');
+  expect(third.notes[0]).toContain('"loss" rung 4 (tagged 4, inferred 0, hypotheses 2, fixated)');
   expect(due.filter((a) => a.kind === "rollover_due")).toEqual([]);
-  expect(top).toEqual({ metric: "loss", n: 3, rung: 4 });
+  expect(top).toEqual({ metric: "loss", n: 4, rung: 4 });
   expect(r.code).toBe(0);
   // the new session starts its own ladder
   expect(stuckTop(await readLane(deps))).toBeUndefined();
-  expect(readRollovers(state.dir)[0]).toMatchObject({ kind: "rollover", signals: { stuck: { metric: "loss", n: 3, rung: 4 } } });
+  expect(readRollovers(state.dir)[0]).toMatchObject({ kind: "rollover", signals: { stuck: { metric: "loss", n: 4, rung: 4 } } });
 });
 
 test("refuses without the owner's approval and opens nothing; --dry-run needs none", async () => {
@@ -621,6 +622,11 @@ test("an approval is an answered rollover card for this lane's current session, 
   expect(check("lead:STUCK rung 4 on loss, research did not help")).toContain("needs a way to tell the owner afterwards");
   expect(check("lead:because", false, true)).toContain("does not say the reason and the signal behind it");
   expect(check("lead:it seems a good idea to me now", false, true)).toContain("does not say the reason and the signal behind it");
+  // whole tokens only (challenge, grok-4.7): a word that only contains a signal name is no signal
+  expect(check("lead:context is fine, the message page looks right", false, true)).toContain("does not say the reason");
+  expect(check("lead:\ub2e8\uacc4\ub97c \ud310\ub2e8\ud574 \ubcf4\ub2c8 \uc62e\uae38 \ub54c", false, true)).toContain("does not say the reason");
+  expect(check("lead:after the outage 3 h ago it looked off", false, true)).toContain("does not say the reason");
+  expect(check("lead:context 85% after 6 compactions", false, true)).toBeUndefined();
 });
 
 test("the old lane is quiet while it is replaced and may talk again after; every real attempt is logged with signals and steps", async () => {

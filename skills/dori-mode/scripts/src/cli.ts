@@ -484,7 +484,7 @@ try {
       for (const line of priorFixLines(await areaSignals(await deps.registry.list(), area, config), l.key, metric)) console.log(line);
       const attempt = { at: new Date().toISOString(), metric, hypothesis: normFix(need("hypothesis")), via: "lead" as const, ...(flags.values.improved ? { improved: true } : {}) };
       const branch = { hypotheses: many("hypotheses"), tests: many("test"), override: opt("no-hypotheses") };
-      const gate = gateFix(l.fixes ?? [], attempt, branch, { ...config.explore, ...config.stuck }, stuckView(l, metric, config).inferred);
+      const gate = gateFix(l, attempt, branch, config);
       if (gate.verdict === "required") {
         const msg = requiredMessage(l.key, metric, gate, config.explore);
         recordRefusal(deps, msg);

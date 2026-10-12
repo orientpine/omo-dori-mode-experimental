@@ -223,7 +223,7 @@ In the Dori's own session, arm these as persistent monitors (`references/setup.m
 |---|---|---|
 | owner messages and answers | `tail -n 0 -F ~/.dori/state/discord/inbox.jsonl` | `^\{` |
 | sessions waiting on a human | `tail -n 0 -F ~/.dori/state/session-events.jsonl` | `^\{` |
-| lane sweeps | `tail -n 0 -F ~/.dori/dori-lanes.log` | `LANE_\|DEAD_PANE\|HOST_GUARD ALERT\|NUDGED\|POSTED\|NO-REPORT\|FAIL\|STUCK\|OWNER_CHECK\|ROLLOVER_\|NOT_SUBMITTED\|SAME_FIX` |
+| lane sweeps | `tail -n 0 -F ~/.dori/dori-lanes.log` | `LANE_\|DEAD_PANE\|HOST_GUARD ALERT\|NUDGED\|POSTED\|NO-REPORT\|FAIL\|STUCK\|OWNER_CHECK\|ROLLOVER_\|RESEARCH_NOT_STARTED\|NOT_SUBMITTED\|SAME_FIX` |
 | listener health | `tail -n 0 -F ~/.dori/inbound.log ~/.dori/session-watch.log` | `FATAL\|_FAIL\|SESSION-WATCH-FAIL` |
 
 `DISCORD_LISTENER_CLOSED` alone is not worth a ping: the gateway asks for reconnects several times a day. Only alert when no `DISCORD_LISTENER_READY` follows within a minute.

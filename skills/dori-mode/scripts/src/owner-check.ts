@@ -136,14 +136,17 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   const reports = all.slice(-Math.min(Math.max(cfg.reports, unseen), cfg.maxReports));
   const unread = Math.max(0, unseen - cfg.maxReports);
   const newest = reports.at(-1)?.at;
-  const why = opts.direction ? (newest || lane.direction?.text ? undefined : "no report and no stated direction on record") : ownerDue(lane.ownerCheck, newest, now, opts.force ? { minIntervalMin: 0, maxPerDay: Number.POSITIVE_INFINITY } : cfg);
+  // intent-check (direction): no interval and no new report needed, but the daily limit holds
+  const day = new Date(now).toISOString().slice(0, 10);
+  const why = opts.direction ? (!newest && !lane.direction?.text ? "no report and no stated direction on record" : !opts.force && lane.ownerCheck?.day === day && lane.ownerCheck.today >= cfg.maxPerDay ? `daily limit: ${lane.ownerCheck.today} checks today (ownerCheck.maxPerDay ${cfg.maxPerDay})` : undefined) : ownerDue(lane.ownerCheck, newest, now, opts.force ? { minIntervalMin: 0, maxPerDay: Number.POSITIVE_INFINITY } : cfg);
   if (why) return { skipped: `OWNER_CHECK_SKIP ${lane.key} ${why}`, findings: [], lines: [] };
   const briefFile = Bun.file(lane.brief);
   const brief = briefForCheck((await briefFile.exists()) ? await briefFile.text() : "");
   const relays = ownerRelays(await readLeadRelays(files, since), cfg.relays);
   const prompt = ownerPrompt(lane, brief, relays, reports);
   const ownerSource = [lane.goal ?? "", brief, ...relays.map((r) => r.text)].join("\n");
-  const reportSource = reports.map((r) => r.text).join("\n");
+  // the direction the lane stated (dori intent-check) is evidence too: a finding may quote it
+  const reportSource = [...reports.map((r) => r.text), lane.direction?.text ?? "", lane.direction?.next ?? ""].join("\n");
   const own = lane.model ?? deps.config.defaultModel;
   const failures: string[] = [];
   let checks: Awaited<ReturnType<typeof checkReviewers>> = [];
@@ -164,11 +167,12 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
       failures.push(`${c.call}: ${r.code !== 0 ? `exit ${r.code} ${r.err.split("\n").find((l) => l.trim())?.slice(0, 120) ?? ""}` : `no VERDICT line in "${r.out.trim().slice(0, 80)}"`}`);
       continue;
     }
-    const day = new Date(now).toISOString().slice(0, 10);
     const today = lane.ownerCheck?.day === day ? lane.ownerCheck.today + 1 : 1;
     const gap = unread ? ` (${unread} older unchecked reports not read: autoSignals.ownerCheck.maxReports ${cfg.maxReports})` : "";
     const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief and ${relays.length} owner relays${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
-    await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: (newest ?? lane.ownerCheck?.lastReportAt) ?? "", day, today, model: c.call, kinds: findings.length ? findings.map((f) => f.kind) : ["OK"], ...(findings[0] ? { finding: lines[0]?.slice(0, 600) } : {}) } });
+    // a re-read the lead sent stays on record: the context rung reads it
+    const rereadAt = (await deps.registry.read(lane.key))?.ownerCheck?.rereadAt ?? lane.ownerCheck?.rereadAt;
+    await deps.registry.patch(lane.key, { ownerCheck: { at: iso(deps.clock), lastReportAt: (newest ?? lane.ownerCheck?.lastReportAt) ?? "", day, today, model: c.call, kinds: findings.length ? findings.map((f) => f.kind) : ["OK"], ...(findings[0] ? { finding: lines[0]?.slice(0, 600) } : {}), ...(rereadAt ? { rereadAt } : {}) } });
     // a clean check and an unverified finding (a quote not in the inputs, a claim that is not on record) go to the log as
     // OWNER_CHECK lines; a verified finding is the stuck ladder's context rung, one STUCK line
     const verified = findings.filter((f) => f.verified);
@@ -191,6 +195,7 @@ export const sendReread = async (deps: FlowDeps, lane: Lane): Promise<{ readonly
   const finding = (last.finding ?? last.kinds.join(", ")).replace(/^OWNER_CHECK \S+ /, "").replace(/`/g, "'").replaceAll("$(", "$ (").slice(0, 400);
   const text = fill([deps.config.stuck.rereadText], { key: lane.key, brief: lane.brief, finding })[0] ?? deps.config.stuck.rereadText;
   const ok = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
+  if (ok) await deps.registry.patch(lane.key, { ownerCheck: { ...last, rereadAt: iso(deps.clock) } });
   const line = ok ? `REREAD_SENT ${lane.key}: the lead confirmed the owner-check finding of ${last.at}; the lane got its brief and the owner's words to re-read` : `REREAD_FAILED ${lane.key}: the re-read did not reach pane ${lane.pane}`;
   watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
   return { ok, line };

@@ -79,13 +79,14 @@ export type Lane = {
   // session can get its own (auto: written by older versions, not read)
   readonly rolloverDue?: { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean };
   // untagged repeats freshness inferred in the current session: cycles per metric (the inferred half of the stuck count) and
-  // when the reports last showed each metric PASS (the tagged half counts only attempts after that)
-  readonly inferred?: { readonly at: string; readonly counts: Readonly<Record<string, number>>; readonly passedAt?: Readonly<Record<string, string>>; readonly lastEventAt?: string };
+  // when the reports last showed each metric PASS (the tagged half counts only attempts after that), and the count at the
+  // last --improved of a metric (baseline: only cycles after it count)
+  readonly inferred?: { readonly at: string; readonly counts: Readonly<Record<string, number>>; readonly passedAt?: Readonly<Record<string, string>>; readonly baseline?: Readonly<Record<string, number>>; readonly lastEventAt?: string };
   // the stuck ladder: the rung each metric reached, so each rung change alerts once
   readonly stuck?: Readonly<Record<string, StuckMark>>;
   // the last dori owner-check: when, up to which report, how many today, by which reviewer, what it found (finding: the first
   // finding, for the re-read the lead may send)
-  readonly ownerCheck?: { readonly at: string; readonly lastReportAt: string; readonly day: string; readonly today: number; readonly model: string; readonly kinds: readonly string[]; readonly finding?: string };
+  readonly ownerCheck?: { readonly at: string; readonly lastReportAt: string; readonly day: string; readonly today: number; readonly model: string; readonly kinds: readonly string[]; readonly finding?: string; readonly rereadAt?: string };
   readonly receipt?: unknown;
 };
 

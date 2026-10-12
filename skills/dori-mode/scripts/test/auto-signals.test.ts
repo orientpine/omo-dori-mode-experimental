@@ -105,8 +105,8 @@ test("the stuck count is the larger of the tagged and the inferred count, under 
     await deps.registry.write({ ...lane(st.dir), inferred: { at: at(0), counts: { "교착": 4 } } });
     const r = await recordFix(deps, "rl-e7", { at: at(1), metric: "deadlocks", hypothesis: "reward", via: "report" });
     expect(r.notes).toHaveLength(1);
-    expect(r.notes[0]).toStartWith('STUCK rl-e7 "교착" rung 3 (tagged 1, inferred 4, hypotheses 1, inferred only) -> ulw research');
-    expect(r.notes[0]).toEndWith("[RESEARCH_DUE REPEAT_SUSPECT]");
+    expect(r.notes[0]).toStartWith('STUCK rl-e7 "교착" rung 3 (tagged 1, inferred 4, hypotheses 1, inferred only, first count) -> ulw research');
+    expect(r.notes[0]).toEndWith("[HYPOTHESES_REQUIRED RESEARCH_DUE REPEAT_SUSPECT]");
     const saved = (await deps.registry.read("rl-e7")) as Lane;
     expect(stuckView(saved, "deadlock", deps.config)).toMatchObject({ metric: "교착", tagged: 1, inferred: 4, n: 4 });
     // a PASS the reports showed after the tagged attempt starts the tagged half again too
@@ -143,8 +143,9 @@ test("freshness turns the untagged loop into one STUCK rung 3 and types the ulw 
   await deps.registry.write(lane(state.dir));
   world.screens["lead:p1"] = ` [REPORT] rl-e7 | milestone | ${loop.at(-1)?.text}\n\n❯ `;
   const acts = (await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "stuck");
-  expect(acts.map((a) => a.detail.split(" -> ")[0])).toEqual(['"교착" rung 3 (tagged 0, inferred 3, hypotheses 0, inferred only)']);
-  expect(acts[0]?.detail).toEndWith("ulw research sent to the lane [RESEARCH_DUE REPEAT_SUSPECT]");
+  expect(acts.map((a) => a.detail.split(" -> ")[0])).toEqual(['"교착" rung 3 (tagged 0, inferred 3, hypotheses 0, inferred only, first count)']);
+  // the first scan of a long loop jumps: the line carries the skipped rung's name too (challenge, grok-4.7)
+  expect(acts[0]?.detail).toEndWith("ulw research sent to the lane [HYPOTHESES_REQUIRED RESEARCH_DUE REPEAT_SUSPECT]");
   expect(await Bun.file(deps.config.watchLog).text()).toMatch(/ stuck STUCK rl-e7 "교착" rung 3 /);
   expect(sent(world)).toHaveLength(1);
   expect(sent(world)[0]).toStartWith("ulw research ");
@@ -274,11 +275,15 @@ test("intent-check's call needs no new report; a finding again in the next check
   expect(first.lines.at(-1)).toContain('"@context" rung context');
   // no new report since: a regular check skips, the intent-check call (direction) runs anyway
   expect((await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file], force: true })).skipped).toContain("no new report");
+  // the same finding again before the lead confirmed a re-read: still the context rung, no new line (challenge, grok-4.7)
   const second = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file], direction: true });
-  expect(second.lines.at(-1)).toMatch(/^STUCK rl-e7 "@context" rung 4 \(VIOLATION: .*the owner check found the lane off the owner's words again \(2 checks in a row\).*\[OWNER_CHECK_VIOLATION ROLLOVER_DUE\]$/);
+  expect(second.lines).toHaveLength(1);
   const reread = await sendReread(deps, (await deps.registry.read("rl-e7")) as Lane);
   expect(reread.ok).toBe(true);
   expect(sent(world)).toHaveLength(1);
+  // after the confirmed re-read the lane is still off the owner's words: rung 4
+  const third = await runOwnerCheck(deps, (await deps.registry.read("rl-e7")) as Lane, { files: [file], direction: true });
+  expect(third.lines.at(-1)).toMatch(/^STUCK rl-e7 "@context" rung 4 \(VIOLATION: .*the owner check found the lane off the owner's words again \(3 checks in a row\).*\[OWNER_CHECK_VIOLATION ROLLOVER_DUE\]$/);
   expect(sent(world)[0]).toStartWith("[LEAD] Your last report breaks what the owner asked (VIOLATION owner");
   expect(sent(world)[0]).toContain(join(state.dir, "brief.md"));
   reply = "VERDICT: OK";
@@ -321,4 +326,39 @@ test("a quoted report template is no report, and a CONTRADICTION that only names
   const claimed = { claim: { at: at(3), evidence: "merged o/r#1" } };
   expect(claimCheck({ kind: "CONTRADICTION", owner: "x", report: "dori claim-done rl-e7 ran", why: "w", verified: true }, claimed).verified).toBe(true);
   expect(claimCheck({ kind: "CONTRADICTION", owner: "x", report: "dori claim-done rl-e7 ran", why: "w", verified: true }, {}).verified).toBe(false);
+});
+
+test("a PASS in a report lowers a tagged-only metric's rung, and clears an --improved baseline (challenge, gpt-6-astra)", async () => {
+  const deps = depsFor(world, fakeClock(T0 + 220 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions"), explore: { ...defaultConfig("/home/test").explore, sendResearchToLane: false } });
+  await deps.registry.write({ ...lane(state.dir), inferred: { at: at(0), counts: {}, baseline: { "\uad50\ucc29": 3 } } });
+  for (let i = 0; i < 3; i++) await recordFix(deps, "rl-e7", { at: at(i), metric: "\uad50\ucc29", hypothesis: `h${i}`, via: "report" });
+  expect(((await deps.registry.read("rl-e7")) as Lane).stuck?.["\uad50\ucc29"]).toMatchObject({ rung: 3, n: 3 });
+  writeSession([sessionLine(200, "assistant", "[REPORT] rl-e7 | milestone | model_800 F1: \uad50\ucc29 1 PASS")]);
+  world.screens["lead:p1"] = " [REPORT] rl-e7 | milestone | model_800 F1: \uad50\ucc29 1 PASS\n\n\u276f ";
+  expect((await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "stuck")).toEqual([]);
+  const after = (await deps.registry.read("rl-e7")) as Lane;
+  expect(after.stuck?.["\uad50\ucc29"]).toMatchObject({ rung: 0, n: 0 });
+  expect(after.inferred?.baseline).toBeUndefined();
+});
+
+test("intent-check's direction is evidence: a finding that quotes it is verified and climbs the ladder (challenge, gpt-6-astra)", async () => {
+  writeFileSync(join(state.dir, "brief.md"), "# \ube0c\ub9ac\ud504\n\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0");
+  const reply = 'VERDICT: VIOLATION\nOWNER: "\ud559\uc2b5\uc740 \uba48\ucd94\uc9c0 \ub9d0\uace0"\nREPORT: "\ud559\uc2b5\uc744 \uba48\ucd94\uace0 \ube44\uad50\ud45c\ub9cc \ub9cc\ub4e0\ub2e4"\nWHY: the owner said keep training.';
+  const base = fakeRunner(world);
+  const run: Runner = async (argv, opts) => (argv[0] !== "omo" ? base(argv, opts) : { code: 0, out: reply, err: "" });
+  const explore = { ...defaultConfig("/home/test").explore, modelsCommand: [] };
+  const deps = { ...depsFor(world, fakeClock(T0 + 10 * 60_000), state.dir, { sessionsDir: join(state.dir, "sessions"), explore }), run };
+  const l = { ...lane(state.dir), direction: { at: at(1), text: "\ud559\uc2b5\uc744 \uba48\ucd94\uace0 \ube44\uad50\ud45c\ub9cc \ub9cc\ub4e0\ub2e4", next: "\ud45c \uc815\ub9ac" } };
+  await deps.registry.write(l);
+  const r = await runOwnerCheck(deps, l, { files: [], direction: true });
+  expect(r.findings[0]?.verified).toBe(true);
+  expect(r.lines.at(-1)).toContain('"@context" rung context');
+});
+
+test("a report is read only where one is sent or received: a template in a goal's arguments or in the agent's own text is none (challenge, grok-4.7)", async () => {
+  const goalCall = JSON.stringify({ type: "message", timestamp: at(1), message: { role: "assistant", content: [{ type: "toolCall", name: "create_goal", arguments: { objective: "stop when [REPORT] rl-e7 | done | merged, claim-done ran" } }] } });
+  const ownText = JSON.stringify({ type: "message", timestamp: at(2), message: { role: "assistant", content: [{ type: "text", text: "I will send [REPORT] rl-e7 | done | all checks green" }] } });
+  const typed = JSON.stringify({ type: "message", timestamp: at(3), message: { role: "assistant", content: [{ type: "toolCall", name: "eval", arguments: { code: 'await run(["dori","type","lead","--text","[REPORT] rl-e7 | milestone | step 2 done"])' } }] } });
+  const file = writeSession([goalCall, ownText, typed, sessionLine(4, "user", "[REPORT] rl-e7 | milestone | lead copy of step 3")]);
+  expect((await readReports([file], "rl-e7")).map((r) => r.text)).toEqual(['step 2 done"])', "lead copy of step 3"].map((t) => t.replace(/"\]\)$/, "")));
 });

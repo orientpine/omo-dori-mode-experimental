@@ -4,7 +4,7 @@ import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 import { run } from "../src/run.ts";
 import { parseWatchLine } from "../src/watch-log.ts";
 
-test("writes exactly one STUCK line, the old SAME_FIX_3 name at its end, when the CLI records three identical fixes; an old config key still works with a warning", async () => {
+test("writes exactly one STUCK line, rung 3 with the old SAME_FIX_3 name at its end, when the CLI records three identical fixes; an old config key still works with a warning", async () => {
   // Given
   const state = withState();
   try {
@@ -23,7 +23,7 @@ test("writes exactly one STUCK line, the old SAME_FIX_3 name at its end, when th
     // Then
     const lines = (await Bun.file(deps.config.watchLog).text()).trim().split("\n");
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^\S+ stuck STUCK test-fix "latency" rung 4 \(tagged 3, inferred 0, hypotheses 1, fixated\) .*\[ROLLOVER_DUE SAME_FIX_3\]$/);
+    expect(lines[0]).toMatch(/^\S+ stuck STUCK test-fix "latency" rung 3 \(tagged 3, inferred 0, hypotheses 1, from rung 1\) .*\[HYPOTHESES_REQUIRED RESEARCH_DUE SAME_FIX_3\]$/);
   } finally {
     state.done();
   }

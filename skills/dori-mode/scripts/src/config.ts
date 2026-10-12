@@ -410,6 +410,7 @@ export const migrateOldKeys = (input: Raw): { readonly raw: Raw; readonly warnin
     if (take(from, key) !== undefined) warnings.push(`CONFIG_OLD_KEY ${from}.${key} is no longer read: ${why}; remove it from the config`);
   };
   const hypothesesAt = Number(raw.stuck?.hypothesesAt ?? raw.explore?.hypothesesFrom ?? 2);
+  const userReviewers = "models" in (input.reviewers ?? {});
   move("sameFix", "after", "stuck", "fixatedAfter");
   drop("sameFix", "sendToLane", "the stuck ladder sends a lane research at rung 3 and a re-read only when the lead confirms it (stuck.rereadText)");
   drop("sameFix", "laneText", "stuck.rereadText is the text the lead confirms");
@@ -429,7 +430,9 @@ export const migrateOldKeys = (input: Raw): { readonly raw: Raw; readonly warnin
     const rest = { ...oc };
     delete rest.models;
     section("autoSignals").ownerCheck = { ...(Array.isArray(models) && models[0] && !("first" in oc) ? { first: models[0] } : {}), ...rest };
-    if (Array.isArray(models) && !("models" in section("reviewers"))) section("reviewers").models = [...new Set([...models, ...defaultConfig().reviewers.models])];
+    // both old lists set: one list holding both (challenge order first); only a reviewers.models the config sets itself wins
+    const moved = section("reviewers").models;
+    if (Array.isArray(models) && !userReviewers) section("reviewers").models = [...new Set([...(Array.isArray(moved) ? moved : []), ...models, ...(Array.isArray(moved) ? [] : defaultConfig().reviewers.models)])];
     warnings.push("CONFIG_OLD_KEY autoSignals.ownerCheck.models -> reviewers.models (one list for challenge and owner-check) and autoSignals.ownerCheck.first; rename it in the config");
   }
   return { raw, warnings };

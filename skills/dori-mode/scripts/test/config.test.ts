@@ -123,7 +123,8 @@ test("old keys of the stuck ladder, the reviewer list and the attempt patterns s
     expect(config.stuck).toMatchObject({ hypothesesAt: 3, researchAt: 4, fixatedAfter: 5 });
     expect(config.signals.numberedAttemptPattern).toBe("try (\\d)");
     expect(config.autoSignals.inferAttemptPattern).toBe("처방");
-    expect(config.reviewers.models).toEqual(["xai/grok-4.7"]);
+    // both old lists: one list holding both, the challenge order first (challenge, grok-4.7)
+    expect(config.reviewers.models).toEqual(["xai/grok-4.7", "chatgpt-subscription/gpt-6-luna"]);
     expect(config.autoSignals.ownerCheck).toMatchObject({ first: "chatgpt-subscription/gpt-6-luna", minutes: 2 });
     expect("models" in config.autoSignals.ownerCheck).toBe(false);
     expect("laneRepeats" in config.handover).toBe(false);

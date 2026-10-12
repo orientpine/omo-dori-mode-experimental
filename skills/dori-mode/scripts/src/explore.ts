@@ -184,8 +184,10 @@ export type Gate = { readonly verdict: "ok" | "branch" | "override" | "required"
 // Rung 2 as dori fix-attempt enforces it: from stuck.hypothesesAt failed attempts on one metric (the tagged count with this
 // attempt, or the inferred count, whichever is larger) a fix needs minHypotheses competing hypotheses, each with a cheap
 // discriminating test, or an explicit override with a reason.
-export const gateFix = (fixes: readonly FixAttempt[], next: FixAttempt, input: GateInput, cfg: Pick<Explore, "minHypotheses"> & Pick<Stuck, "hypothesesAt">, inferred = 0): Gate => {
-  const attempt = Math.max(metricAttempts([...fixes, next], next.metric), next.improved ? 0 : inferred);
+export const gateFix = (lane: Lane, next: FixAttempt, input: GateInput, config: Pick<DoriConfig, "explore" | "stuck" | "autoSignals">): Gate => {
+  // the stuck ladder's own count with this attempt added (aliases, session, last PASS, --improved), so gate and ladder agree
+  const attempt = next.improved ? 1 : stuckView({ ...lane, fixes: [...(lane.fixes ?? []), next] }, next.metric, config).n;
+  const cfg = { ...config.explore, ...config.stuck };
   if (attempt < cfg.hypothesesAt) return { verdict: "ok", attempt };
   const hyps = input.hypotheses.map((h) => h.trim()).filter(Boolean);
   const tests = input.tests.map((t) => t.trim()).filter(Boolean);
@@ -232,7 +234,8 @@ export const recordRefusal = (deps: FlowDeps, message: string): void => watchLog
 // One metric's stuck count: tagged failed attempts (fix tags and dori fix-attempt, in the lane's current session, since the
 // last --improved and since the last PASS the reports showed) and the inferred cycles (untagged reports, commits, tree;
 // auto-signals), counted under one name (autoSignals.aliases). fixated: one hypothesis tried fixatedAfter times.
-export type StuckView = { readonly metric: string; readonly tagged: number; readonly inferred: number; readonly n: number; readonly hypotheses: number; readonly fixated: boolean };
+// sameFix: one hypothesis tried fixatedAfter times; fixated: that, after the lane branched (two or more hypotheses tried)
+export type StuckView = { readonly metric: string; readonly tagged: number; readonly inferred: number; readonly n: number; readonly hypotheses: number; readonly sameFix: boolean; readonly fixated: boolean };
 
 export const stuckView = (lane: Lane, metric: string, config: Pick<DoriConfig, "stuck" | "autoSignals">): StuckView => {
   const aliases = config.autoSignals.aliases;
@@ -244,8 +247,10 @@ export const stuckView = (lane: Lane, metric: string, config: Pick<DoriConfig, "
   const current = restart >= 0 ? fixes.slice(restart) : fixes;
   const hyps = [...new Set(current.map((f) => f.hypothesis))];
   const tagged = metricAttempts(fixes, key);
-  const inferred = lane.inferred?.counts[key] ?? 0;
-  return { metric: key, tagged, inferred, n: Math.max(tagged, inferred), hypotheses: hyps.length, fixated: hyps.some((h) => fixCount(current, key, h) >= config.stuck.fixatedAfter) };
+  // an --improved attempt also starts the inferred half again: only cycles counted after it (baseline) are stuck ones
+  const inferred = Math.max(0, (lane.inferred?.counts[key] ?? 0) - (lane.inferred?.baseline?.[key] ?? 0));
+  const sameFix = hyps.some((h) => fixCount(current, key, h) >= config.stuck.fixatedAfter);
+  return { metric: key, tagged, inferred, n: Math.max(tagged, inferred), hypotheses: hyps.length, sameFix, fixated: sameFix && hyps.length >= 2 };
 };
 
 // The rung a count reaches: 4 when one hypothesis is fixated or an attempt failed after rung 3, 3 from researchAt, 2 from
@@ -265,11 +270,12 @@ export const stuckTop = (lane: Lane): { readonly metric: string; readonly n: num
 const counts = (v: StuckView): string => `tagged ${v.tagged}, inferred ${v.inferred}, hypotheses ${v.hypotheses}${v.fixated ? ", fixated" : ""}${v.inferred > v.tagged ? ", inferred only" : ""}`;
 
 // the signal names this one line replaces, kept at its end for one release so old monitors and stats still match
-const oldNames = (rung: number, v: StuckView, cfg: Stuck): string[] => [
-  ...(rung === 2 ? ["HYPOTHESES_REQUIRED"] : []),
-  ...(rung === 3 ? ["RESEARCH_DUE"] : []),
+// (a scan that jumps over a rung, the first untagged scan of a long loop, carries the skipped rungs' names too)
+const oldNames = (rung: number, prev: number, v: StuckView, cfg: Stuck): string[] => [
+  ...(rung >= 2 && prev < 2 ? ["HYPOTHESES_REQUIRED"] : []),
+  ...(rung >= 3 && prev < 3 ? ["RESEARCH_DUE"] : []),
   ...(rung === 4 ? ["ROLLOVER_DUE"] : []),
-  ...(v.fixated ? ["SAME_FIX_3"] : []),
+  ...(v.sameFix ? ["SAME_FIX_3"] : []),
   ...(v.inferred >= cfg.researchAt ? ["REPEAT_SUSPECT"] : []),
 ];
 
@@ -305,7 +311,7 @@ export const stuckStep = async (deps: FlowDeps, key: string, metric: string): Pr
       action += delivered ? "; ulw research sent to the lane" : `; the research text did not reach pane ${lane.pane}`;
     }
   } else action = rolloverAction(key, v.fixated ? `hypothesis tried ${cfg.fixatedAfter}+ times on "${v.metric}"` : `attempt ${v.n} failed after rung 3`);
-  const line = stuckLine(key, v.metric, rung, counts(v), action, oldNames(rung, v, cfg));
+  const line = stuckLine(key, v.metric, rung, `${counts(v)}${rung > prev + 1 && prev > 0 ? `, from rung ${prev}` : rung > 2 && prev === 0 ? ", first count" : ""}`, action, oldNames(rung, prev, v, cfg));
   watchLog(deps.config.watchLog, deps.clock, { source: "stuck", line });
   return [line];
 };
@@ -325,10 +331,12 @@ export const stuckContext = async (deps: FlowDeps, key: string, findings: readon
     }
     return [];
   }
-  const rung = prev ? 4 : 1;
+  // rung 4 only when the lead confirmed a re-read after the first finding and the lane is still off the owner's words
+  const reread = lane.ownerCheck?.rereadAt && prev ? lane.ownerCheck.rereadAt >= prev.at : false;
+  const rung = prev ? (reread ? 4 : prev.rung) : 1;
   const n = (prev?.n ?? 0) + 1;
   await deps.registry.patch(key, { stuck: { ...marks, [CONTEXT]: { rung, n, at: iso(deps.clock), ...(lane.pane ? { pane: lane.pane } : {}) } } });
-  if (prev?.rung === 4) return [];
+  if (prev && (prev.rung === 4 || rung !== 4)) return [];
   const f = findings[0];
   const detail = `${findings.map((x) => x.kind).join(", ")}: owner "${clip(f?.owner ?? "", 160)}" vs report "${clip(f?.report ?? "", 160)}": ${clip(f?.why ?? "", 160)}${f?.verified ? "" : " (unverified quote)"}; reviewer ${model}`;
   const action = rung === 4

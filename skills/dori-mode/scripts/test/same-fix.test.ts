@@ -50,16 +50,20 @@ test("tagged reports climb one ladder per metric: one STUCK line at rung 2, 3 an
   expect((await deps(T0).registry.read("e7"))?.status).toBeUndefined();
 });
 
-test("one hypothesis tried fixatedAfter times jumps to rung 4 with SAME_FIX_3 at the end, and no research is sent", async () => {
-  const deps = depsFor(world, fakeClock(T0), state.dir, { explore: defaultConfig().explore });
+test("one hypothesis three times without branching is rung 3 (research first, SAME_FIX_3 at the end); after branching, the same one again is rung 4, fixated (challenge, grok-4.7)", async () => {
+  const deps = depsFor(world, fakeClock(T0), state.dir, quiet);
   await deps.registry.write(lane);
-  expect((await recordFix(deps, "e7", fix("h"))).notes).toEqual([]);
-  expect((await recordFix(deps, "e7", fix("h"))).notes[0]).toContain('"m" rung 2 ');
+  await deps.registry.write({ ...lane, key: "e8", pane: "w:p8" });
+  await recordFix(deps, "e7", fix("h"));
+  await recordFix(deps, "e7", fix("h"));
   const third = await recordFix(deps, "e7", fix("h"));
   expect(third.count).toBe(3);
-  expect(third.notes).toHaveLength(1);
-  expect(third.notes[0]).toStartWith('STUCK e7 "m" rung 4 (tagged 3, inferred 0, hypotheses 1, fixated) -> hypothesis tried 3+ times on "m"');
-  expect(third.notes[0]).toEndWith("[ROLLOVER_DUE SAME_FIX_3]");
+  expect(third.notes[0]).toStartWith('STUCK e7 "m" rung 3 (tagged 3, inferred 0, hypotheses 1) -> ulw research');
+  expect(third.notes[0]).toEndWith("[RESEARCH_DUE SAME_FIX_3]");
+  for (const h of ["a", "b", "a"]) await recordFix(deps, "e8", fix(h));
+  const fourth = await recordFix(deps, "e8", fix("a"));
+  expect(fourth.notes[0]).toStartWith('STUCK e8 "m" rung 4 (tagged 4, inferred 0, hypotheses 2, fixated) -> hypothesis tried 3+ times on "m"');
+  expect(fourth.notes[0]).toEndWith("[ROLLOVER_DUE SAME_FIX_3]");
   expect(sent(world)).toEqual([]);
 });
 
@@ -71,6 +75,18 @@ test("--improved starts the count again: the mark goes down silently and the nex
   expect((await recordFix(deps, "e7", fix("c", { improved: true }))).notes).toEqual([]);
   expect((await deps.registry.read("e7"))?.stuck?.m).toMatchObject({ rung: 1, n: 1 });
   expect((await recordFix(deps, "e7", fix("d"))).notes[0]).toContain('"m" rung 2 (tagged 2');
+});
+
+test("--improved starts the inferred half again too: three inferred cycles before it count no more (challenge, gpt-6-astra)", async () => {
+  const deps = depsFor(world, fakeClock(T0), state.dir, quiet);
+  await deps.registry.write({ ...lane, inferred: { at: "t", counts: { m: 3 } } });
+  await recordFix(deps, "e7", fix("c", { improved: true }));
+  const after = await deps.registry.read("e7");
+  expect(after?.stuck?.m).toMatchObject({ n: 1, rung: 1 });
+  expect(after?.inferred?.baseline).toEqual({ m: 3 });
+  // a new untagged cycle after it counts from there: 4 - 3 = 1, so the next tagged failure is the 2nd attempt
+  await deps.registry.patch("e7", { inferred: { ...after?.inferred, at: "t", counts: { m: 4 } } });
+  expect((await recordFix(deps, "e7", fix("d"))).notes[0]).toContain('"m" rung 2 (tagged 2, inferred 1');
 });
 
 test("a fix the lead asked for and the lane then reported counts once", () => {

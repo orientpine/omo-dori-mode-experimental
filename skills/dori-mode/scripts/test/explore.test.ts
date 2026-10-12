@@ -57,17 +57,23 @@ test("the second fix on one metric with no improvement is refused without three 
   expect(await Bun.file(deps.config.watchLog).text()).toMatch(/HYPOTHESES_OVERRIDE rl-e7 attempt 3 .*owner asked for this exact patch/);
 });
 
-test("the gate counts attempts on a metric across hypotheses, once per lead-asked-then-reported fix, the inferred count too, and --improved starts again", () => {
-  const cfg = { ...defaultConfig().explore, ...defaultConfig().stuck };
-  expect(gateFix([], fix("a"), { hypotheses: [], tests: [] }, cfg).verdict).toBe("ok");
-  expect(gateFix([fix("a")], fix("b"), { hypotheses: [], tests: [] }, cfg).verdict).toBe("required");
-  expect(gateFix([fix("a")], fix("b"), { hypotheses: three.hypotheses, tests: three.tests.slice(0, 2) }, cfg).verdict).toBe("required");
-  expect(gateFix([fix("a")], fix("b"), three, cfg).verdict).toBe("branch");
-  expect(gateFix([fix("a")], fix("b", { improved: true }), { hypotheses: [], tests: [] }, cfg).verdict).toBe("ok");
+test("the gate counts the ladder's own way: across hypotheses, once per lead-asked-then-reported fix, inferred cycles too, alias names, the last PASS and --improved", () => {
+  const config = defaultConfig();
+  const at = (fixes: FixAttempt[], extra: Partial<Lane> = {}): Lane => ({ ...lane, fixes, ...extra });
+  const none = { hypotheses: [], tests: [] };
+  expect(gateFix(at([]), fix("a"), none, config).verdict).toBe("ok");
+  expect(gateFix(at([fix("a")]), fix("b"), none, config).verdict).toBe("required");
+  expect(gateFix(at([fix("a")]), fix("b"), { hypotheses: three.hypotheses, tests: three.tests.slice(0, 2) }, config).verdict).toBe("required");
+  expect(gateFix(at([fix("a")]), fix("b"), three, config).verdict).toBe("branch");
+  expect(gateFix(at([fix("a")]), fix("b", { improved: true }), none, config).verdict).toBe("ok");
   expect(metricAttempts([fix("a"), fix("a", { via: "report" }), fix("b")], "dumps")).toBe(2);
   // untagged repeats count as attempts: the first lead-asked fix after two inferred cycles already needs hypotheses
-  expect(gateFix([], fix("a"), { hypotheses: [], tests: [] }, cfg, 2).verdict).toBe("required");
-  expect(gateFix([], fix("a"), { hypotheses: [], tests: [] }, cfg, 1).verdict).toBe("ok");
+  expect(gateFix(at([], { inferred: { at: "t", counts: { dumps: 2 } } }), fix("a"), none, config).verdict).toBe("required");
+  expect(gateFix(at([], { inferred: { at: "t", counts: { dumps: 1 } } }), fix("a"), none, config).verdict).toBe("ok");
+  // the same gate under another name counts (aliases), and a PASS the reports showed starts it again (challenge, gpt-6-astra)
+  const aliased = { ...config, autoSignals: { ...config.autoSignals, aliases: { dumps: ["dump count"] } } };
+  expect(gateFix(at([fix("a", { metric: "dump count" })]), fix("b"), none, aliased).verdict).toBe("required");
+  expect(gateFix(at([fix("a", { at: "t1" })], { inferred: { at: "t", counts: {}, passedAt: { dumps: "t2" } } }), fix("b", { at: "t3" }), none, config).verdict).toBe("ok");
 });
 
 test("the tree keeps one entry per idea, records falsified and supported results, and a new brief carries it before the footer", async () => {
@@ -399,7 +405,7 @@ test("intent-check shows the owner's goal, the lane's direction and next step; a
   for (const [key, cwd] of [["rl-a", "/work/a"], ["rl-b", "/work/b"]] as const) {
     const dir = sessionDirFor(sessions, cwd);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `2026-01-01T11-00-00-000Z_00000000-0000-0000-0000-00000000000${key === "rl-a" ? 1 : 2}.jsonl`), `${JSON.stringify({ type: "message", timestamp: new Date(T0 + 30_000).toISOString(), message: { role: "assistant", content: [{ type: "text", text: `[REPORT] ${key} | milestone | working` }] } })}\n`);
+    writeFileSync(join(dir, `2026-01-01T11-00-00-000Z_00000000-0000-0000-0000-00000000000${key === "rl-a" ? 1 : 2}.jsonl`), `${JSON.stringify({ type: "message", timestamp: new Date(T0 + 30_000).toISOString(), message: { role: "user", content: [{ type: "text", text: `[REPORT] ${key} | milestone | working` }] } })}\n`);
   }
   // whichever lane the registry lists first, the one that announced a new stage is checked (one check per sweep)
   for (const staged of ["rl-a", "rl-b"]) {

@@ -225,6 +225,16 @@ export const reportKey = (text: string): string => text.replace(/\$\{[^}]*\}|\{k
 
 export type ReportLine = { readonly at: string; readonly text: string };
 
+// Where a report can be: text the session received (a lane's report typed into the lead, a lead copy), or a tool call that
+// sends one (send-keys, send-text, dori type). A report template quoted in a goal, a brief or a note is not a report.
+const SENDS = /send-keys|send-text|\bdori\b["',\s\\]+type\b/;
+const reportStrings = (e: Entry): string[] => {
+  const c = e.message?.content;
+  if (e.message?.role === "user") return strings(c);
+  if (e.message?.role !== "assistant" || !Array.isArray(c)) return [];
+  return (c as { type?: string; arguments?: unknown }[]).flatMap((b) => (b?.type === "toolCall" && SENDS.test(JSON.stringify(b.arguments ?? {})) ? strings(b.arguments) : []));
+};
+
 // [REPORT] <key> lines in session files (the lane's own tool calls that typed them, and the lead's copy), oldest first.
 // Files not written since `since` are skipped.
 export const readReports = async (files: readonly string[], key: string, since = 0): Promise<ReportLine[]> => {
@@ -242,7 +252,7 @@ export const readReports = async (files: readonly string[], key: string, since =
       }
       const at = e.timestamp ?? "";
       if (Date.parse(at) < since) continue;
-      for (const s of strings(e.message?.content ?? e.content)) {
+      for (const s of reportStrings(e)) {
         for (const m of s.matchAll(grammar)) {
           const text = (m[1] ?? "").replace(/\\n/g, " ").trim();
           // a template quoted in a goal or a brief ("| done | ...` is sent ...") is not a report
@@ -344,8 +354,12 @@ export const repeatTick = async (deps: FlowDeps, lane: Lane, files?: readonly st
   const counts = Object.fromEntries([...state.counts.values()].map((r) => [r.metric, r.n]));
   const passedAt = Object.fromEntries(state.passes);
   const newest = scan.events.reduce((m, e) => (e.at > m ? e.at : m), lastAt ?? "");
-  const changed = [...new Set([...Object.keys(before), ...Object.keys(counts)])].filter((m) => (before[m] ?? 0) !== (counts[m] ?? 0));
-  if (changed.length || JSON.stringify(passedAt) !== JSON.stringify(lane.inferred?.passedAt ?? {}) || newest !== (lastAt ?? "")) await deps.registry.patch(lane.key, { inferred: { at: iso(deps.clock), counts, passedAt, ...(newest ? { lastEventAt: newest } : {}) } });
+  // a metric whose count changed or that passed again takes a ladder step (a PASS lowers a tagged-only metric's rung too)
+  const passedNow = Object.keys(passedAt).filter((m) => passedAt[m] !== lane.inferred?.passedAt?.[m]);
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(counts), ...passedNow])].filter((m) => (before[m] ?? 0) !== (counts[m] ?? 0) || passedNow.includes(m));
+  // a PASS started the count again from 0, so an --improved baseline from before it no longer applies
+  const baseline = Object.fromEntries(Object.entries(lane.inferred?.baseline ?? {}).filter(([m]) => !passedNow.includes(m)));
+  if (changed.length || newest !== (lastAt ?? "")) await deps.registry.patch(lane.key, { inferred: { at: iso(deps.clock), counts, passedAt, ...(Object.keys(baseline).length ? { baseline } : {}), ...(newest ? { lastEventAt: newest } : {}) } });
   const file = evidenceFile(deps.config.stateDir, lane.key);
   const lines: string[] = [];
   for (const m of changed) {

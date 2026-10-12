@@ -1,3 +1,4 @@
+import { canonical } from "./auto-signals.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { afterFix } from "./explore.ts";
 import type { FixAttempt, Lane } from "./registry.ts";
@@ -37,7 +38,10 @@ export const recordFix = async (deps: FlowDeps, key: string, attempt: FixAttempt
   const lane: Lane | null = await deps.registry.read(key);
   if (!lane) return { count: 0, notes: [] };
   const fixes = [...(lane.fixes ?? []), attempt];
-  await deps.registry.patch(key, { fixes });
+  // --improved: the metric moved, so the untagged cycles counted so far are no longer a stuck run either
+  const metric = canonical(attempt.metric, deps.config.autoSignals.aliases);
+  const inferred = attempt.improved && lane.inferred ? { inferred: { ...lane.inferred, baseline: { ...lane.inferred.baseline, [metric]: lane.inferred.counts[metric] ?? 0 } } } : {};
+  await deps.registry.patch(key, { fixes, ...inferred });
   const notes = await afterFix(deps, lane, fixes, attempt);
   return { count: fixCount(fixes, attempt.metric, attempt.hypothesis), notes };
 };

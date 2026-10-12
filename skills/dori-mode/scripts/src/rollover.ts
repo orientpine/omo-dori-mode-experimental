@@ -92,7 +92,8 @@ export const AUTO_PREFIX = "auto:";
 export const LEAD_PREFIX = "lead:";
 
 // a lead's approval names the signal it acts on (a STUCK rung, an owner-check finding, a measured threshold)
-const SIGNAL_WORD = /STUCK|rung|OWNER_CHECK|VIOLATION|CONTRADICTION|GOAL_LOSS|context|compaction|age|ROLLOVER_DUE|SAME_FIX|RESEARCH|fixat|막힘|단|맥락|압축/i;
+// whole tokens only: "age" in "message" or 단 in 단계 is no signal (challenge, grok-4.7)
+const SIGNAL_WORD = /(?<![\w])(?:STUCK|rung ?4|OWNER_CHECK|VIOLATION|CONTRADICTION|GOAL_LOSS|ROLLOVER_DUE|SAME_FIX_3|fixated|context \d+ ?%|compactions? \d+|\d+ compactions?|age \d+(?:\.\d+)? ?h)(?![\w])|막힘 ?4 ?단|맥락 (?:이상|단)|압축 \d+/i;
 
 export const decidedBy = (ref: string): DecidedBy => (ref.startsWith(LEAD_PREFIX) ? "lead" : ref.startsWith(AUTO_PREFIX) ? "auto" : "owner");
 
