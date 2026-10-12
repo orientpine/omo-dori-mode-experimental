@@ -5,7 +5,7 @@ import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, pauseLane, resumeLane, watchTick } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { Discord } from "../src/messenger/discord.ts";
-import { discordThreadId, setThreadStatus, type ThreadStatus } from "../src/messenger/discord-thread.ts";
+import { discordThreadId, postInThread, setThreadStatus, type ThreadStatus } from "../src/messenger/discord-thread.ts";
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -92,7 +92,7 @@ const fakeThread = (name: string, archived: boolean, refuse = false) => {
   const dc = new Discord(http, fakeClock(0), "bot");
   const markThreadDone = (ref: string) => setThreadStatus(dc, discordThreadId(ref), "done", { ...defaultDiscordWords, statusStyle: "emoji" });
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}${r.body ? ` ${r.body}` : ""}`);
-  return { markThreadDone, calls };
+  return { markThreadDone, calls, dc };
 };
 const T = `/channels/${THREAD_ID}`;
 
@@ -154,4 +154,46 @@ test("a thread that cannot be renamed is a warning, the lane still closes; a lan
   await closeLane(at(T0, { markThreadDone: none.markThreadDone }), lane, "closed");
   expect(none.calls()).toEqual([]);
   expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too");
+});
+
+// both thread hooks, told apart in the recorded argv
+const bothHooks = (deps: FlowDeps): FlowDeps => ({ ...deps, config: { ...deps.config, hooks: { ...deps.config.hooks, threadReply: ["notify", "reply", "{thread}", "{text}"], threadDone: ["notify", "done", "{thread}", "{text}"] } } });
+const hookCalls = () => world.calls.filter((c) => c[0] === "notify").map((c) => `${c[1]} ${c[3]}`);
+
+test("two lanes in one thread: the automatic close of the first posts its result and leaves the thread working; closing the last marks it done", async () => {
+  const f = fakeThread("🔄 dedup", false);
+  const deps = (ms: number) => bothHooks(at(ms, { markThreadDone: f.markThreadDone }));
+  await deps(T0).registry.write({ ...lane, key: "fix-b", title: "fix-b", pane: "aoe_fix-b_00000000" });
+  await claimDone(deps(T0), lane, "merged #47");
+  const out = await watchTick(deps(T0 + 10 * MIN));
+  expect(out.some((l) => l.startsWith("LANE_CLOSED fix-a "))).toBe(true);
+  expect(hookCalls()).toEqual([`reply fix-a: ${deps(T0).config.discord.doneText}`]);
+  expect(f.calls()).toEqual([]);
+  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too; result posted");
+
+  const last = (await deps(T0).registry.read("fix-b")) ?? lane;
+  expect((await closeLane(deps(T0 + 11 * MIN), last, "closed by the lead")).closed).toBe(true);
+  expect(hookCalls().at(-1)).toBe("done closed by the lead");
+  expect(f.calls()).toEqual([`GET ${T}`, `PATCH ${T} {"name":"✅ dedup"}`, `PATCH ${T} {"archived":true}`]);
+});
+
+test("with a Discord token the result goes straight to the thread: a waiting shared thread is not renamed, not even to working", async () => {
+  const f = fakeThread("⏸️ shared", false);
+  await at(T0).registry.write({ ...lane, key: "fix-b", title: "fix-b", pane: "aoe_fix-b_00000000", status: "paused" });
+  const deps = bothHooks(at(T0, { markThreadDone: f.markThreadDone, postInThread: (ref, text) => postInThread(f.dc, ref, text) }));
+  expect((await closeLane(deps, lane, "closed")).closed).toBe(true);
+  expect(f.calls().filter((c) => c.startsWith("PATCH") || c.startsWith("GET"))).toEqual([]);
+  expect(f.calls().filter((c) => c.startsWith(`POST ${T}/messages`))).toHaveLength(1);
+  expect(f.calls().join("\n")).toContain("fix-a: closed");
+  expect(hookCalls()).toEqual([]);
+  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too; result posted");
+});
+
+test("a thread with an open question card is not marked done when its only lane closes; the result is posted", async () => {
+  const f = fakeThread("⏸️ dedup", false);
+  const r = await closeLane(bothHooks(at(T0, { markThreadDone: f.markThreadDone, openCards: (ref) => (ref === lane.thread ? ["Q7"] : []) })), lane, "closed");
+  expect(r.closed).toBe(true);
+  expect(hookCalls()).toEqual(["reply fix-a: closed"]);
+  expect(f.calls()).toEqual([]);
+  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open card Q7; result posted");
 });

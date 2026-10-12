@@ -44,7 +44,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
-import { bareThreadName, discordThreadId, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
 import { mapThread, threads } from "./messenger/thread-map.ts";
 import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
 import { realTimers } from "./messenger/typing.ts";
@@ -131,7 +131,8 @@ const USAGE = `dori <command> [options]
                                        switch, tagged fixes by metric, rejected done claims, re-sends, nudges, outcome,
                                        warnings; no option = one SIGNALS line per open lane. Read it before re-instructing
   close  <key> [--note TEXT]           close now (Done signals must read back live); a discord:<id> work thread is set
-                                       done and archived when DORI_DISCORD_TOKEN is set
+                                       done and archived when DORI_DISCORD_TOKEN is set; a thread another open
+                                       lane or an open card uses only gets the result posted
   watch                                long-running: emits LANE_* lines every 30 s
   update [--pull] [--dry-run]           apply changed scripts to configured services and report unset new config keys
   notify-change --summary TEXT [--file PATH ...]
@@ -219,6 +220,8 @@ const deps: FlowDeps = {
   clock: realClock,
   registry: new Registry(config.stateDir),
   config,
+  // a close leaves a thread with an open question card as it is (cards are kept per Discord thread id)
+  openCards: (ref: string) => (ref.startsWith("discord:") ? openCardIds(new QuestionStore(cardDir()), discordThreadId(ref)) : []),
   ...(discordToken
     ? {
         markThreadDone: async (ref: string) => {
@@ -226,6 +229,7 @@ const deps: FlowDeps = {
           const outcome = await threadStatuses(new Discord(fetchHttp, realClock, discordToken)).request(discordThreadId(ref), "done");
           if (outcome === "pending" || outcome === "dropped") throw new Error(`thread rename ${outcome}, see the THREAD_STATUS line`);
         },
+        postInThread: (ref: string, text: string) => postInThread(new Discord(fetchHttp, realClock, discordToken), ref, text),
       }
     : {}),
 };
