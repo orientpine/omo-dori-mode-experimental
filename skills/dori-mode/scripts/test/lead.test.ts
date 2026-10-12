@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findLead, LeadError } from "../src/lead.ts";
+import type { Runner } from "../src/run.ts";
 import { fakeRunner, newWorld, withState } from "./fakes.ts";
 
 const ID = "12345678-abcd";
@@ -21,12 +22,20 @@ test("lead resolves a stale env id from aoe list using the configured pane", asy
   expect({ lead, calls: world.calls }).toEqual({ lead: `${ID} ${TMUX}`, calls: [["tmux", "has-session", "-t", `=${TMUX}`], ["aoe", "list", "--json"]] });
 });
 
-test("lead refuses a missing pane, dead tmux or unmatched aoe session", async () => {
+test("lead refuses a missing pane or an unmatched aoe session", async () => {
   const world = newWorld();
   const missing = await findLead(fakeRunner(world), { leadPane: "" }, {}).catch((e: unknown) => e instanceof LeadError);
-  const dead = await findLead(async () => ({ code: 1, out: "", err: "no session" }), { leadPane: TMUX }, { DORI_LEAD_AOE_ID: ID }).catch((e: unknown) => e instanceof LeadError);
   const unmatched = await findLead(fakeRunner(world), { leadPane: TMUX }, {}).catch((e: unknown) => e instanceof LeadError);
-  expect({ missing, dead, unmatched }).toEqual({ missing: true, dead: true, unmatched: true });
+  expect({ missing, unmatched }).toEqual({ missing: true, unmatched: true });
+});
+
+// at boot the lead's tmux session does not exist yet; dori-lead.service and dori.sh start it from this id
+test("a lead whose tmux session is not running still resolves, marked stopped, from a matching env id or from aoe list", async () => {
+  const noTmux = (aoe: object[]): Runner => async (argv) => (argv[0] === "tmux" ? { code: 1, out: "", err: "can't find session" } : argv[0] === "aoe" ? { code: 0, out: JSON.stringify(aoe), err: "" } : { code: 2, out: "", err: "" });
+  const repro = "aoe_zzangdori_00000000";
+  expect(await findLead(noTmux([{ id: "00000000aaaa", title: "zzangdori", path: "/home" }]), { leadPane: "" }, { DORI_LEAD_TMUX: repro, DORI_LEAD_AOE_ID: "8d429737ddd245c8" })).toBe(`00000000aaaa ${repro} stopped`);
+  expect(await findLead(noTmux([]), { leadPane: TMUX }, { DORI_LEAD_AOE_ID: ID })).toBe(`${ID} ${TMUX} stopped`);
+  expect(await findLead(noTmux([]), { leadPane: TMUX }, {}).catch((e: unknown) => (e as Error).message)).toBe(`no aoe session matches ${TMUX}`);
 });
 
 let state: ReturnType<typeof withState>;
@@ -61,8 +70,8 @@ test("dori lead resolves a stale env-file id with fake aoe and tmux and honors D
   expect(await leadCli(true, TMUX)).toEqual({ code: 0, out: `${ID} ${TMUX}`, err: "" });
 });
 
-test("dori lead exits one with a reason when fake tmux has no live lead", async () => {
-  expect(await leadCli(false)).toEqual({ code: 1, out: "", err: `no live lead tmux session: ${TMUX}` });
+test("dori lead prints the stopped lead with exit 0 when fake tmux has no live session (boot)", async () => {
+  expect(await leadCli(false)).toEqual({ code: 0, out: `${ID} ${TMUX} stopped`, err: "" });
 });
 
 test("the boot service resolves the lead before starting its aoe session", async () => {

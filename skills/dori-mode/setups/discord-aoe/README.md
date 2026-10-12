@@ -9,7 +9,7 @@ What you get:
 | `dori inbound discord` (unit `dori-inbound`) | Gateway listener. Takes only the owner's messages in the Dori's channel, its threads and DMs. Puts the eyes reaction on at once and takes it off when the bot writes back in that channel or thread, transcribes voice notes, backfills what it missed during a reconnect, records question-card answers, and appends one JSON row per event to the inbox file. |
 | `dori ask` / `questions` / `reopen` / `resolve` | Question cards: one tap answers a decision the owner has to make. |
 | `dori thread open\|set\|map\|list` | Open work threads, set their status through the shared queue, and keep non-lane session mappings in `<cardDir>/threads.json`. Standalone threads require `--first`. |
-| `dori lead` | Print the live lead's aoe id and tmux name; used by no-argument `self-restart.sh` and `dori-lead.service`. |
+| `dori lead` | Print the lead's aoe id and tmux name (` stopped` when its tmux is not running yet); used by no-argument `self-restart.sh` and `dori-lead.service`. |
 | `dori thread reply\|wait\|done` | The thread hooks: posts lane reports into the work thread and sets its status mark (🔄, ⏸️, ✅ with this setup's emoji style); `done` archives the thread. |
 | `dori-lanes.sh` (unit `dori-lanes`) | `dori watch`, `freshness`, `dead-panes` and `guard` in one unit and one log, each line stamped and tagged. |
 | `session-watch.ts` (unit `dori-session-watch`) | Notices when another aoe session stops for a human (waiting, error, idle after a turn, a new `MILESTONE` line) and writes the event with the pane's tail, the lane's thread and what the session last said. |
@@ -247,7 +247,7 @@ A card answer:
 
 Each tick re-reads `leadPane` (with the usual `DORI_LEAD_PANE` override) and `ignorePanes`, so a lead handover or ignore-list edit needs no watcher restart. Thread lookup prefers the registry's lane thread, then the session mapping in `<cardDir>/threads.json` (`DORI_DISCORD_STATE_DIR`, else `<stateDir>/discord`). Output remains `<stateDir>/session-events.jsonl`; tick failures still print `SESSION-WATCH-FAIL`.
 
-Lead discovery for restarts is shared by `dori lead`: `DORI_LEAD_TMUX` from `dori.env`, else configured `leadPane`; the configured aoe id is used only when its first eight characters match the live tmux name's suffix. Otherwise `aoe list --json` supplies the id. No live lead exits 1 rather than restarting a stale session. Pass an explicit aoe id and tmux name to `self-restart.sh` to restart another session.
+Lead discovery for restarts is shared by `dori lead`: `DORI_LEAD_TMUX` from `dori.env`, else configured `leadPane`; the configured aoe id is used only when its first eight characters match the tmux name's suffix. Otherwise `aoe list --json` (stopped sessions included) supplies the id. A lead whose tmux session is not running yet (boot) still resolves, printed with ` stopped`; no matching session exits 1 rather than starting a stale one. Pass an explicit aoe id and tmux name to `self-restart.sh` to restart another session.
 
 Each row in `session-events.jsonl` has `kind` (`session-idle`, `session-waiting`, `session-error`, `session-milestone`), `session`, `title`, `path`, `tmux`, `thread`, `tail` (the pane's last 20 lines) and `said`:
 
