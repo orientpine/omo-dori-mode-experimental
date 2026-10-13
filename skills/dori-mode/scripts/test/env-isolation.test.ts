@@ -93,12 +93,12 @@ test("an inherited value of the same Dori (a rotated token of the same bot inclu
     const rotated = tok(OK).replace(".fake.token", ".rotated.secret");
     const same: Record<string, string | undefined> = { DORI_DISCORD_TOKEN: rotated, DORI_DISCORD_INBOX: "/override/inbox.jsonl" };
     const sameDropped = await loadEnvFile(file, same);
-    const other: Record<string, string | undefined> = { ...zzangEnv(state.dir), DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane" };
+    const other: Record<string, string | undefined> = { ...zzangEnv(state.dir), DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane", DORI_DISCORD_SHADOW_INBOX: "/shadow.jsonl" };
     const otherDropped = await loadEnvFile(file, other);
     expect({ same, sameDropped, other, otherDropped: otherDropped.sort() }).toEqual({
       same: { DORI_DISCORD_TOKEN: rotated, DORI_DISCORD_INBOX: "/override/inbox.jsonl", DORI_DISCORD_CHANNEL: "ok-channel" },
       sameDropped: [],
-      other: { DORI_DISCORD_TOKEN: tok(OK), DORI_DISCORD_CHANNEL: "ok-channel", DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane" },
+      other: { DORI_DISCORD_TOKEN: tok(OK), DORI_DISCORD_CHANNEL: "ok-channel", DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane", DORI_DISCORD_SHADOW_INBOX: "/shadow.jsonl" },
       otherDropped: Object.keys(zzangEnv(state.dir)).sort(),
     });
   } finally {
@@ -108,5 +108,5 @@ test("an inherited value of the same Dori (a rotated token of the same bot inclu
 
 test("aoe and tmux, which can start the tmux server every pane inherits from, run without any DORI_* variable", () => {
   const env = { PATH: "/bin", DORI_DISCORD_TOKEN: "t", DORI_CONFIG: "/c" };
-  expect([childEnv(["tmux", "new-session"], env), childEnv(["aoe", "session", "start", "x"], env), childEnv(["git", "status"], env)]).toEqual([{ PATH: "/bin" }, { PATH: "/bin" }, env]);
+  expect([childEnv(["tmux", "new-session"], env), childEnv(["/usr/bin/tmux", "ls"], env), childEnv(["aoe", "session", "start", "x"], env), childEnv(["git", "status"], env)]).toEqual([{ PATH: "/bin" }, { PATH: "/bin" }, { PATH: "/bin" }, env]);
 });

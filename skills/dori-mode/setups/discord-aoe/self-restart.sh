@@ -26,8 +26,8 @@ export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 # shellcheck disable=SC2046
 no_dori_env() { env $(env | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/-u \1/p') "$@"; }
 scrub_tmux_env() {
-  tmux show-environment -g 2>/dev/null | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/\1/p' | while read -r v; do
-    tmux set-environment -g -u "$v" && log "TMUX_ENV_DROPPED $v"
+  no_dori_env tmux show-environment -g 2>/dev/null | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/\1/p' | while read -r v; do
+    no_dori_env tmux set-environment -g -u "$v" && log "TMUX_ENV_DROPPED $v"
   done
 }
 

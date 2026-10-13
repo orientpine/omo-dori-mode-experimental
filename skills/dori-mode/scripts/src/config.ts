@@ -389,7 +389,8 @@ export const envFilePath = (): string => process.env.DORI_ENV_FILE ?? join(homed
 
 // What one Dori's dori.env sets: bot tokens, channel, inbox, card store, lead, voice, Google, usage. A process can
 // inherit another Dori's set: a tmux server started by a unit that loaded dori.env hands it to every pane it opens.
-const instanceVar = (name: string): boolean => /^DORI_(DISCORD|SLACK|TELEGRAM|LEAD|ASR|GOOGLE|USAGE)_/.test(name) && name !== "DORI_LEAD_PANE";
+// DORI_LEAD_PANE and DORI_DISCORD_SHADOW_INBOX choose how this run works (set by its unit or caller), not instance values.
+const instanceVar = (name: string): boolean => /^DORI_(DISCORD|SLACK|TELEGRAM|LEAD|ASR|GOOGLE|USAGE)_/.test(name) && name !== "DORI_LEAD_PANE" && name !== "DORI_DISCORD_SHADOW_INBOX";
 
 // The bot a token signs in as: a Discord token's base64 user id before its first dot, a Telegram token's id before its
 // colon, else the token itself. A rotated token of the same bot is the same bot.
