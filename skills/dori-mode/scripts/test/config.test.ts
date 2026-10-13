@@ -100,7 +100,9 @@ test("every key the config loader knows is documented, and every DORI_ variable 
   // log-line tags, not variables
   for (const tag of ["DORI_ENV_FOREIGN", "DORI_SHELL_CHECK_PASS"]) read.delete(tag);
   // When
-  const keysMissing = knownConfigKeys().filter((key) => !documented.has(key) && !documented.has(key.split(".").pop() ?? key));
+  // instances is [] by default, so its entry fields come from a sample; the discord words are documented by their bare names
+  const keys = [...knownConfigKeys(), ...configKeys({ instances: [{ config: "", envFile: "" }] })];
+  const keysMissing = keys.filter((key) => !documented.has(key) && !(key.startsWith("discord.") && documented.has(key.slice("discord.".length))));
   const listed = new Set([...example.matchAll(/\bDORI_[A-Z0-9_]*[A-Z0-9]\b/g), ...settings.matchAll(/`(DORI_[A-Z0-9_]*[A-Z0-9])`/g)].map((m) => m[1] ?? m[0]));
   const varsMissing = [...read].filter((name) => !listed.has(name)).sort();
   // Then
