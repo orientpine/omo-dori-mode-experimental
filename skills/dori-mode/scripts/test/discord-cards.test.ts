@@ -295,6 +295,24 @@ test("resolving a card inside its thread folds it there, then marks the thread �
   expect(thread.name).toBe("🔄 fix login");
 });
 
+test("a card in a thread that archived itself is folded by opening the thread and editing it again", async () => {
+  const thread = { archived: false };
+  const { cards, calls, json } = setup((req) => {
+    if (req.method === "PATCH" && req.url.endsWith("/channels/300")) thread.archived = JSON.parse(String(req.body)).archived ?? thread.archived;
+    if (req.method === "PATCH" && req.url.includes("/messages/") && thread.archived) throw new Error('discord PATCH /channels/300/messages/900: 400 {"message": "Thread is archived", "code": 50083}');
+    if (req.method === "GET") return { name: "⏸️ fix login", thread_metadata: { archived: thread.archived } };
+    return req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {};
+  });
+  await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  thread.archived = true;
+  const before = calls().length;
+  expect(await cards.resolve("Q1", "yes")).toBe("folded");
+  expect(calls().slice(before, before + 3)).toEqual(["PATCH /channels/300/messages/900", "PATCH /channels/300", "PATCH /channels/300/messages/900"]);
+  expect(json(before + 1)).toEqual({ archived: false });
+  expect(content(json(before + 2).components)).toBe("[answered] **Q1** Ship?\n→ **yes**\n-# reply · 1/2, 03:04");
+  expect(readFileSync(cards.store.answersFile, "utf8").trim().split("\n")).toHaveLength(1);
+});
+
 test("a failed card edit keeps the question open and unlogged, so resolve can be run again", async () => {
   const { cards, store } = setup((req) => {
     if (req.method === "PATCH") throw new Error("discord down");

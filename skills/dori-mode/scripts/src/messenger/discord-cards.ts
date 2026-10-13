@@ -286,11 +286,24 @@ export class QuestionCards {
     }
     const value = guardText(answer ?? "").trim() || this.settings.words.repliedInText;
     const at = this.at();
-    if (q.message) await this.dc.call("PATCH", `/channels/${q.channel}/messages/${q.message}`, { components: this.card({ ...q, status: "answered", answer: value, answerKind: "reply", answeredAt: at }) });
+    if (q.message) await this.edit(q.channel, q.message, { components: this.card({ ...q, status: "answered", answer: value, answerKind: "reply", answeredAt: at }) });
     this.store.answer(id, value, "reply", at);
     this.store.resolve(id);
     if (q.thread) await this.mark(q.thread, "working");
     return q.message ? "folded" : "kept";
+  }
+
+  // Discord refuses to edit a message in an archived thread (50083), and a quiet thread with an open card archives
+  // itself, so the thread is opened and the card edited again; the thread mark that follows settles the thread
+  private async edit(channel: string, message: string, body: Record<string, unknown>): Promise<void> {
+    const patch = () => this.dc.call("PATCH", `/channels/${channel}/messages/${message}`, body);
+    try {
+      await patch();
+    } catch (e) {
+      if (!(e instanceof Error && e.message.includes("50083"))) throw e;
+      await this.dc.setThread(channel, { archived: false });
+      await patch();
+    }
   }
 
   private respond(i: Interaction, body: Record<string, unknown>): Promise<unknown> {
