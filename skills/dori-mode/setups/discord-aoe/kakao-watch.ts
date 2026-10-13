@@ -64,17 +64,22 @@ export const kakaoOptions = (env: Record<string, string | undefined>): KakaoOpti
 
 const readJson = <T>(path: string, fallback: T): T => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as T) : fallback);
 const save = (path: string, value: unknown) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-export const loadKakaoState = (o: KakaoOptions, now: number): KakaoState => ({
-  rooms: readJson(o.rooms, {}),
-  cursors: readJson(o.cursors, {}),
-  marked: readJson(o.marked, {}),
-  fails: {},
-  retryAt: {},
-  advancedAt: {},
-  unread: new Set(),
-  lastSweep: now,
-  lastDiscover: -Infinity,
-});
+// The first tick sweeps with every known room counted as unread: a mark-read that returned success before a restart
+// but left the badge is not remembered anywhere else, so each room is marked once more at start.
+export const loadKakaoState = (o: KakaoOptions): KakaoState => {
+  const rooms = readJson<Record<string, { id: string }>>(o.rooms, {});
+  return {
+    rooms,
+    cursors: readJson(o.cursors, {}),
+    marked: readJson(o.marked, {}),
+    fails: {},
+    retryAt: {},
+    advancedAt: {},
+    unread: new Set(Object.values(rooms).map((r) => String(r.id))),
+    lastSweep: -Infinity,
+    lastDiscover: -Infinity,
+  };
+};
 
 const oneLine = (r: Ran, max: number) => (r.err || r.out).slice(0, max).replace(/\n/g, " ");
 const parseList = <T>(out: string, key: string): T[] | null => {
@@ -193,7 +198,7 @@ if (import.meta.main) {
     process.exit(0);
   }
   for (const file of [options.rooms, options.inbox]) mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  const state = loadKakaoState(options, Date.now());
+  const state = loadKakaoState(options);
   const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
   const tick = () => kakaoTick(options, state, run, Date.now, log);
   if (process.argv.includes("--once")) {
