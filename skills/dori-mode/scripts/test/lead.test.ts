@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findLead, LeadError } from "../src/lead.ts";
@@ -87,6 +87,18 @@ test("the boot service executes the existing self-restart script in start mode",
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: ["self-restart.sh --start"] });
 });
 
+// a fake ~/.nvm: node in each version's bin, ~/.nvm/alias files as nvm writes them
+const fakeNvm = (versions: string[], aliases: Record<string, string> = {}) => {
+  const nvm = join(state.dir, ".nvm");
+  for (const v of versions) {
+    mkdirSync(join(nvm, "versions/node", v, "bin"), { recursive: true });
+    executable(join(nvm, "versions/node", v, "bin/node"), "exit 0");
+  }
+  mkdirSync(join(nvm, "alias/lts"), { recursive: true });
+  for (const [name, target] of Object.entries(aliases)) writeFileSync(join(nvm, "alias", name), `${target}\n`);
+  return nvm;
+};
+
 const startScript = async (stopped: boolean, args: string[] = []) => {
   const bin = join(state.dir, ".bun/bin");
   mkdirSync(bin, { recursive: true });
@@ -97,8 +109,9 @@ const startScript = async (stopped: boolean, args: string[] = []) => {
   executable(join(bin, "tmux"), `printf '%s\\n' '❯'`);
   executable(join(bin, "sleep"), "exit 0");
   executable(join(bin, "agent"), "exit 0");
+  fakeNvm(["v24.15.0"]);
   const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ...args], {
-    env: { ...process.env, HOME: state.dir, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_AGENT_BIN: "agent", DORI_LEAD_AOE_ID: "stale", DORI_LEAD_TMUX: "wrong" }, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, HOME: state.dir, NVM_DIR: "", DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_AGENT_BIN: "agent", DORI_LEAD_AOE_ID: "stale", DORI_LEAD_TMUX: "wrong" }, stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
   return { code, out: out.trim(), err: err.trim(), commands: readFileSync(log, "utf8").trim().split("\n"), logged: existsSync(join(state.dir, ".dori/self-restart.log")) };
@@ -136,6 +149,33 @@ test("self-restart gives the session no DORI_* variable and drops them from the 
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
     code: 0,
     commands: ["tmux set-environment -g -u DORI_DISCORD_TOKEN", "tmux set-environment -g -u DORI_LEAD_TMUX", `aoe session restart ${ID} dori-vars=0`],
+  });
+});
+
+// omo runs memory reflection with #!/usr/bin/env node, and the pinned PATH has no nvm (it is set up in ~/.bashrc only)
+test("self-restart puts nvm's default node on the session's PATH through the alias chain, else the newest version", async () => {
+  const bin = join(state.dir, ".bun/bin");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(state.dir, ".dori"));
+  const log = join(state.dir, "commands");
+  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* node=$(command -v node)" >> "${log}"`);
+  executable(join(bin, "tmux"), `printf '%s\\n' '❯'`);
+  executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "agent"), "exit 0");
+  const nvm = fakeNvm(["v22.22.2", "v24.15.0", "v25.1.0"], { default: "lts/*", "lts/*": "lts/krypton", "lts/krypton": "v24.15.0" });
+  const restart = async () => {
+    const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ID, TMUX, ""], {
+      env: { ...process.env, HOME: state.dir, NVM_DIR: "", DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_AGENT_BIN: "agent" }, stdout: "pipe", stderr: "pipe",
+    });
+    return { code: await p.exited, err: (await new Response(p.stderr).text()).trim() };
+  };
+  const byAlias = await restart();
+  rmSync(join(nvm, "alias/default"));
+  const newest = await restart();
+  expect({ byAlias, newest, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
+    byAlias: { code: 0, err: "" },
+    newest: { code: 0, err: "" },
+    commands: [`aoe session restart ${ID} node=${nvm}/versions/node/v24.15.0/bin/node`, `aoe session restart ${ID} node=${nvm}/versions/node/v25.1.0/bin/node`],
   });
 });
 
