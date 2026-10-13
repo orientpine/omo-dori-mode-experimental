@@ -176,3 +176,16 @@ Rules the owner gave piled up in one Dori's local handoff notes, where every oth
 - **Local** goes into the local agent instructions or handoff file next to that Dori's config: a host's paths, an account, a person's preferences that are not a rule about how a Dori works.
 - **Unclear** (a rule that might be a preference of this owner, or a fix for one host's quirk): ask the owner which it is before filing it, with your pick.
 - The fork is the original and the local layer keeps configuration only, so a common rule left in local notes is a rule the other Dori break.
+
+## 21. Two Dori on one host: each runs on its own dori.env, whatever the parent environment
+
+After a power outage on 2026-10-13 the second Dori posted in its own channel as the first Dori's bot. At boot the first Dori's `dori-lead.service` (`EnvironmentFile=dori.env`) ran `self-restart.sh`, which exported the file again; its `aoe session start` was the first tmux command after the boot, so it started the tmux server with that environment. tmux keeps the server's start environment as its global environment and hands it to every pane it opens: all sessions, the second Dori's included, had the first Dori's token, inbox, card store and lead. The second Dori's wrapper named its own `dori.env`, but a variable already set won over the file, so the inherited token won.
+
+What holds now:
+
+- **Nothing hands a Dori's variables to aoe or tmux.** `dori-lead.service` has no `EnvironmentFile`; `self-restart.sh` reads its env file without exporting it, runs `aoe` without any `DORI_*`, and drops `DORI_*` from the tmux server's global environment before it starts or restarts a session; every `aoe` and `tmux` the CLI runs gets no `DORI_*` either. A unit that loads `dori.env` for its own process is fine; one that can start the tmux server must not.
+- **A Dori's own file beats another Dori's environment.** When the env file names a different bot token than the inherited one, the inherited instance variables are dropped first (`DORI_ENV_FOREIGN` on stderr). A variable set for the same Dori still wins over its file.
+- **The directory says which Dori.** List the other Dori under `instances` in `~/.dori/config.json`; a plain `dori` run in its `defaultCwd` uses its config and `dori.env`.
+- **A post as the wrong bot fails instead of going out.** Set `discord.botId` in each Dori's config; every Discord write checks the token's bot and refuses with `DISCORD_BOT_MISMATCH`.
+- **Starting the other Dori.** The lead starts it through `self-restart.sh` with that Dori's `DORI_CONFIG`, `DORI_ENV_FILE` and `DORI_STATE_DIR` set, not with a bare `aoe session start`, so the tmux global environment is cleaned first and the failure notice goes to that Dori's channel.
+- **Check after a reboot:** `tr '\0' '\n' < /proc/<pane pid>/environ | grep ^DORI_` in each Dori's pane shows no other Dori's token or paths, and `tmux show-environment -g | grep ^DORI_` is empty.

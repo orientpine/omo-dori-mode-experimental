@@ -47,9 +47,9 @@ test("the discord-aoe setup's config loads as the aoe backend with built-in thre
 test("the env file fills unset variables only, skips comments and strips quotes", async () => {
   const file = join(state.dir, "dori.env");
   writeFileSync(file, "# Discord\nDORI_DISCORD_OWNER=111\nDORI_DISCORD_CHANNEL='222'\nexport_me=x\nDORI_DISCORD_TOKEN=from-file\n");
-  const env: Record<string, string | undefined> = { DORI_DISCORD_TOKEN: "from-env" };
+  const env: Record<string, string | undefined> = { DORI_DISCORD_OWNER: "from-env" };
   await loadEnvFile(file, env);
-  expect(env).toEqual({ DORI_DISCORD_TOKEN: "from-env", DORI_DISCORD_OWNER: "111", DORI_DISCORD_CHANNEL: "222" });
+  expect(env).toEqual({ DORI_DISCORD_OWNER: "from-env", DORI_DISCORD_CHANNEL: "222", DORI_DISCORD_TOKEN: "from-file" });
   await loadEnvFile(join(state.dir, "missing.env"), env);
 });
 
