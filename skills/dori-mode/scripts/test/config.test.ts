@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { ConfigError, defaultConfig, fill, loadConfig, loadEnvFile } from "../src/config.ts";
 import { run } from "../src/run.ts";
-import { configKeys } from "../src/config-keys.ts";
+import { configKeys, knownConfigKeys } from "../src/config-keys.ts";
 import { withState } from "./fakes.ts";
 
 const state = withState();
@@ -84,6 +84,30 @@ test("documents every configuration field when defaultConfig defines it", async 
   const missing = required.filter((key) => !documented.has(key));
   // Then
   expect(missing).toEqual([]);
+});
+
+test("every key the config loader knows is documented, and every DORI_ variable the code reads is in dori.env.example or the settings section", async () => {
+  // Given
+  const root = join(import.meta.dir, "../..");
+  const scripts = await Bun.file(join(root, "references/scripts.md")).text();
+  const documented = new Set([...scripts.matchAll(/`([a-zA-Z][\w.]*)`/g)].map((match) => match[1]));
+  const example = await Bun.file(join(root, "setups/discord-aoe/dori.env.example")).text();
+  const readme = await Bun.file(join(root, "setups/discord-aoe/README.md")).text();
+  const settings = readme.slice(readme.indexOf("## Settings per Dori"), readme.indexOf("## Optional local helpers"));
+  const sources = ["scripts/src/**/*.ts", "setups/**/*.{ts,sh,service}"].flatMap((pattern) => [...new Bun.Glob(pattern).scanSync(root)]);
+  const read = new Set<string>();
+  for (const file of sources) for (const m of (await Bun.file(join(root, file)).text()).matchAll(/\bDORI_[A-Z0-9_]*[A-Z0-9]\b/g)) read.add(m[0]);
+  // log-line tags, not variables
+  for (const tag of ["DORI_ENV_FOREIGN", "DORI_SHELL_CHECK_PASS"]) read.delete(tag);
+  // When
+  const keysMissing = knownConfigKeys().filter((key) => !documented.has(key) && !documented.has(key.split(".").pop() ?? key));
+  const listed = new Set([...example.matchAll(/\bDORI_[A-Z0-9_]*[A-Z0-9]\b/g), ...settings.matchAll(/`(DORI_[A-Z0-9_]*[A-Z0-9])`/g)].map((m) => m[1] ?? m[0]));
+  const varsMissing = [...read].filter((name) => !listed.has(name)).sort();
+  // Then
+  expect(sources.length).toBeGreaterThan(10);
+  expect(read.has("DORI_DISCORD_TOKEN")).toBe(true);
+  expect(keysMissing).toEqual([]);
+  expect(varsMissing).toEqual([]);
 });
 
 test("expands update paths and defaults watchLog and alertPane when config overrides state and lead", async () => {

@@ -42,13 +42,18 @@
     "working": "working",
     "waiting": "waiting",
     "done": "done",
-    "other": "Write my own"
+    "other": "Write my own",
+    "locale": "en-US",
+    "timeZone": "UTC",
+    "botId": "444444444444444444"
   },
   "scorecard": {
     "timeZone": "UTC",
     "language": "en",
+    "sessions": "",
     "lanesLog": "~/.dori/dori-lanes.log",
     "leadSessions": "",
     "replyPattern": "^(SENT|POSTED) \\d"
-  }
+  },
+  "instances": []
 }
