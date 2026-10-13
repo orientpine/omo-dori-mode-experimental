@@ -189,3 +189,12 @@ What holds now:
 - **A post as the wrong bot fails instead of going out.** Set `discord.botId` in each Dori's config; every Discord write checks the token's bot and refuses with `DISCORD_BOT_MISMATCH`.
 - **Starting the other Dori.** The lead starts it through `self-restart.sh` with that Dori's `DORI_CONFIG`, `DORI_ENV_FILE` and `DORI_STATE_DIR` set, not with a bare `aoe session start`, so the tmux global environment is cleaned first and the failure notice goes to that Dori's channel.
 - **Check after a reboot:** `tr '\0' '\n' < /proc/<pane pid>/environ | grep ^DORI_` in each Dori's pane shows no other Dori's token or paths, and `tmux show-environment -g | grep ^DORI_` is empty.
+
+## 22. A read mark that returned success can still leave the badge
+
+On 2026-10-14 the owner found two unread messages in one of a Dori's KakaoTalk group rooms. Its watcher had taken both in (13:16 and 13:17 UTC) and marked the room read each time; it marked a room read only when its read cursor moved and printed a line only on failure, and that Dori's session had never received one `KAKAO_MARKREAD_FAIL`. So retrying failures alone would not have cleared the badge. The watcher also lived only in that Dori's local `bin`, where no other Dori could use or fix it.
+
+- **Keep what was marked read apart from what was read.** `kakao-markread.json` sits beside `kakao-cursors.json`; a room whose cursor is ahead is marked again with backoff, and a restart retries what is still pending.
+- **Do not trust a success code for something the owner sees.** Every sweep marks again the rooms with recent messages and the rooms `chat list` shows unread.
+- **`chat list` is a delta.** agent-messenger's `kakaotalk chat list` returns only chats changed since the account's last sync (it can return `[]`), so "no unread rooms" from it proves nothing; use its counts as a hint only.
+- **A helper one Dori needs today goes into the fork anyway** (#20): off by default, with that Dori's ids, names and paths in its `dori.env`. The local copy is deleted once the fork's version runs.
