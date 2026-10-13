@@ -290,10 +290,10 @@ dori ask --text "Lane fix-login asks: keep the old session cookie for 30 days?" 
 - With `--thread` the card is posted inside that work thread, which is marked ⏸️ until it is answered; without it the card goes to the Dori's channel.
 - On the tap the card folds into a one-line record (`[answered] Q4 ... → Yes, 30 days`), the answer goes to `~/.dori/state/discord/answers.jsonl` and to the inbox as a `kind:"answer"` row. A card inside the thread is the record there; a channel card leaves a silent record line in its thread. When no other question in the thread is open, the thread turns 🔄 again.
 - When the answer row arrives, act on it: relay it to the lane (`dori type <tmux> --text "<answer>"` as argv, never a shell string; it prints `SUBMITTED` only when the lane took it), or do the work.
-- If a typed answer is not really an answer, `dori reopen Q4` puts the buttons back and marks its thread ⏸️ again. When the follow-up is done, `dori resolve Q4` forgets the question; the folded card stays in the chat as the record.
+- If a typed answer is not really an answer, `dori reopen Q4` puts the buttons back and marks its thread ⏸️ again. When the follow-up is done, `dori resolve Q4` forgets the question; the folded card stays in the chat as the record. If the owner answered in a message instead of a tap, `dori resolve Q4 --answer "Yes, 30 days"` folds the card into the same record first.
 - `dori questions --open` lists what is still waiting.
 
-Card and thread wording is in the `discord` section of `config.json` (`statusStyle`, `autoUnEye`, `quietText`, `doneText`, `postRawReports`, `working`, `waiting`, `done`, `other`, `pick`, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`, `locale`, `timeZone`), so a Dori that talks to its owner in another language can use that language's words and the owner's time zone.
+Card and thread wording is in the `discord` section of `config.json` (`statusStyle`, `autoUnEye`, `quietText`, `doneText`, `postRawReports`, `working`, `waiting`, `done`, `other`, `pick`, `recommended`, `answered`, `ownerOnly`, `byButton`, `byText`, `byReply`, `repliedInText`, `locale`, `timeZone`), so a Dori that talks to its owner in another language can use that language's words and the owner's time zone.
 
 ## Operating rules for this setup
 

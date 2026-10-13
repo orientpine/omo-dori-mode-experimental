@@ -149,8 +149,8 @@ test("the owner replying in text while a card is open keeps the thread ⏸️ an
   await listener.onMessage(say("1001", "yes, ship it"));
   expect(w.name).toBe("⏸️ fix login");
   expect(w.patches.length).toBe(renames);
-  expect(inbox()[0]).toMatchObject({ id: "1001", scope: "thread", open_cards: ["Q1"], note: "card Q1 still open, owner replied in text: resolve it with dori resolve Q1" });
-  expect(w.logs).toContain(`CARD_STILL_OPEN Q1 thread=${THREAD} card Q1 still open, owner replied in text: resolve it with dori resolve Q1`);
+  expect(inbox()[0]).toMatchObject({ id: "1001", scope: "thread", open_cards: ["Q1"], note: 'card Q1 still open, owner replied in text: resolve it with dori resolve Q1 --answer "<the answer, short>" so the card folds' });
+  expect(w.logs).toContain(`CARD_STILL_OPEN Q1 thread=${THREAD} card Q1 still open, owner replied in text: resolve it with dori resolve Q1 --answer "<the answer, short>" so the card folds`);
   expect(cards.store.get("Q1")?.status).toBe("open");
 });
 
@@ -164,7 +164,7 @@ test("three cards answered out of step stay ⏸️ until the last open one is re
   expect(w.name).toBe("⏸️ fix login");
   await listener.onMessage(say("1002", "the third one: no"));
   expect(w.name).toBe("⏸️ fix login");
-  expect(await cards.resolve("Q3")).toBe(true);
+  expect(await cards.resolve("Q3")).toBe("folded");
   expect(w.name).toBe("🔄 fix login");
 });
 

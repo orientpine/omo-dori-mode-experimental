@@ -134,7 +134,7 @@ test("reopen puts the buttons back on the posted card; resolve forgets the quest
   expect(calls()[2]).toBe(`PATCH /channels/${CHANNEL}/messages/900`);
   expect(rows(json(2).components).map((b) => b?.custom_id)).toEqual(["q:Q1:0", "q:Q1:1", "q:Q1:other"]);
   expect(store.get("Q1")?.answer).toBeUndefined();
-  expect(await cards.resolve("Q1")).toBe(true);
+  expect(await cards.resolve("Q1")).toBe("folded");
   expect(store.all()).toEqual([]);
   await expect(cards.reopen("Q1")).rejects.toBeInstanceOf(QuestionError);
 });
@@ -224,7 +224,7 @@ test("resolving the last open card in a thread without an answer marks the threa
   if (out.kind !== "answered") throw new Error(out.kind);
   await cards.afterAnswer(out.question);
   expect(thread.name).toBe("⏸️ fix login");
-  expect(await cards.resolve("Q1")).toBe(true);
+  expect(await cards.resolve("Q1")).toBe("folded");
   expect(thread.name).toBe("🔄 fix login");
 });
 
@@ -232,7 +232,7 @@ test("with word status the same resolve marks the thread [working]", async () =>
   const { dc, store, thread } = threadCards("[waiting] fix login");
   const cards = new QuestionCards(dc, store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => 0);
   await cards.ask("Ship?", ["Yes"], { thread: "300" });
-  expect(await cards.resolve("Q1")).toBe(true);
+  expect(await cards.resolve("Q1")).toBe("folded");
   expect(thread.name).toBe("[working] fix login");
 });
 
@@ -241,8 +241,8 @@ test("resolving an open card while another card in the thread is still open leav
   await cards.ask("Ship?", ["Yes"], { thread: "300" });
   await cards.ask("Deploy where?", ["Staging"], { thread: "300" });
   const before = calls().length;
-  expect(await cards.resolve("Q1")).toBe(true);
-  expect(calls().slice(before).filter((c) => c.startsWith("PATCH"))).toEqual([]);
+  expect(await cards.resolve("Q1")).toBe("folded");
+  expect(calls().slice(before).filter((c) => c.startsWith("PATCH"))).toEqual(["PATCH /channels/300/messages/900"]);
   expect(thread.name).toBe("⏸️ fix login");
 });
 
@@ -252,10 +252,58 @@ test("resolving an answered card does not touch the thread status", async () => 
   await cards.handle(threadTap("q:Q1:0"));
   thread.name = "⏸️ fix login";
   const before = calls().length;
-  expect(await cards.resolve("Q1")).toBe(true);
+  expect(await cards.resolve("Q1", "no")).toBe("kept");
   expect(calls().slice(before)).toEqual([]);
   expect(thread.name).toBe("⏸️ fix login");
-  expect(await cards.resolve("Q9")).toBe(false);
+  expect(await cards.resolve("Q9")).toBeNull();
+});
+
+const content = (card: unknown) => parts(card)[0]?.content;
+
+test("resolving a card the owner answered in text folds it into the record a tap leaves, logs the answer once, and a second resolve changes nothing", async () => {
+  const { cards, store, calls, json } = setup();
+  await cards.ask("Ship?", ["Yes", "No"]);
+  expect(await cards.resolve("Q1", "  ship it monday  ")).toBe("folded");
+  expect(calls()).toEqual([`POST /channels/${CHANNEL}/messages`, `PATCH /channels/${CHANNEL}/messages/900`]);
+  expect(parts(json(1).components)).toHaveLength(1);
+  expect(content(json(1).components)).toBe("[answered] **Q1** Ship?\n→ **ship it monday**\n-# reply · 1/2, 03:04");
+  const logged = readFileSync(store.answersFile, "utf8").trim().split("\n");
+  expect(logged).toHaveLength(1);
+  expect(JSON.parse(logged[0] ?? "")).toMatchObject({ id: "Q1", status: "answered", answer: "ship it monday", answerKind: "reply" });
+  expect(store.all()).toEqual([]);
+  expect(await cards.resolve("Q1", "ship it monday")).toBe("already");
+  expect(calls()).toHaveLength(2);
+  expect(readFileSync(store.answersFile, "utf8").trim().split("\n")).toHaveLength(1);
+});
+
+test("without --answer the folded card reads the repliedInText word, marked byReply", async () => {
+  const { dc, store, json } = setup();
+  const words = { ...defaultDiscordWords, statusStyle: "emoji", byReply: "글", repliedInText: "형 글로 답함" } as const;
+  const cards = new QuestionCards(dc, store, { channel: CHANNEL, owner: OWNER, words }, () => Date.parse("2026-01-02T03:04:00Z"));
+  await cards.ask("Ship?", ["Yes"]);
+  expect(await cards.resolve("Q1")).toBe("folded");
+  expect(content(json(1).components)).toBe("✅ **Q1** Ship?\n→ **형 글로 답함**\n-# 글 · 1/2, 03:04");
+});
+
+test("resolving a card inside its thread folds it there, then marks the thread 🔄", async () => {
+  const { cards, calls, json, thread } = threadCards();
+  await cards.ask("Ship?", ["Yes"], { thread: "300" });
+  const before = calls().length;
+  expect(await cards.resolve("Q1", "yes, today")).toBe("folded");
+  expect(calls().slice(before)).toEqual(["PATCH /channels/300/messages/900", "GET /channels/300", "PATCH /channels/300"]);
+  expect(content(json(before).components)).toBe("✅ **Q1** Ship?\n→ **yes, today**\n-# reply · 1/2, 03:04");
+  expect(thread.name).toBe("🔄 fix login");
+});
+
+test("a failed card edit keeps the question open and unlogged, so resolve can be run again", async () => {
+  const { cards, store } = setup((req) => {
+    if (req.method === "PATCH") throw new Error("discord down");
+    return req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {};
+  });
+  await cards.ask("Ship?", ["Yes"]);
+  await expect(cards.resolve("Q1", "yes")).rejects.toThrow();
+  expect(store.get("Q1")?.status).toBe("open");
+  expect(existsSync(store.answersFile)).toBe(false);
 });
 
 test("a failed thread rename does not fail the ask: the card is already posted", async () => {

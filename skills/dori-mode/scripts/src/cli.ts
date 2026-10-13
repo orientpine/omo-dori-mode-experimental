@@ -168,7 +168,9 @@ const USAGE = `dori <command> [options]
   ask --text Q --option A [--option B ...] [--thread REF] [--session ID] [--tmux NAME]
                                        post a Discord question card; the first option is the recommended one
   questions [--open]                   list tracked question cards
-  reopen <Qn> / resolve <Qn>           put a card's buttons back / forget a settled question
+  reopen <Qn> / resolve <Qn> [--answer TEXT]
+                                       put a card's buttons back / forget a settled question; a card still open (the
+                                       owner answered in text) folds into its record with TEXT as the answer
   handover --approved-by REF [--note FILE] [--title T] [--model M] [--keep-old] [--no-monitors] [--minutes N] [--dry-run]
                                        move the lead to a new session (backend aoe): write a note (open lanes, the old
                                        session's running monitors, open question cards, todos, timers, --note), open the
@@ -261,7 +263,7 @@ const flags = parseArgs({
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
     "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
     force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
-    repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
+    answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -917,8 +919,8 @@ try {
       break;
     case "resolve": {
       const id = key ?? die("resolve needs a question id");
-      if (!(await questionCards(discordClient()).resolve(id))) die(`no question ${id}`);
-      console.log(`RESOLVED ${id}`);
+      const resolved = (await questionCards(discordClient()).resolve(id, opt("answer"))) ?? die(`no question ${id}`);
+      console.log(`RESOLVED ${id} ${resolved}`);
       break;
     }
     case "lead":

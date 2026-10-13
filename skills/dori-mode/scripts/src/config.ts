@@ -63,6 +63,9 @@ export type DiscordWords = {
   readonly ownerOnly: string;
   readonly byButton: string;
   readonly byText: string;
+  // a card folded by dori resolve: the owner answered in a message; repliedInText is the answer shown without --answer
+  readonly byReply: string;
+  readonly repliedInText: string;
   readonly locale: string;
   readonly timeZone: string;
   // the user id of this Dori's own bot; Discord writes refuse a DORI_DISCORD_TOKEN of another bot (empty: no check)
@@ -86,6 +89,8 @@ export const defaultDiscordWords: DiscordWords = {
   ownerOnly: "Only the owner can answer this.",
   byButton: "button",
   byText: "typed",
+  byReply: "reply",
+  repliedInText: "answered in text",
   locale: "en-US",
   timeZone: "UTC",
   botId: "",
