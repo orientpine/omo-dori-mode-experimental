@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { tokenBotId } from "./messenger/discord.ts";
 import { run } from "./run.ts";
 
 export type UpdateService = {
@@ -390,8 +391,16 @@ export const envFilePath = (): string => process.env.DORI_ENV_FILE ?? join(homed
 // inherit another Dori's set: a tmux server started by a unit that loaded dori.env hands it to every pane it opens.
 const instanceVar = (name: string): boolean => /^DORI_(DISCORD|SLACK|TELEGRAM|LEAD|ASR|GOOGLE|USAGE)_/.test(name) && name !== "DORI_LEAD_PANE";
 
+// The bot a token signs in as: a Discord token's base64 user id before its first dot, a Telegram token's id before its
+// colon, else the token itself. A rotated token of the same bot is the same bot.
+const tokenIdentity = (name: string, token: string): string => {
+  const t = token.trim();
+  if (name === "DORI_DISCORD_TOKEN") return tokenBotId(t) ?? t;
+  return name === "DORI_TELEGRAM_TOKEN" && /^\d+:/.test(t) ? t.split(":")[0] ?? t : t;
+};
+
 // KEY=VALUE lines (tokens, Discord ids) for every dori command; a variable already set wins over the file, except when
-// the file names another bot token than the inherited one. Then the environment is another Dori's: every inherited
+// the file names another bot than the inherited token. Then the environment is another Dori's: every inherited
 // instance variable is dropped first, so this file and the defaults apply. Returns the dropped names.
 export const loadEnvFile = async (path: string, env: Record<string, string | undefined> = process.env): Promise<string[]> => {
   const file = Bun.file(path);
@@ -401,7 +410,10 @@ export const loadEnvFile = async (path: string, env: Record<string, string | und
     const [, name, value] = /^\s*([A-Z][A-Z0-9_]*)=(.*)$/.exec(line) ?? [];
     if (name && value !== undefined && !values.has(name)) values.set(name, value.trim().replace(/^(["'])(.*)\1$/, "$2"));
   }
-  const foreign = [...values].some(([name, value]) => /^DORI_\w+_TOKEN$/.test(name) && value !== "" && env[name] !== undefined && env[name]?.trim() !== value);
+  const foreign = [...values].some(([name, value]) => {
+    const inherited = env[name];
+    return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && tokenIdentity(name, inherited) !== tokenIdentity(name, value);
+  });
   const dropped = foreign ? Object.keys(env).filter((name) => instanceVar(name) && env[name] !== undefined) : [];
   for (const name of dropped) delete env[name];
   for (const [name, value] of values) if (env[name] === undefined) env[name] = value;

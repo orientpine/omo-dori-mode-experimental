@@ -85,17 +85,18 @@ for (const [label, envFile, botId, inheritedAll, reason] of [
   });
 }
 
-test("an inherited value of the same Dori still wins over its file; another Dori's instance values are dropped", async () => {
+test("an inherited value of the same Dori (a rotated token of the same bot included) still wins over its file; another Dori's instance values are dropped", async () => {
   const state = withState();
   try {
     const file = join(state.dir, "dori.env");
     writeFileSync(file, `DORI_DISCORD_TOKEN=${tok(OK)}\nDORI_DISCORD_CHANNEL=ok-channel\n`);
-    const same: Record<string, string | undefined> = { DORI_DISCORD_TOKEN: tok(OK), DORI_DISCORD_INBOX: "/override/inbox.jsonl" };
+    const rotated = tok(OK).replace(".fake.token", ".rotated.secret");
+    const same: Record<string, string | undefined> = { DORI_DISCORD_TOKEN: rotated, DORI_DISCORD_INBOX: "/override/inbox.jsonl" };
     const sameDropped = await loadEnvFile(file, same);
     const other: Record<string, string | undefined> = { ...zzangEnv(state.dir), DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane" };
     const otherDropped = await loadEnvFile(file, other);
     expect({ same, sameDropped, other, otherDropped: otherDropped.sort() }).toEqual({
-      same: { DORI_DISCORD_TOKEN: tok(OK), DORI_DISCORD_INBOX: "/override/inbox.jsonl", DORI_DISCORD_CHANNEL: "ok-channel" },
+      same: { DORI_DISCORD_TOKEN: rotated, DORI_DISCORD_INBOX: "/override/inbox.jsonl", DORI_DISCORD_CHANNEL: "ok-channel" },
       sameDropped: [],
       other: { DORI_DISCORD_TOKEN: tok(OK), DORI_DISCORD_CHANNEL: "ok-channel", DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane" },
       otherDropped: Object.keys(zzangEnv(state.dir)).sort(),
