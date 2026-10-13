@@ -74,7 +74,7 @@ So the repo holds everything a Dori runs, and nothing that says which Dori it is
 
 ### dori.env
 
-One `KEY=VALUE` per line, `#` comments, absolute paths (neither systemd nor the helpers expand `~` or `$HOME`). Every `dori` command, `self-restart.sh`, the TypeScript helpers and the units' `EnvironmentFile=` read it. A value already in the environment wins, except when it belongs to another Dori (its bot token differs): then every inherited instance variable is dropped first and logged as `DORI_ENV_FOREIGN` (the rule is in `../../references/scripts.md`, "Configuration"). A feature whose variables are unset stays off, so one Dori can have KakaoTalk and another Google from the same code. `self-restart.sh` is the exception to that reading rule: it sources the file with the shell (`. dori.env`), so there a file value overrides an inherited one, and a value with shell characters (`|`, `;`, `$`, spaces) must be quoted, e.g. `DORI_KAKAO_MENTION='dori|도리'` (dori and the helpers strip the quotes).
+One `KEY=VALUE` per line, `#` comments, absolute paths (neither systemd nor the helpers expand `~` or `$HOME`). Every `dori` command, `self-restart.sh`, the TypeScript helpers and the units with an `EnvironmentFile=` line read it (`dori-lead.service` has none on purpose: the tmux server it may start would hand the token to every pane). A value already in the environment wins, except when it belongs to another Dori (its bot token differs): then every inherited instance variable is dropped first and logged as `DORI_ENV_FOREIGN` (the rule is in `../../references/scripts.md`, "Configuration"). Optional features follow the variables and units: KakaoTalk is off while `DORI_KAKAO_SELF_ID` is unset, Slack and Telegram are used only with their tokens, and the Google watcher runs where its unit is enabled; so one Dori can have KakaoTalk and another Google from the same code. `self-restart.sh` is the exception to that reading rule: it sources the file with the shell (`. dori.env`), so there a file value overrides an inherited one, and a value with shell characters (`|`, `;`, `$`, spaces) must be quoted, e.g. `DORI_KAKAO_MENTION='dori|도리'` (dori and the helpers strip the quotes).
 
 | Variable | Needed | Secret | What it does |
 |---|---|---|---|
@@ -123,7 +123,7 @@ Every key is optional; the full list with defaults and what reads each one is in
 | `scorecard.sessions`, `scorecard.leadSessions` | this Dori's folder under `~/.omo/agent/sessions/` | The scorecard counts only this Dori's sessions (empty: every session on the host) |
 | `hooks.threadReply`, `hooks.threadDone` | `dori thread reply\|done` as in the template | Lane reports and closes in the owner's thread |
 | `hooks.transcribe` | absolute path of `transcribe.sh` | Voice notes |
-| `discord.botId` | this Dori's bot user id (empty: no check) | Discord writes refuse another bot's token (`DISCORD_BOT_MISMATCH`) |
+| `discord.botId` | this Dori's bot user id (the template ships it empty: no check until you set it) | Discord writes refuse another bot's token (`DISCORD_BOT_MISMATCH`) |
 | `discord.*` words, `locale`, `timeZone`, `statusStyle` | the owner's language and zone | Thread marks and question-card wording |
 | `update.services` | this Dori's own units ([Auto-apply updates](#auto-apply-updates)) | Units restarted when their source changes |
 | `handover.watchers` | watches of this Dori's lead that are not omo monitors | Checked before and after a lead handover |
@@ -143,9 +143,9 @@ The example uses `~/.second`, the name `second` and its own Discord bot; replace
    cp $S/dori.env.example ~/.second/dori.env && chmod 600 ~/.second/dori.env
    cp $S/config.json ~/.second/config.json
    ```
-   In `dori.env` fill in the new bot's token, the guild, its channel, the owner and only the optional variables this Dori uses. In `config.json` set `stateDir` (`~/.second/state`), `defaultCwd` (its own directory, e.g. `~/Documents/second`), `discord.botId`, `scorecard.sessions` and `leadSessions`, its `watchLog`, and the first Dori's lead in `ignorePanes`.
+   In `dori.env` fill in the new bot's token, the guild, its channel, the owner and only the optional variables this Dori uses. In `config.json` set `stateDir` (`~/.second/state`), `defaultCwd` (its own directory, e.g. `~/Documents/second`), `discord.botId`, `scorecard.sessions` and `leadSessions`, its `watchLog` and `scorecard.lanesLog`, and the first Dori's lead in `ignorePanes`. Add the second lead to the first Dori's `ignorePanes` too, so neither Dori's sweeps or session watch report the other's lead.
 
-   The helpers (`kakao-watch.ts`, `google-watch.ts`, `usage-snapshot.ts`) read `dori.env` but not `config.json`: their default state paths come from `DORI_STATE_DIR`, else `~/.dori/state`, which is the first Dori's. So in the second Dori's `dori.env` give each helper it uses absolute paths under its own state (`DORI_KAKAO_STATE_DIR`, `DORI_KAKAO_INBOX`, `DORI_GOOGLE_EVENTS`, `DORI_GOOGLE_STATE`), or run the helper with `DORI_STATE_DIR` set, as the wrapper does.
+   The helpers (`kakao-watch.ts`, `google-watch.ts`, `usage-snapshot.ts`) do not take `stateDir` from `config.json`: their default paths are under `DORI_STATE_DIR`, else `~/.dori/state`, the first Dori's. Only `kakao-watch.ts` and `kakao-login.ts` find this Dori by directory (`instances`); `google-watch.ts` and `usage-snapshot.ts` read `~/.dori/dori.env` unless `DORI_ENV_FILE` is set. So run every helper of this Dori with both set, e.g. `env DORI_ENV_FILE=$HOME/.second/dori.env DORI_STATE_DIR=$HOME/.second/state bun $S/kakao-watch.ts` (or the same `Environment=` lines in its unit), or give it absolute paths under its own state in its `dori.env` (`DORI_KAKAO_STATE_DIR`, `DORI_KAKAO_INBOX`, `DORI_GOOGLE_EVENTS`, `DORI_GOOGLE_STATE`).
 3. **Wrapper**, so every `dori` call of this Dori uses its files, `~/.second/bin/dori` (`chmod 700`):
    ```sh
    #!/bin/sh
@@ -167,6 +167,8 @@ The example uses `~/.second`, the name `second` and its own Discord bot; replace
    StandardOutput=append:%h/.second/inbound.log
    StandardError=append:%h/.second/inbound.log
    ```
+   To start its lead at boot, copy `dori-lead.service` as `second-lead.service` and add only the three `Environment=DORI_*` lines: no `EnvironmentFile=` there (see the comment in the unit); `self-restart.sh --start` reads `DORI_ENV_FILE` itself and finds the lead with `dori lead`. If this Dori launches lanes, copy `dori-lanes.service` and `dori-session-watch.service` the same way as the inbound unit (all four lines, and its own log paths).
+
    A copied `.path` unit keeps `Unit=dori-update.service`, which would run the first Dori's update: in `second-update.path` set `Unit=second-update.service` (its `PathChanged=` lines stay on the shared `~/.dori/src`), and in `second-update.service` use the same `Environment=` lines and `ExecStart=%h/.second/bin/dori update`. Then `systemctl --user daemon-reload && systemctl --user enable --now second-inbound`, and list the units in its `update.services`.
 7. **Check.** `~/.second/bin/dori lead` prints the second lead; `~/.second/inbound.log` shows `DISCORD_LISTENER_READY`; `~/.second/bin/dori send discord --to <its channel id> --text "hello"` posts as the second bot (a `DISCORD_BOT_MISMATCH` means a wrong token or `botId`); an owner message in its channel lands in `~/.second/state/discord/inbox.jsonl` and nowhere else; and a plain `dori lead` run from `~` still prints the first Dori's lead.
 
