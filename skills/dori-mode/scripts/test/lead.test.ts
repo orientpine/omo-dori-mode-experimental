@@ -153,7 +153,7 @@ test("self-restart gives the session no DORI_* variable and drops them from the 
 });
 
 // omo runs memory reflection with #!/usr/bin/env node, and the pinned PATH has no nvm (it is set up in ~/.bashrc only)
-test("self-restart puts nvm's default node on the session's PATH through the alias chain, else the newest version", async () => {
+test("self-restart puts nvm's default node on the session's PATH through the alias chain, else the newest version whose node runs", async () => {
   const bin = join(state.dir, ".bun/bin");
   mkdirSync(bin, { recursive: true });
   mkdirSync(join(state.dir, ".dori"));
@@ -172,10 +172,17 @@ test("self-restart puts nvm's default node on the session's PATH through the ali
   const byAlias = await restart();
   rmSync(join(nvm, "alias/default"));
   const newest = await restart();
-  expect({ byAlias, newest, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
+  chmodSync(join(nvm, "versions/node/v25.1.0/bin/node"), 0o600);
+  const newestWorking = await restart();
+  expect({ byAlias, newest, newestWorking, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
     byAlias: { code: 0, err: "" },
     newest: { code: 0, err: "" },
-    commands: [`aoe session restart ${ID} node=${nvm}/versions/node/v24.15.0/bin/node`, `aoe session restart ${ID} node=${nvm}/versions/node/v25.1.0/bin/node`],
+    newestWorking: { code: 0, err: "" },
+    commands: [
+      `aoe session restart ${ID} node=${nvm}/versions/node/v24.15.0/bin/node`,
+      `aoe session restart ${ID} node=${nvm}/versions/node/v25.1.0/bin/node`,
+      `aoe session restart ${ID} node=${nvm}/versions/node/v24.15.0/bin/node`,
+    ],
   });
 });
 

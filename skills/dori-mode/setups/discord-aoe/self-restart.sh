@@ -29,10 +29,9 @@ node_bin() {
     [ -f "$nvm/alias/$v" ] || break
     v=$(tr -d '[:space:]' <"$nvm/alias/$v")
   done
-  d=$(ls -d "$nvm/versions/node/v${v#v}"*/bin 2>/dev/null | sort -V | tail -1)
-  [ -x "$d/node" ] || d=$(ls -d "$nvm"/versions/node/v*/bin 2>/dev/null | sort -V | tail -1)
-  [ -x "$d/node" ] || d=${CALLER_NODE%/node}
-  [ -x "$d/node" ] && echo "$d"
+  # newest first within each group; the first bin dir whose node is executable wins (a broken newer one is skipped)
+  { ls -d "$nvm/versions/node/v${v#v}"*/bin | sort -rV; ls -d "$nvm"/versions/node/v*/bin | sort -rV; echo "${CALLER_NODE%/node}"; } 2>/dev/null |
+    while read -r d; do [ -x "$d/node" ] && { echo "$d"; break; }; done
 }
 NODE_BIN=$(node_bin)
 [ -z "$NODE_BIN" ] || PATH="$HOME/.bun/bin:$HOME/.local/bin:$NODE_BIN:/usr/local/bin:/usr/bin:/bin"

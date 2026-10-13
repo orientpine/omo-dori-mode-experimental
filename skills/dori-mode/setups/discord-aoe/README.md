@@ -268,7 +268,7 @@ and is listed under `instances` in `~/.dori/config.json` so a plain `dori` in it
 The session keeps the script's pinned PATH, and so do the lanes it later opens with `dori launch` (`aoe add` passes the
 caller's PATH on). omo runs memory reflection and other hooks with `#!/usr/bin/env node`, and nvm is set up only in
 `~/.bashrc`, so the script puts node's bin dir into that PATH: nvm's default alias followed through `lts/*` to a version
-(`$NVM_DIR`, else `~/.nvm`), else the newest installed nvm version, else the caller's `node`. With none of them it
+(`$NVM_DIR`, else `~/.nvm`), else the newest installed nvm version whose `node` is executable, else the caller's `node`. With none of them it
 prints `SELF-RESTART-WARN no node ...` to stderr and the restart log, and restarts anyway.
 
 Each row in `session-events.jsonl` has `kind` (`session-idle`, `session-waiting`, `session-error`, `session-milestone`), `session`, `title`, `path`, `tmux`, `thread`, `tail` (the pane's last 20 lines) and `said`:
