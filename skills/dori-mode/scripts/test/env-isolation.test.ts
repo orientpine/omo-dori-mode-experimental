@@ -93,13 +93,13 @@ test("an inherited value of the same Dori (a rotated token of the same bot inclu
     const rotated = tok(OK).replace(".fake.token", ".rotated.secret");
     const same: Record<string, string | undefined> = { DORI_DISCORD_TOKEN: rotated, DORI_DISCORD_INBOX: "/override/inbox.jsonl" };
     const sameDropped = await loadEnvFile(file, same);
-    const other: Record<string, string | undefined> = { ...zzangEnv(state.dir), DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane", DORI_DISCORD_SHADOW_INBOX: "/shadow.jsonl" };
+    const other: Record<string, string | undefined> = { ...zzangEnv(state.dir), DORI_KAKAO_SELF_ID: "another-account", DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane", DORI_DISCORD_SHADOW_INBOX: "/shadow.jsonl" };
     const otherDropped = await loadEnvFile(file, other);
     expect({ same, sameDropped, other, otherDropped: otherDropped.sort() }).toEqual({
       same: { DORI_DISCORD_TOKEN: rotated, DORI_DISCORD_INBOX: "/override/inbox.jsonl", DORI_DISCORD_CHANNEL: "ok-channel" },
       sameDropped: [],
       other: { DORI_DISCORD_TOKEN: tok(OK), DORI_DISCORD_CHANNEL: "ok-channel", DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane", DORI_DISCORD_SHADOW_INBOX: "/shadow.jsonl" },
-      otherDropped: Object.keys(zzangEnv(state.dir)).sort(),
+      otherDropped: [...Object.keys(zzangEnv(state.dir)), "DORI_KAKAO_SELF_ID"].sort(),
     });
   } finally {
     state.done();

@@ -15,6 +15,7 @@ What you get:
 | `session-watch.ts` (unit `dori-session-watch`) | Notices when another aoe session stops for a human (waiting, error, idle after a turn, a new `MILESTONE` line) and writes the event with the pane's tail, the lane's thread and what the session last said. |
 | `self-restart.sh` | The one safe way to restart an aoe session, the Dori's own included, e.g. after an agent update. |
 | `google-watch.ts` (unit `dori-google-watch`) | Read-only zele polling for new unread mail and upcoming calendar events; writes JSONL and remembers notified ids. |
+| `kakao-watch.ts`, `kakao-login.ts` | Optional, for a Dori with its own KakaoTalk account: polls its rooms through agent-messenger, appends new messages to the inbox, prints `KAKAO_MSG` for the Dori's monitor and marks the rooms read, again until it holds. Off unless `DORI_KAKAO_SELF_ID` is set. |
 | `usage-snapshot.ts` | Captures the omo-usage TUI with ANSI colors and renders a PNG using headless Firefox. |
 | `dori.sh` | Starts `dori-inbound` and `dori-google-watch`, starts the current lead session if needed, then attaches to it. Requires the separate `dori lead` PR. |
 | `transcribe.sh`, `setup-asr.sh` | Local speech-to-text with whisper.cpp (CUDA when available) for `hooks.transcribe`. |
@@ -102,6 +103,43 @@ ExecStart=/absolute/path/to/bun /absolute/path/to/fork/skills/dori-mode/setups/d
 The same symlink/drop-in pattern applies to the other units. At installation time,
 reload user units and enable the watcher if wanted; merely adding the files does not change running units.
 Watch the output JSONL in the lead session and include `~/.dori/google-watch.log` in its health monitor.
+
+### KakaoTalk
+
+For a Dori that has its own KakaoTalk account; without `DORI_KAKAO_SELF_ID` the watcher prints `KAKAO_WATCH_OFF` and exits.
+Install agent-messenger (`npm install -g agent-messenger`) and sign the account in once: put `KAKAO_EMAIL=` (an email or a
+phone number) and `KAKAO_PASSWORD=` in a 0600 file, point `DORI_KAKAO_ACCOUNT_FILE` at it and run `bun "$S/kakao-login.ts"`
+(`--phone 82` turns a login like 010-1234-5678 into `+82 1012345678`). The password goes to agent-messenger only through a
+temporary 0600 file that is removed afterwards; the script prints `KAKAO_LOGIN_EXIT <code>`. Delete the password line once
+you are signed in. `DORI_KAKAO_DEVICE_TYPE` (default `tablet`) picks the second-device slot, so the phone stays signed in.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DORI_KAKAO_SELF_ID` | unset: the watcher is off | The account's own Kakao user id; its own messages are not taken in |
+| `DORI_KAKAO_OWNER_ID` | none | The owner's Kakao user id; their rows get `author_kind: "owner"` |
+| `DORI_KAKAO_MENTION` | none | Case-insensitive regex of the Dori's names; sets `mentions_self` on a row |
+| `DORI_KAKAO_STATE_DIR` | `<DORI_STATE_DIR or ~/.dori/state>` | `kakao-rooms.json`, `kakao-cursors.json`, `kakao-markread.json`, `kakao.lock` |
+| `DORI_KAKAO_INBOX` | `DORI_DISCORD_INBOX`, else `<DORI_STATE_DIR or ~/.dori/state>/discord/inbox.jsonl` | Inbox the rows go to |
+| `DORI_KAKAO_CLI` | `agent-messenger` | The CLI, always run as `flock <state dir>/kakao.lock <cli> kakaotalk ...` |
+| `DORI_KAKAO_POLL_MS` | `8000` | Pause between two polls of all rooms |
+| `DORI_KAKAO_SWEEP_MS` | `300000` | Mark-read sweep interval |
+| `DORI_KAKAO_DISCOVER_MS` | `20000` | New-room discovery interval |
+| `DORI_KAKAO_ACCOUNT_FILE`, `DORI_KAKAO_DEVICE_TYPE` | none, `tablet` | Login only |
+
+- **Rooms.** Every chat the account is in is added to `kakao-rooms.json` (`KAKAO_NEW_ROOM`). A room's first poll starts at its newest message (`KAKAO_CURSOR_INIT`): its backlog is neither taken in nor marked read.
+- **Messages.** Each message from someone else becomes one inbox row and one `KAKAO_MSG <room> <log id> <author>: <text>` line; `kakao-cursors.json` is how far the Dori has read.
+- **Read marks.** `kakao-markread.json` keeps, apart from the cursor, how far a mark-read went through. A room whose cursor is ahead is marked read at the cursor; a failure prints `KAKAO_MARKREAD_FAIL <room> <log id> attempt <n>, retry in <s>s: <error>` and backs off (the poll interval doubling, at most two sweeps), a success prints `KAKAO_MARKREAD_OK` (with `after <n> failed` after failures). A mark-read still pending at a restart is retried.
+- **Sweeps.** A mark-read can return success and still leave the badge. At start every room is marked once more (a miss from before a restart is remembered nowhere else); after that every sweep marks again the rooms `chat list` showed unread and the rooms with a message in the last six sweeps. `chat list` returns only chats changed since the account's last sync: its unread counts are a hint, and an empty list does not mean nothing is unread.
+- **One login at a time.** Two agent-messenger calls on one device evict each other's session. Anything else that uses the account (sending, uploads) takes the same lock: `flock <state dir>/kakao.lock agent-messenger kakaotalk ...`.
+
+Run it as a persistent monitor in the Dori's own session (see "The Dori's monitors"); its output is the notification.
+agent-messenger needs node: put node's bin directory first in the monitor's PATH. `bun "$S/kakao-watch.ts" --once` runs
+one tick and prints `KAKAO_WATCH_ONCE`. For a check beside a running watcher, copy the state files to a scratch directory,
+symlink its `kakao.lock` to the live one (a second lock means a second login, which evicts the first), and point
+`DORI_KAKAO_STATE_DIR` and `DORI_KAKAO_INBOX` there. `KAKAO_MARKREAD_OK` means the server accepted the mark, not that the
+badge is gone; only the account's own app shows that.
+A monitor keeps running the code it started with: after an update that changes `kakao-watch.ts`, stop the running watcher
+and arm the monitor again once (`pgrep -f kakao-watch.ts` shows exactly one).
 
 ### Usage screenshot
 
@@ -225,6 +263,7 @@ In the Dori's own session, arm these as persistent monitors (`references/setup.m
 | sessions waiting on a human | `tail -n 0 -F ~/.dori/state/session-events.jsonl` | `^\{` |
 | lane sweeps | `tail -n 0 -F ~/.dori/dori-lanes.log` | `LANE_\|DEAD_PANE\|HOST_GUARD ALERT\|NUDGED\|POSTED\|NO-REPORT\|FAIL\|STUCK\|OWNER_CHECK\|ROLLOVER_\|RESEARCH_NOT_STARTED\|NOT_SUBMITTED\|SAME_FIX` |
 | listener health | `tail -n 0 -F ~/.dori/inbound.log ~/.dori/session-watch.log` | `FATAL\|_FAIL\|SESSION-WATCH-FAIL` |
+| KakaoTalk (only with `DORI_KAKAO_SELF_ID`) | `PATH=/absolute/node/bin:$PATH bun <fork>/skills/dori-mode/setups/discord-aoe/kakao-watch.ts` | `KAKAO_(MSG\|NEW_ROOM\|WATCH_OFF\|[A-Z_]*FAIL)` |
 
 `DISCORD_LISTENER_CLOSED` alone is not worth a ping: the gateway asks for reconnects several times a day. Only alert when no `DISCORD_LISTENER_READY` follows within a minute.
 
@@ -237,6 +276,12 @@ A message:
 ```
 
 `scope` is `channel`, `thread` or `dm`. With a pair channel set (`DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT`) it can also be `pair` (the owner there) or `pair-bot` (the other Dori's bot: information, not a request). A voice note has `transcript` filled. A post from the owner's registered webhook (`DORI_DISCORD_OWNER_WEBHOOK`, see [ios-shortcut-voice.md](ios-shortcut-voice.md)) has `author_id` set to the owner and also carries `"via":"owner-webhook"` and `webhook_id`. A reply has `reply_to`: read that message first.
+
+A KakaoTalk message (`kakao-watch.ts`):
+
+```json
+{"ts":"...","id":"<log id>","channel_id":"<chat id>","scope":"kakao","room":"<room name>","author_id":"<kakao user id>","author_name":"<nickname>","author_kind":"owner","content":"...","sent_at":1791900000,"mentions_self":false}
+```
 
 A card answer:
 
