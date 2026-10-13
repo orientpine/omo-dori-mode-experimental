@@ -17,7 +17,24 @@
 # environment loses them first. A server first started by a unit that loaded dori.env keeps that file's token, inbox
 # and lead in its global environment and hands them to every pane it opens, another Dori's included.
 set -uo pipefail
+CALLER_NODE=$(command -v node 2>/dev/null)
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# The session keeps this PATH, and omo runs memory reflection and other hooks with `#!/usr/bin/env node`: without node
+# they fail ("/usr/bin/env: 'node': No such file or directory"). nvm is set up only in ~/.bashrc, so find node's bin dir
+# here: nvm's default alias (followed through lts/* -> lts/<name> -> vX.Y.Z), else the newest nvm version, else the
+# caller's node.
+node_bin() {
+  local nvm=${NVM_DIR:-$HOME/.nvm} v=default d _
+  for _ in 1 2 3 4 5; do
+    [ -f "$nvm/alias/$v" ] || break
+    v=$(tr -d '[:space:]' <"$nvm/alias/$v")
+  done
+  # newest first within each group; the first bin dir whose node is executable wins (a broken newer one is skipped)
+  { ls -d "$nvm/versions/node/v${v#v}"*/bin | sort -rV; ls -d "$nvm"/versions/node/v*/bin | sort -rV; echo "${CALLER_NODE%/node}"; } 2>/dev/null |
+    while read -r d; do [ -x "$d/node" ] && { echo "$d"; break; }; done
+}
+NODE_BIN=$(node_bin)
+[ -z "$NODE_BIN" ] || PATH="$HOME/.bun/bin:$HOME/.local/bin:$NODE_BIN:/usr/local/bin:/usr/bin:/bin"
 # read, not exported: dori reads its env file itself, and nothing here may pass the values on to aoe or tmux
 # shellcheck disable=SC1090
 [ -f "${DORI_ENV_FILE:-$HOME/.dori/dori.env}" ] && . "${DORI_ENV_FILE:-$HOME/.dori/dori.env}"
@@ -54,6 +71,10 @@ LOG=$HOME/.dori/self-restart.log
 REASON=""
 
 log() { echo "$(date -u +%FT%TZ) $*" >>"$LOG"; }
+if ! command -v node >/dev/null; then
+  echo "SELF-RESTART-WARN no node (nvm or caller PATH): the restarted session's node hooks, memory reflection included, will fail" >&2
+  log "SELF-RESTART-WARN no node on the session PATH ($PATH)"
+fi
 notify() { dori send discord --to "${DORI_DISCORD_CHANNEL:-}" --text "$1" >>"$LOG" 2>&1 || log "SELF-RESTART-NOTIFY-FAIL"; }
 ready() { tmux capture-pane -p -t "=$T:" 2>/dev/null | grep -q '^❯'; }
 busy() { tmux capture-pane -p -t "=$T:" 2>/dev/null | grep -q 'esc to interrupt'; }
