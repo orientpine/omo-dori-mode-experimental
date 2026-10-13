@@ -12,7 +12,7 @@ import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TE
 import { appendRollover, dueReasons, LEAD_PREFIX, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
-import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile } from "./config.ts";
+import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
 import { sendVerified, submitToPane } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
@@ -41,7 +41,7 @@ import { pollSlackInbound } from "./messenger/slack-inbound.ts";
 import { ThreadLedger } from "./messenger/thread-ledger.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
-import { Discord, discordPresence } from "./messenger/discord.ts";
+import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
 import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
@@ -216,7 +216,9 @@ const die = (message: string, code = 1): never => {
   process.exit(code);
 };
 
-await loadEnvFile(envFilePath());
+await resolveInstance(process.cwd());
+const foreignEnv = await loadEnvFile(envFilePath());
+if (foreignEnv.length) console.error(`DORI_ENV_FOREIGN dropped ${foreignEnv.length} inherited variables of another Dori (its bot token differs from ${envFilePath()}): ${foreignEnv.join(" ")}`);
 const config = await loadConfig().catch((e: unknown) => (e instanceof ConfigError ? die(`CONFIG_INVALID ${e.message}`, 2) : Promise.reject(e)));
 const discordToken = process.env.DORI_DISCORD_TOKEN?.trim();
 const deps: FlowDeps = {
@@ -230,11 +232,11 @@ const deps: FlowDeps = {
     ? {
         markThreadDone: async (ref: string) => {
           // a rename left pending (429) is applied later by the listener; the close still says it did not happen yet
-          const outcome = await threadStatuses(new Discord(fetchHttp, realClock, discordToken)).request(discordThreadId(ref), "done");
+          const outcome = await threadStatuses(ownDiscord(discordToken)).request(discordThreadId(ref), "done");
           if (outcome === "pending" || outcome === "dropped") throw new Error(`thread rename ${outcome}, see the THREAD_STATUS line`);
         },
-        postInThread: (ref: string, text: string) => postInThread(new Discord(fetchHttp, realClock, discordToken), ref, text),
-        requestThreadStatus: async (ref: string, status: "working" | "waiting") => String(await threadStatuses(new Discord(fetchHttp, realClock, discordToken)).request(discordThreadId(ref), status)),
+        postInThread: async (ref: string, text: string) => postInThread(ownDiscord(discordToken), ref, text),
+        requestThreadStatus: async (ref: string, status: "working" | "waiting") => String(await threadStatuses(ownDiscord(discordToken)).request(discordThreadId(ref), status)),
       }
     : {}),
 };
@@ -368,7 +370,27 @@ const lane = async (k: string | undefined) => {
 };
 
 const env = (name: string): string => process.env[name]?.trim() || die(`${name} is not set`);
-const discordClient = () => new Discord(fetchHttp, realClock, env("DORI_DISCORD_TOKEN"));
+// Discord writes go out only as this Dori's own bot: the token's bot must be discord.botId when that is set, and is never
+// the pair Dori's bot (DORI_DISCORD_PAIR_BOT). An inherited token of another Dori fails here instead of posting as it.
+const discordBotProblem = (token: string): string | undefined => {
+  const bot = tokenBotId(token);
+  const pairBot = process.env.DORI_DISCORD_PAIR_BOT?.trim() ?? "";
+  const where = `config ${configPath()}, env file ${envFilePath()}`;
+  if (config.discord.botId && bot !== config.discord.botId)
+    return `DISCORD_BOT_MISMATCH DORI_DISCORD_TOKEN is bot ${bot ?? "unknown"}, but this Dori is bot ${config.discord.botId} (discord.botId; ${where}). Nothing was sent. An inherited token of another Dori? Unset the DORI_DISCORD_* variables or fix the token.`;
+  if (pairBot && bot === pairBot) return `DISCORD_BOT_MISMATCH DORI_DISCORD_TOKEN is the pair Dori's bot ${bot} (DORI_DISCORD_PAIR_BOT; ${where}). Nothing was sent.`;
+  return undefined;
+};
+const checkedDiscordToken = (token: string): string => {
+  const why = discordBotProblem(token);
+  return why ? die(why, 2) : token;
+};
+const ownDiscord = (token: string): Discord => {
+  const why = discordBotProblem(token);
+  if (why) throw new Error(why);
+  return new Discord(fetchHttp, realClock, token);
+};
+const discordClient = () => new Discord(fetchHttp, realClock, checkedDiscordToken(env("DORI_DISCORD_TOKEN")));
 // question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
 const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
 // every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards and
@@ -448,7 +470,7 @@ try {
       if (r.lane.thread.startsWith("discord:")) {
         if (!discordToken) console.log(`THREAD_START_NO_TOKEN ${r.lane.thread}: DORI_DISCORD_TOKEN is not set, so no first message was posted`);
         else {
-          const started = await postLaneStart(new Discord(fetchHttp, realClock, discordToken), r.lane.thread, laneStartText(config.discord.laneStartText, r.lane, leadBrief)).catch((e: unknown) => `THREAD_START_FAILED ${r.lane.thread}: ${e instanceof Error ? e.message : String(e)}`);
+          const started = await Promise.resolve().then(() => postLaneStart(ownDiscord(discordToken), r.lane.thread, laneStartText(config.discord.laneStartText, r.lane, leadBrief))).catch((e: unknown) => `THREAD_START_FAILED ${r.lane.thread}: ${e instanceof Error ? e.message : String(e)}`);
           console.log(started);
         }
       }
@@ -796,7 +818,7 @@ try {
         if (edit) await tg.edit(target, Number(edit), text);
         else console.log(`SENT ${await tg.send(target, text)}`);
       } else if (platform === "discord") {
-        const dc = new Discord(fetchHttp, realClock, token("DORI_DISCORD_TOKEN"));
+        const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")));
         if (edit) await dc.edit(to, edit, text);
         else console.log(`SENT ${await dc.send(thread ?? to, text, !flags.values["no-typing"], ping)}`);
       } else die(`unknown platform ${platform}`);
@@ -813,7 +835,7 @@ try {
         console.log("PRESENCE_READY slack");
         await every(1, async () => console.log(`PRESENCE slack ${await p.hold()}`));
       } else if (key === "discord") {
-        const token = process.env.DORI_DISCORD_TOKEN ?? die("DORI_DISCORD_TOKEN is not set");
+        const token = checkedDiscordToken(process.env.DORI_DISCORD_TOKEN ?? die("DORI_DISCORD_TOKEN is not set"));
         discordPresence(() => {
           const ws = new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
           let handler: (d: string) => void = () => {};

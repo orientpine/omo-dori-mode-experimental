@@ -9,6 +9,9 @@ globalThis.fetch = Object.assign(async (input: string | URL | Request, init?: Re
   const method = init?.method ?? "GET";
   const body: Record<string, unknown> = JSON.parse(String(init?.body ?? "{}"));
   state.calls.push({ method, path, body });
+  // <file>.auth: the Authorization header of each request, in order (which bot token went out)
+  const auth = `${file}.auth`;
+  writeFileSync(auth, JSON.stringify([...(existsSync(auth) ? (JSON.parse(readFileSync(auth, "utf8")) as string[]) : []), new Headers(init?.headers).get("authorization") ?? ""]));
   let result: unknown = {};
   if (method === "POST" && path.endsWith("/threads")) {
     state.name = String(body.name);

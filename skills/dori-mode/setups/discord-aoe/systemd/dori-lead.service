@@ -6,7 +6,9 @@ After=dori-inbound.service
 Type=oneshot
 RemainAfterExit=yes
 KillMode=none
-EnvironmentFile=%h/.dori/dori.env
+# No EnvironmentFile: this unit can start the tmux server, whose environment every later pane inherits, so a loaded
+# dori.env would make every session (another Dori's included) run with this Dori's token and inbox. dori reads
+# ~/.dori/dori.env itself; set DORI_CONFIG, DORI_ENV_FILE and DORI_STATE_DIR here (Environment=) for another Dori.
 Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.dori/src/skills/dori-mode/setups/discord-aoe/self-restart.sh --start
 

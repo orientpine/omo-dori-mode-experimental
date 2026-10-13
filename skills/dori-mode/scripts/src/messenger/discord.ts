@@ -10,6 +10,12 @@ const retryAfter = (body: string): number | undefined => {
   }
 };
 
+// A bot token starts with the bot's user id in base64, up to the first dot; undefined when it does not.
+export const tokenBotId = (token: string): string | undefined => {
+  const id = Buffer.from(token.trim().split(".")[0] ?? "", "base64").toString("utf8");
+  return /^\d{15,22}$/.test(id) ? id : undefined;
+};
+
 export class Discord {
   constructor(
     private readonly http: Http,

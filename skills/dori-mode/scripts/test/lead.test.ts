@@ -118,6 +118,38 @@ test("default mode still restarts the lead and submits an explicit first message
   expect(result).toEqual({ code: 0, out: "", err: "", commands: [`aoe session restart ${ID}`, `dori type ${TMUX} --text configured first message`], logged: true });
 });
 
+test("self-restart gives the session no DORI_* variable and drops them from the tmux server's global environment first", async () => {
+  const bin = join(state.dir, ".bun/bin");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(state.dir, ".dori"));
+  const log = join(state.dir, "commands");
+  const envFile = join(state.dir, "dori.env");
+  writeFileSync(envFile, "DORI_DISCORD_TOKEN=from-file\nDORI_DISCORD_INBOX=/zzang/inbox.jsonl\n");
+  executable(join(bin, "dori"), `printf '%s\\n' "dori $*" >> "${log}"`);
+  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* dori-vars=$(env | grep -c '^DORI_')" >> "${log}"`);
+  executable(join(bin, "tmux"), `case "$1" in\n  show-environment) printf '%s\\n' DORI_DISCORD_TOKEN=leaked DORI_LEAD_TMUX=aoe_zzangdori_1 PATH=/bin ;;\n  set-environment) printf '%s\\n' "tmux $*" >> "${log}" ;;\n  *) printf '%s\\n' '❯' ;;\nesac`);
+  executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "agent"), "exit 0");
+  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ID, TMUX, ""], {
+    env: { ...process.env, HOME: state.dir, DORI_ENV_FILE: envFile, DORI_AGENT_BIN: "agent", DORI_DISCORD_TOKEN: "inherited", DORI_DISCORD_STATE_DIR: "/zzang" }, stdout: "pipe", stderr: "pipe",
+  });
+  expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
+    code: 0,
+    commands: ["tmux set-environment -g -u DORI_DISCORD_TOKEN", "tmux set-environment -g -u DORI_LEAD_TMUX", `aoe session restart ${ID} dori-vars=0`],
+  });
+});
+
+test("dori.sh starts and attaches the lead with aoe given no DORI_* variable", async () => {
+  const bin = join(state.dir, "bin");
+  mkdirSync(bin);
+  const log = join(state.dir, "commands");
+  executable(join(bin, "dori"), `printf '%s\\n' '${ID} ${TMUX}'`);
+  executable(join(bin, "systemctl"), "exit 0");
+  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* dori-vars=$(env | grep -c '^DORI_')" >> "${log}"`);
+  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DORI_DISCORD_TOKEN: "inherited", DORI_CONFIG: "/c" }, stdout: "pipe", stderr: "pipe" });
+  expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: [`aoe session start ${ID} dori-vars=0`, `aoe session attach ${ID} dori-vars=0`] });
+});
+
 test("no-argument self-restart resolves dori lead before checking the agent, without restarting in the check", async () => {
   const bin = join(state.dir, ".bun/bin");
   mkdirSync(bin, { recursive: true });

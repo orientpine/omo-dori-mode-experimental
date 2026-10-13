@@ -10,9 +10,26 @@
 # the prompt before typing, retries three times, and reports a failure to the Dori's Discord channel.
 # The prompt goes in through `dori type`, which counts it only when the input box is empty again and a turn
 # runs: a long prompt folds into "[paste #1 +N lines]" and can sit unsent after a plain send-keys + Enter.
+#
+# Another Dori on the same host (its own config and dori.env): run this with its DORI_CONFIG, DORI_ENV_FILE and
+# DORI_STATE_DIR set, so `dori lead`, `dori type` and the failure notice use that Dori's lead, token and channel.
+# The session itself never gets a Dori's variables: aoe and tmux run without any DORI_*, and the tmux server's global
+# environment loses them first. A server first started by a unit that loaded dori.env keeps that file's token, inbox
+# and lead in its global environment and hands them to every pane it opens, another Dori's included.
 set -uo pipefail
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
-[ -f "${DORI_ENV_FILE:-$HOME/.dori/dori.env}" ] && set -a && . "${DORI_ENV_FILE:-$HOME/.dori/dori.env}" && set +a
+# read, not exported: dori reads its env file itself, and nothing here may pass the values on to aoe or tmux
+# shellcheck disable=SC1090
+[ -f "${DORI_ENV_FILE:-$HOME/.dori/dori.env}" ] && . "${DORI_ENV_FILE:-$HOME/.dori/dori.env}"
+
+# aoe and tmux without any DORI_* variable (exported ones from the caller or a unit included)
+# shellcheck disable=SC2046
+no_dori_env() { env $(env | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/-u \1/p') "$@"; }
+scrub_tmux_env() {
+  no_dori_env tmux show-environment -g 2>/dev/null | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/\1/p' | while read -r v; do
+    no_dori_env tmux set-environment -g -u "$v" && log "TMUX_ENV_DROPPED $v"
+  done
+}
 
 MODE=restart
 if [ "${1:-}" = --start ]; then
@@ -49,7 +66,8 @@ fi
 
 for attempt in 1 2 3; do
   log "attempt $attempt: aoe session $MODE $ID"
-  aoe session "$MODE" "$ID" >>"$LOG" 2>&1 || log "aoe $MODE rc=$?"
+  scrub_tmux_env
+  no_dori_env aoe session "$MODE" "$ID" >>"$LOG" 2>&1 || log "aoe $MODE rc=$?"
   for _ in $(seq 90); do ready && break; sleep 2; done
   if ready; then
     sleep 10 # let aoe's own wake-up message land first

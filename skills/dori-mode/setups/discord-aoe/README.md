@@ -33,7 +33,7 @@ What you get:
    cp $S/dori.env.example ~/.dori/dori.env && chmod 600 ~/.dori/dori.env   # fill in token and ids
    cp $S/config.json ~/.dori/config.json                                   # set leadPane, defaultCwd, the transcribe path
    ```
-   Every `dori` command reads `~/.dori/dori.env` (or `DORI_ENV_FILE`); a variable already set in the environment wins.
+   Every `dori` command reads `~/.dori/dori.env` (or `DORI_ENV_FILE`); a variable already set in the environment wins, unless it came from another Dori's `dori.env` (a different bot token; `scripts.md` has the rule). Set `discord.botId` in `config.json` to your bot's user id so a post with another bot's token fails (`DISCORD_BOT_MISMATCH`).
 4. **Voice (optional).** `bash $S/setup-asr.sh`, then check `$S/transcribe.sh some-note.ogg` prints the text. Set `DORI_ASR_LANG` to the owner's language for better accuracy. To send voice requests from an iPhone with one button (Action Button, Back Tap, Siri), see [ios-shortcut-voice.md](ios-shortcut-voice.md).
 5. **The Dori's own session.** `aoe add <dir> -t Dori --tool omo`, start it, and put its id and tmux name into `DORI_LEAD_AOE_ID` / `DORI_LEAD_TMUX`, and the tmux name into `leadPane`.
 6. **Services.**
@@ -257,6 +257,13 @@ A stopped lead uses `aoe session start <id>`, then the same prompt wait, `dori t
 three attempts and failure alert as a restart. The first message defaults to `Dori mode`;
 `self-restart.sh --start <aoe-id> <tmux-session> <prompt>` supplies another prompt (an empty
 prompt types nothing). Without `--start`, the script still uses `aoe session restart`.
+
+The unit loads no `dori.env`, and the script reads its env file without exporting it: the first `aoe` after a boot
+starts the tmux server, and every pane inherits that server's environment. The script runs `aoe` without any `DORI_*`
+and removes `DORI_*` from the tmux global environment (`TMUX_ENV_DROPPED <name>` in the restart log) before it starts
+or restarts a session. A second Dori on the same host is started the same way with its own files, for example
+`DORI_CONFIG=~/.second/config.json DORI_ENV_FILE=~/.second/dori.env DORI_STATE_DIR=~/.second/state self-restart.sh --start <aoe-id> <tmux-session> ""`,
+and is listed under `instances` in `~/.dori/config.json` so a plain `dori` in its directory acts as it.
 
 Each row in `session-events.jsonl` has `kind` (`session-idle`, `session-waiting`, `session-error`, `session-milestone`), `session`, `title`, `path`, `tmux`, `thread`, `tail` (the pane's last 20 lines) and `said`:
 
