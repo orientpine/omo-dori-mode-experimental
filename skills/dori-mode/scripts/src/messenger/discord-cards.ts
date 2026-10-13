@@ -22,7 +22,8 @@ const ACK_UPDATE = 6;
 const UPDATE_MESSAGE = 7;
 const OPEN_MODAL = 9;
 
-export type AnswerKind = "button" | "text";
+// button: a pick tap; text: the write-my-own box; reply: the owner answered in a message and the lead resolved the card
+export type AnswerKind = "button" | "text" | "reply";
 
 export type QuestionMeta = { readonly thread?: string | null; readonly session?: string | null; readonly tmux?: string | null };
 
@@ -134,6 +135,13 @@ export class QuestionStore {
     return moved;
   }
 
+  // every resolved card leaves its answer line here, so a question gone from the store but logged was resolved before
+  logged(id: string): boolean {
+    if (!existsSync(this.answersFile)) return false;
+    const head = `{"id":${JSON.stringify(id)},`;
+    return readFileSync(this.answersFile, "utf8").split("\n").some((line) => line.startsWith(head));
+  }
+
   resolve(id: string): boolean {
     const s = this.load();
     const before = s.questions.length;
@@ -177,7 +185,7 @@ export const doneCard = (q: Question, w: DiscordWords): object[] => [
   {
     type: 17,
     accent_color: DONE_ACCENT,
-    components: [{ type: 10, content: `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${q.text}${where(q)}\n→ **${q.answer ?? ""}**\n-# ${q.answerKind === "text" ? w.byText : w.byButton} · ${stamp(q.answeredAt, w)}`.slice(0, 3000) }],
+    components: [{ type: 10, content: `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${q.text}${where(q)}\n→ **${q.answer ?? ""}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`.slice(0, 3000) }],
   },
 ];
 
@@ -207,6 +215,10 @@ export const modalValue = (components: readonly unknown[] = []): string => {
   }
   return "";
 };
+
+// folded: an open card was edited into its record now; kept: already folded (or never posted), only forgotten;
+// already: resolved before, nothing to do
+export type Resolved = "folded" | "kept" | "already";
 
 export type CardSettings = { readonly channel: string; readonly owner: string; readonly words: DiscordWords };
 
@@ -261,13 +273,37 @@ export class QuestionCards {
     return q;
   }
 
-  // Resolving a card nobody answered would otherwise leave its thread waiting on a question that is gone,
-  // so its thread is re-checked: working once none of its questions is open. An answered card changes nothing.
-  async resolve(id: string): Promise<boolean> {
+  // A card still open when it is resolved (the owner answered in a message) folds into the same record a tap leaves,
+  // with the given answer or words.repliedInText: the edit goes first, so a failed edit keeps the question for another
+  // try, then the answer is logged and the question forgotten. Its thread is re-checked: working once none of its
+  // questions is open. A card already folded by a tap is not edited again; a question resolved before changes nothing.
+  async resolve(id: string, answer?: string): Promise<Resolved | null> {
     const q = this.store.get(id);
-    if (!q || !this.store.resolve(id)) return false;
-    if (q.status === "open" && q.thread) await this.mark(q.thread, "working");
-    return true;
+    if (!q) return this.store.logged(id) ? "already" : null;
+    if (q.status !== "open") {
+      this.store.resolve(id);
+      return "kept";
+    }
+    const value = guardText(answer ?? "").trim() || this.settings.words.repliedInText;
+    const at = this.at();
+    if (q.message) await this.edit(q.channel, q.message, { components: this.card({ ...q, status: "answered", answer: value, answerKind: "reply", answeredAt: at }) });
+    this.store.answer(id, value, "reply", at);
+    this.store.resolve(id);
+    if (q.thread) await this.mark(q.thread, "working");
+    return q.message ? "folded" : "kept";
+  }
+
+  // Discord refuses to edit a message in an archived thread (50083), and a quiet thread with an open card archives
+  // itself, so the thread is opened and the card edited again; the thread mark that follows settles the thread
+  private async edit(channel: string, message: string, body: Record<string, unknown>): Promise<void> {
+    const patch = () => this.dc.call("PATCH", `/channels/${channel}/messages/${message}`, body);
+    try {
+      await patch();
+    } catch (e) {
+      if (!(e instanceof Error && e.message.includes("50083"))) throw e;
+      await this.dc.setThread(channel, { archived: false });
+      await patch();
+    }
   }
 
   private respond(i: Interaction, body: Record<string, unknown>): Promise<unknown> {

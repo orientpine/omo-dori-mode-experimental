@@ -238,7 +238,7 @@ export class DiscordListener {
     const audio = audioAttachment(m.attachments);
     if (audio && this.d.transcribe) transcript = await this.d.transcribe(audio.url, audio.filename).catch((e: unknown) => (this.d.log(`DISCORD_TRANSCRIBE_FAIL ${m.id} ${errText(e)}`), null));
     const open = scope === "thread" ? openCardIds(this.d.cards.store, m.channel_id) : [];
-    const note = open.length ? `card ${open.join(", ")} still open, owner replied in text: resolve it with dori resolve ${open[0]}` : "";
+    const note = open.length ? `card ${open.join(", ")} still open, owner replied in text: resolve it with dori resolve ${open[0]} --answer "<the answer, short>" so the card folds` : "";
     this.append({
       ts: m.timestamp,
       id: m.id,
