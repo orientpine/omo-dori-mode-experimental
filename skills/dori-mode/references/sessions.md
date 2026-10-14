@@ -33,7 +33,7 @@ ulw
    (질문은 [넘으면 안 되는 선]을 넘어야 하거나 오너만 정할 수 있는 선택일 때만 | question |으로 보고한다.)
 8. 보고: [끝난 상태]와 QA 항목마다 증거(캡처, 출력, 파일 경로)를 붙여라.
 
-(the lane's own lines: where, what is known, the owner's words with their link, what to do)
+(lane마다 따로 적는 줄: 위치, 지금까지 아는 것, 형 말과 원문 링크, 할 일)
 ```
 
 How the fields carry what a brief always needs:
