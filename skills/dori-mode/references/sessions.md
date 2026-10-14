@@ -12,7 +12,7 @@ dori launch fix-login --title "Fix the login redirect loop" \
 
 `launch` checks the key and the `Done =` line, appends a footer to the brief, opens a tab in `laneWorkspace`, starts the agent, and after 20 seconds reads the pane for startup errors (missing module, no API key, rate limit, quota). On `STARTUP_ERROR`, relaunch on another model.
 
-Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as written here, and put the lane's own lines under them. Each step carries the sentences of the owner's original prompt word for word (owner, 2026-10-14 21:09 KST): copy them as they are, never shortened or softened; the lines after them add what the rules below need, and a line in parentheses says how an original sentence meets one of those rules. A small fix keeps the same frame and may write "2~8: sessions.md 틀 그대로" instead of copying the steps, but never a shorter version of them.
+Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as written here, and put the lane's own lines under them. Each step carries the sentences of the owner's original prompt word for word (owner, 2026-10-14 21:09 KST): copy them as they are, never shortened or softened; the lines after them add what the rules below need, and a line in parentheses says how an original sentence meets one of those rules. A small fix keeps the same frame and may write "2~8: <this file's full path>의 틀 8단계를 읽고 그대로 따른다" instead of copying the steps, so the lane reads them here, but never a shorter version of them.
 
 ```text
 ulw
@@ -35,7 +35,7 @@ ulw
 5. 실행: 그 내용대로 타협없이 구현하여야 한다
    작업 진행에 있어서는 unspecified low 를 활용하는대신에 quick 을 더 잘개 쪼개어 동시에 작업이 진행 될 수 있도록 하고, 대신 검증을 더 빡세고 엄격히 하게끔 작업하여 최대 효율을 달성하라.
    set goal and go mass ulw loop, create multiple workflows and workflows, take workflow as just one tool create multiple workflows and so on if required
-   그 밖에 어떤 도구·모델을 쓸지는 맡긴다.
+   동시에 돌리는 것은 서로 독립적인 일뿐이다. 그 밖에 어떤 도구·모델을 쓸지는 맡긴다.
 6. 대조: 그리고 그 이상적인 상태와 1:1 100% 동일하다고 확인을 진행하고, 그렇지 못하다면 예외없이, 핑계없이 다 그 상태가 되도록 만들기 위한 계획을 세워라
    QA 시나리오로 항목별로 대조하고, 안 맞는 항목이 있으면 3번으로 돌아가 다시 계획하고 고쳐라. [끝난 상태]가 증거로 확인될 때까지 반복.
    (재시도 상한이 먼저다: 같은 지표에서 정한 횟수만큼 실패하면 다시 계획하는 대신 | blocker | 로 남은 차이를 그대로 보고한다. 새 계획이 실패 횟수를 되돌리지 않고, 그 보고는 핑계가 아니다.)
