@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // KakaoTalk watcher for a Dori with its own Kakao account (agent-messenger kakaotalk). Off unless DORI_KAKAO_SELF_ID is set.
 // Polls every known room, appends new messages to the inbox, prints one KAKAO_MSG line each for the lead's monitor and
-// marks them read. --once performs one tick and exits.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// marks them read. --once performs one tick and exits; --mark-read <chat> <log id> is the one-session mark a tick runs.
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { envFilePath, loadEnvFile, resolveInstance } from "../../scripts/src/config.ts";
@@ -93,6 +93,72 @@ const parseList = <T>(out: string, key: string): T[] | null => {
   }
 };
 
+type Long = { toString(): string };
+type LocoReply = { statusCode: number; body: Record<string, unknown> };
+export type KakaoSession = {
+  syncMessages(chatId: Long, count: number, cur: Long, max: Long): Promise<LocoReply>;
+  markRead(chatId: Long, watermark: Long): Promise<LocoReply>;
+  getChatInfo(chatId: Long): Promise<LocoReply>;
+};
+export type MarkBack = { status: number; watermark: string | null };
+// Runs fn on a freshly logged-in session and closes it.
+export type OpenSession = <T>(fn: (session: KakaoSession) => Promise<T>) => Promise<T>;
+
+// The account's own read mark as the server holds it: CHATONROOM answers with members and their watermarks on its first
+// call per session. Sent alone in a fresh session it left the unread count unchanged, so it reads without marking.
+async function serverReadMark(session: KakaoSession, chatId: Long, self: string): Promise<string | null> {
+  const room = await session.getChatInfo(chatId);
+  if (room.statusCode !== 0) throw new Error(`CHATONROOM failed: statusCode=${room.statusCode}`);
+  const members = Array.isArray(room.body.a) ? room.body.a.map(String) : [];
+  const marks = Array.isArray(room.body.w) ? room.body.w.map(String) : [];
+  const at = members.indexOf(self);
+  return at >= 0 ? (marks[at] ?? null) : null;
+}
+
+// The server acks NOTIREAD with status 0 and still drops it unless the same session first synced the chat from the
+// account's read mark up to the target (SYNCMSG), which left the sender's "1" while the CLI said success. So: read the
+// server's mark, sync from it and mark in a fresh session, then read the mark back in another fresh session.
+export async function markReadConfirmed(open: OpenSession, long: (id: string) => Long, chatId: string, logId: string, from: string, self: string): Promise<MarkBack> {
+  const readMark = (session: KakaoSession) => serverReadMark(session, long(chatId), self);
+  const before = await open(readMark);
+  if (before !== null && BigInt(before) >= BigInt(logId)) return { status: 0, watermark: before };
+  const status = await open(async (session) => {
+    const sync = await session.syncMessages(long(chatId), 80, long(before ?? from), long(logId));
+    if (sync.statusCode !== 0) throw new Error(`SYNCMSG failed: statusCode=${sync.statusCode}`);
+    const mark = await session.markRead(long(chatId), long(logId));
+    if (mark.statusCode !== 0) throw new Error(`NOTIREAD failed: statusCode=${mark.statusCode}`);
+    return typeof mark.body.status === "number" ? mark.body.status : 0;
+  });
+  return { status, watermark: await open(readMark) };
+}
+
+// The agent-messenger SDK the CLI ships with (its CLI has no sync or read-back), found next to the resolved CLI script.
+async function markReadOnce(o: KakaoOptions, chatId: string, logId: string, from: string): Promise<MarkBack> {
+  const cli = realpathSync(Bun.which(o.cli) ?? o.cli);
+  const sdk = join(dirname(cli), "platforms", "kakaotalk", "index.js");
+  const mod = await import(sdk);
+  const { Long } = mod.Long ? mod : await import(Bun.resolveSync("bson", dirname(sdk)));
+  const open: OpenSession = async (fn) => {
+    const client = new mod.KakaoTalkClient();
+    await client.login(undefined, undefined);
+    try {
+      return await client.executeWithReconnect(({ session }: { session: KakaoSession }) => fn(session));
+    } finally {
+      client.close();
+    }
+  };
+  return markReadConfirmed(open, (id) => Long.fromString(id), chatId, logId, from, o.self);
+}
+
+const parseMarkBack = (out: string): MarkBack | null => {
+  try {
+    const j = JSON.parse(out) as MarkBack;
+    return typeof j.status === "number" ? j : null;
+  } catch {
+    return null;
+  }
+};
+
 export async function kakaoTick(o: KakaoOptions, s: KakaoState, runner: Runner, now: () => number, log: (line: string) => void): Promise<void> {
   // Every call holds the account's lock: two agent-messenger logins on one device evict each other.
   const kakao = (args: string[], timeoutMs: number) => runner(["flock", o.lock, o.cli, "kakaotalk", ...args], { timeoutMs });
@@ -171,21 +237,26 @@ export async function kakaoTick(o: KakaoOptions, s: KakaoState, runner: Runner, 
     save(o.cursors, s.cursors);
     const target = s.cursors[id] ?? "";
     if (s.marked[id] === target || now() < (s.retryAt[id] ?? 0)) continue;
-    const mr = await kakao(["message", "mark-read", id, target], 60_000);
-    if (mr.code === 0) {
+    // Marked only when the server's own read mark for this account reached the target; anything else is retried.
+    const from = sorted.find((m) => BigInt(m.log_id) < BigInt(target))?.log_id ?? "0";
+    const mr = await runner(["flock", o.lock, process.execPath, import.meta.path, "--mark-read", id, target, from], { timeoutMs: 60_000 });
+    const back = mr.code === 0 ? parseMarkBack(mr.out) : null;
+    if (back && back.status === 0 && back.watermark !== null && BigInt(back.watermark) >= BigInt(target)) {
       const after = s.fails[id] ? ` after ${s.fails[id]} failed` : "";
       s.marked[id] = target;
       delete s.fails[id];
       delete s.retryAt[id];
       save(o.marked, s.marked);
-      log(`KAKAO_MARKREAD_OK ${name} ${target}${after}`);
+      log(`KAKAO_MARKREAD_OK ${name} ${target} server ${back.watermark}${after}`);
       continue;
     }
+    const why =
+      mr.code !== 0 ? oneLine(mr, 150) : !back ? `unreadable reply ${oneLine(mr, 100)}` : back.status !== 0 ? `NOTIREAD status ${back.status}` : `server read mark ${back.watermark ?? "missing"} is behind ${target}`;
     const n = (s.fails[id] ?? 0) + 1;
     const wait = Math.min(o.pollMs * 2 ** (n - 1), 2 * o.sweepMs);
     s.fails[id] = n;
     s.retryAt[id] = now() + wait;
-    log(`KAKAO_MARKREAD_FAIL ${name} ${target} attempt ${n}, retry in ${Math.round(wait / 1000)}s: ${oneLine(mr, 150)}`);
+    log(`KAKAO_MARKREAD_FAIL ${name} ${target} attempt ${n}, retry in ${Math.round(wait / 1000)}s: ${why}`);
   }
 }
 
@@ -195,6 +266,11 @@ if (import.meta.main) {
   const options = kakaoOptions(process.env);
   if (!options.self) {
     console.log("KAKAO_WATCH_OFF DORI_KAKAO_SELF_ID is not set");
+    process.exit(0);
+  }
+  const at = process.argv.indexOf("--mark-read");
+  if (at >= 0) {
+    console.log(JSON.stringify(await markReadOnce(options, process.argv[at + 1] ?? "", process.argv[at + 2] ?? "", process.argv[at + 3] ?? "0")));
     process.exit(0);
   }
   for (const file of [options.rooms, options.inbox]) mkdirSync(dirname(file), { recursive: true, mode: 0o700 });

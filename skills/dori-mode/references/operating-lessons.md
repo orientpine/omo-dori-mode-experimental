@@ -205,3 +205,10 @@ On 2026-10-14 the owner mentioned a Dori's role in a thread under another agent'
 
 - **Being called counts wherever it happens.** An owner message anywhere in the guild that mentions the Dori's bot user or one of its roles is a `scope:"mention"` row with a `link`. The roles are read from the bot member at start (`DISCORD_MENTION_IDS`); `discord.mentionRoleIds` adds others. Each Dori has its own bot and role, so a mention of the other Dori stays the other Dori's.
 - **Called is not owned.** Answer a mention in the Dori's own channel or work thread with its link (the link takes the eyes off). A channel another agent owns is read, not written; the eyes on the owner's own message are the only mark the Dori leaves there, and only when it was called. The owner's other messages there stay ignored.
+
+## 24. Confirm a read mark on the server, not by its reply
+
+On 2026-10-14 the owner still saw "1" on messages a Dori had read in KakaoTalk, a day after the retry and sweep fix (#55). Its own record said every room was marked. On the server, its read mark in the busiest room had stopped at 04:21 UTC with four messages unread after it: from then on every `mark-read` was acked with status 0 and dropped. Sent alone in a fresh session, NOTIREAD did nothing (five tries). After SYNCMSG of the room from the account's read mark in the same session, it moved the mark (unread 6 to 2, then 4 to 0). Retries and sweeps had repeated the dropped call.
+
+- **Read the result back from the place the other person sees.** A mark counts only when the account's own read mark (CHATONROOM watermarks) has reached the message, read in a separate session; anything short of that is a loud `KAKAO_MARKREAD_FAIL` with the server's mark.
+- **A changed protocol call is tried live before it ships.** The packet shape that moved the mark is the one the watcher sends; an untried variant (a one-message sync window) was caught by `dori challenge` before the PR.
