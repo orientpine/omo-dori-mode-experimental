@@ -12,7 +12,7 @@ dori launch fix-login --title "Fix the login redirect loop" \
 
 `launch` checks the key and the `Done =` line, appends a footer to the brief, opens a tab in `laneWorkspace`, starts the agent, and after 20 seconds reads the pane for startup errors (missing module, no API key, rate limit, quota). On `STARTUP_ERROR`, relaunch on another model.
 
-Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as they are, and put the lane's own lines under them.
+Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as written here (step 5 carries the owner's addition of 2026-10-14 21:00 KST, the original's "quick" line), and put the lane's own lines under them. A small fix keeps the same frame; each step can then be one line.
 
 ```text
 ulw
@@ -38,9 +38,9 @@ How the fields carry what a brief always needs:
 
 - **Keywords.** The template opens with `ulw`; add any other keywords you would type yourself (for example `ulw set goal and work`).
 - **[목표]** is the owner's request in one line; launch with `--goal "<the owner's words>"` as well, so the owner check reads them.
-- **[끝난 상태]** is a state someone can see, and the `Done =` line is the check that reads it back live (see the table below). If you cannot write a signal for it, the end state is still too vague.
+- **[끝난 상태]** is a state someone can see, written as the person sees it. The `Done =` line is the machine check that backs it (see the table below): pick the signal that reads the closest thing back live, and keep the end state as it is rather than narrowing it to what a signal can read.
 - **[사용자와 장면]** is the ideal end state from the point of view of whoever uses the result: one person, one moment.
-- **[넘으면 안 되는 선]** is what not to touch. Name the live nodes and services the lane must not experiment on (it tries on a scratch copy first), and when the work adds a feature, that it changes the existing one instead.
+- **[넘으면 안 되는 선]** is what not to touch. When the lane could reach a live node or service, name it here: the lane must not experiment on it and tries on a scratch copy first. "없음" is right only when nothing like that is in reach.
 - **Proceeding without asking.** Plan approval is given in advance (step 7): inside the lines the lane does not ask. It reports a `| question |` only to cross a line or for a choice only the owner can make.
 - **Evidence is the real thing.** Steps 4, 6 and 8 mean the real screen, the real call, the real output, not a passing test suite. The tests the repository keeps stay green as well, and for a code change a mutation shows they catch the bug; they back the proof, they are not the proof.
 - **Under the steps:** where the code is and what has been learned so far, the owner's words with the link to his message, and the concrete steps you already know (for example tests, docs, PR, `dori challenge`, merge, update).
@@ -51,7 +51,7 @@ How the fields carry what a brief always needs:
 - that the docs and tests of what the lane changes change with it;
 - when the lane makes or changes a yardstick (a metric, a threshold, a pass/fail check), one line on how that yardstick could get better while the real goal gets worse;
 - that a blocker, an impossible task or an ambiguous request is a fine report (`| blocker |`), not a failure to hide;
-- a retry cap: after a set number of failed attempts at the same step (two or three), report a blocker instead of trying again. Step 6 loops back to a new plan; it never repeats the same fix.
+- a retry cap: after a set number of failed attempts at the same step (two or three), report a blocker instead of trying again. Step 6 loops back to a new plan, but a new plan or hypothesis does not reset the count: the cap and the stuck ladder count failed attempts per metric, and they win over step 6's "repeat".
 
 **Why the `Done =` line has to be checkable:** the watcher closes lanes on its own, so it can only trust what it can read back itself. `launch` and `adopt` refuse any signal outside this list. Signals are joined with `;`, and every one has to pass.
 
