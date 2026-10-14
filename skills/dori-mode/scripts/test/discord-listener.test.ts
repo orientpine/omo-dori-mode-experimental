@@ -38,11 +38,12 @@ const fakeTimers = () => {
 let state: ReturnType<typeof withState>;
 afterEach(() => state?.done());
 
-const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBot?: string; shadow?: boolean; mentionRoleIds?: string[] } = {}) => {
+const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBot?: string; shadow?: boolean; mentionRoleIds?: string[]; gate?: (req: HttpRequest) => Promise<void> | undefined } = {}) => {
   state = withState();
   const seen: HttpRequest[] = [];
   const http: Http = async (req) => {
     seen.push(req);
+    await opts.gate?.(req);
     const special = opts.respond?.(req);
     if (special) return special;
     const body = req.url.includes("/interactions/") || req.method === "PUT" ? "" : JSON.stringify(route(req));
@@ -414,6 +415,39 @@ test("the owner calling the other Dori (its bot or its role) is not this Dori's 
   await listener.onMessage(msg("1002", { channel_id: AGENT_THREAD, content: `<@${OTHER_BOT}> you`, mentions: [{ id: OTHER_BOT }] }));
   expect(inbox()).toEqual([]);
   expect(eyesOn(calls)).toEqual([]);
+});
+
+test("a role mention that comes while the bot's roles are still being read waits for them", async () => {
+  let release = () => {};
+  const held = new Promise<void>((r) => { release = r; });
+  const { listener, gw, inbox } = setup(elsewhere, { gate: (req) => (req.url.includes("/members/") ? held : undefined) });
+  listener.start();
+  ready(gw);
+  let finished = false;
+  const pending = listener.onMessage(msg("1001", { channel_id: AGENT_THREAD, mention_roles: [MY_ROLE] })).then(() => { finished = true; });
+  // a macrotask turn runs every queued microtask: the fake Discord does no I/O, so only the held read can still be pending
+  await new Promise((r) => setImmediate(r));
+  expect([finished, inbox()]).toEqual([false, []]);
+  release();
+  await pending;
+  expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1001", "mention"]]);
+});
+
+test("a failed read of the bot's roles is tried again by the next mention, and each READY reads them afresh", async () => {
+  let roles: string[] | null = null;
+  const respond = (req: HttpRequest): HttpResponse | undefined => (req.url.includes("/members/") && !roles ? { status: 500, headers: {}, body: "{}" } : undefined);
+  const { listener, gw, inbox, logs } = setup((req) => (req.url.includes("/members/") ? { roles } : elsewhere(req)), { respond });
+  listener.start();
+  ready(gw);
+  await listener.settled();
+  expect(logs.some((l) => l.startsWith("DISCORD_MENTION_IDS_FAIL"))).toBe(true);
+  roles = [MY_ROLE];
+  await listener.onMessage(msg("1001", { channel_id: AGENT_THREAD, mention_roles: [MY_ROLE] }));
+  roles = [OTHER_ROLE];
+  ready(gw);
+  await listener.settled();
+  await listener.onMessage(msg("1002", { channel_id: AGENT_THREAD, mention_roles: [MY_ROLE] }));
+  expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1001", "mention"]]);
 });
 
 test("our bot posting a link to a mention elsewhere takes the eyes off it there", async () => {

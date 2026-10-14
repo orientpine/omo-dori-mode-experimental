@@ -135,8 +135,10 @@ export class DiscordListener {
   // channel or thread id -> owner messages that still carry our eyes reaction
   private eyes: Record<string, string[]> = {};
   private self = "";
-  // role ids that call this Dori: discord.mentionRoleIds, plus its bot member's roles once READY has named the bot
-  private readonly roles: Set<string>;
+  // role ids that call this Dori: discord.mentionRoleIds, plus its bot member's roles, read again at every READY
+  private roles: Set<string>;
+  private rolesStale = true;
+  private rolesRead: Promise<void> | null = null;
   // newest owner message this listener has taken; everything missed while the socket was down is newer than it
   private cursor = "0";
   private seq: number | null = null;
@@ -234,8 +236,11 @@ export class DiscordListener {
     else if (m.channel_id === this.d.channel) scope = "channel";
     else if (pair && m.channel_id === pair) scope = fromPairBot ? "pair-bot" : "pair";
     else if ((await this.parentOf(m.channel_id)) === this.d.channel) scope = "thread";
-    else if (this.addressed(m)) scope = "mention";
-    else return;
+    else {
+      await this.readRoles();
+      if (!this.addressed(m)) return;
+      scope = "mention";
+    }
     this.seen.add(m.id);
     if (newer(m.id, this.cursor)) this.cursor = m.id;
     // the other Dori's posts are information the Dori rarely answers, so eyes there would never come off
@@ -278,9 +283,21 @@ export class DiscordListener {
   }
 
   // the roles the bot member has in the guild (a bot's managed role is what the owner picks when typing @<Dori>)
+  // A mention that comes while they are being read waits for them; a failed read is tried again by the next mention.
+  private readRoles(): Promise<void> {
+    if (!this.rolesStale || !this.self) return Promise.resolve();
+    this.rolesRead ??= this.loadRoles()
+      .catch((e: unknown) => this.d.log(`DISCORD_MENTION_IDS_FAIL ${errText(e)}`))
+      .finally(() => {
+        this.rolesRead = null;
+      });
+    return this.rolesRead;
+  }
+
   private async loadRoles(): Promise<void> {
     const me = await this.d.dc.call<{ roles?: string[] }>("GET", `/guilds/${this.d.guild}/members/${this.self}`);
-    for (const r of me.roles ?? []) this.roles.add(r);
+    this.roles = new Set([...this.d.words.mentionRoleIds, ...(me.roles ?? [])]);
+    this.rolesStale = false;
     this.d.log(`DISCORD_MENTION_IDS user=${this.self} roles=${[...this.roles].join(",") || "-"}`);
   }
 
@@ -352,7 +369,8 @@ export class DiscordListener {
       this.self = String((data.user as { id?: string } | undefined)?.id ?? "");
       this.d.log(this.d.shadow ? "DISCORD_LISTENER_READY shadow" : "DISCORD_LISTENER_READY");
       this.track(this.backfill().then(() => {}), "backfill");
-      if (this.self) this.track(this.loadRoles(), "roles");
+      this.rolesStale = true;
+      this.track(this.readRoles(), "roles");
     } else if (type === "GUILD_CREATE" && data.id === this.d.guild) {
       for (const t of (data.threads as { id: string; parent_id: string }[] | undefined) ?? []) this.parents.set(t.id, t.parent_id);
     } else if (type === "THREAD_CREATE" || type === "THREAD_UPDATE") this.parents.set(String(data.id), String(data.parent_id ?? ""));
