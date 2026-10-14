@@ -235,7 +235,8 @@ export class DiscordListener {
     else if (m.guild_id !== this.d.guild) return;
     else if (m.channel_id === this.d.channel) scope = "channel";
     else if (pair && m.channel_id === pair) scope = fromPairBot ? "pair-bot" : "pair";
-    else if ((await this.parentOf(m.channel_id)) === this.d.channel) scope = "thread";
+    // a channel it cannot look up is not one of its threads, but the owner may still have called it there
+    else if ((await this.parentOf(m.channel_id).catch((e: unknown) => (this.d.log(`DISCORD_PARENT_FAIL ${m.channel_id} ${errText(e)}`), ""))) === this.d.channel) scope = "thread";
     else {
       await this.readRoles();
       if (!this.addressed(m)) return;

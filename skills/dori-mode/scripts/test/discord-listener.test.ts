@@ -450,6 +450,17 @@ test("a failed read of the bot's roles is tried again by the next mention, and e
   expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1001", "mention"]]);
 });
 
+test("a mention in a channel the bot cannot look up still lands; the failed lookup is logged", async () => {
+  const respond = (req: HttpRequest): HttpResponse | undefined => (req.url.endsWith(`/channels/${AGENT_THREAD}`) ? { status: 403, headers: {}, body: "{}" } : undefined);
+  const { listener, gw, inbox, logs } = setup(elsewhere, { respond });
+  listener.start();
+  ready(gw);
+  await listener.settled();
+  await listener.onMessage(msg("1001", { channel_id: AGENT_THREAD, mention_roles: [MY_ROLE] }));
+  expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1001", "mention"]]);
+  expect(logs.some((l) => l.startsWith(`DISCORD_PARENT_FAIL ${AGENT_THREAD}`))).toBe(true);
+});
+
 test("our bot posting a link to a mention elsewhere takes the eyes off it there", async () => {
   const { listener, gw, calls, eyesFile } = setup(elsewhere);
   listener.start();
