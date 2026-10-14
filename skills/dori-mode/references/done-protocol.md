@@ -23,6 +23,8 @@ If the lead has paused your lane (`dori pause`, e.g. while it waits on the owner
 
 - A blocker, an impossible task or an ambiguous request is a fine report: `[REPORT] <key> | blocker | <what blocks, what you tried, what you need>`. Say it plainly instead of retrying or claiming done.
 - Cap your retries: after two or three failed attempts at the same step, report a blocker.
+- Evidence is the real thing: the real screen, the real call, the real output, with a capture, output or file path for [끝난 상태] and for each QA item. A passing test suite alone does not show the result works; keep the repository's tests green as well.
+- Inside your brief's [넘으면 안 되는 선], proceed without asking: plan approval is given in advance. Report a `| question |` only to cross a line or for a choice only the owner can make.
 - Tag a report that is a fix attempt for a failing check or metric with `(fix: <metric> / <hypothesis>)`. The lead's stuck ladder counts failed attempts on one metric (untagged ones too): at the 2nd, competing hypotheses before the next patch; at the 3rd you get ulw research and a challenge of your next plan; with one hypothesis tried 3 times after you branched, or a failure after the research, the lead may move you to a new session. Stop patching, reproduce the failure and read the logs for the root cause.
 - If your brief has a "Past signals" section, read it before you plan: it lists what earlier lanes in the same repo or topic tried and what failed. Don't repeat a fix listed there without a new reason.
 - When you make or change a yardstick (a metric, a threshold, a check), write one line on how it could get better while the real goal gets worse.

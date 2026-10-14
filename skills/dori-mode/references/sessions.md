@@ -12,18 +12,46 @@ dori launch fix-login --title "Fix the login redirect loop" \
 
 `launch` checks the key and the `Done =` line, appends a footer to the brief, opens a tab in `laneWorkspace`, starts the agent, and after 20 seconds reads the pane for startup errors (missing module, no API key, rate limit, quota). On `STARTUP_ERROR`, relaunch on another model.
 
-Write the brief like a careful prompt:
+Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as they are, and put the lane's own lines under them.
 
-- open with the keywords you would type yourself (for example `ulw set goal and work`);
-- where the code is and what has been learned so far;
-- the ideal end state, from the point of view of whoever uses the result;
-- what not to touch;
+```text
+ulw
+
+[목표] (한 줄)
+[끝난 상태] (눈으로 확인되는 상태 한 줄)
+[사용자와 장면] (이 결과를 실제로 쓸 사람 한 명 + 그 사람이 겪는 장면 하나)
+[넘으면 안 되는 선] (2~3개, 없으면 "없음")
+
+1. 조사: 결정에 필요한 정보를 explore로 먼저 모아라. 코드·파일·로그는 explore, 외부 문서·라이브러리는 librarian.
+2. 이상적인 상태: 위 사용자가 이 결과를 쓰는 장면에서 걸리거나, 이상하다고 느끼거나, 기존 기능이 깨지거나, 경험이 나빠지는 지점이 하나도 없는 상태를 정의하라. 항목마다 이유를 달아라.
+3. 차이: 그 상태와 현재의 차이를 전부 적어라. 차이마다 근거(파일, 출력)를 달아라.
+4. 계획과 QA: 차이를 없애는 계획과, 그 상태가 됐음을 확인하는 QA 시나리오를 같이 세워라. QA는 테스트 통과가 아니라 실제 화면·실제 호출·실제 출력을 보는 방식으로.
+5. 실행: 서로 독립적인 일은 잘게 쪼개 병렬로 돌려라(goal을 걸고, 필요하면 mass-ulw와 워크플로 여러 개). unspecified-low 대신 quick으로 더 잘게 쪼개 동시에 진행하고, 대신 검증은 더 빡세고 엄격하게. 어떤 도구·모델을 쓸지는 맡긴다. 잘게 쪼갠 만큼 검증은 더 엄격하게.
+6. 대조: QA 시나리오로 이상적인 상태와 항목별로 대조하라. 안 맞는 항목이 있으면 3번으로 돌아가 다시 계획하고 고쳐라. [끝난 상태]가 증거로 확인될 때까지 반복.
+7. 기록: 계획·차이·QA·대조 결과를 ulw-plan처럼 파일로 남기고 체크하며, todo로 진행 상황을 계속 보고하라. 계획 승인은 미리 줬으니 [넘으면 안 되는 선] 안에서는 묻지 말고 진행하라.
+8. 보고: [끝난 상태]와 QA 항목마다 증거(캡처, 출력, 파일 경로)를 붙여라.
+
+(the lane's own lines: where, what is known, the owner's words with their link, what to do)
+```
+
+How the fields carry what a brief always needs:
+
+- **Keywords.** The template opens with `ulw`; add any other keywords you would type yourself (for example `ulw set goal and work`).
+- **[목표]** is the owner's request in one line; launch with `--goal "<the owner's words>"` as well, so the owner check reads them.
+- **[끝난 상태]** is a state someone can see, and the `Done =` line is the check that reads it back live (see the table below). If you cannot write a signal for it, the end state is still too vague.
+- **[사용자와 장면]** is the ideal end state from the point of view of whoever uses the result: one person, one moment.
+- **[넘으면 안 되는 선]** is what not to touch. Name the live nodes and services the lane must not experiment on (it tries on a scratch copy first), and when the work adds a feature, that it changes the existing one instead.
+- **Proceeding without asking.** Plan approval is given in advance (step 7): inside the lines the lane does not ask. It reports a `| question |` only to cross a line or for a choice only the owner can make.
+- **Evidence is the real thing.** Steps 4, 6 and 8 mean the real screen, the real call, the real output, not a passing test suite. The tests the repository keeps stay green as well, and for a code change a mutation shows they catch the bug; they back the proof, they are not the proof.
+- **Under the steps:** where the code is and what has been learned so far, the owner's words with the link to his message, and the concrete steps you already know (for example tests, docs, PR, `dori challenge`, merge, update).
 - when the work is the same as or continues earlier work, the thread it already has: launch with `--thread` on that ref instead of opening a new thread (`references/operating-lessons.md` #17);
 - when the work adds a feature (a command, flag, hook, service or rule), which existing feature does the same job and why it cannot be fixed instead (`references/operating-lessons.md` #18);
-- how and when to report;
+- how and when to report: the footer `dori launch` adds gives the `[REPORT]` line, the `Done =` line and `dori claim-done`; ask for times in the owner's time zone when it is not the machine's;
+- before a big step (one that costs hours or a GPU queue, or changes the approach), a `dori challenge` of the plan; launch with `--challenge-before` to require it;
+- that the docs and tests of what the lane changes change with it;
 - when the lane makes or changes a yardstick (a metric, a threshold, a pass/fail check), one line on how that yardstick could get better while the real goal gets worse;
 - that a blocker, an impossible task or an ambiguous request is a fine report (`| blocker |`), not a failure to hide;
-- a retry cap: after a set number of failed attempts at the same step (two or three), report a blocker instead of trying again.
+- a retry cap: after a set number of failed attempts at the same step (two or three), report a blocker instead of trying again. Step 6 loops back to a new plan; it never repeats the same fix.
 
 **Why the `Done =` line has to be checkable:** the watcher closes lanes on its own, so it can only trust what it can read back itself. `launch` and `adopt` refuse any signal outside this list. Signals are joined with `;`, and every one has to pass.
 
