@@ -198,3 +198,10 @@ On 2026-10-14 the owner found two unread messages in one of a Dori's KakaoTalk g
 - **Do not trust a success code for something the owner sees.** Every sweep marks again the rooms with recent messages and the rooms `chat list` shows unread.
 - **`chat list` is a delta.** agent-messenger's `kakaotalk chat list` returns only chats changed since the account's last sync (it can return `[]`), so "no unread rooms" from it proves nothing; use its counts as a hint only.
 - **A helper one Dori needs today goes into the fork anyway** (#20): off by default, with that Dori's ids, names and paths in its `dori.env`. The local copy is deleted once the fork's version runs.
+
+## 23. The owner can call a Dori from any channel
+
+On 2026-10-14 the owner mentioned a Dori's role in a thread under another agent's channel with a request. The listener took only the Dori's own channel, its threads, DMs and the pair channel, and dropped everything else without a line in its log, so the request never reached the inbox and the owner had to ask whether the Dori had seen it. The message carried the Dori's managed role in `mention_roles` (its `mentions` list was empty): typing `@<Dori>` often picks the bot's role, not the bot user.
+
+- **Being called counts wherever it happens.** An owner message anywhere in the guild that mentions the Dori's bot user or one of its roles is a `scope:"mention"` row with a `link`. The roles are read from the bot member at start (`DISCORD_MENTION_IDS`); `discord.mentionRoleIds` adds others. Each Dori has its own bot and role, so a mention of the other Dori stays the other Dori's.
+- **Called is not owned.** Answer a mention in the Dori's own channel or work thread with its link (the link takes the eyes off). A channel another agent owns is read, not written; the eyes on the owner's own message are the only mark the Dori leaves there, and only when it was called. The owner's other messages there stay ignored.

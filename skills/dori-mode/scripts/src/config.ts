@@ -70,6 +70,9 @@ export type DiscordWords = {
   readonly timeZone: string;
   // the user id of this Dori's own bot; Discord writes refuse a DORI_DISCORD_TOKEN of another bot (empty: no check)
   readonly botId: string;
+  // role ids that call this Dori besides the roles its bot member has (read at listener start): an owner message anywhere
+  // in the guild that mentions its bot or one of these roles reaches the inbox (scope "mention")
+  readonly mentionRoleIds: readonly string[];
 };
 
 export const defaultDiscordWords: DiscordWords = {
@@ -94,6 +97,7 @@ export const defaultDiscordWords: DiscordWords = {
   locale: "en-US",
   timeZone: "UTC",
   botId: "",
+  mentionRoleIds: [],
 };
 
 // The stuck ladder (dori fix-attempt, freshness): one count per metric, the failed attempts since the last PASS or

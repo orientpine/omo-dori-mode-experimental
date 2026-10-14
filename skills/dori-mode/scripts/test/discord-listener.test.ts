@@ -38,7 +38,7 @@ const fakeTimers = () => {
 let state: ReturnType<typeof withState>;
 afterEach(() => state?.done());
 
-const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBot?: string; shadow?: boolean } = {}) => {
+const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBot?: string; shadow?: boolean; mentionRoleIds?: string[] } = {}) => {
   state = withState();
   const seen: HttpRequest[] = [];
   const http: Http = async (req) => {
@@ -51,7 +51,7 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const sleeps: number[] = [];
   const dc = new Discord(http, { ...fakeClock(0), sleep: async (ms: number) => { sleeps.push(ms); } }, "bot");
   // one words setting for the cards and the listener, as the CLI builds them from one config
-  const words = { ...defaultDiscordWords, statusStyle: "emoji" as const, autoUnEye: opts.autoUnEye ?? true };
+  const words = { ...defaultDiscordWords, statusStyle: "emoji" as const, autoUnEye: opts.autoUnEye ?? true, mentionRoleIds: opts.mentionRoleIds ?? [] };
   const cards = new QuestionCards(dc, new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words }, () => Date.parse("2026-01-02T03:04:00Z"));
   const inboxFile = `${state.dir}/discord/inbox.jsonl`;
   if (opts.inbox) {
@@ -360,6 +360,71 @@ test("backfill reads the pair channel too, after the newest pair row", async () 
   await listener.settled();
   expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1500&limit=100`, `GET /channels/${PAIR}/messages?after=1500&limit=100`]);
   expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1000", "channel"], ["1500", "pair-bot"], ["1601", "pair-bot"]]);
+});
+
+// a thread under a channel this Dori does not own (another agent's), and this Dori's bot member with its managed role
+const AGENT_CHAT = "800000000000000008";
+const AGENT_THREAD = "810000000000000081";
+const MY_ROLE = "900000000000000009";
+const OTHER_ROLE = "910000000000000091";
+const elsewhere = (req: HttpRequest) =>
+  req.url.endsWith(`/channels/${AGENT_THREAD}`) ? { id: AGENT_THREAD, parent_id: AGENT_CHAT, type: 11 } : req.url.endsWith(`/guilds/${GUILD}/members/${SELF}`) ? { roles: [MY_ROLE] } : { parent_id: "777" };
+const eyesOn = (calls: () => string[]) => calls().filter((c) => c.startsWith("PUT"));
+
+test("the owner mentioning this Dori's role in a thread of another channel is a mention row with a link and the eyes; the role comes from the bot member at READY", async () => {
+  const { listener, gw, inbox, calls, logs } = setup(elsewhere);
+  listener.start();
+  ready(gw);
+  await listener.settled();
+  expect(logs).toContain(`DISCORD_MENTION_IDS user=${SELF} roles=${MY_ROLE}`);
+  await listener.onMessage(msg("1001", { channel_id: AGENT_THREAD, content: `<@&${MY_ROLE}> review this`, mentions: [], mention_roles: [MY_ROLE] }));
+  expect(inbox()).toMatchObject([{ id: "1001", channel_id: AGENT_THREAD, scope: "mention", author_id: OWNER, content: `<@&${MY_ROLE}> review this`, link: `https://discord.com/channels/${GUILD}/${AGENT_THREAD}/1001` }]);
+  expect(eyesOn(calls)).toEqual([`PUT /channels/${AGENT_THREAD}/messages/1001/reactions/%F0%9F%91%80/@me`]);
+  expect(logs.some((l) => l.startsWith(`INBOUND discord-mention ${AGENT_THREAD} 1001 ${OWNER}`))).toBe(true);
+});
+
+test("a mention of this Dori's bot user, or of a role set in discord.mentionRoleIds, counts in any channel too", async () => {
+  const { listener, gw, inbox } = setup(elsewhere, { mentionRoleIds: ["920000000000000092"] });
+  listener.start();
+  ready(gw);
+  await listener.settled();
+  await listener.onMessage(msg("1001", { channel_id: "888", content: `<@${SELF}> look`, mentions: [{ id: SELF }] }));
+  await listener.onMessage(msg("1002", { channel_id: "888", content: "<@&920000000000000092> look", mention_roles: ["920000000000000092"] }));
+  expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1001", "mention"], ["1002", "mention"]]);
+});
+
+test("outside its own channel, an owner message that does not call this Dori, or someone else calling it, is skipped with no eyes", async () => {
+  const { listener, gw, inbox, calls } = setup(elsewhere);
+  listener.start();
+  ready(gw);
+  await listener.settled();
+  await listener.onMessage(msg("1001", { channel_id: AGENT_THREAD, content: "just talking here", mentions: [], mention_roles: [] }));
+  await listener.onMessage(msg("1002", { channel_id: AGENT_THREAD, author: { id: "555" }, mention_roles: [MY_ROLE] }));
+  await listener.onMessage(msg("1003", { channel_id: AGENT_THREAD, author: { id: OTHER_BOT, bot: true }, mentions: [{ id: SELF }] }));
+  expect(inbox()).toEqual([]);
+  expect(eyesOn(calls)).toEqual([]);
+});
+
+test("the owner calling the other Dori (its bot or its role) is not this Dori's mention", async () => {
+  const { listener, gw, inbox, calls } = setup(elsewhere);
+  listener.start();
+  ready(gw);
+  await listener.settled();
+  await listener.onMessage(msg("1001", { channel_id: AGENT_THREAD, content: `<@&${OTHER_ROLE}> you`, mention_roles: [OTHER_ROLE] }));
+  await listener.onMessage(msg("1002", { channel_id: AGENT_THREAD, content: `<@${OTHER_BOT}> you`, mentions: [{ id: OTHER_BOT }] }));
+  expect(inbox()).toEqual([]);
+  expect(eyesOn(calls)).toEqual([]);
+});
+
+test("our bot posting a link to a mention elsewhere takes the eyes off it there", async () => {
+  const { listener, gw, calls, eyesFile } = setup(elsewhere);
+  listener.start();
+  ready(gw);
+  await listener.settled();
+  await listener.onMessage(msg("1001", { channel_id: AGENT_THREAD, mention_roles: [MY_ROLE] }));
+  await listener.onMessage(fromBot("1002", { content: `on it: https://discord.com/channels/${GUILD}/${AGENT_THREAD}/1001` }));
+  expect(unreacts(calls)).toEqual([`${AGENT_THREAD}/messages/1001`]);
+  expect(eyesFile()).toEqual({});
 });
 
 test("a shadow listener writes the same inbox row but never writes to Discord: no eyes, no reopen, no card answer, no unreact", async () => {
