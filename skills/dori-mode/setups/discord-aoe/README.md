@@ -124,6 +124,7 @@ Every key is optional; the full list with defaults and what reads each one is in
 | `hooks.threadReply`, `hooks.threadDone` | `dori thread reply\|done` as in the template | Lane reports and closes in the owner's thread |
 | `hooks.transcribe` | absolute path of `transcribe.sh` | Voice notes |
 | `discord.botId` | this Dori's bot user id (the template ships it empty: no check until you set it) | Discord writes refuse another bot's token (`DISCORD_BOT_MISMATCH`) |
+| `discord.mentionRoleIds` | usually nothing: the listener reads its bot's own roles at start; list other role ids that should call this Dori | Which `@role` mentions anywhere in the guild reach the inbox (`scope:"mention"`) |
 | `discord.*` words, `locale`, `timeZone`, `statusStyle` | the owner's language and zone | Thread marks and question-card wording |
 | `update.services` | this Dori's own units ([Auto-apply updates](#auto-apply-updates)) | Units restarted when their source changes |
 | `handover.watchers` | watches of this Dori's lead that are not omo monitors | Checked before and after a lead handover |

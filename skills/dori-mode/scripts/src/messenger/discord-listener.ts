@@ -33,6 +33,8 @@ export type DiscordMessage = {
   readonly webhook_id?: string;
   readonly attachments?: readonly Attachment[];
   readonly message_reference?: { readonly message_id?: string; readonly channel_id?: string };
+  readonly mentions?: readonly { readonly id: string }[];
+  readonly mention_roles?: readonly string[];
 };
 
 export type Attachment = { readonly url: string; readonly filename: string; readonly content_type?: string };
@@ -62,7 +64,8 @@ export type InboxMessage = {
   readonly ts: string;
   readonly id: string;
   readonly channel_id: string;
-  readonly scope: "dm" | "channel" | "thread" | "pair" | "pair-bot";
+  // mention: the owner called this Dori (its bot or one of its roles) in a channel or thread it does not own
+  readonly scope: "dm" | "channel" | "thread" | "pair" | "pair-bot" | "mention";
   readonly author_id: string;
   readonly content: string;
   readonly transcript: string | null;
@@ -74,6 +77,7 @@ export type InboxMessage = {
   // resolves the card (dori resolve <Qn>); the listener never resolves it on a guess
   readonly open_cards?: readonly string[];
   readonly note?: string;
+  readonly link?: string;
 };
 
 export type InboxAnswer = {
@@ -117,7 +121,10 @@ export type ListenerDeps = {
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 200);
 const newer = (a: string, b: string): boolean => BigInt(a) > BigInt(b);
 // the inbox may be shared with other listeners (other messengers, other channels); only rows this listener writes set its cursors
-const OWN_SCOPES = new Set(["dm", "channel", "thread", "pair", "pair-bot"]);
+const OWN_SCOPES = new Set(["dm", "channel", "thread", "pair", "pair-bot", "mention"]);
+const MENTION_NOTE = "the owner called this Dori in a channel it does not own: answer in your own channel or work thread and include this link (that takes the eyes off); do not post there";
+// a Discord message link in the bot's own post: the eyes come off the message it points to
+const MESSAGE_LINK = /discord(?:app)?\.com\/channels\/\d+\/(\d+)\/(\d+)/g;
 
 export class DiscordListener {
   private readonly seen = new Set<string>();
@@ -128,6 +135,10 @@ export class DiscordListener {
   // channel or thread id -> owner messages that still carry our eyes reaction
   private eyes: Record<string, string[]> = {};
   private self = "";
+  // role ids that call this Dori: discord.mentionRoleIds, plus its bot member's roles, read again at every READY
+  private roles: Set<string>;
+  private rolesStale = true;
+  private rolesRead: Promise<void> | null = null;
   // newest owner message this listener has taken; everything missed while the socket was down is newer than it
   private cursor = "0";
   private seq: number | null = null;
@@ -135,6 +146,7 @@ export class DiscordListener {
 
   constructor(private readonly d: ListenerDeps) {
     mkdirSync(dirname(d.inboxFile), { recursive: true, mode: 0o700 });
+    this.roles = new Set(d.words.mentionRoleIds);
     this.eyesFile = join(dirname(d.inboxFile), "eyes.json");
     if (existsSync(this.eyesFile)) this.eyes = JSON.parse(readFileSync(this.eyesFile, "utf8")) as Record<string, string[]>;
     if (!existsSync(d.inboxFile)) return;
@@ -190,6 +202,8 @@ export class DiscordListener {
       const tracked = Object.keys(this.eyes).find((ch) => this.eyes[ch]?.includes(ref));
       targets.push([tracked ?? m.message_reference?.channel_id ?? m.channel_id, ref]);
     }
+    for (const [, ch, id] of (m.content ?? "").matchAll(MESSAGE_LINK))
+      if (ch && id && this.eyes[ch]?.includes(id) && !targets.some(([, t]) => t === id)) targets.push([ch, id]);
     const cleared: string[] = [];
     for (const [ch, id] of targets) {
       await this.d.dc.unreact(ch, id, EYES).then(
@@ -221,8 +235,13 @@ export class DiscordListener {
     else if (m.guild_id !== this.d.guild) return;
     else if (m.channel_id === this.d.channel) scope = "channel";
     else if (pair && m.channel_id === pair) scope = fromPairBot ? "pair-bot" : "pair";
-    else if ((await this.parentOf(m.channel_id)) === this.d.channel) scope = "thread";
-    else return;
+    // a channel it cannot look up is not one of its threads, but the owner may still have called it there
+    else if ((await this.parentOf(m.channel_id).catch((e: unknown) => (this.d.log(`DISCORD_PARENT_FAIL ${m.channel_id} ${errText(e)}`), ""))) === this.d.channel) scope = "thread";
+    else {
+      await this.readRoles();
+      if (!this.addressed(m)) return;
+      scope = "mention";
+    }
     this.seen.add(m.id);
     if (newer(m.id, this.cursor)) this.cursor = m.id;
     // the other Dori's posts are information the Dori rarely answers, so eyes there would never come off
@@ -251,10 +270,36 @@ export class DiscordListener {
       reply_to: m.message_reference?.message_id ?? null,
       ...(viaWebhook ? { via: "owner-webhook" as const, webhook_id: m.webhook_id } : {}),
       ...(open.length ? { open_cards: open, note } : {}),
+      ...(scope === "mention" ? { note: MENTION_NOTE, link: `https://discord.com/channels/${this.d.guild}/${m.channel_id}/${m.id}` } : {}),
     });
     this.d.log(`INBOUND discord-${scope} ${m.channel_id} ${m.id} ${viaWebhook ? `${this.d.owner} via=owner-webhook` : m.author.id} ${JSON.stringify((transcript ?? m.content).slice(0, 200))}`);
     if (open.length) this.d.log(`CARD_STILL_OPEN ${open.join(",")} thread=${m.channel_id} ${note}`);
     if (scope === "thread" && !this.d.shadow) await this.recheckThread(m.channel_id, open).catch((e: unknown) => this.d.log(`DISCORD_REOPEN_FAIL ${m.channel_id} ${errText(e)}`));
+  }
+
+  // the owner mentioned this Dori's bot or one of its roles (another Dori's bot or role is not this one)
+  private addressed(m: DiscordMessage): boolean {
+    if (this.self && (m.mentions ?? []).some((u) => u.id === this.self)) return true;
+    return (m.mention_roles ?? []).some((r) => this.roles.has(r));
+  }
+
+  // the roles the bot member has in the guild (a bot's managed role is what the owner picks when typing @<Dori>)
+  // A mention that comes while they are being read waits for them; a failed read is tried again by the next mention.
+  private readRoles(): Promise<void> {
+    if (!this.rolesStale || !this.self) return Promise.resolve();
+    this.rolesRead ??= this.loadRoles()
+      .catch((e: unknown) => this.d.log(`DISCORD_MENTION_IDS_FAIL ${errText(e)}`))
+      .finally(() => {
+        this.rolesRead = null;
+      });
+    return this.rolesRead;
+  }
+
+  private async loadRoles(): Promise<void> {
+    const me = await this.d.dc.call<{ roles?: string[] }>("GET", `/guilds/${this.d.guild}/members/${this.self}`);
+    this.roles = new Set([...this.d.words.mentionRoleIds, ...(me.roles ?? [])]);
+    this.rolesStale = false;
+    this.d.log(`DISCORD_MENTION_IDS user=${this.self} roles=${[...this.roles].join(",") || "-"}`);
   }
 
   // The owner writing in a closed thread brings the work back: unarchive it and mark it working again. Writing in a
@@ -325,6 +370,8 @@ export class DiscordListener {
       this.self = String((data.user as { id?: string } | undefined)?.id ?? "");
       this.d.log(this.d.shadow ? "DISCORD_LISTENER_READY shadow" : "DISCORD_LISTENER_READY");
       this.track(this.backfill().then(() => {}), "backfill");
+      this.rolesStale = true;
+      this.track(this.readRoles(), "roles");
     } else if (type === "GUILD_CREATE" && data.id === this.d.guild) {
       for (const t of (data.threads as { id: string; parent_id: string }[] | undefined) ?? []) this.parents.set(t.id, t.parent_id);
     } else if (type === "THREAD_CREATE" || type === "THREAD_UPDATE") this.parents.set(String(data.id), String(data.parent_id ?? ""));
