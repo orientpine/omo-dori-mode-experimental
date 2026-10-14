@@ -12,7 +12,7 @@ dori launch fix-login --title "Fix the login redirect loop" \
 
 `launch` checks the key and the `Done =` line, appends a footer to the brief, opens a tab in `laneWorkspace`, starts the agent, and after 20 seconds reads the pane for startup errors (missing module, no API key, rate limit, quota). On `STARTUP_ERROR`, relaunch on another model.
 
-Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as written here, and put the lane's own lines under them. Each step carries the sentences of the owner's original prompt word for word (owner, 2026-10-14 21:09 KST): copy them as they are, never shortened or softened; the lines after them add what the rules below need, and a line in parentheses says how an original sentence meets one of those rules. A small fix keeps the same frame and may write "2~8: <this file's full path>의 틀 8단계를 읽고 그대로 따른다" instead of copying the steps, so the lane reads them here, but never a shorter version of them.
+Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as written here, and put the lane's own lines under them. Each step carries the sentences of the owner's original prompt word for word (owner, 2026-10-14 21:09 KST): copy them as they are, never shortened or softened; the lines after them add what the rules below need, and a line in parentheses says how an original sentence meets one of those rules. A small fix keeps the same frame and the same eight steps; only the lane's own lines get shorter.
 
 ```text
 ulw
@@ -27,7 +27,7 @@ ulw
    코드·파일·로그는 explore, 외부 문서·라이브러리는 librarian.
 2. 이상적인 상태: 제품을 사용하는 최종 사용자를 상상하라. 그 사용자는 코드가 되었건, 다른 프로그래머가 되었건, 실제 고객이 되었건, 이 결과물이 맞닿아 영향을 줄 사람이 누군지를 명확히하고, 그 사람에 대해 상상하라.  그 사용자가 어떻게 사용하고있을지, 사용하게 될지를 상상하라. 그 사용자의 문제를 어떻게 풀고, 개선하고, 고민을 풀어주고, 더 낫게할지를 고민하라. 그리고 그렇게 풀기 위한 계획을 구체적이고 논리적으로 이유와 함께 나열하라.
    그 사용자의 입장에서 걸리거나, 이상하다고 느끼거나, 리그레션이 생기거나, 경험의 열화가 일어나지않는 가장 이상적인 상태를 정의하라. 그리고 구체적이고 논리적으로 이유와 함께 나열하라.
-   (그 사용자가 [사용자와 장면]의 사람이다.)
+   ([사용자와 장면]에는 그중 대표가 되는 한 사람과 장면을 적는다. 영향을 받는 다른 사람도 이 단계에서 명확히 한다.)
 3. 차이: 그리고 상태와 현재의 차이점을 모두 나열하라. 구체적이고 논리적으로 이유와 함께 나열하라.
    차이마다 근거(파일, 출력)를 달아라.
 4. 계획과 QA: 그 상태가 되기위한 계획, 그 상태가 되었음을 검증하는 QA 시나리오를 타협없이 세우라. 그리고 구체적이고 논리적으로 이유와 함께 나열하라.
