@@ -265,6 +265,33 @@ test("dori handover ready runs only in the lane's own pane and also covers the c
   expect((await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true })).code).toBe(0);
 });
 
+const guardedHandover = async (useGpu: boolean) => {
+  const base = await setup();
+  const deps = { ...base, config: { ...base.config, launchEnv: { CUDA_VISIBLE_DEVICES: "" } } };
+  if (useGpu) await deps.registry.patch("demo", { useGpu: true });
+  ready(deps, [15]);
+  return { deps, r: await laneHandover(deps, "demo", "aoe_lead_x", OK) };
+};
+
+test("launchEnv: a lane's new session starts with it", async () => {
+  expect((await guardedHandover(false)).r).toMatchObject({ code: 0, to: NEW });
+  expect(w.aoeEnv).toEqual([{ CUDA_VISIBLE_DEVICES: "" }]);
+});
+
+test("launchEnv: a --use-gpu lane's new session starts without it", async () => {
+  expect((await guardedHandover(true)).r).toMatchObject({ code: 0, to: NEW });
+  expect(w.aoeEnv).toEqual([{ CUDA_VISIBLE_DEVICES: undefined }]);
+});
+
+test("launchEnv: a new session tmux did not give it is closed and the old one stays the lane", async () => {
+  w.dropEnv = true;
+  const { deps, r } = await guardedHandover(false);
+  expect(r).toMatchObject({ code: 3, to: NEW });
+  expect(printed).toContain(`HANDOVER_FAIL demo: new session ${NEW} lacks launchEnv: CUDA_VISIBLE_DEVICES=(unset)`);
+  expect(stoppedIds()).toEqual([NEW_AOE_ID]);
+  expect((await readLane(deps)).pane).toBe(OLD);
+});
+
 test("moves the lane: same cwd, model and thinking, registry and cards repointed, status, monitors and probe checked, then the old session closes", async () => {
   // Given
   const deps = await setup();

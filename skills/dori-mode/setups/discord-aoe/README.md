@@ -13,7 +13,7 @@ What you get:
 | `dori thread reply\|wait\|done` | The thread hooks: posts lane reports into the work thread and sets its status mark (🔄, ⏸️, ✅ with this setup's emoji style); `done` archives the thread. |
 | `dori-lanes.sh` (unit `dori-lanes`) | `dori watch`, `freshness`, `dead-panes` and `guard` in one unit and one log, each line stamped and tagged. |
 | `session-watch.ts` (unit `dori-session-watch`) | Notices when another aoe session stops for a human (waiting, error, idle after a turn, a new `MILESTONE` line) and writes the event with the pane's tail, the lane's thread and what the session last said. |
-| `self-restart.sh` | The one safe way to restart an aoe session, the Dori's own included, e.g. after an agent update. |
+| `self-restart.sh` | The one safe way to restart an aoe session, the Dori's own included, e.g. after an agent update. A lane restarts with `launchEnv` unless it uses the GPU (`dori launch-env`). |
 | `google-watch.ts` (unit `dori-google-watch`) | Read-only zele polling for new unread mail and upcoming calendar events; writes JSONL and remembers notified ids. |
 | `kakao-watch.ts`, `kakao-login.ts` | Optional, for a Dori with its own KakaoTalk account: polls its rooms through agent-messenger, appends new messages to the inbox, prints `KAKAO_MSG` for the Dori's monitor and marks the rooms read, again until it holds. Off unless `DORI_KAKAO_SELF_ID` is set. |
 | `usage-snapshot.ts` | Captures the omo-usage TUI with ANSI colors and renders a PNG using headless Firefox. |
@@ -119,6 +119,7 @@ Every key is optional; the full list with defaults and what reads each one is in
 | `leadPane` | the tmux name of this Dori's lead | Where lane reports, nudges and update alerts go |
 | `ignorePanes` | the other Dori's lead (and its `aoe_term_*`) and any session no lane owns | Sessions the sweeps leave alone |
 | `defaultCwd` | this Dori's working directory | Where lanes start; also how `instances` recognises this Dori's directory |
+| `launchEnv` | `{"CUDA_VISIBLE_DEVICES": ""}` on a host whose GPU trains, else `{}` | Variables every lane session starts with: the GPU hidden from lanes and all they start; a lane launched with `--use-gpu` (or `dori set-gpu <key> on`) starts without them |
 | `watchLog`, `scorecard.lanesLog` | this Dori's lanes log | Sweep lines, update results, scorecard nudges |
 | `scorecard.sessions`, `scorecard.leadSessions` | this Dori's folder under `~/.omo/agent/sessions/` | The scorecard counts only this Dori's sessions (empty: every session on the host) |
 | `hooks.threadReply`, `hooks.threadDone` | `dori thread reply\|done` as in the template | Lane reports and closes in the owner's thread |

@@ -263,6 +263,9 @@ export type DoriConfig = {
   readonly agentCommand: ArgvTemplate;
   readonly defaultModel: string;
   readonly launchKeywords: string;
+  // variables every lane session starts with (aoe backend), e.g. {"CUDA_VISIBLE_DEVICES": ""} on a training node; a lane
+  // launched with --use-gpu starts without them
+  readonly launchEnv: Readonly<Record<string, string>>;
   readonly sessionsDir: string;
   readonly nudgeAfterMin: number;
   readonly postAfterMin: number;
@@ -300,6 +303,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   agentCommand: ["omo", "--model", "{model}", "{prompt}"],
   defaultModel: "anthropic/claude-opus-5-5",
   launchKeywords: "ulw set goal and work",
+  launchEnv: {},
   sessionsDir: join(home, ".omo", "agent", "sessions"),
   nudgeAfterMin: 15,
   postAfterMin: 20,
@@ -529,6 +533,8 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover } };
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
+  const env: unknown = merged.launchEnv;
+  if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((v) => typeof v !== "string")) throw new ConfigError(`${path}: launchEnv must map variable names to strings, e.g. {"CUDA_VISIBLE_DEVICES": ""}`);
   const stateDir = expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home);
   const leadPane = process.env.DORI_LEAD_PANE ?? merged.leadPane;
   const repo = raw.update?.repo ? expandHome(raw.update.repo, home) : (await run(["git", "-C", import.meta.dir, "rev-parse", "--show-toplevel"])).out || base.update.repo;

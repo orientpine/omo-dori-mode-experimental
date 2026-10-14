@@ -22,7 +22,7 @@ import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
-import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchLane, LaunchError, renderBrief, setThread, validateLaunch } from "./launch.ts";
+import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, renderBrief, setGpu, setThread, validateLaunch } from "./launch.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
 import { canonical, evidenceLines, inferredLine, inferRepeats, laneEvents, type MetricRepeat, suspects } from "./auto-signals.ts";
@@ -54,17 +54,23 @@ const USAGE = `dori <command> [options]
 
   lead                                 print the live lead as "<aoe-id> <tmux-session>"
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
-         [--goal "owner words"] [--challenge-before STEP ...] [--dry-run]
+         [--goal "owner words"] [--challenge-before STEP ...] [--use-gpu] [--dry-run]
                                        prints LAUNCH_DONE_WEAK (and still launches) when every Done signal only checks
                                        files or text; --done-weak-ok silences it. The brief gets a "Past signals" section
                                        from earlier lanes in the same cwd or with a shared tag (the key's first word is one)
                                        and the area's "Hypothesis tree". --goal keeps the owner's words for intent-check
                                        (LAUNCH_NO_GOAL without it); --challenge-before makes the lane run dori challenge
                                        before that step (claim-done is refused until it did); --dry-run prints the brief
-                                       as the lane would read it and opens nothing
-  adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...]
+                                       as the lane would read it and opens nothing. The session starts with config
+                                       launchEnv (aoe), e.g. the GPU hidden; --use-gpu starts it without, and the
+                                       registry keeps that for handover and restart
+  adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...] [--use-gpu]
                                        REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
   set-thread <key> <adapter>:<id>      point an open lane at another work thread
+  set-gpu <key> on|off                 on: the lane's next session (handover, restart) starts without launchEnv; off: with it
+  launch-env <tmux-session>            env(1) arguments a restart of that session needs to start like dori opens it
+                                       (NAME=VALUE for a lane, --unset=NAME for a --use-gpu lane or any other session;
+                                       nothing without launchEnv); used by setups/discord-aoe/self-restart.sh
   sync   [--write]                     registry vs live panes; read-only unless --write; a SIGNALS line per open lane with a record
   claim-done [<key>] --evidence TEXT  key defaults to the lane registered for this pane ($HERDR_PANE_ID, or the tmux session with backend aoe)
   object-done <key> --reason TEXT [--reason TEXT ...]
@@ -256,7 +262,7 @@ const flags = parseArgs({
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
     from: { type: "string" }, first: { type: "string" }, "open-card": { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
-    pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" },
+    pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" }, "use-gpu": { type: "boolean" },
     hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" }, template: { type: "boolean" },
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
@@ -455,7 +461,7 @@ try {
       process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
       break;
     case "launch": {
-      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before") };
+      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]) };
       const noGoal = goalWarning(input);
       if (noGoal) console.log(noGoal);
       if (flags.values["dry-run"]) {
@@ -480,8 +486,9 @@ try {
       process.exit(r.startup.startsWith("STARTUP_OK") ? 0 : 3);
     }
     case "adopt": {
-      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), pane: need("pane"), tags: tags(), goal: opt("goal"), challengeBefore: many("challenge-before") });
+      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), pane: need("pane"), tags: tags(), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]) });
       console.log(`ADOPTED ${l.key} pane=${l.pane} thread=${l.thread}`);
+      if (config.backend === "aoe" && Object.keys(config.launchEnv).length) console.log(`ADOPT_ENV ${l.key}: the running session keeps the environment it started with; ${l.useGpu ? "no launchEnv" : "launchEnv"} applies from its next handover or restart`);
       break;
     }
     case "sync": {
@@ -496,6 +503,16 @@ try {
     case "set-thread": {
       const ref = flags.positionals[1]?.trim() ?? die("usage: dori set-thread <key> <adapter>:<id>");
       console.log(await setThread(deps, await lane(key ?? die("set-thread needs a lane key")), ref));
+      break;
+    }
+    case "set-gpu": {
+      const on = flags.positionals[1]?.trim();
+      if (on !== "on" && on !== "off") die("usage: dori set-gpu <key> on|off");
+      console.log(await setGpu(deps, await lane(key ?? die("set-gpu needs a lane key")), on === "on"));
+      break;
+    }
+    case "launch-env": {
+      for (const arg of await launchEnvArgs(deps, key ?? die("usage: dori launch-env <tmux-session>"))) console.log(arg);
       break;
     }
     case "claim-done": {

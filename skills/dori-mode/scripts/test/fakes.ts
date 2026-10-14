@@ -22,6 +22,12 @@ export type World = {
   calls: string[][];
   // panes that got an Enter: their next screen read shows a running turn, the one after it does not
   started: string[];
+  // tmux's update-environment option, the env each aoe add ran with, and the session env tmux built from it
+  // (dropEnv: tmux carries nothing over, as before update-environment named the variables)
+  updateEnv: string[];
+  aoeEnv: (Readonly<Record<string, string | undefined>> | undefined)[];
+  sessionEnv: Record<string, Record<string, string | undefined>>;
+  dropEnv: boolean;
 };
 
 export const RUNNING = " • Working (esc to interrupt)";
@@ -30,9 +36,9 @@ export const NEW_AOE_ID = "5e5e5e5e00aa11bb";
 
 export const WT = "/repo/.wt/demo-lane";
 
-export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", screens: {}, aoePs: [], panes: [], aoe: [], tmux: [], calls: [], started: [] });
+export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", screens: {}, aoePs: [], panes: [], aoe: [], tmux: [], calls: [], started: [], updateEnv: ["DISPLAY", "SSH_AUTH_SOCK"], aoeEnv: [], sessionEnv: {}, dropEnv: false });
 
-export const fakeRunner = (w: World): Runner => async (argv) => {
+export const fakeRunner = (w: World): Runner => async (argv, opts) => {
   w.calls.push([...argv]);
   const ok = (out = ""): Ran => ({ code: 0, out, err: "" });
   const [cmd, a1, a2] = argv;
@@ -55,9 +61,22 @@ export const fakeRunner = (w: World): Runner => async (argv) => {
   if (cmd === "aoe" && a1 === "ps") return ok(JSON.stringify(w.aoePs));
   if (cmd === "aoe" && a1 === "add") {
     const title = argv[argv.indexOf("-t") + 1] ?? "";
+    const name = `aoe_${title}_${NEW_AOE_ID.slice(0, 8)}`;
     w.aoe.push({ id: NEW_AOE_ID, title, path: a2 ?? "", tool: "omo", profile: "main" });
-    w.tmux.push(`aoe_${title}_${NEW_AOE_ID.slice(0, 8)}`);
+    w.tmux.push(name);
+    w.aoeEnv.push(opts?.env);
+    w.sessionEnv[name] = w.dropEnv ? {} : Object.fromEntries(w.updateEnv.map((n) => [n, opts?.env?.[n]]));
     return ok();
+  }
+  if (cmd === "tmux" && a1 === "show-options" && argv.at(-1) === "update-environment") return ok(w.updateEnv.join("\n"));
+  if (cmd === "tmux" && a1 === "set-option" && argv.includes("update-environment")) {
+    w.updateEnv.push(argv.at(-1) ?? "");
+    return ok();
+  }
+  if (cmd === "tmux" && a1 === "show-environment") {
+    const name = argv.at(-1) ?? "";
+    const value = w.sessionEnv[(argv[argv.indexOf("-t") + 1] ?? "").replace(/^=/, "")]?.[name];
+    return value === undefined ? { code: 1, out: "", err: `unknown variable: ${name}` } : ok(`${name}=${value}`);
   }
   if (cmd === "aoe") return ok();
   if (cmd === "tmux" && a1 === "ls") return ok(w.tmux.join("\n"));

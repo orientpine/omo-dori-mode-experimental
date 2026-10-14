@@ -123,12 +123,28 @@ test("start mode leaves an already running lead untouched", async () => {
 
 test("start mode starts a stopped lead then submits the default first message", async () => {
   const result = await startScript(true, ["--start"]);
-  expect(result).toEqual({ code: 0, out: "", err: "", commands: ["dori lead", `aoe session start ${ID}`, `dori type ${TMUX} --text Dori mode`], logged: true });
+  expect(result).toEqual({ code: 0, out: "", err: "", commands: ["dori lead", `dori launch-env ${TMUX}`, `aoe session start ${ID}`, `dori type ${TMUX} --text Dori mode`], logged: true });
 });
 
 test("default mode still restarts the lead and submits an explicit first message", async () => {
   const result = await startScript(false, [ID, TMUX, "configured first message"]);
-  expect(result).toEqual({ code: 0, out: "", err: "", commands: [`aoe session restart ${ID}`, `dori type ${TMUX} --text configured first message`], logged: true });
+  expect(result).toEqual({ code: 0, out: "", err: "", commands: [`dori launch-env ${TMUX}`, `aoe session restart ${ID}`, `dori type ${TMUX} --text configured first message`], logged: true });
+});
+
+test("self-restart restarts the session with what dori launch-env prints: a launchEnv value set, another name removed even when the caller has it", async () => {
+  const bin = join(state.dir, ".bun/bin");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(state.dir, ".dori"));
+  const log = join(state.dir, "commands");
+  executable(join(bin, "dori"), `[ "$1" != launch-env ] || printf '%s\\n' --unset=HIDE_ME CUDA_VISIBLE_DEVICES=`);
+  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* cuda=\${CUDA_VISIBLE_DEVICES-unset} hide=\${HIDE_ME-unset}" >> "${log}"`);
+  executable(join(bin, "tmux"), `printf '%s\\n' '❯'`);
+  executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "agent"), "exit 0");
+  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ID, TMUX, ""], {
+    env: { ...process.env, HOME: state.dir, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_AGENT_BIN: "agent", HIDE_ME: "from-caller" }, stdout: "pipe", stderr: "pipe",
+  });
+  expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: [`aoe session restart ${ID} cuda= hide=unset`] });
 });
 
 test("self-restart gives the session no DORI_* variable and drops them from the tmux server's global environment first", async () => {
@@ -148,7 +164,7 @@ test("self-restart gives the session no DORI_* variable and drops them from the 
   });
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
     code: 0,
-    commands: ["tmux set-environment -g -u DORI_DISCORD_TOKEN", "tmux set-environment -g -u DORI_LEAD_TMUX", `aoe session restart ${ID} dori-vars=0`],
+    commands: [`dori launch-env ${TMUX}`, "tmux set-environment -g -u DORI_DISCORD_TOKEN", "tmux set-environment -g -u DORI_LEAD_TMUX", `aoe session restart ${ID} dori-vars=0`],
   });
 });
 

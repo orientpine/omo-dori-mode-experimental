@@ -13,6 +13,7 @@
   ],
   "defaultModel": "anthropic/claude-opus-5-5",
   "launchKeywords": "ulw",
+  "launchEnv": {},
   "sessionsDir": "~/.omo/agent/sessions",
   "nudgeAfterMin": 15,
   "postAfterMin": 20,

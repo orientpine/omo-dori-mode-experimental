@@ -1,4 +1,4 @@
-import { AoeError, inputLine, openAoeSession, target } from "./aoe.ts";
+import { AoeError, envMismatch, forwardEnv, inputLine, laneEnv, openAoeSession, target } from "./aoe.ts";
 import { type Backend, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen, sendVerified } from "./panes.ts";
@@ -24,6 +24,8 @@ export type LaunchInput = {
   readonly goal?: string;
   // big steps the lane must put through dori challenge first
   readonly challengeBefore?: readonly string[];
+  // the lane needs the GPU: its sessions start without config launchEnv
+  readonly useGpu?: boolean;
 };
 
 export class LaunchError extends Error {}
@@ -64,7 +66,7 @@ export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr")
   "",
 ].join("\n");
 
-const intentFields = (input: LaunchInput): Partial<Lane> => ({ ...(input.goal?.trim() ? { goal: input.goal.trim() } : {}), ...(input.challengeBefore?.length ? { challengeBefore: input.challengeBefore } : {}) });
+const intentFields = (input: LaunchInput): Partial<Lane> => ({ ...(input.goal?.trim() ? { goal: input.goal.trim() } : {}), ...(input.challengeBefore?.length ? { challengeBefore: input.challengeBefore } : {}), ...(input.useGpu ? { useGpu: true } : {}) });
 
 export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly pane: string }): Promise<Lane> => {
   await validateLaunch(deps, input);
@@ -79,6 +81,25 @@ export const setThread = async (deps: FlowDeps, lane: Lane, ref: string): Promis
   if (problem) throw new LaunchError(problem);
   await deps.registry.patch(lane.key, { thread: ref });
   return `THREAD_SET ${lane.key} ${lane.thread || "-"} -> ${ref}`;
+};
+
+// Marks whether a lane's sessions start without launchEnv. The running session keeps the environment it started with.
+export const setGpu = async (deps: FlowDeps, lane: Lane, on: boolean): Promise<string> => {
+  await deps.registry.patch(lane.key, { useGpu: on });
+  return `GPU_SET ${lane.key} ${lane.useGpu ? "on" : "off"} -> ${on ? "on" : "off"}: applies from its next handover or restart; the running session keeps its environment`;
+};
+
+// env(1) arguments that restart a session the way dori opens it (setups/discord-aoe/self-restart.sh): NAME=VALUE for an
+// open lane without --use-gpu, --unset=NAME for anything else (a GPU lane, the lead, a session no lane owns). Nothing
+// when launchEnv is empty; otherwise its names go into tmux update-environment first.
+export const launchEnvArgs = async (deps: FlowDeps, pane: string): Promise<string[]> => {
+  const names = Object.keys(deps.config.launchEnv);
+  if (!names.length) return [];
+  const lane = (await deps.registry.list()).find((l) => l.pane === pane && l.status !== "closed");
+  await forwardEnv(deps.run, names);
+  // env(1) reads options only before the first NAME=VALUE (a later --unset=X would set a variable named "--unset")
+  const env = Object.entries(laneEnv(deps.config.launchEnv, !lane || lane.useGpu));
+  return [...env.filter(([, v]) => v === undefined).map(([name]) => `--unset=${name}`), ...env.flatMap(([name, value]) => (value === undefined ? [] : [`${name}=${value}`]))];
 };
 
 // Earlier lanes in the same repo (a cwd other than the default one) or with a shared tag, for the new brief.
@@ -141,7 +162,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const { draft, text } = await renderBrief(deps, input);
   await Bun.write(input.brief, text);
   const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
-  const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt) : await openHerdr(deps, input.key, cwd, model, prompt);
+  const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt, laneEnv(deps.config.launchEnv, input.useGpu)) : await openHerdr(deps, input.key, cwd, model, prompt);
   const lane: Lane = { ...draft, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}) };
   await deps.registry.write(lane);
   if (opened.failure) return { lane, startup: `STARTUP_ERROR ${input.key} ${opened.pane}: ${opened.failure}` };
@@ -162,16 +183,19 @@ const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model: string
   return { pane, ...(tab ? { tab } : {}) };
 };
 
-const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string): Promise<Opened> => {
+const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string, env: Readonly<Record<string, string | undefined>>): Promise<Opened> => {
   let pane: string;
   try {
-    pane = await openAoeSession(deps.run, deps.clock, { title: key, cwd, tool: deps.config.agentCommand[0] ?? "omo", model });
+    pane = await openAoeSession(deps.run, deps.clock, { title: key, cwd, tool: deps.config.agentCommand[0] ?? "omo", model, env });
   } catch (e) {
     if (e instanceof AoeError) throw new LaunchError(e.message);
     throw e;
   }
   const failure = await awaitPrompt(deps, pane);
   if (failure) return { pane, failure };
+  // a lane that missed launchEnv (the GPU guard) gets no prompt: it would start working with the GPU in reach
+  const off = await envMismatch(deps.run, pane, env);
+  if (off.length) return { pane, failure: `launchEnv not in the session: ${off.join(", ")}; the lane prompt was not sent` };
   if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, prompt))) return { pane, failure: "the launch prompt was not submitted (see NOT_SUBMITTED in the watch log)" };
   return { pane };
 };

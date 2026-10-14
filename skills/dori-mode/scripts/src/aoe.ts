@@ -96,10 +96,43 @@ export const waitForPrompt = async (run: Runner, clock: Clock, pane: string, tri
 
 export class AoeError extends Error {}
 
+// What a lane's session starts with: config launchEnv, or for a lane launched with --use-gpu none of its keys (an
+// undefined value removes the variable, so a caller that has it does not hand it on). {} when launchEnv is empty.
+export const laneEnv = (launchEnv: Readonly<Record<string, string>>, useGpu: boolean | undefined): Record<string, string | undefined> =>
+  Object.fromEntries(Object.keys(launchEnv).map((name) => [name, useGpu ? undefined : launchEnv[name]]));
+
+// aoe does not pass its own environment to the session it opens: tmux copies only the variables named in its
+// update-environment option from the client (aoe add, aoe session restart) into the new session. Each name goes in once;
+// a client without the variable then leaves it out of the session.
+export const forwardEnv = async (run: Runner, names: readonly string[]): Promise<void> => {
+  if (!names.length) return;
+  const shown = await run(["tmux", "show-options", "-gv", "update-environment"]);
+  if (shown.code !== 0) throw new AoeError(`tmux update-environment unreadable (${shown.err || shown.out}); the session would start without launchEnv`);
+  const have = new Set(shown.out.split("\n").map((l) => l.trim()));
+  for (const name of names.filter((n) => !have.has(n))) {
+    const set = await run(["tmux", "set-option", "-g", "-a", "update-environment", name]);
+    if (set.code !== 0) throw new AoeError(`tmux update-environment could not take ${name} (${set.err || set.out}); the session would start without launchEnv`);
+  }
+};
+
+// The launchEnv variables a session did not get as asked, as "NAME=want(got)" (empty when all match).
+export const envMismatch = async (run: Runner, pane: string, env: Readonly<Record<string, string | undefined>>): Promise<string[]> => {
+  const out: string[] = [];
+  for (const [name, want] of Object.entries(env)) {
+    const r = await run(["tmux", "show-environment", "-t", `=${pane}`, name]);
+    const got = r.code === 0 && r.out.startsWith(`${name}=`) ? r.out.slice(name.length + 1) : undefined;
+    if (got !== want) out.push(`${name}=${want ?? "(unset)"}(${got ?? "unset"})`);
+  }
+  return out;
+};
+
 // aoe add refuses a title+path pair that already exists, even in the trash (aoe rm --purge clears it).
 // thinking goes in as its own --thinking flag: omo 5.1.30 can start a session at medium although the model id ends in :high.
-export const openAoeSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly tool: string; readonly model: string; readonly thinking?: string }): Promise<string> => {
-  const added = await run(["aoe", "add", opts.cwd, "-t", opts.title, "--tool", opts.tool, "-l", "--extra-args", `--model ${opts.model}${opts.thinking ? ` --thinking ${opts.thinking}` : ""}`]);
+// env: laneEnv for the session (see forwardEnv); left out or {} touches neither tmux nor aoe's environment.
+export const openAoeSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly tool: string; readonly model: string; readonly thinking?: string; readonly env?: Readonly<Record<string, string | undefined>> }): Promise<string> => {
+  const env = opts.env && Object.keys(opts.env).length ? opts.env : undefined;
+  if (env) await forwardEnv(run, Object.keys(env));
+  const added = await run(["aoe", "add", opts.cwd, "-t", opts.title, "--tool", opts.tool, "-l", "--extra-args", `--model ${opts.model}${opts.thinking ? ` --thinking ${opts.thinking}` : ""}`], env ? { env } : undefined);
   if (added.code !== 0) throw new AoeError(`aoe add failed: ${added.err || added.out}`);
   for (let i = 0; i < 30; i++) {
     const s = (await aoeSessions(run)).find((x) => x.title === opts.title && x.path === opts.cwd);
