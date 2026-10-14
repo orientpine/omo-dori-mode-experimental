@@ -12,7 +12,7 @@ dori launch fix-login --title "Fix the login redirect loop" \
 
 `launch` checks the key and the `Done =` line, appends a footer to the brief, opens a tab in `laneWorkspace`, starts the agent, and after 20 seconds reads the pane for startup errors (missing module, no API key, rate limit, quota). On `STARTUP_ERROR`, relaunch on another model.
 
-Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as written here (step 5 carries the owner's addition of 2026-10-14 21:00 KST, the original's "quick" line), and put the lane's own lines under them. A small fix keeps the same frame; each step can then be one line.
+Write the brief like a careful prompt, on this template. The four fields and the eight steps are the owner's shared prompt for big tasks (2026-10-14): fill in the four fields, keep the steps as written here, and put the lane's own lines under them. Each step carries the sentences of the owner's original prompt word for word (owner, 2026-10-14 21:09 KST): copy them as they are, never shortened or softened; the lines after them add what the rules below need, and a line in parentheses says how an original sentence meets one of those rules. A small fix keeps the same frame and the same eight steps; only the lane's own lines get shorter.
 
 ```text
 ulw
@@ -22,13 +22,25 @@ ulw
 [사용자와 장면] (이 결과를 실제로 쓸 사람 한 명 + 그 사람이 겪는 장면 하나)
 [넘으면 안 되는 선] (2~3개, 없으면 "없음")
 
-1. 조사: 결정에 필요한 정보를 explore로 먼저 모아라. 코드·파일·로그는 explore, 외부 문서·라이브러리는 librarian.
-2. 이상적인 상태: 위 사용자가 이 결과를 쓰는 장면에서 걸리거나, 이상하다고 느끼거나, 기존 기능이 깨지거나, 경험이 나빠지는 지점이 하나도 없는 상태를 정의하라. 항목마다 이유를 달아라.
-3. 차이: 그 상태와 현재의 차이를 전부 적어라. 차이마다 근거(파일, 출력)를 달아라.
-4. 계획과 QA: 차이를 없애는 계획과, 그 상태가 됐음을 확인하는 QA 시나리오를 같이 세워라. QA는 테스트 통과가 아니라 실제 화면·실제 호출·실제 출력을 보는 방식으로.
-5. 실행: 서로 독립적인 일은 잘게 쪼개 병렬로 돌려라(goal을 걸고, 필요하면 mass-ulw와 워크플로 여러 개). unspecified-low 대신 quick으로 더 잘게 쪼개 동시에 진행하고, 대신 검증은 더 빡세고 엄격하게. 어떤 도구·모델을 쓸지는 맡긴다. 잘게 쪼갠 만큼 검증은 더 엄격하게.
-6. 대조: QA 시나리오로 이상적인 상태와 항목별로 대조하라. 안 맞는 항목이 있으면 3번으로 돌아가 다시 계획하고 고쳐라. [끝난 상태]가 증거로 확인될 때까지 반복.
-7. 기록: 계획·차이·QA·대조 결과를 ulw-plan처럼 파일로 남기고 체크하며, todo로 진행 상황을 계속 보고하라. 계획 승인은 미리 줬으니 [넘으면 안 되는 선] 안에서는 묻지 말고 진행하라.
+1. 조사: 결정을 위한 정보를 ulw explore 로 모두 수집하라.
+   작업 계획에 있어서는 explorian, librarian 을 적극 활용하여 최대한 많은 정보를 과 수집하고,
+   코드·파일·로그는 explore, 외부 문서·라이브러리는 librarian.
+2. 이상적인 상태: 제품을 사용하는 최종 사용자를 상상하라. 그 사용자는 코드가 되었건, 다른 프로그래머가 되었건, 실제 고객이 되었건, 이 결과물이 맞닿아 영향을 줄 사람이 누군지를 명확히하고, 그 사람에 대해 상상하라.  그 사용자가 어떻게 사용하고있을지, 사용하게 될지를 상상하라. 그 사용자의 문제를 어떻게 풀고, 개선하고, 고민을 풀어주고, 더 낫게할지를 고민하라. 그리고 그렇게 풀기 위한 계획을 구체적이고 논리적으로 이유와 함께 나열하라.
+   그 사용자의 입장에서 걸리거나, 이상하다고 느끼거나, 리그레션이 생기거나, 경험의 열화가 일어나지않는 가장 이상적인 상태를 정의하라. 그리고 구체적이고 논리적으로 이유와 함께 나열하라.
+   ([사용자와 장면]에는 그중 대표가 되는 한 사람과 장면을 적는다. 영향을 받는 다른 사람도 이 단계에서 명확히 한다.)
+3. 차이: 그리고 상태와 현재의 차이점을 모두 나열하라. 구체적이고 논리적으로 이유와 함께 나열하라.
+   차이마다 근거(파일, 출력)를 달아라.
+4. 계획과 QA: 그 상태가 되기위한 계획, 그 상태가 되었음을 검증하는 QA 시나리오를 타협없이 세우라. 그리고 구체적이고 논리적으로 이유와 함께 나열하라.
+   QA는 테스트 통과가 아니라 실제 화면·실제 호출·실제 출력을 보는 방식으로.
+5. 실행: 그 내용대로 타협없이 구현하여야 한다
+   작업 진행에 있어서는 unspecified low 를 활용하는대신에 quick 을 더 잘개 쪼개어 동시에 작업이 진행 될 수 있도록 하고, 대신 검증을 더 빡세고 엄격히 하게끔 작업하여 최대 효율을 달성하라.
+   set goal and go mass ulw loop, create multiple workflows and workflows, take workflow as just one tool create multiple workflows and so on if required
+   동시에 돌리는 것은 서로 독립적인 일뿐이다. 그 밖에 어떤 도구·모델을 쓸지는 맡긴다.
+6. 대조: 그리고 그 이상적인 상태와 1:1 100% 동일하다고 확인을 진행하고, 그렇지 못하다면 예외없이, 핑계없이 다 그 상태가 되도록 만들기 위한 계획을 세워라
+   QA 시나리오로 항목별로 대조하고, 안 맞는 항목이 있으면 3번으로 돌아가 다시 계획하고 고쳐라. [끝난 상태]가 증거로 확인될 때까지 반복.
+   (재시도 상한이 먼저다: 같은 지표에서 정한 횟수만큼 실패하면 다시 계획하는 대신 | blocker | 로 남은 차이를 그대로 보고한다. 새 계획이 실패 횟수를 되돌리지 않고, 그 보고는 핑계가 아니다.)
+7. 기록: 그리고 또한 이 내용을 마치 $ulw-plan 을 진행하듯 상세히 적어두고 이를 체크하고, todo 상태를 항상 업데이트하여 보고하며 진행하라. plan approval 은 이 자리에서 모두 허가하니 더이상 질문하지 말고 바로 진행하라.
+   (질문은 [넘으면 안 되는 선]을 넘어야 하거나 오너만 정할 수 있는 선택일 때만 | question | 으로 보고한다.)
 8. 보고: [끝난 상태]와 QA 항목마다 증거(캡처, 출력, 파일 경로)를 붙여라.
 
 (the lane's own lines: where, what is known, the owner's words with their link, what to do)
@@ -51,7 +63,7 @@ How the fields carry what a brief always needs:
 - that the docs and tests of what the lane changes change with it;
 - when the lane makes or changes a yardstick (a metric, a threshold, a pass/fail check), one line on how that yardstick could get better while the real goal gets worse;
 - that a blocker, an impossible task or an ambiguous request is a fine report (`| blocker |`), not a failure to hide;
-- a retry cap: after a set number of failed attempts at the same step (two or three), report a blocker instead of trying again. Step 6 loops back to a new plan, but a new plan or hypothesis does not reset the count: the cap and the stuck ladder count failed attempts per metric, and they win over step 6's "repeat".
+- a retry cap: after a set number of failed attempts at the same step (two or three), report a blocker instead of trying again. Step 6 loops back to a new plan, but a new plan or hypothesis does not reset the count: the cap and the stuck ladder count failed attempts per metric, and they win over step 6's "repeat" and its 예외없이, 핑계없이: a blocker at the cap reports the gap that is left, it is not an excuse.
 
 **Why the `Done =` line has to be checkable:** the watcher closes lanes on its own, so it can only trust what it can read back itself. `launch` and `adopt` refuse any signal outside this list. Signals are joined with `;`, and every one has to pass.
 
