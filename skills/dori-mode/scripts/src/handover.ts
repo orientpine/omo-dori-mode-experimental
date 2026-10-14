@@ -4,7 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { aoeSessions, captureTmux, closeAoeSession, inputLine, openAoeSession, sessionFor } from "./aoe.ts";
+import { aoeSessions, captureTmux, closeAoeSession, inputLine, laneEnv, openAoeSession, sessionFor } from "./aoe.ts";
 import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { awaitPrompt } from "./launch.ts";
@@ -450,7 +450,8 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   const tell = (pane: string, text: string) => sendVerified(deps.run, deps.clock, config, pane, text).catch(() => false);
   let pane: string;
   try {
-    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", model });
+    // the lead is no lane: it never starts with launchEnv, even when the handover runs from a lane's environment
+    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", model, env: laneEnv(config.launchEnv, true) });
     mark("open", true);
   } catch (e) {
     mark("open", false);

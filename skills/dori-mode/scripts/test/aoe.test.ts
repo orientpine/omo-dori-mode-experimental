@@ -3,7 +3,8 @@ import { join } from "node:path";
 
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, watchTick } from "../src/done-flow.ts";
-import { launchLane } from "../src/launch.ts";
+import type { DoriConfig } from "../src/config.ts";
+import { launchEnvArgs, launchLane } from "../src/launch.ts";
 import { listPanes, sendVerified } from "../src/panes.ts";
 import { SUBMIT_TIMING } from "../src/submit.ts";
 import type { Lane } from "../src/registry.ts";
@@ -49,6 +50,65 @@ test("a launch opens an aoe session, waits for the prompt and types the lane pro
   expect(world.calls).toContainEqual(["tmux", "send-keys", "-t", `=${pane}:`, "Enter"]);
   expect(await Bun.file(brief).text()).toContain(`run ["dori","type","aoe_Dori_0a1b2c3d","--text","<report line>"]`);
   expect(await Bun.file(brief).text()).not.toContain("send-keys");
+});
+
+const GUARD = { CUDA_VISIBLE_DEVICES: "" };
+const launchWith = async (patch: Partial<DoriConfig>, useGpu?: boolean, key = "gg") => {
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "# brief\n");
+  const deps = { ...at(T0), config: { ...at(T0).config, ...patch } };
+  return { deps, r: await launchLane(deps, { key, title: key, brief, done: "file /tmp/ok", cwd: `/tmp/${key}`, ...(useGpu ? { useGpu } : {}) }) };
+};
+
+test("launchEnv: the launch names each variable in tmux update-environment once, runs aoe add with it, and the session has it", async () => {
+  world.updateEnv.push("OTHER");
+  const { r } = await launchWith({ launchEnv: GUARD });
+  expect(r.startup).toBe(`STARTUP_OK gg aoe_gg_${NEW_AOE_ID.slice(0, 8)}`);
+  expect(world.updateEnv).toEqual(["DISPLAY", "SSH_AUTH_SOCK", "OTHER", "CUDA_VISIBLE_DEVICES"]);
+  expect(world.aoeEnv).toEqual([GUARD]);
+  expect(world.sessionEnv[`aoe_gg_${NEW_AOE_ID.slice(0, 8)}`]?.CUDA_VISIBLE_DEVICES).toBe("");
+  expect(r.lane.useGpu).toBeUndefined();
+  // a second launch finds the name there and does not append it again
+  await launchWith({ launchEnv: GUARD }, false, "hh");
+  expect(world.updateEnv.filter((n) => n === "CUDA_VISIBLE_DEVICES")).toHaveLength(1);
+});
+
+test("--use-gpu: aoe add runs with the launchEnv names removed, the lane is prompted, and the registry keeps useGpu", async () => {
+  const { deps, r } = await launchWith({ launchEnv: GUARD }, true);
+  expect(r.startup).toStartWith("STARTUP_OK gg");
+  expect(world.aoeEnv).toEqual([{ CUDA_VISIBLE_DEVICES: undefined }]);
+  expect(sent(world)).toHaveLength(1);
+  expect((await deps.registry.read("gg"))?.useGpu).toBe(true);
+});
+
+test("no launchEnv: the launch leaves tmux options alone and runs aoe add with the plain environment", async () => {
+  const { r } = await launchWith({});
+  expect(r.startup).toStartWith("STARTUP_OK gg");
+  expect(world.aoeEnv).toEqual([undefined]);
+  expect(world.calls.some((c) => c[0] === "tmux" && /^(show|set)-(options|option|environment)$/.test(c[1] ?? ""))).toBe(false);
+});
+
+test("a session tmux did not give launchEnv gets no lane prompt: STARTUP_ERROR names the variable", async () => {
+  world.dropEnv = true;
+  const { r } = await launchWith({ launchEnv: GUARD });
+  expect(r.startup).toBe(`STARTUP_ERROR gg aoe_gg_${NEW_AOE_ID.slice(0, 8)}: launchEnv not in the session: CUDA_VISIBLE_DEVICES=(unset); the lane prompt was not sent`);
+  expect(sent(world)).toEqual([]);
+});
+
+test("launch-env prints NAME=VALUE for an open lane, --unset=NAME for a --use-gpu lane, a closed lane or another session, nothing without launchEnv", async () => {
+  const deps = { ...at(T0), config: { ...at(T0).config, launchEnv: GUARD } };
+  const base = { title: "t", thread: "none", brief: "/b", done: "file /x", openedAt: "2026-01-01T00:00:00Z" };
+  await deps.registry.write({ ...base, key: "cpu", pane: "aoe_cpu_1" });
+  await deps.registry.write({ ...base, key: "gpu", pane: "aoe_gpu_1", useGpu: true });
+  await deps.registry.write({ ...base, key: "old", pane: "aoe_old_1", status: "closed" });
+  expect(await launchEnvArgs(deps, "aoe_cpu_1")).toEqual(["CUDA_VISIBLE_DEVICES="]);
+  expect(await launchEnvArgs(deps, "aoe_gpu_1")).toEqual(["--unset=CUDA_VISIBLE_DEVICES"]);
+  expect(await launchEnvArgs(deps, "aoe_old_1")).toEqual(["--unset=CUDA_VISIBLE_DEVICES"]);
+  expect(await launchEnvArgs(deps, "aoe_Dori_0a1b2c3d")).toEqual(["--unset=CUDA_VISIBLE_DEVICES"]);
+  expect(world.updateEnv).toContain("CUDA_VISIBLE_DEVICES");
+  world.calls = [];
+  expect(await launchEnvArgs(at(T0), "aoe_cpu_1")).toEqual([]);
+  expect(world.calls).toEqual([]);
 });
 
 test("a launch whose Done only checks a file warns LAUNCH_DONE_WEAK and still launches; --done-weak-ok and a behavior signal stay quiet", async () => {

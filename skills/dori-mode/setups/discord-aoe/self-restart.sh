@@ -85,10 +85,19 @@ if ! command -v "$AGENT" >/dev/null || ! "$AGENT" --version >>"$LOG" 2>&1; then
   exit 1
 fi
 
+# config launchEnv (e.g. the GPU hidden on a training node): a lane restarts with it, a --use-gpu lane, the lead and any
+# other session without it, as dori opens them; aoe hands the session only what tmux update-environment names
+if ! LAUNCH_ENV_OUT=$(dori launch-env "$T" 2>>"$LOG"); then
+  log "SELF-RESTART-WARN dori launch-env $T failed; the session restarts without launchEnv"
+  LAUNCH_ENV_OUT=""
+fi
+mapfile -t LAUNCH_ENV < <(printf '%s' "$LAUNCH_ENV_OUT" | sed '/^$/d')
+[ ${#LAUNCH_ENV[@]} -eq 0 ] || log "launch env for $T: ${LAUNCH_ENV[*]}"
+
 for attempt in 1 2 3; do
   log "attempt $attempt: aoe session $MODE $ID"
   scrub_tmux_env
-  no_dori_env aoe session "$MODE" "$ID" >>"$LOG" 2>&1 || log "aoe $MODE rc=$?"
+  no_dori_env env "${LAUNCH_ENV[@]}" aoe session "$MODE" "$ID" >>"$LOG" 2>&1 || log "aoe $MODE rc=$?"
   for _ in $(seq 90); do ready && break; sleep 2; done
   if ready; then
     sleep 10 # let aoe's own wake-up message land first

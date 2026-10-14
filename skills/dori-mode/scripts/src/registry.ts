@@ -71,6 +71,8 @@ export type Lane = {
   readonly direction?: { readonly at: string; readonly text: string; readonly next?: string };
   // big steps this lane must put through dori challenge first (dori launch --challenge-before)
   readonly challengeBefore?: readonly string[];
+  // the lane's sessions start without config launchEnv (dori launch|adopt --use-gpu, dori set-gpu): launch, handover, restart
+  readonly useGpu?: boolean;
   readonly challenges?: readonly ChallengeRecord[];
   readonly explorations?: readonly ExplorationRecord[];
   readonly research?: ResearchSent;

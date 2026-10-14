@@ -29,6 +29,7 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `ignorePanes`, `leadPane` | none | panes the sweeps skip; `leadPane` is also where lanes report |
 | `defaultCwd` | home | where lanes start, and the repo whose worktrees they own |
 | `agentCommand`, `defaultModel`, `launchKeywords` | `omo --model {model} {prompt}` | `launch` |
+| `launchEnv` | `{}` (none) | variables every lane session starts with (backend `aoe`), e.g. `{"CUDA_VISIBLE_DEVICES": ""}` on a node that trains on its GPU, so a lane and every process it starts (tests, eval kernels, subagents) see no GPU; `launch`, lane `handover` and `self-restart.sh` (via `launch-env`) apply it, a `--use-gpu` lane and the lead start without it. Values are strings; empty means nothing changes |
 | `sessionsDir` | `~/.omo/agent/sessions` | session-id lookup |
 | `nudgeAfterMin`, `postAfterMin` | 15, 20 | `freshness` |
 | `closeAfterMin` | 5 | `watch` |
@@ -90,6 +91,7 @@ With `"backend": "aoe"` lanes run as [agent-of-empires](https://github.com/njbra
 - `claim-done` without a key finds the lane by the tmux session it runs in. `guard` and `can-launch` count aoe sessions as panes.
 - `watch` also reads `aoe ps --json` and the lane screens and prints `LANE_BLOCKED <key> <state> <pane>` for a working lane whose agent waits for a human (see `dori watch` below).
 - `launch` reports `STARTUP_ERROR` with the agent's own message as soon as a startup error or `Pane is dead` shows while it waits for the prompt.
+- `launchEnv`: aoe does not hand its own environment to the session it opens; tmux copies only the variables its `update-environment` option names from the client (`aoe add`, `aoe session restart`) into a new session. So with a non-empty `launchEnv`, `launch` and lane `handover` first append each name to the global `update-environment` (once), then run `aoe add` with the values set, or, for a `--use-gpu` lane, with those names removed, and read the new session's environment back (`tmux show-environment`). A session that lacks a value gets no lane prompt (`STARTUP_ERROR ... launchEnv not in the session`), and a handover's new session is closed while the old one stays the lane (`HANDOVER_FAIL ... lacks launchEnv`). The running session of an adopted pane keeps the environment it started with. A restart makes a new tmux session from the restarting client's environment, which is why `self-restart.sh` asks `dori launch-env` first. `--use-gpu` drops every `launchEnv` variable, so keep `launchEnv` to what keeps lanes off the GPU. Limits: aoe's own auto-resume after a reboot starts sessions from aoe's environment, not through dori (a lane gets `launchEnv` back at its next handover or `self-restart.sh`); emptying `launchEnv` later leaves its names in tmux `update-environment` until the tmux server restarts or `tmux set-option -gu update-environment` restores tmux's default list. Sessions start as before meanwhile, since dori and `self-restart.sh` then run aoe without those variables.
 
 Hooks are argv templates for your messenger CLI. `{thread}`, `{text}` and `{key}` are filled into each argument separately, so the text stays one argument whatever it contains.
 
@@ -157,8 +159,8 @@ Every line also goes to `watchLog` with source `handover`, and the outcome to `<
 
 `dori handover ack <id> [--state DIR]` records the pane it runs in for that probe id under `<DIR or stateDir>/handover/acks/` (`HANDOVER_ACK <id> pane=<pane>`).
 
-### `dori launch <key> --title T --brief FILE --done "..." [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok] [--goal G] [--challenge-before STEP ...] [--dry-run]`
-Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and checks the pane for startup errors after 20 seconds. Exit 3 on `STARTUP_ERROR`.
+### `dori launch <key> --title T --brief FILE --done "..." [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok] [--goal G] [--challenge-before STEP ...] [--use-gpu] [--dry-run]`
+Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and checks the pane for startup errors after 20 seconds. Exit 3 on `STARTUP_ERROR`. With backend `aoe` the session starts with `launchEnv`; `--use-gpu` (a lane that needs the GPU, e.g. a training run) starts it without, and the lane keeps `useGpu: true` in the registry so its handovers and restarts do the same.
 
 With `--thread discord:<id>` and `DORI_DISCORD_TOKEN` set, it then writes the lane's first message in that thread, so a thread opened for the lane never sits empty: `discord.laneStartText` with the title, the `--goal`, the first lines of the brief, the Done line, the key and the pane. It prints `THREAD_START_POSTED <ref> message=<id>`; a thread that already has a message is left as it is (`THREAD_START_SKIP`); without a token it prints `THREAD_START_NO_TOKEN` and a Discord error `THREAD_START_FAILED`, and the lane runs either way. `launch` never opens a thread itself: for work that is the same as or continues an earlier lane, pass the ref of the thread that work already has, so it stays in one place; several open lanes may share a thread, and a close leaves a shared `discord:` thread open while another open lane uses it.
 
@@ -172,8 +174,14 @@ When every `Done =` signal only checks that files exist or contain text (a `file
 
 `REF` is `<adapter>:<id>`, e.g. `discord:<thread id>` (digits only) or `telegram:<chat>/<topic>`. An empty id (`discord:`), a bare `--thread`, a ref without an adapter, or whitespace in the id is refused before anything opens: exit 1 with a one-line reason, and no lane is registered. Leaving `--thread` out is fine; the lane is registered with thread `none`. `adopt` checks `--thread` the same way.
 
-### `dori adopt <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...]`
-Registers a lane that is already running; `--goal` and `--challenge-before` are stored as for `launch`.
+### `dori adopt <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...] [--use-gpu]`
+Registers a lane that is already running; `--goal`, `--challenge-before` and `--use-gpu` are stored as for `launch`. The running session keeps its environment: with backend `aoe` and a `launchEnv` it prints `ADOPT_ENV <key>: ...` saying the lane's setting applies from its next handover or restart.
+
+### `dori set-gpu <key> on|off`
+`on`: the lane's next session (handover, `self-restart.sh`) starts without `launchEnv`; `off`: with it. The running session keeps its environment. Prints `GPU_SET <key> <old> -> <new>: ...`. Mark a lane that trains on the GPU `on` before its next handover or restart.
+
+### `dori launch-env <tmux-session>`
+Prints, one per line, the `env(1)` arguments a restart of that session needs to start the way dori opens it: `NAME=VALUE` for an open lane, `--unset=NAME` for a `--use-gpu` lane, a closed lane, the lead or any other session (unsets first, as `env` reads options only before the first assignment). It appends the names to tmux `update-environment` first. Nothing without `launchEnv`. `setups/discord-aoe/self-restart.sh` runs `aoe session start|restart` under these arguments.
 
 ### `dori set-thread <key> <adapter>:<id>`
 Points an open lane at another work thread, for example one created after the lane was launched. The ref is checked as for `launch`; a bad one exits 1 and leaves the lane unchanged. Prints `THREAD_SET <key> <old> -> <new>`.

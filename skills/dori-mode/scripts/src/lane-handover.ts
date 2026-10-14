@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, inputLine, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
+import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, envMismatch, inputLine, laneEnv, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { ackFile, liveMonitors, manifestPath, type MonitorSpec, missingMonitors, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
 import { awaitPrompt } from "./launch.ts";
@@ -657,7 +657,7 @@ const moveLane = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, facts
   const { lane, from } = facts;
   let pane: string;
   try {
-    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", model: facts.model, ...(facts.thinking ? { thinking: facts.thinking } : {}) });
+    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", model: facts.model, ...(facts.thinking ? { thinking: facts.thinking } : {}), env: laneEnv(config.launchEnv, lane.useGpu) });
     ctx.mark("open", true);
   } catch (e) {
     ctx.mark("open", false);
@@ -707,6 +707,11 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   if (startup) {
     emit(`HANDOVER_FAIL ${lane.key}: new session ${pane}: ${startup}`);
     return discard(`the new session did not start: ${startup}`);
+  }
+  const off = await envMismatch(deps.run, pane, laneEnv(config.launchEnv, lane.useGpu));
+  if (off.length) {
+    emit(`HANDOVER_FAIL ${lane.key}: new session ${pane} lacks launchEnv: ${off.join(", ")}`);
+    return discard(`the new session did not get launchEnv: ${off.join(", ")}`);
   }
   setQuiet(config.stateDir, from.pane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of ${lane.key} to ${pane} is running`);
   await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} to ${pane} started (note ${note}). Stop here: start no new tool call, leave running processes alone, and ignore ${PROBE} lines. If it fails you are told and stay the lane.`);

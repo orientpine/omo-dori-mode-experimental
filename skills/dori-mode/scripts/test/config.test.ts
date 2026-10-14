@@ -66,6 +66,17 @@ test("a researchText that does not start with 'ulw research ' or lacks {question
   expect(cli.err).toContain("CONFIG_INVALID");
 });
 
+test("launchEnv defaults to none, loads a name with an empty value, and a value that is not a string is refused", async () => {
+  const path = join(state.dir, "env.json");
+  expect((await loadConfig(join(state.dir, "missing.json"), "/home/ana")).launchEnv).toEqual({});
+  writeFileSync(path, JSON.stringify({ launchEnv: { CUDA_VISIBLE_DEVICES: "" } }));
+  expect((await loadConfig(path, "/home/ana")).launchEnv).toEqual({ CUDA_VISIBLE_DEVICES: "" });
+  writeFileSync(path, JSON.stringify({ launchEnv: { CUDA_VISIBLE_DEVICES: 0 } }));
+  await expect(loadConfig(path, "/home/ana")).rejects.toThrow("launchEnv must map variable names to strings");
+  writeFileSync(path, JSON.stringify({ launchEnv: ["CUDA_VISIBLE_DEVICES="] }));
+  await expect(loadConfig(path, "/home/ana")).rejects.toThrow(ConfigError);
+});
+
 test("hook templates fill each argument separately, so text with spaces or quotes stays one argument", () => {
   const argv = fill(["notify", "--thread", "{thread}", "--text", "{text}"], { thread: "chat:1/2", text: `it's "done"; rm -rf /` });
   expect(argv).toEqual(["notify", "--thread", "chat:1/2", "--text", `it's "done"; rm -rf /`]);
