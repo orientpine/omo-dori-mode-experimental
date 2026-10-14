@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loginArgv, phoneLogin, readAccount } from "../../setups/discord-aoe/kakao-login.ts";
-import { kakaoOptions, kakaoTick, loadKakaoState, type KakaoOptions } from "../../setups/discord-aoe/kakao-watch.ts";
+import { kakaoOptions, kakaoTick, loadKakaoState, markReadConfirmed, type KakaoOptions, type OpenSession } from "../../setups/discord-aoe/kakao-watch.ts";
 import type { Runner } from "../src/run.ts";
 
 const SETUP = join(import.meta.dir, "..", "..", "setups", "discord-aoe");
@@ -28,22 +28,30 @@ const setup = (files: { rooms?: object; cursors?: object; marked?: object }, env
   return o;
 };
 
-// A fake agent-messenger behind flock: message list serves msgs[room], chat list serves chats, mark-read fails while
-// failMarks[room] is above 0.
-const fakeKakao = (msgs: Record<string, Msg[]>, chats: object[] = [], failMarks: Record<string, number> = {}) => {
+// A fake agent-messenger behind flock: message list serves msgs[room], chat list serves chats. The one-session mark
+// (--mark-read) fails while failMarks[room] is above 0; while ignored[room] is above 0 the server acks it and keeps its
+// read mark where it was ("0" before any applied mark).
+const fakeKakao = (msgs: Record<string, Msg[]>, chats: object[] = [], failMarks: Record<string, number> = {}, ignored: Record<string, number> = {}) => {
   const calls: string[][] = [];
+  const server: Record<string, string> = {};
   const runner: Runner = async (argv) => {
     calls.push([...argv]);
+    if (argv[4] === "--mark-read") {
+      const room = argv[5] ?? "";
+      if ((failMarks[room] ?? 0) > 0) {
+        failMarks[room] = (failMarks[room] ?? 0) - 1;
+        return { code: 1, out: "", err: "NOTIREAD failed" };
+      }
+      if ((ignored[room] ?? 0) > 0) ignored[room] = (ignored[room] ?? 0) - 1;
+      else server[room] = argv[6] ?? "";
+      return { code: 0, out: JSON.stringify({ status: 0, watermark: server[room] ?? "0" }), err: "" };
+    }
     const [, , , , cmd, sub, room] = argv;
     if (cmd === "chat") return { code: 0, out: JSON.stringify(chats), err: "" };
     if (sub === "list") return { code: 0, out: JSON.stringify(msgs[room ?? ""] ?? []), err: "" };
-    if ((failMarks[room ?? ""] ?? 0) > 0) {
-      failMarks[room ?? ""] = (failMarks[room ?? ""] ?? 0) - 1;
-      return { code: 1, out: "", err: "NOTIREAD failed" };
-    }
     return { code: 0, out: '{"success":true}', err: "" };
   };
-  const marks = () => calls.filter((c) => c[5] === "mark-read").map((c) => `${c[6]} ${c[7]}`);
+  const marks = () => calls.filter((c) => c[4] === "--mark-read").map((c) => `${c[5]} ${c[6]}`);
   return { calls, runner, marks };
 };
 
@@ -89,8 +97,48 @@ test("a new message goes to the inbox and the monitor, own messages do not, and 
   await w.at(0);
   expect(inbox(o).map((r) => [r.id, r.author_kind, r.mentions_self, r.scope])).toEqual([["6", "owner", true, "kakao"]]);
   expect(w.lines.filter((l) => l.startsWith("KAKAO_MSG"))).toEqual(["KAKAO_MSG R 6 u1: hi dori"]);
-  expect(k.calls.find((c) => c[5] === "mark-read")).toEqual(["flock", o.lock, "agent-messenger", "kakaotalk", "message", "mark-read", "100", "7"]);
+  expect(k.calls.find((c) => c[4] === "--mark-read")).toEqual(["flock", o.lock, process.execPath, join(SETUP, "kakao-watch.ts"), "--mark-read", "100", "7", "5"]);
   expect([json(o.cursors), json(o.marked)]).toEqual([{ "100": "7" }, { "100": "7" }]);
+});
+
+test("a mark-read the server acks but does not apply fails with the server's read mark and is retried until the read-back reaches the target", async () => {
+  const o = setup({ rooms: { R: { id: "100" } }, cursors: { "100": "5" }, marked: { "100": "5" } });
+  const k = fakeKakao({ "100": [msg("5", 2, "old"), msg("6", 1, "hi")] }, [], {}, { "100": 1 });
+  const w = ticker(o, k.runner);
+  await w.at(0);
+  expect(json(o.marked)).toEqual({ "100": "5" });
+  await w.at(1000);
+  expect(k.marks()).toEqual(["100 6", "100 6"]);
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_MARKREAD"))).toEqual([
+    "KAKAO_MARKREAD_FAIL R 6 attempt 1, retry in 1s: server read mark 0 is behind 6",
+    "KAKAO_MARKREAD_OK R 6 server 6 after 1 failed",
+  ]);
+  expect(json(o.marked)).toEqual({ "100": "6" });
+});
+
+test("a mark reads the server's read mark, syncs from it and marks in a fresh session, and reads the mark back in another", async () => {
+  const sessions: string[][] = [];
+  let server = "4";
+  let applies = true;
+  // Each session records its packets; the server moves the account's read mark only when NOTIREAD applies.
+  const open: OpenSession = async (fn) => {
+    const calls: string[] = [];
+    sessions.push(calls);
+    return fn({
+      syncMessages: async (c, n, cur, max) => (calls.push(`SYNCMSG ${c} ${n} ${cur} ${max}`), { statusCode: 0, body: {} }),
+      markRead: async (c, wm) => (calls.push(`NOTIREAD ${c} ${wm}`), applies && (server = String(wm)), { statusCode: 0, body: { status: 0 } }),
+      getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { a: [1, 9], w: ["8", server] } }),
+    });
+  };
+  expect(await markReadConfirmed(open, String, "100", "7", "5", "9")).toEqual({ status: 0, watermark: "7" });
+  expect(sessions.splice(0)).toEqual([["CHATONROOM 100"], ["SYNCMSG 100 80 4 7", "NOTIREAD 100 7"], ["CHATONROOM 100"]]);
+  applies = false;
+  expect(await markReadConfirmed(open, String, "100", "8", "5", "9")).toEqual({ status: 0, watermark: "7" });
+  expect(sessions.splice(0)).toEqual([["CHATONROOM 100"], ["SYNCMSG 100 80 7 8", "NOTIREAD 100 8"], ["CHATONROOM 100"]]);
+  expect(await markReadConfirmed(open, String, "100", "6", "5", "9")).toEqual({ status: 0, watermark: "7" });
+  expect(sessions.splice(0)).toEqual([["CHATONROOM 100"]]);
+  expect(await markReadConfirmed(open, String, "100", "8", "5", "2")).toEqual({ status: 0, watermark: null });
+  expect(sessions.splice(0)[1]).toEqual(["SYNCMSG 100 80 5 8", "NOTIREAD 100 8"]);
 });
 
 test("a failed mark-read waits out its backoff, is retried, and the marked id catches up with the cursor", async () => {
@@ -107,7 +155,7 @@ test("a failed mark-read waits out its backoff, is retried, and the marked id ca
   expect(w.lines.filter((l) => l.startsWith("KAKAO_MARKREAD"))).toEqual([
     "KAKAO_MARKREAD_FAIL R 6 attempt 1, retry in 1s: NOTIREAD failed",
     "KAKAO_MARKREAD_FAIL R 6 attempt 2, retry in 2s: NOTIREAD failed",
-    "KAKAO_MARKREAD_OK R 6 after 2 failed",
+    "KAKAO_MARKREAD_OK R 6 server 6 after 2 failed",
   ]);
   expect(json(o.marked)).toEqual({ "100": "6" });
   expect(inbox(o)).toHaveLength(1);
@@ -160,6 +208,27 @@ esac
 `,
   );
   chmodSync(cli, 0o755);
+  // The SDK beside the CLI script, as in the agent-messenger package: the one-session mark logs its packets.
+  const sdk = join(realpathSync(dir), "platforms", "kakaotalk");
+  mkdirSync(sdk, { recursive: true });
+  writeFileSync(
+    join(sdk, "index.js"),
+    `import { appendFileSync } from "node:fs";
+const log = (line) => appendFileSync(${JSON.stringify(join(dir, "calls.log"))}, line + "\\n");
+export const Long = { fromString: (s) => s };
+let mark = "4";
+const session = {
+  syncMessages: async (c, n, cur, max) => (log("sdk SYNCMSG " + c + " " + cur + " " + max), { statusCode: 0, body: {} }),
+  markRead: async (c, w) => (log("sdk NOTIREAD " + c + " " + w), (mark = w), { statusCode: 0, body: { status: 0 } }),
+  getChatInfo: async (c) => (log("sdk CHATONROOM " + c), { statusCode: 0, body: { a: [9], w: [mark] } }),
+};
+export class KakaoTalkClient {
+  async login() { log("sdk login"); }
+  async executeWithReconnect(op) { return op({ session }); }
+  close() { log("sdk close"); }
+}
+`,
+  );
   return cli;
 };
 const runScript = async (script: string, args: string[], env: Record<string, string>, cwd: string) => {
@@ -176,8 +245,21 @@ test("the script stays off without a Kakao id and runs one tick through flock wi
   writeFileSync(join(dir, "kakao-cursors.json"), JSON.stringify({ "100": "5" }));
   const env = { DORI_KAKAO_SELF_ID: "9", DORI_KAKAO_STATE_DIR: dir, DORI_KAKAO_INBOX: join(dir, "inbox.jsonl"), DORI_KAKAO_CLI: fakeCli(dir) };
   const once = await runScript("kakao-watch.ts", ["--once"], env, dir);
-  expect([once.code, once.out.trim().split("\n").map((l) => l.replace(/^\S+Z /, ""))]).toEqual([0, ["KAKAO_MSG R 6 2: new", "KAKAO_MARKREAD_OK R 6", "KAKAO_WATCH_ONCE"]]);
-  expect(readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n")).toEqual(["kakaotalk chat list --all", "kakaotalk message list 100 -n 15", "kakaotalk message mark-read 100 6"]);
+  expect([once.code, once.out.trim().split("\n").map((l) => l.replace(/^\S+Z /, ""))]).toEqual([0, ["KAKAO_MSG R 6 2: new", "KAKAO_MARKREAD_OK R 6 server 6", "KAKAO_WATCH_ONCE"]]);
+  expect(readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n")).toEqual([
+    "kakaotalk chat list --all",
+    "kakaotalk message list 100 -n 15",
+    "sdk login",
+    "sdk CHATONROOM 100",
+    "sdk close",
+    "sdk login",
+    "sdk SYNCMSG 100 4 6",
+    "sdk NOTIREAD 100 6",
+    "sdk close",
+    "sdk login",
+    "sdk CHATONROOM 100",
+    "sdk close",
+  ]);
   expect(existsSync(join(dir, "kakao.lock"))).toBe(true);
 });
 

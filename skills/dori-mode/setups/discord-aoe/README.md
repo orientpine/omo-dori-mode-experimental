@@ -238,7 +238,7 @@ you are signed in. `DORI_KAKAO_DEVICE_TYPE` (default `tablet`) picks the second-
 | `DORI_KAKAO_MENTION` | none | Case-insensitive regex of the Dori's names; sets `mentions_self` on a row |
 | `DORI_KAKAO_STATE_DIR` | `<DORI_STATE_DIR or ~/.dori/state>` | `kakao-rooms.json`, `kakao-cursors.json`, `kakao-markread.json`, `kakao.lock` |
 | `DORI_KAKAO_INBOX` | `DORI_DISCORD_INBOX`, else `<DORI_STATE_DIR or ~/.dori/state>/discord/inbox.jsonl` | Inbox the rows go to |
-| `DORI_KAKAO_CLI` | `agent-messenger` | The CLI, always run as `flock <state dir>/kakao.lock <cli> kakaotalk ...` |
+| `DORI_KAKAO_CLI` | `agent-messenger` | The CLI, always run as `flock <state dir>/kakao.lock <cli> kakaotalk ...`; read marks use the agent-messenger SDK installed beside it |
 | `DORI_KAKAO_POLL_MS` | `8000` | Pause between two polls of all rooms |
 | `DORI_KAKAO_SWEEP_MS` | `300000` | Mark-read sweep interval |
 | `DORI_KAKAO_DISCOVER_MS` | `20000` | New-room discovery interval |
@@ -246,16 +246,16 @@ you are signed in. `DORI_KAKAO_DEVICE_TYPE` (default `tablet`) picks the second-
 
 - **Rooms.** Every chat the account is in is added to `kakao-rooms.json` (`KAKAO_NEW_ROOM`). A room's first poll starts at its newest message (`KAKAO_CURSOR_INIT`): its backlog is neither taken in nor marked read.
 - **Messages.** Each message from someone else becomes one inbox row and one `KAKAO_MSG <room> <log id> <author>: <text>` line; `kakao-cursors.json` is how far the Dori has read.
-- **Read marks.** `kakao-markread.json` keeps, apart from the cursor, how far a mark-read went through. A room whose cursor is ahead is marked read at the cursor; a failure prints `KAKAO_MARKREAD_FAIL <room> <log id> attempt <n>, retry in <s>s: <error>` and backs off (the poll interval doubling, at most two sweeps), a success prints `KAKAO_MARKREAD_OK` (with `after <n> failed` after failures). A mark-read still pending at a restart is retried.
-- **Sweeps.** A mark-read can return success and still leave the badge. At start every room is marked once more (a miss from before a restart is remembered nowhere else); after that every sweep marks again the rooms `chat list` showed unread and the rooms with a message in the last six sweeps. `chat list` returns only chats changed since the account's last sync: its unread counts are a hint, and an empty list does not mean nothing is unread.
+- **Read marks.** `kakao-markread.json` keeps, apart from the cursor, how far the server confirmed a mark. A room whose cursor is ahead is marked read at the cursor by `kakao-watch.ts --mark-read <room> <log id> <older log id>` under the lock: it reads the account's own read mark from the server (CHATONROOM), then in a fresh session syncs the room from that mark up to the log id (SYNCMSG) and marks it (NOTIREAD), then reads the mark back in another fresh session. The server acks a NOTIREAD without that sync and drops it, which is why `message mark-read` is not used. Only a read-back at or past the log id counts: `KAKAO_MARKREAD_OK <room> <log id> server <read mark>` (with `after <n> failed` after failures). Anything else prints `KAKAO_MARKREAD_FAIL <room> <log id> attempt <n>, retry in <s>s: <error>`, for example `server read mark <id> is behind <log id>`, and backs off (the poll interval doubling, at most two sweeps). A mark-read still pending at a restart is retried.
+- **Sweeps.** At start every room is marked once more (a miss from before a restart is remembered nowhere else); after that every sweep marks again the rooms `chat list` showed unread and the rooms with a message in the last six sweeps. `chat list` returns only chats changed since the account's last sync: its unread counts are a hint, and an empty list does not mean nothing is unread.
 - **One login at a time.** Two agent-messenger calls on one device evict each other's session. Anything else that uses the account (sending, uploads) takes the same lock: `flock <state dir>/kakao.lock agent-messenger kakaotalk ...`.
 
 Run it as a persistent monitor in the Dori's own session (see "The Dori's monitors"); its output is the notification.
 agent-messenger needs node: put node's bin directory first in the monitor's PATH. `bun "$S/kakao-watch.ts" --once` runs
 one tick and prints `KAKAO_WATCH_ONCE`. For a check beside a running watcher, copy the state files to a scratch directory,
 symlink its `kakao.lock` to the live one (a second lock means a second login, which evicts the first), and point
-`DORI_KAKAO_STATE_DIR` and `DORI_KAKAO_INBOX` there. `KAKAO_MARKREAD_OK` means the server accepted the mark, not that the
-badge is gone; only the account's own app shows that.
+`DORI_KAKAO_STATE_DIR` and `DORI_KAKAO_INBOX` there. `KAKAO_MARKREAD_OK` means the server holds the account's read mark at
+or past that message, which is what the sender's "1" counts.
 A monitor keeps running the code it started with: after an update that changes `kakao-watch.ts`, stop the running watcher
 and arm the monitor again once (`pgrep -f kakao-watch.ts` shows exactly one).
 
