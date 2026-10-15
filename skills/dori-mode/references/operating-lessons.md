@@ -212,3 +212,10 @@ On 2026-10-14 the owner still saw "1" on messages a Dori had read in KakaoTalk, 
 
 - **Read the result back from the place the other person sees.** A mark counts only when the account's own read mark (CHATONROOM watermarks) has reached the message, read in a separate session; anything short of that is a loud `KAKAO_MARKREAD_FAIL` with the server's mark.
 - **A changed protocol call is tried live before it ships.** The packet shape that moved the mark is the one the watcher sends; an untried variant (a one-message sync window) was caught by `dori challenge` before the PR.
+
+## 25. A room the server keeps no read mark in is not marked, and no mark is retried forever
+
+On 2026-10-16 a Dori's account was signed in again and a new room appeared: "카카오계정", where KakaoTalk sends account notices. Every mark there ended in `KAKAO_MARKREAD_FAIL`: the account's read mark stayed at the same id while the newest message moved past it, and the watcher retried with a growing backoff without end, so the monitor kept raising an alarm about a room nobody reads. Its CHATONROOM says why: room type `PlusChat` (a KakaoTalk channel, `writable: false`), and the account's own read mark in it unchanged after the watcher's synced marks. That the server ignores NOTIREAD in every channel room is inferred from this one room.
+
+- **Decide by the room's type, not its id.** Types the server keeps no read mark in (`PlusChat`) are skipped, with one `KAKAO_MARKREAD_SKIP` line; the type comes from `chat list` or the mark's own CHATONROOM. Every other room still counts a mark only when the server's read mark reaches the message (#24).
+- **A retry has an end.** Five failed tries at one message give one `KAKAO_MARKREAD_GIVEUP` and stop until a newer message arrives; that point survives a restart. An alarm that repeats with nothing new to say hides the next one that matters.
