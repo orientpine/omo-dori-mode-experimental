@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loginArgv, phoneLogin, readAccount } from "../../setups/discord-aoe/kakao-login.ts";
-import { kakaoOptions, kakaoTick, loadKakaoState, markReadConfirmed, type KakaoOptions, type OpenSession } from "../../setups/discord-aoe/kakao-watch.ts";
+import { kakaoOptions, kakaoTick, loadKakaoState, markReadConfirmed, type KakaoOptions, type KakaoSession, type OpenSession } from "../../setups/discord-aoe/kakao-watch.ts";
 import type { Runner } from "../src/run.ts";
 
 const SETUP = join(import.meta.dir, "..", "..", "setups", "discord-aoe");
@@ -30,8 +30,8 @@ const setup = (files: { rooms?: object; cursors?: object; marked?: object }, env
 
 // A fake agent-messenger behind flock: message list serves msgs[room], chat list serves chats. The one-session mark
 // (--mark-read) fails while failMarks[room] is above 0; while ignored[room] is above 0 the server acks it and keeps its
-// read mark where it was ("0" before any applied mark).
-const fakeKakao = (msgs: Record<string, Msg[]>, chats: object[] = [], failMarks: Record<string, number> = {}, ignored: Record<string, number> = {}) => {
+// read mark where it was ("0" before any applied mark). A room in types answers as that room type and marks nothing.
+const fakeKakao = (msgs: Record<string, Msg[]>, chats: object[] = [], failMarks: Record<string, number> = {}, ignored: Record<string, number> = {}, types: Record<string, string> = {}) => {
   const calls: string[][] = [];
   const server: Record<string, string> = {};
   const runner: Runner = async (argv) => {
@@ -42,6 +42,7 @@ const fakeKakao = (msgs: Record<string, Msg[]>, chats: object[] = [], failMarks:
         failMarks[room] = (failMarks[room] ?? 0) - 1;
         return { code: 1, out: "", err: "NOTIREAD failed" };
       }
+      if (types[room]) return { code: 0, out: JSON.stringify({ status: 0, watermark: server[room] ?? "0", type: types[room] }), err: "" };
       if ((ignored[room] ?? 0) > 0) ignored[room] = (ignored[room] ?? 0) - 1;
       else server[room] = argv[6] ?? "";
       return { code: 0, out: JSON.stringify({ status: 0, watermark: server[room] ?? "0" }), err: "" };
@@ -81,6 +82,7 @@ test("Kakao watcher environment sets ids, mention, paths and intervals; nothing 
     rooms: "/s/kakao-rooms.json",
     cursors: "/s/kakao-cursors.json",
     marked: "/s/kakao-markread.json",
+    gaveUp: "/s/kakao-markread-giveup.json",
     inbox: "/i",
     pollMs: 5,
     sweepMs: 6,
@@ -139,6 +141,73 @@ test("a mark reads the server's read mark, syncs from it and marks in a fresh se
   expect(sessions.splice(0)).toEqual([["CHATONROOM 100"]]);
   expect(await markReadConfirmed(open, String, "100", "8", "5", "2")).toEqual({ status: 0, watermark: null });
   expect(sessions.splice(0)[1]).toEqual(["SYNCMSG 100 80 5 8", "NOTIREAD 100 8"]);
+});
+
+test("a mark in a room of a type the server keeps no read mark in (a KakaoTalk channel) reads the type and sends no SYNCMSG or NOTIREAD", async () => {
+  const sessions: string[][] = [];
+  const open: OpenSession = async (fn) => {
+    const calls: string[] = [];
+    sessions.push(calls);
+    const session: KakaoSession = {
+      syncMessages: async (c) => (calls.push(`SYNCMSG ${c}`), { statusCode: 0, body: {} }),
+      markRead: async (c) => (calls.push(`NOTIREAD ${c}`), { statusCode: 0, body: { status: 0 } }),
+      getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { t: "PlusChat", a: [1, 9], w: ["3", "4"] } }),
+    };
+    return fn(session);
+  };
+  expect(await markReadConfirmed(open, String, "100", "7", "5", "9")).toEqual({ status: 0, watermark: "4", type: "PlusChat" });
+  expect(sessions).toEqual([["CHATONROOM 100"]]);
+});
+
+test("a channel room is never marked read: once its type is known (from the mark or from chat list) it gets one SKIP line, its messages still come in, other rooms are marked", async () => {
+  const o = setup({ rooms: { R: { id: "100" }, S: { id: "300" } }, cursors: { "100": "5", "300": "5" }, marked: { "100": "5", "300": "5" } });
+  const sys = [msg("5", 4, "old"), msg("6", 4, "notice")];
+  const chats: object[] = [];
+  const k = fakeKakao({ "100": [msg("5", 2, "old"), msg("6", 2, "new")], "300": sys, "400": [msg("8", 4, "x")] }, chats, {}, {}, { "300": "PlusChat" });
+  const w = ticker(o, k.runner);
+  await w.at(0);
+  expect(k.marks()).toEqual(["100 6", "300 6"]);
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_MARKREAD"))).toEqual([
+    "KAKAO_MARKREAD_OK R 6 server 6",
+    "KAKAO_MARKREAD_SKIP S 300 PlusChat: the server keeps no read mark in this room type, it is not marked read",
+  ]);
+  sys.push(msg("7", 4, "another notice"));
+  chats.push({ chat_id: "300", display_name: "S", type: "PlusChat", unread_count: 1 }, { chat_id: "400", display_name: "Channel", type: "PlusChat", unread_count: 1 });
+  await w.at(30_000);
+  await w.at(60_000);
+  await w.at(10 * 60_000);
+  expect(k.marks().filter((m) => !m.startsWith("100 "))).toEqual(["300 6"]);
+  expect(inbox(o).map((r) => [r.room, r.id])).toEqual([["R", "6"], ["S", "6"], ["S", "7"]]);
+  expect(json(o.rooms)).toEqual({ R: { id: "100" }, S: { id: "300", type: "PlusChat" }, Channel: { id: "400", type: "PlusChat" } });
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_MARKREAD_SKIP"))).toHaveLength(2);
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_MARKREAD_FAIL"))).toEqual([]);
+});
+
+test("a mark that keeps failing gives up after five tries with one GIVEUP line, stays quiet through sweeps and a restart, and starts over at a newer message", async () => {
+  const o = setup({ rooms: { R: { id: "100" } }, cursors: { "100": "5" }, marked: { "100": "5" } });
+  const msgs = [msg("5", 2, "old"), msg("6", 2, "new")];
+  const failMarks = { "100": 99 };
+  const k = fakeKakao({ "100": msgs }, [], failMarks);
+  const w = ticker(o, k.runner);
+  for (const t of [0, 1000, 3000, 7000, 15_000, 16_000, 60_000, 120_000, 600_000]) await w.at(t);
+  expect(k.marks()).toEqual(["100 6", "100 6", "100 6", "100 6", "100 6"]);
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_MARKREAD"))).toEqual([
+    "KAKAO_MARKREAD_FAIL R 6 attempt 1, retry in 1s: NOTIREAD failed",
+    "KAKAO_MARKREAD_FAIL R 6 attempt 2, retry in 2s: NOTIREAD failed",
+    "KAKAO_MARKREAD_FAIL R 6 attempt 3, retry in 4s: NOTIREAD failed",
+    "KAKAO_MARKREAD_FAIL R 6 attempt 4, retry in 8s: NOTIREAD failed",
+    "KAKAO_MARKREAD_GIVEUP R 6 after 5 failed, not marked again until a newer message: NOTIREAD failed",
+  ]);
+  expect(json(o.gaveUp)).toEqual({ "100": "6" });
+  const restarted = ticker(o, k.runner);
+  await restarted.at(700_000);
+  expect(k.marks()).toHaveLength(5);
+  failMarks["100"] = 0;
+  msgs.push(msg("7", 2, "newer"));
+  await restarted.at(701_000);
+  expect(k.marks().slice(5)).toEqual(["100 7"]);
+  expect(restarted.lines.filter((l) => l.startsWith("KAKAO_MARKREAD"))).toEqual(["KAKAO_MARKREAD_OK R 7 server 7"]);
+  expect([json(o.marked), json(o.gaveUp)]).toEqual([{ "100": "7" }, {}]);
 });
 
 test("a failed mark-read waits out its backoff, is retried, and the marked id catches up with the cursor", async () => {
