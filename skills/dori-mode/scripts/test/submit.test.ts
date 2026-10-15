@@ -64,6 +64,38 @@ test("a tall box whose ❯ line scrolled out of view still counts as unsent text
   expect(editorText(EMPTY)).toBe("");
 });
 
+// a 200-column senpi pane with its side panel from column 148, shaped after aoe_e7-beyond-eth_c16ae828 on 2026-10-15
+const PANEL_AT = 148;
+const row = (left: string, panel: string): string => left + " ".repeat(PANEL_AT - Bun.stringWidth(left)) + panel;
+const paneled = (inBox: string, queued?: string): string => [
+  row(" TPS 4657.5 tok/s. Cache hit 99.3%, 0.1s", "eval"),
+  ...(queued ? [row("", "?? dig_smoke3_300.log"), row(` Steering: ${queued}`, "?? dig_smoke_300.log")] : []),
+  `${"─".repeat(PANEL_AT)}eval`,
+  row(inBox, "?? fp_clay_101.log"),
+  `${"─".repeat(PANEL_AT)}FILES  143 changed · +135 more`,
+  row(" Claude·cbaekdong ▕█████░░░░░░░░░▏ 35% 7d · resets 10/17 16:00", "?? .omo/"),
+].join("\n");
+const LEAD = "[LEAD] e7 stage A: pour more unless curled, then report the motion-bonus split";
+
+test("side-panel text on the input box rows is not unsent text, and a Steering queue line of the sent text is SUBMITTED", async () => {
+  expect(editorText(paneled("❯"))).toBe("");
+  const { keys, log } = keysFor([paneled("❯", LEAD)]);
+  expect(await submitText(keys, fakeClock(0), LEAD)).toEqual({ status: "SUBMITTED", reason: "input box empty and the text waits in the Steering queue" });
+  expect(log.enters).toBe(1);
+});
+
+test("text left in the input box next to the side panel is still NOT_SUBMITTED, with only the box's text in the reason", async () => {
+  const { keys, log } = keysFor([paneled("❯ [LEAD] half-typed report")]);
+  const r = await submitText(keys, fakeClock(0), LEAD);
+  expect(r).toEqual({ status: "NOT_SUBMITTED", reason: "text still in the input box after 2 Enters: [LEAD] half-typed report" });
+  expect(log.enters).toBe(2);
+});
+
+test("a Steering line of another text does not count as the sent text", async () => {
+  const { keys } = keysFor([paneled("❯", "[LEAD] an earlier message about something else")]);
+  expect((await submitText(keys, fakeClock(0), LEAD)).reason).toStartWith("input box empty but no running turn");
+});
+
 test("NOT_SUBMITTED goes to the watch log with the pane and the reason", async () => {
   const world = newWorld();
   world.screen = PASTED;

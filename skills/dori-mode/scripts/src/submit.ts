@@ -18,16 +18,52 @@ export const SUBMIT_TIMING: SubmitTiming = { settleMs: 1_500, pollMs: 500, clear
 
 const isBorder = (line: string): boolean => line.trimStart().startsWith("─");
 
+// senpi draws a side panel (FILES, TOOLS, MEMORY) right of the input box on a wide pane, on the same rows:
+// the ─ border stops where the panel starts, so a row cut at the border's width holds only the box's own text
+// (e7-beyond-eth, 2026-10-15: "?? fp_clay_101.log" from the FILES panel read as unsent text six times).
+// (a top border may carry the running-turn status inside it, so the box ends after the border's last ─)
+const borderWidth = (line: string): number => Bun.stringWidth(line.slice(0, line.lastIndexOf("─") + 1));
+const cutAt = (line: string, width: number): string => {
+  let out = "";
+  let used = 0;
+  for (const ch of line) {
+    used += Bun.stringWidth(ch);
+    if (used > width) break;
+    out += ch;
+  }
+  return out;
+};
+
 // The agent's input box: the lines between the last two ─ borders (a tall box scrolls its ❯ line out of
-// view, so "from ❯ down" misses text). A screen without two borders falls back to the last ❯ line.
-const inputBox = (screen: string): { readonly top: number; readonly lines: readonly string[] } => {
+// view, so "from ❯ down" misses text), cut at the borders' width. A screen without two borders falls back
+// to the last ❯ line.
+const inputBox = (screen: string): { readonly top: number; readonly width: number; readonly lines: readonly string[] } => {
   const lines = screen.split("\n");
   const borders = lines.flatMap((line, i) => (isBorder(line) ? [i] : []));
   const top = borders.at(-2);
   const bottom = borders.at(-1);
-  if (top !== undefined && bottom !== undefined) return { top, lines: lines.slice(top + 1, bottom) };
+  if (top !== undefined && bottom !== undefined) {
+    const width = Math.min(borderWidth(lines[top] ?? ""), borderWidth(lines[bottom] ?? ""));
+    return { top, width, lines: lines.slice(top + 1, bottom).map((line) => cutAt(line, width)) };
+  }
   const prompt = lines.findLastIndex((line) => line.trimStart().startsWith("❯"));
-  return prompt < 0 ? { top: lines.length, lines: [] } : { top: prompt, lines: [lines[prompt] ?? ""] };
+  return prompt < 0 ? { top: lines.length, width: Infinity, lines: [] } : { top: prompt, width: Infinity, lines: [lines[prompt] ?? ""] };
+};
+
+const squash = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+// A text sent while a turn runs waits in senpi's queue above the input box as "Steering: <text>" (one line,
+// cut to the box): the agent took it. Only a queue line that starts like the sent text counts.
+export const steeringQueued = (screen: string, text: string): boolean => {
+  const head = squash(text.split("\n")[0] ?? "").slice(0, 24);
+  if (!head) return false;
+  const box = inputBox(screen);
+  return screen.split("\n").slice(0, box.top).some((line) => {
+    const shown = cutAt(line, box.width).trimStart();
+    if (!shown.startsWith("Steering: ")) return false;
+    const queued = squash(shown.slice("Steering: ".length)).replace(/…$/, "");
+    return queued.startsWith(head) || (queued.length >= 8 && head.startsWith(queued));
+  });
 };
 
 // What is still unsent in the input box, the ❯ and whitespace folded away; "" when the box is empty
@@ -60,6 +96,7 @@ export const submitText = async (keys: PaneKeys, clock: Clock, text: string, tim
   if (left) return failed(`text still in the input box after 2 Enters: ${left.slice(0, 60)}`);
   for (let poll = 0; poll < timing.busyPolls; poll++) {
     if (turnRunning(screen)) return { status: "SUBMITTED", reason: "input box empty and the turn runs" };
+    if (steeringQueued(screen, text)) return { status: "SUBMITTED", reason: "input box empty and the text waits in the Steering queue" };
     await clock.sleep(timing.pollMs);
     screen = await keys.read();
   }
