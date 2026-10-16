@@ -106,7 +106,7 @@ The footer tells lanes to send `[REPORT] <key> | <milestone|blocker|question|don
 
 `dori freshness` reads reports from the lead first, then the lane screen. A new report resets the silence timer; by default it nudges after 15 minutes and after 20 posts a short status line in the owner's words (`discord.quietText`) through `hooks.threadReply`, once per silence. The lane's report itself goes to the lead pane for the lead to retell in plain words; `discord.postRawReports: true` posts the report as before.
 
-With aoe, `dori watch` emits `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` when a working or not-done lane stops for a human. It combines `aoe ps --json` with the screen: no blocked event during a running turn; idle must last 45 seconds, and a monitor, wake source or active/scheduled goal is not idle. Closing stops the aoe session and moves it to trash, never purges it.
+With aoe, `dori watch` emits `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` when a working or not-done lane stops for a human. It combines `aoe ps --json` with the screen: no blocked event during a running turn; idle must last 45 seconds, and a monitor, wake source or active/scheduled goal is not idle, nor is a lane whose session still waits on a detached eval cell, background bash session or background task it started (a quiet `BG_WAITING` log line; `LANE_BLOCKED` after `blockedWaitMin`, 60 minutes). Closing stops the aoe session and moves it to trash, never purges it.
 
 ## Onboarding
 

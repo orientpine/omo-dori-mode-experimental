@@ -106,7 +106,7 @@ footer는 레인이 `[REPORT] <key> | <milestone|blocker|question|done> | <text>
 
 `dori freshness`는 리드 화면에서 먼저 보고를 읽고, 없으면 레인 화면을 봅니다. 새 보고는 무응답 시간을 초기화합니다. 기본값으로 15분 뒤 알림을 보내고 20분 뒤 `hooks.threadReply`로 소유자 말투의 짧은 상태 한 줄(`discord.quietText`)을 올리며, 무응답 구간마다 한 번씩 실행합니다. 레인의 보고 원문은 리드 화면으로 보내 리드가 사람 말로 정리하게 하고, `discord.postRawReports: true`면 예전처럼 원문을 올립니다.
 
-aoe에서 `dori watch`는 working 또는 not-done 레인이 사람을 기다리며 멈추면 `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>`을 출력합니다. `aoe ps --json`과 화면을 함께 확인하며, 턴이 실행 중이면 출력하지 않습니다. idle은 45초간 지속돼야 하고, 모니터나 wake source, 진행 중이거나 예약된 goal을 기다리는 경우는 idle이 아닙니다. 닫을 때는 aoe 세션을 멈추고 휴지통으로 옮기며 영구 삭제하지 않습니다.
+aoe에서 `dori watch`는 working 또는 not-done 레인이 사람을 기다리며 멈추면 `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>`을 출력합니다. `aoe ps --json`과 화면을 함께 확인하며, 턴이 실행 중이면 출력하지 않습니다. idle은 45초간 지속돼야 하고, 모니터나 wake source, 진행 중이거나 예약된 goal을 기다리는 경우는 idle이 아닙니다. 세션이 직접 띄운 분리된 eval 셀, 백그라운드 bash 세션, 백그라운드 task를 기다리는 경우도 idle이 아니며, 감시 로그에 조용한 `BG_WAITING` 줄만 남고 `blockedWaitMin`(기본 60분)이 지나면 `LANE_BLOCKED`가 됩니다. 닫을 때는 aoe 세션을 멈추고 휴지통으로 옮기며 영구 삭제하지 않습니다.
 
 ## 온보딩
 

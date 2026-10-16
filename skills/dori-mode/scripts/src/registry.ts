@@ -89,6 +89,8 @@ export type Lane = {
   readonly research?: ResearchSent;
   readonly blocked?: string;
   readonly idleSince?: number;
+  // the background jobs (kind:id) an idle lane waits on, as the last BG_WAITING line named them
+  readonly waitingOn?: string;
   // the last ROLLOVER_DUE freshness gave for a measured threshold (context, compactions, age): one per pane, so a lane's new
   // session can get its own (auto: written by older versions, not read); autoAt and tries: the last automatic start in this
   // pane and how many there were, gaveUp once autoMaxTries ran out

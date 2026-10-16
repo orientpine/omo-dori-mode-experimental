@@ -286,6 +286,8 @@ export type DoriConfig = {
   readonly directives: { readonly common: string; readonly local: string };
   readonly sessionsDir: string;
   readonly nudgeAfterMin: number;
+  // dori watch: an idle lane waiting on background work it started (BG_WAITING) is LANE_BLOCKED idle after this long
+  readonly blockedWaitMin: number;
   readonly postAfterMin: number;
   readonly closeAfterMin: number;
   readonly heavySlots: number;
@@ -325,6 +327,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   directives: { common: join(import.meta.dir, "../../references/directives.json"), local: "" },
   sessionsDir: join(home, ".omo", "agent", "sessions"),
   nudgeAfterMin: 15,
+  blockedWaitMin: 60,
   postAfterMin: 20,
   closeAfterMin: 5,
   heavySlots: 1,

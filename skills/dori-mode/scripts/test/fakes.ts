@@ -28,6 +28,9 @@ export type World = {
   aoeEnv: (Readonly<Record<string, string | undefined>> | undefined)[];
   sessionEnv: Record<string, Record<string, string | undefined>>;
   dropEnv: boolean;
+  // ps -A -o pid=,ppid=,command= and ps -o lstart= (the agent's start) as the host would print them
+  ps: string;
+  agentStart: string;
 };
 
 export const RUNNING = " • Working (esc to interrupt)";
@@ -36,7 +39,7 @@ export const NEW_AOE_ID = "5e5e5e5e00aa11bb";
 
 export const WT = "/repo/.wt/demo-lane";
 
-export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", screens: {}, aoePs: [], panes: [], aoe: [], tmux: [], calls: [], started: [], updateEnv: ["DISPLAY", "SSH_AUTH_SOCK"], aoeEnv: [], sessionEnv: {}, dropEnv: false });
+export const newWorld = (): World => ({ prState: "MERGED", issueState: "CLOSED", aheadCount: "0", dirty: "", stuckReads: 0, screen: "❯ ", screens: {}, aoePs: [], panes: [], aoe: [], tmux: [], calls: [], started: [], updateEnv: ["DISPLAY", "SSH_AUTH_SOCK"], aoeEnv: [], sessionEnv: {}, dropEnv: false, ps: "", agentStart: "" });
 
 export const fakeRunner = (w: World): Runner => async (argv, opts) => {
   w.calls.push([...argv]);
@@ -89,6 +92,8 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
   if (cmd === "gh" && a1 === "pr") return ok(JSON.stringify({ state: w.prState, mergeCommit: w.prState === "MERGED" ? { oid: "abc1234567890" } : null }));
   if (cmd === "gh" && a1 === "issue") return ok(JSON.stringify({ state: w.issueState }));
   if (cmd === "notify") return ok();
+  if (cmd === "ps" && a1 === "-A") return ok(w.ps);
+  if (cmd === "ps" && argv.includes("lstart=")) return ok(w.agentStart);
   return { code: 1, out: "", err: `unexpected ${argv.join(" ")}` };
 };
 

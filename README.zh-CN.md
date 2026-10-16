@@ -106,7 +106,7 @@ footer 要求 lane 向 lead 发送 `[REPORT] <key> | <milestone|blocker|question
 
 `dori freshness` 先从 lead 屏幕读取报告，再看 lane 屏幕。新报告会重置静默计时；默认 15 分钟后提醒，20 分钟后通过 `hooks.threadReply` 发布一行用所有者语言写的简短状态(`discord.quietText`)，每段静默期各执行一次。lane 的报告原文发到 lead 屏幕，由 lead 用人话转述；`discord.postRawReports: true` 时照旧发布原文。
 
-aoe 下，working 或 not-done 的 lane 停下来等人时，`dori watch` 输出 `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>`。它结合 `aoe ps --json` 和屏幕判断：回合运行中不会输出，idle 必须持续 45 秒，等待 monitor、wake source 或正在执行/已安排的 goal 不算 idle。关闭时会停止 aoe 会话并移入回收站，绝不永久删除。
+aoe 下，working 或 not-done 的 lane 停下来等人时，`dori watch` 输出 `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>`。它结合 `aoe ps --json` 和屏幕判断：回合运行中不会输出，idle 必须持续 45 秒，等待 monitor、wake source 或正在执行/已安排的 goal 不算 idle。等待会话自己启动的已分离 eval 单元、后台 bash 会话或后台 task 也不算 idle：监控日志只留一行安静的 `BG_WAITING`，超过 `blockedWaitMin`(默认 60 分钟)后才输出 `LANE_BLOCKED`。关闭时会停止 aoe 会话并移入回收站，绝不永久删除。
 
 ## 初次了解(Onboarding)
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { deadPaneTick } from "../src/dead-panes.ts";
@@ -9,7 +10,7 @@ import { listPanes, sendVerified } from "../src/panes.ts";
 import { SUBMIT_TIMING } from "../src/submit.ts";
 import type { Lane } from "../src/registry.ts";
 import { resolveSession } from "../src/session-id.ts";
-import { depsFor, fakeClock, NEW_AOE_ID, newWorld, sent, withState, type World } from "./fakes.ts";
+import { depsFor, fakeClock, NEW_AOE_ID, newWorld, RUNNING, sent, withState, type World } from "./fakes.ts";
 
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
 const MIN = 60_000;
@@ -223,6 +224,71 @@ test("an idle lane that waits on its own monitor, wake source or goal is never L
   world.aoePs = [{ session: LANE_ID, state: "waiting" }];
   world.screen = status("◉ watching ci (1m)");
   expect(await watchTick(at(t + 30_000))).toEqual([`LANE_BLOCKED fix-a waiting ${PANE}`]);
+});
+
+const SESSION_ID = "40ccbe13-33d4-4c1e-9d0e-0123456789ab";
+const bgWorld = (agentStart: number) => {
+  const sessionsDir = join(state.dir, "sessions");
+  const file = join(sessionsDir, "--repo--", `2026-01-01T10-00-00-000Z_${SESSION_ID}.jsonl`);
+  mkdirSync(join(sessionsDir, "--repo--"), { recursive: true });
+  writeFileSync(file, "");
+  world.aoePs = [{ session: LANE_ID, state: "idle" }];
+  world.ps = `10 1 /bin/bash /tmp/aoe-pane-env\n11 10 /x/senpi/dist/bundle/cli.js --session-id ${SESSION_ID}\n`;
+  world.agentStart = new Date(agentStart).toString();
+  const add = (ms: number, entry: object) => appendFileSync(file, `${JSON.stringify({ timestamp: new Date(ms).toISOString(), ...entry })}\n`);
+  return {
+    deps: (ms: number) => ({ ...at(ms), config: { ...at(ms).config, sessionsDir } }),
+    result: (ms: number, tool: string, text: string) => add(ms, { type: "message", message: { role: "toolResult", toolName: tool, content: [{ type: "text", text }] } }),
+    said: (ms: number, text: string) => add(ms, { type: "message", message: { role: "assistant", content: [{ type: "text", text }] } }),
+    notified: (ms: number, text: string) => add(ms, { type: "custom_message", customType: "senpi-codemode:notification", content: text }),
+  };
+};
+const idleLane = async () => at(T0).registry.write({ key: "fix-a", title: "fix-a", thread: "none", pane: PANE, brief: "/b.md", done: "file /etc/hostname", cwd: "/repo", openedAt: new Date(T0).toISOString() });
+
+test("an idle lane waiting on a detached eval cell, background bash or task it started is BG_WAITING, not LANE_BLOCKED, until blockedWaitMin", async () => {
+  await idleLane();
+  const w = bgWorld(T0 - 60 * MIN);
+  w.result(T0 - 20_000, "eval", "Eval cell toolu_01RfMaz detached and is running in the js kernel (0 other live cells). Completion arrives as a notification; do not re-run it.");
+  w.result(T0 - 15_000, "eval", "Command running in background with ID: bash_3\nMonitor started with ID: mon_X");
+  w.result(T0 - 12_000, "task", "Started task explore the code (st_01a14301, running). Completion is automatically delivered.");
+  w.said(T0 - 10_000, "Waiting on the browser cell.");
+  world.screen = "Waiting on the browser cell.\n❯ ";
+  expect(await watchTick(w.deps(T0))).toEqual([]);
+  expect(await watchTick(w.deps(T0 + 30_000))).toEqual([]);
+  expect(await watchTick(w.deps(T0 + MIN))).toEqual([`BG_WAITING fix-a eval:toolu_01RfMaz,bash:bash_3,task:st_01a14301 ${PANE}`]);
+  for (let t = T0 + MIN + 30_000; t < T0 + 60 * MIN; t += 10 * MIN) expect(await watchTick(w.deps(t))).toEqual([]);
+  expect((await at(T0).registry.read("fix-a"))?.waitingOn).toBe("eval:toolu_01RfMaz,bash:bash_3,task:st_01a14301");
+  // waiting too long: blocked after all, once
+  expect(await watchTick(w.deps(T0 + 60 * MIN))).toEqual([`LANE_BLOCKED fix-a idle ${PANE}`]);
+  expect(await watchTick(w.deps(T0 + 61 * MIN))).toEqual([]);
+});
+
+test("once its background work ended, or when the work is from before the agent started, an idle lane is LANE_BLOCKED idle as before", async () => {
+  await idleLane();
+  const w = bgWorld(T0 - 60 * MIN);
+  w.result(T0 - 20_000, "eval", "Eval cell toolu_A detached and is running in the py kernel (0 other live cells).");
+  w.result(T0 - 19_000, "eval", "Command is still running; auto-detached to background with ID: bash_7 (not killed; the original 600s timeout still applies).");
+  w.result(T0 - 18_000, "task", "Batch running.\n1. L1-horizon st_01a14025 (running)");
+  w.result(T0 - 18_000, "eval", "{\"text\":\"Command running in background with ID: bash_8\"}");
+  w.said(T0 - 17_000, "Eval cell toolu_Q detached and is running — I only quote it.");
+  world.screen = "Waiting.\n❯ ";
+  expect(await watchTick(w.deps(T0))).toEqual([]);
+  expect(await watchTick(w.deps(T0 + MIN))).toEqual([`BG_WAITING fix-a eval:toolu_A,bash:bash_7,task:st_01a14025,bash:bash_8 ${PANE}`]);
+  w.notified(T0 + 2 * MIN, "<system-reminder>Detached eval cell toolu_A (py) completed.\nok</system-reminder>");
+  w.notified(T0 + 2 * MIN, "<system-reminder>Background terminal session bash_7 finished: completed (exit code 0).</system-reminder>");
+  w.notified(T0 + 2 * MIN, "Terminal state after restart (offline up to 58s): restored 1 - 1 \"post13\" (respawned); background: bash_8 exited.");
+  // the task's end is newer than the settle time: it may not have woken the lane yet
+  w.notified(T0 + 3 * MIN, "task completion name:L1-horizon id:st_01a14025 agent:explore status:completed");
+  expect(await watchTick(w.deps(T0 + 3 * MIN + 30_000))).toEqual([`BG_WAITING fix-a task:st_01a14025 ${PANE}`]);
+  expect(await watchTick(w.deps(T0 + 4 * MIN))).toEqual([`LANE_BLOCKED fix-a idle ${PANE}`]);
+  // a new agent process: jobs its predecessor started died with it
+  world.screen = `${RUNNING}\n❯ `;
+  expect(await watchTick(w.deps(T0 + 5 * MIN))).toEqual([]);
+  w.result(T0 + 5 * MIN, "eval", "Eval cell toolu_B detached and is running in the js kernel (0 other live cells).");
+  world.agentStart = new Date(T0 + 6 * MIN).toString();
+  world.screen = "Waiting.\n❯ ";
+  expect(await watchTick(w.deps(T0 + 7 * MIN))).toEqual([]);
+  expect(await watchTick(w.deps(T0 + 8 * MIN))).toEqual([`LANE_BLOCKED fix-a idle ${PANE}`]);
 });
 
 test("a stopped agent in an aoe session is reported, and the lead's session is skipped", async () => {
