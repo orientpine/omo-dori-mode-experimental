@@ -44,6 +44,10 @@ export type Directive = {
   readonly original?: string;
   // typos and speech-to-text errors in original, corrected before that check: [as received, corrected]
   readonly fixes?: readonly (readonly [string, string])[];
+  // what goes into a brief for an owner entry with words: the lead's rewrite of his words as a directive (imperative or
+  // declarative, no question, no spoken filler), with every condition, target and strength of his words and nothing added.
+  // words and original stay on record; dori directives check has a reviewer of another family compare prompt with original
+  readonly prompt?: string;
   readonly trigger?: string;
   // why the entry is owner or lead: the context of his message, one line
   readonly basis?: string;
@@ -82,6 +86,12 @@ export class DirectiveError extends Error {}
 
 export const COMMON_LEDGER = join(import.meta.dir, "../../references/directives.json");
 export const DIRECTIVES_HEADING = "## 형 지침 (지침 장부에서 dori launch가 넣음)";
+// the section dori directives apply adds to a launched lane's brief, before the parts dori launch appended
+export const APPLIED_HEADING = "## 추가 지침(리드, launch 뒤)";
+
+// A prompt that still asks: a question mark, or a sentence ending in a Korean question ending (않아, 할까, 하니, 하나요...).
+const QUESTION = /\?|(?:않아|않나|않니|까|니|냐|나요|가요|죠|는가|을래|ㄹ래|할래)\s*(?:[.!]|$|\n)/m;
+export const promptQuestion = (prompt: string): string | undefined => QUESTION.exec(prompt)?.[0].trim();
 
 type RawLedger = { entries?: unknown[]; kinds?: Record<string, string>; minHits?: number; labels?: string[]; standing?: string; reviewed?: string[]; fillers?: string[] };
 
@@ -232,6 +242,11 @@ export const ledgerProblems = (ledger: Ledger): string[] => {
         if (p) out.push(`${at}: ${p}`);
       }
     }
+    // what goes into a brief for his words is the lead's directive-style rewrite, never his spoken words or a question
+    if (e.by === "owner" && e.words && !e.prompt?.trim()) out.push(`${at}: owner words without prompt (write his words as a directive: every condition, target and strength kept, no question, nothing added)`);
+    if (e.prompt && e.by !== "owner") out.push(`${at}: prompt is for an owner entry with words (a lead rule goes in as its rule)`);
+    const asks = e.prompt ? promptQuestion(e.prompt) : undefined;
+    if (asks) out.push(`${at}: prompt is a question ("${asks}"); write it as a directive`);
     if (e.by === "lead" && !e.rule) out.push(`${at}: a lead rule needs its rule`);
     if (!e.basis) out.push(`${at}: no basis (why it is the owner's directive or the lead's rule)`);
     if (!/^\d{4}-\d{2}-\d{2}/.test(e.date ?? "")) out.push(`${at}: date must start YYYY-MM-DD`);
@@ -260,12 +275,15 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // The lead's text of a brief: what dori launch appended (past signals, tree, footer) and the ledger block it put in are cut.
 export const leadText = (brief: string): string => {
-  const own = brief.split(/\n## (?:Past signals|Hypothesis tree|Lane footer) \(written by dori launch\)/)[0] ?? brief;
-  const at = own.indexOf(DIRECTIVES_HEADING);
-  if (at < 0) return own;
-  const rest = own.slice(at + DIRECTIVES_HEADING.length);
-  const next = rest.search(/\n## /);
-  return own.slice(0, at) + (next < 0 ? "" : rest.slice(next));
+  let own = brief.split(/\n## (?:Past signals|Hypothesis tree|Lane footer) \(written by dori launch\)/)[0] ?? brief;
+  for (const heading of [DIRECTIVES_HEADING, APPLIED_HEADING]) {
+    const at = own.indexOf(heading);
+    if (at < 0) continue;
+    const rest = own.slice(at + heading.length);
+    const next = rest.search(/\n## /);
+    own = own.slice(0, at) + (next < 0 ? "" : rest.slice(next));
+  }
+  return own;
 };
 
 // The text that says what kind of work a brief is: the lead's text without quoted words (the owner's or anyone's) and
@@ -334,7 +352,7 @@ const squash = (s: string): string => s.replace(/\s+/g, " ").trim();
 // trigger and the basis stay in the ledger and its table.
 export const directiveTag = (e: Directive): string =>
   e.by === "lead" ? `[리드 규칙 ${e.id}]` : e.words ? `[형 지침 ${e.id}, ${e.date}]` : `[형 결정 ${e.id}, ${e.date}, 원문 없음: 리드 기록]`;
-export const directiveText = (e: Directive): string => `${directiveTag(e)}\n${e.by === "owner" && e.words ? e.words : (e.rule ?? "")}`;
+export const directiveText = (e: Directive): string => `${directiveTag(e)}\n${e.by === "owner" && e.words ? (e.prompt ?? e.words) : (e.rule ?? "")}`;
 export const hasDirective = (brief: string, e: Directive): boolean => {
   const b = squash(brief);
   const own = e.by === "owner" && e.words ? e.words : (e.rule ?? "");
@@ -454,6 +472,16 @@ export const unledgered = (inbox: string, ledger: Ledger, owner: string, since: 
   return out;
 };
 
+// His words next to the prompt a brief gets for them, one row per owner entry with words: for the owner to read.
+export const promptTable = (ledger: Ledger): string => {
+  const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
+  return [
+    "| id | 형 원문 | 지침문 |",
+    "|---|---|---|",
+    ...ledger.entries.filter((e) => e.by === "owner" && e.words && !e.retired).map((e) => `| ${e.id} | ${cell(e.words)} | ${cell(e.prompt ?? "(없음)")} |`),
+  ].join("\n");
+};
+
 // The ledger as one table for the owner.
 export const ledgerTable = (ledger: Ledger): string => {
   const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
@@ -461,8 +489,8 @@ export const ledgerTable = (ledger: Ledger): string => {
   const how = (e: Directive) => (e.mode === "inject" ? (e.block ? `주입(${e.block})` : "주입") : e.mode === "require" ? "브리프 확인(없으면 멈춤)" : e.check === "none" ? "리드 행동(기계 확인 없음, owner-check가 읽음)" : `리드 행동 확인(${e.check})`);
   const words = (e: Directive) => (e.words ? `"${e.words}"` : e.block ? `(블록 원문: ${e.block === "eight-steps" ? "references/sessions.md 1. 조사 … 8. 보고" : "references/ui-work.md [UI 지침] 1)…7)"})` : e.by === "lead" ? "-" : "(원문 없음)");
   return [
-    "| id | 이름 | 누가 | 판단 근거 | 형 원문(지침 문장) | 계기가 된 형 말 | 규칙 | 날짜 | 출처 | 적용 범위 | 강제 방식 | 층 | 폐기 |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-    ...ledger.entries.map((e) => `| ${e.id} | ${cell(e.name)} | ${e.by === "lead" ? "리드 규칙" : "형 지침"} | ${cell(e.basis ?? "")} | ${cell(words(e))} | ${cell(e.trigger ? `"${e.trigger}"` : "")} | ${cell(e.rule ?? "")} | ${e.date} | ${cell(e.source)} | ${cell(scope(e.scope))} | ${how(e)} | ${e.layer === "common" ? "포크" : "로컬"} | ${cell(e.retired ?? "")} |`),
+    "| id | 이름 | 누가 | 판단 근거 | 형 원문(지침 문장) | 지침문(브리프에 들어감) | 계기가 된 형 말 | 규칙 | 날짜 | 출처 | 적용 범위 | 강제 방식 | 층 | 폐기 |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ...ledger.entries.map((e) => `| ${e.id} | ${cell(e.name)} | ${e.by === "lead" ? "리드 규칙" : "형 지침"} | ${cell(e.basis ?? "")} | ${cell(words(e))} | ${cell(e.prompt ?? "")} | ${cell(e.trigger ? `"${e.trigger}"` : "")} | ${cell(e.rule ?? "")} | ${e.date} | ${cell(e.source)} | ${cell(scope(e.scope))} | ${how(e)} | ${e.layer === "common" ? "포크" : "로컬"} | ${cell(e.retired ?? "")} |`),
   ].join("\n");
 };
