@@ -231,7 +231,8 @@ export const IDLE_SETTLE_MS = 45_000;
 // LANE_BLOCKED once each time a working lane's agent stops for a human: aoe says waiting or error, an omo question is
 // open, or the turn ended and stayed idle; never while the screen shows a running turn. An idle lane whose session still
 // waits on background work it started (a detached eval cell, a background bash session or task) is BG_WAITING instead,
-// a quiet watch-log line, until that work ends or the lane has been idle for blockedWaitMin.
+// a quiet watch-log line, until that work ends or the lane has been idle for blockedWaitMin; work started longer ago
+// than that does not count.
 export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
   const lanes = (await deps.registry.open()).filter((l) => l.pane && (statusOf(l) === "working" || statusOf(l) === "not-done"));
   const activity = await paneActivity(deps.run, lanes.map((l) => l.pane ?? ""));
@@ -242,9 +243,10 @@ export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
     const idleSince = act === "idle" ? (lane.idleSince ?? now) : undefined;
     let blocked = act === "waiting" || act === "error" || act === "question" ? act : idleSince !== undefined && now - idleSince >= IDLE_SETTLE_MS ? "idle" : undefined;
     let waitingOn: string | undefined;
-    if (blocked === "idle" && lane.blocked !== "idle" && idleSince !== undefined && now - idleSince < deps.config.blockedWaitMin * 60_000) {
+    const waitMs = deps.config.blockedWaitMin * 60_000;
+    if (blocked === "idle" && lane.blocked !== "idle" && idleSince !== undefined && now - idleSince < waitMs) {
       // an end that landed within the settle time may not have woken the lane yet; it counts once the lane stayed idle after it
-      const jobs = await laneBackground(deps.run, deps.config.sessionsDir, lane.pane ?? "", lane.cwd ?? "", now - IDLE_SETTLE_MS).catch((e: unknown) => {
+      const jobs = await laneBackground(deps.run, deps.config.sessionsDir, lane.pane ?? "", lane.cwd ?? "", now - IDLE_SETTLE_MS, now - waitMs).catch((e: unknown) => {
         out.push(`LANE_WATCH_WARN background check ${lane.key}: ${String(e).slice(0, 160)}`);
         return undefined;
       });

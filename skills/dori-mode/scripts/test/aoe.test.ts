@@ -238,7 +238,7 @@ const bgWorld = (agentStart: number) => {
   const add = (ms: number, entry: object) => appendFileSync(file, `${JSON.stringify({ timestamp: new Date(ms).toISOString(), ...entry })}\n`);
   return {
     deps: (ms: number) => ({ ...at(ms), config: { ...at(ms).config, sessionsDir } }),
-    result: (ms: number, tool: string, text: string) => add(ms, { type: "message", message: { role: "toolResult", toolName: tool, content: [{ type: "text", text }] } }),
+    result: (ms: number, tool: string, text: string, details: object = {}, toolCallId = "toolu_x") => add(ms, { type: "message", message: { role: "toolResult", toolCallId, toolName: tool, content: [{ type: "text", text }], details } }),
     said: (ms: number, text: string) => add(ms, { type: "message", message: { role: "assistant", content: [{ type: "text", text }] } }),
     notified: (ms: number, text: string) => add(ms, { type: "custom_message", customType: "senpi-codemode:notification", content: text }),
   };
@@ -248,9 +248,11 @@ const idleLane = async () => at(T0).registry.write({ key: "fix-a", title: "fix-a
 test("an idle lane waiting on a detached eval cell, background bash or task it started is BG_WAITING, not LANE_BLOCKED, until blockedWaitMin", async () => {
   await idleLane();
   const w = bgWorld(T0 - 60 * MIN);
-  w.result(T0 - 20_000, "eval", "Eval cell toolu_01RfMaz detached and is running in the js kernel (0 other live cells). Completion arrives as a notification; do not re-run it.");
-  w.result(T0 - 15_000, "eval", "Command running in background with ID: bash_3\nMonitor started with ID: mon_X");
-  w.result(T0 - 12_000, "task", "Started task explore the code (st_01a14301, running). Completion is automatically delivered.");
+  w.result(T0 - 20_000, "eval", "Eval cell toolu_01RfMaz detached and is running in the js kernel (0 other live cells). Completion arrives as a notification; do not re-run it.", {}, "toolu_01RfMaz");
+  w.result(T0 - 15_000, "eval", "started", { toolCalls: [{ name: "bash", resultPreview: "Command running in background with ID: bash_3" }, { name: "monitor", resultPreview: "Monitor started with ID: mon_X" }] });
+  w.result(T0 - 12_000, "task", "Started task explore the code (st_01a14301, running). Completion is automatically delivered.", { task_id: "st_01a14301", status: "running", run_in_background: true });
+  // what a lane printed (a grep of logs or of omo's source) starts nothing
+  w.result(T0 - 11_000, "eval", "Eval cell toolu_Z detached and is running\nCommand running in background with ID: bash_9\nStarted task x (st_01a19999, running)", {}, "toolu_01Grep");
   w.said(T0 - 10_000, "Waiting on the browser cell.");
   world.screen = "Waiting on the browser cell.\n❯ ";
   expect(await watchTick(w.deps(T0))).toEqual([]);
@@ -266,10 +268,10 @@ test("an idle lane waiting on a detached eval cell, background bash or task it s
 test("once its background work ended, or when the work is from before the agent started, an idle lane is LANE_BLOCKED idle as before", async () => {
   await idleLane();
   const w = bgWorld(T0 - 60 * MIN);
-  w.result(T0 - 20_000, "eval", "Eval cell toolu_A detached and is running in the py kernel (0 other live cells).");
-  w.result(T0 - 19_000, "eval", "Command is still running; auto-detached to background with ID: bash_7 (not killed; the original 600s timeout still applies).");
-  w.result(T0 - 18_000, "task", "Batch running.\n1. L1-horizon st_01a14025 (running)");
-  w.result(T0 - 18_000, "eval", "{\"text\":\"Command running in background with ID: bash_8\"}");
+  w.result(T0 - 20_000, "eval", "Eval cell toolu_A detached and is running in the py kernel (0 other live cells).", {}, "toolu_A");
+  w.result(T0 - 19_000, "eval", "x", { toolCalls: [{ name: "bash", resultPreview: "Command is still running; auto-detached to background with ID: bash_7 (not killed; the or" }] });
+  w.result(T0 - 18_000, "task", "Batch running.\n1. L1-horizon st_01a14025 (running)", { task_id: "st_01a14025", status: "running", run_in_background: true, items: [{ task_id: "st_01a14025", status: "running" }] });
+  w.result(T0 - 18_000, "bash", "Command running in background with ID: bash_8", { bash_id: "bash_8", background: true });
   w.said(T0 - 17_000, "Eval cell toolu_Q detached and is running — I only quote it.");
   world.screen = "Waiting.\n❯ ";
   expect(await watchTick(w.deps(T0))).toEqual([]);
@@ -289,6 +291,13 @@ test("once its background work ended, or when the work is from before the agent 
   world.screen = "Waiting.\n❯ ";
   expect(await watchTick(w.deps(T0 + 7 * MIN))).toEqual([]);
   expect(await watchTick(w.deps(T0 + 8 * MIN))).toEqual([`LANE_BLOCKED fix-a idle ${PANE}`]);
+  // a server it left running for longer than blockedWaitMin is not what it waits on
+  world.screen = `${RUNNING}\n❯ `;
+  expect(await watchTick(w.deps(T0 + 70 * MIN))).toEqual([]);
+  w.result(T0 + 8 * MIN, "bash", "Command running in background with ID: bash_1", { bash_id: "bash_1", background: true });
+  world.screen = "Waiting.\n❯ ";
+  expect(await watchTick(w.deps(T0 + 70 * MIN + 1))).toEqual([]);
+  expect(await watchTick(w.deps(T0 + 71 * MIN))).toEqual([`LANE_BLOCKED fix-a idle ${PANE}`]);
 });
 
 test("a stopped agent in an aoe session is reported, and the lead's session is skipped", async () => {
