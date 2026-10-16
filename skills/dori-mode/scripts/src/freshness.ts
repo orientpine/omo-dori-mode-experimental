@@ -66,7 +66,14 @@ const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: 
   const now = deps.clock.now();
   const at = new Date(now).toISOString();
   if (seen?.pane === pane) {
-    if (!auto || !seen.autoAt || seen.gaveUp) return [];
+    if (!auto || seen.gaveUp) return [];
+    // due while the key was off (only the ROLLOVER_DUE line so far): the first automatic start, now that it is on
+    if (!seen.autoAt) {
+      const hit = await reasons();
+      if (!hit.length) return [];
+      await save({ ...seen, autoAt: at, tries: 1 });
+      return [{ kind: "rollover_auto", lane: key, detail: `${hit.join(", ")}: ${await auto(who, key)}` }];
+    }
     const tries = seen.tries ?? 1;
     if (tries >= h.autoMaxTries) {
       await save({ ...seen, gaveUp: true });
