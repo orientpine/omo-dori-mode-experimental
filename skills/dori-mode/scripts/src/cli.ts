@@ -22,7 +22,7 @@ import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
-import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, renderBrief, setGpu, setThread, validateLaunch } from "./launch.ts";
+import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, renderBrief, setGpu, setThread, uiWarning, validateLaunch } from "./launch.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
 import { canonical, evidenceLines, inferredLine, inferRepeats, laneEvents, type MetricRepeat, suspects } from "./auto-signals.ts";
@@ -54,7 +54,7 @@ const USAGE = `dori <command> [options]
 
   lead                                 print the live lead as "<aoe-id> <tmux-session>"
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
-         [--goal "owner words"] [--challenge-before STEP ...] [--use-gpu] [--dry-run]
+         [--goal "owner words"] [--challenge-before STEP ...] [--use-gpu] [--ui] [--dry-run]
                                        prints LAUNCH_DONE_WEAK (and still launches) when every Done signal only checks
                                        files or text; --done-weak-ok silences it. The brief gets a "Past signals" section
                                        from earlier lanes in the same cwd or with a shared tag (the key's first word is one)
@@ -63,7 +63,9 @@ const USAGE = `dori <command> [options]
                                        before that step (claim-done is refused until it did); --dry-run prints the brief
                                        as the lane would read it and opens nothing. The session starts with config
                                        launchEnv (aoe), e.g. the GPU hidden; --use-gpu starts it without, and the
-                                       registry keeps that for handover and restart
+                                       registry keeps that for handover and restart. --ui puts the owner's seven UI steps
+                                       (references/ui-work.md) at the top of the brief, after its ulw line; a brief that
+                                       reads like UI work without --ui prints LAUNCH_UI_HINT (and still launches)
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...] [--use-gpu]
                                        REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
   set-thread <key> <adapter>:<id>      point an open lane at another work thread
@@ -262,7 +264,7 @@ const flags = parseArgs({
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
     from: { type: "string" }, first: { type: "string" }, "open-card": { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
-    pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" }, "use-gpu": { type: "boolean" },
+    pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" }, "use-gpu": { type: "boolean" }, ui: { type: "boolean" },
     hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" }, template: { type: "boolean" },
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
@@ -461,13 +463,15 @@ try {
       process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
       break;
     case "launch": {
-      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]) };
+      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]), ui: Boolean(flags.values.ui) };
       const noGoal = goalWarning(input);
       if (noGoal) console.log(noGoal);
       if (flags.values["dry-run"]) {
         await validateLaunch(deps, input);
         const weak = await doneWeakWarning(input, input.cwd ?? config.defaultCwd);
         if (weak) console.log(weak);
+        const uiHint = uiWarning(input, await Bun.file(input.brief).text().catch(() => ""));
+        if (uiHint) console.log(uiHint);
         console.log((await renderBrief(deps, input)).text);
         console.log(`DRY_RUN ${input.key}: brief not written, no pane opened, nothing registered`);
         break;
