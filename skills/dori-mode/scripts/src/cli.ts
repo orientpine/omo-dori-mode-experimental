@@ -34,6 +34,7 @@ import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
 import { syncRegistry } from "./sync.ts";
+import { closeDueFrozen, closeFrozen, frozenLine, readFrozen, thawFrozen } from "./frozen.ts";
 import { canLaunch } from "./routing.ts";
 import { normFix, recordFix } from "./same-fix.ts";
 import { computeScorecard, dayWindow, formatScorecard, saveScorecard, ScorecardError } from "./scorecard.ts";
@@ -217,8 +218,13 @@ const USAGE = `dori <command> [options]
                                        every open lane, card and timer, the owner's words and the summary's decisions and
                                        follow-ups; what it leaves out is sent back with the old log lines behind it
                                        (HANDOVER_SUPPLEMENT, up to handover.supplementRounds rounds). Only then is the old
-                                       session closed (HANDOVER_DONE); a failed check moves everything back
-                                       (HANDOVER_VERIFY_FAIL, exit 3). Run from inside the lead it detaches itself (systemd-run)
+                                       lead frozen (SIGSTOP on its agent and children, HANDOVER_OLD_FROZEN, HANDOVER_DONE) and
+                                       closed handover.frozenCloseH hours later by freshness; a failed check moves everything
+                                       back and freezes nothing (HANDOVER_VERIFY_FAIL, exit 3). Run from inside the lead it
+                                       detaches itself (systemd-run)
+  handover frozen | thaw <pane> | close-frozen [<pane>]
+                                       list the frozen old leads; resume one frozen by mistake; close one now, or every one
+                                       whose close time passed (its log stays)
   handover --template                  print the headings of the old lead's summary (--note FILE)
   handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE, HANDOVER_UNDERSTAND or HANDOVER_SUPPLEMENT line with this
   handover --lane <key> --approved-by REF [--note FILE] [--model M] [--thinking L] [--force] [--keep-old] [--minutes N] [--dry-run]
@@ -358,6 +364,15 @@ const reportOwner = discordToken && process.env.DORI_DISCORD_CHANNEL?.trim()
   ? { reportOwner: async (thread: string | null, text: string): Promise<string> => discordClient().send(thread ?? env("DORI_DISCORD_CHANNEL"), text) }
   : {};
 const sessionOfPane = async (pane: string, cwd: string): Promise<string> => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id;
+const sendSignal = (pid: number, sig: "SIGSTOP" | "SIGCONT"): boolean => {
+  try {
+    process.kill(pid, sig);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const freezeDeps = { run, procs: () => procTable(run), signal: sendSignal };
 const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)): LaneHandoverDeps => ({
   ...deps,
   cardDir: cardDir(),
@@ -372,14 +387,7 @@ const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)
     }
   },
   alive: pidAlive,
-  signal: (pid, sig) => {
-    try {
-      process.kill(pid, sig);
-      return true;
-    } catch {
-      return false;
-    }
-  },
+  signal: sendSignal,
   realpath: realpathOr,
   nonce: () => crypto.randomUUID().slice(0, 8),
   print,
@@ -396,6 +404,8 @@ const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
   routedPane: async () => (await loadConfig()).leadPane,
   envLeadPane: process.env.DORI_LEAD_PANE?.trim() ?? "",
   alive: pidAlive,
+  procs: () => procTable(run),
+  signal: sendSignal,
   realpath: realpathOr,
   timers: async () => {
     const pattern = new RegExp(config.handover.timers);
@@ -841,6 +851,11 @@ try {
           },
         };
         for (const a of await freshnessTick(deps, process.env.HOME ?? "", hooks)) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
+        // a frozen old lead is closed handover.frozenCloseH hours after its handover
+        for (const line of await closeDueFrozen(freezeDeps, config.stateDir, Date.now())) {
+          watchLog(config.watchLog, realClock, { source: "handover", line });
+          console.log(line);
+        }
       });
       break;
     case "dead-panes": {
@@ -1079,6 +1094,28 @@ try {
         console.log(ackHandover(opt("state") ? resolve(opt("state") ?? "") : config.stateDir, flags.positionals[1]?.trim() || die("usage: dori handover ack <id> [--state DIR]"), here, new Date().toISOString()));
         break;
       }
+      // the old lead frozen at a committed handover: list, resume one frozen by mistake, close one (or every due one)
+      if (key === "frozen") {
+        const recs = readFrozen(config.stateDir);
+        console.log(recs.length ? recs.map(frozenLine).join("\n") : "FROZEN none");
+        break;
+      }
+      if (key === "thaw") {
+        const line = thawFrozen(freezeDeps, config.stateDir, flags.positionals[1]?.trim() || die("usage: dori handover thaw <pane>"));
+        watchLog(config.watchLog, realClock, { source: "handover", line });
+        console.log(line);
+        if (line.startsWith("FROZEN_NONE")) process.exit(1);
+        break;
+      }
+      if (key === "close-frozen") {
+        const pane = flags.positionals[1]?.trim();
+        const rec = pane ? readFrozen(config.stateDir).find((r) => r.pane === pane) : undefined;
+        if (pane && !rec) die(`FROZEN_NONE ${pane}: no frozen session recorded for this pane (dori handover frozen lists them)`);
+        const lines = rec ? [await closeFrozen(freezeDeps, config.stateDir, rec)] : await closeDueFrozen(freezeDeps, config.stateDir, Date.now());
+        for (const line of lines) watchLog(config.watchLog, realClock, { source: "handover", line });
+        console.log(lines.join("\n") || "FROZEN_NONE_DUE");
+        break;
+      }
       if (key === "ready" || opt("lane")) {
         const laneDeps = laneDepsFor();
         if (key === "ready") {
@@ -1100,7 +1137,8 @@ try {
         break;
       }
       // closing the old lead ends every process in its tmux session, so a handover started there continues as a user unit
-      if (here && here === config.leadPane && !flags.values["dry-run"] && !flags.values["keep-old"] && !process.env.DORI_HANDOVER_DETACHED) {
+      // and since the old lead is frozen at the commit (--keep-old too), it must not run under the agent it stops
+      if (here && here === config.leadPane && !flags.values["dry-run"] && !process.env.DORI_HANDOVER_DETACHED) {
         const unit = `dori-handover-${Date.now()}`;
         const log = join(config.stateDir, "handover", "run.log");
         mkdirSync(join(config.stateDir, "handover"), { recursive: true });

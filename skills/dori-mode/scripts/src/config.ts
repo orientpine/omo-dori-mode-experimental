@@ -230,6 +230,9 @@ export type AutoSignals = {
 // reportText ({who}, {from}, {to},
 // {reason}) is that message to the owner, posted in the lane's discord thread or DORI_DISCORD_CHANNEL. supplementRounds is how many times a lane handover fills in what the new session's
 // restatement left out (from the note and the old log) and asks again before it rolls back; 0 rolls back at the first gap.
+// A committed lead handover freezes the old lead (SIGSTOP on its agent and every child) instead of closing it; frozenCloseH
+// is how many hours later freshness closes it (0: only by hand, dori handover close-frozen), and frozenText ({from}, {n}
+// processes, {hours} or - when closed by hand) is the line the owner's report of that rollover gets.
 export type HandoverWatcher = { readonly name: string; readonly check: readonly string[]; readonly arm?: string };
 
 export type Handover = {
@@ -256,6 +259,8 @@ export type Handover = {
   readonly autoRetryMin: number;
   readonly autoMaxTries: number;
   readonly supplementRounds: number;
+  readonly frozenCloseH: number;
+  readonly frozenText: string;
   readonly proposalText: string;
   readonly reportText: string;
 };
@@ -394,7 +399,8 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     },
   },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
-    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneAfterCompactK: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, leadAfterCompactK: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoMaxTries: 6, supplementRounds: 2,
+    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneAfterCompactK: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, leadAfterCompactK: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoMaxTries: 6, supplementRounds: 2, frozenCloseH: 24,
+    frozenText: "The old session {from} is frozen ({n} processes stopped, it uses no tokens); it closes in {hours} h. To undo: dori handover thaw {from}",
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
     reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },
   instances: [],

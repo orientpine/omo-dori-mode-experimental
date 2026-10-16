@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { ackHandover, handover, type HandoverDeps, manifestPath, missingMonitors } from "../src/handover.ts";
 import { quietReason, readRollovers, appendRollover } from "../src/rollover.ts";
+import { readFrozen } from "../src/frozen.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { Lane } from "../src/registry.ts";
 import { sessionDirFor } from "../src/session-id.ts";
@@ -32,6 +33,9 @@ let sim: Sim;
 let printed: string[];
 let restarted: string[];
 let live: Set<number>;
+let sigs: string[];
+// the old lead's pane: shell 10 (the fake tmux pane pid), the agent 11, a monitor 12 under it and its grep 13
+const TREE = [{ pid: 10, ppid: 1, cmd: "bash" }, { pid: 11, ppid: 10, cmd: "node /x/senpi/dist/bundle/cli.js" }, { pid: 12, ppid: 11, cmd: "tail -n 0 -F /home/test/.dori/inbox.jsonl" }, { pid: 13, ppid: 12, cmd: "grep --line-buffered x" }];
 
 const monitor = (description: string, command: string, extra: Record<string, unknown> = {}) => ({ description, command, filter: "^\\{", persistent: true, suspended: false, expiresAt: Date.parse("2026-10-20T00:00:00Z"), runtime: { pid: 101 }, ...extra });
 
@@ -84,6 +88,11 @@ const setup = async (): Promise<HandoverDeps> => {
     routedPane: async () => (JSON.parse(readFileSync(join(state.dir, "config.json"), "utf8")) as { leadPane: string }).leadPane,
     envLeadPane: "",
     alive: (pid) => live.has(pid),
+    procs: async () => TREE,
+    signal: (pid, sig) => {
+      sigs.push(`${sig} ${pid}`);
+      return true;
+    },
     realpath: (path) => (path === LINK ? CWD : path),
     timers: async () => ["Sat 2026-10-17 08:30:00 UTC 5 days - - dori-remind-droneshow.timer dori-remind-droneshow.service"],
     restart: async (unit) => {
@@ -135,6 +144,7 @@ beforeEach(() => {
   printed = [];
   restarted = [];
   live = new Set([101, 102, 201, 202, 203]);
+  sigs = [];
 });
 afterEach(() => state.done());
 
@@ -203,7 +213,7 @@ test("refuses while another handover holds the lock, and takes over a lock whose
   expect(existsSync(join(state.dir, "handover", "lock"))).toBe(false);
 });
 
-test("moves config, env, lanes and cards to the new session, checks monitors and both probes, and only then closes the old one", async () => {
+test("moves config, env, lanes and cards to the new session, checks monitors and both probes, and only then freezes the old one", async () => {
   // Given
   const deps = await setup();
   // When
@@ -223,17 +233,52 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   expect(card).toMatchObject({ tmux: NEW, session: "new-sid" });
   expect(restarted).toEqual(["dori-lanes"]);
   const probeAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "") === `[REPORT] handover-probe | milestone | HANDOVER_PROBE n1: run dori handover ack n1 --state ${state.dir}`);
-  const stopAt = w.calls.findIndex((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop" && c[3] === OLD_ID);
   expect(probeAt).toBeGreaterThan(-1);
-  expect(stopAt).toBeGreaterThan(probeAt);
-  expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "rm" && c[2] === OLD_ID)).toBe(true);
+  // committed: the old lead's agent and everything under it is stopped, not closed; its log stays
+  expect(sigs).toEqual(["SIGSTOP 11", "SIGSTOP 12", "SIGSTOP 13"]);
+  expect(stopped()).toBe(false);
+  expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "rm")).toBe(false);
+  const oldLog = join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-08T08-13-21-349Z_old-sid.jsonl");
+  expect(existsSync(oldLog)).toBe(true);
+  expect(readFrozen(state.dir)).toEqual([{ pane: OLD, aoeId: OLD_ID, at: "2026-10-11T16:35:00.000Z", agentPid: 11, pids: [11, 12, 13], closeAt: "2026-10-12T16:35:00.000Z", to: NEW, session: "old-sid", oldLog }]);
   expect(printed).toContain("HANDOVER_MONITORS_OK 3 in aoe_lead2_5e5e5e5e (session new-sid)");
   expect(printed.some((l) => l.startsWith(`HANDOVER_DONE ${OLD} -> ${NEW}`))).toBe(true);
   expect(readFileSync(r.note ?? "", "utf8")).toContain(`## The old lead's notes\n${SUMMARY.trim()}`);
   // the new lead acts only after the commit, which comes once the old session is closed
   expect(readFileSync(r.note ?? "", "utf8")).toContain("Until a [LEAD] HANDOVER_COMMITTED line arrives answer no one");
-  const commitAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_COMMITTED: the handover is checked and the old session is closed"));
-  expect(commitAt).toBeGreaterThan(stopAt);
+  expect(sent(w).some((t) => t.startsWith(`[LEAD] HANDOVER_COMMITTED: the handover is checked and the old session ${OLD} is frozen`))).toBe(true);
+  const frozenAt = printed.findIndex((l) => l.startsWith(`HANDOVER_OLD_FROZEN ${OLD} agent 11: 3 processes stopped (11,12,13)`));
+  expect(frozenAt).toBeGreaterThan(-1);
+  expect(printed.findIndex((l) => l === `HANDOVER_COMMITTED lead ${NEW}`)).toBeGreaterThan(frozenAt);
+});
+
+test("an old lead that cannot be frozen (no agent under its pane) is closed as before, and --keep-old freezes it with no close time", async () => {
+  // Given
+  const deps = await setup();
+  const noAgent: HandoverDeps = { ...deps, procs: async () => [TREE[0] ?? { pid: 10, ppid: 1, cmd: "bash" }] };
+  // When
+  const failed = await handover(noAgent, { approvedBy: APPROVED, title: "lead2" });
+  // Then
+  expect(failed).toMatchObject({ code: 0, to: NEW });
+  expect(printed.some((l) => l.startsWith(`HANDOVER_FREEZE_FAIL ${OLD}: no agent process under ${OLD}`) && l.endsWith("closing it instead"))).toBe(true);
+  expect(sigs).toEqual([]);
+  expect(stopped()).toBe(true);
+  expect(readFrozen(state.dir)).toEqual([]);
+  // Given a fresh world with the agent, kept open
+  state.done();
+  state = withState();
+  w = newWorld();
+  printed = [];
+  sim.handled = new Set();
+  const kept = await setup();
+  // When
+  const r = await handover(kept, { approvedBy: APPROVED, title: "lead2", keepOld: true });
+  // Then
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(sigs).toEqual(["SIGSTOP 11", "SIGSTOP 12", "SIGSTOP 13"]);
+  expect(stopped()).toBe(false);
+  expect(readFrozen(state.dir)[0]?.closeAt).toBeUndefined();
+  expect(printed.some((l) => l.startsWith(`HANDOVER_OLD_FROZEN ${OLD}`) && l.includes("kept until closed by hand"))).toBe(true);
 });
 
 test("an inbox probe acked by the old lead does not count: nothing is closed and everything moves back", async () => {
@@ -267,6 +312,9 @@ test("an inbox probe acked by the old lead does not count: nothing is closed and
   expect(printed.some((l) => l.startsWith(`HANDOVER_ROLLED_BACK ${OLD} stays the lead`))).toBe(true);
   expect(sent(w).some((t) => t.startsWith("[LEAD] HANDOVER_ROLLED_BACK: the handover failed") && t.includes("You are not the lead"))).toBe(true);
   expect(sent(w).some((t) => t.includes("HANDOVER_COMMITTED:"))).toBe(false);
+  // rolled back: the old lead is never stopped, it goes on as the lead
+  expect(sigs).toEqual([]);
+  expect(readFrozen(state.dir)).toEqual([]);
 });
 
 test("a monitor whose process died in the new session counts as missing, so the old lead stays", async () => {
@@ -410,8 +458,8 @@ test("the old lead is quiet from the moment the new lead takes over until the ch
   expect(quietReason(state.dir, OLD, deps.clock.now())).toBeUndefined();
   expect(quietReason(state.dir, NEW, deps.clock.now())).toBeUndefined();
   const log = readRollovers(state.dir);
-  expect(log[0]).toMatchObject({ kind: "rollover", who: "lead", key: "lead", from: OLD, to: NEW, approvedBy: APPROVED, result: "done" });
-  expect(log[0]?.kind === "rollover" && log[0].steps.map((s) => s.step)).toEqual(["open", "startup", "repoint", "verify", "close"]);
+  expect(log[0]).toMatchObject({ kind: "rollover", who: "lead", key: "lead", from: OLD, to: NEW, approvedBy: APPROVED, result: "done-frozen", frozen: { pids: 3, closeAt: "2026-10-12T16:35:00.000Z" } });
+  expect(log[0]?.kind === "rollover" && log[0].steps.map((s) => s.step)).toEqual(["open", "startup", "repoint", "verify", "freeze"]);
 });
 
 test("a monitor counts as re-armed only with the same command and filter, or the same path; a name alone is enough only without either", () => {
@@ -442,6 +490,8 @@ test("an automatic lead rollover tells the owner afterwards with what it crossed
   expect(r).toMatchObject({ code: 0, to: NEW });
   expect(posted).toHaveLength(1);
   expect(posted[0]).toStartWith(`I moved the lead to a new session (${OLD} -> ${NEW}). Why: automatic (handover.autoRolloverLead)`);
+  // the owner's notice says the old session is frozen
+  expect(posted[0]?.split("\n")[1]).toBe(`The old session ${OLD} is frozen (3 processes stopped, it uses no tokens); it closes in 24 h. To undo: dori handover thaw ${OLD}`);
   expect(readRollovers(state.dir).at(-1)).toMatchObject({ decidedBy: "auto", ownerReport: { message: "msg-9" } });
 });
 
@@ -459,11 +509,12 @@ test("the new lead restates what it understood; an open lane it leaves out comes
   expect(readFileSync(sup, "utf8")).toContain("## 1. open lane: demo\nSource: the lane registry: working, pane aoe_demo_12345678, thread discord:12345678, last report [REPORT] demo / milestone / half way. Goes under: ## Open lanes.");
   expect(printed).toContain("HANDOVER_SUPPLEMENT_OK lead after 1 round(s)");
   expect(printed).toContain(`HANDOVER_UNDERSTOOD ${understood}`);
-  // the restatement and its supplement come before the old lead is closed
+  // the restatement and its supplement come before the old lead is frozen and the new one committed
   const supAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_SUPPLEMENT"));
   expect(supAt).toBeGreaterThan(-1);
-  expect(w.calls.findIndex((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop")).toBeGreaterThan(supAt);
-  expect(readRollovers(state.dir).at(-1)).toMatchObject({ who: "lead", result: "done", supplementRounds: 1, supplements: [{ round: 1, items: [{ kind: "open lane", text: "demo" }], file: sup }] });
+  expect(w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_COMMITTED"))).toBeGreaterThan(supAt);
+  expect(sigs).toEqual(["SIGSTOP 11", "SIGSTOP 12", "SIGSTOP 13"]);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ who: "lead", result: "done-frozen", supplementRounds: 1, supplements: [{ round: 1, items: [{ kind: "open lane", text: "demo" }], file: sup }] });
 });
 
 test("a new lead whose restatement still leaves out an open lane after the supplement rounds fails the check: everything moves back and the old lead stays", async () => {
