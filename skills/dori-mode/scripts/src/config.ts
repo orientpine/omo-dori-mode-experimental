@@ -220,7 +220,8 @@ export type AutoSignals = {
 // before the move for the old lead and after it for the new one; arm tells the new session how to start it, if it must.
 // Rollover (moving a session to a new one): readyMin is how long a lane's `dori handover ready` mark stays valid. lane* and
 // lead* are the thresholds at which freshness says a rollover is due (ROLLOVER_DUE): context use in percent (status line),
-// compactions in the session log, hours since the session began; 0 turns one off. A stuck lane is due at rung 4 of the
+// compactions in the session log, hours since the session began, thousands of tokens still held after the last compaction
+// (*AfterCompactK); 0 turns one off. A stuck lane is due at rung 4 of the
 // stuck ladder (stuck.*). Nothing switches on a threshold: the lead decides (dori rollover-propose prints proposalText
 // for the lead and logs it), runs the handover with --approved-by lead:<reason and signal>, and the handover tells the
 // owner afterwards and logs that message's id. autoRolloverLanes / autoRolloverLead let freshness start it on a measured
@@ -245,9 +246,11 @@ export type Handover = {
   readonly laneContextPct: number;
   readonly laneCompactions: number;
   readonly laneAgeH: number;
+  readonly laneAfterCompactK: number;
   readonly leadContextPct: number;
   readonly leadCompactions: number;
   readonly leadAgeH: number;
+  readonly leadAfterCompactK: number;
   readonly autoRolloverLanes: boolean;
   readonly autoRolloverLead: boolean;
   readonly autoRetryMin: number;
@@ -391,7 +394,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     },
   },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
-    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoMaxTries: 6, supplementRounds: 2,
+    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneAfterCompactK: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, leadAfterCompactK: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoMaxTries: 6, supplementRounds: 2,
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
     reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },
   instances: [],

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
 import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine } from "../src/lane-handover.ts";
-import { approvalProblem, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
+import { approvalProblem, compactionScan, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
 import { stuckTop, stuckView } from "../src/explore.ts";
 import { recordFix } from "../src/same-fix.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
@@ -1036,4 +1036,28 @@ test("a rollover due while the auto key was off starts automatically in the same
   expect(first).toEqual(["rollover_auto demo context 85% >= 80%: started"]);
   expect(again).toEqual([]);
   expect(starts).toEqual(["lane:demo"]);
+});
+
+test("the context after the last compaction is the first assistant turn after it (input + cache read + cache write), read incrementally; a threshold on it makes a rollover due", () => {
+  // Given
+  const dir = join(state.dir, "after-compact");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "2026-10-11T10-00-00-000Z_abcdefab-0000-0000-0000-000000000001.jsonl");
+  const turn = (input: number, cacheRead: number, cacheWrite: number) => JSON.stringify({ type: "message", message: { role: "assistant", usage: { input, output: 10, cacheRead, cacheWrite } } });
+  const compaction = JSON.stringify({ type: "compaction", tokensBefore: 790000, details: { tokenEstimate: 640000 } });
+  writeFileSync(file, [turn(2, 700000, 5000), compaction, JSON.stringify({ type: "message", message: { role: "user", usage: { input: 1 } } }), turn(2, 17421, 180890), turn(2, 198311, 3125)].join("\n") + "\n");
+  // When
+  const first = compactionScan(file);
+  appendFileSync(file, [compaction, turn(2, 17421, 300000)].join("\n") + "\n");
+  const second = compactionScan(file);
+  appendFileSync(file, compaction + "\n");
+  const pending = compactionScan(file);
+  // Then
+  expect(first).toEqual({ count: 1, afterK: 198 });
+  expect(second).toEqual({ count: 2, afterK: 317 });
+  expect(pending).toEqual({ count: 3 });
+  expect(sessionSignals(dir, "abcdefab-0000-0000-0000-000000000001", Date.parse("2026-10-11T12:00:00Z"))).toEqual({ compactions: 3, ageH: 2 });
+  expect(crossed({ afterCompactK: 317 }, { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 300 })).toEqual(["context after compaction 317k >= 300k"]);
+  expect(crossed({ afterCompactK: 299 }, { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 300 })).toEqual([]);
+  expect(crossed({ afterCompactK: 900 }, { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 0 })).toEqual([]);
 });

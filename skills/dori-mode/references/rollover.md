@@ -54,6 +54,8 @@ The sources, with their conditions and numbers:
 
 ### The decision
 
+- 2026-10-16, the owner (Q190, after the lead measured keeping a compacted session and moving to a fresh one at about the same cost per turn, 0.133 vs 0.135): automatic rollover on, on quality signals only: stuck rung 4, and a session that still carries 300k tokens or more right after its last compaction (`handover.laneAfterCompactK` / `leadAfterCompactK` = 300); context %, compaction count and age off. The decision below stands for hosts that have not made one.
+
 - Lanes: rung 4 of the stuck ladder (replaced `handover.laneRepeats` = 3 on 2026-10-12, with the owner's approval). The 3rd failed attempt on one metric is rung 3: ulw research and a challenge of the next plan in the same session, because a lane that is researching cannot be moved and a moved lane would have to re-read the research. A rollover is due only when that still fails, when one hypothesis is tried 3 times after the lane branched (it is fixated), or when an owner-check finding is still there after the re-read the lead confirmed. The lead decides; often the better answer is a changed hypothesis in the same session (`dori fix-attempt` asks for three).
 - Context use, compactions and age: 0 (off) for lanes and the lead. The evidence does not give a number that transfers to claude-opus-5-5 at 1M, and the local logs show no onset. `dori rollover-propose` still works by hand at any time, for example when the owner sees a session go wrong, and it logs the signal values either way.
 - The handover note matters more than the timing: see "Upsides kept, downsides removed" below.
@@ -145,4 +147,4 @@ Each row is a point where a rollover can break, what is left, how it is put righ
 
 ## Configuration
 
-`handover.readyMin`, `handover.laneContextPct`, `handover.laneCompactions`, `handover.laneAgeH`, `handover.leadContextPct`, `handover.leadCompactions`, `handover.leadAgeH`, `handover.autoRolloverLanes`, `handover.autoRolloverLead`, `handover.autoRetryMin`, `handover.autoMaxTries`, `handover.proposalText` and `handover.reportText`, and the stuck ladder's `stuck.*`, are described in [scripts.md](scripts.md).
+`handover.readyMin`, `handover.laneContextPct`, `handover.laneCompactions`, `handover.laneAgeH`, `handover.leadContextPct`, `handover.leadCompactions`, `handover.leadAgeH`, `handover.laneAfterCompactK`, `handover.leadAfterCompactK`, `handover.autoRolloverLanes`, `handover.autoRolloverLead`, `handover.autoRetryMin`, `handover.autoMaxTries`, `handover.proposalText` and `handover.reportText`, and the stuck ladder's `stuck.*`, are described in [scripts.md](scripts.md).
