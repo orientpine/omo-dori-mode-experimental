@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config.ts";
 import { knownConfigKeys } from "../src/config-keys.ts";
@@ -158,6 +158,48 @@ test("prints only UP_TO_DATE when the applied HEAD is unchanged", async () => {
   // Then
   expect(lines).toEqual(["UP_TO_DATE"]);
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
+});
+
+// The second run's clock never moves, so it waits until the first run releases the lock however long that takes;
+// setImmediate lets the first run's file reads finish between its tries.
+const waiting = (git: Runner = deps.git): UpdateDeps => ({ ...deps, git, clock: { now: () => 0, sleep: () => new Promise((resolve) => setImmediate(resolve)) } });
+
+test("two updates of one commit at once restart and announce once, the second prints UPDATE_SKIP", async () => {
+  // Given
+  baseline();
+  // When
+  const results = await Promise.all([applyUpdate(deps, options), applyUpdate(waiting(), options)]);
+  // Then
+  expect(results).toEqual([true, true]);
+  expect(calls.filter((args) => args.includes("restart"))).toEqual([["systemctl", "--user", "restart", "dori-test"]]);
+  const log = await logLines();
+  expect(log.filter((line) => line.includes(" UPDATED "))).toHaveLength(1);
+  expect(log.filter((line) => / update ANNOUNCE/.test(line))).toHaveLength(1);
+  expect(log.filter((line) => line.includes(" UPDATE_SKIP "))).toEqual([`1970-01-01T00:00:00.000Z update UPDATE_SKIP ${next.slice(0, 7)} already applied by the dori update this run waited for`]);
+  expect(existsSync(join(state.dir, "update.lock"))).toBe(false);
+});
+
+test("a run that waited applies a newer HEAD instead of skipping it", async () => {
+  // Given
+  baseline();
+  const third = "3333333333333333333333333333333333333333";
+  const git: Runner = async (args) => ({ code: 0, out: args.includes("rev-parse") ? third : args.includes("diff") ? changes : "", err: "" });
+  // When
+  await Promise.all([applyUpdate(deps, options), applyUpdate(waiting(git), options)]);
+  // Then
+  expect((await logLines()).filter((line) => line.includes(" UPDATED ")).map((line) => line.split(" ")[3])).toEqual(["1111111..2222222", "2222222..3333333"]);
+  expect((await Bun.file(join(state.dir, "update.json")).json()).applied).toBe(third);
+});
+
+test("takes over the lock of a dori update that died", async () => {
+  // Given
+  baseline();
+  writeFileSync(join(state.dir, "update.lock"), JSON.stringify({ pid: 2 ** 22 + 1, at: "1970-01-01T00:00:00.000Z" }));
+  // When
+  expect(await applyUpdate(deps, options)).toBe(true);
+  // Then
+  expect(calls.filter((args) => args.includes("restart"))).toHaveLength(1);
+  expect(existsSync(join(state.dir, "update.lock"))).toBe(false);
 });
 
 test("logs UPDATE_FAIL and preserves state when the pull fails", async () => {

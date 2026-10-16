@@ -1,6 +1,8 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DoriConfig } from "./config.ts";
+import { takeLock } from "./handover.ts";
+import { pidAlive } from "./heavy-slot.ts";
 import { configKeys, knownConfigKeys } from "./config-keys.ts";
 import type { Clock, Runner } from "./run.ts";
 import { restartService } from "./update-ready.ts";
@@ -31,7 +33,42 @@ const readState = async (path: string): Promise<UpdateState | undefined> => {
   throw new UpdateError(`invalid update state: ${path}`);
 };
 
+// One update at a time per stateDir: a manual `dori update --pull` moves the branch ref, which starts
+// dori-update.service at the same moment (10-16 12:02Z: both read the old applied SHA, restarted twice
+// and announced twice). A run waits for state/update.lock (a dead holder's lock is taken over), then
+// reads HEAD and update.json; HEAD already applied by the run it waited for prints UPDATE_SKIP, a newer
+// HEAD is applied, so no commit is missed. Returns true when it had to wait.
+const waitForLock = async (deps: UpdateDeps, file: string): Promise<boolean> => {
+  const { config, clock } = deps;
+  const deadline = clock.now() + (config.update.readyTimeoutSec * config.update.services.length + 300) * 1000;
+  for (let waited = false; ; waited = true) {
+    const busy = takeLock(file, pidAlive, new Date(clock.now()).toISOString(), "dori update");
+    if (!busy) return waited;
+    if (clock.now() >= deadline) throw new UpdateError(`update lock: ${busy}`);
+    await clock.sleep(250);
+  }
+};
+
 export const applyUpdate = async (deps: UpdateDeps, options: UpdateOptions): Promise<boolean> => {
+  const { config } = deps;
+  if (options.dryRun) return applyLocked(deps, options, false);
+  mkdirSync(config.stateDir, { recursive: true });
+  const lock = join(config.stateDir, "update.lock");
+  let waited: boolean;
+  try {
+    waited = await waitForLock(deps, lock);
+  } catch (error) {
+    if (!(error instanceof UpdateError)) throw error;
+    return applyLocked(deps, options, false, error);
+  }
+  try {
+    return await applyLocked(deps, options, waited);
+  } finally {
+    rmSync(lock, { force: true });
+  }
+};
+
+const applyLocked = async (deps: UpdateDeps, options: UpdateOptions, waited: boolean, lockError?: UpdateError): Promise<boolean> => {
   const { config } = deps;
   const emit = (line: string): void => {
     deps.print(options.dryRun ? `DRY_RUN ${line}` : line);
@@ -43,12 +80,14 @@ export const applyUpdate = async (deps: UpdateDeps, options: UpdateOptions): Pro
     return result.out;
   };
   try {
+    if (lockError) throw lockError;
     if (options.pull && !options.dryRun) await git(["pull", "--ff-only"]);
     if (options.pull && options.dryRun) deps.print("DRY_RUN git pull --ff-only (not executed)");
     const head = await git(["rev-parse", "HEAD"]);
     const path = join(config.stateDir, "update.json");
     const state = await readState(path);
     const keys = knownConfigKeys();
+    if (state?.applied === head && waited) { emit(`UPDATE_SKIP ${head.slice(0, 7)} already applied by the dori update this run waited for`); return true; }
     if (state?.applied === head) { deps.print("UP_TO_DATE"); return true; }
     const save = async (): Promise<void> => {
       if (options.dryRun) return;
