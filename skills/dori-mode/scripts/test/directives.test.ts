@@ -158,7 +158,7 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   await deps.registry.write({ ...clean, key: "old", thread: "none", brief: "/nope.md", openedAt: "2026-10-14T00:00:00.000Z" });
   const inbox = await write("inbox.jsonl", "");
   const quiet = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
-  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 19 directives, no gap"]);
+  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 20 directives, no gap"]);
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
   expect(sent(world)).toEqual([]);
   // a lane whose brief lacks a directive and has no thread, and a standing directive of the owner nobody put in the ledger
@@ -241,6 +241,23 @@ test("directives apply: a lane launched before the ledger gets what its brief la
   expect(again.lines.at(-1)).toStartWith("DIRECTIVES_APPLY_NONE old");
   expect(sent(world).filter((t) => t.startsWith("[LEAD] 지침 보충"))).toHaveLength(1);
   expect(await Bun.file(lane.brief).text()).toBe(text);
+});
+
+test("a brief that quotes a section heading inside a field keeps that field: only a heading on a line of its own starts the section", async () => {
+  const deps = await ledgerDeps({ backend: "aoe" });
+  const ledger = loadLedger(deps.config);
+  const blocks = { "eight-steps": await eightSteps(), "ui-steps": await uiSteps() };
+  // this lane's own brief: its [끝난 상태] names the section by its heading, and two fields follow it
+  const quoting = fields.replace("[끝난 상태] x", `[끝난 상태] 같은 블록을 브리프 파일의 "${APPLIED_HEADING}" 절로 기록, "${"## 형 지침 (지침 장부에서 dori launch가 넣음)"}"도 그대로`);
+  const four = ledger.entries.find((e) => e.id === "four-fields")!;
+  expect(requireMissing(quoting, four)).toEqual([]);
+  const old = `${quoting}\n## Lane footer (written by dori launch)\n- Key: q.\n`;
+  const lane = await laneOf(deps, "q", await write("q.md", old));
+  await applyDirectives(deps, lane);
+  const text = await Bun.file(lane.brief).text();
+  // apply starts its own section (the quoted heading is not one), and the gap check then finds nothing missing
+  expect(text).toContain(`\n${APPLIED_HEADING}\n`);
+  expect(briefGaps(lane, text, ledger, "hr35-isaac", blocks).map((g) => g.id)).toEqual([]);
 });
 
 test("directives apply: a message the lane did not take leaves the brief as it was; a missing four fields is listed, not sent", async () => {
