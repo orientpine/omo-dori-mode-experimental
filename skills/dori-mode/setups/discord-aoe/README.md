@@ -52,7 +52,7 @@ What you get:
    systemctl --user daemon-reload && systemctl --user enable --now dori-scorecard.timer
    systemctl --user list-timers dori-scorecard.timer
    ```
-   The timer saves yesterday's card every morning at 08:30 host time to `~/.dori/state/scorecard/<date>.json` and `latest.md`, for the Dori to read; nothing is posted to the owner. Add `--post` to `ExecStart=` only if the owner wants the card in the channel. Put a time zone after the time in `OnCalendar=` (e.g. `08:30:00 Asia/Seoul`) to pin it.
+   The timer saves yesterday's card every morning at 08:30 host time to `~/.dori/state/scorecard/<date>.json` and `latest.md`, for the Dori to read; nothing is posted to the owner. Add `--post` to `ExecStart=` only if the owner wants the card in the channel. The same unit then runs `dori directive-audit --since 24h`: the last day's lane briefs and the owner's messages against the directive ledger, one `[DIRECTIVE_AUDIT]` line to the Dori when something is missing, nothing when not. Put a time zone after the time in `OnCalendar=` (e.g. `08:30:00 Asia/Seoul`) to pin it.
 7. **Smoke test.** Write in the channel: the eyes reaction appears within a second and a row lands in `~/.dori/state/discord/inbox.jsonl`. Then `dori ask --text "Smoke test: does the card work?" --option Yes --option No` and tap a button: the card folds into `[answered] ... → Yes` and an `answer` row follows in the inbox.
 
 ## Settings per Dori
@@ -119,6 +119,7 @@ Every key is optional; the full list with defaults and what reads each one is in
 | `leadPane` | the tmux name of this Dori's lead | Where lane reports, nudges and update alerts go |
 | `ignorePanes` | the other Dori's lead (and its `aoe_term_*`) and any session no lane owns | Sessions the sweeps leave alone |
 | `defaultCwd` | this Dori's working directory | Where lanes start; also how `instances` recognises this Dori's directory |
+| `directives.local` | `~/Documents/<dori>/directives.json`, or empty | The host's own directive ledger: the owner's directives for this host and its repos, with links to his messages; `dori launch` reads it with the fork's `references/directives.json` (see SKILL.md). Never commit it to the fork |
 | `launchEnv` | `{"CUDA_VISIBLE_DEVICES": ""}` on a host whose GPU trains, else `{}` | Variables every lane session starts with: the GPU hidden from lanes and all they start; a lane launched with `--use-gpu` (or `dori set-gpu <key> on`) starts without them |
 | `watchLog`, `scorecard.lanesLog` | this Dori's lanes log | Sweep lines, update results, scorecard nudges |
 | `scorecard.sessions`, `scorecard.leadSessions` | this Dori's folder under `~/.omo/agent/sessions/` | The scorecard counts only this Dori's sessions (empty: every session on the host) |

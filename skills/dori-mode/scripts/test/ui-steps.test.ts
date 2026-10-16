@@ -51,10 +51,11 @@ test("LAUNCH_UI_HINT warns on a brief that reads like UI work without --ui, and 
   expect(uiWarning(key, "Found by the dashboard lane: the inbox misses mail")).toBeUndefined();
 });
 
-test("dori launch --dry-run --ui prints the brief with the steps; without --ui it prints LAUNCH_UI_HINT and no steps", async () => {
+test("dori launch --dry-run --ui prints the brief with the steps; without --ui the directive ledger puts them in too, with LAUNCH_UI_HINT", async () => {
   const config = join(state.dir, "config.json");
   await Bun.write(config, JSON.stringify({ stateDir: state.dir, watchLog: join(state.dir, "watch.log"), defaultCwd: "/home/test" }));
-  const brief = await briefFile(lead);
+  // the four fields: the ledger's four-fields directive stops a launch without them
+  const brief = await briefFile(`${lead}[사용자와 장면] y\n[넘으면 안 되는 선] 없음\n`);
   const cli = (extra: string[]) =>
     run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "bun", join(import.meta.dir, "../src/cli.ts"), "launch", "pmd-ui", "--title", "ui", "--brief", brief, "--done", 'command ["bun","test"]', "--goal", "UI", "--dry-run", ...extra]);
   const on = await cli(["--ui"]);
@@ -64,5 +65,11 @@ test("dori launch --dry-run --ui prints the brief with the steps; without --ui i
   const off = await cli([]);
   expect(off.code).toBe(0);
   expect(off.out).toContain("LAUNCH_UI_HINT pmd-ui:");
-  expect(off.out).not.toContain("[UI 지침]");
+  expect(off.out).toContain("the owner's seven UI steps (references/ui-work.md, directive ui-steps) were put in");
+  expect(off.out).toContain(`ulw\n\n${await uiSteps()}\n\n[목표]`);
+  // --waive ui-steps keeps a brief that is not UI work as written
+  const waived = await cli(["--waive", "ui-steps", "not UI work"]);
+  expect(waived.code).toBe(0);
+  expect(waived.out).toContain("LAUNCH_DIRECTIVE_WAIVED pmd-ui ui-steps:");
+  expect(waived.out).not.toContain("[UI 지침]");
 });

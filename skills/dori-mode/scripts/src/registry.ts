@@ -73,6 +73,10 @@ export type Lane = {
   readonly challengeBefore?: readonly string[];
   // the lane's sessions start without config launchEnv (dori launch|adopt --use-gpu, dori set-gpu): launch, handover, restart
   readonly useGpu?: boolean;
+  // launched with --ui, or its brief read like UI work: the directive ledger's UI directives apply to it
+  readonly ui?: boolean;
+  // the owner's directives dori launch found in scope (applied) and those the lead left out with a reason (dori launch --waive)
+  readonly directives?: { readonly applied: readonly string[]; readonly waived: readonly { readonly id: string; readonly reason: string; readonly at: string }[] };
   readonly challenges?: readonly ChallengeRecord[];
   readonly explorations?: readonly ExplorationRecord[];
   readonly research?: ResearchSent;

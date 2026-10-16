@@ -1,6 +1,6 @@
 # UI work: the owner's seven steps
 
-The owner's guideline for any UI work (2026-10-16): a screen, a design, a dashboard, a page, an app's UI, a frontend. The owner called it "정말 중요" (really important). When the owner asks for UI work, the lane brief carries these seven steps as written below, at the top, right after the `ulw` line. Launch with `dori launch ... --ui` to put them there. Launch warns `LAUNCH_UI_HINT` when the brief reads like UI work and `--ui` is missing.
+The owner's guideline for any UI work (2026-10-16): a screen, a design, a dashboard, a page, an app's UI, a frontend. The owner called it "정말 중요" (really important). When the owner asks for UI work, the lane brief carries these seven steps as written below, at the top, right after the `ulw` line. Launch with `dori launch ... --ui` to put them there. When the brief reads like UI work and `--ui` is missing, launch warns `LAUNCH_UI_HINT` and puts them in anyway (directive `ui-steps` of the directive ledger, `references/directives.json`).
 
 The block between the markers is what `dori launch --ui` inserts, byte for byte. Its wording is the owner's original, typos corrected, its meaning and strength kept. Do not shorten or soften it. Change the text only between the markers, and only on the owner's word.
 

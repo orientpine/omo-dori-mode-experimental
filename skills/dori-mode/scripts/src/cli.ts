@@ -12,7 +12,7 @@ import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TE
 import { appendRollover, dueReasons, LEAD_PREFIX, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
-import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
+import { ConfigError, configPath, envFilePath, fill, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
 import { sendVerified, submitToPane } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
@@ -22,7 +22,9 @@ import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
-import { adoptLane, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, renderBrief, setGpu, setThread, uiWarning, validateLaunch } from "./launch.ts";
+import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, renderBrief, setGpu, setThread, validateLaunch } from "./launch.ts";
+import { DirectiveError, ledgerProblems, ledgerTable, loadLedger } from "./directives.ts";
+import { runDirectiveAudit, sinceIso } from "./directive-audit.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
 import { canonical, evidenceLines, inferredLine, inferRepeats, laneEvents, type MetricRepeat, suspects } from "./auto-signals.ts";
@@ -67,7 +69,22 @@ const USAGE = `dori <command> [options]
                                        (references/ui-work.md) at the top of the brief, after its ulw line; a brief that
                                        reads like UI work without --ui prints LAUNCH_UI_HINT (and still launches). A brief with none of
                                        the eight steps of references/sessions.md gets them after its four fields
-                                       (LAUNCH_STEPS_ADDED); with only some, LAUNCH_STEPS_PARTIAL and nothing added
+                                       (LAUNCH_STEPS_ADDED); with only some, LAUNCH_STEPS_PARTIAL and nothing added.
+                                       The directive ledger (config directives.common + .local, dori directives): a
+                                       directive in scope (all lanes, UI work, a kind of work, the --cwd repo, a keyword;
+                                       quoted words and directive names do not count) that the brief lacks is added as
+                                       written there (LAUNCH_DIRECTIVE_ADDED); a require directive the brief does not meet
+                                       stops the launch (LAUNCH_DIRECTIVE_MISSING, exit 4, nothing opened) unless
+                                       --waive <id> "<reason>" (repeatable) leaves it out: LAUNCH_DIRECTIVE_WAIVED in the
+                                       watch log and the registry, and discord.waiveText to the owner
+  directives [table|check]             the directive ledger: table (default) prints it as one table for the owner; check
+                                       validates both layers (DIRECTIVES_OK, or DIRECTIVES_BAD lines and exit 1)
+  directive-audit [--since 24h|Nd|ISO] [--dry-run]
+                                       the lanes opened since then against the ledger (directives in scope missing from
+                                       the brief, a lane without a thread) and the owner's messages that read like a
+                                       standing directive no ledger entry cites: DIRECTIVE_GAP / DIRECTIVE_LEAD /
+                                       DIRECTIVE_UNLEDGERED lines into the watch log and one [DIRECTIVE_AUDIT] summary to
+                                       the lead; none: DIRECTIVE_AUDIT_OK on stdout only. --dry-run prints and sends nothing
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...] [--use-gpu]
                                        REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
   set-thread <key> <adapter>:<id>      point an open lane at another work thread
@@ -253,6 +270,15 @@ const deps: FlowDeps = {
     : {}),
 };
 const [command = "", ...rest] = process.argv.slice(2);
+
+// --waive <id> "<reason>" takes two values, which parseArgs cannot: taken out of the arguments first
+const waive: Record<string, string> = {};
+for (let i = rest.indexOf("--waive"); i >= 0; i = rest.indexOf("--waive")) {
+  const [id, reason] = [rest[i + 1], rest[i + 2]];
+  if (!id || !reason?.trim() || id.startsWith("--") || reason.startsWith("--")) die('--waive takes a directive id and a reason: --waive <id> "<reason>"');
+  waive[id ?? ""] = reason?.trim() ?? "";
+  rest.splice(i, 3);
+}
 
 const flags = parseArgs({
   args: rest,
@@ -465,24 +491,39 @@ try {
       process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
       break;
     case "launch": {
-      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]), ui: Boolean(flags.values.ui) };
+      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]), ui: Boolean(flags.values.ui), waive };
       const noGoal = goalWarning(input);
       if (noGoal) console.log(noGoal);
       if (flags.values["dry-run"]) {
         await validateLaunch(deps, input);
         const weak = await doneWeakWarning(input, input.cwd ?? config.defaultCwd);
         if (weak) console.log(weak);
-        const uiHint = uiWarning(input, await Bun.file(input.brief).text().catch(() => ""));
-        if (uiHint) console.log(uiHint);
         const rendered = await renderBrief(deps, input);
-        if (rendered.steps) console.log(rendered.steps);
+        for (const line of [...rendered.lines, ...(rendered.steps ? [rendered.steps] : []), ...rendered.missing]) console.log(line);
         console.log(rendered.text);
-        console.log(`DRY_RUN ${input.key}: brief not written, no pane opened, nothing registered`);
+        console.log(`DRY_RUN ${input.key}: brief not written, no pane opened, nothing registered${rendered.missing.length ? "; a real launch stops here (LAUNCH_DIRECTIVE_MISSING)" : ""}`);
+        if (rendered.missing.length) process.exit(4);
         break;
       }
       const leadBrief = await Bun.file(input.brief).text().catch(() => "");
-      const r = await launchLane(deps, input, (line) => console.log(line));
+      const r = await launchLane(deps, input, (line) => console.log(line)).catch((e: unknown) => {
+        // the LAUNCH_DIRECTIVE_MISSING lines are printed and logged already
+        if (e instanceof DirectiveMissingError) process.exit(4);
+        throw e;
+      });
       console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
+      for (const w of r.lane.directives?.waived ?? []) {
+        const name = launchLedger(deps).entries.find((e) => e.id === w.id)?.name ?? w.id;
+        const text = fill([config.discord.waiveText], { key: r.lane.key, id: w.id, name, reason: w.reason })[0] ?? "";
+        const line = !discordToken
+          ? `DIRECTIVE_WAIVE_NOT_SENT ${r.lane.key} ${w.id}: DORI_DISCORD_TOKEN is not set, so the owner was not told`
+          : await Promise.resolve()
+              .then(() => (r.lane.thread.startsWith("discord:") ? postInThread(ownDiscord(discordToken), r.lane.thread, text) : discordClient().send(env("DORI_DISCORD_CHANNEL"), text)))
+              .then(() => `DIRECTIVE_WAIVE_SENT ${r.lane.key} ${w.id}: the owner was told`)
+              .catch((e: unknown) => `DIRECTIVE_WAIVE_NOT_SENT ${r.lane.key} ${w.id}: ${e instanceof Error ? e.message : String(e)}`);
+        console.log(line);
+        watchLog(config.watchLog, realClock, { source: "launch", line });
+      }
       if (r.lane.thread.startsWith("discord:")) {
         if (!discordToken) console.log(`THREAD_START_NO_TOKEN ${r.lane.thread}: DORI_DISCORD_TOKEN is not set, so no first message was posted`);
         else {
@@ -1083,6 +1124,26 @@ try {
       for (const line of rolloverStats(readRollovers(config.stateDir), watch, Date.now(), window)) console.log(line);
       break;
     }
+    case "directives": {
+      const ledger = loadLedger(config);
+      if ((key ?? "table") === "check") {
+        const problems = ledgerProblems(ledger);
+        for (const p of problems) console.log(`DIRECTIVES_BAD ${p}`);
+        if (problems.length) process.exit(1);
+        console.log(`DIRECTIVES_OK ${ledger.entries.length} directives (${ledger.entries.filter((e) => e.layer === "common").length} fork, ${ledger.entries.filter((e) => e.layer === "local").length} local) in ${ledger.files.join(", ") || "no ledger"}`);
+        break;
+      }
+      if (key !== undefined && key !== "table") die("usage: dori directives [table|check]");
+      console.log(ledgerTable(ledger));
+      break;
+    }
+    case "directive-audit": {
+      const since = sinceIso(opt("since") ?? "24h", Date.now());
+      const inbox = config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+      const r = await runDirectiveAudit(deps, { since, inbox, owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "", dryRun: Boolean(flags.values["dry-run"]) });
+      for (const line of r.lines) console.log(line);
+      break;
+    }
     case "transcribe":
       console.log(await transcribe(run, config.hooks.transcribe, key ?? die("transcribe needs an audio file path")));
       break;
@@ -1091,6 +1152,6 @@ try {
       process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof ForkError) die(e.message);
+  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof ForkError || e instanceof DirectiveError) die(e.message);
   throw e;
 }
