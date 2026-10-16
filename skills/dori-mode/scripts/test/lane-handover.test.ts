@@ -3,7 +3,7 @@ import { pauseLane } from "../src/done-flow.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { freshnessTick } from "../src/freshness.ts";
+import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
 import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine } from "../src/lane-handover.ts";
 import { approvalProblem, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
@@ -13,6 +13,7 @@ import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { Lane } from "../src/registry.ts";
 import type { Proc } from "../src/session-id.ts";
 import { sessionDirFor } from "../src/session-id.ts";
+import { defaultConfig } from "../src/config.ts";
 import { depsFor, fakeClock, NEW_AOE_ID, newWorld, sent, withState, type World } from "./fakes.ts";
 
 const OLD_ID = "1a1a1a1a22223333";
@@ -641,7 +642,8 @@ test("an approval is an answered rollover card for this lane's current session, 
   for (const words of ["not approved", "owner said yes", "https://discord.com/channels/1/2", "https://example.com/channels/1/2/3"]) expect(check(words)).toContain("neither an answered rollover card");
   expect(check(undefined)).toStartWith("no approval");
   expect(check("auto:handover.autoRolloverLanes")).toContain("the automation key is off");
-  expect(check("auto:handover.autoRolloverLanes", true)).toBeUndefined();
+  expect(check("auto:handover.autoRolloverLanes", true)).toContain("an automatic rollover needs a way to tell the owner afterwards");
+  expect(check("auto:handover.autoRolloverLanes", true, true)).toBeUndefined();
   expect(check("auto:anything", true)).toBe("auto:anything is not the automatic approval of this side; only auto:handover.autoRolloverLanes is");
   // the lead decides with a reason and the signal behind it, and only when the owner can be told afterwards
   expect(check("lead:STUCK rung 4 on loss, research did not help", false, true)).toBeUndefined();
@@ -950,4 +952,68 @@ test("without a way to reach the owner a lead's rollover is refused before anyth
   expect(moved.code).toBe(0);
   expect(printed.some((l) => l.startsWith("ROLLOVER_OWNER_REPORT_MISSING demo: 429 rate limited; tell the owner yourself: I moved lane demo"))).toBe(true);
   expect(readRollovers(state.dir).at(-1)).toMatchObject({ decidedBy: "lead", ownerReport: { error: "429 rate limited" } });
+});
+
+test("an automatic rollover still in the same pane is started again after autoRetryMin, up to autoMaxTries, then one line gives up; a new pane starts over", async () => {
+  // Given
+  const base = await setup();
+  const clock = fakeClock(Date.parse("2026-10-11T16:35:00Z"));
+  const deps = { ...base, clock, config: { ...base.config, handover: { ...base.config.handover, laneContextPct: 80, autoRolloverLanes: true, autoRetryMin: 30, autoMaxTries: 3 } } };
+  const starts: string[] = [];
+  const hooks = { signals: async (pane: string) => (pane === OLD ? { contextPct: 85 } : {}), auto: async (_who: "lead" | "lane", key: string) => { starts.push(key); return `started ${starts.length}`; } };
+  const tick = async (min: number): Promise<string[]> => {
+    clock.at = Date.parse("2026-10-11T16:35:00Z") + min * 60_000;
+    await deps.registry.patch("demo", { lastReplyAt: clock.at });
+    return (await freshnessTick(deps, "/home/test", hooks)).filter((a) => a.lane === "demo" && a.kind.startsWith("rollover")).map((a) => `${a.kind} ${a.detail}`);
+  };
+  // When
+  const first = await tick(0);
+  const soon = await tick(10);
+  const second = await tick(31);
+  const third = await tick(62);
+  const gaveUp = await tick(93);
+  const after = await tick(200);
+  await deps.registry.patch("demo", { pane: "aoe_demo-2_77777777" });
+  const moved = await tick(201);
+  // Then
+  expect(first).toEqual([`rollover_due context 85% >= 80% in ${OLD}: decide it (dori rollover-propose demo shows the note); to go ahead, once the lane is at a safe point (dori handover ready demo), run dori handover --lane demo --approved-by "lead:<reason and this signal>"; the owner is told afterwards`, "rollover_auto started 1"]);
+  expect(soon).toEqual([]);
+  expect(second).toEqual(["rollover_auto retry 2/3 (context 85% >= 80%): started 2"]);
+  expect(third).toEqual(["rollover_auto retry 3/3 (context 85% >= 80%): started 3"]);
+  expect(gaveUp).toHaveLength(1);
+  expect(gaveUp[0]).toStartWith(`rollover_auto gave up in ${OLD} after 3 automatic starts (handover.autoMaxTries 3)`);
+  expect(after).toEqual([]);
+  expect(moved).toEqual([]);
+  expect(starts).toEqual(["demo", "demo", "demo"]);
+  expect((await readLane(deps)).rolloverDue).toMatchObject({ pane: OLD, tries: 3, gaveUp: true });
+});
+
+test("an automatic lane rollover tells the owner afterwards with what it crossed; a refused one is only in the log", async () => {
+  // Given
+  const posted: [string | null, string][] = [];
+  const base = await setup();
+  const deps: LaneHandoverDeps = { ...base, config: { ...base.config, handover: { ...base.config.handover, autoRolloverLanes: true } }, reportOwner: async (thread, text) => { posted.push([thread, text]); return "msg-2"; } };
+  // When: first with the lane's local chain still running (no ready mark), then at a safe point
+  const refused = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: "auto:handover.autoRolloverLanes" });
+  const postedAfterRefusal = posted.length;
+  ready(deps, [15]);
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: "auto:handover.autoRolloverLanes" });
+  // Then
+  expect(refused.code).toBe(2);
+  expect(printed.some((l) => l.startsWith("HANDOVER_REFUSED") && l.includes("would die"))).toBe(true);
+  expect(postedAfterRefusal).toBe(0);
+  expect(r.code).toBe(0);
+  expect(posted).toHaveLength(1);
+  expect(posted[0]?.[0]).toBe("12345678");
+  expect(posted[0]?.[1]).toStartWith(`I moved lane demo (Demo lane) to a new session (${OLD} -> ${NEW}). Why: automatic (handover.autoRolloverLanes)`);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "done", decidedBy: "auto", ownerReport: { message: "msg-2" } });
+});
+
+test("freshness starts with one line that says whether rollovers start by themselves, on what, and how they are retried", () => {
+  const h = defaultConfig("/home/test").handover;
+  expect(autoReadyLine(h)).toBe("ROLLOVER_AUTO_OFF lanes off, lead off; rollovers wait for the lead's decision");
+  expect(autoReadyLine({ ...h, autoRolloverLanes: true, autoRolloverLead: true, laneContextPct: 80, laneCompactions: 4, laneAgeH: 24, leadContextPct: 80, leadCompactions: 4, leadAgeH: 48 })).toBe(
+    "ROLLOVER_AUTO_READY lanes on (context >= 80%, compactions >= 4, age >= 24 h, stuck rung 4), lead on (context >= 80%, compactions >= 4, age >= 48 h); retry every 30 min, up to 6 starts per session; the owner is told after each move",
+  );
+  expect(autoReadyLine({ ...h, autoRolloverLead: true })).toBe("ROLLOVER_AUTO_READY lanes off, lead on (no threshold set); retry every 30 min, up to 6 starts per session; the owner is told after each move");
 });
