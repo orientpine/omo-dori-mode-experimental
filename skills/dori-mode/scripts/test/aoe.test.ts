@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, watchTick } from "../src/done-flow.ts";
 import type { DoriConfig } from "../src/config.ts";
-import { launchEnvArgs, launchLane } from "../src/launch.ts";
+import { eightSteps, launchEnvArgs, launchLane } from "../src/launch.ts";
 import { listPanes, sendVerified } from "../src/panes.ts";
 import { SUBMIT_TIMING } from "../src/submit.ts";
 import type { Lane } from "../src/registry.ts";
@@ -114,7 +114,7 @@ test("launch-env prints NAME=VALUE for an open lane, --unset=NAME for a --use-gp
 test("a launch whose Done only checks a file warns LAUNCH_DONE_WEAK and still launches; --done-weak-ok and a behavior signal stay quiet", async () => {
   const brief = join(state.dir, "brief.md");
   const warned: string[] = [];
-  await Bun.write(brief, "# brief\n");
+  await Bun.write(brief, `# brief\n\n${await eightSteps()}\n`);
   const r = await launchLane(at(T0), { key: "weak", title: "weak", brief, done: "file /tmp/ok", cwd: "/tmp/w" }, (l) => warned.push(l));
   expect(r.startup).toStartWith("STARTUP_OK weak");
   expect(warned).toHaveLength(1);

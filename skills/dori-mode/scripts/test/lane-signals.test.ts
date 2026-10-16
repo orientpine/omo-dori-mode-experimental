@@ -98,7 +98,7 @@ test("three numbered attempts with no root-cause switch, a third same fix and tw
 
 test("a launch in the same repo or topic gets a Past signals section from the earlier lanes; an unrelated launch does not", async () => {
   const config = setupLogs();
-  const deps = depsFor(world, fakeClock(T0), state.dir, { ...config, backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" });
+  const deps = depsFor(world, fakeClock(T0), state.dir, { ...config, backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d", watchLog: join(state.dir, "watch.log") });
   await deps.registry.write({ ...e7, closedAt: "2026-03-01T08:00:00Z", history: [{ at: "2026-03-01T08:00:00Z", status: "closed", note: "lead" }] });
   await deps.registry.write({ key: "mail-digest", title: "mail", thread: "none", brief: "/b.md", done: "merged a/b#2", openedAt: "2026-03-01T00:00:00Z", fixes: [{ at: "t", metric: "m", hypothesis: "h", via: "lead" }] });
   const brief = join(state.dir, "brief.md");

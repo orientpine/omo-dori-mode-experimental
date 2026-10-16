@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { renderBrief, uiSteps, uiWarning } from "../src/launch.ts";
+import { eightSteps, renderBrief, uiSteps, uiWarning } from "../src/launch.ts";
 import { run } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
 
@@ -37,7 +37,7 @@ test("--ui puts the seven steps from references/ui-work.md right after the ulw l
   const again = (await renderBrief(deps, input(await briefFile(`ulw\n\n${steps}\n\n[목표] y`), true))).text;
   expect(again.split("[UI 지침]").length).toBe(2);
   const top = (await renderBrief(deps, input(await briefFile("# 대시보드 고치기\n"), true))).text;
-  expect(top.startsWith(`${steps}\n\n# 대시보드 고치기`)).toBe(true);
+  expect(top.startsWith(`${steps}\n\n${await eightSteps()}\n\n# 대시보드 고치기`)).toBe(true);
 });
 
 test("LAUNCH_UI_HINT warns on a brief that reads like UI work without --ui, and stays quiet otherwise", () => {
