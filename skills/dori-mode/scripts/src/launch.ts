@@ -153,7 +153,7 @@ export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr")
 
 const intentFields = (input: LaunchInput): Partial<Lane> => ({ ...(input.goal?.trim() ? { goal: input.goal.trim() } : {}), ...(input.challengeBefore?.length ? { challengeBefore: input.challengeBefore } : {}), ...(input.useGpu ? { useGpu: true } : {}), ...(input.ui ? { ui: true } : {}) });
 
-const EMPTY_LEDGER: Ledger = { entries: [], kinds: {}, minHits: 3, labels: [], standing: "", reviewed: [], files: [] };
+const EMPTY_LEDGER: Ledger = { entries: [], kinds: {}, minHits: 3, labels: [], standing: "", reviewed: [], fillers: [], files: [] };
 // config directives.common and .local; a broken ledger stops the launch (it would let directives through unseen)
 export const launchLedger = (deps: Pick<FlowDeps, "config">): Ledger => (deps.config.directives.common || deps.config.directives.local ? checkedLedger(deps.config) : EMPTY_LEDGER);
 

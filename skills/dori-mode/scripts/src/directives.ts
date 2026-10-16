@@ -39,6 +39,11 @@ export type Directive = {
   // said that led to it
   readonly by: "owner" | "lead";
   readonly words: string;
+  // his whole message(s) as he sent them, on record (several joined with " / "); words is this with only fillers (the
+  // ledger's fillers) and whole sentences deleted, nothing reworded, reordered or added (trimProblem checks it)
+  readonly original?: string;
+  // typos and speech-to-text errors in original, corrected before that check: [as received, corrected]
+  readonly fixes?: readonly (readonly [string, string])[];
   readonly trigger?: string;
   // why the entry is owner or lead: the context of his message, one line
   readonly basis?: string;
@@ -68,6 +73,8 @@ export type Ledger = {
   readonly standing: string;
   // owner message ids the lead read and judged not a standing directive
   readonly reviewed: readonly string[];
+  // words and phrases with no directive in them ("알겠어", "아 그리고", his name for the Dori): words may drop them from original
+  readonly fillers: readonly string[];
   readonly files: readonly string[];
 };
 
@@ -76,7 +83,7 @@ export class DirectiveError extends Error {}
 export const COMMON_LEDGER = join(import.meta.dir, "../../references/directives.json");
 export const DIRECTIVES_HEADING = "## 형 지침 (지침 장부에서 dori launch가 넣음)";
 
-type RawLedger = { entries?: unknown[]; kinds?: Record<string, string>; minHits?: number; labels?: string[]; standing?: string; reviewed?: string[] };
+type RawLedger = { entries?: unknown[]; kinds?: Record<string, string>; minHits?: number; labels?: string[]; standing?: string; reviewed?: string[]; fillers?: string[] };
 
 const readLedger = (path: string): RawLedger => {
   try {
@@ -95,6 +102,7 @@ export const loadLedger = (cfg: Pick<DoriConfig, "directives">): Ledger => {
   let minHits = 3;
   const labels: string[] = [];
   const reviewed: string[] = [];
+  const fillers: string[] = [];
   for (const [layer, path] of [["common", cfg.directives.common], ["local", cfg.directives.local]] as const) {
     if (!path) continue;
     if (!existsSync(path)) throw new DirectiveError(`directive ledger ${path} (config directives.${layer}) does not exist`);
@@ -105,13 +113,93 @@ export const loadLedger = (cfg: Pick<DoriConfig, "directives">): Ledger => {
     minHits = raw.minHits ?? minHits;
     labels.push(...(raw.labels ?? []));
     reviewed.push(...(raw.reviewed ?? []));
+    fillers.push(...(raw.fillers ?? []));
     for (const e of raw.entries ?? []) {
       const entry = e as Partial<Directive>;
       const prior = entry.id ? byId.get(entry.id) : undefined;
       byId.set(entry.id ?? "", { ...(prior ?? {}), ...entry, layer: prior ? prior.layer : layer } as Directive);
     }
   }
-  return { entries: [...byId.values()], kinds, minHits, labels, standing, reviewed, files };
+  return { entries: [...byId.values()], kinds, minHits, labels, standing, reviewed, fillers, files };
+};
+
+// --- words against original: deletion only ---
+
+type Tok = { readonly t: string; readonly nl: boolean };
+const ELLIPSIS = /(…+\.*|\.{3,})/;
+const isEllipsis = (t: string) => /^(?:…+\.*|\.{3,})$/.test(t);
+// words split at whitespace; an ellipsis is a token of its own ("그대로다…..모든"); nl: a line break came before it
+const tokens = (s: string): Tok[] => {
+  const out: Tok[] = [];
+  let nl = false;
+  for (const part of s.split(/(\s+)/)) {
+    if (!part) continue;
+    if (/^\s+$/.test(part)) {
+      nl ||= part.includes("\n");
+      continue;
+    }
+    for (const p of part.split(ELLIPSIS)) {
+      if (!p) continue;
+      out.push({ t: p, nl });
+      nl = false;
+    }
+  }
+  return out;
+};
+const bare = (t: string) => t.replace(/[,.!?~]+$/, "");
+// where a sentence or clause ends: . ! ? , an ellipsis, the " / " between his messages
+const endsPart = (t: string) => /[.!?,]["'”’)]*$/.test(t) || isEllipsis(t) || t === "/";
+
+// Why words is not original with only fillers and whole sentences deleted, or undefined when it is. A deleted run of words
+// is either fillers only (and ellipses) or whole sentences/clauses: it starts and ends at . ! ? , an ellipsis, a line break,
+// a " / " between messages or the ends of the message. Every word kept is his word as he wrote it, in his order.
+export const trimProblem = (original: string, words: string, fillers: readonly string[], fixes: readonly (readonly [string, string])[] = []): string | undefined => {
+  let text = original;
+  for (const [from, to] of fixes) {
+    if (!from || !text.includes(from)) return `fix "${from}" is not in original`;
+    text = text.split(from).join(to);
+  }
+  const o = tokens(text);
+  const w = tokens(words);
+  const phrases = fillers.map((f) => tokens(f).map((x) => bare(x.t))).filter((p) => p.length);
+  const n = o.length;
+  const startsAt = (i: number) => i === 0 || endsPart(o[i - 1]!.t) || o[i]!.nl || o[i]!.t === "/";
+  const endsAt = (k: number) => k === n || endsPart(o[k - 1]!.t) || o[k]!.nl || o[k]!.t === "/" || isEllipsis(o[k]!.t);
+  // del[i]: the ends k of a deletable run o[i..k)
+  const del: number[][] = [];
+  for (let i = 0; i < n; i++) {
+    const ends = new Set<number>();
+    const seen = new Set<number>([i]);
+    const todo = [i];
+    while (todo.length) {
+      const at = todo.pop()!;
+      const next: number[] = [];
+      if (at < n && isEllipsis(o[at]!.t)) next.push(at + 1);
+      for (const p of phrases) if (p.every((x, d) => at + d < n && bare(o[at + d]!.t) === x)) next.push(at + p.length);
+      for (const k of next) {
+        ends.add(k);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        todo.push(k);
+      }
+    }
+    if (startsAt(i)) for (let k = i + 1; k <= n; k++) if (endsAt(k)) ends.add(k);
+    del.push([...ends]);
+  }
+  const reach = Array.from({ length: n + 1 }, () => new Array<boolean>(w.length + 1).fill(false));
+  reach[0]![0] = true;
+  let far = 0;
+  for (let i = 0; i <= n; i++)
+    for (let j = 0; j <= w.length; j++) {
+      if (!reach[i]![j]) continue;
+      far = Math.max(far, j);
+      if (i < n && j < w.length && o[i]!.t === w[j]!.t) reach[i + 1]![j + 1] = true;
+      for (const k of del[i] ?? []) reach[k]![j] = true;
+    }
+  if (reach[n]![w.length]) return undefined;
+  return far < w.length
+    ? `words is not his original with words deleted: "${w[far]!.t}" (word ${far + 1}) is not there in that order, or what is left out before it is not a filler or a whole sentence`
+    : "words is not his original with words deleted: what is left out at the end is not a filler or a whole sentence";
 };
 
 const compiles = (re: string): boolean => {
@@ -136,7 +224,14 @@ export const ledgerProblems = (ledger: Ledger): string[] => {
     if (e.by !== "owner" && e.by !== "lead") out.push(`${at}: by must be owner or lead`);
     // the owner's words go into briefs as they are: a sentence cut short (… or ...) is a summary of them
     if (/…|\.\.\./.test(e.words ?? "")) out.push(`${at}: words cut with an ellipsis; put the whole sentences of his message, or none (by owner, no words: a decision on record)`);
-    if (e.by === "lead" && e.words) out.push(`${at}: a lead rule has no owner words (put what he said in trigger)`);
+    if (e.by === "lead" && (e.words || e.original)) out.push(`${at}: a lead rule has no owner words (put what he said in trigger)`);
+    if (e.by === "owner" && e.original !== undefined) {
+      if (!e.words) out.push(`${at}: original without words (put his words, trimmed of fillers only)`);
+      else {
+        const p = trimProblem(e.original, e.words, ledger.fillers, e.fixes);
+        if (p) out.push(`${at}: ${p}`);
+      }
+    }
     if (e.by === "lead" && !e.rule) out.push(`${at}: a lead rule needs its rule`);
     if (!e.basis) out.push(`${at}: no basis (why it is the owner's directive or the lead's rule)`);
     if (!/^\d{4}-\d{2}-\d{2}/.test(e.date ?? "")) out.push(`${at}: date must start YYYY-MM-DD`);
