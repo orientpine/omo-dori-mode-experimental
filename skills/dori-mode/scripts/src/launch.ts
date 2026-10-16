@@ -5,7 +5,7 @@ import { readScreen, sendVerified } from "./panes.ts";
 import { LANE_KEY, type Lane, NO_THREAD, threadRefProblem } from "./registry.ts";
 import { areaLabel, type AreaQuery, areaSignals, pastSignalsSection, tagsOf } from "./lane-signals.ts";
 import { iso } from "./run.ts";
-import { doneSyntaxErrors, weakDone } from "./done-signals.ts";
+import { checkDone, doneSyntaxErrors, weakDone } from "./done-signals.ts";
 import { laneArea, loadTree, treeSection } from "./explore.ts";
 import { watchLog } from "./watch-log.ts";
 import { addedLine, checkedLedger, type Ledger, missingLines, planDirectives, repoName, scopeContext, uiHits, scopeText, waivedLines, withDirectives } from "./directives.ts";
@@ -176,6 +176,56 @@ export const setThread = async (deps: FlowDeps, lane: Lane, ref: string): Promis
   if (problem) throw new LaunchError(problem);
   await deps.registry.patch(lane.key, { thread: ref });
   return `THREAD_SET ${lane.key} ${lane.thread || "-"} -> ${ref}`;
+};
+
+// The lane's brief with its footer's Done line set to the new one and a line under it saying what it was and why it
+// changed (newest first). A brief without that line (adopted lanes) gets both at its end.
+export const briefWithDone = (brief: string, done: string, change: { readonly at: string; readonly from: string; readonly reason: string }): string => {
+  const doneLine = `- Done = ${done}. The lane closes only when every signal reads back live.`;
+  const changed = `- Done changed ${change.at} (dori done-set): ${change.reason}. Earlier: Done = ${change.from}`;
+  const lines = brief.split("\n");
+  const i = lines.findIndex((l) => l.startsWith("- Done = "));
+  if (i < 0) return `${brief.replace(/\n*$/, "")}\n\n## Done changed (written by dori done-set)\n${doneLine}\n${changed}\n`;
+  return [...lines.slice(0, i), doneLine, changed, ...lines.slice(i + 1)].join("\n");
+};
+
+// The lead changes an open lane's Done line when the plan changed after launch (the old signals can no longer read back
+// live, though the work is done). The new line must parse like a launch's, the reason is required, and the new signals
+// are read once now; every signal still has to read back live for dori close or the watcher to close the lane. The
+// earlier line stays in the lane's doneChanges, the watch log gets a DONE_SET line, the brief's footer is updated and
+// the lane is told.
+export const setDone = async (deps: FlowDeps, lane: Lane, done: string, reason: string): Promise<string[]> => {
+  const next = done.trim().replace(/^Done\s*=\s*/i, "");
+  if (!reason.trim()) throw new LaunchError("--reason is required: why the Done line changed");
+  const errors = doneSyntaxErrors(next);
+  if (errors.length) throw new LaunchError(`Done line is not checkable: ${errors.join("; ")}`);
+  if (next === lane.done.trim()) throw new LaunchError(`lane ${lane.key} already has this Done line`);
+  const checks = await checkDone(next, deps.run, { cwd: lane.cwd ?? deps.config.defaultCwd, ...deps.signalIo });
+  const live = checks.filter((c) => c.ok).length;
+  const at = iso(deps.clock);
+  const change = { at, from: lane.done, to: next, reason: reason.trim(), live: live === checks.length };
+  await deps.registry.patch(lane.key, { done: next, doneChanges: [...(lane.doneChanges ?? []), change] });
+  watchLog(deps.config.watchLog, deps.clock, { source: "done-set", line: `DONE_SET ${lane.key} live ${live}/${checks.length}; reason: ${change.reason}; was: ${lane.done}; now: ${next}` });
+  const out = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
+  try {
+    await Bun.write(lane.brief, briefWithDone(await Bun.file(lane.brief).text(), next, change));
+    out.push(`BRIEF_UPDATED ${lane.brief}`);
+  } catch (e) {
+    out.push(`DONE_SET_BRIEF_WARN ${lane.key} ${lane.brief}: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`);
+  }
+  if (lane.pane) {
+    const text = `[LEAD] Done line changed for ${lane.key}: ${change.reason}. The new line is in your brief's Lane footer (${lane.brief}); the lane closes only when it reads back live.`;
+    await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text).then(
+      (ok) => out.push(ok ? `LANE_TOLD ${lane.pane}` : `DONE_SET_NOT_SENT ${lane.key} ${lane.pane}: not submitted (see NOT_SUBMITTED in the watch log)`),
+      (e: unknown) => out.push(`DONE_SET_NOT_SENT ${lane.key} ${lane.pane}: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`),
+    );
+  }
+  out.push(
+    change.live
+      ? `DONE_SET ${lane.key} live ${live}/${checks.length}: every new signal reads back live; dori close ${lane.key} closes it now`
+      : `DONE_SET ${lane.key} live ${live}/${checks.length}: not every new signal reads back live yet; the lane closes once they do`,
+  );
+  return out;
 };
 
 // Marks whether a lane's sessions start without launchEnv. The running session keeps the environment it started with.

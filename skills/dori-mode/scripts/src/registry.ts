@@ -39,6 +39,9 @@ export type ResearchSent = { readonly at: string; readonly sentAt: number; reado
 // report: for "@context", the report the last finding rested on (one report moves the rung once)
 export type StuckMark = { readonly rung: number; readonly n: number; readonly at: string; readonly pane?: string; readonly report?: string };
 
+// live: every new signal read back live when it was set
+export type DoneChange = { readonly at: string; readonly from: string; readonly to: string; readonly reason: string; readonly live: boolean };
+
 export type RolloverDue = { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean; readonly autoAt?: string; readonly tries?: number; readonly gaveUp?: boolean };
 
 export type Lane = {
@@ -51,6 +54,8 @@ export type Lane = {
   readonly sessionVia?: string;
   readonly brief: string;
   readonly done: string;
+  // every change of the Done line after launch (dori done-set): the line before and after, and why
+  readonly doneChanges?: readonly DoneChange[];
   readonly cwd?: string;
   readonly model?: string;
   // topic tags (dori launch --tag); the key's first word (rl in rl-e7) is always a tag too
