@@ -163,7 +163,7 @@ watcher는 레인을 닫을 때 셸 없이 이 확인을 직접 다시 돌리고
 
 | 명령 | 하는 일 |
 |---|---|
-| `dori launch <key> ...` | brief에 레인 footer를 쓰고, herdr 탭이나 aoe 세션을 열고, 에이전트를 시작하고, 시작 오류를 확인; `Done =` 신호가 모두 파일·글자만 확인하면 `LAUNCH_DONE_WEAK` 경고(레인은 그대로 열림), `--done-weak-ok`로 끔; `--ui`는 소유자의 UI 7단계([ui-work.md](skills/dori-mode/references/ui-work.md))를 brief 맨 위에 넣고, UI 일로 보이는 brief에 `--ui`가 없으면 `LAUNCH_UI_HINT` 경고(레인은 그대로 열림); 소유자의 8단계([sessions.md](skills/dori-mode/references/sessions.md))가 하나도 없는 brief에는 네 칸 뒤에 그대로 붙이고(`LAUNCH_STEPS_ADDED`), 일부만 있으면 아무것도 붙이지 않고 `LAUNCH_STEPS_PARTIAL` 경고 |
+| `dori launch <key> ...` | brief에 레인 footer를 쓰고, herdr 탭이나 aoe 세션을 열고, 에이전트를 시작하고, 시작 오류를 확인; `Done =` 신호가 모두 파일·글자만 확인하면 `LAUNCH_DONE_WEAK` 경고(레인은 그대로 열림), `--done-weak-ok`로 끔; `--ui`는 소유자의 UI 7단계([ui-work.md](skills/dori-mode/references/ui-work.md))를 brief 맨 위에 넣고, UI 일로 보이는 brief에 `--ui`가 없으면 `LAUNCH_UI_HINT` 경고(레인은 그대로 열림); 소유자의 8단계([sessions.md](skills/dori-mode/references/sessions.md))가 하나도 없는 brief에는 네 칸 뒤에 그대로 붙이고(`LAUNCH_STEPS_ADDED`), 일부만 있으면 아무것도 붙이지 않고 `LAUNCH_STEPS_PARTIAL` 경고; 소유자 지침 장부([directives.json](skills/dori-mode/references/directives.json)와 호스트 로컬 파일)에서 범위에 드는데 brief에 없는 지침은 그대로 넣고(`LAUNCH_DIRECTIVE_ADDED`), 꼭 있어야 할 지침이 없으면 멈춤(`LAUNCH_DIRECTIVE_MISSING`, 종료 코드 4, `--waive <id> "<이유>"`로만 통과); `dori directive-audit`가 매일 아침 지난 하루 레인을 장부와 대조 |
 | `dori adopt <key> --pane ID ...` | 이미 돌고 있는 레인을 등록 |
 | `dori set-thread <key> <adapter>:<id>` | 레인의 작업 스레드를 바꿈; `launch`, `adopt`, `set-thread`는 `discord:`처럼 빈 값이나 틀린 형식을 거부 |
 | `dori sync [--write]` | 레지스트리와 실제 pane 비교, 어긋난 곳 표시 |

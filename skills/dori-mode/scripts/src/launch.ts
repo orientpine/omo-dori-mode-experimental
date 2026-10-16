@@ -8,6 +8,7 @@ import { iso } from "./run.ts";
 import { doneSyntaxErrors, weakDone } from "./done-signals.ts";
 import { laneArea, loadTree, treeSection } from "./explore.ts";
 import { watchLog } from "./watch-log.ts";
+import { addedLine, checkedLedger, type Ledger, missingLines, planDirectives, repoName, scopeContext, uiHits, scopeText, waivedLines, withDirectives } from "./directives.ts";
 import { join } from "node:path";
 
 export type LaunchInput = {
@@ -29,9 +30,18 @@ export type LaunchInput = {
   readonly useGpu?: boolean;
   // UI work: the owner's seven UI steps (references/ui-work.md) go at the top of the brief
   readonly ui?: boolean;
+  // directive id -> the lead's reason: dori launch --waive <id> "<reason>" leaves that directive of the ledger out
+  readonly waive?: Readonly<Record<string, string>>;
 };
 
 export class LaunchError extends Error {}
+
+// A require directive of the ledger the brief does not meet: nothing was opened, written or registered.
+export class DirectiveMissingError extends LaunchError {
+  constructor(readonly lines: readonly string[]) {
+    super(lines.join("\n"));
+  }
+}
 
 const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API key|model_not_available|usage limit|rate limit|quota|Session crashed|unknown provider|Model "[^"\n]*" not found|Pane is dead/i;
 
@@ -115,16 +125,16 @@ export const stepsLine = (key: string, r: { readonly added: boolean; readonly mi
       ? `LAUNCH_STEPS_PARTIAL ${key}: the brief has only some of the owner's eight steps (missing ${r.missing.join(", ")}); left as the lead wrote it, nothing added. Check that the edit was meant.`
       : undefined;
 
-// Words that mark UI work. 화면 alone is not enough (a terminal screen, the template's "실제 화면·호출·출력"), and a word
-// inside a hyphenated name (a lane key such as cytoplasm-pm-dashboard) does not count.
-const UI_WORD = /(?<![\w-])(?:UI|UX|dashboard|front-?end|web ?page)(?![\w-])|대시보드|프론트엔드|디자인|웹 ?페이지|화면(?!·호출)/gi;
-
-// A warning, never a refusal: the lead's brief reads like UI work (two UI words, one of them not 화면) and --ui is missing.
-export const uiWarning = (input: LaunchInput, brief: string): string | undefined => {
+// The lead's brief reads like UI work (two UI words, one of them not 화면; quoted words and directive names do not count) and
+// --ui is missing. added: the directive ledger put the UI steps in anyway (directive ui-steps); without a ledger they are not.
+export const uiWarning = (input: LaunchInput, brief: string, ledger: Pick<Ledger, "entries"> = { entries: [] }, added = false): string | undefined => {
   if (input.ui) return undefined;
-  const hits = [...brief.matchAll(UI_WORD)].map((m) => m[0]);
-  if (hits.length < 2 || hits.every((h) => h === "화면")) return undefined;
-  return `LAUNCH_UI_HINT ${input.key}: the brief reads like UI work (${[...new Set(hits)].slice(0, 4).join(", ")}) but has no --ui, so the owner's seven UI steps (references/ui-work.md) are not in it. Launched as is; for UI work, launch with --ui.`;
+  const hits = uiHits(scopeText(brief, ledger));
+  if (!hits.length) return undefined;
+  const words = [...new Set(hits)].slice(0, 4).join(", ");
+  return added
+    ? `LAUNCH_UI_HINT ${input.key}: the brief reads like UI work (${words}) and has no --ui; the owner's seven UI steps (references/ui-work.md, directive ui-steps) were put in. Launch UI work with --ui; when it is not UI work, --waive ui-steps "<reason>".`
+    : `LAUNCH_UI_HINT ${input.key}: the brief reads like UI work (${words}) but has no --ui, so the owner's seven UI steps (references/ui-work.md) are not in it. Launched as is; for UI work, launch with --ui.`;
 };
 
 export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr"): string => [
@@ -141,7 +151,17 @@ export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr")
   "",
 ].join("\n");
 
-const intentFields = (input: LaunchInput): Partial<Lane> => ({ ...(input.goal?.trim() ? { goal: input.goal.trim() } : {}), ...(input.challengeBefore?.length ? { challengeBefore: input.challengeBefore } : {}), ...(input.useGpu ? { useGpu: true } : {}) });
+const intentFields = (input: LaunchInput): Partial<Lane> => ({ ...(input.goal?.trim() ? { goal: input.goal.trim() } : {}), ...(input.challengeBefore?.length ? { challengeBefore: input.challengeBefore } : {}), ...(input.useGpu ? { useGpu: true } : {}), ...(input.ui ? { ui: true } : {}) });
+
+const EMPTY_LEDGER: Ledger = { entries: [], kinds: {}, minHits: 3, labels: [], standing: "", reviewed: [], files: [] };
+// config directives.common and .local; a broken ledger stops the launch (it would let directives through unseen)
+export const launchLedger = (deps: Pick<FlowDeps, "config">): Ledger => (deps.config.directives.common || deps.config.directives.local ? checkedLedger(deps.config) : EMPTY_LEDGER);
+
+// The repo a lane works in (directive scope "repos"): its origin remote's name, else its directory's name.
+export const laneRepo = async (deps: Pick<FlowDeps, "run">, cwd: string): Promise<string> => {
+  const r = await deps.run(["git", "-C", cwd, "remote", "get-url", "origin"]);
+  return repoName(r.code === 0 ? r.out : "", cwd);
+};
 
 export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly pane: string }): Promise<Lane> => {
   await validateLaunch(deps, input);
@@ -197,17 +217,39 @@ const draftLane = (deps: FlowDeps, input: LaunchInput): Lane => ({
   ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock),
 });
 
-// The brief as the lane will read it: the lead's text, then Past signals, the hypothesis tree, and the footer.
-export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<{ readonly draft: Lane; readonly text: string; readonly steps?: string }> => {
+export type Rendered = {
+  readonly draft: Lane;
+  readonly text: string;
+  readonly steps?: string;
+  // LAUNCH_UI_HINT, LAUNCH_DIRECTIVE_ADDED and LAUNCH_DIRECTIVE_WAIVED lines, for the lead and the watch log
+  readonly lines: readonly string[];
+  // LAUNCH_DIRECTIVE_MISSING lines: the launch stops when there is one
+  readonly missing: readonly string[];
+};
+
+// The brief as the lane will read it: the lead's text with the eight steps, the UI steps for UI work and the directives of
+// the ledger in scope it lacks, then Past signals, the hypothesis tree, and the footer.
+export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<Rendered> => {
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
-  const draft = draftLane(deps, input);
+  const raw = (await briefFile.text()).replace(/\s*$/, "");
+  const cwd = input.cwd ?? deps.config.defaultCwd;
+  const ledger = launchLedger(deps);
+  const ctx = scopeContext(raw, ledger, { ui: input.ui, repo: ledger.entries.length ? await laneRepo(deps, cwd) : "" });
+  const plan = planDirectives(raw, ledger, ctx, input.waive);
+  const ui = Boolean(input.ui) || plan.blocks.includes("ui-steps");
+  const at = iso(deps.clock);
+  const draft: Lane = { ...draftLane(deps, input), ...(ui ? { ui: true } : {}), ...(ledger.entries.length ? { directives: { applied: plan.applied, waived: plan.waived.map(({ e, reason }) => ({ id: e.id, reason, at })) } } : {}) };
   const past = await pastSignals(deps, input, draft.cwd ?? deps.config.defaultCwd);
   const tree = await treeContext(deps, draft);
-  const eight = withEightSteps((await briefFile.text()).replace(/\s*$/, ""), await eightSteps());
-  const lead = eight.text;
+  const skipEight = plan.waived.some(({ e }) => e.block === "eight-steps");
+  const eight = skipEight ? { text: raw, added: false, missing: [] } : withEightSteps(raw, await eightSteps());
+  const lead = withDirectives(eight.text, plan.add);
   const steps = stepsLine(input.key, eight);
-  return { draft, ...(steps ? { steps } : {}), text: `${input.ui ? withUiSteps(lead, await uiSteps()) : lead}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}` };
+  const hint = uiWarning(input, raw, ledger, ui);
+  const added = addedLine(input.key, plan);
+  const lines = [...(hint ? [hint] : []), ...(added ? [added] : []), ...waivedLines(input.key, plan)];
+  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}` };
 };
 
 // The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.
@@ -237,16 +279,12 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     warn(weak);
     watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: weak });
   }
-  const hint = uiWarning(input, await Bun.file(input.brief).text().catch(() => ""));
-  if (hint) {
-    warn(hint);
-    watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: hint });
+  const { draft, text, steps, lines, missing } = await renderBrief(deps, input);
+  for (const line of [...lines, ...(steps ? [steps] : []), ...missing]) {
+    warn(line);
+    watchLog(deps.config.watchLog, deps.clock, { source: "launch", line });
   }
-  const { draft, text, steps } = await renderBrief(deps, input);
-  if (steps) {
-    warn(steps);
-    watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: steps });
-  }
+  if (missing.length) throw new DirectiveMissingError(missing);
   await Bun.write(input.brief, text);
   const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt, laneEnv(deps.config.launchEnv, input.useGpu)) : await openHerdr(deps, input.key, cwd, model, prompt);

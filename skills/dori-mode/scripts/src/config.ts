@@ -45,12 +45,14 @@ export type StatusStyle = "words" | "emoji";
 // the owner's thread (hooks.threadReply / threadDone, any messenger), instead of the lane's own report or claim, which are
 // notes for the lead. postRawReports brings back posting those notes as they are. laneStartText is the first message
 // dori launch posts in a discord:<id> work thread that has none ({title}, {goal}, {brief}, {done}, {key}, {pane}; a line
-// whose placeholder is empty is left out).
+// whose placeholder is empty is left out). waiveText is the line the owner gets when dori launch --waive leaves one of his
+// directives out of a brief ({key}, {id}, {name}, {reason}): in the lane's discord:<id> thread, else DORI_DISCORD_CHANNEL.
 export type DiscordWords = {
   readonly statusStyle: StatusStyle;
   readonly autoUnEye: boolean;
   readonly quietText: string;
   readonly laneStartText: string;
+  readonly waiveText: string;
   readonly doneText: string;
   readonly postRawReports: boolean;
   readonly working: string;
@@ -80,6 +82,7 @@ export const defaultDiscordWords: DiscordWords = {
   autoUnEye: true,
   quietText: "Still working on it. The last report came {min} min ago; I'll sum it up for you soon.",
   laneStartText: "{title}\nGoal, in your words: {goal}\n{brief}\nDone when: {done}\nLane {key}, pane {pane}",
+  waiveText: "Lane {key} was launched without your directive {id} ({name}). The lead's reason: {reason}",
   doneText: "Done: the checks passed and the work is closed. I'll sum up what changed for you soon.",
   postRawReports: false,
   working: "working",
@@ -266,6 +269,9 @@ export type DoriConfig = {
   // variables every lane session starts with (aoe backend), e.g. {"CUDA_VISIBLE_DEVICES": ""} on a training node; a lane
   // launched with --use-gpu starts without them
   readonly launchEnv: Readonly<Record<string, string>>;
+  // the directive ledger (src/directives.ts): common is the fork's references/directives.json (empty turns it off), local
+  // the host's own file with its directives and links (empty: none)
+  readonly directives: { readonly common: string; readonly local: string };
   readonly sessionsDir: string;
   readonly nudgeAfterMin: number;
   readonly postAfterMin: number;
@@ -304,6 +310,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   defaultModel: "anthropic/claude-opus-5-5",
   launchKeywords: "ulw set goal and work",
   launchEnv: {},
+  directives: { common: join(import.meta.dir, "../../references/directives.json"), local: "" },
   sessionsDir: join(home, ".omo", "agent", "sessions"),
   nudgeAfterMin: 15,
   postAfterMin: 20,
@@ -544,6 +551,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
     watchLog: expandHome(raw.watchLog ?? join(stateDir, "lanes.log"), home),
     update: { ...merged.update, repo, alertPane: raw.update?.alertPane ?? leadPane, services: merged.update.services.map((s) => ({ ...s, paths: s.paths ?? ["skills/dori-mode/scripts/src/"], log: expandHome(s.log ?? "", home), ready: s.ready ?? "" })) },
     defaultCwd: expandHome(merged.defaultCwd, home),
+    directives: { common: expandHome(raw.directives?.common ?? base.directives.common, home), local: expandHome(raw.directives?.local ?? "", home) },
     sessionsDir: expandHome(merged.sessionsDir, home),
     scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog || (raw.watchLog ?? join(stateDir, "lanes.log")), home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
     handover: { ...merged.handover, inbox: expandHome(merged.handover.inbox, home), cwd: expandHome(merged.handover.cwd, home) },

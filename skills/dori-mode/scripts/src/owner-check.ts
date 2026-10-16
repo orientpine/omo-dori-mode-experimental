@@ -9,6 +9,8 @@ import { sendVerified } from "./panes.ts";
 import type { Lane } from "./registry.ts";
 import { iso } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
+import { blockTexts, laneDirectiveGaps, laneDirectiveWords } from "./directive-audit.ts";
+import { launchLedger } from "./launch.ts";
 
 // dori owner-check: a model of another family than the lane's reads the lane brief, the owner's own words for the lane (the
 // brief and the lead's [LEAD] relays that link or quote them) and the lane's recent reports, and answers in a fixed format
@@ -108,7 +110,7 @@ const inboxPath = (config: FlowDeps["config"]): string => config.handover.inbox 
 export const doneClaimFact = (lane: Pick<Lane, "claim" | "status" | "closedAt">): string =>
   lane.claim ? `the lane claimed done at ${lane.claim.at} (status ${lane.status ?? "working"}): ${lane.claim.evidence.slice(0, 300)}` : `none: the lane has not run dori claim-done (status ${lane.closedAt ? "closed" : (lane.status ?? "working")})`;
 
-export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "direction" | "claim" | "status" | "closedAt">, brief: string, relays: readonly ReportLine[], reports: readonly ReportLine[], decisions: readonly ReportLine[] = []): string => [
+export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "direction" | "claim" | "status" | "closedAt">, brief: string, relays: readonly ReportLine[], reports: readonly ReportLine[], decisions: readonly ReportLine[] = [], directives: readonly string[] = []): string => [
   "Check the worker's recent reports against the owner's instructions below. The owner and the worker mostly write Korean. Read it as it is; quote exactly as written, in the original language.",
   "Kinds:",
   "- VIOLATION: a report shows the worker doing something the owner said not to do, or skipping or changing something the owner required (a constraint, an order of steps, an approval to wait for).",
@@ -125,6 +127,9 @@ export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "directi
   "<<<BRIEF (the lane's brief; the owner's words are quoted in it)",
   brief,
   "BRIEF>>>",
+  "<<<OWNER DIRECTIVES (the owner's standing directives from the directive ledger that apply to this lane, his own words; a report that breaks one is a VIOLATION)",
+  ...(directives.length ? directives.map((d) => cut(d, MAX_ITEM)) : ["(none)"]),
+  "OWNER DIRECTIVES>>>",
   "<<<RELAYS (the lead's messages to the worker that carry the owner's words, oldest first)",
   ...(relays.length ? relays.map((r) => `[${r.at}] ${cut(r.text, MAX_ITEM)}`) : ["(none)"]),
   "RELAYS>>>",
@@ -262,8 +267,14 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   const inbox = (await inboxFile.exists()) ? await inboxFile.text() : "";
   const owner = opts.owner ?? process.env.DORI_DISCORD_OWNER?.trim() ?? "";
   const decisions = ownerDecisions(inbox, lane.thread, owner, lane.openedAt, cfg.relays);
-  const prompt = ownerPrompt(lane, brief, relays, reports, decisions);
-  const ownerSource = [lane.goal ?? "", ownerWords(brief), ...linkedWords(brief, inbox, owner), ...relays.flatMap((r) => [ownerWords(r.text), ...linkedWords(r.text, inbox, owner)]), ...decisions.map((d) => d.words)].join("\n");
+  // the brief against the directive ledger: a directive in scope that is not in it is a DIRECTIVE_GAP line; the directives
+  // in scope go to the reviewer as the owner's words
+  const ledger = launchLedger(deps);
+  const directiveLines = (await laneDirectiveGaps(deps, lane, ledger, await blockTexts())).map((g) => `OWNER_CHECK_${g.line}`);
+  for (const line of directiveLines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
+  const directives = await laneDirectiveWords(deps, lane, ledger);
+  const prompt = ownerPrompt(lane, brief, relays, reports, decisions, directives);
+  const ownerSource = [lane.goal ?? "", ...directives, ownerWords(brief), ...linkedWords(brief, inbox, owner), ...relays.flatMap((r) => [ownerWords(r.text), ...linkedWords(r.text, inbox, owner)]), ...decisions.map((d) => d.words)].join("\n");
   // the direction the lane stated (dori intent-check) is evidence too: a finding may quote it
   const reportSource = [...reports.map((r) => r.text), lane.direction?.text ?? "", lane.direction?.next ?? ""].join("\n");
   const ground = { ownerSource, briefSource: brief, reports, direction: lane.direction, checkedUpTo: lane.ownerCheck?.lastReportAt, checkedAt: lane.ownerCheck?.at };
@@ -308,11 +319,11 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
     if (!verified.length) for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
     // only unverified or dropped findings: nothing for the ladder, and an earlier context rung stays as it was
     const stuck = verified.length || (!findings.length && !dropped.length) ? await stuckContext(deps, lane.key, verified, c.call, verified[0]?.reportAt) : [];
-    return { findings, dropped, lines: [...drops, ...lines, ...stuck], model: c.call };
+    return { findings, dropped, lines: [...directiveLines, ...drops, ...lines, ...stuck], model: c.call };
   }
   const line = `OWNER_CHECK_FAILED ${lane.key} no reviewer answered in the format: ${failures.join(" | ") || "no reviewer of another family in reviewers.models"}`;
   watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
-  return { skipped: line, findings: [], lines: [] };
+  return { skipped: line, findings: [], lines: directiveLines };
 };
 
 // dori owner-check <key> --reread: the lead confirmed the last finding, so the lane gets stuck.rereadText (its brief and the

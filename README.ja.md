@@ -163,7 +163,7 @@ watcher はレーンを閉じるときに、シェルを通さずこの確認を
 
 | コマンド | やること |
 |---|---|
-| `dori launch <key> ...` | brief にレーンの footer を書き、herdr タブか aoe セッションを開き、エージェントを起動し、起動エラーを確認。`Done =` のシグナルがすべてファイルや文字列の確認だけなら `LAUNCH_DONE_WEAK` を警告(レーンはそのまま開く)、`--done-weak-ok` で止める。`--ui` はオーナーの UI 7 ステップ([ui-work.md](skills/dori-mode/references/ui-work.md))を brief の先頭に入れ、UI の仕事に見える brief に `--ui` がなければ `LAUNCH_UI_HINT` を警告(レーンはそのまま開く)。オーナーの 8 ステップ([sessions.md](skills/dori-mode/references/sessions.md))が一つもない brief には四つの欄の後にそのまま入れ(`LAUNCH_STEPS_ADDED`)、一部だけなら何も足さず `LAUNCH_STEPS_PARTIAL` を警告 |
+| `dori launch <key> ...` | brief にレーンの footer を書き、herdr タブか aoe セッションを開き、エージェントを起動し、起動エラーを確認。`Done =` のシグナルがすべてファイルや文字列の確認だけなら `LAUNCH_DONE_WEAK` を警告(レーンはそのまま開く)、`--done-weak-ok` で止める。`--ui` はオーナーの UI 7 ステップ([ui-work.md](skills/dori-mode/references/ui-work.md))を brief の先頭に入れ、UI の仕事に見える brief に `--ui` がなければ `LAUNCH_UI_HINT` を警告(レーンはそのまま開く)。オーナーの 8 ステップ([sessions.md](skills/dori-mode/references/sessions.md))が一つもない brief には四つの欄の後にそのまま入れ(`LAUNCH_STEPS_ADDED`)、一部だけなら何も足さず `LAUNCH_STEPS_PARTIAL` を警告; オーナーの指針台帳([directives.json](skills/dori-mode/references/directives.json)とホストのローカルファイル)のうち対象範囲なのに brief にない指針はそのまま追加し(`LAUNCH_DIRECTIVE_ADDED`)、必須の指針がなければ停止(`LAUNCH_DIRECTIVE_MISSING`、終了コード 4、`--waive <id> "<理由>"` でのみ通過);`dori directive-audit` が毎朝前日のレーンを台帳と照合 |
 | `dori adopt <key> --pane ID ...` | すでに動いているレーンを登録 |
 | `dori sync [--write]` | レジストリと実際の pane を比べ、ずれを表示 |
 | `dori claim-done` / `object-done` / `close` | 完了フロー。`DORI_DISCORD_TOKEN` があれば、close は `discord:` の作業スレッドを完了にしてアーカイブする |

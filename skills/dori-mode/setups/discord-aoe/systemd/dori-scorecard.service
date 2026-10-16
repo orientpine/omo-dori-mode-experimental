@@ -1,10 +1,11 @@
 [Unit]
-Description=Dori daily token scorecard, saved under ~/.dori/state/scorecard for the Dori to read (not posted)
+Description=Dori daily token scorecard (saved under ~/.dori/state/scorecard, not posted) and directive audit (gaps to the lead)
 
 [Service]
 Type=oneshot
 EnvironmentFile=%h/.dori/dori.env
 Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.bun/bin/dori scorecard --date yesterday
+ExecStart=%h/.bun/bin/dori directive-audit --since 24h
 StandardOutput=append:%h/.dori/scorecard.log
 StandardError=append:%h/.dori/scorecard.log

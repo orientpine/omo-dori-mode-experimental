@@ -103,7 +103,8 @@ export const withState = (): { dir: string; done: () => void } => {
 };
 
 export const depsFor = (w: World, clock: Clock, stateDir: string, patch: Partial<DoriConfig> = {}): FlowDeps => {
-  const config: DoriConfig = { ...defaultConfig("/home/test"), stateDir, watchLog: join(stateDir, "lanes.log"), defaultCwd: "/repo", leadPane: "lead:p1", ...patch };
+  // no directive ledger unless a test asks for one (directives.test.ts): other tests launch briefs without the four fields
+  const config: DoriConfig = { ...defaultConfig("/home/test"), stateDir, watchLog: join(stateDir, "lanes.log"), defaultCwd: "/repo", leadPane: "lead:p1", directives: { common: "", local: "" }, ...patch };
   return { run: fakeRunner(w), clock, registry: new Registry(stateDir), config, exists: () => true };
 };
 
