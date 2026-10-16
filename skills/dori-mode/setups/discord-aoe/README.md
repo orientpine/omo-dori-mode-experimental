@@ -310,7 +310,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now dori-update.path
 ```
 
-The shipped unit watches `.git/HEAD`, `refs/heads`, `packed-refs`, and specifically `PathChanged=%h/.dori/src/.git/refs/heads/main`: fast-forward pulls update the branch ref, not HEAD. Replace `main` with the checked-out branch in the installed unit. These paths are for an ordinary clone, not a linked worktree with a `.git` file. Use `dori update --pull` to pull and apply explicitly. Restart results and new config-key notices land in `watchLog`; update command output also lands in `~/.dori/update.log`. The lead gets one change summary and the `update.announce` instruction after each applied HEAD; first-run sends nothing.
+The shipped unit watches `.git/HEAD`, `refs/heads`, `packed-refs`, and specifically `PathChanged=%h/.dori/src/.git/refs/heads/main`: fast-forward pulls update the branch ref, not HEAD. Replace `main` with the checked-out branch in the installed unit. These paths are for an ordinary clone, not a linked worktree with a `.git` file. Use `dori update --pull` to pull and apply explicitly; its pull also starts the path unit, and the second run waits on `state/update.lock` and prints `UPDATE_SKIP` instead of restarting and announcing again. Restart results and new config-key notices land in `watchLog`; update command output also lands in `~/.dori/update.log`. The lead gets one change summary and the `update.announce` instruction after each applied HEAD; first-run sends nothing.
 
 ## Switching an existing listener over
 

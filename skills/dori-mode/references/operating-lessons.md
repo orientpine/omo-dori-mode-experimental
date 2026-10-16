@@ -43,7 +43,7 @@ One-shot commands (`dori ask`, `dori launch`, `dori send`, ...) use the new code
 dori update
 ```
 
-`dori update` replaces the manual restarts and ready-line checks, logs new unset config keys, and tells the lead what changed. The `dori-update.path` user unit runs it automatically when the clone's checked-out branch ref changes; see the setup's "Auto-apply updates" step. `dori update --pull` combines the pull and apply. A rejected pull logs and alerts `UPDATE_FAIL` rather than silently leaving stale code running.
+`dori update` replaces the manual restarts and ready-line checks, logs new unset config keys, and tells the lead what changed. The `dori-update.path` user unit runs it automatically when the clone's checked-out branch ref changes; see the setup's "Auto-apply updates" step. `dori update --pull` combines the pull and apply; the path unit's run it sets off waits for it and logs one `UPDATE_SKIP` line, so services restart and the lead is told once per commit. A rejected pull logs and alerts `UPDATE_FAIL` rather than silently leaving stale code running.
 
 ## 7. Replacing a listener: shadow first
 
