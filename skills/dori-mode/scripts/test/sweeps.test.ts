@@ -6,10 +6,12 @@ import { defaultDiscordWords } from "../src/config.ts";
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
-import { acquireSlot, releaseSlot } from "../src/heavy-slot.ts";
+import { parseGpuQuery, parsePmon, treeOf, type Usage } from "../src/heavy-headroom.ts";
+import { acquireSlot, releaseSlot, type SlotDeps } from "../src/heavy-slot.ts";
 import { guardTick } from "../src/host-guard.ts";
 import { adoptLane, LaunchError } from "../src/launch.ts";
 import type { Lane } from "../src/registry.ts";
+import type { Clock } from "../src/run.ts";
 import { resolveSession } from "../src/session-id.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
 
@@ -147,6 +149,71 @@ test("a slot whose owner is alive is not taken", async () => {
   let polls = 0;
   const clock = { now: () => Date.now(), sleep: async () => { polls++; if (polls > 2) throw new Error("stop"); } };
   await expect(acquireSlot({ dir, slots: 1, maxLoad: 80, clock, pid: 7, load: async () => 10, alive: () => true }, "x", 1)).rejects.toThrow("stop");
+});
+
+const heldSlot = (dir: string, n: number, pid: number, since: number) => {
+  mkdirSync(join(dir, `slot.${n}`), { recursive: true });
+  writeFileSync(join(dir, `slot.${n}`, "owner"), `${pid} running eval ${new Date(since).toISOString()}`);
+};
+const eval25: Usage = { gpu: 25, gpuMem: null, cpu: 10, mem: 10 };
+const headroomDeps = (dir: string, host: () => Usage, logs: string[], clock: Clock = fakeClock(T0)): SlotDeps & { calls: number } => {
+  const d = {
+    dir, slots: 1, maxLoad: 80, clock, pid: 4242, load: async () => 10, alive: (pid: number) => pid !== 999999, calls: 0,
+    headroom: { maxSlots: 4, free: 30, settleSec: 120, usage: async (pids: readonly number[]) => { d.calls++; return { host: host(), unified: true, jobs: pids.map(() => eval25) }; } },
+    log: (l: string) => logs.push(l),
+  };
+  return d;
+};
+const stopAfter = (n: number) => { let polls = 0; return { now: () => T0, sleep: async () => { if (++polls >= n) throw new Error("stop"); } }; };
+
+test("a heavy job starts beside a running one when every resource keeps 30% free with it, and waits when one would not", async () => {
+  const dir = join(state.dir, "heavy");
+  heldSlot(dir, 1, 100, T0 - 10 * MIN);
+  const logs: string[] = [];
+  const slot = await acquireSlot(headroomDeps(dir, () => ({ gpu: 45, gpuMem: null, cpu: 20, mem: 25 }), logs), "eval-b");
+  expect(slot).toBe(join(dir, "slot.2"));
+  expect(logs).toEqual(["HEAVY_ADMIT eval-b slot.2: 1 running beside it; gpu 45%+25% -> 30% free, cpu 20%+10% -> 70% free, mem(unified) 25%+10% -> 65% free (needs 30% free each)"]);
+  heldSlot(dir, 2, 101, T0 - 10 * MIN);
+  const waits: string[] = [];
+  const busy = headroomDeps(dir, () => ({ gpu: 46, gpuMem: null, cpu: 20, mem: 25 }), waits, stopAfter(3));
+  await expect(acquireSlot(busy, "eval-c", 1)).rejects.toThrow("stop");
+  expect(waits).toEqual(["HEAVY_WAIT eval-c: 2 running; gpu 46%+25% -> 29% free, cpu 20%+10% -> 70% free, mem(unified) 25%+10% -> 65% free (needs 30% free each)"]);
+  expect(busy.calls).toBe(3);
+});
+
+test("a heavy job waits while the last one taken has not shown its load, and two waiters never take one headroom twice", async () => {
+  const dir = join(state.dir, "heavy");
+  heldSlot(dir, 1, 100, T0 - 30_000);
+  const logs: string[] = [];
+  const settling = headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 0 }), logs, stopAfter(2));
+  await expect(acquireSlot(settling, "eval-b", 1)).rejects.toThrow("stop");
+  expect(logs).toEqual(["HEAVY_WAIT eval-b: slot.1 was taken 30s ago; its load shows after 120s"]);
+  expect(settling.calls).toBe(0);
+  heldSlot(dir, 1, 100, T0 - 10 * MIN);
+  const both: string[] = [];
+  const a = acquireSlot(headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 0 }), both, stopAfter(3)), "eval-b", 1);
+  const b = acquireSlot(headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 0 }), both, stopAfter(3)), "eval-c", 1);
+  const got = await Promise.allSettled([a, b]);
+  expect(got.filter((g) => g.status === "fulfilled").length).toBe(1);
+  expect(both.filter((l) => l.startsWith("HEAVY_ADMIT")).length).toBe(1);
+  expect(both.some((l) => /^HEAVY_WAIT eval-[bc]: slot\.2 was taken 0s ago/.test(l))).toBe(true);
+});
+
+test("GPU, per-process and process-tree readings parse as nvidia-smi and ps print them on a GB10", () => {
+  expect(parseGpuQuery("77, [N/A], [N/A]")).toEqual({ util: 77, memUsedMib: null, memTotalMib: null });
+  expect(parseGpuQuery("40, 8000, 16000\n60, 4000, 16000")).toEqual({ util: 50, memUsedMib: 12000, memTotalMib: 32000 });
+  const pmon = [
+    "# gpu         pid   type     sm    mem    enc    dec    jpg    ofa     fb   ccpm    command ",
+    "# Idx           #    C/G      %      %      %      %      %      %     MB     MB    name ",
+    "    0       3292     G      -      -      -      -      -      -     18      0    Xorg           ",
+    "    0    1977792     C     34      0      -      -      -      -    289      0    python         ",
+  ].join("\n");
+  expect(parsePmon(pmon).get(1977792)).toEqual({ sm: 34, fbMib: 289 });
+  expect(parsePmon(pmon).get(3292)).toEqual({ sm: 0, fbMib: 18 });
+  const t = treeOf("   10     1  100  0.0\n   11    10 2000 100\n   12    11  500 50.5\n   13     1  900 99", 10);
+  expect(t.pids.sort()).toEqual([10, 11, 12]);
+  expect(t.rssKb).toBe(2600);
+  expect(t.cpuPct).toBe(150.5);
 });
 
 test("adopting a lane refuses a Done line the watcher could never check", async () => {

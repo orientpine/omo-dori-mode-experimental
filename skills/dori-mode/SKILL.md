@@ -144,7 +144,7 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 | `dori freshness` | nudge silent lanes, post a short status line in the owner's words to their thread, and hand their last report (read from the lead pane) to you to retell |
 | `dori dead-panes` | report agent panes that stopped |
 | `dori guard` | host load, memory, disk and pane-count alerts |
-| `dori heavy <label> -- <cmd>` | run a heavy command only when a slot is free and load is low |
+| `dori heavy <label> -- <cmd>` | run a heavy command when load is low; beside running ones only when GPU, memory and CPU each keep 30% free with it (`HEAVY_ADMIT` / `HEAVY_WAIT` lines) |
 | `dori can-launch` | is there room for a new lane? exit 4 with the reasons if not |
 | `dori send` / `dori presence` / `dori transcribe` | messenger utilities: post or edit on Slack, Telegram or Discord; stay shown online; voice note to text |
 | `dori inbound discord` | Discord listener: owner messages with the eyes reaction, voice transcripts, question-card answers, into one inbox file; optional pair channel with a second Dori, and a shadow run (`DORI_DISCORD_SHADOW_INBOX`) that writes inbox rows only |

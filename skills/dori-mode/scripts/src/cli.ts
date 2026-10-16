@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // allow: SIZE_OK — existing command dispatcher; command behavior lives in separate modules.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -19,7 +19,8 @@ import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
 import { autoReadyLine, freshnessTick } from "./freshness.ts";
-import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
+import { sampleUsage } from "./heavy-headroom.ts";
+import { acquireSlot, pidAlive, releaseSlot, type SlotDeps } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
 import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, renderBrief, setDone, setGpu, setThread, validateLaunch } from "./launch.ts";
@@ -190,7 +191,9 @@ const USAGE = `dori <command> [options]
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
-  heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low
+  heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low; beside a running one only
+                                       when GPU, memory and CPU each keep heavyHeadroomPct (30) percent free with it
+                                       (HEAVY_ADMIT / HEAVY_WAIT lines on stderr and in state/heavy/heavy.log)
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
   send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID] [--status working|done] [--no-typing] [--ping USER_ID]
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN);
@@ -357,6 +360,20 @@ if (flags.values.help) {
   process.exit(0);
 }
 const loopMin = Number(opt("loop") ?? 0);
+const heavyDeps = (load: () => Promise<number>): SlotDeps => ({
+  dir: `${config.stateDir}/heavy`,
+  slots: config.heavySlots,
+  maxLoad: config.heavyMaxLoad,
+  clock: realClock,
+  load,
+  alive: pidAlive,
+  pid: process.pid,
+  headroom: { maxSlots: config.heavyMaxSlots, free: config.heavyHeadroomPct, settleSec: config.heavySettleSec, usage: (pids) => sampleUsage(run, pids) },
+  log: (line) => {
+    console.error(line);
+    appendFileSync(`${config.stateDir}/heavy/heavy.log`, `${new Date().toISOString()} ${line}\n`);
+  },
+});
 
 const realpathOr = (path: string): string => {
   try {
@@ -702,7 +719,7 @@ try {
       const branches = branchesFrom(many("hypotheses"), many("test"), many("gpu").map(Number), Boolean(flags.values["gpu-all"]));
       const load = async () => (await sampleHost(run, config.backend)).load1;
       const takeSlot = async (label: string) => {
-        const slot = await acquireSlot({ dir: `${config.stateDir}/heavy`, slots: config.heavySlots, maxLoad: config.heavyMaxLoad, clock: realClock, load, alive: pidAlive, pid: process.pid }, label);
+        const slot = await acquireSlot(heavyDeps(load), label);
         return () => releaseSlot(slot);
       };
       console.log(`FORK_START ${l.key} ${branches.length} branches on "${need("metric")}" (${branches.filter((b) => b.gpu).length} gpu, queued on the heavy slot), ${minutes} min each, mode ${mode}`);
@@ -891,7 +908,7 @@ try {
       const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
       if (!label || label === "--" || !cmd.length) die("usage: dori heavy <label> -- <command ...>");
       const load = async () => (await sampleHost(run, config.backend)).load1;
-      const slot = await acquireSlot({ dir: `${config.stateDir}/heavy`, slots: config.heavySlots, maxLoad: config.heavyMaxLoad, clock: realClock, load, alive: pidAlive, pid: process.pid }, label ?? "");
+      const slot = await acquireSlot(heavyDeps(load), label ?? "");
       try {
         const child = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
         process.exitCode = await child.exited;
