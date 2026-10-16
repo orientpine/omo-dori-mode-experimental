@@ -8,151 +8,235 @@
     "autophagy": "오토파지|autophagy|cytoplasm|hermes",
     "feature": "새 기능|기능을? 추가|새 명령|명령을? (?:추가|만들)|플래그|\\bflag\\b|\\bhook\\b|훅|서비스를? (?:추가|만들)|new feature|new command"
   },
-  "labels": ["모든 lane", "노드·GPU", "릴리스·외부효과", "특정 저장소"],
+  "labels": [
+    "모든 lane",
+    "노드·GPU",
+    "릴리스·외부효과",
+    "특정 저장소"
+  ],
   "standing": "앞으로|항상|절대|매번|지침|규칙|원칙|잊지 ?마|빠짐없이|꼭 (?:넣|해|지켜)",
   "entries": [
     {
       "id": "eight-steps",
       "name": "8단계 틀",
+      "by": "owner",
+      "basis": "형이 큰 작업용으로 공유한 프롬프트 자체(2026-10-14)를 브리프 틀에 오타만 고쳐 넣은 것 → 형 지침",
       "words": "",
       "rule": "브리프 틀의 여덟 단계(1. 조사 … 8. 보고)는 references/sessions.md에 적힌 형 원문 그대로 브리프에 들어간다.",
       "date": "2026-10-14",
       "source": "references/sessions.md 브리프 틀 (형 2026-10-14 21:09 KST 원문 프롬프트)",
-      "scope": { "all": true },
+      "scope": {
+        "all": true
+      },
       "mode": "inject",
       "block": "eight-steps"
     },
     {
       "id": "four-fields",
       "name": "네 칸",
+      "by": "owner",
+      "basis": "같은 형 프롬프트의 네 칸 → 형 지침",
       "words": "[목표] [끝난 상태] [사용자와 장면] [넘으면 안 되는 선]",
       "rule": "브리프는 형이 정한 네 칸을 리드가 채워서 연다.",
       "date": "2026-10-14",
       "source": "references/sessions.md 브리프 틀 (형 2026-10-14)",
-      "scope": { "all": true },
+      "scope": {
+        "all": true
+      },
       "mode": "require",
-      "require": ["^\\s*\\[목표\\]", "^\\s*\\[끝난 상태\\]", "^\\s*\\[사용자와 장면\\]", "^\\s*\\[넘으면 안 되는 선\\]"]
+      "require": [
+        "^\\s*\\[목표\\]",
+        "^\\s*\\[끝난 상태\\]",
+        "^\\s*\\[사용자와 장면\\]",
+        "^\\s*\\[넘으면 안 되는 선\\]"
+      ]
     },
     {
       "id": "ui-steps",
       "name": "UI 7단계",
-      "words": "이 지침은 중요해 정말",
+      "by": "owner",
+      "basis": "형이 UI 지시마다 따르라고 보낸 7단계 원문(옥돌 경유) → 형 지침. '이 지침은 중요해 정말'은 강조라 원문 칸에 넣지 않음",
+      "words": "",
       "rule": "UI 일(화면·디자인·대시보드·페이지·앱 UI)은 references/ui-work.md의 일곱 단계를 브리프 맨 위(ulw 줄 뒤)에 그대로 넣는다.",
       "date": "2026-10-16",
-      "source": "references/ui-work.md (형 2026-10-16)",
-      "scope": { "ui": true },
+      "source": "references/ui-work.md (형 2026-10-16; 형은 이 지침을 '정말 중요'하다고 했다)",
+      "scope": {
+        "ui": true
+      },
       "mode": "inject",
       "block": "ui-steps"
     },
     {
       "id": "docs-same-pr",
       "name": "문서 갱신 규칙",
+      "by": "owner",
+      "basis": "세션이 작업할 때 문서를 갱신하게 프로젝트 지침에 넣으라는 일반 지시 → 형 지침. 날짜·원문 기록과 띄우기 전 문서=설정은 리드가 hr35 AGENTS에 더한 것이라 이 줄에서 뺌",
       "words": "세션에서 작업 시 문서를 업데이트 하게 해당 프로젝트 지침에 추가해",
-      "rule": "코드·설정·실험을 바꾸는 같은 커밋·PR에서 관련 문서를 같이 고친다. 형 결정은 날짜와 원문 인용으로 적는다. 띄우기 전에 문서와 실제 설정을 맞춘다.",
+      "rule": "작업하는 세션은 바꾸는 같은 커밋·PR에서 그 프로젝트 문서를 같이 갱신한다.",
       "date": "2026-10-10",
       "source": "형 2026-10-10",
-      "scope": { "all": true },
+      "scope": {
+        "all": true
+      },
       "mode": "inject"
     },
     {
       "id": "skill-check",
       "name": "스킬 확인",
+      "by": "owner",
+      "basis": "'다음부터는 … 반드시 꼭 확인해'는 앞으로 하라는 지시 → 형 지침. 브리프에 SKILL.md 먼저 읽기를 쓰는 것은 리드의 적용",
       "words": "다음부터는 스킬 제대로 불러줬는지 반드시 꼭 확인해.",
-      "rule": "브리프가 시키는 스킬(ulw-research, ulw-loop, mass-ulw, ulw-plan 등)은 그 SKILL.md를 먼저 읽고, 세션 기록에 그 흔적(스킬 포인터, SKILL.md 읽기)이 남았는지 확인한다.",
+      "rule": "lane에 스킬(ulw-research, ulw-loop, mass-ulw, ulw-plan 등)로 일을 맡기면 리드가 시작 직후와 완료 확인 때 세션 기록에서 그 스킬을 실제로 불렀는지(스킬 포인터, SKILL.md 읽기) 확인한다. 브리프에는 그 SKILL.md를 먼저 읽으라고 쓴다.",
       "date": "2026-10-09",
       "source": "형 2026-10-09",
-      "scope": { "all": true },
+      "scope": {
+        "all": true
+      },
       "mode": "inject"
     },
     {
       "id": "fix-existing",
       "name": "기존 기능 고치기",
+      "by": "owner",
+      "basis": "새 기능 대신 기존 기능을 고치라는 일반 원칙(같은 메시지에서 중복 기능 전수 검토 지시) → 형 지침",
       "words": "새로운 기능을 만들 게 아니라 기존 기능을 고쳐야 되지 않아? … 중복 기능만 만드는 거잖아",
       "rule": "기능(명령·플래그·훅·서비스·규칙)을 더할 때는 같은 일을 하는 기존 기능을 먼저 찾아 고친다. 새로 만들면 기존 것을 왜 못 고치는지 근거를 적는다.",
       "date": "2026-10-12",
       "source": "형 2026-10-12",
-      "scope": { "kinds": ["feature"] },
+      "scope": {
+        "kinds": [
+          "feature"
+        ]
+      },
       "mode": "inject"
     },
     {
       "id": "report-table",
       "name": "보고서 권고 대응표",
-      "words": "이걸 명시적으로 고려해서 학습하는지 확인해",
+      "by": "lead",
+      "basis": "바로 앞 형 메시지(23:29)가 찾던 조사 스레드 한 건을 학습이 반영하는지 확인하라는 한 건 지시 → 대응표 일반 규칙은 리드가 세움",
+      "words": "",
+      "trigger": "이걸 명시적으로 고려해서 학습하는지 확인해",
       "rule": "조사 보고서를 근거로 학습·실험을 하면 시작 전에 설계 문서에 '보고서 권고 → 반영/부분/안 함 + 이유' 대응표를 만들고 직접 대조한다.",
       "date": "2026-10-09",
-      "source": "형 2026-10-09",
-      "scope": { "kinds": ["learning"] },
+      "source": "리드 규칙 2026-10-09: 형이 한 lane에 대해 한 말(위 계기)을 리드가 학습 lane 전반의 대응표 규칙으로 세움",
+      "scope": {
+        "kinds": [
+          "learning"
+        ]
+      },
       "mode": "inject"
     },
     {
       "id": "method-md",
       "name": "새 기법 기록",
-      "words": "결과가 좋으면 이 시도에 대한 방법과 결과를 md로 저장해둬",
-      "rule": "새 기법을 시도하면 결과가 좋든 나쁘든 방법과 결과를 md로 남긴다.",
+      "by": "lead",
+      "basis": "'이번에 한 것이 결과가 좋으면 이 시도에 대한 …'은 함정 상태 은행 한 건에 대한 말 → 새 기법 전반 규칙은 리드가 넓힘",
+      "words": "",
+      "trigger": "이렇게 발생 빈도를 보고 못 배운 상황을 집중적으로 배치하는건 정말 좋은 아이디어 같아. 이번에 한 것이 결과가 좋으면 이 시도에 대한 방법과 결과를 md로 저장해둬",
+      "rule": "새 기법을 시도해 결과가 좋으면 그 방법과 결과를 md로 남긴다.",
       "date": "2026-10-10",
-      "source": "형 2026-10-10",
-      "scope": { "kinds": ["learning"] },
+      "source": "리드 규칙 2026-10-10: 형 말은 함정 상태 은행 한 건에 대한 것, 리드가 새 기법 전반으로 넓힘",
+      "scope": {
+        "kinds": [
+          "learning"
+        ]
+      },
       "mode": "inject"
     },
     {
       "id": "gate-deferred",
       "name": "관문 통과 시 미룬 결정 찾기",
-      "words": "우리 지금 MLP만 쓰는 게 아니라 시계열이랑 CNN도 쓰기로 하지 않았나?",
+      "by": "lead",
+      "basis": "형 말은 빠진 결정을 묻는 질문 → 관문 통과 때 미룬 결정을 찾는 규칙은 리드가 세움",
+      "words": "",
+      "trigger": "우리 지금 MLP만 쓰는 게 아니라 시계열이랑 CNN도 쓰기로 하지 않았나?",
       "rule": "단계·관문이 통과하면 다음 계획을 세우기 전에 계획 문서·장부에서 '그 단계 뒤에 하기로 한' 형 결정('~뒤', '통과하면', '1단계 뒤' 등)을 찾아 목록으로 보고하고 계획 맨 앞에 넣는다.",
       "date": "2026-10-16",
-      "source": "형 2026-10-16 11:15 KST (미룬 결정이 빠졌던 일)",
-      "scope": { "kinds": ["learning"] },
+      "source": "리드 규칙 2026-10-16: 형의 위 지적(1단계 뒤 A/B로 미룬 결정이 빠졌던 일) 뒤에 세움",
+      "scope": {
+        "kinds": [
+          "learning"
+        ]
+      },
       "mode": "inject"
     },
     {
       "id": "approval-table",
       "name": "승인 표 \"코드에 있음\" 열",
-      "words": "이 설정 그대로 띄우기",
+      "by": "lead",
+      "basis": "계기가 된 형 말 없음. 형 승인 뒤 리드가 '만들 것' 넷을 찾아 세운 규칙",
+      "words": "",
       "rule": "형에게 올리는 승인 표(설정 한 장)에는 항목마다 '코드에 있음(파일:줄) / 만들 것' 열을 넣는다. '만들 것'이 남은 채 승인을 받았으면 띄우기 전에 형에게 다시 알린다.",
       "date": "2026-10-16",
-      "source": "형 2026-10-16 09:30 KST 승인 뒤 '만들 것' 넷이 나온 일에서 리드가 세운 규칙",
-      "scope": { "kinds": ["learning", "release"] },
+      "source": "리드 규칙 2026-10-16: 형 승인(09:30 KST) 뒤 띄우기 전 확인에서 '만들 것' 넷이 나와 형에게 다시 물은 일 (hr35 docs/beyond_eth.md:394)",
+      "scope": {
+        "kinds": [
+          "learning",
+          "release"
+        ]
+      },
       "mode": "inject"
     },
     {
       "id": "redefined",
       "name": "결과 본 뒤 바꾼 정의 표시",
-      "words": "알았어 기준 타협하지 말고 해결하되, 물리적 한계때문에 원래 불가능한 것를 인공지능 학습 미비로 오인하는 경우만 없게 하자",
-      "rule": "판정 정의·관문을 결과를 본 뒤에 바꾸면 문서·장부에 '결과 본 뒤 바꾼 정의'로 표시하고 옛 정의의 값도 같이 적는다. 관문 문턱은 낮추지 않는다.",
-      "date": "2026-10-12",
-      "source": "형 2026-10-12",
-      "scope": { "kinds": ["learning"] },
+      "by": "lead",
+      "basis": "계기가 된 형 말 없음. 리드 결정(rl_redesign.md:588)",
+      "words": "",
+      "rule": "판정 정의·관문을 결과를 본 뒤에 바꾸면 문서·장부에 '결과 본 뒤 바꾼 정의'로 표시하고 옛 정의의 값도 같이 적는다.",
+      "date": "2026-10-10",
+      "source": "리드 결정 2026-10-10 ('판정 정의를 바꾸는 건 결과를 본 뒤라 조심', hr35 docs/rl_redesign.md:588); 적용 예 docs/beyond_eth.md:142",
+      "scope": {
+        "kinds": [
+          "learning"
+        ]
+      },
       "mode": "inject"
     },
     {
       "id": "release-notes",
       "name": "릴리스 노트",
+      "by": "owner",
+      "basis": "'앞으로 항상 릴리즈 할 때'는 일반 지시 → 형 지침",
       "words": "앞으로 항상 릴리즈 할 때 노트도 함께 작성하도록 해 줘",
       "rule": "릴리스마다 노트를 태그와 같은 단계에서 쓴다.",
       "date": "2026-10-09",
       "source": "형 2026-10-09",
-      "scope": { "kinds": ["release"] },
+      "scope": {
+        "kinds": [
+          "release"
+        ]
+      },
       "mode": "inject"
     },
     {
       "id": "lane-thread",
       "name": "같은 일은 한 스레드",
+      "by": "owner",
+      "basis": "'앞으로도 이렇게 해줘'는 일반 지시 → 형 지침. --thread를 붙이는 것은 리드의 적용",
       "words": "이렇게 스레드가 여러 개 열렸어도 관리는 있는 스레드 있으면 하나로 통합해서 하는 거 좋아 앞으로도 이렇게 해줘",
-      "rule": "lane은 열 때 --thread로 작업 스레드를 붙인다(같은 일이면 있는 스레드).",
+      "rule": "같은 일이나 이어지는 일은 있는 스레드로 모은다: lane은 열 때 --thread로 그 스레드를 붙인다.",
       "date": "2026-10-12",
       "source": "형 2026-10-12",
-      "scope": { "all": true },
+      "scope": {
+        "all": true
+      },
       "mode": "lead",
       "check": "thread"
     },
     {
       "id": "ledger-same-day",
       "name": "지침 장부 갱신",
+      "by": "owner",
+      "basis": "'앞으로 내가 설정한 지침이 절대로 빠지지 않도록'은 일반 지시 → 형 지침. '같은 날 장부에'는 이 lane 브리프가 정한 방법",
       "words": "앞으로 내가 설정한 지침이 절대로 빠지지 않도록 강제하는 프로세스 만들고 도리에도 푸쉬해줘",
       "rule": "형이 새 상시 지침을 말하면 리드가 같은 날 장부에 형 원문과 링크로 넣는다. 넣지 않으면 다음 dori directive-audit가 DIRECTIVE_UNLEDGERED로 잡는다.",
       "date": "2026-10-16",
       "source": "형 2026-10-16 13:56 KST",
-      "scope": { "all": true },
+      "scope": {
+        "all": true
+      },
       "mode": "lead",
       "check": "ledger"
     }
