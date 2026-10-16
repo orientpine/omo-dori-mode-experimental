@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { checkReviewers, ChallengeError, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
-import { APPLIED_HEADING, appliesWhy, briefGaps, type Directive, type DirectiveBlock, DirectiveError, directiveText, type Gap, type Ledger, leadGaps, scopeContext, unledgered } from "./directives.ts";
+import { APPLIED_HEADING, appliesWhy, briefGaps, type Directive, type DirectiveBlock, DirectiveError, directiveText, type Gap, headingAt, type Ledger, leadGaps, scopeContext, unledgered } from "./directives.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { eightSteps, laneRepo, launchLedger, uiSteps } from "./launch.ts";
 import { sendVerified } from "./panes.ts";
@@ -48,7 +48,7 @@ export const withApplied = (brief: string, texts: readonly string[]): string => 
   const head = (m ? brief.slice(0, m.index) : brief).replace(/\s*$/, "");
   const tail = m ? brief.slice(m.index) : "\n";
   const body = texts.join("\n\n");
-  return `${head.includes(APPLIED_HEADING) ? `${head}\n\n${body}` : `${head}\n\n${APPLIED_HEADING}\n\n${body}`}\n${tail}`;
+  return `${headingAt(head, APPLIED_HEADING) >= 0 ? `${head}\n\n${body}` : `${head}\n\n${APPLIED_HEADING}\n\n${body}`}\n${tail}`;
 };
 
 export const applyMessage = (brief: string, texts: readonly string[]): string =>

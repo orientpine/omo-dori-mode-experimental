@@ -273,11 +273,17 @@ export const checkedLedger = (cfg: Pick<DoriConfig, "directives">): Ledger => {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Where a heading stands as a line of its own (a brief that quotes the heading inside a field does not start that section).
+export const headingAt = (text: string, heading: string): number => {
+  const m = new RegExp(`(?:^|\\n)${escapeRe(heading)}[ \\t]*(?=\\n|$)`).exec(text);
+  return m ? m.index + (m[0].startsWith("\n") ? 1 : 0) : -1;
+};
+
 // The lead's text of a brief: what dori launch appended (past signals, tree, footer) and the ledger block it put in are cut.
 export const leadText = (brief: string): string => {
   let own = brief.split(/\n## (?:Past signals|Hypothesis tree|Lane footer) \(written by dori launch\)/)[0] ?? brief;
   for (const heading of [DIRECTIVES_HEADING, APPLIED_HEADING]) {
-    const at = own.indexOf(heading);
+    const at = headingAt(own, heading);
     if (at < 0) continue;
     const rest = own.slice(at + heading.length);
     const next = rest.search(/\n## /);
@@ -408,7 +414,7 @@ export const planDirectives = (brief: string, ledger: Ledger, ctx: ScopeContext,
 export const withDirectives = (lead: string, add: DirectivePlan["add"]): string => {
   if (!add.length) return lead;
   const body = add.map(({ e }) => directiveText(e)).join("\n\n");
-  return lead.includes(DIRECTIVES_HEADING) ? `${lead}\n\n${body}` : `${lead}\n\n${DIRECTIVES_HEADING}\n\n${body}`;
+  return headingAt(lead, DIRECTIVES_HEADING) >= 0 ? `${lead}\n\n${body}` : `${lead}\n\n${DIRECTIVES_HEADING}\n\n${body}`;
 };
 
 export const addedLine = (key: string, plan: DirectivePlan): string | undefined =>
