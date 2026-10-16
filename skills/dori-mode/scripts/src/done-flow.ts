@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 
 import { closeAoeSession, paneActivity } from "./aoe.ts";
+import { laneBackground } from "./background.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import { hasThread, type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
@@ -60,7 +61,7 @@ const pausedAt = (lane: Lane): string => lane.history?.findLast((h) => h.status 
 export const pauseLane = async (deps: FlowDeps, lane: Lane, reason: string): Promise<string> => {
   const from = statusOf(lane);
   if (from !== "working" && from !== "not-done") throw new LaneStateError(`lane ${lane.key} is ${from}; only a working or not-done lane can be paused`);
-  await deps.registry.write(withStatus(lane, "paused", `PAUSED: ${reason}`, iso(deps.clock), { pausedFrom: from, blocked: undefined, idleSince: undefined }));
+  await deps.registry.write(withStatus(lane, "paused", `PAUSED: ${reason}`, iso(deps.clock), { pausedFrom: from, blocked: undefined, idleSince: undefined, waitingOn: undefined }));
   return `LANE_PAUSED ${lane.key} (was ${from}) ${reason}`;
 };
 
@@ -228,7 +229,9 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
 export const IDLE_SETTLE_MS = 45_000;
 
 // LANE_BLOCKED once each time a working lane's agent stops for a human: aoe says waiting or error, an omo question is
-// open, or the turn ended and stayed idle; never while the screen shows a running turn.
+// open, or the turn ended and stayed idle; never while the screen shows a running turn. An idle lane whose session still
+// waits on background work it started (a detached eval cell, a background bash session or task) is BG_WAITING instead,
+// a quiet watch-log line, until that work ends or the lane has been idle for blockedWaitMin.
 export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
   const lanes = (await deps.registry.open()).filter((l) => l.pane && (statusOf(l) === "working" || statusOf(l) === "not-done"));
   const activity = await paneActivity(deps.run, lanes.map((l) => l.pane ?? ""));
@@ -237,9 +240,22 @@ export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
   for (const lane of lanes) {
     const act = activity.get(lane.pane ?? "");
     const idleSince = act === "idle" ? (lane.idleSince ?? now) : undefined;
-    const blocked = act === "waiting" || act === "error" || act === "question" ? act : idleSince !== undefined && now - idleSince >= IDLE_SETTLE_MS ? "idle" : undefined;
-    if (blocked === lane.blocked && idleSince === lane.idleSince) continue;
-    await deps.registry.patch(lane.key, { blocked, idleSince });
+    let blocked = act === "waiting" || act === "error" || act === "question" ? act : idleSince !== undefined && now - idleSince >= IDLE_SETTLE_MS ? "idle" : undefined;
+    let waitingOn: string | undefined;
+    if (blocked === "idle" && lane.blocked !== "idle" && idleSince !== undefined && now - idleSince < deps.config.blockedWaitMin * 60_000) {
+      // an end that landed within the settle time may not have woken the lane yet; it counts once the lane stayed idle after it
+      const jobs = await laneBackground(deps.run, deps.config.sessionsDir, lane.pane ?? "", lane.cwd ?? "", now - IDLE_SETTLE_MS).catch((e: unknown) => {
+        out.push(`LANE_WATCH_WARN background check ${lane.key}: ${String(e).slice(0, 160)}`);
+        return undefined;
+      });
+      if (jobs?.length) {
+        blocked = undefined;
+        waitingOn = jobs.map((j) => `${j.kind}:${j.id}`).join(",");
+      }
+    }
+    if (blocked === lane.blocked && idleSince === lane.idleSince && waitingOn === lane.waitingOn) continue;
+    await deps.registry.patch(lane.key, { blocked, idleSince, waitingOn });
+    if (waitingOn && waitingOn !== lane.waitingOn) out.push(`BG_WAITING ${lane.key} ${waitingOn} ${lane.pane}`);
     if (blocked && blocked !== lane.blocked) out.push(`LANE_BLOCKED ${lane.key} ${blocked} ${lane.pane}`);
   }
   return out;

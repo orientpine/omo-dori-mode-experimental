@@ -106,7 +106,7 @@ footer はレーンに `[REPORT] <key> | <milestone|blocker|question|done> | <te
 
 `dori freshness` はまずリードの画面から報告を読み、次にレーンの画面を見ます。新しい報告は沈黙のタイマーをリセットします。既定では 15 分後に声をかけ、20 分後に `hooks.threadReply` で所有者の言葉の短い状況一行(`discord.quietText`)を投稿し、それぞれ沈黙の期間につき 1 回実行します。レーンの報告そのものはリードの画面に送り、リードが人の言葉でまとめます。`discord.postRawReports: true` なら以前のように報告をそのまま投稿します。
 
-aoe では `dori watch` が、working または not-done のレーンが人を待って止まると `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` を出力します。`aoe ps --json` と画面を合わせて判断し、ターンの実行中は出力しません。idle は 45 秒続く必要があり、モニター、wake source、実行中や予約済みの goal を待つ状態は idle ではありません。閉じると aoe セッションを停止してゴミ箱に移し、完全削除はしません。
+aoe では `dori watch` が、working または not-done のレーンが人を待って止まると `LANE_BLOCKED <key> <waiting|error|question|idle> <pane>` を出力します。`aoe ps --json` と画面を合わせて判断し、ターンの実行中は出力しません。idle は 45 秒続く必要があり、モニター、wake source、実行中や予約済みの goal を待つ状態は idle ではありません。セッション自身が始めた切り離し済みの eval セル、バックグラウンド bash セッション、バックグラウンド task を待つ状態も idle ではなく、監視ログに静かな `BG_WAITING` 行だけを残し、`blockedWaitMin`(既定 60 分)を過ぎると `LANE_BLOCKED` になります。閉じると aoe セッションを停止してゴミ箱に移し、完全削除はしません。
 
 ## オンボーディング
 
