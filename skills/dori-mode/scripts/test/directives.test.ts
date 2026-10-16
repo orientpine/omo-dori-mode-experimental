@@ -50,6 +50,10 @@ test("the fork ledger validates, carries the template's directives and holds no 
   expect(both.entries.filter((e) => e.by === "lead").every((e) => !e.words && e.rule)).toBe(true);
   const lead = both.entries.find((e) => e.by === "lead")!;
   expect(ledgerProblems({ ...both, entries: [{ ...lead, words: "형 말처럼 붙인 문장" }] })).toEqual([`directive ${lead.id}: a lead rule has no owner words (put what he said in trigger)`]);
+  // his words are never cut short: an ellipsis in words is refused, and no entry of either layer has one
+  expect(ledgerProblems({ ...both, entries: [{ ...both.entries.find((e) => e.by === "owner" && e.words)!, words: "앞부분 … 뒷부분" }] })[0]).toContain("words cut with an ellipsis");
+  expect(ledgerProblems({ ...both, entries: [{ ...both.entries.find((e) => e.by === "owner" && e.words)!, words: "앞부분... 뒷부분" }] })[0]).toContain("words cut with an ellipsis");
+  expect(both.entries.filter((e) => /…|\.\.\./.test(e.words ?? "")).map((e) => e.id)).toEqual([]);
   expect(directiveText(lead)).toBe(`[리드 규칙 ${lead.id}]\n${lead.rule}`);
   expect(ledgerProblems({ ...both, entries: [...both.entries, { ...both.entries[0], id: "Bad Id", mode: "inject", scope: { kinds: ["nope"] } } as never] })).toEqual(["directive Bad Id: id must be lowercase words with -", "directive Bad Id: unknown kind nope"]);
 });
