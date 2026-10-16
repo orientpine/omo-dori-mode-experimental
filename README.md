@@ -163,7 +163,7 @@ The watcher runs each check itself when it closes the lane, with no shell, and n
 
 | Command | What it does |
 |---|---|
-| `dori launch <key> ...` | write the lane footer into the brief, open a herdr tab or aoe session, start the agent, check for startup errors; warns `LAUNCH_DONE_WEAK` (and still launches) when every `Done =` signal only checks files or text, `--done-weak-ok` silences it; adds a "Past signals" section from earlier lanes in the same repo or topic (`--tag`, and the key's first word) so a new lane doesn't repeat a failed fix |
+| `dori launch <key> ...` | write the lane footer into the brief, open a herdr tab or aoe session, start the agent, check for startup errors; warns `LAUNCH_DONE_WEAK` (and still launches) when every `Done =` signal only checks files or text, `--done-weak-ok` silences it; adds a "Past signals" section from earlier lanes in the same repo or topic (`--tag`, and the key's first word) so a new lane doesn't repeat a failed fix; `--ui` puts the owner's seven UI steps ([ui-work.md](skills/dori-mode/references/ui-work.md)) at the top of the brief, and a brief that reads like UI work without it gets `LAUNCH_UI_HINT` (still launches) |
 | `dori adopt <key> --pane ID ...` | register a lane that's already running |
 | `dori set-thread <key> <adapter>:<id>` | point a lane at another work thread; `launch`, `adopt` and `set-thread` refuse an empty or malformed ref such as `discord:` |
 | `dori sync [--write]` | registry against live panes, plus drift and a `SIGNALS` line per open lane with a record |

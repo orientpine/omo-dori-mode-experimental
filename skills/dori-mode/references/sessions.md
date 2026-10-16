@@ -39,6 +39,7 @@ ulw
 How the fields carry what a brief always needs:
 
 - **Keywords.** The template opens with `ulw`; add any other keywords you would type yourself (for example `ulw set goal and work`).
+- **UI work.** When the owner asks for UI work (a screen, a design, a dashboard, a page, an app's UI), launch with `--ui`: the owner's seven UI steps (`references/ui-work.md`) go right after the `ulw` line, above the four fields, as written there. `LAUNCH_UI_HINT` means the brief reads like UI work and `--ui` is missing.
 - **[목표]** is the owner's request in one line; launch with `--goal "<the owner's words>"` as well, so the owner check reads them.
 - **[끝난 상태]** is a state someone can see, written as the person sees it. The `Done =` line is the machine check that backs it (see the table below): pick the signal that reads the closest thing back live, and keep the end state as it is rather than narrowing it to what a signal can read.
 - **[사용자와 장면]** is the ideal end state from the point of view of whoever uses the result: one person, one moment.

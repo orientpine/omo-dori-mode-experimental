@@ -8,6 +8,7 @@ import { iso } from "./run.ts";
 import { doneSyntaxErrors, weakDone } from "./done-signals.ts";
 import { laneArea, loadTree, treeSection } from "./explore.ts";
 import { watchLog } from "./watch-log.ts";
+import { join } from "node:path";
 
 export type LaunchInput = {
   readonly key: string;
@@ -26,6 +27,8 @@ export type LaunchInput = {
   readonly challengeBefore?: readonly string[];
   // the lane needs the GPU: its sessions start without config launchEnv
   readonly useGpu?: boolean;
+  // UI work: the owner's seven UI steps (references/ui-work.md) go at the top of the brief
+  readonly ui?: boolean;
 };
 
 export class LaunchError extends Error {}
@@ -50,6 +53,35 @@ export const doneWeakWarning = async (input: LaunchInput, cwd: string): Promise<
   return weak
     ? `LAUNCH_DONE_WEAK ${input.key}: every Done signal only checks files or text (${weak}). Add at least one that measures the behavior: a command that runs it or its tests (command ["bun","test"] stdout~" 0 fail"), or a url with status= and body~. --done-weak-ok silences this.`
     : undefined;
+};
+
+// The owner's seven UI steps: the block between the markers in references/ui-work.md, the one copy of their wording.
+export const UI_WORK_DOC = join(import.meta.dir, "../../references/ui-work.md");
+export const uiSteps = async (doc = UI_WORK_DOC): Promise<string> => {
+  const m = /<!-- ui-steps:begin -->\n([\s\S]*?)\n<!-- ui-steps:end -->/.exec(await Bun.file(doc).text());
+  if (!m?.[1]) throw new LaunchError(`no ui-steps block in ${doc}`);
+  return m[1];
+};
+
+// The steps right after the first line when it is the ulw line, else at the very top; a brief that already has them is left alone.
+export const withUiSteps = (brief: string, steps: string): string => {
+  if (brief.includes(steps.split("\n")[0] ?? steps)) return brief;
+  const lines = brief.split("\n");
+  const first = lines.findIndex((l) => l.trim());
+  if (first >= 0 && /^ulw\b/i.test(lines[first]?.trim() ?? "")) return [...lines.slice(0, first + 1), "", steps, ...lines.slice(first + 1)].join("\n");
+  return `${steps}\n\n${brief}`;
+};
+
+// Words that mark UI work. 화면 alone is not enough (a terminal screen, the template's "실제 화면·호출·출력"), and a word
+// inside a hyphenated name (a lane key such as cytoplasm-pm-dashboard) does not count.
+const UI_WORD = /(?<![\w-])(?:UI|UX|dashboard|front-?end|web ?page)(?![\w-])|대시보드|프론트엔드|디자인|웹 ?페이지|화면(?!·호출)/gi;
+
+// A warning, never a refusal: the lead's brief reads like UI work (two UI words, one of them not 화면) and --ui is missing.
+export const uiWarning = (input: LaunchInput, brief: string): string | undefined => {
+  if (input.ui) return undefined;
+  const hits = [...brief.matchAll(UI_WORD)].map((m) => m[0]);
+  if (hits.length < 2 || hits.every((h) => h === "화면")) return undefined;
+  return `LAUNCH_UI_HINT ${input.key}: the brief reads like UI work (${[...new Set(hits)].slice(0, 4).join(", ")}) but has no --ui, so the owner's seven UI steps (references/ui-work.md) are not in it. Launched as is; for UI work, launch with --ui.`;
 };
 
 export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr"): string => [
@@ -129,7 +161,8 @@ export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<{
   const draft = draftLane(deps, input);
   const past = await pastSignals(deps, input, draft.cwd ?? deps.config.defaultCwd);
   const tree = await treeContext(deps, draft);
-  return { draft, text: `${(await briefFile.text()).replace(/\s*$/, "")}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}` };
+  const lead = (await briefFile.text()).replace(/\s*$/, "");
+  return { draft, text: `${input.ui ? withUiSteps(lead, await uiSteps()) : lead}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}` };
 };
 
 // The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.
@@ -158,6 +191,11 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   if (weak) {
     warn(weak);
     watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: weak });
+  }
+  const hint = uiWarning(input, await Bun.file(input.brief).text().catch(() => ""));
+  if (hint) {
+    warn(hint);
+    watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: hint });
   }
   const { draft, text } = await renderBrief(deps, input);
   await Bun.write(input.brief, text);
