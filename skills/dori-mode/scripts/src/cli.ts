@@ -23,8 +23,8 @@ import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
 import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, renderBrief, setGpu, setThread, validateLaunch } from "./launch.ts";
-import { DirectiveError, ledgerProblems, ledgerTable, loadLedger } from "./directives.ts";
-import { runDirectiveAudit, sinceIso } from "./directive-audit.ts";
+import { DirectiveError, ledgerProblems, ledgerTable, loadLedger, promptTable } from "./directives.ts";
+import { applyDirectives, checkMeaning, runDirectiveAudit, sinceIso } from "./directive-audit.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
 import { canonical, evidenceLines, inferredLine, inferRepeats, laneEvents, type MetricRepeat, suspects } from "./auto-signals.ts";
@@ -77,8 +77,16 @@ const USAGE = `dori <command> [options]
                                        stops the launch (LAUNCH_DIRECTIVE_MISSING, exit 4, nothing opened) unless
                                        --waive <id> "<reason>" (repeatable) leaves it out: LAUNCH_DIRECTIVE_WAIVED in the
                                        watch log and the registry, and discord.waiveText to the owner
-  directives [table|check]             the directive ledger: table (default) prints it as one table for the owner; check
-                                       validates both layers (DIRECTIVES_OK, or DIRECTIVES_BAD lines and exit 1)
+  directives [table|prompts|check [--static]|apply <key> [--dry-run]]
+                                       the directive ledger: table (default) prints it as one table for the owner; prompts
+                                       prints his words next to the prompt each brief gets (형 원문 | 지침문); check
+                                       validates both layers and has a reviewer of another family compare every new or
+                                       changed prompt with his words (DIRECTIVES_OK, or DIRECTIVES_BAD / _MEANING_FAILED
+                                       lines and exit 1; --static skips the reviewer); apply sends a lane launched before
+                                       a directive was in the ledger the ones in scope its brief lacks, as one [LEAD]
+                                       message, and adds them to its brief under "## 추가 지침(리드, launch 뒤)"
+                                       (DIRECTIVES_APPLIED; none missing: DIRECTIVES_APPLY_NONE; not submitted:
+                                       DIRECTIVES_APPLY_NOT_SENT, exit 1, brief unchanged)
   directive-audit [--since 24h|Nd|ISO] [--dry-run]
                                        the lanes opened since then against the ledger (directives in scope missing from
                                        the brief, a lane without a thread) and the owner's messages that read like a
@@ -300,6 +308,7 @@ const flags = parseArgs({
     "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
     force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
     answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
+    static: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -1130,10 +1139,26 @@ try {
         const problems = ledgerProblems(ledger);
         for (const p of problems) console.log(`DIRECTIVES_BAD ${p}`);
         if (problems.length) process.exit(1);
+        if (!flags.values.static) {
+          const meaning = await checkMeaning(deps, ledger);
+          for (const line of meaning.lines) console.log(line);
+          if (!meaning.ok) process.exit(1);
+        }
         console.log(`DIRECTIVES_OK ${ledger.entries.length} directives (${ledger.entries.filter((e) => e.layer === "common").length} fork, ${ledger.entries.filter((e) => e.layer === "local").length} local) in ${ledger.files.join(", ") || "no ledger"}`);
         break;
       }
-      if (key !== undefined && key !== "table") die("usage: dori directives [table|check]");
+      if (key === "apply") {
+        const r = await applyDirectives(deps, await lane(flags.positionals[1] ?? die("usage: dori directives apply <key> [--dry-run]")), { dryRun: Boolean(flags.values["dry-run"]) });
+        for (const line of r.lines) console.log(line);
+        if (flags.values["dry-run"] && r.message) console.log(r.message);
+        if (!r.ok) process.exit(1);
+        break;
+      }
+      if (key === "prompts") {
+        console.log(promptTable(ledger));
+        break;
+      }
+      if (key !== undefined && key !== "table") die("usage: dori directives [table|prompts|check [--static]|apply <key> [--dry-run]]");
       console.log(ledgerTable(ledger));
       break;
     }

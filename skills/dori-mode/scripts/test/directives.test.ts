@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { runDirectiveAudit } from "../src/directive-audit.ts";
-import { COMMON_LEDGER, DirectiveError, directiveText, ledgerProblems, loadLedger, scopeContext, trimProblem } from "../src/directives.ts";
+import { applyDirectives, checkMeaning, meaningCachePath, runDirectiveAudit, withApplied } from "../src/directive-audit.ts";
+import { APPLIED_HEADING, briefGaps, COMMON_LEDGER, DirectiveError, directiveText, ledgerProblems, loadLedger, requireMissing, scopeContext, trimProblem } from "../src/directives.ts";
+import type { Runner } from "../src/run.ts";
 import { DirectiveMissingError, eightSteps, launchLane, renderBrief, uiSteps } from "../src/launch.ts";
-import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
+import { depsFor, fakeClock, fakeRunner, newWorld, sent, withState, type World } from "./fakes.ts";
 
 let state: ReturnType<typeof withState>;
 let world: World;
@@ -24,9 +25,9 @@ const write = async (name: string, text: string) => {
 // a host layer like the owner's: a repo directive, a learning one, and the names the lead uses for them
 const local = {
   entries: [
-    { id: "options-ledger", name: "옵션 장부·순서 기록", by: "owner", basis: "fixture basis line", words: "내가 이것저것 시도하는 옵션들이 실제로 얼마나 학습에 유용했는지 내가 요청할 때마다 다 표로 정리되어 있었으면 좋겠어", rule: "같은 커밋에서 옵션 장부 줄을 갱신한다.", date: "2026-10-16", source: "https://discord.com/channels/1/2/3", scope: { repos: ["hr35-isaac"] }, mode: "inject" },
-    { id: "no-rl-here", name: "이 PC 학습 금지", by: "owner", basis: "fixture basis line", words: "이 PC에서는 강화학습 자체는 하지 말고 테스트 같은 거는 가끔 가끔 돌려도 돼", date: "2026-10-15", source: "https://discord.com/channels/1/2/4", scope: { kinds: ["learning", "gpu"] }, mode: "inject" },
-    { id: "gpu-rule", name: "GPU 규칙", by: "owner", basis: "fixture basis line", words: "Gpu제한 같은거 모두 없애", date: "2026-10-15", source: "x", scope: { kinds: ["gpu"] }, mode: "inject" },
+    { id: "options-ledger", name: "옵션 장부·순서 기록", by: "owner", basis: "fixture basis line", words: "내가 이것저것 시도하는 옵션들이 실제로 얼마나 학습에 유용했는지 내가 요청할 때마다 다 표로 정리되어 있었으면 좋겠어", prompt: "형이 시도하는 옵션들이 학습에 얼마나 유용했는지 형이 요청할 때마다 모두 표로 정리되어 있게 한다.", rule: "같은 커밋에서 옵션 장부 줄을 갱신한다.", date: "2026-10-16", source: "https://discord.com/channels/1/2/3", scope: { repos: ["hr35-isaac"] }, mode: "inject" },
+    { id: "no-rl-here", name: "이 PC 학습 금지", by: "owner", basis: "fixture basis line", words: "이 PC에서는 강화학습 자체는 하지 말고 테스트 같은 거는 가끔 가끔 돌려도 돼", prompt: "이 PC에서는 강화학습 자체는 하지 않는다. 테스트 같은 것은 가끔 돌려도 된다.", date: "2026-10-15", source: "https://discord.com/channels/1/2/4", scope: { kinds: ["learning", "gpu"] }, mode: "inject" },
+    { id: "gpu-rule", name: "GPU 규칙", by: "owner", basis: "fixture basis line", words: "Gpu제한 같은거 모두 없애", prompt: "GPU 제한 같은 것은 모두 없앤다.", date: "2026-10-15", source: "x", scope: { kinds: ["gpu"] }, mode: "inject" },
     { id: "docs-same-pr", source: "https://discord.com/channels/1/2/5" },
   ],
   reviewed: ["900"],
@@ -89,8 +90,9 @@ test("launch puts an inject directive in scope into the brief as the ledger writ
   const r = await renderBrief(deps, input(await write("brief.md", fields)));
   expect(r.missing).toEqual([]);
   expect(count(r.text, directiveText(options!))).toBe(1);
-  // the owner's words byte for byte under a one-line tag; his directive is never summarised in the brief
-  expect(r.text).toContain(`\n[형 지침 options-ledger, 2026-10-16]\n${options?.words}\n`);
+  // the prompt written from his words under a one-line tag (his spoken words stay in the ledger); never the rule or a summary
+  expect(r.text).toContain(`\n[형 지침 options-ledger, 2026-10-16]\n${options?.prompt}\n`);
+  expect(r.text).not.toContain(options?.words ?? "-");
   expect(r.text).not.toContain(options?.rule ?? "-");
   for (const e of loadLedger(deps.config).entries) {
     if (e.basis) expect(r.text).not.toContain(e.basis);
@@ -156,7 +158,7 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   await deps.registry.write({ ...clean, key: "old", thread: "none", brief: "/nope.md", openedAt: "2026-10-14T00:00:00.000Z" });
   const inbox = await write("inbox.jsonl", "");
   const quiet = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
-  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 18 directives, no gap"]);
+  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 19 directives, no gap"]);
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
   expect(sent(world)).toEqual([]);
   // a lane whose brief lacks a directive and has no thread, and a standing directive of the owner nobody put in the ledger
@@ -178,6 +180,113 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   // a waiver on record is not a gap
   await deps.registry.write({ ...clean, key: "gappy", thread: "none", brief: await write("gappy.md", fields), directives: { applied: [], waived: [{ id: "lane-thread", reason: "ops", at: "t" }] } });
   expect((await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7", dryRun: true })).gaps.some((g) => g.id === "lane-thread")).toBe(false);
+});
+
+test("an owner entry with words goes into briefs as its prompt: a prompt is required, may not ask, and is only for owner words", async () => {
+  const both = loadLedger((await ledgerDeps()).config);
+  expect(both.entries.filter((e) => e.by === "owner" && e.words && !e.prompt).map((e) => e.id)).toEqual([]);
+  const owner = both.entries.find((e) => e.id === "docs-same-pr")!;
+  const lead = both.entries.find((e) => e.by === "lead")!;
+  expect(ledgerProblems({ ...both, entries: [{ ...owner, prompt: undefined }] })[0]).toContain("owner words without prompt");
+  for (const asks of ["문서를 갱신해야 하지 않아?", "문서를 갱신하지 않아.", "문서도 같이 고칠까."])
+    expect(ledgerProblems({ ...both, entries: [{ ...owner, prompt: asks }] })[0]).toContain("prompt is a question");
+  expect(ledgerProblems({ ...both, entries: [{ ...lead, prompt: "무언가 한다." }] })[0]).toContain("prompt is for an owner entry with words");
+  expect(directiveText(owner)).toBe(`[형 지침 docs-same-pr, 2026-10-10]\n${owner.prompt}`);
+  // a field with a note after its name ("[끝난 상태 — 2단계]") is that field; a missing one is not
+  const four = both.entries.find((e) => e.id === "four-fields")!;
+  expect(requireMissing(fields.replace("[끝난 상태]", "[끝난 상태 — 2단계]"), four)).toEqual([]);
+  expect(requireMissing(fields.replace("[끝난 상태] x\n", ""), four)).toHaveLength(1);
+});
+
+const laneOf = async (deps: Awaited<ReturnType<typeof ledgerDeps>>, key: string, brief: string) => {
+  const lane = { key, title: "t", thread: "discord:42", brief, done: "x", cwd: "/work/hr35-isaac", pane: `aoe_${key}_0a1b2c3d`, openedAt: "2026-10-16T05:00:00.000Z" };
+  await deps.registry.write(lane);
+  return lane;
+};
+
+test("directives apply: a lane launched before the ledger gets what its brief lacks, sent and added to the brief once; owner-check then reads no gap", async () => {
+  const deps = await ledgerDeps({ backend: "aoe" });
+  const ledger = loadLedger(deps.config);
+  const blocks = { "eight-steps": await eightSteps(), "ui-steps": await uiSteps() };
+  // a brief as launch wrote it before the ledger: the lead's text, then what launch appended
+  const old = `${fields}\n## Past signals (written by dori launch)\n- none\n\n## Lane footer (written by dori launch)\n- Key: old.\n`;
+  const lane = await laneOf(deps, "old", await write("old.md", old));
+  const before = briefGaps(lane, old, ledger, "hr35-isaac", blocks).map((g) => g.id);
+  expect(before).toEqual(expect.arrayContaining(["eight-steps", "docs-same-pr", "options-ledger"]));
+  const r = await applyDirectives(deps, lane);
+  expect(r.ok).toBe(true);
+  expect(r.added).toEqual(before);
+  // one [LEAD] message with every text, as launch writes them
+  const msgs = sent(world).filter((t) => t.startsWith("[LEAD] 지침 보충"));
+  expect(msgs).toHaveLength(1);
+  const options = ledger.entries.find((e) => e.id === "options-ledger")!;
+  expect(msgs[0]).toContain(directiveText(options));
+  expect(msgs[0]).toContain(blocks["eight-steps"]);
+  const text = await Bun.file(lane.brief).text();
+  // the lead's text above is untouched; the section sits before what launch appended
+  expect(text.startsWith(fields.replace(/\s*$/, ""))).toBe(true);
+  expect(text.indexOf(APPLIED_HEADING)).toBeGreaterThan(text.indexOf("[넘으면 안 되는 선]"));
+  expect(text.indexOf(APPLIED_HEADING)).toBeLessThan(text.indexOf("## Past signals"));
+  expect(text.endsWith("## Lane footer (written by dori launch)\n- Key: old.\n")).toBe(true);
+  expect(count(text, directiveText(options))).toBe(1);
+  // owner-check's gap check reads the section as part of the brief; the scope did not change with the added words
+  expect(briefGaps(lane, text, ledger, "hr35-isaac", blocks)).toEqual([]);
+  expect(scopeContext(text, ledger, { repo: "hr35-isaac" }).kinds).toEqual(scopeContext(old, ledger, { repo: "hr35-isaac" }).kinds);
+  // words of a directive added there are not the lane's work: a section full of UI words does not make it UI work
+  expect(scopeContext(withApplied(old, ["대시보드 화면 프론트엔드 디자인 UI"]), ledger, { repo: "x" }).ui).toBe(false);
+  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/^\S+ directives DIRECTIVES_APPLIED old: eight-steps, /m);
+  expect((await deps.registry.read("old"))?.directives?.applied).toEqual(expect.arrayContaining(before));
+  // again: nothing to send, nothing written
+  const again = await applyDirectives(deps, (await deps.registry.read("old"))!);
+  expect(again.lines.at(-1)).toStartWith("DIRECTIVES_APPLY_NONE old");
+  expect(sent(world).filter((t) => t.startsWith("[LEAD] 지침 보충"))).toHaveLength(1);
+  expect(await Bun.file(lane.brief).text()).toBe(text);
+});
+
+test("directives apply: a message the lane did not take leaves the brief as it was; a missing four fields is listed, not sent", async () => {
+  const deps = await ledgerDeps({ backend: "aoe" });
+  world.stuckReads = 99;
+  const old = "ulw\n\nfix the login loop\n";
+  const lane = await laneOf(deps, "bare", await write("bare-old.md", old));
+  const r = await applyDirectives(deps, lane);
+  expect(r.ok).toBe(false);
+  expect(r.lines).toContain("DIRECTIVES_APPLY_REQUIRE bare four-fields: 네 칸 is a brief requirement, not a text to send; the lead writes it into the lane's brief");
+  expect(r.lines.at(-1)).toStartWith("DIRECTIVES_APPLY_NOT_SENT bare aoe_bare_0a1b2c3d");
+  expect(await Bun.file(lane.brief).text()).toBe(old);
+});
+
+test("directives check: a reviewer of another family reads each new prompt against his words; CHANGED fails, SAME is not asked again", async () => {
+  let reply = "VERDICT: SAME";
+  const asked: string[] = [];
+  const base = await ledgerDeps();
+  const run: Runner = async (argv, opts) => {
+    if (argv[0] !== "omo") return fakeRunner(world)(argv, opts);
+    asked.push(argv.at(-1) ?? "");
+    return { code: 0, out: reply, err: "" };
+  };
+  const deps = { ...base, run, config: { ...base.config, defaultModel: "anthropic/claude-opus-5-5", reviewers: { ...base.config.reviewers, models: ["anthropic/claude-x", "openai/gpt-6"] }, explore: { ...base.config.explore, modelsCommand: [] }, autoSignals: { ...base.config.autoSignals, ownerCheck: { ...base.config.autoSignals.ownerCheck, first: "" } } } };
+  const ledger = loadLedger(deps.config);
+  const owner = ledger.entries.filter((e) => e.by === "owner" && e.words && e.prompt);
+  const ok = await checkMeaning(deps, ledger);
+  expect(ok.ok).toBe(true);
+  expect(asked).toHaveLength(owner.length);
+  // the reviewer is of another family than the lead's model, and reads his words and the prompt
+  expect(asked[0]).toContain("PROMPT:");
+  expect(ok.lines.every((l) => l.startsWith("DIRECTIVES_MEANING_OK") && l.includes("openai/gpt-6"))).toBe(true);
+  expect(await Bun.file(meaningCachePath(deps.config.stateDir)).exists()).toBe(true);
+  // a prompt that changes his meaning: CHANGED with what it lost fails the check; the others are not asked again
+  reply = "VERDICT: CHANGED\n- STRENGTH: 반드시 꼭 vs 가능하면";
+  const skill = ledger.entries.find((e) => e.id === "skill-check")!;
+  const changed = { ...ledger, entries: ledger.entries.map((e) => (e.id === "skill-check" ? { ...skill, prompt: "가능하면 스킬을 불렀는지 확인한다." } : e)) };
+  const bad = await checkMeaning(deps, changed);
+  expect(bad.ok).toBe(false);
+  expect(asked).toHaveLength(owner.length + 1);
+  expect(bad.lines).toContain("DIRECTIVES_BAD directive skill-check: prompt does not mean what his words mean: STRENGTH: 반드시 꼭 vs 가능하면 [openai/gpt-6]");
+  // no reviewer answers: not checked, and the check fails
+  reply = "I think it is fine";
+  const none = await checkMeaning(deps, { ...ledger, entries: [{ ...skill, prompt: "다음부터는 스킬을 반드시 확인한다." }] });
+  expect(none.ok).toBe(false);
+  expect(none.lines[0]).toStartWith("DIRECTIVES_MEANING_FAILED skill-check");
 });
 
 test("the blocks the ledger names are the ones launch inserts", async () => {
