@@ -134,6 +134,8 @@ export const ledgerProblems = (ledger: Ledger): string[] => {
     if (!e.id || !/^[a-z0-9][a-z0-9-]*$/.test(e.id)) out.push(`${at}: id must be lowercase words with -`);
     if (!e.name) out.push(`${at}: no name`);
     if (e.by !== "owner" && e.by !== "lead") out.push(`${at}: by must be owner or lead`);
+    // the owner's words go into briefs as they are: a sentence cut short (… or ...) is a summary of them
+    if (/…|\.\.\./.test(e.words ?? "")) out.push(`${at}: words cut with an ellipsis; put the whole sentences of his message, or none (by owner, no words: a decision on record)`);
     if (e.by === "lead" && e.words) out.push(`${at}: a lead rule has no owner words (put what he said in trigger)`);
     if (e.by === "lead" && !e.rule) out.push(`${at}: a lead rule needs its rule`);
     if (!e.basis) out.push(`${at}: no basis (why it is the owner's directive or the lead's rule)`);
