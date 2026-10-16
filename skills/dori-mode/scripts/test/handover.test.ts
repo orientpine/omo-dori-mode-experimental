@@ -19,7 +19,12 @@ const INBOX_CMD = "tail -n 0 -F /home/test/.dori/inbox.jsonl";
 const APPROVED = "https://discord.com/channels/1/2/3";
 const LANES_CMD = "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_";
 
-type Sim = { arm: { command: string; description: string; pid: number }[]; ackPane: string; ackReport: boolean; ackInbox: boolean; guardFor: Set<string> };
+type Sim = { arm: { command: string; description: string; pid: number }[]; ackPane: string; ackReport: boolean; ackInbox: boolean; guardFor: Set<string>; restate: "full" | "omit-lane" | "silent"; supplement: "fix" | "ignore"; handled: Set<string> };
+
+// what the fake new lead understood: every open lane, todo, card and timer of the setup under its own heading
+const RESTATEMENT = (lanes = "- demo: working, half way") =>
+  ["## Goal", "none", "## Owner's words", "none", "## Open lanes", lanes, "## Open work", "- watch the E7 run", "## Open cards", "- Q1: Ship it?", "## Timers", "- dori-remind-droneshow.timer", "## Promised follow-ups", "none", "## Decisions", "none", "## Next step", "watch the lanes", "## Questions", "none", ""].join("\n");
+const SUMMARY = ["## Owner's words and constraints", '- "keep the eval seed fixed at three" (owner, 10-11)', "## Decisions and why", "- moved the digest to the morning because the owner reads it then", "## Promised follow-ups", "- report the E7 render to the owner by 22:00 KST", "## In progress", "- none", "## Next step", "- watch the E7 run", ""].join("\n");
 
 let state: { dir: string; done: () => void };
 let w: World;
@@ -98,6 +103,26 @@ const simulate = () => {
   if (sim.ackReport && w.calls.some((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").includes("HANDOVER_PROBE n1"))) ackHandover(state.dir, "n1", sim.ackPane, at);
   const inbox = join(state.dir, "inbox.jsonl");
   if (sim.ackInbox && existsSync(inbox) && readFileSync(inbox, "utf8").includes("HANDOVER_PROBE n2")) ackHandover(state.dir, "n2", sim.ackPane, at);
+  for (const c of w.calls) {
+    const text = c[1] === "send-keys" && c.includes(`=${NEW}:`) ? (c.at(-1) ?? "") : "";
+    const ask = /HANDOVER_UNDERSTAND (\S+): write what you understood to (\S+)/.exec(text);
+    if (ask?.[1] && ask[2] && !sim.handled.has(ask[1]) && sim.restate !== "silent") {
+      sim.handled.add(ask[1]);
+      writeFileSync(ask[2], RESTATEMENT(sim.restate === "omit-lane" ? "none" : undefined));
+      ackHandover(state.dir, ask[1], sim.ackPane, at);
+    }
+    // a supplement round: the fake lead adds each item under the heading named ("fix") or acks without adding ("ignore")
+    const sup = /HANDOVER_SUPPLEMENT (\S+) .*Read (\S+), add them to (\S+), then/.exec(text);
+    if (sup?.[1] && sup[2] && sup[3] && !sim.handled.has(sup[1])) {
+      sim.handled.add(sup[1]);
+      if (sim.supplement === "fix") {
+        let body = readFileSync(sup[3], "utf8");
+        for (const m of readFileSync(sup[2], "utf8").matchAll(/^## \d+\. [^:]+: (.*)\nSource: .*Goes under: ## (.+?)\.$/gm)) body = body.replace(`## ${m[2]}\n`, `## ${m[2]}\n- "${m[1]}"\n`);
+        writeFileSync(sup[3], body);
+      }
+      ackHandover(state.dir, sup[1], sim.ackPane, at);
+    }
+  }
 };
 
 const stopped = () => w.calls.some((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop");
@@ -106,7 +131,7 @@ const leadPaneInConfig = () => (JSON.parse(readFileSync(join(state.dir, "config.
 beforeEach(() => {
   state = withState();
   w = newWorld();
-  sim = { arm: [{ description: "inbox", command: INBOX_CMD, pid: 201 }, { description: "lanes", command: LANES_CMD.replace("~/", "/home/test/"), pid: 202 }, { description: "digest due", command: "until false; do sleep 60; done", pid: 203 }], ackPane: NEW, ackReport: true, ackInbox: true, guardFor: new Set([OLD, NEW]) };
+  sim = { arm: [{ description: "inbox", command: INBOX_CMD, pid: 201 }, { description: "lanes", command: LANES_CMD.replace("~/", "/home/test/"), pid: 202 }, { description: "digest due", command: "until false; do sleep 60; done", pid: 203 }], ackPane: NEW, ackReport: true, ackInbox: true, guardFor: new Set([OLD, NEW]), restate: "full", supplement: "fix", handled: new Set() };
   printed = [];
   restarted = [];
   live = new Set([101, 102, 201, 202, 203]);
@@ -182,7 +207,9 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   // Given
   const deps = await setup();
   // When
-  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2", note: lane().brief });
+  const summary = join(state.dir, "summary.md");
+  writeFileSync(summary, SUMMARY);
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2", note: summary });
   // Then
   expect(r).toMatchObject({ code: 0, to: NEW });
   expect(leadPaneInConfig()).toBe(NEW);
@@ -202,9 +229,9 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "rm" && c[2] === OLD_ID)).toBe(true);
   expect(printed).toContain("HANDOVER_MONITORS_OK 3 in aoe_lead2_5e5e5e5e (session new-sid)");
   expect(printed.some((l) => l.startsWith(`HANDOVER_DONE ${OLD} -> ${NEW}`))).toBe(true);
-  expect(readFileSync(r.note ?? "", "utf8")).toContain("## The old lead's notes\nDo the work.");
+  expect(readFileSync(r.note ?? "", "utf8")).toContain(`## The old lead's notes\n${SUMMARY.trim()}`);
   // the new lead acts only after the commit, which comes once the old session is closed
-  expect(readFileSync(r.note ?? "", "utf8")).toContain("until a [LEAD] HANDOVER_COMMITTED line arrives answer no one");
+  expect(readFileSync(r.note ?? "", "utf8")).toContain("Until a [LEAD] HANDOVER_COMMITTED line arrives answer no one");
   const commitAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_COMMITTED: the handover is checked and the old session is closed"));
   expect(commitAt).toBeGreaterThan(stopAt);
 });
@@ -416,4 +443,97 @@ test("an automatic lead rollover tells the owner afterwards with what it crossed
   expect(posted).toHaveLength(1);
   expect(posted[0]).toStartWith(`I moved the lead to a new session (${OLD} -> ${NEW}). Why: automatic (handover.autoRolloverLead)`);
   expect(readRollovers(state.dir).at(-1)).toMatchObject({ decidedBy: "auto", ownerReport: { message: "msg-9" } });
+});
+
+test("the new lead restates what it understood; an open lane it leaves out comes back from the registry in one supplement round, and then the move commits", async () => {
+  // Given
+  const deps = await setup();
+  sim.restate = "omit-lane";
+  // When
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
+  // Then
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  const understood = (r.note ?? "").replace(/\.md$/, ".understood.md");
+  const sup = (r.note ?? "").replace(/\.md$/, ".supplement-1.md");
+  expect(printed).toContain(`HANDOVER_SUPPLEMENT lead round 1/2: 1 left out (open lane: demo); ${sup}`);
+  expect(readFileSync(sup, "utf8")).toContain("## 1. open lane: demo\nSource: the lane registry: working, pane aoe_demo_12345678, thread discord:12345678, last report [REPORT] demo / milestone / half way. Goes under: ## Open lanes.");
+  expect(printed).toContain("HANDOVER_SUPPLEMENT_OK lead after 1 round(s)");
+  expect(printed).toContain(`HANDOVER_UNDERSTOOD ${understood}`);
+  // the restatement and its supplement come before the old lead is closed
+  const supAt = w.calls.findIndex((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").startsWith("[LEAD] HANDOVER_SUPPLEMENT"));
+  expect(supAt).toBeGreaterThan(-1);
+  expect(w.calls.findIndex((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop")).toBeGreaterThan(supAt);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ who: "lead", result: "done", supplementRounds: 1, supplements: [{ round: 1, items: [{ kind: "open lane", text: "demo" }], file: sup }] });
+});
+
+test("a new lead whose restatement still leaves out an open lane after the supplement rounds fails the check: everything moves back and the old lead stays", async () => {
+  // Given
+  const deps = await setup();
+  sim.restate = "omit-lane";
+  sim.supplement = "ignore";
+  // When
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
+  // Then
+  expect(r.code).toBe(3);
+  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("still leaves out after 2 supplement round(s): open lane: demo");
+  expect(stopped()).toBe(false);
+  expect(leadPaneInConfig()).toBe(OLD);
+  expect(new QuestionStore(join(state.dir, "discord")).get("Q1")?.tmux).toBe(OLD);
+  expect(sent(w).some((t) => t.startsWith(`[LEAD] Handover to ${NEW} failed`))).toBe(true);
+  expect(sent(w).some((t) => t.includes("HANDOVER_COMMITTED:"))).toBe(false);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ who: "lead", result: "rolled-back", supplementRounds: 2 });
+});
+
+test("a new lead that never writes its restatement fails the check", async () => {
+  // Given
+  const deps = await setup();
+  sim.restate = "silent";
+  // When
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2", verifyMin: 1 });
+  // Then
+  expect(r.code).toBe(3);
+  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain("no ack for the restatement request n3");
+  expect(leadPaneInConfig()).toBe(OLD);
+});
+
+test("the owner's recent messages and the old lead's summary go into the note and are checked: his words, decisions and promised follow-ups left out come back with the old log line", async () => {
+  // Given
+  const deps = await setup();
+  const withOwner: HandoverDeps = { ...deps, ownerIds: ["owner1"] };
+  writeFileSync(join(state.dir, "inbox.jsonl"), [
+    { ts: "2026-10-11T16:20:00Z", id: "m1", scope: "thread", channel_id: "777", author_id: "owner1", content: "auto rollover loses no context, right?" },
+    { ts: "2026-10-10T10:00:00Z", id: "m0", scope: "thread", channel_id: "777", author_id: "owner1", content: "an old message from yesterday morning" },
+    { ts: "2026-10-11T16:21:00Z", id: "m2", scope: "kakao", room: "friends", author_id: "someone", content: "not the owner talking here" },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  const log = join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-08T08-13-21-349Z_old-sid.jsonl");
+  writeFileSync(log, `${readFileSync(log, "utf8")}\n${JSON.stringify({ type: "message", message: { role: "user", content: "and keep the eval seed fixed at three for every run" } })}`);
+  const summary = join(state.dir, "summary.md");
+  writeFileSync(summary, SUMMARY);
+  // When
+  const r = await handover(withOwner, { approvedBy: APPROVED, title: "lead2", note: summary });
+  // Then
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  const note = readFileSync(r.note ?? "", "utf8");
+  expect(note).toContain("## The owner's recent messages (1, last 24 h, newest last)\n- 2026-10-11T16:20:00Z (thread 777, message m1): \"auto rollover loses no context, right?\"");
+  expect(note).toContain(`Its full log is ${log}`);
+  const sup = readFileSync((r.note ?? "").replace(/\.md$/, ".supplement-1.md"), "utf8");
+  expect(sup).toContain("owner's words: keep the eval seed fixed at three");
+  expect(sup).toContain('(user): "and keep the eval seed fixed at three for every run"');
+  const last = readRollovers(state.dir).at(-1);
+  const kinds = (last?.kind === "rollover" ? (last.supplements ?? []) : []).flatMap((x) => x.items.map((i) => i.kind));
+  expect(kinds).toEqual(["owner's words", "owner's words", "decision", "promised follow-up"]);
+  const understood = readFileSync((r.note ?? "").replace(/\.md$/, ".understood.md"), "utf8");
+  expect(understood).toContain("auto rollover loses no context, right?");
+  expect(understood).toContain("report the E7 render to the owner by 22:00 KST");
+});
+
+test("an old lead's summary without its headings is refused before anything opens", async () => {
+  // Given
+  const deps = await setup();
+  // When
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2", note: lane().brief });
+  // Then
+  expect(r.code).toBe(2);
+  expect(printed.find((l) => l.startsWith("HANDOVER_REFUSED"))).toContain("lacks ## Owner's words and constraints, ## Decisions and why, ## Promised follow-ups, ## In progress, ## Next step (dori handover --template prints the headings)");
+  expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);
 });

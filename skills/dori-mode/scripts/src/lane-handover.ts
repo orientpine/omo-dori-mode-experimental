@@ -18,6 +18,7 @@ import { iso } from "./run.ts";
 import { AGENT, descendants, type Proc, sessionDirFor } from "./session-id.ts";
 import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { stuckTop } from "./explore.ts";
+import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, section } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type LaneHandoverDeps = FlowDeps & {
@@ -103,92 +104,22 @@ export const SUMMARY_TEMPLATE = [
 // The headings the new session's restatement needs (written before it acks the probe).
 export const UNDERSTOOD_HEADINGS = ["Goal", "Owner's words", "Decisions", "Next step", "Ruled out", "Questions"] as const;
 
-const missingHeadings = (text: string, headings: readonly string[]): string[] => headings.filter((h) => !new RegExp(`^##\\s+${escape(h)}\\s*$`, "mi").test(text));
-
-const section = (text: string, heading: string): string => {
-  const m = new RegExp(`^##\\s+${escape(heading)}\\s*$([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "mi").exec(text);
-  return m?.[1]?.trim() ?? "";
-};
-
 // What the new session's restatement left out, measured against what the handover holds: the fix ledger and the lane's
 // goal (independent of the summary), and the owner's quoted words and the decisions of the old session's summary.
-export type Missing = { readonly kind: "restatement" | "heading" | "tried fix" | "owner goal" | "owner's words" | "decision"; readonly text: string; readonly under: string; readonly source: string };
-
-// an escaped quote (\") counts as a plain one on both sides, so a quote inside a quote stays one line
-const flat = (s: string): string => s.replace(/\\"/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
-const QUOTE = /"((?:[^"\\\n]|\\.){6,})"|“([^”\n]{6,})”|「([^」\n]{6,})」/g;
-const quotesIn = (text: string): string[] => [...new Set([...text.matchAll(QUOTE)].map((m) => (m[1] ?? m[2] ?? m[3] ?? "").replace(/\\"/g, '"').trim()).filter(Boolean))];
-const words = (s: string): string[] => [...new Set(s.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]{3,}/gu) ?? [])];
-// a decision bullet without its "Why: ..." tail; one with fewer than 3 words is too short to check
-const decisionsIn = (summary: string): string[] =>
-  section(summary, "Decisions and why").split("\n").map((l) => /^\s*[-*]\s+(.*)$/.exec(l)?.[1]?.split(/\s+why:|\s+because\s/i)[0]?.trim() ?? "").filter((d) => words(d).length >= 3);
+export type { Missing };
 
 export const missingFrom = (text: string, facts: LaneFacts): Missing[] => {
   if (!text.trim()) return [{ kind: "restatement", text: "the restatement file is missing or empty", under: "", source: "the probe" }];
   const all = flat(text);
   const ruled = flat(section(text, "Ruled out"));
-  // a long quote counts when its first 80 characters are there
-  const has = (s: string) => all.includes(flat(s).slice(0, 80));
   const goal = facts.lane.goal?.trim() ?? "";
   const out: Missing[] = missingHeadings(text, UNDERSTOOD_HEADINGS).map((h) => ({ kind: "heading", text: `## ${h}`, under: h, source: "the restatement format" }));
   for (const h of new Set(sessionFixes(facts.lane).map((x) => x.hypothesis))) if (!ruled.includes(flat(h))) out.push({ kind: "tried fix", text: h, under: "Ruled out", source: "the fix ledger (dori fix-attempt), kept apart from the summary" });
-  if (goal && !has(goal)) out.push({ kind: "owner goal", text: goal, under: "Goal", source: "the lane's registry entry (the owner's words at launch)" });
-  for (const q of quotesIn(section(facts.laneNote, "Owner's words and constraints"))) if (!has(q) && flat(q) !== flat(goal)) out.push({ kind: "owner's words", text: q, under: "Owner's words", source: "the old session's summary, Owner's words and constraints" });
-  for (const d of decisionsIn(facts.laneNote)) {
-    const ws = words(d);
-    if (ws.filter((x) => all.includes(x)).length * 2 < ws.length) out.push({ kind: "decision", text: d, under: "Decisions", source: "the old session's summary, Decisions and why" });
-  }
+  if (goal && !quoted(all, goal)) out.push({ kind: "owner goal", text: goal, under: "Goal", source: "the lane's registry entry (the owner's words at launch)" });
+  for (const q of quotesIn(section(facts.laneNote, "Owner's words and constraints"))) if (!quoted(all, q) && flat(q) !== flat(goal)) out.push({ kind: "owner's words", text: q, under: "Owner's words", source: "the old session's summary, Owner's words and constraints" });
+  for (const d of bulletsIn(facts.laneNote, "Decisions and why")) if (!covered(all, d)) out.push({ kind: "decision", text: d, under: "Decisions", source: "the old session's summary, Decisions and why", byWords: true });
   return out;
 };
-
-const stringsOf = (v: unknown, out: string[] = []): string[] => {
-  if (typeof v === "string") out.push(v);
-  else if (Array.isArray(v)) for (const x of v) stringsOf(x, out);
-  else if (v && typeof v === "object") for (const x of Object.values(v)) stringsOf(x, out);
-  return out;
-};
-
-// The old conversation's lines behind a left-out item (the owner's messages first): the supplement quotes them, so the
-// new session gets the source, not only the old session's summary of it.
-export const evidenceFor = (log: string | undefined, item: Missing, max = 2): string[] => {
-  if (!log || !existsSync(log) || item.kind === "restatement" || item.kind === "heading") return [];
-  const ws = item.kind === "decision" ? words(item.text) : [];
-  const needle = (item.kind === "decision" ? [...ws].sort((a, b) => b.length - a.length)[0] ?? "" : item.text.slice(0, 60)).toLowerCase();
-  if (!needle) return [];
-  const raw = JSON.stringify(needle).slice(1, -1);
-  const hits: { line: number; role: string; text: string }[] = [];
-  readFileSync(log, "utf8").split("\n").forEach((line, i) => {
-    if (!line.toLowerCase().includes(raw)) return;
-    let obj: unknown;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      return;
-    }
-    const s = stringsOf(obj).find((x) => (ws.length ? ws.filter((w) => x.toLowerCase().includes(w)).length * 2 >= ws.length : x.toLowerCase().includes(needle)));
-    if (!s) return;
-    const at = Math.max(0, s.toLowerCase().indexOf(needle));
-    const a = Math.max(0, at - 100);
-    const b = at + needle.length + 100;
-    const o = obj as { message?: { role?: string }; type?: string };
-    hits.push({ line: i + 1, role: o.message?.role ?? o.type ?? "?", text: `${a ? "…" : ""}${s.slice(a, b).replace(/\s+/g, " ").trim()}${b < s.length ? "…" : ""}` });
-  });
-  return [...hits.filter((h) => h.role === "user"), ...hits.filter((h) => h.role !== "user")].slice(0, max).map((h) => `old log line ${h.line} (${h.role}): "${h.text}"`);
-};
-
-const renderSupplement = (key: string, round: number, rounds: number, items: readonly Missing[], evidence: readonly string[][], understood: string, ack: string): string =>
-  [
-    `# Supplement ${round}/${rounds} for the ${key} handover`,
-    "",
-    `Your restatement ${understood} left out what follows. It comes from the handover's own records and the old session's summary; the log lines are quoted from the old conversation (frozen, still on disk). Add each item to ${understood} under the heading named (the owner's words quoted exactly), keep the rest, then run: ${ack}`,
-    "",
-    ...items.flatMap((it, i) => [
-      `## ${i + 1}. ${it.kind}: ${it.text}`,
-      `Source: ${it.source}. Goes under: ${it.under ? `## ${it.under}` : `the whole file, with the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")}`}.`,
-      ...(evidence[i]?.length ? ["Evidence:", ...(evidence[i] ?? []).map((e) => `- ${e}`)] : ["Evidence: no matching line in the old log."]),
-      "",
-    ]),
-  ].join("\n");
 
 const logOf = (dir: string, session: string): string | undefined => {
   if (!session) return undefined;
@@ -205,8 +136,6 @@ const logOf = (dir: string, session: string): string | undefined => {
 export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[]; readonly agentPid?: number };
 
 const POLL_MS = 5_000;
-// how long the new session gets to answer one supplement round (polls of POLL_MS)
-const ROUND_TRIES = 36;
 const THINKING = /^(.*):(off|minimal|low|medium|high|xhigh|max)$/;
 // processes every omo session runs besides the work: MCP servers, the subagent RPC host, the provider's own CLI
 const INFRA = /\bmcp\b|--internal-rpc-host-supervisor|--mode rpc|claude-agent-sdk/;
@@ -522,8 +451,6 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
 
 type Check = { readonly reasons: string[]; readonly session: string; readonly account?: string; readonly supplements?: readonly Supplement[] };
 
-const readText = (file: string): string => (existsSync(file) ? readFileSync(file, "utf8") : "");
-
 const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, understood: string, emit: (line: string) => void): Promise<Check> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
@@ -561,34 +488,10 @@ const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string
   // the new session says what it understood: a gap shows before the old session is gone. A gap is filled in, not rolled
   // back: the left-out items go to it with the old log lines behind them and it restates; only a gap that outlasts the
   // supplement rounds rolls back (it no longer takes in what it is given)
-  const key = facts.lane.key;
-  const rounds = deps.config.handover.supplementRounds;
-  const supplements: Supplement[] = [];
-  let text = readText(understood);
-  let left = missingFrom(text, facts);
-  const fmt = (items: readonly Missing[]) => items.map((it) => `${it.kind}: ${it.text.replace(/\s+/g, " ").slice(0, 80)}`).join("; ");
-  for (let round = 1; round <= rounds && left.length; round++) {
-    const evidence = left.map((it) => evidenceFor(facts.oldLog, it));
-    const sid = deps.nonce();
-    const file = understood.replace(/\.understood\.md$/, `.supplement-${round}.md`);
-    const ack = `dori handover ack ${sid} --state ${deps.config.stateDir}`;
-    writeFileSync(file, renderSupplement(key, round, rounds, left, evidence, understood, ack));
-    supplements.push({ round, items: left.map((it) => ({ kind: it.kind, text: it.text })), evidence: evidence.flat().length, file });
-    emit(`HANDOVER_SUPPLEMENT ${key} round ${round}/${rounds}: ${left.length} left out (${fmt(left)}); ${file}`);
-    if (!(await tell(deps, pane, `[LEAD] HANDOVER_SUPPLEMENT ${sid} (round ${round}/${rounds}): your restatement left out ${left.length} item(s). Read ${file}, add them to ${understood}, then run ${ack} and nothing else for this line.`)))
-      return { reasons: [`the supplement ${sid} did not reach ${pane}`], session, supplements };
-    let acked: string | undefined;
-    for (let j = 0; j < ROUND_TRIES && acked === undefined; j++) {
-      await deps.clock.sleep(POLL_MS);
-      acked = ackedBy(deps.config.stateDir, sid);
-    }
-    if (acked !== pane) return { reasons: [acked === undefined ? `no ack for the supplement ${sid}` : `the supplement ${sid} was acked from ${acked || "an unknown pane"}, not ${pane}`], session, supplements };
-    text = readText(understood);
-    left = missingFrom(text, facts);
-  }
-  if (left.length) return { reasons: [`the new session's restatement ${understood} still leaves out after ${supplements.length} supplement round(s): ${fmt(left)}`], session, supplements };
-  if (supplements.length) emit(`HANDOVER_SUPPLEMENT_OK ${key} after ${supplements.length} round(s)`);
-  emit(`HANDOVER_UNDERSTOOD ${understood}`);
+  const gaps = await fillGaps({ clock: deps.clock, stateDir: deps.config.stateDir, nonce: deps.nonce, tell: (to, line) => tell(deps, to, line), ackedBy: (id) => ackedBy(deps.config.stateDir, id) },
+    { who: facts.lane.key, pane, understood, headings: UNDERSTOOD_HEADINGS, rounds: deps.config.handover.supplementRounds, oldLog: facts.oldLog, check: (t) => missingFrom(t, facts), emit });
+  const { supplements, text } = gaps;
+  if (gaps.reasons.length) return { reasons: gaps.reasons, session, supplements };
   const asks = section(text, "Questions");
   if (asks && !/^none\.?$/i.test(asks)) emit(`HANDOVER_QUESTIONS ${facts.lane.key}: ${asks.replace(/\s+/g, " ").slice(0, 400)} (the lead answers them in the new pane; the old log is ${facts.oldLog ?? "not found"})`);
   return { reasons: [], session, supplements, ...(shown.account ? { account: shown.account } : {}) };

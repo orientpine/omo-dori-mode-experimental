@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
 import { findLead, LeadError } from "./lead.ts";
-import { ackHandover, handover, type HandoverDeps } from "./handover.ts";
+import { ackHandover, handover, type HandoverDeps, LEAD_SUMMARY_TEMPLATE } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
 import { appendRollover, dueReasons, LEAD_PREFIX, limitsFor, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
@@ -208,13 +208,19 @@ const USAGE = `dori <command> [options]
                                        owner answered in text) folds into its record with TEXT as the answer
   handover --approved-by REF [--note FILE] [--title T] [--model M] [--keep-old] [--no-monitors] [--minutes N] [--dry-run]
                                        move the lead to a new session (backend aoe): write a note (open lanes, the old
-                                       session's running monitors, open question cards, todos, timers, --note), open the
-                                       new session on it, point leadPane, dori.env DORI_LEAD_*, the lanes and the cards at
-                                       it, restart handover.services, then check that its monitors run and that a
-                                       [REPORT] probe and an inbox probe are acked from it. Only then is the old session
-                                       closed (HANDOVER_DONE); a failed check moves everything back (HANDOVER_VERIFY_FAIL,
-                                       exit 3). Run from inside the lead it detaches itself (systemd-run)
-  handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE line with this (the line gives --state)
+                                       session's running monitors, open question cards, todos, timers, the owner's
+                                       messages of the last 24 h from the inbox, the old log's path, --note: the old lead's
+                                       summary under the headings of handover --template), open the new session on it,
+                                       point leadPane, dori.env DORI_LEAD_*, the lanes and the cards at it, restart
+                                       handover.services, then check that its monitors run, that a [REPORT] probe and an
+                                       inbox probe are acked from it, and that its restatement (HANDOVER_UNDERSTAND) names
+                                       every open lane, card and timer, the owner's words and the summary's decisions and
+                                       follow-ups; what it leaves out is sent back with the old log lines behind it
+                                       (HANDOVER_SUPPLEMENT, up to handover.supplementRounds rounds). Only then is the old
+                                       session closed (HANDOVER_DONE); a failed check moves everything back
+                                       (HANDOVER_VERIFY_FAIL, exit 3). Run from inside the lead it detaches itself (systemd-run)
+  handover --template                  print the headings of the old lead's summary (--note FILE)
+  handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE, HANDOVER_UNDERSTAND or HANDOVER_SUPPLEMENT line with this
   handover --lane <key> --approved-by REF [--note FILE] [--model M] [--thinking L] [--force] [--keep-old] [--minutes N] [--dry-run]
                                        move a lane to a new session (run by the lead): REF is lead:<reason and the signal behind
                                        it> (the lead decides; the owner gets a line afterwards, its message id goes to the
@@ -398,6 +404,7 @@ const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
   restart: (unit) => restartService({ systemctl: run, clock: realClock, timeoutSec: config.update.readyTimeoutSec }, config.update.services.find((s) => s.unit === unit) ?? { unit, paths: [], log: "", ready: "" }),
   nonce: () => crypto.randomUUID().slice(0, 8),
   print,
+  ownerIds: [process.env.DORI_DISCORD_OWNER, process.env.DORI_KAKAO_OWNER_ID].map((id) => id?.trim() ?? "").filter(Boolean),
   ...reportOwner,
 });
 // dori commands that talk to the owner refuse from a session that a running handover is replacing (no double replies)
@@ -1087,6 +1094,10 @@ try {
         if (minutes !== undefined && !(minutes > 0)) die("--minutes must be a positive number");
         const r = await laneHandover(laneDeps, opt("lane") ?? "", here, { approvedBy: opt("approved-by"), note: opt("note"), model: opt("model"), thinking: opt("thinking"), force: Boolean(flags.values.force), keepOld: Boolean(flags.values["keep-old"]), dryRun: Boolean(flags.values["dry-run"]), verifyMin: minutes });
         process.exit(r.code);
+      }
+      if (flags.values.template) {
+        console.log(LEAD_SUMMARY_TEMPLATE);
+        break;
       }
       // closing the old lead ends every process in its tmux session, so a handover started there continues as a user unit
       if (here && here === config.leadPane && !flags.values["dry-run"] && !flags.values["keep-old"] && !process.env.DORI_HANDOVER_DETACHED) {
