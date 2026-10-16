@@ -20,6 +20,9 @@
   "closeAfterMin": 5,
   "heavySlots": 1,
   "heavyMaxLoad": 80,
+  "heavyMaxSlots": 8,
+  "heavyHeadroomPct": 30,
+  "heavySettleSec": 120,
   "deadPanePatterns": [
     "has stopped",
     "no suitable jobs"
