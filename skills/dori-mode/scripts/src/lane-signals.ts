@@ -218,7 +218,14 @@ export const laneSignals = (lane: Lane, logs: LaneLogs | undefined, cfg: Pick<Do
   return { lane, outcome: outcomeOf(lane), fixes, claims: events.length - rejections.length, rejections, sends: logs?.sends ?? 0, nudges: logs?.nudges ?? 0, attempts, ...(rootCause ? { rootCause } : {}), warnings };
 };
 
-export const hasSignals = (s: LaneSignals): boolean => s.fixes.length > 0 || s.attempts.length > 0 || s.rejections.length > 0 || s.sends + s.nudges > 0 || s.outcome === "not-done";
+export const hasSignals = (s: LaneSignals): boolean => s.fixes.length > 0 || s.attempts.length > 0 || s.rejections.length > 0 || s.sends + s.nudges > 0 || s.outcome === "not-done" || (s.lane.doneChanges?.length ?? 0) > 0;
+
+// the lead changed the Done line after launch (dori done-set): how often and the last reason
+const doneChanged = (lane: Lane): string | undefined => {
+  const all = lane.doneChanges ?? [];
+  const last = all.at(-1);
+  return last ? `Done line changed ${all.length}x by the lead (last ${when(last.at)}: ${clip(last.reason, 90)})` : undefined;
+};
 
 const clip = (s: string, n: number): string => {
   const t = s.replace(/^\[REPORT\][^|]*\|[^|]*\|\s*/, "").replace(/\s+/g, " ").trim();
@@ -256,6 +263,7 @@ export const oneLine = (s: LaneSignals): string => {
     `rejected ${s.rejections.length}/${s.claims + s.rejections.length ? s.claims : 0}`,
     `re-sends ${s.sends}`,
     `nudges ${s.nudges}`,
+    ...(s.lane.doneChanges?.length ? [`done changed ${s.lane.doneChanges.length}`] : []),
     ...(s.warnings.length ? [`${s.warnings.length} warning${s.warnings.length === 1 ? "" : "s"}`] : []),
   ];
   return `SIGNALS ${s.lane.key} [${s.outcome}] ${parts.join(", ")}`;
@@ -273,6 +281,7 @@ export const formatLane = (s: LaneSignals, width = 150): string[] => {
   if (s.rootCause) out.push(`  root-cause switch: ${mention(s.rootCause, width)}`);
   else if (s.attempts.length) out.push("  root-cause switch: none found");
   if (s.fixes.length) out.push(`  tagged fixes (metric: hypothesis xN): ${hypotheses(s.fixes).join("; ")}`);
+  for (const c of s.lane.doneChanges ?? []) out.push(`  Done changed ${when(c.at)} (${c.live ? "live when set" : "not live when set"}): ${clip(c.reason, width)}\n       was: ${clip(c.from, width)}`);
   if (s.rejections.length) out.push(`  done claims: ${s.claims}, rejected ${s.rejections.length}: ${s.rejections.map((r) => `${when(r.at)} ${clip(r.note, 100)}`).join(" | ")}`);
   for (const w of s.warnings) out.push(`  WARN ${w}`);
   if (!s.attempts.length && !s.fixes.length && !s.rejections.length) out.push("  no fix attempts, tagged fixes or rejected claims on record");
@@ -300,6 +309,7 @@ export const pastSignalsSection = (label: string, list: readonly LaneSignals[], 
       ...(s.rootCause ? [`then a root-cause hunt (${clip(s.rootCause.text, 90)})`] : []),
       ...(s.fixes.length ? [`fixes ${hypotheses(s.fixes).join("; ")}`] : []),
       ...(s.rejections.length ? [`${s.rejections.length} done claim(s) rejected (${clip(s.rejections.at(-1)?.note ?? "", 90)})`] : []),
+      ...(doneChanged(s.lane) ? [doneChanged(s.lane) ?? ""] : []),
       `${s.sends} re-sends, ${s.nudges} nudges`,
     ];
     lines.push(`- ${s.lane.key} (${s.outcome}): ${bits.join("; ")}`);

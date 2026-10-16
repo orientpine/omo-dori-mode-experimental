@@ -80,6 +80,8 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 
 Work no script can check (a design review, a judgement call) stays in the lane's own plan. You judge it yourself before the claim.
 
+**When the plan changes after launch,** the `Done =` line can go stale: the work is done, but the signal still looks for what the old plan would have made, so `dori close` keeps refusing. Change the line, never skip it: `dori done-set <key> --done "<signals that fit the plan now>" --reason "<what changed and who decided>"`. It reads the new signals once and prints the result, keeps the earlier line in the lane's record, writes a `DONE_SET` line to the watch log, updates the brief's footer and tells the lane. The lane then closes the usual way, only when every new signal reads back live.
+
 **Measure behavior, not files.** A Done line that only proves files exist or contain some text lets a lane pass without the thing working. `launch` prints `LAUNCH_DONE_WEAK <key>: ...` when every signal is a `file` signal or a command that only reads files or text (`grep`, `test`, `cat`, `ls`, `wc`, `jq` and the like, given directly, through `sh -c`, or in a shell script it can read). Add at least one signal that runs the thing: its tests, a command that exercises it, a `url` with the expected status and body. The lane still launches; pass `--done-weak-ok` when a file really is the deliverable (a report, a dataset).
 
 ## Repeated fixes

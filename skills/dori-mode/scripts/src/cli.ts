@@ -22,7 +22,7 @@ import { autoReadyLine, freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
-import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, renderBrief, setGpu, setThread, validateLaunch } from "./launch.ts";
+import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, renderBrief, setDone, setGpu, setThread, validateLaunch } from "./launch.ts";
 import { DirectiveError, ledgerProblems, ledgerTable, loadLedger, promptTable } from "./directives.ts";
 import { applyDirectives, checkMeaning, runDirectiveAudit, sinceIso } from "./directive-audit.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
@@ -96,6 +96,12 @@ const USAGE = `dori <command> [options]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...] [--use-gpu]
                                        REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
   set-thread <key> <adapter>:<id>      point an open lane at another work thread
+  done-set <key> --done "<signals>" --reason "<why>"
+                                       change an open lane's Done line when its plan changed after launch: the new line is
+                                       checked like launch's and read once now (SIGNAL OK/NOT lines, DONE_SET <key> live k/n);
+                                       the earlier line stays in the lane's doneChanges, the watch log gets DONE_SET, the
+                                       brief's footer gets the new line and the lane is told. dori close and the watcher then
+                                       read the new line, and every signal still has to read back live
   set-gpu <key> on|off                 on: the lane's next session (handover, restart) starts without launchEnv; off: with it
   launch-env <tmux-session>            env(1) arguments a restart of that session needs to start like dori opens it
                                        (NAME=VALUE for a lane, --unset=NAME for a --use-gpu lane or any other session;
@@ -568,6 +574,11 @@ try {
     case "set-thread": {
       const ref = flags.positionals[1]?.trim() ?? die("usage: dori set-thread <key> <adapter>:<id>");
       console.log(await setThread(deps, await lane(key ?? die("set-thread needs a lane key")), ref));
+      break;
+    }
+    case "done-set": {
+      const l = await lane(key ?? die("done-set needs a lane key"));
+      for (const line of await setDone(deps, l, need("done"), many("reason").join("; "))) console.log(line);
       break;
     }
     case "set-gpu": {
