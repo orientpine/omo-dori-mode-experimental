@@ -5,8 +5,9 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { join } from "node:path";
 
 import { aoeSessions, captureTmux, closeAoeSession, inputLine, laneEnv, openAoeSession, sessionFor } from "./aoe.ts";
-import type { HandoverWatcher } from "./config.ts";
+import { fill, type HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { type FreezeDeps, type FrozenRecord, freezePane, writeFrozen } from "./frozen.ts";
 import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
@@ -17,7 +18,7 @@ import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quot
 import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
-export type HandoverDeps = FlowDeps & {
+export type HandoverDeps = FlowDeps & Pick<FreezeDeps, "procs" | "signal"> & {
   readonly configPath: string;
   readonly envPath: string;
   readonly cardDir: string;
@@ -459,7 +460,7 @@ export const takeLock = (file: string, alive: (pid: number) => boolean, at: stri
   return `could not take the handover lock ${file}`;
 };
 
-type MoveContext = { readonly note: string; readonly stamp: string; readonly dir: string; readonly title: string; readonly model: string; readonly units: readonly string[]; readonly emit: (line: string) => void; readonly mark: (step: string, ok: boolean) => void; readonly supplements: Supplement[] };
+type MoveContext = { readonly note: string; readonly stamp: string; readonly dir: string; readonly title: string; readonly model: string; readonly units: readonly string[]; readonly emit: (line: string) => void; readonly mark: (step: string, ok: boolean) => void; readonly supplements: Supplement[]; frozen?: FrozenRecord };
 
 export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): Promise<HandoverResult> => {
   const { config } = deps;
@@ -543,8 +544,9 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   };
   let r: HandoverResult = { code: 3, note };
   const supplements: Supplement[] = [];
+  const ctx: MoveContext = { note, stamp, dir, title, model, units, emit, mark, supplements };
   try {
-    r = await moveLead(deps, opts, facts, { note, stamp, dir, title, model, units, emit, mark, supplements });
+    r = await moveLead(deps, opts, facts, ctx);
     return r;
   } finally {
     rmSync(lockFile, { force: true });
@@ -555,12 +557,14 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
     const ref = opts.approvedBy?.trim() ?? "";
     const by = ref ? decidedBy(ref) : undefined;
     const reason = by === "lead" ? ref.slice(LEAD_PREFIX.length).trim() : by === "auto" ? autoReason("lead", signals, config.handover) : undefined;
-    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, "lead", null, { who: "the lead", from: config.leadPane, to: r.to, reason: reason ?? "" }, emit) : undefined;
+    const frozen = ctx.frozen ? fill([config.handover.frozenText], { from: ctx.frozen.pane, n: String(ctx.frozen.pids.length), hours: ctx.frozen.closeAt ? String(config.handover.frozenCloseH) : "-" })[0] : undefined;
+    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, "lead", null, { who: "the lead", from: config.leadPane, to: r.to, reason: reason ?? "" }, emit, frozen) : undefined;
     appendRollover(config.stateDir, {
       kind: "rollover", who: "lead", at, key: "lead", from: config.leadPane, ...(r.to ? { to: r.to } : {}), ...(ref ? { approvedBy: ref } : {}),
       ...(by ? { decidedBy: by } : {}), ...(reason ? { reason } : {}), ...(ownerReport ? { ownerReport } : {}),
       ...(proposal ? { proposedAt: proposal.at, approvalMin: Math.round((Date.parse(at) - Date.parse(proposal.at)) / 6_000) / 10 } : {}),
-      signals, steps, result: r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back", reasons: steps.filter((st) => !st.ok).map((st) => st.step),
+      signals, steps, result: r.code === 0 ? (ctx.frozen ? "done-frozen" : opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back", reasons: steps.filter((st) => !st.ok).map((st) => st.step),
+      ...(ctx.frozen ? { frozen: { pids: ctx.frozen.pids.length, closeAt: ctx.frozen.closeAt ?? null } } : {}),
       ...(supplements.length ? { supplementRounds: supplements.length, supplements } : {}),
     });
   }
@@ -622,6 +626,25 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     return { code: 3, note, to: pane };
   }
   if (facts.from.session && checked.session) new QuestionStore(deps.cardDir).retarget({ session: facts.from.session }, { session: checked.session });
+  // committed: the old lead is frozen, not closed, so it spends no tokens and does nothing while its pane and log stay.
+  // A rolled-back move never gets here, and before this point it was only told to stay quiet.
+  const ice = await freezePane(deps, config.leadPane, process.pid).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
+  mark("freeze", !!ice.agentPid);
+  if (ice.agentPid) {
+    const h = config.handover.frozenCloseH;
+    const closeAt = !opts.keepOld && h > 0 ? new Date(deps.clock.now() + h * 3_600_000).toISOString() : undefined;
+    const rec: FrozenRecord = { pane: config.leadPane, aoeId: facts.from.aoeId, at: iso(deps.clock), agentPid: ice.agentPid, pids: ice.pids, ...(closeAt ? { closeAt } : {}), to: pane, ...(facts.from.session ? { session: facts.from.session } : {}), ...(facts.oldLog ? { oldLog: facts.oldLog } : {}) };
+    writeFrozen(config.stateDir, rec);
+    ctx.frozen = rec;
+    emit(`HANDOVER_OLD_FROZEN ${config.leadPane} agent ${ice.agentPid}: ${ice.pids.length} processes stopped (${ice.pids.join(",")}); ${closeAt ? `closes at ${closeAt} (handover.frozenCloseH ${h})` : "kept until closed by hand"}; dori handover thaw ${config.leadPane} resumes it; log ${facts.oldLog ?? "-"}`);
+    emit(`HANDOVER_DONE ${config.leadPane} -> ${pane}; old session frozen`);
+    record("done-frozen", []);
+    await tell(pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${config.leadPane} is frozen (its processes are stopped, its log stays); you are the lead now. Go on with step 5 of the note.`);
+    emit(`${COMMITTED} lead ${pane}`);
+    return { code: 0, note, to: pane };
+  }
+  emit(`HANDOVER_FREEZE_FAIL ${config.leadPane}: ${ice.why ?? "nothing stopped"}${ice.pids.length ? ` (stopped ${ice.pids.join(",")}, resumed)` : ""}; ${opts.keepOld ? "it stays open, told to stay idle" : "closing it instead"}`);
+  for (const p of [...ice.pids].reverse()) deps.signal(p, "SIGCONT");
   if (opts.keepOld) {
     await tell(config.leadPane, `[LEAD] Handover to ${pane} is done and checked. You are no longer the lead; stay idle until the lead closes you.`);
     await tell(pane, `[LEAD] ${COMMITTED}: the handover is checked and ${config.leadPane} stays open but idle; you are the lead now. Go on with step 5 of the note.`);

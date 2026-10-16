@@ -1,4 +1,5 @@
 import type { DoriConfig } from "./config.ts";
+import { frozenPanes } from "./frozen.ts";
 import { listPanes, readScreen } from "./panes.ts";
 import type { Runner } from "./run.ts";
 
@@ -6,7 +7,8 @@ import type { Runner } from "./run.ts";
 export const deadPaneTick = async (run: Runner, config: DoriConfig, seen: Set<string>, hourKey: string, pausedPanes: readonly string[] = []): Promise<string[]> => {
   const out: string[] = [];
   const watch = new Set(config.workspaces);
-  const skip = new Set([config.leadPane, ...config.ignorePanes, ...pausedPanes].filter(Boolean));
+  // a frozen old lead shows a still screen on purpose
+  const skip = new Set([config.leadPane, ...config.ignorePanes, ...pausedPanes, ...frozenPanes(config.stateDir)].filter(Boolean));
   for (const pane of await listPanes(run, config.backend)) {
     if (skip.has(pane.pane_id) || (watch.size > 0 && !watch.has(pane.workspace_id))) continue;
     const tail = (await readScreen(run, config.backend, pane.pane_id, 6)).toLowerCase();

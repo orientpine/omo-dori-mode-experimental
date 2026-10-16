@@ -50,6 +50,8 @@ export type RolloverEntry =
       readonly accounts?: { readonly from: string; readonly to: string };
       readonly supplementRounds?: number;
       readonly supplements?: readonly Supplement[];
+      // the old lead frozen at the commit: how many processes, and when freshness closes it (null: by hand)
+      readonly frozen?: { readonly pids: number; readonly closeAt: string | null };
     };
 
 // afterCompactK: thousands of tokens the session still held right after its last compaction (0 or absent is off)
@@ -76,8 +78,8 @@ export const sessionFixes = (lane: Lane): FixAttempt[] => {
 
 // After a rollover the lead decided (lead:<reason>): one line to the owner, and its message id (or why it failed) for the log.
 // A failure is ROLLOVER_OWNER_REPORT_MISSING in the watch log, so the lead tells the owner by hand.
-export const reportToOwner = async (deps: { readonly reportOwner?: (thread: string | null, text: string) => Promise<string>; readonly config: Pick<DoriConfig, "handover">  }, key: string, thread: string | null, values: { readonly who: string; readonly from: string; readonly to: string; readonly reason: string }, emit: (line: string) => void): Promise<OwnerReport> => {
-  const text = fill([deps.config.handover.reportText], values)[0] ?? deps.config.handover.reportText;
+export const reportToOwner = async (deps: { readonly reportOwner?: (thread: string | null, text: string) => Promise<string>; readonly config: Pick<DoriConfig, "handover">  }, key: string, thread: string | null, values: { readonly who: string; readonly from: string; readonly to: string; readonly reason: string }, emit: (line: string) => void, extra?: string): Promise<OwnerReport> => {
+  const text = [fill([deps.config.handover.reportText], values)[0] ?? deps.config.handover.reportText, ...(extra ? [extra] : [])].join("\n");
   try {
     if (!deps.reportOwner) throw new Error("no messenger to reach the owner");
     const message = await deps.reportOwner(thread, text);

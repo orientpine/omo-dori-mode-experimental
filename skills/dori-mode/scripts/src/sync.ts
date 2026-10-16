@@ -1,4 +1,5 @@
 import type { FlowDeps } from "./done-flow.ts";
+import { frozenPanes } from "./frozen.ts";
 import { listPanes } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { procTable, resolveSession } from "./session-id.ts";
@@ -25,7 +26,7 @@ export const syncRegistry = async (deps: FlowDeps, write: boolean): Promise<Sync
   }
   const owned = new Set(lanes.map((l) => l.pane));
   const watch = new Set(deps.config.workspaces);
-  const skip = new Set([deps.config.leadPane, ...deps.config.ignorePanes]);
+  const skip = new Set([deps.config.leadPane, ...deps.config.ignorePanes, ...frozenPanes(deps.config.stateDir)]);
   const unregistered: SyncRow[] = [];
   for (const p of panes) {
     if (owned.has(p.pane_id) || skip.has(p.pane_id) || (watch.size > 0 && !watch.has(p.workspace_id))) continue;
