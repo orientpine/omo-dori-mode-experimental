@@ -95,6 +95,13 @@ export const LEAD_PREFIX = "lead:";
 // whole tokens only: "age" in "message" or 단 in 단계 is no signal (challenge, grok-4.7)
 const SIGNAL_WORD = /(?<![\w])(?:STUCK|rung ?4|OWNER_CHECK|VIOLATION|CONTRADICTION|GOAL_LOSS|ROLLOVER_DUE|SAME_FIX_3|fixated|context \d+ ?%|compactions? \d+|\d+ compactions?|age \d+(?:\.\d+)? ?h)(?![\w])|막힘 ?4 ?단|맥락 (?:이상|단)|압축 \d+/i;
 
+// the thresholds of one side, from handover.lane* or handover.lead*
+export const limitsFor = (who: Who, h: DoriConfig["handover"]): Limits =>
+  who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH };
+
+// the reason the owner reads after an automatic rollover: what the session crossed when it moved
+export const autoReason = (who: Who, signals: Signals, h: DoriConfig["handover"]): string => `automatic (handover.autoRollover${who === "lane" ? "Lanes" : "Lead"}): ${dueReasons(signals, limitsFor(who, h)).join(", ") || "a threshold was crossed"}`;
+
 export const decidedBy = (ref: string): DecidedBy => (ref.startsWith(LEAD_PREFIX) ? "lead" : ref.startsWith(AUTO_PREFIX) ? "auto" : "owner");
 
 // A new session (lane or lead) does nothing but re-arm monitors and ack the probe until it gets this line: before it the
@@ -119,7 +126,9 @@ export const approvalProblem = (ref: string | undefined, card: (id: string) => Q
   }
   if (r.startsWith(AUTO_PREFIX)) {
     if (r !== `${AUTO_PREFIX}${auto.key}`) return `${r} is not the automatic approval of this side; only ${AUTO_PREFIX}${auto.key} is`;
-    return auto.on ? undefined : `${r} is an automatic approval, but the automation key is off (the owner turns it on)`;
+    if (!auto.on) return `${r} is an automatic approval, but the automation key is off (the owner turns it on)`;
+    // an automatic rollover tells the owner afterwards too
+    return canReport ? undefined : "an automatic rollover needs a way to tell the owner afterwards: set DORI_DISCORD_TOKEN and DORI_DISCORD_CHANNEL (or give the lane a discord:<id> thread)";
   }
   if (/^Q\d+$/i.test(r)) {
     const q = card(r.toUpperCase());

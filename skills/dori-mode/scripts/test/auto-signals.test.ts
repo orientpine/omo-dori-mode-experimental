@@ -78,7 +78,7 @@ test("a prescription verdict (REJECTED, \uae30\uac01, \ud310\uc815 \ubd88\uac00)
   expect(inferRepeats(events, cfg).counts.get("\uba48\ucda4")?.n).toBe(2);
 });
 
-test("a stuck rung 4 makes a rollover due as a reason, never a measured crossing, and never starts an automatic rollover", async () => {
+test("a stuck rung 4 makes a rollover due as a reason, never a measured crossing; with the auto key on it starts an automatic rollover, with it off the STUCK line is the only notice", async () => {
   const limits = { contextPct: 0, compactions: 0, ageH: 0 };
   expect(dueReasons({ stuck: { metric: "교착", n: 4, rung: 4 } }, limits)).toEqual(['stuck rung 4 on "교착" (4 attempts)']);
   expect(dueReasons({ stuck: { metric: "교착", n: 3, rung: 3 } }, limits)).toEqual([]);
@@ -86,12 +86,16 @@ test("a stuck rung 4 makes a rollover due as a reason, never a measured crossing
   const state = withState();
   try {
     const w = newWorld();
-    const deps = depsFor(w, fakeClock(T0 + 60_000), state.dir, { backend: "aoe", handover: { ...defaultConfig("/home/test").handover, autoRolloverLanes: true } });
-    await deps.registry.write({ ...lane(state.dir), pane: "aoe_rl_1", lastReplyAt: T0 + 60_000, stuck: { "교착": { rung: 4, n: 4, at: at(0), pane: "aoe_rl_1" } } });
+    const off = depsFor(w, fakeClock(T0 + 60_000), state.dir, { backend: "aoe" });
+    await off.registry.write({ ...lane(state.dir), pane: "aoe_rl_1", lastReplyAt: T0 + 60_000, stuck: { "교착": { rung: 4, n: 4, at: at(0), pane: "aoe_rl_1" } } });
     let started = 0;
-    const acts = await freshnessTick(deps, "/home/test", { signals: async () => ({}), auto: async () => `started ${++started}` });
-    expect(acts).toEqual([]);
+    const hooks = { signals: async () => ({}), auto: async () => `started ${++started}` };
+    expect(await freshnessTick(off, "/home/test", hooks)).toEqual([]);
     expect(started).toBe(0);
+    const deps = depsFor(w, fakeClock(T0 + 60_000), state.dir, { backend: "aoe", handover: { ...defaultConfig("/home/test").handover, autoRolloverLanes: true } });
+    const acts = await freshnessTick(deps, "/home/test", hooks);
+    expect(acts.map((a) => [a.kind, a.lane, a.detail.split(" in ")[0]])).toEqual([["rollover_due", "rl-e7", 'stuck rung 4 on "교착" (4 attempts)'], ["rollover_auto", "rl-e7", "started 1"]]);
+    expect(started).toBe(1);
   } finally {
     state.done();
   }

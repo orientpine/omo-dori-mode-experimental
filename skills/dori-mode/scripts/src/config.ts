@@ -224,7 +224,9 @@ export type AutoSignals = {
 // stuck ladder (stuck.*). Nothing switches on a threshold: the lead decides (dori rollover-propose prints proposalText
 // for the lead and logs it), runs the handover with --approved-by lead:<reason and signal>, and the handover tells the
 // owner afterwards and logs that message's id. autoRolloverLanes / autoRolloverLead let freshness start it on a measured
-// threshold without asking; off until the owner decides from dori rollover-stats. reportText ({who}, {from}, {to},
+// threshold or at rung 4 of the stuck ladder without asking; off until the owner decides from dori rollover-stats. A session
+// still in the same pane autoRetryMin minutes after an automatic start (refused or failed) gets another, up to autoMaxTries.
+// reportText ({who}, {from}, {to},
 // {reason}) is that message to the owner, posted in the lane's discord thread or DORI_DISCORD_CHANNEL. supplementRounds is how many times a lane handover fills in what the new session's
 // restatement left out (from the note and the old log) and asks again before it rolls back; 0 rolls back at the first gap.
 export type HandoverWatcher = { readonly name: string; readonly check: readonly string[]; readonly arm?: string };
@@ -248,6 +250,8 @@ export type Handover = {
   readonly leadAgeH: number;
   readonly autoRolloverLanes: boolean;
   readonly autoRolloverLead: boolean;
+  readonly autoRetryMin: number;
+  readonly autoMaxTries: number;
   readonly supplementRounds: number;
   readonly proposalText: string;
   readonly reportText: string;
@@ -387,7 +391,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     },
   },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
-    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false, supplementRounds: 2,
+    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoMaxTries: 6, supplementRounds: 2,
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
     reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },
   instances: [],

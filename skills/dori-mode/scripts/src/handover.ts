@@ -13,7 +13,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
+import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type HandoverDeps = FlowDeps & {
@@ -433,8 +433,8 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
     const proposal = lastProposal(readRollovers(config.stateDir), "lead");
     const ref = opts.approvedBy?.trim() ?? "";
     const by = ref ? decidedBy(ref) : undefined;
-    const reason = by === "lead" ? ref.slice(LEAD_PREFIX.length).trim() : undefined;
-    const ownerReport = by === "lead" && r.to && r.code !== 3 ? await reportToOwner(deps, "lead", null, { who: "the lead", from: config.leadPane, to: r.to, reason: reason ?? "" }, emit) : undefined;
+    const reason = by === "lead" ? ref.slice(LEAD_PREFIX.length).trim() : by === "auto" ? autoReason("lead", signals, config.handover) : undefined;
+    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, "lead", null, { who: "the lead", from: config.leadPane, to: r.to, reason: reason ?? "" }, emit) : undefined;
     appendRollover(config.stateDir, {
       kind: "rollover", who: "lead", at, key: "lead", from: config.leadPane, ...(r.to ? { to: r.to } : {}), ...(ref ? { approvedBy: ref } : {}),
       ...(by ? { decidedBy: by } : {}), ...(reason ? { reason } : {}), ...(ownerReport ? { ownerReport } : {}),

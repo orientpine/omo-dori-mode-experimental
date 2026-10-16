@@ -1,13 +1,13 @@
 import { repeatTick } from "./auto-signals.ts";
-import { fill } from "./config.ts";
+import { type DoriConfig, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { runOwnerCheck } from "./owner-check.ts";
-import { researchCheck } from "./explore.ts";
+import { researchCheck, stuckTop } from "./explore.ts";
 import { readScreen, sendVerified } from "./panes.ts";
-import { type Lane, statusOf } from "./registry.ts";
+import { type Lane, type RolloverDue, statusOf } from "./registry.ts";
 import { fixTag, recordFix } from "./same-fix.ts";
 import { statusLine } from "./lane-handover.ts";
-import { crossed, type Signals, type Who } from "./rollover.ts";
+import { crossed, dueReasons, limitsFor, type Signals, type Who } from "./rollover.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { watchLog } from "./watch-log.ts";
@@ -51,19 +51,55 @@ const leadDueFile = (stateDir: string): string => join(stateDir, "handover", "le
 // A session past a measured threshold (context, compactions, age) is due for a rollover. Freshness says so once per pane
 // and only suggests: the lead decides and runs the handover with --approved-by lead:<reason and signal>, unless the owner
 // turned the auto key on. A stuck lane's rollover point is rung 4 of the stuck ladder, which has its own STUCK line.
-const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: string, pane: string, model: string, seen: { readonly pane?: string } | undefined, save: (pane: string, at: string, crossed: string[]) => Promise<void>): Promise<SweepAct[]> => {
+// With the auto key on, rung 4 of the stuck ladder is a reason too, and a session still in the same pane autoRetryMin minutes
+// after an automatic start (the handover refused it, a turn was running, or it rolled back) gets another, up to autoMaxTries;
+// then one line says it gave up. A refusal goes to the watch log only (HANDOVER_REFUSED); the owner hears of a move that happened.
+const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: string, pane: string, model: string, seen: RolloverDue | undefined, stuck: Signals["stuck"], save: (due: RolloverDue) => Promise<void>): Promise<SweepAct[]> => {
   const h = deps.config.handover;
-  if (deps.config.backend !== "aoe" || seen?.pane === pane) return [];
-  const limits = who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH };
-  const signals: Signals = await hooks.signals(pane, model).catch(() => ({}));
-  const hit = crossed(signals, limits);
+  if (deps.config.backend !== "aoe") return [];
+  const auto = (who === "lane" ? h.autoRolloverLanes : h.autoRolloverLead) ? hooks.auto : undefined;
+  const limits = limitsFor(who, h);
+  const reasons = async (): Promise<string[]> => {
+    const signals: Signals = await hooks.signals(pane, model).catch(() => ({}));
+    return auto ? dueReasons({ ...signals, ...(stuck ? { stuck } : {}) }, limits) : crossed(signals, limits);
+  };
+  const now = deps.clock.now();
+  const at = new Date(now).toISOString();
+  if (seen?.pane === pane) {
+    if (!auto || !seen.autoAt || seen.gaveUp) return [];
+    const tries = seen.tries ?? 1;
+    if (tries >= h.autoMaxTries) {
+      await save({ ...seen, gaveUp: true });
+      return [{ kind: "rollover_auto", lane: key, detail: `gave up in ${pane} after ${tries} automatic starts (handover.autoMaxTries ${h.autoMaxTries}); why each stopped is in the watch log (HANDOVER_REFUSED, HANDOVER_VERIFY_FAIL); decide it by hand` }];
+    }
+    if (now - Date.parse(seen.autoAt) < h.autoRetryMin * 60_000) return [];
+    const hit = await reasons();
+    if (!hit.length) return [];
+    await save({ ...seen, autoAt: at, tries: tries + 1 });
+    return [{ kind: "rollover_auto", lane: key, detail: `retry ${tries + 1}/${h.autoMaxTries} (${hit.join(", ")}): ${await auto(who, key)}` }];
+  }
+  const hit = await reasons();
   if (!hit.length) return [];
-  await save(pane, new Date(deps.clock.now()).toISOString(), hit);
+  await save({ pane, at, crossed: hit, ...(auto ? { autoAt: at, tries: 1 } : {}) });
   const run = who === "lane" ? `dori handover --lane ${key} --approved-by "lead:<reason and this signal>"` : `dori handover --approved-by "lead:<reason and this signal>"`;
   const acts: SweepAct[] = [{ kind: "rollover_due", lane: key, detail: `${hit.join(", ")} in ${pane}: decide it (dori rollover-propose ${key} shows the note); to go ahead, ${who === "lane" ? `once the lane is at a safe point (dori handover ready ${key}), ` : ""}run ${run}; the owner is told afterwards` }];
-  const autoOn = who === "lane" ? h.autoRolloverLanes : h.autoRolloverLead;
-  if (autoOn && hooks.auto) acts.push({ kind: "rollover_auto", lane: key, detail: await hooks.auto(who, key) });
+  if (auto) acts.push({ kind: "rollover_auto", lane: key, detail: await auto(who, key) });
   return acts;
+};
+
+// The line freshness prints when it starts: whether rollovers start by themselves, on what, and how often they are retried.
+export const autoReadyLine = (h: DoriConfig["handover"]): string => {
+  const side = (who: Who, on: boolean): string => {
+    const name = who === "lane" ? "lanes" : "lead";
+    if (!on) return `${name} off`;
+    const l = limitsFor(who, h);
+    const what = [l.contextPct > 0 ? `context >= ${l.contextPct}%` : "", l.compactions > 0 ? `compactions >= ${l.compactions}` : "", l.ageH > 0 ? `age >= ${l.ageH} h` : "", who === "lane" ? "stuck rung 4" : ""].filter(Boolean);
+    return `${name} on (${what.join(", ") || "no threshold set"})`;
+  };
+  const sides = `${side("lane", h.autoRolloverLanes)}, ${side("lead", h.autoRolloverLead)}`;
+  return h.autoRolloverLanes || h.autoRolloverLead
+    ? `ROLLOVER_AUTO_READY ${sides}; retry every ${h.autoRetryMin} min, up to ${h.autoMaxTries} starts per session; the owner is told after each move`
+    : `ROLLOVER_AUTO_OFF ${sides}; rollovers wait for the lead's decision`;
 };
 
 // A milestone report that announces a new stage or phase is the moment to compare the lane's direction with the owner's goal:
@@ -111,7 +147,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, hooks: Rollove
       const r = await researchCheck(deps, lane);
       if (r.verdict === "started" || r.verdict === "not-started") acts.push({ kind: r.verdict === "started" ? "research_started" : "research_not_started", lane: lane.key, detail: r.line.replace(/^RESEARCH_\w+ \S+ /, "") });
     }
-    acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue, (pane, at, hit) => deps.registry.patch(lane.key, { rolloverDue: { pane, at, crossed: hit } }))));
+    acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue, stuckTop(current), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
     const heard = lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);
     if (silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
@@ -161,10 +197,10 @@ export const freshnessTick = async (deps: FlowDeps, home: string, hooks: Rollove
   const lead = deps.config.leadPane;
   if (lead) {
     const file = leadDueFile(deps.config.stateDir);
-    const seen = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { pane?: string }) : undefined;
-    acts.push(...(await rolloverDue(deps, hooks, "lead", "lead", lead, deps.config.handover.model || deps.config.defaultModel, seen, async (pane, at, hit) => {
+    const seen = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RolloverDue) : undefined;
+    acts.push(...(await rolloverDue(deps, hooks, "lead", "lead", lead, deps.config.handover.model || deps.config.defaultModel, seen, undefined, async (due) => {
       mkdirSync(join(deps.config.stateDir, "handover"), { recursive: true });
-      writeFileSync(file, JSON.stringify({ pane, at, crossed: hit }));
+      writeFileSync(file, JSON.stringify(due));
     })));
   }
   return acts;

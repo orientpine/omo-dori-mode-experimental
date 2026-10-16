@@ -400,3 +400,20 @@ test("a monitor counts as re-armed only with the same command and filter, or the
   expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "y", path: "/x/inbox" })])).toEqual([]);
   expect(check({ description: "named", persistent: true }, [entry({ description: "named", command: "anything" })])).toEqual([]);
 });
+
+test("an automatic lead rollover tells the owner afterwards with what it crossed; with the key off it is refused and nobody is told", async () => {
+  // Given
+  const posted: string[] = [];
+  const base = await setup();
+  const off: HandoverDeps = { ...base, reportOwner: async (_thread, text) => { posted.push(text); return "msg-9"; } };
+  const on: HandoverDeps = { ...off, config: { ...off.config, handover: { ...off.config.handover, autoRolloverLead: true } } };
+  // When
+  const refused = await handover(off, { approvedBy: "auto:handover.autoRolloverLead", title: "lead2" });
+  const r = await handover(on, { approvedBy: "auto:handover.autoRolloverLead", title: "lead2" });
+  // Then
+  expect(refused.code).toBe(2);
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(posted).toHaveLength(1);
+  expect(posted[0]).toStartWith(`I moved the lead to a new session (${OLD} -> ${NEW}). Why: automatic (handover.autoRolloverLead)`);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ decidedBy: "auto", ownerReport: { message: "msg-9" } });
+});

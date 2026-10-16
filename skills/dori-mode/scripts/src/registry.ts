@@ -39,6 +39,8 @@ export type ResearchSent = { readonly at: string; readonly sentAt: number; reado
 // report: for "@context", the report the last finding rested on (one report moves the rung once)
 export type StuckMark = { readonly rung: number; readonly n: number; readonly at: string; readonly pane?: string; readonly report?: string };
 
+export type RolloverDue = { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean; readonly autoAt?: string; readonly tries?: number; readonly gaveUp?: boolean };
+
 export type Lane = {
   readonly key: string;
   readonly title: string;
@@ -83,8 +85,9 @@ export type Lane = {
   readonly blocked?: string;
   readonly idleSince?: number;
   // the last ROLLOVER_DUE freshness gave for a measured threshold (context, compactions, age): one per pane, so a lane's new
-  // session can get its own (auto: written by older versions, not read)
-  readonly rolloverDue?: { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean };
+  // session can get its own (auto: written by older versions, not read); autoAt and tries: the last automatic start in this
+  // pane and how many there were, gaveUp once autoMaxTries ran out
+  readonly rolloverDue?: RolloverDue;
   // untagged repeats freshness inferred in the current session: cycles per metric (the inferred half of the stuck count) and
   // when the reports last showed each metric PASS (the tagged half counts only attempts after that), and the count at the
   // last --improved of a metric (baseline: only cycles after it count)

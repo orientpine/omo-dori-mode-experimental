@@ -18,7 +18,7 @@ import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
-import { freshnessTick } from "./freshness.ts";
+import { autoReadyLine, freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
@@ -819,6 +819,7 @@ try {
       break;
     }
     case "freshness":
+      console.log(autoReadyLine(config.handover));
       await every(loopMin, async () => {
         const laneDeps = laneDepsFor(() => {});
         const hooks = {
