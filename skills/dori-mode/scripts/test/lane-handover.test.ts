@@ -1017,3 +1017,23 @@ test("freshness starts with one line that says whether rollovers start by themse
   );
   expect(autoReadyLine({ ...h, autoRolloverLead: true })).toBe("ROLLOVER_AUTO_READY lanes off, lead on (no threshold set); retry every 30 min, up to 6 starts per session; the owner is told after each move");
 });
+
+test("a rollover due while the auto key was off starts automatically in the same pane once the key is on, once", async () => {
+  // Given
+  const base = await setup();
+  const deps = { ...base, config: { ...base.config, handover: { ...base.config.handover, laneContextPct: 80 } } };
+  await deps.registry.patch("demo", { lastReplyAt: deps.clock.now() });
+  const starts: string[] = [];
+  const hooks = { signals: async (pane: string) => (pane === OLD ? { contextPct: 85 } : {}), auto: async (who: "lead" | "lane", key: string) => { starts.push(`${who}:${key}`); return "started"; } };
+  const on = { ...deps, config: { ...deps.config, handover: { ...deps.config.handover, autoRolloverLanes: true } } };
+  const rollovers = async (d: typeof deps) => (await freshnessTick(d, "/home/test", hooks)).filter((a) => a.kind.startsWith("rollover")).map((a) => `${a.kind} ${a.lane} ${a.detail}`);
+  // When
+  const off = await rollovers(deps);
+  const first = await rollovers(on);
+  const again = await rollovers(on);
+  // Then
+  expect(off.map((l) => l.split(" ")[0])).toEqual(["rollover_due"]);
+  expect(first).toEqual(["rollover_auto demo context 85% >= 80%: started"]);
+  expect(again).toEqual([]);
+  expect(starts).toEqual(["lane:demo"]);
+});
