@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
 import { runDirectiveAudit } from "../src/directive-audit.ts";
-import { COMMON_LEDGER, DirectiveError, directiveText, ledgerProblems, loadLedger, scopeContext } from "../src/directives.ts";
+import { COMMON_LEDGER, DirectiveError, directiveText, ledgerProblems, loadLedger, scopeContext, trimProblem } from "../src/directives.ts";
 import { DirectiveMissingError, eightSteps, launchLane, renderBrief, uiSteps } from "../src/launch.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
 
@@ -56,6 +56,31 @@ test("the fork ledger validates, carries the template's directives and holds no 
   expect(both.entries.filter((e) => /…|\.\.\./.test(e.words ?? "")).map((e) => e.id)).toEqual([]);
   expect(directiveText(lead)).toBe(`[리드 규칙 ${lead.id}]\n${lead.rule}`);
   expect(ledgerProblems({ ...both, entries: [...both.entries, { ...both.entries[0], id: "Bad Id", mode: "inject", scope: { kinds: ["nope"] } } as never] })).toEqual(["directive Bad Id: id must be lowercase words with -", "directive Bad Id: unknown kind nope"]);
+});
+
+test("words are his original with only fillers and whole sentences left out: a reworded, reordered, added or half-cut sentence fails the check", async () => {
+  const both = loadLedger((await ledgerDeps()).config);
+  const fillers = ["알겠어", "아 그리고", "짱돌아"];
+  const original = "짱돌아 알겠어 이건 꼭 해줘. 아 그리고 저것도 정리해 너무 원문 그대로다…..모든 지침은 유지해 / 오늘은 쉬어";
+  const trim = (words: string) => trimProblem(original, words, fillers);
+  // fillers, the ellipsis and his last message left out; or his first sentence
+  expect(trim("이건 꼭 해줘. 저것도 정리해 너무 원문 그대로다 모든 지침은 유지해")).toBeUndefined();
+  expect(trim("저것도 정리해 너무 원문 그대로다 모든 지침은 유지해 / 오늘은 쉬어")).toBeUndefined();
+  for (const bad of [
+    "이건 해줘. 저것도 정리해 너무 원문 그대로다 모든 지침은 유지해", // a word of his (꼭) left out
+    "이건 꼭 해줘. 저것도 정리해 모든 지침은 유지해", // part of a sentence left out
+    "이건 꼭 해줘. 저것도 정리해 너무 원문 그대로다 모든 지침은 반드시 유지해", // a word added
+    "저것도 정리해 이건 꼭 해줘. 모든 지침은 유지해", // reordered
+    "이건 꼭 해 줘. 저것도 정리해 너무 원문 그대로다 모든 지침은 유지해", // a word of his rewritten
+  ])
+    expect(trim(bad)).toContain("words is not his original");
+  // the ledger check holds every entry with an original to it, with the ledger's fillers
+  const owner = both.entries.find((e) => e.by === "owner" && e.words)!;
+  expect(ledgerProblems({ ...both, fillers, entries: [{ ...owner, original, words: "이건 꼭 해줘. 저것도 정리해 모든 지침은 유지해" }] })[0]).toContain("words is not his original");
+  expect(ledgerProblems({ ...both, fillers, entries: [{ ...owner, original, words: "이건 꼭 해줘. 저것도 정리해 너무 원문 그대로다 모든 지침은 유지해" }] })).toEqual([]);
+  // a speech-to-text error is corrected only through fixes, each one found in original
+  expect(trimProblem("기간 내 다이제스트 붙여줄게요", "기관메일 다이제스트 붙여줘", [], [["기간 내", "기관메일"], ["붙여줄게요", "붙여줘"]])).toBeUndefined();
+  expect(trimProblem("기간 내 다이제스트 붙여줄게요", "기관메일 다이제스트 붙여줘", [])).toContain("words is not his original");
 });
 
 test("launch puts an inject directive in scope into the brief as the ledger writes it, once; LAUNCH_DIRECTIVE_ADDED says which and why", async () => {
@@ -131,7 +156,7 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   await deps.registry.write({ ...clean, key: "old", thread: "none", brief: "/nope.md", openedAt: "2026-10-14T00:00:00.000Z" });
   const inbox = await write("inbox.jsonl", "");
   const quiet = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
-  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 17 directives, no gap"]);
+  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 18 directives, no gap"]);
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
   expect(sent(world)).toEqual([]);
   // a lane whose brief lacks a directive and has no thread, and a standing directive of the owner nobody put in the ledger

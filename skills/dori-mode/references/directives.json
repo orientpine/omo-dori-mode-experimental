@@ -1,5 +1,5 @@
 {
-  "about": "The owner's standing directives every Dori shares (the directive ledger, fork layer). dori launch reads it with the host's local ledger (config directives.local): see SKILL.md and references/sessions.md. words are the owner's own words (typos corrected only, meaning and strength kept); rule says how the directive reads as a rule. No links, names or paths here: a host's local ledger adds them by id.",
+  "about": "The owner's standing directives every Dori shares (the directive ledger, fork layer). dori launch reads it with the host's local ledger (config directives.local): see SKILL.md and references/sessions.md. original is the owner's whole message as he sent it; words is original with only fillers (the list below) and whole sentences left out, never reworded, reordered or added to (dori directives check refuses anything else; a typo or speech-to-text error is corrected only through fixes); rule says how the directive reads as a rule. No links, names or paths here: a host's local ledger adds them by id.",
   "minHits": 3,
   "kinds": {
     "learning": "강화학습|학습|훈련|\\btrain(?:ing)?\\b|\\bRL\\b|reward|보상|정책|policy|체크포인트|checkpoint|\\biter\\b|관문|합격선|평가 판",
@@ -15,6 +15,22 @@
     "특정 저장소"
   ],
   "standing": "앞으로|항상|절대|매번|지침|규칙|원칙|잊지 ?마|빠짐없이|꼭 (?:넣|해|지켜)",
+  "fillers": [
+    "알았어",
+    "알겠어",
+    "오케이",
+    "그렇지",
+    "응",
+    "좋아",
+    "아냐",
+    "아니",
+    "아니 그",
+    "아 그리고",
+    "야 그러면",
+    "그럼",
+    "그리고",
+    "뭐"
+  ],
   "entries": [
     {
       "id": "eight-steps",
@@ -72,6 +88,7 @@
       "by": "owner",
       "basis": "세션이 작업할 때 문서를 갱신하게 프로젝트 지침에 넣으라는 일반 지시 → 형 지침. 날짜·원문 기록과 띄우기 전 문서=설정은 리드가 hr35 AGENTS에 더한 것이라 이 줄에서 뺌",
       "words": "세션에서 작업 시 문서를 업데이트 하게 해당 프로젝트 지침에 추가해",
+      "original": "오케이 위 내용이 모두 문서에 잘 반영되었는지 확인하고, 세션에서 작업 시 문서를 업데이트 하게 해당 프로젝트 지침에 추가해",
       "rule": "작업하는 세션은 바꾸는 같은 커밋·PR에서 그 프로젝트 문서를 같이 갱신한다.",
       "date": "2026-10-10",
       "source": "형 2026-10-10",
@@ -86,6 +103,7 @@
       "by": "owner",
       "basis": "'다음부터는 … 반드시 꼭 확인해'는 앞으로 하라는 지시 → 형 지침. 브리프에 SKILL.md 먼저 읽기를 쓰는 것은 리드의 적용",
       "words": "다음부터는 스킬 제대로 불러줬는지 반드시 꼭 확인해.",
+      "original": "다음부터는 스킬 제대로 불러줬는지 반드시 꼭 확인해.",
       "rule": "lane에 스킬(ulw-research, ulw-loop, mass-ulw, ulw-plan 등)로 일을 맡기면 리드가 시작 직후와 완료 확인 때 세션 기록에서 그 스킬을 실제로 불렀는지(스킬 포인터, SKILL.md 읽기) 확인한다. 브리프에는 그 SKILL.md를 먼저 읽으라고 쓴다.",
       "date": "2026-10-09",
       "source": "형 2026-10-09",
@@ -99,7 +117,8 @@
       "name": "기존 기능 고치기",
       "by": "owner",
       "basis": "새 기능 대신 기존 기능을 고치라는 일반 원칙 → 형 지침. 메시지 마지막 문장 \"한꺼번에 다 고치는 거 지시할 거야.\"는 그때 한 건 예고라 문장째 뺌",
-      "words": "야 그러면 새로운 기능을 만들 게 아니라 기존 기능을 고쳐야 되지 않아? 그럼 이러면 중복 기능만 만드는 거잖아. 이거 말고 기존 기능을 개선하는 게 나은데 그렇지 않고 중복 기능을 만든 게 다른 것도 있는지 검토해 봐.",
+      "words": "새로운 기능을 만들 게 아니라 기존 기능을 고쳐야 되지 않아? 이러면 중복 기능만 만드는 거잖아. 이거 말고 기존 기능을 개선하는 게 나은데 그렇지 않고 중복 기능을 만든 게 다른 것도 있는지 검토해 봐.",
+      "original": "야 그러면 새로운 기능을 만들 게 아니라 기존 기능을 고쳐야 되지 않아? 그럼 이러면 중복 기능만 만드는 거잖아. 이거 말고 기존 기능을 개선하는 게 나은데 그렇지 않고 중복 기능을 만든 게 다른 것도 있는지 검토해 봐. 한꺼번에 다 고치는 거 지시할 거야.",
       "rule": "기능(명령·플래그·훅·서비스·규칙)을 더할 때는 같은 일을 하는 기존 기능을 먼저 찾아 고친다. 새로 만들면 기존 것을 왜 못 고치는지 근거를 적는다.",
       "date": "2026-10-12",
       "source": "형 2026-10-12",
@@ -200,6 +219,7 @@
       "by": "owner",
       "basis": "'앞으로 항상 릴리즈 할 때'는 일반 지시 → 형 지침",
       "words": "앞으로 항상 릴리즈 할 때 노트도 함께 작성하도록 해 줘",
+      "original": "앞으로 항상 릴리즈 할 때 노트도 함께 작성하도록 해 줘",
       "rule": "릴리스마다 노트를 태그와 같은 단계에서 쓴다.",
       "date": "2026-10-09",
       "source": "형 2026-10-09",
@@ -216,6 +236,7 @@
       "by": "owner",
       "basis": "'앞으로도 이렇게 해줘'는 일반 지시 → 형 지침. --thread를 붙이는 것은 리드의 적용",
       "words": "이렇게 스레드가 여러 개 열렸어도 관리는 있는 스레드 있으면 하나로 통합해서 하는 거 좋아 앞으로도 이렇게 해줘",
+      "original": "그렇지 이렇게 스레드가 여러 개 열렸어도 관리는 있는 스레드 있으면 하나로 통합해서 하는 거 좋아 앞으로도 이렇게 해줘",
       "rule": "같은 일이나 이어지는 일은 있는 스레드로 모은다: lane은 열 때 --thread로 그 스레드를 붙인다.",
       "date": "2026-10-12",
       "source": "형 2026-10-12",
@@ -231,6 +252,7 @@
       "by": "owner",
       "basis": "'앞으로 내가 설정한 지침이 절대로 빠지지 않도록'은 일반 지시 → 형 지침. '같은 날 장부에'는 이 lane 브리프가 정한 방법",
       "words": "앞으로 내가 설정한 지침이 절대로 빠지지 않도록 강제하는 프로세스 만들고 도리에도 푸쉬해줘",
+      "original": "앞으로 내가 설정한 지침이 절대로 빠지지 않도록 강제하는 프로세스 만들고 도리에도 푸쉬해줘",
       "rule": "형이 새 상시 지침을 말하면 리드가 같은 날 장부에 형 원문과 링크로 넣는다. 넣지 않으면 다음 dori directive-audit가 DIRECTIVE_UNLEDGERED로 잡는다.",
       "date": "2026-10-16",
       "source": "형 2026-10-16 13:56 KST",
@@ -239,6 +261,24 @@
       },
       "mode": "lead",
       "check": "ledger"
+    },
+    {
+      "id": "words-trim",
+      "name": "형 원문 군말만 지우기",
+      "by": "owner",
+      "basis": "'모든 지침 원형은 유지하는데 … 지워야지'는 장부의 모든 형 원문에 대한 일반 지시 → 형 지침. 형 말에서 지운 것은 부르는 이름과 생략 부호뿐",
+      "words": "이건 조금 트리밍 해줘라 너무 원문 그대로다 모든 지침 원형은 유지하는데 “알겠어” 같은 건 지워야지",
+      "rule": "장부의 original에는 형 메시지 전체를 그대로 두고, words는 original에서 군말(fillers: 알겠어, 아 그리고 같은 말버릇·맞장구·호칭)과 지침과 무관한 통째 문장만 지워 만든다. 바꿔 쓰기·순서 바꾸기·말 보태기는 하지 않는다. dori directives check가 확인한다.",
+      "date": "2026-10-16",
+      "source": "형 2026-10-16 14:55 KST (#73 안내에 답장)",
+      "scope": {
+        "keywords": [
+          "지침 장부",
+          "directives\\.json",
+          "dori directives"
+        ]
+      },
+      "mode": "inject"
     }
   ],
   "reviewed": []
