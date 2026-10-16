@@ -72,6 +72,49 @@ export const withUiSteps = (brief: string, steps: string): string => {
   return `${steps}\n\n${brief}`;
 };
 
+// The owner's eight steps (1. 조사 ... 8. 보고) of the brief template in references/sessions.md, the one copy of their wording.
+export const SESSIONS_DOC = join(import.meta.dir, "../../references/sessions.md");
+export const eightSteps = async (doc = SESSIONS_DOC): Promise<string> => {
+  const template = /```text\n(ulw\n[\s\S]*?)```/.exec(await Bun.file(doc).text())?.[1] ?? "";
+  const m = /^1\. 조사:[\s\S]*?^8\. 보고:[^\n]*$/m.exec(template);
+  if (!m) throw new LaunchError(`no eight-step block (1. 조사: ... 8. 보고:) in the brief template of ${doc}`);
+  return m[0];
+};
+
+const FIELD = /^\s*\[(?:목표|끝난 상태|사용자와 장면|넘으면 안 되는 선)\]/;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// A brief with none of the eight step headings gets the whole block after the four fields (after the ulw line when it has
+// no fields, else at the top); one with all eight is left alone; one with some of them is an edited frame: left as the
+// lead wrote it, with a warning.
+export const withEightSteps = (brief: string, steps: string): { readonly text: string; readonly added: boolean; readonly missing: readonly number[] } => {
+  const heads = [...steps.matchAll(/^([1-8])\. ([^:\n]+):/gm)].map(([, n, name]) => ({ n: Number(n), re: new RegExp(`^\\s*${n}\\.\\s*${escapeRe(name ?? "")}\\s*:`, "m") }));
+  const missing = heads.filter((h) => !h.re.test(brief)).map((h) => h.n);
+  if (missing.length < heads.length) return { text: brief, added: false, missing };
+  const lines = brief.split("\n");
+  const lastField = lines.reduce((at, l, i) => (FIELD.test(l) ? i : at), -1);
+  let at: number;
+  if (lastField >= 0) {
+    at = lastField + 1;
+    while (at < lines.length && lines[at]?.trim()) at++;
+  } else {
+    const first = lines.findIndex((l) => l.trim());
+    at = first >= 0 && /^ulw\b/i.test(lines[first]?.trim() ?? "") ? first + 1 : 0;
+  }
+  const before = lines.slice(0, at);
+  const after = lines.slice(at);
+  while (after.length && !after[0]?.trim()) after.shift();
+  const text = [...before, ...(before.length ? [""] : []), steps, ...(after.length ? ["", ...after] : [])].join("\n");
+  return { text, added: true, missing };
+};
+
+export const stepsLine = (key: string, r: { readonly added: boolean; readonly missing: readonly number[] }): string | undefined =>
+  r.added
+    ? `LAUNCH_STEPS_ADDED ${key}: the brief had none of the owner's eight steps (1. 조사 ... 8. 보고, references/sessions.md); added them as written there, after the four fields.`
+    : r.missing.length
+      ? `LAUNCH_STEPS_PARTIAL ${key}: the brief has only some of the owner's eight steps (missing ${r.missing.join(", ")}); left as the lead wrote it, nothing added. Check that the edit was meant.`
+      : undefined;
+
 // Words that mark UI work. 화면 alone is not enough (a terminal screen, the template's "실제 화면·호출·출력"), and a word
 // inside a hyphenated name (a lane key such as cytoplasm-pm-dashboard) does not count.
 const UI_WORD = /(?<![\w-])(?:UI|UX|dashboard|front-?end|web ?page)(?![\w-])|대시보드|프론트엔드|디자인|웹 ?페이지|화면(?!·호출)/gi;
@@ -155,14 +198,16 @@ const draftLane = (deps: FlowDeps, input: LaunchInput): Lane => ({
 });
 
 // The brief as the lane will read it: the lead's text, then Past signals, the hypothesis tree, and the footer.
-export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<{ readonly draft: Lane; readonly text: string }> => {
+export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<{ readonly draft: Lane; readonly text: string; readonly steps?: string }> => {
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
   const draft = draftLane(deps, input);
   const past = await pastSignals(deps, input, draft.cwd ?? deps.config.defaultCwd);
   const tree = await treeContext(deps, draft);
-  const lead = (await briefFile.text()).replace(/\s*$/, "");
-  return { draft, text: `${input.ui ? withUiSteps(lead, await uiSteps()) : lead}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}` };
+  const eight = withEightSteps((await briefFile.text()).replace(/\s*$/, ""), await eightSteps());
+  const lead = eight.text;
+  const steps = stepsLine(input.key, eight);
+  return { draft, ...(steps ? { steps } : {}), text: `${input.ui ? withUiSteps(lead, await uiSteps()) : lead}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend)}` };
 };
 
 // The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.
@@ -197,7 +242,11 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     warn(hint);
     watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: hint });
   }
-  const { draft, text } = await renderBrief(deps, input);
+  const { draft, text, steps } = await renderBrief(deps, input);
+  if (steps) {
+    warn(steps);
+    watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: steps });
+  }
   await Bun.write(input.brief, text);
   const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt, laneEnv(deps.config.launchEnv, input.useGpu)) : await openHerdr(deps, input.key, cwd, model, prompt);

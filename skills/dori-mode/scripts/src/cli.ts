@@ -65,7 +65,9 @@ const USAGE = `dori <command> [options]
                                        launchEnv (aoe), e.g. the GPU hidden; --use-gpu starts it without, and the
                                        registry keeps that for handover and restart. --ui puts the owner's seven UI steps
                                        (references/ui-work.md) at the top of the brief, after its ulw line; a brief that
-                                       reads like UI work without --ui prints LAUNCH_UI_HINT (and still launches)
+                                       reads like UI work without --ui prints LAUNCH_UI_HINT (and still launches). A brief with none of
+                                       the eight steps of references/sessions.md gets them after its four fields
+                                       (LAUNCH_STEPS_ADDED); with only some, LAUNCH_STEPS_PARTIAL and nothing added
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF] [--tag T ...] [--goal G] [--challenge-before STEP ...] [--use-gpu]
                                        REF is <adapter>:<id> (discord:<thread id>); an empty or malformed REF is refused
   set-thread <key> <adapter>:<id>      point an open lane at another work thread
@@ -472,7 +474,9 @@ try {
         if (weak) console.log(weak);
         const uiHint = uiWarning(input, await Bun.file(input.brief).text().catch(() => ""));
         if (uiHint) console.log(uiHint);
-        console.log((await renderBrief(deps, input)).text);
+        const rendered = await renderBrief(deps, input);
+        if (rendered.steps) console.log(rendered.steps);
+        console.log(rendered.text);
         console.log(`DRY_RUN ${input.key}: brief not written, no pane opened, nothing registered`);
         break;
       }

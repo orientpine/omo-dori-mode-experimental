@@ -163,7 +163,7 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 
 | 命令 | 作用 |
 |---|---|
-| `dori launch <key> ...` | 在 brief 里写入 lane footer,打开 herdr 标签页或 aoe 会话，启动智能体，检查启动错误；如果 `Done =` 的信号全都只检查文件或文字，会警告 `LAUNCH_DONE_WEAK`(lane 照样打开),`--done-weak-ok` 可关掉；`--ui` 把所有者的 UI 七步([ui-work.md](skills/dori-mode/references/ui-work.md))放到 brief 最前面，看起来是 UI 工作的 brief 没加 `--ui` 时会警告 `LAUNCH_UI_HINT`(lane 照样打开) |
+| `dori launch <key> ...` | 在 brief 里写入 lane footer,打开 herdr 标签页或 aoe 会话，启动智能体，检查启动错误；如果 `Done =` 的信号全都只检查文件或文字，会警告 `LAUNCH_DONE_WEAK`(lane 照样打开),`--done-weak-ok` 可关掉；`--ui` 把所有者的 UI 七步([ui-work.md](skills/dori-mode/references/ui-work.md))放到 brief 最前面，看起来是 UI 工作的 brief 没加 `--ui` 时会警告 `LAUNCH_UI_HINT`(lane 照样打开);brief 里完全没有所有者的八步([sessions.md](skills/dori-mode/references/sessions.md))时，会原样加在四个栏目之后(`LAUNCH_STEPS_ADDED`),只有一部分时不添加，只警告 `LAUNCH_STEPS_PARTIAL` |
 | `dori adopt <key> --pane ID ...` | 登记一条已经在运行的 lane |
 | `dori sync [--write]` | 对照登记表和实际 pane,列出不一致 |
 | `dori claim-done` / `object-done` / `close` | 完成流程；设置了 `DORI_DISCORD_TOKEN` 时，close 会把 `discord:` 工作线程标为完成并归档 |
