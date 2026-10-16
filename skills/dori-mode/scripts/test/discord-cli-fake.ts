@@ -17,7 +17,7 @@ globalThis.fetch = Object.assign(async (input: string | URL | Request, init?: Re
     state.name = String(body.name);
     result = { id: "300000000000000003" };
   } else if (method === "GET" && path === "/channels/300000000000000003") {
-    result = { name: state.name, thread_metadata: { archived: state.archived } };
+    result = { name: state.name, type: 11, thread_metadata: { archived: state.archived } };
   } else if (method === "PATCH" && path === "/channels/300000000000000003") {
     if (typeof body.name === "string") state.name = body.name;
     if (typeof body.archived === "boolean") state.archived = body.archived;

@@ -46,7 +46,13 @@ export const isDoneName = (name: string, words: DiscordWords): boolean => name.s
 export const progressText = (status: "working" | "done", text: string, words: DiscordWords): string =>
   words.statusStyle === "emoji" ? (status === "working" ? `⏳ · ${text}` : `${STATUS_EMOJI.done} ${text}`) : `${words[status]}: ${text}`;
 
-export type ThreadInfo = { readonly name?: string; readonly thread_metadata?: { readonly archived?: boolean } };
+export type ThreadInfo = { readonly name?: string; readonly type?: number; readonly thread_metadata?: { readonly archived?: boolean } };
+
+// Discord channel types that are threads (announcement, public, private). Only these get a status mark: a text
+// channel, forum or category passed in as a "thread" (a card asked with --thread pointing at the channel) keeps its name.
+const THREAD_TYPES: ReadonlySet<number> = new Set([10, 11, 12]);
+
+export class NotAThreadError extends ThreadRefError {}
 
 // The status a thread should show, from the truth rather than the last event: a closed lane is done; otherwise a lane
 // still working on the thread makes it working (waiting means nothing is left on our side, so neither an open card nor a
@@ -59,6 +65,7 @@ export const desiredStatus = (hint: ThreadStatus, openCards: readonly string[], 
 // Resolves true when it sent a change.
 export const setThreadStatus = async (dc: Discord, threadId: string, status: ThreadStatus, words: DiscordWords, current?: ThreadInfo): Promise<boolean> => {
   const info = current ?? (await dc.call<ThreadInfo>("GET", `/channels/${threadId}`));
+  if (info.type === undefined || !THREAD_TYPES.has(info.type)) throw new NotAThreadError(`channel ${threadId} is not a thread (type ${info.type ?? "unknown"}); its name is left alone`);
   const name = info.name ?? "";
   const next = threadName(status, name, words);
   const archived = info.thread_metadata?.archived === true;
