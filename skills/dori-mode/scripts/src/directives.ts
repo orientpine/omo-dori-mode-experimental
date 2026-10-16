@@ -232,15 +232,17 @@ export const appliesWhy = (e: Directive, ctx: ScopeContext): string | undefined 
 const squash = (s: string): string => s.replace(/\s+/g, " ").trim();
 
 // The text dori launch puts in for an inject directive, and what shows it is already in a brief.
-export const directiveText = (e: Directive): string => {
-  const head = `[지침 ${e.id}] ${e.name}${e.rule ? `: ${e.rule}` : ""}`;
-  if (e.by === "lead") return `${head}\n(리드 규칙, ${e.date}${e.trigger ? `; 계기가 된 형 말: "${e.trigger}"` : ""})`;
-  return e.words ? `${head}\n형 원문(${e.date}): "${e.words}"` : head;
-};
+// The owner's directive goes in as his words only, byte for byte, under a one-line tag: no summary, no rule, no context. A
+// lead rule goes in as the lead's rule only. An owner decision on record without his sentence says so in its tag. The
+// trigger and the basis stay in the ledger and its table.
+export const directiveTag = (e: Directive): string =>
+  e.by === "lead" ? `[리드 규칙 ${e.id}]` : e.words ? `[형 지침 ${e.id}, ${e.date}]` : `[형 결정 ${e.id}, ${e.date}, 원문 없음: 리드 기록]`;
+export const directiveText = (e: Directive): string => `${directiveTag(e)}\n${e.by === "owner" && e.words ? e.words : (e.rule ?? "")}`;
 export const hasDirective = (brief: string, e: Directive): boolean => {
   const b = squash(brief);
-  const own = e.words || (e.by === "lead" ? e.rule : "") || "";
-  return b.includes(`[지침 ${e.id}]`) || (Boolean(own) && b.includes(squash(own)));
+  const own = e.by === "owner" && e.words ? e.words : (e.rule ?? "");
+  // [지침 <id>]: the tag of briefs launched before #72
+  return b.includes(squash(directiveTag(e))) || b.includes(`[지침 ${e.id}]`) || (Boolean(own) && b.includes(squash(own)));
 };
 export const requireMissing = (brief: string, e: Directive): string[] => (e.require ?? []).filter((re) => !new RegExp(re, "m").test(leadText(brief)));
 
