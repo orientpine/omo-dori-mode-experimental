@@ -13,7 +13,8 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step } from "./rollover.ts";
+import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, ROUND_TRIES, section, words } from "./restatement.ts";
+import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type HandoverDeps = FlowDeps & {
@@ -38,6 +39,9 @@ export type HandoverDeps = FlowDeps & {
   readonly print: (line: string) => void;
   // posts the owner's after-the-fact note of a rollover the lead decided and returns its message id (rollover.ts reportToOwner)
   readonly reportOwner?: (thread: string | null, text: string) => Promise<string>;
+  // the owner's ids in the inbox (DORI_DISCORD_OWNER, DORI_KAKAO_OWNER_ID): their recent messages go into the note and the
+  // new lead's restatement is checked for each
+  readonly ownerIds?: readonly string[];
 };
 
 export type HandoverOptions = {
@@ -81,10 +85,86 @@ export type HandoverFacts = {
   readonly goal?: string;
   readonly timers: readonly string[];
   readonly leadNote: string;
+  readonly ownerWords: readonly OwnerWord[];
+  // the old lead's conversation log, quoted by the supplements
+  readonly oldLog?: string;
+};
+
+export type OwnerWord = { readonly at: string; readonly where: string; readonly text: string };
+
+// The summary the old lead writes before it is replaced (dori handover --note FILE; dori handover --template prints the
+// headings): what only its conversation knows.
+export const LEAD_SUMMARY_HEADINGS = ["Owner's words and constraints", "Decisions and why", "Promised follow-ups", "In progress", "Next step"] as const;
+export const LEAD_SUMMARY_TEMPLATE = [
+  "## Owner's words and constraints",
+  "(every instruction and constraint from the owner that still holds, and what he asked last and is waiting for, quoted exactly in \"double quotes\", newest last, with the message link when you have it)",
+  "## Decisions and why",
+  "(each decision made in this conversation and what it rests on, one bullet each)",
+  "## Promised follow-ups",
+  "(each thing you told the owner you would do or report, and when, one bullet each)",
+  "## In progress",
+  "(what is half done: lanes you were about to launch, steer or close, answers you were writing, checks you were running)",
+  "## Next step",
+  "(the exact next action)",
+  "",
+].join("\n");
+// The headings of the new lead's restatement, written before it is committed.
+export const LEAD_UNDERSTOOD_HEADINGS = ["Goal", "Owner's words", "Open lanes", "Open work", "Open cards", "Timers", "Promised follow-ups", "Decisions", "Next step", "Questions"] as const;
+// the owner's messages the note carries: those of the last OWNER_HOURS, at most OWNER_MAX, newest last
+const OWNER_HOURS = 24;
+const OWNER_MAX = 8;
+
+export const recentOwnerWords = (inbox: string, ids: readonly string[], now: number): OwnerWord[] => {
+  if (!ids.length || !existsSync(inbox)) return [];
+  const out: OwnerWord[] = [];
+  for (const line of readFileSync(inbox, "utf8").split("\n")) {
+    let row: { ts?: string; author_id?: string; content?: string; transcript?: unknown; scope?: string; channel_id?: string; room?: string; id?: string };
+    try {
+      row = JSON.parse(line) as typeof row;
+    } catch {
+      continue;
+    }
+    const text = (row.content?.trim() || (typeof row.transcript === "string" ? row.transcript.trim() : "")).replace(/\s+/g, " ");
+    const at = Date.parse(row.ts ?? "");
+    if (!text || !row.author_id || !ids.includes(row.author_id) || !(at <= now && now - at <= OWNER_HOURS * 3_600_000)) continue;
+    out.push({ at: row.ts ?? "", where: `${row.scope ?? "?"} ${row.room ?? row.channel_id ?? "-"}, message ${row.id ?? "-"}`, text });
+  }
+  return out.slice(-OWNER_MAX);
+};
+
+const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const named = (text: string, name: string): boolean => new RegExp(`(^|[^\\w-])${escapeRe(name)}($|[^\\w-])`, "i").test(text);
+const timerUnit = (line: string): string => /(\S+\.timer)\b/.exec(line)?.[1] ?? line;
+const todoText = (todo: string): string => todo.replace(/^[^:]*:\s*/, "").replace(/\s*\((?:pending|in_progress)\)$/, "");
+
+// What the new lead's restatement left out, measured against the handover's own records (open lanes, open cards, timers,
+// todos, the old session's goal, the owner's recent messages in the inbox: all kept apart from any summary) and against
+// the old lead's summary (the owner's quoted words, decisions, promised follow-ups). An open lane, card or timer counts
+// only under its own heading.
+export const missingLeadFrom = (text: string, facts: HandoverFacts): Missing[] => {
+  if (!text.trim()) return [{ kind: "restatement", text: "the restatement file is missing or empty", under: "", source: "the handover" }];
+  const all = flat(text);
+  const out: Missing[] = missingHeadings(text, LEAD_UNDERSTOOD_HEADINGS).map((h) => ({ kind: "heading", text: `## ${h}`, under: h, source: "the restatement format" }));
+  const lanes = section(text, "Open lanes");
+  for (const l of facts.lanes) if (!named(lanes, l.key)) out.push({ kind: "open lane", text: l.key, under: "Open lanes", source: `the lane registry: ${statusOf(l)}, pane ${l.pane ?? "-"}, thread ${l.thread}, last report ${cell(l.lastReport ?? "-")}` });
+  const cards = section(text, "Open cards");
+  for (const q of facts.cards) if (!named(cards, q.id)) out.push({ kind: "open card", text: q.id, under: "Open cards", source: `the open question cards: "${cell(q.text)}" (options: ${q.options.join(" / ")}; thread ${q.thread ?? "-"}), waiting for the owner's answer` });
+  const timers = flat(section(text, "Timers"));
+  for (const t of facts.timers) if (!timers.includes(flat(timerUnit(t)))) out.push({ kind: "timer", text: timerUnit(t), under: "Timers", source: `systemctl --user list-timers: ${t}` });
+  const work = flat(section(text, "Open work"));
+  for (const t of facts.todos.map(todoText)) if (!(words(t).length >= 3 ? covered(work, t) : quoted(work, t))) out.push({ kind: "open work", text: t, under: "Open work", source: "the old session's todo list", byWords: true });
+  const goal = facts.goal?.replace(/\s*\((?:active|paused|blocked|[a-z_]+)\)$/, "").trim() ?? "";
+  if (goal && !quoted(all, goal)) out.push({ kind: "goal", text: goal, under: "Goal", source: "the old session's goal" });
+  for (const w of facts.ownerWords) if (flat(w.text).length >= 6 && !quoted(all, w.text)) out.push({ kind: "owner's words", text: w.text, under: "Owner's words", source: `the owner's message at ${w.at} (${w.where}), from the inbox` });
+  for (const q of quotesIn(section(facts.leadNote, "Owner's words and constraints"))) if (!quoted(all, q) && !out.some((m) => flat(m.text) === flat(q))) out.push({ kind: "owner's words", text: q, under: "Owner's words", source: "the old lead's summary, Owner's words and constraints" });
+  for (const d of bulletsIn(facts.leadNote, "Decisions and why")) if (!covered(all, d)) out.push({ kind: "decision", text: d, under: "Decisions", source: "the old lead's summary, Decisions and why", byWords: true });
+  for (const d of bulletsIn(facts.leadNote, "Promised follow-ups")) if (!covered(all, d)) out.push({ kind: "promised follow-up", text: d, under: "Promised follow-ups", source: "the old lead's summary, Promised follow-ups", byWords: true });
+  return out;
 };
 
 const POLL_MS = 5_000;
 export const PROBE = "HANDOVER_PROBE";
+export const UNDERSTAND = "HANDOVER_UNDERSTAND";
 
 // omo keeps each session's monitors in <session dir>/extensions/terminal/<session id>.json
 export const manifestPath = (sessionsDir: string, cwd: string, session: string): string => join(sessionDirFor(sessionsDir, cwd), "extensions", "terminal", `${session}.json`);
@@ -187,8 +267,9 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   "## Do this first",
   "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
   `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
-  `3. Read the rest, but until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,
-  `4. After ${COMMITTED}, carry on: open lanes, owner questions, todos, timers and the old lead's notes.`,
+  `3. A [LEAD] ${UNDERSTAND} <id> line asks what you understood. Read this whole note first, then write it to the file the line names, under the headings ${LEAD_UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")}: under Goal the old session's goal quoted; under Owner's words each of the owner's recent messages and each quote in the old lead's notes, quoted exactly; under Open lanes every lane key of the table with what it waits on; under Open work each todo; under Open cards each card id with its question; under Timers each timer's unit name; under Promised follow-ups what the old lead promised the owner; under Questions only what neither this note nor the old log answers, or none. Then run the ack command the line gives. A [LEAD] HANDOVER_SUPPLEMENT <id> line names a file with what your restatement left out and the old log lines behind it: add those items to the same file, keep the rest, and run the ack command it gives.`,
+  `4. Until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing besides that file: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,
+  `5. After ${COMMITTED}, carry on: open lanes, owner questions, todos, timers, promised follow-ups and the old lead's notes; answer the owner where his last messages left off.`,
   "",
   `## Monitors (${f.monitors.length})`,
   ...(f.monitors.length ? f.monitors.map(monitorLine) : ["none"]),
@@ -211,8 +292,14 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   "## Timers and reminders",
   ...(f.timers.length ? f.timers.map((t) => `- ${t}`) : ["none"]),
   "",
+  `## The owner's recent messages (${f.ownerWords.length}, last ${OWNER_HOURS} h, newest last)`,
+  ...(f.ownerWords.length ? f.ownerWords.map((w) => `- ${w.at} (${w.where}): "${w.text}"`) : ["none"]),
+  "",
   "## The old lead's notes",
-  f.leadNote.trim() || "(none: dori handover --note FILE adds the old lead's own notes here)",
+  f.leadNote.trim() || "(none: the old lead wrote no summary (dori handover --template prints its headings, dori handover --note FILE adds it); read the old conversation below before you act on a guess)",
+  "",
+  "## The old conversation",
+  f.oldLog ? `Its full log is ${f.oldLog} (JSONL; it stays on disk after the old session closes). When this note leaves something out, search it (the owner's words, a lane key, a card id) before you ask.` : "Its log was not found.",
   "",
 ].join("\n");
 
@@ -274,6 +361,14 @@ export const ackHandover = (stateDir: string, nonce: string, pane: string, at: s
   return `HANDOVER_ACK ${nonce} pane=${pane || "-"}`;
 };
 
+export const ackedBy = (stateDir: string, id: string): string | undefined => {
+  try {
+    return (JSON.parse(readFileSync(ackFile(stateDir, id), "utf8")) as { pane?: string }).pane ?? "";
+  } catch {
+    return undefined;
+  }
+};
+
 const ackProblem = (stateDir: string, nonce: string, what: string, pane: string): string | undefined => {
   const file = ackFile(stateDir, nonce);
   if (!existsSync(file)) return `no ack for the ${what}`;
@@ -281,7 +376,9 @@ const ackProblem = (stateDir: string, nonce: string, what: string, pane: string)
   return by === pane ? undefined : `the ${what} was acked from ${by || "an unknown pane"}, not ${pane}`;
 };
 
-const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, verifyMin: number, emit: (line: string) => void): Promise<{ readonly reasons: string[]; readonly session: string }> => {
+type Checked = { readonly reasons: string[]; readonly session: string; readonly supplements?: readonly Supplement[] };
+
+const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, verifyMin: number, understood: string, emit: (line: string) => void): Promise<Checked> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
   let session = "";
@@ -316,7 +413,26 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
     if (!problems.length) break;
     await deps.clock.sleep(POLL_MS);
   }
-  return { reasons: problems, session };
+  if (problems.length) return { reasons: problems, session };
+  // the new lead says what it understood before the old one is gone: a gap is filled in from the records and the old
+  // log for supplementRounds rounds, and only a gap that outlasts them rolls the move back
+  const id = deps.nonce();
+  if (!(await sendVerified(deps.run, deps.clock, deps.config, to.pane, `[LEAD] ${UNDERSTAND} ${id}: write what you understood to ${understood} (${LEAD_UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")}) as step 3 of the handover note says, then run ${ack(id)} and nothing else for this line.`)))
+    return { reasons: [`the restatement request did not reach ${to.pane}`], session };
+  emit(`${UNDERSTAND}_SENT ${id} -> ${to.pane}`);
+  let by: string | undefined;
+  for (let j = 0; j < Math.max(tries - i, ROUND_TRIES) && by === undefined; j++) {
+    await deps.clock.sleep(POLL_MS);
+    by = ackedBy(deps.config.stateDir, id);
+  }
+  if (by === undefined) return { reasons: [`no ack for the restatement request ${id}`], session };
+  if (by !== to.pane) return { reasons: [`the restatement request was acked from ${by || "an unknown pane"}, not ${to.pane}`], session };
+  const gaps = await fillGaps({ clock: deps.clock, stateDir: deps.config.stateDir, nonce: deps.nonce, tell: (pane, text) => sendVerified(deps.run, deps.clock, deps.config, pane, text).catch(() => false), ackedBy: (x) => ackedBy(deps.config.stateDir, x) },
+    { who: "lead", pane: to.pane, understood, headings: LEAD_UNDERSTOOD_HEADINGS, rounds: deps.config.handover.supplementRounds, oldLog: facts.oldLog, check: (text) => missingLeadFrom(text, facts), emit });
+  if (gaps.reasons.length) return { reasons: gaps.reasons, session, supplements: gaps.supplements };
+  const asks = section(gaps.text, "Questions");
+  if (asks && !/^none\.?$/i.test(asks)) emit(`HANDOVER_QUESTIONS lead: ${asks.replace(/\s+/g, " ").slice(0, 400)} (the old log is ${facts.oldLog ?? "not found"})`);
+  return { reasons: [], session, supplements: gaps.supplements };
 };
 
 export type HandoverResult = { readonly code: number; readonly note?: string; readonly to?: string };
@@ -343,7 +459,7 @@ export const takeLock = (file: string, alive: (pid: number) => boolean, at: stri
   return `could not take the handover lock ${file}`;
 };
 
-type MoveContext = { readonly note: string; readonly stamp: string; readonly dir: string; readonly title: string; readonly model: string; readonly units: readonly string[]; readonly emit: (line: string) => void; readonly mark: (step: string, ok: boolean) => void };
+type MoveContext = { readonly note: string; readonly stamp: string; readonly dir: string; readonly title: string; readonly model: string; readonly units: readonly string[]; readonly emit: (line: string) => void; readonly mark: (step: string, ok: boolean) => void; readonly supplements: Supplement[] };
 
 export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): Promise<HandoverResult> => {
   const { config } = deps;
@@ -363,6 +479,8 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   if (!config.leadPane) return refuse("leadPane is not set");
   if (deps.envLeadPane) return refuse(`DORI_LEAD_PANE=${deps.envLeadPane} is set in the environment and overrides leadPane in ${deps.configPath}, so lanes would keep reporting there; remove it (also from any wrapper script) and keep the pane in the config file`);
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
+  const lacking = opts.note ? missingHeadings(readFileSync(opts.note, "utf8"), LEAD_SUMMARY_HEADINGS) : [];
+  if (lacking.length) return refuse(`the old lead's summary ${opts.note} lacks ${lacking.map((h) => `## ${h}`).join(", ")} (dori handover --template prints the headings)`);
   const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLead, key: "handover.autoRolloverLead" }, "lead", config.leadPane, readRollovers(config.stateDir), Boolean(deps.reportOwner));
   if (unapproved) return refuse(`the lead moves to a new session only with an approval: ${unapproved} (--dry-run needs none)`);
   const old = sessionFor(await aoeSessions(deps.run), config.leadPane);
@@ -392,6 +510,8 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
     goal: session ? openGoal(sessionDir, session) : undefined,
     timers: await deps.timers().catch(() => []),
     leadNote: opts.note ? readFileSync(opts.note, "utf8") : "",
+    ownerWords: recentOwnerWords(deps.inbox, deps.ownerIds ?? [], now),
+    ...(session && sessionFile(sessionDir, session) ? { oldLog: sessionFile(sessionDir, session) } : {}),
   };
   const down = await missingWatchers(deps, facts.watchers, { pane: config.leadPane, session });
   if (down.length) return refuse(`configured watchers not running for ${config.leadPane}: ${down.join(", ")}; start them or fix handover.watchers before the handover`);
@@ -403,7 +523,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   const note = join(dir, `${stamp}.md`);
   writeFileSync(note, renderNote(facts, at));
   writeFileSync(join(dir, `${stamp}.json`), JSON.stringify(facts, null, 1));
-  emit(`HANDOVER_NOTE ${note}: ${facts.lanes.length} lanes, ${facts.monitors.length} monitors, ${facts.watchers.length} watchers, ${facts.cards.length} open questions, ${facts.todos.length} todos, ${facts.timers.length} timers${opts.note ? "" : "; HANDOVER_NO_LEAD_NOTE (pass --note FILE with your own notes)"}`);
+  emit(`HANDOVER_NOTE ${note}: ${facts.lanes.length} lanes, ${facts.monitors.length} monitors, ${facts.watchers.length} watchers, ${facts.cards.length} open questions, ${facts.todos.length} todos, ${facts.timers.length} timers, ${facts.ownerWords.length} owner messages, old log ${facts.oldLog ? "yes" : "no"}${opts.note ? "" : "; HANDOVER_NO_LEAD_NOTE (pass --note FILE with your summary, dori handover --template)"}`);
   const units = config.handover.services.length ? config.handover.services : config.update.services.map((s) => s.unit);
   const model = opts.model || config.handover.model || config.defaultModel;
   const title = opts.title || config.handover.title || `${old.title.replace(/-\d{8}$/, "")}-${stamp.slice(4, 8)}${stamp.slice(9, 13)}`;
@@ -422,8 +542,9 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
     last = t;
   };
   let r: HandoverResult = { code: 3, note };
+  const supplements: Supplement[] = [];
   try {
-    r = await moveLead(deps, opts, facts, { note, stamp, dir, title, model, units, emit, mark });
+    r = await moveLead(deps, opts, facts, { note, stamp, dir, title, model, units, emit, mark, supplements });
     return r;
   } finally {
     rmSync(lockFile, { force: true });
@@ -440,6 +561,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
       ...(by ? { decidedBy: by } : {}), ...(reason ? { reason } : {}), ...(ownerReport ? { ownerReport } : {}),
       ...(proposal ? { proposedAt: proposal.at, approvalMin: Math.round((Date.parse(at) - Date.parse(proposal.at)) / 6_000) / 10 } : {}),
       signals, steps, result: r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back", reasons: steps.filter((st) => !st.ok).map((st) => st.step),
+      ...(supplements.length ? { supplementRounds: supplements.length, supplements } : {}),
     });
   }
 };
@@ -485,7 +607,8 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   for (const line of await pointLead(deps, facts.from, to, stamp)) emit(line);
   const restartFailures = await restartAll();
   mark("repoint", !restartFailures.length);
-  const checked = restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, emit);
+  const checked: Checked = restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, join(dir, `${stamp}.understood.md`), emit);
+  ctx.supplements.push(...(checked.supplements ?? []));
   if (!restartFailures.length) mark("verify", !checked.reasons.length);
   const record = (result: string, reasons: readonly string[]) => writeFileSync(join(dir, `${stamp}.result.json`), JSON.stringify({ at: iso(deps.clock), from: facts.from, to: { ...to, session: checked.session }, note, result, reasons }, null, 1));
   if (checked.reasons.length) {
@@ -501,7 +624,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   if (facts.from.session && checked.session) new QuestionStore(deps.cardDir).retarget({ session: facts.from.session }, { session: checked.session });
   if (opts.keepOld) {
     await tell(config.leadPane, `[LEAD] Handover to ${pane} is done and checked. You are no longer the lead; stay idle until the lead closes you.`);
-    await tell(pane, `[LEAD] ${COMMITTED}: the handover is checked and ${config.leadPane} stays open but idle; you are the lead now. Go on with step 4 of the note.`);
+    await tell(pane, `[LEAD] ${COMMITTED}: the handover is checked and ${config.leadPane} stays open but idle; you are the lead now. Go on with step 5 of the note.`);
     emit(`HANDOVER_DONE ${config.leadPane} -> ${pane}; old session kept (--keep-old)`);
     record("done-kept-old", []);
     return { code: 0, note, to: pane };
@@ -512,7 +635,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   const ok = closed.includes("stopped and trashed");
   mark("close", ok);
   emit(ok ? `HANDOVER_CLOSED ${closed}` : `HANDOVER_CLOSE_FAIL ${closed}`);
-  await tell(pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${ok ? "is closed" : `${config.leadPane} did not close but stays idle`}; you are the lead now. Go on with step 4 of the note.`);
+  await tell(pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${ok ? "is closed" : `${config.leadPane} did not close but stays idle`}; you are the lead now. Go on with step 5 of the note.`);
   emit(`${COMMITTED} lead ${pane}`);
   return { code: ok ? 0 : 1, note, to: pane };
 };
