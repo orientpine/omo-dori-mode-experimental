@@ -98,10 +98,10 @@ export const applyDirectives = async (deps: FlowDeps, lane: Lane, opts: { readon
 
 export const MEANING_SYSTEM = "You compare an owner's message with a directive a lead rewrote from it. You answer only in the requested format. You never ask questions and never translate quotes.";
 
-export const meaningPrompt = (e: Pick<Directive, "id" | "name" | "basis" | "words" | "original" | "prompt">): string => [
-  "An owner gave a standing directive in Korean. WORDS is the directive as he said it: his message with only fillers and whole unrelated sentences left out. ORIGINAL is his whole message, for context. PROMPT is the lead's rewrite of WORDS as a directive for coding agents: imperative or declarative, no question, no spoken filler.",
-  `CONTEXT (the lead's notes, not his words): the directive is called "${e.name}"; ${e.basis ?? ""}`,
-  "The rewrite may change the form (question to order, spoken to written, \"해 줘\" to \"한다\"), say who \"나\" and \"너\" are (형 = the owner, 리드 = the agent he spoke to) and name what a bare reference points at when CONTEXT says it, and nothing else. Check that PROMPT keeps every condition, target, scope, exception, step and the strength of WORDS (반드시 / 항상 / 절대 / 모두 / 가끔 stay as strong or as weak), and adds no requirement, target or method he did not state.",
+export const meaningPrompt = (e: Pick<Directive, "id" | "name" | "basis" | "rule" | "words" | "original" | "prompt">): string => [
+  "An owner gave a standing directive in Korean. WORDS is the directive as he said it: his message with only fillers and whole unrelated sentences left out. ORIGINAL is his whole message, for context. PROMPT is the lead's rewrite of WORDS as a standing rule for coding agents: what a lane does from now on, in general terms, imperative or declarative, no question, no spoken filler.",
+  `CONTEXT (the lead's notes, not his words): the directive is called "${e.name}"; ${e.basis ?? ""}${e.rule ? ` The lead applies it as: ${e.rule}` : ""}`,
+  "WORDS can hold a task he asked to be done once in that message, a description of that situation or an aside; those are not the standing directive, and PROMPT leaving them out is not MISSING. A remark about a past case (\"처음부터 있었어야 할 것 같아\") may become the rule it implies. The rewrite may change the form (question to order, spoken to written, \"해 줘\" to \"한다\"), say who \"나\" and \"너\" are (형 = the owner, 리드 = the agent he spoke to) and name what a bare reference (\"이런 스레드\") points at when CONTEXT says it, and nothing else: it takes no requirement from the lead's notes that WORDS does not state. Check that PROMPT keeps every condition, target, scope, exception, step and the strength of WORDS (반드시 / 항상 / 절대 / 모두 / 가끔 stay as strong or as weak), and adds no requirement, target or method he did not state.",
   `ORIGINAL:\n<<<\n${e.original ?? e.words}\n>>>`,
   `WORDS:\n<<<\n${e.words}\n>>>`,
   `PROMPT:\n<<<\n${e.prompt ?? ""}\n>>>`,
