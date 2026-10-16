@@ -24,9 +24,9 @@ const write = async (name: string, text: string) => {
 // a host layer like the owner's: a repo directive, a learning one, and the names the lead uses for them
 const local = {
   entries: [
-    { id: "options-ledger", name: "옵션 장부·순서 기록", words: "내가 이것저것 시도하는 옵션들이 실제로 얼마나 학습에 유용했는지 내가 요청할 때마다 다 표로 정리되어 있었으면 좋겠어", rule: "같은 커밋에서 옵션 장부 줄을 갱신한다.", date: "2026-10-16", source: "https://discord.com/channels/1/2/3", scope: { repos: ["hr35-isaac"] }, mode: "inject" },
-    { id: "no-rl-here", name: "이 PC 학습 금지", words: "이 PC에서는 강화학습 자체는 하지 말고 테스트 같은 거는 가끔 가끔 돌려도 돼", date: "2026-10-15", source: "https://discord.com/channels/1/2/4", scope: { kinds: ["learning", "gpu"] }, mode: "inject" },
-    { id: "gpu-rule", name: "GPU 규칙", words: "Gpu제한 같은거 모두 없애", date: "2026-10-15", source: "x", scope: { kinds: ["gpu"] }, mode: "inject" },
+    { id: "options-ledger", name: "옵션 장부·순서 기록", by: "owner", basis: "test", words: "내가 이것저것 시도하는 옵션들이 실제로 얼마나 학습에 유용했는지 내가 요청할 때마다 다 표로 정리되어 있었으면 좋겠어", rule: "같은 커밋에서 옵션 장부 줄을 갱신한다.", date: "2026-10-16", source: "https://discord.com/channels/1/2/3", scope: { repos: ["hr35-isaac"] }, mode: "inject" },
+    { id: "no-rl-here", name: "이 PC 학습 금지", by: "owner", basis: "test", words: "이 PC에서는 강화학습 자체는 하지 말고 테스트 같은 거는 가끔 가끔 돌려도 돼", date: "2026-10-15", source: "https://discord.com/channels/1/2/4", scope: { kinds: ["learning", "gpu"] }, mode: "inject" },
+    { id: "gpu-rule", name: "GPU 규칙", by: "owner", basis: "test", words: "Gpu제한 같은거 모두 없애", date: "2026-10-15", source: "x", scope: { kinds: ["gpu"] }, mode: "inject" },
     { id: "docs-same-pr", source: "https://discord.com/channels/1/2/5" },
   ],
   reviewed: ["900"],
@@ -46,6 +46,12 @@ test("the fork ledger validates, carries the template's directives and holds no 
   expect(docs?.source).toBe("https://discord.com/channels/1/2/5");
   expect(docs?.words).toBe("세션에서 작업 시 문서를 업데이트 하게 해당 프로젝트 지침에 추가해");
   expect(docs?.layer).toBe("common");
+  // a rule the lead set never carries the owner's words: what he said that led to it is its trigger
+  expect(both.entries.filter((e) => e.by === "lead").every((e) => !e.words && e.rule)).toBe(true);
+  const lead = both.entries.find((e) => e.by === "lead")!;
+  expect(ledgerProblems({ ...both, entries: [{ ...lead, words: "형 말처럼 붙인 문장" }] })).toEqual([`directive ${lead.id}: a lead rule has no owner words (put what he said in trigger)`]);
+  expect(directiveText(lead)).toContain("(리드 규칙, ");
+  expect(directiveText(lead)).not.toContain("형 원문(");
   expect(ledgerProblems({ ...both, entries: [...both.entries, { ...both.entries[0], id: "Bad Id", mode: "inject", scope: { kinds: ["nope"] } } as never] })).toEqual(["directive Bad Id: id must be lowercase words with -", "directive Bad Id: unknown kind nope"]);
 });
 

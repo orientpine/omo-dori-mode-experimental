@@ -34,8 +34,14 @@ export type Directive = {
   readonly id: string;
   // what the lead and the owner call it ("UI 7단계"); a mention of it in a brief is not a sign of that kind of work
   readonly name: string;
-  // the owner's own words, as he wrote or said them (typos corrected only)
+  // owner: the owner stated the directive himself and words is that sentence (typos corrected only), or the directive is a
+  // block of his words (eight-steps, ui-steps); lead: a rule the lead set, words stays empty and trigger holds what the owner
+  // said that led to it
+  readonly by: "owner" | "lead";
   readonly words: string;
+  readonly trigger?: string;
+  // why the entry is owner or lead: the context of his message, one line
+  readonly basis?: string;
   // how the directive reads as a rule, when the owner's words alone do not say it
   readonly rule?: string;
   readonly date: string;
@@ -127,6 +133,10 @@ export const ledgerProblems = (ledger: Ledger): string[] => {
     const at = `directive ${e.id || "(no id)"}`;
     if (!e.id || !/^[a-z0-9][a-z0-9-]*$/.test(e.id)) out.push(`${at}: id must be lowercase words with -`);
     if (!e.name) out.push(`${at}: no name`);
+    if (e.by !== "owner" && e.by !== "lead") out.push(`${at}: by must be owner or lead`);
+    if (e.by === "lead" && e.words) out.push(`${at}: a lead rule has no owner words (put what he said in trigger)`);
+    if (e.by === "lead" && !e.rule) out.push(`${at}: a lead rule needs its rule`);
+    if (!e.basis) out.push(`${at}: no basis (why it is the owner's directive or the lead's rule)`);
     if (!/^\d{4}-\d{2}-\d{2}/.test(e.date ?? "")) out.push(`${at}: date must start YYYY-MM-DD`);
     if (!e.source) out.push(`${at}: no source`);
     if (!DIRECTIVE_MODES.includes(e.mode)) out.push(`${at}: mode must be ${DIRECTIVE_MODES.join("|")}`);
@@ -224,11 +234,13 @@ const squash = (s: string): string => s.replace(/\s+/g, " ").trim();
 // The text dori launch puts in for an inject directive, and what shows it is already in a brief.
 export const directiveText = (e: Directive): string => {
   const head = `[지침 ${e.id}] ${e.name}${e.rule ? `: ${e.rule}` : ""}`;
+  if (e.by === "lead") return `${head}\n(리드 규칙, ${e.date}${e.trigger ? `; 계기가 된 형 말: "${e.trigger}"` : ""})`;
   return e.words ? `${head}\n형 원문(${e.date}): "${e.words}"` : head;
 };
 export const hasDirective = (brief: string, e: Directive): boolean => {
   const b = squash(brief);
-  return b.includes(`[지침 ${e.id}]`) || (Boolean(e.words) && b.includes(squash(e.words)));
+  const own = e.words || (e.by === "lead" ? e.rule : "") || "";
+  return b.includes(`[지침 ${e.id}]`) || (Boolean(own) && b.includes(squash(own)));
 };
 export const requireMissing = (brief: string, e: Directive): string[] => (e.require ?? []).filter((re) => !new RegExp(re, "m").test(leadText(brief)));
 
@@ -348,9 +360,10 @@ export const ledgerTable = (ledger: Ledger): string => {
   const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
   const scope = (s: DirectiveScope) => [s.all ? "모든 lane" : "", s.ui ? "UI" : "", ...(s.kinds ?? []), ...(s.repos ?? []).map((r) => `저장소 ${r}`), ...(s.keywords ?? []).map((k) => `낱말 /${k}/`)].filter(Boolean).join(", ");
   const how = (e: Directive) => (e.mode === "inject" ? (e.block ? `주입(${e.block})` : "주입") : e.mode === "require" ? "브리프 확인(없으면 멈춤)" : e.check === "none" ? "리드 행동(기계 확인 없음, owner-check가 읽음)" : `리드 행동 확인(${e.check})`);
+  const words = (e: Directive) => (e.words ? `"${e.words}"` : e.block ? `(블록 원문: ${e.block === "eight-steps" ? "references/sessions.md 1. 조사 … 8. 보고" : "references/ui-work.md [UI 지침] 1)…7)"})` : e.by === "lead" ? "-" : "(원문 없음)");
   return [
-    "| id | 이름 | 형 원문 | 날짜 | 출처 | 적용 범위 | 강제 방식 | 층 | 폐기 |",
-    "|---|---|---|---|---|---|---|---|---|",
-    ...ledger.entries.map((e) => `| ${e.id} | ${cell(e.name)} | ${cell(e.words || e.rule || "")} | ${e.date} | ${cell(e.source)} | ${cell(scope(e.scope))} | ${how(e)} | ${e.layer === "common" ? "포크" : "로컬"} | ${cell(e.retired ?? "")} |`),
+    "| id | 이름 | 누가 | 판단 근거 | 형 원문(지침 문장) | 계기가 된 형 말 | 규칙 | 날짜 | 출처 | 적용 범위 | 강제 방식 | 층 | 폐기 |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ...ledger.entries.map((e) => `| ${e.id} | ${cell(e.name)} | ${e.by === "lead" ? "리드 규칙" : "형 지침"} | ${cell(e.basis ?? "")} | ${cell(words(e))} | ${cell(e.trigger ? `"${e.trigger}"` : "")} | ${cell(e.rule ?? "")} | ${e.date} | ${cell(e.source)} | ${cell(scope(e.scope))} | ${how(e)} | ${e.layer === "common" ? "포크" : "로컬"} | ${cell(e.retired ?? "")} |`),
   ].join("\n");
 };
