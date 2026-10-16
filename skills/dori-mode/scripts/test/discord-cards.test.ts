@@ -28,7 +28,7 @@ afterEach(() => state?.done());
 
 const setup = (route?: (req: HttpRequest) => unknown) => {
   state = withState();
-  const f = fakeDiscord(route ?? ((req) => (req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {})));
+  const f = fakeDiscord(route ?? ((req) => (req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : req.method === "GET" ? { type: 11 } : {})));
   const store = new QuestionStore(`${state.dir}/discord`);
   const cards = new QuestionCards(f.dc, store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
   return { ...f, store, cards };
@@ -150,7 +150,7 @@ test("a question with no options or with shell-substitution text is refused befo
 const threadCards = (name = "🔄 fix login") => {
   const thread = { name };
   const f = setup((req) => {
-    if (req.method === "GET") return { name: thread.name };
+    if (req.method === "GET") return { name: thread.name, type: 11 };
     if (req.method === "PATCH" && req.url.endsWith("/channels/300")) thread.name = JSON.parse(String(req.body)).name ?? thread.name;
     return req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {};
   });
@@ -300,7 +300,7 @@ test("a card in a thread that archived itself is folded by opening the thread an
   const { cards, calls, json } = setup((req) => {
     if (req.method === "PATCH" && req.url.endsWith("/channels/300")) thread.archived = JSON.parse(String(req.body)).archived ?? thread.archived;
     if (req.method === "PATCH" && req.url.includes("/messages/") && thread.archived) throw new Error('discord PATCH /channels/300/messages/900: 400 {"message": "Thread is archived", "code": 50083}');
-    if (req.method === "GET") return { name: "⏸️ fix login", thread_metadata: { archived: thread.archived } };
+    if (req.method === "GET") return { name: "⏸️ fix login", type: 11, thread_metadata: { archived: thread.archived } };
     return req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {};
   });
   await cards.ask("Ship?", ["Yes"], { thread: "300" });
@@ -335,7 +335,7 @@ test("a failed thread rename does not fail the ask: the card is already posted",
 });
 
 test("the done thread hook posts without emoji, swaps the status word in the thread name, then archives", async () => {
-  const f = fakeDiscord((req) => (req.method === "GET" ? { name: "[working] fix login" } : req.method === "POST" && req.url.endsWith("/messages") ? { id: "901" } : {}));
+  const f = fakeDiscord((req) => (req.method === "GET" ? { name: "[working] fix login", type: 11 } : req.method === "POST" && req.url.endsWith("/messages") ? { id: "901" } : {}));
   const t = "300000000000000003";
   expect(await threadHook(f.dc, "done", `discord:${t}`, "merged 🎉 abc123", defaultDiscordWords)).toBe("901");
   expect(f.calls()).toEqual([`POST /channels/${t}/typing`, `POST /channels/${t}/messages`, `GET /channels/${t}`, `PATCH /channels/${t}`, `PATCH /channels/${t}`]);
@@ -347,7 +347,7 @@ test("the done thread hook posts without emoji, swaps the status word in the thr
 
 const emoji = { ...defaultDiscordWords, statusStyle: "emoji" } as const;
 const T = "300000000000000003";
-const threadAs = (name: string, archived = false) => fakeDiscord((req) => (req.method === "GET" ? { name, thread_metadata: { archived } } : req.method === "POST" && req.url.endsWith("/messages") ? { id: "901" } : {}));
+const threadAs = (name: string, archived = false) => fakeDiscord((req) => (req.method === "GET" ? { name, type: 11, thread_metadata: { archived } } : req.method === "POST" && req.url.endsWith("/messages") ? { id: "901" } : {}));
 
 test("with emoji status the done hook swaps the word mark for ✅ and archives; the posted note still has no emoji", async () => {
   const f = threadAs("[working] fix login");

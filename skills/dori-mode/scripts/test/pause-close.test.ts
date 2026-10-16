@@ -87,7 +87,7 @@ const fakeThread = (name: string, archived: boolean, refuse = false) => {
   const http: Http = async (req): Promise<HttpResponse> => {
     seen.push(req);
     if (refuse && req.method === "PATCH") return { status: 403, headers: {}, body: JSON.stringify({ code: 50013, message: "Missing Permissions" }) };
-    return { status: 200, headers: {}, body: JSON.stringify(req.method === "GET" ? { name, thread_metadata: { archived } } : {}) };
+    return { status: 200, headers: {}, body: JSON.stringify(req.method === "GET" ? { name, type: 11, thread_metadata: { archived } } : {}) };
   };
   const dc = new Discord(http, fakeClock(0), "bot");
   const markThreadDone = (ref: string) => setThreadStatus(dc, discordThreadId(ref), "done", { ...defaultDiscordWords, statusStyle: "emoji" });
@@ -127,7 +127,7 @@ const renamed = async (name: string, status: ThreadStatus, words: DiscordWords =
     if (req.method === "PATCH") sent = (JSON.parse(String(req.body ?? "{}")) as { name?: string }).name ?? sent;
     return { status: 200, headers: {}, body: "{}" };
   };
-  await setThreadStatus(new Discord(http, fakeClock(0), "bot"), THREAD_ID, status, words, { name });
+  await setThreadStatus(new Discord(http, fakeClock(0), "bot"), THREAD_ID, status, words, { name, type: 11 });
   return sent ?? name;
 };
 

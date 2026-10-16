@@ -29,7 +29,7 @@ const world = (name: string) => {
   const w = { t: T0, name, archived: false, limited: [] as number[], patches: [] as Record<string, unknown>[], timers: [] as { at: number; cb: () => void }[], logs: [] as string[] };
   const http: Http = async (req) => {
     const path = req.url.replace("https://discord.com/api/v10", "");
-    if (path === `/channels/${THREAD}` && req.method === "GET") return ok({ name: w.name, parent_id: CHANNEL, thread_metadata: { archived: w.archived } });
+    if (path === `/channels/${THREAD}` && req.method === "GET") return ok({ name: w.name, parent_id: CHANNEL, type: 11, thread_metadata: { archived: w.archived } });
     if (path === `/channels/${THREAD}` && req.method === "PATCH") {
       const wait = w.limited.shift();
       if (wait !== undefined) return { status: 429, headers: {}, body: JSON.stringify({ message: "You are being rate limited.", retry_after: wait, global: false }) };
@@ -182,4 +182,38 @@ test("a lane still working in the thread keeps it 🔄 past an open card and a w
   working.clear();
   await listener.onMessage(say("1003", "still thinking"));
   expect(w.name).toBe("⏸️ fix login");
+});
+
+// 2026-10-16: a card asked with --thread pointing at the owner's text channel renamed the channel "⏸️-zzangdori" and its
+// answer queued "🔄". A status mark goes only on a thread (Discord types 10-12); the channel keeps its name, a real thread
+// in the same run still gets its mark.
+test("a status for a text channel never renames it; a thread next to it still gets its mark", async () => {
+  state = withState();
+  const chans: Record<string, { name: string; type: number }> = { [CHANNEL]: { name: "zzangdori", type: 0 }, [THREAD]: { name: "🔄 fix login", type: 11 } };
+  const patched: string[] = [];
+  const http: Http = async (req) => {
+    const id = /\/channels\/(\d+)$/.exec(req.url)?.[1];
+    if (id && chans[id] && req.method === "GET") return ok({ ...chans[id], thread_metadata: { archived: false } });
+    if (id && chans[id] && req.method === "PATCH") {
+      patched.push(id);
+      const body = JSON.parse(String(req.body)) as { name?: string };
+      if (body.name) chans[id].name = body.name;
+      return ok({});
+    }
+    return ok(req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {});
+  };
+  const dc = new Discord(http, fakeClock(0), "bot");
+  const store = new QuestionStore(`${state.dir}/discord`);
+  const logs: string[] = [];
+  const q = new ThreadStatusQueue({ dc, words: WORDS, file: `${state.dir}/discord/thread-status.json`, openCards: (t) => openCardIds(store, t), now: () => T0, log: (l) => logs.push(l) });
+  const cards = new QuestionCards(dc, store, { channel: CHANNEL, owner: OWNER, words: WORDS }, () => T0, q);
+  await cards.ask("Which way?", ["A", "B"], { thread: CHANNEL });
+  expect(await cards.resolve("Q1")).toBe("folded");
+  for (const s of ["waiting", "working", "done"] as const) expect(await q.request(CHANNEL, s)).toBe("dropped");
+  expect(chans[CHANNEL]?.name).toBe("zzangdori");
+  expect(logs.filter((l) => l.startsWith(`THREAD_STATUS_DROPPED ${CHANNEL}`)).length).toBe(5);
+  expect(logs[0]).toContain("is not a thread (type 0); its name is left alone");
+  expect(await q.request(THREAD, "waiting")).toBe("applied");
+  expect(chans[THREAD]?.name).toBe("⏸️ fix login");
+  expect(patched).toEqual([THREAD]);
 });

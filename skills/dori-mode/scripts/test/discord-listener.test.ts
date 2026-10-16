@@ -114,7 +114,7 @@ test("the owner writing in a closed thread reopens it as working; an open thread
   const names: Record<string, string> = { "501": "✅ fix login", "502": "[done] old thread", "503": "🔄 still going" };
   const { listener, calls, seen, logs } = setup((req) => {
     const id = /\/channels\/(\d+)$/.exec(req.url)?.[1] ?? "";
-    return id in names ? { parent_id: CHANNEL, name: names[id], thread_metadata: { archived: id !== "503" } } : {};
+    return id in names ? { parent_id: CHANNEL, name: names[id], type: 11, thread_metadata: { archived: id !== "503" } } : {};
   });
   for (const [n, thread] of ["501", "502", "503"].entries()) await listener.onMessage(msg(`100${n}`, { channel_id: thread }));
   const patches = seen.filter((r) => r.method === "PATCH");
@@ -186,7 +186,7 @@ test("with no owner webhook set, a webhook post is not a request; its id is logg
 });
 
 test("a tap on a card inside its work thread is taken, lands in the inbox with its session and tmux, and turns the thread working; a tap from an unrelated channel is ignored", async () => {
-  const { listener, cards, gw, inbox, calls } = setup((req) => (req.method === "GET" ? { name: "⏸️ fix login" } : req.method === "POST" && req.url.endsWith(`/channels/${THREAD}/messages`) ? { id: "900" } : {}));
+  const { listener, cards, gw, inbox, calls } = setup((req) => (req.method === "GET" ? { name: "⏸️ fix login", type: 11 } : req.method === "POST" && req.url.endsWith(`/channels/${THREAD}/messages`) ? { id: "900" } : {}));
   await cards.ask("Ship?", ["Yes", "No"], { thread: THREAD, session: "sess-1", tmux: "aoe_demo_1234abcd" });
   expect(calls()[0]).toBe(`POST /channels/${THREAD}/messages`);
   const before = calls().length;
@@ -473,7 +473,7 @@ test("our bot posting a link to a mention elsewhere takes the eyes off it there"
 });
 
 test("a shadow listener writes the same inbox row but never writes to Discord: no eyes, no reopen, no card answer, no unreact", async () => {
-  const { listener, gw, inbox, seen, logs } = setup((req) => (req.url.endsWith(`/channels/${THREAD}`) ? { parent_id: CHANNEL, name: "✅ fix login", thread_metadata: { archived: true } } : {}), { shadow: true });
+  const { listener, gw, inbox, seen, logs } = setup((req) => (req.url.endsWith(`/channels/${THREAD}`) ? { parent_id: CHANNEL, name: "✅ fix login", type: 11, thread_metadata: { archived: true } } : {}), { shadow: true });
   listener.start();
   ready(gw);
   await listener.onMessage(msg("1001"));
