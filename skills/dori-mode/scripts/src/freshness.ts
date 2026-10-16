@@ -100,7 +100,7 @@ export const autoReadyLine = (h: DoriConfig["handover"]): string => {
     const name = who === "lane" ? "lanes" : "lead";
     if (!on) return `${name} off`;
     const l = limitsFor(who, h);
-    const what = [l.contextPct > 0 ? `context >= ${l.contextPct}%` : "", l.compactions > 0 ? `compactions >= ${l.compactions}` : "", l.ageH > 0 ? `age >= ${l.ageH} h` : "", who === "lane" ? "stuck rung 4" : ""].filter(Boolean);
+    const what = [l.contextPct > 0 ? `context >= ${l.contextPct}%` : "", l.compactions > 0 ? `compactions >= ${l.compactions}` : "", (l.afterCompactK ?? 0) > 0 ? `context after compaction >= ${l.afterCompactK}k` : "", l.ageH > 0 ? `age >= ${l.ageH} h` : "", who === "lane" ? "stuck rung 4" : ""].filter(Boolean);
     return `${name} on (${what.join(", ") || "no threshold set"})`;
   };
   const sides = `${side("lane", h.autoRolloverLanes)}, ${side("lead", h.autoRolloverLead)}`;

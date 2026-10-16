@@ -13,7 +13,7 @@ import { parseWatchLine } from "./watch-log.ts";
 
 // stuck: the highest rung of the stuck ladder the lane reached in its current session (rung 4 makes a rollover due);
 // repeats: written by older versions (the most attempts of one same fix), still shown by rollover-stats
-export type Signals = { readonly contextPct?: number; readonly compactions?: number; readonly ageH?: number; readonly stuck?: { readonly metric: string; readonly n: number; readonly rung: number }; readonly repeats?: number };
+export type Signals = { readonly contextPct?: number; readonly compactions?: number; readonly afterCompactK?: number; readonly ageH?: number; readonly stuck?: { readonly metric: string; readonly n: number; readonly rung: number }; readonly repeats?: number };
 
 export type Step = { readonly step: string; readonly ms: number; readonly ok: boolean };
 // one round of filling in what the new session's restatement left out: the items, how many old-log lines were quoted, the file
@@ -52,12 +52,14 @@ export type RolloverEntry =
       readonly supplements?: readonly Supplement[];
     };
 
-export type Limits = { readonly contextPct: number; readonly compactions: number; readonly ageH: number };
+// afterCompactK: thousands of tokens the session still held right after its last compaction (0 or absent is off)
+export type Limits = { readonly contextPct: number; readonly compactions: number; readonly ageH: number; readonly afterCompactK?: number };
 
 // Which thresholds the measured signals cross (a threshold of 0 is off).
 export const crossed = (s: Signals, h: Limits): string[] => [
   ...(h.contextPct > 0 && s.contextPct !== undefined && s.contextPct >= h.contextPct ? [`context ${s.contextPct}% >= ${h.contextPct}%`] : []),
   ...(h.compactions > 0 && s.compactions !== undefined && s.compactions >= h.compactions ? [`compactions ${s.compactions} >= ${h.compactions}`] : []),
+  ...((h.afterCompactK ?? 0) > 0 && s.afterCompactK !== undefined && s.afterCompactK >= (h.afterCompactK ?? 0) ? [`context after compaction ${s.afterCompactK}k >= ${h.afterCompactK}k`] : []),
   ...(h.ageH > 0 && s.ageH !== undefined && s.ageH >= h.ageH ? [`age ${s.ageH.toFixed(1)} h >= ${h.ageH} h`] : []),
 ];
 
@@ -93,11 +95,11 @@ export const LEAD_PREFIX = "lead:";
 
 // a lead's approval names the signal it acts on (a STUCK rung, an owner-check finding, a measured threshold)
 // whole tokens only: "age" in "message" or 단 in 단계 is no signal (challenge, grok-4.7)
-const SIGNAL_WORD = /(?<![\w])(?:STUCK|rung ?4|OWNER_CHECK|VIOLATION|CONTRADICTION|GOAL_LOSS|ROLLOVER_DUE|SAME_FIX_3|fixated|context \d+ ?%|compactions? \d+|\d+ compactions?|age \d+(?:\.\d+)? ?h)(?![\w])|막힘 ?4 ?단|맥락 (?:이상|단)|압축 \d+/i;
+const SIGNAL_WORD = /(?<![\w])(?:STUCK|rung ?4|OWNER_CHECK|VIOLATION|CONTRADICTION|GOAL_LOSS|ROLLOVER_DUE|SAME_FIX_3|fixated|context \d+ ?%|context after compaction \d+ ?k|compactions? \d+|\d+ compactions?|age \d+(?:\.\d+)? ?h)(?![\w])|막힘 ?4 ?단|맥락 (?:이상|단)|압축 \d+/i;
 
 // the thresholds of one side, from handover.lane* or handover.lead*
 export const limitsFor = (who: Who, h: DoriConfig["handover"]): Limits =>
-  who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH };
+  who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH, afterCompactK: h.laneAfterCompactK } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH, afterCompactK: h.leadAfterCompactK };
 
 // the reason the owner reads after an automatic rollover: what the session crossed when it moved
 export const autoReason = (who: Who, signals: Signals, h: DoriConfig["handover"]): string => `automatic (handover.autoRollover${who === "lane" ? "Lanes" : "Lead"}): ${dueReasons(signals, limitsFor(who, h)).join(", ") || "a threshold was crossed"}`;
@@ -166,12 +168,27 @@ export const quietReason = (stateDir: string, pane: string, now: number): string
 
 const COMPACTION = '"type":"compaction"';
 // Session logs grow to tens of MB; a long-running sweep keeps where it stopped per file and reads only what was added.
-const scanned = new Map<string, { offset: number; count: number }>();
+// afterK: the context of the first assistant turn after the last compaction (input + cache read + cache write, in thousands),
+// what the session really carries on; the compaction line's own tokenEstimate runs about three times higher (2026-10-16).
+type Scan = { offset: number; count: number; afterK?: number; waiting: boolean };
+const scanned = new Map<string, Scan>();
 
-export const compactionsIn = (file: string): number => {
+const turnContextK = (line: string): number | undefined => {
+  try {
+    const m = (JSON.parse(line) as { message?: { role?: string; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } } }).message;
+    if (m?.role !== "assistant" || !m.usage) return undefined;
+    return Math.round(((m.usage.input ?? 0) + (m.usage.cacheRead ?? 0) + (m.usage.cacheWrite ?? 0)) / 1000);
+  } catch {
+    return undefined;
+  }
+};
+
+export const compactionsIn = (file: string): number => compactionScan(file).count;
+
+export const compactionScan = (file: string): { readonly count: number; readonly afterK?: number } => {
   const size = statSync(file).size;
-  let { offset, count } = scanned.get(file) ?? { offset: 0, count: 0 };
-  if (size < offset) ({ offset, count } = { offset: 0, count: 0 });
+  let { offset, count, afterK, waiting } = scanned.get(file) ?? { offset: 0, count: 0, waiting: false };
+  if (size < offset) ({ offset, count, afterK, waiting } = { offset: 0, count: 0, afterK: undefined, waiting: false });
   const fd = openSync(file, "r");
   try {
     const buf = Buffer.alloc(4 << 20);
@@ -184,20 +201,29 @@ export const compactionsIn = (file: string): number => {
       const cut = text.lastIndexOf("\n");
       const whole = cut >= 0 ? text.slice(0, cut + 1) : "";
       rest = cut >= 0 ? text.slice(cut + 1) : text;
-      for (const line of whole.split("\n")) if (line.startsWith('{"type":"compaction"') || (line.includes(COMPACTION) && line.indexOf(COMPACTION) < 12)) count++;
+      for (const line of whole.split("\n")) {
+        if (line.startsWith('{"type":"compaction"') || (line.includes(COMPACTION) && line.indexOf(COMPACTION) < 12)) {
+          count++;
+          afterK = undefined;
+          waiting = true;
+        } else if (waiting && line.includes('"usage"')) {
+          const k = turnContextK(line);
+          if (k !== undefined) [afterK, waiting] = [k, false];
+        }
+      }
     }
     offset = size - Buffer.byteLength(rest);
   } finally {
     closeSync(fd);
   }
-  scanned.set(file, { offset, count });
-  return count;
+  scanned.set(file, { offset, count, ...(afterK !== undefined ? { afterK } : {}), waiting });
+  return { count, ...(afterK !== undefined ? { afterK } : {}) };
 };
 
 const SESSION_FILE = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z_([0-9a-f-]{36})\.jsonl$/;
 
 // Compactions so far and hours since the session's log began, for the omo session id in a session directory.
-export const sessionSignals = (sessionDir: string, session: string, now: number): Pick<Signals, "compactions" | "ageH"> => {
+export const sessionSignals = (sessionDir: string, session: string, now: number): Pick<Signals, "compactions" | "afterCompactK" | "ageH"> => {
   if (!session) return {};
   let name: string | undefined;
   try {
@@ -208,7 +234,8 @@ export const sessionSignals = (sessionDir: string, session: string, now: number)
   const m = name ? SESSION_FILE.exec(name) : null;
   if (!name || !m) return {};
   const started = Date.parse(`${m[1]}:${m[2]}:${m[3]}.${m[4]}Z`);
-  return { compactions: compactionsIn(join(sessionDir, name)), ageH: Math.round(((now - started) / 3_600_000) * 10) / 10 };
+  const scan = compactionScan(join(sessionDir, name));
+  return { compactions: scan.count, ...(scan.afterK !== undefined ? { afterCompactK: scan.afterK } : {}), ageH: Math.round(((now - started) / 3_600_000) * 10) / 10 };
 };
 
 export const rolloverLog = (stateDir: string): string => join(stateDir, "rollover-log.jsonl");

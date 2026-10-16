@@ -9,7 +9,7 @@ import { currentTmuxSession } from "./aoe.ts";
 import { findLead, LeadError } from "./lead.ts";
 import { ackHandover, handover, type HandoverDeps } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
-import { appendRollover, dueReasons, LEAD_PREFIX, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
+import { appendRollover, dueReasons, LEAD_PREFIX, limitsFor, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, fill, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
@@ -1112,11 +1112,11 @@ try {
       const stuck = l ? stuckTop(l) : undefined;
       const signals = { ...(await paneSignals(laneDepsFor(() => {}), pane, model)), ...(stuck ? { stuck } : {}) };
       const h = config.handover;
-      const hit = dueReasons(signals, who === "lane" ? { contextPct: h.laneContextPct, compactions: h.laneCompactions, ageH: h.laneAgeH } : { contextPct: h.leadContextPct, compactions: h.leadCompactions, ageH: h.leadAgeH });
+      const hit = dueReasons(signals, limitsFor(who, h));
       const lines: string[] = [];
       const preview = l ? await laneHandover(laneDepsFor((line) => lines.push(line)), l.key, "", { dryRun: true }) : await handover(leadDepsFor((line) => lines.push(line)), { dryRun: true });
       const blockers = lines.filter((x) => x.startsWith("HANDOVER_REFUSED")).map((x) => x.replace(/^HANDOVER_REFUSED\s*/, "")).join("; ");
-      const shown = [signals.contextPct !== undefined ? `context ${signals.contextPct}%` : "", signals.compactions !== undefined ? `${signals.compactions} compactions` : "", signals.ageH !== undefined ? `${signals.ageH} h old` : "", stuck ? `stuck rung ${stuck.rung} on "${stuck.metric}" (${stuck.n} attempts)` : ""].filter(Boolean).join(", ");
+      const shown = [signals.contextPct !== undefined ? `context ${signals.contextPct}%` : "", signals.compactions !== undefined ? `${signals.compactions} compactions` : "", signals.afterCompactK !== undefined ? `${signals.afterCompactK}k after the last compaction` : "", signals.ageH !== undefined ? `${signals.ageH} h old` : "", stuck ? `stuck rung ${stuck.rung} on "${stuck.metric}" (${stuck.n} attempts)` : ""].filter(Boolean).join(", ");
       const text = h.proposalText.replaceAll("{who}", l ? `lane ${l.key} (${l.title})` : "the lead").replaceAll("{signals}", hit.length ? `${shown} (${hit.join(", ")})` : `${shown || "no signals"} (no threshold crossed)`).replaceAll("{note}", preview.note ?? "(no note)").replaceAll("{blockers}", blockers ? `. Blocked now: ${blockers}` : "");
       const run = `dori handover ${l ? `--lane ${l.key} ` : ""}--approved-by "${LEAD_PREFIX}<your reason>, ${(hit[0] ?? "<the signal>").replaceAll('"', "'")}"`;
       if (flags.values["dry-run"]) {
