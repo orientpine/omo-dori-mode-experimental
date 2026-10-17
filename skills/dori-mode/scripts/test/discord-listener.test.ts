@@ -38,7 +38,7 @@ const fakeTimers = () => {
 let state: ReturnType<typeof withState>;
 afterEach(() => state?.done());
 
-const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBot?: string; shadow?: boolean; mentionRoleIds?: string[]; gate?: (req: HttpRequest) => Promise<void> | undefined } = {}) => {
+const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBot?: string; watchChannels?: string[]; watchBots?: string[]; watchMatch?: RegExp; shadow?: boolean; mentionRoleIds?: string[]; gate?: (req: HttpRequest) => Promise<void> | undefined } = {}) => {
   state = withState();
   const seen: HttpRequest[] = [];
   const http: Http = async (req) => {
@@ -63,7 +63,7 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const t = fakeTimers();
   const logs: string[] = [];
   const fatal: number[] = [];
-  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBot: opts.pairBot ?? "" } : {}), ...(opts.shadow ? { shadow: true } : {}), words, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
+  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBot: opts.pairBot ?? "" } : {}), ...(opts.watchChannels ? { watchChannels: opts.watchChannels, watchBots: opts.watchBots ?? [] } : {}), ...(opts.watchMatch ? { watchMatch: opts.watchMatch } : {}), ...(opts.shadow ? { shadow: true } : {}), words, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
   const inbox = () => (existsSync(inboxFile) ? readFileSync(inboxFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}`);
   const eyesFile = () => JSON.parse(readFileSync(`${state.dir}/discord/eyes.json`, "utf8"));
@@ -361,6 +361,50 @@ test("backfill reads the pair channel too, after the newest pair row", async () 
   await listener.settled();
   expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1500&limit=100`, `GET /channels/${PAIR}/messages?after=1500&limit=100`]);
   expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1000", "channel"], ["1500", "pair-bot"], ["1601", "pair-bot"]]);
+});
+
+const NOTIFY = "130000000000000013";
+const MONITOR_BOT = "140000000000000014";
+const ALERT = "**📊 [doctor 연결·동작 점검]**\n> 새로 확인된 문제 1건:\n> - 확인 · 정기 작업(워처): 최근 실패·중지: calendar-confirm-watch";
+
+test("in a watched channel the monitoring bot's problem alert is a watch row with a link and no eyes; recoveries, other bots and other channels are skipped", async () => {
+  const { listener, inbox, calls, logs } = setup(() => ({}), { watchChannels: [NOTIFY], watchBots: [MONITOR_BOT] });
+  const bot = { id: MONITOR_BOT, bot: true };
+  await listener.onMessage(msg("1001", { channel_id: NOTIFY, author: bot, content: ALERT }));
+  await listener.onMessage(msg("1002", { channel_id: NOTIFY, author: bot, content: "사실: 신규 실패: 없음; 회복: embedding" }));
+  await listener.onMessage(msg("1003", { channel_id: NOTIFY, author: bot, content: "사실: 신규 실패: rag embedding" }));
+  await listener.onMessage(msg("1004", { channel_id: NOTIFY, author: { id: OTHER_BOT, bot: true }, content: ALERT }));
+  await listener.onMessage(msg("1005", { author: bot, content: ALERT }));
+  expect(inbox().map((r) => [r.id, r.scope, r.author_id])).toEqual([["1001", "watch", MONITOR_BOT], ["1003", "watch", MONITOR_BOT]]);
+  expect(inbox()[0]?.link).toBe(`https://discord.com/channels/${GUILD}/${NOTIFY}/1001`);
+  expect(inbox()[0]?.note).toContain("do not post in the watched channel");
+  expect(calls()).toEqual([]);
+  expect(logs.filter((l) => l.startsWith("INBOUND discord-watch"))).toHaveLength(2);
+});
+
+test("a watch match from the settings replaces the default one, and without watch bots the channel is skipped", async () => {
+  const custom = setup(() => ({}), { watchChannels: [NOTIFY], watchBots: [MONITOR_BOT], watchMatch: /FAILED/ });
+  await custom.listener.onMessage(msg("1001", { channel_id: NOTIFY, author: { id: MONITOR_BOT, bot: true }, content: ALERT }));
+  await custom.listener.onMessage(msg("1002", { channel_id: NOTIFY, author: { id: MONITOR_BOT, bot: true }, content: "job FAILED" }));
+  expect(custom.inbox().map((r) => r.id)).toEqual(["1002"]);
+  const noBots = setup((req) => (req.url.endsWith(`/channels/${NOTIFY}`) ? { parent_id: "777" } : {}), { watchChannels: [NOTIFY] });
+  await noBots.listener.onMessage(msg("1003", { channel_id: NOTIFY, author: { id: MONITOR_BOT, bot: true }, content: ALERT }));
+  expect(noBots.inbox()).toEqual([]);
+});
+
+test("backfill reads the watched channels too, after the newest own row", async () => {
+  const route = (req: HttpRequest) => {
+    if (req.url.endsWith(`/guilds/${GUILD}/threads/active`)) return { threads: [] };
+    if (req.url.includes(`/channels/${NOTIFY}/messages?after=1500`)) return [msg("1601", { channel_id: NOTIFY, guild_id: undefined, author: { id: MONITOR_BOT, bot: true }, content: ALERT })];
+    return [];
+  };
+  const rows = [{ id: "1500", ts: "x", channel_id: NOTIFY, scope: "watch" }];
+  const { listener, gw, inbox, calls } = setup(route, { watchChannels: [NOTIFY], watchBots: [MONITOR_BOT], inbox: rows.map((r) => `${JSON.stringify(r)}\n`).join("") });
+  listener.start();
+  gw.push({ op: 0, s: 1, t: "READY", d: {} });
+  await listener.settled();
+  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1500&limit=100`, `GET /channels/${NOTIFY}/messages?after=1500&limit=100`]);
+  expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1500", "watch"], ["1601", "watch"]]);
 });
 
 // a thread under a channel this Dori does not own (another agent's), and this Dori's bot member with its managed role

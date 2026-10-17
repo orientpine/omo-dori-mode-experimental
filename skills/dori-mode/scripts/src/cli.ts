@@ -209,7 +209,9 @@ const USAGE = `dori <command> [options]
   inbound slack [--loop MIN]           print INBOUND lines: unread thread replies (threads view), replies in threads
                                        the Dori posted in (any helper), DMs and channels with unread mentions
   inbound discord                      long-running gateway listener: the owner's messages get an eyes reaction and an
-                                       inbox row, voice is transcribed, question-card answers are recorded
+                                       inbox row, voice is transcribed, question-card answers are recorded; with
+                                       DORI_DISCORD_WATCH_CHANNELS + DORI_DISCORD_WATCH_BOTS a monitoring bot's problem
+                                       alert there (DORI_DISCORD_WATCH_MATCH) is a scope:"watch" row for the lead
   ask --text Q --option A [--option B ...] [--thread REF] [--session ID] [--tmux NAME]
                                        post a Discord question card; the first option is the recommended one
   questions [--open]                   list tracked question cards
@@ -457,6 +459,16 @@ const lane = async (k: string | undefined) => {
 };
 
 const env = (name: string): string => process.env[name]?.trim() || die(`${name} is not set`);
+const idList = (value: string | undefined): string[] => (value ?? "").split(/[\s,]+/).filter(Boolean);
+const watchMatch = (value: string | undefined): { watchMatch?: RegExp } => {
+  const source = value?.trim();
+  if (!source) return {};
+  try {
+    return { watchMatch: new RegExp(source) };
+  } catch {
+    return die(`DORI_DISCORD_WATCH_MATCH is not a valid regular expression: ${source}`);
+  }
+};
 // Discord writes go out only as this Dori's own bot: the token's bot must be discord.botId when that is set, and is never
 // the pair Dori's bot (DORI_DISCORD_PAIR_BOT). An inherited token of another Dori fails here instead of posting as it.
 const discordBotProblem = (token: string): string | undefined => {
@@ -1004,6 +1016,9 @@ try {
           ownerWebhook: process.env.DORI_DISCORD_OWNER_WEBHOOK?.trim() ?? "",
           pairChannel: process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "",
           pairBot: process.env.DORI_DISCORD_PAIR_BOT?.trim() ?? "",
+          watchChannels: idList(process.env.DORI_DISCORD_WATCH_CHANNELS),
+          watchBots: idList(process.env.DORI_DISCORD_WATCH_BOTS),
+          ...watchMatch(process.env.DORI_DISCORD_WATCH_MATCH),
           shadow: !!shadowInbox,
           words: config.discord,
           inboxFile: shadowInbox || liveInbox,

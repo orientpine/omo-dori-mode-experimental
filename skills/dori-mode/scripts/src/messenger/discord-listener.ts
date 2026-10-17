@@ -65,7 +65,8 @@ export type InboxMessage = {
   readonly id: string;
   readonly channel_id: string;
   // mention: the owner called this Dori (its bot or one of its roles) in a channel or thread it does not own
-  readonly scope: "dm" | "channel" | "thread" | "pair" | "pair-bot" | "mention";
+  // watch: a monitoring bot's problem alert in a watched channel (information for the lead to act on, not the owner's request)
+  readonly scope: "dm" | "channel" | "thread" | "pair" | "pair-bot" | "mention" | "watch";
   readonly author_id: string;
   readonly content: string;
   readonly transcript: string | null;
@@ -107,6 +108,12 @@ export type ListenerDeps = {
   // (information, not requests). Unset: no pair channel.
   readonly pairChannel?: string;
   readonly pairBot?: string;
+  // channels where another app posts problem alerts (e.g. a monitoring bot's notification channel, same guild): a message
+  // there from one of watchBots whose text matches watchMatch (default WATCH_MATCH) is a "watch" row without eyes, for the
+  // lead to act on. Other messages there are skipped. Unset or no bots: those channels are skipped like any other.
+  readonly watchChannels?: readonly string[];
+  readonly watchBots?: readonly string[];
+  readonly watchMatch?: RegExp;
   // shadow: write inbox rows only, never to Discord (no reaction, no thread reopen, no card answers), to compare with a live listener
   readonly shadow?: boolean;
   readonly words: DiscordWords;
@@ -121,7 +128,10 @@ export type ListenerDeps = {
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 200);
 const newer = (a: string, b: string): boolean => BigInt(a) > BigInt(b);
 // the inbox may be shared with other listeners (other messengers, other channels); only rows this listener writes set its cursors
-const OWN_SCOPES = new Set(["dm", "channel", "thread", "pair", "pair-bot", "mention"]);
+const OWN_SCOPES = new Set(["dm", "channel", "thread", "pair", "pair-bot", "mention", "watch"]);
+// a problem alert: a new problem found, a new failure that is not "none", or a repeated failure (Korean monitoring copy)
+export const WATCH_MATCH = /새로 확인된 문제|신규 실패: (?!없음)|반복 실패/;
+const WATCH_NOTE = "a problem alert another app posted in a watched channel: check what failed and why, fix it or open a lane to fix it, and tell the owner in your own channel with this link; do not post in the watched channel";
 const MENTION_NOTE = "the owner called this Dori in a channel it does not own: answer in your own channel or work thread and include this link (that takes the eyes off); do not post there";
 // a Discord message link in the bot's own post: the eyes come off the message it points to
 const MESSAGE_LINK = /discord(?:app)?\.com\/channels\/\d+\/(\d+)\/(\d+)/g;
@@ -226,15 +236,17 @@ export class DiscordListener {
     }
     const pair = this.d.pairChannel ?? "";
     const fromPairBot = !!pair && !!this.d.pairBot && m.channel_id === pair && m.author.id === this.d.pairBot;
+    const fromWatch = !!this.d.watchChannels?.includes(m.channel_id) && !!this.d.watchBots?.includes(m.author.id) && (this.d.watchMatch ?? WATCH_MATCH).test(m.content ?? "");
     const hook = webhookVerdict(m, { guild: this.d.guild, channel: this.d.channel, ownerWebhook: this.d.ownerWebhook ?? "" });
     if (hook === "unknown" && !this.seen.has(m.id)) this.d.log(`DISCORD_WEBHOOK_UNKNOWN id=${m.webhook_id} name=${JSON.stringify(m.author.username ?? "")} message=${m.id}`);
     const viaWebhook = hook === "owner";
-    if (this.seen.has(m.id) || (!viaWebhook && !fromPairBot && (m.author.bot || m.author.id !== this.d.owner))) return;
+    if (this.seen.has(m.id) || (!viaWebhook && !fromPairBot && !fromWatch && (m.author.bot || m.author.id !== this.d.owner))) return;
     let scope: InboxMessage["scope"];
     if (!m.guild_id) scope = "dm";
     else if (m.guild_id !== this.d.guild) return;
     else if (m.channel_id === this.d.channel) scope = "channel";
     else if (pair && m.channel_id === pair) scope = fromPairBot ? "pair-bot" : "pair";
+    else if (fromWatch) scope = "watch";
     // a channel it cannot look up is not one of its threads, but the owner may still have called it there
     else if ((await this.parentOf(m.channel_id).catch((e: unknown) => (this.d.log(`DISCORD_PARENT_FAIL ${m.channel_id} ${errText(e)}`), ""))) === this.d.channel) scope = "thread";
     else {
@@ -245,7 +257,7 @@ export class DiscordListener {
     this.seen.add(m.id);
     if (newer(m.id, this.cursor)) this.cursor = m.id;
     // the other Dori's posts are information the Dori rarely answers, so eyes there would never come off
-    if (!this.d.shadow && scope !== "pair-bot")
+    if (!this.d.shadow && scope !== "pair-bot" && scope !== "watch")
       await this.d.dc.react(m.channel_id, m.id, EYES).then(
       () => {
         this.eyes[m.channel_id] = [...(this.eyes[m.channel_id] ?? []), m.id];
@@ -271,6 +283,7 @@ export class DiscordListener {
       ...(viaWebhook ? { via: "owner-webhook" as const, webhook_id: m.webhook_id } : {}),
       ...(open.length ? { open_cards: open, note } : {}),
       ...(scope === "mention" ? { note: MENTION_NOTE, link: `https://discord.com/channels/${this.d.guild}/${m.channel_id}/${m.id}` } : {}),
+      ...(scope === "watch" ? { note: WATCH_NOTE, link: `https://discord.com/channels/${this.d.guild}/${m.channel_id}/${m.id}` } : {}),
     });
     this.d.log(`INBOUND discord-${scope} ${m.channel_id} ${m.id} ${viaWebhook ? `${this.d.owner} via=owner-webhook` : m.author.id} ${JSON.stringify((transcript ?? m.content).slice(0, 200))}`);
     if (open.length) this.d.log(`CARD_STILL_OPEN ${open.join(",")} thread=${m.channel_id} ${note}`);
@@ -349,7 +362,8 @@ export class DiscordListener {
     if (this.cursor === "0") return 0;
     const since = this.cursor;
     const active = await this.d.dc.call<{ threads?: { id: string; parent_id: string }[] }>("GET", `/guilds/${this.d.guild}/threads/active`);
-    const channels = [this.d.channel, ...(this.d.pairChannel ? [this.d.pairChannel] : []), ...(active.threads ?? []).filter((t) => t.parent_id === this.d.channel).map((t) => t.id)];
+    const watched = this.d.watchBots?.length ? (this.d.watchChannels ?? []) : [];
+    const channels = [this.d.channel, ...(this.d.pairChannel ? [this.d.pairChannel] : []), ...watched, ...(active.threads ?? []).filter((t) => t.parent_id === this.d.channel).map((t) => t.id)];
     for (const t of active.threads ?? []) this.parents.set(t.id, t.parent_id);
     let added = 0;
     for (const ch of channels) {
