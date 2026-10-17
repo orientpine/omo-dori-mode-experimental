@@ -252,6 +252,17 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   expect(printed.findIndex((l) => l === `HANDOVER_COMMITTED lead ${NEW}`)).toBeGreaterThan(frozenAt);
 });
 
+test("writes channel scope when sending the inbox probe", async () => {
+  // Given
+  const deps = await setup();
+  // When
+  await handover(deps, { approvedBy: APPROVED, title: "lead2" });
+  // Then
+  const rows: unknown[] = readFileSync(deps.inbox, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const probe = rows.find((row) => typeof row === "object" && row !== null && "kind" in row && row.kind === "handover-probe");
+  expect(probe).toMatchObject({ scope: "channel" });
+});
+
 test("an old lead that cannot be frozen (no agent under its pane) is closed as before, and --keep-old freezes it with no close time", async () => {
   // Given
   const deps = await setup();
