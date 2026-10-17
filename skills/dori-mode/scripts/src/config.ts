@@ -3,7 +3,21 @@ import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tokenBotId } from "./messenger/discord.ts";
 import { run } from "./run.ts";
+import type { BackupSettings } from "./state-backup.ts";
 import type { StateGitSettings } from "./state-git.ts";
+
+// stateGit.backup defaults (src/state-backup.ts); here so loading the config does not load git or the backup code
+export const BACKUP_DEFAULTS: BackupSettings = {
+  repo: "",
+  dirs: [],
+  at: "06:00",
+  retryMin: 30,
+  until: "07:30",
+  secretFiles: [],
+  messageFiles: [],
+  ownerMinChars: 30,
+  ownerQuoteOk: ["directives.json", "AGENTS.md", "HANDOFF*.md"],
+};
 
 export type UpdateService = {
   readonly unit: string;
@@ -441,7 +455,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     frozenText: "The old session {from} is frozen ({n} processes stopped, it uses no tokens); it closes in {hours} h. To undo: dori handover thaw {from}",
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
     reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },
-  stateGit: { dirs: [], everyMin: 10, maxFileKb: 512, timeoutSec: 60, timeZone: "" },
+  stateGit: { dirs: [], everyMin: 10, maxFileKb: 512, timeoutSec: 60, timeZone: "", backup: BACKUP_DEFAULTS },
   instances: [],
 });
 
@@ -589,7 +603,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const migrated = migrateOldKeys((await file.exists()) ? ((await file.json()) as Raw) : {});
   for (const w of migrated.warnings) warn(`${w} (${path})`);
   const raw = migrated.raw as Partial<DoriConfig>;
-  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover }, stateGit: { ...base.stateGit, ...raw.stateGit } };
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } } };
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const env: unknown = merged.launchEnv;
@@ -607,7 +621,11 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
     sessionsDir: expandHome(merged.sessionsDir, home),
     scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog || (raw.watchLog ?? join(stateDir, "lanes.log")), home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
     handover: { ...merged.handover, inbox: expandHome(merged.handover.inbox, home), cwd: expandHome(merged.handover.cwd, home) },
-    stateGit: { ...merged.stateGit, dirs: merged.stateGit.dirs.map((d) => expandHome(d, home)) },
+    stateGit: {
+      ...merged.stateGit,
+      dirs: merged.stateGit.dirs.map((d) => expandHome(d, home)),
+      backup: { ...merged.stateGit.backup, ...Object.fromEntries((["dirs", "secretFiles", "messageFiles"] as const).map((k) => [k, merged.stateGit.backup[k].map((d) => expandHome(d, home))])) },
+    },
     leadPane,
   };
 };

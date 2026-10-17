@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 // allow: SIZE_OK — existing command dispatcher; command behavior lives in separate modules.
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { currentTmuxSession } from "./aoe.ts";
+import { currentTmuxSession, paneActivity } from "./aoe.ts";
 import { leadAlertPoster } from "./autoturn.ts";
 import { findLead, LeadError } from "./lead.ts";
 import { ackHandover, handover, type HandoverDeps, LEAD_SUMMARY_TEMPLATE } from "./handover.ts";
@@ -15,6 +15,7 @@ import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, fill, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
 import { checkRepo, commitDir, initRepo, logDir, restoreDir, type StateGitDeps, stateGitDirs } from "./state-git.ts";
+import { approve, backupTick, type BackupDeps, envFilesIn, guardDir, loadSecrets, msToNextSlot, previewDir, pushAll, pushCheck } from "./state-backup.ts";
 import { sendVerified, submitToPane } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
@@ -198,8 +199,13 @@ const USAGE = `dori <command> [options]
                                        when GPU, memory and CPU each keep heavyHeadroomPct (30) percent free with it
                                        (HEAVY_ADMIT / HEAVY_WAIT lines on stderr and in state/heavy/heavy.log)
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
-  state-git [init|commit|log [N]|restore <time|sha> [--file PATH ...]|loop|check] [--dir DIR ...]
-                                       this Dori's state in local git (config dir, stateDir, inbox dir; never pushed):
+  state-git [init|commit|log [N]|restore <time|sha> [--file PATH ...]|loop|check|push-check] [--dir DIR ...]
+  state-git backup [create|preview|approve --by "lead: ..." [--history-ok DIR:PATH ...]|push|tick [--clock ISO]]
+                                       the private backup (stateGit.backup.repo): a checked snapshot per directory,
+                                       pushed by the loop at stateGit.backup.at (06:00) when no pane is mid-turn, no
+                                       heavy job and no git lock (again every retryMin, none after until); the first
+                                       push waits for approve; push-check is the pre-push hook
+                                       this Dori's state in local git (config dir, stateDir, inbox dir; pushed only as above):
                                        commit only when something changed, never env/inbox/briefs/logs or token-shaped
                                        content; restore "yesterday 21:00" (stateGit.timeZone) commits first, so it can
                                        be undone; loop is what dori-lanes runs every stateGit.everyMin minutes
@@ -345,6 +351,7 @@ const flags = parseArgs({
     force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
     answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
     static: { type: "boolean" }, dir: { type: "string", multiple: true },
+    remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -975,6 +982,83 @@ try {
       const show = (lines: readonly string[]): void => {
         for (const line of lines) console.log(line);
       };
+      const bk = sg.backup;
+      // the repos the backup pushes: the state-git ones and the Dori's docs repos (stateGit.backup.dirs)
+      const backupDirs = [...new Set([...dirs, ...bk.dirs.filter((d) => existsSync(join(d, ".git")))])];
+      const clockAt = opt("clock") ? Date.parse(opt("clock") ?? "") : undefined;
+      if (clockAt !== undefined && !Number.isFinite(clockAt)) die(`--clock takes an ISO time with its offset, e.g. 2026-10-18T06:00+09:00`);
+      const backupDeps = (): BackupDeps => ({
+        ...sgDeps,
+        now: clockAt === undefined ? () => Date.now() : () => clockAt,
+        backup: bk,
+        stateDir: config.stateDir,
+        home: process.env.HOME ?? "",
+        visibility: async (repo) => {
+          const r = await run(["gh", "api", `repos/${repo}`, "--jq", ".visibility"]);
+          if (r.code === 0) return r.out.trim() || "unknown: empty answer";
+          return /Not Found|404/.test(`${r.err} ${r.out}`) ? "missing" : `unknown: ${(r.err || r.out).replace(/\s+/g, " ").slice(0, 120)}`;
+        },
+        remoteUrl: (repo) => `https://github.com/${repo}.git`,
+        secrets: async () => {
+          const gh = await run(["gh", "auth", "token"]);
+          const ghToken = gh.code === 0 && gh.out.trim() ? [{ value: gh.out.trim(), from: "gh auth token" }] : [];
+          const ownerIds = [process.env.DORI_DISCORD_OWNER, process.env.DORI_KAKAO_OWNER_ID].map((v) => v?.trim() ?? "").filter(Boolean);
+          const messageFiles = [...bk.messageFiles, inbox, process.env.DORI_KAKAO_INBOX?.trim() ?? ""].filter(Boolean);
+          const secretFiles = bk.secretFiles.flatMap((f) => (existsSync(f) && statSync(f).isDirectory() ? envFilesIn(f) : [f]));
+          return loadSecrets([...secretFiles, envFilePath(), ...backupDirs.flatMap(envFilesIn)], messageFiles, ownerIds, bk.ownerMinChars, ghToken);
+        },
+        busy: async () => {
+          const why: string[] = [];
+          const lanes = (await deps.registry.open()).filter((l) => l.pane);
+          const panes = [...new Set([config.leadPane, ...lanes.map((l) => l.pane ?? "")].filter(Boolean))];
+          try {
+            for (const [pane, a] of await paneActivity(run, panes)) if (a === "busy") why.push(`turn:${lanes.find((l) => l.pane === pane)?.key ?? (pane === config.leadPane ? "lead" : pane)}`);
+          } catch (e) {
+            if (!(e instanceof Error)) throw e;
+            why.push(`pane check failed (${e.message.slice(0, 80)})`);
+          }
+          const heavy = join(config.stateDir, "heavy");
+          for (const slot of existsSync(heavy) ? readdirSync(heavy).filter((n) => n.startsWith("slot.")) : []) {
+            const owner = existsSync(join(heavy, slot, "owner")) ? readFileSync(join(heavy, slot, "owner"), "utf8").split(" ") : [];
+            if (pidAlive(Number(owner[0]))) why.push(`heavy:${owner[1] ?? slot}`);
+          }
+          for (const d of backupDirs) if (["index.lock", "dori-state.lock"].some((f) => existsSync(join(d, ".git", f)))) why.push(`git-lock:${d}`);
+          return why;
+        },
+      });
+      if (sub === "push-check") {
+        // the pre-push hook: refuse unless the remote is this Dori's private backup and the pushed commits are clean
+        const refused = await pushCheck(backupDeps(), resolve(many("repo")[0] ?? process.cwd()), opt("remote") ?? "", opt("url") ?? "", await new Response(Bun.stdin.stream()).text());
+        for (const line of refused) console.error(`STATE_GIT_PUSH_REFUSED ${line}`);
+        process.exit(refused.length ? 1 : 0);
+      }
+      if (sub === "backup") {
+        const step = flags.positionals[1] ?? "preview";
+        if (!bk.repo) die("BACKUP_OFF stateGit.backup.repo is empty in this Dori's config");
+        const bd = backupDeps();
+        if (step === "create") {
+          let vis = await bd.visibility(bk.repo);
+          if (vis === "missing") {
+            const made = await run(["gh", "repo", "create", bk.repo, "--private", "--description", "Dori local backup (private; pushed by dori state-git)"]);
+            if (made.code !== 0) die(`BACKUP_REPO_FAILED ${bk.repo}: ${(made.err || made.out).slice(0, 200)}`);
+            vis = await bd.visibility(bk.repo);
+          }
+          if (vis !== "private") die(`BACKUP_REPO_NOT_PRIVATE ${bk.repo} is ${vis}: nothing will be pushed there`);
+          console.log(`BACKUP_REPO_OK ${bk.repo} private`);
+        } else if (step === "preview") {
+          const secrets = await bd.secrets();
+          console.log(`BACKUP_SECRETS ${secrets.values.length} secret values (never printed), ${secrets.ownerTexts.length} owner messages to look for`);
+          for (const d of backupDirs) show(await previewDir(bd, d, secrets));
+        } else if (step === "approve") {
+          console.log(approve(bd, need("by"), many("history-ok")));
+        } else if (step === "push") {
+          for (const d of backupDirs) show(await guardDir(bd, d, dirs.includes(d)));
+          show(await pushAll(bd, backupDirs));
+        } else if (step === "tick") {
+          show(await backupTick(bd, backupDirs));
+        } else die(`state-git backup: unknown step ${step} (create, preview, approve, push, tick)`);
+        break;
+      }
       if (sub === "check") {
         const lines = await checkRepo(sgDeps, resolve(many("repo")[0] ?? process.cwd()));
         for (const line of lines) console.error(line);
@@ -986,7 +1070,8 @@ try {
           console.log("STATE_GIT_OFF stateGit.everyMin is 0");
           for (;;) await Bun.sleep(3_600_000);
         }
-        console.log(`STATE_GIT_READY ${dirs.join(" ")} every ${sg.everyMin} min`);
+        console.log(`STATE_GIT_READY ${dirs.join(" ")} every ${sg.everyMin} min${bk.repo ? `; backup to ${bk.repo} at ${bk.at} ${sgDeps.timeZone} when quiet (${backupDirs.join(" ")})` : ""}`);
+        if (bk.repo) for (const d of backupDirs.filter((x) => !dirs.includes(x))) await guardDir(backupDeps(), d, false);
         for (;;) {
           for (const d of dirs) {
             try {
@@ -995,7 +1080,15 @@ try {
               console.log(`STATE_GIT_WARN ${d} ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 200)}`);
             }
           }
-          await Bun.sleep(sg.everyMin * 60_000);
+          if (bk.repo) {
+            try {
+              show(await backupTick(backupDeps(), backupDirs));
+            } catch (e) {
+              console.log(`STATE_GIT_PUSH_WARN ${bk.repo} ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 200)}`);
+            }
+          }
+          // wake for the next backup try when it comes before the next commit tick
+          await Bun.sleep(bk.repo ? Math.max(1000, Math.min(sg.everyMin * 60_000, msToNextSlot(Date.now(), sgDeps.timeZone, bk))) : sg.everyMin * 60_000);
         }
       }
       for (const d of dirs) {
