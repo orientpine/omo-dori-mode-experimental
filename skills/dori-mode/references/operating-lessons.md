@@ -237,3 +237,11 @@ On 10-17 at 13:42 and 13:45 KST the owner wrote in a lane's thread "강화학습
 
 - **Cite the owner instead of a signal.** `--approved-by "lead:<reason>, owner <message id or link>"` passes when that message is in the inbox with the owner's `author_id` (and in the link's channel); every other handover check stays.
 - **A reference that cannot be checked is refused.** A made-up id, a bot's or someone else's message, a link into another channel, or a fake id next to a real signal all stop the move. The ref records which message the lead acted on, and the owner is told afterwards as for any lead decision.
+
+## 29. A Dori's state is in local git, to put it back when it breaks
+
+On 10-17 at 21:56 KST the owner asked for the Dori's state files to be kept in git like their memory: "나는 그냥 너네들 상태가 잘못됐을때 깃으로 복구하려는거야". The lane registry, the question cards, config, handover notes and the many small mark files had no history, so a broken lane record or a bad config edit could only be repaired by hand. He also worried that the Dori would get slower ("도리들이 빠딱빠딱 안할수있어서") and said git was not worth it if it became a burden.
+
+- **Restore is the point.** `dori state-git log` lists the commits in the owner's time zone; `dori state-git restore "yesterday 21:00"` (or a commit) puts every tracked file back, after committing what is there, and prints how to undo it. Ignored files are never touched.
+- **Nothing waits on it.** The commit runs in `dori-lanes` as its own loop every 10 minutes, only when something changed, under `nice`/`ionice` with a timeout; a failure is one `STATE_GIT_WARN` line, a stale `index.lock` is removed on the next run. No lane, lead or listener step calls it.
+- **No secret and no message text goes in.** Env files, inbox and answer logs, events, briefs (they quote the owner), logs, models and big files are excluded by the fork's defaults; a staged file with a secret's name or a token's shape is refused, by the loop and by the `pre-commit` hook for a manual commit. The repos are local only and `pre-push` refuses a push; a private remote is the owner's call once he has seen what goes in.

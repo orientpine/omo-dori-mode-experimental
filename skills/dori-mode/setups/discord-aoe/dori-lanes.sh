@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The dori lane sweeps (watch, freshness, dead-panes, guard) in one unit, each output line stamped and tagged,
+# The dori lane sweeps (watch, freshness, dead-panes, guard, state-git) in one unit, each output line stamped and tagged,
 # so one log file shows everything. systemd restarts the unit when any sweep exits.
 set -uo pipefail
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
@@ -14,6 +14,8 @@ tagged watch watch &
 tagged freshness freshness --loop 2 &
 tagged dead-panes dead-panes --loop 5 &
 tagged guard guard --loop 1 &
+# this Dori's state in local git, every stateGit.everyMin minutes when something changed (never waited on, never exits)
+tagged state-git state-git loop &
 wait -n
 echo "$(date -u +%FT%TZ) dori-lanes a sweep exited; restarting the unit"
 exit 1

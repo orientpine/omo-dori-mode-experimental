@@ -14,6 +14,7 @@ import { appendRollover, dueReasons, LEAD_PREFIX, limitsFor, quietReason, readRo
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, fill, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
+import { checkRepo, commitDir, initRepo, logDir, restoreDir, type StateGitDeps, stateGitDirs } from "./state-git.ts";
 import { sendVerified, submitToPane } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
@@ -196,6 +197,11 @@ const USAGE = `dori <command> [options]
                                        when GPU, memory and CPU each keep heavyHeadroomPct (30) percent free with it
                                        (HEAVY_ADMIT / HEAVY_WAIT lines on stderr and in state/heavy/heavy.log)
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
+  state-git [init|commit|log [N]|restore <time|sha> [--file PATH ...]|loop|check] [--dir DIR ...]
+                                       this Dori's state in local git (config dir, stateDir, inbox dir; never pushed):
+                                       commit only when something changed, never env/inbox/briefs/logs or token-shaped
+                                       content; restore "yesterday 21:00" (stateGit.timeZone) commits first, so it can
+                                       be undone; loop is what dori-lanes runs every stateGit.everyMin minutes
   send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID] [--status working|done] [--no-typing] [--ping USER_ID]
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN);
                                        --status (discord) writes it as the progress message, in discord.statusStyle;
@@ -337,7 +343,7 @@ const flags = parseArgs({
     "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
     force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
     answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
-    static: { type: "boolean" },
+    static: { type: "boolean" }, dir: { type: "string", multiple: true },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -935,6 +941,49 @@ try {
       } finally {
         releaseSlot(slot);
       }
+      break;
+    }
+    case "state-git": {
+      const sg = config.stateGit;
+      const sgDeps: StateGitDeps = { settings: sg, timeZone: sg.timeZone || config.scorecard.timeZone, now: () => Date.now(), print: (line) => console.log(line) };
+      const inbox = process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+      const picked = many("dir").map((d) => resolve(d));
+      const dirs = picked.length ? picked : stateGitDirs({ configFile: configPath(), stateDir: config.stateDir, inbox, home: process.env.HOME ?? "", dirs: sg.dirs }).filter((d) => existsSync(d));
+      const sub = key ?? "log";
+      const show = (lines: readonly string[]): void => {
+        for (const line of lines) console.log(line);
+      };
+      if (sub === "check") {
+        const lines = await checkRepo(sgDeps, resolve(many("repo")[0] ?? process.cwd()));
+        for (const line of lines) console.error(line);
+        process.exit(lines.length ? 1 : 0);
+      }
+      if (sub === "loop") {
+        // dori-lanes runs this beside the other sweeps; it must never exit (wait -n would restart them all)
+        if (sg.everyMin <= 0) {
+          console.log("STATE_GIT_OFF stateGit.everyMin is 0");
+          for (;;) await Bun.sleep(3_600_000);
+        }
+        console.log(`STATE_GIT_READY ${dirs.join(" ")} every ${sg.everyMin} min`);
+        for (;;) {
+          for (const d of dirs) {
+            try {
+              show((await commitDir(sgDeps, d)).lines.filter((l) => !l.startsWith("STATE_GIT_NOCHANGE")));
+            } catch (e) {
+              console.log(`STATE_GIT_WARN ${d} ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 200)}`);
+            }
+          }
+          await Bun.sleep(sg.everyMin * 60_000);
+        }
+      }
+      for (const d of dirs) {
+        if (sub === "init") show(await initRepo(sgDeps, d));
+        else if (sub === "commit") show((await commitDir(sgDeps, d, undefined, 30_000)).lines);
+        else if (sub === "log") show(await logDir(sgDeps, d, Number(flags.positionals[1] ?? 15)));
+        else if (sub === "restore") show(await restoreDir(sgDeps, d, flags.positionals[1] ?? die("state-git restore needs a time or a commit, e.g. \"yesterday 21:00\""), many("file")));
+        else die(`state-git: unknown step ${sub} (init, commit, log, restore, loop, check)`);
+      }
+      if (!dirs.length) console.log("STATE_GIT_NO_DIRS none of this Dori's directories exists");
       break;
     }
     case "can-launch": {
