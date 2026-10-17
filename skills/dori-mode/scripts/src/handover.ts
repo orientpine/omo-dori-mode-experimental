@@ -8,6 +8,7 @@ import { aoeSessions, captureTmux, closeAoeSession, inputLine, laneEnv, openAoeS
 import { fill, type HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, freezePane, writeFrozen } from "./frozen.ts";
+import { pointInstanceAlerts } from "./handover-alerts.ts";
 import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
@@ -319,6 +320,7 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
   if (raw.update?.alertPane === from.pane) raw.update.alertPane = to.pane;
   writeFileSync(deps.configPath, `${JSON.stringify(raw, null, 2)}\n`);
   out.push(`HANDOVER_CONFIG leadPane ${from.pane} -> ${to.pane} in ${deps.configPath}`);
+  out.push(...pointInstanceAlerts(deps, { from: from.pane, to: to.pane, stamp }));
   if (existsSync(deps.envPath)) {
     const text = readFileSync(deps.envPath, "utf8");
     // a line the file lacks is added, so the listener that reads dori.env learns the new lead too
