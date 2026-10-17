@@ -91,6 +91,8 @@ export type Lane = {
   readonly idleSince?: number;
   // the background jobs (kind:id) an idle lane waits on, as the last BG_WAITING line named them
   readonly waitingOn?: string;
+  // the last omo auto-turn pause dori watch reported (since: its first engine-turn-limit entry) and when it lifted one
+  readonly autoturn?: AutoturnMark;
   // the last ROLLOVER_DUE freshness gave for a measured threshold (context, compactions, age): one per pane, so a lane's new
   // session can get its own (auto: written by older versions, not read); autoAt and tries: the last automatic start in this
   // pane and how many there were, gaveUp once autoMaxTries ran out
@@ -107,6 +109,8 @@ export type Lane = {
   readonly ownerCheck?: { readonly at: string; readonly lastReportAt: string; readonly day: string; readonly today: number; readonly model: string; readonly kinds: readonly string[]; readonly finding?: string; readonly rereadAt?: string };
   readonly receipt?: unknown;
 };
+
+export type AutoturnMark = { readonly since: string; readonly resumes: readonly string[] };
 
 export const statusOf = (lane: Lane): LaneStatus => (lane.closedAt ? "closed" : (lane.status ?? "working"));
 
