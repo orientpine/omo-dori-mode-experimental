@@ -99,6 +99,8 @@ test("token shapes: Discord, GitHub, Slack, API key, private key, password; plai
   expect(tokenShape(`sk-ant-${"k".repeat(30)}`)).toBe("api-key");
   expect(tokenShape("-----BEGIN OPENSSH PRIVATE KEY-----")).toBe("private-key");
   expect(tokenShape("비밀번호: hunter22")).toBe("password");
+  expect(tokenShape("DORI_DISCORD_TOKEN=abcdefgh12345678")).toBe("env-secret");
+  expect(tokenShape('"sudo -n -u ops grep -c ^OPENAI_API_KEY= /home/ops/.env.secrets; X_TOKEN=$TOKEN_VAR"')).toBeUndefined();
   expect(tokenShape('{"key":"blocked-fp","thread":"discord:1560620500135182438","tokenEnv":"DORI_DISCORD_TOKEN"}')).toBeUndefined();
 });
 

@@ -65,7 +65,8 @@ export const TOKEN_SHAPES: readonly (readonly [string, RegExp])[] = [
   ["telegram-token", /\b\d{8,10}:AA[A-Za-z0-9_-]{33}/],
   ["private-key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ["bearer", /\bBearer\s+[A-Za-z0-9._~+/-]{20,}/],
-  ["env-secret", /\b[A-Z][A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY)\s*=\s*["']?[^\s"']{8,}/],
+  // a value right after the =, not a path or variable (a lane's "grep -c ^OPENAI_API_KEY= /home/ops/.env" is no secret)
+  ["env-secret", /\b[A-Z][A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY)=["']?(?![$/{<~.])[^\s"'$]{8,}/],
   ["password", /(password|passwd|비밀번호|비번)["']?\s*[:=]\s*["']?[^\s"',}]{4,}/i],
 ];
 
