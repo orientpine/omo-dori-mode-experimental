@@ -263,6 +263,66 @@ test("writes channel scope when sending the inbox probe", async () => {
   expect(probe).toMatchObject({ scope: "channel" });
 });
 
+test("rewrites instance alert panes when they target the old lead, preserving every other byte", async () => {
+  // Given
+  const deps = await setup();
+  const instances = ["ok", "moo", "yoo"].map((name) => ({ config: join(state.dir, `${name}.json`) }));
+  const text = `{\r\n\t"leadPane": "${OLD}",\r\n\t"alertPane": "${OLD}",\r\n\t"update": { "services": [{"alertPane":"${OLD}"}], "alertPane" : "${OLD}" }\r\n}\r\n`;
+  for (const ref of instances) writeFileSync(ref.config, text);
+  // When
+  const result = await handover({ ...deps, config: { ...deps.config, instances } }, { approvedBy: APPROVED, title: "lead2" });
+  // Then
+  expect(result.code).toBe(0);
+  for (const ref of instances) {
+    expect(readFileSync(ref.config, "utf8")).toBe(text.replace(`"alertPane" : "${OLD}"`, `"alertPane" : "${NEW}"`));
+    expect(printed).toContain(`HANDOVER_ALERTPANE ${ref.config} ${OLD} -> ${NEW}`);
+  }
+});
+
+test("leaves instance alert panes unchanged when they target another pane", async () => {
+  // Given
+  const deps = await setup();
+  const config = join(state.dir, "other.json");
+  const text = '{ "update" : { "alertPane": "aoe_other_12345678" }, "keep": true }\n';
+  writeFileSync(config, text);
+  // When
+  await handover({ ...deps, config: { ...deps.config, instances: [{ config }] } }, { approvedBy: APPROVED, title: "lead2" });
+  // Then
+  expect(readFileSync(config, "utf8")).toBe(text);
+  expect(printed.some((line) => line.startsWith(`HANDOVER_ALERTPANE ${config} `))).toBe(false);
+});
+
+test("restores instance alert panes when handover verification rolls back", async () => {
+  // Given
+  const deps = await setup();
+  const config = join(state.dir, "rollback.json");
+  const text = `{\n\t"update": { "alertPane" : "${OLD}" }, "leadPane": "own-lead"\n}\n`;
+  writeFileSync(config, text);
+  sim.ackInbox = false;
+  // When
+  const result = await handover({ ...deps, config: { ...deps.config, instances: [{ config }] } }, { approvedBy: APPROVED, title: "lead2", verifyMin: 1 });
+  // Then
+  expect(result.code).toBe(3);
+  expect(printed.some((line) => line.startsWith("HANDOVER_VERIFY_FAIL"))).toBe(true);
+  expect(printed).toContain(`HANDOVER_ALERTPANE ${config} ${OLD} -> ${NEW}`);
+  expect(printed).toContain(`HANDOVER_ALERTPANE ${config} ${NEW} -> ${OLD}`);
+  expect(readFileSync(config, "utf8")).toBe(text);
+});
+
+test("leaves instance alert panes unchanged on rollback when they already target the new pane", async () => {
+  // Given
+  const deps = await setup();
+  const config = join(state.dir, "already-new.json");
+  const text = `{ "update": {"alertPane": "${NEW}"} }\n`;
+  writeFileSync(config, text);
+  sim.ackInbox = false;
+  // When
+  await handover({ ...deps, config: { ...deps.config, instances: [{ config }] } }, { approvedBy: APPROVED, title: "lead2", verifyMin: 1 });
+  // Then
+  expect(readFileSync(config, "utf8")).toBe(text);
+  expect(printed.some((line) => line.startsWith(`HANDOVER_ALERTPANE ${config} `))).toBe(false);
+});
+
 test("an old lead that cannot be frozen (no agent under its pane) is closed as before, and --keep-old freezes it with no close time", async () => {
   // Given
   const deps = await setup();
