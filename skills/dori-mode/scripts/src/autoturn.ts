@@ -45,11 +45,39 @@ export const autoturnPause = (transcript: string): AutoturnPause | undefined => 
   return pause;
 };
 
-// the end of the transcript is enough: a lift always comes after the limit entries it lifts
+// How long the session has run on its own: the engine turns started since the last user message (a lead message typed
+// into the pane is one too; so are a "." manual continue and continue-from-leaf), and that message's time ("" when
+// the text has none).
+export type AutoturnRun = { readonly turns: number; readonly lastUser: string };
+export const autoturnRun = (transcript: string): AutoturnRun => {
+  let turns = 0;
+  let lastUser = "";
+  for (const line of transcript.split("\n")) {
+    if (!HINT.test(line)) continue;
+    let e: Entry;
+    try {
+      e = JSON.parse(line) as Entry;
+    } catch {
+      continue;
+    }
+    if ((e.type === "message" && e.message?.role === "user") || (e.type === "custom_message" && USER_DIRECTED.has(e.customType ?? ""))) {
+      turns = 0;
+      lastUser = e.timestamp ?? "";
+    } else if (e.type === "custom" && e.customType === "engine-turn-start") turns += 1;
+  }
+  return { turns, lastUser };
+};
+
+// the end of the transcript is enough for a pause: a lift always comes after the limit entries it lifts; a run is
+// counted from the whole file when the end holds no user message
 const TAIL_BYTES = 2 * 1024 * 1024;
-const tailOf = (path: string): string => {
-  const text = readFileSync(path, "utf8");
-  return text.length > TAIL_BYTES ? text.slice(-TAIL_BYTES) : text;
+const readTranscript = (path: string): { readonly tail: string; readonly whole: string } => {
+  const whole = readFileSync(path, "utf8");
+  return { tail: whole.length > TAIL_BYTES ? whole.slice(-TAIL_BYTES) : whole, whole };
+};
+const runOf = (t: { readonly tail: string; readonly whole: string }): AutoturnRun => {
+  const run = autoturnRun(t.tail);
+  return run.lastUser || t.tail.length === t.whole.length ? run : autoturnRun(t.whole);
 };
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -72,6 +100,9 @@ const leadText = (pause: AutoturnPause, n: number, max: number): string =>
 // LANE_AUTOTURN_PAUSED once per pause of a lane's session (working, not-done or paused by the lead) or the lead's; up to
 // autoturnResumeMax times in 24 hours per session it also types a short message that lifts the pause (to the lead its
 // monitors cannot do that: a monitor notification is one more engine turn). Past the cap it only reports.
+// LANE_AUTOTURN_LONG <key> <turns> <last user message time> each time the same session passes another autoturnLongTurns
+// (300) turns started on its own since its last user message: the runaway alert once omo's own limit is off
+// (engineTurns.maxPerUserInput 0). It is only a line in the watch log; nothing is typed or stopped.
 export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
   const lanes = (await deps.registry.open()).filter((l) => l.pane && ["working", "not-done", "paused"].includes(statusOf(l)));
   const lead = deps.config.leadPane;
@@ -79,6 +110,7 @@ export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
   const [sessions, table] = await Promise.all([aoeSessions(deps.run), procTable(deps.run)]);
   const now = deps.clock.now();
   const max = deps.config.autoturnResumeMax;
+  const every = deps.config.autoturnLongTurns;
   const out: string[] = [];
   const targets: { readonly lane?: Lane; readonly pane: string; readonly cwd: string }[] = [
     ...lanes.map((lane) => ({ lane, pane: lane.pane ?? "", cwd: lane.cwd ?? sessionFor(sessions, lane.pane ?? "")?.path ?? "" })),
@@ -88,14 +120,30 @@ export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
     if (!t.cwd || !sessionFor(sessions, t.pane)) continue;
     const key = t.lane?.key ?? "lead";
     let pause: AutoturnPause | undefined;
+    let run: AutoturnRun | undefined;
     try {
       const file = await sessionFile(deps.run, deps.config.sessionsDir, t.pane, t.cwd, table);
-      pause = file ? autoturnPause(tailOf(file.path)) : undefined;
+      const text = file ? readTranscript(file.path) : undefined;
+      pause = text ? autoturnPause(text.tail) : undefined;
+      run = text && every > 0 ? runOf(text) : undefined;
     } catch (e) {
       out.push(`LANE_WATCH_WARN autoturn check ${key}: ${String(e).slice(0, 160)}`);
       continue;
     }
     const mark = t.lane ? t.lane.autoturn : readLeadMark(deps);
+    const save = async (next: AutoturnMark): Promise<void> => {
+      if (t.lane) await deps.registry.patch(t.lane.key, { autoturn: next });
+      else writeFileSync(leadMarkPath(deps), `${JSON.stringify({ pane: t.pane, ...next })}\n`);
+    };
+    let long = mark?.long;
+    if (run && run.turns >= every) {
+      const step = Math.floor(run.turns / every) * every;
+      if (long?.user !== run.lastUser || step > (long?.at ?? 0)) {
+        long = { user: run.lastUser, at: step };
+        out.push(`LANE_AUTOTURN_LONG ${key} ${run.turns} ${run.lastUser || "none"}`);
+        if (!pause || mark?.since === pause.since) await save({ ...mark, long });
+      }
+    }
     if (!pause || mark?.since === pause.since) continue;
     const resumes = (mark?.resumes ?? []).filter((at) => now - Date.parse(at) < DAY_MS);
     const head = `LANE_AUTOTURN_PAUSED ${key} ${t.pane} ${pause.turns} turns on its own (${pause.reason}) since ${pause.since}`;
@@ -107,9 +155,7 @@ export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
       if (ok) resumes.push(iso(deps.clock));
       tail = ok ? `resumed ${n}/${max} in 24h` : "resume NOT_SUBMITTED: the message did not reach the pane";
     }
-    const next: AutoturnMark = { since: pause.since, resumes };
-    if (t.lane) await deps.registry.patch(t.lane.key, { autoturn: next });
-    else writeFileSync(leadMarkPath(deps), `${JSON.stringify({ pane: t.pane, ...next })}\n`);
+    await save({ since: pause.since, resumes, ...(long ? { long } : {}) });
     out.push(`${head}; ${tail}`);
   }
   return out;

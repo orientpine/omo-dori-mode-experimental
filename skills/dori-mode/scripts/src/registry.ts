@@ -110,7 +110,9 @@ export type Lane = {
   readonly receipt?: unknown;
 };
 
-export type AutoturnMark = { readonly since: string; readonly resumes: readonly string[] };
+export type AutoturnMark = { readonly since?: string; readonly resumes?: readonly string[]; readonly long?: AutoturnLongMark };
+// the last LANE_AUTOTURN_LONG: the user message its run counts from and the multiple of autoturnLongTurns it reported
+export type AutoturnLongMark = { readonly user: string; readonly at: number };
 
 export const statusOf = (lane: Lane): LaneStatus => (lane.closedAt ? "closed" : (lane.status ?? "working"));
 

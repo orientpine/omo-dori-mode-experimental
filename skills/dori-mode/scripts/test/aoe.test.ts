@@ -375,3 +375,38 @@ test("a lane paused by the lead is still caught and told to keep waiting; the le
   expect(sent(world)[1]).toStartWith("[DORI] LANE_AUTOTURN_PAUSED lead: omo paused this session");
   expect(await watchTick(w.deps(T0 + 30_000))).toEqual([]);
 });
+
+test("a session that keeps running on its own is LANE_AUTOTURN_LONG once per autoturnLongTurns turns since its last user message, only reported", async () => {
+  await idleLane();
+  const w = bgWorld(T0 - 300 * MIN);
+  world.screen = watching("chain (5h)");
+  const start = (ms: number) => w.entry(ms, { type: "custom", customType: "engine-turn-start", data: { customType: "goal-continuation" } });
+  const starts = (from: number, n: number) => {
+    for (let i = 0; i < n; i++) start(from + i);
+  };
+  w.entry(T0 - 290 * MIN, typed());
+  starts(T0 - 280 * MIN, 299);
+  expect(await watchTick(w.deps(T0))).toEqual([]);
+  start(T0 - 1000);
+  expect(await watchTick(w.deps(T0 + 30_000))).toEqual([`LANE_AUTOTURN_LONG fix-a 300 ${iso(T0 - 290 * MIN)}`]);
+  expect(sent(world)).toEqual([]);
+  // once per 300: not again at 301..599, also after a watcher restart (the mark is in the registry)
+  starts(T0 + MIN, 299);
+  expect(await watchTick(w.deps(T0 + 2 * MIN))).toEqual([]);
+  expect((await at(T0).registry.read("fix-a"))?.autoturn?.long).toEqual({ user: iso(T0 - 290 * MIN), at: 300 });
+  start(T0 + 3 * MIN);
+  expect(await watchTick(w.deps(T0 + 4 * MIN))).toEqual([`LANE_AUTOTURN_LONG fix-a 600 ${iso(T0 - 290 * MIN)}`]);
+  // a typed (or lead) message starts the count again
+  w.entry(T0 + 5 * MIN, typed());
+  starts(T0 + 6 * MIN, 300);
+  expect(await watchTick(w.deps(T0 + 7 * MIN))).toEqual([`LANE_AUTOTURN_LONG fix-a 300 ${iso(T0 + 5 * MIN)}`]);
+  expect(sent(world)).toEqual([]);
+  // the lead's own session is counted too, and autoturnLongTurns 0 turns it off
+  const leadFile = join(state.dir, "sessions", "--home-test-dori--", `2026-01-01T10-00-00-000Z_${SESSION_ID}.jsonl`);
+  mkdirSync(join(state.dir, "sessions", "--home-test-dori--"), { recursive: true });
+  writeFileSync(leadFile, Array.from({ length: 300 }, (_, i) => JSON.stringify({ timestamp: iso(T0 + i), type: "custom", customType: "engine-turn-start" })).join("\n"));
+  const off = (ms: number) => ({ ...w.deps(ms), config: { ...w.deps(ms).config, autoturnLongTurns: 0 } });
+  expect(await watchTick(off(T0 + 8 * MIN))).toEqual([]);
+  expect(await watchTick(w.deps(T0 + 9 * MIN))).toEqual(["LANE_AUTOTURN_LONG lead 300 none"]);
+  expect(await watchTick(w.deps(T0 + 10 * MIN))).toEqual([]);
+});

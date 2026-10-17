@@ -291,6 +291,9 @@ export type DoriConfig = {
   // dori watch: how many [LEAD] messages may lift one session's omo auto-turn pause (LANE_AUTOTURN_PAUSED) in 24 hours;
   // past it the pause is only reported, so omo's guard against an endless self-driven run still holds (0: never resume)
   readonly autoturnResumeMax: number;
+  // dori watch: LANE_AUTOTURN_LONG each time a session has started this many more turns on its own since the last user
+  // (or lead) message, only reported, never stopped; with engineTurns.maxPerUserInput 0 omo no longer pauses (0: off)
+  readonly autoturnLongTurns: number;
   readonly postAfterMin: number;
   readonly closeAfterMin: number;
   readonly heavySlots: number;
@@ -339,6 +342,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   nudgeAfterMin: 15,
   blockedWaitMin: 60,
   autoturnResumeMax: 3,
+  autoturnLongTurns: 300,
   postAfterMin: 20,
   closeAfterMin: 5,
   heavySlots: 1,
