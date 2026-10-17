@@ -134,6 +134,11 @@ export const initRepo = async (deps: StateGitDeps, dir: string): Promise<string[
     await must(deps, dir, ["init", "-q", "-b", "main"]);
     lines.push(`STATE_GIT_INIT ${dir}`);
   }
+  // a manual commit needs an author before git runs the pre-commit hook (this host has no global identity)
+  if ((await git(deps, dir, ["config", "--local", "user.email"])).code !== 0) {
+    await must(deps, dir, ["config", "--local", "user.name", "Dori state"]);
+    await must(deps, dir, ["config", "--local", "user.email", "dori-state@localhost"]);
+  }
   writeExclude(dir);
   writeHook(dir, "pre-commit", PRE_COMMIT);
   writeHook(dir, "pre-push", PRE_PUSH);
