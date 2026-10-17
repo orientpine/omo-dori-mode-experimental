@@ -122,7 +122,7 @@ Every key is optional; the full list with defaults and what reads each one is in
 | `directives.local` | `~/Documents/<dori>/directives.json`, or empty | The host's own directive ledger: the owner's directives for this host and its repos, with links to his messages; `dori launch` reads it with the fork's `references/directives.json` (see SKILL.md). Never commit it to the fork |
 | `launchEnv` | `{"CUDA_VISIBLE_DEVICES": ""}` on a host whose GPU trains, else `{}` | Variables every lane session starts with: the GPU hidden from lanes and all they start; a lane launched with `--use-gpu` (or `dori set-gpu <key> on`) starts without them |
 | `watchLog`, `scorecard.lanesLog` | this Dori's lanes log | Sweep lines, update results, scorecard nudges |
-| `scorecard.sessions`, `scorecard.leadSessions` | this Dori's folder under `~/.omo/agent/sessions/` | The scorecard counts only this Dori's sessions (empty: every session on the host) |
+| `scorecard.sessions`, `scorecard.leadSessions` | this Dori's folder under `~/.omo/agent/sessions/` | `sessions` sets the total-cost scope (empty: every session on the host). `leadSessions` files are filtered by the lead's session ids in `<stateDir>/handover/*.json` (`from.session` and `to.session`, including the persisted current lead); no known ids: the whole folder. This filtering also applies to signals and repeat-check's lead files. |
 | `hooks.threadReply`, `hooks.threadDone` | `dori thread reply\|done` as in the template | Lane reports and closes in the owner's thread |
 | `hooks.transcribe` | absolute path of `transcribe.sh` | Voice notes |
 | `discord.botId` | this Dori's bot user id (the template ships it empty: no check until you set it) | Discord writes refuse another bot's token (`DISCORD_BOT_MISMATCH`) |

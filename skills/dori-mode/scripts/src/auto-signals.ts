@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { type AutoSignals, type DoriConfig, expandHome } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { laneArea, loadTree, stuckStep, type Tree } from "./explore.ts";
+import { leadSessionFiles } from "./lead-sessions.ts";
 import type { Lane } from "./registry.ts";
 import { sessionStart } from "./rollover.ts";
 import { iso, type Runner } from "./run.ts";
@@ -313,9 +314,9 @@ const jsonl = (dir: string): string[] => {
 };
 
 // the lane's own session files (its cwd's session folder) and the lead's (scorecard.leadSessions)
-export const laneSessionFiles = (config: Pick<DoriConfig, "sessionsDir" | "defaultCwd" | "scorecard">, lane: Pick<Lane, "cwd">): string[] => {
+export const laneSessionFiles = (config: Pick<DoriConfig, "sessionsDir" | "defaultCwd" | "scorecard" | "stateDir">, lane: Pick<Lane, "cwd">): string[] => {
   const cwd = resolve(expandHome(lane.cwd ?? config.defaultCwd));
-  return [...new Set([...jsonl(sessionDirFor(config.sessionsDir, cwd)), ...(config.scorecard.leadSessions ? jsonl(config.scorecard.leadSessions) : [])])];
+  return [...new Set([...jsonl(sessionDirFor(config.sessionsDir, cwd)), ...leadSessionFiles(config.scorecard.leadSessions, config.stateDir)])];
 };
 
 // commit subjects on the lane's branches since `since` (each dir: its checked-out branch)
