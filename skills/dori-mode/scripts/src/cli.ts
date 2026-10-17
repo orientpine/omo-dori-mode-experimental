@@ -478,14 +478,14 @@ const watchMatch = (value: string | undefined): { watchMatch?: RegExp } => {
   }
 };
 // Discord writes go out only as this Dori's own bot: the token's bot must be discord.botId when that is set, and is never
-// the pair Dori's bot (DORI_DISCORD_PAIR_BOT). An inherited token of another Dori fails here instead of posting as it.
+// any pair Dori's bot (DORI_DISCORD_PAIR_BOT). An inherited token of another Dori fails here instead of posting as it.
 const discordBotProblem = (token: string): string | undefined => {
   const bot = tokenBotId(token);
-  const pairBot = process.env.DORI_DISCORD_PAIR_BOT?.trim() ?? "";
+  const pairBots = idList(process.env.DORI_DISCORD_PAIR_BOT);
   const where = `config ${configPath()}, env file ${envFilePath()}`;
   if (config.discord.botId && bot !== config.discord.botId)
     return `DISCORD_BOT_MISMATCH DORI_DISCORD_TOKEN is bot ${bot ?? "unknown"}, but this Dori is bot ${config.discord.botId} (discord.botId; ${where}). Nothing was sent. An inherited token of another Dori? Unset the DORI_DISCORD_* variables or fix the token.`;
-  if (pairBot && bot === pairBot) return `DISCORD_BOT_MISMATCH DORI_DISCORD_TOKEN is the pair Dori's bot ${bot} (DORI_DISCORD_PAIR_BOT; ${where}). Nothing was sent.`;
+  if (bot && pairBots.includes(bot)) return `DISCORD_BOT_MISMATCH DORI_DISCORD_TOKEN is the pair Dori's bot ${bot} (DORI_DISCORD_PAIR_BOT; ${where}). Nothing was sent.`;
   return undefined;
 };
 const checkedDiscordToken = (token: string): string => {
@@ -1023,7 +1023,7 @@ try {
           owner: env("DORI_DISCORD_OWNER"),
           ownerWebhook: process.env.DORI_DISCORD_OWNER_WEBHOOK?.trim() ?? "",
           pairChannel: process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "",
-          pairBot: process.env.DORI_DISCORD_PAIR_BOT?.trim() ?? "",
+          pairBots: idList(process.env.DORI_DISCORD_PAIR_BOT),
           watchChannels: idList(process.env.DORI_DISCORD_WATCH_CHANNELS),
           watchBots: idList(process.env.DORI_DISCORD_WATCH_BOTS),
           ...watchMatch(process.env.DORI_DISCORD_WATCH_MATCH),

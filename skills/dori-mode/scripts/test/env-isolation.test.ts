@@ -70,6 +70,8 @@ test("a bare dori in the second Dori's directory (through its symlinked old name
 for (const [label, envFile, botId, inheritedAll, reason] of [
   ["the configured bot", "DORI_DISCORD_CHANNEL=ok-channel\n", OK, true, `is bot ${ZZANG}, but this Dori is bot ${OK}`],
   ["the pair Dori's bot", `DORI_DISCORD_PAIR_BOT=${ZZANG}\n`, "", false, `is the pair Dori's bot ${ZZANG}`],
+  ["the second pair Dori's bot in a comma list", `DORI_DISCORD_PAIR_BOT=${OK},${ZZANG}\n`, "", false, `is the pair Dori's bot ${ZZANG}`],
+  ["the second pair Dori's bot in a whitespace list", `DORI_DISCORD_PAIR_BOT= ${OK} \t ${ZZANG} \n`, "", false, `is the pair Dori's bot ${ZZANG}`],
 ] as const) {
   test(`dori send refuses, before any request, a token that is not ${label}`, async () => {
     const state = withState();

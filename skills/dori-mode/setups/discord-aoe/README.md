@@ -85,7 +85,7 @@ One `KEY=VALUE` per line, `#` comments, absolute paths (neither systemd nor the 
 | `DORI_DISCORD_OWNER_WEBHOOK` | no | no (the id, not the webhook URL) | Posts from that webhook count as the owner's ([ios-shortcut-voice.md](ios-shortcut-voice.md)) |
 | `DORI_DISCORD_INBOX` | no | no | Inbox file (default `<stateDir>/discord/inbox.jsonl`) |
 | `DORI_DISCORD_STATE_DIR` | no | no | Question cards, answers and the thread map (default `<stateDir>/discord`) |
-| `DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT` | no | no | A channel shared with another Dori and that Dori's bot id: `pair` / `pair-bot` inbox rows |
+| `DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT` | no | no | A channel shared with other Doris and one or more of their bot ids, comma or whitespace separated (e.g. three Doris, each listing the other two bots): `pair` / `pair-bot` inbox rows |
 | `DORI_LEAD_AOE_ID`, `DORI_LEAD_TMUX` | yes (aoe) | no | This Dori's own aoe session: `dori lead`, `self-restart.sh`, `dori-lead.service` |
 | `DORI_AGENT_BIN` | no | no | The agent CLI `self-restart.sh` waits for in the lead's pane (default `omo`) |
 | `DORI_ASR_DIR`, `DORI_ASR_LANG`, `DORI_ASR_MODEL` | no | no | Voice notes through `transcribe.sh` (`hooks.transcribe`): whisper.cpp dir, language, model (defaults `~/.dori/asr`, auto, `ggml-large-v3.bin`) |
@@ -396,7 +396,7 @@ A message:
 {"ts":"2026-01-02T03:00:00Z","id":"<message id>","channel_id":"<id>","scope":"channel","author_id":"<owner id>","content":"ship it","transcript":null,"attachments":[],"reply_to":null}
 ```
 
-`scope` is `channel`, `thread` or `dm`. With a pair channel set (`DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT`) it can also be `pair` (the owner there) or `pair-bot` (the other Dori's bot: information, not a request). A voice note has `transcript` filled. A post from the owner's registered webhook (`DORI_DISCORD_OWNER_WEBHOOK`, see [ios-shortcut-voice.md](ios-shortcut-voice.md)) has `author_id` set to the owner and also carries `"via":"owner-webhook"` and `webhook_id`. A reply has `reply_to`: read that message first.
+`scope` is `channel`, `thread` or `dm`. With a pair channel set (`DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT`, one or more bot ids separated by commas or whitespace) it can also be `pair` (the owner there) or `pair-bot` (any listed Dori bot: information, not a request). A voice note has `transcript` filled. A post from the owner's registered webhook (`DORI_DISCORD_OWNER_WEBHOOK`, see [ios-shortcut-voice.md](ios-shortcut-voice.md)) has `author_id` set to the owner and also carries `"via":"owner-webhook"` and `webhook_id`. A reply has `reply_to`: read that message first.
 
 A KakaoTalk message (`kakao-watch.ts`):
 

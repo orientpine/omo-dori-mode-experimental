@@ -38,7 +38,7 @@ const fakeTimers = () => {
 let state: ReturnType<typeof withState>;
 afterEach(() => state?.done());
 
-const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBot?: string; watchChannels?: string[]; watchBots?: string[]; watchMatch?: RegExp; shadow?: boolean; mentionRoleIds?: string[]; gate?: (req: HttpRequest) => Promise<void> | undefined } = {}) => {
+const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?: string; transcribe?: (url: string) => Promise<string>; respond?: (req: HttpRequest) => HttpResponse | undefined; autoUnEye?: boolean; ownerWebhook?: string; pairChannel?: string; pairBots?: readonly string[]; watchChannels?: string[]; watchBots?: string[]; watchMatch?: RegExp; shadow?: boolean; mentionRoleIds?: string[]; gate?: (req: HttpRequest) => Promise<void> | undefined } = {}) => {
   state = withState();
   const seen: HttpRequest[] = [];
   const http: Http = async (req) => {
@@ -63,7 +63,7 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const t = fakeTimers();
   const logs: string[] = [];
   const fatal: number[] = [];
-  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBot: opts.pairBot ?? "" } : {}), ...(opts.watchChannels ? { watchChannels: opts.watchChannels, watchBots: opts.watchBots ?? [] } : {}), ...(opts.watchMatch ? { watchMatch: opts.watchMatch } : {}), ...(opts.shadow ? { shadow: true } : {}), words, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
+  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBots: opts.pairBots ?? [] } : {}), ...(opts.watchChannels ? { watchChannels: opts.watchChannels, watchBots: opts.watchBots ?? [] } : {}), ...(opts.watchMatch ? { watchMatch: opts.watchMatch } : {}), ...(opts.shadow ? { shadow: true } : {}), words, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
   const inbox = () => (existsSync(inboxFile) ? readFileSync(inboxFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}`);
   const eyesFile = () => JSON.parse(readFileSync(`${state.dir}/discord/eyes.json`, "utf8"));
@@ -333,7 +333,7 @@ const PAIR = "110000000000000011";
 const PAIR_BOT = "120000000000000012";
 
 test("in the pair channel the owner's messages are pair rows with the eyes reaction and the paired Dori's bot's are pair-bot rows without it; other bots are skipped", async () => {
-  const { listener, inbox, calls } = setup(() => ({}), { pairChannel: PAIR, pairBot: PAIR_BOT });
+  const { listener, inbox, calls } = setup(() => ({}), { pairChannel: PAIR, pairBots: [PAIR_BOT] });
   await listener.onMessage(msg("1001", { channel_id: PAIR }));
   await listener.onMessage(msg("1002", { channel_id: PAIR, author: { id: PAIR_BOT, bot: true } }));
   await listener.onMessage(msg("1003", { channel_id: PAIR, author: { id: OTHER_BOT, bot: true } }));
@@ -348,6 +348,16 @@ test("without a pair channel set, a channel that is not the Dori's or under it i
   expect(inbox()).toEqual([]);
 });
 
+test("two listed pair bots become pair-bot rows without eyes while a third bot is skipped", async () => {
+  const secondBot = "150000000000000015";
+  const { listener, inbox, calls } = setup(() => ({}), { pairChannel: PAIR, pairBots: [PAIR_BOT, secondBot] });
+  await listener.onMessage(msg("1001", { channel_id: PAIR, author: { id: PAIR_BOT, bot: true } }));
+  await listener.onMessage(msg("1002", { channel_id: PAIR, author: { id: secondBot, bot: true } }));
+  await listener.onMessage(msg("1003", { channel_id: PAIR, author: { id: OTHER_BOT, bot: true } }));
+  expect(inbox().map((r) => [r.id, r.scope, r.author_id])).toEqual([["1001", "pair-bot", PAIR_BOT], ["1002", "pair-bot", secondBot]]);
+  expect(calls()).toEqual([]);
+});
+
 test("backfill reads the pair channel too, after the newest pair row", async () => {
   const route = (req: HttpRequest) => {
     if (req.url.endsWith(`/guilds/${GUILD}/threads/active`)) return { threads: [] };
@@ -355,7 +365,7 @@ test("backfill reads the pair channel too, after the newest pair row", async () 
     return [];
   };
   const rows = [{ id: "1000", ts: "x", channel_id: CHANNEL, scope: "channel" }, { id: "1500", ts: "x", channel_id: PAIR, scope: "pair-bot" }];
-  const { listener, gw, inbox, calls } = setup(route, { pairChannel: PAIR, pairBot: PAIR_BOT, inbox: rows.map((r) => `${JSON.stringify(r)}\n`).join("") });
+  const { listener, gw, inbox, calls } = setup(route, { pairChannel: PAIR, pairBots: [PAIR_BOT], inbox: rows.map((r) => `${JSON.stringify(r)}\n`).join("") });
   listener.start();
   gw.push({ op: 0, s: 1, t: "READY", d: {} });
   await listener.settled();
