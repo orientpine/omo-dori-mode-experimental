@@ -114,18 +114,63 @@ export const COMMITTED = "HANDOVER_COMMITTED";
 
 const DISCORD_LINK = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/\d+\/\d+\/\d+$/;
 
-// What makes a rollover approved: the lead's decision "lead:<reason and the signal behind it>" (the owner decided the lead
+// the owner's message a lead's approval cites instead of a signal: "owner <message id>" or "owner <its Discord link>"
+// (형 works for owner); groups: 1 the link's channel, 2 the link's message, 3 a bare message id
+const OWNER_REF = /(?<![\w])(?:owner|형)\s*[:#]?\s*(?:https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/(?:\d+|@me)\/(\d+)\/(\d+)|(\d{15,22}))(?![\w])/i;
+
+// The owner's ids (DORI_DISCORD_OWNER, DORI_KAKAO_OWNER_ID) and the inbox rows by message id: who wrote it, where.
+export type OwnerMessages = { readonly ids: readonly string[]; readonly find: (id: string) => { readonly author: string; readonly channel: string } | undefined };
+export const NO_OWNER_MESSAGES: OwnerMessages = { ids: [], find: () => undefined };
+
+// reads the inbox once, on the first lookup
+export const inboxMessages = (inbox: string, ids: readonly string[]): OwnerMessages => {
+  let rows: Map<string, { readonly author: string; readonly channel: string }> | undefined;
+  const load = () => {
+    const out = new Map<string, { readonly author: string; readonly channel: string }>();
+    if (!existsSync(inbox)) return out;
+    for (const line of readFileSync(inbox, "utf8").split("\n")) {
+      let row: { id?: unknown; author_id?: unknown; channel_id?: unknown };
+      try {
+        row = JSON.parse(line) as typeof row;
+      } catch {
+        continue;
+      }
+      if (typeof row?.id === "string" && typeof row.author_id === "string" && !out.has(row.id)) out.set(row.id, { author: row.author_id, channel: String(row.channel_id ?? "") });
+    }
+    return out;
+  };
+  return { ids, find: (id) => (rows ??= load()).get(id) };
+};
+
+// why a cited owner's message does not hold: not set up, not in the inbox (a made-up id), someone else's, another channel
+const ownerRefProblem = (m: RegExpExecArray, owner: OwnerMessages): string | undefined => {
+  const id = m[2] ?? m[3] ?? "";
+  if (!owner.ids.length) return `the owner's message ${id} cannot be checked: DORI_DISCORD_OWNER is not set`;
+  const row = owner.find(id);
+  if (!row) return `message ${id} is not in the inbox, so it is not known as the owner's; cite the id or link of a message the owner wrote`;
+  if (!owner.ids.includes(row.author)) return `message ${id} in the inbox was written by ${row.author}, not by the owner`;
+  if (m[1] && m[1] !== row.channel) return `message ${id} is in channel ${row.channel} in the inbox, not in ${m[1]} as the link says`;
+  return undefined;
+};
+
+// What makes a rollover approved: the lead's decision "lead:<reason and the signal behind it>" or "lead:<reason>, owner
+// <the id or link of the owner's message that asked for it>" (the message must be the owner's in the inbox; the owner decided the lead
 // rolls over and is told afterwards: canReport says the handover can post that message), a question card (Qn) the owner
 // answered with its first option, a link to the owner's Discord message, or "auto:..." when the automation key for that
 // side is on. A card counts only when it was posted as a rollover proposal for this key and for the session it runs in now
 // (the rollover log says so), so a yes on another lane's card, on any other question, or on a card about an earlier session
 // moves nothing. Undefined when the reference holds.
-export const approvalProblem = (ref: string | undefined, card: (id: string) => Question | undefined, auto: { readonly on: boolean; readonly key: string }, key: string, pane: string, proposals: readonly RolloverEntry[], canReport = false): string | undefined => {
+export const approvalProblem = (ref: string | undefined, card: (id: string) => Question | undefined, auto: { readonly on: boolean; readonly key: string }, key: string, pane: string, proposals: readonly RolloverEntry[], canReport = false, owner: OwnerMessages = NO_OWNER_MESSAGES): string | undefined => {
   const r = ref?.trim() ?? "";
-  if (!r) return `no approval: pass --approved-by "${LEAD_PREFIX}<your reason and the signal behind it>" (or the owner's answered rollover card Qn, or the link to their Discord message)`;
+  if (!r) return `no approval: pass --approved-by "${LEAD_PREFIX}<your reason and the signal behind it>" or "${LEAD_PREFIX}<your reason>, owner <id or link of the owner's message that asked for it>" (or the owner's answered rollover card Qn, or the link to their Discord message)`;
   if (r.startsWith(LEAD_PREFIX)) {
     const why = r.slice(LEAD_PREFIX.length).trim();
-    if (why.length < 8 || !SIGNAL_WORD.test(why)) return `${JSON.stringify(r)} does not say the reason and the signal behind it: --approved-by "${LEAD_PREFIX}<reason>, <signal: STUCK rung 4 on X, OWNER_CHECK GOAL_LOSS twice, context 85%>"`;
+    const cited = OWNER_REF.exec(why);
+    if (cited) {
+      const problem = ownerRefProblem(cited, owner);
+      if (problem) return `${JSON.stringify(r)} cites the owner, but ${problem}`;
+      if (why.replace(cited[0], "").replace(/[\s,;:.()-]+/g, " ").trim().length < 8) return `${JSON.stringify(r)} does not say the reason: --approved-by "${LEAD_PREFIX}<reason>, owner <message id>"`;
+    } else if (why.length < 8 || !SIGNAL_WORD.test(why)) return `${JSON.stringify(r)} does not say the reason and the signal behind it: --approved-by "${LEAD_PREFIX}<reason>, <signal: STUCK rung 4 on X, OWNER_CHECK GOAL_LOSS twice, context 85%>" or "${LEAD_PREFIX}<reason>, owner <id or link of the owner's message that asked for it>"`;
     return canReport ? undefined : "a lead's rollover needs a way to tell the owner afterwards: set DORI_DISCORD_TOKEN and DORI_DISCORD_CHANNEL (or give the lane a discord:<id> thread)";
   }
   if (r.startsWith(AUTO_PREFIX)) {

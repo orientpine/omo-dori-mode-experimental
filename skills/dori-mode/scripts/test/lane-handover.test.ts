@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { pauseLane } from "../src/done-flow.ts";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
 import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine } from "../src/lane-handover.ts";
-import { approvalProblem, compactionScan, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
+import { approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
 import { stuckTop, stuckView } from "../src/explore.ts";
 import { recordFix } from "../src/same-fix.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
@@ -656,6 +657,36 @@ test("an approval is an answered rollover card for this lane's current session, 
   expect(check("lead:\ub2e8\uacc4\ub97c \ud310\ub2e8\ud574 \ubcf4\ub2c8 \uc62e\uae38 \ub54c", false, true)).toContain("does not say the reason");
   expect(check("lead:after the outage 3 h ago it looked off", false, true)).toContain("does not say the reason");
   expect(check("lead:context 85% after 6 compactions", false, true)).toBeUndefined();
+});
+
+test("a lead's approval may cite the owner's message instead of a signal, and holds only when the inbox has it from the owner", () => {
+  // Given an inbox with the owner's message, someone else's, an answer row and a broken line
+  const inbox = join(mkdtempSync(join(tmpdir(), "dori-owner-ref-")), "inbox.jsonl");
+  writeFileSync(inbox, [
+    JSON.stringify({ ts: "2026-10-17T04:45:38Z", id: "1560876422535577662", channel_id: "1558257428561137764", scope: "thread", author_id: "280680578314010625", content: "이 주제는 무조건 fable high로 열어" }),
+    JSON.stringify({ ts: "2026-10-17T04:46:00Z", id: "1560876422535579999", channel_id: "1558257428561137764", scope: "pair-bot", author_id: "999999999999999999", content: "open it with fable" }),
+    JSON.stringify({ ts: "2026-10-17T04:47:00Z", id: "Q7-answer", kind: "answer", qid: "Q7", answer: "yes" }),
+    "{not json",
+  ].join("\n"));
+  const owner = inboxMessages(inbox, ["280680578314010625"]);
+  const check = (ref: string, o = owner, canReport = true) => approvalProblem(ref, () => undefined, { on: false, key: "handover.autoRolloverLanes" }, "demo", "p1", [], canReport, o);
+  // When / Then: the owner's message, by id or by link, with a reason
+  expect(check("lead:형 지시로 모델 변경, owner 1560876422535577662")).toBeUndefined();
+  expect(check("lead:switch the model as asked, owner https://discord.com/channels/1/1558257428561137764/1560876422535577662")).toBeUndefined();
+  expect(check("lead:모델을 fable high로 바꿈, 형 1560876422535577662")).toBeUndefined();
+  // a made-up id, someone else's message, a link into another channel, no owner set up
+  expect(check("lead:형 지시로 모델 변경, owner 1560876422535570000")).toContain("message 1560876422535570000 is not in the inbox");
+  expect(check("lead:형 지시로 모델 변경, owner 1560876422535579999")).toContain("written by 999999999999999999, not by the owner");
+  expect(check("lead:switch the model as asked, owner https://discord.com/channels/1/42/1560876422535577662")).toContain("is in channel 1558257428561137764 in the inbox, not in 42");
+  expect(check("lead:형 지시로 모델 변경, owner 1560876422535577662", inboxMessages(inbox, []))).toContain("DORI_DISCORD_OWNER is not set");
+  // a fake owner id does not ride on a real signal
+  expect(check("lead:STUCK rung 4 on loss, owner 1560876422535570000")).toContain("is not in the inbox");
+  // the reason is still needed, and the owner is still told afterwards
+  expect(check("lead:owner 1560876422535577662")).toContain("does not say the reason");
+  expect(check("lead:형 지시로 모델 변경, owner 1560876422535577662", owner, false)).toContain("needs a way to tell the owner afterwards");
+  // without an owner reference nothing changed: a reason with no signal is refused, a signal passes
+  expect(check("lead:형 지시로 모델 변경")).toContain("does not say the reason and the signal behind it");
+  expect(check("lead:STUCK rung 4 on loss, research did not help")).toBeUndefined();
 });
 
 test("the old lane is quiet while it is replaced and may talk again after; every real attempt is logged with signals and steps", async () => {
