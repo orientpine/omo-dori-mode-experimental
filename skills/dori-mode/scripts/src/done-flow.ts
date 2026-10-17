@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 
 import { closeAoeSession, paneActivity } from "./aoe.ts";
+import { autoturnTick } from "./autoturn.ts";
 import { laneBackground } from "./background.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import { hasThread, type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
@@ -221,7 +222,10 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
     if (deps.clock.now() - Date.parse(claim.at) < windowMs(deps)) continue;
     out.push(...(await settle(deps, lane, claim.evidence)));
   }
-  if (deps.config.backend === "aoe") out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
+  if (deps.config.backend === "aoe") {
+    out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
+    out.push(...(await autoturnTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN autoturn check: ${String(e).slice(0, 200)}`])));
+  }
   return out;
 };
 

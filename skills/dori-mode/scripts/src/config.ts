@@ -288,6 +288,9 @@ export type DoriConfig = {
   readonly nudgeAfterMin: number;
   // dori watch: an idle lane waiting on background work it started (BG_WAITING) is LANE_BLOCKED idle after this long
   readonly blockedWaitMin: number;
+  // dori watch: how many [LEAD] messages may lift one session's omo auto-turn pause (LANE_AUTOTURN_PAUSED) in 24 hours;
+  // past it the pause is only reported, so omo's guard against an endless self-driven run still holds (0: never resume)
+  readonly autoturnResumeMax: number;
   readonly postAfterMin: number;
   readonly closeAfterMin: number;
   readonly heavySlots: number;
@@ -335,6 +338,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   sessionsDir: join(home, ".omo", "agent", "sessions"),
   nudgeAfterMin: 15,
   blockedWaitMin: 60,
+  autoturnResumeMax: 3,
   postAfterMin: 20,
   closeAfterMin: 5,
   heavySlots: 1,

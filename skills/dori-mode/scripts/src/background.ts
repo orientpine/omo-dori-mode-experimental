@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Runner } from "./run.ts";
-import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
+import { type Proc, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // Background work an omo session started and is still waiting on, read from its session transcript: a detached eval
 // cell, a background (or auto-detached) bash session, a background task child. omo shows none of these on its status
@@ -79,8 +79,9 @@ export const pendingBackground = (transcript: string, since = 0, until = Number.
 // The lane's own session transcript (the session its pane's omo runs) and the agent's start, or undefined when either
 // cannot be read. Jobs started before the agent process started died with the earlier process; jobs started before
 // notBefore (a server or watcher left running for hours) are not what the lane waits on.
-export const laneBackground = async (run: Runner, sessionsDir: string, pane: string, cwd: string, until = Number.POSITIVE_INFINITY, notBefore = 0): Promise<BackgroundJob[] | undefined> => {
-  const hit = await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir, backend: "aoe" });
+// The transcript file of the session a pane's omo runs, and that agent's pid, or undefined when either cannot be read.
+export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[]): Promise<{ readonly path: string; readonly pid: number } | undefined> => {
+  const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend: "aoe" });
   if (!hit.id || !hit.pid) return undefined;
   const dir = sessionDirFor(sessionsDir, cwd);
   let name: string | undefined;
@@ -89,7 +90,12 @@ export const laneBackground = async (run: Runner, sessionsDir: string, pane: str
   } catch {
     return undefined;
   }
-  if (!name) return undefined;
-  const started = Date.parse((await run(["ps", "-o", "lstart=", "-p", String(hit.pid)])).out.trim());
-  return pendingBackground(readFileSync(join(dir, name), "utf8"), Math.max(Number.isNaN(started) ? 0 : started, notBefore), until);
+  return name ? { path: join(dir, name), pid: hit.pid } : undefined;
+};
+
+export const laneBackground = async (run: Runner, sessionsDir: string, pane: string, cwd: string, until = Number.POSITIVE_INFINITY, notBefore = 0): Promise<BackgroundJob[] | undefined> => {
+  const file = await sessionFile(run, sessionsDir, pane, cwd);
+  if (!file) return undefined;
+  const started = Date.parse((await run(["ps", "-o", "lstart=", "-p", String(file.pid)])).out.trim());
+  return pendingBackground(readFileSync(file.path, "utf8"), Math.max(Number.isNaN(started) ? 0 : started, notBefore), until);
 };

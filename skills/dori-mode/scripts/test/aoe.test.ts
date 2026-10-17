@@ -222,7 +222,7 @@ test("an idle lane that waits on its own monitor, wake source or goal is never L
   world.screen = ` Ask user · 2m\n Submit (0/1 answered)\n${status("Pursuing goal (18m)")}`;
   expect(await watchTick(at(t))).toEqual([`LANE_BLOCKED fix-a question ${PANE}`]);
   world.aoePs = [{ session: LANE_ID, state: "waiting" }];
-  world.screen = status("◉ watching ci (1m)");
+  world.screen = watching("ci (1m)");
   expect(await watchTick(at(t + 30_000))).toEqual([`LANE_BLOCKED fix-a waiting ${PANE}`]);
 });
 
@@ -241,6 +241,7 @@ const bgWorld = (agentStart: number) => {
     result: (ms: number, tool: string, text: string, details: object = {}, toolCallId = "toolu_x") => add(ms, { type: "message", message: { role: "toolResult", toolCallId, toolName: tool, content: [{ type: "text", text }], details } }),
     said: (ms: number, text: string) => add(ms, { type: "message", message: { role: "assistant", content: [{ type: "text", text }] } }),
     notified: (ms: number, text: string) => add(ms, { type: "custom_message", customType: "senpi-codemode:notification", content: text }),
+    entry: add,
   };
 };
 const idleLane = async () => at(T0).registry.write({ key: "fix-a", title: "fix-a", thread: "none", pane: PANE, brief: "/b.md", done: "file /etc/hostname", cwd: "/repo", openedAt: new Date(T0).toISOString() });
@@ -304,4 +305,73 @@ test("a stopped agent in an aoe session is reported, and the lead's session is s
   world.screen = "omo has stopped\n$ ";
   const deps = at(T0);
   expect(await deadPaneTick(deps.run, deps.config, new Set(), "2026-01-01T12")).toEqual([`DEAD_PANE ${PANE}`]);
+});
+
+const typed = () => ({ type: "message", message: { role: "user", content: [{ type: "text", text: "go" }] } });
+const watching = (s: string) => `❯ \n Claude │ pool\n(OmO) mem:repo just now ◉ watching ${s}`;
+const limitHit = (n = 150, by = "goal-continuation", reason = "per-user-input") => ({ type: "custom", customType: "engine-turn-limit", data: { customType: by, reason, sinceUserInput: n, toolFreeInWindow: 0 } });
+const iso = (ms: number) => new Date(ms).toISOString();
+
+test("a lane omo paused after 150 turns of its own is LANE_AUTOTURN_PAUSED once and gets one [LEAD] message, at most autoturnResumeMax a day", async () => {
+  await idleLane();
+  const w = bgWorld(T0 - 120 * MIN);
+  w.entry(T0 - 100 * MIN, typed());
+  w.entry(T0 - 10 * MIN, limitHit());
+  w.entry(T0 - 5 * MIN, limitHit(150, "senpi-monitor:notification"));
+  world.screen = watching("digest (8h)");
+  const line = (since: number, tail: string) => `LANE_AUTOTURN_PAUSED fix-a ${PANE} 150 turns on its own (per-user-input) since ${iso(since)}; ${tail}`;
+  expect(await watchTick(w.deps(T0))).toEqual([line(T0 - 10 * MIN, "resumed 1/3 in 24h")]);
+  expect(sent(world)).toHaveLength(1);
+  expect(sent(world)[0]).toStartWith("[LEAD] autoturn: omo paused this session after it started 150 turns on its own");
+  expect(sent(world)[0]).toContain("one monitor gate");
+  // the same pause is not reported again, also after a watcher restart (the mark is in the registry)
+  expect(await watchTick(w.deps(T0 + 30_000))).toEqual([]);
+  expect((await at(T0).registry.read("fix-a"))?.autoturn?.since).toBe(iso(T0 - 10 * MIN));
+  // the message lifted it; each later pause gets its own line, and the fourth in 24 hours only a report
+  for (const [k, tail] of [[2, "resumed 2/3 in 24h"], [3, "resumed 3/3 in 24h"], [4, "not resumed: 3 resumes in 24h already (autoturnResumeMax 3), the lead decides"]] as const) {
+    w.entry(T0 + k * MIN, typed());
+    expect(await watchTick(w.deps(T0 + k * MIN + 10_000))).toEqual([]);
+    w.entry(T0 + k * MIN + 20_000, limitHit());
+    expect(await watchTick(w.deps(T0 + k * MIN + 30_000))).toEqual([line(T0 + k * MIN + 20_000, tail)]);
+  }
+  expect(sent(world)).toHaveLength(3);
+  // a day later the cap has room again
+  w.entry(T0 + 25 * 60 * MIN, typed());
+  w.entry(T0 + 25 * 60 * MIN + 1000, limitHit());
+  expect(await watchTick(w.deps(T0 + 25 * 60 * MIN + 30_000))).toEqual([line(T0 + 25 * 60 * MIN + 1000, "resumed 1/3 in 24h")]);
+});
+
+test("no auto-turn pause stays quiet: none at all, one lifted by a typed message or a new engine turn, or the words only quoted in a tool result", async () => {
+  await idleLane();
+  const w = bgWorld(T0 - 120 * MIN);
+  world.screen = watching("ci (1m)");
+  w.entry(T0 - 50 * MIN, typed());
+  expect(await watchTick(w.deps(T0))).toEqual([]);
+  w.entry(T0 - 40 * MIN, limitHit());
+  w.entry(T0 - 39 * MIN, typed());
+  w.entry(T0 - 30 * MIN, limitHit(12, "senpi-monitor:notification", "tool-free-rate"));
+  w.entry(T0 - 29 * MIN, { type: "custom", customType: "engine-turn-start", data: { customType: "goal-continuation" } });
+  w.result(T0 - 20 * MIN, "bash", '{"type":"custom","customType":"engine-turn-limit","data":{"reason":"per-user-input"}}');
+  expect(await watchTick(w.deps(T0 + MIN))).toEqual([]);
+  expect(sent(world)).toEqual([]);
+  expect((await at(T0).registry.read("fix-a"))?.autoturn).toBeUndefined();
+});
+
+test("a lane paused by the lead is still caught and told to keep waiting; the lead's own pause is typed into the lead pane", async () => {
+  await idleLane();
+  const deps = at(T0);
+  await deps.registry.write({ ...(await deps.registry.read("fix-a"))!, status: "paused", pausedFrom: "working" });
+  const w = bgWorld(T0 - 120 * MIN);
+  w.entry(T0 - 10 * MIN, limitHit(150, "senpi-monitor:notification"));
+  const leadFile = join(state.dir, "sessions", "--home-test-dori--", `2026-01-01T10-00-00-000Z_${SESSION_ID}.jsonl`);
+  mkdirSync(join(state.dir, "sessions", "--home-test-dori--"), { recursive: true });
+  writeFileSync(leadFile, `${JSON.stringify({ timestamp: iso(T0 - 3 * MIN), ...limitHit(150, "senpi-monitor:notification") })}\n`);
+  world.screen = watching("5: Dori inbox +4 more");
+  expect(await watchTick(w.deps(T0))).toEqual([
+    `LANE_AUTOTURN_PAUSED fix-a ${PANE} 150 turns on its own (per-user-input) since ${iso(T0 - 10 * MIN)}; resumed 1/3 in 24h`,
+    `LANE_AUTOTURN_PAUSED lead aoe_Dori_0a1b2c3d 150 turns on its own (per-user-input) since ${iso(T0 - 3 * MIN)}; resumed 1/3 in 24h`,
+  ]);
+  expect(sent(world)[0]).toContain("the lead paused this lane, so keep waiting and start no new work");
+  expect(sent(world)[1]).toStartWith("[DORI] LANE_AUTOTURN_PAUSED lead: omo paused this session");
+  expect(await watchTick(w.deps(T0 + 30_000))).toEqual([]);
 });
