@@ -3,11 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { BACKUP_DEFAULTS } from "../src/state-backup.ts";
 import { checkRepo, commitDir, restoreDir, type StateGitDeps, stateGitDirs, tokenShape } from "../src/state-git.ts";
 
 let dir: string;
 let lines: string[];
-const deps = (maxFileKb = 512): StateGitDeps => ({ settings: { dirs: [], everyMin: 10, maxFileKb, timeoutSec: 30, timeZone: "" }, timeZone: "Asia/Seoul", now: () => Date.now(), print: (l) => lines.push(l) });
+const deps = (maxFileKb = 512): StateGitDeps => ({ settings: { dirs: [], everyMin: 10, maxFileKb, timeoutSec: 30, timeZone: "", backup: BACKUP_DEFAULTS }, timeZone: "Asia/Seoul", now: () => Date.now(), print: (l) => lines.push(l) });
 const put = (rel: string, text: string): void => {
   mkdirSync(dirname(join(dir, rel)), { recursive: true });
   writeFileSync(join(dir, rel), text);

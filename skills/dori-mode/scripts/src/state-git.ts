@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 
 import { takeLock } from "./handover.ts";
 import { pidAlive } from "./heavy-slot.ts";
+import type { BackupSettings } from "./state-backup.ts";
 
 // A Dori's state kept in a local git repo per directory (owner 10-17 21:56 KST: "도리들 상태 파일도 메모리처럼 깃으로
 // 관리하라고 해줘"; 21:57: "상태가 잘못됐을때 깃으로 복구하려는거야"). Local only: no remote, a pre-push hook refuses a push.
@@ -22,6 +23,8 @@ export type StateGitSettings = {
   readonly timeoutSec: number;
   // times in `log` and `restore "<time>"` (empty: scorecard.timeZone)
   readonly timeZone: string;
+  // the private GitHub backup (src/state-backup.ts); backup.repo empty: none
+  readonly backup: BackupSettings;
 };
 
 export type StateGitDeps = {
@@ -52,7 +55,7 @@ export const EXCLUDES = [
 ];
 
 // a staged file with one of these names is refused even when forced in (git add -f) or the excludes were edited
-const SECRET_NAME = /(^|\.)env$|\.env\.|^\.env|token|secret|passw|credential|cookie|\.pem$|\.key$|\.p12$|^id_(rsa|ed25519)|^\.netrc$|inbox.*\.jsonl$|^answers.*\.jsonl$|events.*\.jsonl$/i;
+export const SECRET_NAME = /(^|\.)env$|\.env\.|^\.env|token|secret|passw|credential|cookie|\.pem$|\.key$|\.p12$|^id_(rsa|ed25519)|^\.netrc$|inbox.*\.jsonl$|^answers.*\.jsonl$|events.*\.jsonl$/i;
 
 // token shapes: a file whose staged content matches one is not committed
 export const TOKEN_SHAPES: readonly (readonly [string, RegExp])[] = [
@@ -83,25 +86,26 @@ const PRE_COMMIT = `#!/bin/sh
 d=$(command -v dori || echo "$HOME/.bun/bin/dori")
 exec "$d" state-git check --repo "$(git rev-parse --show-toplevel)"
 `;
-const PRE_PUSH = `#!/bin/sh
-# dori state-git: this repo keeps a Dori's state on this host only
-echo "dori state-git: local only, push refused (the owner decides about a private remote)" >&2
-exit 1
+// a push goes only to this Dori's private backup repo (stateGit.backup.repo), after the same checks dori runs itself
+export const PRE_PUSH = `#!/bin/sh
+# dori state-git: push only to this Dori's private backup repo, checked first (visibility private, no secret, no owner message)
+d=$(command -v dori || echo "$HOME/.bun/bin/dori")
+"$d" state-git push-check --repo "$(git rev-parse --show-toplevel)" --remote "$1" --url "$2" || { echo "dori state-git: push refused" >&2; exit 1; }
 `;
 
 type Git = { readonly code: number; readonly out: string; readonly err: string };
 
 const niceArgv = ((): string[] => (Bun.which("ionice") ? ["nice", "-n", "19", "ionice", "-c3"] : Bun.which("nice") ? ["nice", "-n", "19"] : []))();
 
-const git = async (deps: StateGitDeps, dir: string, args: readonly string[], stdin?: Uint8Array): Promise<Git & { readonly bytes: Uint8Array }> => {
+export const git = async (deps: StateGitDeps, dir: string, args: readonly string[], stdin?: Uint8Array, env: Readonly<Record<string, string>> = {}): Promise<Git & { readonly bytes: Uint8Array }> => {
   const argv = [...niceArgv, "git", "-C", dir, "-c", "user.name=Dori state", "-c", "user.email=dori-state@localhost", "-c", "commit.gpgsign=false", "-c", "core.quotepath=false", ...args];
-  const p = Bun.spawn(argv, { stdin: stdin ?? "ignore", stdout: "pipe", stderr: "pipe", timeout: deps.settings.timeoutSec * 1000, killSignal: "SIGKILL", env: { ...process.env, TZ: deps.timeZone, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" } });
+  const p = Bun.spawn(argv, { stdin: stdin ?? "ignore", stdout: "pipe", stderr: "pipe", timeout: deps.settings.timeoutSec * 1000, killSignal: "SIGKILL", env: { ...process.env, TZ: deps.timeZone, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...env } });
   const [bytes, err, code] = await Promise.all([new Response(p.stdout).bytes(), new Response(p.stderr).text(), p.exited]);
   return { code: p.signalCode ? 124 : code, out: new TextDecoder().decode(bytes).trim(), err: p.signalCode ? `killed by ${p.signalCode} (timeout ${deps.settings.timeoutSec}s)` : err.trim(), bytes };
 };
 
-const must = async (deps: StateGitDeps, dir: string, args: readonly string[]): Promise<string> => {
-  const r = await git(deps, dir, args);
+export const must = async (deps: StateGitDeps, dir: string, args: readonly string[], env: Readonly<Record<string, string>> = {}): Promise<string> => {
+  const r = await git(deps, dir, args, undefined, env);
   if (r.code !== 0) throw new StateGitError(`git ${args[0]}: ${(r.err || r.out || `exit ${r.code}`).slice(0, 200)}`);
   return r.out;
 };
@@ -118,7 +122,7 @@ const writeExclude = (dir: string, big: readonly string[] = []): void => {
   writeFileSync(file, `${[...EXCLUDES, ...(list.length ? [MARK_BIG, ...list] : [])].join("\n")}\n`);
 };
 
-const writeHook = (dir: string, name: string, body: string): void => {
+export const writeHook = (dir: string, name: string, body: string): void => {
   const file = join(gitDir(dir), "hooks", name);
   mkdirSync(dirname(file), { recursive: true });
   if (existsSync(file) && readFileSync(file, "utf8") === body) return;
@@ -145,7 +149,8 @@ export const initRepo = async (deps: StateGitDeps, dir: string): Promise<string[
   const gi = join(dir, ".gitignore");
   if (!existsSync(gi)) writeFileSync(gi, "# local additions to dori state-git's defaults (those are in .git/info/exclude)\n");
   const remotes = await must(deps, dir, ["remote"]);
-  if (remotes) lines.push(`STATE_GIT_WARN ${dir} has a remote (${remotes.split("\n").join(",")}); state-git never pushes`);
+  const other = remotes.split("\n").filter((r) => r && r !== "backup");
+  if (other.length) lines.push(`STATE_GIT_WARN ${dir} has a remote (${other.join(",")}); state-git pushes only to its private backup remote`);
   return lines;
 };
 
