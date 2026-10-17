@@ -870,6 +870,7 @@ try {
     case "scorecard": {
       const window = dayWindow(opt("date") ?? "today", config.scorecard.timeZone, Date.now());
       const data = await computeScorecard({
+        stateDir: config.stateDir,
         sessionsDir: config.scorecard.sessions,
         lanes: await deps.registry.list(),
         settings: config.scorecard,

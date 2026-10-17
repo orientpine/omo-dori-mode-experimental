@@ -1,9 +1,10 @@
-import { readdirSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { canonical } from "./auto-signals.ts";
 import { type AutoSignals, type DoriConfig, expandHome } from "./config.ts";
+import { leadSessionFiles } from "./lead-sessions.ts";
 import { type FixAttempt, type Lane, statusOf } from "./registry.ts";
 import { fixCount, fixTag } from "./same-fix.ts";
 import { parseWatchLine } from "./watch-log.ts";
@@ -48,6 +49,7 @@ export const inArea = (lane: Lane, q: AreaQuery, home = homedir()): boolean =>
 export type Mention = { readonly at: string; readonly via: "report" | "lead"; readonly text: string };
 
 export type LogSources = {
+  readonly stateDir?: string;
   // folder of the lead's session files (scorecard.leadSessions); empty = no reports or re-sends
   readonly leadSessions: string;
   // the dori-lanes sweep log (scorecard.lanesLog), for freshness nudges
@@ -80,7 +82,7 @@ export const readLaneLogs = async (lanes: readonly Lane[], src: LogSources, sinc
   const panes = lanes.flatMap((l) => (l.pane ? [{ key: l.key, pane: l.pane, send: new RegExp(src.sendPattern.replaceAll("{pane}", escape(l.pane)), "g") }] : []));
   let files: string[] = [];
   try {
-    files = src.leadSessions ? readdirSync(src.leadSessions).filter((n) => n.endsWith(".jsonl")).map((n) => join(src.leadSessions, n)) : [];
+    files = leadSessionFiles(src.leadSessions, src.stateDir);
   } catch {
     files = [];
   }
@@ -332,7 +334,7 @@ export const priorFixLines = (list: readonly LaneSignals[], key: string, metric:
   return lines;
 };
 
-export const logSources = (config: DoriConfig): LogSources => ({ leadSessions: config.scorecard.leadSessions, lanesLog: config.scorecard.lanesLog, sendPattern: config.scorecard.leadSendPattern });
+export const logSources = (config: DoriConfig): LogSources => ({ stateDir: config.stateDir, leadSessions: config.scorecard.leadSessions, lanesLog: config.scorecard.lanesLog, sendPattern: config.scorecard.leadSendPattern });
 
 // Signals for the lanes in an area, newest first. Session files older than the oldest lane are not read.
 export const areaSignals = async (lanes: readonly Lane[], q: AreaQuery, config: DoriConfig): Promise<LaneSignals[]> => {

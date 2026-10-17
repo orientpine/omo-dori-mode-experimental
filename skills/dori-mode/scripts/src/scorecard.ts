@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { Scorecard } from "./config.ts";
 import { claimEvents } from "./lane-signals.ts";
+import { leadSessionFiles } from "./lead-sessions.ts";
 import type { Lane } from "./registry.ts";
 import { parseWatchLine } from "./watch-log.ts";
 
@@ -100,6 +101,7 @@ export type ScorecardData = {
 };
 
 export type ScorecardSources = {
+  readonly stateDir?: string;
   readonly sessionsDir: string;
   readonly lanes: readonly Lane[];
   readonly settings: Scorecard;
@@ -147,7 +149,7 @@ export const computeScorecard = async (src: ScorecardSources, window: DayWindow)
     if (w?.source === "freshness" && w.kind === "NUDGED" && w.key && inDay(ms(w.at))) nudges.set(w.key, (nudges.get(w.key) ?? 0) + 1);
   }
 
-  const leadFiles = src.settings.leadSessions ? recentFiles(src.settings.leadSessions, window.start, false) : [];
+  const leadFiles = leadSessionFiles(src.settings.leadSessions, src.stateDir).filter((f) => (statSync(f, { throwIfNoEntry: false })?.mtimeMs ?? 0) >= window.start);
   const lead: Entry[] = [];
   for (const f of leadFiles) lead.push(...parseLines(await Bun.file(f).text(), (l) => !/"timestamp":"(\d{4}-\d\d-\d\d)/.test(l) || ms(/"timestamp":"([^"]+)"/.exec(l)?.[1]) >= window.start - 3_600_000));
   lead.sort((a, b) => ms(a.timestamp) - ms(b.timestamp));

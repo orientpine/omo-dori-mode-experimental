@@ -10,7 +10,7 @@ export type SessionHit = { readonly id: string; readonly via: "argv" | "child-en
 
 export const AGENT = /senpi\/dist\/bundle\/cli\.js|(^|\/)omo(\s|$)/;
 const ENV_ID = /(?:^|\s)PI_SESSION_ID=([0-9a-f-]{36})(?:\s|$)/;
-const SESSION_FILE = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z_([0-9a-f-]{36})\.jsonl$/;
+export const SESSION_FILE = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z_([0-9a-f-]{36})\.jsonl$/;
 const START_WINDOW_MS = 180_000;
 
 export const procTable = async (run: Runner): Promise<Proc[]> =>
