@@ -100,16 +100,39 @@ const leadText = (pause: AutoturnPause, n: number, max: number): string =>
 // A runaway lead may never read its own watch log or pane, so its LANE_AUTOTURN_LONG and LANE_AUTOTURN_PAUSED also go
 // out as one bot post each (deps.postLeadAlert) to the pair channel, where the other Dori's listener makes it a pair-bot
 // inbox row, and to the owner's channel: a fixed head the other Dori acts on, then the configured words. A lane's alerts
-// stay with its lead.
+// stay with its lead. The other Dori checks on the lead once per LEAD_ALERT_REPEAT_MIN: an alert within that time of the
+// last one that asked for a check is posted as "<head> repeat:" with discord.leadRepeatText, which asks for nothing, so a
+// pause right after a runaway post (the same event) does not depend on the other Dori remembering the first one.
+export const LEAD_ALERT_REPEAT_MIN = 30;
 const stamp = (deps: FlowDeps, at: string): string =>
   at ? new Date(at).toLocaleString(deps.config.discord.locale, { timeZone: deps.config.discord.timeZone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "-";
 const fillWords = (template: string, values: Readonly<Record<string, string>>): string => template.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m);
-export const leadRunawayPost = (deps: FlowDeps, pane: string, run: AutoturnRun): string =>
-  `LEAD_RUNAWAY ${pane} ${run.turns}: ${fillWords(deps.config.discord.leadRunawayText, { pane, turns: String(run.turns), since: stamp(deps, run.lastUser), reason: "" })}`;
-export const leadPausedPost = (deps: FlowDeps, pane: string, pause: AutoturnPause): string =>
-  `LEAD_AUTOTURN_PAUSED ${pane} ${pause.turns}: ${fillWords(deps.config.discord.leadPausedText, { pane, turns: String(pause.turns), since: stamp(deps, pause.since), reason: pause.reason })}`;
-const leadAlert = async (deps: FlowDeps, text: string): Promise<readonly string[]> =>
-  deps.postLeadAlert ? deps.postLeadAlert(text).catch((e: unknown) => [`LEAD_ALERT_WARN ${String(e).slice(0, 160)}`]) : [];
+type LeadAlert = { readonly head: string; readonly pane: string; readonly turns: number; readonly template: string; readonly since: string; readonly reason: string };
+export const leadRunawayPost = (deps: FlowDeps, pane: string, run: AutoturnRun): LeadAlert => ({ head: "LEAD_RUNAWAY", pane, turns: run.turns, template: deps.config.discord.leadRunawayText, since: run.lastUser, reason: "" });
+export const leadPausedPost = (deps: FlowDeps, pane: string, pause: AutoturnPause): LeadAlert => ({ head: "LEAD_AUTOTURN_PAUSED", pane, turns: pause.turns, template: deps.config.discord.leadPausedText, since: pause.since, reason: pause.reason });
+const alertMarkPath = (deps: FlowDeps): string => join(deps.config.stateDir, "autoturn-lead-alert.json");
+const readAlertMark = (deps: FlowDeps): { readonly pane?: string; readonly at?: string } => {
+  try {
+    return JSON.parse(readFileSync(alertMarkPath(deps), "utf8")) as { pane?: string; at?: string };
+  } catch {
+    return {};
+  }
+};
+const leadAlert = async (deps: FlowDeps, a: LeadAlert): Promise<readonly string[]> => {
+  if (!deps.postLeadAlert) return [];
+  const now = deps.clock.now();
+  const last = readAlertMark(deps);
+  const ago = last.pane === a.pane && last.at ? (now - Date.parse(last.at)) / 60_000 : Number.POSITIVE_INFINITY;
+  const values = { pane: a.pane, turns: String(a.turns), since: stamp(deps, a.since), reason: a.reason };
+  const text =
+    ago < LEAD_ALERT_REPEAT_MIN
+      ? `${a.head} ${a.pane} ${a.turns} repeat: ${fillWords(deps.config.discord.leadRepeatText, { ...values, min: String(Math.max(0, Math.floor(ago))), at: stamp(deps, last.at ?? "") })}`
+      : `${a.head} ${a.pane} ${a.turns}: ${fillWords(a.template, values)}`;
+  const lines = await deps.postLeadAlert(text).catch((e: unknown) => [`LEAD_ALERT_WARN ${String(e).slice(0, 160)}`]);
+  // the window starts at the post that asked for a check, and only once it reached a channel
+  if (ago >= LEAD_ALERT_REPEAT_MIN && lines.some((l) => l.startsWith("LEAD_ALERT_POSTED "))) writeFileSync(alertMarkPath(deps), `${JSON.stringify({ pane: a.pane, at: new Date(now).toISOString() })}\n`);
+  return lines;
+};
 
 // cli's postLeadAlert: one post per configured channel (pair first, then the owner's), each answered by its own line
 export const leadAlertPoster =

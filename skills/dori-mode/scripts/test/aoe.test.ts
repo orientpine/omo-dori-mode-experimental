@@ -440,12 +440,21 @@ test("the lead's own LANE_AUTOTURN_LONG and LANE_AUTOTURN_PAUSED also go out to 
     `LANE_AUTOTURN_PAUSED lead aoe_Dori_0a1b2c3d 150 turns on its own (per-user-input) since ${iso(T0 + 2 * MIN + 1000)}; resumed 1/3 in 24h`,
     "LEAD_ALERT_POSTED pair P m2",
   ]);
-  expect(posts[1]).toStartWith("LEAD_AUTOTURN_PAUSED aoe_Dori_0a1b2c3d 150: ");
+  // two minutes after the runaway post that asked for a check it is the same event: a repeat that asks for nothing
+  expect(posts[1]).toStartWith("LEAD_AUTOTURN_PAUSED aoe_Dori_0a1b2c3d 150 repeat: ");
   expect(await watchTick(deps(T0 + 4 * MIN))).toEqual([]);
   expect(posts).toHaveLength(2);
   // the lead's pane got only the resume message: nothing stops it
   expect(sent(world)).toHaveLength(1);
   expect(sent(world)[0]).toStartWith("[DORI] LANE_AUTOTURN_PAUSED lead:");
+  // 30 minutes after that request a new pause asks for a check again
+  lead(T0 + 5 * MIN, typed());
+  lead(T0 + 31 * MIN, limitHit());
+  expect(await watchTick(deps(T0 + 32 * MIN))).toEqual([
+    `LANE_AUTOTURN_PAUSED lead aoe_Dori_0a1b2c3d 150 turns on its own (per-user-input) since ${iso(T0 + 31 * MIN)}; resumed 2/3 in 24h`,
+    "LEAD_ALERT_POSTED pair P m3",
+  ]);
+  expect(posts[2]).toStartWith("LEAD_AUTOTURN_PAUSED aoe_Dori_0a1b2c3d 150: ");
 });
 
 test("leadAlertPoster posts to the pair channel, then the owner's, skips an unset one and reports a failed post without dropping the other", async () => {

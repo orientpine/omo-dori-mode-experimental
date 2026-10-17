@@ -49,7 +49,8 @@ export type StatusStyle = "words" | "emoji";
 // directives out of a brief ({key}, {id}, {name}, {reason}): in the lane's discord:<id> thread, else DORI_DISCORD_CHANNEL.
 // leadRunawayText / leadPausedText follow the LEAD_RUNAWAY / LEAD_AUTOTURN_PAUSED head dori watch posts to the pair channel
 // and DORI_DISCORD_CHANNEL when the lead itself ran autoturnLongTurns turns on its own or omo paused it ({pane}, {turns},
-// {since}, {reason}).
+// {since}, {reason}). leadRepeatText follows "<head> repeat:" when the last alert that asked for a check is under 30 min
+// old ({pane}, {turns}, {since}, {reason}, {min} = minutes since that alert, {at} = its time): it asks for nothing.
 export type DiscordWords = {
   readonly statusStyle: StatusStyle;
   readonly autoUnEye: boolean;
@@ -58,6 +59,7 @@ export type DiscordWords = {
   readonly waiveText: string;
   readonly leadRunawayText: string;
   readonly leadPausedText: string;
+  readonly leadRepeatText: string;
   readonly doneText: string;
   readonly postRawReports: boolean;
   readonly working: string;
@@ -90,6 +92,7 @@ export const defaultDiscordWords: DiscordWords = {
   waiveText: "Lane {key} was launched without your directive {id} ({name}). The lead's reason: {reason}",
   leadRunawayText: "The lead {pane} has started {turns} turns on its own since its last user message ({since}). Other Dori: type one short check message into {pane}; do not stop it.",
   leadPausedText: "omo paused the lead {pane} after {turns} turns on its own ({reason}, since {since}). Other Dori: type one short check message into {pane}; do not stop it.",
+  leadRepeatText: "The lead {pane} is still on its own ({turns} turns). A check was already asked for {min} min ago ({at}): send no new message.",
   doneText: "Done: the checks passed and the work is closed. I'll sum up what changed for you soon.",
   postRawReports: false,
   working: "working",
