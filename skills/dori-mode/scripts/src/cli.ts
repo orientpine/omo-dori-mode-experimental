@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession } from "./aoe.ts";
+import { leadAlertPoster } from "./autoturn.ts";
 import { findLead, LeadError } from "./lead.ts";
 import { ackHandover, handover, type HandoverDeps, LEAD_SUMMARY_TEMPLATE } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
@@ -297,6 +298,10 @@ const deps: FlowDeps = {
         },
         postInThread: async (ref: string, text: string) => postInThread(ownDiscord(discordToken), ref, text),
         requestThreadStatus: async (ref: string, status: "working" | "waiting") => String(await threadStatuses(ownDiscord(discordToken)).request(discordThreadId(ref), status)),
+        postLeadAlert: leadAlertPoster((channel, text) => ownDiscord(discordToken).send(channel, text), {
+          pair: process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "",
+          owner: process.env.DORI_DISCORD_CHANNEL?.trim() ?? "",
+        }),
       }
     : {}),
 };

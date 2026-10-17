@@ -97,6 +97,30 @@ const laneText = (lane: Lane, pause: AutoturnPause, n: number, max: number): str
 const leadText = (pause: AutoturnPause, n: number, max: number): string =>
   `[DORI] LANE_AUTOTURN_PAUSED lead: omo paused this session after it started ${pause.turns} turns on its own since the last message (${pause.reason}); this message lifts it. Read the lanes log and the inbox for what arrived while it was paused. (watch resume ${n}/${max} in 24h)`;
 
+// A runaway lead may never read its own watch log or pane, so its LANE_AUTOTURN_LONG and LANE_AUTOTURN_PAUSED also go
+// out as one bot post each (deps.postLeadAlert) to the pair channel, where the other Dori's listener makes it a pair-bot
+// inbox row, and to the owner's channel: a fixed head the other Dori acts on, then the configured words. A lane's alerts
+// stay with its lead.
+const stamp = (deps: FlowDeps, at: string): string =>
+  at ? new Date(at).toLocaleString(deps.config.discord.locale, { timeZone: deps.config.discord.timeZone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "-";
+const fillWords = (template: string, values: Readonly<Record<string, string>>): string => template.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m);
+export const leadRunawayPost = (deps: FlowDeps, pane: string, run: AutoturnRun): string =>
+  `LEAD_RUNAWAY ${pane} ${run.turns}: ${fillWords(deps.config.discord.leadRunawayText, { pane, turns: String(run.turns), since: stamp(deps, run.lastUser), reason: "" })}`;
+export const leadPausedPost = (deps: FlowDeps, pane: string, pause: AutoturnPause): string =>
+  `LEAD_AUTOTURN_PAUSED ${pane} ${pause.turns}: ${fillWords(deps.config.discord.leadPausedText, { pane, turns: String(pause.turns), since: stamp(deps, pause.since), reason: pause.reason })}`;
+const leadAlert = async (deps: FlowDeps, text: string): Promise<readonly string[]> =>
+  deps.postLeadAlert ? deps.postLeadAlert(text).catch((e: unknown) => [`LEAD_ALERT_WARN ${String(e).slice(0, 160)}`]) : [];
+
+// cli's postLeadAlert: one post per configured channel (pair first, then the owner's), each answered by its own line
+export const leadAlertPoster =
+  (send: (channel: string, text: string) => Promise<string>, channels: { readonly pair: string; readonly owner: string }) =>
+  async (text: string): Promise<string[]> =>
+    Promise.all(
+      ([["pair", channels.pair], ["owner", channels.owner]] as const)
+        .filter(([, id]) => id)
+        .map(([name, id]) => send(id, text).then((m) => `LEAD_ALERT_POSTED ${name} ${id} ${m}`, (e: unknown) => `LEAD_ALERT_WARN ${name} ${id} ${String(e).slice(0, 160)}`)),
+    );
+
 // LANE_AUTOTURN_PAUSED once per pause of a lane's session (working, not-done or paused by the lead) or the lead's; up to
 // autoturnResumeMax times in 24 hours per session it also types a short message that lifts the pause (to the lead its
 // monitors cannot do that: a monitor notification is one more engine turn). Past the cap it only reports.
@@ -141,6 +165,7 @@ export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
       if (long?.user !== run.lastUser || step > (long?.at ?? 0)) {
         long = { user: run.lastUser, at: step };
         out.push(`LANE_AUTOTURN_LONG ${key} ${run.turns} ${run.lastUser || "none"}`);
+        if (!t.lane) out.push(...(await leadAlert(deps, leadRunawayPost(deps, t.pane, run))));
         if (!pause || mark?.since === pause.since) await save({ ...mark, long });
       }
     }
@@ -157,6 +182,7 @@ export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
     }
     await save({ since: pause.since, resumes, ...(long ? { long } : {}) });
     out.push(`${head}; ${tail}`);
+    if (!t.lane) out.push(...(await leadAlert(deps, leadPausedPost(deps, t.pane, pause))));
   }
   return out;
 };

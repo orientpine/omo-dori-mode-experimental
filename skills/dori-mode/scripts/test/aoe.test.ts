@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { leadAlertPoster } from "../src/autoturn.ts";
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, watchTick } from "../src/done-flow.ts";
 import type { DoriConfig } from "../src/config.ts";
@@ -409,4 +410,52 @@ test("a session that keeps running on its own is LANE_AUTOTURN_LONG once per aut
   expect(await watchTick(off(T0 + 8 * MIN))).toEqual([]);
   expect(await watchTick(w.deps(T0 + 9 * MIN))).toEqual(["LANE_AUTOTURN_LONG lead 300 none"]);
   expect(await watchTick(w.deps(T0 + 10 * MIN))).toEqual([]);
+});
+
+test("the lead's own LANE_AUTOTURN_LONG and LANE_AUTOTURN_PAUSED also go out to the other Dori and the owner, once each; a lane's stay with the lead", async () => {
+  await idleLane();
+  const w = bgWorld(T0 - 300 * MIN);
+  world.screen = watching("chain (5h)");
+  const posts: string[] = [];
+  const deps = (ms: number) => ({ ...w.deps(ms), postLeadAlert: async (text: string) => (posts.push(text), [`LEAD_ALERT_POSTED pair P m${posts.length}`]) });
+  const start = { type: "custom", customType: "engine-turn-start", data: { customType: "goal-continuation" } };
+  w.entry(T0 - 290 * MIN, typed());
+  for (let i = 0; i < 300; i++) w.entry(T0 - 280 * MIN + i, start);
+  expect(await watchTick(deps(T0))).toEqual([`LANE_AUTOTURN_LONG fix-a 300 ${iso(T0 - 290 * MIN)}`]);
+  expect(posts).toEqual([]);
+  const leadFile = join(state.dir, "sessions", "--home-test-dori--", `2026-01-01T10-00-00-000Z_${SESSION_ID}.jsonl`);
+  mkdirSync(join(state.dir, "sessions", "--home-test-dori--"), { recursive: true });
+  const lead = (ms: number, entry: object) => appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), ...entry })}\n`);
+  lead(T0 - 200 * MIN, typed());
+  for (let i = 0; i < 300; i++) lead(T0 - 100 * MIN + i, start);
+  expect(await watchTick(deps(T0 + MIN))).toEqual([`LANE_AUTOTURN_LONG lead 300 ${iso(T0 - 200 * MIN)}`, "LEAD_ALERT_POSTED pair P m1"]);
+  expect(posts).toHaveLength(1);
+  expect(posts[0]).toStartWith("LEAD_RUNAWAY aoe_Dori_0a1b2c3d 300: ");
+  expect(posts[0]).not.toContain("<@");
+  // once per 300 turns: the next tick posts nothing
+  expect(await watchTick(deps(T0 + 2 * MIN))).toEqual([]);
+  // omo pausing the lead is one more post, once per pause
+  lead(T0 + 2 * MIN + 1000, limitHit());
+  expect(await watchTick(deps(T0 + 3 * MIN))).toEqual([
+    `LANE_AUTOTURN_PAUSED lead aoe_Dori_0a1b2c3d 150 turns on its own (per-user-input) since ${iso(T0 + 2 * MIN + 1000)}; resumed 1/3 in 24h`,
+    "LEAD_ALERT_POSTED pair P m2",
+  ]);
+  expect(posts[1]).toStartWith("LEAD_AUTOTURN_PAUSED aoe_Dori_0a1b2c3d 150: ");
+  expect(await watchTick(deps(T0 + 4 * MIN))).toEqual([]);
+  expect(posts).toHaveLength(2);
+  // the lead's pane got only the resume message: nothing stops it
+  expect(sent(world)).toHaveLength(1);
+  expect(sent(world)[0]).toStartWith("[DORI] LANE_AUTOTURN_PAUSED lead:");
+});
+
+test("leadAlertPoster posts to the pair channel, then the owner's, skips an unset one and reports a failed post without dropping the other", async () => {
+  const calls: string[][] = [];
+  const post = leadAlertPoster(async (ch, text) => {
+    calls.push([ch, text]);
+    if (ch === "O") throw new Error("429");
+    return "m1";
+  }, { pair: "P", owner: "O" });
+  expect(await post("x")).toEqual(["LEAD_ALERT_POSTED pair P m1", "LEAD_ALERT_WARN owner O Error: 429"]);
+  expect(calls).toEqual([["P", "x"], ["O", "x"]]);
+  expect(await leadAlertPoster(async () => "m", { pair: "", owner: "O" })("x")).toEqual(["LEAD_ALERT_POSTED owner O m"]);
 });
