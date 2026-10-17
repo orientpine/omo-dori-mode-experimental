@@ -144,6 +144,7 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 | `dori watch` | the 5-minute auto-close watcher, plus `LANE_BLOCKED` with aoe (run it as a persistent monitor) |
 | `dori freshness` | nudge silent lanes, post a short status line in the owner's words to their thread, and hand their last report (read from the lead pane) to you to retell |
 | `dori dead-panes` | report agent panes that stopped |
+| `dori state-git log` / `restore "<time>"` | your state in local git (committed by `dori-lanes` every 10 min when it changed; env, inbox, briefs and logs stay out): when the owner says "go back to how it was last night", run `dori state-git log`, then `dori state-git restore "yesterday 21:00"` (or a commit); it commits first, so the restore line it prints also says how to undo it. Never push these repos |
 | `dori guard` | host load, memory, disk and pane-count alerts |
 | `dori heavy <label> -- <cmd>` | run a heavy command when load is low; beside running ones only when GPU, memory and CPU each keep 30% free with it (`HEAVY_ADMIT` / `HEAVY_WAIT` lines) |
 | `dori can-launch` | is there room for a new lane? exit 4 with the reasons if not |

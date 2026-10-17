@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tokenBotId } from "./messenger/discord.ts";
 import { run } from "./run.ts";
+import type { StateGitSettings } from "./state-git.ts";
 
 export type UpdateService = {
   readonly unit: string;
@@ -326,6 +327,8 @@ export type DoriConfig = {
   readonly explore: Explore;
   readonly autoSignals: AutoSignals;
   readonly handover: Handover;
+  // dori state-git: this Dori's state in local git, committed by dori-lanes (src/state-git.ts)
+  readonly stateGit: StateGitSettings;
   readonly instances: readonly InstanceRef[];
 };
 
@@ -434,6 +437,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     frozenText: "The old session {from} is frozen ({n} processes stopped, it uses no tokens); it closes in {hours} h. To undo: dori handover thaw {from}",
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
     reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },
+  stateGit: { dirs: [], everyMin: 10, maxFileKb: 512, timeoutSec: 60, timeZone: "" },
   instances: [],
 });
 
@@ -581,7 +585,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const migrated = migrateOldKeys((await file.exists()) ? ((await file.json()) as Raw) : {});
   for (const w of migrated.warnings) warn(`${w} (${path})`);
   const raw = migrated.raw as Partial<DoriConfig>;
-  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover } };
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover }, stateGit: { ...base.stateGit, ...raw.stateGit } };
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const env: unknown = merged.launchEnv;
@@ -599,6 +603,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
     sessionsDir: expandHome(merged.sessionsDir, home),
     scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog || (raw.watchLog ?? join(stateDir, "lanes.log")), home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
     handover: { ...merged.handover, inbox: expandHome(merged.handover.inbox, home), cwd: expandHome(merged.handover.cwd, home) },
+    stateGit: { ...merged.stateGit, dirs: merged.stateGit.dirs.map((d) => expandHome(d, home)) },
     leadPane,
   };
 };
