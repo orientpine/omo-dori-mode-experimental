@@ -104,10 +104,10 @@ export type ListenerDeps = {
   readonly owner: string;
   // id of the owner's own webhook in the channel; its posts count as the owner's. Empty or unset: webhook posts are only logged.
   readonly ownerWebhook?: string;
-  // a channel shared with another Dori: the owner's messages there are "pair" rows, that Dori's bot's are "pair-bot" rows
+  // a channel shared with other Doris: the owner's messages there are "pair" rows, bots in pairBots are "pair-bot" rows
   // (information, not requests). Unset: no pair channel.
   readonly pairChannel?: string;
-  readonly pairBot?: string;
+  readonly pairBots?: readonly string[];
   // channels where another app posts problem alerts (e.g. a monitoring bot's notification channel, same guild): a message
   // there from one of watchBots whose text matches watchMatch (default WATCH_MATCH) is a "watch" row without eyes, for the
   // lead to act on. Other messages there are skipped. Unset or no bots: those channels are skipped like any other.
@@ -235,7 +235,7 @@ export class DiscordListener {
       return;
     }
     const pair = this.d.pairChannel ?? "";
-    const fromPairBot = !!pair && !!this.d.pairBot && m.channel_id === pair && m.author.id === this.d.pairBot;
+    const fromPairBot = !!pair && m.channel_id === pair && !!this.d.pairBots?.includes(m.author.id);
     const fromWatch = !!this.d.watchChannels?.includes(m.channel_id) && !!this.d.watchBots?.includes(m.author.id) && (this.d.watchMatch ?? WATCH_MATCH).test(m.content ?? "");
     const hook = webhookVerdict(m, { guild: this.d.guild, channel: this.d.channel, ownerWebhook: this.d.ownerWebhook ?? "" });
     if (hook === "unknown" && !this.seen.has(m.id)) this.d.log(`DISCORD_WEBHOOK_UNKNOWN id=${m.webhook_id} name=${JSON.stringify(m.author.username ?? "")} message=${m.id}`);
