@@ -16,7 +16,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { AGENT, descendants, type Proc, sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
+import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { stuckTop } from "./explore.ts";
 import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, section } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
@@ -39,6 +39,10 @@ export type LaneHandoverDeps = FlowDeps & {
   // posts the owner's after-the-fact note of a rollover the lead decided (in the lane's discord thread, else the owner's
   // channel) and returns its message id; absent when no messenger is set up, and then a lead: approval is refused
   readonly reportOwner?: (thread: string | null, text: string) => Promise<string>;
+  // the Discord inbox and the owner's ids in it (DORI_DISCORD_OWNER, DORI_KAKAO_OWNER_ID): an approval "lead:<reason>, owner
+  // <message id or link>" holds only when that message is the owner's there
+  readonly inbox?: string;
+  readonly ownerIds?: readonly string[];
 };
 
 export type LaneHandoverOptions = {
@@ -352,7 +356,7 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
     await recover(deps, pending, emit);
     return { code: 3 };
   }
-  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLanes, key: "handover.autoRolloverLanes" }, key, lane.pane ?? "", readRollovers(config.stateDir), Boolean(deps.reportOwner));
+  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLanes, key: "handover.autoRolloverLanes" }, key, lane.pane ?? "", readRollovers(config.stateDir), Boolean(deps.reportOwner), inboxMessages(deps.inbox ?? "", deps.ownerIds ?? []));
   if (unapproved) return refuse(`a lane moves to a new session only with an approval: ${unapproved} (--dry-run needs none)`);
   const old = sessionFor(await aoeSessions(deps.run), lane.pane);
   if (!old) return refuse(`no live aoe session for pane ${lane.pane}`);

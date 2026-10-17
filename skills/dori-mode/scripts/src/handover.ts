@@ -15,7 +15,7 @@ import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
 import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, ROUND_TRIES, section, words } from "./restatement.ts";
-import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
+import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type HandoverDeps = FlowDeps & Pick<FreezeDeps, "procs" | "signal"> & {
@@ -482,7 +482,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
   const lacking = opts.note ? missingHeadings(readFileSync(opts.note, "utf8"), LEAD_SUMMARY_HEADINGS) : [];
   if (lacking.length) return refuse(`the old lead's summary ${opts.note} lacks ${lacking.map((h) => `## ${h}`).join(", ")} (dori handover --template prints the headings)`);
-  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLead, key: "handover.autoRolloverLead" }, "lead", config.leadPane, readRollovers(config.stateDir), Boolean(deps.reportOwner));
+  const unapproved = opts.dryRun ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLead, key: "handover.autoRolloverLead" }, "lead", config.leadPane, readRollovers(config.stateDir), Boolean(deps.reportOwner), inboxMessages(deps.inbox, deps.ownerIds ?? []));
   if (unapproved) return refuse(`the lead moves to a new session only with an approval: ${unapproved} (--dry-run needs none)`);
   const old = sessionFor(await aoeSessions(deps.run), config.leadPane);
   if (!old) return refuse(`no live aoe session for leadPane ${config.leadPane}`);

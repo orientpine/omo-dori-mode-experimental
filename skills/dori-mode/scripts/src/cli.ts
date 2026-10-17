@@ -255,7 +255,8 @@ const USAGE = `dori <command> [options]
                                        the rollover proposal for the lead to decide: handover.proposalText with the length
                                        signals, the thresholds crossed, the lane's stuck rung and the note a dry-run handover
                                        writes (ROLLOVER_PROPOSAL), logged to <stateDir>/rollover-log.jsonl; then run the
-                                       handover with --approved-by "lead:<reason and signal>"
+                                       handover with --approved-by "lead:<reason and signal>" (or "lead:<reason>,
+                                       owner <message id>" when the owner asked for it: checked against the inbox)
   rollover-stats [--window H]          proposals and rollovers from the log: signal values, approval time, each step's time
                                        and result, and the lane's watch-log quality signals H hours (24) before and after
   handover ready [<key>] --note FILE   run by a lane in its own pane at a safe point: the local chains running now may end
@@ -421,6 +422,8 @@ const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)
   realpath: realpathOr,
   nonce: () => crypto.randomUUID().slice(0, 8),
   print,
+  inbox: config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+  ownerIds: [process.env.DORI_DISCORD_OWNER, process.env.DORI_KAKAO_OWNER_ID].map((id) => id?.trim() ?? "").filter(Boolean),
   ...reportOwner,
 });
 const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
