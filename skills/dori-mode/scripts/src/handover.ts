@@ -406,7 +406,7 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
   const ack = (id: string) => `dori handover ack ${id} --state ${deps.config.stateDir}`;
   const line = `[REPORT] handover-probe | milestone | ${PROBE} ${report}: run ${ack(report)}`;
   if (!(await sendVerified(deps.run, deps.clock, deps.config, routed, line))) return { reasons: [`the report probe did not reach ${routed}`], session };
-  appendFileSync(deps.inbox, `${JSON.stringify({ ts: iso(deps.clock), id: `handover-${inbox}`, kind: "handover-probe", content: `${PROBE} ${inbox}: run ${ack(inbox)}` })}\n`);
+  appendFileSync(deps.inbox, `${JSON.stringify({ ts: iso(deps.clock), id: `handover-${inbox}`, scope: "channel", kind: "handover-probe", content: `${PROBE} ${inbox}: run ${ack(inbox)}` })}\n`);
   emit(`HANDOVER_PROBES_SENT report=${report} inbox=${inbox} (${deps.inbox})`);
   let problems: string[] = [];
   for (; i < tries; i++) {
