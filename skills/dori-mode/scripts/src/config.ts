@@ -63,6 +63,9 @@ export type DiscordWords = {
   readonly leadRepeatText: string;
   readonly doneText: string;
   readonly postRawReports: boolean;
+  // minutes a done (✅) thread in DORI_DISCORD_CHANNEL stays quiet before freshness archives it (0: never; a thread an open
+  // lane, an open card or a pending rename holds is left open)
+  readonly autoArchiveMin: number;
   readonly working: string;
   readonly waiting: string;
   readonly done: string;
@@ -96,6 +99,7 @@ export const defaultDiscordWords: DiscordWords = {
   leadRepeatText: "The lead {pane} is still on its own ({turns} turns). A check was already asked for {min} min ago ({at}): send no new message.",
   doneText: "Done: the checks passed and the work is closed. I'll sum up what changed for you soon.",
   postRawReports: false,
+  autoArchiveMin: 30,
   working: "working",
   waiting: "waiting",
   done: "done",
