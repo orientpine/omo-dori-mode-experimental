@@ -25,6 +25,9 @@ export type FlowDeps = {
   // asks the thread status queue for a status on a discord:<id> work thread; the queue keeps it working while a lane there
   // still works. Resolves with the queue's outcome (cli wires it when DORI_DISCORD_TOKEN is set)
   readonly requestThreadStatus?: (ref: string, status: "working" | "waiting") => Promise<string>;
+  // posts the lead's own runaway or pause alert to the pair channel (the other Dori's inbox) and the owner's channel as
+  // this Dori's bot, without mentions; one LEAD_ALERT_POSTED / LEAD_ALERT_WARN line per channel (cli wires leadAlertPoster)
+  readonly postLeadAlert?: (text: string) => Promise<readonly string[]>;
 };
 
 export class LaneStateError extends Error {}
