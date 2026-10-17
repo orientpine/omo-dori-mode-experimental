@@ -52,6 +52,7 @@ import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./mess
 import { DiscordListener } from "./messenger/discord-listener.ts";
 import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
 import { mapThread, threads } from "./messenger/thread-map.ts";
+import { archiveDoneThreads } from "./messenger/thread-archive.ts";
 import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
@@ -905,6 +906,27 @@ try {
           },
         };
         for (const a of await freshnessTick(deps, process.env.HOME ?? "", hooks)) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
+        // a done thread that a post after its close opened again goes back to the archive once quiet (discord.autoArchiveMin)
+        if (discordToken) {
+          const statusFile = join(cardDir(), "thread-status.json");
+          const store = new QuestionStore(cardDir());
+          const archived = await Promise.resolve()
+            .then(() =>
+              archiveDoneThreads({
+                dc: ownDiscord(discordToken),
+                guild: process.env.DORI_DISCORD_GUILD?.trim() ?? "",
+                channel: process.env.DORI_DISCORD_CHANNEL?.trim() ?? "",
+                words: config.discord,
+                afterMin: config.discord.autoArchiveMin,
+                now: realClock.now,
+                laneThreads: async () => new Set((await deps.registry.open()).flatMap((l) => (l.thread?.startsWith("discord:") ? [l.thread.slice("discord:".length)] : []))),
+                openCards: (t) => openCardIds(store, t),
+                pendingStatus: (t) => existsSync(statusFile) && t in (JSON.parse(readFileSync(statusFile, "utf8")) as Record<string, unknown>),
+              }),
+            )
+            .catch((e: unknown) => [`THREAD_AUTO_ARCHIVE_WARN ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 200)}`]);
+          for (const line of archived) console.log(line);
+        }
         // a frozen old lead is closed handover.frozenCloseH hours after its handover
         for (const line of await closeDueFrozen(freezeDeps, config.stateDir, Date.now())) {
           watchLog(config.watchLog, realClock, { source: "handover", line });
