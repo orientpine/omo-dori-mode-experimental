@@ -506,12 +506,19 @@ const checkedDiscordToken = (token: string): string => {
   const why = discordBotProblem(token);
   return why ? die(why, 2) : token;
 };
+// DORI_DISCORD_API: the REST base for a Dori whose only way out is an egress gate (setups/egress-gate); unset = Discord
+const discordApi = (): string => process.env.DORI_DISCORD_API?.trim() || "https://discord.com/api/v10";
+// the gateway socket follows HTTPS_PROXY when one is set, like fetch does
+const gatewaySocket = (): WebSocket => {
+  const proxy = process.env.HTTPS_PROXY?.trim() || process.env.https_proxy?.trim();
+  return new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json", proxy ? { proxy } : undefined);
+};
 const ownDiscord = (token: string): Discord => {
   const why = discordBotProblem(token);
   if (why) throw new Error(why);
-  return new Discord(fetchHttp, realClock, token);
+  return new Discord(fetchHttp, realClock, token, discordApi());
 };
-const discordClient = () => new Discord(fetchHttp, realClock, checkedDiscordToken(env("DORI_DISCORD_TOKEN")));
+const discordClient = () => new Discord(fetchHttp, realClock, checkedDiscordToken(env("DORI_DISCORD_TOKEN")), discordApi());
 // question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
 const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
 // every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards and
@@ -1131,7 +1138,7 @@ try {
         if (edit) await tg.edit(target, Number(edit), text);
         else console.log(`SENT ${await tg.send(target, text)}`);
       } else if (platform === "discord") {
-        const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")));
+        const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")), discordApi());
         if (edit) await dc.edit(to, edit, text);
         else console.log(`SENT ${await dc.send(thread ?? to, text, !flags.values["no-typing"], ping)}`);
       } else die(`unknown platform ${platform}`);
@@ -1150,7 +1157,7 @@ try {
       } else if (key === "discord") {
         const token = checkedDiscordToken(process.env.DORI_DISCORD_TOKEN ?? die("DORI_DISCORD_TOKEN is not set"));
         discordPresence(() => {
-          const ws = new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
+          const ws = gatewaySocket();
           let handler: (d: string) => void = () => {};
           ws.addEventListener("message", (e) => handler(String(e.data)));
           return { send: (d) => ws.send(d), close: () => ws.close(), onMessage: (cb) => { handler = cb; } };
@@ -1174,7 +1181,7 @@ try {
           dc,
           cards: questionCards(dc, statuses),
           open: () => {
-            const ws = new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
+            const ws = gatewaySocket();
             return {
               send: (d) => ws.send(d),
               close: (code, reason) => ws.close(code, reason),

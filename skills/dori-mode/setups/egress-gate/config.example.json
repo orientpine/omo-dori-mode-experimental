@@ -1,0 +1,36 @@
+{
+  "state": "/var/lib/dori-gate",
+  "listen": {"connect": 3128, "google": 3129, "discord": 3130},
+  "clients": [1004],
+  "admins": [1001],
+  "proc_tcp_paths": ["/proc/net/tcp", "/proc/net/tcp6"],
+  "owner_id": "280680578314010625",
+  "owner_guild": "1528936606264856737",
+  "owner_emails": ["owner@example.com"],
+  "owner_proof": {
+    "token_file": "/var/lib/dori-gate/owner-bot-token",
+    "max_age_hours": 24
+  },
+  "approval": {"channel_id": "REPLACE_WITH_APPROVAL_CHANNEL_ID", "poll_seconds": 20},
+  "limits": {"deletes_per_hour": 10, "writes_per_owner_message": 30},
+  "google_scopes": [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/gmail.readonly"
+  ],
+  "connect_allow": [
+    "api.anthropic.com", "console.anthropic.com", "platform.claude.com",
+    "claude.ai", "statsig.anthropic.com", "chatgpt.com", "auth.openai.com",
+    "api.openai.com", "api.x.ai", "auth.x.ai", "gateway.discord.gg",
+    "*.discord.gg", "cdn.discordapp.com", "media.discordapp.net",
+    "github.com", "codeload.github.com", "objects.githubusercontent.com",
+    "raw.githubusercontent.com", "registry.npmjs.org", "*.npmjs.org"
+  ],
+  "upstreams": {},
+  "discord_api_base": "https://discord.com/api/v10",
+  "tokeninfo_url": "https://oauth2.googleapis.com/tokeninfo"
+}
