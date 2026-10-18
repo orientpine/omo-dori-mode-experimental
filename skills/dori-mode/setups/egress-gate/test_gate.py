@@ -765,8 +765,10 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(summary.post_summary, self.config, 24)
         text = "\n".join(self.cards.values())
         self.assertIn("Daily title", text)
-        self.assertIn("https://discord.com/channels/10/20/100", text)
-        self.assertIn("KST", text)
+        self.assertNotIn("https://discord.com/channels/10/20/100", text)
+        self.assertEqual(text.splitlines()[-1], "자세한 건 물어보면 올림")
+        journal = (self.state / "changes.jsonl").read_text()
+        self.assertIn("https://discord.com/channels/10/20/100", journal)
         self.assertTrue(output.getvalue().startswith("SUMMARY_POSTED"))
         self.assertTrue(all(len(c) < 1900 for c in self.cards.values()))
 
@@ -817,9 +819,25 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(summary.post_summary, self.config, 24)
         content = "\n".join(self.cards.values())
         self.assertIn("Summary restore", content)
-        self.assertIn("되살리기: /_gate/restore/", content)
-        self.assertIn("owner-message-required", content)
-        self.assertIn(self.service.pending()[0]["card"], content)
+        self.assertIn("막힌 쓰기 1건 · 승인 기다림 1건", content)
+        self.assertNotIn("/_gate/restore/", content)
+        self.assertNotIn(self.service.pending()[0]["card"], content)
+        self.assertTrue(json.loads((self.state / "changes.jsonl").read_text().splitlines()[0])["restorable"])
+
+    def test_summary_groups_gate_tests_and_names_deletes_from_snapshots(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        def row(op, title, status=200, **extra):
+            return {"id": op + title, "ts": now.isoformat(), "api": "calendar", "op": op, "status": status,
+                    "restorable": False, "resource": {"summary": title} if title else {},
+                    "owner_message": "https://discord.com/channels/1/2/3", **extra}
+        changes = [row("events.insert", "Dentist"), row("events.patch", "Dinner"),
+                   row("events.insert", "게이트 시험"), row("events.delete", "", 204, restorable=True, snapshot="s"),
+                   row("events.insert", "Broken", 500)]
+        text = summary.render(changes, [], [], 24, "유돌", lambda r: "게이트 시험")
+        self.assertEqual(text.splitlines(), [
+            "오늘 유돌이 바꾼 것 4건", "일정 2(추가 1·수정 1)",
+            now.astimezone(dt.timezone(dt.timedelta(hours=9))).strftime("%H:%M Dentist · %H:%M Dinner"),
+            "게이트 시험 2건(일정 2)", "되살릴 수 있음 1건", "실패 1건", "자세한 건 유돌에게 물어보면 올림"])
 
     async def test_vault_path_rejects_traversal_hidden_and_other_prefixes(self):
         self.config["vault"] = {"dir": str(self.state / "vault.git"), "allowed_prefix": "Notes"}

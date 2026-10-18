@@ -23,30 +23,83 @@ def window_records(path: Path, cutoff: dt.datetime) -> list:
                 dt.datetime.fromisoformat(row["ts"]) >= cutoff]
 
 
-def render(changes: list, denials: list, pending: list, hours: float) -> str:
-    names = {"calendar": "일정", "tasks": "할 일", "drive": "드라이브",
-             "docs": "문서", "obsidian": "노트", "sheets": "시트"}
-    lines = [f"최근 {hours:g}시간 변경 {len(changes)}건"]
-    counts = collections.Counter((row["api"], row["op"]) for row in changes)
-    lines.extend(f"{names.get(api, api)} · {op}: {count}건" for (api, op), count in sorted(counts.items()))
-    kst = dt.timezone(dt.timedelta(hours=9))
-    for row in changes:
-        resource = row["resource"]
-        title = resource.get("title") or resource.get("summary") or resource.get("name") or resource.get("id", "")
-        stamp = dt.datetime.fromisoformat(row["ts"]).astimezone(kst).strftime("%m-%d %H:%M KST")
-        line = f"- {stamp} {row['op']} {defang(str(title))} ({row['status']})"
-        if resource.get("link"):
-            line += f"\n  {resource['link']}"
-        line += f"\n  근거 형 메시지: {row['owner_message']}"
-        if row.get("approved_by"):
-            line += f"\n  approved_by: {row['approved_by']}"
-        if row["restorable"]:
-            line += f"\n  되살리기: /_gate/restore/{row['id']}"
-        lines.append(line)
-    reasons = collections.Counter(row["reason"] for row in denials)
-    lines.extend(f"거절 · {reason}: {count}건" for reason, count in sorted(reasons.items()))
-    lines.append(f"열린 승인 카드 {len(pending)}건")
-    lines.extend(f"- {row['reason']} {row['card']}" for row in pending)
+NAMES = {"calendar": "일정", "tasks": "할 일", "drive": "드라이브",
+         "docs": "문서", "obsidian": "노트", "sheets": "시트"}
+TEST_TITLE = re.compile(r"게이트\s*시험|gate[ -]?test", re.IGNORECASE)
+SHOWN_TITLES = 3
+
+
+def verb(row: dict) -> str:
+    op = row["op"]
+    if op.startswith("restore."):
+        return "되살림"
+    if op.startswith("permissions."):
+        return "공유"
+    if op.startswith("comments."):
+        return "댓글"
+    if row.get("delete") or op.endswith(".delete"):
+        return "삭제"
+    if op.endswith((".insert", ".create", ".copy")):
+        return "추가"
+    return "수정"
+
+
+def title_of(row: dict, snapshot_title=None) -> str:
+    resource = row["resource"]
+    title = resource.get("title") or resource.get("summary") or resource.get("name")
+    if not title and snapshot_title:
+        title = snapshot_title(row)
+    title = " ".join(str(title or "제목 없음").split())
+    return title.rsplit("/", 1)[-1].removesuffix(".md") if row["api"] == "obsidian" else title
+
+
+def short(text: str, width: int = 20) -> str:
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def by_kind(rows: list, verbs_shown: bool = True) -> str:
+    """일정 4(추가 3·수정 1) · 할 일 1 - kinds by count, verbs inside when more than one."""
+    kinds = collections.defaultdict(collections.Counter)
+    for row in rows:
+        kinds[row["api"]][verb(row)] += 1
+    parts = []
+    for api, verbs in sorted(kinds.items(), key=lambda item: (-sum(item[1].values()), item[0])):
+        part = f"{NAMES.get(api, api)} {sum(verbs.values())}"
+        if verbs_shown and len(verbs) > 1:
+            part += "(" + "·".join(f"{v} {n}" for v, n in verbs.most_common()) + ")"
+        parts.append(part)
+    return " · ".join(parts)
+
+
+def render(changes: list, denials: list, pending: list, hours: float, name: str = "",
+           snapshot_title=None) -> str:
+    """A few lines for a phone; links, owner proof, approvals and restore IDs stay in the journal."""
+    final = name and 0xAC00 <= ord(name[-1]) <= 0xD7A3 and (ord(name[-1]) - 0xAC00) % 28
+    who = f"{name}{'이' if final else '가'} " if name else ""
+    span = "오늘" if hours == 24 else f"최근 {hours:g}시간"
+    done = [row for row in changes if 200 <= row["status"] < 300]
+    failed = len(changes) - len(done)
+    tests = [row for row in done if TEST_TITLE.search(title_of(row, snapshot_title))]
+    real = [row for row in done if row not in tests]
+    lines = [f"{span} {who}바꾼 것 {len(done)}건"]
+    if real:
+        lines.append(by_kind(real))
+        kst = dt.timezone(dt.timedelta(hours=9))
+        latest = sorted(real, key=lambda row: row["ts"], reverse=True)
+        shown = [dt.datetime.fromisoformat(row["ts"]).astimezone(kst).strftime("%H:%M ") +
+                 defang(short(title_of(row, snapshot_title))) for row in latest[:SHOWN_TITLES]]
+        more = f" 외 {len(real) - SHOWN_TITLES}건" if len(real) > SHOWN_TITLES else ""
+        lines.append(" · ".join(shown) + more)
+    if tests:
+        lines.append(f"게이트 시험 {len(tests)}건({by_kind(tests, False).replace(' · ', '·')})")
+    restorable = sum(1 for row in done if row["restorable"] and verb(row) == "삭제")
+    if restorable:
+        lines.append(f"되살릴 수 있음 {restorable}건")
+    others = [text for count, text in ((failed, f"실패 {failed}건"), (len(denials), f"막힌 쓰기 {len(denials)}건"),
+                                       (len(pending), f"승인 기다림 {len(pending)}건")) if count]
+    if others:
+        lines.append(" · ".join(others))
+    lines.append(f"자세한 건 {name}에게 물어보면 올림" if name else "자세한 건 물어보면 올림")
     return "\n".join(lines)
 
 
@@ -63,7 +116,15 @@ def post_summary(config: dict, hours: float) -> int:
     if not changes and not denials and not pending:
         print("SUMMARY_EMPTY")
         return 0
-    content = render(changes, denials, pending, hours)
+    def snapshot_title(row: dict) -> str:
+        """A delete returns no body; its title is in the snapshot taken before it."""
+        try:
+            data = json.loads((state / row["snapshot"]).read_text())
+        except (KeyError, TypeError, OSError, ValueError):
+            return ""
+        return str(data.get("title") or data.get("summary") or data.get("name") or "") if isinstance(data, dict) else ""
+
+    content = render(changes, denials, pending, hours, config.get("dori_name", ""), snapshot_title)
     base = urlsplit(config.get("discord_api_base", "https://discord.com/api/v10"))
     connection_class = http.client.HTTPSConnection if base.scheme == "https" else http.client.HTTPConnection
     authorization = "Bot " + Path(config["owner_proof"]["token_file"]).read_text().strip()

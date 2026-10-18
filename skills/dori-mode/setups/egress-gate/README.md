@@ -117,10 +117,16 @@ python3 -I summary.py --config /etc/dori-gate/config.json --hours 24 --post
 
 The first command reads the gate endpoint (admin UID allowed) and prints nothing
 when no changes exist. The second is suitable for an external systemd timer,
-running as the gate user: reads journals/pending directly, includes KST times,
-API/operation counts, titles/links, owner proof, approval links, restore hints,
-denial reasons and open cards. Posts using the gate bot to the configured approval
-channel in chunks below 1900 characters. Prints `SUMMARY_EMPTY` or
+running as the gate user: reads journals/pending directly and posts a short
+phone-sized message: a head line (changes in the window), one line of counts per
+kind (`일정 4(추가 3·수정 1) · 할 일 1`), the latest three `HH:MM title` (KST),
+titles matching `게이트 시험`/`gate test` folded into one line, a count of restorable
+deletes, one line of failed/refused/pending counts, and `자세한 건 <name>에게 물어보면
+올림`. Optional config `"dori_name"` names the Dori in the head and last lines.
+Links, owner proof, approvals and restore IDs stay in the journal only; the Dori
+reads them from `GET /_gate/changes` and `GET /_gate/pending` when the owner asks.
+Posts using the gate bot to the configured approval channel in chunks below 1900
+characters. Prints `SUMMARY_EMPTY` or
 `SUMMARY_POSTED N messages`. No service or timer is installed by these files.
 
 ## Tests

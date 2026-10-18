@@ -1,5 +1,6 @@
 {
   "state": "/var/lib/dori-gate",
+  "dori_name": "도리",
   "listen": {"connect": 3128, "google": 3129, "discord": 3130},
   "clients": [1004],
   "admins": [1001],
