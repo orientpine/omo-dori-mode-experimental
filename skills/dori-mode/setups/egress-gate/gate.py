@@ -981,7 +981,7 @@ class Gate:
                 raise Refused("oauth-state-required")
             pending = self.auth_pending or json.loads(pending_path.read_text())
             if (not secrets.compare_digest(params.get("state", ""), pending["state"])
-                    or time.time() - pending["created"] > 600 or not params.get("code")):
+                    or time.time() - pending["created"] > 86400 or not params.get("code")):
                 raise Refused("oauth-state-required")
             pending_path.unlink()
             self.auth_pending = None
@@ -998,7 +998,7 @@ class Gate:
                 scope = info.get("scope", "")
             granted = scope.split()
             if (not granted or any(forbidden_scope(s) for s in granted)
-                    or not set(granted) <= set(self.config["google_scopes"])):
+                    or not set(granted) <= set(self.config["google_scopes"]) | {"email", "profile"}):
                 raise Refused("unsafe-google-scope")
             if not token.get("refresh_token"):
                 raise Refused("refresh-token-required", 400)
@@ -1359,11 +1359,13 @@ class Gate:
             await asyncio.gather(self.approval_task, return_exceptions=True)
         for server in self.servers.values():
             server.close()
-            await server.wait_closed()
+        # Python 3.12 wait_closed() waits for open connections (a long CONNECT tunnel), so end them first.
         tasks = list(self.connections)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        for server in self.servers.values():
+            await server.wait_closed()
 
 
 async def serve(config: dict):

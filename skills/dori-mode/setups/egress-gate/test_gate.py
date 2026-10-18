@@ -608,6 +608,10 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(json.loads(content)["error"], "unsafe-google-scope")
                 self.assertEqual((self.state / "google-token.json").read_bytes(), previous)
 
+    async def test_auth_finish_accepts_googles_email_alias_as_it_really_answers(self):
+        status, content = await self.finish_auth("email profile openid")
+        self.assertEqual(status, 200, content)
+
     async def test_auth_finish_accepts_configured_scopes_and_rejects_extra(self):
         self.assertEqual((await self.finish_auth("openid"))[0], 200)
         self.assertEqual((self.state / "google-token.json").stat().st_mode & 0o777, 0o600)
