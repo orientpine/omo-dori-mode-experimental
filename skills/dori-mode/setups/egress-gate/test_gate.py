@@ -809,6 +809,30 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
 
 
+class IPv6FallbackTests(unittest.TestCase):
+    def test_ipv4_is_tried_first_and_a_dead_ipv6_address_does_not_block_the_connection(self):
+        server = socket.socket(socket.AF_INET)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        dead = socket.socket(socket.AF_INET6)
+        dead.bind(("::1", 0))
+        dead_port = dead.getsockname()[1]
+        dead.close()
+        infos = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", dead_port, 0, 0)),
+                 (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+        self.assertEqual([a[0] for a in gate.ordered(infos)], [socket.AF_INET, socket.AF_INET6])
+        with patch.object(gate.socket, "getaddrinfo", return_value=list(reversed(infos[::-1]))):
+            sock = gate.tcp_connect("dual.example", port, 3)
+        try:
+            self.assertEqual(sock.getpeername(), ("127.0.0.1", port))
+        finally:
+            sock.close()
+            server.close()
+        with patch.object(gate.socket, "getaddrinfo", return_value=[infos[0]]), self.assertRaises(OSError):
+            gate.tcp_connect("v6only.example", dead_port, 1)
+
+
 class IdentityTests(unittest.TestCase):
     def test_uid_lookup_from_fake_proc_and_remote_endpoint(self):
         with tempfile.TemporaryDirectory(prefix="dori-proc-test-") as root:

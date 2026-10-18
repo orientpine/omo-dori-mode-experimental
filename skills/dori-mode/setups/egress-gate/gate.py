@@ -41,6 +41,38 @@ DISCORD_URL_ALLOW = ["discord.com", "*.discord.com", "discordapp.com", "*.discor
                      "github.com", "*.github.com"]
 
 
+def ordered(addresses):
+    """IPv4 first: on a host without working IPv6 an IPv6 attempt only hangs until its timeout."""
+    return sorted(addresses, key=lambda a: a[0] != socket.AF_INET)
+
+
+def tcp_connect(host: str, port: int, timeout: float) -> socket.socket:
+    last: OSError | None = None
+    for family, kind, proto, _, address in ordered(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)):
+        sock = socket.socket(family, kind, proto)
+        sock.settimeout(min(timeout, 5) if family == socket.AF_INET6 else timeout)
+        try:
+            sock.connect(address)
+        except OSError as error:
+            last = error
+            sock.close()
+            continue
+        sock.settimeout(timeout)
+        return sock
+    raise last or OSError("no address")
+
+
+class PlainUpstream(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = tcp_connect(self.host, self.port, self.timeout)
+
+
+class TlsUpstream(http.client.HTTPSConnection):
+    def connect(self):
+        self.sock = self._context.wrap_socket(tcp_connect(self.host, self.port, self.timeout),
+                                              server_hostname=self.host)
+
+
 def strings(value):
     if isinstance(value, str):
         yield value
@@ -336,7 +368,7 @@ class Gate:
         parts = urlsplit(url)
         if parts.scheme not in {"http", "https"} or parts.username or parts.password:
             raise Refused("invalid-upstream", 502)
-        connection_class = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+        connection_class = TlsUpstream if parts.scheme == "https" else PlainUpstream
         connection = connection_class(parts.hostname, parts.port, timeout=30)
         outgoing = {k: v for k, v in headers.items()
                     if k.lower() not in HOP | {"host", "content-length", "x-dori-owner-message"}}
@@ -1214,8 +1246,15 @@ class Gate:
         self.tunnels += 1
         remote_writer = None
         try:
-            remote_reader, remote_writer = await asyncio.wait_for(
-                asyncio.open_connection(addresses[0][4][0], port), 30)
+            for family, *_, address in ordered(addresses):
+                try:
+                    remote_reader, remote_writer = await asyncio.wait_for(
+                        asyncio.open_connection(address[0], port), 5 if family == socket.AF_INET6 else 30)
+                    break
+                except (OSError, TimeoutError):
+                    continue
+            else:
+                raise Refused("connect-upstream-unreachable", 502)
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
             activity = asyncio.Event()
