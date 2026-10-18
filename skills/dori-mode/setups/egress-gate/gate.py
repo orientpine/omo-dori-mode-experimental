@@ -819,10 +819,13 @@ class Gate:
         fallback = snapshot or {}
         title = " ".join(str(data.get("title") or data.get("summary") or data.get("name") or
                              fallback.get("title") or fallback.get("summary") or fallback.get("name") or "").splitlines())
+        thread = await self.card_thread(channel, proof, title or op)
+        await self.supersede(thread, api, op, path, method, title)
         content = ("승인 필요 · 유도리 바깥 경로\n"
                    f"무엇: {op} ({api})\n어디로: {', '.join(sorted(set(destinations)))[:500] or path[:500]}\n"
                    f"이유: {', '.join(sorted(set(reasons)))}\n"
                    f"내용: {defang(title[:200])}\n근거 형 메시지: {proof}\n✅ 실행 · ⛔ 취소 (24시간 뒤 만료)")
+        channel = thread
         status, _, response = await self.bot_call("POST", f"/channels/{channel}/messages",
                                                  {"content": content, "allowed_mentions": {"parse": []}, "flags": 4})
         if not 200 <= status < 300:
@@ -836,7 +839,7 @@ class Gate:
                      headers={k: v for k, v in headers.items() if k.lower() in {"content-type", "accept"}},
                      body=base64.b64encode(body).decode(), owner_message=proof,
                      reason=",".join(sorted(set(reasons))), api=api, op=op,
-                     channel=channel, message=message, card=link,
+                     channel=channel, message=message, card=link, title=title, thread=thread,
                      content_hash=hashlib.sha256(json_object(response).get("content", content).encode()).hexdigest(), status="pending",
                      snapshot_hash=hashlib.sha256(json_bytes(snapshot)).hexdigest(),
                      restoring=restoring,
@@ -850,6 +853,57 @@ class Gate:
             if not 200 <= status < 300:
                 self.deny(uid, "google", method, path, "approval-reaction-failed")
         return 202, {}, json_bytes(dict(status="pending_approval", id=identity, card=link, reason=entry["reason"]))
+
+    async def card_thread(self, channel, proof, title) -> str:
+        """Where a card goes (owner 2026-10-18/19): the owner's request thread, or a thread of its own.
+
+        A request written inside a thread keeps its card there; one written in the approval channel
+        gets a thread on that message (Discord: thread id == message id); anything else opens a new
+        thread in the approval channel. Any failure keeps the old place, the channel itself.
+        """
+        parts = proof.rsplit("/", 2)
+        origin, message = (parts[-2], parts[-1]) if len(parts) == 3 and parts[-1].isdigit() else ("", "")
+        name = f"🔐 승인 · {title}"[:100]
+        try:
+            if origin and origin != channel:
+                status, _, body = await self.bot_call("GET", f"/channels/{origin}")
+                info = json_object(body) if 200 <= status < 300 else {}
+                if info.get("type") in (11, 12) and str(info.get("parent_id")) == channel:
+                    return origin
+            if origin == channel and message:
+                status, _, _ = await self.bot_call(
+                    "POST", f"/channels/{channel}/messages/{message}/threads",
+                    {"name": name, "auto_archive_duration": 10080})
+                if 200 <= status < 300 or status == 400:  # 400: that message already has its thread
+                    return message
+            status, _, body = await self.bot_call(
+                "POST", f"/channels/{channel}/threads", {"name": name, "type": 11, "auto_archive_duration": 10080})
+            created = str(json_object(body).get("id", "")) if 200 <= status < 300 else ""
+            if created.isdigit():
+                return created
+        except (OSError, ValueError, KeyError, http.client.HTTPException):
+            pass
+        print("GATE_CARD_THREAD_FALLBACK", file=sys.stderr, flush=True)
+        return channel
+
+    async def supersede(self, thread, api, op, path, method, title) -> None:
+        """A newer card for the same work in the same thread replaces the older undecided one."""
+        async with self.approval_lock:
+            for entry in self.pending():
+                if (entry.get("thread") != thread or entry.get("api") != api or entry.get("op") != op
+                        or entry.get("path") != path or entry.get("status") != "pending"
+                        or method == "POST" and entry.get("title") != title):
+                    continue
+                base = f"/channels/{entry['channel']}/messages/{entry['message']}"
+                if await self.owner_reacted(base, "⛔") or await self.owner_reacted(base, "✅"):
+                    continue  # the owner already decided that card; the poller handles it
+                (self.state / "pending" / (entry["id"] + ".json")).unlink(missing_ok=True)
+                self.deny(entry["uid"], "google", entry["method"], entry["path"], "superseded")
+                status, _, body = await self.bot_call("GET", base)
+                original = json_object(body).get("content", "") if 200 <= status < 300 else ""
+                await self.bot_call("PATCH", base, {
+                    "content": ("🔁 새 판으로 대체됨 — 이 카드는 실행되지 않습니다\n" + original)[:2000],
+                    "allowed_mentions": {"parse": []}})
 
     async def owner_reacted(self, base, emoji) -> bool:
         after = None

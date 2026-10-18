@@ -63,6 +63,14 @@ Cards expire after 24 hours. Missing/tampered cards never execute. A SHA-256
 content check precedes reactions. Clients cannot edit/delete pending cards or
 add/remove their reactions through the Discord port.
 
+Each card lives in a thread, and its result is written on the card there. A request
+written inside a thread under the approval channel keeps its card in that thread; one
+written in the approval channel gets a thread on that message; anything else opens a new
+thread in the approval channel (any thread failure falls back to the channel). A newer card
+for the same work in the same thread (same API, operation and path; for creates, the same
+title) replaces the older undecided card: it is marked `🔁 새 판으로 대체됨` and never runs.
+A card the owner already reacted to is left to the poller.
+
 Pending requests are private JSON files in `pending/`. Execution is marked
 durably before sending: an interrupted, uncertain write is never automatically
 replayed after restart. Confirm its real upstream state before resubmitting.
