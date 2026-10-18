@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import shutil
 import signal
 import socket
 import sys
@@ -992,7 +993,8 @@ class Gate:
             present = (self.state / "google-token.json").exists()
             info = await self.tokeninfo() if present else {}
             return dict(token_present=present, scopes=info.get("scope", "").split(),
-                        changes=len(self.records()), denials=len(self.records("denials.jsonl")))
+                        changes=len(self.records()), denials=len(self.records("denials.jsonl")),
+                        vault_last_error=getattr(self, "vault_error", ""))
         if (method, path) == ("GET", "/_admin/tokeninfo"):
             return await self.tokeninfo()
         if (method, path) == ("POST", "/_admin/auth-url"):
@@ -1104,7 +1106,7 @@ class Gate:
         process = await asyncio.create_subprocess_exec(*command, env=full, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            output, _ = await asyncio.wait_for(process.communicate(stdin), 120)
+            output, errors = await asyncio.wait_for(process.communicate(stdin), 120)
         except asyncio.CancelledError:
             process.kill()
             await process.communicate()
@@ -1114,6 +1116,8 @@ class Gate:
             await process.communicate()
             raise Refused("vault-git-timeout", 502) from None
         if check and process.returncode:
+            last = (errors.decode("utf-8", "replace").strip().splitlines() or [""])[-1][:300]
+            self.vault_error = f"{utc()} {args[0]} rc={process.returncode}: {last}"
             print(f"GATE_GIT_FAIL {args[0]} rc={process.returncode}", file=sys.stderr, flush=True)
             raise Refused("vault-git-failed", 502)
         return output if check else (process.returncode, output)
@@ -1141,7 +1145,13 @@ class Gate:
         remote = (await self.git("remote", "get-url", "origin")).decode().strip()
         if remote != vault["remote"]:
             raise Refused("vault-remote-mismatch")
-        await self.git("fetch", "--depth=1", "--filter=blob:none", "origin", f"+refs/heads/{branch}:refs/heads/{branch}")
+        try:
+            await self.git("fetch", "--depth=1", "--filter=blob:none", "origin", f"+refs/heads/{branch}:refs/heads/{branch}")
+        except Refused:
+            # A clone left broken (an interrupted fetch, a stale lock) is cheaper to take again than to repair.
+            shutil.rmtree(vault["dir"])
+            await self.git("clone", "--bare", "--filter=blob:none", "--depth=1", "--single-branch",
+                           "--branch", branch, "--", vault["remote"], vault["dir"], clone=True)
         return branch
 
     async def vault_read(self, branch: str, relative: str) -> str | None:
