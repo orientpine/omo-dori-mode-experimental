@@ -20,6 +20,17 @@ socket entry in `/proc/net/tcp` and `/proc/net/tcp6`, not HTTP headers.
 | 3129 | Google reverse API, journal, restores, OAuth admin, optional vault |
 | 3130 | Discord `/api/v10/*`, owner guild/owner-only DMs |
 
+The Discord Gateway uses the CONNECT port, not the Discord REST port. CONNECT
+copies opaque TLS bytes in both directions; it does not decode WebSocket frames,
+opcodes, or zlib streams. The listener requests JSON without compression. A
+`DISCORD_LISTENER_CLOSED code=4001` can also be a locally chosen close code: check
+the listener's handling of Gateway reconnect/invalid-session events before
+attributing it to an upstream unknown opcode.
+
+Owner DM history is available through `POST /api/v10/users/@me/channels` with
+the owner's `recipient_id`, then `GET /api/v10/channels/<id>/messages`. The gate
+checks the DM recipients on history reads too; another person's DM is refused.
+
 Google paths look like `/www.googleapis.com/calendar/v3/calendars/primary/events`.
 The gate supplies Google authorization and strips caller credentials.
 Writes require `X-Dori-Owner-Message: channel_id/message_id`; proof must be an
