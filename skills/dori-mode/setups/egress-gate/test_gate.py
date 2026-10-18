@@ -810,6 +810,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         run("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "elsewhere", cwd=work)
         run("git", "push", "-q", str(remote), "main", cwd=work)
         (self.state / "vault.git" / "refs" / "heads" / "main.lock").write_text("stale")
+        (self.state / "vault-index.lock").write_text("killed write")
         status, _ = await self.request("PUT", "/_vault/note?path=Notes/a.md", raw="After 한글".encode())
         self.assertEqual(status, 200)
         self.assertIn("fetch rc=", self.service.vault_error)

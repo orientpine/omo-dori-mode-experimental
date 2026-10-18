@@ -1167,6 +1167,10 @@ class Gate:
                 branch = await self.vault_sync()
                 previous = await self.vault_read(branch, relative)
                 index = {"GIT_INDEX_FILE": str(self.state / "vault-index")}
+                # A write killed mid-way leaves vault-index.lock behind and every later read-tree refuses; the index is
+                # rebuilt from the branch each time, so both files are disposable under the vault lock.
+                for stale in ("vault-index", "vault-index.lock"):
+                    (self.state / stale).unlink(missing_ok=True)
                 await self.git("read-tree", branch, env=index)
                 if content is None:
                     await self.git("update-index", "--index-info", env=index,
