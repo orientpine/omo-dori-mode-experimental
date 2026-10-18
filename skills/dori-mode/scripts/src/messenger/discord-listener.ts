@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
@@ -142,6 +142,10 @@ export class DiscordListener {
   private readonly inflight = new Set<Promise<void>>();
   private readonly sweeps = new Map<string, Promise<void>>();
   private readonly eyesFile: string;
+  private readonly backfillFile: string;
+  private readonly scanCursors: Record<string, string> = {};
+  private backfilling: Promise<number> | null = null;
+  private dmChannel = "";
   // channel or thread id -> owner messages that still carry our eyes reaction
   private eyes: Record<string, string[]> = {};
   private self = "";
@@ -149,7 +153,7 @@ export class DiscordListener {
   private roles: Set<string>;
   private rolesStale = true;
   private rolesRead: Promise<void> | null = null;
-  // newest owner message this listener has taken; everything missed while the socket was down is newer than it
+  // Summary watermark only; independent per-channel cursors own history progress.
   private cursor = "0";
   private seq: number | null = null;
   private backoff = 1_000;
@@ -158,14 +162,21 @@ export class DiscordListener {
     mkdirSync(dirname(d.inboxFile), { recursive: true, mode: 0o700 });
     this.roles = new Set(d.words.mentionRoleIds);
     this.eyesFile = join(dirname(d.inboxFile), "eyes.json");
+    this.backfillFile = d.shadow ? `${d.inboxFile}.backfill.json` : join(dirname(d.inboxFile), "backfill.json");
     if (existsSync(this.eyesFile)) this.eyes = JSON.parse(readFileSync(this.eyesFile, "utf8")) as Record<string, string[]>;
-    if (!existsSync(d.inboxFile)) return;
-    for (const line of readFileSync(d.inboxFile, "utf8").split("\n")) {
+    for (const line of existsSync(d.inboxFile) ? readFileSync(d.inboxFile, "utf8").split("\n") : []) {
       if (!line.trim()) continue;
       const row = JSON.parse(line) as { id: string; kind?: string; scope?: string; channel_id?: string };
       this.seen.add(row.id);
-      if (!row.kind && OWN_SCOPES.has(row.scope ?? "") && newer(row.id, this.cursor)) this.cursor = row.id;
+      if (!row.kind && OWN_SCOPES.has(row.scope ?? "")) {
+        if (newer(row.id, this.cursor)) this.cursor = row.id;
+        if (row.scope === "dm" && row.channel_id) this.dmChannel = row.channel_id;
+        if (row.scope !== "dm" && row.channel_id && newer(row.id, this.scanCursors[row.channel_id] ?? "0"))
+          this.scanCursors[row.channel_id] = row.id;
+      }
     }
+    // DM history starts at zero once: a missed first DM can predate every recorded DM.
+    if (existsSync(this.backfillFile)) Object.assign(this.scanCursors, JSON.parse(readFileSync(this.backfillFile, "utf8")));
   }
 
   private append(row: InboxMessage | InboxAnswer): void {
@@ -242,7 +253,10 @@ export class DiscordListener {
     const viaWebhook = hook === "owner";
     if (this.seen.has(m.id) || (!viaWebhook && !fromPairBot && !fromWatch && (m.author.bot || m.author.id !== this.d.owner))) return;
     let scope: InboxMessage["scope"];
-    if (!m.guild_id) scope = "dm";
+    if (!m.guild_id) {
+      scope = "dm";
+      this.dmChannel = m.channel_id;
+    }
     else if (m.guild_id !== this.d.guild) return;
     else if (m.channel_id === this.d.channel) scope = "channel";
     else if (pair && m.channel_id === pair) scope = fromPairBot ? "pair-bot" : "pair";
@@ -255,7 +269,6 @@ export class DiscordListener {
       scope = "mention";
     }
     this.seen.add(m.id);
-    if (newer(m.id, this.cursor)) this.cursor = m.id;
     // the other Dori's posts are information the Dori rarely answers, so eyes there would never come off
     if (!this.d.shadow && scope !== "pair-bot" && scope !== "watch")
       await this.d.dc.react(m.channel_id, m.id, EYES).then(
@@ -285,6 +298,7 @@ export class DiscordListener {
       ...(scope === "mention" ? { note: MENTION_NOTE, link: `https://discord.com/channels/${this.d.guild}/${m.channel_id}/${m.id}` } : {}),
       ...(scope === "watch" ? { note: WATCH_NOTE, link: `https://discord.com/channels/${this.d.guild}/${m.channel_id}/${m.id}` } : {}),
     });
+    if (newer(m.id, this.cursor)) this.cursor = m.id;
     this.d.log(`INBOUND discord-${scope} ${m.channel_id} ${m.id} ${viaWebhook ? `${this.d.owner} via=owner-webhook` : m.author.id} ${JSON.stringify((transcript ?? m.content).slice(0, 200))}`);
     if (open.length) this.d.log(`CARD_STILL_OPEN ${open.join(",")} thread=${m.channel_id} ${note}`);
     if (scope === "thread" && !this.d.shadow) await this.recheckThread(m.channel_id, open).catch((e: unknown) => this.d.log(`DISCORD_REOPEN_FAIL ${m.channel_id} ${errText(e)}`));
@@ -357,22 +371,42 @@ export class DiscordListener {
     this.d.log(`SHADOW_ANSWER ${q.id} ${JSON.stringify(value)}`);
   }
 
-  // after a reconnect, read what the owner wrote in the channel and its open threads while the socket was down
-  async backfill(): Promise<number> {
-    if (this.cursor === "0") return 0;
+  // A live event must not jump a history scan past another channel's reconnect gap.
+  backfill(): Promise<number> {
+    this.backfilling ??= this.scanHistory().finally(() => { this.backfilling = null; });
+    return this.backfilling;
+  }
+
+  private async scanHistory(): Promise<number> {
     const since = this.cursor;
+    const dm = this.d.shadow ? this.dmChannel : (await this.d.dc.call<{ id: string }>("POST", "/users/@me/channels", { recipient_id: this.d.owner })).id;
     const active = await this.d.dc.call<{ threads?: { id: string; parent_id: string }[] }>("GET", `/guilds/${this.d.guild}/threads/active`);
     const watched = this.d.watchBots?.length ? (this.d.watchChannels ?? []) : [];
-    const channels = [this.d.channel, ...(this.d.pairChannel ? [this.d.pairChannel] : []), ...watched, ...(active.threads ?? []).filter((t) => t.parent_id === this.d.channel).map((t) => t.id)];
+    const channels = [this.d.channel, ...(this.d.pairChannel ? [this.d.pairChannel] : []), ...watched, ...(active.threads ?? []).filter((t) => t.parent_id === this.d.channel).map((t) => t.id), ...(dm ? [dm] : [])];
     for (const t of active.threads ?? []) this.parents.set(t.id, t.parent_id);
     let added = 0;
-    for (const ch of channels) {
-      const msgs = await this.d.dc.call<DiscordMessage[]>("GET", `/channels/${ch}/messages?after=${since}&limit=100`);
-      for (const m of [...msgs].sort((a, b) => (newer(b.id, a.id) ? -1 : 1))) {
-        const before = this.seen.size;
-        await this.onMessage({ ...m, guild_id: this.d.guild });
-        if (this.seen.size > before) added++;
+    for (const ch of new Set(channels)) {
+      let after = this.scanCursors[ch] ?? "0";
+      const start = after;
+      let scanned = 0;
+      let accepted = 0;
+      for (;;) {
+        const msgs = await this.d.dc.call<DiscordMessage[]>("GET", `/channels/${ch}/messages?after=${after}&limit=100`);
+        for (const m of [...msgs].sort((a, b) => (newer(b.id, a.id) ? -1 : 1))) {
+          const before = this.seen.size;
+          await this.onMessage({ ...m, guild_id: ch === dm ? undefined : this.d.guild });
+          if (this.seen.size > before) { added++; accepted++; }
+          if (newer(m.id, after)) after = m.id;
+          scanned++;
+        }
+        // Persist only a fully processed page, including skipped authors. Never advance on a failed page.
+        this.scanCursors[ch] = after;
+        writeFileSync(`${this.backfillFile}.tmp`, JSON.stringify(this.scanCursors), { mode: 0o600 });
+        renameSync(`${this.backfillFile}.tmp`, this.backfillFile);
+        if (newer(after, this.cursor)) this.cursor = after;
+        if (msgs.length < 100) break;
       }
+      this.d.log(`DISCORD_BACKFILL_SCAN channel=${ch} since=${start} cursor=${after} scanned=${scanned} added=${accepted}`);
     }
     this.d.log(`DISCORD_BACKFILL since=${since} added=${added}`);
     return added;
@@ -395,6 +429,7 @@ export class DiscordListener {
 
   start(): void {
     const ws = this.d.open();
+    this.seq = null;
     let beat: unknown;
     let acked = true;
     ws.onMessage((raw) => {
@@ -409,7 +444,10 @@ export class DiscordListener {
         ws.send(JSON.stringify({ op: 2, d: { token: this.d.token, intents: LISTENER_INTENTS, properties: { os: process.platform, browser: "dori", device: "dori" } } }));
       } else if (p.op === 11) acked = true;
       else if (p.op === 1) ws.send(JSON.stringify({ op: 1, d: this.seq }));
-      else if (p.op === 7 || p.op === 9) ws.close(4001, "reconnect");
+      else if (p.op === 7 || p.op === 9) {
+        this.d.log(`DISCORD_LISTENER_RECONNECT op=${p.op}`);
+        ws.close(4000, "reconnect");
+      }
       else if (p.op === 0) this.dispatch(p.t ?? null, p.d ?? {});
     });
     ws.onClose((code) => {

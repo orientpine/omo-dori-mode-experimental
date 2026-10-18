@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { QuestionCards, QuestionStore } from "../src/messenger/discord-cards.ts";
-import { audioAttachment, type DiscordMessage, DiscordListener, type GatewayConnection, LISTENER_INTENTS, webhookVerdict } from "../src/messenger/discord-listener.ts";
+import { audioAttachment, type DiscordMessage, DiscordListener, type GatewayConnection, type ListenerDeps, LISTENER_INTENTS, webhookVerdict } from "../src/messenger/discord-listener.ts";
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
@@ -14,6 +14,7 @@ const CHANNEL = "200000000000000002";
 const THREAD = "300000000000000003";
 const SELF = "600000000000000006";
 const OTHER_BOT = "700000000000000007";
+const DM = "800000000000000008";
 
 const fakeGateway = () => {
   const sent: string[] = [];
@@ -27,11 +28,13 @@ const fakeGateway = () => {
 const fakeTimers = () => {
   const intervals = new Set<() => void>();
   const timeouts: number[] = [];
+  const reconnects: (() => void)[] = [];
   return {
     intervals,
     timeouts,
-    timers: { setInterval: (cb: () => void) => { intervals.add(cb); return cb; }, clearInterval: (h: unknown) => { intervals.delete(h as () => void); }, setTimeout: (_cb: () => void, ms: number) => { timeouts.push(ms); return ms; } },
+    timers: { setInterval: (cb: () => void) => { intervals.add(cb); return cb; }, clearInterval: (h: unknown) => { intervals.delete(h as () => void); }, setTimeout: (cb: () => void, ms: number) => { timeouts.push(ms); reconnects.push(cb); return ms; } },
     beat: () => { for (const cb of intervals) cb(); },
+    reconnect: () => { const cb = reconnects.shift(); if (!cb) throw new Error("no reconnect scheduled"); cb(); },
   };
 };
 
@@ -46,7 +49,10 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
     await opts.gate?.(req);
     const special = opts.respond?.(req);
     if (special) return special;
-    const body = req.url.includes("/interactions/") || req.method === "PUT" ? "" : JSON.stringify(route(req));
+    const result = req.method === "POST" && req.url.endsWith("/users/@me/channels") ? { id: DM } : route(req);
+    const body = req.url.includes("/interactions/") || req.method === "PUT" ? "" : JSON.stringify(
+      req.url.includes("/messages?") && !Array.isArray(result) ? [] : result,
+    );
     return { status: body ? 200 : 204, headers: {}, body };
   };
   const sleeps: number[] = [];
@@ -63,16 +69,102 @@ const setup = (route: (req: HttpRequest) => unknown = () => ({}), opts: { inbox?
   const t = fakeTimers();
   const logs: string[] = [];
   const fatal: number[] = [];
-  const listener = new DiscordListener({ dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBots: opts.pairBots ?? [] } : {}), ...(opts.watchChannels ? { watchChannels: opts.watchChannels, watchBots: opts.watchBots ?? [] } : {}), ...(opts.watchMatch ? { watchMatch: opts.watchMatch } : {}), ...(opts.shadow ? { shadow: true } : {}), words, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) });
+  const deps: ListenerDeps = { dc, cards, open: () => gw.conn, token: "BOT", guild: GUILD, channel: CHANNEL, owner: OWNER, ...(opts.ownerWebhook !== undefined ? { ownerWebhook: opts.ownerWebhook } : {}), ...(opts.pairChannel ? { pairChannel: opts.pairChannel, pairBots: opts.pairBots ?? [] } : {}), ...(opts.watchChannels ? { watchChannels: opts.watchChannels, watchBots: opts.watchBots ?? [] } : {}), ...(opts.watchMatch ? { watchMatch: opts.watchMatch } : {}), ...(opts.shadow ? { shadow: true } : {}), words, inboxFile, timers: t.timers, now: () => Date.parse("2026-01-02T03:04:00Z"), log: (l) => logs.push(l), fatal: (c) => fatal.push(c), ...(opts.transcribe ? { transcribe: opts.transcribe } : {}) };
+  const listener = new DiscordListener(deps);
   const inbox = () => (existsSync(inboxFile) ? readFileSync(inboxFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}`);
   const eyesFile = () => JSON.parse(readFileSync(`${state.dir}/discord/eyes.json`, "utf8"));
-  return { listener, cards, gw, t, logs, fatal, inbox, calls, seen, sleeps, eyesFile };
+  return { listener, restart: () => new DiscordListener(deps), cards, gw, t, logs, fatal, inbox, calls, seen, sleeps, eyesFile };
 };
 
 const unreacts = (calls: () => string[]) => calls().filter((c) => c.startsWith("DELETE")).map((c) => c.replace("DELETE /channels/", "").replace("/reactions/%F0%9F%91%80/@me", ""));
 
 const msg = (id: string, patch: Partial<DiscordMessage> = {}): DiscordMessage => ({ id, channel_id: CHANNEL, guild_id: GUILD, content: `hello ${id}`, timestamp: "2026-01-02T03:00:00Z", author: { id: OWNER }, ...patch });
+
+test.each([7, 9])("gateway opcode %i requests a reconnect without impersonating an upstream unknown-opcode error", (op) => {
+  const { listener, gw } = setup();
+  listener.start();
+  gw.push({ op, d: null });
+  expect(gw.closed).toEqual([4000]);
+});
+
+test("an owner DM sent while the socket is down is backfilled after reconnect and the scan cursor survives restart", async () => {
+  const history: DiscordMessage[] = [];
+  const route = (req: HttpRequest) => {
+    if (!req.url.includes(`/channels/${DM}/messages?`)) return [];
+    const after = new URL(req.url).searchParams.get("after") ?? "0";
+    return history.filter((m) => BigInt(m.id) > BigInt(after)).slice(0, 100).reverse();
+  };
+  const { listener, restart, gw, t, inbox, calls } = setup(route, {
+    inbox: `${JSON.stringify({ id: "2000", channel_id: CHANNEL, scope: "channel" })}\n`,
+    transcribe: async () => "test transcript",
+  });
+  listener.start();
+  gw.push({ op: 0, s: 1, t: "READY", d: { user: { id: SELF } } });
+  await listener.settled();
+  gw.drop(1006);
+  history.push(
+    msg("1001", { channel_id: DM, guild_id: undefined }),
+    msg("1002", { channel_id: DM, guild_id: undefined, author: { id: "555" } }),
+    msg("1003", { channel_id: DM, guild_id: undefined, author: { id: OTHER_BOT, bot: true } }),
+    msg("1004", { channel_id: DM, guild_id: undefined, content: "", attachments: [{ url: "https://cdn.example/a.ogg", filename: "a.ogg" }] }),
+  );
+  t.reconnect();
+  gw.push({ op: 0, s: 1, t: "READY", d: { user: { id: SELF } } });
+  await listener.settled();
+  expect(inbox().map((r) => [r.id, r.scope])).toEqual([["2000", "channel"], ["1001", "dm"], ["1004", "dm"]]);
+  expect(inbox().at(-1)?.transcript).toBe("test transcript");
+  await restart().backfill();
+  expect(calls().at(-1)).toBe(`GET /channels/${DM}/messages?after=1004&limit=100`);
+  expect(JSON.parse(readFileSync(`${state.dir}/discord/backfill.json`, "utf8"))[DM]).toBe("1004");
+});
+
+test("backfill paginates skipped bot messages and advances beyond them without accepting them", async () => {
+  const history = Array.from({ length: 102 }, (_, i) => msg(String(1001 + i), { author: { id: OTHER_BOT, bot: true } }));
+  history.push(msg("1103"));
+  const { listener, inbox, calls } = setup((req) => {
+    if (!req.url.includes(`/channels/${CHANNEL}/messages?`)) return [];
+    const after = new URL(req.url).searchParams.get("after") ?? "0";
+    return history.filter((m) => BigInt(m.id) > BigInt(after)).slice(0, 100).reverse();
+  }, { inbox: `${JSON.stringify({ id: "1000", channel_id: CHANNEL, scope: "channel" })}\n` });
+  await listener.backfill();
+  await listener.backfill();
+  expect(inbox().map((r) => r.id)).toEqual(["1000", "1103"]);
+  expect(calls()).toContain(`GET /channels/${CHANNEL}/messages?after=1100&limit=100`);
+  expect(calls()).toContain(`GET /channels/${CHANNEL}/messages?after=1103&limit=100`);
+});
+
+test("a skipped-only scan is durable and a newer live event does not hide a reconnect gap", async () => {
+  const history: DiscordMessage[] = [msg("1001", { author: { id: OTHER_BOT, bot: true } })];
+  const { listener, restart, inbox, calls } = setup((req) => {
+    if (!req.url.includes(`/channels/${CHANNEL}/messages?`)) return [];
+    const after = new URL(req.url).searchParams.get("after") ?? "0";
+    return history.filter((m) => BigInt(m.id) > BigInt(after));
+  }, { inbox: `${JSON.stringify({ id: "1000", channel_id: CHANNEL, scope: "channel" })}\n` });
+  await listener.backfill();
+  history.push(msg("1002"));
+  // The live socket wins the race to a newer message. The scan still owes the gap.
+  await listener.onMessage(msg("1003"));
+  await restart().backfill();
+  expect(calls()).toContain(`GET /channels/${CHANNEL}/messages?after=1001&limit=100`);
+  expect(inbox().map((r) => r.id)).toEqual(["1000", "1003", "1002"]);
+});
+
+test("a failed history page keeps its cursor for the next reconnect", async () => {
+  let fail = true;
+  const { listener, restart, inbox, calls } = setup((req) => {
+    if (req.url.includes(`/channels/${CHANNEL}/messages?`)) {
+      if (fail) throw new Error("history unavailable");
+      return [msg("1001")];
+    }
+    return [];
+  }, { inbox: `${JSON.stringify({ id: "1000", channel_id: CHANNEL, scope: "channel" })}\n` });
+  await expect(listener.backfill()).rejects.toThrow("history unavailable");
+  fail = false;
+  await restart().backfill();
+  expect(calls().filter((c) => c === `GET /channels/${CHANNEL}/messages?after=1000&limit=100`)).toHaveLength(2);
+  expect(inbox().map((r) => r.id)).toEqual(["1000", "1001"]);
+});
 
 test("the listener identifies with the message-content intents after hello, heartbeats, and drops a zombie connection", () => {
   const { listener, gw, t } = setup();
@@ -211,7 +303,7 @@ test("on READY it backfills owner messages newer than the inbox from the channel
   const route = (req: HttpRequest) => {
     if (req.url.endsWith(`/guilds/${GUILD}/threads/active`)) return { threads: [{ id: THREAD, parent_id: CHANNEL }, { id: "666", parent_id: "777" }] };
     if (req.url.includes(`/channels/${CHANNEL}/messages?after=1000`)) return [msg("1002", { guild_id: undefined }), msg("1001", { guild_id: undefined })];
-    if (req.url.includes(`/channels/${THREAD}/messages?after=1000`)) return [msg("1003", { channel_id: THREAD, guild_id: undefined })];
+    if (req.url.includes(`/channels/${THREAD}/messages?after=0`)) return [msg("1003", { channel_id: THREAD, guild_id: undefined })];
     return {};
   };
   const { listener, gw, inbox, calls, logs } = setup(route, { inbox: `${JSON.stringify({ id: "1000", ts: "x", channel_id: CHANNEL, scope: "channel" })}\n${JSON.stringify({ id: "5000", kind: "answer" })}\n` });
@@ -324,7 +416,7 @@ test("rows other listeners share the inbox with, however large their ids, do not
   listener.start();
   gw.push({ op: 0, s: 1, t: "READY", d: {} });
   await listener.settled();
-  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1000&limit=100`]);
+  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1000&limit=100`, `GET /channels/${DM}/messages?after=0&limit=100`]);
   expect(inbox().map((r) => r.id)).toEqual(["1000", "9000000000000000001", "2000", "1001"]);
   expect(logs).toContain("DISCORD_BACKFILL since=1000 added=1");
 });
@@ -369,7 +461,7 @@ test("backfill reads the pair channel too, after the newest pair row", async () 
   listener.start();
   gw.push({ op: 0, s: 1, t: "READY", d: {} });
   await listener.settled();
-  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1500&limit=100`, `GET /channels/${PAIR}/messages?after=1500&limit=100`]);
+  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1000&limit=100`, `GET /channels/${PAIR}/messages?after=1500&limit=100`, `GET /channels/${DM}/messages?after=0&limit=100`]);
   expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1000", "channel"], ["1500", "pair-bot"], ["1601", "pair-bot"]]);
 });
 
@@ -413,7 +505,7 @@ test("backfill reads the watched channels too, after the newest own row", async 
   listener.start();
   gw.push({ op: 0, s: 1, t: "READY", d: {} });
   await listener.settled();
-  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=1500&limit=100`, `GET /channels/${NOTIFY}/messages?after=1500&limit=100`]);
+  expect(calls().filter((c) => c.includes("/messages?"))).toEqual([`GET /channels/${CHANNEL}/messages?after=0&limit=100`, `GET /channels/${NOTIFY}/messages?after=1500&limit=100`, `GET /channels/${DM}/messages?after=0&limit=100`]);
   expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1500", "watch"], ["1601", "watch"]]);
 });
 
