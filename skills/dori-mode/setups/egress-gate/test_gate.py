@@ -42,6 +42,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.reactions = {}
         self.threads = {"555"}
         self.created_threads = []
+        self.thread_names = []
         self.author = "1"
         self.proof_time = gate.utc()
         self.calendar_role = "owner"
@@ -101,6 +102,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 parts = route.split("/")
                 if route.endswith("/threads") and method == "POST":
                     self.created_threads.append(route)
+                    self.thread_names.append(json.loads(body)["name"])
                     data = {"id": parts[4] if "messages" in parts else "777"}
                 elif len(parts) >= 5 and parts[1] == "channels" and parts[3] == "messages":
                     message = parts[4]
@@ -257,6 +259,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         entry = self.service.pending()[0]
         # Then: the card sits in the thread on his message (thread id == message id).
         self.assertEqual(self.created_threads, ["/channels/20/messages/100/threads"])
+        self.assertEqual(self.thread_names, ["🔐 일정 초대 · Invite"])
         self.assertEqual((entry["channel"], self.card_channels[entry["message"]]), ("100", "100"))
 
     async def test_a_card_for_a_request_inside_a_thread_stays_in_that_thread(self):

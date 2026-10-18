@@ -822,7 +822,7 @@ class Gate:
         fallback = snapshot or {}
         title = " ".join(str(data.get("title") or data.get("summary") or data.get("name") or
                              fallback.get("title") or fallback.get("summary") or fallback.get("name") or "").splitlines())
-        thread = await self.card_thread(channel, proof, title or op)
+        thread = await self.card_thread(channel, proof, f"{CARD_KIND.get(api, api)} · {(title or op)[:40]}")
         await self.supersede(thread, api, op, path, method, title)
         # Owner 2026-10-19 00:00 KST: the card shows who, what and the reactions; the reason,
         # the owner-message link and the expiry stay in the pending record.
@@ -867,7 +867,7 @@ class Gate:
         """
         parts = proof.rsplit("/", 2)
         origin, message = (parts[-2], parts[-1]) if len(parts) == 3 and parts[-1].isdigit() else ("", "")
-        name = f"🔐 승인 · {title}"[:100]
+        name = f"🔐 {title}"[:100]
         try:
             if origin and origin != channel:
                 status, _, body = await self.bot_call("GET", f"/channels/{origin}")
