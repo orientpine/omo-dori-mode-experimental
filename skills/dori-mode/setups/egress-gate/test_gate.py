@@ -8,6 +8,7 @@ import datetime as dt
 import importlib.util
 import io
 import json
+import subprocess
 import os
 from pathlib import Path
 import socket
@@ -607,6 +608,10 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(json.loads(content)["error"], "unsafe-google-scope")
                 self.assertEqual((self.state / "google-token.json").read_bytes(), previous)
 
+    async def test_auth_finish_accepts_googles_email_alias_as_it_really_answers(self):
+        status, content = await self.finish_auth("email profile openid")
+        self.assertEqual(status, 200, content)
+
     async def test_auth_finish_accepts_configured_scopes_and_rejects_extra(self):
         self.assertEqual((await self.finish_auth("openid"))[0], 200)
         self.assertEqual((self.state / "google-token.json").stat().st_mode & 0o777, 0o600)
@@ -755,38 +760,45 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("owner-message-required", content)
         self.assertIn(self.service.pending()[0]["card"], content)
 
-    async def test_vault_path_rejects_traversal_and_symlinks(self):
-        root = self.state / "vault"
-        root.mkdir()
-        self.config["vault"] = {"dir": str(root), "allowed_prefix": "Notes"}
-        (root / "Notes").mkdir()
-        (root / "Notes" / "link.md").symlink_to(self.state / "bot")
-        for path in ("../secret.md", "/secret.md", ".secret.md", "Notes/../a.md",
-                     "Other/a.md", "Notes/link.md", "Notes/file.txt"):
+    async def test_vault_path_rejects_traversal_hidden_and_other_prefixes(self):
+        self.config["vault"] = {"dir": str(self.state / "vault.git"), "allowed_prefix": "Notes"}
+        for path in ("../secret.md", "/secret.md", ".secret.md", "Notes/../a.md", "Notes/.h/a.md",
+                     "Other/a.md", "Notes/file.txt", "Notes//a.md", "Notes/a\\b.md"):
             with self.subTest(path=path), self.assertRaises(gate.Refused):
                 self.service.vault_path(path)
+        self.assertEqual(self.service.vault_path("Notes/sub/a.md"), "Notes/sub/a.md")
 
-    async def test_vault_write_snapshot_and_restore_with_fake_git(self):
-        root = self.state / "vault"
-        (root / "Notes").mkdir(parents=True)
-        note = root / "Notes" / "a.md"
-        note.write_text("Before")
-        self.config["vault"] = {"dir": str(root), "remote": "local-fixture",
+    async def test_vault_write_read_restore_against_a_real_remote_without_checkout(self):
+        work = self.state / "seed"
+        remote = self.state / "remote.git"
+        run = lambda *a, cwd=None: subprocess.run(a, cwd=cwd, check=True, capture_output=True, text=True).stdout
+        run("git", "init", "-q", "--bare", "-b", "main", str(remote))
+        run("git", "init", "-q", "-b", "main", str(work))
+        (work / "Notes").mkdir()
+        (work / "Notes" / "a.md").write_text("Before")
+        (work / "Big.md").write_text("x" * 100000)
+        run("git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A", cwd=work)
+        run("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed", cwd=work)
+        run("git", "push", "-q", str(remote), "main", cwd=work)
+        url = "file://" + str(remote)
+        self.config["vault"] = {"dir": str(self.state / "vault.git"), "remote": url,
                                 "ssh_key": str(self.state / "unused-key"), "allowed_prefix": "Notes"}
-        calls = []
-        async def git(*args, **kwargs):
-            calls.append(args)
-            return b"local-fixture\n" if args[:2] == ("remote", "get-url") else b""
-        with patch.object(self.service, "git", side_effect=git):
-            status, _ = await self.request("PUT", "/_vault/note?path=Notes/a.md", raw=b"After")
-            self.assertEqual(status, 200)
-            self.assertEqual(note.read_text(), "After")
-            row = self.changes()[0]
-            self.assertTrue(row["restorable"])
-            self.assertEqual((await self.request(path="/_gate/restore/" + row["id"]))[0], 200)
-        self.assertEqual(note.read_text(), "Before")
-        self.assertIn(("pull", "--rebase"), calls)
-        self.assertIn(("push", "origin", "HEAD"), calls)
+        status, _ = await self.request("PUT", "/_vault/note?path=Notes/a.md", raw="After 한글".encode())
+        self.assertEqual(status, 200)
+        self.assertEqual(run("git", "--git-dir", str(remote), "show", "main:Notes/a.md"), "After 한글")
+        self.assertIn("discord.com/channels/", run("git", "--git-dir", str(remote), "log", "-1", "--format=%s", "main"))
+        self.assertFalse((self.state / "vault.git" / "Notes").exists())
+        status, body = await self.request("GET", "/_vault/note?path=Notes/a.md", proof=False)
+        self.assertEqual((status, body.decode()), (200, "After 한글"))
+        status, _ = await self.request("PUT", "/_vault/note?path=Notes/new.md", raw=b"New")
+        self.assertEqual(status, 200)
+        rows = self.changes()
+        self.assertTrue(all(r["restorable"] for r in rows))
+        self.assertEqual((await self.request(path="/_gate/restore/" + rows[0]["id"]))[0], 200)
+        self.assertEqual(run("git", "--git-dir", str(remote), "show", "main:Notes/a.md"), "Before")
+        self.assertEqual((await self.request(path="/_gate/restore/" + rows[1]["id"]))[0], 200)
+        self.assertNotIn("Notes/new.md", run("git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"))
+        self.assertEqual(run("git", "--git-dir", str(remote), "show", "main:Big.md"), "x" * 100000)
 
     async def test_admin_restore_requires_no_owner_proof(self):
         await self.request("DELETE", "/tasks.googleapis.com/tasks/v1/lists/l/tasks/t")
@@ -795,6 +807,30 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.config["clients"] = []
         status, _ = await self.request(path="/_gate/restore/" + row["id"], proof=False)
         self.assertEqual(status, 200)
+
+
+class IPv6FallbackTests(unittest.TestCase):
+    def test_ipv4_is_tried_first_and_a_dead_ipv6_address_does_not_block_the_connection(self):
+        server = socket.socket(socket.AF_INET)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        dead = socket.socket(socket.AF_INET6)
+        dead.bind(("::1", 0))
+        dead_port = dead.getsockname()[1]
+        dead.close()
+        infos = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", dead_port, 0, 0)),
+                 (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+        self.assertEqual([a[0] for a in gate.ordered(infos)], [socket.AF_INET, socket.AF_INET6])
+        with patch.object(gate.socket, "getaddrinfo", return_value=list(reversed(infos[::-1]))):
+            sock = gate.tcp_connect("dual.example", port, 3)
+        try:
+            self.assertEqual(sock.getpeername(), ("127.0.0.1", port))
+        finally:
+            sock.close()
+            server.close()
+        with patch.object(gate.socket, "getaddrinfo", return_value=[infos[0]]), self.assertRaises(OSError):
+            gate.tcp_connect("v6only.example", dead_port, 1)
 
 
 class IdentityTests(unittest.TestCase):

@@ -41,6 +41,38 @@ DISCORD_URL_ALLOW = ["discord.com", "*.discord.com", "discordapp.com", "*.discor
                      "github.com", "*.github.com"]
 
 
+def ordered(addresses):
+    """IPv4 first: on a host without working IPv6 an IPv6 attempt only hangs until its timeout."""
+    return sorted(addresses, key=lambda a: a[0] != socket.AF_INET)
+
+
+def tcp_connect(host: str, port: int, timeout: float) -> socket.socket:
+    last: OSError | None = None
+    for family, kind, proto, _, address in ordered(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)):
+        sock = socket.socket(family, kind, proto)
+        sock.settimeout(min(timeout, 5) if family == socket.AF_INET6 else timeout)
+        try:
+            sock.connect(address)
+        except OSError as error:
+            last = error
+            sock.close()
+            continue
+        sock.settimeout(timeout)
+        return sock
+    raise last or OSError("no address")
+
+
+class PlainUpstream(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = tcp_connect(self.host, self.port, self.timeout)
+
+
+class TlsUpstream(http.client.HTTPSConnection):
+    def connect(self):
+        self.sock = self._context.wrap_socket(tcp_connect(self.host, self.port, self.timeout),
+                                              server_hostname=self.host)
+
+
 def strings(value):
     if isinstance(value, str):
         yield value
@@ -336,7 +368,7 @@ class Gate:
         parts = urlsplit(url)
         if parts.scheme not in {"http", "https"} or parts.username or parts.password:
             raise Refused("invalid-upstream", 502)
-        connection_class = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+        connection_class = TlsUpstream if parts.scheme == "https" else PlainUpstream
         connection = connection_class(parts.hostname, parts.port, timeout=30)
         outgoing = {k: v for k, v in headers.items()
                     if k.lower() not in HOP | {"host", "content-length", "x-dori-owner-message"}}
@@ -981,7 +1013,7 @@ class Gate:
                 raise Refused("oauth-state-required")
             pending = self.auth_pending or json.loads(pending_path.read_text())
             if (not secrets.compare_digest(params.get("state", ""), pending["state"])
-                    or time.time() - pending["created"] > 600 or not params.get("code")):
+                    or time.time() - pending["created"] > 86400 or not params.get("code")):
                 raise Refused("oauth-state-required")
             pending_path.unlink()
             self.auth_pending = None
@@ -998,7 +1030,7 @@ class Gate:
                 scope = info.get("scope", "")
             granted = scope.split()
             if (not granted or any(forbidden_scope(s) for s in granted)
-                    or not set(granted) <= set(self.config["google_scopes"])):
+                    or not set(granted) <= set(self.config["google_scopes"]) | {"email", "profile"}):
                 raise Refused("unsafe-google-scope")
             if not token.get("refresh_token"):
                 raise Refused("refresh-token-required", 400)
@@ -1057,15 +1089,19 @@ class Gate:
         return await self.google_write(uid, method, path, query, {"content-type": "application/json"},
                                        json_bytes(snapshot), proof=proof, restore=True)
 
-    async def git(self, *args, clone=False):
+    async def git(self, *args, clone=False, stdin=None, env=None, check=True):
         vault = self.config["vault"]
-        env = {**os.environ, "GIT_SSH_COMMAND": "ssh -o IdentitiesOnly=yes -i " +
-               shlex.quote(vault["ssh_key"]), "GIT_TERMINAL_PROMPT": "0"}
-        command = ("git", *args) if clone else ("git", "-C", vault["dir"], *args)
-        process = await asyncio.create_subprocess_exec(*command,
-            env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        known = str(self.state / "vault-known-hosts")
+        full = {**os.environ, "GIT_TERMINAL_PROMPT": "0",
+                "GIT_SSH_COMMAND": "ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="
+                + shlex.quote(known) + " -i " + shlex.quote(vault["ssh_key"]),
+                "GIT_AUTHOR_NAME": "YooDori (dori-gate)", "GIT_AUTHOR_EMAIL": "dori-gate@localhost",
+                "GIT_COMMITTER_NAME": "YooDori (dori-gate)", "GIT_COMMITTER_EMAIL": "dori-gate@localhost", **(env or {})}
+        command = ("git", *args) if clone else ("git", "--git-dir", vault["dir"], *args)
+        process = await asyncio.create_subprocess_exec(*command, env=full, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            output, _ = await asyncio.wait_for(process.communicate(), 120)
+            output, _ = await asyncio.wait_for(process.communicate(stdin), 120)
         except asyncio.CancelledError:
             process.kill()
             await process.communicate()
@@ -1074,57 +1110,73 @@ class Gate:
             process.kill()
             await process.communicate()
             raise Refused("vault-git-timeout", 502) from None
-        if process.returncode:
+        if check and process.returncode:
+            print(f"GATE_GIT_FAIL {args[0]} rc={process.returncode}", file=sys.stderr, flush=True)
             raise Refused("vault-git-failed", 502)
-        return output
+        return output if check else (process.returncode, output)
 
-    def vault_path(self, relative: str) -> Path:
+    def vault_path(self, relative: str) -> str:
+        """A vault note path: relative .md under allowed_prefix, no hidden or empty parts, no traversal."""
         vault = self.config["vault"]
         parts = relative.split("/")
         if (not relative or relative.startswith("/") or "\\" in relative or
-                any(not p or p.startswith(".") for p in parts) or not relative.endswith(".md")):
+                any(not p or p.startswith(".") for p in parts) or not relative.endswith(".md") or
+                any(ord(c) < 32 or ord(c) == 127 for c in relative)):
             raise Refused("invalid-vault-path", 400)
         prefix = vault.get("allowed_prefix", "").rstrip("/")
         if prefix and not relative.startswith(prefix + "/"):
             raise Refused("vault-prefix-required")
-        root = Path(vault["dir"]).resolve()
-        path = root / relative
-        if any(p.is_symlink() for p in [path, *path.parents] if p != root and root in p.parents):
-            raise Refused("vault-symlink")
-        if not path.resolve().is_relative_to(root):
-            raise Refused("invalid-vault-path", 400)
-        return path
+        return relative
+
+    async def vault_sync(self) -> str:
+        """The gate's own bare, shallow, blob-less clone (a large vault never gets checked out); returns the branch."""
+        vault = self.config["vault"]
+        branch = vault.get("branch", "main")
+        if not Path(vault["dir"]).exists():
+            await self.git("clone", "--bare", "--filter=blob:none", "--depth=1", "--single-branch",
+                           "--branch", branch, "--", vault["remote"], vault["dir"], clone=True)
+        remote = (await self.git("remote", "get-url", "origin")).decode().strip()
+        if remote != vault["remote"]:
+            raise Refused("vault-remote-mismatch")
+        await self.git("fetch", "--depth=1", "--filter=blob:none", "origin", f"+refs/heads/{branch}:refs/heads/{branch}")
+        return branch
+
+    async def vault_read(self, branch: str, relative: str) -> str | None:
+        code, _ = await self.git("cat-file", "-e", f"{branch}:{relative}", check=False)
+        if code:
+            return None
+        return (await self.git("cat-file", "blob", f"{branch}:{relative}")).decode("utf-8")
 
     async def vault_write(self, uid, relative, content, proof, restoring=False, approved_by=None):
         async with self.vault_lock:
-            vault = self.config["vault"]
-            if not Path(vault["dir"]).exists():
-                await self.git("clone", "--", vault["remote"], vault["dir"], clone=True)
-            remote = (await self.git("remote", "get-url", "origin")).decode().strip()
-            if remote != vault["remote"]:
-                raise Refused("vault-remote-mismatch")
-            await self.git("pull", "--rebase")
-            path = self.vault_path(relative)
-            previous = path.read_text(encoding="utf-8") if path.exists() else None
+            self.vault_path(relative)
+            for attempt in (1, 2):
+                branch = await self.vault_sync()
+                previous = await self.vault_read(branch, relative)
+                index = {"GIT_INDEX_FILE": str(self.state / "vault-index")}
+                await self.git("read-tree", branch, env=index)
+                if content is None:
+                    await self.git("update-index", "--index-info", env=index,
+                                   stdin=f"0 {'0' * 40}\t{relative}\n".encode())
+                else:
+                    blob = (await self.git("hash-object", "-w", "--stdin", stdin=content.encode())).decode().strip()
+                    await self.git("update-index", "--add", "--cacheinfo", f"100644,{blob},{relative}", env=index)
+                tree = (await self.git("write-tree", env=index)).decode().strip()
+                commit = (await self.git("commit-tree", tree, "-p", branch, "-m",
+                                         f"yoodori: {relative} ({proof})")).decode().strip()
+                code, _ = await self.git("push", "origin", f"{commit}:refs/heads/{branch}", check=False)
+                if not code:
+                    await self.git("update-ref", f"refs/heads/{branch}", commit)
+                    break
+                if attempt == 2:
+                    snapshot = {"path": relative, "content": previous}
+                    self.record(uid, "obsidian", "note.write", "PUT", "/_vault/note", [("path", relative)],
+                                502, b"{}", proof, snapshot, approved_by)
+                    raise Refused("vault-push-failed", 502)
             snapshot = {"path": relative, "content": previous}
             prepared = f"snapshots/{time.time_ns():020d}-{secrets.token_hex(6)}.json"
             private_write(self.state / prepared, json_bytes(snapshot))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if content is None:
-                path.unlink(missing_ok=True)
-            else:
-                private_write(path, content.encode())
-            await self.git("add", "--", relative)
-            await self.git("commit", "--allow-empty", "-m", f"yoodori: {relative} ({proof})")
-            try:
-                await self.git("push", "origin", "HEAD")
-            except Refused:
-                await self.git("fetch", "origin")
-                await self.git("reset", "--hard", "@{upstream}")
-                self.record(uid, "obsidian", "note.write", "PUT", "/_vault/note", [("path", relative)],
-                            502, b"{}", proof, snapshot, approved_by, prepared=prepared)
-                raise Refused("vault-push-failed", 502) from None
-            response = json_bytes({"name": relative})
+            response = json_bytes({"name": relative, "commit": commit})
             self.record(uid, "obsidian", "restore.note" if restoring else "note.write", "PUT",
                         "/_vault/note", [("path", relative)], 200, response, proof,
                         snapshot, approved_by, prepared=prepared)
@@ -1135,12 +1187,13 @@ class Gate:
             raise Refused("vault-not-configured", 503)
         if path != "/_vault/note" or method not in {"GET", "PUT"}:
             raise Refused("not-allowed")
-        relative = dict(query).get("path", "")
-        target = self.vault_path(relative)
+        relative = self.vault_path(dict(query).get("path", ""))
         if method == "GET":
-            if not target.exists():
+            async with self.vault_lock:
+                text = await self.vault_read(await self.vault_sync(), relative)
+            if text is None:
                 raise Refused("note-not-found", 404)
-            return 200, {"content-type": "text/markdown; charset=utf-8"}, target.read_bytes()
+            return 200, {"content-type": "text/markdown; charset=utf-8"}, text.encode("utf-8")
         if len(body) > 1024 * 1024:
             raise Refused("body-too-large", 413)
         proof = await self.proof(headers)
@@ -1193,8 +1246,15 @@ class Gate:
         self.tunnels += 1
         remote_writer = None
         try:
-            remote_reader, remote_writer = await asyncio.wait_for(
-                asyncio.open_connection(addresses[0][4][0], port), 30)
+            for family, *_, address in ordered(addresses):
+                try:
+                    remote_reader, remote_writer = await asyncio.wait_for(
+                        asyncio.open_connection(address[0], port), 5 if family == socket.AF_INET6 else 30)
+                    break
+                except (OSError, TimeoutError):
+                    continue
+            else:
+                raise Refused("connect-upstream-unreachable", 502)
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
             activity = asyncio.Event()
@@ -1338,11 +1398,13 @@ class Gate:
             await asyncio.gather(self.approval_task, return_exceptions=True)
         for server in self.servers.values():
             server.close()
-            await server.wait_closed()
+        # Python 3.12 wait_closed() waits for open connections (a long CONNECT tunnel), so end them first.
         tasks = list(self.connections)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        for server in self.servers.values():
+            await server.wait_closed()
 
 
 async def serve(config: dict):

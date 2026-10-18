@@ -9,6 +9,7 @@ Group=dori-gate
 ExecStart=/usr/bin/python3 -I /opt/dori-gate/gate.py --config /etc/dori-gate/config.json
 Restart=always
 RestartSec=3
+TimeoutStopSec=15
 StateDirectory=dori-gate
 StateDirectoryMode=0700
 UMask=0077
