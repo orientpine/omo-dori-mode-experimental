@@ -38,7 +38,10 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.state = Path(self.temporary.name)
         self.seen = []
         self.cards = {}
+        self.card_channels = {}
         self.reactions = {}
+        self.threads = {"555"}
+        self.created_threads = []
         self.author = "1"
         self.proof_time = gate.utc()
         self.calendar_role = "owner"
@@ -96,7 +99,10 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             elif path.startswith("/api/v10/"):
                 route = path[len("/api/v10"):]
                 parts = route.split("/")
-                if len(parts) >= 5 and parts[1] == "channels" and parts[3] == "messages":
+                if route.endswith("/threads") and method == "POST":
+                    self.created_threads.append(route)
+                    data = {"id": parts[4] if "messages" in parts else "777"}
+                elif len(parts) >= 5 and parts[1] == "channels" and parts[3] == "messages":
                     message = parts[4]
                     if len(parts) >= 7 and parts[5] == "reactions":
                         if method == "GET":
@@ -115,11 +121,14 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 elif route.endswith("/messages") and method == "POST":
                     message = str(1000 + len(self.cards))
                     self.cards[message] = json.loads(body)["content"]
+                    self.card_channels[message] = parts[2]
                     data = {"id": message, "content": self.cards[message]}
                 elif parts[1] == "channels" and len(parts) == 3:
                     channel = parts[2]
                     data = ({"id": channel, "type": 1, "recipients": [{"id": "1" if channel == "21" else "2"}]}
-                            if channel in {"21", "22"} else {"id": channel, "guild_id": "99" if channel == "99" else "10"})
+                            if channel in {"21", "22"} else
+                            {"id": channel, "type": 11, "parent_id": "20", "guild_id": "10"} if channel in self.threads
+                            else {"id": channel, "guild_id": "99" if channel == "99" else "10"})
             elif method in {"GET", "HEAD"}:
                 if "/calendarList/" in path:
                     data = {"accessRole": self.calendar_role}
@@ -156,13 +165,13 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             await writer.wait_closed()
 
     async def request(self, method="POST", path="/www.googleapis.com/calendar/v3/calendars/primary/events",
-                      data=None, proof=True, port="google", headers=None, raw=None):
+                      data=None, proof=True, port="google", headers=None, raw=None, origin="20/100"):
         reader, writer = await asyncio.open_connection("127.0.0.1", self.ports[port])
         try:
             body = gate.json_bytes(data or {}) if raw is None else raw
             values = {"host": "ignored.invalid", "content-type": "application/json", **(headers or {})}
             if proof:
-                values["x-dori-owner-message"] = "20/100"
+                values["x-dori-owner-message"] = origin
             values["content-length"] = str(len(body))
             request = f"{method} {path} HTTP/1.1\r\n".encode()
             request += "".join(f"{k}: {v}\r\n" for k, v in values.items()).encode()
@@ -240,6 +249,66 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(content)["status"], "pending_approval")
         self.assertTrue(self.cards)
         self.assertFalse(self.writes())
+
+    async def test_a_card_for_a_channel_request_hangs_a_thread_on_the_owners_message(self):
+        # Given / When: the owner asked in the approval channel itself.
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        entry = self.service.pending()[0]
+        # Then: the card sits in the thread on his message (thread id == message id).
+        self.assertEqual(self.created_threads, ["/channels/20/messages/100/threads"])
+        self.assertEqual((entry["channel"], self.card_channels[entry["message"]]), ("100", "100"))
+
+    async def test_a_card_for_a_request_inside_a_thread_stays_in_that_thread(self):
+        # Given / When: the owner's request was written inside a thread under the approval channel.
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]},
+                           origin="555/100")
+        entry = self.service.pending()[0]
+        # Then: no new thread; the card and later its result live in that thread.
+        self.assertEqual(self.created_threads, [])
+        self.assertEqual(self.card_channels[entry["message"]], "555")
+        self.approve()
+        await self.service.poll_approvals()
+        self.assertTrue(self.cards[entry["message"]].startswith("✅ 실행됨"))
+
+    async def test_a_card_for_a_request_elsewhere_opens_its_own_thread(self):
+        # Given / When: the owner's message lives in another channel of his server.
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]},
+                           origin="30/100")
+        # Then: one new thread in the approval channel carries the card.
+        self.assertEqual(self.created_threads, ["/channels/20/threads"])
+        self.assertEqual(self.card_channels[self.service.pending()[0]["message"]], "777")
+
+    async def test_a_revised_request_replaces_the_older_card_which_then_never_runs(self):
+        # Given: the same invite asked twice in one thread.
+        self.approval()
+        invite = {"summary": "Invite", "attendees": [{"email": "outside@example.net"}]}
+        await self.request(data=invite, origin="555/100")
+        old = self.service.pending()[0]
+        await self.request(data={**invite, "description": "고친 판"}, origin="555/100")
+        # Then: only the newer card waits, the older one says it was replaced.
+        pending = self.service.pending()
+        self.assertEqual(len(pending), 1)
+        self.assertNotEqual(pending[0]["id"], old["id"])
+        self.assertTrue(self.cards[old["message"]].startswith("🔁 새 판으로 대체됨"))
+        # When: the owner presses ✅ on the old card; Then: nothing is written.
+        self.reactions[(old["message"], quote("✅"))] = [{"id": "1", "bot": False}]
+        await self.service.poll_approvals()
+        self.assertFalse(self.writes())
+
+    async def test_a_decided_older_card_is_not_replaced(self):
+        # Given: the owner already pressed ✅ on the first card.
+        self.approval()
+        invite = {"summary": "Invite", "attendees": [{"email": "outside@example.net"}]}
+        await self.request(data=invite, origin="555/100")
+        old = self.approve()
+        # When: a second card for the same work arrives before the poller runs.
+        await self.request(data=invite, origin="555/100")
+        # Then: both stay; the decided one is left to the poller.
+        self.assertEqual(len(self.service.pending()), 2)
+        self.assertFalse(self.cards[old["message"]].startswith("🔁"))
 
     async def test_owner_approval_executes_once_and_notifies(self):
         self.approval()
