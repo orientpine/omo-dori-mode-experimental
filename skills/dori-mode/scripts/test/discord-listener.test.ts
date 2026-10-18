@@ -509,6 +509,30 @@ test("backfill reads the watched channels too, after the newest own row", async 
   expect(inbox().map((r) => [r.id, r.scope])).toEqual([["1500", "watch"], ["1601", "watch"]]);
 });
 
+test("a deleted watched channel drops its cursor with one log line, is not asked again, and the other channels are still scanned", async () => {
+  const route = (req: HttpRequest) => (req.url.endsWith(`/guilds/${GUILD}/threads/active`) ? { threads: [] } : []);
+  const respond = (req: HttpRequest): HttpResponse | undefined =>
+    req.url.includes(`/channels/${NOTIFY}/messages?`) ? { status: 404, headers: {}, body: '{"message": "Unknown Channel", "code": 10003}' } : undefined;
+  const rows = [{ id: "1500", ts: "x", channel_id: NOTIFY, scope: "watch" }];
+  const { listener, inbox, calls, logs } = setup(route, { respond, watchChannels: [NOTIFY], watchBots: [MONITOR_BOT], inbox: rows.map((r) => `${JSON.stringify(r)}\n`).join("") });
+  await listener.backfill();
+  await listener.backfill();
+  expect(calls().filter((c) => c.includes(`/channels/${NOTIFY}/messages?`))).toHaveLength(1);
+  expect(calls().filter((c) => c === `GET /channels/${DM}/messages?after=0&limit=100`)).toHaveLength(2);
+  expect(logs.filter((l) => l.startsWith(`DISCORD_BACKFILL_GONE channel=${NOTIFY}`))).toHaveLength(1);
+  expect(NOTIFY in JSON.parse(readFileSync(`${state.dir}/discord/backfill.json`, "utf8"))).toBe(false);
+  expect(inbox().map((r) => r.id)).toEqual(["1500"]);
+});
+
+test("a 404 that is not Unknown Channel still fails the scan and keeps the cursor", async () => {
+  const respond = (req: HttpRequest): HttpResponse | undefined =>
+    req.url.includes(`/channels/${NOTIFY}/messages?`) ? { status: 404, headers: {}, body: '{"message": "Unknown Message", "code": 10008}' } : undefined;
+  const route = (req: HttpRequest) => (req.url.endsWith(`/guilds/${GUILD}/threads/active`) ? { threads: [] } : []);
+  const { listener, logs } = setup(route, { respond, watchChannels: [NOTIFY], watchBots: [MONITOR_BOT] });
+  await expect(listener.backfill()).rejects.toThrow("404");
+  expect(logs.some((l) => l.startsWith("DISCORD_BACKFILL_GONE"))).toBe(false);
+});
+
 // a thread under a channel this Dori does not own (another agent's), and this Dori's bot member with its managed role
 const AGENT_CHAT = "800000000000000008";
 const AGENT_THREAD = "810000000000000081";

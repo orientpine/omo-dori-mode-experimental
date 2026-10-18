@@ -5,6 +5,7 @@ import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
 import { type Interaction, modalValue, openCardIds, type QuestionCards } from "./discord-cards.ts";
 import { isDoneName, type ThreadInfo } from "./discord-thread.ts";
+import { MessengerError } from "./http.ts";
 import type { Timers } from "./typing.ts";
 
 export const EYES = "👀";
@@ -126,6 +127,8 @@ export type ListenerDeps = {
 };
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 200);
+// Discord's 10003 means the channel was deleted, so retrying its history can never succeed.
+const unknownChannel = (e: unknown): boolean => e instanceof MessengerError && e.status === 404 && /"code":\s*10003\b/.test(e.message);
 const newer = (a: string, b: string): boolean => BigInt(a) > BigInt(b);
 // the inbox may be shared with other listeners (other messengers, other channels); only rows this listener writes set its cursors
 const OWN_SCOPES = new Set(["dm", "channel", "thread", "pair", "pair-bot", "mention", "watch"]);
@@ -144,6 +147,7 @@ export class DiscordListener {
   private readonly eyesFile: string;
   private readonly backfillFile: string;
   private readonly scanCursors: Record<string, string> = {};
+  private readonly goneChannels = new Set<string>();
   private backfilling: Promise<number> | null = null;
   private dmChannel = "";
   // channel or thread id -> owner messages that still carry our eyes reaction
@@ -386,12 +390,27 @@ export class DiscordListener {
     for (const t of active.threads ?? []) this.parents.set(t.id, t.parent_id);
     let added = 0;
     for (const ch of new Set(channels)) {
+      if (this.goneChannels.has(ch)) continue;
       let after = this.scanCursors[ch] ?? "0";
       const start = after;
       let scanned = 0;
       let accepted = 0;
+      let gone = false;
       for (;;) {
-        const msgs = await this.d.dc.call<DiscordMessage[]>("GET", `/channels/${ch}/messages?after=${after}&limit=100`);
+        let msgs: DiscordMessage[];
+        try {
+          msgs = await this.d.dc.call<DiscordMessage[]>("GET", `/channels/${ch}/messages?after=${after}&limit=100`);
+        } catch (e) {
+          if (!unknownChannel(e)) throw e;
+          this.goneChannels.add(ch);
+          if (ch in this.scanCursors) {
+            delete this.scanCursors[ch];
+            this.saveScanCursors();
+          }
+          this.d.log(`DISCORD_BACKFILL_GONE channel=${ch} (404 Unknown Channel: cursor dropped, not retried; remove it from the settings)`);
+          gone = true;
+          break;
+        }
         for (const m of [...msgs].sort((a, b) => (newer(b.id, a.id) ? -1 : 1))) {
           const before = this.seen.size;
           await this.onMessage({ ...m, guild_id: ch === dm ? undefined : this.d.guild });
@@ -401,15 +420,19 @@ export class DiscordListener {
         }
         // Persist only a fully processed page, including skipped authors. Never advance on a failed page.
         this.scanCursors[ch] = after;
-        writeFileSync(`${this.backfillFile}.tmp`, JSON.stringify(this.scanCursors), { mode: 0o600 });
-        renameSync(`${this.backfillFile}.tmp`, this.backfillFile);
+        this.saveScanCursors();
         if (newer(after, this.cursor)) this.cursor = after;
         if (msgs.length < 100) break;
       }
-      this.d.log(`DISCORD_BACKFILL_SCAN channel=${ch} since=${start} cursor=${after} scanned=${scanned} added=${accepted}`);
+      if (!gone) this.d.log(`DISCORD_BACKFILL_SCAN channel=${ch} since=${start} cursor=${after} scanned=${scanned} added=${accepted}`);
     }
     this.d.log(`DISCORD_BACKFILL since=${since} added=${added}`);
     return added;
+  }
+
+  private saveScanCursors(): void {
+    writeFileSync(`${this.backfillFile}.tmp`, JSON.stringify(this.scanCursors), { mode: 0o600 });
+    renameSync(`${this.backfillFile}.tmp`, this.backfillFile);
   }
 
   private dispatch(type: string | null, data: Record<string, unknown>): void {
