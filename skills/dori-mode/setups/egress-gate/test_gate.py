@@ -700,6 +700,54 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 asyncio, "open_connection", side_effect=connection):
             self.assertEqual((await self.request("CONNECT", "example.com:443", port="connect"))[0], 200)
 
+    async def test_connect_preserves_gateway_frames_and_compressed_binary_bytes(self):
+        # CONNECT carries TLS bytes, not WebSocket messages: no opcode or zlib interpretation.
+        payload = b"\x81\x82mask\x89\x00\x82\x08\x78\x9c\x00\x00\xff\xff\x88\x02\x0f\xa1"
+        received = asyncio.get_running_loop().create_future()
+
+        async def echo(reader, writer):
+            try:
+                data = await reader.readexactly(len(payload))
+                received.set_result(data)
+                writer.write(data)
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        remote = await asyncio.start_server(echo, "127.0.0.1", 0)
+        self.addAsyncCleanup(remote.wait_closed)
+        self.addCleanup(remote.close)
+        port = remote.sockets[0].getsockname()[1]
+        original = asyncio.open_connection
+
+        async def connection(host, target_port):
+            return await original("127.0.0.1", port) if host == "93.184.216.34" else await original(host, target_port)
+
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "getaddrinfo", return_value=[
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]), patch.object(
+                asyncio, "open_connection", side_effect=connection):
+            reader, writer = await original("127.0.0.1", self.ports["connect"])
+            try:
+                writer.write(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n")
+                await writer.drain()
+                self.assertIn(b" 200 ", await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5))
+                writer.write(payload)
+                await writer.drain()
+                self.assertEqual(await asyncio.wait_for(reader.readexactly(len(payload)), 5), payload)
+                self.assertEqual(await asyncio.wait_for(received, 5), payload)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+    async def test_owner_dm_history_is_readable_but_other_dm_history_is_refused(self):
+        for channel, expected in [("21", 200), ("22", 403)]:
+            status, _ = await self.request(
+                "GET", path=f"/api/v10/channels/{channel}/messages?after=100&limit=100",
+                port="discord", headers={"authorization": "Bot client"})
+            self.assertEqual(status, expected)
+
     async def test_unknown_uid_is_disconnected(self):
         self.config["proc_tcp_paths"] = [str(self.state / "missing-proc")]
         reader, writer = await asyncio.open_connection("127.0.0.1", self.ports["google"])
