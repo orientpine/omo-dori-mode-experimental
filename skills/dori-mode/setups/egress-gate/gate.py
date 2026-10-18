@@ -1057,15 +1057,19 @@ class Gate:
         return await self.google_write(uid, method, path, query, {"content-type": "application/json"},
                                        json_bytes(snapshot), proof=proof, restore=True)
 
-    async def git(self, *args, clone=False):
+    async def git(self, *args, clone=False, stdin=None, env=None, check=True):
         vault = self.config["vault"]
-        env = {**os.environ, "GIT_SSH_COMMAND": "ssh -o IdentitiesOnly=yes -i " +
-               shlex.quote(vault["ssh_key"]), "GIT_TERMINAL_PROMPT": "0"}
-        command = ("git", *args) if clone else ("git", "-C", vault["dir"], *args)
-        process = await asyncio.create_subprocess_exec(*command,
-            env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        known = str(self.state / "vault-known-hosts")
+        full = {**os.environ, "GIT_TERMINAL_PROMPT": "0",
+                "GIT_SSH_COMMAND": "ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="
+                + shlex.quote(known) + " -i " + shlex.quote(vault["ssh_key"]),
+                "GIT_AUTHOR_NAME": "YooDori (dori-gate)", "GIT_AUTHOR_EMAIL": "dori-gate@localhost",
+                "GIT_COMMITTER_NAME": "YooDori (dori-gate)", "GIT_COMMITTER_EMAIL": "dori-gate@localhost", **(env or {})}
+        command = ("git", *args) if clone else ("git", "--git-dir", vault["dir"], *args)
+        process = await asyncio.create_subprocess_exec(*command, env=full, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            output, _ = await asyncio.wait_for(process.communicate(), 120)
+            output, _ = await asyncio.wait_for(process.communicate(stdin), 120)
         except asyncio.CancelledError:
             process.kill()
             await process.communicate()
@@ -1074,57 +1078,73 @@ class Gate:
             process.kill()
             await process.communicate()
             raise Refused("vault-git-timeout", 502) from None
-        if process.returncode:
+        if check and process.returncode:
+            print(f"GATE_GIT_FAIL {args[0]} rc={process.returncode}", file=sys.stderr, flush=True)
             raise Refused("vault-git-failed", 502)
-        return output
+        return output if check else (process.returncode, output)
 
-    def vault_path(self, relative: str) -> Path:
+    def vault_path(self, relative: str) -> str:
+        """A vault note path: relative .md under allowed_prefix, no hidden or empty parts, no traversal."""
         vault = self.config["vault"]
         parts = relative.split("/")
         if (not relative or relative.startswith("/") or "\\" in relative or
-                any(not p or p.startswith(".") for p in parts) or not relative.endswith(".md")):
+                any(not p or p.startswith(".") for p in parts) or not relative.endswith(".md") or
+                any(ord(c) < 32 or ord(c) == 127 for c in relative)):
             raise Refused("invalid-vault-path", 400)
         prefix = vault.get("allowed_prefix", "").rstrip("/")
         if prefix and not relative.startswith(prefix + "/"):
             raise Refused("vault-prefix-required")
-        root = Path(vault["dir"]).resolve()
-        path = root / relative
-        if any(p.is_symlink() for p in [path, *path.parents] if p != root and root in p.parents):
-            raise Refused("vault-symlink")
-        if not path.resolve().is_relative_to(root):
-            raise Refused("invalid-vault-path", 400)
-        return path
+        return relative
+
+    async def vault_sync(self) -> str:
+        """The gate's own bare, shallow, blob-less clone (a large vault never gets checked out); returns the branch."""
+        vault = self.config["vault"]
+        branch = vault.get("branch", "main")
+        if not Path(vault["dir"]).exists():
+            await self.git("clone", "--bare", "--filter=blob:none", "--depth=1", "--single-branch",
+                           "--branch", branch, "--", vault["remote"], vault["dir"], clone=True)
+        remote = (await self.git("remote", "get-url", "origin")).decode().strip()
+        if remote != vault["remote"]:
+            raise Refused("vault-remote-mismatch")
+        await self.git("fetch", "--depth=1", "--filter=blob:none", "origin", f"+refs/heads/{branch}:refs/heads/{branch}")
+        return branch
+
+    async def vault_read(self, branch: str, relative: str) -> str | None:
+        code, _ = await self.git("cat-file", "-e", f"{branch}:{relative}", check=False)
+        if code:
+            return None
+        return (await self.git("cat-file", "blob", f"{branch}:{relative}")).decode("utf-8")
 
     async def vault_write(self, uid, relative, content, proof, restoring=False, approved_by=None):
         async with self.vault_lock:
-            vault = self.config["vault"]
-            if not Path(vault["dir"]).exists():
-                await self.git("clone", "--", vault["remote"], vault["dir"], clone=True)
-            remote = (await self.git("remote", "get-url", "origin")).decode().strip()
-            if remote != vault["remote"]:
-                raise Refused("vault-remote-mismatch")
-            await self.git("pull", "--rebase")
-            path = self.vault_path(relative)
-            previous = path.read_text(encoding="utf-8") if path.exists() else None
+            self.vault_path(relative)
+            for attempt in (1, 2):
+                branch = await self.vault_sync()
+                previous = await self.vault_read(branch, relative)
+                index = {"GIT_INDEX_FILE": str(self.state / "vault-index")}
+                await self.git("read-tree", branch, env=index)
+                if content is None:
+                    await self.git("update-index", "--index-info", env=index,
+                                   stdin=f"0 {'0' * 40}\t{relative}\n".encode())
+                else:
+                    blob = (await self.git("hash-object", "-w", "--stdin", stdin=content.encode())).decode().strip()
+                    await self.git("update-index", "--add", "--cacheinfo", f"100644,{blob},{relative}", env=index)
+                tree = (await self.git("write-tree", env=index)).decode().strip()
+                commit = (await self.git("commit-tree", tree, "-p", branch, "-m",
+                                         f"yoodori: {relative} ({proof})")).decode().strip()
+                code, _ = await self.git("push", "origin", f"{commit}:refs/heads/{branch}", check=False)
+                if not code:
+                    await self.git("update-ref", f"refs/heads/{branch}", commit)
+                    break
+                if attempt == 2:
+                    snapshot = {"path": relative, "content": previous}
+                    self.record(uid, "obsidian", "note.write", "PUT", "/_vault/note", [("path", relative)],
+                                502, b"{}", proof, snapshot, approved_by)
+                    raise Refused("vault-push-failed", 502)
             snapshot = {"path": relative, "content": previous}
             prepared = f"snapshots/{time.time_ns():020d}-{secrets.token_hex(6)}.json"
             private_write(self.state / prepared, json_bytes(snapshot))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if content is None:
-                path.unlink(missing_ok=True)
-            else:
-                private_write(path, content.encode())
-            await self.git("add", "--", relative)
-            await self.git("commit", "--allow-empty", "-m", f"yoodori: {relative} ({proof})")
-            try:
-                await self.git("push", "origin", "HEAD")
-            except Refused:
-                await self.git("fetch", "origin")
-                await self.git("reset", "--hard", "@{upstream}")
-                self.record(uid, "obsidian", "note.write", "PUT", "/_vault/note", [("path", relative)],
-                            502, b"{}", proof, snapshot, approved_by, prepared=prepared)
-                raise Refused("vault-push-failed", 502) from None
-            response = json_bytes({"name": relative})
+            response = json_bytes({"name": relative, "commit": commit})
             self.record(uid, "obsidian", "restore.note" if restoring else "note.write", "PUT",
                         "/_vault/note", [("path", relative)], 200, response, proof,
                         snapshot, approved_by, prepared=prepared)
@@ -1135,12 +1155,13 @@ class Gate:
             raise Refused("vault-not-configured", 503)
         if path != "/_vault/note" or method not in {"GET", "PUT"}:
             raise Refused("not-allowed")
-        relative = dict(query).get("path", "")
-        target = self.vault_path(relative)
+        relative = self.vault_path(dict(query).get("path", ""))
         if method == "GET":
-            if not target.exists():
+            async with self.vault_lock:
+                text = await self.vault_read(await self.vault_sync(), relative)
+            if text is None:
                 raise Refused("note-not-found", 404)
-            return 200, {"content-type": "text/markdown; charset=utf-8"}, target.read_bytes()
+            return 200, {"content-type": "text/markdown; charset=utf-8"}, text.encode("utf-8")
         if len(body) > 1024 * 1024:
             raise Refused("body-too-large", 413)
         proof = await self.proof(headers)
