@@ -310,6 +310,17 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.service.pending()), 2)
         self.assertFalse(self.cards[old["message"]].startswith("🔁"))
 
+    async def test_the_card_shows_only_who_what_and_the_reactions(self):
+        # Given / When: an outside invite is parked.
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        entry = self.service.pending()[0]
+        card = self.cards[entry["message"]]
+        # Then: recipients, title and reactions only; reason, proof link and expiry stay in the record.
+        self.assertEqual(card.splitlines(), ["승인 필요 · 일정 초대", "받는 사람: outside@example.net",
+                                             "내용: Invite", "✅ 실행 · ⛔ 취소"])
+        self.assertTrue(entry["reason"] and entry["owner_message"].startswith("https://discord.com/channels/"))
+
     async def test_owner_approval_executes_once_and_notifies(self):
         self.approval()
         await self.request(data={"attendees": [{"email": "outside@example.net"}]})
