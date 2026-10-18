@@ -42,6 +42,24 @@ for (const [text, ping, content] of [
   });
 }
 
+test("Discord CLI sends to DORI_DISCORD_API when it is set (a Dori behind an egress gate), and to Discord when it is not", async () => {
+  const seen: string[] = [];
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => { seen.push(`${req.method} ${new URL(req.url).pathname} ${req.headers.get("authorization")}`); return Response.json({ id: "901" }); } });
+  const state = withState();
+  try {
+    const base = ["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake"];
+    const gated = await run([...base, `DORI_DISCORD_API=http://127.0.0.1:${server.port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--no-typing"]);
+    const file = join(state.dir, "http.json");
+    const direct = await run([...base, `DORI_TEST_HTTP=${file}`, "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--no-typing"]);
+    expect({ gated: gated.out, seen, direct: direct.out, calls: JSON.parse(readFileSync(file, "utf8")).calls.map((c: { path: string }) => c.path) }).toEqual({
+      gated: "SENT 901", seen: ["POST /api/v10/channels/channel/messages Bot fake"], direct: "SENT 900", calls: ["/channels/channel/messages"],
+    });
+  } finally {
+    server.stop(true);
+    state.done();
+  }
+});
+
 for (const ping of ["abc", "123x", "", " 123", "123\n"]) {
   test(`Discord CLI refuses invalid ping ${JSON.stringify(ping)} before HTTP`, async () => {
     const state = withState();

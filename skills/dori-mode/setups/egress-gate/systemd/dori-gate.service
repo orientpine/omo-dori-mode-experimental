@@ -1,0 +1,25 @@
+[Unit]
+Description=dori-gate: the only way out for a sandboxed Dori user (CONNECT allow list, Google and Discord policy, change log)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=dori-gate
+Group=dori-gate
+ExecStart=/usr/bin/python3 -I /opt/dori-gate/gate.py --config /etc/dori-gate/config.json
+Restart=always
+RestartSec=3
+StateDirectory=dori-gate
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

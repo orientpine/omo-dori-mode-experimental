@@ -1,0 +1,15 @@
+[Unit]
+Description=dori-gate daily summary: what the Dori changed, what the gate refused, open approval cards (posted by the gate to the Dori's channel)
+After=network-online.target dori-gate.service
+
+[Service]
+Type=oneshot
+User=dori-gate
+Group=dori-gate
+ExecStart=/usr/bin/python3 -I /opt/dori-gate/summary.py --config /etc/dori-gate/config.json --hours 24 --post
+StateDirectory=dori-gate
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

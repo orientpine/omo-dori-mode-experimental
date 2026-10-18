@@ -1,0 +1,41 @@
+# dori-gate firewall for one Dori user (uid @UID@). Loaded by dori-gate-nft.service (full) and
+# dori-gate-nft-early.service (strict: no @SELF_LO@ line, so the Dori reaches only the gate on loopback until its
+# user slice exists). Rendered by install.sh; the file replaces the whole table atomically.
+#
+# Out of the box: that uid may open new connections only to
+#   - loopback, then checked in chain yd_lo: the gate ports, or a socket of its own user slice
+#   - @NODE_IP@ tcp/22 (the node read gate, a forced command)
+# Everything else (DNS included) is rejected and logged with prefix DORI_GATE_DROP / DORI_GATE_LO_DROP.
+table inet dori_gate
+delete table inet dori_gate
+table inet dori_gate {
+	set gate_ports {
+		type inet_service
+		elements = { @PORTS@ }
+	}
+
+	chain out {
+		type filter hook output priority filter; policy accept;
+		meta skuid != @UID@ return
+		oif "lo" ct state new ct mark set 0x0d0d0001
+		oif "lo" accept
+		ct state established,related accept
+		ip daddr @NODE_IP@ tcp dport 22 accept
+		limit rate 30/minute log prefix "DORI_GATE_DROP " level info
+		meta l4proto tcp reject with tcp reset
+		reject with icmpx admin-prohibited
+	}
+
+	chain in {
+		type filter hook input priority filter; policy accept;
+		iif "lo" ct mark 0x0d0d0001 ct direction original jump yd_lo
+	}
+
+	chain yd_lo {
+		tcp dport @gate_ports accept
+		@SELF_LO@
+		limit rate 30/minute log prefix "DORI_GATE_LO_DROP " level info
+		meta l4proto tcp reject with tcp reset
+		reject with icmpx admin-prohibited
+	}
+}

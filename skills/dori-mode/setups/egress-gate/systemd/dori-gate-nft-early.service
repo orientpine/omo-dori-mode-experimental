@@ -1,0 +1,13 @@
+[Unit]
+Description=dori-gate firewall, strict form, before any network is up (the Dori reaches only the gate)
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/dori-gate/dori-gate-strict.nft
+
+[Install]
+WantedBy=sysinit.target

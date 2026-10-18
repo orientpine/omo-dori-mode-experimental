@@ -1,0 +1,15 @@
+[Unit]
+Description=dori-gate firewall, full form (adds the Dori's own loopback sockets once its user slice exists)
+After=dori-gate-nft-early.service user@@UID@.service
+Requires=dori-gate-nft-early.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# the slice must exist when the rule is loaded (nft binds the cgroup id); without it the strict form stays
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -d /sys/fs/cgroup/user.slice/user-@UID@.slice ]; do i=$((i+1)); [ $i -gt 120 ] && exit 1; sleep 1; done'
+ExecStart=/usr/sbin/nft -f /etc/dori-gate/dori-gate-full.nft
+ExecReload=/usr/sbin/nft -f /etc/dori-gate/dori-gate-full.nft
+
+[Install]
+WantedBy=multi-user.target
