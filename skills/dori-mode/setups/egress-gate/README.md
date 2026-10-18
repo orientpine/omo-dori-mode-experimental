@@ -57,7 +57,8 @@ vault writes at 1 MiB. Chunked requests are decoded; trailers cannot alter heade
 ## Approval and journal
 
 Outbound changes and the 11th delete/hour or 31st write/owner message are parked,
-returning `202` with a card link. The gate posts Korean cards and checks every
+returning `202` with a card link. The gate posts short Korean cards (kind, recipients, title,
+✅/⛔ only; the reason, owner-message link and expiry stay in the pending record) and checks every
 20 seconds. Only the owner's non-bot reaction counts. Cancel wins over approve.
 Cards expire after 24 hours. Missing/tampered cards never execute. A SHA-256
 content check precedes reactions. Clients cannot edit/delete pending cards or

@@ -298,6 +298,9 @@ async def reply(writer: asyncio.StreamWriter, status: int, body: bytes, headers=
     await writer.drain()
 
 
+CARD_KIND = {"calendar": "일정 초대", "drive": "Drive 공유", "docs": "문서 공유", "gmail": "메일",
+             "tasks": "할 일", "obsidian": "노트"}
+
 class Gate:
     """Mutable service state: cached credentials, proofs, and listener ownership."""
 
@@ -821,10 +824,11 @@ class Gate:
                              fallback.get("title") or fallback.get("summary") or fallback.get("name") or "").splitlines())
         thread = await self.card_thread(channel, proof, title or op)
         await self.supersede(thread, api, op, path, method, title)
-        content = ("승인 필요 · 유도리 바깥 경로\n"
-                   f"무엇: {op} ({api})\n어디로: {', '.join(sorted(set(destinations)))[:500] or path[:500]}\n"
-                   f"이유: {', '.join(sorted(set(reasons)))}\n"
-                   f"내용: {defang(title[:200])}\n근거 형 메시지: {proof}\n✅ 실행 · ⛔ 취소 (24시간 뒤 만료)")
+        # Owner 2026-10-19 00:00 KST: the card shows who, what and the reactions; the reason,
+        # the owner-message link and the expiry stay in the pending record.
+        content = (f"승인 필요 · {CARD_KIND.get(api, api)}\n"
+                   f"받는 사람: {', '.join(sorted(set(destinations)))[:500] or path[:500]}\n"
+                   f"내용: {defang(title[:200])}\n✅ 실행 · ⛔ 취소")
         channel = thread
         status, _, response = await self.bot_call("POST", f"/channels/{channel}/messages",
                                                  {"content": content, "allowed_mentions": {"parse": []}, "flags": 4})
