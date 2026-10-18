@@ -33,7 +33,7 @@ const local = {
   reviewed: ["900"],
 };
 const ledgerDeps = async (patch = {}) => depsFor(world, fakeClock(T0), state.dir, { directives: { common: COMMON_LEDGER, local: await write("local.json", JSON.stringify(local)) }, watchLog: join(state.dir, "watch.log"), ...patch });
-const input = (brief: string, extra = {}) => ({ key: "lane-a", title: "t", brief, done: 'command ["bun","test"]', cwd: "/work/hr35-isaac", goal: "g", ...extra });
+const input = (brief: string, extra = {}) => ({ key: "lane-a", title: "t", brief, done: 'command ["bun","test"]', cwd: "/work/hr35-isaac", goal: "g", noThread: "test lane", ...extra });
 const count = (text: string, s: string) => text.split(s).length - 1;
 
 test("the fork ledger validates, carries the template's directives and holds no links, paths or ids; a local entry overrides by id", async () => {
@@ -121,6 +121,11 @@ test("a brief without the four fields stops the launch (LAUNCH_DIRECTIVE_MISSING
   expect(world.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);
   expect(await Bun.file(brief).text()).toBe(bare);
   expect(await Bun.file(deps.config.watchLog).text()).toMatch(/^\S+ launch LAUNCH_DIRECTIVE_MISSING lane-a four-fields:/m);
+  // --thread new opens its thread only once nothing else stops the launch: a stopped launch leaves no empty thread
+  const opened: string[] = [];
+  const withOpen = { ...deps, openThread: async (title: string) => (opened.push(title), "discord:100000000000000009") };
+  expect(await launchLane(withOpen, input(brief, { noThread: undefined, thread: "new" })).catch((e: unknown) => e)).toBeInstanceOf(DirectiveMissingError);
+  expect(opened).toEqual([]);
   await expect(launchLane(deps, input(brief, { waive: { "four-feilds": "typo" } }))).rejects.toBeInstanceOf(DirectiveError);
   const r = await launchLane(deps, input(brief, { waive: { "four-fields": "a one-line ops fix" } }));
   expect(r.lane.directives?.waived).toEqual([{ id: "four-fields", reason: "a one-line ops fix", at: new Date(T0).toISOString() }]);
@@ -158,7 +163,7 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   await deps.registry.write({ ...clean, key: "old", thread: "none", brief: "/nope.md", openedAt: "2026-10-14T00:00:00.000Z" });
   const inbox = await write("inbox.jsonl", "");
   const quiet = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
-  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 20 directives, no gap"]);
+  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 21 directives, no gap"]);
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
   expect(sent(world)).toEqual([]);
   // a lane whose brief lacks a directive and has no thread, and a standing directive of the owner nobody put in the ledger
@@ -171,7 +176,7 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   ].join("\n"));
   const r = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
   const kinds = r.gaps.map((g) => `${g.lane} ${g.id}`);
-  expect(kinds).toEqual(expect.arrayContaining(["gappy docs-same-pr", "gappy options-ledger", "gappy lane-thread", "- 777"]));
+  expect(kinds).toEqual(expect.arrayContaining(["gappy docs-same-pr", "gappy options-ledger", "gappy lane-thread", "gappy long-work-thread", "- 777"]));
   expect(kinds.some((k) => k.startsWith("clean ") || k === "- 900" || k === "- 901" || k === "- 902")).toBe(false);
   expect(r.lines.find((l) => l.startsWith("DIRECTIVE_UNLEDGERED"))).toContain("https://discord.com/channels/1/2/777");
   const log = await Bun.file(deps.config.watchLog).text();
@@ -180,6 +185,10 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   // a waiver on record is not a gap
   await deps.registry.write({ ...clean, key: "gappy", thread: "none", brief: await write("gappy.md", fields), directives: { applied: [], waived: [{ id: "lane-thread", reason: "ops", at: "t" }] } });
   expect((await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7", dryRun: true })).gaps.some((g) => g.id === "lane-thread")).toBe(false);
+  // a lane launched with --no-thread "<reason>" has no thread on the lead's word: not a thread gap
+  await deps.registry.write({ ...clean, key: "gappy", thread: "none", noThread: "an internal check", brief: await write("gappy.md", fields) });
+  const threadGaps = (await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7", dryRun: true })).gaps.filter((g) => g.lane === "gappy" && (g.id === "lane-thread" || g.id === "long-work-thread"));
+  expect(threadGaps).toEqual([]);
 });
 
 test("an owner entry with words goes into briefs as its prompt: a prompt is required, may not ask, and is only for owner words", async () => {

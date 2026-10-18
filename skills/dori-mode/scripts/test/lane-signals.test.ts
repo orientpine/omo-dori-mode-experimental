@@ -103,7 +103,7 @@ test("a launch in the same repo or topic gets a Past signals section from the ea
   await deps.registry.write({ key: "mail-digest", title: "mail", thread: "none", brief: "/b.md", done: "merged a/b#2", openedAt: "2026-03-01T00:00:00Z", fixes: [{ at: "t", metric: "m", hypothesis: "h", via: "lead" }] });
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# next stage\n");
-  await launchLane(deps, { key: "hr9-e8", title: "e8", brief, done: 'command ["bun","test"]', cwd: "/work/rl" });
+  await launchLane(deps, { noThread: "test lane", key: "hr9-e8", title: "e8", brief, done: 'command ["bun","test"]', cwd: "/work/rl" });
   const text = await Bun.file(brief).text();
   expect(text).toContain("## Past signals (written by dori launch)");
   expect(text).toContain("- hr9-e7 (closed by the lead): attempts 1-3");
@@ -113,12 +113,12 @@ test("a launch in the same repo or topic gets a Past signals section from the ea
   expect(text.indexOf("## Past signals")).toBeLessThan(text.indexOf("## Lane footer"));
   const other = join(state.dir, "other.md");
   await Bun.write(other, "# other\n");
-  await launchLane(deps, { key: "news-brief", title: "news", brief: other, done: 'command ["bun","test"]', cwd: "/home/test" });
+  await launchLane(deps, { noThread: "test lane", key: "news-brief", title: "news", brief: other, done: 'command ["bun","test"]', cwd: "/home/test" });
   expect(await Bun.file(other).text()).not.toContain("## Past signals");
   // the tag on the command line joins a lane to a topic its key does not name
   const tagged = join(state.dir, "tagged.md");
   await Bun.write(tagged, "# tagged\n");
-  await launchLane(deps, { key: "news-rl", title: "news", brief: tagged, done: 'command ["bun","test"]', cwd: "/home/test", tags: ["hr9"] });
+  await launchLane(deps, { noThread: "test lane", key: "news-rl", title: "news", brief: tagged, done: 'command ["bun","test"]', cwd: "/home/test", tags: ["hr9"] });
   expect(await Bun.file(tagged).text()).toContain("- hr9-e7 (closed by the lead)");
   expect((await areaSignals(await deps.registry.list(), { tags: ["hr9"] }, config)).map((s) => s.lane.key).sort()).toEqual(["hr9-e7", "hr9-e8", "news-rl"]);
 });

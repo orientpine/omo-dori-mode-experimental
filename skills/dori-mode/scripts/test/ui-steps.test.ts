@@ -57,7 +57,7 @@ test("dori launch --dry-run --ui prints the brief with the steps; without --ui t
   // the four fields: the ledger's four-fields directive stops a launch without them
   const brief = await briefFile(`${lead}[사용자와 장면] y\n[넘으면 안 되는 선] 없음\n`);
   const cli = (extra: string[]) =>
-    run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "bun", join(import.meta.dir, "../src/cli.ts"), "launch", "pmd-ui", "--title", "ui", "--brief", brief, "--done", 'command ["bun","test"]', "--goal", "UI", "--dry-run", ...extra]);
+    run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "bun", join(import.meta.dir, "../src/cli.ts"), "launch", "pmd-ui", "--title", "ui", "--brief", brief, "--done", 'command ["bun","test"]', "--goal", "UI", "--no-thread", "test lane", "--dry-run", ...extra]);
   const on = await cli(["--ui"]);
   expect(on.code).toBe(0);
   expect(on.out).toContain(`ulw\n\n${await uiSteps()}\n\n[목표]`);

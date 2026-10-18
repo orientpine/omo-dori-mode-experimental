@@ -48,6 +48,8 @@ export type Lane = {
   readonly key: string;
   readonly title: string;
   readonly thread: string;
+  // why the lane was launched without a work thread (dori launch --no-thread "<reason>")
+  readonly noThread?: string;
   readonly pane?: string;
   readonly tab?: string;
   readonly session?: string;

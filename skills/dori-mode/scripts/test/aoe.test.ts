@@ -43,7 +43,7 @@ test("each running aoe session is one pane named by its tmux session; terminals 
 test("a launch opens an aoe session, waits for the prompt and types the lane prompt as one argv argument", async () => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
-  const r = await launchLane(at(T0), { key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  const r = await launchLane(at(T0), { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
   expect(world.calls).toContainEqual(["aoe", "add", "/tmp/w", "-t", "smoke", "--tool", "omo", "-l", "--extra-args", "--model anthropic/claude-opus-5-5"]);
   const pane = `aoe_smoke_${NEW_AOE_ID.slice(0, 8)}`;
   expect(r.lane.pane).toBe(pane);
@@ -59,7 +59,7 @@ const launchWith = async (patch: Partial<DoriConfig>, useGpu?: boolean, key = "g
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
   const deps = { ...at(T0), config: { ...at(T0).config, ...patch } };
-  return { deps, r: await launchLane(deps, { key, title: key, brief, done: "file /tmp/ok", cwd: `/tmp/${key}`, ...(useGpu ? { useGpu } : {}) }) };
+  return { deps, r: await launchLane(deps, { noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: `/tmp/${key}`, ...(useGpu ? { useGpu } : {}) }) };
 };
 
 test("launchEnv: the launch names each variable in tmux update-environment once, runs aoe add with it, and the session has it", async () => {
@@ -117,12 +117,12 @@ test("a launch whose Done only checks a file warns LAUNCH_DONE_WEAK and still la
   const brief = join(state.dir, "brief.md");
   const warned: string[] = [];
   await Bun.write(brief, `# brief\n\n${await eightSteps()}\n`);
-  const r = await launchLane(at(T0), { key: "weak", title: "weak", brief, done: "file /tmp/ok", cwd: "/tmp/w" }, (l) => warned.push(l));
+  const r = await launchLane(at(T0), { thread: "discord:100000000000000001", key: "weak", title: "weak", brief, done: "file /tmp/ok", cwd: "/tmp/w" }, (l) => warned.push(l));
   expect(r.startup).toStartWith("STARTUP_OK weak");
   expect(warned).toHaveLength(1);
   expect(warned[0]).toStartWith("LAUNCH_DONE_WEAK weak: every Done signal only checks files or text (file)");
-  await launchLane(at(T0), { key: "weak-ok", title: "weak", brief, done: "file /tmp/ok", cwd: "/tmp/w", doneWeakOk: true }, (l) => warned.push(l));
-  await launchLane(at(T0), { key: "strong", title: "strong", brief, done: 'file /tmp/ok; command ["bun","test"] stdout~" 0 fail"', cwd: "/tmp/w" }, (l) => warned.push(l));
+  await launchLane(at(T0), { thread: "discord:100000000000000001", key: "weak-ok", title: "weak", brief, done: "file /tmp/ok", cwd: "/tmp/w", doneWeakOk: true }, (l) => warned.push(l));
+  await launchLane(at(T0), { thread: "discord:100000000000000001", key: "strong", title: "strong", brief, done: 'file /tmp/ok; command ["bun","test"] stdout~" 0 fail"', cwd: "/tmp/w" }, (l) => warned.push(l));
   expect(warned).toHaveLength(1);
   const logged = (await Bun.file(at(T0).config.watchLog).text()).trim().split("\n");
   expect(logged).toHaveLength(1);
@@ -133,7 +133,7 @@ test("an agent that exits at start is a STARTUP_ERROR with its own message, with
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
   world.screen = 'Error: Model "nosuch/model" not found. Use --list-models to see available models.\nPane is dead (status 1)';
-  const r = await launchLane(at(T0), { key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "nosuch/model" });
+  const r = await launchLane(at(T0), { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "nosuch/model" });
   expect(r.startup).toBe(`STARTUP_ERROR smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: Model "nosuch/model" not found`);
   expect(world.calls.filter((c) => c[1] === "capture-pane")).toHaveLength(1);
   expect(sent(world)).toEqual([]);
