@@ -251,6 +251,19 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parse_qs(urlsplit(self.writes()[0][1]).query)["sendUpdates"], ["all"])
         self.assertEqual(self.changes()[0]["approved_by"], entry["card"])
         self.assertFalse(self.service.pending())
+        card = self.cards[entry["message"]]
+        self.assertTrue(card.startswith("✅ 실행됨 (200)\n승인 필요"), card)
+        self.assertIn("outside@example.net", card)
+
+    async def test_the_bots_own_prefilled_reactions_are_not_an_approval(self):
+        self.approval()
+        await self.request(data={"attendees": [{"email": "outside@example.net"}]})
+        entry = self.service.pending()[0]
+        for emoji in ("✅", "⛔"):
+            self.reactions[(entry["message"], quote(emoji))] = [{"id": "123", "bot": True}]
+        await self.service.poll_approvals()
+        self.assertFalse(self.writes())
+        self.assertEqual(len(self.service.pending()), 1)
 
     async def test_nonowner_approval_is_ignored(self):
         self.approval()
