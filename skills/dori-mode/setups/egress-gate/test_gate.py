@@ -786,6 +786,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         remote = self.state / "remote.git"
         run = lambda *a, cwd=None: subprocess.run(a, cwd=cwd, check=True, capture_output=True, text=True).stdout
         run("git", "init", "-q", "--bare", "-b", "main", str(remote))
+        run("git", "--git-dir", str(remote), "config", "uploadpack.allowFilter", "true")
         run("git", "init", "-q", "-b", "main", str(work))
         (work / "Notes").mkdir()
         (work / "Notes" / "a.md").write_text("Before")
@@ -801,6 +802,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run("git", "--git-dir", str(remote), "show", "main:Notes/a.md"), "After 한글")
         self.assertIn("discord.com/channels/", run("git", "--git-dir", str(remote), "log", "-1", "--format=%s", "main"))
         self.assertFalse((self.state / "vault.git" / "Notes").exists())
+        present = run("git", "--git-dir", str(self.state / "vault.git"), "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").split()
+        self.assertNotIn(run("git", "--git-dir", str(remote), "rev-parse", "main:Big.md").strip(), present)
         status, body = await self.request("GET", "/_vault/note?path=Notes/a.md", proof=False)
         self.assertEqual((status, body.decode()), (200, "After 한글"))
         status, _ = await self.request("PUT", "/_vault/note?path=Notes/new.md", raw=b"New")

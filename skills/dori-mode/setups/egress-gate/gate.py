@@ -1164,7 +1164,8 @@ class Gate:
                 else:
                     blob = (await self.git("hash-object", "-w", "--stdin", stdin=content.encode())).decode().strip()
                     await self.git("update-index", "--add", "--cacheinfo", f"100644,{blob},{relative}", env=index)
-                tree = (await self.git("write-tree", env=index)).decode().strip()
+                # --missing-ok: the blob-less clone lacks every other blob, and write-tree would fetch them all to check
+                tree = (await self.git("write-tree", "--missing-ok", env=index)).decode().strip()
                 commit = (await self.git("commit-tree", tree, "-p", branch, "-m",
                                          f"yoodori: {relative} ({proof})")).decode().strip()
                 code, _ = await self.git("push", "origin", f"{commit}:refs/heads/{branch}", check=False)
