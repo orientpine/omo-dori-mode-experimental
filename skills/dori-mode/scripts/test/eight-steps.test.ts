@@ -19,7 +19,7 @@ const briefFile = async (text: string) => {
   await Bun.write(brief, text);
   return brief;
 };
-const input = (brief: string, ui?: boolean) => ({ key: "eight", title: "t", brief, done: 'command ["bun","test"]', cwd: "/work/app", goal: "g", ...(ui ? { ui } : {}) });
+const input = (brief: string, ui?: boolean) => ({ key: "eight", title: "t", brief, done: 'command ["bun","test"]', cwd: "/work/app", goal: "g", noThread: "test lane", ...(ui ? { ui } : {}) });
 const count = (text: string, s: string) => text.split(s).length - 1;
 
 test("a brief without the eight steps gets the block from references/sessions.md after the four fields, once; a brief with them is left alone", async () => {
@@ -58,7 +58,7 @@ test("dori launch --dry-run --ui orders ulw, the UI steps, the four fields, then
   const config = join(state.dir, "config.json");
   await Bun.write(config, JSON.stringify({ stateDir: state.dir, watchLog: join(state.dir, "watch.log"), defaultCwd: "/home/test" }));
   const brief = await briefFile(fields);
-  const r = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "bun", join(import.meta.dir, "../src/cli.ts"), "launch", "eight", "--title", "t", "--brief", brief, "--done", 'command ["bun","test"]', "--goal", "g", "--dry-run", "--ui"]);
+  const r = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "bun", join(import.meta.dir, "../src/cli.ts"), "launch", "eight", "--title", "t", "--brief", brief, "--done", 'command ["bun","test"]', "--goal", "g", "--no-thread", "test lane", "--dry-run", "--ui"]);
   expect(r.code).toBe(0);
   expect(r.out).toContain("LAUNCH_STEPS_ADDED eight:");
   expect(r.out).toContain(`ulw\n\n${await uiSteps()}\n\n[목표] 로그인 고침\n[끝난 상태] x\n[사용자와 장면] y\n[넘으면 안 되는 선] 없음\n\n${await eightSteps()}\n\n위치: ~/app\n`);

@@ -16,7 +16,10 @@ export type LaunchInput = {
   readonly title: string;
   readonly brief: string;
   readonly done: string;
+  // the work thread: <adapter>:<id> of the thread the work continues in, or NEW_THREAD for one launch opens in this Dori's channel
   readonly thread?: string;
+  // why the lane has no work thread (dori launch --no-thread "<reason>"): only a lane the owner did not ask for
+  readonly noThread?: string;
   readonly model?: string;
   readonly cwd?: string;
   readonly tags?: readonly string[];
@@ -36,6 +39,12 @@ export type LaunchInput = {
 
 export class LaunchError extends Error {}
 
+// --thread new: dori launch opens the lane's work thread in this Dori's own channel (deps.openThread), named for --title
+export const NEW_THREAD = "new";
+
+// A launch with no work thread and no --no-thread reason, or a channel as its thread: nothing was opened, written or registered.
+export class ThreadMissingError extends LaunchError {}
+
 // A require directive of the ledger the brief does not meet: nothing was opened, written or registered.
 export class DirectiveMissingError extends LaunchError {
   constructor(readonly lines: readonly string[]) {
@@ -48,12 +57,36 @@ const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API ke
 export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promise<void> => {
   if (!LANE_KEY.test(input.key)) throw new LaunchError(`key must match ${LANE_KEY}`);
   if (await deps.registry.read(input.key)) throw new LaunchError(`lane ${input.key} is already registered`);
-  if (input.thread !== undefined && input.thread !== NO_THREAD) {
+  if (input.thread !== undefined && input.thread !== NO_THREAD && input.thread !== NEW_THREAD) {
     const problem = threadRefProblem(input.thread);
-    if (problem) throw new LaunchError(`${problem}; pass --thread <adapter>:<id>, or leave --thread out`);
+    if (problem) throw new LaunchError(`${problem}; pass --thread <adapter>:<id> or --thread ${NEW_THREAD}`);
   }
   const errors = doneSyntaxErrors(input.done);
   if (errors.length) throw new LaunchError(`Done line is not checkable: ${errors.join("; ")}`);
+};
+
+// The owner's long work gets a work thread (directive long-work-thread): a launch names the open thread the work continues
+// in (--thread <ref>), has one opened in this Dori's own channel (--thread new), or says why the lane has none
+// (--no-thread "<reason>", a lane the owner did not ask for). A channel is not a thread. dori adopt is not gated: it
+// registers a session that is already running, an older lane without a thread among them.
+export const threadGate = (deps: Pick<FlowDeps, "openThread" | "channels">, input: LaunchInput): void => {
+  const threadless = input.thread === undefined || input.thread === NO_THREAD;
+  if (input.noThread !== undefined) {
+    if (!input.noThread.trim()) throw new LaunchError(`--no-thread needs a reason: --no-thread "<why this lane has no work thread>"`);
+    if (!threadless) throw new LaunchError(`pass --thread or --no-thread "<reason>", not both`);
+    return;
+  }
+  if (threadless)
+    throw new ThreadMissingError(
+      `LAUNCH_NO_THREAD ${input.key}: a lane opens with a work thread (the owner's long work gets one: directive long-work-thread); nothing was opened. Pass --thread <adapter>:<id> for the open thread this work continues, --thread ${NEW_THREAD} to open one in this Dori's own channel, or --no-thread "<reason>" for a lane the owner did not ask for.`,
+    );
+  if (input.thread === NEW_THREAD) {
+    if (!deps.openThread) throw new LaunchError(`--thread ${NEW_THREAD} opens the work thread in this Dori's own channel and needs DORI_DISCORD_TOKEN and DORI_DISCORD_CHANNEL; pass --thread <adapter>:<id> instead`);
+    return;
+  }
+  const id = input.thread.startsWith("discord:") ? input.thread.slice("discord:".length) : "";
+  if (id && deps.channels?.includes(id))
+    throw new ThreadMissingError(`LAUNCH_THREAD_IS_CHANNEL ${input.key}: ${input.thread} is a channel, not a thread; nothing was opened. Pass --thread ${NEW_THREAD} to open a work thread in it, or the ref of a thread.`);
 };
 
 // A warning, never a refusal: a Done line that only checks files or text proves the files are there, not that the work behaves.
@@ -263,6 +296,7 @@ export const treeContext = async (deps: FlowDeps, draft: Lane): Promise<string |
 };
 
 const draftLane = (deps: FlowDeps, input: LaunchInput): Lane => ({
+  ...(input.noThread?.trim() ? { noThread: input.noThread.trim() } : {}),
   key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, model: input.model ?? deps.config.defaultModel,
   ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock),
 });
@@ -322,6 +356,12 @@ export const goalWarning = (input: LaunchInput): string | undefined =>
 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
+  try {
+    threadGate(deps, input);
+  } catch (e) {
+    if (e instanceof ThreadMissingError) watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: e.message });
+    throw e;
+  }
   const model = input.model ?? deps.config.defaultModel;
   const cwd = input.cwd ?? deps.config.defaultCwd;
   const weak = await doneWeakWarning(input, cwd);
@@ -329,12 +369,23 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     warn(weak);
     watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: weak });
   }
-  const { draft, text, steps, lines, missing } = await renderBrief(deps, input);
-  for (const line of [...lines, ...(steps ? [steps] : []), ...missing]) {
+  const rendered = await renderBrief(deps, input);
+  const { steps, lines, missing } = rendered;
+  let { draft, text } = rendered;
+  const threadless = input.noThread?.trim() ? [`LAUNCH_THREADLESS ${input.key}: no work thread, on the lead's word: ${input.noThread.trim()}`] : [];
+  for (const line of [...lines, ...(steps ? [steps] : []), ...missing, ...threadless]) {
     warn(line);
     watchLog(deps.config.watchLog, deps.clock, { source: "launch", line });
   }
   if (missing.length) throw new DirectiveMissingError(missing);
+  // opened only once nothing else can stop the launch, so a refused launch leaves no empty thread behind
+  if (input.thread === NEW_THREAD && deps.openThread) {
+    const ref = await deps.openThread(input.title);
+    const line = `THREAD_OPENED ${input.key} ${ref}: the lane's work thread, new in this Dori's channel (--thread ${NEW_THREAD})`;
+    warn(line);
+    watchLog(deps.config.watchLog, deps.clock, { source: "launch", line });
+    ({ draft, text } = await renderBrief(deps, { ...input, thread: ref }));
+  }
   await Bun.write(input.brief, text);
   const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt, laneEnv(deps.config.launchEnv, input.useGpu)) : await openHerdr(deps, input.key, cwd, model, prompt);

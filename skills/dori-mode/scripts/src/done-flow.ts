@@ -28,6 +28,11 @@ export type FlowDeps = {
   // posts the lead's own runaway or pause alert to the pair channel (the other Dori's inbox) and the owner's channel as
   // this Dori's bot, without mentions; one LEAD_ALERT_POSTED / LEAD_ALERT_WARN line per channel (cli wires leadAlertPoster)
   readonly postLeadAlert?: (text: string) => Promise<readonly string[]>;
+  // opens a work thread named for a lane in this Dori's own channel and returns its ref (dori launch --thread new; cli wires it
+  // when DORI_DISCORD_TOKEN and DORI_DISCORD_CHANNEL are set)
+  readonly openThread?: (title: string) => Promise<string>;
+  // ids of channels that are not threads (this Dori's channel, the pair channel, watched channels): refused as --thread
+  readonly channels?: readonly string[];
 };
 
 export class LaneStateError extends Error {}

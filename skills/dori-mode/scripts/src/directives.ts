@@ -443,10 +443,10 @@ export const briefGaps = (lane: Pick<Lane, "key" | "directives" | "ui">, brief: 
   return out;
 };
 
-export const leadGaps = (lane: Pick<Lane, "key" | "thread" | "directives">, ledger: Ledger): Gap[] => {
+export const leadGaps = (lane: Pick<Lane, "key" | "thread" | "directives" | "noThread">, ledger: Ledger): Gap[] => {
   const waived = new Set((lane.directives?.waived ?? []).map((w) => w.id));
   return ledger.entries
-    .filter((e) => e.mode === "lead" && !e.retired && !waived.has(e.id) && e.check === "thread" && (!lane.thread || lane.thread === "none"))
+    .filter((e) => e.mode === "lead" && !e.retired && !waived.has(e.id) && e.check === "thread" && (!lane.thread || lane.thread === "none") && !lane.noThread)
     .map((e) => ({ lane: lane.key, id: e.id, line: `DIRECTIVE_LEAD ${lane.key} ${e.id}: ${e.name}: the lane was launched without a work thread (--thread)` }));
 };
 

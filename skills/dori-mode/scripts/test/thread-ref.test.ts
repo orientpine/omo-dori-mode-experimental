@@ -3,7 +3,8 @@ import { join } from "node:path";
 
 import { closeLane, claimDone, watchTick } from "../src/done-flow.ts";
 import { defaultDiscordWords } from "../src/config.ts";
-import { laneStartText, launchLane, LaunchError, setThread } from "../src/launch.ts";
+import type { FlowDeps } from "../src/done-flow.ts";
+import { laneStartText, launchLane, LaunchError, setThread, ThreadMissingError } from "../src/launch.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { postLaneStart } from "../src/messenger/discord-thread.ts";
 import type { HttpRequest } from "../src/messenger/http.ts";
@@ -26,12 +27,13 @@ beforeEach(() => {
 });
 afterEach(() => state.done());
 
-const launch = async (thread: string | undefined) => {
+const aoeDeps = (): FlowDeps => depsFor(world, fakeClock(T0), state.dir, { backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d", watchLog: join(state.dir, "watch.log") });
+const launch = async (thread: string | undefined, extra: { readonly noThread?: string } = {}, deps: FlowDeps = aoeDeps(), warn?: (line: string) => void) => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
-  const aoe = depsFor(world, fakeClock(T0), state.dir, { backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" });
-  return launchLane(aoe, { key: "new-lane", title: "new", brief, done: "merged acme/app#1", ...(thread === undefined ? {} : { thread }) });
+  return launchLane(deps, { key: "new-lane", title: "new", brief, done: "merged acme/app#1", ...(thread === undefined ? {} : { thread }), ...extra }, warn);
 };
+const aoeAdds = () => world.calls.filter((c) => c[0] === "aoe" && c[1] === "add");
 
 for (const [why, ref] of [["an empty id", "discord:"], ["an empty id on another adapter", "chat:"], ["an empty ref", ""], ["no adapter", "100000000000000001"], ["a non-numeric Discord id", "discord:abc"], ["whitespace in the id", "chat:team 1"]] as const) {
   test(`launch refuses a thread ref with ${why} and registers nothing`, async () => {
@@ -41,10 +43,59 @@ for (const [why, ref] of [["an empty id", "discord:"], ["an empty id on another 
   });
 }
 
-test("launch without --thread still opens the lane, with no thread", async () => {
-  const r = await launch(undefined);
+for (const thread of [undefined, "none"]) {
+  test(`launch with ${thread === undefined ? "no --thread" : "--thread none"} is refused (LAUNCH_NO_THREAD): nothing opened, written or registered`, async () => {
+    const r = await launch(thread).catch((e: unknown) => e);
+    expect(r).toBeInstanceOf(ThreadMissingError);
+    expect((r as Error).message).toStartWith("LAUNCH_NO_THREAD new-lane: ");
+    expect((r as Error).message).toContain('--no-thread "<reason>"');
+    expect(await at(T0).registry.read("new-lane")).toBeNull();
+    expect(world.calls).toEqual([]);
+    expect(await Bun.file(join(state.dir, "brief.md")).text()).toBe("# brief\n");
+    expect(await Bun.file(join(state.dir, "watch.log")).text()).toMatch(/^\S+ launch LAUNCH_NO_THREAD new-lane: /m);
+  });
+}
+
+test("--no-thread with a reason opens a lane without a thread and keeps the reason; an empty reason or both flags are refused", async () => {
+  const warned: string[] = [];
+  const r = await launch(undefined, { noThread: "an internal check the owner did not ask for" }, aoeDeps(), (l) => warned.push(l));
   expect(r.lane.thread).toBe("none");
-  expect((await at(T0).registry.read("new-lane"))?.thread).toBe("none");
+  expect((await at(T0).registry.read("new-lane"))?.noThread).toBe("an internal check the owner did not ask for");
+  expect(warned).toContain("LAUNCH_THREADLESS new-lane: no work thread, on the lead's word: an internal check the owner did not ask for");
+  expect(aoeAdds()).toHaveLength(1);
+  for (const [thread, noThread] of [[undefined, "  "], [THREAD, "why"]] as const) {
+    world = newWorld();
+    const e = await launch(thread, { noThread }, depsFor(world, fakeClock(T0), join(state.dir, "fresh"), { backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" })).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(LaunchError);
+    expect(e).not.toBeInstanceOf(ThreadMissingError);
+    expect(world.calls).toEqual([]);
+  }
+});
+
+test("--thread new opens one thread in this Dori's channel named for the title and the lane works there; without a channel it is refused", async () => {
+  const opened: string[] = [];
+  const warned: string[] = [];
+  const deps = { ...aoeDeps(), openThread: async (title: string) => (opened.push(title), "discord:100000000000000077") };
+  const r = await launch("new", {}, deps, (l) => warned.push(l));
+  expect(opened).toEqual(["new"]);
+  expect(r.lane.thread).toBe("discord:100000000000000077");
+  expect((await at(T0).registry.read("new-lane"))?.thread).toBe("discord:100000000000000077");
+  expect(await Bun.file(join(state.dir, "brief.md")).text()).toContain("- Key: new-lane. Work thread: discord:100000000000000077.");
+  expect(warned.find((l) => l.startsWith("THREAD_OPENED new-lane discord:100000000000000077"))).toBeDefined();
+  world = newWorld();
+  const e = await launch("new", {}, depsFor(world, fakeClock(T0), join(state.dir, "fresh"), { backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" })).catch((x: unknown) => x);
+  expect(e).toBeInstanceOf(LaunchError);
+  expect((e as Error).message).toContain("DORI_DISCORD_CHANNEL");
+  expect(world.calls).toEqual([]);
+});
+
+test("a channel id as --thread is refused (LAUNCH_THREAD_IS_CHANNEL) and nothing is opened; a thread id still launches", async () => {
+  const deps = { ...aoeDeps(), channels: ["100000000000000001"] };
+  const e = await launch(THREAD, {}, deps).catch((x: unknown) => x);
+  expect(e).toBeInstanceOf(ThreadMissingError);
+  expect((e as Error).message).toStartWith(`LAUNCH_THREAD_IS_CHANNEL new-lane: ${THREAD} is a channel`);
+  expect(world.calls).toEqual([]);
+  expect((await launch("discord:100000000000000002", {}, deps)).lane.thread).toBe("discord:100000000000000002");
 });
 
 test("launch keeps a well-formed thread ref", async () => {
