@@ -910,7 +910,10 @@ class Gate:
                     if not outcome.startswith("✅"):
                         self.deny(entry["uid"], "google", entry["method"], entry["path"], outcome)
                     if edit:
-                        await self.bot_call("PATCH", base, {"content": outcome, "allowed_mentions": {"parse": []}})
+                        # Keep what was approved on the card: the outcome goes on top of the posted text.
+                        original = json_object(body).get("content", "")
+                        await self.bot_call("PATCH", base, {"content": (outcome + "\n" + original)[:2000],
+                                                             "allowed_mentions": {"parse": []}})
 
     async def approval_loop(self):
         while True:
