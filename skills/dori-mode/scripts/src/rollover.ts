@@ -368,3 +368,41 @@ export const rolloverStats = (entries: readonly RolloverEntry[], watchLines: rea
   }
   return out;
 };
+
+// The owner's own messages a lane handover note carries, since the lane's last handover: those in the lane's thread and
+// those the lead relayed into the old conversation by message id or link. Only rows the inbox holds as written by him count,
+// so what the lead or a bot wrote never passes for his words. Newest max kept, oldest first.
+export type OwnerMessage = { readonly at: string; readonly id: string; readonly channel: string; readonly text: string; readonly link?: string };
+export const ownerMessagesFor = (o: { readonly inbox: string; readonly ownerIds: readonly string[]; readonly oldLog?: string; readonly thread?: string; readonly since: string; readonly guild?: string; readonly max?: number }): OwnerMessage[] => {
+  if (!o.ownerIds.length || !o.inbox || !existsSync(o.inbox)) return [];
+  const cited = new Set<string>();
+  if (o.oldLog && existsSync(o.oldLog)) {
+    for (const line of readFileSync(o.oldLog, "utf8").split("\n")) {
+      if (!line.includes('"user"')) continue;
+      let row: { timestamp?: string; message?: { role?: string; content?: unknown } };
+      try {
+        row = JSON.parse(line) as typeof row;
+      } catch {
+        continue;
+      }
+      if (row.message?.role !== "user" || (row.timestamp ?? "") < o.since) continue;
+      for (const m of JSON.stringify(row.message.content ?? "").matchAll(/(?<![\w])(\d{17,22})(?![\w])/g)) if (m[1]) cited.add(m[1]);
+    }
+  }
+  const out = new Map<string, OwnerMessage>();
+  for (const line of readFileSync(o.inbox, "utf8").split("\n")) {
+    let r: { id?: unknown; author_id?: unknown; channel_id?: unknown; ts?: unknown; content?: unknown; transcript?: unknown };
+    try {
+      r = JSON.parse(line) as typeof r;
+    } catch {
+      continue;
+    }
+    if (typeof r?.id !== "string" || !o.ownerIds.includes(String(r.author_id ?? "")) || out.has(r.id)) continue;
+    const at = String(r.ts ?? "");
+    const channel = String(r.channel_id ?? "");
+    if (at < o.since || !(cited.has(r.id) || (!!o.thread && channel === o.thread))) continue;
+    const text = String((typeof r.content === "string" && r.content.trim()) || (typeof r.transcript === "string" ? r.transcript : "")).replace(/\s+/g, " ").trim();
+    if (text) out.set(r.id, { at, id: r.id, channel, text, ...(o.guild && channel ? { link: `https://discord.com/channels/${o.guild}/${channel}/${r.id}` } : {}) });
+  }
+  return [...out.values()].sort((a, b) => a.at.localeCompare(b.at)).slice(-(o.max ?? 40));
+};

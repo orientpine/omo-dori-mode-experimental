@@ -303,7 +303,7 @@ const USAGE = `dori <command> [options]
                                        runs or watches a training or eval chain (handover.trainingTags, trainingWatch);
                                        --wait-idle MIN (freshness's automatic start): waits up to MIN minutes for a running
                                        turn to end and freezes the old agent at that idle moment, before the new session opens;
-                                       writes a note (brief, owner goal, Done, todos, goal,
+                                       writes a note (brief, owner goal, Done, the owner's messages since the last handover, todos, goal,
                                        monitors, local chains, detached jobs, last reports, model and thinking), opens a
                                        session in the same real path with --model and --thinking, points the registry and
                                        cards at it, checks its status line, monitors and a [LEAD] probe ack, then closes the

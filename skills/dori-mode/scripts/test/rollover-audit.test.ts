@@ -4,10 +4,10 @@ import { join } from "node:path";
 
 import { freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
-import type { LaneHandoverDeps } from "../src/lane-handover.ts";
+import { type LaneFacts, type LaneHandoverDeps, renderLaneNote } from "../src/lane-handover.ts";
 import type { Lane } from "../src/registry.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
-import { appendRollover } from "../src/rollover.ts";
+import { appendRollover, ownerMessagesFor } from "../src/rollover.ts";
 import { auditDue, auditHandover, auditLog, type Classify, committedHandovers, markerFile, ownerQuotes, readAudit, reportGap, scrubSecrets, sendAuditSummary, summaryWeek, userLines, weeklyDue } from "../src/rollover-audit.ts";
 import { sessionDirFor } from "../src/session-id.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -241,4 +241,29 @@ test("a quote is the owner's only with proof: his message id in the inbox or an 
     ["lead's words", "네가 빨리 보내"],
     ["lead's words", "다른 사람이 쓴 글이라 형 것이 아님"],
   ]);
+});
+
+test("the lane handover note carries the owner's own messages since the last handover, with id and link; the lead's and others' do not count", () => {
+  state = state ?? withState();
+  const inbox = join(state.dir, "inbox-note.jsonl");
+  const row = (id: string, author: string, channel: string, ts: string, content: string) => JSON.stringify({ id, author_id: author, channel_id: channel, ts, content });
+  writeFileSync(inbox, [
+    row("1561000000000000001", "owner-1", "555", "2026-10-19T09:00:00.000000+00:00", "카드 E 이름은 zzangdori-ops로"),
+    row("1561000000000000002", "owner-1", "777", "2026-10-19T09:10:00.000000+00:00", "이 lane은 \"표\"를 꼭 살려"),
+    row("1561000000000000003", "lead-bot", "777", "2026-10-19T09:20:00.000000+00:00", "리드가 쓴 글"),
+    row("1561000000000000004", "owner-1", "999", "2026-10-19T09:30:00.000000+00:00", "다른 곳의 형 글, 인용 안 됨"),
+    row("1561000000000000005", "owner-1", "777", "2026-10-18T01:00:00.000000+00:00", "지난 교대 전의 글"),
+  ].join("\n"));
+  const log = join(state.dir, "old.jsonl");
+  writeFileSync(log, [said("2026-10-19T09:01:00Z", "[LEAD] 형(18:00 KST, 1561000000000000001): \"카드 E 이름은 zzangdori-ops로\""), said("2026-10-19T09:21:00Z", "[LEAD] 1561000000000000003 참고")].join("\n"));
+  const got = ownerMessagesFor({ inbox, ownerIds: ["owner-1"], oldLog: log, thread: "777", since: "2026-10-19T00:00:00Z", guild: "42" });
+  expect(got.map((m) => [m.id, m.link])).toEqual([["1561000000000000001", "https://discord.com/channels/42/555/1561000000000000001"], ["1561000000000000002", "https://discord.com/channels/42/777/1561000000000000002"]]);
+  const facts = { lane: lane(), from: { pane: "aoe_demo_old", aoeId: "1a", session: "old-sid", title: "demo", cwd: CWD }, cwd: CWD, model: "m", monitors: [], todos: [], chains: [], detached: [], laneNote: "", signals: {}, ownerMessages: got } as unknown as LaneFacts;
+  const note = renderLaneNote(facts, "2026-10-19T10:00:00Z", state.dir);
+  expect(note).toContain("## The owner's messages since the last handover (2)");
+  expect(note).toContain('https://discord.com/channels/42/555/1561000000000000001: "카드 E 이름은 zzangdori-ops로"');
+  expect(note).toContain('1561000000000000002: "이 lane은 \\"표\\"를 꼭 살려"');
+  expect(note).not.toContain("리드가 쓴 글");
+  expect(note).not.toContain("다른 곳의 형 글");
+  expect(note).not.toContain("지난 교대 전의 글");
 });
