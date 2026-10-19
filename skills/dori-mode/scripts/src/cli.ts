@@ -24,6 +24,7 @@ import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
 import { plainSummaryProblem } from "./close-summary.ts";
+import { literalNewlineProblem } from "./messenger/literal-newline.ts";
 import { autoReadyLine, freshnessTick } from "./freshness.ts";
 import { sampleUsage } from "./heavy-headroom.ts";
 import { heavyJobCommand, HeavyJobError, heavyServe } from "./heavy-queue.ts";
@@ -249,8 +250,12 @@ const USAGE = `dori <command> [options]
                                        commit only when something changed, never env/inbox/briefs/logs or token-shaped
                                        content; restore "yesterday 21:00" (stateGit.timeZone) commits first, so it can
                                        be undone; loop is what dori-lanes runs every stateGit.everyMin minutes
-  send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID] [--status working|done] [--no-typing] [--ping USER_ID]
+  send <slack|telegram|discord> --to TARGET --text TEXT | --text-file FILE [--thread ID] [--edit ID] [--status working|done] [--no-typing] [--ping USER_ID]
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN);
+                                       --text-file posts the file's text (real line breaks) the same way as --text. A text
+                                       with a literal \n and no real line break outside code is refused before anything is
+                                       sent (SEND_LITERAL_NEWLINE, exit 2; also thread reply|wait|done|open --first, ask,
+                                       claim-done and close --summary)
                                        --status (discord) writes it as the progress message, in discord.statusStyle;
                                        Discord posts show typing first (best effort); --no-typing skips it
                                        --ping USER_ID (digits only) mentions and pings only that user on a new Discord post
@@ -338,7 +343,7 @@ const USAGE = `dori <command> [options]
   thread list                          print mapped thread ids, sessions and titles
   thread set discord:<id> working|waiting|done [--open-card]
                                        queue its status; done archives it and removes its mapping
-  thread <reply|wait|done> discord:<id> <text>
+  thread <reply|wait|done> discord:<id> <text> | --text-file FILE
                                        post in a work thread and set its status (working, waiting, done); done archives it
                                        (Discord env: DORI_DISCORD_TOKEN, DORI_DISCORD_GUILD, DORI_DISCORD_CHANNEL, DORI_DISCORD_OWNER)`;
 
@@ -427,6 +432,17 @@ const opt = (name: string): string | undefined => {
   return typeof v === "string" ? v.trim() : undefined;
 };
 const need = (name: string): string => opt(name) || die(`--${name} is required`);
+// Every text dori posts for a person: a literal \n with no real line break is refused (messenger/literal-newline.ts).
+const postable = (text: string, what: string): string => {
+  const problem = literalNewlineProblem(text);
+  return problem ? die(`SEND_LITERAL_NEWLINE ${what}: ${problem}`, 2) : text;
+};
+// --text-file FILE (read as it is, trimmed) or the inline text
+const textOrFile = async (inline: string | undefined, usage: string): Promise<string> => {
+  const file = opt("text-file");
+  if (file && inline) die(`${usage}: give --text-file or the text, not both`);
+  return file ? (await Bun.file(file).text()).trim() || die(`${usage}: ${file} is empty`) : inline || die(usage);
+};
 // a bare --thread (no value) is a thread ref that came out empty, not a lane without a thread
 const threadOpt = (): string | undefined => (flags.values.thread === true ? "" : opt("thread"));
 // a bare --no-thread is a reason that came out empty, refused like --no-thread ""
@@ -746,6 +762,7 @@ try {
       const missing = challengeMissing(l);
       if (missing) die(missing, 5);
       const summary = opt("summary");
+      if (summary !== undefined) postable(summary, `claim-done --summary ${l.key}`);
       const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale);
       if (bad) die(`SUMMARY_REFUSED ${l.key}: ${bad}; write it for the owner in plain words`, 2);
       console.log(await claimDone(deps, l, need("evidence"), summary));
@@ -950,6 +967,7 @@ try {
       break;
     case "close": {
       const summary = opt("summary");
+      if (summary !== undefined) postable(summary, `close --summary ${key ?? ""}`);
       const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale);
       if (bad) die(`SUMMARY_REFUSED ${key ?? ""}: ${bad}; write it for the owner in plain words`, 2);
       const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead", summary);
@@ -1232,7 +1250,8 @@ try {
       const to = need("to");
       const status = opt("status");
       if (status !== undefined && (platform !== "discord" || (status !== "working" && status !== "done"))) die("--status takes working or done, with discord");
-      const text = status === "working" || status === "done" ? progressText(status, need("text"), config.discord) : need("text");
+      const body = postable(await textOrFile(opt("text"), "send needs --text TEXT or --text-file FILE"), "send");
+      const text = status === "working" || status === "done" ? progressText(status, body, config.discord) : body;
       const thread = opt("thread");
       const edit = opt("edit");
       const rawPing = flags.values.ping;
@@ -1337,7 +1356,7 @@ try {
     case "ask": {
       await quietGuard();
       const thread = opt("thread")?.replace(/^discord:/, "");
-      const q = await questionCards(discordClient()).ask(need("text"), (flags.values.option as string[] | undefined) ?? [], { thread: thread || null, session: opt("session") || null, tmux: opt("tmux") || null });
+      const q = await questionCards(discordClient()).ask(postable(need("text"), "ask"), (flags.values.option as string[] | undefined) ?? [], { thread: thread || null, session: opt("session") || null, tmux: opt("tmux") || null });
       console.log(`ASKED ${q.id} message=${q.message}`);
       break;
     }
@@ -1376,6 +1395,7 @@ try {
         const title = bareThreadName(ref ?? "", config.discord).trim();
         const from = opt("from")?.trim();
         const first = opt("first")?.trim();
+        if (first) postable(first, "thread open --first");
         if (!title || (!from && !first)) die("usage: dori thread open <title> [--from MSG_ID] [--first TEXT] [--session S]; standalone threads need --first");
         const dc = discordClient();
         const id = await dc.startThread(env("DORI_DISCORD_CHANNEL"), from, threadName("working", title, config.discord));
@@ -1406,20 +1426,21 @@ try {
         await threadStatuses(discordClient()).request(id, status);
         break;
       }
-      if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref || !text?.trim()) die("usage: dori thread <reply|wait|done> discord:<thread id> <text>");
+      if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref) die("usage: dori thread <reply|wait|done> discord:<thread id> <text> | --text-file FILE");
+      const body = postable(await textOrFile(text?.trim(), "usage: dori thread <reply|wait|done> discord:<thread id> <text> | --text-file FILE"), `thread ${verb}`);
       const dc = discordClient();
       if (verb === "done") {
         // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;
         const holders = await holdersOf(thread);
         if (holders && !flags.values.force) {
-          console.log(`POSTED ${await postInThread(dc, ref ?? "", text ?? "")} THREAD_LEFT_OPEN ${thread}: ${holders}; not marked done (--force marks it done anyway)`);
+          console.log(`POSTED ${await postInThread(dc, ref ?? "", body)} THREAD_LEFT_OPEN ${thread}: ${holders}; not marked done (--force marks it done anyway)`);
           break;
         }
         if (holders) console.log(`THREAD_DONE_FORCED ${thread}: ${holders}; marking it done anyway`);
       }
       const statuses = threadStatuses(dc);
-      const posted = await threadHook(dc, verb as ThreadVerb, ref ?? "", text ?? "", config.discord, (t, s) => statuses.request(t, s));
+      const posted = await threadHook(dc, verb as ThreadVerb, ref ?? "", body, config.discord, (t, s) => statuses.request(t, s));
       console.log(`POSTED ${posted}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
       break;
     }

@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 
 import { ChallengeError, checkReviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
+import { literalNewlineProblem } from "./messenger/literal-newline.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Lane } from "./registry.ts";
 
@@ -22,6 +23,7 @@ export const plainSummaryProblem = (text: string, locale = ""): string | undefin
   if (!t) return "it is empty";
   if (t.length > MAX_SUMMARY) return `it is longer than ${MAX_SUMMARY} characters (${t.length})`;
   if (t.includes("`")) return "it has backticks";
+  if (literalNewlineProblem(t)) return "it has a literal \\n and no real line break";
   if (/\[(REPORT|LEAD|DORI)\]/.test(t)) return "it is a report line for the lead, not words for the owner";
   if (/(^|[\s(])(~\/|\/home\/|\/Users\/|\/tmp\/|\/root\/)/.test(t)) return "it has a local path";
   if ((t.match(/\b[0-9a-f]{7,40}\b/g) ?? []).some((h) => /\d/.test(h) && /[a-f]/.test(h))) return "it has a commit hash";
