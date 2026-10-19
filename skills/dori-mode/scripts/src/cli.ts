@@ -26,7 +26,7 @@ import { sampleUsage } from "./heavy-headroom.ts";
 import { acquireSlot, pidAlive, releaseSlot, type SlotDeps } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
-import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, renderBrief, setDone, setGpu, setThread, threadGate, ThreadMissingError, validateLaunch } from "./launch.ts";
+import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, relatedGate, renderBrief, setDone, setGpu, setThread, threadGate, ThreadMissingError, validateLaunch } from "./launch.ts";
 import { DirectiveError, ledgerProblems, ledgerTable, loadLedger, promptTable } from "./directives.ts";
 import { applyDirectives, checkMeaning, runDirectiveAudit, sinceIso } from "./directive-audit.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
@@ -61,14 +61,20 @@ import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 const USAGE = `dori <command> [options]
 
   lead                                 print the live lead as "<aoe-id> <tmux-session>"
-  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" --thread REF|new | --no-thread "<reason>" [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
+  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" --thread REF|new [--why-new "<reason>"] | --no-thread "<reason>" [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
          [--goal "owner words"] [--challenge-before STEP ...] [--use-gpu] [--ui] [--dry-run]
                                        every lane opens with a work thread (the owner's long work gets one): --thread REF
                                        for the open thread the work continues in, --thread new to open one named T in this
                                        Dori's own channel (DORI_DISCORD_CHANNEL; THREAD_OPENED, then the lane's first
                                        message), or --no-thread "<reason>" for a lane the owner did not ask for
                                        (LAUNCH_THREADLESS, kept in the registry). Neither, or --thread none: LAUNCH_NO_THREAD,
-                                       exit 4, nothing opened; a channel id as REF: LAUNCH_THREAD_IS_CHANNEL, exit 4
+                                       exit 4, nothing opened; a channel id as REF: LAUNCH_THREAD_IS_CHANNEL, exit 4.
+                                       --thread new first looks for related open threads (a lane open there or closed
+                                       less than related.recentH hours ago; an owner message the brief links in it, the
+                                       same link, its ~/.dori/qa/<key>/ folder, shared title and brief words): found, it
+                                       prints a LAUNCH_RELATED_THREAD line per thread with its evidence and exits 4,
+                                       nothing opened; pass --thread REF to continue there, or --why-new "<reason>" to
+                                       open a new one anyway (LAUNCH_NEW_THREAD_WHY, the reason kept in the registry)
                                        prints LAUNCH_DONE_WEAK (and still launches) when every Done signal only checks
                                        files or text; --done-weak-ok silences it. The brief gets a "Past signals" section
                                        from earlier lanes in the same cwd or with a shared tag (the key's first word is one)
@@ -370,7 +376,7 @@ const flags = parseArgs({
     "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
     force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
     answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
-    static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" },
+    static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
     remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
   },
 });
@@ -383,6 +389,7 @@ const need = (name: string): string => opt(name) || die(`--${name} is required`)
 const threadOpt = (): string | undefined => (flags.values.thread === true ? "" : opt("thread"));
 // a bare --no-thread is a reason that came out empty, refused like --no-thread ""
 const noThreadOpt = (): string | undefined => (flags.values["no-thread"] === true ? "" : opt("no-thread"));
+const whyNewOpt = (): string | undefined => (flags.values["why-new"] === true ? "" : opt("why-new"));
 const key = flags.positionals[0];
 const tags = (): string[] => ((flags.values.tag as string[] | undefined) ?? []).map((t) => t.trim()).filter(Boolean);
 const many = (name: string): string[] => ((flags.values[name] as string[] | undefined) ?? []).map((t) => t.trim()).filter(Boolean);
@@ -603,10 +610,10 @@ try {
       process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
       break;
     case "launch": {
-      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), noThread: noThreadOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]), ui: Boolean(flags.values.ui), waive };
+      const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), noThread: noThreadOpt(), whyNew: whyNewOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]), ui: Boolean(flags.values.ui), waive };
       const noGoal = goalWarning(input);
       if (noGoal) console.log(noGoal);
-      // LAUNCH_NO_THREAD / LAUNCH_THREAD_IS_CHANNEL: nothing opened, exit 4 like a missing directive
+      // LAUNCH_NO_THREAD / LAUNCH_THREAD_IS_CHANNEL / LAUNCH_RELATED_THREAD: nothing opened, exit 4 like a missing directive
       const threadMissing = (e: unknown): never => {
         if (e instanceof ThreadMissingError) die(e.message, 4);
         throw e;
@@ -615,6 +622,7 @@ try {
         await validateLaunch(deps, input);
         try {
           threadGate(deps, input);
+          for (const line of await relatedGate(deps, input)) console.log(line);
         } catch (e) {
           threadMissing(e);
         }
