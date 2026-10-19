@@ -125,9 +125,12 @@ test("entries with via stay in the ledger and in scope but go into a brief as th
   expect((await renderBrief(deps, input(await write("p2.md", fields), { cwd: "/work/app" }))).text).not.toContain("repo-rules");
   const blocks = { "eight-steps": await eightSteps(), "ui-steps": await uiSteps() };
   expect(briefGaps({ key: "p" }, r.text, ledger, "hr35-isaac", blocks)).toEqual([]);
-  // a brief launched before the pointer still carries the full texts: no gap either
+  // a brief launched before the pointer still carries the full texts: no gap either, the pointer included
   const old = `${fields}\n[형 결정 rule-a, 2026-07-14, 원문 없음: 리드 기록]\n규칙 A 원문\n\n[형 결정 rule-b, 2026-07-14, 원문 없음: 리드 기록]\n규칙 B 원문\n`;
-  expect(briefGaps({ key: "p" }, old, ledger, "hr35-isaac", blocks).map((g) => g.id)).not.toEqual(expect.arrayContaining(["rule-a", "rule-b", "repo-rules"]));
+  expect(briefGaps({ key: "p" }, old, ledger, "hr35-isaac", blocks).filter((g) => /rule/.test(g.id))).toEqual([]);
+  // with only one of the texts the pointer is still sent
+  const half = `${fields}\n[형 결정 rule-a, 2026-07-14, 원문 없음: 리드 기록]\n규칙 A 원문\n`;
+  expect(briefGaps({ key: "p" }, half, ledger, "hr35-isaac", blocks).filter((g) => /rule/.test(g.id)).map((g) => g.id)).toEqual(["repo-rules"]);
   // a brief with neither: one gap, the pointer, and apply sends the pointer only
   const lane = await laneOf(deps, "pl", await write("pl.md", fields));
   expect(briefGaps(lane, fields, ledger, "hr35-isaac", blocks).filter((g) => /rule/.test(g.id)).map((g) => g.id)).toEqual(["repo-rules"]);

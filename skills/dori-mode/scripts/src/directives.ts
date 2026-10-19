@@ -379,10 +379,13 @@ export const pointerOf = (e: Directive, ledger: Pick<Ledger, "entries">): Direct
   const p = ledger.entries.find((x) => x.id === e.via);
   return p && !p.retired ? p : undefined;
 };
-// In the brief as its own text, or through its pointer.
+// In the brief as its own text, or through its pointer; a pointer is also in a brief that already has every entry
+// naming it as their own texts (a lane launched before the pointer), so it is not sent on top of them.
 export const coveredBy = (brief: string, e: Directive, ledger: Pick<Ledger, "entries">): boolean => {
   const p = pointerOf(e, ledger);
-  return hasDirective(brief, e) || (p !== undefined && hasDirective(brief, p));
+  if (hasDirective(brief, e) || (p !== undefined && hasDirective(brief, p))) return true;
+  const named = ledger.entries.filter((x) => x.via === e.id && !x.retired);
+  return named.length > 0 && named.every((x) => hasDirective(brief, x));
 };
 export const requireMissing = (brief: string, e: Directive): string[] => (e.require ?? []).filter((re) => !new RegExp(re, "m").test(leadText(brief)));
 
