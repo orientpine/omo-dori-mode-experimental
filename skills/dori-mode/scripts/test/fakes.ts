@@ -28,7 +28,8 @@ export type World = {
   aoeEnv: (Readonly<Record<string, string | undefined>> | undefined)[];
   sessionEnv: Record<string, Record<string, string | undefined>>;
   dropEnv: boolean;
-  // ps -A -o pid=,ppid=,command= and ps -o lstart= (the agent's start) as the host would print them
+  // ps -A -o pid=,ppid=,command= ("pid ppid command" lines; asked with stat= the fake adds state S, as the host prints it)
+  // and ps -o lstart= (the agent's start) as the host would print them
   ps: string;
   agentStart: string;
 };
@@ -92,7 +93,7 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
   if (cmd === "gh" && a1 === "pr") return ok(JSON.stringify({ state: w.prState, mergeCommit: w.prState === "MERGED" ? { oid: "abc1234567890" } : null }));
   if (cmd === "gh" && a1 === "issue") return ok(JSON.stringify({ state: w.issueState }));
   if (cmd === "notify") return ok();
-  if (cmd === "ps" && a1 === "-A") return ok(w.ps);
+  if (cmd === "ps" && a1 === "-A") return ok(argv.some((a) => a.includes("stat=")) ? w.ps.replace(/^(\s*\d+\s+\d+)\s+/gm, "$1 S ") : w.ps);
   if (cmd === "ps" && argv.includes("lstart=")) return ok(w.agentStart);
   return { code: 1, out: "", err: `unexpected ${argv.join(" ")}` };
 };

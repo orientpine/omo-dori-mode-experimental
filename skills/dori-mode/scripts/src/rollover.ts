@@ -21,6 +21,10 @@ export type Supplement = { readonly round: number; readonly items: readonly { re
 
 export type Who = "lead" | "lane";
 
+// work: a local chain or a background eval cell would die; busy: a turn ran or a question stayed open; training: the
+// owner's rule keeps automatic starts away from a lane with a training or eval chain
+export type Blocked = "work" | "busy" | "training";
+
 // who decided a rollover: the lead (lead:<reason>), the owner (an answered card or their message), or the automation key
 export type DecidedBy = "lead" | "owner" | "auto";
 
@@ -46,6 +50,10 @@ export type RolloverEntry =
       readonly steps: readonly Step[];
       readonly result: string;
       readonly reasons: readonly string[];
+      // a refusal: what held it (work that would die, a lane that stayed busy, a training chain) and the chain pids, so an
+      // automatic start knows when to try again
+      readonly blocked?: Blocked;
+      readonly pids?: readonly number[];
       // the subscription accounts of the old and new session ("" when the status line did not show one)
       readonly accounts?: { readonly from: string; readonly to: string };
       readonly supplementRounds?: number;

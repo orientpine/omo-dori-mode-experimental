@@ -5,7 +5,8 @@ import { tmuxPanePid } from "./aoe.ts";
 import type { Backend } from "./config.ts";
 import type { Runner } from "./run.ts";
 
-export type Proc = { readonly pid: number; readonly ppid: number; readonly cmd: string };
+// stat: the ps state letters ("S", "R+", "Z" for a zombie); absent when the table was built without it
+export type Proc = { readonly pid: number; readonly ppid: number; readonly cmd: string; readonly stat?: string };
 export type SessionHit = { readonly id: string; readonly via: "argv" | "child-env" | "start-time" | "none"; readonly pid?: number };
 
 export const AGENT = /senpi\/dist\/bundle\/cli\.js|(^|\/)omo(\s|$)/;
@@ -14,10 +15,13 @@ export const SESSION_FILE = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z_([0-
 const START_WINDOW_MS = 180_000;
 
 export const procTable = async (run: Runner): Promise<Proc[]> =>
-  (await run(["ps", "-A", "-o", "pid=,ppid=,command="])).out.split("\n").flatMap((line) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), cmd: m[3] ?? "" }] : [];
+  (await run(["ps", "-A", "-o", "pid=,ppid=,stat=,command="])).out.split("\n").flatMap((line) => {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), stat: m[3] ?? "", cmd: m[4] ?? "" }] : [];
   });
+
+// A zombie ("[bash] <defunct>"): it already ended and only waits for its parent to collect it, so no work dies with it.
+export const ended = (p: Proc): boolean => (p.stat ?? "").startsWith("Z") || /<defunct>\s*$/.test(p.cmd);
 
 export const descendants = (table: readonly Proc[], root: number): Proc[] => {
   const byParent = new Map<number, Proc[]>();
