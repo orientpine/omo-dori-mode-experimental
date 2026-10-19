@@ -59,7 +59,8 @@ vault writes at 1 MiB. Chunked requests are decoded; trailers cannot alter heade
 Outbound changes and the 11th delete/hour or 31st write/owner message are parked,
 returning `202` with a card link. The gate posts short Korean cards (kind, recipients, title,
 ✅/⛔ only; the reason, owner-message link and expiry stay in the pending record) and checks every
-20 seconds. Only the owner's non-bot reaction counts. Cancel wins over approve.
+20 seconds. A sharing or comment card on a Drive file shows that file's name and the access asked for
+(`내용: <file> 공유(보기)`; an unreadable name says so with the file id), so the card alone tells who gets what. Only the owner's non-bot reaction counts. Cancel wins over approve.
 Cards expire after 24 hours. Missing/tampered cards never execute. A SHA-256
 content check precedes reactions. Clients cannot edit/delete pending cards or
 add/remove their reactions through the Discord port.

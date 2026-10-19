@@ -341,6 +341,8 @@ async def reply(writer: asyncio.StreamWriter, status: int, body: bytes, headers=
     await writer.drain()
 
 
+DRIVE_ROLES = {"reader": "보기", "commenter": "댓글", "writer": "편집", "fileOrganizer": "정리",
+              "organizer": "관리", "owner": "소유권"}
 CARD_KIND = {"calendar": "일정 초대", "drive": "Drive 공유", "docs": "문서 공유", "gmail": "메일",
              "tasks": "할 일", "obsidian": "노트"}
 
@@ -929,6 +931,17 @@ class Gate:
         fallback = snapshot or {}
         title = " ".join(str(data.get("title") or data.get("summary") or data.get("name") or
                              fallback.get("title") or fallback.get("summary") or fallback.get("name") or "").splitlines())
+        shared = re.fullmatch(r"/www\.googleapis\.com/drive/v3/files/([^/]+)/(permissions|comments)(?:/[^/]+)*", path)
+        if api == "drive" and shared and not title:
+            # Owner 2026-10-19 12:15 KST "앞으로 이런 실수 없도록 해": a sharing card names the shared file and the access.
+            try:
+                name = str((await self.google_json("/www.googleapis.com/drive/v3/files/" + quote(shared[1], safe="") + "?"
+                                                   + urlencode({"fields": "name", "supportsAllDrives": "true"}))).get("name") or "")
+            except Refused:
+                name = ""
+            name = " ".join(name.splitlines()) or f"파일 이름을 읽지 못함 · {shared[1][:40]}"
+            role = DRIVE_ROLES.get(str({**fallback, **data}.get("role", "")), "")
+            title = (f"{name} 공유({role})" if role else f"{name} 공유") if shared[2] == "permissions" else f"{name} 댓글"
         thread = await self.card_thread(channel, proof, f"{CARD_KIND.get(api, api)} · {(title or op)[:40]}")
         await self.supersede(thread, api, op, path, method, title)
         # Owner 2026-10-19 00:00 KST: the card shows who, what and the reactions; the reason,
