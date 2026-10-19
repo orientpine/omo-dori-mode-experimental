@@ -15,7 +15,7 @@ import { watchLog } from "./watch-log.ts";
 
 // A report the agent UI wrapped over several lines continues until the next blank line.
 export const lastReportLine = (screen: string, key: string): string | null => {
-  const grammar = new RegExp(`\\[REPORT\\] ${key.replace(/[.]/g, "\\.")} \\| (milestone|blocker|question|done) \\| (?!<what)\\S`);
+  const grammar = new RegExp(`\\[REPORT\\] ${key.replace(/[.]/g, "\\.")} \\| (milestone|blocker|question|done) \\| (?!<)\\S`);
   const lines = screen.split("\n");
   const at = lines.findLastIndex((l) => grammar.test(l));
   if (at < 0) return null;
