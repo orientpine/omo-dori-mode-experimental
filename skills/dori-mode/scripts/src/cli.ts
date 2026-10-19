@@ -16,6 +16,7 @@ import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, fill, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
 import { checkRepo, commitDir, initRepo, logDir, restoreDir, type StateGitDeps, stateGitDirs } from "./state-git.ts";
 import { approve, backupTick, type BackupDeps, envFilesIn, guardDir, loadSecrets, msToNextSlot, previewDir, pushAll, pushCheck } from "./state-backup.ts";
+import { backupRemoteUrl, backupVisibility } from "./backup-visibility.ts";
 import { sendVerified, submitToPane } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
@@ -1076,12 +1077,8 @@ try {
         backup: bk,
         stateDir: config.stateDir,
         home: process.env.HOME ?? "",
-        visibility: async (repo) => {
-          const r = await run(["gh", "api", `repos/${repo}`, "--jq", ".visibility"]);
-          if (r.code === 0) return r.out.trim() || "unknown: empty answer";
-          return /Not Found|404/.test(`${r.err} ${r.out}`) ? "missing" : `unknown: ${(r.err || r.out).replace(/\s+/g, " ").slice(0, 120)}`;
-        },
-        remoteUrl: (repo) => `https://github.com/${repo}.git`,
+        visibility: (repo) => backupVisibility(repo, { run, fetch }),
+        remoteUrl: backupRemoteUrl,
         secrets: async () => {
           const gh = await run(["gh", "auth", "token"]);
           const ghToken = gh.code === 0 && gh.out.trim() ? [{ value: gh.out.trim(), from: "gh auth token" }] : [];
