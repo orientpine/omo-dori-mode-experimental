@@ -43,6 +43,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.threads = {"555"}
         self.created_threads = []
         self.thread_names = []
+        self.thread_meta = {}
+        self.thread_patches = []
         self.author = "1"
         self.proof_time = gate.utc()
         self.calendar_role = "owner"
@@ -104,6 +106,18 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                     self.created_threads.append(route)
                     self.thread_names.append(json.loads(body)["name"])
                     data = {"id": parts[4] if "messages" in parts else "777"}
+                    self.thread_meta[data["id"]] = {"id": data["id"], "type": 11, "parent_id": parts[2],
+                                                    "name": json.loads(body)["name"]}
+                elif route == "/guilds/10/threads/active":
+                    data = {"threads": list(self.thread_meta.values())}
+                elif route.endswith("/messages") and method == "GET":
+                    data = [{"id": m, "content": c, "author": {"bot": True}}
+                            for m, c in sorted(self.cards.items(), reverse=True) if self.card_channels.get(m) == parts[2]]
+                elif parts[1] == "channels" and len(parts) == 3 and parts[2] in self.thread_meta:
+                    if method == "PATCH":
+                        self.thread_patches.append((parts[2], json.loads(body)))
+                        self.thread_meta[parts[2]].update(json.loads(body))
+                    data = self.thread_meta[parts[2]]
                 elif len(parts) >= 5 and parts[1] == "channels" and parts[3] == "messages":
                     message = parts[4]
                     if len(parts) >= 7 and parts[5] == "reactions":
@@ -376,6 +390,57 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         await self.service.poll_approvals()
         self.assertFalse(self.writes())
         self.assertFalse(self.service.pending())
+
+    async def test_a_decided_card_titles_and_archives_its_own_thread(self):
+        # Owner 2026-10-19 16:44 KST: the approval result shows in the thread title.
+        for emoji, status, title in (("⛔", 200, "⛔ 취소"), ("✅", 200, "✅ 완료"), ("✅", 500, "❗ 실패")):
+            self.thread_meta.clear()
+            self.thread_patches.clear()
+            self.response_status = status
+            self.approval()
+            await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+            entry = self.approve(emoji=emoji)
+            await self.service.poll_approvals()
+            self.assertEqual(self.thread_patches, [(entry["thread"], {"name": f"{title} · 🔐 일정 초대 · Invite",
+                                                                     "archived": True})], emoji + str(status))
+
+    async def test_an_expired_card_titles_its_thread_expired(self):
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        entry = self.service.pending()[0]
+        entry["ts"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25)).isoformat()
+        gate.private_write(self.state / "pending" / (entry["id"] + ".json"), gate.json_bytes(entry))
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches[-1][1]["name"], "⌛ 만료 · 🔐 일정 초대 · Invite")
+
+    async def test_the_owners_own_thread_and_a_thread_with_an_open_card_keep_their_title(self):
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]},
+                           origin="555/100")
+        self.thread_meta["555"] = {"id": "555", "type": 11, "parent_id": "20", "name": "형의 요청"}
+        self.approve(emoji="⛔")
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches, [])
+        await self.request(data={"summary": "A", "attendees": [{"email": "outside@example.net"}]})
+        await self.request(data={"summary": "B", "attendees": [{"email": "outside@example.net"}]})
+        first = self.service.pending()[0]
+        self.reactions[(first["message"], quote("⛔"))] = [{"id": "1", "bot": False}]
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches, [])
+        self.assertEqual(len(self.service.pending()), 1)
+
+    async def test_the_start_sweep_titles_threads_decided_before_the_rule(self):
+        self.approval()
+        await self.request(data={"summary": "Old", "attendees": [{"email": "outside@example.net"}]})
+        self.approve(emoji="⛔")
+        with patch.object(self.service, "close_card_thread", lambda *a: asyncio.sleep(0)):
+            await self.service.poll_approvals()
+        await self.request(data={"summary": "Open", "attendees": [{"email": "outside@example.net"}]},
+                           origin="30/100")
+        self.assertEqual(self.thread_patches, [])
+        await self.service.close_decided_threads()
+        self.assertEqual(self.thread_patches, [("100", {"name": "⛔ 취소 · 🔐 일정 초대 · Old",
+                                                         "archived": True})])
 
     async def test_tampered_card_never_executes_or_edits(self):
         self.approval()

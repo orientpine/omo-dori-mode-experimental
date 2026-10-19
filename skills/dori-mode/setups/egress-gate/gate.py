@@ -345,6 +345,17 @@ DRIVE_ROLES = {"reader": "보기", "commenter": "댓글", "writer": "편집", "f
               "organizer": "관리", "owner": "소유권"}
 CARD_KIND = {"calendar": "일정 초대", "drive": "Drive 공유", "docs": "문서 공유", "gmail": "메일",
              "tasks": "할 일", "obsidian": "노트"}
+# A decided card thread's title prefix, in the node's request-thread words (origin_notice.ThreadOutcome).
+THREAD_STATUSES = ("✅ 완료", "⛔ 취소", "⌛ 만료", "❗ 실패")
+
+
+def thread_status(outcome: str) -> str | None:
+    """The thread prefix for a card outcome line; None for outcomes that leave the thread alone."""
+    executed = re.fullmatch(r"✅ 실행됨 \((\d+)\)", outcome)
+    if executed:
+        return "✅ 완료" if 200 <= int(executed[1]) < 300 else "❗ 실패"
+    return {"⛔ 취소됨": "⛔ 취소", "만료됨": "⌛ 만료", "실행 실패": "❗ 실패"}.get(outcome)
+
 
 class Gate:
     """Mutable service state: cached credentials, proofs, and listener ownership."""
@@ -1093,8 +1104,65 @@ class Gate:
                         original = json_object(body).get("content", "")
                         await self.bot_call("PATCH", base, {"content": (outcome + "\n" + original)[:2000],
                                                              "allowed_mentions": {"parse": []}})
+                        await self.close_card_thread(entry.get("thread"), outcome)
+
+    async def close_card_thread(self, thread, outcome) -> None:
+        """Owner 2026-10-19 16:44 KST "승인 결과를 스레드 제목에 반영하게 해줘": a card thread the gate opened
+        is renamed '<status> · <name>' and archived once its last card is decided (the node's request-thread
+        words). The owner's own threads and threads with an undecided card stay as they are; failures are
+        logged and change nothing else."""
+        prefix = thread_status(outcome)
+        channel = str(self.config.get("approval", {}).get("channel_id", ""))
+        if not prefix or not thread or str(thread) == channel:
+            return
+        if any(e.get("thread") == thread for e in self.pending()):
+            return
+        try:
+            status, _, body = await self.bot_call("GET", f"/channels/{thread}")
+            info = json_object(body) if 200 <= status < 300 else {}
+            name = str(info.get("name") or "")
+            if info.get("type") not in (11, 12) or str(info.get("parent_id")) != channel:
+                return
+            for old in THREAD_STATUSES:
+                if name.startswith(old + " · "):
+                    name = name[len(old) + 3:]
+            if not name.startswith("🔐 "):
+                return
+            status, _, _ = await self.bot_call("PATCH", f"/channels/{thread}",
+                                               {"name": f"{prefix} · {name}"[:100], "archived": True})
+            if not 200 <= status < 300:
+                raise OSError(status)
+        except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
+            print("GATE_THREAD_CLOSE_FAILED", file=sys.stderr, flush=True)
+
+    async def close_decided_threads(self) -> None:
+        """Once at start: card threads still open whose cards are all decided get their status title
+        (threads decided before this rule, or while the gate was down)."""
+        channel = str(self.config.get("approval", {}).get("channel_id", ""))
+        status, _, body = await self.bot_call("GET", f"/guilds/{self.config['owner_guild']}/threads/active")
+        if not 200 <= status < 300:
+            return
+        waiting = {e.get("thread") for e in self.pending()}
+        for info in json_object(body).get("threads", []):
+            thread = str(info.get("id", ""))
+            if (str(info.get("parent_id")) != channel or thread in waiting
+                    or not str(info.get("name") or "").startswith("🔐 ")):
+                continue
+            status, _, body = await self.bot_call("GET", f"/channels/{thread}/messages?limit=50")
+            messages = json.loads(body) if 200 <= status < 300 else []
+            cards = [str(m.get("content") or "") for m in messages
+                     if (m.get("author") or {}).get("bot") and "\n받는 사람: " in str(m.get("content") or "")]
+            if not cards or any(c.startswith("승인 필요 · ") for c in cards):
+                continue
+            latest = next((c.split("\n", 1)[0] for c in cards if thread_status(c.split("\n", 1)[0])), "")
+            if latest:
+                await self.close_card_thread(thread, latest)
 
     async def approval_loop(self):
+        try:
+            await self.close_decided_threads()
+        except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
+            print("GATE_THREAD_SWEEP_FAILED", file=sys.stderr, flush=True)
         while True:
             try:
                 await self.poll_approvals()

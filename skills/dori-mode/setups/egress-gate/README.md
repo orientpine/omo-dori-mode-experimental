@@ -71,6 +71,11 @@ written in the approval channel gets a thread on that message; anything else ope
 thread in the approval channel (any thread failure falls back to the channel). A newer card
 for the same work in the same thread (same API, operation and path; for creates, the same
 title) replaces the older undecided card: it is marked `🔁 새 판으로 대체됨` and never runs.
+Once the last card in a thread the gate opened (its name starts `🔐 `) is decided, the thread is
+renamed `✅ 완료 · ` (executed, 2xx), `⛔ 취소 · `, `⌛ 만료 · ` or `❗ 실패 · ` plus its name and archived; the
+owner's own threads and threads with an open card keep their title. At start the gate also titles
+open card threads whose cards were all decided earlier (owner 2026-10-19 "승인 결과를 스레드 제목에
+반영하게 해줘").
 A card the owner already reacted to is left to the poller.
 
 Pending requests are private JSON files in `pending/`. Execution is marked
