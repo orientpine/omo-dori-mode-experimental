@@ -367,7 +367,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.changes()[0]["approved_by"], entry["card"])
         self.assertFalse(self.service.pending())
         card = self.cards[entry["message"]]
-        self.assertTrue(card.startswith("✅ 실행됨 (200)\n승인 필요"), card)
+        self.assertTrue(card.startswith("✅ 실행됨\n승인 필요"), card)
         self.assertIn("outside@example.net", card)
 
     async def test_the_bots_own_prefilled_reactions_are_not_an_approval(self):

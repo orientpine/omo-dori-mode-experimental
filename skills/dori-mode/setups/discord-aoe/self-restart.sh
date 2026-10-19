@@ -75,7 +75,9 @@ if ! command -v node >/dev/null; then
   echo "SELF-RESTART-WARN no node (nvm or caller PATH): the restarted session's node hooks, memory reflection included, will fail" >&2
   log "SELF-RESTART-WARN no node on the session PATH ($PATH)"
 fi
-notify() { dori send discord --to "${DORI_DISCORD_CHANNEL:-}" --text "$1" >>"$LOG" 2>&1 || log "SELF-RESTART-NOTIFY-FAIL"; }
+# A failed restart is for the other Dori (pair channel) to fix, not a code for the owner (owner 2026-10-18 21:43 KST,
+# 2026-10-20 00:10 KST); the owner's channel only when no pair channel is set.
+notify() { dori send discord --to "${DORI_DISCORD_PAIR_CHANNEL:-${DORI_DISCORD_CHANNEL:-}}" --text "$1" >>"$LOG" 2>&1 || log "SELF-RESTART-NOTIFY-FAIL"; }
 ready() { tmux capture-pane -p -t "=$T:" 2>/dev/null | grep -q '^❯'; }
 busy() { tmux capture-pane -p -t "=$T:" 2>/dev/null | grep -q 'esc to interrupt'; }
 

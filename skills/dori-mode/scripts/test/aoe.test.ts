@@ -457,14 +457,13 @@ test("the lead's own LANE_AUTOTURN_LONG and LANE_AUTOTURN_PAUSED also go out to 
   expect(posts[2]).toStartWith("LEAD_AUTOTURN_PAUSED aoe_Dori_0a1b2c3d 150: ");
 });
 
-test("leadAlertPoster posts to the pair channel, then the owner's, skips an unset one and reports a failed post without dropping the other", async () => {
+test("leadAlertPoster posts to the pair channel only, and to the owner's channel only when there is no pair channel", async () => {
   const calls: string[][] = [];
   const post = leadAlertPoster(async (ch, text) => {
     calls.push([ch, text]);
-    if (ch === "O") throw new Error("429");
     return "m1";
   }, { pair: "P", owner: "O" });
-  expect(await post("x")).toEqual(["LEAD_ALERT_POSTED pair P m1", "LEAD_ALERT_WARN owner O Error: 429"]);
-  expect(calls).toEqual([["P", "x"], ["O", "x"]]);
-  expect(await leadAlertPoster(async () => "m", { pair: "", owner: "O" })("x")).toEqual(["LEAD_ALERT_POSTED owner O m"]);
+  expect(await post("x")).toEqual(["LEAD_ALERT_POSTED pair P m1"]);
+  expect(calls).toEqual([["P", "x"]]);
+  expect(await leadAlertPoster(async () => { throw new Error("429"); }, { pair: "", owner: "O" })("x")).toEqual(["LEAD_ALERT_WARN owner O Error: 429"]);
 });
