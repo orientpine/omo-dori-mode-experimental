@@ -303,6 +303,10 @@ export type AutoSignals = {
 // A committed lead handover freezes the old lead (SIGSTOP on its agent and every child) instead of closing it; frozenCloseH
 // is how many hours later freshness closes it (0: only by hand, dori handover close-frozen), and frozenText ({from}, {n}
 // processes, {hours} or - when closed by hand) is the line the owner's report of that rollover gets.
+// The audit after a committed handover (rollover-audit.ts): freshness starts it auditAfterMin minutes after the commit, for
+// handovers committed at most auditWindowH hours ago (0 turns it off); the lead's instructions of the old session's last
+// auditLeadH hours are read with the owner's quoted words; auditSummaryAt ("Mon 08:30" in scorecard.timeZone; empty: off)
+// is when the week's summary goes to the lead's inbox.
 export type HandoverWatcher = { readonly name: string; readonly check: readonly string[]; readonly arm?: string };
 
 export type Handover = {
@@ -335,6 +339,10 @@ export type Handover = {
   readonly frozenText: string;
   readonly proposalText: string;
   readonly reportText: string;
+  readonly auditAfterMin: number;
+  readonly auditWindowH: number;
+  readonly auditLeadH: number;
+  readonly auditSummaryAt: string;
 };
 
 export type DoriConfig = {
@@ -500,7 +508,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
     laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneAfterCompactK: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, leadAfterCompactK: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoWaitMin: 20,
-    trainingTags: ["training"], trainingWatch: "chain[_-]?watch|_chain_|\\btrain(ing)?\\b|learning iteration|/runs/|run[_-]?dir|\\bdori heavy\\b|(^|[^a-z])(eval|replay)([^a-z]|$)", supplementRounds: 2, frozenCloseH: 24,
+    trainingTags: ["training"], trainingWatch: "chain[_-]?watch|_chain_|\\btrain(ing)?\\b|learning iteration|/runs/|run[_-]?dir|\\bdori heavy\\b|(^|[^a-z])(eval|replay)([^a-z]|$)", supplementRounds: 2, frozenCloseH: 24, auditAfterMin: 10, auditWindowH: 24, auditLeadH: 6, auditSummaryAt: "Mon 08:30",
     frozenText: "The old session {from} is frozen ({n} processes stopped, it uses no tokens); it closes in {hours} h. To undo: dori handover thaw {from}",
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
     reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },
