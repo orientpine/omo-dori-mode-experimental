@@ -63,6 +63,9 @@ export type Directive = {
   readonly check?: LeadCheck;
   // a retired directive stays on record and applies to nothing: "<date>: <why>"
   readonly retired?: string;
+  // an inject entry that stays on record and in scope, but goes into a brief as the pointer entry with this id (one text
+  // that names where the rule is written, e.g. a repo's AGENTS.md); the pointer in a brief counts as this entry
+  readonly via?: string;
   readonly layer: "common" | "local";
 };
 
@@ -260,6 +263,11 @@ export const ledgerProblems = (ledger: Ledger): string[] => {
     if (e.mode === "require" && !e.require?.length) out.push(`${at}: a require directive needs require patterns`);
     for (const re of e.require ?? []) if (!compiles(re)) out.push(`${at}: require ${re} does not compile`);
     if (e.mode === "lead" && !LEAD_CHECKS.includes(e.check as LeadCheck)) out.push(`${at}: a lead directive needs check ${LEAD_CHECKS.join("|")}`);
+    if (e.via !== undefined) {
+      const p = ledger.entries.find((x) => x.id === e.via);
+      if (e.mode !== "inject" || e.block) out.push(`${at}: via is for an inject directive with its own text`);
+      if (!p || p.id === e.id || p.mode !== "inject" || p.block || p.via) out.push(`${at}: via ${e.via} must name another inject entry with its own text and no via`);
+    }
   }
   return out;
 };
@@ -365,6 +373,17 @@ export const hasDirective = (brief: string, e: Directive): boolean => {
   // [지침 <id>]: the tag of briefs launched before #72
   return b.includes(squash(directiveTag(e))) || b.includes(`[지침 ${e.id}]`) || (Boolean(own) && b.includes(squash(own)));
 };
+// The pointer that goes into a brief for an entry with via (undefined when it has none or the pointer is retired).
+export const pointerOf = (e: Directive, ledger: Pick<Ledger, "entries">): Directive | undefined => {
+  if (!e.via) return undefined;
+  const p = ledger.entries.find((x) => x.id === e.via);
+  return p && !p.retired ? p : undefined;
+};
+// In the brief as its own text, or through its pointer.
+export const coveredBy = (brief: string, e: Directive, ledger: Pick<Ledger, "entries">): boolean => {
+  const p = pointerOf(e, ledger);
+  return hasDirective(brief, e) || (p !== undefined && hasDirective(brief, p));
+};
 export const requireMissing = (brief: string, e: Directive): string[] => (e.require ?? []).filter((re) => !new RegExp(re, "m").test(leadText(brief)));
 
 export type Waiver = { readonly id: string; readonly reason: string; readonly at: string };
@@ -400,8 +419,10 @@ export const planDirectives = (brief: string, ledger: Ledger, ctx: ScopeContext,
       continue;
     }
     applied.push(e.id);
+    // an entry with a pointer goes in as the pointer, once for all entries that name it
+    const shown = e.mode === "inject" && !e.block ? (pointerOf(e, ledger) ?? e) : e;
     if (e.mode === "inject" && e.block) blocks.push(e.block);
-    else if (e.mode === "inject" && !hasDirective(brief, e)) add.push({ e, why });
+    else if (e.mode === "inject" && !coveredBy(brief, e, ledger) && !add.some((a) => a.e.id === shown.id)) add.push({ e: shown, why: shown === e ? why : `${why}, for ${e.id}` });
     else if (e.mode === "require") {
       const patterns = requireMissing(brief, e);
       if (patterns.length) missing.push({ e, patterns, why });
@@ -437,8 +458,10 @@ export const briefGaps = (lane: Pick<Lane, "key" | "directives" | "ui">, brief: 
     if (e.mode === "lead" || waived.has(e.id)) continue;
     const why = appliesWhy(e, ctx);
     if (!why) continue;
-    const lacks = e.block ? !squash(brief).includes(squash(blockLines[e.block])) : e.mode === "inject" ? !hasDirective(brief, e) : requireMissing(brief, e).length > 0;
-    if (lacks) out.push({ lane: lane.key, id: e.id, line: `DIRECTIVE_GAP ${lane.key} ${e.id}: ${e.name} applies (${why}) and is not in the brief` });
+    const lacks = e.block ? !squash(brief).includes(squash(blockLines[e.block])) : e.mode === "inject" ? !coveredBy(brief, e, ledger) : requireMissing(brief, e).length > 0;
+    // an entry with a pointer is a gap of its pointer: that is the text to send
+    const shown = e.mode === "inject" && !e.block ? (pointerOf(e, ledger) ?? e) : e;
+    if (lacks && !out.some((g) => g.id === shown.id)) out.push({ lane: lane.key, id: shown.id, line: `DIRECTIVE_GAP ${lane.key} ${shown.id}: ${shown.name} applies (${shown === e ? why : `${why}, for ${e.id}`}) and is not in the brief` });
   }
   return out;
 };
@@ -492,7 +515,7 @@ export const promptTable = (ledger: Ledger): string => {
 export const ledgerTable = (ledger: Ledger): string => {
   const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
   const scope = (s: DirectiveScope) => [s.all ? "모든 lane" : "", s.ui ? "UI" : "", ...(s.kinds ?? []), ...(s.repos ?? []).map((r) => `저장소 ${r}`), ...(s.keywords ?? []).map((k) => `낱말 /${k}/`)].filter(Boolean).join(", ");
-  const how = (e: Directive) => (e.mode === "inject" ? (e.block ? `주입(${e.block})` : "주입") : e.mode === "require" ? "브리프 확인(없으면 멈춤)" : e.check === "none" ? "리드 행동(기계 확인 없음, owner-check가 읽음)" : `리드 행동 확인(${e.check})`);
+  const how = (e: Directive) => (e.mode === "inject" ? (e.block ? `주입(${e.block})` : e.via ? `주입(포인터 ${e.via}로)` : "주입") : e.mode === "require" ? "브리프 확인(없으면 멈춤)" : e.check === "none" ? "리드 행동(기계 확인 없음, owner-check가 읽음)" : `리드 행동 확인(${e.check})`);
   const words = (e: Directive) => (e.words ? `"${e.words}"` : e.block ? `(블록 원문: ${e.block === "eight-steps" ? "references/sessions.md 1. 조사 … 8. 보고" : "references/ui-work.md [UI 지침] 1)…7)"})` : e.by === "lead" ? "-" : "(원문 없음)");
   return [
     "| id | 이름 | 누가 | 판단 근거 | 형 원문(지침 문장) | 지침문(브리프에 들어감) | 계기가 된 형 말 | 규칙 | 날짜 | 출처 | 적용 범위 | 강제 방식 | 층 | 폐기 |",

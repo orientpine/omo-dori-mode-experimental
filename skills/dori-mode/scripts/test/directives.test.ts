@@ -109,6 +109,41 @@ test("launch puts an inject directive in scope into the brief as the ledger writ
   expect(again.lines.some((l) => l.startsWith("LAUNCH_DIRECTIVE_ADDED"))).toBe(false);
 });
 
+test("entries with via stay in the ledger and in scope but go into a brief as their one pointer; the pointer counts for them", async () => {
+  const repoRule = (id: string, rule: string) => ({ id, name: id, by: "owner", basis: "fixture basis line", words: "", rule, date: "2026-07-14", source: "x", scope: { repos: ["hr35-isaac"] }, mode: "inject", via: "repo-rules" });
+  const pointer = { id: "repo-rules", name: "저장소 규칙", by: "lead", basis: "fixture basis line", rule: "이 저장소 AGENTS.md의 규칙을 읽고 그대로 따른다.", date: "2026-10-20", source: "x", scope: { repos: ["hr35-isaac"] }, mode: "inject" };
+  const withPointer = { ...local, entries: [...local.entries, repoRule("rule-a", "규칙 A 원문"), repoRule("rule-b", "규칙 B 원문"), pointer] };
+  const deps = await ledgerDeps({ directives: { common: COMMON_LEDGER, local: await write("pointer.json", JSON.stringify(withPointer)) }, backend: "aoe" });
+  const ledger = loadLedger(deps.config);
+  expect(ledgerProblems(ledger)).toEqual([]);
+  const r = await renderBrief(deps, input(await write("p.md", fields)));
+  expect(count(r.text, "[리드 규칙 repo-rules]")).toBe(1);
+  expect(r.text).not.toContain("규칙 A 원문");
+  expect(r.text).not.toContain("규칙 B 원문");
+  expect(r.lines.find((l) => l.startsWith("LAUNCH_DIRECTIVE_ADDED"))).toContain("repo-rules (repo hr35-isaac, for rule-a)");
+  // in another repo neither goes in
+  expect((await renderBrief(deps, input(await write("p2.md", fields), { cwd: "/work/app" }))).text).not.toContain("repo-rules");
+  const blocks = { "eight-steps": await eightSteps(), "ui-steps": await uiSteps() };
+  expect(briefGaps({ key: "p" }, r.text, ledger, "hr35-isaac", blocks)).toEqual([]);
+  // a brief launched before the pointer still carries the full texts: no gap either
+  const old = `${fields}\n[형 결정 rule-a, 2026-07-14, 원문 없음: 리드 기록]\n규칙 A 원문\n\n[형 결정 rule-b, 2026-07-14, 원문 없음: 리드 기록]\n규칙 B 원문\n`;
+  expect(briefGaps({ key: "p" }, old, ledger, "hr35-isaac", blocks).map((g) => g.id)).not.toEqual(expect.arrayContaining(["rule-a", "rule-b", "repo-rules"]));
+  // a brief with neither: one gap, the pointer, and apply sends the pointer only
+  const lane = await laneOf(deps, "pl", await write("pl.md", fields));
+  expect(briefGaps(lane, fields, ledger, "hr35-isaac", blocks).filter((g) => /rule/.test(g.id)).map((g) => g.id)).toEqual(["repo-rules"]);
+  const dry = await applyDirectives(deps, lane, { dryRun: true });
+  expect(dry.added).toContain("repo-rules");
+  expect(dry.added).not.toContain("rule-a");
+  expect(dry.message).not.toContain("규칙 A 원문");
+  // a retired pointer: the entries go in as their own texts again
+  const retired = { ...ledger, entries: ledger.entries.map((e) => (e.id === "repo-rules" ? { ...e, retired: "2026-10-21: test" } : e)) };
+  expect(briefGaps({ key: "p" }, fields, retired, "hr35-isaac", blocks).map((g) => g.id)).toEqual(expect.arrayContaining(["rule-a", "rule-b"]));
+  // via must name another inject entry with its own text
+  const bad = (via: string) => ledgerProblems({ ...ledger, entries: ledger.entries.map((e) => (e.id === "rule-a" ? { ...e, via } : e)) });
+  expect(bad("nope")).toEqual(["directive rule-a: via nope must name another inject entry with its own text and no via"]);
+  expect(bad("rule-b")).toEqual(["directive rule-a: via rule-b must name another inject entry with its own text and no via"]);
+});
+
 test("a brief without the four fields stops the launch (LAUNCH_DIRECTIVE_MISSING, nothing opened); --waive with a reason lets it through and records it", async () => {
   const deps = await ledgerDeps({ backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" });
   const bare = "ulw\n\nfix the login loop\n";
