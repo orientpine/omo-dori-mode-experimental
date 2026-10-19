@@ -267,3 +267,12 @@ test("the lane handover note carries the owner's own messages since the last han
   expect(note).not.toContain("다른 곳의 형 글");
   expect(note).not.toContain("지난 교대 전의 글");
 });
+
+test("a handover whose new session was replaced by a later one is not charged with the todos it cannot read", async () => {
+  handover({ log: [], todos: ["Work: ship it (in_progress)", "Report: send the release notes to the lead (pending)"] });
+  const deps = await setup();
+  await deps.registry.write({ ...lane(), pane: "aoe_demo-later_77777777", session: "later-sid" });
+  const r = await auditHandover(deps, committedHandovers(state.dir)[0] ?? (() => { throw new Error("no handover"); })(), { classify: async () => ({ verdicts: [] }) });
+  expect(r.line).toBe(`HANDOVER_AUDIT_OK demo ${STAMP}: nothing left out`);
+  expect(readAudit(state.dir)).toEqual([]);
+});
