@@ -5,7 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { join } from "node:path";
 
 import { aoeSessions, captureTmux, closeAoeSession, inputLine, laneEnv, openAoeSession, sessionFor } from "./aoe.ts";
-import { fill, type HandoverWatcher } from "./config.ts";
+import { type HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
@@ -16,7 +16,7 @@ import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
 import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, ROUND_TRIES, section, words } from "./restatement.ts";
-import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
+import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, limitsFor, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type HandoverDeps = FlowDeps & Pick<FreezeDeps, "procs" | "signal"> & {
@@ -559,8 +559,8 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
     const ref = opts.approvedBy?.trim() ?? "";
     const by = ref ? decidedBy(ref) : undefined;
     const reason = by === "lead" ? ref.slice(LEAD_PREFIX.length).trim() : by === "auto" ? autoReason("lead", signals, config.handover) : undefined;
-    const frozen = ctx.frozen ? fill([config.handover.frozenText], { from: ctx.frozen.pane, n: String(ctx.frozen.pids.length), hours: ctx.frozen.closeAt ? String(config.handover.frozenCloseH) : "-" })[0] : undefined;
-    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, "lead", null, { who: "the lead", from: config.leadPane, to: r.to, reason: reason ?? "" }, emit, frozen) : undefined;
+    const ownerText = ownerRolloverText({ who: "lead", cause: rolloverCause(ref, signals, limitsFor("lead", config.handover)), ...(ctx.frozen ? { frozenH: ctx.frozen.closeAt ? config.handover.frozenCloseH : null } : {}) }, config.discord.locale);
+    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, "lead", null, ownerText, emit) : undefined;
     appendRollover(config.stateDir, {
       kind: "rollover", who: "lead", at, key: "lead", from: config.leadPane, ...(r.to ? { to: r.to } : {}), ...(ref ? { approvedBy: ref } : {}),
       ...(by ? { decidedBy: by } : {}), ...(reason ? { reason } : {}), ...(ownerReport ? { ownerReport } : {}),

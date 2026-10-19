@@ -9,7 +9,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 
 import { pendingBackground } from "./background.ts";
-import { fill } from "./config.ts";
 import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, envMismatch, inputLine, laneEnv, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { ackFile, liveMonitors, manifestPath, type MonitorSpec, missingMonitors, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
@@ -19,7 +18,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { AGENT, descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
-import { appendRollover, type OwnerMessage, ownerMessagesFor, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, contextK, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Sizes, sizePct, type Step, type Supplement } from "./rollover.ts";
+import { appendRollover, type OwnerMessage, ownerMessagesFor, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, contextK, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, limitsFor, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFixes, type Signals, sessionSignals, setQuiet, type Sizes, sizePct, type Step, type Supplement } from "./rollover.ts";
 import { stuckTop } from "./explore.ts";
 import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, section } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
@@ -512,9 +511,8 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     const result = r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back";
     const by = facts.approvedBy ? decidedBy(facts.approvedBy) : undefined;
     const reason = by === "lead" ? (facts.approvedBy ?? "").slice(LEAD_PREFIX.length).trim() : by === "auto" ? autoReason("lane", facts.signals, config.handover) : undefined;
-    const pct = sizePct(sizes);
-    const sizeLine = pct !== undefined ? fill([config.handover.sizeText], { old: String(sizes.oldK), now: String(sizes.checkedK), pct: String(pct) })[0] : undefined;
-    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, key, lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : null, { who: `lane ${key} (${lane.title})`, from: lane.pane, to: r.to, reason: reason ?? "" }, emit, sizeLine) : undefined;
+    const ownerText = ownerRolloverText({ who: "lane", title: lane.title || key, cause: rolloverCause(facts.approvedBy ?? "", facts.signals, limitsFor("lane", config.handover)), sizes }, config.discord.locale);
+    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, key, lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : null, ownerText, emit) : undefined;
     appendRollover(config.stateDir, {
       kind: "rollover", who: "lane", at, key, from: lane.pane, ...(r.to ? { to: r.to } : {}), ...(facts.approvedBy ? { approvedBy: facts.approvedBy } : {}),
       ...(by ? { decidedBy: by } : {}), ...(reason ? { reason } : {}), ...(ownerReport ? { ownerReport } : {}),

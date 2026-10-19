@@ -150,7 +150,7 @@ test("old keys of the stuck ladder, the reviewer list and the attempt patterns s
     writeFileSync(file, JSON.stringify({
       sameFix: { after: 4, sendToLane: true },
       explore: { hypothesesFrom: 3, researchAt: 2, driftBelow: 0.2, challengeModels: ["xai/grok-4.7"] },
-      handover: { laneRepeats: 3 },
+      handover: { laneRepeats: 3, reportText: "I moved {who} ({from} -> {to})", frozenText: "{from} frozen", sizeText: "{old}k -> {now}k" },
       signals: { attemptPattern: "try (\\d)" },
       autoSignals: { repeatAfter: 5, attemptPattern: "처방", ownerCheck: { models: ["chatgpt-subscription/gpt-6-luna"], minutes: 2 } },
       stuck: { fixatedAfter: 5 },
@@ -167,7 +167,8 @@ test("old keys of the stuck ladder, the reviewer list and the attempt patterns s
     expect(config.autoSignals.ownerCheck).toMatchObject({ first: "chatgpt-subscription/gpt-6-luna", minutes: 2 });
     expect("models" in config.autoSignals.ownerCheck).toBe(false);
     expect("laneRepeats" in config.handover).toBe(false);
-    expect(warned.map((w) => w.split(" ")[1])).toEqual(["sameFix.after", "sameFix.sendToLane", "explore.hypothesesFrom", "explore.researchAt", "explore.driftBelow", "handover.laneRepeats", "autoSignals.repeatAfter", "signals.attemptPattern", "autoSignals.attemptPattern", "explore.challengeModels", "autoSignals.ownerCheck.models"]);
+    expect(["reportText", "frozenText", "sizeText"].filter((k) => k in config.handover)).toEqual([]);
+    expect(warned.map((w) => w.split(" ")[1])).toEqual(["sameFix.after", "sameFix.sendToLane", "explore.hypothesesFrom", "explore.researchAt", "explore.driftBelow", "handover.laneRepeats", "handover.reportText", "handover.frozenText", "handover.sizeText", "autoSignals.repeatAfter", "signals.attemptPattern", "autoSignals.attemptPattern", "explore.challengeModels", "autoSignals.ownerCheck.models"]);
     expect(warned[0]).toBe(`CONFIG_OLD_KEY sameFix.after -> stuck.fixatedAfter (both set: the new key wins); rename it in the config (${file})`);
     expect(warned.every((w) => w.startsWith("CONFIG_OLD_KEY "))).toBe(true);
     // a config without old keys loads quietly, and scorecard.lanesLog defaults to the watch log

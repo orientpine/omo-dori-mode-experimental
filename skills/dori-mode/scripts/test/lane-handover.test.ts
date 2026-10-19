@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
 import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine, trainingMark } from "../src/lane-handover.ts";
-import { appendRollover, approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
+import { appendRollover, approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, ownerRolloverText, quietReason, readRollovers, rolloverCause, rolloverStats, sessionSignals } from "../src/rollover.ts";
 import { stuckTop, stuckView } from "../src/explore.ts";
 import { recordFix } from "../src/same-fix.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
@@ -1162,6 +1162,9 @@ test("a lane whose omo session lives under the real path of a symlinked cwd is s
   expect(printed.some((l) => l.startsWith("HANDOVER_SESSION_UNSEEN"))).toBe(false);
 });
 
+// what the owner must never read in a rollover message: a pane, an arrow, a config key, a placeholder, a link, a signal token
+const MACHINE = /aoe_|->|handover\.|[{}]|https?:|STUCK|rung|>=/;
+
 test("a rollover the lead decided tells the owner afterwards in the lane's thread and logs that message id; a failed message is ROLLOVER_OWNER_REPORT_MISSING", async () => {
   // Given
   const posted: [string | null, string][] = [];
@@ -1172,7 +1175,11 @@ test("a rollover the lead decided tells the owner afterwards in the lane's threa
   const r = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: "lead:STUCK rung 4 on loss after research" });
   // Then
   expect(r.code).toBe(0);
-  expect(posted).toEqual([["12345678", `I moved lane demo (Demo lane) to a new session (${OLD} -> ${NEW}). Why: STUCK rung 4 on loss after research`]]);
+  expect(posted.map(([thread]) => thread)).toEqual(["12345678"]);
+  expect(posted[0]?.[1]).toContain("Demo lane");
+  expect(posted[0]?.[1]).not.toMatch(MACHINE);
+  expect(posted[0]?.[1]).not.toContain(OLD);
+  expect(posted[0]?.[1]).not.toContain(NEW);
   expect(readRollovers(state.dir)[0]).toMatchObject({ kind: "rollover", result: "done", decidedBy: "lead", reason: "STUCK rung 4 on loss after research", ownerReport: { message: "msg-1" } });
   expect(printed).toContain("ROLLOVER_OWNER_REPORTED demo message msg-1");
 });
@@ -1195,7 +1202,10 @@ test("a moved lane records what the move bought: the old session's last context,
   expect(JSON.parse(readFileSync((r.note ?? "").replace(/\.md$/, ".result.json"), "utf8"))).toMatchObject({ result: "done", sizes });
   expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "done", sizes });
   expect(printed).toContain("HANDOVER_SIZE demo old 450k -> new first 120k, checked 140k (31% of the old)");
-  expect(posted[0]?.split("\n")[1]).toBe("Context: 450k in the old session, 140k in the new one once checked (31% of the old)");
+  expect(posted).toHaveLength(1);
+  expect(posted[0]).toContain("450k");
+  expect(posted[0]).toContain("140k");
+  expect(posted[0]).not.toMatch(MACHINE);
   const stats = (now: string) => rolloverStats(readRollovers(state.dir), [], Date.parse(now)).find((l) => l.startsWith("ROLLOVER ")) ?? "";
   expect(stats("2026-10-11T17:00:00Z")).toEndWith("; context 450k -> new session first 120k, checked 140k (31% of the old)");
   expect(stats("2026-10-11T18:00:00Z")).toEndWith("; context 450k -> new session first 120k, checked 140k (31% of the old), 1 h later 300k");
@@ -1213,7 +1223,9 @@ test("without a way to reach the owner a lead's rollover is refused before anyth
   expect(refused.code).toBe(2);
   expect(printed[0]).toContain("needs a way to tell the owner afterwards");
   expect(moved.code).toBe(0);
-  expect(printed.some((l) => l.startsWith("ROLLOVER_OWNER_REPORT_MISSING demo: 429 rate limited; tell the owner yourself: I moved lane demo"))).toBe(true);
+  const missing = printed.find((l) => l.startsWith("ROLLOVER_OWNER_REPORT_MISSING demo: 429 rate limited; tell the owner yourself: ")) ?? "";
+  expect(missing).toContain("Demo lane");
+  expect(missing.slice(missing.indexOf("yourself: "))).not.toMatch(MACHINE);
   expect(readRollovers(state.dir).at(-1)).toMatchObject({ decidedBy: "lead", ownerReport: { error: "429 rate limited" } });
 });
 
@@ -1314,7 +1326,8 @@ test("an automatic lane rollover tells the owner afterwards with what it crossed
   expect(r.code).toBe(0);
   expect(posted).toHaveLength(1);
   expect(posted[0]?.[0]).toBe("12345678");
-  expect(posted[0]?.[1]).toStartWith(`I moved lane demo (Demo lane) to a new session (${OLD} -> ${NEW}). Why: automatic (handover.autoRolloverLanes)`);
+  expect(posted[0]?.[1]).toContain("Demo lane");
+  expect(posted[0]?.[1]).not.toMatch(MACHINE);
   expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "done", decidedBy: "auto", ownerReport: { message: "msg-2" } });
 });
 
@@ -1369,4 +1382,34 @@ test("the context after the last compaction is the first assistant turn after it
   expect(crossed({ afterCompactK: 317 }, { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 300 })).toEqual(["context after compaction 317k >= 300k"]);
   expect(crossed({ afterCompactK: 299 }, { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 300 })).toEqual([]);
   expect(crossed({ afterCompactK: 900 }, { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 0 })).toEqual([]);
+});
+
+test("the owner's rollover message names one cause from the approval or the signals, in his language, with no pane, key or link", () => {
+  // Given: the reasons the five Doris logged on 2026-10-19 and 20, and the signals of an automatic move
+  const lane = { contextPct: 80, compactions: 3, ageH: 24, afterCompactK: 300 };
+  const cases: [string, Parameters<typeof rolloverCause>[1], string][] = [
+    ["lead:문맥 초과로 멈춤, context 317%", {}, "full"],
+    ["lead:owner https://discord.com/channels/1/2/3 asked for it", {}, "owner"],
+    ["lead:STUCK rung 4 on loss after research", {}, "stuck"],
+    ["lead:OWNER_CHECK rung4 VIOLATION", {}, "drift"],
+    ["lead:rollover due: context after compaction 596k >= 300k", {}, "afterCompact"],
+    ["auto:handover.autoRolloverLanes", { afterCompactK: 323 }, "afterCompact"],
+    ["auto:handover.autoRolloverLanes", { contextPct: 85 }, "context"],
+    ["auto:handover.autoRolloverLanes", { stuck: { metric: "loss", n: 3, rung: 4 } }, "stuck"],
+    ["lead:a good point after the merge", {}, "lead"],
+  ];
+  // When / Then
+  for (const [ref, signals, kind] of cases) {
+    const cause = rolloverCause(ref, signals, lane);
+    expect([ref, cause.kind]).toEqual([ref, kind]);
+    for (const n of [{ who: "lane" as const, title: "ETH 넘기", cause, sizes: { oldK: 603, checkedK: 112 } }, { who: "lead" as const, cause, frozenH: 24 }, { who: "lead" as const, cause, frozenH: null }]) {
+      const ko = ownerRolloverText(n, "ko-KR");
+      expect(ko).toMatch(/[가-힣]/);
+      expect(ko).not.toMatch(MACHINE);
+      expect(ko.split(/(?<=[.?!])\s/).length).toBeLessThanOrEqual(2);
+      expect(ownerRolloverText(n, "en-US")).not.toMatch(MACHINE);
+    }
+  }
+  // the numbers a move bought are in the message as they were measured
+  expect(ownerRolloverText({ who: "lane", title: "ETH 넘기", cause: { kind: "full" }, sizes: { oldK: 603, checkedK: 112 } }, "ko-KR")).toContain("603k에서 112k");
 });
