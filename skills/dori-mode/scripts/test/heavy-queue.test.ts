@@ -6,7 +6,7 @@ import type { HeavyQueue } from "../src/config.ts";
 import { heavyJobCommand, runQueued, type HeavyCtx } from "../src/heavy-queue.ts";
 import { newJobDir, stageInputs } from "../src/heavy-job.ts";
 import { heavyWorker } from "../src/heavy-worker.ts";
-import type { SlotDeps } from "../src/heavy-slot.ts";
+import { acquireSlot, releaseSlot, type SlotDeps } from "../src/heavy-slot.ts";
 import { withState } from "./fakes.ts";
 
 // A queue host and a helper, each with its own state; the helper is the real CLI (`dori heavy-worker`) behind an argv
@@ -21,11 +21,12 @@ let input: string;
 const upper = (where: string) => ({ argv: ["sh", "-c", `tr a-z A-Z < "$0"; echo ${where} > "$1/where"`, "{in0}", "{out}"] });
 const train = { argv: ["sh", "-c", "echo trained"], rl: true };
 
-const helperArgv = (): string[] => {
+const helperArgv = (rl?: boolean): string[] => {
   const dir = join(state.dir, "helper");
   mkdirSync(dir, { recursive: true });
   const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { jobs: { upper: upper("helper"), train }, jobDir: join(dir, "jobs") } }));
+  const jobs = { upper: upper("helper"), train, rlprobe: { ...upper("helper"), rl: true } };
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { jobs, jobDir: join(dir, "jobs"), ...(rl === undefined ? {} : { rl }) } }));
   return ["env", `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker"];
 };
 
@@ -84,27 +85,46 @@ test("a job the queue host can start runs here and never reaches the helper", as
   expect(existsSync(join(state.dir, "helper", "state", "heavy", "heavy.log"))).toBe(false);
 });
 
-test("an rl job is never offered to a helper, it waits for the queue host", async () => {
-  holdSlot();
-  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] }, stopAfter(3));
-  await expect(queued(ctx, "train")).rejects.toThrow("stop");
-  expect(logs.filter((l) => l.startsWith("HEAVY_HELPER"))).toEqual([]);
-  expect(existsSync(join(state.dir, "helper", "state", "heavy", "heavy.log"))).toBe(false);
-});
-
-test("a job behind an rl job that waits for the queue host still goes to a free helper, without passing it here", async () => {
-  // Given: the queue host busy, an rl job at the front of the line
+test("an rl job the queue host cannot start now runs on a helper that runs rl jobs", async () => {
+  // Given: the queue host busy, a helper with the default heavyQueue.rl (true)
   holdSlot();
   const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] });
-  const rl = queued(ctx, "rlprobe", false, "rl");
+  // When
+  const r = await queued(ctx, "rlprobe");
+  // Then
+  expect(r).toEqual({ code: 0, stdout: "HELLO\n", where: "helper" });
+  expect(logs.some((l) => l.startsWith("HEAVY_HELPER t second:"))).toBe(true);
+  expect(readFileSync(join(state.dir, "helper", "state", "heavy", "heavy.log"), "utf8")).toContain("HEAVY_WORKER_ADMIT t rlprobe");
+});
+
+test("a helper whose heavyQueue.rl is false refuses a job sent as --rl, and the job waits for the queue host", async () => {
+  // Given: the queue host busy, a helper that runs no rl jobs, a job its own config calls plain but asked as --rl
+  holdSlot();
+  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv(false) }] }, async () => {
+    if (logs.some((l) => l.startsWith("HEAVY_HELPER_REFUSED"))) holderAlive = false;
+    await new Promise((r) => setImmediate(r));
+  });
+  // When
+  const r = await queued(ctx, "upper", true);
+  // Then
+  expect(r.where).toBe("queue");
+  expect(logs.filter((l) => l.startsWith("HEAVY_HELPER_REFUSED t second"))).toHaveLength(1);
+  expect(readFileSync(join(state.dir, "helper", "state", "heavy", "heavy.log"), "utf8")).toContain("HEAVY_WORKER_REFUSED t: rl jobs do not run on this host");
+});
+
+test("a job behind a plain dori heavy that waits for the queue host still goes to a free helper, without passing it here", async () => {
+  // Given: the queue host busy, a plain dori heavy (this host only) at the front of the line
+  holdSlot();
+  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] });
+  const plain = acquireSlot(ctx.deps, "plain");
   // When: a job comes in behind it
   const behind = await queued(ctx, "upper", false, "behind");
-  // Then: it ran on the helper while the rl job still waits, and the rl job later runs on the queue host
+  // Then: it ran on the helper while the plain one still waits, and the plain one later starts on the queue host
   expect(behind.where).toBe("helper");
-  expect(logs.some((l) => l.startsWith("HEAVY_DONE rl"))).toBe(false);
+  expect(logs.some((l) => l.startsWith("HEAVY_ADMIT plain"))).toBe(false);
   holderAlive = false;
-  expect((await rl).where).toBe("queue");
-  expect(logs.filter((l) => l.startsWith("HEAVY_HELPER rl"))).toEqual([]);
+  releaseSlot(await plain);
+  expect(logs.some((l) => l.startsWith("HEAVY_ADMIT plain"))).toBe(true);
 });
 
 test("a run that breaks off on the helper goes back to the front of the line and finishes on the queue host", async () => {
@@ -133,9 +153,11 @@ test("a helper that cannot be reached is noted once and the job waits for the qu
   expect(logs.filter((l) => l.startsWith("HEAVY_HELPER_DOWN t second"))).toHaveLength(1);
 });
 
-test("the worker refuses an rl job, an unknown job and an argument a shell would read, and takes no slot", async () => {
+test("the worker refuses an rl job where heavyQueue.rl is false, an unknown job and an argument a shell would read, and takes no slot", async () => {
   const ctx = ctxWith({});
-  for (const request of ["run t train", "run t upper --rl", "run t nojob", "run t upper $(id)", "exec sh"]) expect(await heavyWorker(ctx, request)).toBe(3);
+  const noRl = ctxWith({ rl: false });
+  for (const request of ["run t train", "run --rl t upper", "run t upper --rl"]) expect(await heavyWorker(noRl, request)).toBe(3);
+  for (const request of ["run t nojob", "run t upper $(id)", "exec sh"]) expect(await heavyWorker(ctx, request)).toBe(3);
   expect(existsSync(join(state.dir, "heavy", "slot.1"))).toBe(false);
 });
 

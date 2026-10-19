@@ -215,7 +215,7 @@ const USAGE = `dori <command> [options]
                                        start in the order they came
   heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]
                                        run heavyQueue.jobs.<name> in the GPU line of all hosts: on the queue host here
-                                       first, then on a heavyQueue.helpers host (never an rl job), else wait in line;
+                                       first, then on a heavyQueue.helpers host (an rl job only where its heavyQueue.rl), else wait;
                                        elsewhere sent to the queue host (heavyQueue.queue), run here only while it cannot
                                        be reached. Prints the job's stdout, copies its result files to --out, exits with
                                        its code (HEAVY_HELPER / HEAVY_DONE / HEAVY_QUEUE_DOWN lines)

@@ -53,7 +53,7 @@ const takeResult = async (bytes: Uint8Array, dir: string): Promise<JobResult | n
 };
 
 const startOnHelper = async (h: HeavyHelper, req: JobRequest, dir: string): Promise<HelperTry> => {
-  const p = Bun.spawn([...h.ssh, "run", req.label, req.kind, ...req.args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn([...h.ssh, "run", ...(req.rl ? ["--rl"] : []), req.label, req.kind, ...req.args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const out = new Response(p.stdout).arrayBuffer();
   const lines = linesOf(p.stderr);
   let verdict: RegExpExecArray | null = null;
@@ -94,7 +94,8 @@ export const runQueued = async (ctx: HeavyCtx, req: JobRequest, dir: string): Pr
   const seen = new Map<string, string>();
   const helpers = async (why: string): Promise<Started | null> => {
     for (const h of ctx.q.helpers) {
-      const t = await startOnHelper(h, req, dir);
+      // an rl job goes as --rl: the helper runs it only where its own heavyQueue.rl allows rl jobs
+      const t = await startOnHelper(h, { ...req, rl }, dir);
       if (t.kind === "started") {
         seen.delete(h.name);
         log(`HEAVY_HELPER ${req.label} ${h.name}: ${why}`);
@@ -107,7 +108,7 @@ export const runQueued = async (ctx: HeavyCtx, req: JobRequest, dir: string): Pr
   };
   const since = ctx.deps.clock.now();
   for (;;) {
-    const got = await acquire<Started>(ctx.deps, req.label, { since, ...(rl ? {} : { elsewhere: helpers }) });
+    const got = await acquire<Started>(ctx.deps, req.label, { since, elsewhere: helpers });
     if ("slot" in got) {
       try {
         const r = await runJob(job, dir, req.args);

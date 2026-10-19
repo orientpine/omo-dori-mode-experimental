@@ -187,7 +187,7 @@ export type AcquireOptions<T> = {
   // when the job entered the line (a job sent back after its helper dropped keeps its place at the front)
   readonly since?: number;
   // the job at the front of the line, refused here for load, full slots or headroom (not while a new job settles), or a
-  // job behind only jobs that wait for this host alone (rl, plain dori heavy): a started run on another host, or null
+  // job behind only jobs that wait for this host alone (plain dori heavy): a started run on another host, or null
   readonly elsewhere?: (wait: string) => Promise<T | null>;
 };
 
