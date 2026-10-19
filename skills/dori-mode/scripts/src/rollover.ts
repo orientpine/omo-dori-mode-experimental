@@ -31,6 +31,11 @@ export type DecidedBy = "lead" | "owner" | "auto";
 // the one-line message to the owner after a rollover the lead decided: its message id, or why it could not be sent
 export type OwnerReport = { readonly message?: string; readonly error?: string };
 
+// What a lane rollover bought, in thousands of context tokens (input + cache read + cache write of a model call): the old
+// session's last call, the new one's first (its floor: system prompt, tools and the cwd's AGENTS.md, before it read anything)
+// and its last once checked; newLog is the new session's log, where rollover-stats reads the context an hour later.
+export type Sizes = { readonly oldK?: number; readonly firstK?: number; readonly checkedK?: number; readonly newLog?: string };
+
 export type RolloverEntry =
   | { readonly kind: "proposal"; readonly who: Who; readonly at: string; readonly key: string; readonly card?: string; readonly pane: string; readonly signals: Signals; readonly crossed: readonly string[]; readonly note?: string; readonly blockers: string }
   | {
@@ -60,6 +65,7 @@ export type RolloverEntry =
       readonly supplements?: readonly Supplement[];
       // the old lead frozen at the commit: how many processes, and when freshness closes it (null: by hand)
       readonly frozen?: { readonly pids: number; readonly closeAt: string | null };
+      readonly sizes?: Sizes;
     };
 
 // afterCompactK: thousands of tokens the session still held right after its last compaction (0 or absent is off)
@@ -238,6 +244,29 @@ const turnContextK = (line: string): number | undefined => {
   }
 };
 
+// The context of a session log's first model call and of its last one at or before until (an ISO time), in thousands.
+export const contextK = (file: string, until?: string): { readonly first?: number; readonly last?: number } => {
+  let first: number | undefined;
+  let last: number | undefined;
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return {};
+  }
+  for (const line of text.split("\n")) {
+    if (!line.includes('"usage"')) continue;
+    const k = turnContextK(line);
+    if (k === undefined) continue;
+    if (until && ((JSON.parse(line) as { timestamp?: string }).timestamp ?? "") > until) break;
+    first ??= k;
+    last = k;
+  }
+  return { ...(first !== undefined ? { first } : {}), ...(last !== undefined ? { last } : {}) };
+};
+
+export const sizePct = (s: Sizes): number | undefined => (s.oldK && s.checkedK !== undefined ? Math.round((s.checkedK / s.oldK) * 100) : undefined);
+
 export const compactionsIn = (file: string): number => compactionScan(file).count;
 
 export const compactionScan = (file: string): { readonly count: number; readonly afterK?: number } => {
@@ -344,12 +373,20 @@ const median = (xs: readonly number[]): number | undefined => {
   return s.length % 2 ? s[mid] : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
 };
 const fmtSignals = (s: Signals): string => [s.contextPct !== undefined ? `context ${s.contextPct}%` : "", s.compactions !== undefined ? `compactions ${s.compactions}` : "", s.ageH !== undefined ? `age ${s.ageH} h` : "", s.stuck ? `stuck rung ${s.stuck.rung} on ${JSON.stringify(s.stuck.metric)} (${s.stuck.n}x)` : "", s.repeats !== undefined ? `same fix ${s.repeats}x` : ""].filter(Boolean).join(", ") || "no signals";
+const HOUR_MS = 3_600_000;
+const fmtSizes = (r: Extract<RolloverEntry, { kind: "rollover" }>, now: number, readK: typeof contextK): string => {
+  const s = r.sizes;
+  if (!s) return "";
+  const hourAt = Date.parse(r.at) + HOUR_MS;
+  const hour = s.newLog && now >= hourAt ? readK(s.newLog, new Date(hourAt).toISOString()).last : undefined;
+  return `; context ${s.oldK ?? "?"}k -> new session first ${s.firstK ?? "?"}k, checked ${s.checkedK ?? "?"}k (${sizePct(s) ?? "?"}% of the old)${hour !== undefined ? `, 1 h later ${hour}k` : ""}`;
+};
 const fmtDecision = (r: Extract<RolloverEntry, { kind: "rollover" }>): string =>
   r.decidedBy === "lead" ? `; decided by the lead${r.reason ? ` (${r.reason})` : ""}, owner told: ${r.ownerReport?.message ?? `MISSING (${r.ownerReport?.error ?? "no report"})`}` : "";
 
 // The summary the owner sets automation parameters from: how often a proposal came and at which signal values, how long
 // approval took, how each rollover went step by step, and the lane's quality signals in windowH hours before and after.
-export const rolloverStats = (entries: readonly RolloverEntry[], watchLines: readonly string[], now: number, windowH = 24): string[] => {
+export const rolloverStats = (entries: readonly RolloverEntry[], watchLines: readonly string[], now: number, windowH = 24, readK: typeof contextK = contextK): string[] => {
   const proposals = entries.filter((e) => e.kind === "proposal");
   const rolls = entries.filter((e): e is Extract<RolloverEntry, { kind: "rollover" }> => e.kind === "rollover");
   const byResult: Counts = {};
@@ -363,7 +400,7 @@ export const rolloverStats = (entries: readonly RolloverEntry[], watchLines: rea
     const at = Date.parse(r.at);
     const span = windowH * 3_600_000;
     const afterH = Math.round((Math.min(now, at + span) - at) / 360_000) / 10;
-    out.push(`ROLLOVER ${r.who} ${r.key} ${r.at} ${r.result} ${r.from} -> ${r.to ?? "-"} ${fmtSignals(r.signals)}; approval ${r.approvalMin ?? "-"} min (by ${r.approvedBy ?? "-"})${fmtDecision(r)}; steps ${r.steps.map((s) => `${s.step} ${Math.round(s.ms / 1000)}s${s.ok ? "" : " FAIL"}`).join(", ") || "-"}${r.reasons.length ? `; reasons: ${r.reasons.join("; ")}` : ""}${r.accounts && r.accounts.from !== r.accounts.to ? `; account ${r.accounts.from || "?"} -> ${r.accounts.to || "?"}` : ""}${r.supplementRounds ? `; supplements ${r.supplementRounds} (${(r.supplements ?? []).map((s) => s.items.length).join("+")} items)` : ""}`);
+    out.push(`ROLLOVER ${r.who} ${r.key} ${r.at} ${r.result} ${r.from} -> ${r.to ?? "-"} ${fmtSignals(r.signals)}; approval ${r.approvalMin ?? "-"} min (by ${r.approvedBy ?? "-"})${fmtDecision(r)}; steps ${r.steps.map((s) => `${s.step} ${Math.round(s.ms / 1000)}s${s.ok ? "" : " FAIL"}`).join(", ") || "-"}${r.reasons.length ? `; reasons: ${r.reasons.join("; ")}` : ""}${r.accounts && r.accounts.from !== r.accounts.to ? `; account ${r.accounts.from || "?"} -> ${r.accounts.to || "?"}` : ""}${r.supplementRounds ? `; supplements ${r.supplementRounds} (${(r.supplements ?? []).map((s) => s.items.length).join("+")} items)` : ""}${fmtSizes(r, now, readK)}`);
     out.push(`QUALITY ${r.key} ${r.at} before ${windowH}h: ${fmtCounts(countsIn(watchLines, r.key, at - span, at))} | after ${afterH}h: ${fmtCounts(countsIn(watchLines, r.key, at, at + span))}`);
   }
   return out;

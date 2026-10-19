@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 
 import { pendingBackground } from "./background.ts";
+import { fill } from "./config.ts";
 import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, envMismatch, inputLine, laneEnv, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { ackFile, liveMonitors, manifestPath, type MonitorSpec, missingMonitors, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
@@ -18,7 +19,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { AGENT, descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
-import { appendRollover, type OwnerMessage, ownerMessagesFor, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
+import { appendRollover, type OwnerMessage, ownerMessagesFor, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, contextK, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Sizes, sizePct, type Step, type Supplement } from "./rollover.ts";
 import { stuckTop } from "./explore.ts";
 import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, section } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
@@ -298,7 +299,7 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   `You are the ${f.lane.key} lane, in a new session. The old one (${f.from.pane}, aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}) ran out of room; dori handover --lane points the lane's registry entry at you. The old conversation does not come with you: this note and your brief are all you know.`,
   "",
   "## Do this first",
-  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once.",
+  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once, all in one call, and print only how many armed and the ones that failed: each monitor's full reply is context the new session carries to its end.",
   `2. A [LEAD] line with ${PROBE} <id> is a check of this handover. Before you answer it, read this whole note and your brief, then write what you understood to the file the line names, under the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")} (under Goal and Owner's words, the owner's goal and words quoted exactly as the note gives them; under Questions, only what neither the note nor the old log answers after you searched it, or none). Then run the dori handover ack command it gives (with its --state) and nothing else for that line. A [LEAD] HANDOVER_SUPPLEMENT <id> line names a file with what your restatement left out and the old log lines behind it: add those items to the same file, keep the rest, and run the ack command it gives.`,
   `3. Read your brief ${f.lane.brief} in full. It still holds: same Done, same footer, and reports still go to the lead.`,
   `4. Until a [LEAD] ${COMMITTED} line arrives, do nothing else: change no file, start no process besides the monitors of step 1, post nothing. Until then the handover can still roll back and close this session.`,
@@ -505,18 +506,22 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     };
     const accounts: { to?: string } = {};
     const supplements: Supplement[] = [];
-    const r = await moveLane(deps, opts, facts, { note, title, emit, steps, mark, accounts, supplements, frozen });
+    const sizes: Mutable<Sizes> = {};
+    const r = await moveLane(deps, opts, facts, { note, title, emit, steps, mark, accounts, supplements, frozen, sizes });
     const proposal = lastProposal(readRollovers(config.stateDir), key);
     const result = r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back";
     const by = facts.approvedBy ? decidedBy(facts.approvedBy) : undefined;
     const reason = by === "lead" ? (facts.approvedBy ?? "").slice(LEAD_PREFIX.length).trim() : by === "auto" ? autoReason("lane", facts.signals, config.handover) : undefined;
-    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, key, lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : null, { who: `lane ${key} (${lane.title})`, from: lane.pane, to: r.to, reason: reason ?? "" }, emit) : undefined;
+    const pct = sizePct(sizes);
+    const sizeLine = pct !== undefined ? fill([config.handover.sizeText], { old: String(sizes.oldK), now: String(sizes.checkedK), pct: String(pct) })[0] : undefined;
+    const ownerReport = (by === "lead" || by === "auto") && r.to && r.code !== 3 ? await reportToOwner(deps, key, lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : null, { who: `lane ${key} (${lane.title})`, from: lane.pane, to: r.to, reason: reason ?? "" }, emit, sizeLine) : undefined;
     appendRollover(config.stateDir, {
       kind: "rollover", who: "lane", at, key, from: lane.pane, ...(r.to ? { to: r.to } : {}), ...(facts.approvedBy ? { approvedBy: facts.approvedBy } : {}),
       ...(by ? { decidedBy: by } : {}), ...(reason ? { reason } : {}), ...(ownerReport ? { ownerReport } : {}),
       ...(proposal ? { proposedAt: proposal.at, approvalMin: Math.round((Date.parse(at) - Date.parse(proposal.at)) / 6_000) / 10 } : {}),
       signals: facts.signals, steps, result, reasons: steps.filter((st) => !st.ok).map((st) => st.step), accounts: { from: facts.account ?? "", to: accounts.to ?? "" },
       ...(supplements.length ? { supplementRounds: supplements.length, supplements } : {}),
+      ...(Object.keys(sizes).length ? { sizes } : {}),
     });
     return r;
   } finally {
@@ -635,7 +640,8 @@ const chainsEnded = async (deps: LaneHandoverDeps, key: string, chains: readonly
 };
 
 // frozen: the old agent was already frozen at its idle moment (an automatic start)
-type MoveContext = { readonly note: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string }; readonly supplements: Supplement[]; readonly frozen: boolean };
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+type MoveContext = { readonly note: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string }; readonly supplements: Supplement[]; readonly frozen: boolean; readonly sizes: Mutable<Sizes> };
 
 const tell = (deps: LaneHandoverDeps, pane: string, text: string) => sendVerified(deps.run, deps.clock, deps.config, pane, text).catch(() => false);
 
@@ -709,7 +715,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   const { note, emit, mark } = ctx;
   const { lane, from } = facts;
   const record = (result: string, reasons: readonly string[]) =>
-    writeFileSync(note.replace(/\.md$/, ".result.json"), JSON.stringify({ at: iso(deps.clock), key: lane.key, from, to: pane, note, approvedBy: facts.approvedBy, signals: facts.signals, result, reasons }, null, 1));
+    writeFileSync(note.replace(/\.md$/, ".result.json"), JSON.stringify({ at: iso(deps.clock), key: lane.key, from, to: pane, note, approvedBy: facts.approvedBy, signals: facts.signals, result, reasons, ...(Object.keys(ctx.sizes).length ? { sizes: ctx.sizes } : {}) }, null, 1));
   let frozen = ctx.frozen;
   const thaw = (): void => {
     if (frozen && facts.agentPid) emit(deps.signal(facts.agentPid, "SIGCONT") ? `HANDOVER_THAWED ${lane.key} agent ${facts.agentPid}` : `HANDOVER_THAW_FAIL ${lane.key} agent ${facts.agentPid}`);
@@ -769,6 +775,12 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   }
   if (facts.account && checked.account && facts.account !== checked.account) emit(`HANDOVER_ACCOUNT ${lane.key} ${facts.account} -> ${checked.account} (the account pool chose it for the new session)`);
   ctx.accounts.to = checked.account;
+  // what the move bought, from the two session logs: the old session's last context, the new one's first and its context now
+  const newLog = logOf(sessionDirFor(config.sessionsDir, facts.cwd), checked.session);
+  const fresh = newLog ? contextK(newLog, iso(deps.clock)) : {};
+  const oldK = facts.oldLog ? contextK(facts.oldLog).last : undefined;
+  Object.assign(ctx.sizes, { ...(oldK !== undefined ? { oldK } : {}), ...(fresh.first !== undefined ? { firstK: fresh.first } : {}), ...(fresh.last !== undefined ? { checkedK: fresh.last } : {}), ...(newLog ? { newLog } : {}) });
+  emit(`HANDOVER_SIZE ${lane.key} old ${oldK ?? "?"}k -> new first ${fresh.first ?? "?"}k, checked ${fresh.last ?? "?"}k (${sizePct(ctx.sizes) ?? "?"}% of the old)`);
   await deps.registry.patch(lane.key, { session: checked.session, sessionVia: "handover" });
   rmSync(readyFile(config.stateDir, lane.key), { force: true });
   if (opts.keepOld) {
