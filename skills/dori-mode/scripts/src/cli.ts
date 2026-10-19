@@ -364,6 +364,7 @@ const deps: FlowDeps = {
   config,
   // a close leaves a thread with an open question card as it is (cards are kept per Discord thread id)
   openCards: (ref: string) => (ref.startsWith("discord:") ? openCardIds(new QuestionStore(cardDir()), discordThreadId(ref)) : []),
+  answeredCards: () => new QuestionStore(cardDir()).all().filter((q) => q.status === "answered"),
   ...(discordToken
     ? {
         markThreadDone: async (ref: string) => {

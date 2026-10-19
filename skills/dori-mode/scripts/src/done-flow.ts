@@ -4,6 +4,8 @@ import { closeAoeSession, paneActivity } from "./aoe.ts";
 import { autoturnTick } from "./autoturn.ts";
 import { laneBackground } from "./background.ts";
 import { type DoriConfig, fill } from "./config.ts";
+import type { Question } from "./messenger/discord-cards.ts";
+import { missedAnswersTick } from "./missed-answers.ts";
 import { hasThread, type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
 import { sendVerified } from "./panes.ts";
@@ -23,6 +25,8 @@ export type FlowDeps = {
   readonly postInThread?: (ref: string, text: string) => Promise<unknown>;
   // ids of the question cards still open in a work thread (cli reads the card store for discord:<id> threads)
   readonly openCards?: (ref: string) => readonly string[];
+  // the question cards the owner answered (cli reads the card store); the watch re-types an answer its session missed
+  readonly answeredCards?: () => readonly Question[];
   // asks the thread status queue for a status on a discord:<id> work thread; the queue keeps it working while a lane there
   // still works. Resolves with the queue's outcome (cli wires it when DORI_DISCORD_TOKEN is set)
   readonly requestThreadStatus?: (ref: string, status: "working" | "waiting") => Promise<string>;
@@ -259,6 +263,7 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
   if (deps.config.backend === "aoe") {
     out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
     out.push(...(await autoturnTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN autoturn check: ${String(e).slice(0, 200)}`])));
+    out.push(...(await missedAnswersTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN missed answer check: ${String(e).slice(0, 200)}`])));
   }
   return out;
 };
