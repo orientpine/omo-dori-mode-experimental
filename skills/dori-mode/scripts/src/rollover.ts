@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 
 import type { Question } from "./messenger/discord-cards.ts";
 import type { FixAttempt, Lane } from "./registry.ts";
-import { type DoriConfig, fill } from "./config.ts";
+import type { DoriConfig } from "./config.ts";
 import { parseWatchLine } from "./watch-log.ts";
 
 // stuck: the highest rung of the stuck ladder the lane reached in its current session (rung 4 makes a rollover due);
@@ -90,10 +90,96 @@ export const sessionFixes = (lane: Lane): FixAttempt[] => {
   return (lane.fixes ?? []).filter((f) => f.at >= since);
 };
 
-// After a rollover the lead decided (lead:<reason>): one line to the owner, and its message id (or why it failed) for the log.
-// A failure is ROLLOVER_OWNER_REPORT_MISSING in the watch log, so the lead tells the owner by hand.
-export const reportToOwner = async (deps: { readonly reportOwner?: (thread: string | null, text: string) => Promise<string>; readonly config: Pick<DoriConfig, "handover">  }, key: string, thread: string | null, values: { readonly who: string; readonly from: string; readonly to: string; readonly reason: string }, emit: (line: string) => void, extra?: string): Promise<OwnerReport> => {
-  const text = [fill([deps.config.handover.reportText], values)[0] ?? deps.config.handover.reportText, ...(extra ? [extra] : [])].join("\n");
+// Why a session moved, as the owner reads it: one cause, from the lead's approval (its words and the signal it names) or,
+// for an automatic move or an approval that names none, the measured signals over their thresholds. The raw reason, the
+// panes and the thaw command stay in the rollover log and the watch log, which the lead reads (owner 2026-10-20 "이건 왜
+// 아직 기계적 구문 생성이 남아있어?" about "I moved lane ... (aoe_... -> aoe_...). Why: ...").
+export type Cause =
+  | { readonly kind: "owner" | "full" | "drift" | "stuck" | "lead" | "threshold" }
+  | { readonly kind: "afterCompact" | "context" | "compactions" | "age"; readonly n: number };
+
+const numberIn = (re: RegExp, text: string): number | undefined => {
+  const g = re.exec(text)?.slice(1).find((v) => v !== undefined);
+  return g === undefined ? undefined : Number(g);
+};
+
+export const rolloverCause = (ref: string, signals: Signals, limits: Limits): Cause => {
+  const words = ref.startsWith(AUTO_PREFIX) ? "" : ref.startsWith(LEAD_PREFIX) ? ref.slice(LEAD_PREFIX.length) : ref;
+  const over = (limit: number | undefined, value: number | undefined): number | undefined => ((limit ?? 0) > 0 && value !== undefined && value >= (limit ?? 0) ? value : undefined);
+  const pct = numberIn(/(?<![\w])context (\d+) ?%/i, words) ?? over(limits.contextPct, signals.contextPct);
+  const afterK = numberIn(/context after compaction (\d+) ?k/i, words) ?? over(limits.afterCompactK, signals.afterCompactK);
+  const compactions = numberIn(/compactions? (\d+)|(\d+) compactions?|압축 (\d+)/i, words) ?? over(limits.compactions, signals.compactions);
+  const age = numberIn(/(?<![\w])age (\d+(?:\.\d+)?) ?h/i, words) ?? over(limits.ageH, signals.ageH);
+  if (words && OWNER_REF.test(words)) return { kind: "owner" };
+  if (/문맥 ?(?:초과|가득|꽉)|context (?:overflow|full|limit)/i.test(words) || (pct ?? 0) >= 100) return { kind: "full" };
+  if (/OWNER_CHECK|owner[- ]check|VIOLATION|CONTRADICTION|GOAL_LOSS|맥락 (?:이상|단)/i.test(words)) return { kind: "drift" };
+  if (/STUCK|rung ?4|SAME_FIX_3|fixated|막힘 ?4 ?단/i.test(words) || (!words && (signals.stuck?.rung ?? 0) >= 4)) return { kind: "stuck" };
+  if (afterK !== undefined) return { kind: "afterCompact", n: afterK };
+  if (pct !== undefined) return { kind: "context", n: pct };
+  if (compactions !== undefined) return { kind: "compactions", n: compactions };
+  if (age !== undefined) return { kind: "age", n: age };
+  return { kind: ref.startsWith(AUTO_PREFIX) ? "threshold" : "lead" };
+};
+
+// What the owner's message says besides the cause: which work moved (a lane's title; the lead is the Dori itself), what
+// the move bought in context (a lane), and how long the frozen old lead is kept (null: until closed by hand).
+export type OwnerNotice = { readonly who: Who; readonly title?: string; readonly cause: Cause; readonly sizes?: Sizes; readonly frozenH?: number | null };
+
+const KO_WHY = (c: Cause): string => {
+  switch (c.kind) {
+    case "owner": return "형이 말한 대로";
+    case "full": return "문맥이 꽉 차서";
+    case "drift": return "형이 말한 방향에서 벗어나기 시작해서";
+    case "stuck": return "같은 문제에서 계속 막혀서 새 눈으로 보려고";
+    case "afterCompact": return `압축해도 문맥이 ${c.n}k나 남아서`;
+    case "context": return `문맥이 ${c.n}%까지 차서`;
+    case "compactions": return `대화를 ${c.n}번이나 압축해서`;
+    case "age": return `${Math.round(c.n)}시간 넘게 한 세션으로 일해서`;
+    case "lead": return "지금이 갈아탈 때라서";
+    case "threshold": return "정해 둔 기준을 넘어서";
+  }
+};
+
+const EN_WHY = (c: Cause): string => {
+  switch (c.kind) {
+    case "owner": return "as you asked";
+    case "full": return "because its context was full";
+    case "drift": return "because it had started to drift from what you asked";
+    case "stuck": return "because it kept getting stuck on the same problem, to look at it fresh";
+    case "afterCompact": return `because it still held ${c.n}k of context after compacting`;
+    case "context": return `because its context reached ${c.n}%`;
+    case "compactions": return `because it had compacted its conversation ${c.n} times`;
+    case "age": return `because it had run for over ${Math.round(c.n)} hours`;
+    case "lead": return "because it was a good point to switch";
+    case "threshold": return "because it crossed a limit you set";
+  }
+};
+
+// The owner's message after a rollover: one or two plain sentences in his language (discord.locale ko: Korean, else
+// English) on what moved, why, and that he has nothing to do. No pane, arrow, config key, link or message id.
+export const ownerRolloverText = (n: OwnerNotice, locale: string): string => {
+  const pct = n.sizes ? sizePct(n.sizes) : undefined;
+  const title = n.title?.trim();
+  if (locale.toLowerCase().startsWith("ko")) {
+    const first = `${n.who === "lead" ? "내 리드 세션을" : `‘${title}’ 세션을`} ${KO_WHY(n.cause)} 새 세션으로 옮겼어.`;
+    const before = [
+      ...(pct !== undefined ? [`문맥은 ${n.sizes?.oldK}k에서 ${n.sizes?.checkedK}k로 줄었고`] : []),
+      ...(n.frozenH === undefined ? [] : n.frozenH ? [`옛 세션은 ${n.frozenH}시간 얼려 뒀다가 닫을 거고`] : ["옛 세션은 얼려 두기만 했고"]),
+    ];
+    return `${first} ${[...before, `하던 일은 ${before.length ? "" : "새 세션이 "}그대로 이어 가니까 형이 할 일은 없어.`].join(", ")}`;
+  }
+  const first = `I moved ${n.who === "lead" ? "myself (the lead)" : `the "${title}" work`} to a new session ${EN_WHY(n.cause)}.`;
+  const extra = [
+    ...(pct !== undefined ? [`its context went from ${n.sizes?.oldK}k to ${n.sizes?.checkedK}k`] : []),
+    ...(n.frozenH === undefined ? [] : n.frozenH ? [`the old session is frozen and closes in ${n.frozenH} hours`] : ["the old session is frozen until it is closed by hand"]),
+  ];
+  return `${first} It carries on where it left off${extra.length ? `; ${extra.join(", ")}` : ""}, and there is nothing for you to do.`;
+};
+
+// After a rollover the lead decided (lead:<reason>) or an automatic one: the owner's message (ownerRolloverText), and its
+// message id (or why it failed) for the log. A failure is ROLLOVER_OWNER_REPORT_MISSING in the watch log, so the lead
+// tells the owner by hand.
+export const reportToOwner = async (deps: { readonly reportOwner?: (thread: string | null, text: string) => Promise<string> }, key: string, thread: string | null, text: string, emit: (line: string) => void): Promise<OwnerReport> => {
   try {
     if (!deps.reportOwner) throw new Error("no messenger to reach the owner");
     const message = await deps.reportOwner(thread, text);

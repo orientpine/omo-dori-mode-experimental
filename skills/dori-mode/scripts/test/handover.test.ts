@@ -560,9 +560,9 @@ test("an automatic lead rollover tells the owner afterwards with what it crossed
   expect(refused.code).toBe(2);
   expect(r).toMatchObject({ code: 0, to: NEW });
   expect(posted).toHaveLength(1);
-  expect(posted[0]).toStartWith(`I moved the lead to a new session (${OLD} -> ${NEW}). Why: automatic (handover.autoRolloverLead)`);
-  // the owner's notice says the old session is frozen
-  expect(posted[0]?.split("\n")[1]).toBe(`The old session ${OLD} is frozen (3 processes stopped, it uses no tokens); it closes in 24 h. To undo: dori handover thaw ${OLD}`);
+  // the owner's notice says how long the old session is kept, with no pane, arrow or key; the thaw command is in the watch log
+  expect(posted[0]).toContain("24 hours");
+  for (const token of [OLD, NEW, "->", "handover.", "{"]) expect(posted[0]).not.toContain(token);
   expect(readRollovers(state.dir).at(-1)).toMatchObject({ decidedBy: "auto", ownerReport: { message: "msg-9" } });
 });
 
