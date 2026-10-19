@@ -44,7 +44,7 @@ export type Hooks = {
 
 // dori heavy --job: a named job one host may run for another. argv fills {in} (the input folder), {in0}, {in1}... (the
 // input files in the order given), {out} (a folder for result files); env is all the job gets besides PATH, HOME, LANG and
-// TMPDIR (inside the job's folder). rl: reinforcement learning, run only on the queue host and only where heavyQueue.rl.
+// TMPDIR (inside the job's folder). rl: reinforcement learning, run only on hosts whose heavyQueue.rl is true (queue host or helper).
 export type HeavyJob = { readonly argv: ArgvTemplate; readonly env?: Readonly<Record<string, string>>; readonly rl?: boolean };
 // a second GPU host the queue host hands jobs to: ssh argv to its forced-command `dori heavy-worker`
 export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate };
@@ -55,7 +55,7 @@ export type HeavyQueue = {
   // on any other host: argv that runs `dori` on the queue host (e.g. ["ssh", "main", "~/.bun/bin/dori"]); empty: this
   // host is the queue
   readonly queue: ArgvTemplate;
-  // whether this host runs rl jobs at all (a helper refuses them, a host cut off from the queue waits instead)
+  // whether this host runs rl jobs at all (false: as a helper it refuses them, cut off from the queue it waits instead)
   readonly rl: boolean;
   // a job's files live here while it runs, on every host, and are deleted after (memory-backed, gone at reboot)
   readonly jobDir: string;

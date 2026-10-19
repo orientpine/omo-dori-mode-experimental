@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { basename } from "node:path";
 
 import { newJobDir, onStop, packTo, RESULT_ENTRIES, requestProblem, runJob, stopWithCaller, sweepJobDirs, unpackFrom } from "./heavy-job.ts";
@@ -6,12 +6,14 @@ import type { HeavyCtx } from "./heavy-queue.ts";
 import { admitOnce, pidAlive, releaseSlot } from "./heavy-slot.ts";
 
 // dori heavy-worker: the forced command of the queue host's key on a helper. It reads the request from
-// SSH_ORIGINAL_COMMAND, never a shell: "run <label> <job> [args]" runs one job named in this host's own heavyQueue.jobs
-// (never an rl job) when this host's heavy slots admit it now, "sweep" deletes job folders left by killed runs. Verdict
+// SSH_ORIGINAL_COMMAND, never a shell: "run [--rl] <label> <job> [args]" runs one job named in this host's own heavyQueue.jobs
+// (an rl job only when this host's heavyQueue.rl allows rl jobs) when this host's heavy slots admit it now, "sweep" deletes job folders left by killed runs. Verdict
 // lines on stderr (WORKER_ADMIT / WORKER_BUSY / WORKER_REFUSED) come before anything is read from stdin; after
 // WORKER_ADMIT stdin is the inputs as tar, stdout the result as tar, and the job's folder is gone when it exits.
 export const heavyWorker = async (ctx: HeavyCtx, command: string): Promise<number> => {
   const [verb, ...rest] = command.trim().split(/\s+/);
+  // the heavy log lives here; a refusal on a host that never ran a heavy job still logs and says WORKER_REFUSED
+  mkdirSync(ctx.deps.dir, { recursive: true });
   const refuse = (label: string, why: string): number => {
     ctx.deps.log?.(`HEAVY_WORKER_REFUSED ${label}: ${why}`);
     console.error(`WORKER_REFUSED ${why}`);
@@ -25,7 +27,7 @@ export const heavyWorker = async (ctx: HeavyCtx, command: string): Promise<numbe
   const rlAsked = rest.includes("--rl");
   const [label = "", kind = "", ...args] = rest.filter((a) => a !== "--rl");
   const job = ctx.q.jobs[kind];
-  const problem = requestProblem({ label, kind, rl: rlAsked, args }) ?? (!job ? `no job "${kind}" on this host` : rlAsked || job.rl ? "rl jobs never run on a helper" : undefined);
+  const problem = requestProblem({ label, kind, rl: rlAsked, args }) ?? (!job ? `no job "${kind}" on this host` : (rlAsked || job.rl) && !ctx.q.rl ? "rl jobs do not run on this host (heavyQueue.rl false)" : undefined);
   if (problem || !job) return refuse(label || "-", problem ?? "no job");
   sweepJobDirs(ctx.q.jobDir, pidAlive);
   const t = await admitOnce(ctx.deps, label);
