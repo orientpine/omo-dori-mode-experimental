@@ -1177,6 +1177,30 @@ test("a rollover the lead decided tells the owner afterwards in the lane's threa
   expect(printed).toContain("ROLLOVER_OWNER_REPORTED demo message msg-1");
 });
 
+test("a moved lane records what the move bought: the old session's last context, the new one's first and once checked; the owner hears it, rollover-stats adds the new session an hour later", async () => {
+  // Given: the old session ended at 450k; the new one starts at 120k and is at 140k when it is checked, 300k an hour later
+  const posted: string[] = [];
+  const base = await setup();
+  const deps: LaneHandoverDeps = { ...base, reportOwner: async (_thread, text) => { posted.push(text); return "msg-1"; } };
+  ready(deps, [15]);
+  const dir = sessionDirFor(join(state.dir, "sessions"), CWD);
+  const call = (timestamp: string, k: number) => `\n${JSON.stringify({ type: "message", timestamp, message: { role: "assistant", content: [], usage: { input: 2, output: 9, cacheRead: 17_561, cacheWrite: k * 1000 - 17_563 } } })}`;
+  appendFileSync(join(dir, "2026-10-11T10-00-00-000Z_old-sid.jsonl"), call("2026-10-11T16:20:00Z", 300) + call("2026-10-11T16:30:00Z", 450));
+  writeFileSync(join(dir, "2026-10-11T16-34-00-000Z_new-sid.jsonl"), call("2026-10-11T16:34:10Z", 120) + call("2026-10-11T16:34:50Z", 140) + call("2026-10-11T17:20:00Z", 300) + call("2026-10-11T17:50:00Z", 400));
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: "lead:STUCK rung 4 on loss after research" });
+  // Then
+  expect(r.code).toBe(0);
+  const sizes = { oldK: 450, firstK: 120, checkedK: 140, newLog: join(dir, "2026-10-11T16-34-00-000Z_new-sid.jsonl") };
+  expect(JSON.parse(readFileSync((r.note ?? "").replace(/\.md$/, ".result.json"), "utf8"))).toMatchObject({ result: "done", sizes });
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "done", sizes });
+  expect(printed).toContain("HANDOVER_SIZE demo old 450k -> new first 120k, checked 140k (31% of the old)");
+  expect(posted[0]?.split("\n")[1]).toBe("Context: 450k in the old session, 140k in the new one once checked (31% of the old)");
+  const stats = (now: string) => rolloverStats(readRollovers(state.dir), [], Date.parse(now)).find((l) => l.startsWith("ROLLOVER ")) ?? "";
+  expect(stats("2026-10-11T17:00:00Z")).toEndWith("; context 450k -> new session first 120k, checked 140k (31% of the old)");
+  expect(stats("2026-10-11T18:00:00Z")).toEndWith("; context 450k -> new session first 120k, checked 140k (31% of the old), 1 h later 300k");
+});
+
 test("without a way to reach the owner a lead's rollover is refused before anything opens; a message that fails after the move is logged as missing", async () => {
   // Given
   const base = await setup();
