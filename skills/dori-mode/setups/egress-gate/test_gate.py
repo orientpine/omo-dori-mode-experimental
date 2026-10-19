@@ -135,6 +135,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                     elif method == "PATCH":
                         self.cards[message] = json.loads(body)["content"]
                 elif route.endswith("/messages") and method == "POST":
+                    if parts[2] in self.thread_meta and "thread_metadata" in self.thread_meta[parts[2]]:
+                        self.thread_meta[parts[2]]["thread_metadata"]["archived"] = False  # Discord reopens
                     message = str(1000 + len(self.cards))
                     self.cards[message] = json.loads(body)["content"]
                     self.card_channels[message] = parts[2]
@@ -428,6 +430,30 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         await self.service.poll_approvals()
         self.assertEqual(self.thread_patches, [])
         self.assertEqual(len(self.service.pending()), 1)
+
+    def decided_thread(self, name, archived):
+        self.thread_meta["555"] = {"id": "555", "type": 11, "parent_id": "20", "guild_id": "10", "name": name,
+                                    "thread_metadata": {"archived": archived}}
+
+    async def test_a_message_into_a_closed_decided_thread_puts_it_back_in_the_archive(self):
+        # 2026-10-19: a mail card's thread was renamed and archived, then YooDori's follow-up line
+        # reopened it (Discord reopens an archived thread on any new message).
+        self.decided_thread("⛔ 취소 · ✉️ 메일 발신 · FW: 자료", archived=True)
+        status, _ = await self.request("POST", "/api/v10/channels/555/messages", data={"content": "취소됐어"},
+                                       port="discord", headers={"authorization": "Bot MTIz.fake.fake"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.thread_patches, [("555", {"archived": True})])
+
+    async def test_a_message_into_an_open_or_undecided_thread_leaves_it_open(self):
+        for name, archived in (("⛔ 취소 · ✉️ 메일 발신 · FW: 자료", False), ("형의 요청", True),
+                               ("✉️ 메일 발신 · FW: 자료", True)):
+            with self.subTest(name=name, archived=archived):
+                self.thread_patches.clear()
+                self.decided_thread(name, archived)
+                status, _ = await self.request("POST", "/api/v10/channels/555/messages", data={"content": "네"},
+                                               port="discord", headers={"authorization": "Bot MTIz.fake.fake"})
+                self.assertEqual(status, 200)
+                self.assertEqual(self.thread_patches, [])
 
     async def test_the_start_sweep_titles_threads_decided_before_the_rule(self):
         self.approval()
