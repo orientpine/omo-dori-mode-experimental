@@ -1,5 +1,6 @@
 // dori handover --lane <key>: move a lane whose conversation grew long to a new agent session.
-// Order: refuse while work would die with the old session (a local chain, a running turn, an open question) unless the
+// Order: refuse while work would die with the old session (a local chain, a background eval cell, a running turn, an
+// open question) unless the
 // lane marked a safe point (dori handover ready) -> write the note -> open the new session in the same real path with the
 // lane's model and thinking level -> point the registry and the question cards at it -> check its status line, its
 // monitors and a [LEAD] probe ack -> only then close the old session. A failed check moves everything back and closes
@@ -7,6 +8,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { pendingBackground } from "./background.ts";
 import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, envMismatch, inputLine, laneEnv, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { ackFile, liveMonitors, manifestPath, type MonitorSpec, missingMonitors, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
@@ -143,6 +145,9 @@ const POLL_MS = 5_000;
 const THINKING = /^(.*):(off|minimal|low|medium|high|xhigh|max)$/;
 // processes every omo session runs besides the work: MCP servers, the subagent RPC host, the provider's own CLI
 const INFRA = /\bmcp\b|--internal-rpc-host-supervisor|--mode rpc|claude-agent-sdk/;
+// omo's eval kernel (python3 -u .../senpi-codemode/src/kernels/py/prelude.py): the session's own interpreter, alive once
+// the lane used it. Not work itself; what a cell started under it is, and a cell running in it is read from the log.
+const KERNEL = /senpi-codemode\/src\/kernels\/[\w-]+\/prelude\.\w+/;
 const CONTEXT = /\b\d+(?:\.\d+)?[KMG]?\/\d+(?:\.\d+)?[KMG]?\s+\((\d+(?:\.\d+)?)%\)/;
 
 export const splitModel = (model: string): { readonly base: string; readonly thinking?: string } => {
@@ -170,16 +175,31 @@ export const statusLine = (screen: string, model: string): StatusLine => {
 
 // The work the old session's agent runs that dies with it: every child process of the agent except omo's own helpers
 // and its monitors (those are re-armed in the new session). exclude: pids that must not count (the caller's own chain).
+// The session itself is not a chain: the shells that launched the agent (aoe runs it from /bin/bash /dev/fd/4 under the
+// pane's shell) and omo's eval kernel. What runs under them is.
 export const localChains = (table: readonly Proc[], shellPid: number, monitorPids: readonly number[], exclude: ReadonlySet<number> = new Set()): { readonly agent?: Proc; readonly chains: Job[]; readonly tree: Set<number> } => {
   const tree = descendants(table, shellPid);
   const agent = tree.find((p) => AGENT.test(p.cmd) && !/\bmcp\b/.test(p.cmd));
   const ids = new Set([shellPid, ...tree.map((p) => p.pid)]);
   if (!agent) return { chains: [], tree: ids };
-  // the agent's children, and jobs started from the pane's shell itself (they die with the pane too)
+  const session = new Set([...ancestors(table, agent.pid)].filter((pid) => ids.has(pid)));
+  const kernels = new Set(table.filter((p) => p.ppid === agent.pid && KERNEL.test(p.cmd)).map((p) => p.pid));
+  // the children of the agent, of its kernel and of the shells that launched it (jobs started from the pane die with it too)
   const chains = table
-    .filter((p) => (p.ppid === agent.pid || (p.ppid === shellPid && p.pid !== agent.pid)) && !INFRA.test(p.cmd) && !monitorPids.includes(p.pid) && !exclude.has(p.pid))
+    .filter((p) => (session.has(p.ppid) || kernels.has(p.ppid)) && !session.has(p.pid) && !kernels.has(p.pid) && !INFRA.test(p.cmd) && !monitorPids.includes(p.pid) && !exclude.has(p.pid))
     .map((p) => ({ pid: p.pid, cmd: p.cmd, pids: [p.pid, ...descendants(table, p.pid).map((d) => d.pid)] }));
   return { agent, chains, tree: ids };
+};
+
+// Why an automatic rollover leaves a lane to the lead: a tag in handover.trainingTags, or a live monitor watching a training
+// or eval chain (handover.trainingWatch on its command, path or description), as e7-beyond-eth's q267_chain_watch.sh.
+export const trainingMark = (lane: Lane, monitors: readonly MonitorSpec[], h: { readonly trainingTags: readonly string[]; readonly trainingWatch: string }): string | undefined => {
+  const tag = lane.tags?.find((t) => h.trainingTags.includes(t));
+  if (tag) return `tag ${tag}`;
+  if (!h.trainingWatch) return undefined;
+  const watch = new RegExp(h.trainingWatch, "i");
+  const m = monitors.find((x) => watch.test([x.command, x.path, x.description].filter(Boolean).join(" ")));
+  return m ? `training chain watched: monitor "${m.description}"` : undefined;
 };
 
 // Jobs the lane started that left its pane's process tree (setsid, nohup, systemd-run): their environment still names
@@ -246,8 +266,8 @@ export const markReady = async (deps: LaneHandoverDeps, lane: Lane, here: string
   const { pids } = await monitorPidsOf(deps, lane.pane, old?.path ?? lane.cwd ?? deps.config.defaultCwd);
   const table = await deps.procs();
   const shell = await tmuxPanePid(deps.run, lane.pane);
-  // The chain that runs this command is covered too: a shell that ends right after, or omo's eval kernel, which stays
-  // alive while the lane idles and would otherwise block the move the lane just declared safe.
+  // The chain that runs this command is covered too: a shell that ends right after, or a process the eval kernel started,
+  // which may stay alive while the lane idles and would otherwise block the move the lane just declared safe.
   const all = localChains(table, shell, pids).chains;
   const runner = all.filter((c) => ancestors(table, self).has(c.pid));
   const chains = all.filter((c) => !runner.includes(c));
@@ -372,12 +392,21 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   if (!session) emit(`HANDOVER_SESSION_UNSEEN ${key}: the omo session of ${lane.pane} was not found under ${old.path}${real !== old.path ? ` or ${real}` : ""}; the note has no monitors, todos, goal or old log`);
   const now = deps.clock.now();
   const monitors = liveMonitors(entries, now, deps.alive);
+  // the owner's rule: an automatic start never moves a lane that runs or watches a training or eval chain; the lead does.
+  // It stops the automatic starts in this pane at once (no retries, no gave-up line later).
+  const training = decidedBy(opts.approvedBy?.trim() ?? "") === "auto" ? trainingMark(lane, monitors, config.handover) : undefined;
+  if (training) {
+    if (lane.rolloverDue?.pane === lane.pane) await deps.registry.patch(key, { rolloverDue: { ...lane.rolloverDue, gaveUp: true } });
+    return refuse(`an automatic rollover does not move a lane that runs or watches a training or eval chain (${training}); no more automatic starts in ${lane.pane}. The lead moves it by hand: dori handover --lane ${key} --approved-by "lead:<reason and signal>"`);
+  }
   const table = await deps.procs();
   const shell = await tmuxPanePid(deps.run, lane.pane);
   const { agent, chains, tree } = localChains(table, shell, monitorPids);
   if (!agent) return refuse(`no omo agent process under pane ${lane.pane} (shell pid ${shell || "?"})`);
   const marked = detachedJobs(table, tree, session, old.id, deps.envOf);
-  const detached = [...marked, ...carried(dir, key, deps.alive, new Set([...marked.map((d) => d.pid), ...chains.flatMap((c) => c.pids ?? [c.pid]), ...monitorPids]))];
+  // a pid in the pane's own tree is no detached job, even when an earlier note listed it (as a chain, before the session's
+  // own launcher shell and eval kernel stopped counting as chains)
+  const detached = [...marked, ...carried(dir, key, deps.alive, new Set([...marked.map((d) => d.pid), ...chains.flatMap((c) => c.pids ?? [c.pid]), ...monitorPids, ...tree]))];
   const model = opts.model || lane.model || config.defaultModel;
   const screen = await captureTmux(deps.run, lane.pane);
   const shown = statusLine(screen, model);
@@ -388,8 +417,15 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   const ready = mark && mark.pane === lane.pane && now - Date.parse(mark.at) <= config.handover.readyMin * 60_000 ? mark : undefined;
   if (mark && !ready) emit(`HANDOVER_READY_STALE ${key}: the ready mark from ${mark.at} (pane ${mark.pane}) is older than ${config.handover.readyMin} min or from another pane; ignored`);
   const uncovered = chains.filter((c) => !ready?.chains.includes(c.pid));
+  const sessionDir = sessionDirFor(config.sessionsDir, base);
+  // a detached eval cell computing in the kernel (or in the agent, for js) has no process of its own: its start without an
+  // end in the session log, since this agent started; a ready mark covers the cells started before it
+  const oldLog = logOf(sessionDir, session);
+  const agentStart = Date.parse((await deps.run(["ps", "-o", "lstart=", "-p", String(agent.pid)])).out.trim());
+  const cells = oldLog ? pendingBackground(readFileSync(oldLog, "utf8"), Number.isNaN(agentStart) ? 0 : agentStart).filter((j) => j.kind === "eval" && !(ready && j.at <= Date.parse(ready.at))) : [];
   const blockers = [
     ...(uncovered.length ? [`${uncovered.length} local chain(s) would die: ${uncovered.map((c) => `${c.pid} ${c.cmd.slice(0, 80)}`).join("; ")}`] : []),
+    ...(cells.length ? [`${cells.length} eval cell(s) still run in the background: ${cells.map((c) => c.id).join(", ")}`] : []),
     // a ready mark covers chains only: a turn that started after it (a nudge, a message) still blocks
     ...(screen.includes(BUSY_MARK) ? ["a turn is running (esc to interrupt on screen)"] : []),
     ...(QUESTION_MARK.test(screen) ? ["a question is open in the pane"] : []),
@@ -401,7 +437,6 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   if (blocked) emit(`HANDOVER_REFUSED ${key}: ${blockedWhy}`);
   else if (blockers.length) emit(`HANDOVER_FORCED ${key}: ${blockers.join("; ")}`);
   if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK ${key}: the lane runs from ${old.path}, a symlink to ${real}; the new session opens in ${real}`);
-  const sessionDir = sessionDirFor(config.sessionsDir, base);
   const stuck = stuckTop(lane);
   const signals: Signals = { ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...sessionSignals(sessionDir, session, now), ...(stuck ? { stuck } : {}) };
   const laneNote = [ready?.note ?? "", opts.note ? readFileSync(opts.note, "utf8") : ""].filter((t) => t.trim()).join("\n\n");
