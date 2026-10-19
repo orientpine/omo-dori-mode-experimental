@@ -80,7 +80,10 @@ Discord reopens an archived thread on any new message. When a message posted thr
 Discord port goes into a thread that was archived under one of those four titles (the gate's
 own card threads and the node's request threads use the same words), the gate archives it again
 right after the post. A decided thread someone else reopened, or one without a status title,
-stays as it is.
+stays as it is. So does a decided thread that holds a live card: a message newer than the
+thread's last title change that carries both ✅ and ⛔ reactions (a newer card for the same work
+can land in a thread already titled decided). If the thread's history cannot be read, the gate
+leaves it open rather than hide a card.
 A card the owner already reacted to is left to the poller.
 
 Pending requests are private JSON files in `pending/`. Execution is marked
