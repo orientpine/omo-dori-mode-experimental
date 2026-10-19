@@ -1148,7 +1148,13 @@ class NodeGateTests(unittest.IsolatedAsyncioTestCase):
         path.write_text(json.dumps({**self.pc_config, "state": str(root)}))
         process = await asyncio.create_subprocess_exec(sys.executable, "-I", str(Path(__file__).with_name("gate.py")),
             "--config", str(path), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-        _, stderr = await asyncio.wait_for(process.communicate(), 10)
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), 10)
+        finally:
+            # A gate that wrongly starts must not outlive the failed test.
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
         self.assertEqual(process.returncode, 3)
         self.assertIn(b"GATE_FORWARD_REFUSED google-token-present", stderr)
 
