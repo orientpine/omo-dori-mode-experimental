@@ -1,0 +1,37 @@
+# Forward mode only (README "Forward mode"): the keyless gate reaches the node gate through this tunnel.
+# The local end is a unix socket only the gate user can open (no loopback TCP port another local user could
+# reach). The node side is a relay account whose single authorized_keys line allows nothing but this forward:
+#   restrict,port-forwarding,permitopen="127.0.0.1:3129",command="/usr/bin/false",from="<this host>" <key>
+# Not installed by install.sh. Replace @NODE_LOGIN@ (relay@node address) before installing.
+[Unit]
+Description=dori-gate forward mode: SSH tunnel to the node gate (unix socket, gate user only)
+After=network-online.target
+Wants=network-online.target
+Before=dori-gate.service
+
+[Service]
+User=dori-gate
+Group=dori-gate
+RuntimeDirectory=dori-gate-node
+RuntimeDirectoryMode=0700
+StateDirectory=dori-gate
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/ssh -N -F none -i /var/lib/dori-gate/node-tunnel-key -o IdentitiesOnly=yes -o BatchMode=yes \
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/dori-gate/node-known-hosts \
+  -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o StreamLocalBindMask=0177 -o StreamLocalBindUnlink=yes \
+  -L /run/dori-gate-node/gate.sock:127.0.0.1:3129 @NODE_LOGIN@
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

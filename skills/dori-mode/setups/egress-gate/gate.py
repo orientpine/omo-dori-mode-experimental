@@ -74,6 +74,49 @@ class TlsUpstream(http.client.HTTPSConnection):
                                               server_hostname=self.host)
 
 
+class UnixUpstream(http.client.HTTPConnection):
+    """Forward mode: the node gate behind the gate user's SSH tunnel socket."""
+
+    def __init__(self, path: str, timeout: float):
+        super().__init__("localhost", timeout=timeout)
+        self.unix_path = path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        try:
+            sock.connect(self.unix_path)
+        except OSError:
+            sock.close()
+            raise
+        self.sock = sock
+
+
+class ConfigRefused(Exception):
+    """The configuration asks for something this gate must not do (reason only)."""
+
+
+def forward_refusal(config: dict) -> str | None:
+    """A forwarding gate holds no Google or vault credential and no open card of its own."""
+    forward = config.get("google_forward")
+    if not forward:
+        return None
+    if not isinstance(forward, dict) or not str(forward.get("unix", "")).startswith("/"):
+        return "forward-config-invalid"
+    if config.get("vault"):
+        return "vault-config-present"
+    if config.get("grants") or config.get("token_clients"):
+        return "grants-config-present"
+    state = Path(config["state"])
+    if any(state.glob("*-token.json")):
+        return "google-token-present"
+    if (state / "client_secret.json").exists():
+        return "client-secret-present"
+    if any((state / "pending").glob("*.json")):
+        return "pending-cards-present"
+    return None
+
+
 def strings(value):
     if isinstance(value, str):
         yield value
@@ -314,6 +357,7 @@ class Gate:
         self.cache = {}
         self.access = ""
         self.expiry = 0.0
+        self.grant_access = {}
         self.auth_pending = None
         self.servers = {}
         self.connections = set()
@@ -407,22 +451,85 @@ class Gate:
         data = json.loads((self.state / "client_secret.json").read_text())
         return data.get("installed", data)
 
+    def forwarding(self) -> bool:
+        return bool(self.config.get("google_forward"))
+
+    def grant(self, name) -> dict:
+        """The default grant serves the reverse API and never holds send scopes; a named grant
+        (`grants` in the config) only mints short access tokens for `token_clients`."""
+        if name in (None, "", "default"):
+            return dict(name="default", scopes=self.config["google_scopes"], token_file="google-token.json")
+        spec = self.config.get("grants", {}).get(name) if isinstance(name, str) else None
+        token_file = spec.get("token_file", f"{name}-token.json") if isinstance(spec, dict) else ""
+        if not (isinstance(spec, dict) and isinstance(spec.get("scopes"), list)
+                and re.fullmatch(r"[a-z][a-z0-9-]{0,30}", name)
+                and re.fullmatch(r"[a-z0-9-]+-token\.json", token_file) and token_file != "google-token.json"):
+            raise Refused("unknown-grant", 404)
+        return dict(name=name, scopes=spec["scopes"], token_file=token_file)
+
     async def access_token(self) -> str:
+        return (await self.grant_token(self.grant(None)))[0]
+
+    async def grant_token(self, spec: dict) -> tuple[str, float, str]:
         async with self.token_lock:
-            if self.access and self.expiry > time.time() + 60:
-                return self.access
-            path = self.state / "google-token.json"
+            default = spec["name"] == "default"
+            token, expiry, scope = ((self.access, self.expiry, "") if default
+                                    else self.grant_access.get(spec["name"], ("", 0.0, "")))
+            if token and expiry > time.time() + 60:
+                return token, expiry, scope
+            path = self.state / spec["token_file"]
             if not path.exists():
                 raise Refused("google-auth-required", 503)
-            token = json.loads(path.read_text())
+            stored = json.loads(path.read_text())
             secret = self.secret()
             result = await self.fetch_json("POST", secret["token_uri"],
                 {"content-type": "application/x-www-form-urlencoded"},
                 urlencode(dict(client_id=secret["client_id"], client_secret=secret["client_secret"],
-                               refresh_token=token["refresh_token"], grant_type="refresh_token")).encode())
-            self.access = result["access_token"]
-            self.expiry = time.time() + int(result.get("expires_in", 3600))
-            return self.access
+                               refresh_token=stored["refresh_token"], grant_type="refresh_token")).encode())
+            token = result["access_token"]
+            expiry = time.time() + int(result.get("expires_in", 3600))
+            scope = str(result.get("scope") or stored.get("scope", ""))
+            if default:
+                self.access, self.expiry = token, expiry
+            else:
+                self.grant_access[spec["name"]] = (token, expiry, scope)
+            return token, expiry, scope
+
+    async def mint(self, uid, method, query, writer) -> None:
+        """Night jobs on the node get a short access token of a named grant, never a refresh token."""
+        if self.forwarding() or uid not in self.config.get("token_clients", []):
+            raise Refused("token-client-required")
+        if method != "GET":
+            raise Refused("not-found", 404)
+        spec = self.grant(dict(query).get("grant", ""))
+        if spec["name"] == "default":
+            raise Refused("grant-required", 400)
+        token, expiry, scope = await self.grant_token(spec)
+        self.append("tokens.jsonl", dict(ts=utc(), uid=uid, grant=spec["name"]))
+        await reply(writer, 200, json_bytes(dict(access_token=token, scope=scope,
+                                                 expires_in=max(0, int(expiry - time.time())))))
+
+    async def forward_proxy(self, writer, method, target, headers, body) -> None:
+        """Keyless mode: only the local caller uid is checked here; the node gate decides the rest."""
+        forward = self.config["google_forward"]
+        connection = UnixUpstream(forward["unix"], timeout=forward.get("timeout", 120))
+        outgoing = {k: v for k, v in headers.items()
+                    if k.lower() not in HOP | {"host", "content-length", "authorization"}}
+        outgoing["Connection"] = "close"
+        outgoing["Content-Length"] = str(len(body))
+        try:
+            await asyncio.to_thread(connection.request, method, target, body=body, headers=outgoing)
+            response = await asyncio.to_thread(connection.getresponse)
+        except (OSError, http.client.HTTPException):
+            connection.close()
+            raise Refused("node-gate-unavailable", 502) from None
+        try:
+            self.response_head(writer, response)
+            while chunk := await asyncio.to_thread(response.read, 65536):
+                writer.write(chunk)
+                await writer.drain()
+        finally:
+            connection.close()
 
     async def google_json(self, path: str) -> dict:
         host, rest = path.lstrip("/").split("/", 1)
@@ -1047,27 +1154,39 @@ class Gate:
         return {key: result[key] for key in ("scope", "email", "expires_in") if key in result}
 
     async def admin(self, method, path, body):
+        if self.forwarding():
+            if (method, path) == ("GET", "/_admin/status"):
+                return dict(mode="forward", forward=self.config["google_forward"]["unix"], token_present=False,
+                            changes=len(self.records()), denials=len(self.records("denials.jsonl")))
+            raise Refused("keys-on-node", 409)
         if (method, path) == ("GET", "/_admin/status"):
             present = (self.state / "google-token.json").exists()
             info = await self.tokeninfo() if present else {}
-            return dict(token_present=present, scopes=info.get("scope", "").split(),
-                        changes=len(self.records()), denials=len(self.records("denials.jsonl")),
+            grants = {}
+            for name in self.config.get("grants", {}):
+                token_path = self.state / self.grant(name)["token_file"]
+                grants[name] = dict(token_present=token_path.exists(), scopes=(
+                    str(json.loads(token_path.read_text()).get("scope", "")).split() if token_path.exists() else []))
+            return dict(mode="custody", token_present=present, scopes=info.get("scope", "").split(),
+                        grants=grants, changes=len(self.records()), denials=len(self.records("denials.jsonl")),
                         vault_last_error=getattr(self, "vault_error", ""))
         if (method, path) == ("GET", "/_admin/tokeninfo"):
             return await self.tokeninfo()
         if (method, path) == ("POST", "/_admin/auth-url"):
+            spec = self.grant(json_object(body).get("grant"))
             secret = self.secret()
             verifier = secrets.token_urlsafe(64)
             state = secrets.token_urlsafe(32)
-            self.auth_pending = dict(verifier=verifier, state=state, created=time.time())
+            self.auth_pending = dict(verifier=verifier, state=state, created=time.time(), grant=spec["name"])
             private_write(self.state / "auth-pending.json", json_bytes(self.auth_pending))
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
             query = dict(client_id=secret["client_id"], redirect_uri="http://localhost", response_type="code",
                          state=state, code_challenge=challenge, code_challenge_method="S256",
-                         access_type="offline", prompt="consent", scope=" ".join(self.config["google_scopes"]))
+                         access_type="offline", prompt="consent", scope=" ".join(spec["scopes"]))
             return {"url": secret.get("auth_uri", "https://accounts.google.com/o/oauth2/v2/auth") + "?" + urlencode(query)}
         if (method, path) == ("POST", "/_admin/auth-finish"):
-            redirect = urlsplit(json_object(body).get("redirect", ""))
+            request = json_object(body)
+            redirect = urlsplit(request.get("redirect", ""))
             if redirect.scheme != "http" or redirect.netloc != "localhost" or redirect.path not in {"", "/"}:
                 raise Refused("invalid-redirect", 400)
             params = dict(parse_qsl(redirect.query))
@@ -1075,8 +1194,10 @@ class Gate:
             if not pending_path.exists():
                 raise Refused("oauth-state-required")
             pending = self.auth_pending or json.loads(pending_path.read_text())
+            spec = self.grant(pending.get("grant"))
             if (not secrets.compare_digest(params.get("state", ""), pending["state"])
-                    or time.time() - pending["created"] > 86400 or not params.get("code")):
+                    or time.time() - pending["created"] > 86400 or not params.get("code")
+                    or request.get("grant") not in (None, spec["name"])):
                 raise Refused("oauth-state-required")
             pending_path.unlink()
             self.auth_pending = None
@@ -1092,16 +1213,20 @@ class Gate:
                     "https://oauth2.googleapis.com/tokeninfo") + "?" + urlencode({"access_token": token["access_token"]}))
                 scope = info.get("scope", "")
             granted = scope.split()
-            if (not granted or any(forbidden_scope(s) for s in granted)
-                    or not set(granted) <= set(self.config["google_scopes"]) | {"email", "profile"}):
+            # Send-capable scopes are refused for the reverse API's grant only; a named job grant may hold them.
+            if (not granted or spec["name"] == "default" and any(forbidden_scope(s) for s in granted)
+                    or not set(granted) <= set(spec["scopes"]) | {"email", "profile"}):
                 raise Refused("unsafe-google-scope")
             if not token.get("refresh_token"):
                 raise Refused("refresh-token-required", 400)
-            private_write(self.state / "google-token.json",
+            private_write(self.state / spec["token_file"],
                           json_bytes({"refresh_token": token["refresh_token"], "scope": " ".join(granted)}))
-            self.access = ""
-            self.expiry = 0
-            return {"scopes": granted}
+            if spec["name"] == "default":
+                self.access = ""
+                self.expiry = 0
+            else:
+                self.grant_access.pop(spec["name"], None)
+            return {"scopes": granted, "grant": spec["name"]}
         raise Refused("not-found", 404)
 
     async def restore(self, uid, identity, headers):
@@ -1381,6 +1506,9 @@ class Gate:
                 await self.connect(reader, writer, method, target)
                 return
             path, query = clean_path(target)
+            if port == "google" and path == "/_gate/access-token":
+                await self.mint(uid, method, query, writer)
+                return
             if port == "google" and path.startswith("/_admin/"):
                 if uid not in self.config["admins"]:
                     raise Refused("admin-uid-required")
@@ -1390,6 +1518,9 @@ class Gate:
             gate_path = port == "google" and path.startswith("/_gate/")
             if uid not in self.config["clients"] and not (gate_path and uid in self.config["admins"]):
                 raise Refused("client-uid-required")
+            if port == "google" and self.forwarding():
+                await self.forward_proxy(writer, method, target, headers, body)
+                return
             if gate_path:
                 if path == "/_gate/changes" and method == "GET":
                     await reply(writer, 200, json_bytes(self.records(since=dict(query).get("since", "24h"))))
@@ -1454,18 +1585,26 @@ class Gate:
             self.connections.discard(task)
 
     async def start(self):
+        refusal = forward_refusal(self.config)
+        if refusal:
+            raise ConfigRefused(refusal)
         try:
             for name in ("connect", "google", "discord"):
+                # A null port leaves that listener off (the node gate in stage 1 serves only Google).
+                if self.config["listen"][name] is None:
+                    continue
                 self.servers[name] = await asyncio.start_server(
                     lambda r, w, name=name: self.handle(name, r, w), "127.0.0.1",
                     self.config["listen"][name], limit=HEADER_CAP)
         except OSError:
             await self.close()
             raise
-        ports = ",".join(str(self.servers[n].sockets[0].getsockname()[1])
+        ports = ",".join(str(self.servers[n].sockets[0].getsockname()[1]) if n in self.servers else "-"
                          for n in ("connect", "google", "discord"))
-        print("GATE_READY ports=" + ports, file=sys.stderr, flush=True)
-        if self.config.get("approval"):
+        print("GATE_READY ports=" + ports + (" mode=forward" if self.forwarding() else ""),
+              file=sys.stderr, flush=True)
+        # A forwarding gate parks nothing: every card is the node gate's.
+        if self.config.get("approval") and not self.forwarding():
             self.approval_task = asyncio.create_task(self.approval_loop())
 
     async def close(self):
@@ -1501,7 +1640,11 @@ def main() -> None:
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
-    asyncio.run(serve(config))
+    try:
+        asyncio.run(serve(config))
+    except ConfigRefused as error:
+        print(f"GATE_FORWARD_REFUSED {error}", file=sys.stderr, flush=True)
+        raise SystemExit(3) from None
 
 
 if __name__ == "__main__":

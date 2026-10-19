@@ -138,6 +138,49 @@ Posts using the gate bot to the configured approval channel in chunks below 1900
 characters. Prints `SUMMARY_EMPTY` or
 `SUMMARY_POSTED N messages`. No service or timer is installed by these files.
 
+## One gate holds the keys: forward mode and named grants
+
+When the Dori host and the machine that keeps the owner's keys are different, run this same gate on
+both and keep every Google (and vault) credential, every approval card and the journal on one of them
+("the node gate"). Without the keys below in the config nothing changes.
+
+**Forward mode** (the keyless gate, on the Dori host). Add
+`"google_forward": {"unix": "/run/dori-gate-node/gate.sock", "timeout": 120}`. The Google port then
+checks only the caller uid (`clients`) and passes the request (path, query, body,
+`X-Dori-Owner-Message`; never `Authorization`) unchanged to the node gate, which does the owner proof,
+the direct-or-card decision, the card, the write and the journal. The CONNECT allow list and the Discord
+port stay local and unchanged. It parks nothing and runs no approval poller. `/_admin/status` answers
+`mode: forward`; every other admin path answers `409 keys-on-node`. A node gate out of reach is
+`502 node-gate-unavailable`, never a direct Google call. It refuses to start (`GATE_FORWARD_REFUSED
+<reason>`, exit 3) while its state still holds `*-token.json` or `client_secret.json`, an open card in
+`pending/`, or the config still has `vault`, `grants` or `token_clients`: move those first.
+
+The socket comes from `systemd/dori-gate-node-tunnel.service` (`ssh -N -L <socket>:127.0.0.1:3129`, as
+the gate user, its own key `/var/lib/dori-gate/node-tunnel-key` and a pinned `node-known-hosts`; the
+socket is 0600) plus the drop-in `systemd/dori-gate.service.d/forward.conf`. On the node, a relay account
+with one authorized_keys line that allows only this forward:
+`restrict,port-forwarding,permitopen="127.0.0.1:3129",command="/usr/bin/false",from="<dori host>" <key>`.
+The node gate sees the relay account's uid, so its `clients` is `[<relay uid>]`.
+
+**Node gate.** A listener whose port is `null` stays off (`"listen": {"connect": null, "google": 3129,
+"discord": null}` until the Dori itself lives there). Named grants hold other refresh tokens for local
+jobs that cannot carry an owner message (scheduled reminders, Drive publishing):
+
+```json
+"grants": {"jobs": {"scopes": ["openid", "https://www.googleapis.com/auth/calendar", "..."],
+                    "token_file": "jobs-token.json"}},
+"token_clients": [1002]
+```
+
+`GET /_gate/access-token?grant=jobs` from a `token_clients` uid returns
+`{"access_token", "expires_in", "scope"}` (never a refresh token) and appends
+`{ts, uid, grant}` to `tokens.jsonl`; everyone else gets `403 token-client-required`, a grant not yet
+consented `503 google-auth-required`, and the reverse API's own grant is never minted
+(`400 grant-required`). A named grant may hold send-capable scopes (the jobs it serves send approved
+mail themselves); the reverse API's grant still may not. Consent per grant:
+`gatectl.py auth-url --grant jobs`, then `gatectl.py auth-finish --grant jobs '<redirect>'`.
+`gatectl.py status` lists `grants` with presence and scopes only.
+
 ## Tests
 
 ```sh
