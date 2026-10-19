@@ -24,7 +24,7 @@ If the lead has paused your lane (`dori pause`, e.g. while it waits on the owner
 
 ## Reporting honestly
 
-- A blocker, an impossible task or an ambiguous request is a fine report: `[REPORT] <key> | blocker | <what blocks, what you tried, what you need>`. Say it plainly instead of retrying or claiming done.
+- A blocker, an impossible task or an ambiguous request is a fine report: `[REPORT] <key> | blocker | <one plain line: what blocks and what you need>`, with what you tried and the evidence on the lines below. Say it plainly instead of retrying or claiming done.
 - Cap your retries: after two or three failed attempts at the same step, report a blocker.
 - Evidence is the real thing: the real screen, the real call, the real output, with a capture, output or file path for [끝난 상태] and for each QA item. A passing test suite alone does not show the result works; keep the repository's tests green as well, and for a code change show with a mutation that they catch the bug.
 - Step 6 of the brief (back to a new plan until [끝난 상태] holds) does not reset the retry cap or the stuck ladder: they count failed attempts per metric, whatever the plan.
