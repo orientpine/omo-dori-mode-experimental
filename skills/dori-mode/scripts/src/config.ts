@@ -42,6 +42,41 @@ export type Hooks = {
   readonly transcribe?: ArgvTemplate;
 };
 
+// dori heavy --job: a named job one host may run for another. argv fills {in} (the input folder), {in0}, {in1}... (the
+// input files in the order given), {out} (a folder for result files); env is all the job gets besides PATH, HOME, LANG and
+// TMPDIR (inside the job's folder). rl: reinforcement learning, run only on the queue host and only where heavyQueue.rl.
+export type HeavyJob = { readonly argv: ArgvTemplate; readonly env?: Readonly<Record<string, string>>; readonly rl?: boolean };
+// a second GPU host the queue host hands jobs to: ssh argv to its forced-command `dori heavy-worker`
+export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate };
+export type HeavyQueue = {
+  readonly jobs: Readonly<Record<string, HeavyJob>>;
+  // on the queue host: helpers tried in order when a job at the front of the line cannot start here
+  readonly helpers: readonly HeavyHelper[];
+  // on any other host: argv that runs `dori` on the queue host (e.g. ["ssh", "main", "~/.bun/bin/dori"]); empty: this
+  // host is the queue
+  readonly queue: ArgvTemplate;
+  // whether this host runs rl jobs at all (a helper refuses them, a host cut off from the queue waits instead)
+  readonly rl: boolean;
+  // a job's files live here while it runs, on every host, and are deleted after (memory-backed, gone at reboot)
+  readonly jobDir: string;
+};
+
+const isArgv = (v: unknown): boolean => Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string");
+const isStringMap = (v: unknown): boolean => v === undefined || (typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every((x) => typeof x === "string"));
+
+// what is wrong with a heavyQueue section, or undefined
+export const heavyQueueProblem = (q: HeavyQueue): string | undefined => {
+  for (const [name, job] of Object.entries(q.jobs)) {
+    if (!/^[\w.-]{1,64}$/.test(name)) return `heavyQueue.jobs: job name "${name}" must be letters, digits, . _ -`;
+    if (!isArgv(job.argv)) return `heavyQueue.jobs.${name}.argv must be a non-empty list of strings`;
+    if (!isStringMap(job.env)) return `heavyQueue.jobs.${name}.env must map variable names to strings`;
+  }
+  for (const h of q.helpers) if (typeof h.name !== "string" || !/^[\w.-]{1,64}$/.test(h.name) || !isArgv(h.ssh)) return `heavyQueue.helpers: each needs a name (letters, digits, . _ -) and an ssh argv`;
+  if (!Array.isArray(q.queue) || !q.queue.every((p) => typeof p === "string")) return "heavyQueue.queue must be a list of strings";
+  if (q.queue.length && q.helpers.length) return "heavyQueue: a host is either the queue (helpers) or reaches it (queue), not both";
+  return undefined;
+};
+
 export type GuardThresholds = {
   readonly loadAlert: number;
   readonly loadOk: number;
@@ -339,6 +374,7 @@ export type DoriConfig = {
   readonly heavyMaxSlots: number;
   readonly heavyHeadroomPct: number;
   readonly heavySettleSec: number;
+  readonly heavyQueue: HeavyQueue;
   readonly deadPanePatterns: readonly string[];
   readonly guard: GuardThresholds;
   readonly hooks: Hooks;
@@ -388,6 +424,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   heavyMaxSlots: 8,
   heavyHeadroomPct: 30,
   heavySettleSec: 120,
+  heavyQueue: { jobs: {}, helpers: [], queue: [], rl: true, jobDir: "/dev/shm/dori-heavy" },
   deadPanePatterns: ["has stopped", "no suitable jobs"],
   guard: { loadAlert: 150, loadOk: 80, memFreeMinPct: 20, diskFreeMinGb: 50, panesMax: 20 },
   hooks: {},
@@ -612,7 +649,9 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const migrated = migrateOldKeys((await file.exists()) ? ((await file.json()) as Raw) : {});
   for (const w of migrated.warnings) warn(`${w} (${path})`);
   const raw = migrated.raw as Partial<DoriConfig>;
-  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover }, related: { ...base.related, ...raw.related }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } } };
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover }, related: { ...base.related, ...raw.related }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } }, heavyQueue: { ...base.heavyQueue, ...raw.heavyQueue } };
+  const heavyProblem = heavyQueueProblem(merged.heavyQueue);
+  if (heavyProblem) throw new ConfigError(`${path}: ${heavyProblem}`);
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const env: unknown = merged.launchEnv;

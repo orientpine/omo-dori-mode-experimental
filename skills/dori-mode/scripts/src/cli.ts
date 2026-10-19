@@ -23,7 +23,9 @@ import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
 import { autoReadyLine, freshnessTick } from "./freshness.ts";
 import { sampleUsage } from "./heavy-headroom.ts";
+import { heavyJobCommand, HeavyJobError, heavyServe } from "./heavy-queue.ts";
 import { acquireSlot, pidAlive, releaseSlot, type SlotDeps } from "./heavy-slot.ts";
+import { heavyWorker } from "./heavy-worker.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
 import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, relatedGate, renderBrief, setDone, setGpu, setThread, threadGate, ThreadMissingError, validateLaunch } from "./launch.ts";
@@ -209,7 +211,20 @@ const USAGE = `dori <command> [options]
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
   heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low; beside a running one only
                                        when GPU, memory and CPU each keep heavyHeadroomPct (30) percent free with it
-                                       (HEAVY_ADMIT / HEAVY_WAIT lines on stderr and in state/heavy/heavy.log)
+                                       (HEAVY_ADMIT / HEAVY_WAIT lines on stderr and in state/heavy/heavy.log); waiters
+                                       start in the order they came
+  heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]
+                                       run heavyQueue.jobs.<name> in the GPU line of all hosts: on the queue host here
+                                       first, then on a heavyQueue.helpers host (never an rl job), else wait in line;
+                                       elsewhere sent to the queue host (heavyQueue.queue), run here only while it cannot
+                                       be reached. Prints the job's stdout, copies its result files to --out, exits with
+                                       its code (HEAVY_HELPER / HEAVY_DONE / HEAVY_QUEUE_DOWN lines)
+  heavy-serve <label> <name> [--rl] -- [arg ...]
+                                       queue host side of a job sent by another host: inputs as tar on stdin, result tar
+                                       on stdout
+  heavy-worker                         a helper's forced command for the queue host's key (SSH_ORIGINAL_COMMAND "run
+                                       <label> <name> [arg ...]" or "sweep"); job files live in heavyQueue.jobDir and
+                                       are deleted after each run
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
   state-git [init|commit|log [N]|restore <time|sha> [--file PATH ...]|loop|check|push-check] [--dir DIR ...]
   state-git backup [create|preview|approve --by "lead: ..." [--history-ok DIR:PATH ...]|push|tick [--clock ISO]]
@@ -378,6 +393,7 @@ const flags = parseArgs({
     answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
     static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
     remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
+    job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -1009,8 +1025,15 @@ try {
       const sep = rest.indexOf("--");
       const label = rest[0];
       const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
-      if (!label || label === "--" || !cmd.length) die("usage: dori heavy <label> -- <command ...>");
       const load = async () => (await sampleHost(run, config.backend)).load1;
+      const jobName = opt("job");
+      if (jobName !== undefined) {
+        const jobLabel = label && !label.startsWith("-") ? label : die("usage: dori heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]");
+        const out = opt("out");
+        process.exitCode = await heavyJobCommand({ q: config.heavyQueue, deps: heavyDeps(load) }, { req: { label: jobLabel, kind: jobName, rl: Boolean(flags.values.rl), args: cmd }, files: many("in").map((f) => resolve(f)), ...(out ? { out: resolve(out) } : {}) });
+        break;
+      }
+      if (!label || label === "--" || !cmd.length) die("usage: dori heavy <label> -- <command ...>");
       const slot = await acquireSlot(heavyDeps(load), label ?? "");
       try {
         const child = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
@@ -1018,6 +1041,18 @@ try {
       } finally {
         releaseSlot(slot);
       }
+      break;
+    }
+    case "heavy-serve": {
+      const sep = rest.indexOf("--");
+      const load = async () => (await sampleHost(run, config.backend)).load1;
+      const [label = "", kind = ""] = flags.positionals;
+      process.exitCode = await heavyServe({ q: config.heavyQueue, deps: heavyDeps(load) }, { label, kind, rl: Boolean(flags.values.rl), args: sep >= 0 ? rest.slice(sep + 1) : [] });
+      break;
+    }
+    case "heavy-worker": {
+      const load = async () => (await sampleHost(run, config.backend)).load1;
+      process.exitCode = await heavyWorker({ q: config.heavyQueue, deps: heavyDeps(load) }, process.env.SSH_ORIGINAL_COMMAND ?? rest.join(" "));
       break;
     }
     case "state-git": {
@@ -1490,6 +1525,6 @@ try {
       process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof ForkError || e instanceof DirectiveError) die(e.message);
+  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof ForkError || e instanceof DirectiveError || e instanceof HeavyJobError) die(e.message);
   throw e;
 }
