@@ -139,7 +139,9 @@ export const leadAlertPoster =
   (send: (channel: string, text: string) => Promise<string>, channels: { readonly pair: string; readonly owner: string }) =>
   async (text: string): Promise<string[]> =>
     Promise.all(
-      ([["pair", channels.pair], ["owner", channels.owner]] as const)
+      // The owner's channel only when there is no pair channel: the alert is for the other Dori, the owner has nothing to
+      // do with it (owner 2026-10-18 21:43 KST "경고 코드를 바로 나에게 보여주지 말고", 2026-10-20 00:10 KST).
+      ([["pair", channels.pair], ["owner", channels.pair ? "" : channels.owner]] as const)
         .filter(([, id]) => id)
         .map(([name, id]) => send(id, text).then((m) => `LEAD_ALERT_POSTED ${name} ${id} ${m}`, (e: unknown) => `LEAD_ALERT_WARN ${name} ${id} ${String(e).slice(0, 160)}`)),
     );

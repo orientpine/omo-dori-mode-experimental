@@ -347,14 +347,14 @@ CARD_KIND = {"calendar": "일정 초대", "drive": "Drive 공유", "docs": "문�
              "tasks": "할 일", "obsidian": "노트"}
 # A decided card thread's title prefix, in the node's request-thread words (origin_notice.ThreadOutcome).
 THREAD_STATUSES = ("✅ 완료", "⛔ 취소", "⌛ 만료", "❗ 실패")
+# An approved write the service answered with a non-2xx status; the code itself stays in the GATE_WRITE log line.
+UPSTREAM_FAILED = "❗ 실행 실패"
 
 
 def thread_status(outcome: str) -> str | None:
     """The thread prefix for a card outcome line; None for outcomes that leave the thread alone."""
-    executed = re.fullmatch(r"✅ 실행됨 \((\d+)\)", outcome)
-    if executed:
-        return "✅ 완료" if 200 <= int(executed[1]) < 300 else "❗ 실패"
-    return {"⛔ 취소됨": "⛔ 취소", "만료됨": "⌛ 만료", "실행 실패": "❗ 실패"}.get(outcome)
+    return {"✅ 실행됨": "✅ 완료", UPSTREAM_FAILED: "❗ 실패", "⛔ 취소됨": "⛔ 취소", "만료됨": "⌛ 만료",
+            "실행 실패": "❗ 실패"}.get(outcome)
 
 
 class Gate:
@@ -1091,13 +1091,15 @@ class Gate:
                                     entry["query"], entry["headers"], base64.b64decode(entry["body"]),
                                     proof=entry["owner_message"], approved_by=entry["card"], approved_context=entry,
                                     restore=entry.get("restoring", False))
-                        outcome = f"✅ 실행됨 ({status})"
+                        # The HTTP status is already in the GATE_WRITE log line; the owner's card says what happened,
+                        # not a code (owner 2026-10-20 00:10 KST: no machine output in the owner's channel).
+                        outcome = "✅ 실행됨" if 200 <= status < 300 else UPSTREAM_FAILED
                     except Refused as error:
                         outcome = "실행 실패"
                         self.deny(entry["uid"], "google", entry["method"], entry["path"], error.reason)
                 if outcome:
                     pending_path.unlink()
-                    if not outcome.startswith("✅"):
+                    if not outcome.startswith("✅") and outcome != UPSTREAM_FAILED:
                         self.deny(entry["uid"], "google", entry["method"], entry["path"], outcome)
                     if edit:
                         # Keep what was approved on the card: the outcome goes on top of the posted text.
