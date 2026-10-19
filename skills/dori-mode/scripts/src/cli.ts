@@ -10,6 +10,7 @@ import { leadAlertPoster } from "./autoturn.ts";
 import { findLead, LeadError } from "./lead.ts";
 import { ackHandover, handover, type HandoverDeps, LEAD_SUMMARY_TEMPLATE } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
+import { auditHandover, auditSummary, type Committed, findCommitted, markerFile, reportGap, sendAuditSummary, summaryWeek } from "./rollover-audit.ts";
 import { appendRollover, dueReasons, LEAD_PREFIX, limitsFor, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
@@ -278,6 +279,17 @@ const USAGE = `dori <command> [options]
   handover frozen | thaw <pane> | close-frozen [<pane>]
                                        list the frozen old leads; resume one frozen by mistake; close one now, or every one
                                        whose close time passed (its log stays)
+  handover audit <note.md|key|lead> [--dry-run] [--no-send] [--force]
+                                       the audit after a committed handover (freshness starts it handover.auditAfterMin
+                                       after the commit): the owner's quoted words and recent lead instructions only the
+                                       old conversation held (a reviewer sorts them: standing, done, chatter), and the
+                                       todos, goal and monitors the new session lacks; one line per gap in
+                                       <stateDir>/handover/audit.jsonl, sent once as HANDOVER_SUPPLEMENT (HANDOVER_AUDIT)
+  handover gap <key|lead> --kind K --text T [--fixed]
+                                       record what a session found later that its handover did not carry (HANDOVER_GAP)
+  handover audit-summary [--days N] [--send]
+                                       the audit ledger summed up; --send puts it in the lead's inbox (freshness does it
+                                       each week after handover.auditSummaryAt)
   handover --template                  print the headings of the old lead's summary (--note FILE)
   handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE, HANDOVER_UNDERSTAND or HANDOVER_SUPPLEMENT line with this
   handover --lane <key> --approved-by REF [--note FILE] [--model M] [--thinking L] [--force] [--keep-old] [--minutes N] [--dry-run]
@@ -978,6 +990,15 @@ try {
             const r = await run(["systemd-run", "--user", "--collect", `--unit=${unit}`, "--setenv=DORI_HANDOVER_DETACHED=1", ...passEnv(), `--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`, process.execPath, import.meta.path, "handover", ...(who === "lane" ? ["--lane", k, "--wait-idle", String(config.handover.autoWaitMin)] : []), "--approved-by", `auto:handover.autoRollover${who === "lane" ? "Lanes" : "Lead"}`]);
             return r.code === 0 ? `started unit=${unit} log=${log}` : `could not start: ${(r.err || r.out).trim().slice(0, 160)}`;
           },
+          // the audit after a committed handover: a detached run, so its supplement round does not hold up the sweep
+          audit: async (c: Committed) => {
+            const unit = `dori-handover-audit-${c.key}-${Date.now()}`;
+            const log = join(config.stateDir, "handover", "run.log");
+            const r = await run(["systemd-run", "--user", "--collect", `--unit=${unit}`, ...passEnv(), `--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`, process.execPath, import.meta.path, "handover", "audit", c.note]);
+            if (r.code !== 0) rmSync(markerFile(c.note), { force: true });
+            return r.code === 0 ? `started unit=${unit} log=${log}` : `could not start: ${(r.err || r.out).trim().slice(0, 160)}`;
+          },
+          auditSummary: (week: string) => sendAuditSummary(deps, laneDeps.inbox ?? join(config.stateDir, "discord", "inbox.jsonl"), week),
         };
         for (const a of await freshnessTick(deps, process.env.HOME ?? "", hooks)) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
         // a done thread that a post after its close opened again goes back to the archive once quiet (discord.autoArchiveMin)
@@ -1411,6 +1432,31 @@ try {
         const lines = rec ? [await closeFrozen(freezeDeps, config.stateDir, rec)] : await closeDueFrozen(freezeDeps, config.stateDir, Date.now());
         for (const line of lines) watchLog(config.watchLog, realClock, { source: "handover", line });
         console.log(lines.join("\n") || "FROZEN_NONE_DUE");
+        break;
+      }
+      // the audit after a committed handover, what a session reports it did not know, and the weekly summary (rollover-audit.ts)
+      if (key === "audit") {
+        const ref = flags.positionals[1]?.trim() || die("usage: dori handover audit <note.md|key|lead> [--dry-run] [--no-send] [--force]");
+        const c = findCommitted(config.stateDir, ref.endsWith(".md") ? resolve(ref) : ref) ?? die(`HANDOVER_AUDIT_NONE ${ref}: no committed handover on record (a result.json with done, done-frozen, done-kept-old or kept-new-old-gone)`);
+        const r = await auditHandover(laneDepsFor(), c, { dryRun: Boolean(flags.values["dry-run"]), noSend: Boolean(flags.values["no-send"]), force: Boolean(flags.values.force) });
+        process.exit(r.code);
+      }
+      if (key === "gap") {
+        const k = flags.positionals[1]?.trim() || die("usage: dori handover gap <key|lead> --kind KIND --text \"what the new session did not know\" [--fixed]");
+        if (k !== "lead") await lane(k);
+        const kind = opt("kind")?.trim() || die("--kind is needed: owner's words, decision, lead instruction, todo, goal, monitor, tried fix or other");
+        const text = opt("text")?.trim() || die("--text is needed: one line on what was not known (a summary, no secret values)");
+        const by = k !== "lead" && here && here === (await deps.registry.read(k))?.pane ? "lane" : "lead";
+        console.log(reportGap(deps, k, kind, text, by, Boolean(flags.values.fixed)).line);
+        break;
+      }
+      if (key === "audit-summary") {
+        const days = opt("days") ? Number(opt("days")) : 7;
+        if (!(days > 0)) die("--days must be a positive number");
+        if (flags.values.send) {
+          const week = summaryWeek(Date.now(), config.scorecard.timeZone || "UTC", config.handover.auditSummaryAt || "Mon 08:30") ?? die(`handover.auditSummaryAt "${config.handover.auditSummaryAt}" is not like "Mon 08:30"`);
+          console.log(sendAuditSummary(deps, laneDepsFor().inbox ?? join(config.stateDir, "discord", "inbox.jsonl"), week));
+        } else console.log(auditSummary(config.stateDir, Date.now(), days));
         break;
       }
       if (key === "ready" || opt("lane")) {

@@ -107,7 +107,9 @@ export type GapDeps = {
   readonly ackedBy: (id: string) => string | undefined;
 };
 
-export type GapRun = { readonly who: string; readonly pane: string; readonly understood: string; readonly headings: readonly string[]; readonly rounds: number; readonly oldLog?: string; readonly check: (text: string) => Missing[]; readonly emit: (line: string) => void };
+// label names the round files (<stamp>.<label>-<round>.md; "supplement" by default) and extra is one more sentence for the
+// new session, said in the [LEAD] line and the file (the audit after the commit asks it to write standing items down); tries is how many polls one round waits (ROUND_TRIES)
+export type GapRun = { readonly who: string; readonly pane: string; readonly understood: string; readonly headings: readonly string[]; readonly rounds: number; readonly oldLog?: string; readonly check: (text: string) => Missing[]; readonly emit: (line: string) => void; readonly label?: string; readonly extra?: string; readonly tries?: number };
 
 const POLL_MS = 5_000;
 // how long the new session gets to answer one supplement round (polls of POLL_MS)
@@ -124,15 +126,15 @@ export const fillGaps = async (deps: GapDeps, r: GapRun): Promise<{ readonly rea
   for (let round = 1; round <= r.rounds && left.length; round++) {
     const evidence = left.map((it) => evidenceFor(r.oldLog, it));
     const sid = deps.nonce();
-    const file = r.understood.replace(/\.understood\.md$/, `.supplement-${round}.md`);
+    const file = r.understood.replace(/\.understood\.md$/, `.${r.label ?? "supplement"}-${round}.md`);
     const ack = `dori handover ack ${sid} --state ${deps.stateDir}`;
-    writeFileSync(file, renderSupplement(r.who, round, r.rounds, left, evidence, r.understood, r.headings, ack));
+    writeFileSync(file, renderSupplement(r.who, round, r.rounds, left, evidence, r.understood, r.headings, ack) + (r.extra ? `\n${r.extra}\n` : ""));
     supplements.push({ round, items: left.map((it) => ({ kind: it.kind, text: it.text })), evidence: evidence.flat().length, file });
     r.emit(`HANDOVER_SUPPLEMENT ${r.who} round ${round}/${r.rounds}: ${left.length} left out (${fmtMissing(left)}); ${file}`);
-    if (!(await deps.tell(r.pane, `[LEAD] HANDOVER_SUPPLEMENT ${sid} (round ${round}/${r.rounds}): your restatement left out ${left.length} item(s). Read ${file}, add them to ${r.understood}, then run ${ack} and nothing else for this line.`)))
+    if (!(await deps.tell(r.pane, `[LEAD] HANDOVER_SUPPLEMENT ${sid} (round ${round}/${r.rounds}): your restatement left out ${left.length} item(s). Read ${file}, add them to ${r.understood}, then run ${ack} and nothing else for this line.${r.extra ? ` ${r.extra}` : ""}`)))
       return { reasons: [`the supplement ${sid} did not reach ${r.pane}`], supplements, text };
     let acked: string | undefined;
-    for (let j = 0; j < ROUND_TRIES && acked === undefined; j++) {
+    for (let j = 0; j < (r.tries ?? ROUND_TRIES) && acked === undefined; j++) {
       await deps.clock.sleep(POLL_MS);
       acked = deps.ackedBy(sid);
     }

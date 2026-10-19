@@ -8,6 +8,7 @@ import { type Lane, type RolloverDue, statusOf } from "./registry.ts";
 import { fixTag, recordFix } from "./same-fix.ts";
 import { pendingFile, type ReadyMark, readyFile, statusLine } from "./lane-handover.ts";
 import { crossed, dueReasons, limitsFor, readRollovers, type RolloverEntry, type Signals, type Who } from "./rollover.ts";
+import { auditDue, type Committed, weeklyDue, writeMarker } from "./rollover-audit.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { watchLog } from "./watch-log.ts";
@@ -35,7 +36,7 @@ export const scrubForThread = (line: string, home: string): string =>
     .replace(/`/g, "'")
     .trim();
 
-export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto"; readonly lane: string; readonly detail: string };
+export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary"; readonly lane: string; readonly detail: string };
 
 export type RolloverHooks = {
   // the length signals of the session in a pane: context use, compactions, age
@@ -44,6 +45,10 @@ export type RolloverHooks = {
   readonly auto?: (who: Who, key: string) => Promise<string>;
   // whether a process still runs (a handover's lock holder, the chain pids a refusal named); process.kill(pid, 0) by default
   readonly alive?: (pid: number) => boolean;
+  // starts the audit of a committed handover (dori handover audit, detached); the line says what it started
+  readonly audit?: (c: Committed) => Promise<string>;
+  // puts the week's audit summary in the lead's inbox; the line says what it wrote
+  readonly auditSummary?: (week: string) => string;
 };
 
 const pidAlive = (pid: number): boolean => {
@@ -284,5 +289,15 @@ export const freshnessTick = async (deps: FlowDeps, home: string, hooks: Rollove
       writeFileSync(file, JSON.stringify(due));
     })));
   }
+  // the audit after each committed handover, once (queued before it starts, so the next sweep does not start a second one),
+  // and the week's summary for the lead
+  if (hooks.audit) {
+    for (const c of auditDue(deps.config.stateDir, now, deps.config.handover)) {
+      writeMarker(c.note, { at: new Date(now).toISOString(), status: "queued" });
+      acts.push({ kind: "rollover_audit", lane: c.key, detail: `${c.stamp}: ${await hooks.audit(c)}` });
+    }
+  }
+  const week = hooks.auditSummary ? weeklyDue(deps.config.stateDir, now, deps.config.scorecard.timeZone, deps.config.handover.auditSummaryAt) : undefined;
+  if (week && hooks.auditSummary) acts.push({ kind: "audit_summary", lane: "lead", detail: hooks.auditSummary(week) });
   return acts;
 };
