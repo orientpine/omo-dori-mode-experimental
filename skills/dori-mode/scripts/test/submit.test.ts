@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config.ts";
-import { sendVerified, submitToPane } from "../src/panes.ts";
+import { SEND_CHUNK_BYTES, sendVerified, submitToPane } from "../src/panes.ts";
 import { editorText, type PaneKeys, SUBMIT_TIMING, submitText } from "../src/submit.ts";
 import { announceChange } from "../src/update-announce.ts";
 import { fakeClock, fakeRunner, newWorld, withState } from "./fakes.ts";
@@ -103,6 +103,33 @@ test("NOT_SUBMITTED goes to the watch log with the pane and the reason", async (
   const r = await submitToPane(fakeRunner(world), fakeClock(0), config, "aoe_lead_0a1b2c3d", "[UPDATE] a\n\nb");
   expect(r.status).toBe("NOT_SUBMITTED");
   expect(await Bun.file(config.watchLog).text()).toContain("submit NOT_SUBMITTED aoe_lead_0a1b2c3d text still in the input box after 2 Enters: [paste #1 +13 lines]");
+});
+
+test("a text longer than tmux takes in one send-keys is typed in pieces, whole characters only, then submitted with one Enter", async () => {
+  // Given: tmux refuses one send-keys argument over 16 KB, and a 28 KB Korean directive block like the one dori directives apply sent on 2026-10-19
+  const world = newWorld();
+  world.screen = EMPTY;
+  const base = fakeRunner(world);
+  const pieces: string[] = [];
+  const run: typeof base = async (argv, opts) => {
+    if (argv[0] === "tmux" && argv[1] === "send-keys" && argv.includes("-l")) {
+      const text = argv.at(-1) ?? "";
+      if (Buffer.byteLength(text) > 16_000) return { code: 1, out: "", err: "command too long" };
+      pieces.push(text);
+    }
+    return base(argv, opts);
+  };
+  const config = { ...defaultConfig("/home/test"), backend: "aoe" as const, watchLog: join(state.dir, "lanes.log") };
+  const text = `[LEAD] ${"가나다 라마바 사아자\n".repeat(1100)}끝`;
+  // When
+  const r = await submitToPane(run, fakeClock(0), config, "aoe_lane_0a1b2c3d", text);
+  // Then
+  expect(Buffer.byteLength(text)).toBeGreaterThan(28_000);
+  expect(r.status).toBe("SUBMITTED");
+  expect(pieces.join("")).toBe(text);
+  expect(pieces.length).toBeGreaterThan(1);
+  expect(pieces.every((p) => Buffer.byteLength(p) <= SEND_CHUNK_BYTES)).toBe(true);
+  expect(world.calls.filter((c) => c[0] === "tmux" && c[1] === "send-keys" && c.at(-1) === "Enter").length).toBe(1);
 });
 
 test("an update announcement that stays in the lead's input box logs ANNOUNCE_FAIL, never ANNOUNCED", async () => {

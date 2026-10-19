@@ -28,12 +28,33 @@ export const readScreen = async (run: Runner, backend: Backend, pane: string, li
     ? captureTmux(run, pane, lines)
     : (await run(["herdr", "pane", "read", pane, "--source", lines ? "recent" : "visible", ...(lines ? ["--lines", String(lines)] : [])])).out;
 
+// tmux refuses one send-keys argument much longer than 16 KB (2026-10-19: 15,000 bytes typed, 20,000 refused), so a long
+// text (a directive block, a report) is typed in pieces of at most this many bytes, whole characters only, before the Enter.
+export const SEND_CHUNK_BYTES = 4_000;
+
+export const sendChunks = (text: string, max = SEND_CHUNK_BYTES): string[] => {
+  const out: string[] = [];
+  let part = "";
+  let bytes = 0;
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch);
+    if (bytes + n > max && part) {
+      out.push(part);
+      [part, bytes] = ["", 0];
+    }
+    part += ch;
+    bytes += n;
+  }
+  return part ? [...out, part] : out;
+};
+
 const paneKeys = (run: Runner, clock: Clock, backend: Backend, pane: string): PaneKeys =>
   backend === "aoe"
     ? {
         type: async (text) => {
           if (!(await waitForPrompt(run, clock, pane, 10, 1_000))) return "no ❯ prompt in the pane";
-          return (await run(["tmux", "send-keys", "-t", target(pane), "-l", "--", text])).code === 0 ? undefined : "tmux send-keys failed";
+          for (const part of sendChunks(text)) if ((await run(["tmux", "send-keys", "-t", target(pane), "-l", "--", part])).code !== 0) return "tmux send-keys failed";
+          return undefined;
         },
         enter: async () => { await run(["tmux", "send-keys", "-t", target(pane), "Enter"]); },
         read: () => captureTmux(run, pane),
