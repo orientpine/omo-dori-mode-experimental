@@ -45,6 +45,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.thread_names = []
         self.thread_meta = {}
         self.thread_patches = []
+        self.thread_history = {}
         self.author = "1"
         self.proof_time = gate.utc()
         self.calendar_role = "owner"
@@ -110,6 +111,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                                     "name": json.loads(body)["name"]}
                 elif route == "/guilds/10/threads/active":
                     data = {"threads": list(self.thread_meta.values())}
+                elif route.endswith("/messages") and method == "GET" and parts[2] in self.thread_history:
+                    data = self.thread_history[parts[2]]
                 elif route.endswith("/messages") and method == "GET":
                     data = [{"id": m, "content": c, "author": {"bot": True}}
                             for m, c in sorted(self.cards.items(), reverse=True) if self.card_channels.get(m) == parts[2]]
@@ -443,6 +446,23 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                        port="discord", headers={"authorization": "Bot MTIz.fake.fake"})
         self.assertEqual(status, 200)
         self.assertEqual(self.thread_patches, [("555", {"archived": True})])
+
+    async def test_a_live_card_after_the_decision_keeps_the_thread_open(self):
+        # 2026-10-19: a redone mail card went into the owner's thread already titled cancelled.
+        card = {"id": "9", "type": 0, "content": "card", "reactions": [{"emoji": {"name": "✅"}},
+                                                                          {"emoji": {"name": "⛔"}}]}
+        rename = {"id": "8", "type": 4, "content": "⛔ 취소 · ✉️ 메일 발신 · FW: 자료"}
+        old_card = dict(card, id="7")
+        line = {"id": "10", "type": 0, "content": "새 카드 올렸어", "reactions": []}
+        for history, patched in (([line, card, rename, old_card], False), ([line, rename, old_card], True)):
+            with self.subTest(patched=patched):
+                self.thread_patches.clear()
+                self.thread_history["555"] = history
+                self.decided_thread("⛔ 취소 · ✉️ 메일 발신 · FW: 자료", archived=True)
+                status, _ = await self.request("POST", "/api/v10/channels/555/messages", data={"content": "네"},
+                                               port="discord", headers={"authorization": "Bot MTIz.fake.fake"})
+                self.assertEqual(status, 200)
+                self.assertEqual(self.thread_patches, [("555", {"archived": True})] if patched else [])
 
     async def test_a_message_into_an_open_or_undecided_thread_leaves_it_open(self):
         for name, archived in (("⛔ 취소 · ✉️ 메일 발신 · FW: 자료", False), ("형의 요청", True),

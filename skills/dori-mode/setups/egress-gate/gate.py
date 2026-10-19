@@ -1151,10 +1151,34 @@ class Gate:
         info = json_object(body) if 200 <= status < 300 else {}
         name = str(info.get("name") or "")
         archived = (info.get("thread_metadata") or {}).get("archived")
-        if (info.get("type") in (11, 12) and archived
+        if not (info.get("type") in (11, 12) and archived
                 and any(name.startswith(prefix + " · ") for prefix in THREAD_STATUSES)):
-            return match[1]
-        return None
+            return None
+        if await self.live_card_after_decision(match[1]):
+            return None
+        return match[1]
+
+    async def live_card_after_decision(self, thread) -> bool:
+        """Whether a card still waits in a thread whose title says decided.
+
+        A newer card can land in a thread already titled '⛔ 취소 · …' (2026-10-19: a redone mail card
+        went into the owner's cancelled thread). Every approval card carries both ✅ and ⛔ reactions,
+        so a message newer than the thread's last title change with both is a live card; the thread
+        stays where it is. Unreadable history counts as a live card (never hide a card)."""
+        try:
+            status, _, body = await self.bot_call("GET", f"/channels/{thread}/messages?limit=50")
+            messages = json.loads(body) if 200 <= status < 300 else None
+        except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
+            messages = None
+        if not isinstance(messages, list):
+            return True
+        for message in messages:  # newest first
+            if not isinstance(message, dict) or message.get("type") == 4:
+                break
+            emojis = {(r.get("emoji") or {}).get("name") for r in message.get("reactions") or []}
+            if {"✅", "⛔"} <= emojis:
+                return True
+        return False
 
     async def rearchive_thread(self, thread) -> None:
         """Put a decided thread back into the archive after YooDori's own message reopened it."""
