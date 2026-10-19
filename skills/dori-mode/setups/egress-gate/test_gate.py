@@ -324,6 +324,19 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                              "내용: Invite", "✅ 실행 · ⛔ 취소"])
         self.assertTrue(entry["reason"] and entry["owner_message"].startswith("https://discord.com/channels/"))
 
+    async def test_a_sharing_card_names_the_shared_file_and_the_access(self):
+        # Given / When: a share with someone outside is parked (the body names no file).
+        self.approval()
+        status, _ = await self.request(path="/www.googleapis.com/drive/v3/files/f/permissions",
+                                       data={"type": "user", "role": "reader", "emailAddress": "partner@example.net"})
+        entry = self.service.pending()[0]
+        # Then: the owner sees which file, with whom and what access, without opening anything.
+        self.assertEqual(status, 202)
+        self.assertEqual(self.cards[entry["message"]].splitlines(),
+                         ["승인 필요 · Drive 공유", "받는 사람: partner@example.net", "내용: Before 공유(보기)",
+                          "✅ 실행 · ⛔ 취소"])
+        self.assertEqual(self.thread_names[-1], "🔐 Drive 공유 · Before 공유(보기)")
+
     async def test_owner_approval_executes_once_and_notifies(self):
         self.approval()
         await self.request(data={"attendees": [{"email": "outside@example.net"}]})
