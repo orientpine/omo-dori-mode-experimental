@@ -23,6 +23,7 @@ import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
+import { plainSummaryProblem } from "./close-summary.ts";
 import { autoReadyLine, freshnessTick } from "./freshness.ts";
 import { sampleUsage } from "./heavy-headroom.ts";
 import { heavyJobCommand, HeavyJobError, heavyServe } from "./heavy-queue.ts";
@@ -129,7 +130,13 @@ const USAGE = `dori <command> [options]
                                        (NAME=VALUE for a lane, --unset=NAME for a --use-gpu lane or any other session;
                                        nothing without launchEnv); used by setups/discord-aoe/self-restart.sh
   sync   [--write]                     registry vs live panes; read-only unless --write; a SIGNALS line per open lane with a record
-  claim-done [<key>] --evidence TEXT  key defaults to the lane registered for this pane ($HERDR_PANE_ID, or the tmux session with backend aoe)
+  claim-done [<key>] --evidence TEXT [--summary TEXT]
+                                       key defaults to the lane registered for this pane ($HERDR_PANE_ID, or the tmux session
+                                       with backend aoe); --summary: 2 to 5 plain lines for the owner's thread in his language
+                                       (what changed, what is left, when it reaches where it is used), posted before the close
+                                       marks the thread done; paths, commit hashes, backticks or report heads are refused
+                                       (SUMMARY_REFUSED, exit 2). Without it the close has a model write one from the lane's
+                                       last report and REPORT.md
   object-done <key> --reason TEXT [--reason TEXT ...]
   pause  <key> <reason>                park a lane that waits on a human: no freshness nudge or post, LANE_BLOCKED or
                                        DEAD_PANE for it, and a done claim does not close it; the reason goes in its history
@@ -197,9 +204,13 @@ const USAGE = `dori <command> [options]
                                        what earlier lanes tried and how it went: numbered fix attempts and the root-cause
                                        switch, tagged fixes by metric, rejected done claims, re-sends, nudges, outcome,
                                        warnings; no option = one SIGNALS line per open lane. Read it before re-instructing
-  close  <key> [--note TEXT]           close now (Done signals must read back live); a discord:<id> work thread is set
-                                       done and archived when DORI_DISCORD_TOKEN is set; a thread another open
-                                       lane or an open card uses only gets the result posted
+  close  <key> [--note TEXT] [--summary TEXT]
+                                       close now (Done signals must read back live); a lane with a work thread first posts
+                                       its summary for the owner there (--summary, the claim's, else one a model writes from
+                                       its last report and REPORT.md): none is CLOSE_SUMMARY_MISSING, a post that failed is
+                                       CLOSE_SUMMARY_NOT_SENT, exit 2 and nothing changed. Then a discord:<id> thread is set
+                                       done and archived when DORI_DISCORD_TOKEN is set; a thread another open lane or an
+                                       open card uses only gets the summary posted
   watch                                long-running: emits LANE_* lines every 30 s
   update [--pull] [--dry-run]           apply changed scripts to configured services and report unset new config keys
   notify-change --summary TEXT [--file PATH ...]
@@ -734,7 +745,10 @@ try {
       const l = await lane(key);
       const missing = challengeMissing(l);
       if (missing) die(missing, 5);
-      console.log(await claimDone(deps, l, need("evidence")));
+      const summary = opt("summary");
+      const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale);
+      if (bad) die(`SUMMARY_REFUSED ${l.key}: ${bad}; write it for the owner in plain words`, 2);
+      console.log(await claimDone(deps, l, need("evidence"), summary));
       break;
     }
     case "object-done": {
@@ -935,7 +949,10 @@ try {
       for (const line of await resumeLane(deps, await lane(key ?? die("resume needs a lane key")))) console.log(line);
       break;
     case "close": {
-      const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead");
+      const summary = opt("summary");
+      const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale);
+      if (bad) die(`SUMMARY_REFUSED ${key ?? ""}: ${bad}; write it for the owner in plain words`, 2);
+      const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead", summary);
       for (const line of r.lines) console.log(line);
       process.exit(r.closed ? 0 : 2);
     }

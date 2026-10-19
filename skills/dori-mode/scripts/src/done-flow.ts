@@ -8,6 +8,7 @@ import { hasThread, type Lane, type Registry, statusOf, withStatus } from "./reg
 import { type Clock, iso, type Runner } from "./run.ts";
 import { sendVerified } from "./panes.ts";
 import { checkDone, type SignalIo } from "./done-signals.ts";
+import { ownerSummary } from "./close-summary.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -41,15 +42,17 @@ const signalIo = (deps: FlowDeps, lane: Lane): SignalIo => ({ cwd: lane.cwd ?? d
 
 const windowMs = (deps: FlowDeps): number => deps.config.closeAfterMin * 60_000;
 
-export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<string> => {
+// summary: what the owner's thread gets when the lane closes (dori claim-done --summary), kept with the claim
+export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, summary?: string): Promise<string> => {
   const at = iso(deps.clock);
+  const claim = { at, evidence, emitted: false, ...(summary?.trim() ? { summary: summary.trim() } : {}) };
   // A paused lane waits on a human, so its claim is recorded and announced but never closes it on a timer.
   if (statusOf(lane) === "paused") {
-    await deps.registry.write({ ...lane, claim: { at, evidence, emitted: false }, history: [...(lane.history ?? []), { at, status: "paused", note: `done claimed while paused: ${evidence}` }] });
+    await deps.registry.write({ ...lane, claim, history: [...(lane.history ?? []), { at, status: "paused", note: `done claimed while paused: ${evidence}` }] });
     if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}, but the lane is paused, so it does not close automatically; the lead decides. Stay idle until then.`);
     return `LANE_DONE_CLAIMED_PAUSED ${lane.key} ${lane.pane ?? "-"} ${evidence}`;
   }
-  await deps.registry.write(withStatus(lane, "done-claimed", evidence, at, { claim: { at, evidence, emitted: false } }));
+  await deps.registry.write(withStatus(lane, "done-claimed", evidence, at, { claim }));
   if (lane.pane) {
     const closesAt = new Date(deps.clock.now() + windowMs(deps)).toISOString().slice(11, 16);
     await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
@@ -117,12 +120,24 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
   return reasons;
 };
 
-// note goes into the lane's record; threadText (the note unless given) is what the owner's thread gets
-export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, threadText = note): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+// note goes into the lane's record. A lane with a work thread closes only with a summary for the owner (summary, else the
+// claim's, else one a model writes from the lane's notes; close-summary.ts), posted there before the thread is marked done
+// and archived: no summary is CLOSE_SUMMARY_MISSING, a post that did not go out is CLOSE_SUMMARY_NOT_SENT, and either way
+// nothing is changed and the lane stays open.
+export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summary?: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
   const exists = deps.exists ?? existsSync;
   const checks = await checkDone(lane.done, deps.run, signalIo(deps, lane));
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
   if (checks.some((c) => !c.ok)) return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };
+  let threadText = "";
+  if (hasThread(lane)) {
+    const s = await ownerSummary(deps, lane, summary ?? lane.claim?.summary);
+    if (!s.text) return { closed: false, lines: [...lines, `CLOSE_SUMMARY_MISSING ${lane.key}: ${s.why ?? "no summary"}`] };
+    threadText = s.text;
+    lines.push(`CLOSE_SUMMARY ${lane.key} from ${s.source}`);
+  }
+  const notSent = (why: string) => ({ closed: false, lines: [...lines, `CLOSE_SUMMARY_NOT_SENT ${lane.key} ${lane.thread}: ${why.slice(0, 200)}`] });
+  const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 160);
   const cleanup: string[] = [];
   const warnings: string[] = [];
   const hook = deps.config.hooks.threadDone;
@@ -134,23 +149,28 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, thread
   if (holders.length) {
     const text = `${lane.title}: ${threadText}`;
     const reply = deps.config.hooks.threadReply;
-    let posted: string;
     if (deps.postInThread && lane.thread.startsWith("discord:")) {
       // straight to Discord, so a waiting (or any) mark stays; the reply hook would mark the thread working
-      posted = await deps.postInThread(lane.thread, text).then(
-        () => "result posted",
-        (e: unknown) => `result not posted: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`,
-      );
+      const why = await deps.postInThread(lane.thread, text).then(() => "", errText);
+      if (why) return notSent(why);
     } else if (reply) {
       // the closing lane is still open while its hook runs: DORI_CLOSING_LANE tells dori thread reply not to count it as working
       const r = await deps.run(fill(reply, { thread: lane.thread, text, key: lane.key }), { env: { DORI_CLOSING_LANE: lane.key } });
-      posted = r.code === 0 ? "result posted" : `reply hook failed: ${r.err.slice(0, 160)}`;
-    } else posted = "no threadReply hook, nothing posted";
-    cleanup.push(`thread left open: ${holders.join("; ")}; ${posted}`);
+      if (r.code !== 0) return notSent(`reply hook failed: ${r.err}`);
+    } else return notSent("no Discord token and no threadReply hook: nothing can post in the thread");
+    cleanup.push(`thread left open: ${holders.join("; ")}; summary posted`);
+  } else if (deps.postInThread && deps.markThreadDone && hasThread(lane) && lane.thread.startsWith("discord:")) {
+    // straight to Discord, then the done mark and the archive below; the threadDone hook would post a second time
+    const why = await deps.postInThread(lane.thread, threadText).then(() => "", errText);
+    if (why) return notSent(why);
+    cleanup.push("summary posted");
   } else if (hook && hasThread(lane)) {
     // the closing lane is still open while its hook runs: DORI_CLOSING_LANE tells dori thread done not to count it as a user
     const r = await deps.run(fill(hook, { thread: lane.thread, text: threadText, key: lane.key }), { env: { DORI_CLOSING_LANE: lane.key } });
-    cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);
+    if (r.code !== 0) return notSent(`thread hook failed: ${r.err}`);
+    cleanup.push("summary posted, thread marked done");
+  } else if (hasThread(lane)) {
+    return notSent("no Discord token and no threadDone hook: nothing can post in the thread");
   } else if (hook) {
     // a missing or broken thread ref would leave the work thread open without a word; say so
     warnings.push(`THREAD_MISSING ${lane.key} thread=${JSON.stringify(lane.thread ?? null)}; threadDone not run, close the thread by hand or set it with dori set-thread first`);
@@ -206,9 +226,15 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   const verified = withStatus(lane, "verified-done", "Done signals read back live", iso(deps.clock));
   await deps.registry.write(verified);
   const note = `Done: ${evidence}`;
-  const result = await closeLane(deps, verified, note, deps.config.discord.postRawReports ? note : deps.config.discord.doneText);
-  if (!result.closed) return [await objectDone(deps, (await deps.registry.read(lane.key)) ?? verified, result.lines.filter((l) => l.startsWith("SIGNAL NOT")))];
-  return [...result.lines.filter((l) => l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ") || l.startsWith("THREAD_STATUS_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
+  const result = await closeLane(deps, verified, note, lane.claim?.summary);
+  if (!result.closed) {
+    const current = (await deps.registry.read(lane.key)) ?? verified;
+    // no summary, or it did not go out: the lead gets the line, and the lane (still idle in its session) is told how to claim again
+    const gate = result.lines.find((l) => l.startsWith("CLOSE_SUMMARY_MISSING ") || l.startsWith("CLOSE_SUMMARY_NOT_SENT "));
+    if (gate) return [gate, await objectDone(deps, current, [`${gate.startsWith("CLOSE_SUMMARY_MISSING ") ? "no summary for the owner's thread" : "the summary did not reach the owner's thread"} (${gate.split(": ").slice(1).join(": ").slice(0, 300)}); claim again with dori claim-done ${lane.key} --evidence \"...\" --summary \"<2 to 5 plain lines in the owner's language: what changed, what is left, when it reaches where it is used>\"`])];
+    return [await objectDone(deps, current, result.lines.filter((l) => l.startsWith("SIGNAL NOT")))];
+  }
+  return [...result.lines.filter((l) => l.startsWith("CLOSE_SUMMARY ") || l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ") || l.startsWith("THREAD_STATUS_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
 };
 
 export const watchTick = async (deps: FlowDeps): Promise<string[]> => {

@@ -39,7 +39,7 @@ test("a lane silent past the nudge time is nudged once, then its last report is 
   expect(posted.map((a) => a.kind)).toEqual(["posted"]);
   const call = world.calls.find((c) => c[0] === "notify");
   expect(call?.[1]).toBe("chat:team/9");
-  expect(call?.[2]).toBe("Still working on it. The last report came 21 min ago; I'll sum it up for you soon.");
+  expect(call?.[2]).toBe("Still working on it. The last report came 21 min ago.");
   // one nudge to the lane, one note to the lead carrying the report
   expect(sent(world)).toHaveLength(2);
 });
@@ -54,7 +54,7 @@ test("a report the lane sent to the lead pane is found there, wrapped lines join
   const later = await freshnessTick(deps(T0 + 35 * MIN), "/home/test");
   expect(later.map((a) => a.kind)).toEqual(["nudged", "posted"]);
   // the owner's thread gets a plain status line in the configured words; the raw report goes to the lead pane
-  expect(world.calls.find((c) => c[0] === "notify")?.[2]).toBe("Still working on it. The last report came 21 min ago; I'll sum it up for you soon.");
+  expect(world.calls.find((c) => c[0] === "notify")?.[2]).toBe("Still working on it. The last report came 21 min ago.");
   const toLead = world.calls.find((c) => c[0] === "herdr" && c[2] === "send-text" && c[3] === "lead:p1")?.[4];
   expect(toLead).toContain("[DORI] quiet-lane: 21 min without a new report");
   expect(toLead).toContain("Last report: [REPORT] quiet-lane | blocker | CI is red on the flaky e2e job, rerunning");

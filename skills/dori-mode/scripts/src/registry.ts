@@ -21,7 +21,8 @@ export const hasThread = (lane: Lane): boolean => typeof lane.thread === "string
 
 // "paused": the lead parked the lane (e.g. it waits on the owner); no sweep nudges, posts for, or flags it until resumed.
 export type LaneStatus = "working" | "done-claimed" | "verified-done" | "not-done" | "paused" | "closed";
-export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean };
+// summary: the lane's words for the owner's thread (dori claim-done --summary), posted when the lane closes
+export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly summary?: string };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };
 export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; readonly note: string };
 // one fix attempt on a failing metric, from a tagged [REPORT] or from the lead (dori fix-attempt)

@@ -54,8 +54,8 @@ To swap one inbound listener for another, run the new one as a shadow that write
 A lane's `[REPORT]` is a note for the lead: abbreviations, numbered items, an English head, written for someone who knows the plan. Posted as it is in the owner's thread it reads like an office memo, and the owner asked why it was written like that. Anything a script posts to the owner on its own must be in plain words, in the owner's language, and short.
 
 - `dori freshness` posts `discord.quietText` (`{min}` = minutes since the last report) after `postAfterMin`, not the report. The report goes to the lead pane as `[DORI] <key>: ... Last report: ...`; when you see it, tell the owner where the lane stands in your own words.
-- The automatic close in `dori watch` posts `discord.doneText` through `hooks.threadDone`, not `Done: <evidence>`. The evidence stays in the lane's record; sum up the result for the owner yourself.
-- Set both in the owner's language, for example Korean in casual speech: `"quietText": "진행 중이야 — 마지막 보고는 {min}분 전. 정리해서 곧 알려 줄게."`.
+- A close (`dori close` and the automatic one in `dori watch`) posts the lane's summary for the owner, then marks the thread done: the lane's `claim-done --summary`, else one a model writes from its last report and `REPORT.md`. A lane with a thread and no summary does not close (`CLOSE_SUMMARY_MISSING`). This replaced a fixed `doneText` ("done, I'll sum up what changed for you"): the lead's follow-up never came, and the owner asked "왜 안알려주고 닫아?" (2026-10-19). Never post words that promise a later summary.
+- Set `quietText` in the owner's language, for example Korean in casual speech: `"quietText": "진행 중이야 — 마지막 보고는 {min}분 전."`.
 - `discord.postRawReports: true` brings back posting the raw report and evidence. Leave it off unless the owner reads those notes directly.
 
 ## 9. Stuck on one metric: branch the explanations, do not repeat the patch

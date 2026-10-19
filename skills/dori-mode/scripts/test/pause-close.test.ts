@@ -92,32 +92,39 @@ const fakeThread = (name: string, archived: boolean, refuse = false) => {
   const dc = new Discord(http, fakeClock(0), "bot");
   const markThreadDone = (ref: string) => setThreadStatus(dc, discordThreadId(ref), "done", { ...defaultDiscordWords, statusStyle: "emoji" });
   const calls = () => seen.map((r) => `${r.method} ${r.url.replace("https://discord.com/api/v10", "")}${r.body ? ` ${r.body}` : ""}`);
-  return { markThreadDone, calls, dc };
+  // the status calls alone (GET and PATCH), without the summary's typing and message POSTs
+  const marks = () => calls().filter((c) => !c.startsWith("POST"));
+  // what cli wires with a Discord token: the summary posted straight to the thread, then the done mark
+  const close = { markThreadDone, postInThread: (ref: string, text: string) => postInThread(dc, ref, text) };
+  return { markThreadDone, calls, marks, close, dc };
 };
 const T = `/channels/${THREAD_ID}`;
+const SUMMARY = "The login page takes SSO now. Nothing is left; the nodes get it with the next update.";
 
 test("close sets the lane's Discord thread done and archives it", async () => {
   const f = fakeThread("🔄 fix login", false);
-  const r = await closeLane(at(T0, { markThreadDone: f.markThreadDone }), lane, "closed by the lead");
+  const r = await closeLane(at(T0, f.close), lane, "closed by the lead", SUMMARY);
   expect(r.closed).toBe(true);
-  expect(f.calls()).toEqual([`GET ${T}`, `PATCH ${T} {"name":"✅ fix login"}`, `PATCH ${T} {"archived":true}`]);
+  // the owner's summary goes out first; only then is the thread marked done and archived
+  expect(f.calls().filter((c) => !c.endsWith("/typing"))).toEqual([`POST ${T}/messages {"content":"${SUMMARY}","allowed_mentions":{"parse":[]}}`, `GET ${T}`, `PATCH ${T} {"name":"✅ fix login"}`, `PATCH ${T} {"archived":true}`]);
+  expect(r.lines).toContain("CLOSE_SUMMARY fix-a from the lane");
   expect(JSON.stringify((await read()).receipt)).toContain("thread set done and archived");
 });
 
 test("an archived thread is opened, renamed and archived again, since Discord will not rename an archived thread; one already done is left alone", async () => {
   const f = fakeThread("🔄 fix login", true);
-  await closeLane(at(T0, { markThreadDone: f.markThreadDone }), lane, "closed");
-  expect(f.calls()).toEqual([`GET ${T}`, `PATCH ${T} {"archived":false}`, `PATCH ${T} {"name":"✅ fix login"}`, `PATCH ${T} {"archived":true}`]);
+  await closeLane(at(T0, f.close), lane, "closed", SUMMARY);
+  expect(f.marks()).toEqual([`GET ${T}`, `PATCH ${T} {"archived":false}`, `PATCH ${T} {"name":"✅ fix login"}`, `PATCH ${T} {"archived":true}`]);
   await at(T0).registry.write(lane);
   const done = fakeThread("✅ fix login", true);
-  await closeLane(at(T0, { markThreadDone: done.markThreadDone }), lane, "closed");
-  expect(done.calls()).toEqual([`GET ${T}`]);
+  await closeLane(at(T0, done.close), lane, "closed", SUMMARY);
+  expect(done.marks()).toEqual([`GET ${T}`]);
 });
 
 test("close strips every stacked status mark from a thread name, so it ends with one", async () => {
   const f = fakeThread("🔄 🔄 fix login", false);
-  await closeLane(at(T0, { markThreadDone: f.markThreadDone }), lane, "closed");
-  expect(f.calls()).toEqual([`GET ${T}`, `PATCH ${T} {"name":"✅ fix login"}`, `PATCH ${T} {"archived":true}`]);
+  await closeLane(at(T0, f.close), lane, "closed", SUMMARY);
+  expect(f.marks()).toEqual([`GET ${T}`, `PATCH ${T} {"name":"✅ fix login"}`, `PATCH ${T} {"archived":true}`]);
 });
 
 // the name setThreadStatus sends for a thread currently called `name`
@@ -141,18 +148,19 @@ test("every status change leaves exactly one status mark in front of the title",
 
 test("a thread that cannot be renamed is a warning, the lane still closes; a lane without a thread or sharing it with an open lane is not touched", async () => {
   const refused = fakeThread("🔄 fix login", false, true);
-  const r = await closeLane(at(T0, { markThreadDone: refused.markThreadDone }), lane, "closed");
+  const r = await closeLane(at(T0, refused.close), lane, "closed", SUMMARY);
   expect(r.closed).toBe(true);
   expect(r.lines.some((l) => l.startsWith(`THREAD_DONE_WARN fix-a discord:${THREAD_ID}: discord PATCH`))).toBe(true);
   expect(statusOf(await read())).toBe("closed");
 
   const none = fakeThread("🔄 fix login", false);
   await at(T0).registry.write({ ...lane, thread: "none" });
-  expect((await closeLane(at(T0, { markThreadDone: none.markThreadDone }), { ...lane, thread: "none" }, "closed")).closed).toBe(true);
+  expect((await closeLane(at(T0, none.close), { ...lane, thread: "none" }, "closed")).closed).toBe(true);
+  expect(none.calls()).toEqual([]);
   await at(T0).registry.write(lane);
   await at(T0).registry.write({ ...lane, key: "fix-b", pane: "aoe_fix-b_00000000" });
-  await closeLane(at(T0, { markThreadDone: none.markThreadDone }), lane, "closed");
-  expect(none.calls()).toEqual([]);
+  await closeLane(at(T0, none.close), lane, "closed", SUMMARY);
+  expect(none.marks()).toEqual([]);
   expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too");
 });
 
@@ -164,16 +172,16 @@ test("two lanes in one thread: the automatic close of the first posts its result
   const f = fakeThread("🔄 dedup", false);
   const deps = (ms: number) => bothHooks(at(ms, { markThreadDone: f.markThreadDone }));
   await deps(T0).registry.write({ ...lane, key: "fix-b", title: "fix-b", pane: "aoe_fix-b_00000000" });
-  await claimDone(deps(T0), lane, "merged #47");
+  await claimDone(deps(T0), lane, "merged #47", SUMMARY);
   const out = await watchTick(deps(T0 + 10 * MIN));
   expect(out.some((l) => l.startsWith("LANE_CLOSED fix-a "))).toBe(true);
-  expect(hookCalls()).toEqual([`reply fix-a: ${deps(T0).config.discord.doneText}`]);
+  expect(hookCalls()).toEqual([`reply fix-a: ${SUMMARY}`]);
   expect(f.calls()).toEqual([]);
-  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too; result posted");
+  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too; summary posted");
 
   const last = (await deps(T0).registry.read("fix-b")) ?? lane;
-  expect((await closeLane(deps(T0 + 11 * MIN), last, "closed by the lead")).closed).toBe(true);
-  expect(hookCalls().at(-1)).toBe("done closed by the lead");
+  expect((await closeLane(deps(T0 + 11 * MIN), last, "closed by the lead", "Dedup is done too.")).closed).toBe(true);
+  expect(hookCalls().at(-1)).toBe("done Dedup is done too.");
   expect(f.calls()).toEqual([`GET ${T}`, `PATCH ${T} {"name":"✅ dedup"}`, `PATCH ${T} {"archived":true}`]);
 });
 
@@ -181,27 +189,27 @@ test("with a Discord token the result goes straight to the thread: a waiting sha
   const f = fakeThread("⏸️ shared", false);
   await at(T0).registry.write({ ...lane, key: "fix-b", title: "fix-b", pane: "aoe_fix-b_00000000", status: "paused" });
   const deps = bothHooks(at(T0, { markThreadDone: f.markThreadDone, postInThread: (ref, text) => postInThread(f.dc, ref, text) }));
-  expect((await closeLane(deps, lane, "closed")).closed).toBe(true);
+  expect((await closeLane(deps, lane, "closed", SUMMARY)).closed).toBe(true);
   expect(f.calls().filter((c) => c.startsWith("PATCH") || c.startsWith("GET"))).toEqual([]);
   expect(f.calls().filter((c) => c.startsWith(`POST ${T}/messages`))).toHaveLength(1);
-  expect(f.calls().join("\n")).toContain("fix-a: closed");
+  expect(f.calls().join("\n")).toContain(`fix-a: ${SUMMARY}`);
   expect(hookCalls()).toEqual([]);
-  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too; result posted");
+  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open lane fix-b uses it too; summary posted");
 });
 
 test("a thread with an open question card is not marked done when its only lane closes; the result is posted", async () => {
   const f = fakeThread("⏸️ dedup", false);
-  const r = await closeLane(bothHooks(at(T0, { markThreadDone: f.markThreadDone, openCards: (ref) => (ref === lane.thread ? ["Q7"] : []) })), lane, "closed");
+  const r = await closeLane(bothHooks(at(T0, { markThreadDone: f.markThreadDone, openCards: (ref) => (ref === lane.thread ? ["Q7"] : []) })), lane, "closed", SUMMARY);
   expect(r.closed).toBe(true);
-  expect(hookCalls()).toEqual(["reply fix-a: closed"]);
+  expect(hookCalls()).toEqual([`reply fix-a: ${SUMMARY}`]);
   expect(f.calls()).toEqual([]);
-  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open card Q7; result posted");
+  expect(JSON.stringify((await read()).receipt)).toContain("thread left open: open card Q7; summary posted");
 });
 
 test("the reply hook a closing lane runs is told which lane closes, so the lane is not counted as working there", async () => {
   const deps = bothHooks(at(T0, { openCards: (ref) => (ref === lane.thread ? ["Q7"] : []) }));
   const envs: unknown[] = [];
-  await closeLane({ ...deps, run: (argv, opts) => (argv[0] === "notify" && envs.push(opts?.env), deps.run(argv, opts)) }, lane, "closed");
+  await closeLane({ ...deps, run: (argv, opts) => (argv[0] === "notify" && envs.push(opts?.env), deps.run(argv, opts)) }, lane, "closed", SUMMARY);
   expect(envs).toEqual([{ DORI_CLOSING_LANE: "fix-a" }]);
 });
 
@@ -213,10 +221,66 @@ test("a card answered while the lane's close cleans up gives the thread back to 
     postInThread: async () => { cards = []; },
     requestThreadStatus: async (_ref, status) => (asked.push(status), "applied"),
   });
-  expect((await closeLane(deps, lane, "closed")).closed).toBe(true);
+  expect((await closeLane(deps, lane, "closed", SUMMARY)).closed).toBe(true);
   expect(asked).toEqual([]);
   cards = ["Q7"];
   await at(T0).registry.write(lane);
-  await closeLane({ ...deps, postInThread: async () => {} }, lane, "closed");
+  await closeLane({ ...deps, postInThread: async () => {} }, lane, "closed", SUMMARY);
   expect(asked).toEqual(["waiting"]);
+});
+
+// owner 2026-10-19 23:53 KST "왜 안알려주고 닫아?": two lanes closed with only "done, I'll sum it up for you" and archived
+test("a lane with a thread and nothing to write a summary from is not closed: CLOSE_SUMMARY_MISSING, nothing posted, no done mark", async () => {
+  const f = fakeThread("🔄 fix login", false);
+  const r = await closeLane(at(T0, f.close), lane, "closed by the lead");
+  expect(r.closed).toBe(false);
+  expect(r.lines.at(-1)).toStartWith("CLOSE_SUMMARY_MISSING fix-a: no report, claim or REPORT.md to write one from");
+  expect(f.calls()).toEqual([]);
+  expect(statusOf(await read())).toBe("working");
+  expect(world.calls.some((c) => c[0] === "aoe" && c[1] === "rm")).toBe(false);
+});
+
+test("a summary that did not go out leaves the thread without its done mark and the lane open", async () => {
+  const f = fakeThread("🔄 fix login", false);
+  const r = await closeLane(at(T0, { ...f.close, postInThread: async () => { throw new Error("discord POST 503"); } }), lane, "closed", SUMMARY);
+  expect(r.closed).toBe(false);
+  expect(r.lines.at(-1)).toBe(`CLOSE_SUMMARY_NOT_SENT fix-a discord:${THREAD_ID}: discord POST 503`);
+  expect(f.calls()).toEqual([]);
+  expect(statusOf(await read())).toBe("working");
+});
+
+test("the automatic close without a summary gives the lead CLOSE_SUMMARY_MISSING and tells the lane to claim again with --summary", async () => {
+  const f = fakeThread("🔄 fix login", false);
+  await claimDone(at(T0, f.close), lane, "merged #47");
+  const out = await watchTick(at(T0 + 10 * MIN, f.close));
+  expect(out.find((l) => l.startsWith("CLOSE_SUMMARY_MISSING fix-a: "))).toBeDefined();
+  expect(out.some((l) => l.startsWith("LANE_CLOSED"))).toBe(false);
+  expect(statusOf(await read())).toBe("not-done");
+  expect(sent(world).some((t) => t.startsWith("[LEAD] not done: no summary for the owner's thread") && t.includes(`dori claim-done fix-a --evidence`) && t.includes("--summary"))).toBe(true);
+  expect(f.calls()).toEqual([]);
+  // claimed again with a summary, the next settle posts it, then marks the thread done
+  await claimDone(at(T0 + 11 * MIN, f.close), await read(), "merged #47", SUMMARY);
+  const closed = await watchTick(at(T0 + 20 * MIN, f.close));
+  expect(closed).toContain("CLOSE_SUMMARY fix-a from the lane");
+  expect(closed.at(-1)).toStartWith("LANE_CLOSED fix-a ");
+  expect(f.calls().filter((c) => !c.endsWith("/typing")).map((c) => c.split(" ").slice(0, 2).join(" "))).toEqual([`POST ${T}/messages`, `GET ${T}`, `PATCH ${T}`, `PATCH ${T}`]);
+});
+
+test("without the lane's own summary a model writes one from its last report; an answer with a path or a hash is refused", async () => {
+  const f = fakeThread("🔄 fix login", false);
+  const base = at(T0, f.close);
+  const answers = ["<<<SUMMARY\nSSO is in, see /home/me/repo/REPORT.md (abc1234).\nSUMMARY>>>", "<<<SUMMARY\nThe login page takes SSO now.\nNothing is left.\nSUMMARY>>>"];
+  const asked: string[] = [];
+  const deps: FlowDeps = {
+    ...base,
+    config: { ...base.config, explore: { ...base.config.explore, modelsCommand: [] } },
+    run: async (argv, opts) => (argv[0] === "omo" ? (asked.push(argv.at(-1) ?? ""), { code: 0, out: answers[asked.length - 1] ?? "", err: "" }) : base.run(argv, opts)),
+  };
+  const reported = { ...lane, lastReport: "[REPORT] fix-a | done | SSO merged in acme/app#12 (abc1234), QA ok" };
+  const r = await closeLane(deps, reported, "closed by the lead");
+  expect(r.closed).toBe(true);
+  expect(asked).toHaveLength(2);
+  expect(asked[0]).toContain("[REPORT] fix-a | done | SSO merged");
+  expect(r.lines.find((l) => l.startsWith("CLOSE_SUMMARY "))).toStartWith("CLOSE_SUMMARY fix-a from model ");
+  expect(f.calls().find((c) => c.startsWith(`POST ${T}/messages`))).toContain("The login page takes SSO now.\\nNothing is left.");
 });

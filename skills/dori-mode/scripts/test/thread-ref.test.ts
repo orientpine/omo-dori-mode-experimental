@@ -127,8 +127,9 @@ for (const thread of ["discord:", "none", ""]) {
 test("close with a thread runs the threadDone hook and warns nothing", async () => {
   const deps = at(T0);
   const envs: unknown[] = [];
-  const r = await closeLane({ ...deps, run: (argv, opts) => (argv[0] === "notify" && envs.push(opts?.env), deps.run(argv, opts)) }, lane, "manual");
-  expect(hookCalls()).toEqual([["notify", THREAD, "manual"]]);
+  const r = await closeLane({ ...deps, run: (argv, opts) => (argv[0] === "notify" && envs.push(opts?.env), deps.run(argv, opts)) }, lane, "manual", "SSO is on the login page now.");
+  // the thread gets the summary for the owner, not the lead's note
+  expect(hookCalls()).toEqual([["notify", THREAD, "SSO is on the login page now."]]);
   // the closing lane is still open while its hook runs; dori thread done must not count it as another user of the thread
   expect(envs).toEqual([{ DORI_CLOSING_LANE: "demo-lane" }]);
   expect(r.lines.some((l) => l.startsWith("THREAD_MISSING"))).toBe(false);

@@ -92,9 +92,10 @@ export type StatusStyle = "words" | "emoji";
 
 // Words the Discord helpers write: thread status words, question-card labels, and how answer times are shown.
 // autoUnEye: the listener takes its eyes reaction off the owner's earlier messages once its bot writes in that channel.
-// quietText ({min} = minutes since the lane's last report) and doneText are what freshness and the automatic close post in
-// the owner's thread (hooks.threadReply / threadDone, any messenger), instead of the lane's own report or claim, which are
-// notes for the lead. postRawReports brings back posting those notes as they are. laneStartText is the first message
+// quietText ({min} = minutes since the lane's last report) is what freshness posts in the owner's thread (hooks.threadReply,
+// any messenger) instead of the lane's own report, a note for the lead; it promises nothing the scripts do not do.
+// postRawReports brings back posting the report as it is. A close posts the lane's summary for the owner
+// (close-summary.ts), not fixed words. laneStartText is the first message
 // dori launch posts in a discord:<id> work thread that has none ({title}, {goal}, {brief}, {done}, {key}, {pane}; a line
 // whose placeholder is empty is left out). waiveText is the line the owner gets when dori launch --waive leaves one of his
 // directives out of a brief ({key}, {id}, {name}, {reason}): in the lane's discord:<id> thread, else DORI_DISCORD_CHANNEL.
@@ -111,7 +112,6 @@ export type DiscordWords = {
   readonly leadRunawayText: string;
   readonly leadPausedText: string;
   readonly leadRepeatText: string;
-  readonly doneText: string;
   readonly postRawReports: boolean;
   // minutes a done (✅) thread in DORI_DISCORD_CHANNEL stays quiet before freshness archives it (0: never; a thread an open
   // lane, an open card or a pending rename holds is left open)
@@ -141,13 +141,12 @@ export type DiscordWords = {
 export const defaultDiscordWords: DiscordWords = {
   statusStyle: "words",
   autoUnEye: true,
-  quietText: "Still working on it. The last report came {min} min ago; I'll sum it up for you soon.",
+  quietText: "Still working on it. The last report came {min} min ago.",
   laneStartText: "{title}\nGoal, in your words: {goal}\n{brief}\nDone when: {done}\nLane {key}, pane {pane}",
   waiveText: "Lane {key} was launched without your directive {id} ({name}). The lead's reason: {reason}",
   leadRunawayText: "The lead {pane} has started {turns} turns on its own since its last user message ({since}). Other Dori: type one short check message into {pane}; do not stop it.",
   leadPausedText: "omo paused the lead {pane} after {turns} turns on its own ({reason}, since {since}). Other Dori: type one short check message into {pane}; do not stop it.",
   leadRepeatText: "The lead {pane} is still on its own ({turns} turns). A check was already asked for {min} min ago ({at}): send no new message.",
-  doneText: "Done: the checks passed and the work is closed. I'll sum up what changed for you soon.",
   postRawReports: false,
   autoArchiveMin: 30,
   working: "working",
@@ -638,6 +637,7 @@ export const migrateOldKeys = (input: Raw): { readonly raw: Raw; readonly warnin
   move("explore", "researchAt", "stuck", "researchAt", (v) => Number(v) + hypothesesAt - 1);
   drop("explore", "driftBelow", "dori intent-check reads the owner's words with a reviewer model (owner-check) instead of counting shared words");
   drop("handover", "laneRepeats", "a stuck lane is due for a rollover at rung 4 of the stuck ladder");
+  drop("discord", "doneText", "a close posts the lane's own summary for the owner (dori claim-done --summary, or one a model writes from its last report and REPORT.md), and a lane with a thread does not close without one");
   drop("handover", "proposalOptions", "dori rollover-propose no longer posts an owner card; the lead decides");
   drop("autoSignals", "repeatAfter", "the inferred count is one input of the stuck ladder (stuck.researchAt)");
   move("signals", "attemptPattern", "signals", "numberedAttemptPattern");

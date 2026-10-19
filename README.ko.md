@@ -68,7 +68,7 @@ Dori는 사용자의 말투를 따라갑니다. 짧고 편하게, 소문자로 �
 | `hooks.threadReply`, `hooks.threadDone` | 메신저 CLI를 `{thread}`, `{text}`가 들어간 argv 목록으로. 레인 진행 상황을 올리고 완료 표시를 할 때 씁니다. |
 | `discord.statusStyle` | 디스코드 상태 표시를 `"words"`(기본값) 또는 `"emoji"`로 설정 |
 | `discord.autoUnEye` | `true`(기본값)면 봇이 그 채널이나 스레드에 글을 쓸 때 `dori inbound discord`가 소유자의 앞선 메시지에서 눈 리액션을 지움. `false`면 그대로 둠 |
-| `discord.quietText`, `discord.doneText`, `discord.postRawReports` | `freshness`와 자동 닫기가 소유자 스레드에 올리는 글(`{min}` = 마지막 보고 뒤 지난 분), 소유자 언어로. 레인의 보고·완료 증거 원문은 스레드가 아니라 리드에게 감. `postRawReports: true`(기본 `false`)면 원문을 그대로 올림 |
+| `discord.quietText`, `discord.postRawReports` | `freshness`가 소유자 스레드에 올리는 글(`{min}` = 마지막 보고 뒤 지난 분), 소유자 언어로. 레인의 보고 원문은 스레드가 아니라 리드에게 감. `postRawReports: true`(기본 `false`)면 원문을 그대로 올림. 닫기는 레인의 소유자용 정리 글(`claim-done --summary`, 없으면 모델이 씀)을 먼저 올린 뒤에만 스레드를 완료로 표시하고, 정리가 없으면 닫지 않음 |
 
 나머지(시간, 임계값, heavy 슬롯 수)는 기본값으로 충분합니다. 전체 표는 [`references/scripts.md`](skills/dori-mode/references/scripts.md)에 있습니다. `DORI_CONFIG`, `DORI_STATE_DIR`, `DORI_LEAD_PANE` 환경변수를 주면 파일 값 대신 그 값을 씁니다.
 
