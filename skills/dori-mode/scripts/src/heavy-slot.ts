@@ -109,13 +109,22 @@ export type Try = { readonly slot: string; readonly why: string } | { readonly w
 const QUEUE = "queue";
 const ticketPid = (name: string): number => Number(name.split("-")[1]);
 
-const enqueue = (deps: SlotDeps, label: string, since: number): string => {
+// a ticket's content says whether its job can run on another host ("any") or only waits for this one ("local")
+const ticketKind = (deps: SlotDeps, name: string): string => {
+  try {
+    return readFileSync(join(deps.dir, QUEUE, name), "utf8");
+  } catch {
+    return "local";
+  }
+};
+
+const enqueue = (deps: SlotDeps, label: string, since: number, kind: "any" | "local"): string => {
   const dir = join(deps.dir, QUEUE);
   mkdirSync(dir, { recursive: true });
   for (let at = since; ; at++) {
     const path = join(dir, `${String(at).padStart(15, "0")}-${deps.pid}-${label.replace(/[^\w.-]/g, "_")}`);
     try {
-      writeFileSync(path, "", { flag: "wx" });
+      writeFileSync(path, kind, { flag: "wx" });
       return path;
     } catch (e) {
       if (!(e instanceof Error && "code" in e && e.code === "EEXIST")) throw e;
@@ -177,19 +186,21 @@ export type AcquireOptions<T> = {
   readonly pollMs?: number;
   // when the job entered the line (a job sent back after its helper dropped keeps its place at the front)
   readonly since?: number;
-  // the job at the front of the line, refused here for load, full slots or headroom (not while a new job settles): a
-  // started run on another host, or null to keep waiting
+  // the job at the front of the line, refused here for load, full slots or headroom (not while a new job settles), or a
+  // job behind only jobs that wait for this host alone (rl, plain dori heavy): a started run on another host, or null
   readonly elsewhere?: (wait: string) => Promise<T | null>;
 };
 
 export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOptions<T> = {}): Promise<Acquired<T>> => {
   mkdirSync(deps.dir, { recursive: true });
-  const ticket = enqueue(deps, label, opts.since ?? deps.clock.now());
+  const ticket = enqueue(deps, label, opts.since ?? deps.clock.now(), opts.elsewhere ? "any" : "local");
   try {
     let waiting = "";
     for (;;) {
-      const ahead = line(deps).indexOf(basename(ticket));
-      const t: Try | null = ahead > 0 ? { wait: "queue", why: `${ahead} job(s) ahead in the queue` } : await withLock(deps, () => tryAdmit(deps, label));
+      const names = line(deps);
+      const ahead = names.slice(0, Math.max(0, names.indexOf(basename(ticket))));
+      const t: Try | null = ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await withLock(deps, () => tryAdmit(deps, label));
+      const localOnlyAhead = ahead.length > 0 && ahead.every((n) => ticketKind(deps, n) === "local");
       if (t && "slot" in t) {
         deps.log?.(`HEAVY_ADMIT ${label} ${basename(t.slot)}: ${t.why}`);
         return { slot: t.slot };
@@ -198,7 +209,7 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
         deps.log?.(`HEAVY_WAIT ${label}: ${t.why}`);
         waiting = t.wait;
       }
-      if (t && opts.elsewhere && t.wait !== "queue" && t.wait !== "settle") {
+      if (t && opts.elsewhere && (localOnlyAhead || (t.wait !== "queue" && t.wait !== "settle"))) {
         const got = await opts.elsewhere(t.why);
         if (got !== null) return { elsewhere: got };
       }

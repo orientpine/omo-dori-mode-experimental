@@ -30,8 +30,10 @@ const helperArgv = (): string[] => {
 };
 
 const ctxWith = (q: Partial<HeavyQueue>, sleep: () => Promise<void> = () => new Promise((r) => setImmediate(r))): HeavyCtx => {
-  const deps: SlotDeps = { dir: join(state.dir, "heavy"), slots: 1, maxLoad: 80, clock: { now: () => Date.now(), sleep }, pid: process.pid, load: async () => 10, alive: (p) => (p === HOLDER ? holderAlive : true), log: (l) => logs.push(l) };
-  return { q: { jobs: { upper: upper("queue"), train }, helpers: [], queue: [], rl: true, jobDir: join(state.dir, "jobs"), ...q }, deps };
+  // every reading of the clock a millisecond later, so jobs line up in the order they were started
+  let tick = Date.now();
+  const deps: SlotDeps = { dir: join(state.dir, "heavy"), slots: 1, maxLoad: 80, clock: { now: () => tick++, sleep }, pid: process.pid, load: async () => 10, alive: (p) => (p === HOLDER ? holderAlive : true), log: (l) => logs.push(l) };
+  return { q: { jobs: { upper: upper("queue"), train, rlprobe: { ...upper("queue"), rl: true } }, helpers: [], queue: [], rl: true, jobDir: join(state.dir, "jobs"), ...q }, deps };
 };
 
 const holdSlot = () => {
@@ -39,10 +41,10 @@ const holdSlot = () => {
   writeFileSync(join(state.dir, "heavy", "slot.1", "owner"), `${HOLDER} other-job ${new Date().toISOString()}`);
 };
 
-const queued = async (ctx: HeavyCtx, kind = "upper", rl = false) => {
+const queued = async (ctx: HeavyCtx, kind = "upper", rl = false, label = "t") => {
   const dir = newJobDir(ctx.q.jobDir);
   stageInputs(dir, [input]);
-  const r = await runQueued(ctx, { label: "t", kind, rl, args: [] }, dir);
+  const r = await runQueued(ctx, { label, kind, rl, args: [] }, dir);
   return { ...r, where: readFileSync(join(dir, "out", "where"), "utf8").trim() };
 };
 
@@ -88,6 +90,21 @@ test("an rl job is never offered to a helper, it waits for the queue host", asyn
   await expect(queued(ctx, "train")).rejects.toThrow("stop");
   expect(logs.filter((l) => l.startsWith("HEAVY_HELPER"))).toEqual([]);
   expect(existsSync(join(state.dir, "helper", "state", "heavy", "heavy.log"))).toBe(false);
+});
+
+test("a job behind an rl job that waits for the queue host still goes to a free helper, without passing it here", async () => {
+  // Given: the queue host busy, an rl job at the front of the line
+  holdSlot();
+  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] });
+  const rl = queued(ctx, "rlprobe", false, "rl");
+  // When: a job comes in behind it
+  const behind = await queued(ctx, "upper", false, "behind");
+  // Then: it ran on the helper while the rl job still waits, and the rl job later runs on the queue host
+  expect(behind.where).toBe("helper");
+  expect(logs.some((l) => l.startsWith("HEAVY_DONE rl"))).toBe(false);
+  holderAlive = false;
+  expect((await rl).where).toBe("queue");
+  expect(logs.filter((l) => l.startsWith("HEAVY_HELPER rl"))).toEqual([]);
 });
 
 test("a run that breaks off on the helper goes back to the front of the line and finishes on the queue host", async () => {
