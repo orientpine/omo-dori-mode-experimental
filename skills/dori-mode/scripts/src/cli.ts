@@ -289,6 +289,8 @@ const USAGE = `dori <command> [options]
                                        background eval cell, a running turn or an open question would die, unless the lane
                                        ran handover ready (or --force); an automatic start (auto:) never moves a lane that
                                        runs or watches a training or eval chain (handover.trainingTags, trainingWatch);
+                                       --wait-idle MIN (freshness's automatic start): waits up to MIN minutes for a running
+                                       turn to end and freezes the old agent at that idle moment, before the new session opens;
                                        writes a note (brief, owner goal, Done, todos, goal,
                                        monitors, local chains, detached jobs, last reports, model and thinking), opens a
                                        session in the same real path with --model and --thinking, points the registry and
@@ -389,7 +391,7 @@ const flags = parseArgs({
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
     summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
-    "keep-old": { type: "boolean" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
+    "keep-old": { type: "boolean" }, "wait-idle": { type: "string" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
     force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
     answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
     static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
@@ -973,7 +975,7 @@ try {
             const unit = `dori-rollover-${k}-${Date.now()}`;
             const log = join(config.stateDir, "handover", "run.log");
             mkdirSync(join(config.stateDir, "handover"), { recursive: true });
-            const r = await run(["systemd-run", "--user", "--collect", `--unit=${unit}`, "--setenv=DORI_HANDOVER_DETACHED=1", ...passEnv(), `--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`, process.execPath, import.meta.path, "handover", ...(who === "lane" ? ["--lane", k] : []), "--approved-by", `auto:handover.autoRollover${who === "lane" ? "Lanes" : "Lead"}`]);
+            const r = await run(["systemd-run", "--user", "--collect", `--unit=${unit}`, "--setenv=DORI_HANDOVER_DETACHED=1", ...passEnv(), `--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`, process.execPath, import.meta.path, "handover", ...(who === "lane" ? ["--lane", k, "--wait-idle", String(config.handover.autoWaitMin)] : []), "--approved-by", `auto:handover.autoRollover${who === "lane" ? "Lanes" : "Lead"}`]);
             return r.code === 0 ? `started unit=${unit} log=${log}` : `could not start: ${(r.err || r.out).trim().slice(0, 160)}`;
           },
         };
@@ -1424,7 +1426,9 @@ try {
         }
         const minutes = opt("minutes") ? Number(opt("minutes")) : undefined;
         if (minutes !== undefined && !(minutes > 0)) die("--minutes must be a positive number");
-        const r = await laneHandover(laneDeps, opt("lane") ?? "", here, { approvedBy: opt("approved-by"), note: opt("note"), model: opt("model"), thinking: opt("thinking"), force: Boolean(flags.values.force), keepOld: Boolean(flags.values["keep-old"]), dryRun: Boolean(flags.values["dry-run"]), verifyMin: minutes });
+        const waitIdle = opt("wait-idle") ? Number(opt("wait-idle")) : undefined;
+        if (waitIdle !== undefined && !(waitIdle > 0)) die("--wait-idle must be a positive number of minutes");
+        const r = await laneHandover(laneDeps, opt("lane") ?? "", here, { approvedBy: opt("approved-by"), note: opt("note"), model: opt("model"), thinking: opt("thinking"), force: Boolean(flags.values.force), keepOld: Boolean(flags.values["keep-old"]), dryRun: Boolean(flags.values["dry-run"]), verifyMin: minutes, ...(waitIdle ? { waitIdleMin: waitIdle } : {}) });
         process.exit(r.code);
       }
       if (flags.values.template) {

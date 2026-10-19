@@ -42,7 +42,10 @@ export type StuckMark = { readonly rung: number; readonly n: number; readonly at
 // live: every new signal read back live when it was set
 export type DoneChange = { readonly at: string; readonly from: string; readonly to: string; readonly reason: string; readonly live: boolean };
 
-export type RolloverDue = { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean; readonly autoAt?: string; readonly tries?: number; readonly gaveUp?: boolean };
+// autoAt/tries: the last automatic start in this pane and how many there were; askedAt: when the busy lane was last asked to
+// reach a safe point; failures: moves in a row that failed (they back off); leftToLead: why automatic starts stopped in
+// this pane (a training or eval chain, the owner's rule). gaveUp was written by older versions after autoMaxTries; it is ignored.
+export type RolloverDue = { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean; readonly autoAt?: string; readonly tries?: number; readonly askedAt?: string; readonly failures?: number; readonly leftToLead?: string; readonly gaveUp?: boolean };
 
 export type Lane = {
   readonly key: string;
@@ -99,7 +102,7 @@ export type Lane = {
   readonly autoturn?: AutoturnMark;
   // the last ROLLOVER_DUE freshness gave for a measured threshold (context, compactions, age): one per pane, so a lane's new
   // session can get its own (auto: written by older versions, not read); autoAt and tries: the last automatic start in this
-  // pane and how many there were, gaveUp once autoMaxTries ran out
+  // pane and how many there were, the safe-point request, failures in a row, leftToLead for a training or eval chain
   readonly rolloverDue?: RolloverDue;
   // untagged repeats freshness inferred in the current session: cycles per metric (the inferred half of the stuck count) and
   // when the reports last showed each metric PASS (the tagged half counts only attempts after that), and the count at the

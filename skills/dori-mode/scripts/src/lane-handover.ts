@@ -17,8 +17,8 @@ import { QuestionStore } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
-import { AGENT, descendants, type Proc, sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
+import { AGENT, descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
+import { appendRollover, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { stuckTop } from "./explore.ts";
 import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, section } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
@@ -57,9 +57,15 @@ export type LaneHandoverOptions = {
   readonly keepOld?: boolean;
   readonly dryRun?: boolean;
   readonly verifyMin?: number;
+  // an automatic start (freshness passes --wait-idle): wait up to this many minutes for the lane's turn to end and move it
+  // at that idle moment
+  readonly waitIdleMin?: number;
+  // set by that waiting loop: it holds the lock; final means the wait is over, so a lane still busy is refused
+  readonly idle?: { readonly final: boolean; readonly since: number; readonly waitedMin: number };
 };
 
-export type LaneHandoverResult = { readonly code: number; readonly note?: string; readonly to?: string };
+// retry: only a running turn or an open question held the lane, and the waiting loop tries again when it is idle
+export type LaneHandoverResult = { readonly code: number; readonly note?: string; readonly to?: string; readonly retry?: boolean };
 
 // What the lane confirmed with dori handover ready: the local chains it accepts losing, and its own notes.
 export type ReadyMark = { readonly key: string; readonly pane: string; readonly at: string; readonly chains: readonly number[]; readonly note?: string };
@@ -176,7 +182,8 @@ export const statusLine = (screen: string, model: string): StatusLine => {
 // The work the old session's agent runs that dies with it: every child process of the agent except omo's own helpers
 // and its monitors (those are re-armed in the new session). exclude: pids that must not count (the caller's own chain).
 // The session itself is not a chain: the shells that launched the agent (aoe runs it from /bin/bash /dev/fd/4 under the
-// pane's shell) and omo's eval kernel. What runs under them is.
+// pane's shell) and omo's eval kernel. What runs under them is. A zombie (an ended process its parent has not collected,
+// "[bash] <defunct>") is no work either: it refused 5 automatic moves of yoodori-gate-gaps on 2026-10-19.
 export const localChains = (table: readonly Proc[], shellPid: number, monitorPids: readonly number[], exclude: ReadonlySet<number> = new Set()): { readonly agent?: Proc; readonly chains: Job[]; readonly tree: Set<number> } => {
   const tree = descendants(table, shellPid);
   const agent = tree.find((p) => AGENT.test(p.cmd) && !/\bmcp\b/.test(p.cmd));
@@ -186,19 +193,20 @@ export const localChains = (table: readonly Proc[], shellPid: number, monitorPid
   const kernels = new Set(table.filter((p) => p.ppid === agent.pid && KERNEL.test(p.cmd)).map((p) => p.pid));
   // the children of the agent, of its kernel and of the shells that launched it (jobs started from the pane die with it too)
   const chains = table
-    .filter((p) => (session.has(p.ppid) || kernels.has(p.ppid)) && !session.has(p.pid) && !kernels.has(p.pid) && !INFRA.test(p.cmd) && !monitorPids.includes(p.pid) && !exclude.has(p.pid))
-    .map((p) => ({ pid: p.pid, cmd: p.cmd, pids: [p.pid, ...descendants(table, p.pid).map((d) => d.pid)] }));
+    .filter((p) => (session.has(p.ppid) || kernels.has(p.ppid)) && !session.has(p.pid) && !kernels.has(p.pid) && !ended(p) && !INFRA.test(p.cmd) && !monitorPids.includes(p.pid) && !exclude.has(p.pid))
+    .map((p) => ({ pid: p.pid, cmd: p.cmd, pids: [p.pid, ...descendants(table, p.pid).filter((d) => !ended(d)).map((d) => d.pid)] }));
   return { agent, chains, tree: ids };
 };
 
 // Why an automatic rollover leaves a lane to the lead: a tag in handover.trainingTags, or a live monitor watching a training
-// or eval chain (handover.trainingWatch on its command, path or description), as e7-beyond-eth's q267_chain_watch.sh.
+// or eval chain (handover.trainingWatch on its command, path, filter or description), as e7-beyond-eth's q267_chain_watch.sh
+// and, since 10-19, q267_spark_watch.sh with filter Q267_EVAL (a replay on another node: no chain word in the command).
 export const trainingMark = (lane: Lane, monitors: readonly MonitorSpec[], h: { readonly trainingTags: readonly string[]; readonly trainingWatch: string }): string | undefined => {
   const tag = lane.tags?.find((t) => h.trainingTags.includes(t));
   if (tag) return `tag ${tag}`;
   if (!h.trainingWatch) return undefined;
   const watch = new RegExp(h.trainingWatch, "i");
-  const m = monitors.find((x) => watch.test([x.command, x.path, x.description].filter(Boolean).join(" ")));
+  const m = monitors.find((x) => watch.test([x.command, x.path, x.filter, x.description].filter(Boolean).join(" ")));
   return m ? `training chain watched: monitor "${m.description}"` : undefined;
 };
 
@@ -345,7 +353,7 @@ const ackedBy = (stateDir: string, id: string): string | undefined => {
 
 const titleFor = (old: string, stamp: string): string => `${old.replace(/-\d{8}$/, "")}-${stamp.slice(4, 8)}${stamp.slice(9, 13)}`;
 
-export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: string, opts: LaneHandoverOptions = {}): Promise<LaneHandoverResult> => {
+const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: LaneHandoverOptions): Promise<LaneHandoverResult> => {
   const { config } = deps;
   const at = iso(deps.clock);
   const stamp = at.replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
@@ -355,9 +363,9 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
     if (!opts.dryRun) watchLog(config.watchLog, deps.clock, { source: "handover", line });
   };
   let fromPane = "";
-  const refuse = (why: string): LaneHandoverResult => {
+  const refuse = (why: string, held?: { readonly blocked: Blocked; readonly pids?: readonly number[] }): LaneHandoverResult => {
     emit(`HANDOVER_REFUSED ${key}: ${why}`);
-    if (!opts.dryRun && opts.approvedBy?.trim()) appendRollover(config.stateDir, { kind: "rollover", who: "lane", at, key, from: fromPane, approvedBy: opts.approvedBy.trim(), signals: {}, steps: [], result: "refused", reasons: [why] });
+    if (!opts.dryRun && opts.approvedBy?.trim()) appendRollover(config.stateDir, { kind: "rollover", who: "lane", at, key, from: fromPane, approvedBy: opts.approvedBy.trim(), signals: {}, steps: [], result: "refused", reasons: [why], ...(held ? { blocked: held.blocked, ...(held.pids?.length ? { pids: held.pids } : {}) } : {}) });
     return { code: 2 };
   };
   if (config.backend !== "aoe") return refuse("dori handover --lane needs backend aoe");
@@ -396,8 +404,8 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   // It stops the automatic starts in this pane at once (no retries, no gave-up line later).
   const training = decidedBy(opts.approvedBy?.trim() ?? "") === "auto" ? trainingMark(lane, monitors, config.handover) : undefined;
   if (training) {
-    if (lane.rolloverDue?.pane === lane.pane) await deps.registry.patch(key, { rolloverDue: { ...lane.rolloverDue, gaveUp: true } });
-    return refuse(`an automatic rollover does not move a lane that runs or watches a training or eval chain (${training}); no more automatic starts in ${lane.pane}. The lead moves it by hand: dori handover --lane ${key} --approved-by "lead:<reason and signal>"`);
+    if (lane.rolloverDue?.pane === lane.pane) await deps.registry.patch(key, { rolloverDue: { ...lane.rolloverDue, leftToLead: training } });
+    return refuse(`an automatic rollover does not move a lane that runs or watches a training or eval chain (${training}); no more automatic starts in ${lane.pane}. The lead moves it by hand: dori handover --lane ${key} --approved-by "lead:<reason and signal>"`, { blocked: "training" });
   }
   const table = await deps.procs();
   const shell = await tmuxPanePid(deps.run, lane.pane);
@@ -423,17 +431,22 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
   const oldLog = logOf(sessionDir, session);
   const agentStart = Date.parse((await deps.run(["ps", "-o", "lstart=", "-p", String(agent.pid)])).out.trim());
   const cells = oldLog ? pendingBackground(readFileSync(oldLog, "utf8"), Number.isNaN(agentStart) ? 0 : agentStart).filter((j) => j.kind === "eval" && !(ready && j.at <= Date.parse(ready.at))) : [];
-  const blockers = [
+  const work = [
     ...(uncovered.length ? [`${uncovered.length} local chain(s) would die: ${uncovered.map((c) => `${c.pid} ${c.cmd.slice(0, 80)}`).join("; ")}`] : []),
     ...(cells.length ? [`${cells.length} eval cell(s) still run in the background: ${cells.map((c) => c.id).join(", ")}`] : []),
+  ];
+  const busy = [
     // a ready mark covers chains only: a turn that started after it (a nudge, a message) still blocks
     ...(screen.includes(BUSY_MARK) ? ["a turn is running (esc to interrupt on screen)"] : []),
     ...(QUESTION_MARK.test(screen) ? ["a question is open in the pane"] : []),
   ];
+  const blockers = [...work, ...busy];
   const blocked = blockers.length > 0 && !opts.force;
-  const blockedWhy = `${blockers.join("; ")}. Ask the lane to reach a safe point and write its conversation summary and run dori handover ready ${key} --note FILE in its own pane, or pass --force`;
+  // an automatic start that waits for the idle moment tries again once the turn ends; work that would die refuses at once
+  if (blocked && !opts.dryRun && opts.idle && !opts.idle.final && !work.length) return { code: 2, retry: true };
+  const blockedWhy = `${opts.idle && !work.length ? `the lane stayed busy for ${opts.idle.waitedMin} min: ` : ""}${blockers.join("; ")}. Ask the lane to reach a safe point and write its conversation summary and run dori handover ready ${key} --note FILE in its own pane, or pass --force`;
   // a dry run still writes the note, so a rollover proposal can show it with what blocks the move
-  if (blocked && !opts.dryRun) return refuse(blockedWhy);
+  if (blocked && !opts.dryRun) return refuse(blockedWhy, { blocked: work.length ? "work" : "busy", pids: uncovered.flatMap((c) => c.pids ?? [c.pid]) });
   if (blocked) emit(`HANDOVER_REFUSED ${key}: ${blockedWhy}`);
   else if (blockers.length) emit(`HANDOVER_FORCED ${key}: ${blockers.join("; ")}`);
   if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK ${key}: the lane runs from ${old.path}, a symlink to ${real}; the new session opens in ${real}`);
@@ -457,9 +470,24 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
     return { code: 0, note };
   }
   const lockFile = join(dir, `${key}.lock`);
-  const busy = takeLock(lockFile, deps.alive, at);
-  if (busy) return refuse(busy);
+  // the waiting loop of an automatic start already holds the lock
+  const locked = opts.idle ? undefined : takeLock(lockFile, deps.alive, at);
+  if (locked) return refuse(locked);
   try {
+    // an automatic start moves the lane at its idle moment: the old agent is frozen now, before the new session opens, so
+    // no goal continuation, nudge or message starts a turn whose work the note would not carry; a turn that slipped in
+    // between the check and the freeze thaws it again and the waiting loop goes on
+    let frozen = false;
+    if (opts.idle) {
+      frozen = deps.signal(agent.pid, "SIGSTOP");
+      emit(frozen ? `HANDOVER_FROZEN ${key} agent ${agent.pid} in ${lane.pane} at its idle moment (${Math.round((deps.clock.now() - opts.idle.since) / 1000)} s after the automatic start)` : `HANDOVER_FREEZE_FAIL ${key} agent ${agent.pid}: it stays told and quiet only`);
+      const after = await captureTmux(deps.run, lane.pane);
+      if (after.includes(BUSY_MARK) || QUESTION_MARK.test(after)) {
+        if (frozen) emit(deps.signal(agent.pid, "SIGCONT") ? `HANDOVER_THAWED ${key} agent ${agent.pid}: a turn started as it was frozen` : `HANDOVER_THAW_FAIL ${key} agent ${agent.pid}`);
+        if (!opts.idle.final) return { code: 2, retry: true };
+        return refuse(`the lane stayed busy for ${opts.idle.waitedMin} min: a turn started as it was frozen`, { blocked: "busy" });
+      }
+    }
     const steps: Step[] = [];
     let last = deps.clock.now();
     const mark = (step: string, ok: boolean) => {
@@ -469,7 +497,7 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
     };
     const accounts: { to?: string } = {};
     const supplements: Supplement[] = [];
-    const r = await moveLane(deps, opts, facts, { note, title, emit, steps, mark, accounts, supplements });
+    const r = await moveLane(deps, opts, facts, { note, title, emit, steps, mark, accounts, supplements, frozen });
     const proposal = lastProposal(readRollovers(config.stateDir), key);
     const result = r.code === 0 ? (opts.keepOld ? "done-kept-old" : "done") : r.code === 1 ? "done-close-failed" : "rolled-back";
     const by = facts.approvedBy ? decidedBy(facts.approvedBy) : undefined;
@@ -483,6 +511,47 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
       ...(supplements.length ? { supplementRounds: supplements.length, supplements } : {}),
     });
     return r;
+  } finally {
+    if (!opts.idle) rmSync(lockFile, { force: true });
+  }
+};
+
+const IDLE_POLL_MS = 3_000;
+
+// dori handover --lane. An automatic start (--wait-idle, from freshness) moves the lane at its idle moment: it holds the
+// lane's lock while it waits, so freshness starts no second run, and tries at once; while only a running turn or an open
+// question holds the lane it watches the screen every few seconds and tries again the moment the turn ends, for up to
+// waitIdleMin minutes. Then a lane still busy is refused (blocked busy, and freshness asks it to reach a safe point).
+// Work that would die (a local chain, a background eval cell) refuses at once (blocked work).
+export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: string, opts: LaneHandoverOptions = {}): Promise<LaneHandoverResult> => {
+  if (!opts.waitIdleMin || opts.dryRun) return attempt(deps, key, here, opts);
+  const emit = (line: string): void => {
+    deps.print(line);
+    watchLog(deps.config.watchLog, deps.clock, { source: "handover", line });
+  };
+  const dir = join(deps.config.stateDir, "handover", "lanes");
+  mkdirSync(dir, { recursive: true });
+  const lockFile = join(dir, `${key}.lock`);
+  const held = takeLock(lockFile, deps.alive, iso(deps.clock));
+  if (held) {
+    emit(`HANDOVER_REFUSED ${key}: ${held}`);
+    return { code: 2 };
+  }
+  try {
+    const since = deps.clock.now();
+    const until = since + opts.waitIdleMin * 60_000;
+    for (let waiting = false; ; waiting = true) {
+      const r = await attempt(deps, key, here, { ...opts, idle: { final: deps.clock.now() >= until, since, waitedMin: opts.waitIdleMin } });
+      if (!r.retry) return r;
+      if (!waiting) emit(`HANDOVER_WAIT_IDLE ${key}: a turn is running or a question is open; the move starts the moment the lane is idle (up to ${opts.waitIdleMin} min)`);
+      for (;;) {
+        await deps.clock.sleep(IDLE_POLL_MS);
+        if (deps.clock.now() >= until) break;
+        const pane = (await deps.registry.read(key))?.pane;
+        const screen = pane ? await captureTmux(deps.run, pane) : "";
+        if (!screen.includes(BUSY_MARK) && !QUESTION_MARK.test(screen)) break;
+      }
+    }
   } finally {
     rmSync(lockFile, { force: true });
   }
@@ -557,7 +626,8 @@ const chainsEnded = async (deps: LaneHandoverDeps, key: string, chains: readonly
   }
 };
 
-type MoveContext = { readonly note: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string }; readonly supplements: Supplement[] };
+// frozen: the old agent was already frozen at its idle moment (an automatic start)
+type MoveContext = { readonly note: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string }; readonly supplements: Supplement[]; readonly frozen: boolean };
 
 const tell = (deps: LaneHandoverDeps, pane: string, text: string) => sendVerified(deps.run, deps.clock, deps.config, pane, text).catch(() => false);
 
@@ -603,6 +673,7 @@ const moveLane = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, facts
     ctx.mark("open", true);
   } catch (e) {
     ctx.mark("open", false);
+    if (ctx.frozen && facts.agentPid) emit(deps.signal(facts.agentPid, "SIGCONT") ? `HANDOVER_THAWED ${lane.key} agent ${facts.agentPid}` : `HANDOVER_THAW_FAIL ${lane.key} agent ${facts.agentPid}`);
     emit(`HANDOVER_FAIL ${lane.key}: could not open the new session: ${e instanceof Error ? e.message : String(e)}; nothing moved, ${from.pane} stays the lane`);
     return { code: 3, note };
   }
@@ -631,7 +702,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   const { lane, from } = facts;
   const record = (result: string, reasons: readonly string[]) =>
     writeFileSync(note.replace(/\.md$/, ".result.json"), JSON.stringify({ at: iso(deps.clock), key: lane.key, from, to: pane, note, approvedBy: facts.approvedBy, signals: facts.signals, result, reasons }, null, 1));
-  let frozen = false;
+  let frozen = ctx.frozen;
   const thaw = (): void => {
     if (frozen && facts.agentPid) emit(deps.signal(facts.agentPid, "SIGCONT") ? `HANDOVER_THAWED ${lane.key} agent ${facts.agentPid}` : `HANDOVER_THAW_FAIL ${lane.key} agent ${facts.agentPid}`);
     frozen = false;
@@ -656,9 +727,10 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
     return discard(`the new session did not get launchEnv: ${off.join(", ")}`);
   }
   setQuiet(config.stateDir, from.pane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of ${lane.key} to ${pane} is running`);
-  await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} to ${pane} started (note ${note}). Stop here: start no new tool call, leave running processes alone, and ignore ${PROBE} lines. If it fails you are told and stay the lane.`);
+  // an agent frozen at its idle moment reads nothing typed now; it is told only if the move rolls back
+  if (!frozen) await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} to ${pane} started (note ${note}). Stop here: start no new tool call, leave running processes alone, and ignore ${PROBE} lines. If it fails you are told and stay the lane.`);
   // frozen, the old agent cannot answer, report or start a second copy of the work while both sessions live
-  if (facts.agentPid) {
+  if (facts.agentPid && !frozen) {
     frozen = deps.signal(facts.agentPid, "SIGSTOP");
     emit(frozen ? `HANDOVER_FROZEN ${lane.key} agent ${facts.agentPid} in ${from.pane}` : `HANDOVER_FREEZE_FAIL ${lane.key} agent ${facts.agentPid}: it stays told and quiet only`);
   }

@@ -6,8 +6,8 @@ import { researchCheck, stuckTop } from "./explore.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { type Lane, type RolloverDue, statusOf } from "./registry.ts";
 import { fixTag, recordFix } from "./same-fix.ts";
-import { statusLine } from "./lane-handover.ts";
-import { crossed, dueReasons, limitsFor, type Signals, type Who } from "./rollover.ts";
+import { pendingFile, type ReadyMark, readyFile, statusLine } from "./lane-handover.ts";
+import { crossed, dueReasons, limitsFor, readRollovers, type RolloverEntry, type Signals, type Who } from "./rollover.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { watchLog } from "./watch-log.ts";
@@ -42,7 +42,43 @@ export type RolloverHooks = {
   readonly signals: (pane: string, model: string) => Promise<Signals>;
   // starts a rollover without asking (handover.autoRolloverLanes / autoRolloverLead on); the line says what it started
   readonly auto?: (who: Who, key: string) => Promise<string>;
+  // whether a process still runs (a handover's lock holder, the chain pids a refusal named); process.kill(pid, 0) by default
+  readonly alive?: (pid: number) => boolean;
 };
+
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+const readJson = <T>(file: string): T | undefined => {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
+};
+
+// A handover of this lane (or of the lead) runs now: its lock or its journal names a live process.
+const handoverRunning = (stateDir: string, who: Who, key: string, alive: (pid: number) => boolean): boolean =>
+  (who === "lane" ? [join(stateDir, "handover", "lanes", `${key}.lock`), pendingFile(stateDir, key)] : [join(stateDir, "handover", "lock")]).some((f) => {
+    const pid = readJson<{ pid?: number }>(f)?.pid;
+    return typeof pid === "number" && pid !== process.pid && alive(pid);
+  });
+
+type Attempt = Extract<RolloverEntry, { kind: "rollover" }>;
+
+// The record of the automatic run started at autoAt: the last automatic rollover entry of this lane (or the lead) since.
+const lastAuto = (stateDir: string, who: Who, key: string, since: string): Attempt | undefined =>
+  readRollovers(stateDir).findLast((e): e is Attempt => e.kind === "rollover" && e.who === who && e.key === key && (e.approvedBy ?? "").startsWith("auto:") && e.at >= since);
+
+// what the lane is asked when an automatic rollover finds it busy: reach a safe point, write the summary, mark ready, go idle
+export const safePointText = (key: string, why: string): string =>
+  `[LEAD] An automatic rollover of ${key} to a new session is due, but the lane is busy (${why}). At your next safe point: start no new work, write your conversation summary (dori handover ready --template prints its headings) to a file, run dori handover ready ${key} --note <file>, then end your turn. The local chains that command lists end with this session: if one must keep running (a training, eval or deploy run), let it finish or move it out of the session (setsid, systemd-run) first, and say so in your report. The move starts by itself once you are idle; nothing else to do.`;
 
 const screenSignals = (deps: FlowDeps): RolloverHooks => ({ signals: async (pane, model) => ({ contextPct: statusLine(await readScreen(deps.run, deps.config.backend, pane, 8), model).contextPct }) });
 
@@ -51,9 +87,13 @@ const leadDueFile = (stateDir: string): string => join(stateDir, "handover", "le
 // A session past a measured threshold (context, compactions, age) is due for a rollover. Freshness says so once per pane
 // and only suggests: the lead decides and runs the handover with --approved-by lead:<reason and signal>, unless the owner
 // turned the auto key on. A stuck lane's rollover point is rung 4 of the stuck ladder, which has its own STUCK line.
-// With the auto key on, rung 4 of the stuck ladder is a reason too, and a session still in the same pane autoRetryMin minutes
-// after an automatic start (the handover refused it, a turn was running, or it rolled back) gets another, up to autoMaxTries;
-// then one line says it gave up. A refusal goes to the watch log only (HANDOVER_REFUSED); the owner hears of a move that happened.
+// With the auto key on, rung 4 of the stuck ladder is a reason too, and a session still in the same pane is started again
+// from what the last automatic run left in the rollover log, never on a fixed clock and never given up: a lane that stayed
+// busy is asked to reach a safe point and started again at once (the run waits for its idle moment); a lane whose chain or
+// eval cell would die is asked, and started again when it marks ready, when those chains ended, or after autoRetryMin; a
+// move that failed is started again after autoRetryMin, doubling while failures go on (up to 8 times). Only a training or
+// eval chain stops it: the lead moves that lane (the owner's rule). A refusal goes to the watch log only
+// (HANDOVER_REFUSED); the owner hears of a move that happened.
 const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: string, pane: string, model: string, seen: RolloverDue | undefined, stuck: Signals["stuck"], save: (due: RolloverDue) => Promise<void>): Promise<SweepAct[]> => {
   const h = deps.config.handover;
   if (deps.config.backend !== "aoe") return [];
@@ -66,7 +106,7 @@ const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: 
   const now = deps.clock.now();
   const at = new Date(now).toISOString();
   if (seen?.pane === pane) {
-    if (!auto || seen.gaveUp) return [];
+    if (!auto || seen.leftToLead) return [];
     // due while the key was off (only the ROLLOVER_DUE line so far): the first automatic start, now that it is on
     if (!seen.autoAt) {
       const hit = await reasons();
@@ -74,16 +114,43 @@ const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: 
       await save({ ...seen, autoAt: at, tries: 1 });
       return [{ kind: "rollover_auto", lane: key, detail: `${hit.join(", ")}: ${await auto(who, key)}` }];
     }
-    const tries = seen.tries ?? 1;
-    if (tries >= h.autoMaxTries) {
-      await save({ ...seen, gaveUp: true });
-      return [{ kind: "rollover_auto", lane: key, detail: `gave up in ${pane} after ${tries} automatic starts (handover.autoMaxTries ${h.autoMaxTries}); why each stopped is in the watch log (HANDOVER_REFUSED, HANDOVER_VERIFY_FAIL); decide it by hand` }];
+    const alive = hooks.alive ?? pidAlive;
+    const stateDir = deps.config.stateDir;
+    if (handoverRunning(stateDir, who, key, alive)) return [];
+    const retryMs = h.autoRetryMin * 60_000;
+    const last = lastAuto(stateDir, who, key, seen.autoAt);
+    const acts: SweepAct[] = [];
+    let failures = 0;
+    if (!last) {
+      // started but nothing logged yet (still starting) or the run died before it logged: start again after autoRetryMin
+      if (now - Date.parse(seen.autoAt) < retryMs) return [];
+    } else if (last.result === "refused" && (last.blocked === "work" || last.blocked === "busy")) {
+      // the lane was busy: ask it once per autoRetryMin to reach a safe point, then start again when it can move
+      if (who === "lane" && (!seen.askedAt || now - Date.parse(seen.askedAt) >= retryMs)) {
+        const why = (last.reasons[0] ?? "").replace(/\. Ask the lane to reach a safe point.*$/, "");
+        const told = await sendVerified(deps.run, deps.clock, deps.config, pane, safePointText(key, why));
+        seen = { ...seen, askedAt: at };
+        await save(seen);
+        acts.push({ kind: "rollover_auto", lane: key, detail: `asked ${pane} to reach a safe point and write its summary (${why})${told ? "" : `; the request did not reach pane ${pane}`}` });
+      }
+      if (last.blocked === "work") {
+        const mark = readJson<ReadyMark>(readyFile(stateDir, key));
+        const readied = mark?.pane === pane && mark.at > last.at;
+        const ended = (last.pids ?? []).length > 0 && (last.pids ?? []).every((pid) => !alive(pid));
+        if (!readied && !ended && now - Date.parse(last.at) < retryMs) return acts;
+      }
+    } else if (last.result === "refused" && last.blocked === "training") {
+      return [];
+    } else {
+      // the move failed or rolled back, or the run was refused for another reason: back off, doubling up to 8 times
+      failures = (seen.failures ?? 0) + 1;
+      if (now - Date.parse(last.at) < retryMs * 2 ** Math.min(3, failures - 1)) return [];
     }
-    if (now - Date.parse(seen.autoAt) < h.autoRetryMin * 60_000) return [];
     const hit = await reasons();
-    if (!hit.length) return [];
-    await save({ ...seen, autoAt: at, tries: tries + 1 });
-    return [{ kind: "rollover_auto", lane: key, detail: `retry ${tries + 1}/${h.autoMaxTries} (${hit.join(", ")}): ${await auto(who, key)}` }];
+    if (!hit.length) return acts;
+    const tries = (seen.tries ?? 1) + 1;
+    await save({ ...seen, autoAt: at, tries, failures });
+    return [...acts, { kind: "rollover_auto", lane: key, detail: `start ${tries} (${hit.join(", ")}${last ? `; last: ${last.result}${last.blocked ? ` ${last.blocked}` : ""}` : ""}): ${await auto(who, key)}` }];
   }
   const hit = await reasons();
   if (!hit.length) return [];
@@ -105,7 +172,7 @@ export const autoReadyLine = (h: DoriConfig["handover"]): string => {
   };
   const sides = `${side("lane", h.autoRolloverLanes)}, ${side("lead", h.autoRolloverLead)}`;
   return h.autoRolloverLanes || h.autoRolloverLead
-    ? `ROLLOVER_AUTO_READY ${sides}; retry every ${h.autoRetryMin} min, up to ${h.autoMaxTries} starts per session; the owner is told after each move`
+    ? `ROLLOVER_AUTO_READY ${sides}; a lane moves at its idle moment (waits up to ${h.autoWaitMin} min), a busy lane is asked for a safe point first, a failed move is retried after ${h.autoRetryMin} min (doubling), with no last try; the owner is told after each move`
     : `ROLLOVER_AUTO_OFF ${sides}; rollovers wait for the lead's decision`;
 };
 
@@ -131,7 +198,14 @@ export const freshnessTick = async (deps: FlowDeps, home: string, hooks: Rollove
   const staged = new Set<string>();
   let leadScreen: string | undefined;
   for (const lane of await deps.registry.open()) {
-    if (statusOf(lane) !== "working" || !lane.pane) continue;
+    if (!lane.pane) continue;
+    // a lane told "not done" keeps working: it is moved to a new session like a working one (cyto-p2-timers carried 306k
+    // after its 13th compaction on 10-19 and was never started); its reports, nudges and posts stay as they were
+    if (statusOf(lane) === "not-done") {
+      acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, lane.rolloverDue, stuckTop(lane), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
+      continue;
+    }
+    if (statusOf(lane) !== "working") continue;
     leadScreen ??= deps.config.leadPane ? await readScreen(deps.run, deps.config.backend, deps.config.leadPane, 3000) : "";
     const report = lastReportLine(leadScreen, lane.key) ?? lastReportLine(await readScreen(deps.run, deps.config.backend, lane.pane, 200), lane.key);
     let current = lane;

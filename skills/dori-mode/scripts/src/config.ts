@@ -290,8 +290,11 @@ export type AutoSignals = {
 // stuck ladder (stuck.*). Nothing switches on a threshold: the lead decides (dori rollover-propose prints proposalText
 // for the lead and logs it), runs the handover with --approved-by lead:<reason and signal>, and the handover tells the
 // owner afterwards and logs that message's id. autoRolloverLanes / autoRolloverLead let freshness start it on a measured
-// threshold or at rung 4 of the stuck ladder without asking; off until the owner decides from dori rollover-stats. A session
-// still in the same pane autoRetryMin minutes after an automatic start (refused or failed) gets another, up to autoMaxTries.
+// threshold or at rung 4 of the stuck ladder without asking; off until the owner decides from dori rollover-stats. An
+// automatic lane start waits up to autoWaitMin minutes for the lane's turn to end and moves it at that idle moment; a lane
+// that stays busy, or runs a chain that would die, is asked to reach a safe point first (again after autoRetryMin), and
+// the move starts again once it is idle or marked ready. There is no last try: a move that failed is started again after
+// autoRetryMin minutes, doubling up to 8 times that while failures go on.
 // An automatic start never moves a lane that runs or watches a training or eval chain: one with a tag in trainingTags, or
 // a live monitor whose command, path or description matches trainingWatch (a regex, case-insensitive); the lead moves it.
 // reportText ({who}, {from}, {to},
@@ -324,7 +327,7 @@ export type Handover = {
   readonly autoRolloverLanes: boolean;
   readonly autoRolloverLead: boolean;
   readonly autoRetryMin: number;
-  readonly autoMaxTries: number;
+  readonly autoWaitMin: number;
   readonly trainingTags: readonly string[];
   readonly trainingWatch: string;
   readonly supplementRounds: number;
@@ -496,8 +499,8 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     },
   },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
-    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneAfterCompactK: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, leadAfterCompactK: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoMaxTries: 6,
-    trainingTags: ["training"], trainingWatch: "chain[_-]?watch|_chain_|\\btrain(ing)?\\b|learning iteration|/runs/|run[_-]?dir|\\bdori heavy\\b", supplementRounds: 2, frozenCloseH: 24,
+    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneAfterCompactK: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, leadAfterCompactK: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoWaitMin: 20,
+    trainingTags: ["training"], trainingWatch: "chain[_-]?watch|_chain_|\\btrain(ing)?\\b|learning iteration|/runs/|run[_-]?dir|\\bdori heavy\\b|(^|[^a-z])(eval|replay)([^a-z]|$)", supplementRounds: 2, frozenCloseH: 24,
     frozenText: "The old session {from} is frozen ({n} processes stopped, it uses no tokens); it closes in {hours} h. To undo: dori handover thaw {from}",
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
     reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },

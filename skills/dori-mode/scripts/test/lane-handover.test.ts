@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
 import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine, trainingMark } from "../src/lane-handover.ts";
-import { approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
+import { appendRollover, approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
 import { stuckTop, stuckView } from "../src/explore.ts";
 import { recordFix } from "../src/same-fix.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
@@ -439,6 +439,20 @@ test("a paused lane gets no rollover proposal, and pausing does not make it safe
   expect(printed[0]).toStartWith("HANDOVER_REFUSED demo: 1 local chain(s) would die");
   expect(printed.at(-1)).toContain("a turn is running");
   expect(opened()).toBe(false);
+});
+
+test("a lane told not done keeps working and is moved like a working one; it gets no nudge it did not get before", async () => {
+  // Given: cyto-p2-timers on 10-19, not-done, 306k after its 13th compaction, never started
+  const base = await setup();
+  const deps = { ...base, config: { ...base.config, handover: { ...base.config.handover, laneAfterCompactK: 300, autoRolloverLanes: true } } };
+  await deps.registry.patch("demo", { status: "not-done", lastReplyAt: deps.clock.now() - 600 * 60_000 });
+  const starts: string[] = [];
+  // When
+  const acts = await freshnessTick(deps, "/home/test", { signals: async (pane: string) => (pane === OLD ? { afterCompactK: 306 } : {}), auto: async (_who, key) => { starts.push(key); return "started"; } });
+  // Then
+  expect(acts.filter((a) => a.lane === "demo").map((a) => a.kind)).toEqual(["rollover_due", "rollover_auto"]);
+  expect(starts).toEqual(["demo"]);
+  expect(sent(w).some((t) => t.includes("no update for"))).toBe(false);
 });
 
 test("a lane's stuck rollover point is rung 4 of the ladder: its STUCK line, not a ROLLOVER_DUE of its own, and the rung goes into the handover log", async () => {
@@ -937,6 +951,24 @@ test("work under the lane's own processes still refuses: an agent child, a kerne
   expect(refused.length).toBe(3);
 });
 
+test("a zombie the agent has not collected is no local chain: a lane with only zombies moves, one beside a real chain still refuses for the chain only", async () => {
+  // Given: yoodori-gate-gaps on 10-19, refused 5 times for "3428606 [bash] <defunct>" under its agent
+  const deps = await setup();
+  const idle = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  table = [...idle, { pid: 3428606, ppid: 11, stat: "Z", cmd: "[bash] <defunct>" }, { pid: 2548935, ppid: 30, cmd: "[git] <defunct>" }];
+  // When
+  const zombies = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  const zombieNote = readFileSync(zombies.note ?? "", "utf8");
+  table = [...idle, { pid: 3428606, ppid: 11, stat: "Z", cmd: "[bash] <defunct>" }, { pid: 31, ppid: 11, stat: "S", cmd: "bash -c ./train.sh" }, { pid: 32, ppid: 31, stat: "Z", cmd: "[sh] <defunct>" }];
+  const chain = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // Then
+  expect([zombies.code, chain.code]).toEqual([0, 2]);
+  expect(zombieNote).toContain("## Local chains of the old session (0)");
+  const refused = printed.filter((l) => l.startsWith("HANDOVER_REFUSED"));
+  expect(refused).toEqual([expect.stringContaining("HANDOVER_REFUSED demo: 1 local chain(s) would die: 31 bash -c ./train.sh. ")]);
+  expect(JSON.parse(readFileSync((chain.note ?? "").replace(/\.md$/, ".json"), "utf8")).chains).toEqual([{ pid: 31, cmd: "bash -c ./train.sh", pids: [31] }]);
+});
+
 test("a background eval cell that ended, or was started before a ready mark, does not refuse; one started after it does", async () => {
   // Given
   const deps = await setup();
@@ -969,7 +1001,8 @@ test("an automatic rollover never moves a lane that watches a training chain: re
   // Then
   expect(auto.code).toBe(2);
   expect(printed[0]).toBe(`HANDOVER_REFUSED demo: an automatic rollover does not move a lane that runs or watches a training or eval chain (training chain watched: monitor "Q267 chain s21 then s31"); no more automatic starts in ${OLD}. The lead moves it by hand: dori handover --lane demo --approved-by "lead:<reason and signal>"`);
-  expect((await readLane(deps)).rolloverDue).toMatchObject({ pane: OLD, tries: 1, gaveUp: true });
+  expect((await readLane(deps)).rolloverDue).toMatchObject({ pane: OLD, tries: 1, leftToLead: 'training chain watched: monitor "Q267 chain s21 then s31"' });
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "refused", blocked: "training" });
   expect(opened()).toBe(false);
   expect(byHand.code).toBe(0);
   expect(printed.filter((l) => l.startsWith("HANDOVER_REFUSED"))).toHaveLength(1);
@@ -991,6 +1024,10 @@ test("a lane tagged training is left to the lead as well; ordinary monitors and 
   expect(trainingMark(lane(), plain, h)).toBeUndefined();
   expect(trainingMark(lane(), [{ description: "judge", command: "tail -n 0 -F /w/hr35-eth-v2-t1/runs/judge.log", persistent: true }], h)).toBe('training chain watched: monitor "judge"');
   expect(trainingMark(lane(), [{ description: "Q267 chain", command: "bash q267_chain_watch.sh", persistent: true }], { ...h, trainingWatch: "" })).toBeUndefined();
+  // e7-beyond-eth on 10-19: a replay on another node, no chain word in the command, only its filter and description say eval
+  const spark = { description: "Q267 s21 Spark replay on ori644d: progress/fail/done", command: "bash /home/oriclaw/work/rand_watch/q267_spark_watch.sh arch_cnngru_q267_s21_mn ori644d", filter: "Q267_EVAL", persistent: true };
+  expect(trainingMark(lane(), [spark], h)).toBe('training chain watched: monitor "Q267 s21 Spark replay on ori644d: progress/fail/done"');
+  expect(trainingMark(lane(), [{ ...spark, description: "s21" }], h)).toBe('training chain watched: monitor "s21"');
 });
 
 test("a ready mark covers chains only: a turn that started after it still refuses", async () => {
@@ -1004,6 +1041,72 @@ test("a ready mark covers chains only: a turn that started after it still refuse
   expect(r.code).toBe(2);
   expect(printed[0]).toContain("a turn is running");
   expect(opened()).toBe(false);
+});
+
+const AUTO = "auto:handover.autoRolloverLanes";
+const BUSY = `${HIGH}\n • Working (esc to interrupt)`;
+
+test("an automatic start waits for the lane's idle moment and freezes it right then, before the new session opens; a turn that slips in is thawed and waited for again", async () => {
+  // Given: a lane in a turn (a goal continuation), no chain of its own
+  const base = await setup();
+  const c = fakeClock(Date.parse("2026-10-11T16:35:00Z"));
+  let polls = 0;
+  const order: string[] = [];
+  const posted: string[] = [];
+  const deps: LaneHandoverDeps = {
+    ...base,
+    clock: { now: () => c.at, sleep: async (ms: number) => { c.at += ms; polls++; if (polls === 4 || polls === 6) w.screens[OLD] = HIGH; simulate(); } },
+    config: { ...base.config, handover: { ...base.config.handover, autoRolloverLanes: true } },
+    reportOwner: async (_thread, text) => { posted.push(text); return "msg-9"; },
+    signal: (pid, sig) => {
+      order.push(`${sig} ${pid}${opened() ? " after open" : ""}`);
+      // the first freeze lands just as a turn starts
+      if (sig === "SIGSTOP" && order.length === 1) w.screens[OLD] = BUSY;
+      return true;
+    },
+  };
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  w.screens[OLD] = BUSY;
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: AUTO, waitIdleMin: 20 });
+  // Then
+  expect(r.code).toBe(0);
+  expect(printed.filter((l) => l.startsWith("HANDOVER_WAIT_IDLE demo"))).toHaveLength(1);
+  expect(printed).toContain("HANDOVER_THAWED demo agent 11: a turn started as it was frozen");
+  expect(printed.find((l) => l.startsWith("HANDOVER_FROZEN demo"))).toContain("at its idle moment");
+  expect(order.slice(0, 3)).toEqual(["SIGSTOP 11", "SIGCONT 11", "SIGSTOP 11"]);
+  expect(order.filter((s) => s.startsWith("SIGSTOP"))).toHaveLength(2);
+  expect(sent(w).some((t) => t.includes("Stop here"))).toBe(false);
+  expect(printed).toContain(`HANDOVER_COMMITTED demo ${NEW}`);
+  expect(posted).toHaveLength(1);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "done", decidedBy: "auto" });
+  expect(existsSync(join(state.dir, "handover", "lanes", "demo.lock"))).toBe(false);
+});
+
+test("an automatic start whose lane stays busy for the whole wait is refused as busy and opens nothing; work that would die refuses at once, without waiting, and names its pids", async () => {
+  // Given
+  const base = await setup();
+  const c = fakeClock(Date.parse("2026-10-11T16:35:00Z"));
+  let sleeps = 0;
+  const deps: LaneHandoverDeps = { ...base, clock: { now: () => c.at, sleep: async (ms: number) => { c.at += ms; sleeps++; } }, config: { ...base.config, handover: { ...base.config.handover, autoRolloverLanes: true } }, reportOwner: async () => "msg-1" };
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  w.screens[OLD] = BUSY;
+  // When
+  const busy = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: AUTO, waitIdleMin: 20 });
+  const waited = sleeps;
+  table = aoeTable();
+  w.screens[OLD] = HIGH;
+  const work = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: AUTO, waitIdleMin: 20 });
+  // Then
+  expect([busy.code, work.code]).toEqual([2, 2]);
+  expect(waited).toBe(400);
+  expect(sleeps).toBe(waited);
+  const log = readRollovers(state.dir).flatMap((e) => (e.kind === "rollover" ? [e] : []));
+  expect(log.map((e) => [e.result, e.blocked, e.pids])).toEqual([["refused", "busy", undefined], ["refused", "work", [15, 16]]]);
+  expect(log[0]?.reasons[0]).toStartWith("the lane stayed busy for 20 min: a turn is running (esc to interrupt on screen). ");
+  expect(opened()).toBe(false);
+  expect(sigs).toEqual([]);
+  expect(existsSync(join(state.dir, "handover", "lanes", "demo.lock"))).toBe(false);
 });
 
 test("when the old session ends during the checks, the new one stays the lane instead of moving back to a dead pane", async () => {
@@ -1090,38 +1193,84 @@ test("without a way to reach the owner a lead's rollover is refused before anyth
   expect(readRollovers(state.dir).at(-1)).toMatchObject({ decidedBy: "lead", ownerReport: { error: "429 rate limited" } });
 });
 
-test("an automatic rollover still in the same pane is started again after autoRetryMin, up to autoMaxTries, then one line gives up; a new pane starts over", async () => {
+test("an automatic start comes back from what its run logged, never on a clock alone and never giving up: busy is asked and started again at once, work waits for its ready mark or its chains, a failed move backs off doubling", async () => {
   // Given
   const base = await setup();
-  const clock = fakeClock(Date.parse("2026-10-11T16:35:00Z"));
-  const deps = { ...base, clock, config: { ...base.config, handover: { ...base.config.handover, laneContextPct: 80, autoRolloverLanes: true, autoRetryMin: 30, autoMaxTries: 3 } } };
-  const starts: string[] = [];
-  const hooks = { signals: async (pane: string) => (pane === OLD ? { contextPct: 85 } : {}), auto: async (_who: "lead" | "lane", key: string) => { starts.push(key); return `started ${starts.length}`; } };
+  const T0 = Date.parse("2026-10-11T16:35:00Z");
+  const clock = fakeClock(T0);
+  const deps = { ...base, clock, config: { ...base.config, handover: { ...base.config.handover, laneContextPct: 80, autoRolloverLanes: true, autoRetryMin: 30 } } };
+  const running = new Set<number>([15]);
+  // what the detached run of each start leaves in the rollover log
+  let outcome: { result: string; blocked?: "work" | "busy"; pids?: number[]; reasons: string[] } = { result: "refused", blocked: "busy", reasons: ["the lane stayed busy for 20 min: a turn is running (esc to interrupt on screen). Ask the lane to reach a safe point and ..."] };
+  const starts: number[] = [];
+  const hooks = {
+    signals: async (pane: string) => (pane === OLD ? { contextPct: 85 } : {}),
+    alive: (pid: number) => running.has(pid),
+    auto: async (_who: "lead" | "lane", key: string) => {
+      starts.push(Math.round((clock.at - T0) / 60_000));
+      appendRollover(state.dir, { kind: "rollover", who: "lane", at: new Date(clock.at).toISOString(), key, from: OLD, approvedBy: "auto:handover.autoRolloverLanes", signals: {}, steps: [], ...outcome });
+      return "started";
+    },
+  };
   const tick = async (min: number): Promise<string[]> => {
-    clock.at = Date.parse("2026-10-11T16:35:00Z") + min * 60_000;
+    clock.at = T0 + min * 60_000;
     await deps.registry.patch("demo", { lastReplyAt: clock.at });
     return (await freshnessTick(deps, "/home/test", hooks)).filter((a) => a.lane === "demo" && a.kind.startsWith("rollover")).map((a) => `${a.kind} ${a.detail}`);
   };
-  // When
-  const first = await tick(0);
-  const soon = await tick(10);
-  const second = await tick(31);
-  const third = await tick(62);
-  const gaveUp = await tick(93);
-  const after = await tick(200);
+  const asked = () => sent(w).filter((t) => t.startsWith("[LEAD] An automatic rollover of demo")).length;
+  // When / Then: the first start found the lane busy for its whole wait: it is asked for a safe point and started again at once
+  expect(await tick(0)).toEqual([expect.stringMatching(/^rollover_due /), "rollover_auto started"]);
+  outcome = { result: "refused", blocked: "work", pids: [15, 16], reasons: ["1 local chain(s) would die: 15 bash -c sleep 7200; echo chain-done. Ask the lane to reach a safe point and ..."] };
+  expect(await tick(2)).toEqual(["rollover_auto asked aoe_demo_1a1a1a1a to reach a safe point and write its summary (the lane stayed busy for 20 min: a turn is running (esc to interrupt on screen))", "rollover_auto start 2 (context 85% >= 80%; last: refused busy): started"]);
+  expect(sent(w).find((t) => t.startsWith("[LEAD] An automatic rollover of demo"))).toContain("run dori handover ready demo --note <file>, then end your turn");
+  // a chain would die: no new start while it runs, the request is not repeated within autoRetryMin
+  expect(await tick(4)).toEqual([]);
+  expect(asked()).toBe(1);
+  // the lane marks ready after the refusal: the move starts again at once
+  ready(deps, [15], new Date(T0 + 5 * 60_000).toISOString());
+  outcome = { result: "refused", blocked: "work", pids: [99], reasons: ["1 eval cell(s) still run in the background: toolu_x. Ask ..."] };
+  expect(await tick(6)).toEqual(["rollover_auto start 3 (context 85% >= 80%; last: refused work): started"]);
+  // its chain ends: the move starts again although autoRetryMin has not passed; a handover still running holds it
+  running.add(77);
+  mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
+  writeFileSync(join(state.dir, "handover", "lanes", "demo.lock"), JSON.stringify({ pid: 77, at: "x" }));
+  expect(await tick(8)).toEqual([]);
+  running.delete(77);
+  outcome = { result: "rolled-back", reasons: ["verify"] };
+  expect(await tick(9)).toEqual(["rollover_auto start 4 (context 85% >= 80%; last: refused work): started"]);
+  // failed moves back off: 30 min, then 60, then 120, 240 and 240 again; no last try
+  expect(await tick(38)).toEqual([]);
+  expect(await tick(39)).toEqual(["rollover_auto start 5 (context 85% >= 80%; last: rolled-back): started"]);
+  expect(await tick(98)).toEqual([]);
+  expect(await tick(99)).toEqual(["rollover_auto start 6 (context 85% >= 80%; last: rolled-back): started"]);
+  expect(await tick(219)).toEqual(["rollover_auto start 7 (context 85% >= 80%; last: rolled-back): started"]);
+  expect(await tick(459)).toEqual(["rollover_auto start 8 (context 85% >= 80%; last: rolled-back): started"]);
+  expect(await tick(698)).toEqual([]);
+  expect(await tick(699)).toEqual(["rollover_auto start 9 (context 85% >= 80%; last: rolled-back): started"]);
+  expect(starts).toEqual([0, 2, 6, 9, 39, 99, 219, 459, 699]);
+  expect((await readLane(deps)).rolloverDue).toMatchObject({ pane: OLD, tries: 9, failures: 5 });
+  // a move to a new pane starts over
   await deps.registry.patch("demo", { pane: "aoe_demo-2_77777777" });
-  const moved = await tick(201);
-  // Then
-  expect(first).toEqual([`rollover_due context 85% >= 80% in ${OLD}: decide it (dori rollover-propose demo shows the note); to go ahead, once the lane is at a safe point (dori handover ready demo), run dori handover --lane demo --approved-by "lead:<reason and this signal>"; the owner is told afterwards`, "rollover_auto started 1"]);
-  expect(soon).toEqual([]);
-  expect(second).toEqual(["rollover_auto retry 2/3 (context 85% >= 80%): started 2"]);
-  expect(third).toEqual(["rollover_auto retry 3/3 (context 85% >= 80%): started 3"]);
-  expect(gaveUp).toHaveLength(1);
-  expect(gaveUp[0]).toStartWith(`rollover_auto gave up in ${OLD} after 3 automatic starts (handover.autoMaxTries 3)`);
-  expect(after).toEqual([]);
-  expect(moved).toEqual([]);
-  expect(starts).toEqual(["demo", "demo", "demo"]);
-  expect((await readLane(deps)).rolloverDue).toMatchObject({ pane: OLD, tries: 3, gaveUp: true });
+  expect(await tick(700)).toEqual([]);
+});
+
+test("a lane given up by an older version (gaveUp after autoMaxTries) is started again; a run that left no record is started again after autoRetryMin", async () => {
+  // Given: yoodori-gate-gaps on 10-19 02:04, "gave up in ... after 6 automatic starts"
+  const base = await setup();
+  const T0 = Date.parse("2026-10-11T16:35:00Z");
+  const clock = fakeClock(T0);
+  const deps = { ...base, clock, config: { ...base.config, handover: { ...base.config.handover, laneContextPct: 80, autoRolloverLanes: true, autoRetryMin: 30 } } };
+  await deps.registry.patch("demo", { rolloverDue: { pane: OLD, at: "2026-10-11T10:00:00.000Z", crossed: ["context 85% >= 80%"], autoAt: "2026-10-11T15:00:00.000Z", tries: 6, gaveUp: true } });
+  const hooks = { signals: async (pane: string) => (pane === OLD ? { contextPct: 85 } : {}), alive: () => false, auto: async () => "started" };
+  const tick = async (min: number): Promise<string[]> => {
+    clock.at = T0 + min * 60_000;
+    await deps.registry.patch("demo", { lastReplyAt: clock.at });
+    return (await freshnessTick(deps, "/home/test", hooks)).filter((a) => a.lane === "demo").map((a) => `${a.kind} ${a.detail}`);
+  };
+  // When / Then: the old record has no run logged since its last start: one more start now, then none until autoRetryMin
+  expect(await tick(0)).toEqual(["rollover_auto start 7 (context 85% >= 80%): started"]);
+  expect(await tick(29)).toEqual([]);
+  expect(await tick(30)).toEqual(["rollover_auto start 8 (context 85% >= 80%): started"]);
 });
 
 test("an automatic lane rollover tells the owner afterwards with what it crossed; a refused one is only in the log", async () => {
@@ -1149,9 +1298,9 @@ test("freshness starts with one line that says whether rollovers start by themse
   const h = defaultConfig("/home/test").handover;
   expect(autoReadyLine(h)).toBe("ROLLOVER_AUTO_OFF lanes off, lead off; rollovers wait for the lead's decision");
   expect(autoReadyLine({ ...h, autoRolloverLanes: true, autoRolloverLead: true, laneContextPct: 80, laneCompactions: 4, laneAgeH: 24, leadContextPct: 80, leadCompactions: 4, leadAgeH: 48 })).toBe(
-    "ROLLOVER_AUTO_READY lanes on (context >= 80%, compactions >= 4, age >= 24 h, stuck rung 4), lead on (context >= 80%, compactions >= 4, age >= 48 h); retry every 30 min, up to 6 starts per session; the owner is told after each move",
+    "ROLLOVER_AUTO_READY lanes on (context >= 80%, compactions >= 4, age >= 24 h, stuck rung 4), lead on (context >= 80%, compactions >= 4, age >= 48 h); a lane moves at its idle moment (waits up to 20 min), a busy lane is asked for a safe point first, a failed move is retried after 30 min (doubling), with no last try; the owner is told after each move",
   );
-  expect(autoReadyLine({ ...h, autoRolloverLead: true })).toBe("ROLLOVER_AUTO_READY lanes off, lead on (no threshold set); retry every 30 min, up to 6 starts per session; the owner is told after each move");
+  expect(autoReadyLine({ ...h, autoRolloverLead: true })).toBe("ROLLOVER_AUTO_READY lanes off, lead on (no threshold set); a lane moves at its idle moment (waits up to 20 min), a busy lane is asked for a safe point first, a failed move is retried after 30 min (doubling), with no last try; the owner is told after each move");
 });
 
 test("a rollover due while the auto key was off starts automatically in the same pane once the key is on, once", async () => {
