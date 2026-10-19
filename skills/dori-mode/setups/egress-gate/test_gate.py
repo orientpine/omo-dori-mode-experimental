@@ -1008,6 +1008,226 @@ class IPv6FallbackTests(unittest.TestCase):
             gate.tcp_connect("v6only.example", dead_port, 1)
 
 
+class NodeGateTests(unittest.IsolatedAsyncioTestCase):
+    """One gate holds the keys (the node); a keyless gate forwards to it over a socket like the SSH tunnel's."""
+
+    base_setup = GateTests.asyncSetUp
+    close_fake = GateTests.close_fake
+    fake_request = GateTests.fake_request
+    request = GateTests.request
+    approval = GateTests.approval
+    changes = GateTests.changes
+
+    async def asyncSetUp(self):
+        await self.base_setup()
+        self.relayed = 0
+        self.relayed_bytes = b""
+        relay_root = tempfile.TemporaryDirectory(prefix="dori-relay-test-")
+        self.addCleanup(relay_root.cleanup)
+        self.socket_path = str(Path(relay_root.name) / "gate.sock")
+        self.relay = await asyncio.start_unix_server(self.pipe, self.socket_path)
+        self.addAsyncCleanup(self.close_relay)
+        pc_root = tempfile.TemporaryDirectory(prefix="dori-gate-pc-test-")
+        self.addCleanup(pc_root.cleanup)
+        self.pc_state = Path(pc_root.name)
+        # The forwarding gate can reach no Google or Discord upstream: any direct contact would fail.
+        self.pc_config = {**self.config, "state": str(self.pc_state), "admins": [],
+                          "google_forward": {"unix": self.socket_path, "timeout": 5},
+                          "upstreams": {host: "http://127.0.0.1:9" for host in gate.GOOGLE_HOSTS},
+                          "discord_api_base": "http://127.0.0.1:9/api/v10"}
+        self.pc = gate.Gate(self.pc_config)
+        await self.pc.start()
+        self.addAsyncCleanup(self.pc.close)
+        self.ports["pc"] = self.pc.servers["google"].sockets[0].getsockname()[1]
+
+    async def close_relay(self):
+        self.relay.close()
+        await self.relay.wait_closed()
+
+    async def pipe(self, reader, writer):
+        """What `ssh -L <socket>:127.0.0.1:3129` does: bytes both ways to the node gate's port."""
+        self.relayed += 1
+        node_reader, node_writer = await asyncio.open_connection("127.0.0.1", self.ports["google"])
+
+        async def copy(source, destination):
+            while data := await source.read(65536):
+                if destination is node_writer:
+                    self.relayed_bytes += data
+                destination.write(data)
+                await destination.drain()
+            if destination.can_write_eof():
+                destination.write_eof()
+
+        await asyncio.gather(copy(reader, node_writer), copy(node_reader, writer), return_exceptions=True)
+        node_writer.close()
+        writer.close()
+
+    def pc_files(self):
+        return sorted(str(p.relative_to(self.pc_state)) for p in self.pc_state.rglob("*") if p.is_file())
+
+    async def test_a_forwarded_read_reaches_google_with_the_node_gates_token(self):
+        status, body = await self.request("GET", "/www.googleapis.com/calendar/v3/calendars/primary/events/e",
+                                          headers={"authorization": "Bearer caller-secret"}, proof=False, port="pc")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["id"], "e")
+        self.assertEqual(self.seen[-1][2]["authorization"], "Bearer access-secret")
+        self.assertEqual(self.relayed, 1)
+        self.assertNotIn(b"caller-secret", self.relayed_bytes)
+        self.assertNotIn("google-token.json", self.pc_files())
+
+    async def test_a_forwarded_own_write_runs_and_is_journaled_on_the_node_only(self):
+        status, body = await self.request(data={"summary": "Own", "attendees": [{"email": "owner@example.com"}]},
+                                          port="pc")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(self.changes()), 1)
+        self.assertEqual(self.changes()[0]["owner_message"], "https://discord.com/channels/10/20/100")
+        self.assertEqual(self.pc.records(), [])
+        self.assertFalse([name for name in self.pc_files() if name.endswith(".jsonl")])
+
+    async def test_a_forwarded_outbound_write_gets_its_card_from_the_node_gate(self):
+        self.approval()
+        status, body = await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]},
+                                          port="pc")
+        self.assertEqual(status, 202, body)
+        self.assertEqual(len(self.service.pending()), 1)
+        self.assertTrue(self.cards)
+        self.assertEqual(self.pc.pending(), [])
+        self.assertIsNone(self.pc.approval_task)
+
+    async def test_a_forwarded_write_without_owner_proof_is_refused_by_the_node(self):
+        status, body = await self.request(proof=False, port="pc")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
+        self.assertEqual(self.service.records("denials.jsonl")[-1]["reason"], "owner-message-required")
+        self.assertEqual(self.pc.records("denials.jsonl"), [])
+
+    async def test_the_node_gate_out_of_reach_is_a_clear_refusal_and_never_a_direct_call(self):
+        await self.close_relay()
+        Path(self.socket_path).unlink(missing_ok=True)
+        status, body = await self.request("GET", "/www.googleapis.com/drive/v3/files/f", proof=False, port="pc")
+        self.assertEqual((status, json.loads(body)["error"]), (502, "node-gate-unavailable"))
+        self.assertEqual(self.seen, [])
+
+    async def test_only_the_local_client_uid_may_forward(self):
+        self.pc_config["clients"] = []
+        status, body = await self.request("GET", "/www.googleapis.com/drive/v3/files/f", proof=False, port="pc")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "client-uid-required"))
+        self.assertEqual(self.relayed, 0)
+
+    async def test_the_forwarding_gate_admin_reports_no_keys_and_cannot_start_a_consent(self):
+        self.pc_config["admins"] = [os.getuid()]
+        status, body = await self.request("GET", "/_admin/status", proof=False, port="pc")
+        self.assertEqual(status, 200)
+        self.assertEqual({k: json.loads(body)[k] for k in ("mode", "token_present")},
+                         {"mode": "forward", "token_present": False})
+        status, body = await self.request(path="/_admin/auth-url", proof=False, port="pc")
+        self.assertEqual((status, json.loads(body)["error"]), (409, "keys-on-node"))
+
+    async def test_a_forwarding_gate_refuses_to_start_holding_any_credential_or_card(self):
+        cases = {"google-token-present": "google-token.json", "client-secret-present": "client_secret.json",
+                 "pending-cards-present": "pending/1.json"}
+        for reason, name in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory(prefix="dori-gate-refuse-") as root:
+                (Path(root) / "pending").mkdir()
+                (Path(root) / name).write_text("{}")
+                with self.assertRaises(gate.ConfigRefused) as raised:
+                    await gate.Gate({**self.pc_config, "state": root}).start()
+                self.assertEqual(str(raised.exception), reason)
+        for reason, extra in {"vault-config-present": {"vault": {"dir": "/x"}},
+                              "grants-config-present": {"token_clients": [1]},
+                              "forward-config-invalid": {"google_forward": {"unix": "relative.sock"}}}.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory(prefix="dori-gate-refuse-") as root:
+                with self.assertRaises(gate.ConfigRefused) as raised:
+                    await gate.Gate({**self.pc_config, "state": root, **extra}).start()
+                self.assertEqual(str(raised.exception), reason)
+
+    async def test_the_service_exits_with_a_marker_when_a_forwarding_gate_still_holds_a_token(self):
+        root = self.state / "refuse"
+        root.mkdir()
+        (root / "google-token.json").write_text("{}")
+        path = self.state / "forward.json"
+        path.write_text(json.dumps({**self.pc_config, "state": str(root)}))
+        process = await asyncio.create_subprocess_exec(sys.executable, "-I", str(Path(__file__).with_name("gate.py")),
+            "--config", str(path), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await asyncio.wait_for(process.communicate(), 10)
+        self.assertEqual(process.returncode, 3)
+        self.assertIn(b"GATE_FORWARD_REFUSED google-token-present", stderr)
+
+    def jobs(self, consented=True):
+        self.config["grants"] = {"jobs": {"scopes": ["openid", "https://www.googleapis.com/auth/gmail.send"],
+                                          "token_file": "jobs-token.json"}}
+        self.config["token_clients"] = [os.getuid()]
+        if consented:
+            (self.state / "jobs-token.json").write_text('{"refresh_token":"jobs-refresh","scope":"openid"}')
+
+    async def test_a_token_client_gets_a_short_token_of_a_named_grant_and_the_journal_keeps_no_token(self):
+        self.jobs()
+        status, body = await self.request("GET", "/_gate/access-token?grant=jobs", proof=False)
+        self.assertEqual(status, 200, body)
+        result = json.loads(body)
+        self.assertEqual(result["access_token"], "access-secret")
+        self.assertGreater(result["expires_in"], 3000)
+        refresh = [r for r in self.seen if r[1] == "/token"][-1]
+        self.assertEqual(parse_qs(refresh[3].decode())["refresh_token"], ["jobs-refresh"])
+        journal = (self.state / "tokens.jsonl").read_text()
+        self.assertEqual(json.loads(journal)["grant"], "jobs")
+        self.assertNotIn("access-secret", journal)
+        self.assertNotIn("jobs-refresh", journal)
+
+    async def test_access_tokens_are_refused_to_everyone_else_and_never_for_the_reverse_apis_grant(self):
+        self.jobs(consented=False)
+        cases = [("GET", "/_gate/access-token?grant=jobs", 503, "google-auth-required"),
+                 ("GET", "/_gate/access-token", 400, "grant-required"),
+                 ("GET", "/_gate/access-token?grant=default", 400, "grant-required"),
+                 ("GET", "/_gate/access-token?grant=other", 404, "unknown-grant"),
+                 ("POST", "/_gate/access-token?grant=jobs", 404, "not-found")]
+        for method, path, status, reason in cases:
+            with self.subTest(path=path, method=method):
+                answer, body = await self.request(method, path, proof=False)
+                self.assertEqual((answer, json.loads(body)["error"]), (status, reason))
+        self.config["token_clients"] = []
+        (self.state / "jobs-token.json").write_text('{"refresh_token":"jobs-refresh"}')
+        answer, body = await self.request("GET", "/_gate/access-token?grant=jobs", proof=False)
+        self.assertEqual((answer, json.loads(body)["error"]), (403, "token-client-required"))
+
+    async def consent(self, grant, scope):
+        self.config["admins"] = [os.getuid()]
+        status, content = await self.request(path="/_admin/auth-url", proof=False,
+                                             data={"grant": grant} if grant else None)
+        self.assertEqual(status, 200, content)
+        params = parse_qs(urlsplit(json.loads(content)["url"]).query)
+        self.scope = scope
+        status, content = await self.request(path="/_admin/auth-finish", proof=False,
+            data={"redirect": "http://localhost/?code=fake&state=" + params["state"][0]})
+        return status, content, params["scope"][0]
+
+    async def test_a_named_grant_may_hold_a_send_scope_but_the_reverse_apis_grant_still_may_not(self):
+        self.jobs(consented=False)
+        default_before = (self.state / "google-token.json").read_bytes()
+        send = "https://www.googleapis.com/auth/gmail.send"
+        status, content, asked = await self.consent("jobs", "openid " + send)
+        self.assertEqual(status, 200, content)
+        self.assertIn(send, asked.split())
+        self.assertEqual(json.loads((self.state / "jobs-token.json").read_text())["scope"], "openid " + send)
+        self.assertEqual((self.state / "jobs-token.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.state / "google-token.json").read_bytes(), default_before)
+        self.config["google_scopes"].append(send)
+        status, content, _ = await self.consent(None, "openid " + send)
+        self.assertEqual((status, json.loads(content)["error"]), (403, "unsafe-google-scope"))
+        self.assertEqual((self.state / "google-token.json").read_bytes(), default_before)
+        status, content = await self.request("GET", "/_admin/status", proof=False)
+        self.assertEqual(json.loads(content)["grants"], {"jobs": {"token_present": True, "scopes": ["openid", send]}})
+        self.assertNotIn("refresh", content.decode())
+
+    async def test_a_null_listener_stays_off(self):
+        node = gate.Gate({**self.config, "state": str(self.state / "node-only"),
+                          "listen": {"connect": None, "google": 0, "discord": None}})
+        await node.start()
+        try:
+            self.assertEqual(set(node.servers), {"google"})
+        finally:
+            await node.close()
+
+
 class IdentityTests(unittest.TestCase):
     def test_uid_lookup_from_fake_proc_and_remote_endpoint(self):
         with tempfile.TemporaryDirectory(prefix="dori-proc-test-") as root:

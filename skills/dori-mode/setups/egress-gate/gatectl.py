@@ -26,10 +26,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=3129)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("auth-url", "status", "tokeninfo"):
+    for name in ("status", "tokeninfo"):
         sub.add_parser(name)
+    start = sub.add_parser("auth-url")
+    start.add_argument("--grant", help="a named grant from the config (night-job tokens); default: the reverse API's")
     finish = sub.add_parser("auth-finish")
     finish.add_argument("redirect")
+    finish.add_argument("--grant", help="must match the grant auth-url was started for")
     changes = sub.add_parser("changes")
     changes.add_argument("--since", default="24h")
     restore = sub.add_parser("restore")
@@ -41,10 +44,13 @@ def main() -> None:
     elif args.command == "restore":
         result = request(args.port, "POST", "/_gate/restore/" + quote(args.id, safe=""),
                          proof=args.owner_message)
+    elif args.command.startswith("auth-"):
+        data = {"redirect": args.redirect} if args.command == "auth-finish" else {}
+        if args.grant:
+            data["grant"] = args.grant
+        result = request(args.port, "POST", "/_admin/" + args.command, data)
     else:
-        result = request(args.port, "POST" if args.command.startswith("auth-") else "GET",
-                         "/_admin/" + args.command,
-                         {"redirect": args.redirect} if args.command == "auth-finish" else None)
+        result = request(args.port, "GET", "/_admin/" + args.command)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
