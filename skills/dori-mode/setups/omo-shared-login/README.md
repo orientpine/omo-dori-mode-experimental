@@ -1,7 +1,7 @@
 # omo shared login
 
 One omo login, kept by the source account (zzangdori, `oriclaw`), lent to the
-other Dori accounts on the same host (`okdori`, `moodori`, `yoodori`). The
+other Dori accounts on the same host (`okdori`, `moodori`, `yoodori`, `gongdori`). The
 accounts stay separate; only the login is shared. A lapsed login or a new
 account needs one login, on zzangdori, instead of one per Dori.
 
@@ -38,7 +38,7 @@ cannot share one file across accounts: the path is always
   borrower's file with the sudo rule it already has.
 - Triggers: `omo-login-share.timer` every 3 minutes, plus `omo-login-share.path`
   on every change of the source auth.json. A `/login` on zzangdori therefore
-  reaches the three accounts within seconds, and at most within 3 minutes.
+  reaches the borrowing accounts within seconds, and at most within 3 minutes.
 - Alerts go to the live lead pane (`dori lead`, `dori type`) as
   `[ALERT] omo-shared-login | ...`. They fire when a source grant is rejected
   (and a login link is started, see below), when a source refresh keeps failing
@@ -81,9 +81,18 @@ omo-login-share code '<what the owner pasted>'                         # Anthrop
   final page address) shown in the browser into the thread. The lead passes it
   on with `omo-login-share code`.
 - `/login` in zzangdori's own omo works the same way: the path unit pushes the
-  result to the three accounts.
+  result to the borrowing accounts.
 
-형이 할 일: 짱돌이 보낸 링크를 열어 승인한다(Anthropic·ChatGPT는 화면에 나온 코드를 스레드에 한 번 붙인다). 네 도리에 반영하는 것은 짱돌이 한다.
+## Adding a borrower
+
+Add the account to `BORROWERS` in `omo-login-share.ts` once its Linux user exists
+and `oriclaw` may `sudo -n -u <account>` (the same rule the other Dori have),
+then re-run `install.sh` and `omo-login-share sync`. An account that never had
+a login (gongdori, added 2026-10-19) holds an empty `auth.json` (`{}`) from the
+omo install; the first push backs that up, so `disable` brings the account back
+to no login at all.
+
+형이 할 일: 짱돌이 보낸 링크를 열어 승인한다(Anthropic·ChatGPT는 화면에 나온 코드를 스레드에 한 번 붙인다). 다섯 도리에 반영하는 것은 짱돌이 한다.
 
 ## Test without touching a live session
 

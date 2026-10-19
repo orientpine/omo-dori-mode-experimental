@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// omo-login-share: one omo login (zzangdori, oriclaw) borrowed by okdori, moodori and yoodori.
+// omo-login-share: one omo login (zzangdori, oriclaw) borrowed by okdori, moodori, yoodori and gongdori.
 // Only this account redeems refresh grants; borrowers receive access tokens with the refresh
 // replaced by a placeholder, so no copy can rotate a grant out from under the others.
 // Tokens travel on stdin only (never argv, env, logs or the state dir).
@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const HOME = homedir();
-const BORROWERS = ["okdori", "moodori", "yoodori"] as const;
+const BORROWERS = ["okdori", "moodori", "yoodori", "gongdori"] as const;
 const SOURCE_AUTH = process.env.OLS_SOURCE_AUTH ?? join(HOME, ".omo/agent/auth.json");
 const GLOBAL = join(HOME, ".bun/install/global/node_modules");
 const SENPI = join(GLOBAL, "@code-yeongyu/senpi/dist");
@@ -275,7 +275,7 @@ async function sync(flags: Flags) {
 				state,
 				`needs_login:${failure.key}`,
 				failure.rejected,
-				`짱돌 로그인 풀림: ${failure.key} 갱신 거부(${failure.message}). 로그인 링크를 리드에게 보냅니다(omo-login-share login). 형이 승인하면 네 도리에 자동 반영됩니다.`,
+				`짱돌 로그인 풀림: ${failure.key} 갱신 거부(${failure.message}). 로그인 링크를 리드에게 보냅니다(omo-login-share login). 형이 승인하면 다섯 도리에 자동 반영됩니다.`,
 				() => startLoginUnit(providerId, slotName === "default" && !Array.isArray((source[providerId] as Json)?.accounts) ? undefined : slotName),
 			);
 			const entry = source[providerId] as Json;
@@ -353,7 +353,7 @@ function unitText(): Record<string, string> {
 	const script = join(import.meta.dir, "omo-login-share.ts");
 	const env = `Environment=PATH=${UNIT_PATH}\n`;
 	return {
-		"omo-login-share.service": `[Unit]\nDescription=omo shared login: refresh zzangdori's login ahead and lend it to okdori, moodori, yoodori\nOnFailure=omo-login-share-failed.service\n\n[Service]\nType=oneshot\n${env}ExecStart=${bun} ${script} sync --quiet\n`,
+		"omo-login-share.service": `[Unit]\nDescription=omo shared login: refresh zzangdori's login ahead and lend it to okdori, moodori, yoodori, gongdori\nOnFailure=omo-login-share-failed.service\n\n[Service]\nType=oneshot\n${env}ExecStart=${bun} ${script} sync --quiet\n`,
 		"omo-login-share.timer": `[Unit]\nDescription=omo shared login every 3 minutes\n\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=3min\nAccuracySec=15s\n\n[Install]\nWantedBy=timers.target\n`,
 		"omo-login-share.path": `[Unit]\nDescription=omo shared login on every change of zzangdori's auth.json\n\n[Path]\nPathChanged=${SOURCE_AUTH}\nUnit=omo-login-share.service\nTriggerLimitIntervalSec=60\nTriggerLimitBurst=20\n\n[Install]\nWantedBy=default.target\n`,
 		"omo-login-share-failed.service": `[Unit]\nDescription=omo shared login failure alert to the lead\n\n[Service]\nType=oneshot\n${env}ExecStart=${bun} ${script} alert-failed\n`,
@@ -469,7 +469,7 @@ async function login(positional: string[], flags: Flags) {
 		for (const key of Object.keys(state.rejectedGrants ?? {})) if (key.startsWith(`${providerId}/`)) delete state.rejectedGrants[key];
 		saveState(state);
 		await sync({ "no-refresh": true, quiet: true });
-		await say(`[LOGIN] omo-shared-login | ${providerId}${account ? `/${account}` : ""} 로그인 완료, 옥돌·무돌·유돌에 반영함.`);
+		await say(`[LOGIN] omo-shared-login | ${providerId}${account ? `/${account}` : ""} 로그인 완료, 옥돌·무돌·유돌·공돌에 반영함.`);
 	} finally {
 		rmSync(join(LOGIN_DIR, `${id}.pending`), { force: true });
 	}
@@ -518,10 +518,10 @@ async function main() {
 	}
 	console.log(
 		[
-			"omo-login-share status              네 도리가 짱돌 로그인을 빌려 쓰는지 표로 보여 줌",
+			"omo-login-share status              다섯 도리가 짱돌 로그인을 빌려 쓰는지 표로 보여 줌",
 			"omo-login-share sync [--no-refresh] [--force-refresh P/slot] [--only a,b] [--test-dir REL] [--no-alert] [--quiet]",
 			"omo-login-share enable              백업 후 반영하고 3분 타이머 + auth.json 감시를 켬",
-			"omo-login-share disable             되돌리기: 타이머를 끄고 세 계정 auth.json을 적용 전 백업으로 복원",
+			"omo-login-share disable             되돌리기: 타이머를 끄고 빌려 쓰는 계정들의 auth.json을 적용 전 백업으로 복원",
 			"omo-login-share login <provider> [--account NAME] [--notify]   짱돌에 로그인(링크는 리드에게)",
 			"omo-login-share code <붙인 값>       기다리는 로그인에 형이 붙인 코드를 넘김",
 		].join("\n"),
