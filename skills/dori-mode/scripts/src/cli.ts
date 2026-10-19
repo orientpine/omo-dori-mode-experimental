@@ -263,8 +263,11 @@ const USAGE = `dori <command> [options]
                                        it> (the lead decides; the owner gets a line afterwards, its message id goes to the
                                        log, ROLLOVER_OWNER_REPORT_MISSING when it cannot be sent), or the owner's answered card
                                        Qn or message link, kept in the note and log: refuses while a local chain of the
-                                       lane's agent, a running turn or an open question would die, unless the lane ran
-                                       handover ready (or --force); writes a note (brief, owner goal, Done, todos, goal,
+                                       lane's agent or eval kernel (not the session's own launcher shell or idle kernel), a
+                                       background eval cell, a running turn or an open question would die, unless the lane
+                                       ran handover ready (or --force); an automatic start (auto:) never moves a lane that
+                                       runs or watches a training or eval chain (handover.trainingTags, trainingWatch);
+                                       writes a note (brief, owner goal, Done, todos, goal,
                                        monitors, local chains, detached jobs, last reports, model and thinking), opens a
                                        session in the same real path with --model and --thinking, points the registry and
                                        cards at it, checks its status line, monitors and a [LEAD] probe ack, then closes the

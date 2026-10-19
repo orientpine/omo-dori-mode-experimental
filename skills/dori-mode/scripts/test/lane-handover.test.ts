@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
-import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine } from "../src/lane-handover.ts";
+import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine, trainingMark } from "../src/lane-handover.ts";
 import { approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, quietReason, readRollovers, rolloverStats, sessionSignals } from "../src/rollover.ts";
 import { stuckTop, stuckView } from "../src/explore.ts";
 import { recordFix } from "../src/same-fix.ts";
@@ -886,6 +886,111 @@ test("a job started from the pane's shell dies with it too: it counts as a local
   // Then
   expect(r.code).toBe(2);
   expect(printed[0]).toStartWith("HANDOVER_REFUSED demo: 1 local chain(s) would die: 50 sleep 300");
+});
+
+// aoe starts the agent through a launcher shell, and omo keeps its python eval kernel alive once a lane used it
+const LAUNCHER = { pid: 9, ppid: 10, cmd: "/bin/bash /dev/fd/4" };
+const KERNEL = { pid: 30, ppid: 11, cmd: "python3 -u /r/node_modules/@code-yeongyu/senpi-codemode/src/kernels/py/prelude.py" };
+const aoeTable = (): Proc[] => [LAUNCHER, ...baseTable().map((p) => (p.pid === 11 ? { ...p, ppid: 9 } : p)), KERNEL];
+const evalCell = (id: string, at: string, text = `Eval cell ${id} detached and is running in the background`) =>
+  appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), `\n${JSON.stringify({ type: "message", timestamp: at, message: { role: "toolResult", toolName: "eval", toolCallId: id, content: [{ type: "text", text }] } })}`);
+
+test("the lane's own launcher shell and an idle eval kernel are not local chains: an idle lane moves without a ready mark", async () => {
+  // Given: the live tree of yoodori-gate-gaps (refused 6 times: 517160 /bin/bash /dev/fd/4; 584498 python3 -u ...prelude.py)
+  const deps = await setup();
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  // an earlier (refused) dry run listed both as chains: they are still the session's own, not detached jobs
+  mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
+  writeFileSync(join(state.dir, "handover", "lanes", "demo-20261011-120000.json"), JSON.stringify({ detached: [], chains: [{ pid: 9, cmd: LAUNCHER.cmd }, { pid: 30, cmd: KERNEL.cmd }] }));
+  for (const pid of [9, 30]) live.add(pid);
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // Then
+  expect(printed.filter((l) => l.startsWith("HANDOVER_REFUSED"))).toEqual([]);
+  expect(r.code).toBe(0);
+  expect(readFileSync(r.note ?? "", "utf8")).toContain("## Local chains of the old session (0)");
+  expect(printed.at(-1)).toEndWith("detached jobs left alone: 40");
+});
+
+test("work under the lane's own processes still refuses: an agent child, a kernel child, a background eval cell still running", async () => {
+  // Given
+  const deps = await setup();
+  // When: a real chain under the agent, with the launcher shell and the kernel present
+  table = aoeTable();
+  const chain = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // a process an eval cell started dies with the kernel
+  table = [...aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16), { pid: 31, ppid: 30, cmd: "python3 train.py --seed 3" }];
+  const kernelChild = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // a detached cell computing inside the kernel has no process of its own
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  evalCell("toolu_c1", "2026-10-11T16:20:00Z");
+  const cell = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // a ready mark taken after the cell started covers it, like the chains it lists
+  ready(deps, []);
+  const covered = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // Then
+  expect([chain.code, kernelChild.code, cell.code, covered.code]).toEqual([2, 2, 2, 0]);
+  const refused = printed.filter((l) => l.startsWith("HANDOVER_REFUSED"));
+  expect(refused[0]).toStartWith("HANDOVER_REFUSED demo: 1 local chain(s) would die: 15 bash -c sleep 7200; echo chain-done. ");
+  expect(refused[1]).toStartWith("HANDOVER_REFUSED demo: 1 local chain(s) would die: 31 python3 train.py --seed 3. ");
+  expect(refused[2]).toStartWith("HANDOVER_REFUSED demo: 1 eval cell(s) still run in the background: toolu_c1. ");
+  expect(refused.length).toBe(3);
+});
+
+test("a background eval cell that ended, or was started before a ready mark, does not refuse; one started after it does", async () => {
+  // Given
+  const deps = await setup();
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  evalCell("toolu_c1", "2026-10-11T16:00:00Z");
+  appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), `\n${JSON.stringify({ type: "custom_message", timestamp: "2026-10-11T16:10:00Z", content: "Detached eval cell toolu_c1 (py) finished" })}`);
+  // When
+  const ended = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  ready(deps, [], "2026-10-11T16:30:00Z");
+  evalCell("toolu_c2", "2026-10-11T16:31:00Z");
+  const after = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  const forced = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true, force: true });
+  // Then
+  expect([ended.code, after.code, forced.code]).toEqual([0, 2, 0]);
+  expect(printed.filter((l) => l.startsWith("HANDOVER_REFUSED"))).toEqual([expect.stringContaining("1 eval cell(s) still run in the background: toolu_c2. ")]);
+});
+
+test("an automatic rollover never moves a lane that watches a training chain: refused once, no more automatic starts in that pane; the lead's dry run passes", async () => {
+  // Given: e7-beyond-eth on 10-19: its training runs on another node, only its watch runs here (a monitor), beside an idle kernel
+  const base = await setup();
+  const deps: LaneHandoverDeps = { ...base, config: { ...base.config, handover: { ...base.config.handover, autoRolloverLanes: true } }, reportOwner: async () => "msg-1" };
+  const WATCH = "bash /w/rand_watch/q267_chain_watch.sh";
+  writeManifest("old-sid", [monitor("scratch events", EVENTS, 14), monitor("Q267 chain s21 then s31", WATCH, 18)]);
+  live.add(18);
+  table = [...aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16), { pid: 18, ppid: 11, cmd: WATCH }];
+  await deps.registry.patch("demo", { rolloverDue: { pane: OLD, at: "2026-10-11T16:00:00Z", crossed: ["context after compaction 330k >= 300k"], autoAt: "2026-10-11T16:30:00Z", tries: 1 } });
+  // When
+  const auto = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: "auto:handover.autoRolloverLanes" });
+  const byHand = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // Then
+  expect(auto.code).toBe(2);
+  expect(printed[0]).toBe(`HANDOVER_REFUSED demo: an automatic rollover does not move a lane that runs or watches a training or eval chain (training chain watched: monitor "Q267 chain s21 then s31"); no more automatic starts in ${OLD}. The lead moves it by hand: dori handover --lane demo --approved-by "lead:<reason and signal>"`);
+  expect((await readLane(deps)).rolloverDue).toMatchObject({ pane: OLD, tries: 1, gaveUp: true });
+  expect(opened()).toBe(false);
+  expect(byHand.code).toBe(0);
+  expect(printed.filter((l) => l.startsWith("HANDOVER_REFUSED"))).toHaveLength(1);
+});
+
+test("a lane tagged training is left to the lead as well; ordinary monitors and an empty trainingWatch hold nothing", async () => {
+  // Given
+  const base = await setup();
+  const deps: LaneHandoverDeps = { ...base, config: { ...base.config, handover: { ...base.config.handover, autoRolloverLanes: true } }, reportOwner: async () => "msg-1" };
+  await deps.registry.patch("demo", { tags: ["rl", "training"] });
+  ready(deps, [15]);
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: "auto:handover.autoRolloverLanes" });
+  // Then
+  expect(r.code).toBe(2);
+  expect(printed[0]).toContain("a training or eval chain (tag training)");
+  const h = deps.config.handover;
+  const plain = [{ description: "scratch events", command: EVENTS, persistent: true }, { description: "digest", command: "until false; do sleep 60; done", persistent: true }, { description: "CI", command: "until grep -q '^LOCAL_CI_RC=' /q/ci.log; do sleep 30; done", persistent: true }];
+  expect(trainingMark(lane(), plain, h)).toBeUndefined();
+  expect(trainingMark(lane(), [{ description: "judge", command: "tail -n 0 -F /w/hr35-eth-v2-t1/runs/judge.log", persistent: true }], h)).toBe('training chain watched: monitor "judge"');
+  expect(trainingMark(lane(), [{ description: "Q267 chain", command: "bash q267_chain_watch.sh", persistent: true }], { ...h, trainingWatch: "" })).toBeUndefined();
 });
 
 test("a ready mark covers chains only: a turn that started after it still refuses", async () => {

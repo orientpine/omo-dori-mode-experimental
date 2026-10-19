@@ -256,6 +256,8 @@ export type AutoSignals = {
 // owner afterwards and logs that message's id. autoRolloverLanes / autoRolloverLead let freshness start it on a measured
 // threshold or at rung 4 of the stuck ladder without asking; off until the owner decides from dori rollover-stats. A session
 // still in the same pane autoRetryMin minutes after an automatic start (refused or failed) gets another, up to autoMaxTries.
+// An automatic start never moves a lane that runs or watches a training or eval chain: one with a tag in trainingTags, or
+// a live monitor whose command, path or description matches trainingWatch (a regex, case-insensitive); the lead moves it.
 // reportText ({who}, {from}, {to},
 // {reason}) is that message to the owner, posted in the lane's discord thread or DORI_DISCORD_CHANNEL. supplementRounds is how many times a lane handover fills in what the new session's
 // restatement left out (from the note and the old log) and asks again before it rolls back; 0 rolls back at the first gap.
@@ -287,6 +289,8 @@ export type Handover = {
   readonly autoRolloverLead: boolean;
   readonly autoRetryMin: number;
   readonly autoMaxTries: number;
+  readonly trainingTags: readonly string[];
+  readonly trainingWatch: string;
   readonly supplementRounds: number;
   readonly frozenCloseH: number;
   readonly frozenText: string;
@@ -451,7 +455,8 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     },
   },
   handover: { prompt: "Dori mode", title: "", model: "", services: [], timers: "remind", verifyMin: 15, inbox: "", cwd: "", watchers: [], readyMin: 30,
-    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneAfterCompactK: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, leadAfterCompactK: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoMaxTries: 6, supplementRounds: 2, frozenCloseH: 24,
+    laneContextPct: 0, laneCompactions: 0, laneAgeH: 0, laneAfterCompactK: 0, leadContextPct: 0, leadCompactions: 0, leadAgeH: 0, leadAfterCompactK: 0, autoRolloverLanes: false, autoRolloverLead: false, autoRetryMin: 30, autoMaxTries: 6,
+    trainingTags: ["training"], trainingWatch: "chain[_-]?watch|_chain_|\\btrain(ing)?\\b|learning iteration|/runs/|run[_-]?dir|\\bdori heavy\\b", supplementRounds: 2, frozenCloseH: 24,
     frozenText: "The old session {from} is frozen ({n} processes stopped, it uses no tokens); it closes in {hours} h. To undo: dori handover thaw {from}",
     proposalText: "Move {who} to a new session? {signals}. The handover note it would get: {note}{blockers}",
     reportText: "I moved {who} to a new session ({from} -> {to}). Why: {reason}" },
