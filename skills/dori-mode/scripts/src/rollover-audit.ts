@@ -481,7 +481,9 @@ export const auditHandover = async (deps: LaneHandoverDeps, c: Committed, opts: 
   const newTodos = session ? allTodos(sessionDir, session) : [];
   const todoText = (): string => flat([...(session ? allTodos(sessionDir, session) : []), restated()].join("\n"));
   const oldTodos = (laneFacts?.todos ?? leadFacts?.todos ?? []).map((t) => t.replace(/ \((in_progress|pending|blocked)\)$/, "").replace(/^[^:]{1,60}: /, ""));
-  if (session || !live) for (const t of oldTodos) if (!covered(todoText(), t)) gaps.push({ kind: "todo", text: t, under: "Next step", source: `the old session's open todo; the new session has ${newTodos.length} todos`, byWords: true });
+  // without the new session's own log (it was replaced by a later handover, or cannot be found) its todos, goal and
+  // monitors are not known: nothing is said about them rather than every old todo counted as lost
+  if (session) for (const t of oldTodos) if (!covered(todoText(), t)) gaps.push({ kind: "todo", text: t, under: "Next step", source: `the old session's open todo; the new session has ${newTodos.length} todos`, byWords: true });
   const oldGoal = laneFacts?.goal ?? leadFacts?.goal;
   if (oldGoal && session && !anyGoal(sessionDir, session) && !quoted(flat(restated()), oldGoal.replace(/ \((active|paused|blocked)\)$/, ""))) gaps.push({ kind: "goal", text: oldGoal, under: "Goal", source: "the old session's goal; the new session registered none" });
   const monitors = laneFacts?.monitors ?? leadFacts?.monitors ?? [];
