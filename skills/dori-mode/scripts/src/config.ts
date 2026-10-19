@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tokenBotId } from "./messenger/discord.ts";
 import { run } from "./run.ts";
+import type { RelatedSettings } from "./related-thread.ts";
 import type { BackupSettings } from "./state-backup.ts";
 import type { StateGitSettings } from "./state-git.ts";
 
@@ -349,6 +350,8 @@ export type DoriConfig = {
   readonly explore: Explore;
   readonly autoSignals: AutoSignals;
   readonly handover: Handover;
+  // dori launch --thread new: related open threads shown first (src/related-thread.ts)
+  readonly related: RelatedSettings;
   // dori state-git: this Dori's state in local git, committed by dori-lanes (src/state-git.ts)
   readonly stateGit: StateGitSettings;
   readonly instances: readonly InstanceRef[];
@@ -410,6 +413,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
     postTo: "",
     keepDays: 30,
   },
+  related: { recentH: 24, minScore: 0.2, max: 3 },
   signals: {
     launchLanes: 5,
     numberedAttemptPattern: "(?:fix(?: attempt)?|attempt|adjustment|조정|땜질)\\s*#?(\\d{1,2})(?:\\s*/\\s*\\d+)?(?![\\d.a-z])",
@@ -608,7 +612,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const migrated = migrateOldKeys((await file.exists()) ? ((await file.json()) as Raw) : {});
   for (const w of migrated.warnings) warn(`${w} (${path})`);
   const raw = migrated.raw as Partial<DoriConfig>;
-  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } } };
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover }, related: { ...base.related, ...raw.related }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } } };
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const env: unknown = merged.launchEnv;

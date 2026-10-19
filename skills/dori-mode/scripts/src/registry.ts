@@ -50,6 +50,8 @@ export type Lane = {
   readonly thread: string;
   // why the lane was launched without a work thread (dori launch --no-thread "<reason>")
   readonly noThread?: string;
+  // why the lane opened a new thread though related open threads were shown (dori launch --thread new --why-new "<reason>")
+  readonly whyNew?: string;
   readonly pane?: string;
   readonly tab?: string;
   readonly session?: string;

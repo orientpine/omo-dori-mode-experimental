@@ -8,6 +8,7 @@ import { iso } from "./run.ts";
 import { checkDone, doneSyntaxErrors, weakDone } from "./done-signals.ts";
 import { laneArea, loadTree, treeSection } from "./explore.ts";
 import { watchLog } from "./watch-log.ts";
+import { relatedLines, relatedThreads, type RelatedThread } from "./related-thread.ts";
 import { addedLine, checkedLedger, type Ledger, missingLines, planDirectives, repoName, scopeContext, uiHits, scopeText, waivedLines, withDirectives } from "./directives.ts";
 import { join } from "node:path";
 
@@ -20,6 +21,8 @@ export type LaunchInput = {
   readonly thread?: string;
   // why the lane has no work thread (dori launch --no-thread "<reason>"): only a lane the owner did not ask for
   readonly noThread?: string;
+  // why --thread new opens a new thread though related open threads were shown (dori launch --why-new "<reason>")
+  readonly whyNew?: string;
   readonly model?: string;
   readonly cwd?: string;
   readonly tags?: readonly string[];
@@ -44,6 +47,9 @@ export const NEW_THREAD = "new";
 
 // A launch with no work thread and no --no-thread reason, or a channel as its thread: nothing was opened, written or registered.
 export class ThreadMissingError extends LaunchError {}
+
+// --thread new while related open threads exist and no --why-new: the LAUNCH_RELATED_THREAD lines; nothing was opened.
+export class RelatedThreadError extends ThreadMissingError {}
 
 // A require directive of the ledger the brief does not meet: nothing was opened, written or registered.
 export class DirectiveMissingError extends LaunchError {
@@ -71,6 +77,10 @@ export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promis
 // registers a session that is already running, an older lane without a thread among them.
 export const threadGate = (deps: Pick<FlowDeps, "openThread" | "channels">, input: LaunchInput): void => {
   const threadless = input.thread === undefined || input.thread === NO_THREAD;
+  if (input.whyNew !== undefined) {
+    if (!input.whyNew.trim()) throw new LaunchError(`--why-new needs a reason: --why-new "<why this is not the work of the related threads>"`);
+    if (input.thread !== NEW_THREAD) throw new LaunchError(`--why-new goes with --thread ${NEW_THREAD} only: it says why a new thread opens though related ones are open`);
+  }
   if (input.noThread !== undefined) {
     if (!input.noThread.trim()) throw new LaunchError(`--no-thread needs a reason: --no-thread "<why this lane has no work thread>"`);
     if (!threadless) throw new LaunchError(`pass --thread or --no-thread "<reason>", not both`);
@@ -87,6 +97,35 @@ export const threadGate = (deps: Pick<FlowDeps, "openThread" | "channels">, inpu
   const id = input.thread.startsWith("discord:") ? input.thread.slice("discord:".length) : "";
   if (id && deps.channels?.includes(id))
     throw new ThreadMissingError(`LAUNCH_THREAD_IS_CHANNEL ${input.key}: ${input.thread} is a channel, not a thread; nothing was opened. Pass --thread ${NEW_THREAD} to open a work thread in it, or the ref of a thread.`);
+};
+
+const readText = (path: string): Promise<string> => Promise.resolve().then(() => Bun.file(path).text()).catch(() => "");
+
+// The open threads the lane's work may continue (src/related-thread.ts), from the registry and the briefs of its lanes.
+export const relatedFor = async (deps: Pick<FlowDeps, "registry" | "config" | "clock" | "channels">, input: LaunchInput): Promise<RelatedThread[]> => {
+  const lanes = await deps.registry.list();
+  const briefs = new Map(await Promise.all(lanes.map(async (l) => [l.key, await readText(l.brief)] as const)));
+  const brief = await readText(input.brief);
+  return relatedThreads(lanes, { key: input.key, title: input.title, brief, cwd: input.cwd ?? deps.config.defaultCwd, ...(input.tags?.length ? { tags: input.tags } : {}) }, {
+    now: deps.clock.now(),
+    settings: deps.config.related,
+    channels: deps.channels ?? [],
+    defaultCwd: deps.config.defaultCwd,
+    briefOf: (l) => briefs.get(l.key) ?? "",
+  });
+};
+
+// Related lanes stay in one thread: --thread new shows the related open threads first (LAUNCH_RELATED_THREAD) and opens
+// nothing until the lead passes --thread <ref> of one of them, or --why-new "<reason>" for work that is not theirs (that
+// reason is kept in the registry and the watch log: LAUNCH_NEW_THREAD_WHY). Nothing is ever joined on its own: a wrong
+// guess in someone else's thread is worse than a new one. Without related threads --thread new opens as before.
+export const relatedGate = async (deps: Pick<FlowDeps, "registry" | "config" | "clock" | "channels">, input: LaunchInput): Promise<string[]> => {
+  if (input.thread !== NEW_THREAD) return [];
+  const found = await relatedFor(deps, input);
+  const why = input.whyNew?.trim();
+  if (!found.length) return why ? [`LAUNCH_NEW_THREAD_WHY ${input.key}: no related open thread; reason kept: ${why}`] : [];
+  if (!why) throw new RelatedThreadError(relatedLines(input.key, found).join("\n"));
+  return [`LAUNCH_NEW_THREAD_WHY ${input.key}: a new thread though ${found.length} related open thread(s) were found (${found.map((t) => t.thread).join(", ")}), on the lead's word: ${why}`];
 };
 
 // A warning, never a refusal: a Done line that only checks files or text proves the files are there, not that the work behaves.
@@ -297,6 +336,7 @@ export const treeContext = async (deps: FlowDeps, draft: Lane): Promise<string |
 
 const draftLane = (deps: FlowDeps, input: LaunchInput): Lane => ({
   ...(input.noThread?.trim() ? { noThread: input.noThread.trim() } : {}),
+  ...(input.whyNew?.trim() ? { whyNew: input.whyNew.trim() } : {}),
   key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, model: input.model ?? deps.config.defaultModel,
   ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock),
 });
@@ -356,8 +396,10 @@ export const goalWarning = (input: LaunchInput): string | undefined =>
 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
+  let related: string[];
   try {
     threadGate(deps, input);
+    related = await relatedGate(deps, input);
   } catch (e) {
     if (e instanceof ThreadMissingError) watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: e.message });
     throw e;
@@ -373,7 +415,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const { steps, lines, missing } = rendered;
   let { draft, text } = rendered;
   const threadless = input.noThread?.trim() ? [`LAUNCH_THREADLESS ${input.key}: no work thread, on the lead's word: ${input.noThread.trim()}`] : [];
-  for (const line of [...lines, ...(steps ? [steps] : []), ...missing, ...threadless]) {
+  for (const line of [...lines, ...(steps ? [steps] : []), ...missing, ...threadless, ...related]) {
     warn(line);
     watchLog(deps.config.watchLog, deps.clock, { source: "launch", line });
   }
