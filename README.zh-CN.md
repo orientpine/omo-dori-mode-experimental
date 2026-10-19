@@ -68,7 +68,7 @@ Dori 会跟着你的说话方式走。你写得简短、随意、用小写，它
 | `hooks.threadReply`, `hooks.threadDone` | 你的消息 CLI,写成含 `{thread}` 和 `{text}` 的 argv 列表，用来发布 lane 进度和标记完成 |
 | `discord.statusStyle` | Discord 状态标记使用 `"words"`(默认)或 `"emoji"` |
 | `discord.autoUnEye` | `true`(默认)时，机器人在某个频道或线程里发言后，`dori inbound discord` 会移除所有者在那里更早消息上的眼睛反应；`false` 则保留 |
-| `discord.quietText`、`discord.doneText`、`discord.postRawReports` | `freshness` 和自动关闭发到所有者线程里的话(`{min}` = 距最后一条报告的分钟数)，用所有者的语言；lane 的报告或完成证据原文交给 lead,不进线程。`postRawReports: true`(默认 `false`)时原样发布 |
+| `discord.quietText`、`discord.postRawReports` | `freshness` 发到所有者线程里的话(`{min}` = 距最后一条报告的分钟数)，用所有者的语言；lane 的报告原文交给 lead,不进线程。`postRawReports: true`(默认 `false`)时原样发布。关闭时先发 lane 写给所有者的总结(`claim-done --summary`,没有则由模型写),发出后才把线程标为完成；没有总结就不关闭 |
 
 其余项(时间、阈值、heavy 槽位数)用默认值就够了。完整表格见 [`references/scripts.md`](skills/dori-mode/references/scripts.md)。环境变量 `DORI_CONFIG`、`DORI_STATE_DIR`、`DORI_LEAD_PANE` 优先于配置文件。
 

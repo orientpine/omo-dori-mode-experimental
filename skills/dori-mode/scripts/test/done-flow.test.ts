@@ -8,6 +8,7 @@ import { depsFor, fakeClock, newWorld, sent, withState, type World, WT } from ".
 
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
 const MIN = 60_000;
+const SUMMARY = "The demo page works now. Nothing is left.";
 const lane: Lane = { key: "demo-lane", title: "demo", thread: "chat:team/123", pane: "w:p1", brief: "/briefs/demo.md", done: "merged acme/app#1; closed acme/app#2", cwd: "/repo", openedAt: new Date(T0 - 60 * MIN).toISOString() };
 
 let state: ReturnType<typeof withState>;
@@ -33,14 +34,14 @@ test("an objection inside the window keeps the lane open and the lane hears why"
 });
 
 test("five quiet minutes after a claim the lane is closed, its thread marked done and its worktree removed", async () => {
-  await claimDone(at(T0), lane, "merged acme/app#1 abc123");
+  await claimDone(at(T0), lane, "merged acme/app#1 abc123", SUMMARY);
   expect(await watchTick(at(T0 + 4 * MIN))).toEqual(["LANE_DONE_CLAIMED demo-lane w:p1 merged acme/app#1 abc123"]);
   expect(closedVia()).toHaveLength(0);
   const lines = await watchTick(at(T0 + 5 * MIN + 1));
-  expect(lines[0]).toStartWith("LANE_CLOSED demo-lane");
+  expect(lines).toEqual(["CLOSE_SUMMARY demo-lane from the lane", expect.stringMatching(/^LANE_CLOSED demo-lane /)]);
   expect(closedVia()).toEqual([["herdr", "pane", "close", "w:p1"]]);
-  // the owner's thread gets the plain done words; the claim's evidence stays in the lane's record
-  expect(world.calls).toContainEqual(["notify", "chat:team/123", "Done: the checks passed and the work is closed. I'll sum up what changed for you soon."]);
+  // the owner's thread gets the lane's summary for him; the claim's evidence stays in the lane's record
+  expect(world.calls).toContainEqual(["notify", "chat:team/123", SUMMARY]);
   expect(world.calls.some((c) => c[0] === "notify" && c[2]?.includes("abc123"))).toBe(false);
   expect(world.calls).toContainEqual(["git", "-C", "/repo", "worktree", "remove", WT]);
   const after = await at(T0).registry.read("demo-lane");
@@ -77,13 +78,13 @@ test("a Done signal that does not read back live becomes the objection", async (
 });
 
 test("a watcher restarted inside the window keeps the original deadline and announces the claim once", async () => {
-  await claimDone(at(T0), lane, "merged acme/app#1");
+  await claimDone(at(T0), lane, "merged acme/app#1", SUMMARY);
   const first = await watchTick(at(T0 + 2 * MIN));
   const afterRestart = await watchTick(at(T0 + 3 * MIN));
   const settled = await watchTick(at(T0 + 6 * MIN));
   expect(first).toHaveLength(1);
   expect(afterRestart).toEqual([]);
-  expect(settled[0]).toStartWith("LANE_CLOSED demo-lane");
+  expect(settled.at(-1)).toStartWith("LANE_CLOSED demo-lane");
   expect(closedVia()).toHaveLength(1);
 });
 

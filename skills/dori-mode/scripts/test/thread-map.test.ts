@@ -113,6 +113,7 @@ const openCard = (id: string) => {
   writeFileSync(join(state.dir, "cards", "questions.json"), JSON.stringify({ seq: 1, questions: [{ id, text: "Ship?", options: ["Yes", "No"], status: "open", thread: ID, askedAt: "2026-10-12T00:00:00Z" }] }));
 };
 const renamed = () => http().calls.filter((c) => c.method === "PATCH").length;
+const SUMMARY = "The login page takes SSO now. Nothing is left; the nodes get it with the next update.";
 
 test("thread done leaves a thread that another open lane uses as it is, but the closing lane itself is no other user (feature-verify 2026-10-12, follow-up b)", async () => {
   await cli("open", "fix login", "--first", "Start");
@@ -156,11 +157,11 @@ test("closing the last working lane of a thread with an open card turns it waiti
   await cli("open", "fix login", "--first", "Start");
   openCard("Q1");
   closable("lane-a");
-  const closed = await dori("close", "lane-a");
+  const closed = await dori("close", "lane-a", "--summary", SUMMARY);
   expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
     code: 0, err: `THREAD_STATUS_APPLIED ${ID} waiting`, names: ["⏸️ fix login"], archived: false,
   });
-  expect(closed.out).toContain("thread left open: open card Q1; result posted\",\"waiting requested: applied");
+  expect(closed.out).toContain("thread left open: open card Q1; summary posted\",\"waiting requested: applied");
 });
 
 test("a lane still working in the thread keeps it working when another lane closes, open card or not", async () => {
@@ -168,7 +169,7 @@ test("a lane still working in the thread keeps it working when another lane clos
   openCard("Q1");
   openLane("lane-b");
   closable("lane-a");
-  const closed = await dori("close", "lane-a");
+  const closed = await dori("close", "lane-a", "--summary", SUMMARY);
   expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
     code: 0, err: "", names: [], archived: false,
   });
@@ -181,7 +182,7 @@ test("a waiting rename still held back by Discord's rate limit is kept for the l
   const queued = join(state.dir, "cards", "thread-status.json");
   const due = Date.now() + 10 * 60_000;
   writeFileSync(queued, JSON.stringify({ [ID]: { status: "working", due, tries: 1, rev: 1 } }));
-  const closed = await dori("close", "lane-a");
+  const closed = await dori("close", "lane-a", "--summary", SUMMARY);
   expect({ code: closed.code, names: named(), queued: JSON.parse(readFileSync(queued, "utf8")) }).toEqual({ code: 0, names: [], queued: { [ID]: { status: "waiting", due, tries: 1, rev: 2 } } });
   expect(closed.out).toContain(`THREAD_STATUS_WARN lane-a ${REF}: waiting requested: pending`);
 });
@@ -191,7 +192,7 @@ test("a done-claimed lane left in the thread is still ours: the mark stays until
   openCard("Q1");
   openLane("lane-b", { status: "done-claimed" });
   closable("lane-a");
-  const closed = await dori("close", "lane-a");
+  const closed = await dori("close", "lane-a", "--summary", SUMMARY);
   expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({ code: 0, err: "", names: [], archived: false });
 });
 
@@ -199,7 +200,7 @@ test("a paused lane is not working: when the last working lane closes beside it,
   await cli("open", "fix login", "--first", "Start");
   openLane("lane-b", { status: "paused" });
   closable("lane-a");
-  const closed = await dori("close", "lane-a");
+  const closed = await dori("close", "lane-a", "--summary", SUMMARY);
   expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
     code: 0, err: `THREAD_STATUS_APPLIED ${ID} waiting`, names: ["⏸️ fix login"], archived: false,
   });
@@ -214,10 +215,39 @@ test("a paused lane is not working: when the last working lane closes beside it,
 test("closing the only lane with no card left marks the thread done and archives it", async () => {
   await cli("open", "fix login", "--first", "Start");
   closable("lane-a");
-  const closed = await dori("close", "lane-a");
+  const closed = await dori("close", "lane-a", "--summary", SUMMARY);
   expect({ code: closed.code, err: closed.err, names: named(), archived: http().archived }).toEqual({
     code: 0, err: `THREAD_STATUS_APPLIED ${ID} done`, names: ["✅ fix login"], archived: true,
   });
+});
+
+test("dori close posts the summary in the thread before it sets the done mark and archives it", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  closable("lane-a");
+  const closed = await dori("close", "lane-a", "--summary", SUMMARY);
+  const after = http().calls.slice(2).map((c) => `${c.method} ${c.path}${c.body.name ? ` ${c.body.name}` : ""}${c.body.archived !== undefined ? ` archived=${c.body.archived}` : ""}${c.body.content ? ` ${c.body.content}` : ""}`);
+  expect({ code: closed.code, after }).toEqual({ code: 0, after: [`POST /channels/${ID}/typing`, `POST /channels/${ID}/messages ${SUMMARY}`, `GET /channels/${ID}`, `PATCH /channels/${ID} ✅ fix login`, `PATCH /channels/${ID} archived=true`] });
+});
+
+// owner 2026-10-19 23:53 KST "왜 안알려주고 닫아?": a close with nothing for the owner is refused and changes nothing
+test("dori close without a summary is CLOSE_SUMMARY_MISSING: exit 2, nothing posted, the thread keeps its mark and stays open", async () => {
+  await cli("open", "fix login", "--first", "Start");
+  closable("lane-a");
+  const before = http().calls.length;
+  const closed = await dori("close", "lane-a");
+  expect({ code: closed.code, missing: closed.out.split("\n").at(-1), calls: http().calls.length - before, name: http().name, archived: http().archived }).toEqual({
+    code: 2, missing: "CLOSE_SUMMARY_MISSING lane-a: no report, claim or REPORT.md to write one from", calls: 0, name: "🔄 fix login", archived: false,
+  });
+  expect(JSON.parse(readFileSync(join(state.dir, "lanes", "lane-a.json"), "utf8")).closedAt).toBeUndefined();
+});
+
+test("a summary for the owner with a path, a commit hash or backticks is refused before anything happens", async () => {
+  closable("lane-a");
+  for (const bad of ["see ~/.dori/qa/lane-a/REPORT.md", "merged abc1234 into main", "run `dori update`"]) {
+    const r = await dori("claim-done", "lane-a", "--evidence", "merged", "--summary", bad);
+    expect({ code: r.code, refused: r.err.startsWith("SUMMARY_REFUSED lane-a: ") }).toEqual({ code: 2, refused: true });
+  }
+  expect(JSON.parse(readFileSync(join(state.dir, "lanes", "lane-a.json"), "utf8")).claim).toBeUndefined();
 });
 
 test("the reply hook a closing lane runs does not count that lane as working (DORI_CLOSING_LANE)", async () => {

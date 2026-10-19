@@ -68,7 +68,7 @@ Dori はあなたの話し方に合わせます。短く、くだけた調子で
 | `hooks.threadReply`, `hooks.threadDone` | メッセンジャー CLI を `{thread}` と `{text}` を含む argv のリストで。レーンの進捗投稿と完了表示に使います。 |
 | `discord.statusStyle` | Discord の状態マークを `"words"`(既定)または `"emoji"` に設定 |
 | `discord.autoUnEye` | `true`(既定)ならボットがそのチャンネルやスレッドに書き込んだとき、`dori inbound discord` が所有者のそれ以前のメッセージから目のリアクションを外す。`false` なら残す |
-| `discord.quietText`、`discord.doneText`、`discord.postRawReports` | `freshness` と自動クローズが所有者のスレッドに投稿する文(`{min}` = 最後の報告からの分数)を所有者の言語で。レーンの報告や完了の証拠はスレッドではなくリードへ。`postRawReports: true`(既定 `false`)ならそのまま投稿 |
+| `discord.quietText`、`discord.postRawReports` | `freshness` が所有者のスレッドに投稿する文(`{min}` = 最後の報告からの分数)を所有者の言語で。レーンの報告はスレッドではなくリードへ。`postRawReports: true`(既定 `false`)ならそのまま投稿。クローズはレーンの所有者向けまとめ(`claim-done --summary`、なければモデルが書く)を先に投稿してからスレッドを完了にし、まとめがなければ閉じない |
 
 残り(時間、しきい値、heavy スロット数)は既定値で十分です。全項目の表は [`references/scripts.md`](skills/dori-mode/references/scripts.md) にあります。環境変数 `DORI_CONFIG`、`DORI_STATE_DIR`、`DORI_LEAD_PANE` はファイルより優先されます。
 
