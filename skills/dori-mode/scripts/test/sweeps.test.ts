@@ -192,11 +192,34 @@ test("a heavy job waits while the last one taken has not shown its load, and two
   heldSlot(dir, 1, 100, T0 - 10 * MIN);
   const both: string[] = [];
   const a = acquireSlot(headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 0 }), both, stopAfter(3)), "eval-b", 1);
-  const b = acquireSlot(headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 0 }), both, stopAfter(3)), "eval-c", 1);
+  // eval-c stands behind eval-b in the line first, then sees eval-b's slot settle
+  const b = acquireSlot(headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 0 }), both, stopAfter(20)), "eval-c", 1);
   const got = await Promise.allSettled([a, b]);
   expect(got.filter((g) => g.status === "fulfilled").length).toBe(1);
   expect(both.filter((l) => l.startsWith("HEAVY_ADMIT")).length).toBe(1);
   expect(both.some((l) => /^HEAVY_WAIT eval-[bc]: slot\.2 was taken 0s ago/.test(l))).toBe(true);
+});
+
+test("waiters take a freed slot in the order they came, not by process id", async () => {
+  // Given: one slot held, three waiters arriving one ms apart with falling pids; the earliest polls slowest
+  const dir = join(state.dir, "heavy");
+  heldSlot(dir, 1, 100, T0 - 10 * MIN);
+  let holderAlive = true;
+  const order: string[] = [];
+  const waiter = async (label: string, pid: number, at: number) => {
+    const hops = 3 - (at - T0);
+    const clock = { now: () => at, sleep: async () => { for (let i = 0; i < hops; i++) await new Promise<void>((r) => setImmediate(r)); } };
+    const slot = await acquireSlot({ dir, slots: 1, maxLoad: 80, clock, pid, load: async () => 10, alive: (p) => (p === 100 ? holderAlive : true) }, label, 1);
+    order.push(label);
+    releaseSlot(slot);
+  };
+  const all = Promise.all([waiter("first", 900, T0), waiter("second", 800, T0 + 1), waiter("third", 700, T0 + 2)]);
+  // When: the holder ends after every waiter found the slot taken
+  await new Promise<void>((r) => setImmediate(r));
+  holderAlive = false;
+  await all;
+  // Then
+  expect(order).toEqual(["first", "second", "third"]);
 });
 
 test("GPU, per-process and process-tree readings parse as nvidia-smi and ps print them on a GB10", () => {
