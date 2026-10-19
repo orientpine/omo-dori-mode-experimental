@@ -18,7 +18,7 @@ import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { AGENT, descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
-import { appendRollover, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
+import { appendRollover, type OwnerMessage, ownerMessagesFor, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, readRollovers, reportToOwner, sessionFixes, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { stuckTop } from "./explore.ts";
 import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, section } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
@@ -95,6 +95,8 @@ export type LaneFacts = {
   // the old agent's process (frozen during the switch) and the old conversation's log file
   readonly agentPid?: number;
   readonly oldLog?: string;
+  // the owner's own messages since the lane's last handover (rollover.ts ownerMessagesFor)
+  readonly ownerMessages?: readonly OwnerMessage[];
 };
 
 // The headings of the conversation summary the old session writes at its safe point (dori handover ready --note FILE):
@@ -328,6 +330,11 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   ...(f.lane.direction ? [`- Direction (intent-check ${f.lane.direction.at}): ${f.lane.direction.text}${f.lane.direction.next ? `; next: ${f.lane.direction.next}` : ""}`] : []),
   ...(f.lane.history ?? []).slice(-3).map((h) => `- ${h.at} ${h.status}: ${h.note}`),
   "",
+  `## The owner's messages since the last handover (${f.ownerMessages?.length ?? 0})`,
+  ...(f.ownerMessages?.length
+    ? ["His own messages from the inbox (written by his account, by message id): those in this lane's thread and those the lead relayed into the old conversation by id. Under Owner's words in your restatement, quote each one that still holds.", ...f.ownerMessages.map((m) => `- ${m.at.slice(0, 16)}Z ${m.link ?? `message ${m.id}`}: "${m.text.slice(0, 400).replace(/"/g, '\\"')}"`)]
+    : ["none"]),
+  "",
   "## Conversation summary (written by the old session)",
   f.laneNote.trim() || "(none: the old session did not write one with dori handover ready --note FILE; read the old conversation below before you act on a guess)",
   "",
@@ -457,6 +464,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     lane, from: { pane: lane.pane, aoeId: old.id, session, title: old.title, cwd: old.path }, cwd: real, model: splitModel(model).base, thinking, ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(shown.account ? { account: shown.account } : {}),
     monitors, todos: session ? openTodos(sessionDir, session) : [], goal: session ? openGoal(sessionDir, session) : undefined, chains, detached, ...(ready ? { ready } : {}), laneNote, signals, ...(opts.approvedBy?.trim() ? { approvedBy: opts.approvedBy.trim() } : {}),
     agentPid: agent.pid, ...(logOf(sessionDir, session) ? { oldLog: logOf(sessionDir, session) } : {}),
+    ownerMessages: ownerMessagesFor({ inbox: deps.inbox ?? "", ownerIds: deps.ownerIds ?? [], oldLog: logOf(sessionDir, session), thread: lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : undefined, since: lane.history?.findLast((h) => h.note.startsWith("pane moved "))?.at ?? lane.openedAt, guild: process.env.DORI_DISCORD_GUILD?.trim() }),
   };
   mkdirSync(dir, { recursive: true });
   const note = join(dir, `${key}-${stamp}.md`);
