@@ -76,6 +76,11 @@ renamed `✅ 완료 · ` (executed, 2xx), `⛔ 취소 · `, `⌛ 만료 · ` or 
 owner's own threads and threads with an open card keep their title. At start the gate also titles
 open card threads whose cards were all decided earlier (owner 2026-10-19 "승인 결과를 스레드 제목에
 반영하게 해줘").
+Discord reopens an archived thread on any new message. When a message posted through the
+Discord port goes into a thread that was archived under one of those four titles (the gate's
+own card threads and the node's request threads use the same words), the gate archives it again
+right after the post. A decided thread someone else reopened, or one without a status title,
+stays as it is.
 A card the owner already reacted to is left to the poller.
 
 Pending requests are private JSON files in `pending/`. Execution is marked

@@ -1135,6 +1135,36 @@ class Gate:
         except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
             print("GATE_THREAD_CLOSE_FAILED", file=sys.stderr, flush=True)
 
+    async def closed_decided_thread(self, method, route) -> str | None:
+        """The thread a message POST goes into when that thread is archived under a decided title.
+
+        Discord reopens an archived thread on any new message, so YooDori's follow-up line after a
+        card's result reopened threads the node or the gate had just closed (2026-10-19: five mail card
+        threads stayed open). Only a thread both archived and titled with a decided status counts."""
+        match = re.fullmatch(r"/channels/(\d+)/messages", route)
+        if method != "POST" or not match:
+            return None
+        try:
+            status, _, body = await self.bot_call("GET", f"/channels/{match[1]}")
+        except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
+            return None
+        info = json_object(body) if 200 <= status < 300 else {}
+        name = str(info.get("name") or "")
+        archived = (info.get("thread_metadata") or {}).get("archived")
+        if (info.get("type") in (11, 12) and archived
+                and any(name.startswith(prefix + " · ") for prefix in THREAD_STATUSES)):
+            return match[1]
+        return None
+
+    async def rearchive_thread(self, thread) -> None:
+        """Put a decided thread back into the archive after YooDori's own message reopened it."""
+        try:
+            status, _, _ = await self.bot_call("PATCH", f"/channels/{thread}", {"archived": True})
+            if not 200 <= status < 300:
+                raise OSError(status)
+        except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
+            print("GATE_THREAD_REARCHIVE_FAILED", file=sys.stderr, flush=True)
+
     async def close_decided_threads(self) -> None:
         """Once at start: card threads still open whose cards are all decided get their status title
         (threads decided before this rule, or while the gate was down)."""
@@ -1485,7 +1515,7 @@ class Gate:
                                    "obsidian", "note.write", reasons, {"title": relative})
         return await self.vault_write(uid, relative, body.decode("utf-8"), proof)
 
-    async def stream_proxy(self, writer, method, url, headers, body):
+    async def stream_proxy(self, writer, method, url, headers, body) -> int:
         connection, response = await self.upstream(method, url, headers, body)
         try:
             self.response_head(writer, response)
@@ -1494,6 +1524,7 @@ class Gate:
                 await writer.drain()
         finally:
             connection.close()
+        return response.status
 
     def response_head(self, writer, response):
         writer.write(f"HTTP/1.1 {response.status} Response\r\n".encode())
@@ -1644,7 +1675,10 @@ class Gate:
                     path[len("/api/v10"):], safe="/:@!$&'()*+,;=-._~")
                 if query:
                     url += "?" + urlencode(query)
-                await self.stream_proxy(writer, method, url, headers, body)
+                decided = await self.closed_decided_thread(method, path[len("/api/v10"):])
+                status = await self.stream_proxy(writer, method, url, headers, body)
+                if decided and 200 <= status < 300:
+                    await self.rearchive_thread(decided)
                 return
             await reply(writer, status, response, response_headers)
         except Refused as error:
