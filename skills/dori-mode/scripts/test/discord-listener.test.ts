@@ -434,6 +434,13 @@ test("in the pair channel the owner's messages are pair rows with the eyes react
   expect(calls()).toEqual([`PUT /channels/${PAIR}/messages/1001/reactions/%F0%9F%91%80/@me`]);
 });
 
+test("a pair-bot post written as plain sentences without a [REPORT] head is still a pair-bot row with its text (owner Q304)", async () => {
+  const { listener, inbox } = setup(() => ({}), { pairChannel: PAIR, pairBots: [PAIR_BOT] });
+  const text = "짱돌, 신청서 두 개 고친 판으로 드라이브에 다시 올렸어(md5 27a71993…). 남은 건 형 결재뿐이야.";
+  await listener.onMessage(msg("2001", { channel_id: PAIR, author: { id: PAIR_BOT, bot: true }, content: text }));
+  expect(inbox().map((r) => [r.id, r.scope, r.content])).toEqual([["2001", "pair-bot", text]]);
+});
+
 test("without a pair channel set, a channel that is not the Dori's or under it is skipped", async () => {
   const { listener, inbox } = setup((req) => (req.url.endsWith(`/channels/${PAIR}`) ? { parent_id: "777" } : {}));
   await listener.onMessage(msg("1001", { channel_id: PAIR }));
