@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { leadAlertPoster } from "../src/autoturn.ts";
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, watchTick } from "../src/done-flow.ts";
+import type { Question } from "../src/messenger/discord-cards.ts";
+import { missedAnswersTick, sawAnswer } from "../src/missed-answers.ts";
 import type { DoriConfig } from "../src/config.ts";
 import { eightSteps, launchEnvArgs, launchLane } from "../src/launch.ts";
 import { listPanes, sendVerified } from "../src/panes.ts";
@@ -466,4 +468,45 @@ test("leadAlertPoster posts to the pair channel only, and to the owner's channel
   expect(await post("x")).toEqual(["LEAD_ALERT_POSTED pair P m1"]);
   expect(calls).toEqual([["P", "x"]]);
   expect(await leadAlertPoster(async () => { throw new Error("429"); }, { pair: "", owner: "O" })("x")).toEqual(["LEAD_ALERT_WARN owner O Error: 429"]);
+});
+
+const card = (id: string, answeredAt: number, tmux: string | null = PANE): Question => ({ id, text: "도리방 말투?", options: ["a", "b"], channel: "c", thread: null, session: null, tmux, created: iso(answeredAt - MIN), status: "answered", answer: "a", answerKind: "button", answeredAt: iso(answeredAt) });
+
+test("a card answer its session never got (the monitor event lost, e.g. in a compaction) is typed into that pane once; one it got is not", async () => {
+  const w = bgWorld(T0 - 120 * MIN);
+  w.said(T0 - 100 * MIN, "asked");
+  // Q1 reached the session as its monitor event; Q2 did not; Q3 is too fresh; Q4 is older than the window
+  w.notified(T0 - 9 * MIN, `<system-reminder>Monitor event(Dori inbox): {\"ts\":\"x\",\"kind\":\"answer\",\"qid\":\"Q1\",\"answer\":\"a\"}</system-reminder>`);
+  const cards = [card("Q1", T0 - 10 * MIN), card("Q2", T0 - 10 * MIN), card("Q3", T0 - MIN), card("Q4", T0 - 3 * 60 * MIN)];
+  const deps = (ms: number) => ({ ...w.deps(ms), answeredCards: () => cards });
+  expect(await missedAnswersTick(deps(T0))).toEqual([`CARD_ANSWER_REDELIVERED Q2 ${PANE}: answered ${iso(T0 - 10 * MIN)}, not in that session's transcript; typed it there (SUBMITTED)`]);
+  expect(sent(world)).toHaveLength(1);
+  expect(sent(world)[0]).toStartWith("[DORI] ANSWER Q2 (button, ");
+  expect(sent(world)[0]).toContain("question: 도리방 말투?");
+  // the next tick sends nothing again (the mark), also when the typed line is not in the transcript yet
+  expect(await missedAnswersTick(deps(T0 + 30_000))).toEqual([]);
+  // Q3 past the grace and still missing: once
+  expect(await missedAnswersTick(deps(T0 + 3 * MIN))).toEqual([`CARD_ANSWER_REDELIVERED Q3 ${PANE}: answered ${iso(T0 - MIN)}, not in that session's transcript; typed it there (SUBMITTED)`]);
+  expect(sent(world)).toHaveLength(2);
+  // the watch runs it: a new card missed by the session comes out of watchTick
+  cards.push(card("Q5", T0 - 5 * MIN));
+  expect(await watchTick(deps(T0 + 4 * MIN))).toContain(`CARD_ANSWER_REDELIVERED Q5 ${PANE}: answered ${iso(T0 - 5 * MIN)}, not in that session's transcript; typed it there (SUBMITTED)`);
+});
+
+test("a card answered before its session started (a rollover) is not re-sent, and a card with no tmux goes to the lead's pane", async () => {
+  const w = bgWorld(T0 - 120 * MIN);
+  w.said(T0 - 20 * MIN, "new session after a rollover");
+  const old = [card("Q7", T0 - 30 * MIN)];
+  expect(await missedAnswersTick({ ...w.deps(T0), answeredCards: () => old })).toEqual([]);
+  expect(sawAnswer('{\\"qid\\":\\"Q7\\"}', "Q7")).toBe(true);
+  expect(sawAnswer('"qid": "Q7"', "Q7")).toBe(true);
+  expect(sawAnswer('"qid":"Q70"', "Q7")).toBe(false);
+  expect(sawAnswer("[DORI] ANSWER Q7 (text, x): y", "Q7")).toBe(true);
+  // the lead's session: its own transcript, under its cwd
+  const deps = { ...w.deps(T0), answeredCards: () => [card("Q8", T0 - 10 * MIN, null)] };
+  const leadDir = join(deps.config.sessionsDir, "--home-test-dori--");
+  mkdirSync(leadDir, { recursive: true });
+  writeFileSync(join(leadDir, `2026-01-01T09-00-00-000Z_${SESSION_ID}.jsonl`), `${JSON.stringify({ type: "session", timestamp: iso(T0 - 60 * MIN) })}\n`);
+  expect(await missedAnswersTick(deps)).toEqual([`CARD_ANSWER_REDELIVERED Q8 aoe_Dori_0a1b2c3d: answered ${iso(T0 - 10 * MIN)}, not in that session's transcript; typed it there (SUBMITTED)`]);
+  expect(world.calls.some((c) => c.join(" ").includes("=aoe_Dori_0a1b2c3d:"))).toBe(true);
 });
