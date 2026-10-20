@@ -41,7 +41,8 @@ export class Discord {
     return (res.body ? JSON.parse(res.body) : {}) as T;
   }
 
-  async send(channelId: string, content: string, typing = false, ping?: string): Promise<string> {
+  // reply: the id of a message in the same channel this one answers (shown as a Discord reply; no ping to its author)
+  async send(channelId: string, content: string, typing = false, ping?: string, reply?: string): Promise<string> {
     guardText(content);
     if (ping !== undefined && (ping.length === 0 || /[^0-9]/.test(ping))) throw new MessengerError("--ping takes a digits-only user id", 400);
     if (ping !== undefined && !content.includes(`<@${ping}>`)) content = `<@${ping}> ${content}`;
@@ -50,7 +51,7 @@ export class Discord {
         console.error(`DISCORD_TYPING_FAIL ${e instanceof Error ? e.message : String(e)}`);
       });
     }
-    return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages`, { content: guardText(content), allowed_mentions: { parse: [], ...(ping !== undefined ? { users: [ping] } : {}) } })).id;
+    return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages`, { content: guardText(content), allowed_mentions: { parse: [], ...(ping !== undefined ? { users: [ping] } : {}) }, ...(reply !== undefined ? { message_reference: { message_id: reply, fail_if_not_exists: false } } : {}) })).id;
   }
 
   async edit(channelId: string, messageId: string, content: string): Promise<void> {

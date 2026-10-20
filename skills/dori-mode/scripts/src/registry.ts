@@ -8,7 +8,8 @@ export const NO_THREAD = "none";
 
 export const threadRefProblem = (ref: string): string | undefined => {
   const m = /^([a-z][a-z0-9_-]*):(.*)$/.exec(ref);
-  if (!m) return `thread "${ref}" is not <adapter>:<id>`;
+  // a bare Discord id names the retry that works, so a failed launch is fixed by one edit, not by running the turn again
+  if (!m) return /^\d{5,25}$/.test(ref) ? `thread "${ref}" is not <adapter>:<id> (a Discord thread is --thread discord:${ref})` : `thread "${ref}" is not <adapter>:<id>`;
   const [, adapter, id = ""] = m;
   if (!id) return `thread "${ref}" has an empty id`;
   if (/\s/.test(id)) return `thread "${ref}" has whitespace in its id`;

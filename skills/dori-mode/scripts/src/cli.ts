@@ -57,7 +57,8 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
-import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadVerb } from "./messenger/discord-thread.ts";
+import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS } from "./messenger/discord-thread.ts";
+import { duplicateLine, sendKey, sendOnce } from "./send-dedupe.ts";
 import { mapThread, threads } from "./messenger/thread-map.ts";
 import { archiveDoneThreads } from "./messenger/thread-archive.ts";
 import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
@@ -250,7 +251,7 @@ const USAGE = `dori <command> [options]
                                        commit only when something changed, never env/inbox/briefs/logs or token-shaped
                                        content; restore "yesterday 21:00" (stateGit.timeZone) commits first, so it can
                                        be undone; loop is what dori-lanes runs every stateGit.everyMin minutes
-  send <slack|telegram|discord> --to TARGET --text TEXT | --text-file FILE [--thread ID] [--edit ID] [--status working|done] [--no-typing] [--ping USER_ID]
+  send <slack|telegram|discord> --to TARGET --text TEXT | --text-file FILE [--thread ID] [--edit ID] [--status working|done] [--no-typing] [--ping USER_ID] [--reply ID] [--again]
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN);
                                        --text-file posts the file's text (real line breaks) the same way as --text. A text
                                        with a literal \n and no real line break outside code is refused before anything is
@@ -259,6 +260,11 @@ const USAGE = `dori <command> [options]
                                        --status (discord) writes it as the progress message, in discord.statusStyle;
                                        Discord posts show typing first (best effort); --no-typing skips it
                                        --ping USER_ID (digits only) mentions and pings only that user on a new Discord post
+                                       --reply ID (Discord, digits only) posts it as a reply to that message, no ping
+                                       the same new message (place, --reply, --ping, text) within 10 minutes is not sent
+                                       again: SEND_DUPLICATE <first id>, exit 0, also for two sends at once (thread
+                                       reply|wait|done too); --again sends it anyway; an option send does not take is
+                                       refused (UNKNOWN_OPTION, exit 2)
   type <pane> --text TEXT | --text-file FILE
                                        type text into an agent pane and confirm it was submitted: Enter, an empty input
                                        box (one more Enter if not), a running turn. Prints SUBMITTED, or NOT_SUBMITTED
@@ -426,6 +432,7 @@ const flags = parseArgs({
     static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
     remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
     job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" },
+    reply: { type: "string" }, again: { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -450,6 +457,14 @@ const threadOpt = (): string | undefined => (flags.values.thread === true ? "" :
 const noThreadOpt = (): string | undefined => (flags.values["no-thread"] === true ? "" : opt("no-thread"));
 const whyNewOpt = (): string | undefined => (flags.values["why-new"] === true ? "" : opt("why-new"));
 const key = flags.positionals[0];
+// One option table serves every command (strict: false), so a command that posts checks its own: an option it does not
+// take, or a stray word, is refused before anything is sent instead of dropped (2026-10-20: --reply was dropped and the
+// lead's post went out as no reply).
+const onlyOptions = (what: string, allowed: readonly string[], positionals: number): void => {
+  const extra = Object.keys(flags.values).filter((k) => !allowed.includes(k));
+  if (extra.length) die(`UNKNOWN_OPTION ${what}: ${extra.map((k) => `--${k}`).join(", ")} is not an option of ${what}; nothing was sent`, 2);
+  if (flags.positionals.length > positionals) die(`UNKNOWN_OPTION ${what}: unexpected ${JSON.stringify(flags.positionals.slice(positionals).join(" "))}; nothing was sent`, 2);
+};
 const tags = (): string[] => ((flags.values.tag as string[] | undefined) ?? []).map((t) => t.trim()).filter(Boolean);
 const many = (name: string): string[] => ((flags.values[name] as string[] | undefined) ?? []).map((t) => t.trim()).filter(Boolean);
 
@@ -1248,6 +1263,7 @@ try {
     case "send": {
       await quietGuard();
       const platform = key ?? die("send needs slack, telegram or discord");
+      onlyOptions("send", ["to", "text", "text-file", "thread", "edit", "status", "no-typing", "ping", "reply", "again"], 1);
       const to = need("to");
       const status = opt("status");
       if (status !== undefined && (platform !== "discord" || (status !== "working" && status !== "done"))) die("--status takes working or done, with discord");
@@ -1259,20 +1275,29 @@ try {
       if (rawPing !== undefined && (typeof rawPing !== "string" || rawPing.length === 0 || /[^0-9]/.test(rawPing))) die("--ping takes a digits-only user id");
       const ping = typeof rawPing === "string" ? rawPing : undefined;
       if (ping !== undefined && (platform !== "discord" || edit)) die("--ping is only supported for new Discord messages");
+      const reply = opt("reply");
+      if (flags.values.reply !== undefined && (!reply || /[^0-9]/.test(reply))) die("--reply takes the digits-only id of the message this one answers");
+      if (reply !== undefined && (platform !== "discord" || edit)) die("--reply is only supported for new Discord messages");
+      if (flags.values.again && edit) die("--again is for a new message; an edit is never checked for repeats");
       const token = (name: string) => process.env[name] ?? die(`${name} is not set`);
+      // a new message goes out once per place, reply target, ping and text in SEND_DEDUPE_MS (src/send-dedupe.ts)
+      const once = async (post: () => Promise<string>): Promise<void> => {
+        const r = await sendOnce(join(config.stateDir, "sent"), sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, text]), post, { again: Boolean(flags.values.again) });
+        console.log(r.duplicate ? duplicateLine(r) : `SENT ${r.id}`);
+      };
       if (platform === "slack") {
         const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env.DORI_SLACK_COOKIE }, undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
         if (edit) await slack.edit(to, edit, text);
-        else console.log(`SENT ${(await slack.post(to, text, thread)).ts}`);
+        else await once(async () => (await slack.post(to, text, thread)).ts);
       } else if (platform === "telegram") {
         const tg = new Telegram(fetchHttp, realClock, token("DORI_TELEGRAM_TOKEN"));
         const target = { chatId: to, ...(thread ? { threadId: Number(thread) } : {}) };
         if (edit) await tg.edit(target, Number(edit), text);
-        else console.log(`SENT ${await tg.send(target, text)}`);
+        else await once(async () => String(await tg.send(target, text)));
       } else if (platform === "discord") {
         const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")), discordApi());
         if (edit) await dc.edit(to, edit, text);
-        else console.log(`SENT ${await dc.send(thread ?? to, text, !flags.values["no-typing"], ping)}`);
+        else await once(() => dc.send(thread ?? to, text, !flags.values["no-typing"], ping, reply));
       } else die(`unknown platform ${platform}`);
       break;
     }
@@ -1428,21 +1453,28 @@ try {
         break;
       }
       if ((verb !== "reply" && verb !== "wait" && verb !== "done") || !ref) die("usage: dori thread <reply|wait|done> discord:<thread id> <text> | --text-file FILE");
+      onlyOptions(`thread ${verb}`, ["text-file", "force", "lane", "again"], 3);
       const body = postable(await textOrFile(text?.trim(), "usage: dori thread <reply|wait|done> discord:<thread id> <text> | --text-file FILE"), `thread ${verb}`);
       const dc = discordClient();
+      // the same key as `dori send discord --to <thread id>`, so the two commands do not post one text twice either
+      const threadOnce = (post: () => Promise<string>) => sendOnce(join(config.stateDir, "sent"), sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, body]), post, { again: Boolean(flags.values.again) });
       if (verb === "done") {
         // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;
         const holders = await holdersOf(thread);
         if (holders && !flags.values.force) {
-          console.log(`POSTED ${await postInThread(dc, ref ?? "", body)} THREAD_LEFT_OPEN ${thread}: ${holders}; not marked done (--force marks it done anyway)`);
+          const r = await threadOnce(() => postInThread(dc, ref ?? "", body));
+          console.log(`${r.duplicate ? duplicateLine(r) : `POSTED ${r.id}`} THREAD_LEFT_OPEN ${thread}: ${holders}; not marked done (--force marks it done anyway)`);
           break;
         }
         if (holders) console.log(`THREAD_DONE_FORCED ${thread}: ${holders}; marking it done anyway`);
       }
       const statuses = threadStatuses(dc);
-      const posted = await threadHook(dc, verb as ThreadVerb, ref ?? "", body, config.discord, (t, s) => statuses.request(t, s));
-      console.log(`POSTED ${posted}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
+      const mark = (t: string, s: ThreadStatus) => statuses.request(t, s);
+      // a repeat is not posted, but the status still goes through: a done after a reply with the same words still closes
+      const r = await threadOnce(() => threadHook(dc, verb as ThreadVerb, ref ?? "", body, config.discord, mark));
+      if (r.duplicate) await mark(discordThreadId(ref ?? ""), VERB_STATUS[verb as ThreadVerb]);
+      console.log(`${r.duplicate ? duplicateLine(r) : `POSTED ${r.id}`}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
       break;
     }
     case "handover": {

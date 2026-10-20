@@ -113,7 +113,8 @@ The CLI is a thin layer over typed modules you can import in your own scripts:
 |---|---|
 | `src/messenger/slack.ts` | `Slack`: post, edit, thread replies, file upload (upload URL + complete), presence; 429 backoff |
 | `src/messenger/telegram.ts` | `Telegram`: send, edit, typing, `sendMessageDraft` streaming with a `Thinking…` start, forum topics (create, rename, close, reopen), HTML tables |
-| `src/messenger/discord.ts` | `Discord`: send without pings, edit, typing, reactions, threads (start, rename, archive); gateway presence |
+| `src/messenger/discord.ts` | `Discord`: send without pings (optionally as a reply), edit, typing, reactions, threads (start, rename, archive); gateway presence |
+| `src/send-dedupe.ts` | `sendOnce`, `sendKey`: a new message from `dori send` / `dori thread reply\|wait\|done` goes out once per place, reply target, ping and text in 10 minutes, also for two senders at once (O_EXCL claim under `<stateDir>/sent/`) |
 | `src/messenger/discord-cards.ts` | `QuestionCards`, `QuestionStore`: post a question card (inside its work thread when given, marking the thread waiting), handle its button and modal interactions, reopen, resolve (an unanswered card's thread goes back to working when nothing else in it is open), and after an answer leave the record in the work thread and mark it working again |
 | `src/messenger/discord-listener.ts` | `DiscordListener`: the gateway listener behind `dori inbound discord` |
 | `src/messenger/discord-thread.ts` | `threadHook`, `postInThread` (post without a status change), `setThreadStatus`, `desiredStatus`: the Discord thread hooks, and the mark a thread should show (done, else working while a lane in the thread works, else waiting while a card is open, else the event's status) |
@@ -135,7 +136,7 @@ Library calls to `Discord.send` retain their existing behavior unless their thir
 `--ping USER_ID` accepts digits only, allows mentions of exactly that user (with `parse: []`),
 and prepends `<@USER_ID> ` unless that exact mention is already in the text.
 Without it, mentions remain silent. The flag is for new Discord messages, not edits or other platforms;
-library callers can pass the user id as the fourth argument to `Discord.send`.
+library callers can pass the user id as the fourth argument to `Discord.send`, and a message id to reply to as the fifth.
 
 ## Commands
 
@@ -390,8 +391,10 @@ Types text into an agent pane and confirms the agent took it. Every script that 
 
 Prints `SUBMITTED <pane>` (exit 0) or `NOT_SUBMITTED <pane> <reason>` (exit 1); `NOT_SUBMITTED` also goes to the watch log as `submit NOT_SUBMITTED <pane> <reason>`. Text with a backtick or `$(` is refused. `scorecard.leadSendPattern` counts `dori type <pane>` as a lead message to that lane.
 
-### `dori send <slack|telegram|discord> --to TARGET --text TEXT | --text-file FILE [--thread ID] [--edit ID]`
+### `dori send <slack|telegram|discord> --to TARGET --text TEXT | --text-file FILE [--thread ID] [--edit ID] [--reply ID] [--again]`
 Posts a message, or edits one with `--edit`. Tokens come from `DORI_SLACK_TOKEN` (plus `DORI_SLACK_COOKIE` for a user token), `DORI_TELEGRAM_TOKEN` or `DORI_DISCORD_TOKEN`. `--text-file FILE` posts the file's text (trimmed, real line breaks kept) exactly as `--text` would, through the same send (and the same handling of a long text); both at once is an error. Text containing `$(` is refused, since it can only come from a shell string. A text with a literal `\n` (a backslash and an n) and no real line break, outside inline code and code blocks, is refused before anything is sent: `SEND_LITERAL_NEWLINE send: ...` on stderr, exit 2, pointing at `--text-file`; shell double quotes do not turn `\n` into a line break, and the reader would see the two characters (2026-10-19, E7 thread). The same check guards `dori thread reply|wait|done`, `dori thread open --first`, `dori ask --text` and the `--summary` of `claim-done` and `close`. Rate limits are retried with the server's wait time; other errors fail at once.
+
+A new message goes out once: the same place (platform, `--to` and `--thread`), `--reply`, `--ping` and final text sent again within 10 minutes (`SEND_DEDUPE_MS` in `src/send-dedupe.ts`) is not posted; it prints `SEND_DUPLICATE <first id>: ...` and exits 0, so the caller has the first message's id and nothing to retry. Two identical sends started at the same moment post once as well (2026-10-20: one reply of the lead carried two identical calls and the owner's thread got the message twice): the first takes a claim file created with O_EXCL under `<stateDir>/sent/`, the other waits for its id. A send that fails removes its claim, so a retry after a real failure still goes out; a claim left without an id for a minute (a sender that died) is taken over; marks older than a day are pruned. Edits are never checked. `--again` posts a repeat on purpose (a reminder that really is the same words). `--reply ID` (Discord, digits only, new messages) posts the message as a reply to that message in the same channel, without pinging its author (`message_reference` with `fail_if_not_exists: false`). An option `send` does not take, or a stray word, is refused before anything is sent (`UNKNOWN_OPTION send: ...`, exit 2) instead of being dropped; `--reply` used to be dropped that way.
 
 ### `dori presence <slack|discord>`
 Keeps the account shown as online until stopped.
@@ -443,6 +446,8 @@ Requests the status through the existing `ThreadStatusQueue`, without posting a 
 
 ### `dori thread <reply|wait|done> discord:<thread id> <text> | --text-file FILE`
 A ready `hooks.threadReply` / `hooks.threadDone` for Discord: `["dori", "thread", "reply", "{thread}", "{text}"]`. The text can come from `--text-file FILE` instead; a literal `\n` with no real line break is refused (`SEND_LITERAL_NEWLINE`, see `dori send`). It shows typing, posts the text with emoji removed, and sets the status mark at the start of the thread name: `reply` working, `wait` waiting, `done` done. `done` archives the thread; the others unarchive it. Nothing is renamed when the mark already holds, because Discord allows only about two renames per ten minutes. `done` first makes the same check as closing a lane: while another open lane or an open question card uses the thread, it posts the text and prints `POSTED <id> THREAD_LEFT_OPEN discord:<id>: <holders>; not marked done (--force marks it done anyway)`, and leaves the mark and the archive as they are. The lane whose close runs it is not another user: `hooks.threadDone` runs with `DORI_CLOSING_LANE=<key>`, and `--lane <key>` says the same by hand. `--force` marks the thread done anyway and prints `THREAD_DONE_FORCED discord:<id>: <holders>; marking it done anyway` first.
+
+`thread reply|wait|done` share the repeat check of `dori send` with the same key as `dori send discord --to <thread id>`: the same text again in that thread within 10 minutes is not posted (`SEND_DUPLICATE <first id>: ...`), while the status of the verb is still set, so a `done` with the words of the last `reply` still closes the thread. `--again` posts it anyway; an option these verbs do not take (they take `--text-file`, `--force`, `--lane`, `--again`) is refused (`UNKNOWN_OPTION thread <verb>`, exit 2).
 
 ### `dori send discord --to <thread> [--edit <id>] --status working|done --text <text>`
 Writes the text as the progress message in `discord.statusStyle`: `working: <text>` / `done: <text>`, or `⏳ · <text>` / `✅ <text>` with emoji.
