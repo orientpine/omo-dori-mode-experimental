@@ -98,6 +98,14 @@ test("a channel id as --thread is refused (LAUNCH_THREAD_IS_CHANNEL) and nothing
   expect((await launch("discord:100000000000000002", {}, deps)).lane.thread).toBe("discord:100000000000000002");
 });
 
+// 2026-10-20: the lead passed a bare thread id, launch failed and the turn was run again (send-dedupe); the refusal names the ref that works
+test("a bare Discord id as --thread is refused with the discord:<id> ref to pass instead", async () => {
+  const e = await launch("1561963113488842792").catch((x: unknown) => x);
+  expect(e).toBeInstanceOf(LaunchError);
+  expect((e as Error).message).toContain("(a Discord thread is --thread discord:1561963113488842792)");
+  expect(world.calls).toEqual([]);
+});
+
 test("launch keeps a well-formed thread ref", async () => {
   expect((await launch(THREAD)).lane.thread).toBe(THREAD);
 });

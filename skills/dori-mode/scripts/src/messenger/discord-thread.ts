@@ -85,7 +85,7 @@ export const setThreadStatus = async (dc: Discord, threadId: string, status: Thr
 };
 
 export type ThreadVerb = "reply" | "wait" | "done";
-const VERB_STATUS: Readonly<Record<ThreadVerb, ThreadStatus>> = { reply: "working", wait: "waiting", done: "done" };
+export const VERB_STATUS: Readonly<Record<ThreadVerb, ThreadStatus>> = { reply: "working", wait: "waiting", done: "done" };
 
 // dori launch writes the lane's first message in its work thread, so a thread opened for a lane never sits empty;
 // a thread that already has a message (the lead wrote first, or it was started from a message) is left as it is.

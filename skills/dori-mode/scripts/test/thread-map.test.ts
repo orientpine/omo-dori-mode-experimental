@@ -134,9 +134,10 @@ test("thread done with an open card is left open, and --force marks it done with
   openCard("Q1");
   const left = await cli("done", REF, "finished");
   expect({ out: left.out, renames: renamed() }).toEqual({ out: `POSTED 900 THREAD_LEFT_OPEN ${REF}: open card Q1; not marked done (--force marks it done anyway)`, renames: 0 });
+  // the same words again are not posted a second time (send-dedupe), and --force still marks the thread done
   const forced = await cli("done", REF, "finished", "--force");
-  expect({ forced, name: http().name, archived: http().archived }).toEqual({
-    forced: { code: 0, out: `THREAD_DONE_FORCED ${REF}: open card Q1; marking it done anyway\nPOSTED 900 THREAD_DONE`, err: `THREAD_STATUS_APPLIED ${ID} done` }, name: "✅ fix login", archived: true,
+  expect({ forced: { ...forced, out: forced.out.replace(/ \d+s ago/, " Ns ago") }, name: http().name, archived: http().archived }).toEqual({
+    forced: { code: 0, out: `THREAD_DONE_FORCED ${REF}: open card Q1; marking it done anyway\nSEND_DUPLICATE 900: the same text went to the same place Ns ago as 900; not sent again (--again sends it once more) THREAD_DONE`, err: `THREAD_STATUS_APPLIED ${ID} done` }, name: "✅ fix login", archived: true,
   });
 });
 
