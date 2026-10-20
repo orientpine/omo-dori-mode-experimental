@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { pendingBackground } from "./background.ts";
 import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, envMismatch, inputLine, laneEnv, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { ackFile, liveMonitors, manifestPath, type MonitorSpec, missingMonitors, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
+import { ackFile, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
 import { awaitPrompt } from "./launch.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
@@ -305,8 +305,6 @@ export const markReady = async (deps: LaneHandoverDeps, lane: Lane, here: string
 };
 
 const job = (j: Job): string => `- ${j.pid}: \`${j.cmd.slice(0, 200).replace(/`/g, "'")}\``;
-const monitorLine = (m: MonitorSpec): string =>
-  `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}`;
 
 export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): string => [
   `# Lane handover ${f.lane.key} ${at}`,
@@ -314,7 +312,7 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   `You are the ${f.lane.key} lane, in a new session. The old one (${f.from.pane}, aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}) ran out of room; dori handover --lane points the lane's registry entry at you. The old conversation does not come with you: this note and your brief are all you know.`,
   "",
   "## Do this first",
-  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once, all in one call, and print only how many armed and the ones that failed: each monitor's full reply is context the new session carries to its end.",
+  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command (its work still runs under the old session or already ended). Arm each one once, all in one call, and print only how many armed and the ones that failed: each monitor's full reply is context the new session carries to its end.",
   `2. A [LEAD] line with ${PROBE} <id> is a check of this handover. Before you answer it, read this whole note and your brief, then write what you understood to the file the line names, under the headings ${UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")} (under Goal and Owner's words, the owner's goal and words quoted exactly as the note gives them; under Questions, only what neither the note nor the old log answers after you searched it, or none). Then run the dori handover ack command it gives (with its --state) and nothing else for that line. A [LEAD] HANDOVER_SUPPLEMENT <id> line names a file with what your restatement left out and the old log lines behind it: add those items to the same file, keep the rest, and run the ack command it gives.`,
   `3. Read your brief ${f.lane.brief} in full. It still holds: same Done, same footer, and reports still go to the lead.`,
   `4. Until a [LEAD] ${COMMITTED} line arrives, do nothing else: change no file, start no process besides the monitors of step 1, post nothing. Until then the handover can still roll back and close this session.`,
@@ -424,7 +422,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const { session, entries, pids: monitorPids } = found;
   if (!session) emit(`HANDOVER_SESSION_UNSEEN ${key}: the omo session of ${lane.pane} was not found under ${old.path}${real !== old.path ? ` or ${real}` : ""}; the note has no monitors, todos, goal or old log`);
   const now = deps.clock.now();
-  const monitors = liveMonitors(entries, now, deps.alive);
+  const monitors = liveMonitors(entries, now, deps.alive, deps.home);
   // the owner's rule: an automatic start never moves a lane that runs or watches a training or eval chain; the lead does.
   // It stops the automatic starts in this pane at once (no retries, no gave-up line later).
   const training = decidedBy(opts.approvedBy?.trim() ?? "") === "auto" ? trainingMark(lane, monitors, config.handover) : undefined;

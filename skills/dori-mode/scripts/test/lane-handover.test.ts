@@ -32,7 +32,7 @@ const OWNER = "280680578314010625";
 // a restatement that covers the lane's goal under every heading the new session must write
 const RESTATE = "## Goal\n레인에도 적용: ship it\n## Owner's words\nnone\n## Decisions\nnone\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nnone\n";
 
-type Sim = { arm: { description: string; command: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; supplement: "fix" | "ignore" | "silent"; handled: string[]; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
+type Sim = { fromNote?: boolean; arm: { description: string; command: string; filter?: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; supplement: "fix" | "ignore" | "silent"; handled: string[]; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
 
 let state: { dir: string; done: () => void };
 let w: World;
@@ -80,7 +80,8 @@ const simulate = () => {
     live.add(301);
   }
   if (live.has(301) && live.has(15)) sim.doubleRun = true;
-  writeManifest("new-sid", sim.arm.map((m) => monitor(m.description, m.command, m.pid)));
+  if (sim.fromNote) sim.arm = armFromNote();
+  writeManifest("new-sid", sim.arm.map((m) => monitor(m.description, m.command, m.pid, m.filter ? { filter: m.filter } : {})));
   const probe = w.calls.find((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").includes("HANDOVER_PROBE n1"))?.at(-1);
   if (sim.ack && probe) {
     // the new session writes what it understood, then acks
@@ -106,6 +107,24 @@ const simulate = () => {
     }
     ackHandover(state.dir, m[1], NEW, "2026-10-11T16:41:00Z");
   }
+};
+
+// A new session that does what the note's Monitors section says: each command again, except a LAUNCHES_WORK one, for
+// which it arms the exact watch-only command the note gives or a tail of the first file the work writes, same description.
+const armFromNote = (): Sim["arm"] => {
+  const msg = w.calls.find((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").includes("handover note"))?.at(-1) ?? "";
+  const note = /(\/\S+\.md)/.exec(msg)?.[1];
+  if (!note) return [];
+  const lines = (readFileSync(note, "utf8").split("## Monitors")[1] ?? "").split("\n\n")[0]?.split("\n").filter((l) => l.startsWith("- ")) ?? [];
+  const str = (l: string, key: string) => { const m = new RegExp(`${key} ("(?:[^"\\\\]|\\\\.)*")`).exec(l); return m?.[1] ? (JSON.parse(m[1]) as string) : undefined; };
+  return lines.map((l, i) => {
+    const description = l.slice(2, l.indexOf(": command "));
+    const filter = str(l, "filter");
+    if (!l.includes("LAUNCHES_WORK")) return { description, command: str(l, "command") ?? "", ...(filter ? { filter } : {}), pid: 201 + i };
+    const exact = str(l, "arm exactly command");
+    const file = /writes \(([^,)]+)/.exec(l)?.[1];
+    return { description, command: exact ?? `tail -n 0 -F ${file}`, ...(filter ? { filter } : {}), pid: 201 + i };
+  });
 };
 
 const setup = async (): Promise<LaneHandoverDeps> => {
@@ -1510,4 +1529,48 @@ test("with the auto key on a stuck lead's handover starts by itself; the pair ch
   expect(refused.map((l) => l.split(" ")[0])).toEqual(["lead_compaction_stuck"]);
   expect(refused[0]).toContain("the automatic handover ended refused: configured watchers not running for lead:p1: host guard");
   expect(posts).toHaveLength(1);
+});
+
+test("E7 on 2026-10-20: a lane whose monitor starts its chain is moved with a watch-only re-arm and no second chain start; the same command armed again or none is a rollback", async () => {
+  // Given: the old session watches its chain with a command that starts it unless pgrep finds it (GongDori's e7-beyond-eth)
+  const CHAIN = `dori heavy e7-bs-chain -- ssh node 'cd w && if pgrep -f "^bash qa/chain.sh" >/dev/null; then echo CHAIN_ALREADY_RUNNING; else nohup setsid bash qa/chain.sh 400 > logs/chain.out 2>&1 & echo "CHAIN_PID=$!"; fi; sleep 3; tail -n +1 -F logs/chain.out | grep --line-buffered CHAIN_'`;
+  const starts = () => sim.arm.filter((m) => m.command.includes("nohup setsid bash qa/chain.sh")).length;
+  const oldMonitors = () => writeManifest("old-sid", [monitor("scratch events", EVENTS, 14), monitor("BS chain", CHAIN, 18, { filter: "CHAIN_" })]);
+  const deps = await setup();
+  oldMonitors();
+  live.add(18);
+  ready(deps, [15]);
+  sim.fromNote = true;
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
+  // Then
+  const note = readFileSync(r.note ?? "", "utf8");
+  expect(note).toContain("- BS chain: command ");
+  expect(note).toContain("LAUNCHES_WORK (nohup): do not arm this command again");
+  expect(note).toContain("only reads what the work writes (logs/chain.out)");
+  expect(note).not.toContain(`- scratch events: command ${JSON.stringify(EVENTS)} filter "^EV" LAUNCHES_WORK`);
+  expect(r.code).toBe(0);
+  expect(starts()).toBe(0);
+  expect(sim.arm.map((m) => m.command)).toEqual([EVENTS, "tail -n 0 -F logs/chain.out"]);
+  expect(printed).toContain(`HANDOVER_MONITORS_OK 2 in ${NEW} (session new-sid)`);
+
+  for (const [arm, reason] of [
+    [[{ description: "scratch events", command: EVENTS, pid: 201 }, { description: "BS chain", command: CHAIN, filter: "CHAIN_", pid: 202 }], "BS chain (armed again with the command that starts work; arm a watch-only one instead)"],
+    [[{ description: "scratch events", command: EVENTS, pid: 201 }], "BS chain (starts work: arm a watch-only one with the same description)"],
+  ] as const) {
+    // Given
+    printed = [];
+    w = newWorld();
+    live.add(14).add(18);
+    const again = await setup();
+    oldMonitors();
+    ready(again, [15]);
+    sim = { ...sim, fromNote: false, arm: [...arm], handled: [] };
+    // When
+    const back = await laneHandover(again, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
+    // Then
+    expect(back.code).toBe(3);
+    expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain(reason);
+    expect((await readLane(again)).pane).toBe(OLD);
+  }
 });

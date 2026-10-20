@@ -129,7 +129,7 @@ How the session id is found for a pane, in order:
 
 The id from step 1 is the session the agent was launched with. If someone switches sessions inside the agent, only steps 2 and 3 notice.
 
-When the owner writes in a closed lane's thread, reopen its recorded session in a new tab, set its monitors again, and keep replying there.
+When the owner writes in a closed lane's thread, reopen its recorded session in a new tab, set its monitors again, and keep replying there. A monitor whose command starts work (a chain, a job, a post) is set again as a watch-only one that tails what that work writes, never as the same command: that would start the work a second time.
 
 ## Messaging a session
 
