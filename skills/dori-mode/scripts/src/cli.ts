@@ -764,7 +764,7 @@ try {
       if (missing) die(missing, 5);
       const summary = opt("summary");
       if (summary !== undefined) postable(summary, `claim-done --summary ${l.key}`);
-      const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale);
+      const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale, config.discord.ownerSpeech);
       if (bad) die(`SUMMARY_REFUSED ${l.key}: ${bad}; write it for the owner in plain words`, 2);
       console.log(await claimDone(deps, l, need("evidence"), summary));
       break;
@@ -969,7 +969,7 @@ try {
     case "close": {
       const summary = opt("summary");
       if (summary !== undefined) postable(summary, `close --summary ${key ?? ""}`);
-      const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale);
+      const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale, config.discord.ownerSpeech);
       if (bad) die(`SUMMARY_REFUSED ${key ?? ""}: ${bad}; write it for the owner in plain words`, 2);
       const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead", summary);
       for (const line of r.lines) console.log(line);

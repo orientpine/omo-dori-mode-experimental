@@ -9,7 +9,7 @@ dori claim-done <your-lane-key> --evidence "<merge SHA, closed issue, version, l
   --summary "<2 to 5 plain lines for the owner, in his language: what changed, what is left, when it reaches where it is used>"
 ```
 
-The evidence is for the lead; the summary is what the owner reads in your work thread when the lane closes, posted before the thread is marked done. Write it for him: no paths, commit hashes, command names or report codes (`SUMMARY_REFUSED` otherwise). Without `--summary` the close has a model write one from your last report and `REPORT.md`; if nothing can be written, the lane does not close and you are asked to claim again with one.
+The evidence is for the lead; the summary is what the owner reads in your work thread when the lane closes, posted before the thread is marked done. Write it for him, in the speech the Dori uses with him rather than the polite speech you use with the lead (it goes out under the Dori's name; a Korean owner is spoken to in 반말 unless `discord.ownerSpeech` says `polite`): no ~요 or ~니다 endings then, no paths, commit hashes, command names or report codes (`SUMMARY_REFUSED` otherwise). Without `--summary` the close has a model write one from your last report and `REPORT.md`; if nothing can be written, the lane does not close and you are asked to claim again with one.
 
 The key is in your brief's lane footer. If you leave it out, the lane registered for your pane is used.
 

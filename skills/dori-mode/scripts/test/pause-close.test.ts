@@ -266,6 +266,30 @@ test("the automatic close without a summary gives the lead CLOSE_SUMMARY_MISSING
   expect(f.calls().filter((c) => !c.endsWith("/typing")).map((c) => c.split(" ").slice(0, 2).join(" "))).toEqual([`POST ${T}/messages`, `GET ${T}`, `PATCH ${T}`, `PATCH ${T}`]);
 });
 
+// owner 2026-10-20 "가끔 이렇게 너 말투 달라지는 거니? 왜 달라지는 거야?": a claim made in 존댓말 is not posted as it is under the Dori's name
+test("a lane's summary in 존댓말 goes to a Korean owner's thread rewritten in 반말 from that summary, an answer still in 존댓말 refused", async () => {
+  const f = fakeThread("🔄 fix login", false);
+  const base = at(T0, f.close);
+  const given = "컴퓨터 6곳에 tokscale을 깔았어요.\n매일 오후 6시에 자동으로 올라가요.";
+  const answers = ["<<<SUMMARY\n컴퓨터 6곳에 tokscale을 깔았습니다.\nSUMMARY>>>", "<<<SUMMARY\n컴퓨터 6곳에 tokscale을 깔았어.\n매일 오후 6시에 자동으로 올라가.\nSUMMARY>>>"];
+  const asked: string[] = [];
+  const deps: FlowDeps = {
+    ...base,
+    config: { ...base.config, discord: { ...base.config.discord, locale: "ko-KR" }, explore: { ...base.config.explore, modelsCommand: [] } },
+    run: async (argv, opts) => (argv[0] === "omo" ? (asked.push(argv.at(-1) ?? ""), { code: 0, out: answers[asked.length - 1] ?? "", err: "" }) : base.run(argv, opts)),
+  };
+  const reported = { ...lane, lastReport: "[REPORT] fix-a | done | 첫 자동 실행은 10월 20일 18시 KST" };
+  const r = await closeLane(deps, reported, "closed by the lead", given);
+  expect(r.closed).toBe(true);
+  expect(asked).toHaveLength(2);
+  // the model is given the lane's own words alone to keep, none of the lead's notes to add from, and asked for 반말
+  expect(asked[0]).toContain(given);
+  expect(asked[0]).not.toContain("10월 20일");
+  expect(asked[0]).toContain("반말");
+  expect(r.lines.find((l) => l.startsWith("CLOSE_SUMMARY "))).toStartWith("CLOSE_SUMMARY fix-a from model ");
+  expect(f.calls().find((c) => c.startsWith(`POST ${T}/messages`))).toContain("컴퓨터 6곳에 tokscale을 깔았어.\\n매일 오후 6시에 자동으로 올라가.");
+});
+
 test("without the lane's own summary a model writes one from its last report; an answer with a path or a hash is refused", async () => {
   const f = fakeThread("🔄 fix login", false);
   const base = at(T0, f.close);

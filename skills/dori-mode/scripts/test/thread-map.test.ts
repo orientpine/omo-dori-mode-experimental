@@ -30,9 +30,10 @@ test("a new mapping accepts a null session and a later drop removes it", () => {
   expect({ opened, closed: threads(state.dir) }).toEqual({ opened: { [ID]: { session: null, title: "fix login" } }, closed: {} });
 });
 
+let discordWords: Record<string, unknown> = {};
 const dori = async (...args: string[]) => {
   const config = join(state.dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, discord: { statusStyle: "emoji" } }));
+  writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, discord: { statusStyle: "emoji", ...discordWords } }));
   const p = Bun.spawn(["bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args], {
     env: { ...process.env, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_STATE_DIR: state.dir, DORI_DISCORD_STATE_DIR: join(state.dir, "cards"), DORI_DISCORD_TOKEN: "fake", DORI_DISCORD_CHANNEL: "200000000000000002", DORI_TEST_HTTP: join(state.dir, "http.json") },
     stdout: "pipe", stderr: "pipe",
@@ -248,6 +249,26 @@ test("a summary for the owner with a path, a commit hash or backticks is refused
     expect({ code: r.code, refused: r.err.startsWith("SUMMARY_REFUSED lane-a: ") }).toEqual({ code: 2, refused: true });
   }
   expect(JSON.parse(readFileSync(join(state.dir, "lanes", "lane-a.json"), "utf8")).claim).toBeUndefined();
+});
+
+// owner 2026-10-20 "가끔 이렇게 너 말투 달라지는 거니? 왜 달라지는 거야?": a lane's ~요 summary went out under the Dori's name in its owner's thread
+test("a summary in 존댓말 is refused for a Korean owner spoken to in 반말; 반말, or ownerSpeech polite, is taken", async () => {
+  closable("lane-a");
+  const polite = "컴퓨터 6곳에 tokscale을 깔았어요.\n매일 오후 6시에 자동으로 올라가요.";
+  try {
+    discordWords = { locale: "ko-KR" };
+    const refused = await dori("claim-done", "lane-a", "--evidence", "merged", "--summary", polite);
+    expect({ code: refused.code, refused: refused.err.startsWith("SUMMARY_REFUSED lane-a: it is in 존댓말 ") }).toEqual({ code: 2, refused: true });
+    expect(JSON.parse(readFileSync(join(state.dir, "lanes", "lane-a.json"), "utf8")).claim).toBeUndefined();
+    const casual = await dori("claim-done", "lane-a", "--evidence", "merged", "--summary", "컴퓨터 6곳에 tokscale을 깔았어.\n남은 건 없고, 더 필요한 것도 필요 없어. 매일 오후 6시에 올라가.");
+    expect(casual.code).toBe(0);
+    discordWords = { locale: "ko-KR", ownerSpeech: "polite" };
+    expect((await dori("claim-done", "lane-a", "--evidence", "merged", "--summary", polite)).code).toBe(0);
+    discordWords = { locale: "ko-KR", ownerSpeech: "formal" };
+    expect((await dori("claim-done", "lane-a", "--evidence", "merged", "--summary", polite)).err).toContain("discord.ownerSpeech must be");
+  } finally {
+    discordWords = {};
+  }
 });
 
 test("the reply hook a closing lane runs does not count that lane as working (DORI_CLOSING_LANE)", async () => {
