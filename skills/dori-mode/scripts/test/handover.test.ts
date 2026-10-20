@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { ackHandover, handover, type HandoverDeps, manifestPath, missingMonitors } from "../src/handover.ts";
+import { ackHandover, handover, type HandoverDeps, launchOf, manifestPath, missingMonitors } from "../src/handover.ts";
 import { quietReason, readRollovers, appendRollover } from "../src/rollover.ts";
 import { readFrozen } from "../src/frozen.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
@@ -549,6 +549,47 @@ test("a monitor counts as re-armed only with the same command and filter, or the
   expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "inbox", path: "/x/other" })])).toEqual(["inbox"]);
   expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "y", path: "/x/inbox" })])).toEqual([]);
   expect(check({ description: "named", persistent: true }, [entry({ description: "named", command: "anything" })])).toEqual([]);
+});
+
+// GongDori's E7 chain watch (2026-10-20): it starts the chain unless pgrep finds it, then tails the chain's log
+const E7 = `dori heavy e7-bs-chain -- ssh node 'cd w && if pgrep -f "^bash qa/chain.sh" >/dev/null; then echo CHAIN_ALREADY_RUNNING; else nohup setsid bash qa/chain.sh 400 > logs/chain.out 2>&1 & echo "CHAIN_PID=$!"; fi; sleep 3; tail -n +1 -F logs/chain.out | grep --line-buffered CHAIN_'`;
+
+test("a monitor command that starts work is told from one that only watches; a script that honours SENPI_MONITOR_RESTORED gets its watch-only form", () => {
+  // Given
+  const script = 'if [ -n "${SENPI_MONITOR_RESTORED:-}" ]; then exec tail -F /x/chain.out; fi\nnohup setsid bash chain.sh > /x/chain.out 2>&1 &\n';
+  const read = (p: string) => (p === "/home/test/w/watch.sh" ? script : undefined);
+  // When / Then
+  expect(launchOf(E7, "/home/test")).toEqual({ why: "nohup", writes: ["logs/chain.out"] });
+  expect(launchOf("python train.py > /x/run.log 2>&1 &", "/home/test")?.why).toBe("a background job writing a file");
+  expect(launchOf("until [ -f /x/done ]; do sleep 5; done && dori send discord pair done", "/home/test")?.why).toBe("dori send");
+  expect(launchOf("bash ~/w/watch.sh 2>&1 | tee -a /x/w.log", "/home/test", read)).toEqual({ why: "nohup", writes: ["/x/w.log"], rearm: "export SENPI_MONITOR_RESTORED=1; bash ~/w/watch.sh 2>&1 | tee -a /x/w.log" });
+  for (const watch of [
+    "export SENPI_MONITOR_RESTORED=1; bash ~/w/watch.sh 2>&1 | tee -a /x/w.log",
+    "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_",
+    "ssh node 'tail -n +1 -F w/logs/chain.out | grep --line-buffered CHAIN_'",
+    "until ! kill -0 1234; do sleep 5; done; echo GONE",
+    'curl -s "http://x/a?b=1&c=2" >/dev/null 2>&1; echo $?',
+    // the lead's listener alert: a backgrounded check that only reads
+    "tail -n 0 -F $L | while read -r l; do case \"$l\" in *CLOSED*) ( sleep 60; tail -n 40 $L | awk '/R/{r=NR} END{exit !(r>c)}' || echo NO-RECONNECT ) & ;; esac; done",
+  ]) expect(launchOf(watch, "/home/test", read)).toBeUndefined();
+});
+
+test("a monitor that starts work counts as re-armed only by a watch-only one with its description or filter; the same command armed again does not count", () => {
+  // Given
+  const entry = (e: Record<string, unknown>) => ({ persistent: true, suspended: false, expiresAt: null, runtime: { pid: 1 }, ...e }) as never;
+  const chain = { description: "BS chain", command: E7, filter: "CHAIN_", persistent: true };
+  const check = (entries: object[]) => missingMonitors([chain as never], entries as never, () => true, "/home/test", 0);
+  const tailOnly = "ssh node 'tail -n +1 -F w/logs/chain.out | grep --line-buffered CHAIN_'";
+  // When / Then
+  expect(check([entry({ description: "BS chain", command: E7, filter: "CHAIN_" })])).toEqual(["BS chain (armed again with the command that starts work; arm a watch-only one instead)"]);
+  expect(check([])).toEqual(["BS chain (starts work: arm a watch-only one with the same description)"]);
+  expect(check([entry({ description: "other", command: tailOnly, filter: "^X" })])).toHaveLength(1);
+  expect(check([entry({ description: "BS chain", command: "nohup bash qa/chain.sh > logs/chain.out &" })])).toHaveLength(1);
+  expect(check([entry({ description: "BS chain", command: tailOnly, filter: "CHAIN_" })])).toEqual([]);
+  expect(check([entry({ description: "chain tail", command: tailOnly, filter: "CHAIN_" })])).toEqual([]);
+  expect(check([entry({ description: "BS chain", path: "/x/chain.out" })])).toEqual([]);
+  // a monitor that only watches still needs its own command, as before
+  expect(missingMonitors([{ description: "tail", command: tailOnly, filter: "CHAIN_", persistent: true }], [entry({ description: "tail", command: "tail -F /other", filter: "CHAIN_" })], () => true, "/home/test", 0)).toEqual(["tail"]);
 });
 
 test("an automatic lead rollover tells the owner afterwards with what it crossed; with the key off it is refused and nobody is told", async () => {

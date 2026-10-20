@@ -59,7 +59,10 @@ export type HandoverOptions = {
   readonly verifyMin?: number;
 };
 
-export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string; readonly persistent: boolean };
+// A monitor command that starts work besides watching (see launchOf): why, the files its work writes, and the exact
+// watch-only command when its script has a mode for that.
+export type Launch = { readonly why: string; readonly writes: readonly string[]; readonly rearm?: string };
+export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string; readonly persistent: boolean; readonly launch?: Launch };
 
 type ManifestEntry = {
   readonly description?: string;
@@ -192,10 +195,58 @@ const spec = (e: ManifestEntry): MonitorSpec => ({
 
 const running = (e: ManifestEntry, now: number): boolean => !e.suspended && (e.expiresAt == null || e.expiresAt > now) && !!(e.command || e.path);
 
+// What a monitor command starts besides watching: a job (nohup, setsid, a lone &, systemd-run, dori heavy, tmux, screen,
+// docker, sbatch) or a change (a dori command that posts or moves, kill, rm, mv, git push/commit). Armed again in a new
+// session such a command starts its work again: GongDori's E7 chain watch (2026-10-20) ran "if pgrep ...; else nohup setsid
+// bash bs_chain_mn.sh 400 > logs/bs_chain.out 2>&1 &; fi; tail -F logs/bs_chain.out", and once the chain had ended a
+// re-arm started the 400-iteration chain again. A & counts only after output sent to a file ("job > log 2>&1 &"): a
+// backgrounded check inside a watch (the lead's "( sleep 60; tail ... || echo X ) &") starts nothing; kill -0 is no work.
+const STARTS: readonly RegExp[] = [
+  /\bnohup\b/, /\bsetsid\b/, /\bsystemd-run\b/, /\bdisown\b/,
+  /(?<![0-9&>])>>?\s*(?!\/dev\/null\b)[^\s;&|()<>]+(?:\s+\d?>&\d)*\s*&(?=\s|$|[;)'"])/,
+  /\bdori\s+(?:heavy|launch|send|type|close|claim-done|handover|ask|thread\s+(?:reply|done))\b/,
+  /\btmux\s+(?:new|send-keys|kill)/, /\bscreen\s+-d/, /\bdocker\s+(?:run|start|exec)\b/, /\bsbatch\b/,
+  /\b(?:pkill|killall|kill)\b(?!\s+-0\b)/, /\bgit\s+(?:push|commit|reset|checkout)\b/, /(?:^|[\s;&|(])(?:rm|mv)\s/,
+];
+const RESTORED = "SENPI_MONITOR_RESTORED";
+
+const readText = (path: string): string | undefined => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+};
+
+const startsWork = (text: string): string | undefined => {
+  for (const re of STARTS) {
+    const m = re.exec(text);
+    if (m) return m[0].trim().endsWith("&") ? "a background job writing a file" : m[0].replace(/^[\s;&|(]+/, "").trim();
+  }
+  return undefined;
+};
+
+// A command that only watches gives undefined. A local script it runs (bash x.sh, ./x.sh, an absolute path) is read too:
+// a script that honours SENPI_MONITOR_RESTORED (omo sets it when it restores a monitor) watches only when that is set.
+export const launchOf = (command: string, home: string, read: (path: string) => string | undefined = readText): Launch | undefined => {
+  const scripts = [...command.matchAll(/(?:^|[\s;&|(])((?:~\/|\$HOME\/|\/)[^\s;&|'"()]*\.sh)\b/g)].map((m) => read((m[1] ?? "").replace(/^(?:~|\$HOME)\//, `${home}/`)) ?? "");
+  const honours = scripts.some((s) => s.includes(RESTORED));
+  if (honours && new RegExp(`\\b${RESTORED}=1\\b`).test(command)) return undefined;
+  const why = startsWork(command) ?? scripts.map(startsWork).find(Boolean);
+  if (!why) return undefined;
+  const writes = [...new Set([...command.matchAll(/(?:(?<![0-9&>])>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|'"()>]+)/g)].map((m) => m[1] ?? "").filter((f) => f && f !== "/dev/null"))];
+  return { why, writes, ...(honours ? { rearm: `export ${RESTORED}=1; ${command}` } : {}) };
+};
+
 // Every watch the old session still runs, persistent or not: the new session must run each one. A command monitor whose
-// recorded process is gone has ended and is left out.
-export const liveMonitors = (entries: readonly ManifestEntry[], now: number, alive: (pid: number) => boolean): MonitorSpec[] =>
-  entries.filter((e) => running(e, now) && (!!e.path || e.runtime?.pid === undefined || alive(e.runtime.pid))).map(spec);
+// recorded process is gone has ended and is left out. One that starts work carries launch: the new session arms a
+// watch-only one in its place.
+export const liveMonitors = (entries: readonly ManifestEntry[], now: number, alive: (pid: number) => boolean, home: string): MonitorSpec[] =>
+  entries.filter((e) => running(e, now) && (!!e.path || e.runtime?.pid === undefined || alive(e.runtime.pid))).map((e) => {
+    const s = spec(e);
+    const launch = s.command ? launchOf(s.command, home) : undefined;
+    return launch ? { ...s, launch } : s;
+  });
 
 const fillTarget = (argv: readonly string[], target: { readonly pane: string; readonly session: string }): string[] =>
   argv.map((a) => a.replaceAll("{pane}", target.pane).replaceAll("{session}", target.session));
@@ -214,16 +265,30 @@ export const missingWatchers = async (deps: Pick<HandoverDeps, "run">, watchers:
 const norm = (text: string, home: string): string => text.replace(/(^|[\s=:'"])~\//g, `$1${home}/`).replace(/\s+/g, " ").trim();
 
 // A monitor counts as re-armed when the new session runs a persistent watch with the same command (or path, or
-// description), whose process is alive.
+// description), whose process is alive. One that starts work (launchOf) counts as re-armed by a watch-only one instead:
+// a path watch, or a command that starts nothing, with the same description or filter (or its exact watch-only form);
+// the same command armed again does not count, since that started the work a second time.
 export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonly ManifestEntry[], alive: (pid: number) => boolean, home: string, now: number): string[] => {
   const live = entries.filter((e) => e.persistent && running(e, now) && (e.path || (e.runtime?.pid !== undefined && alive(e.runtime.pid))));
-  return wanted
-    .filter((m) => !live.some((e) =>
-      // the same watch, not just the same name: the command (and its filter) or the path; the description only for a monitor that has neither
-      m.command ? !!e.command && norm(m.command, home) === norm(e.command, home) && (!m.filter || e.filter === m.filter)
-        : m.path ? !!e.path && norm(m.path, home) === norm(e.path, home)
-        : !!m.description && e.description === m.description))
-    .map((m) => m.description || m.command || m.path || "?");
+  const same = (a: string, b: string) => norm(a, home) === norm(b, home);
+  const out: string[] = [];
+  for (const m of wanted) {
+    const name = m.description || m.command || m.path || "?";
+    const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
+    if (m.command && launch) {
+      const watchOnly = live.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))
+        && ((!!m.description && e.description === m.description) || (!!m.filter && e.filter === m.filter) || (!!launch.rearm && !!e.command && same(launch.rearm, e.command))));
+      const command = m.command;
+      if (!watchOnly) out.push(live.some((e) => !!e.command && same(command, e.command)) ? `${name} (armed again with the command that starts work; arm a watch-only one instead)` : `${name} (starts work: arm a watch-only one with the same description)`);
+      continue;
+    }
+    // the same watch, not just the same name: the command (and its filter) or the path; the description only for a monitor that has neither
+    const ok = live.some((e) => m.command ? !!e.command && same(m.command, e.command) && (!m.filter || e.filter === m.filter)
+      : m.path ? !!e.path && same(m.path, e.path)
+      : !!m.description && e.description === m.description);
+    if (!ok) out.push(name);
+  }
+  return out;
 };
 
 const sessionFile = (dir: string, session: string): string | undefined => {
@@ -258,8 +323,10 @@ export const openGoal = (sessionDir: string, session: string): string | undefine
 };
 
 const cell = (text: string): string => text.replace(/\s*\|\s*/g, " / ").replace(/\s*[\r\n]+\s*/g, " ").slice(0, 160);
-const monitorLine = (m: MonitorSpec): string =>
-  `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}`;
+const launchHow = (m: MonitorSpec, l: Launch): string =>
+  ` LAUNCHES_WORK (${l.why}): do not arm this command again, it would start its work a second time. Arm in its place a persistent watch-only monitor with the same description${m.filter ? " and filter" : ""} that only reads what the work writes${l.writes.length ? ` (${l.writes.join(", ")})` : ""}, where it runs (the same ssh host, if any): tail -F, grep, an until-wait; nothing that starts, posts or changes anything.${l.rearm ? ` Its script has a watch-only mode: arm exactly command ${JSON.stringify(l.rearm)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}.` : ""}`;
+export const monitorLine = (m: MonitorSpec): string =>
+  `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}${m.launch ? launchHow(m, m.launch) : ""}`;
 const watcherLine = (w: HandoverWatcher): string => `- ${w.name}: check ${JSON.stringify(w.check)}${w.arm ? `; to start it: ${w.arm}` : "; runs outside omo, nothing to arm"}`;
 
 export const renderNote = (f: HandoverFacts, at: string): string => [
@@ -268,7 +335,7 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   `From ${f.from.pane} (aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}, cwd ${f.from.cwd}). You are the new lead session${f.cwd === f.from.cwd ? "" : `, opened in ${f.cwd}`}: dori handover points leadPane, the open lanes and the open question cards at you.`,
   "",
   "## Do this first",
-  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
+  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
   `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
   `3. A [LEAD] ${UNDERSTAND} <id> line asks what you understood. Read this whole note first, then write it to the file the line names, under the headings ${LEAD_UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")}: under Goal the old session's goal quoted; under Owner's words each of the owner's recent messages and each quote in the old lead's notes, quoted exactly; under Open lanes every lane key of the table with what it waits on; under Open work each todo; under Open cards each card id with its question; under Timers each timer's unit name; under Promised follow-ups what the old lead promised the owner; under Questions only what neither this note nor the old log answers, or none. Then run the ack command the line gives. A [LEAD] HANDOVER_SUPPLEMENT <id> line names a file with what your restatement left out and the old log lines behind it: add those items to the same file, keep the rest, and run the ack command it gives.`,
   `4. Until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing besides that file: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,
@@ -510,7 +577,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
     from: { pane: config.leadPane, aoeId: old.id, session, title: old.title, cwd: old.path },
     cwd,
     lanes: await deps.registry.open(),
-    monitors: liveMonitors(entries, now, deps.alive),
+    monitors: liveMonitors(entries, now, deps.alive, deps.home),
     watchers: config.handover.watchers,
     cards: new QuestionStore(deps.cardDir).all().filter((q) => q.status === "open"),
     todos: session ? openTodos(sessionDir, session) : [],
