@@ -628,6 +628,11 @@ const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string
     { who: facts.lane.key, pane, understood, headings: UNDERSTOOD_HEADINGS, rounds: deps.config.handover.supplementRounds, oldLog: facts.oldLog, check: (t) => missingFrom(t, facts), emit });
   const { supplements, text } = gaps;
   if (gaps.reasons.length) return { reasons: gaps.reasons, session, supplements };
+  // checked again before the old session goes: a monitor that ran at the first check can end before the move commits (a
+  // remote tail whose ssh dropped with code 255 after its first lines, live 2026-10-20 23:51Z), and a new session is not
+  // told when a monitor ends
+  const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now()) : [];
+  if (stopped.length) return { reasons: [`monitors stopped in ${pane} after the first check: ${stopped.join(", ")}`], session, supplements };
   const asks = section(text, "Questions");
   if (asks && !/^none\.?$/i.test(asks)) emit(`HANDOVER_QUESTIONS ${facts.lane.key}: ${asks.replace(/\s+/g, " ").slice(0, 400)} (the lead answers them in the new pane; the old log is ${facts.oldLog ?? "not found"})`);
   return { reasons: [], session, supplements, ...(shown.account ? { account: shown.account } : {}) };

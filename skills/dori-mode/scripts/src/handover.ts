@@ -613,6 +613,10 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
   const gaps = await fillGaps({ clock: deps.clock, stateDir: deps.config.stateDir, nonce: deps.nonce, tell: (pane, text) => sendVerified(deps.run, deps.clock, deps.config, pane, text).catch(() => false), ackedBy: (x) => ackedBy(deps.config.stateDir, x) },
     { who: "lead", pane: to.pane, understood, headings: LEAD_UNDERSTOOD_HEADINGS, rounds: deps.config.handover.supplementRounds, oldLog: facts.oldLog, check: (text) => missingLeadFrom(text, facts), emit });
   if (gaps.reasons.length) return { reasons: gaps.reasons, session, supplements: gaps.supplements };
+  // checked again before the old lead goes: a monitor that ran at the first check can end before the move commits (a
+  // remote tail whose ssh dropped), and a new session is not told when a monitor ends
+  const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now()) : [];
+  if (stopped.length) return { reasons: [`monitors stopped in ${to.pane} after the first check: ${stopped.join(", ")}`], session, supplements: gaps.supplements };
   const asks = section(gaps.text, "Questions");
   if (asks && !/^none\.?$/i.test(asks)) emit(`HANDOVER_QUESTIONS lead: ${asks.replace(/\s+/g, " ").slice(0, 400)} (the old log is ${facts.oldLog ?? "not found"})`);
   return { reasons: [], session, supplements: gaps.supplements };

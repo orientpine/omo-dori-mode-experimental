@@ -32,7 +32,7 @@ const OWNER = "280680578314010625";
 // a restatement that covers the lane's goal under every heading the new session must write
 const RESTATE = "## Goal\n레인에도 적용: ship it\n## Owner's words\nnone\n## Decisions\nnone\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nnone\n";
 
-type Sim = { fromNote?: boolean; arm: { description: string; command: string; filter?: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; supplement: "fix" | "ignore" | "silent"; handled: string[]; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean };
+type Sim = { fromNote?: boolean; arm: { description: string; command: string; filter?: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; supplement: "fix" | "ignore" | "silent"; handled: string[]; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean; endsAfterProbe?: number };
 
 let state: { dir: string; done: () => void };
 let w: World;
@@ -88,6 +88,8 @@ const simulate = () => {
     const file = /write what you understood to (\S+)/.exec(probe)?.[1];
     if (file && sim.restate !== "" && !existsSync(file)) writeFileSync(file, sim.restate ?? RESTATE);
     ackHandover(state.dir, "n1", sim.ackPane, "2026-10-11T16:40:00Z");
+    // a monitor that ran at the first check ends now (a remote tail whose ssh dropped)
+    if (sim.endsAfterProbe) live.delete(sim.endsAfterProbe);
   }
   // a supplement round: it adds the items under the headings named ("fix"), acks without adding ("ignore"), or stays silent
   for (const line of sent(w)) {
@@ -386,6 +388,21 @@ test("rolls back when the new session runs at another thinking level: lane and c
   expect(sent(w).some((t) => t.startsWith("[LEAD] HANDOVER_COMMITTED"))).toBe(false);
   // the old agent was frozen for the switch and resumed when it stayed the lane
   expect(sigs).toEqual(["SIGSTOP 11", "SIGCONT 11"]);
+});
+
+test("a monitor that ran at the first check and ended before the move commits rolls it back, named with its ended process", async () => {
+  // Given
+  const deps = await setup();
+  ready(deps, [15]);
+  sim.endsAfterProbe = 201;
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
+  // Then
+  expect(r.code).toBe(3);
+  expect(printed.some((l) => l.startsWith("HANDOVER_MONITORS_OK"))).toBe(true);
+  expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain(`monitors stopped in ${NEW} after the first check: scratch events (armed, but its process 201 ended`);
+  expect((await readLane(deps)).pane).toBe(OLD);
+  expect(sent(w).some((t) => t.startsWith("[LEAD] HANDOVER_COMMITTED"))).toBe(false);
 });
 
 test("rolls back when a monitor is not re-armed or the probe is acked from another pane", async () => {
