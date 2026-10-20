@@ -138,7 +138,7 @@ def speakers(wav: str) -> list[list] | None:
     env = dict(os.environ, HF_HOME=os.path.join(DIAR_DIR, "hf"), HF_HUB_OFFLINE="1")
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "turns.json")
-        r = subprocess.run([py, "-I", os.path.join(HERE, "diarize.py"), wav, out], env=env,
+        r = subprocess.run([py, "-I", os.path.join(HERE, "diarize.py"), wav, out], env=env, cwd=DIAR_DIR,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if r.returncode != 0:
             log(f"no speaker labels: diarize.py exit {r.returncode}: {r.stderr.strip()[-300:]}")

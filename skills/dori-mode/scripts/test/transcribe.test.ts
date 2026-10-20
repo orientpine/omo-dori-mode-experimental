@@ -49,6 +49,8 @@ afterEach(() => rmSync(asr, { recursive: true, force: true }));
 const diarizer = () =>
   exe(join(asr, "diar/venv/bin/python"), `#!/usr/bin/env python3
 import json, os, sys
+# pyannote reads database.yml from the working directory, so a caller's unreadable one breaks it
+assert os.getcwd() == os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))), os.getcwd()
 turns = os.environ.get("FAKE_TURNS") or '[[0, 5, "SPEAKER_07"], [5, 10, "SPEAKER_02"], [10, 30, "SPEAKER_07"]]'
 open(sys.argv[-1], "w").write(turns)
 `);
