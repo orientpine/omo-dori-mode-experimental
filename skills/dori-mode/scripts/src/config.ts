@@ -110,6 +110,10 @@ export const ownerSpeechOf = (locale: string, speech: OwnerSpeech = ""): OwnerSp
 // and DORI_DISCORD_CHANNEL when the lead itself ran autoturnLongTurns turns on its own or omo paused it ({pane}, {turns},
 // {since}, {reason}). leadRepeatText follows "<head> repeat:" when the last alert that asked for a check is under 30 min
 // old ({pane}, {turns}, {since}, {reason}, {min} = minutes since that alert, {at} = its time): it asks for nothing.
+// leadCompactionStuckText follows the LEAD_COMPACTION_STUCK head dori freshness posts the same way, once per lead pane, when
+// the lead answers every message with the engine's "compaction did not complete" error and nothing moves it: the auto key
+// is off or the automatic handover was refused or failed ({pane}, {turns} = the error's count on its screen, {since} = when
+// freshness first saw it due, {reason} = why it did not move).
 export type DiscordWords = {
   readonly statusStyle: StatusStyle;
   readonly autoUnEye: boolean;
@@ -119,6 +123,7 @@ export type DiscordWords = {
   readonly leadRunawayText: string;
   readonly leadPausedText: string;
   readonly leadRepeatText: string;
+  readonly leadCompactionStuckText: string;
   readonly postRawReports: boolean;
   // minutes a done (✅) thread in DORI_DISCORD_CHANNEL stays quiet before freshness archives it (0: never; a thread an open
   // lane, an open card or a pending rename holds is left open)
@@ -155,6 +160,7 @@ export const defaultDiscordWords: DiscordWords = {
   leadRunawayText: "The lead {pane} has started {turns} turns on its own since its last user message ({since}). Other Dori: type one short check message into {pane}; do not stop it.",
   leadPausedText: "omo paused the lead {pane} after {turns} turns on its own ({reason}, since {since}). Other Dori: type one short check message into {pane}; do not stop it.",
   leadRepeatText: "The lead {pane} is still on its own ({turns} turns). A check was already asked for {min} min ago ({at}): send no new message.",
+  leadCompactionStuckText: "The lead {pane} answers every message with \"compaction did not complete\" ({turns} times on its screen, due since {since}) and was not moved to a new session: {reason}. Other Dori: tell your lead; this lead needs dori handover to a new session on its host.",
   postRawReports: false,
   autoArchiveMin: 30,
   working: "working",

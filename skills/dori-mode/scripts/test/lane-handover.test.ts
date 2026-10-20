@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
-import { type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine, trainingMark } from "../src/lane-handover.ts";
+import { compactionStuckOn, type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine, trainingMark } from "../src/lane-handover.ts";
 import { appendRollover, approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, ownerRolloverText, quietReason, readRollovers, rolloverCause, rolloverStats, sessionSignals } from "../src/rollover.ts";
 import { stuckTop, stuckView } from "../src/explore.ts";
 import { recordFix } from "../src/same-fix.ts";
@@ -1396,6 +1396,8 @@ test("the owner's rollover message names one cause from the approval or the sign
     ["auto:handover.autoRolloverLanes", { afterCompactK: 323 }, "afterCompact"],
     ["auto:handover.autoRolloverLanes", { contextPct: 85 }, "context"],
     ["auto:handover.autoRolloverLanes", { stuck: { metric: "loss", n: 3, rung: 4 } }, "stuck"],
+    ["auto:handover.autoRolloverLead", { compactionStuck: 16, contextPct: 131 }, "compactionStuck"],
+    ["lead:rollover due: COMPACTION_STUCK (the engine's \"compaction did not complete\" error 3x on its screen)", {}, "compactionStuck"],
     ["lead:a good point after the merge", {}, "lead"],
   ];
   // When / Then
@@ -1412,4 +1414,62 @@ test("the owner's rollover message names one cause from the approval or the sign
   }
   // the numbers a move bought are in the message as they were measured
   expect(ownerRolloverText({ who: "lane", title: "ETH 넘기", cause: { kind: "full" }, sizes: { oldK: 603, checkedK: 112 } }, "ko-KR")).toContain("603k에서 112k");
+});
+
+// OkDori's lead on 2026-10-20: the engine refused every message for hours ("compaction did not complete", 16 times on its
+// screen, 262K/200K) and no threshold fired, because no turn after a compaction ever came (owner "옥도리다 대답이 없어").
+const engineError = (n: number) => Array.from({ length: n }, () => " Runtime error (send_message): Context remains above the compaction threshold because compaction\n did not complete").join("\n");
+const box = (above: string) => `${above}\n────────────────\n❯ \n────────────────\n /work • master • 262K/200K (130.9%) (auto)    claude-opus-5-5:high\n(OmO)`;
+
+test("a session whose compaction did not complete is read from its screen: the engine's error at least twice, the last thing above the input box", () => {
+  // Given / When / Then
+  expect(compactionStuckOn(box(`older work\n${engineError(16)}`))).toBe(16);
+  expect(compactionStuckOn(box(`older work\n${engineError(1)}`))).toBe(0);
+  // it went on working after the errors (a compaction that completed later), or never met one: not stuck
+  expect(compactionStuckOn(box(`${engineError(3)}\n hi\n Hi! What would you like to work on?`))).toBe(0);
+  expect(compactionStuckOn(box("normal output"))).toBe(0);
+  // the context figure alone (a one-message spike) is no reason; the error is, whatever the thresholds
+  const limits = { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 300 };
+  expect(crossed({ contextPct: 151 }, limits)).toEqual([]);
+  expect(crossed({ compactionStuck: 16, contextPct: 131 }, limits)).toEqual([`COMPACTION_STUCK (the engine's "compaction did not complete" error 16x on its screen, context 131%)`]);
+});
+
+test("a lead stuck in a compaction that did not complete is due, and the pair channel hears of it once while nothing moves it (auto key off)", async () => {
+  // Given
+  const base = await setup();
+  const posts: string[] = [];
+  const deps = { ...base, postLeadAlert: async (text: string) => { posts.push(text); return [`LEAD_ALERT_POSTED pair c1 m${posts.length}`]; } };
+  const hooks = { signals: async (pane: string) => (pane === "lead:p1" ? { compactionStuck: 16, contextPct: 131 } : {}), auto: async () => "started" };
+  const tick = async () => (await freshnessTick(deps, "/home/test", hooks)).filter((a) => a.lane === "lead").map((a) => `${a.kind} ${a.detail}`);
+  // When
+  const first = await tick();
+  const again = await tick();
+  // Then
+  expect(first.map((l) => l.split(" ")[0])).toEqual(["rollover_due", "lead_compaction_stuck"]);
+  expect(first[0]).toContain("COMPACTION_STUCK (the engine's \"compaction did not complete\" error 16x");
+  expect(first[1]).toContain("handover.autoRolloverLead");
+  expect(posts).toHaveLength(1);
+  expect(posts[0]).toStartWith("LEAD_COMPACTION_STUCK lead:p1 16: The lead lead:p1 answers every message with");
+  expect(again).toEqual([]);
+});
+
+test("with the auto key on a stuck lead's handover starts by itself; the pair channel hears of it only once that run is refused", async () => {
+  // Given
+  const base = await setup();
+  const posts: string[] = [];
+  const starts: string[] = [];
+  const deps = { ...base, config: { ...base.config, handover: { ...base.config.handover, autoRolloverLead: true } }, postLeadAlert: async (text: string) => { posts.push(text); return ["LEAD_ALERT_POSTED pair c1 m1"]; } };
+  const hooks = { signals: async (pane: string) => (pane === "lead:p1" ? { compactionStuck: 3 } : {}), auto: async (who: "lead" | "lane", key: string) => { starts.push(`${who}:${key}`); return "started"; } };
+  const tick = async () => (await freshnessTick(deps, "/home/test", hooks)).filter((a) => a.lane === "lead").map((a) => `${a.kind} ${a.detail}`);
+  // When
+  const first = await tick();
+  appendRollover(deps.config.stateDir, { kind: "rollover", who: "lead", at: new Date(deps.clock.now()).toISOString(), key: "lead", from: "lead:p1", approvedBy: "auto:handover.autoRolloverLead", signals: { compactionStuck: 3 }, steps: [], result: "refused", reasons: ["configured watchers not running for lead:p1: host guard"] });
+  const refused = await tick();
+  // Then
+  expect(first.map((l) => l.split(" ")[0])).toEqual(["rollover_due", "rollover_auto"]);
+  expect(first[0]).toStartWith(`rollover_due COMPACTION_STUCK (the engine's "compaction did not complete" error 3x on its screen) in lead:p1`);
+  expect(starts).toEqual(["lead:lead"]);
+  expect(refused.map((l) => l.split(" ")[0])).toEqual(["lead_compaction_stuck"]);
+  expect(refused[0]).toContain("the automatic handover ended refused: configured watchers not running for lead:p1: host guard");
+  expect(posts).toHaveLength(1);
 });

@@ -9,6 +9,7 @@ import { type HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
+import { compactionStuckOn } from "./lane-handover.ts";
 import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
@@ -498,7 +499,8 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   const leadScreen = await captureTmux(deps.run, config.leadPane);
   const status = leadScreen.split("\n").slice(leadScreen.split("\n").findLastIndex((l) => l === inputLine(leadScreen)) + 1).join("\n");
   const pct = /\b\d+(?:\.\d+)?[KMG]?\/\d+(?:\.\d+)?[KMG]?\s+\((\d+(?:\.\d+)?)%\)/.exec(status)?.[1];
-  const signals: Signals = { ...(pct ? { contextPct: Number(pct) } : {}), ...sessionSignals(sessionDir, session, now) };
+  const blockedTurns = compactionStuckOn(leadScreen);
+  const signals: Signals = { ...(pct ? { contextPct: Number(pct) } : {}), ...sessionSignals(sessionDir, session, now), ...(blockedTurns ? { compactionStuck: blockedTurns } : {}) };
   const real = deps.realpath(old.path);
   const cwd = config.handover.cwd || real;
   if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK the old lead runs from ${old.path}, a symlink to ${real}; the new session opens in ${cwd}${config.handover.cwd ? " (handover.cwd)" : " (set handover.cwd to choose another)"}`);

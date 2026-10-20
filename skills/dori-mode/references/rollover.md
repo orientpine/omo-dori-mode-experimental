@@ -63,6 +63,12 @@ The sources, with their conditions and numbers:
 
 The full research record (sources ledger, claim graph, each lane's report) is kept outside the repository, under `~/work/.omo/ulw-research/20261011-211925/` on the host where it was made.
 
+### A session whose compaction did not complete
+
+The thresholds above measure a session that still takes turns. One whose compaction did not complete takes none: the engine answers every message with "Context remains above the compaction threshold because compaction did not complete", writes nothing to its log, and no turn after a compaction ever comes for `afterCompactK` to measure (OkDori's lead on 2026-10-20 stood at 262K/200K for hours; owner 16:13 KST "옥도리다 대답이 없어"). `dori freshness` reads that from the screen instead: the error at least twice, and the last thing above the input box (a session that went on working after one error is not counted). Such a session is due whatever the thresholds say, which stay as decided: the reason reads `COMPACTION_STUCK (the engine's "compaction did not complete" error Nx on its screen, context P%)` in the `ROLLOVER_DUE` / `ROLLOVER_AUTO` line, the handover's cause tells the owner it could no longer answer, and with the auto key on the move starts by itself. The status line's context figure is not the trigger, so a one-message spike in the measured context (a usage counted twice) moves nothing unless the engine itself refuses turn after turn.
+
+A stuck lead reads nothing typed into it, so when nothing moves it - the auto key is off, or the automatic handover was refused or failed - the pair channel hears of it once per lead pane: `LEAD_COMPACTION_STUCK <pane> <n>: <discord.leadCompactionStuckText>` (postLeadAlert, the owner's channel only without a pair channel), and the watch log gets `LEAD_COMPACTION_STUCK lead ...`. A `handover.watchers` check that fails refuses every lead handover; `dori freshness` says so at start (`HANDOVER_WATCHER_DOWN <pane>: ...`, also to the pair channel) instead of only at the refusal.
+
 ## Rollover or compaction only
 
 The owner asked whether Dori could do without rollovers and rely on auto-compaction alone. Researched on 2026-10-11 by a second team (compaction-only runs, fresh-session costs, handoff contents, handoff checks, practitioner reports, two lanes measuring our own logs, and one lane attacking the claims). Record: `~/work/.omo/ulw-research/20261011-215413/`.

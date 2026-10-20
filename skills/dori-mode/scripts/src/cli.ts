@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { currentTmuxSession, paneActivity } from "./aoe.ts";
 import { leadAlertPoster } from "./autoturn.ts";
 import { findLead, LeadError } from "./lead.ts";
-import { ackHandover, handover, type HandoverDeps, LEAD_SUMMARY_TEMPLATE } from "./handover.ts";
+import { ackHandover, handover, type HandoverDeps, LEAD_SUMMARY_TEMPLATE, missingWatchers } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
 import { auditHandover, auditSummary, type Committed, findCommitted, markerFile, reportGap, sendAuditSummary, summaryWeek } from "./rollover-audit.ts";
 import { appendRollover, dueReasons, LEAD_PREFIX, limitsFor, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
@@ -1029,6 +1029,16 @@ try {
     }
     case "freshness":
       console.log(autoReadyLine(config.handover));
+      // a handover.watchers check that fails refuses every lead handover, the automatic one too: said once at start (the
+      // lanes service starts again after each update), in the watch log and to the pair channel, not first at the refusal
+      if (config.leadPane && config.handover.watchers.length) {
+        const down = await missingWatchers({ run }, config.handover.watchers, { pane: config.leadPane, session: "" });
+        if (down.length) {
+          const line = `HANDOVER_WATCHER_DOWN ${config.leadPane}: ${down.join(", ")}; every lead handover, the automatic one too, is refused until it runs or handover.watchers is fixed`;
+          console.log(line);
+          for (const l of (await deps.postLeadAlert?.(line).catch((e: unknown) => [`LEAD_ALERT_WARN ${String(e).slice(0, 160)}`])) ?? []) console.log(l);
+        }
+      }
       await every(loopMin, async () => {
         const laneDeps = laneDepsFor(() => {});
         const hooks = {
