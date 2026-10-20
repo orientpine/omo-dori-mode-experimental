@@ -23,7 +23,7 @@ import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
 import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
-import { plainSummaryProblem } from "./close-summary.ts";
+import { ownerSpeechProblem, plainSummaryProblem } from "./close-summary.ts";
 import { literalNewlineProblem } from "./messenger/literal-newline.ts";
 import { autoReadyLine, freshnessTick } from "./freshness.ts";
 import { sampleUsage } from "./heavy-headroom.ts";
@@ -622,6 +622,21 @@ const ownDiscord = (token: string): Discord => {
   return new Discord(fetchHttp, realClock, token, discordApi());
 };
 const discordClient = () => new Discord(fetchHttp, realClock, checkedDiscordToken(env("DORI_DISCORD_TOKEN")), discordApi());
+// A Discord place that is the owner's: DORI_DISCORD_CHANNEL, a thread in it, or a DM (a bot's DM is with the owner). The pair
+// channel is the Doris' own. A place that cannot be looked up counts as his.
+const ownerPlace = async (dc: Discord, id: string): Promise<boolean> => {
+  const channel = process.env.DORI_DISCORD_CHANNEL?.trim() ?? "";
+  if (id === (process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() || undefined)) return false;
+  if (id === channel) return true;
+  const c = await dc.call<{ type?: number; parent_id?: string | null }>("GET", `/channels/${id}`).catch(() => undefined);
+  return !c || c.type === 1 || (channel !== "" && c.parent_id === channel);
+};
+// What dori send, thread and ask post for the owner is in the speech this Dori uses with him (close-summary.ts
+// ownerSpeechProblem), refused before anything is sent; the place is looked up only for a text that fails.
+const ownerSpeech = async (text: string, what: string, toOwner: () => Promise<boolean>): Promise<void> => {
+  const problem = ownerSpeechProblem(text, config.discord.locale, config.discord.ownerSpeech);
+  if (problem && (await toOwner())) die(`SPEECH_REFUSED ${what}: ${problem}; nothing was sent`, 2);
+};
 // question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
 const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
 // every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards and
@@ -1306,6 +1321,7 @@ try {
         else await once(async () => String(await tg.send(target, text)));
       } else if (platform === "discord") {
         const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")), discordApi());
+        await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
         if (edit) await dc.edit(to, edit, text);
         else await once(() => dc.send(thread ?? to, text, !flags.values["no-typing"], ping, reply));
       } else die(`unknown platform ${platform}`);
@@ -1392,6 +1408,8 @@ try {
     case "ask": {
       await quietGuard();
       const thread = opt("thread")?.replace(/^discord:/, "");
+      // a card is for the owner: only he answers it
+      await ownerSpeech([need("text"), ...((flags.values.option as string[] | undefined) ?? [])].join("\n"), "ask", async () => true);
       const q = await questionCards(discordClient()).ask(postable(need("text"), "ask"), (flags.values.option as string[] | undefined) ?? [], { thread: thread || null, session: opt("session") || null, tmux: opt("tmux") || null });
       console.log(`ASKED ${q.id} message=${q.message}`);
       break;
@@ -1466,6 +1484,7 @@ try {
       onlyOptions(`thread ${verb}`, ["text-file", "force", "lane", "again"], 3);
       const body = postable(await textOrFile(text?.trim(), "usage: dori thread <reply|wait|done> discord:<thread id> <text> | --text-file FILE"), `thread ${verb}`);
       const dc = discordClient();
+      await ownerSpeech(body, `thread ${verb}`, () => ownerPlace(dc, discordThreadId(ref ?? "")));
       // the same key as `dori send discord --to <thread id>`, so the two commands do not post one text twice either
       const threadOnce = (post: () => Promise<string>) => sendOnce(join(config.stateDir, "sent"), sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, body]), post, { again: Boolean(flags.values.again) });
       if (verb === "done") {

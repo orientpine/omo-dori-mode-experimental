@@ -235,7 +235,7 @@ In the live check right after the merge the other Dori sent two checks 27 second
 
 On 10-17 at 13:42 and 13:45 KST the owner wrote in a lane's thread "강화학습 세션은 fable high로 해" and "이 주제는 무조건 fable high로 열어". The lead ran `dori handover --lane ... --model ... --thinking high` twice and was refused both times: a `lead:` approval had to name a watch signal (STUCK, rung 4, context N%, compactions N, age N h), and a model the owner asked for is none of them. The lane did show real numbers (4 compactions, 37.5 h), but writing them in only to pass would have made the check lie, so the lead did not.
 
-- **Cite the owner instead of a signal.** `--approved-by "lead:<reason>, owner <message id or link>"` passes when that message is in the inbox with the owner's `author_id` (and in the link's channel); every other handover check stays.
+- **Cite the owner instead of a signal.** `--approved-by "lead:<reason>, owner <message id or link>"` passes when that message is in the inbox with the owner's `author_id` (and in the link's channel), or is his card answer row (`kind: "answer"`, written only for his taps; 2026-10-20 GongDori's E7 move on the owner's Q5 button was refused as "not in the inbox" before this); every other handover check stays.
 - **A reference that cannot be checked is refused.** A made-up id, a bot's or someone else's message, a link into another channel, or a fake id next to a real signal all stop the move. The ref records which message the lead acted on, and the owner is told afterwards as for any lead decision.
 
 ## 29. A Dori's state is in local git, to put it back when it breaks

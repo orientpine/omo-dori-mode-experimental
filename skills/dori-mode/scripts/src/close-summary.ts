@@ -29,6 +29,17 @@ export const politeSentence = (text: string): string | undefined => {
   return undefined;
 };
 
+// Why a text this Dori posts to the owner is not in the speech it uses with him, or undefined: polite speech when it talks to
+// him in 반말 (discord.ownerSpeech casual, or "" with a Korean discord.locale). Quoted lines (> ...) and code are someone
+// else's words or a command's output, not this Dori's speech, so they are not read (2026-10-20 a lane's progress post
+// "…결과 카드를 여기 올릴게요." went to the owner's thread, owner "얗는 왜 말투 안 바꼈냐?").
+export const ownerSpeechProblem = (text: string, locale = "", speech: OwnerSpeech = ""): string | undefined => {
+  if (ownerSpeechOf(locale, speech) !== "casual") return undefined;
+  const own = text.replace(/```[\s\S]*?```/g, "\n").replace(/`[^`\n]*`/g, " ").split("\n").filter((l) => !/^\s*>/.test(l)).join("\n");
+  const polite = politeSentence(own);
+  return polite ? `it is in 존댓말 ("${polite.slice(-40)}"), and this Dori talks to the owner in 반말 (discord.ownerSpeech casual): write it in 반말` : undefined;
+};
+
 // Why a text is not fit for the owner's thread, or undefined when it is: the lane's notes for the lead (paths, commit
 // hashes, report heads, backticks) are not what the owner reads, nor their polite speech when this Dori talks to him in
 // 반말 (discord.ownerSpeech, "" follows discord.locale): the post goes out under this Dori's name.
@@ -42,9 +53,7 @@ export const plainSummaryProblem = (text: string, locale = "", speech: OwnerSpee
   if (/(^|[\s(])(~\/|\/home\/|\/Users\/|\/tmp\/|\/root\/)/.test(t)) return "it has a local path";
   if ((t.match(/\b[0-9a-f]{7,40}\b/g) ?? []).some((h) => /\d/.test(h) && /[a-f]/.test(h))) return "it has a commit hash";
   if (locale.toLowerCase().startsWith("ko") && !HANGUL.test(t)) return "it is not in Korean (discord.locale is ko)";
-  const polite = ownerSpeechOf(locale, speech) === "casual" ? politeSentence(t) : undefined;
-  if (polite) return `it is in 존댓말 ("${polite.slice(-40)}"), and this Dori talks to the owner in 반말 (discord.ownerSpeech casual): write it in 반말`;
-  return undefined;
+  return ownerSpeechProblem(t, locale, speech);
 };
 
 export const SUMMARY_SYSTEM = "You write the short message an assistant posts to its owner when a piece of work it ran for him is finished. You answer only with the message between the requested markers. You never invent facts that are not in the notes.";
