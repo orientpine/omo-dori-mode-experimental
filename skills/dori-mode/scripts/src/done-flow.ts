@@ -6,7 +6,7 @@ import { laneBackground } from "./background.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import type { Question } from "./messenger/discord-cards.ts";
 import { missedAnswersTick } from "./missed-answers.ts";
-import { hasThread, type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
+import { hasThread, type Lane, type Registry, statusOf, type ThreadPost, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
 import { sendVerified } from "./panes.ts";
 import { checkDone, type SignalIo } from "./done-signals.ts";
@@ -46,22 +46,50 @@ const signalIo = (deps: FlowDeps, lane: Lane): SignalIo => ({ cwd: lane.cwd ?? d
 
 const windowMs = (deps: FlowDeps): number => deps.config.closeAfterMin * 60_000;
 
-// summary: what the owner's thread gets when the lane closes (dori claim-done --summary), kept with the claim
-export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, summary?: string): Promise<string> => {
+// A lane's result reaches its thread once. Lanes post it themselves (their briefs ask for a short line in the owner's
+// thread) and the close posted the claim's summary there too, the same result twice within a minute (owner 2026-10-21
+// 07:19 KST "지금 왜 두번씩 답변하는지"; 11 lanes on 2026-10-20, e.g. jev-recall-filter and cyto-ocr-merge). So dori send and
+// dori thread record what a lane's own session posts in its work thread, and the newest such post made up to
+// RESULT_POST_MS before the claim is taken as the result: the close then posts no summary.
+export const RESULT_POST_MS = 30 * 60_000;
+const KEEP_POSTS = 5;
+const POST_TEXT = 120;
+
+// Records a post made from pane in thread (a Discord id) on the open lane of that pane, when the thread is its work thread;
+// returns the lane's key, or undefined when the post is not a lane's post in its own thread.
+export const recordThreadPost = async (registry: Registry, pane: string, thread: string, id: string, text: string, at: string): Promise<string | undefined> => {
+  if (!pane) return undefined;
+  const lane = await registry.byPane(pane);
+  if (!lane || lane.thread !== `discord:${thread}`) return undefined;
+  const post: ThreadPost = { id, at, text: text.trim().slice(0, POST_TEXT) };
+  await registry.patch(lane.key, { threadPosts: [...(lane.threadPosts ?? []), post].slice(-KEEP_POSTS) });
+  return lane.key;
+};
+
+const resultPost = (lane: Lane, now: number): ThreadPost | undefined => lane.threadPosts?.findLast((p) => now - Date.parse(p.at) <= RESULT_POST_MS);
+
+export type ClaimOptions = { readonly posted?: string; readonly postSummary?: boolean };
+
+// summary: what the owner's thread gets when the lane closes (dori claim-done --summary), kept with the claim; posted: the
+// lane's result already in its thread (opts.posted, else its own post there in the last RESULT_POST_MS), so the close posts
+// no summary; opts.postSummary: that post was not the result, post the summary anyway
+export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, summary?: string, opts: ClaimOptions = {}): Promise<string> => {
   const at = iso(deps.clock);
-  const claim = { at, evidence, emitted: false, ...(summary?.trim() ? { summary: summary.trim() } : {}) };
+  const posted = opts.postSummary || !hasThread(lane) ? undefined : (opts.posted ?? resultPost(lane, deps.clock.now())?.id);
+  const claim = { at, evidence, emitted: false, ...(summary?.trim() ? { summary: summary.trim() } : {}), ...(posted ? { posted } : {}) };
+  const postedLine = posted ? `\nRESULT_ALREADY_POSTED ${lane.key} ${posted}: the close posts no summary in the thread (the lane's result is there); --post-summary posts it anyway` : "";
   // A paused lane waits on a human, so its claim is recorded and announced but never closes it on a timer.
   if (statusOf(lane) === "paused") {
     await deps.registry.write({ ...lane, claim, history: [...(lane.history ?? []), { at, status: "paused", note: `done claimed while paused: ${evidence}` }] });
     if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}, but the lane is paused, so it does not close automatically; the lead decides. Stay idle until then.`);
-    return `LANE_DONE_CLAIMED_PAUSED ${lane.key} ${lane.pane ?? "-"} ${evidence}`;
+    return `LANE_DONE_CLAIMED_PAUSED ${lane.key} ${lane.pane ?? "-"} ${evidence}${postedLine}`;
   }
   await deps.registry.write(withStatus(lane, "done-claimed", evidence, at, { claim }));
   if (lane.pane) {
     const closesAt = new Date(deps.clock.now() + windowMs(deps)).toISOString().slice(11, 16);
     await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
   }
-  return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}`;
+  return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}${postedLine}`;
 };
 
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
@@ -127,14 +155,17 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
 // note goes into the lane's record. A lane with a work thread closes only with a summary for the owner (summary, else the
 // claim's, else one a model writes from the lane's notes; close-summary.ts), posted there before the thread is marked done
 // and archived: no summary is CLOSE_SUMMARY_MISSING, a post that did not go out is CLOSE_SUMMARY_NOT_SENT, and either way
-// nothing is changed and the lane stays open.
-export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summary?: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+// nothing is changed and the lane stays open. When the lane's result is already in the thread (posted, else the claim's
+// posted) and no summary is given here, none is posted: CLOSE_SUMMARY_SKIPPED, and the thread is marked as usual.
+export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summary?: string, posted?: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
   const exists = deps.exists ?? existsSync;
   const checks = await checkDone(lane.done, deps.run, signalIo(deps, lane));
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
   if (checks.some((c) => !c.ok)) return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };
   let threadText = "";
-  if (hasThread(lane)) {
+  const already = summary?.trim() || !hasThread(lane) ? undefined : (posted ?? lane.claim?.posted);
+  if (already) lines.push(`CLOSE_SUMMARY_SKIPPED ${lane.key}: its result is already in the thread (${already}); no second post`);
+  else if (hasThread(lane)) {
     const s = await ownerSummary(deps, lane, summary ?? lane.claim?.summary);
     if (!s.text) return { closed: false, lines: [...lines, `CLOSE_SUMMARY_MISSING ${lane.key}: ${s.why ?? "no summary"}`] };
     threadText = s.text;
@@ -150,7 +181,15 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   const sharing = hasThread(lane) ? (await deps.registry.open()).filter((l) => l.key !== lane.key && l.thread === lane.thread).map((l) => l.key) : [];
   const cards = hasThread(lane) ? (deps.openCards?.(lane.thread) ?? []) : [];
   const holders = [...(sharing.length ? [`open lane ${sharing.join(", ")} uses it too`] : []), ...(cards.length ? [`open card ${cards.join(", ")}`] : [])];
-  if (holders.length) {
+  if (already) {
+    if (holders.length) cleanup.push(`thread left open: ${holders.join("; ")}; result already posted (${already})`);
+    else if (deps.markThreadDone && lane.thread.startsWith("discord:")) cleanup.push(`result already posted (${already})`);
+    else {
+      // without a Discord token only the threadDone hook marks a thread done, and it posts a text: posting nothing wins
+      warnings.push(`THREAD_DONE_WARN ${lane.key} ${lane.thread}: result already posted (${already}) and no Discord token to mark the thread done without a post; mark it by hand`);
+      cleanup.push(`result already posted (${already}); thread not marked done`);
+    }
+  } else if (holders.length) {
     const text = `${lane.title}: ${threadText}`;
     const reply = deps.config.hooks.threadReply;
     if (deps.postInThread && lane.thread.startsWith("discord:")) {
@@ -230,7 +269,8 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   const verified = withStatus(lane, "verified-done", "Done signals read back live", iso(deps.clock));
   await deps.registry.write(verified);
   const note = `Done: ${evidence}`;
-  const result = await closeLane(deps, verified, note, lane.claim?.summary);
+  // the claim's summary is read by closeLane itself; an explicit summary there would post even when the result is in the thread
+  const result = await closeLane(deps, verified, note);
   if (!result.closed) {
     const current = (await deps.registry.read(lane.key)) ?? verified;
     // no summary, or it did not go out: the lead gets the line, and the lane (still idle in its session) is told how to claim again
