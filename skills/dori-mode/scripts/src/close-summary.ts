@@ -16,15 +16,22 @@ export const MAX_SUMMARY = 700;
 
 const HANGUL = /[\uac00-\ud7a3]/;
 
-// Korean polite speech at the end of a sentence (~요, ~죠, ~니다, ~니까, ~십시오), nouns that end in 요 (필요, 중요, …) aside.
-const POLITE_END = /(?:[\uac00-\ud7a3]요|죠|니다|니까|십시오)$/;
+// Korean polite speech at the end of a sentence (~요, ~죠, ~십시오, ~ㅂ니다, ~ㅂ니까), nouns that end in 요 (필요, 중요, …) aside. Polite 니다/니까
+// follow a syllable that ends in ㅂ (합니다, 습니까, 입니까); after any other one they are 반말 (몫이니까, 그러니까, 다니다), 2026-10-20 the lead's
+// "…그건 유돌 몫이니까." was refused as 존댓말.
+const POLITE_END = /(?:[\uac00-\ud7a3]요|죠|십시오)$|([\uac00-\ud7a3])니(?:다|까)$/;
+const BIEUP_FINAL = 17;
+const politeEnd = (s: string): boolean => {
+  const m = POLITE_END.exec(s);
+  return !!m && (m[1] === undefined || (m[1].charCodeAt(0) - 0xac00) % 28 === BIEUP_FINAL);
+};
 const NOUN_YO = /(?:필요|중요|주요|수요|개요|강요|소요|요요)$/;
 
 // The first sentence of a text that ends in Korean polite speech, or undefined.
 export const politeSentence = (text: string): string | undefined => {
   for (const raw of text.split(/(?<=[.!?…])\s+|\n+/)) {
     const s = raw.trim().replace(/\s*\([^()]*\)[^\uac00-\ud7a3]*$/, "").replace(/[^\uac00-\ud7a3]+$/, "");
-    if (POLITE_END.test(s) && !NOUN_YO.test(s)) return raw.trim();
+    if (politeEnd(s) && !NOUN_YO.test(s)) return raw.trim();
   }
   return undefined;
 };
