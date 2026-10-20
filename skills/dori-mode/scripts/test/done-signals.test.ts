@@ -121,8 +121,11 @@ test("checkDone reports every signal, so one passing signal never hides a failin
 
 test("a command signal that greps git's output for a Korean path matches: git runs with core.quotepath off (feature-verify 2026-10-12, defect 5)", async () => {
   const repo = join(state.dir, "kr-repo");
-  const git = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe" });
-  Bun.spawnSync(["git", "init", "-q", repo]);
+  // git as anything else runs it: without a GIT_CONFIG_* the test itself inherited (dori close runs Done commands, and so
+  // this suite, under the quotepath-off env, which would make the reference git below print the path unquoted too)
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_CONFIG_")));
+  const git = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe", env });
+  Bun.spawnSync(["git", "init", "-q", repo], { env });
   writeFileSync(join(repo, "\ubcf4\uace0\uc11c.md"), "x");
   git("add", ".");
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "add");
