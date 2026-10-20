@@ -22,8 +22,12 @@ export const hasThread = (lane: Lane): boolean => typeof lane.thread === "string
 
 // "paused": the lead parked the lane (e.g. it waits on the owner); no sweep nudges, posts for, or flags it until resumed.
 export type LaneStatus = "working" | "done-claimed" | "verified-done" | "not-done" | "paused" | "closed";
-// summary: the lane's words for the owner's thread (dori claim-done --summary), posted when the lane closes
-export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly summary?: string };
+// summary: the lane's words for the owner's thread (dori claim-done --summary), posted when the lane closes, unless posted
+// names the lane's result already in that thread (its own post shortly before the claim, or --posted): then the close posts
+// nothing more, so the owner does not read the result twice (owner 2026-10-21 "지금 왜 두번씩 답변하는지")
+export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly summary?: string; readonly posted?: string };
+// a message the lane's own session posted in its work thread (dori send, dori thread reply|wait|done run in its pane)
+export type ThreadPost = { readonly id: string; readonly at: string; readonly text: string };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };
 export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; readonly note: string };
 // one fix attempt on a failing metric, from a tagged [REPORT] or from the lead (dori fix-attempt)
@@ -73,6 +77,8 @@ export type Lane = {
   readonly status?: LaneStatus;
   readonly pausedFrom?: LaneStatus;
   readonly claim?: Claim;
+  // the newest posts its own session made in its work thread, oldest first (at most 5, text cut to 120 characters)
+  readonly threadPosts?: readonly ThreadPost[];
   readonly objection?: Objection;
   readonly history?: readonly HistoryEntry[];
   readonly openedAt: string;

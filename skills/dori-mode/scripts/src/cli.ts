@@ -22,7 +22,7 @@ import { sendVerified, submitToPane } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
-import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, resumeLane, watchTick } from "./done-flow.ts";
+import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, recordThreadPost, resumeLane, watchTick } from "./done-flow.ts";
 import { ownerSpeechProblem, plainSummaryProblem } from "./close-summary.ts";
 import { literalNewlineProblem } from "./messenger/literal-newline.ts";
 import { autoReadyLine, freshnessTick } from "./freshness.ts";
@@ -132,9 +132,13 @@ const USAGE = `dori <command> [options]
                                        (NAME=VALUE for a lane, --unset=NAME for a --use-gpu lane or any other session;
                                        nothing without launchEnv); used by setups/discord-aoe/self-restart.sh
   sync   [--write]                     registry vs live panes; read-only unless --write; a SIGNALS line per open lane with a record
-  claim-done [<key>] --evidence TEXT [--summary TEXT]
+  claim-done [<key>] --evidence TEXT [--summary TEXT] [--posted ID|LINK] [--post-summary]
                                        key defaults to the lane registered for this pane ($HERDR_PANE_ID, or the tmux session
-                                       with backend aoe); --summary: 2 to 5 plain lines for the owner's thread in his language
+                                       with backend aoe); --summary: 2 to 5 plain lines for the owner's thread in his language.
+                                       The result reaches the thread once: when this lane's session posted in its work thread
+                                       (dori send, dori thread) in the last 30 minutes, or --posted names that message, it is
+                                       the result (RESULT_ALREADY_POSTED) and the close posts no summary; --post-summary: that
+                                       post was not the result, post the summary anyway
                                        (what changed, what is left, when it reaches where it is used), posted before the close
                                        marks the thread done; paths, commit hashes, backticks or report heads are refused
                                        (SUMMARY_REFUSED, exit 2). Without it the close has a model write one from the lane's
@@ -209,13 +213,15 @@ const USAGE = `dori <command> [options]
                                        what earlier lanes tried and how it went: numbered fix attempts and the root-cause
                                        switch, tagged fixes by metric, rejected done claims, re-sends, nudges, outcome,
                                        warnings; no option = one SIGNALS line per open lane. Read it before re-instructing
-  close  <key> [--note TEXT] [--summary TEXT]
+  close  <key> [--note TEXT] [--summary TEXT] [--posted ID|LINK]
                                        close now (Done signals must read back live); a lane with a work thread first posts
                                        its summary for the owner there (--summary, the claim's, else one a model writes from
                                        its last report and REPORT.md): none is CLOSE_SUMMARY_MISSING, a post that failed is
                                        CLOSE_SUMMARY_NOT_SENT, exit 2 and nothing changed. Then a discord:<id> thread is set
                                        done and archived when DORI_DISCORD_TOKEN is set; a thread another open lane or an
-                                       open card uses only gets the summary posted
+                                       open card uses only gets the summary posted. With the result already in the thread
+                                       (the claim's RESULT_ALREADY_POSTED, or --posted for one the lead relayed) and no
+                                       --summary, nothing is posted: CLOSE_SUMMARY_SKIPPED
   watch                                long-running: emits LANE_* lines every 30 s
   update [--pull] [--dry-run]           apply changed scripts to configured services and report unset new config keys
   notify-change --summary TEXT [--file PATH ...]
@@ -435,7 +441,7 @@ const flags = parseArgs({
     static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
     remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
     job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" },
-    reply: { type: "string" }, again: { type: "boolean" },
+    reply: { type: "string" }, again: { type: "boolean" }, posted: { type: "string" }, "post-summary": { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -584,6 +590,19 @@ const lane = async (k: string | undefined) => {
   if (!found) return die(k ? `no registered lane "${k}"` : "no open lane is registered for this pane");
   if (statusOf(found) === "closed") return die(`lane ${found.key} is already closed`);
   return found;
+};
+
+// A post this session made in an open lane's own work thread is recorded on that lane, so its close does not post the same
+// result a second time (done-flow.ts recordThreadPost). Not recording it only means the close posts its summary as before.
+const notePost = async (thread: string, id: string, text: string): Promise<void> => {
+  const here = config.backend === "aoe" ? await currentTmuxSession(run).catch(() => "") : (process.env.HERDR_PANE_ID ?? "");
+  await recordThreadPost(deps.registry, here, thread, id, text, new Date().toISOString()).catch((e: unknown) => console.error(`THREAD_POST_NOT_RECORDED discord:${thread} ${id}: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`));
+};
+// --posted: a message id or its Discord link
+const postedId = (): string | undefined => {
+  const raw = opt("posted")?.trim();
+  if (raw === undefined) return undefined;
+  return /(?:^|\/)(\d{5,25})\/?$/.exec(raw)?.[1] ?? die(`--posted takes the id or link of the message that holds the result, not ${JSON.stringify(raw)}`);
 };
 
 const env = (name: string): string => process.env[name]?.trim() || die(`${name} is not set`);
@@ -799,7 +818,7 @@ try {
       if (summary !== undefined) postable(summary, `claim-done --summary ${l.key}`);
       const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale, config.discord.ownerSpeech);
       if (bad) die(`SUMMARY_REFUSED ${l.key}: ${bad}; write it for the owner in plain words`, 2);
-      console.log(await claimDone(deps, l, need("evidence"), summary));
+      console.log(await claimDone(deps, l, need("evidence"), summary, { posted: postedId(), postSummary: Boolean(flags.values["post-summary"]) }));
       break;
     }
     case "object-done": {
@@ -1004,7 +1023,7 @@ try {
       if (summary !== undefined) postable(summary, `close --summary ${key ?? ""}`);
       const bad = summary === undefined ? undefined : plainSummaryProblem(summary, config.discord.locale, config.discord.ownerSpeech);
       if (bad) die(`SUMMARY_REFUSED ${key ?? ""}: ${bad}; write it for the owner in plain words`, 2);
-      const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead", summary);
+      const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead", summary, postedId());
       for (const line of r.lines) console.log(line);
       process.exit(r.closed ? 0 : 2);
     }
@@ -1309,9 +1328,10 @@ try {
       if (flags.values.again && edit) die("--again is for a new message; an edit is never checked for repeats");
       const token = (name: string) => process.env[name] ?? die(`${name} is not set`);
       // a new message goes out once per place, reply target, ping and text in SEND_DEDUPE_MS (src/send-dedupe.ts)
-      const once = async (post: () => Promise<string>): Promise<void> => {
+      const once = async (post: () => Promise<string>) => {
         const r = await sendOnce(join(config.stateDir, "sent"), sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, text]), post, { again: Boolean(flags.values.again) });
         console.log(r.duplicate ? duplicateLine(r) : `SENT ${r.id}`);
+        return r;
       };
       if (platform === "slack") {
         const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env.DORI_SLACK_COOKIE }, undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
@@ -1326,7 +1346,10 @@ try {
         const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")), discordApi());
         await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
         if (edit) await dc.edit(to, edit, text);
-        else await once(() => dc.send(thread ?? to, text, !flags.values["no-typing"], ping, reply));
+        else {
+          const r = await once(() => dc.send(thread ?? to, text, !flags.values["no-typing"], ping, reply));
+          if (!r.duplicate) await notePost(thread ?? to, r.id, body);
+        }
       } else die(`unknown platform ${platform}`);
       break;
     }
@@ -1496,6 +1519,7 @@ try {
         const holders = await holdersOf(thread);
         if (holders && !flags.values.force) {
           const r = await threadOnce(() => postInThread(dc, ref ?? "", body));
+          if (!r.duplicate) await notePost(discordThreadId(ref ?? ""), r.id, body);
           console.log(`${r.duplicate ? duplicateLine(r) : `POSTED ${r.id}`} THREAD_LEFT_OPEN ${thread}: ${holders}; not marked done (--force marks it done anyway)`);
           break;
         }
@@ -1506,6 +1530,7 @@ try {
       // a repeat is not posted, but the status still goes through: a done after a reply with the same words still closes
       const r = await threadOnce(() => threadHook(dc, verb as ThreadVerb, ref ?? "", body, config.discord, mark));
       if (r.duplicate) await mark(discordThreadId(ref ?? ""), VERB_STATUS[verb as ThreadVerb]);
+      else await notePost(discordThreadId(ref ?? ""), r.id, body);
       console.log(`${r.duplicate ? duplicateLine(r) : `POSTED ${r.id}`}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
       break;
     }
