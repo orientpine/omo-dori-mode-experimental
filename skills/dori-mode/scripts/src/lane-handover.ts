@@ -181,6 +181,22 @@ export const statusLine = (screen: string, model: string): StatusLine => {
   return { ...(named ? { model: id } : {}), ...(thinking ? { thinking } : {}), ...(pct?.[1] ? { contextPct: Number(pct[1]) } : {}), ...(account ? { account } : {}) };
 };
 
+// The engine's error for a turn it refused because the context stayed over the compaction threshold (senpi
+// REQUIRED_COMPACTION_ERROR_MESSAGE); the TUI wraps it over lines, so it is matched with the whitespace collapsed.
+export const COMPACTION_ERROR = "Context remains above the compaction threshold because compaction did not complete";
+
+// How often that error stands on a session's screen, when it is the last thing above the input box (only the box's border
+// follows it) and came at least twice: a session that answers every message with it can take no turn, and nothing it
+// does by itself ends that. 0 for a session that went on working after an error, or met it once.
+export const compactionStuckOn = (screen: string): number => {
+  const lines = screen.split("\n");
+  const at = lines.findLastIndex((l) => l === inputLine(screen));
+  const above = (at >= 0 ? lines.slice(0, at) : lines).join(" ").replace(/\s+/g, " ");
+  const hits = above.split(COMPACTION_ERROR).length - 1;
+  if (hits < 2) return 0;
+  return above.slice(above.lastIndexOf(COMPACTION_ERROR) + COMPACTION_ERROR.length).replace(/[\s─-╿]/g, "") ? 0 : hits;
+};
+
 // The work the old session's agent runs that dies with it: every child process of the agent except omo's own helpers
 // and its monitors (those are re-armed in the new session). exclude: pids that must not count (the caller's own chain).
 // The session itself is not a chain: the shells that launched the agent (aoe runs it from /bin/bash /dev/fd/4 under the
@@ -458,7 +474,8 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   else if (blockers.length) emit(`HANDOVER_FORCED ${key}: ${blockers.join("; ")}`);
   if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK ${key}: the lane runs from ${old.path}, a symlink to ${real}; the new session opens in ${real}`);
   const stuck = stuckTop(lane);
-  const signals: Signals = { ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...sessionSignals(sessionDir, session, now), ...(stuck ? { stuck } : {}) };
+  const blockedTurns = compactionStuckOn(screen);
+  const signals: Signals = { ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...sessionSignals(sessionDir, session, now), ...(stuck ? { stuck } : {}), ...(blockedTurns ? { compactionStuck: blockedTurns } : {}) };
   const laneNote = [ready?.note ?? "", opts.note ? readFileSync(opts.note, "utf8") : ""].filter((t) => t.trim()).join("\n\n");
   const facts: LaneFacts = {
     lane, from: { pane: lane.pane, aoeId: old.id, session, title: old.title, cwd: old.path }, cwd: real, model: splitModel(model).base, thinking, ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(shown.account ? { account: shown.account } : {}),
@@ -809,7 +826,9 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
 // and age from its session log.
 export const paneSignals = async (deps: LaneHandoverDeps, pane: string, model: string): Promise<Signals> => {
   const s = sessionFor(await aoeSessions(deps.run), pane);
-  const shown = statusLine(await captureTmux(deps.run, pane), model);
+  const screen = await captureTmux(deps.run, pane);
+  const shown = statusLine(screen, model);
+  const blockedTurns = compactionStuckOn(screen);
   const session = s ? await deps.sessionOf(pane, s.path).catch(() => "") : "";
-  return { ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(s ? sessionSignals(sessionDirFor(deps.config.sessionsDir, s.path), session, deps.clock.now()) : {}) };
+  return { ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(blockedTurns ? { compactionStuck: blockedTurns } : {}), ...(s ? sessionSignals(sessionDirFor(deps.config.sessionsDir, s.path), session, deps.clock.now()) : {}) };
 };

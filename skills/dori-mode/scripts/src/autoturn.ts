@@ -107,7 +107,7 @@ export const LEAD_ALERT_REPEAT_MIN = 30;
 const stamp = (deps: FlowDeps, at: string): string =>
   at ? new Date(at).toLocaleString(deps.config.discord.locale, { timeZone: deps.config.discord.timeZone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "-";
 const fillWords = (template: string, values: Readonly<Record<string, string>>): string => template.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m);
-type LeadAlert = { readonly head: string; readonly pane: string; readonly turns: number; readonly template: string; readonly since: string; readonly reason: string };
+export type LeadAlert = { readonly head: string; readonly pane: string; readonly turns: number; readonly template: string; readonly since: string; readonly reason: string };
 export const leadRunawayPost = (deps: FlowDeps, pane: string, run: AutoturnRun): LeadAlert => ({ head: "LEAD_RUNAWAY", pane, turns: run.turns, template: deps.config.discord.leadRunawayText, since: run.lastUser, reason: "" });
 export const leadPausedPost = (deps: FlowDeps, pane: string, pause: AutoturnPause): LeadAlert => ({ head: "LEAD_AUTOTURN_PAUSED", pane, turns: pause.turns, template: deps.config.discord.leadPausedText, since: pause.since, reason: pause.reason });
 const alertMarkPath = (deps: FlowDeps): string => join(deps.config.stateDir, "autoturn-lead-alert.json");
@@ -118,7 +118,7 @@ const readAlertMark = (deps: FlowDeps): { readonly pane?: string; readonly at?: 
     return {};
   }
 };
-const leadAlert = async (deps: FlowDeps, a: LeadAlert): Promise<readonly string[]> => {
+export const leadAlert = async (deps: FlowDeps, a: LeadAlert): Promise<readonly string[]> => {
   if (!deps.postLeadAlert) return [];
   const now = deps.clock.now();
   const last = readAlertMark(deps);

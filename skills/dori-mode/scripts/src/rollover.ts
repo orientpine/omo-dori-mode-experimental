@@ -13,7 +13,9 @@ import { parseWatchLine } from "./watch-log.ts";
 
 // stuck: the highest rung of the stuck ladder the lane reached in its current session (rung 4 makes a rollover due);
 // repeats: written by older versions (the most attempts of one same fix), still shown by rollover-stats
-export type Signals = { readonly contextPct?: number; readonly compactions?: number; readonly afterCompactK?: number; readonly ageH?: number; readonly stuck?: { readonly metric: string; readonly n: number; readonly rung: number }; readonly repeats?: number };
+// compactionStuck: how often the engine's "compaction did not complete" error stands on the session's screen, set only
+// when that error is the last thing above its input box (lane-handover.ts compactionStuckOn): it can take no turn at all.
+export type Signals = { readonly contextPct?: number; readonly compactions?: number; readonly afterCompactK?: number; readonly ageH?: number; readonly stuck?: { readonly metric: string; readonly n: number; readonly rung: number }; readonly repeats?: number; readonly compactionStuck?: number };
 
 export type Step = { readonly step: string; readonly ms: number; readonly ok: boolean };
 // one round of filling in what the new session's restatement left out: the items, how many old-log lines were quoted, the file
@@ -71,8 +73,11 @@ export type RolloverEntry =
 // afterCompactK: thousands of tokens the session still held right after its last compaction (0 or absent is off)
 export type Limits = { readonly contextPct: number; readonly compactions: number; readonly ageH: number; readonly afterCompactK?: number };
 
-// Which thresholds the measured signals cross (a threshold of 0 is off).
+// Which thresholds the measured signals cross (a threshold of 0 is off). A session whose compaction did not complete is
+// due whatever the thresholds say: it answers every message with that error and never reaches the turn after a compaction
+// that afterCompactK measures (OkDori's lead, 262K/200K for hours on 2026-10-20, owner 16:13 KST "옥도리다 대답이 없어").
 export const crossed = (s: Signals, h: Limits): string[] => [
+  ...(s.compactionStuck ? [`${COMPACTION_STUCK} (the engine's "compaction did not complete" error ${s.compactionStuck}x on its screen${s.contextPct !== undefined ? `, context ${s.contextPct}%` : ""})`] : []),
   ...(h.contextPct > 0 && s.contextPct !== undefined && s.contextPct >= h.contextPct ? [`context ${s.contextPct}% >= ${h.contextPct}%`] : []),
   ...(h.compactions > 0 && s.compactions !== undefined && s.compactions >= h.compactions ? [`compactions ${s.compactions} >= ${h.compactions}`] : []),
   ...((h.afterCompactK ?? 0) > 0 && s.afterCompactK !== undefined && s.afterCompactK >= (h.afterCompactK ?? 0) ? [`context after compaction ${s.afterCompactK}k >= ${h.afterCompactK}k`] : []),
@@ -95,7 +100,7 @@ export const sessionFixes = (lane: Lane): FixAttempt[] => {
 // panes and the thaw command stay in the rollover log and the watch log, which the lead reads (owner 2026-10-20 "이건 왜
 // 아직 기계적 구문 생성이 남아있어?" about "I moved lane ... (aoe_... -> aoe_...). Why: ...").
 export type Cause =
-  | { readonly kind: "owner" | "full" | "drift" | "stuck" | "lead" | "threshold" }
+  | { readonly kind: "owner" | "full" | "compactionStuck" | "drift" | "stuck" | "lead" | "threshold" }
   | { readonly kind: "afterCompact" | "context" | "compactions" | "age"; readonly n: number };
 
 const numberIn = (re: RegExp, text: string): number | undefined => {
@@ -111,6 +116,7 @@ export const rolloverCause = (ref: string, signals: Signals, limits: Limits): Ca
   const compactions = numberIn(/compactions? (\d+)|(\d+) compactions?|압축 (\d+)/i, words) ?? over(limits.compactions, signals.compactions);
   const age = numberIn(/(?<![\w])age (\d+(?:\.\d+)?) ?h/i, words) ?? over(limits.ageH, signals.ageH);
   if (words && OWNER_REF.test(words)) return { kind: "owner" };
+  if (/COMPACTION_STUCK|compaction did not complete|압축 ?실패/i.test(words) || (!words && (signals.compactionStuck ?? 0) > 0)) return { kind: "compactionStuck" };
   if (/문맥 ?(?:초과|가득|꽉)|context (?:overflow|full|limit)/i.test(words) || (pct ?? 0) >= 100) return { kind: "full" };
   if (/OWNER_CHECK|owner[- ]check|VIOLATION|CONTRADICTION|GOAL_LOSS|맥락 (?:이상|단)/i.test(words)) return { kind: "drift" };
   if (/STUCK|rung ?4|SAME_FIX_3|fixated|막힘 ?4 ?단/i.test(words) || (!words && (signals.stuck?.rung ?? 0) >= 4)) return { kind: "stuck" };
@@ -129,6 +135,7 @@ const KO_WHY = (c: Cause): string => {
   switch (c.kind) {
     case "owner": return "형이 말한 대로";
     case "full": return "문맥이 꽉 차서";
+    case "compactionStuck": return "압축이 끝나지 못해 아무 말에도 대답할 수 없게 돼서";
     case "drift": return "형이 말한 방향에서 벗어나기 시작해서";
     case "stuck": return "같은 문제에서 계속 막혀서 새 눈으로 보려고";
     case "afterCompact": return `압축해도 문맥이 ${c.n}k나 남아서`;
@@ -144,6 +151,7 @@ const EN_WHY = (c: Cause): string => {
   switch (c.kind) {
     case "owner": return "as you asked";
     case "full": return "because its context was full";
+    case "compactionStuck": return "because its compaction did not finish and it could no longer answer anything";
     case "drift": return "because it had started to drift from what you asked";
     case "stuck": return "because it kept getting stuck on the same problem, to look at it fresh";
     case "afterCompact": return `because it still held ${c.n}k of context after compacting`;
@@ -192,12 +200,13 @@ export const reportToOwner = async (deps: { readonly reportOwner?: (thread: stri
   }
 };
 
+export const COMPACTION_STUCK = "COMPACTION_STUCK";
 export const AUTO_PREFIX = "auto:";
 export const LEAD_PREFIX = "lead:";
 
 // a lead's approval names the signal it acts on (a STUCK rung, an owner-check finding, a measured threshold)
 // whole tokens only: "age" in "message" or 단 in 단계 is no signal (challenge, grok-4.7)
-const SIGNAL_WORD = /(?<![\w])(?:STUCK|rung ?4|OWNER_CHECK|VIOLATION|CONTRADICTION|GOAL_LOSS|ROLLOVER_DUE|SAME_FIX_3|fixated|context \d+ ?%|context after compaction \d+ ?k|compactions? \d+|\d+ compactions?|age \d+(?:\.\d+)? ?h)(?![\w])|막힘 ?4 ?단|맥락 (?:이상|단)|압축 \d+/i;
+const SIGNAL_WORD = /(?<![\w])(?:COMPACTION_STUCK|compaction did not complete|STUCK|rung ?4|OWNER_CHECK|VIOLATION|CONTRADICTION|GOAL_LOSS|ROLLOVER_DUE|SAME_FIX_3|fixated|context \d+ ?%|context after compaction \d+ ?k|compactions? \d+|\d+ compactions?|age \d+(?:\.\d+)? ?h)(?![\w])|막힘 ?4 ?단|맥락 (?:이상|단)|압축 \d+/i;
 
 // the thresholds of one side, from handover.lane* or handover.lead*
 export const limitsFor = (who: Who, h: DoriConfig["handover"]): Limits =>
@@ -458,7 +467,7 @@ const median = (xs: readonly number[]): number | undefined => {
   const mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
 };
-const fmtSignals = (s: Signals): string => [s.contextPct !== undefined ? `context ${s.contextPct}%` : "", s.compactions !== undefined ? `compactions ${s.compactions}` : "", s.ageH !== undefined ? `age ${s.ageH} h` : "", s.stuck ? `stuck rung ${s.stuck.rung} on ${JSON.stringify(s.stuck.metric)} (${s.stuck.n}x)` : "", s.repeats !== undefined ? `same fix ${s.repeats}x` : ""].filter(Boolean).join(", ") || "no signals";
+const fmtSignals = (s: Signals): string => [s.compactionStuck ? `${COMPACTION_STUCK} ${s.compactionStuck}x` : "", s.contextPct !== undefined ? `context ${s.contextPct}%` : "", s.compactions !== undefined ? `compactions ${s.compactions}` : "", s.ageH !== undefined ? `age ${s.ageH} h` : "", s.stuck ? `stuck rung ${s.stuck.rung} on ${JSON.stringify(s.stuck.metric)} (${s.stuck.n}x)` : "", s.repeats !== undefined ? `same fix ${s.repeats}x` : ""].filter(Boolean).join(", ") || "no signals";
 const HOUR_MS = 3_600_000;
 const fmtSizes = (r: Extract<RolloverEntry, { kind: "rollover" }>, now: number, readK: typeof contextK): string => {
   const s = r.sizes;
