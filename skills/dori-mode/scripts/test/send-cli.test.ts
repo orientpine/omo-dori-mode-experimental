@@ -265,6 +265,8 @@ for (const [name, args, parent] of [
   ["send to a thread of the owner's channel", ["send", "discord", "--to", "300000000000000003", "--no-typing", "--text", POLITE], "500"],
   ["send --status working to the owner's channel", ["send", "discord", "--to", "500", "--status", "working", "--no-typing", "--text", POLITE], "500"],
   ["ask", ["ask", "--text", "E7 세션을 새로 켜도 될까요?", "--option", "켜", "--option", "그대로 둬"], "500"],
+  ["a ~습니까 question", ["thread", "reply", "discord:300000000000000003", "E7 결과 카드 확인하셨습니까?"], "500"],
+  ["a ~ㅂ니까 question", ["thread", "reply", "discord:300000000000000003", "그 문서는 누가 정리합니까?"], "500"],
 ] as const) {
   test(`${name}: 존댓말 for a 반말 owner is refused before anything is sent (SPEECH_REFUSED)`, async () => {
     const state = withState();
@@ -278,6 +280,8 @@ for (const [name, args, parent] of [
 
 for (const [name, args, parent, out] of [
   ["반말 in the owner's thread", ["thread", "reply", "discord:300000000000000003", "E7 평가 끝나면 결과 카드 여기 올릴게."], "500", "POSTED 900"],
+  // 2026-10-20 17:25Z the lead's 반말 answer "…그건 유돌 몫이니까." was refused as 존댓말: ~니까 after a syllable without ㅂ is 반말
+  ["반말 ending in ~니까, ~거든, ~잖아 and ~네", ["thread", "reply", "discord:300000000000000003", "맞아, 문서는 대부분 메일 첨부나 드라이브로 오고 그건 유돌 몫이니까.\n어제 이미 보냈거든.\n그건 형도 알잖아.\n벌써 끝났네."], "500", "POSTED 900"],
   ["존댓말 in the pair channel", ["send", "discord", "--to", "600", "--no-typing", "--text", POLITE], "500", "SENT 900"],
   ["존댓말 in a thread of another channel", ["thread", "reply", "discord:300000000000000003", POLITE], "777", "POSTED 900"],
   ["a quoted 존댓말 line and code under the Dori's own 반말", ["thread", "reply", "discord:300000000000000003", "공돌 말 그대로 옮길게\n> 결과 카드를 여기 올릴게요.\n`올릴게요.`"], "500", "POSTED 900"],
