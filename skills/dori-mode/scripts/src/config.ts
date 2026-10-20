@@ -90,6 +90,13 @@ export type Backend = "herdr" | "aoe";
 // "words" marks status as [working] / [waiting] / [done]; "emoji" uses 🔄 / ⏸️ / ✅ (and ⏳ / ✅ in progress text).
 export type StatusStyle = "words" | "emoji";
 
+// The speech this Dori uses with its owner in his channel and threads, which a lane's summary for him has to match (the
+// lanes write to the lead politely; 2026-10-20 a lane's ~요 summary went out under ZzangDori's name, owner "가끔 이렇게 너
+// 말투 달라지는 거니? 왜 달라지는 거야?"). "" follows discord.locale: Korean is casual (반말), any other locale is not checked.
+export type OwnerSpeech = "" | "casual" | "polite";
+export const OWNER_SPEECHES: readonly OwnerSpeech[] = ["", "casual", "polite"];
+export const ownerSpeechOf = (locale: string, speech: OwnerSpeech = ""): OwnerSpeech => speech || (locale.toLowerCase().startsWith("ko") ? "casual" : "");
+
 // Words the Discord helpers write: thread status words, question-card labels, and how answer times are shown.
 // autoUnEye: the listener takes its eyes reaction off the owner's earlier messages once its bot writes in that channel.
 // quietText ({min} = minutes since the lane's last report) is what freshness posts in the owner's thread (hooks.threadReply,
@@ -131,6 +138,7 @@ export type DiscordWords = {
   readonly repliedInText: string;
   readonly locale: string;
   readonly timeZone: string;
+  readonly ownerSpeech: OwnerSpeech;
   // the user id of this Dori's own bot; Discord writes refuse a DORI_DISCORD_TOKEN of another bot (empty: no check)
   readonly botId: string;
   // role ids that call this Dori besides the roles its bot member has (read at listener start): an owner message anywhere
@@ -163,6 +171,7 @@ export const defaultDiscordWords: DiscordWords = {
   repliedInText: "answered in text",
   locale: "en-US",
   timeZone: "UTC",
+  ownerSpeech: "",
   botId: "",
   mentionRoleIds: [],
 };
@@ -662,6 +671,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, ownerCheck: { ...base.autoSignals.ownerCheck, ...raw.autoSignals?.ownerCheck } }, handover: { ...base.handover, ...raw.handover }, related: { ...base.related, ...raw.related }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } }, heavyQueue: { ...base.heavyQueue, ...raw.heavyQueue } };
   const heavyProblem = heavyQueueProblem(merged.heavyQueue);
   if (heavyProblem) throw new ConfigError(`${path}: ${heavyProblem}`);
+  if (!OWNER_SPEECHES.includes(merged.discord.ownerSpeech)) throw new ConfigError(`${path}: discord.ownerSpeech must be "" (follow discord.locale), "casual" or "polite", not ${JSON.stringify(merged.discord.ownerSpeech)}`);
   const researchProblem = researchTextProblem(merged.explore.researchText);
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const env: unknown = merged.launchEnv;
