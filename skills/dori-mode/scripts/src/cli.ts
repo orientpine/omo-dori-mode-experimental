@@ -192,7 +192,10 @@ const USAGE = `dori <command> [options]
   owner-check <key> [--force | --reread]
                                        a reviewer of another family (reviewers.models, autoSignals.ownerCheck.first first)
                                        reads the brief, the owner's words in it and in the lead's [LEAD] relays, his card
-                                       answers and messages in the lane's thread (dated, the newest wins), and the
+                                       answers and messages in the lane's thread (dated, the newest wins; in a thread
+                                       other lanes share, only those tied to this lane: a [LEAD] relay or brief link to
+                                       it, a reply to its post or card, its card's answer, its key named, or no other
+                                       lane open then; a finding on another one is OWNER_CHECK_SHARED, no rung), and the
                                        newest reports: OWNER_CHECK <key> VIOLATION|CONTRADICTION|GOAL_LOSS|OK with quoted
                                        evidence. An owner quote not in his words (goal, brief, quoted part of a relay,
                                        his decisions) is dropped (OWNER_CHECK_UNGROUNDED); a report an earlier check read
