@@ -1,9 +1,14 @@
 """Long recordings (meetings) for transcribe.sh: whisper.cpp text, repeat-loop repair, speaker labels.
 
+The audio is cut at its quietest moment near every DORI_ASR_CHUNK_SEC (60) seconds and all pieces go through one
+whisper-cli call, so whisper.cpp's carried-over text never outlives a piece: a line it starts repeating stops at the
+next cut instead of running to the end of the recording.
+
 usage: python3 -I transcribe_long.py <whisper-cli> <ggml model> <16 kHz mono wav>   (env from transcribe.sh:
 DORI_ASR_LANG, DORI_ASR_DIR, optional DORI_DIAR_DIR and the DORI_ASR_* options in the README). Prints one "[hh:mm:ss] <label>N: text" line per speaker turn; without the
 diarization install (setup-diarize.sh) it prints the time-stamped text with no speaker and says why on stderr.
 """
+import array
 import json
 import os
 import re
@@ -17,7 +22,8 @@ LANG = os.environ.get("DORI_ASR_LANG", "auto")
 ASR_DIR = os.environ["DORI_ASR_DIR"]
 DIAR_DIR = os.environ.get("DORI_DIAR_DIR") or os.path.join(ASR_DIR, "diar")
 HERE = os.path.dirname(os.path.abspath(__file__))
-MAIN_OPTS = os.environ.get("DORI_ASR_LONG_OPTS", "-mc 0").split()
+MAIN_OPTS = os.environ.get("DORI_ASR_LONG_OPTS", "").split()
+CHUNK = float(os.environ.get("DORI_ASR_CHUNK_SEC", "60"))
 RETRY_OPTS = os.environ.get("DORI_ASR_RETRY_OPTS", "-mc 0 -tp 0.4").split()
 REPEAT_RUN = 3
 LABEL = os.environ.get("DORI_ASR_SPEAKER_LABEL") or ("화자" if LANG == "ko" else "Speaker ")
@@ -27,15 +33,31 @@ def log(msg: str) -> None:
     print(f"transcribe_long: {msg}", file=sys.stderr)
 
 
-def whisper(wav: str, opts: list[str], shift: float = 0.0) -> list[list]:
-    with tempfile.TemporaryDirectory() as tmp:
-        prefix = os.path.join(tmp, "out")
-        subprocess.run([CLI, "-m", MODEL, "-l", LANG, "-np", "-oj", "-of", prefix, "-f", wav, *opts],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        with open(prefix + ".json", encoding="utf-8", errors="replace") as f:
+def whisper(parts: list[tuple[str, float]], opts: list[str]) -> list[list]:
+    inputs = [a for wav, _ in parts for a in ("-f", wav)]
+    subprocess.run([CLI, "-m", MODEL, "-l", LANG, "-np", "-oj", *inputs, *opts],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    segs = []
+    for wav, shift in parts:
+        with open(wav + ".json", encoding="utf-8", errors="replace") as f:
             rows = json.load(f)["transcription"]
-    return [[r["offsets"]["from"] / 1000 + shift, r["offsets"]["to"] / 1000 + shift, r["text"].strip()]
-            for r in rows if r["text"].strip()]
+        segs += [[r["offsets"]["from"] / 1000 + shift, r["offsets"]["to"] / 1000 + shift, r["text"].strip()]
+                 for r in rows if r["text"].strip()]
+    return segs
+
+
+def pieces(wav: str) -> list[tuple[float, float]]:
+    with wave.open(wav) as w:
+        rate = w.getframerate()
+        pcm = array.array("h", w.readframes(w.getnframes()))
+    total, frame = len(pcm) / rate, rate // 50
+    cuts, t = [0.0], CHUNK
+    while t < total - CHUNK / 4:
+        lo, hi = int((t - 5) * rate), int(min(t + 5, total) * rate) - frame
+        quiet = min(range(lo, hi, frame), key=lambda i: sum(map(abs, pcm[i:i + frame])))
+        cuts.append(quiet / rate)
+        t = quiet / rate + CHUNK
+    return list(zip(cuts, cuts[1:] + [total]))
 
 
 def norm(text: str) -> str:
@@ -88,14 +110,23 @@ def repair(wav: str, segs: list[list]) -> list[list]:
     for i, j in spans:
         out += segs[last:i]
         start, end = segs[i][0], segs[j - 1][1]
+        last = j
+        if end - start < 1:
+            log(f"REPEAT_COLLAPSED {start:.1f}-{end:.1f}s {j - i} lines in under a second -> 1 line")
+            out += collapse(segs[i:j])
+            continue
         with tempfile.TemporaryDirectory() as tmp:
             part = os.path.join(tmp, "part.wav")
             cut(wav, part, start, end)
-            again = whisper(part, RETRY_OPTS, start)
+            try:
+                again = whisper([(part, start)], RETRY_OPTS)
+            except subprocess.CalledProcessError as e:
+                log(f"REPEAT_LEFT {start:.1f}-{end:.1f}s {j - i} lines kept: whisper-cli exit {e.returncode}")
+                out += segs[i:j]
+                continue
         left = len(loops(again))
         log(f"REPEAT_FIXED {start:.1f}-{end:.1f}s {j - i} lines -> {len(again)} lines, {left} loop(s) left")
         out += collapse(again) if left else again
-        last = j
     return out + segs[last:]
 
 
@@ -135,7 +166,12 @@ def stamp(sec: float) -> str:
 
 def main() -> int:
     wav = sys.argv[3]
-    segs = repair(wav, whisper(wav, MAIN_OPTS))
+    with tempfile.TemporaryDirectory() as tmp:
+        parts = []
+        for k, (start, end) in enumerate(pieces(wav)):
+            parts.append((os.path.join(tmp, f"{k:04d}.wav"), start))
+            cut(wav, parts[-1][0], start, end)
+        segs = repair(wav, whisper(parts, MAIN_OPTS))
     turns = speakers(wav)
     names: dict[str, str] = {}
     lines: list[list] = []
