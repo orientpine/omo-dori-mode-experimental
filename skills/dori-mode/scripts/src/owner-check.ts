@@ -11,6 +11,7 @@ import { iso } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
 import { blockTexts, laneDirectiveGaps, laneDirectiveWords } from "./directive-audit.ts";
 import { launchLedger } from "./launch.ts";
+import { leadSessionFiles } from "./lead-sessions.ts";
 
 // dori owner-check: a model of another family than the lane's reads the lane brief, the owner's own words for the lane (the
 // brief and the lead's [LEAD] relays that link or quote them) and the lane's recent reports, and answers in a fixed format
@@ -71,12 +72,13 @@ export const linkedWords = (text: string, inbox: string, owner: string): string[
   return out;
 };
 
-type InboxRow = { ts?: string; kind?: string; thread?: string; channel_id?: string; author_id?: string; content?: string; transcript?: string | null; qid?: string; question?: string; answer?: string };
+type InboxRow = { ts?: string; id?: string; kind?: string; thread?: string; channel_id?: string; author_id?: string; content?: string; transcript?: string | null; reply_to?: string | null; qid?: string; question?: string; answer?: string; tmux?: string | null };
 
 // The owner's decisions in the lane's discord:<id> thread since `since`, from the inbox the listener writes, oldest first,
 // the newest n: question-card answers (only the owner answers a card) and the owner's own messages (author `owner`).
-// words: what the owner wrote or chose (a card's question is the lead's, context only, never grounds a quote).
-export type OwnerDecision = ReportLine & { readonly words: string };
+// words: what the owner wrote or chose (a card's question is the lead's, context only, never grounds a quote). id: the
+// message (or the answer row); replyTo: the message his message answers; pane: the pane that asked the card he answered.
+export type OwnerDecision = ReportLine & { readonly words: string; readonly id?: string; readonly replyTo?: string; readonly pane?: string };
 export const ownerDecisions = (inbox: string, thread: string, owner: string, since: string, n: number): OwnerDecision[] => {
   const id = /^discord:(\d+)$/.exec(thread)?.[1];
   if (!id || n <= 0) return [];
@@ -94,14 +96,54 @@ export const ownerDecisions = (inbox: string, thread: string, owner: string, sin
     if (Number.isNaN(ms)) continue;
     const at = new Date(ms).toISOString();
     if (at < since) continue;
-    if (e.kind === "answer" && e.thread === id && e.answer) out.push({ at, text: `card ${e.qid ?? ""} "${e.question ?? ""}": the owner chose "${e.answer}"`, words: e.answer });
+    if (e.kind === "answer" && e.thread === id && e.answer) out.push({ at, text: `card ${e.qid ?? ""} "${e.question ?? ""}": the owner chose "${e.answer}"`, words: e.answer, ...(e.id ? { id: e.id } : {}), ...(e.tmux ? { pane: e.tmux } : {}) });
     else if (!e.kind && e.channel_id === id && owner && e.author_id === owner) {
       const text = (e.transcript || e.content || "").trim();
-      if (text) out.push({ at, text, words: text });
+      if (text) out.push({ at, text, words: text, ...(e.id ? { id: e.id } : {}), ...(e.reply_to ? { replyTo: e.reply_to } : {}) });
     }
   }
   return out.sort((a, b) => a.at.localeCompare(b.at)).slice(-n);
 };
+
+// A lane that has (or had) the thread, and what ties an owner message to it. posts: the messages it posted (SENT / POSTED
+// ids its own sessions printed) and the cards it asked (questions.json, by its pane); relayed: the owner messages the lead
+// linked in a [LEAD] relay to it or in its brief.
+export type ThreadLane = { readonly key: string; readonly openedAt: string; readonly closedAt?: string; readonly pane?: string; readonly posts: ReadonlySet<string>; readonly relayed: ReadonlySet<string> };
+// to: lane (an instruction to this lane), other (to another lane), unknown (no sign either way, or signs both ways)
+export type TiedDecision = OwnerDecision & { readonly to: "lane" | "other" | "unknown"; readonly why: string };
+
+const openAt = (l: ThreadLane, at: string): boolean => l.openedAt <= at && (!l.closedAt || l.closedAt > at);
+const namesKey = (text: string, key: string): boolean => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(text);
+
+// Which lane an owner message in a thread several lanes share is for (live 2026-10-20: the owner's answer to the lead about
+// jev-local's search, in the GPU thread, read as spark-oss-4eae's new goal: GOAL_LOSS). A [LEAD] relay of it to this lane
+// decides; then the signs for this lane (a reply to its post or card, an answer to its card, its key named) against those
+// for another lane (the same, or a relay to it); with no sign, it is this lane's only when no other lane had the thread open.
+export const tieDecisions = (decisions: readonly OwnerDecision[], me: ThreadLane, others: readonly ThreadLane[]): TiedDecision[] =>
+  decisions.map((d): TiedDecision => {
+    if (d.id && me.relayed.has(d.id)) return { ...d, to: "lane", why: "the lead relayed it to this lane" };
+    const signs = (l: ThreadLane, self: boolean): string[] => {
+      const whose = self ? "this lane's" : `${l.key}'s`;
+      return [
+        ...(d.pane && d.pane === l.pane ? [`an answer to ${whose} card`] : []),
+        ...(d.replyTo && l.posts.has(d.replyTo) ? [`a reply to ${whose} post`] : []),
+        ...(namesKey(d.words, l.key) ? [`it names ${self ? "this lane" : l.key}`] : []),
+        ...(!self && d.id && l.relayed.has(d.id) ? [`the lead relayed it to ${l.key}`] : []),
+      ];
+    };
+    const mine = signs(me, true);
+    const theirs = others.flatMap((o) => signs(o, false));
+    if (mine.length && !theirs.length) return { ...d, to: "lane", why: mine.join(", ") };
+    if (theirs.length && !mine.length) return { ...d, to: "other", why: theirs.join(", ") };
+    if (mine.length) return { ...d, to: "unknown", why: `signs both ways: ${[...mine, ...theirs].join(", ")}` };
+    const open = others.filter((o) => openAt(o, d.at)).map((o) => o.key);
+    return open.length ? { ...d, to: "unknown", why: `no sign it is for this lane; other lanes open in the thread: ${open.join(", ")}` } : { ...d, to: "lane", why: "no other lane had the thread open" };
+  });
+
+// the message ids a session printed for its own posts (dori send: SENT <id>; dori thread reply|wait|done: POSTED <id>)
+export const postedIds = (text: string): string[] => [...text.matchAll(/\b(?:SENT|POSTED) (\d{6,})\b/g)].map((m) => m[1] ?? "");
+// the Discord message ids a text links
+const linkedIds = (text: string): string[] => [...text.matchAll(/discord(?:app)?\.com\/channels\/\d+\/\d+\/(\d+)/g)].map((m) => m[1] ?? "");
 
 // the inbox the listener writes (the same file handover probes): handover.inbox, DORI_DISCORD_INBOX, <stateDir>/discord
 const inboxPath = (config: FlowDeps["config"]): string => config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
@@ -110,7 +152,12 @@ const inboxPath = (config: FlowDeps["config"]): string => config.handover.inbox 
 export const doneClaimFact = (lane: Pick<Lane, "claim" | "status" | "closedAt">): string =>
   lane.claim ? `the lane claimed done at ${lane.claim.at} (status ${lane.status ?? "working"}): ${lane.claim.evidence.slice(0, 300)}` : `none: the lane has not run dori claim-done (status ${lane.closedAt ? "closed" : (lane.status ?? "working")})`;
 
-export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "direction" | "claim" | "status" | "closedAt">, brief: string, relays: readonly ReportLine[], reports: readonly ReportLine[], decisions: readonly ReportLine[] = [], directives: readonly string[] = []): string => [
+// the question cards dori ask wrote (message id, asking pane): DORI_DISCORD_STATE_DIR, else <stateDir>/discord
+const cardsPath = (config: FlowDeps["config"]): string => join(process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord"), "questions.json");
+
+// shared: the owner's messages in the lane's thread that are tied to no lane while other lanes share the thread (context
+// only: never an instruction to this lane)
+export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "direction" | "claim" | "status" | "closedAt">, brief: string, relays: readonly ReportLine[], reports: readonly ReportLine[], decisions: readonly ReportLine[] = [], directives: readonly string[] = [], shared: readonly ReportLine[] = []): string => [
   "Check the worker's recent reports against the owner's instructions below. The owner and the worker mostly write Korean. Read it as it is; quote exactly as written, in the original language.",
   "Kinds:",
   "- VIOLATION: a report shows the worker doing something the owner said not to do, or skipping or changing something the owner required (a constraint, an order of steps, an approval to wait for).",
@@ -136,6 +183,13 @@ export const ownerPrompt = (lane: Pick<Lane, "key" | "title" | "goal" | "directi
   "<<<OWNER DECISIONS (the owner's own messages and question-card answers in the lane's thread, oldest first; the newest wins)",
   ...(decisions.length ? decisions.map((d) => `[${d.at}] ${cut(d.text, MAX_ITEM)}`) : ["(none)"]),
   "OWNER DECISIONS>>>",
+  ...(shared.length
+    ? [
+        "<<<SHARED THREAD (the owner's messages in this thread, which other lanes share, with no sign they are for this lane: context only, not an instruction to this lane; never flag a report against them)",
+        ...shared.map((d) => `[${d.at}] ${cut(d.text, MAX_ITEM)}`),
+        "SHARED THREAD>>>",
+      ]
+    : []),
   "<<<REPORTS (the worker's recent reports, oldest first)",
   ...reports.map((r) => `[${r.at}] ${cut(r.text, MAX_ITEM)}`),
   "REPORTS>>>",
@@ -179,20 +233,23 @@ export const findingLine = (key: string, f: OwnerFinding, model: string): string
 
 export type OwnerState = NonNullable<Lane["ownerCheck"]>;
 
-export type Dropped = { readonly finding: OwnerFinding; readonly why: "UNGROUNDED" | "STALE" };
+// SHARED: the owner quote is only in the owner's messages in a shared thread that are not tied to this lane (note: why)
+export type Dropped = { readonly finding: OwnerFinding; readonly why: "UNGROUNDED" | "STALE" | "SHARED"; readonly note?: string };
 
 // After the reviewer answers: a finding stands only on the owner's words (ownerSource) and on a report no earlier check
 // read (newer than checkedUpTo, the last check's lastReportAt) or the direction the lane stated. Kept findings carry the
 // report they rest on (reportAt), so the context rung moves once per report. A report quote found nowhere stays, unverified.
 // briefSource: the whole brief, which a CONTRADICTION may also quote (a fact or state the brief gives). checkedAt: when the
 // last check ran (a direction stated before it was read by it).
-export const groundFindings = (findings: readonly OwnerFinding[], src: { readonly ownerSource: string; readonly briefSource?: string; readonly reports: readonly ReportLine[]; readonly direction?: Lane["direction"]; readonly checkedUpTo?: string; readonly checkedAt?: string }): { readonly kept: OwnerFinding[]; readonly dropped: Dropped[] } => {
+// shared: the owner's messages in the thread not tied to this lane (a finding on one is dropped as SHARED, with its why).
+export const groundFindings = (findings: readonly OwnerFinding[], src: { readonly ownerSource: string; readonly briefSource?: string; readonly reports: readonly ReportLine[]; readonly direction?: Lane["direction"]; readonly checkedUpTo?: string; readonly checkedAt?: string; readonly shared?: readonly TiedDecision[] }): { readonly kept: OwnerFinding[]; readonly dropped: Dropped[] } => {
   const kept: OwnerFinding[] = [];
   const dropped: Dropped[] = [];
   const said = src.direction?.text ? [src.direction.text, src.direction.next ?? ""].join("\n") : "";
   for (const f of findings) {
     if (!quoted(f.owner, src.ownerSource) && !(f.kind === "CONTRADICTION" && quoted(f.owner, src.briefSource ?? ""))) {
-      dropped.push({ finding: f, why: "UNGROUNDED" });
+      const other = src.shared?.find((d) => quoted(f.owner, d.words));
+      dropped.push(other ? { finding: f, why: "SHARED", note: `${other.id ? `message ${other.id} ` : ""}at ${other.at}: ${other.to === "other" ? "for another lane" : "not tied to this lane"} (${other.why})` } : { finding: f, why: "UNGROUNDED" });
       continue;
     }
     // a quote joined with an ellipsis may span reports: each report holding one of its pieces is under the finding
@@ -215,7 +272,9 @@ export const groundFindings = (findings: readonly OwnerFinding[], src: { readonl
 };
 
 export const droppedLine = (key: string, d: Dropped, model: string, last?: OwnerState): string =>
-  d.why === "UNGROUNDED"
+  d.why === "SHARED"
+    ? `OWNER_CHECK_SHARED ${key} ${d.finding.kind} owner "${d.finding.owner.slice(0, 200)}" is the owner's message in a thread other lanes share, ${d.note ?? "not tied to this lane"}; not this lane's instruction, dropped, no rung [reviewer ${model}]`
+    : d.why === "UNGROUNDED"
     ? `OWNER_CHECK_UNGROUNDED ${key} ${d.finding.kind} owner "${d.finding.owner.slice(0, 200)}" is not in the owner's words given to the check (goal, quoted parts of the brief and relays, linked owner messages, owner decisions); dropped, no rung [reviewer ${model}]`
     : `OWNER_CHECK_STALE ${key} ${d.finding.kind} report "${d.finding.report.slice(0, 200)}" was read by an earlier check (${last?.at ?? ""}, reports up to ${last?.lastReportAt ?? ""}); not flagged again, no rung [reviewer ${model}]`;
 
@@ -240,7 +299,7 @@ export const claimCheck = (f: OwnerFinding, lane: Pick<Lane, "claim">): OwnerFin
 export const ownerModels = (models: readonly string[], first: string): string[] => (first ? [first, ...models.filter((m) => m !== first)] : [...models]);
 
 // direction: dori intent-check's call, on the direction the lane just stated: no limits, and no new report needed
-export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly force?: boolean; readonly direction?: boolean; readonly files?: readonly string[]; readonly inbox?: string; readonly owner?: string } = {}): Promise<OwnerResult> => {
+export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly force?: boolean; readonly direction?: boolean; readonly files?: readonly string[]; readonly inbox?: string; readonly owner?: string; readonly cards?: string } = {}): Promise<OwnerResult> => {
   const cfg = deps.config.autoSignals.ownerCheck;
   const now = deps.clock.now();
   const files = opts.files ?? laneSessionFiles(deps.config, lane);
@@ -266,18 +325,26 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   const inboxFile = Bun.file(opts.inbox ?? inboxPath(deps.config));
   const inbox = (await inboxFile.exists()) ? await inboxFile.text() : "";
   const owner = opts.owner ?? process.env.DORI_DISCORD_OWNER?.trim() ?? "";
-  const decisions = ownerDecisions(inbox, lane.thread, owner, lane.openedAt, cfg.relays);
+  // the owner's messages in the thread since the lane opened; while other lanes share the thread, only those tied to this
+  // lane are its decisions (and owner words), those tied to none are shown as context, those for another lane are left out
+  const inThread = ownerDecisions(inbox, lane.thread, owner, lane.openedAt, Number.POSITIVE_INFINITY);
+  const sharing = inThread.length ? (await deps.registry.list()).filter((l) => l.key !== lane.key && l.thread === lane.thread) : [];
+  const tied = sharing.length ? tieDecisions(inThread, await threadLane(deps, lane, opts), await Promise.all(sharing.map((l) => threadLane(deps, l, opts)))) : inThread.map((d): TiedDecision => ({ ...d, to: "lane", why: "" }));
+  const decisions = tied.filter((d) => d.to === "lane").slice(-cfg.relays).map((d) => (sharing.length ? { ...d, text: `${d.text} (for this lane: ${d.why})` } : d));
+  const shared = tied.filter((d) => d.to !== "lane");
+  const context = shared.filter((d) => d.to === "unknown").slice(-cfg.relays);
   // the brief against the directive ledger: a directive in scope that is not in it is a DIRECTIVE_GAP line; the directives
   // in scope go to the reviewer as the owner's words
   const ledger = launchLedger(deps);
   const directiveLines = (await laneDirectiveGaps(deps, lane, ledger, await blockTexts())).map((g) => `OWNER_CHECK_${g.line}`);
   for (const line of directiveLines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
   const directives = await laneDirectiveWords(deps, lane, ledger);
-  const prompt = ownerPrompt(lane, brief, relays, reports, decisions, directives);
+  const prompt = ownerPrompt(lane, brief, relays, reports, decisions, directives, context);
   const ownerSource = [lane.goal ?? "", ...directives, ownerWords(brief), ...linkedWords(brief, inbox, owner), ...relays.flatMap((r) => [ownerWords(r.text), ...linkedWords(r.text, inbox, owner)]), ...decisions.map((d) => d.words)].join("\n");
   // the direction the lane stated (dori intent-check) is evidence too: a finding may quote it
   const reportSource = [...reports.map((r) => r.text), lane.direction?.text ?? "", lane.direction?.next ?? ""].join("\n");
-  const ground = { ownerSource, briefSource: brief, reports, direction: lane.direction, checkedUpTo: lane.ownerCheck?.lastReportAt, checkedAt: lane.ownerCheck?.at };
+  const ground = { ownerSource, briefSource: brief, reports, direction: lane.direction, checkedUpTo: lane.ownerCheck?.lastReportAt, checkedAt: lane.ownerCheck?.at, shared };
+  const sharedNote = sharing.length ? `, ${shared.length} owner messages in the thread it shares with ${sharing.map((l) => l.key).join(", ")} not tied to it` : "";
   const family = lane.model ?? deps.config.defaultModel;
   const failures: string[] = [];
   let checks: Awaited<ReturnType<typeof checkReviewers>> = [];
@@ -303,7 +370,7 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
     const gap = unread ? ` (${unread} older unchecked reports not read: autoSignals.ownerCheck.maxReports ${cfg.maxReports})` : "";
     const drops = dropped.map((d) => droppedLine(lane.key, d, c.call ?? "", lane.ownerCheck));
     for (const line of drops) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
-    const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : dropped.length ? [] : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief, ${relays.length} owner relays and ${decisions.length} owner decisions${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
+    const lines = findings.length ? findings.map((f) => `${findingLine(lane.key, f, c.call ?? "")}${gap}`) : dropped.length ? [] : [`OWNER_CHECK ${lane.key} OK ${reports.length} recent reports read against the brief, ${relays.length} owner relays and ${decisions.length} owner decisions${sharedNote}${gap} [reviewer ${c.call} (${familyOf(c.call)})]`];
     // a check whose findings were all dropped leaves the last finding on record (the lead may still confirm it with --reread)
     const last = lane.ownerCheck;
     // ... only while its own owner quote still holds (a finding recorded before this check could rest on lead text)
@@ -324,6 +391,36 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   const line = `OWNER_CHECK_FAILED ${lane.key} no reviewer answered in the format: ${failures.join(" | ") || "no reviewer of another family in reviewers.models"}`;
   watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
   return { skipped: line, findings: [], lines: directiveLines };
+};
+
+// What ties owner messages to a lane: its own session files (those that typed its reports; the lead's sessions, which get
+// every lane's reports, are not its own), the ids they printed for its posts and linked in [LEAD] relays to it, its brief's
+// links, and the cards its pane asked.
+const threadLane = async (deps: FlowDeps, lane: Lane, opts: { readonly files?: readonly string[]; readonly cards?: string }): Promise<ThreadLane> => {
+  const lead = new Set(leadSessionFiles(deps.config.scorecard.leadSessions, deps.config.stateDir));
+  const own: string[] = [];
+  const texts: string[] = [];
+  for (const f of opts.files ?? laneSessionFiles(deps.config, lane)) {
+    if (lead.has(f)) continue;
+    const text = await Bun.file(f).text();
+    if (!text.includes(`[REPORT] ${lane.key} |`)) continue;
+    own.push(f);
+    texts.push(text);
+  }
+  const since = Date.parse(lane.openedAt) || 0;
+  const relayed = (await readLeadRelays(own, since)).flatMap((r) => linkedIds(r.text));
+  const briefFile = Bun.file(lane.brief);
+  const briefText = (await briefFile.exists()) ? await briefFile.text() : "";
+  const cardsFile = Bun.file(opts.cards ?? cardsPath(deps.config));
+  let cards: { message?: string; tmux?: string | null }[] = [];
+  try {
+    const raw = (await cardsFile.exists()) ? (JSON.parse(await cardsFile.text()) as unknown) : [];
+    cards = (Array.isArray(raw) ? raw : Object.values((raw as { questions?: unknown })?.questions ?? raw ?? {})) as typeof cards;
+  } catch {
+    cards = [];
+  }
+  const asked = lane.pane ? cards.filter((c) => c?.tmux === lane.pane && c.message).map((c) => c.message ?? "") : [];
+  return { key: lane.key, openedAt: lane.openedAt, ...(lane.closedAt ? { closedAt: lane.closedAt } : {}), ...(lane.pane ? { pane: lane.pane } : {}), posts: new Set([...texts.flatMap(postedIds), ...asked]), relayed: new Set([...relayed, ...linkedIds(briefText)]) };
 };
 
 // dori owner-check <key> --reread: the lead confirmed the last finding, so the lane gets stuck.rereadText (its brief and the

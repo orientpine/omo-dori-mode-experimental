@@ -6,7 +6,7 @@ import { failedMetrics, inferRepeats, type LaneEvent, passedMetrics, readReports
 import { loadTree, researchDone, stuckView } from "../src/explore.ts";
 import { defaultConfig } from "../src/config.ts";
 import { freshnessTick } from "../src/freshness.ts";
-import { briefForCheck, claimCheck, groundFindings, linkedWords, ownerDecisions, ownerDue, ownerWords, parseOwnerReply, quoted, runOwnerCheck, sendReread } from "../src/owner-check.ts";
+import { briefForCheck, claimCheck, groundFindings, linkedWords, ownerDecisions, ownerDue, ownerWords, parseOwnerReply, quoted, runOwnerCheck, sendReread, tieDecisions } from "../src/owner-check.ts";
 import type { Lane } from "../src/registry.ts";
 import { crossed, dueReasons } from "../src/rollover.ts";
 import { recordFix } from "../src/same-fix.ts";
@@ -625,4 +625,82 @@ test("replay hr35-e7 2026-10-11..12: a discrimination that prescribes again in t
   // "\ucc98\ubc29\uc548 \ud55c \uc7a5 \ud655\uc815" is a prescription; "\ucc98\ubc29 \uc548 \ub744\uc6c0" says none is made
   expect(inferRepeats([ev(0, "\uc815\uc9c0 9 FAIL"), ev(40, "\ucc98\ubc29\uc548 \ud55c \uc7a5 \ud655\uc815: \uc815\uc9c0 \ubc8c\uc810")], cfg).counts.get("\uc815\uc9c0")?.n).toBe(1);
   expect(inferRepeats([ev(0, "\uc815\uc9c0 9 FAIL"), ev(40, "\uc815\uc9c0 \ubc8c\uc810 \ucc98\ubc29 \uc548 \ub744\uc6c0")], cfg).counts.size).toBe(0);
+});
+
+// spark-oss-4eae, 2026-10-20 12:30:06Z (T0 stands for 12:00Z): three lanes share the GPU thread, and the owner's answer to
+// the lead about jev-local's search (relayed to jev-local) was read as spark-oss-4eae's new goal: GOAL_LOSS, the context rung
+const GPU = "1561963113488842792";
+const GPU_LINK = "https://discord.com/channels/1528936606264856737/" + GPU + "/";
+const JEV_WORDS = "그래 좋아. 로컬에서 볼 수 있는 오픈소스 JEV-like 모델이 있었던 것 같으니까 그거 한번 찾아봐.";
+const SPARK_REPORT = "목표 연결: 형 질문 그거 성능이 낮은거 아니야에 같은 시험 숫자로 답하려는 단계";
+const SPARK_GOAL_LOSS = 'VERDICT: GOAL_LOSS\nOWNER: "' + JEV_WORDS + '"\nREPORT: "' + SPARK_REPORT + '"\nWHY: 오너가 최신 지시에서 로컬 오픈소스 JEV-like 모델 탐색으로 목적을 바꿨다.';
+const gpuLane = (key: string, openMin: number, pane: string): Lane => {
+  writeFileSync(join(state.dir, key + ".md"), "# " + key);
+  return { key, title: key, thread: "discord:" + GPU, pane, brief: join(state.dir, key + ".md"), done: "x", cwd: "/repo", openedAt: at(openMin), model: "anthropic/claude-opus-5-5" };
+};
+const gpuSession = (name: string, lines: readonly string[]): string => {
+  const dir = sessionDirFor(join(state.dir, "sessions"), "/repo");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "2026-10-10T00-00-00-000Z_" + name + ".jsonl");
+  writeFileSync(file, lines.join("\n") + "\n");
+  return file;
+};
+const gpuInbox = (extra: readonly object[] = []): string => {
+  const file = join(state.dir, "gpu-inbox.jsonl");
+  writeFileSync(file, [
+    { ts: "2026-10-10T00:25:41.029000+00:00", id: "1562079358212907050", channel_id: GPU, author_id: "owner-1", reply_to: "1562078865881436201", content: "근데 내 원래 목적은 제브와 같이 지금 토큰 생성하는 LLM 말고 제브 같은 모델 중에 로컬 모델이 있는지 확인하고 그걸 쓰기를 원한 거였는데 그거는 결과는 없어?" },
+    { ts: "2026-10-10T00:28:07.312000+00:00", id: "1562079971768279060", channel_id: GPU, author_id: "owner-1", reply_to: "1562079526840700932", content: JEV_WORDS },
+    ...extra,
+  ].map((e) => JSON.stringify(e)).join("\n"));
+  return file;
+};
+
+test("replay spark-oss-4eae 2026-10-20 12:30:06Z: in a thread three lanes share, the owner's answer relayed to jev-local is not spark-oss-4eae's goal (OWNER_CHECK_SHARED, no rung); before any relay it is tied to no lane, and still not raised", async () => {
+  const spark = gpuLane("spark-oss-4eae", 25, "aoe_spark");
+  const sparkFile = gpuSession("spark", [sessionLine(29.9, "assistant", "[REPORT] spark-oss-4eae | milestone | " + SPARK_REPORT)]);
+  const jevFile = gpuSession("jev", [sessionLine(27, "assistant", "[REPORT] jev-local | milestone | 시작"), sessionLine(29.3, "user", "[LEAD] 형 추가(음성 " + GPU_LINK + "1562079971768279060): '" + JEV_WORDS + "' 그걸 1순위로 찾아 줘.")]);
+  const prompts: string[] = [];
+  const deps = ownerCheckDeps(30, SPARK_GOAL_LOSS, prompts);
+  for (const l of [spark, gpuLane("jev-local", 26.7, "aoe_jev"), gpuLane("moodori-shadow-judge", 19.5, "aoe_moodori")]) await deps.registry.write(l);
+  const opts = { files: [sparkFile, jevFile], inbox: gpuInbox(), owner: "owner-1", cards: join(state.dir, "no-cards.json") };
+  const r = await runOwnerCheck(deps, spark, opts);
+  expect(r.findings).toEqual([]);
+  expect(r.lines).toHaveLength(1);
+  expect(r.lines[0]).toMatch(/^OWNER_CHECK_SHARED spark-oss-4eae GOAL_LOSS owner "그래 좋아\. .*" is the owner's message in a thread other lanes share, message 1562079971768279060 at 2026-10-10T00:28:07\.312Z: for another lane \(the lead relayed it to jev-local\); not this lane's instruction, dropped, no rung \[reviewer /);
+  // the message for jev-local is left out; the one tied to no lane is context only, never a decision of this lane
+  expect(prompts[0]).not.toContain("JEV-like 모델이 있었던");
+  expect(prompts[0]).toMatch(/<<<OWNER DECISIONS[^\n]*\n\(none\)\nOWNER DECISIONS>>>\n<<<SHARED THREAD[^\n]*\n\[2026-10-10T00:25:41\.029Z\] 근데 내 원래 목적은/);
+  const log = await Bun.file(deps.config.watchLog).text();
+  expect(log).toContain("owner-check OWNER_CHECK_SHARED spark-oss-4eae GOAL_LOSS");
+  expect(log).not.toContain("STUCK");
+  const after = (await deps.registry.read("spark-oss-4eae")) as Lane;
+  expect(after.stuck?.["@context"]).toBeUndefined();
+  expect(after.ownerCheck?.kinds).toEqual(["OK"]);
+  // at 12:28, before the lead relayed it anywhere: no sign it is for spark-oss-4eae while two other lanes have the thread open
+  const early = await runOwnerCheck(ownerCheckDeps(31, SPARK_GOAL_LOSS, []), spark, { ...opts, files: [sparkFile] });
+  expect(early.findings).toEqual([]);
+  expect(early.lines[0]).toStartWith("OWNER_CHECK_SHARED spark-oss-4eae GOAL_LOSS");
+  expect(early.lines[0]).toContain("not tied to this lane (no sign it is for this lane; other lanes open in the thread: ");
+  expect(early.lines[0]).toContain("jev-local");
+  expect(early.lines[0]).toContain("moodori-shadow-judge");
+});
+
+test("in a shared thread the owner's real redirect still counts: his reply to the lane's own post is its decision and the finding climbs the ladder; a relay to it, its card, its key name or an empty thread tie a message to it too", async () => {
+  const STOP = "gpt-oss 비교는 그만하고 지금까지 숫자만 정리해";
+  const spark = gpuLane("spark-oss-4eae", 25, "aoe_spark");
+  const posted = JSON.stringify({ type: "message", timestamp: at(27.5), message: { role: "toolResult", content: [{ type: "text", text: "POSTED 1562080000000000001" }] } });
+  const sparkFile = gpuSession("spark", [sessionLine(27, "assistant", "[REPORT] spark-oss-4eae | milestone | 비교 시작"), posted, sessionLine(29.9, "assistant", "[REPORT] spark-oss-4eae | milestone | gpt-oss 비교 2회차 시작")]);
+  const prompts: string[] = [];
+  const deps = ownerCheckDeps(30, 'VERDICT: VIOLATION\nOWNER: "' + STOP + '"\nREPORT: "gpt-oss 비교 2회차 시작"\nWHY: 형이 멈추라고 했다.', prompts);
+  for (const l of [spark, gpuLane("jev-local", 26.7, "aoe_jev")]) await deps.registry.write(l);
+  const inbox = gpuInbox([{ ts: "2026-10-10T00:29:00.000000+00:00", id: "1562080100000000002", channel_id: GPU, author_id: "owner-1", reply_to: "1562080000000000001", content: STOP }]);
+  const r = await runOwnerCheck(deps, spark, { files: [sparkFile], inbox, owner: "owner-1", cards: join(state.dir, "no-cards.json") });
+  expect(r.findings.map((f) => [f.kind, f.verified])).toEqual([["VIOLATION", true]]);
+  expect(r.lines.at(-1)).toMatch(/^STUCK spark-oss-4eae "@context" rung context \(VIOLATION: /);
+  expect(prompts[0]).toContain(STOP + " (for this lane: a reply to this lane's post)");
+  const me = { key: "spark-oss-4eae", openedAt: at(25), pane: "aoe_spark", posts: new Set(["p1"]), relayed: new Set(["m1"]) };
+  const jev = { key: "jev-local", openedAt: at(26), pane: "aoe_jev", posts: new Set(["p2"]), relayed: new Set(["m1", "m9"]) };
+  const d = (id: string, extra: object = {}) => ({ at: at(28), text: "x", words: "x", id, ...extra });
+  const tied = tieDecisions([d("m1"), d("m2", { pane: "aoe_spark" }), d("m3", { replyTo: "p2" }), d("m4", { replyTo: "p1", pane: "aoe_jev" }), d("m5"), { ...d("m6"), at: at(25.5) }, d("m7", { words: "spark-oss-4eae 결과 줘" }), d("m9")], me, [jev]);
+  expect(tied.map((t) => t.to)).toEqual(["lane", "lane", "other", "unknown", "unknown", "lane", "lane", "other"]);
 });
