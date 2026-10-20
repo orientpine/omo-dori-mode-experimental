@@ -264,13 +264,118 @@ export const missingWatchers = async (deps: Pick<HandoverDeps, "run">, watchers:
 
 const norm = (text: string, home: string): string => text.replace(/(^|[\s=:'"])~\//g, `$1${home}/`).replace(/\s+/g, " ").trim();
 
+// The words a shell makes of a command: quotes and backslashes resolved, operators (| ; & ( ) < >) as words of their own
+// (marked, so a quoted "|" stays a plain word); undefined for an unclosed quote.
+const OP = "\u0000";
+export const shellWords = (text: string): string[] | undefined => {
+  const out: string[] = [];
+  let cur = "";
+  let has = false;
+  const push = () => {
+    if (has) out.push(cur);
+    cur = "";
+    has = false;
+  };
+  for (let i = 0; i < text.length; ) {
+    const c = text[i] ?? "";
+    if (c === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end < 0) return undefined;
+      cur += text.slice(i + 1, end);
+      has = true;
+      i = end + 1;
+    } else if (c === '"') {
+      has = true;
+      for (i++; ; ) {
+        if (i >= text.length) return undefined;
+        const d = text[i] ?? "";
+        if (d === '"') break;
+        // inside double quotes a backslash escapes only $ ` " \ and a newline
+        if (d === "\\" && '$`"\\\n'.includes(text[i + 1] ?? "x")) {
+          if (text[i + 1] !== "\n") cur += text[i + 1];
+          i += 2;
+        } else {
+          cur += d;
+          i++;
+        }
+      }
+      i++;
+    } else if (c === "\\") {
+      if (text[i + 1] !== undefined && text[i + 1] !== "\n") {
+        cur += text[i + 1];
+        has = true;
+      }
+      i += 2;
+    } else if (/\s/.test(c)) {
+      push();
+      i++;
+    } else if ("|&;()<>".includes(c)) {
+      push();
+      const op = /^(?:\|\||&&|;;|>>|<<|\d?>&|[|&;()<>])/.exec(text.slice(i))?.[0] ?? c;
+      out.push(OP + op);
+      i += op.length;
+    } else {
+      cur += c;
+      has = true;
+      i++;
+    }
+  }
+  push();
+  return out;
+};
+
+// ssh options that take a value (the next word), so the host is the first word after the options
+const SSH_ARG = /^-[46AaCfGgKkMNnqsTtVvXxYy]*[BbcDEeFIiJLlmOoPpQRSWw]$/;
+const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+
+// A command in a form that two spellings a shell runs the same way share: its words, with what another shell runs (the
+// remote command of ssh, the -c string of bash) in that form too. GongDori's E7 lane (2026-10-20 23:39Z) re-armed
+// ssh ori644d 'tail ... | sed -u "/DONE\\|ABORT/q"' with \\| for \| (the same sed argument inside the remote double quotes),
+// and a text compare rolled the handover back while that tail ran.
+export const commandForm = (text: string, home: string, depth = 3): string => {
+  const words = shellWords(text);
+  if (!words) return norm(text, home);
+  const out: string[] = [];
+  for (let i = 0; i < words.length; ) {
+    let end = words.findIndex((w, k) => k >= i && w.startsWith(OP));
+    if (end < 0) end = words.length;
+    const seg = words.slice(i, end).map((w) => w.replace(/^~\//, `${home}/`));
+    let k = seg.findIndex((w) => !/^[A-Za-z_]\w*=/.test(w));
+    const cmd = k < 0 ? "" : (seg[k] ?? "").replace(/^.*\//, "");
+    if (depth > 0 && cmd === "ssh") {
+      for (k++; k < seg.length && (seg[k] ?? "").startsWith("-"); k++) if (SSH_ARG.test(seg[k] ?? "")) k++;
+      // ssh joins the words after the host with spaces and the remote shell reads them again
+      if (k + 1 < seg.length) seg.splice(k + 1, seg.length, `${OP}remote ${commandForm(seg.slice(k + 1).join(" "), home, depth - 1)}`);
+    } else if (depth > 0 && SHELLS.has(cmd)) {
+      const c = seg.findIndex((w, j) => j > k && /^-[a-z]*c[a-z]*$/.test(w));
+      if (c > 0 && c + 1 < seg.length) seg[c + 1] = `${OP}shell ${commandForm(seg[c + 1] ?? "", home, depth - 1)}`;
+    }
+    out.push(...seg, ...(end < words.length ? [words[end] ?? ""] : []));
+    i = end + 1;
+  }
+  return JSON.stringify(out);
+};
+
+export const sameCommand = (a: string, b: string, home: string): boolean => norm(a, home) === norm(b, home) || commandForm(a, home) === commandForm(b, home);
+
+const firstDiff = (a: string, b: string): string => {
+  let i = 0;
+  while (i < a.length && a[i] === b[i]) i++;
+  const from = Math.max(0, i - 12);
+  return `from char ${i}: ${JSON.stringify(a.slice(from, i + 24))} wanted, ${JSON.stringify(b.slice(from, i + 24))} armed`;
+};
+
+// why an armed entry does not count as running
+const notRunning = (e: ManifestEntry, alive: (pid: number) => boolean, now: number): string =>
+  e.suspended ? "it is suspended" : e.expiresAt != null && e.expiresAt <= now ? "it expired" : !e.persistent ? "it is not persistent" : e.runtime?.pid === undefined ? "no process is recorded for it" : !alive(e.runtime.pid) ? `its process ${e.runtime.pid} ended (a remote tail whose ssh failed or whose log ended exits at once)` : "it does not run";
+
 // A monitor counts as re-armed when the new session runs a persistent watch with the same command (or path, or
 // description), whose process is alive. One that starts work (launchOf) counts as re-armed by a watch-only one instead:
 // a path watch, or a command that starts nothing, with the same description or filter (or its exact watch-only form);
 // the same command armed again does not count, since that started the work a second time.
 export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonly ManifestEntry[], alive: (pid: number) => boolean, home: string, now: number): string[] => {
   const live = entries.filter((e) => e.persistent && running(e, now) && (e.path || (e.runtime?.pid !== undefined && alive(e.runtime.pid))));
-  const same = (a: string, b: string) => norm(a, home) === norm(b, home);
+  const same = (a: string, b: string) => sameCommand(a, b, home);
   const out: string[] = [];
   for (const m of wanted) {
     const name = m.description || m.command || m.path || "?";
@@ -286,7 +391,14 @@ export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonl
     const ok = live.some((e) => m.command ? !!e.command && same(m.command, e.command) && (!m.filter || e.filter === m.filter)
       : m.path ? !!e.path && same(m.path, e.path)
       : !!m.description && e.description === m.description);
-    if (!ok) out.push(name);
+    if (ok) continue;
+    // say why, so the lead (and the rollback record) tells "not armed" from "armed but ended" and "armed differently"
+    const command = m.command;
+    const armed = command ? entries.find((e) => !!e.command && same(command, e.command)) : m.path ? entries.find((e) => !!e.path && same(m.path ?? "", e.path)) : undefined;
+    const like = command ? live.find((e) => !!e.command && ((!!m.description && e.description === m.description) || (!!m.filter && e.filter === m.filter) || same(command, e.command))) : undefined;
+    out.push(armed && !live.includes(armed) ? `${name} (armed, but ${notRunning(armed, alive, now)})`
+      : like?.command && command ? `${name} (a monitor runs ${same(command, like.command) ? `its command with filter ${JSON.stringify(like.filter ?? "")}, not ${JSON.stringify(m.filter ?? "")}` : `another command, ${firstDiff(command, like.command)}`}; arm it with the command and filter of the note's Monitors line)`
+      : name);
   }
   return out;
 };
@@ -335,7 +447,7 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   `From ${f.from.pane} (aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}, cwd ${f.from.cwd}). You are the new lead session${f.cwd === f.from.cwd ? "" : `, opened in ${f.cwd}`}: dori handover points leadPane, the open lanes and the open question cards at you.`,
   "",
   "## Do this first",
-  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
+  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command. Take each command, filter and description from its line under Monitors, where they are JSON strings: put them into the tool call as they are (a JSON string is a valid JS string), not retyped and not from the conversation summary, where a copy can differ. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
   `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
   `3. A [LEAD] ${UNDERSTAND} <id> line asks what you understood. Read this whole note first, then write it to the file the line names, under the headings ${LEAD_UNDERSTOOD_HEADINGS.map((h) => `## ${h}`).join(", ")}: under Goal the old session's goal quoted; under Owner's words each of the owner's recent messages and each quote in the old lead's notes, quoted exactly; under Open lanes every lane key of the table with what it waits on; under Open work each todo; under Open cards each card id with its question; under Timers each timer's unit name; under Promised follow-ups what the old lead promised the owner; under Questions only what neither this note nor the old log answers, or none. Then run the ack command the line gives. A [LEAD] HANDOVER_SUPPLEMENT <id> line names a file with what your restatement left out and the old log lines behind it: add those items to the same file, keep the rest, and run the ack command it gives.`,
   `4. Until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing besides that file: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,

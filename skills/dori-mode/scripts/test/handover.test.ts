@@ -543,8 +543,8 @@ test("a monitor counts as re-armed only with the same command and filter, or the
   const events = { description: "events", command: "tail -n 0 -F /x/events.log", filter: "^EV", persistent: true };
   const check = (wanted: object, entries: object[]) => missingMonitors([wanted as never], entries as never, () => true, "/home/test", 0);
   // When / Then
-  expect(check(events, [entry({ description: "events", command: "sleep 3600", filter: "^EV" })])).toEqual(["events"]);
-  expect(check(events, [entry({ description: "x", command: "tail -n 0 -F /x/events.log", filter: "^ANY" })])).toEqual(["events"]);
+  expect(check(events, [entry({ description: "events", command: "sleep 3600", filter: "^EV" })])).toEqual(['events (a monitor runs another command, from char 0: "tail -n 0 -F /x/events.l" wanted, "sleep 3600" armed; arm it with the command and filter of the note\'s Monitors line)']);
+  expect(check(events, [entry({ description: "x", command: "tail -n 0 -F /x/events.log", filter: "^ANY" })])).toEqual(['events (a monitor runs its command with filter "^ANY", not "^EV"; arm it with the command and filter of the note\'s Monitors line)']);
   expect(check(events, [entry({ description: "x", command: "tail -n 0 -F /x/events.log", filter: "^EV" })])).toEqual([]);
   expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "inbox", path: "/x/other" })])).toEqual(["inbox"]);
   expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "y", path: "/x/inbox" })])).toEqual([]);
@@ -589,7 +589,31 @@ test("a monitor that starts work counts as re-armed only by a watch-only one wit
   expect(check([entry({ description: "chain tail", command: tailOnly, filter: "CHAIN_" })])).toEqual([]);
   expect(check([entry({ description: "BS chain", path: "/x/chain.out" })])).toEqual([]);
   // a monitor that only watches still needs its own command, as before
-  expect(missingMonitors([{ description: "tail", command: tailOnly, filter: "CHAIN_", persistent: true }], [entry({ description: "tail", command: "tail -F /other", filter: "CHAIN_" })], () => true, "/home/test", 0)).toEqual(["tail"]);
+  expect(missingMonitors([{ description: "tail", command: tailOnly, filter: "CHAIN_", persistent: true }], [entry({ description: "tail", command: "tail -F /other", filter: "CHAIN_" })], () => true, "/home/test", 0)).toHaveLength(1);
+});
+
+// GongDori's E7 lane (2026-10-20 23:39Z): the old session's remote tail and the one its new session armed, as the two
+// manifests hold them; the new one has \\| for \| inside the remote double quotes, the same sed argument
+const E7_OLD = `ssh ori644d 'tail -n +1 -F workspace/hr35_rand/logs/bs_chain.out | grep --line-buffered -E "BS_CHAIN_|ARCH_MN_|MULTINODE_END|Traceback" | sed -u "/BS_CHAIN_DONE\\|BS_CHAIN_ABORT/q"'`;
+const E7_NEW = `ssh ori644d 'tail -n +1 -F workspace/hr35_rand/logs/bs_chain.out | grep --line-buffered -E "BS_CHAIN_|ARCH_MN_|MULTINODE_END|Traceback" | sed -u "/BS_CHAIN_DONE\\\\|BS_CHAIN_ABORT/q"'`;
+
+test("a remote tail re-armed in another spelling the shell runs the same way counts; one that runs something else, or ended, does not and says why", () => {
+  // Given
+  const entry = (e: Record<string, unknown>) => ({ persistent: true, suspended: false, expiresAt: null, runtime: { pid: 1 }, ...e }) as never;
+  const wanted = { description: "BS chain tail-only (safe to re-arm; never launches): ori644d logs/bs_chain.out", command: E7_OLD, filter: "BS_CHAIN_|ARCH_MN_|MULTINODE_END|Traceback", persistent: true };
+  const check = (entries: object[], alive = (_pid: number) => true) => missingMonitors([wanted as never], entries as never, alive, "/home/test", 0);
+  const armed = (command: string, extra: Record<string, unknown> = {}) => entry({ description: "BS chain tail", command, filter: wanted.filter, ...extra });
+  // When / Then
+  expect(E7_NEW).not.toBe(E7_OLD);
+  expect(check([armed(E7_NEW)])).toEqual([]);
+  expect(check([armed(`ssh   ori644d "tail -n +1 -F workspace/hr35_rand/logs/bs_chain.out | grep --line-buffered -E 'BS_CHAIN_|ARCH_MN_|MULTINODE_END|Traceback' | sed -u '/BS_CHAIN_DONE\\|BS_CHAIN_ABORT/q'"`)])).toEqual([]);
+  expect(check([armed("ssh -o BatchMode=yes ori644d 'tail -n +1 -F workspace/hr35_rand/logs/bs_chain.out'")])[0]).toContain("a monitor runs another command");
+  // another host, another log, a pipe turned into a quoted word: another watch
+  for (const other of [E7_NEW.replace("ori644d", "ori4b69"), E7_NEW.replace("bs_chain.out", "bs_chain2.out"), E7_OLD.replace('-E "BS_CHAIN_|ARCH_MN_|MULTINODE_END|Traceback" |', '-E "BS_CHAIN_|ARCH_MN_|MULTINODE_END|Traceback" "|"')])
+    expect(check([armed(other)])).toHaveLength(1);
+  expect(check([armed(E7_NEW, { runtime: { pid: 71817 } })], () => false)).toEqual([`${wanted.description} (armed, but its process 71817 ended (a remote tail whose ssh failed or whose log ended exits at once))`]);
+  expect(check([armed(E7_NEW, { persistent: false })])).toEqual([`${wanted.description} (armed, but it is not persistent)`]);
+  expect(check([])).toEqual([wanted.description]);
 });
 
 test("an automatic lead rollover tells the owner afterwards with what it crossed; with the key off it is refused and nobody is told", async () => {
