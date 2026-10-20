@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 
@@ -243,3 +243,51 @@ test("thread reply twice posts once, a done with the same words is not posted ag
     state.done();
   }
 });
+
+// 2026-10-20 a lane's progress post "…결과 카드를 여기 올릴게요." went to the owner's thread from a Dori that talks to him in 반말
+// (owner "얘는 왜 말투 안 바꼈냐?"): send, thread and ask refuse 존댓말 for the owner's channel, its threads and the DM
+const speechCli = async (dir: string, args: readonly string[], parent = "500") => {
+  const config = join(dir, "config.json");
+  writeFileSync(config, JSON.stringify({ discord: { locale: "ko-KR" } }));
+  const file = join(dir, "http.json");
+  const r = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+    "DORI_DISCORD_CHANNEL=500", "DORI_DISCORD_PAIR_CHANNEL=600", `DORI_TEST_THREAD_PARENT=${parent}`,
+    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]);
+  const calls = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).calls as { method: string; path: string; body?: { content?: string } }[]) : [];
+  return { code: r.code, out: r.out, refused: r.err.includes("SPEECH_REFUSED") && r.err.includes("반말") && r.err.includes("nothing was sent"), posted: calls.filter((c) => c.method === "POST" && c.path.endsWith("/messages")).map((c) => c.body?.content) };
+};
+
+const POLITE = "E7 평가 끝나면 결과 카드를 여기 올릴게요.";
+for (const [name, args, parent] of [
+  ["thread reply in a thread of the owner's channel", ["thread", "reply", "discord:300000000000000003", POLITE], "500"],
+  ["thread wait in a thread of the owner's channel", ["thread", "wait", "discord:300000000000000003", POLITE], "500"],
+  ["thread done in a thread of the owner's channel", ["thread", "done", "discord:300000000000000003", POLITE], "500"],
+  ["send to a thread of the owner's channel", ["send", "discord", "--to", "300000000000000003", "--no-typing", "--text", POLITE], "500"],
+  ["send --status working to the owner's channel", ["send", "discord", "--to", "500", "--status", "working", "--no-typing", "--text", POLITE], "500"],
+  ["ask", ["ask", "--text", "E7 세션을 새로 켜도 될까요?", "--option", "켜", "--option", "그대로 둬"], "500"],
+] as const) {
+  test(`${name}: 존댓말 for a 반말 owner is refused before anything is sent (SPEECH_REFUSED)`, async () => {
+    const state = withState();
+    try {
+      expect(await speechCli(state.dir, args, parent)).toMatchObject({ code: 2, refused: true, posted: [] });
+    } finally {
+      state.done();
+    }
+  });
+}
+
+for (const [name, args, parent, out] of [
+  ["반말 in the owner's thread", ["thread", "reply", "discord:300000000000000003", "E7 평가 끝나면 결과 카드 여기 올릴게."], "500", "POSTED 900"],
+  ["존댓말 in the pair channel", ["send", "discord", "--to", "600", "--no-typing", "--text", POLITE], "500", "SENT 900"],
+  ["존댓말 in a thread of another channel", ["thread", "reply", "discord:300000000000000003", POLITE], "777", "POSTED 900"],
+  ["a quoted 존댓말 line and code under the Dori's own 반말", ["thread", "reply", "discord:300000000000000003", "공돌 말 그대로 옮길게\n> 결과 카드를 여기 올릴게요.\n`올릴게요.`"], "500", "POSTED 900"],
+] as const) {
+  test(`${name} is sent`, async () => {
+    const state = withState();
+    try {
+      expect(await speechCli(state.dir, args, parent)).toMatchObject({ code: 0, out, refused: false, posted: [args.at(-1)] });
+    } finally {
+      state.done();
+    }
+  });
+}

@@ -223,28 +223,38 @@ export const COMMITTED = "HANDOVER_COMMITTED";
 
 const DISCORD_LINK = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/\d+\/\d+\/\d+$/;
 
-// the owner's message a lead's approval cites instead of a signal: "owner <message id>" or "owner <its Discord link>"
-// (형 works for owner); groups: 1 the link's channel, 2 the link's message, 3 a bare message id
-const OWNER_REF = /(?<![\w])(?:owner|형)\s*[:#]?\s*(?:https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/(?:\d+|@me)\/(\d+)\/(\d+)|(\d{15,22}))(?![\w])/i;
+// the owner's message a lead's approval cites instead of a signal: "owner <message id>" or "owner <its Discord link>", and
+// for the owner's card answer "owner Qn <id or link>" (형 works for owner); groups: 1 the card, 2 the link's channel, 3 the
+// link's message, 4 a bare message id
+const OWNER_REF = /(?<![\w])(?:owner|형)\s*[:#]?\s*(?:(Q\d+)\s*[:#]?\s*)?(?:https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/(?:\d+|@me)\/(\d+)\/(\d+)|(\d{15,22}))(?![\w])/i;
 
-// The owner's ids (DORI_DISCORD_OWNER, DORI_KAKAO_OWNER_ID) and the inbox rows by message id: who wrote it, where.
-export type OwnerMessages = { readonly ids: readonly string[]; readonly find: (id: string) => { readonly author: string; readonly channel: string } | undefined };
+// The author of an inbox card answer row (kind "answer"): the listener writes one only for a tap or a typed answer by
+// DORI_DISCORD_OWNER (discord-cards.ts handle answers anyone else with ownerOnly and records nothing; a shadow listener
+// checks the same), so the row is the owner's though it has no author_id.
+const CARD_ANSWER = "owner card answer";
+
+// The owner's ids (DORI_DISCORD_OWNER, DORI_KAKAO_OWNER_ID) and the inbox rows by message id: who wrote it, where, and for
+// a card answer the card (its channel is the card's thread, "" for a card in DORI_DISCORD_CHANNEL itself).
+type InboxRow = { readonly author: string; readonly channel: string; readonly card?: string };
+export type OwnerMessages = { readonly ids: readonly string[]; readonly find: (id: string) => InboxRow | undefined };
 export const NO_OWNER_MESSAGES: OwnerMessages = { ids: [], find: () => undefined };
 
 // reads the inbox once, on the first lookup
 export const inboxMessages = (inbox: string, ids: readonly string[]): OwnerMessages => {
-  let rows: Map<string, { readonly author: string; readonly channel: string }> | undefined;
+  let rows: Map<string, InboxRow> | undefined;
   const load = () => {
-    const out = new Map<string, { readonly author: string; readonly channel: string }>();
+    const out = new Map<string, InboxRow>();
     if (!existsSync(inbox)) return out;
     for (const line of readFileSync(inbox, "utf8").split("\n")) {
-      let row: { id?: unknown; author_id?: unknown; channel_id?: unknown };
+      let row: { id?: unknown; author_id?: unknown; channel_id?: unknown; kind?: unknown; qid?: unknown; thread?: unknown };
       try {
         row = JSON.parse(line) as typeof row;
       } catch {
         continue;
       }
-      if (typeof row?.id === "string" && typeof row.author_id === "string" && !out.has(row.id)) out.set(row.id, { author: row.author_id, channel: String(row.channel_id ?? "") });
+      if (typeof row?.id !== "string" || out.has(row.id)) continue;
+      if (typeof row.author_id === "string") out.set(row.id, { author: row.author_id, channel: String(row.channel_id ?? "") });
+      else if (row.kind === "answer" && typeof row.qid === "string") out.set(row.id, { author: CARD_ANSWER, channel: typeof row.thread === "string" ? row.thread : "", card: row.qid });
     }
     return out;
   };
@@ -253,12 +263,15 @@ export const inboxMessages = (inbox: string, ids: readonly string[]): OwnerMessa
 
 // why a cited owner's message does not hold: not set up, not in the inbox (a made-up id), someone else's, another channel
 const ownerRefProblem = (m: RegExpExecArray, owner: OwnerMessages): string | undefined => {
-  const id = m[2] ?? m[3] ?? "";
+  const id = m[3] ?? m[4] ?? "";
   if (!owner.ids.length) return `the owner's message ${id} cannot be checked: DORI_DISCORD_OWNER is not set`;
   const row = owner.find(id);
-  if (!row) return `message ${id} is not in the inbox, so it is not known as the owner's; cite the id or link of a message the owner wrote`;
-  if (!owner.ids.includes(row.author)) return `message ${id} in the inbox was written by ${row.author}, not by the owner`;
-  if (m[1] && m[1] !== row.channel) return `message ${id} is in channel ${row.channel} in the inbox, not in ${m[1]} as the link says`;
+  if (!row) return `message ${id} is not in the inbox, so it is not known as the owner's; cite the id or link of a message the owner wrote or of his card answer`;
+  if (row.author !== CARD_ANSWER && !owner.ids.includes(row.author)) return `message ${id} in the inbox was written by ${row.author}, not by the owner`;
+  const card = m[1]?.toUpperCase();
+  if (card && row.card !== card) return `message ${id} in the inbox is ${row.card ? `the owner's answer to card ${row.card}` : "not a card answer"}, not to ${card}`;
+  // a card in DORI_DISCORD_CHANNEL itself has no thread in its answer row: its link's channel is not known to differ
+  if (m[2] && m[2] !== row.channel && !(row.card && !row.channel)) return `message ${id} is in channel ${row.channel} in the inbox, not in ${m[2]} as the link says`;
   return undefined;
 };
 
@@ -298,7 +311,11 @@ export const approvalProblem = (ref: string | undefined, card: (id: string) => Q
     if (q.answer !== q.options[0]) return `card ${q.id} was answered ${JSON.stringify(q.answer ?? "")}, not ${JSON.stringify(q.options[0] ?? "")}`;
     return undefined;
   }
-  return DISCORD_LINK.test(r) ? undefined : `approval reference ${JSON.stringify(r)} is neither an answered rollover card Qn nor a link to the owner's Discord message`;
+  if (!DISCORD_LINK.test(r)) return `approval reference ${JSON.stringify(r)} is neither an answered rollover card Qn nor a link to the owner's Discord message`;
+  // a bare link holds like "owner <link>" in a lead's approval: the inbox has it from the owner (his message or card answer)
+  const linked = OWNER_REF.exec(`owner ${r}`);
+  const problem = linked ? ownerRefProblem(linked, owner) : `${r} is not a Discord message link`;
+  return problem ? `${JSON.stringify(r)} is a link, but ${problem}` : undefined;
 };
 
 // While a session is being replaced it must not talk to the owner: the new one may already answer. dori send, ask and

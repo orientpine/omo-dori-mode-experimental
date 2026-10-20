@@ -18,6 +18,7 @@ const LINK = "/work/lead-link";
 const GUARD = { name: "host guard", check: ["guard-check", "{pane}"], arm: "systemctl --user start dori-lanes" };
 const INBOX_CMD = "tail -n 0 -F /home/test/.dori/inbox.jsonl";
 const APPROVED = "https://discord.com/channels/1/2/3";
+const OWNER = "280680578314010625";
 const LANES_CMD = "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_";
 
 type Sim = { arm: { command: string; description: string; pid: number }[]; ackPane: string; ackReport: boolean; ackInbox: boolean; guardFor: Set<string>; restate: "full" | "omit-lane" | "silent"; supplement: "fix" | "ignore"; handled: Set<string> };
@@ -66,6 +67,8 @@ const setup = async (): Promise<HandoverDeps> => {
     JSON.stringify({ type: "custom", customType: "senpi.todo-state", data: { phases: [{ name: "Work", tasks: [{ content: "finished task", status: "completed" }, { content: "watch the E7 run", status: "in_progress" }] }] } }),
   ].join("\n"));
   writeFileSync(join(state.dir, "config.json"), JSON.stringify({ backend: "aoe", leadPane: OLD, update: { alertPane: OLD } }));
+  // APPROVED links the owner's message in the inbox (an approval link holds only for one the inbox has from the owner)
+  writeFileSync(join(state.dir, "inbox.jsonl"), `${JSON.stringify({ id: "3", channel_id: "2", author_id: OWNER, content: "move the lead" })}\n`);
   writeFileSync(join(state.dir, "dori.env"), `DORI_DISCORD_CHANNEL=1\nDORI_LEAD_AOE_ID=${OLD_ID}\nDORI_LEAD_TMUX=${OLD}\n`);
   writeFileSync(lane().brief, `Do the work.\n- Report ... sent to pane ${OLD} as an argv array.\n- run ["tmux","send-keys","-t","=${OLD}:","-l","--","<report line>"]\n`);
   await base.registry.write(lane());
@@ -83,6 +86,7 @@ const setup = async (): Promise<HandoverDeps> => {
     envPath: join(state.dir, "dori.env"),
     cardDir: join(state.dir, "discord"),
     inbox: join(state.dir, "inbox.jsonl"),
+    ownerIds: [OWNER],
     home: "/home/test",
     sessionOf: async (pane) => (pane === OLD ? "old-sid" : pane === NEW ? "new-sid" : ""),
     routedPane: async () => (JSON.parse(readFileSync(join(state.dir, "config.json"), "utf8")) as { leadPane: string }).leadPane,
@@ -400,7 +404,7 @@ test("a monitor whose process died in the new session counts as missing, so the 
   expect(stopped()).toBe(false);
   expect(leadPaneInConfig()).toBe(OLD);
   expect(w.calls.some((c) => c[1] === "send-keys" && (c.at(-1) ?? "").startsWith("[REPORT] handover-probe"))).toBe(false);
-  expect(existsSync(join(state.dir, "inbox.jsonl"))).toBe(false);
+  expect(readFileSync(join(state.dir, "inbox.jsonl"), "utf8")).not.toContain("HANDOVER_PROBE");
 });
 
 const withWatcher = (deps: HandoverDeps, patch: Partial<HandoverDeps["config"]["handover"]> = {}): HandoverDeps => ({ ...deps, config: { ...deps.config, handover: { ...deps.config.handover, watchers: [GUARD], ...patch } } });
@@ -621,8 +625,8 @@ test("a new lead that never writes its restatement fails the check", async () =>
 test("the owner's recent messages and the old lead's summary go into the note and are checked: his words, decisions and promised follow-ups left out come back with the old log line", async () => {
   // Given
   const deps = await setup();
-  const withOwner: HandoverDeps = { ...deps, ownerIds: ["owner1"] };
-  writeFileSync(join(state.dir, "inbox.jsonl"), [
+  const withOwner: HandoverDeps = { ...deps, ownerIds: [OWNER, "owner1"] };
+  writeFileSync(join(state.dir, "inbox.jsonl"), readFileSync(join(state.dir, "inbox.jsonl"), "utf8") + [
     { ts: "2026-10-11T16:20:00Z", id: "m1", scope: "thread", channel_id: "777", author_id: "owner1", content: "auto rollover loses no context, right?" },
     { ts: "2026-10-10T10:00:00Z", id: "m0", scope: "thread", channel_id: "777", author_id: "owner1", content: "an old message from yesterday morning" },
     { ts: "2026-10-11T16:21:00Z", id: "m2", scope: "kakao", room: "friends", author_id: "someone", content: "not the owner talking here" },

@@ -27,6 +27,7 @@ const EVENTS = "tail -n 0 -F /tmp/events.log";
 const status = (model: string, pct = "9.0", account = "x") => `old transcript line\n❯ \n────\n Claude·${account} ▕██▏ 60%\n~/work • CH85.0% • $0.5 • 90K/1M (${pct}%) (auto)    (anthropic-subscription@${account}) ${model} (shift+tab)\n(OmO) mem:x`;
 const HIGH = status("claude-opus-5-5 • effort high", "72.0");
 const OK = { approvedBy: "https://discord.com/channels/1/2/3" };
+const OWNER = "280680578314010625";
 
 // a restatement that covers the lane's goal under every heading the new session must write
 const RESTATE = "## Goal\n레인에도 적용: ship it\n## Owner's words\nnone\n## Decisions\nnone\n## Next step\ntrain E7\n## Ruled out\nnone\n## Questions\nnone\n";
@@ -119,6 +120,8 @@ const setup = async (): Promise<LaneHandoverDeps> => {
   mkdirSync(join(dir, "extensions", "goal"), { recursive: true });
   writeFileSync(join(dir, "extensions", "goal", "old-sid.json"), JSON.stringify({ goal: { objective: "ship lane handover", status: "active" } }));
   writeFileSync(lane().brief, "Do the work.\n");
+  // OK links the owner's message in the inbox (an approval link holds only for one the inbox has from the owner)
+  writeFileSync(join(state.dir, "inbox.jsonl"), `${JSON.stringify({ id: "3", channel_id: "2", author_id: OWNER, content: "move the lane" })}\n`);
   await base.registry.write(lane());
   new QuestionStore(join(state.dir, "discord")).create("Which run?", ["a", "b"], "1", { thread: "12345678", tmux: OLD, session: "old-sid" }, "2026-10-11T00:00:00Z");
   let n = 0;
@@ -133,6 +136,8 @@ const setup = async (): Promise<LaneHandoverDeps> => {
       return base.run(argv, opts);
     },
     cardDir: join(state.dir, "discord"),
+    inbox: join(state.dir, "inbox.jsonl"),
+    ownerIds: [OWNER],
     home: "/home/test",
     sessionOf: async (pane) => (pane === OLD ? "old-sid" : pane === NEW ? "new-sid" : ""),
     procs: async () => table,
@@ -643,7 +648,10 @@ test("an approval is an answered rollover card for this lane's current session, 
   const card = (id: string) => cards[id] as never;
   const proposal = (key: string, id: string, pane = "p1") => ({ kind: "proposal" as const, who: "lane" as const, at: "2026-10-11T00:00:00Z", key, card: id, pane, signals: {}, crossed: [], blockers: "" });
   const log = [proposal("demo", "Q1"), proposal("demo", "Q2"), proposal("demo", "Q3"), proposal("other", "Q4"), proposal("demo", "Q6", "p0")];
-  const check = (ref: string | undefined, on = false, canReport = false) => approvalProblem(ref, card, { on, key: "handover.autoRolloverLanes" }, "demo", "p1", log, canReport);
+  // a link holds only for a message the inbox has from the owner
+  const inbox = join(mkdtempSync(join(tmpdir(), "dori-approval-")), "inbox.jsonl");
+  writeFileSync(inbox, [{ id: "3", channel_id: "2", author_id: OWNER, content: "roll it over" }, { id: "4", channel_id: "2", author_id: "999", content: "roll it over" }].map((x) => JSON.stringify(x)).join("\n"));
+  const check = (ref: string | undefined, on = false, canReport = false) => approvalProblem(ref, card, { on, key: "handover.autoRolloverLanes" }, "demo", "p1", log, canReport, inboxMessages(inbox, [OWNER]));
   // When / Then
   expect(check("Q1")).toBeUndefined();
   expect(check("q1")).toBeUndefined();
@@ -654,6 +662,9 @@ test("an approval is an answered rollover card for this lane's current session, 
   expect(check("Q5")).toBe("card Q5 is not a rollover proposal for demo; post one with dori rollover-propose demo");
   expect(check("Q6")).toBe("card Q6 was about p0, not the session demo runs in now (p1); post a new one with dori rollover-propose demo");
   expect(check("https://discord.com/channels/1/2/3")).toBeUndefined();
+  expect(check("https://discord.com/channels/1/2/4")).toContain("written by 999, not by the owner");
+  expect(check("https://discord.com/channels/1/2/5")).toContain("message 5 is not in the inbox");
+  expect(check("https://discord.com/channels/1/9/3")).toContain("is in channel 2 in the inbox, not in 9");
   for (const words of ["not approved", "owner said yes", "https://discord.com/channels/1/2", "https://example.com/channels/1/2/3"]) expect(check(words)).toContain("neither an answered rollover card");
   expect(check(undefined)).toStartWith("no approval");
   expect(check("auto:handover.autoRolloverLanes")).toContain("the automation key is off");
@@ -673,6 +684,19 @@ test("an approval is an answered rollover card for this lane's current session, 
   expect(check("lead:context 85% after 6 compactions", false, true)).toBeUndefined();
 });
 
+test("a dry run checks a given approval the same way and says so, writing nothing to the rollover log", async () => {
+  // Given
+  const deps = await setup();
+  // When
+  await laneHandover(deps, "demo", "aoe_lead_x", { ...OK, dryRun: true });
+  const bad = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: "https://discord.com/channels/1/2/5", dryRun: true });
+  // Then
+  expect(printed).toContain(`HANDOVER_APPROVAL_OK ${JSON.stringify(OK.approvedBy)}`);
+  expect(bad.code).toBe(2);
+  expect(printed.find((l) => l.startsWith("HANDOVER_REFUSED demo") && l.includes("message 5 is not in the inbox"))).toBeDefined();
+  expect(readRollovers(state.dir)).toEqual([]);
+});
+
 test("a lead's approval may cite the owner's message instead of a signal, and holds only when the inbox has it from the owner", () => {
   // Given an inbox with the owner's message, someone else's, an answer row and a broken line
   const inbox = join(mkdtempSync(join(tmpdir(), "dori-owner-ref-")), "inbox.jsonl");
@@ -680,6 +704,9 @@ test("a lead's approval may cite the owner's message instead of a signal, and ho
     JSON.stringify({ ts: "2026-10-17T04:45:38Z", id: "1560876422535577662", channel_id: "1558257428561137764", scope: "thread", author_id: "280680578314010625", content: "이 주제는 무조건 fable high로 열어" }),
     JSON.stringify({ ts: "2026-10-17T04:46:00Z", id: "1560876422535579999", channel_id: "1558257428561137764", scope: "pair-bot", author_id: "999999999999999999", content: "open it with fable" }),
     JSON.stringify({ ts: "2026-10-17T04:47:00Z", id: "Q7-answer", kind: "answer", qid: "Q7", answer: "yes" }),
+    // the owner's button answer as the listener writes it (no author_id: it records only the owner's taps), one in a thread, one on a channel card
+    JSON.stringify({ ts: "2026-10-20T10:25:04.293Z", id: "1562049001283395634", kind: "answer", qid: "Q5", answer: "지금 새로 켜 (추천)", answer_kind: "button", question: "E7 작업 세션을 새로 켜도 될까?", thread: "1561750689409933447", session: null, tmux: null }),
+    JSON.stringify({ ts: "2026-10-20T10:26:00Z", id: "1562049001283390000", kind: "answer", qid: "Q6", answer: "응", answer_kind: "text", question: "옮길까?", thread: null, session: null, tmux: null }),
     "{not json",
   ].join("\n"));
   const owner = inboxMessages(inbox, ["280680578314010625"]);
@@ -698,6 +725,17 @@ test("a lead's approval may cite the owner's message instead of a signal, and ho
   // the reason is still needed, and the owner is still told afterwards
   expect(check("lead:owner 1560876422535577662")).toContain("does not say the reason");
   expect(check("lead:형 지시로 모델 변경, owner 1560876422535577662", owner, false)).toContain("needs a way to tell the owner afterwards");
+  // the owner's card answer counts as his message, by id or link, with or without its card named; a wrong card or channel does not
+  expect(check("lead:old session still sends [1m] after 1M patch, owner 1562049001283395634")).toBeUndefined();
+  expect(check("lead:old session still sends [1m] after 1M patch, owner https://discord.com/channels/1528936606264856737/1561750689409933447/1562049001283395634")).toBeUndefined();
+  expect(check("lead:old session still sends [1m] after 1M patch (PID 1571415), owner Q5 1562049001283395634")).toBeUndefined();
+  expect(check("lead:형이 카드로 옮기라고 함, owner 1562049001283390000")).toBeUndefined();
+  expect(check("lead:old session still sends [1m] after 1M patch, owner Q4 1562049001283395634")).toContain("is the owner's answer to card Q5, not to Q4");
+  expect(check("lead:형 지시로 모델 변경, owner Q5 1560876422535577662")).toContain("is not a card answer, not to Q5");
+  expect(check("lead:old session still sends [1m] after 1M patch, owner https://discord.com/channels/1/42/1562049001283395634")).toContain("is in channel 1561750689409933447 in the inbox, not in 42");
+  expect(check("https://discord.com/channels/1528936606264856737/1561750689409933447/1562049001283395634")).toBeUndefined();
+  // someone else's answer is never written as a row, so a made-up answer id stays unknown
+  expect(check("lead:old session still sends [1m] after 1M patch, owner 1562049001283395999")).toContain("is not in the inbox");
   // without an owner reference nothing changed: a reason with no signal is refused, a signal passes
   expect(check("lead:형 지시로 모델 변경")).toContain("does not say the reason and the signal behind it");
   expect(check("lead:STUCK rung 4 on loss, research did not help")).toBeUndefined();
