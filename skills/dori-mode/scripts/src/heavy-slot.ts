@@ -19,7 +19,8 @@ export type SlotDeps = {
   readonly maxLoad: number;
   readonly clock: Clock;
   readonly load: () => Promise<number>;
-  readonly alive: (pid: number) => boolean;
+  // `since`: the slot was claimed then, so only a process started by then can be its holder (a pid reused later is not)
+  readonly alive: (pid: number, since?: number) => boolean;
   readonly pid: number;
   readonly headroom?: Headroom;
   // one line per job when it is taken (HEAVY_ADMIT) and when it starts or changes why it waits (HEAVY_WAIT)
@@ -27,6 +28,16 @@ export type SlotDeps = {
 };
 
 const ORPHAN_MS = 60_000;
+
+// the owner line is "<pid> <label> <claimed ISO time>"
+const parseOwner = (owner: string): { pid: number; label: string; since: number | undefined } => {
+  const words = owner.trim().split(" ");
+  const since = Date.parse(words.at(-1) ?? "");
+  return { pid: Number(words[0]), label: words[1] ?? "", since: Number.isNaN(since) ? undefined : since };
+};
+
+// what this process wrote into each slot it took, so it frees a slot only while that slot is still its own
+const taken = new Map<string, string>();
 
 const tryTake = (deps: SlotDeps, n: number, label: string): string | null => {
   const slot = join(deps.dir, `slot.${n}`);
@@ -36,7 +47,9 @@ const tryTake = (deps: SlotDeps, n: number, label: string): string | null => {
     } catch {
       return null;
     }
-    writeFileSync(join(slot, "owner"), `${deps.pid} ${label} ${new Date(deps.clock.now()).toISOString()}`);
+    const owner = `${deps.pid} ${label} ${new Date(deps.clock.now()).toISOString()}`;
+    writeFileSync(join(slot, "owner"), owner);
+    taken.set(slot, owner);
     return slot;
   };
   const got = claim();
@@ -47,14 +60,14 @@ const tryTake = (deps: SlotDeps, n: number, label: string): string | null => {
   } catch {
     owner = "";
   }
-  const pid = Number(owner.split(" ")[0]);
-  const orphaned = owner ? !deps.alive(pid) : deps.clock.now() - statSync(slot).mtimeMs > ORPHAN_MS;
+  const { pid, since } = parseOwner(owner);
+  const orphaned = owner ? !deps.alive(pid, since) : deps.clock.now() - statSync(slot).mtimeMs > ORPHAN_MS;
   if (!orphaned) return null;
   rmSync(slot, { recursive: true, force: true });
   return claim();
 };
 
-type Holder = { readonly n: number; readonly pid: number; readonly since: number };
+type Holder = { readonly n: number; readonly pid: number; readonly label: string; readonly since: number };
 
 const holders = (deps: SlotDeps, max: number): Holder[] => {
   const out: Holder[] = [];
@@ -65,11 +78,20 @@ const holders = (deps: SlotDeps, max: number): Holder[] => {
     } catch {
       continue;
     }
-    const pid = Number(owner.split(" ")[0]);
-    if (deps.alive(pid)) out.push({ n, pid, since: Date.parse(owner.split(" ").at(-1) ?? "") || 0 });
+    const { pid, label, since } = parseOwner(owner);
+    if (deps.alive(pid, since)) out.push({ n, pid, label, since: since ?? 0 });
   }
   return out;
 };
+
+const age = (ms: number): string => {
+  const min = Math.max(0, Math.floor(ms / 60_000));
+  return min >= 60 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}m` : `${min}m`;
+};
+
+// which jobs hold the slots and for how long, so a waiter can see a job that should have ended
+const heldBy = (deps: SlotDeps, running: readonly Holder[]): string =>
+  running.map((r) => `slot.${r.n} ${r.label} pid ${r.pid} ${r.since ? age(deps.clock.now() - r.since) : "?"}`).join(", ");
 
 // one admission decision at a time across processes, so two waiters never both take the same headroom
 const withLock = async <T>(deps: SlotDeps, f: () => Promise<T>): Promise<T | null> => {
@@ -167,9 +189,9 @@ const tryAdmit = async (deps: SlotDeps, label: string): Promise<Try> => {
       const slot = tryTake(deps, n, label);
       if (slot) return { slot, why: `${running.length} heavy job(s) running, load ${load.toFixed(0)} < ${deps.maxLoad}` };
     }
-    if (!h) return { wait: "full", why: `all ${deps.slots} slot(s) busy` };
+    if (!h) return { wait: "full", why: `all ${deps.slots} slot(s) busy: ${heldBy(deps, holders(deps, max))}` };
   }
-  if (running.length >= max) return { wait: "full", why: `all ${max} slots busy` };
+  if (running.length >= max) return { wait: "full", why: `all ${max} slots busy: ${heldBy(deps, running)}` };
   const fresh = running.find((r) => deps.clock.now() - r.since < h.settleSec * 1000);
   if (fresh) return { wait: "settle", why: `slot.${fresh.n} was taken ${Math.round((deps.clock.now() - fresh.since) / 1000)}s ago; its load shows after ${h.settleSec}s` };
   const v = headroomVerdict(await h.usage(running.map((r) => r.pid)), h.free);
@@ -178,7 +200,7 @@ const tryAdmit = async (deps: SlotDeps, label: string): Promise<Try> => {
     const slot = tryTake(deps, n, label);
     if (slot) return { slot, why: `${running.length} running beside it; ${v.detail}` };
   }
-  return { wait: "full", why: `all ${max} slots busy` };
+  return { wait: "full", why: `all ${max} slots busy: ${heldBy(deps, holders(deps, max))}` };
 };
 
 export type Acquired<T> = { readonly slot: string } | { readonly elsewhere: T };
@@ -225,15 +247,32 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
   return "slot" in got ? got.slot : got.elsewhere;
 };
 
-export const releaseSlot = (slot: string): void => rmSync(slot, { recursive: true, force: true });
+// frees the slot only while it is still the one this process took: a slot taken over by the next job (its holder looked
+// dead) stays with that job
+export const releaseSlot = (slot: string): void => {
+  const mine = taken.get(slot);
+  taken.delete(slot);
+  if (mine !== undefined) {
+    let now = "";
+    try {
+      now = readFileSync(join(slot, "owner"), "utf8");
+    } catch {
+      return;
+    }
+    if (now !== mine) return;
+  }
+  rmSync(slot, { recursive: true, force: true });
+};
 
-export const pidAlive = (pid: number): boolean => {
+// alive and not a zombie; with `since`, also started by then (ps etimes is whole seconds, so 2 s of slack)
+export const pidAlive = (pid: number, since?: number): boolean => {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
   } catch {
     return false;
   }
-  const stat = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)]).stdout.toString().trim();
-  return stat !== "" && !stat.startsWith("Z");
+  const [stat = "", etimes = ""] = Bun.spawnSync(["ps", "-o", "stat=,etimes=", "-p", String(pid)]).stdout.toString().trim().split(/\s+/);
+  if (stat === "" || stat.startsWith("Z")) return false;
+  return since === undefined || !/^\d+$/.test(etimes) || Date.now() - Number(etimes) * 1000 <= since + 2_000;
 };
