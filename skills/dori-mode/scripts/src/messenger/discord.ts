@@ -1,5 +1,6 @@
 import type { Clock } from "../run.ts";
 import { DEFAULT_RETRY, guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
+import { nameThreadLinks } from "./thread-links.ts";
 
 const retryAfter = (body: string): number | undefined => {
   try {
@@ -46,6 +47,7 @@ export class Discord {
     guardText(content);
     if (ping !== undefined && (ping.length === 0 || /[^0-9]/.test(ping))) throw new MessengerError("--ping takes a digits-only user id", 400);
     if (ping !== undefined && !content.includes(`<@${ping}>`)) content = `<@${ping}> ${content}`;
+    content = await this.namedLinks(content);
     if (typing) {
       await this.once().typing(channelId).catch((e: unknown) => {
         console.error(`DISCORD_TYPING_FAIL ${e instanceof Error ? e.message : String(e)}`);
@@ -55,7 +57,12 @@ export class Discord {
   }
 
   async edit(channelId: string, messageId: string, content: string): Promise<void> {
-    await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: guardText(content) });
+    await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: guardText(await this.namedLinks(guardText(content))) });
+  }
+
+  // a thread link the owner's client has not loaded shows as "unknown"; it goes out as [name](<url>) (thread-links.ts)
+  private namedLinks(content: string): Promise<string> {
+    return nameThreadLinks(content, (id) => this.once().call("GET", `/channels/${id}`));
   }
 
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
