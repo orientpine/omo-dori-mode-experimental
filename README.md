@@ -176,7 +176,7 @@ The watcher runs each check itself when it closes the lane, with no shell, and n
 | `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked a lane for; lanes tag such reports `(fix: M / H)`, and from the third attempt on one metric with one hypothesis `SAME_FIX_3` tells you to switch the lane to a root-cause hunt; it first prints the hypotheses already tried on that metric (`PRIOR_FIX`) |
 | `dori signals [--lane K \| --cwd DIR \| --tag T]` | what earlier lanes in one area tried and how it went: numbered fix attempts and the switch to a root-cause hunt (also read back from `[REPORT]` lines and your re-instructions), tagged fixes by metric, rejected done claims with reasons, re-sends, nudges, outcome, the area's rejection rate and rework, warnings. Read it before you re-instruct a lane |
 | `dori scorecard [--date D] [--post]` | the day's token scorecard from records, no model call: cost per verified completion beside the claim rejection rate, the lanes with most rework, first-reply median/p90, the lead's context tax; saved to `<stateDir>/scorecard/<date>.json` and `latest.md` for the lead to read, `--post` also sends it to Discord (off by default; a daily systemd timer that saves it is in the Discord + aoe setup) |
-| `dori heavy <label> -- <cmd>` | run a build, test suite or GPU job when load is low; beside running ones only when GPU, memory and CPU each keep 30% free with it |
+| `dori heavy <label> -- <cmd>` | run a build, test suite or GPU job when load is low; beside running ones only when GPU, memory and CPU each keep 10% free with it |
 
 Text sent to a pane always goes as one argument, never through a shell string, and the CLI checks that Enter actually landed.
 

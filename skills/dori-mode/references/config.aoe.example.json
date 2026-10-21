@@ -21,7 +21,7 @@
   "heavySlots": 1,
   "heavyMaxLoad": 80,
   "heavyMaxSlots": 8,
-  "heavyHeadroomPct": 30,
+  "heavyHeadroomPct": 10,
   "heavySettleSec": 120,
   "deadPanePatterns": [
     "has stopped",
