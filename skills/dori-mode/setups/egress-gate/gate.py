@@ -39,7 +39,7 @@ BAD_SCOPES = {"gmail.send", "gmail.compose", "gmail.insert", "gmail.modify",
 SHEET = "application/vnd.google-apps.spreadsheet"
 READS = {"GET", "HEAD"}
 # Dashboard order states that still stand for an owner command (done and cancelled orders do not).
-OPEN_ORDER_STATUSES = ("received", "forwarded", "in_progress")
+OPEN_ORDER_STATUSES = ("받음", "넘김", "처리 중")
 # Discord fetches every linked URL to build a preview, so a link in a bot message is a request to that host.
 URL = re.compile(r"https?://([^/\s<>\"'`\\)\]|?#]+)", re.I)
 DISCORD_URL_ALLOW = ["discord.com", "*.discord.com", "discordapp.com", "*.discordapp.com", "discord.gg",
@@ -605,26 +605,27 @@ class Gate:
         """A dashboard order as the owner's command (owner 2026-10-21 23:23 KST Q351 "문지기가 대시보드 지시도
         형 명령으로 인정"): the gate asks the dashboard itself, on every write, and refuses on any doubt.
 
-        The order must exist under that id, come from the owner's tailnet login, be younger than max_age_hours,
-        still be open, and have been used fewer than writes_per_owner_order times (the gate's own journal and
-        pending cards, or the dashboard's count if higher). Only the proof changes: writes that reach outside
+        The order must exist under that number, come from the owner's tailnet login, be younger than
+        max_age_hours, still be open, and have been used fewer than writes_per_owner_order times (the gate's own
+        journal and pending cards, or the dashboard's count if higher); the gate then records the use on the
+        dashboard (POST .../use) and refuses if that fails. Only the proof changes: writes that reach outside
         still park on the approval card.
         """
         settings = self.config.get("owner_order")
         identity = headers.get("x-dori-owner-order", "")
-        if not settings or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", identity):
+        if not settings or not re.fullmatch(r"[1-9][0-9]{0,8}", identity):
             raise Refused("owner-order-required")
         base = str(settings["api_base"]).rstrip("/")
         link = str(settings.get("link", base + "/api/orders/{id}")).replace("{id}", identity)
         try:
-            token = Path(settings["token_file"]).read_text().strip()
-            data = await self.fetch_json("GET", f"{base}/api/orders/{identity}",
-                                         {"Authorization": "Bearer " + token, "Accept": "application/json"},
-                                         timeout=settings.get("timeout_seconds", 5))
+            asking = {settings.get("token_header", "X-PB-Gate-Token"): Path(settings["token_file"]).read_text().strip(),
+                      "Accept": "application/json"}
+            timeout = settings.get("timeout_seconds", 5)
+            data = await self.fetch_json("GET", f"{base}/api/orders/{identity}", asking, timeout=timeout)
             stamp = dt.datetime.fromisoformat(str(data["created_at"]).replace("Z", "+00:00"))
             age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
             owners = {str(login).lower() for login in settings["owner_logins"]}
-            if (str(data["id"]) != identity or data.get("created_via") != "tailnet"
+            if (str(data["number"]) != identity or data.get("via") != "tailnet"
                     or str(data.get("created_by", "")).lower() not in owners
                     or data.get("status") not in settings.get("open_statuses", OPEN_ORDER_STATUSES)
                     or not 0 <= age <= settings.get("max_age_hours", 24) * 3600
@@ -637,6 +638,12 @@ class Gate:
                 sum(e.get("owner_message") == link for e in self.pending()))
         if max(used, reported) >= self.config.get("limits", {}).get("writes_per_owner_order", 10):
             raise Refused("owner-order-write-limit")
+        try:
+            recorded = await self.fetch_json("POST", f"{base}/api/orders/{identity}/use", asking, timeout=timeout)
+            if str(recorded["number"]) != identity:
+                raise Refused("owner-order-required")
+        except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise Refused("owner-order-required") from None
         self.order_facts[link] = dict(id=identity, url=link, body_sha256=data["body_sha256"],
                                       created_at=data["created_at"])
         return link

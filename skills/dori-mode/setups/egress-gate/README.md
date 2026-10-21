@@ -38,19 +38,25 @@ owner message in the owner guild, no older than 24 hours. Successful proofs and
 channel/calendar checks are cached for at most ten minutes.
 
 A dashboard order is the other proof (owner 2026-10-21 23:23 KST "문지기가 대시보드 지시도
-형 명령으로 인정"): `X-Dori-Owner-Order: <id>` (letters, digits, `_`, `-`; at most 64) when no
+형 명령으로 인정"): `X-Dori-Owner-Order: <n>` (the dashboard order number, 1-999999999) when no
 `X-Dori-Owner-Message` is sent; an owner message always wins. With `owner_order` set, the gate
-asks the dashboard on every write, never cached:
-`GET <api_base>/api/orders/<id>` with `Authorization: Bearer <token_file contents>`. The answer must
-be a JSON object with `id` equal to the asked id, `created_via` `"tailnet"`, `created_by` one of
-`owner_logins` (the owner's tailnet login, case-insensitive), `created_at` an ISO time with zone no
-older than `max_age_hours` (24) and not in the future, `status` one of `open_statuses` (default
-`received`, `forwarded`, `in_progress`; `done` and `cancelled` are refused), `body_sha256` 64 hex
-characters, and optional `uses` (an integer). Anything else, a non-2xx answer, no answer within
-`timeout_seconds` (5) or a missing setting is `403 owner-order-required` before Google. An order
-already used `limits.writes_per_owner_order` (10) times, counting the gate's journal and pending
-cards or the dashboard's `uses` if higher, is `403 owner-order-write-limit`. The order changes only
-the proof: outbound writes still park on the approval card, and Gmail send stays refused.
+asks the project-board dashboard on every write, never cached:
+`GET <api_base>/api/orders/<n>` with `X-PB-Gate-Token: <token_file contents>` (`token_header`).
+The answer must be a JSON object with `number` equal to the asked number, `via` `"tailnet"` (made in
+the browser through `tailscale serve`, not on the node), `created_by` one of `owner_logins` (the
+owner's tailnet login, case-insensitive), `created_at` an ISO time with zone no older than
+`max_age_hours` (24) and not in the future, `status` one of `open_statuses` (default `받음`, `넘김`,
+`처리 중`; `끝` is refused), `body_sha256` 64 hex characters, and optional `uses` (an integer).
+Anything else, a non-2xx answer, no answer within `timeout_seconds` (5) or a missing setting is
+`403 owner-order-required` before Google. An order already used `limits.writes_per_owner_order` (10)
+times, counting the gate's journal and pending cards or the dashboard's `uses` if higher, is
+`403 owner-order-write-limit`. Then the gate records the use on the dashboard
+(`POST <api_base>/api/orders/<n>/use`, same header; the answer's `number` must match) and refuses
+the write if that fails; the use is counted when the proof is accepted, so a write the policy then
+parks or refuses still uses one. The order changes only the proof: outbound writes still park on the
+approval card, and Gmail send stays refused. The dashboard keeps its gate token in the agent
+account (0600); the owner's root apply copies it to `/etc/dori-gate/dashboard-orders-token`
+(root:dori-gate 0640) and again whenever the dashboard makes a new one.
 
 | API | Direct writes | Approval card | Always refused |
 | --- | --- | --- | --- |
