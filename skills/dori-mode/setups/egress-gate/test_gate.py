@@ -859,7 +859,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dashboard_without_an_answer_refuses_the_write(self):
         replies = {"server error": (500, b'{"error":"x"}'), "not json": (200, b"<html>"),
-                   "not an object": (200, b"[1]"), "uses not a number": (200, gate.json_bytes({**self.order, "uses": "many"}))}
+                   "not an object": (200, b"[1]")}
         for name, answer in replies.items():
             with self.subTest(name):
                 self.order_reply = answer
@@ -881,19 +881,22 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.order_uses()), 3)
         self.assertEqual(self.writes(), [])
 
-    async def test_dashboard_order_write_cap(self):
-        self.config["limits"] = {"writes_per_owner_order": 2}
-        for _ in range(2):
+    async def test_dashboard_order_has_no_write_count_limit_only_the_window(self):
+        # Owner 2026-10-21 23:55 KST Q353 "횟수 제한 없애고 24시간 창만": neither an order cap nor the owner-message
+        # write limit turns an order's later writes into a refusal or a card; every use is still recorded.
+        self.approval()
+        self.config["limits"] = {"writes_per_owner_order": 1, "writes_per_owner_message": 1}
+        self.order = {**self.order, "uses": 500}
+        for _ in range(4):
             self.assertEqual((await self.order_request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
+        self.assertEqual((len(self.writes()), len(self.order_uses()), self.service.pending()), (4, 4, []))
+        self.order = {**self.order, "created_at": (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25)).isoformat()}
         status, body = await self.order_request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks")
-        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-order-write-limit"))
-        self.assertEqual(len(self.writes()), 2)
-        self.assertEqual(len(self.order_uses()), 2)
-        self.order = {**self.order, "number": 18, "uses": 2}
-        status, body = await self.order_request("18", path="/tasks.googleapis.com/tasks/v1/lists/l/tasks")
-        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-order-write-limit"))
-        self.assertEqual(len(self.writes()), 2)
-        self.assertEqual(len(self.order_uses()), 2)
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-order-required"))
+        self.assertEqual(len(self.writes()), 4)
+        status, _ = await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks")
+        self.assertEqual(status, 200)
+        self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 202)
 
     async def test_dashboard_order_cannot_skip_the_outbound_card(self):
         self.approval()

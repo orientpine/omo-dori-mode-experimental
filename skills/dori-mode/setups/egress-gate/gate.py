@@ -606,9 +606,9 @@ class Gate:
         형 명령으로 인정"): the gate asks the dashboard itself, on every write, and refuses on any doubt.
 
         The order must exist under that number, come from the owner's tailnet login, be younger than
-        max_age_hours, still be open, and have been used fewer than writes_per_owner_order times (the gate's own
-        journal and pending cards, or the dashboard's count if higher); the gate then records the use on the
-        dashboard (POST .../use) and refuses if that fails. Only the proof changes: writes that reach outside
+        max_age_hours and still be open; the gate then records the use on the dashboard (POST .../use) and
+        refuses if that fails. There is no count limit per order, only the time window (owner 2026-10-21
+        23:55 KST Q353 "횟수 제한 없애고 24시간 창만"). Only the proof changes: writes that reach outside
         still park on the approval card.
         """
         settings = self.config.get("owner_order")
@@ -631,13 +631,8 @@ class Gate:
                     or not 0 <= age <= settings.get("max_age_hours", 24) * 3600
                     or not re.fullmatch(r"[0-9a-f]{64}", str(data.get("body_sha256", "")))):
                 raise Refused("owner-order-required")
-            reported = int(data.get("uses", 0))
         except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError):
             raise Refused("owner-order-required") from None
-        used = (sum(r.get("owner_message") == link for r in self.records(since="1970-01-01T00:00:00+00:00")) +
-                sum(e.get("owner_message") == link for e in self.pending()))
-        if max(used, reported) >= self.config.get("limits", {}).get("writes_per_owner_order", 10):
-            raise Refused("owner-order-write-limit")
         try:
             recorded = await self.fetch_json("POST", f"{base}/api/orders/{identity}/use", asking, timeout=timeout)
             if str(recorded["number"]) != identity:
@@ -946,7 +941,7 @@ class Gate:
         rows = self.records(since="1970-01-01T00:00:00+00:00")
         waiting = self.pending()
         reasons = []
-        if (sum(r["owner_message"] == proof for r in rows) +
+        if proof not in self.order_facts and (sum(r["owner_message"] == proof for r in rows) +
                 sum(r["owner_message"] == proof for r in waiting)
                 >= limits.get("writes_per_owner_message", 30)):
             reasons.append("owner-message-write-limit")

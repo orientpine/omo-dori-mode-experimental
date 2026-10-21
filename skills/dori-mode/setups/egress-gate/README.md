@@ -46,14 +46,14 @@ The answer must be a JSON object with `number` equal to the asked number, `via` 
 the browser through `tailscale serve`, not on the node), `created_by` one of `owner_logins` (the
 owner's tailnet login, case-insensitive), `created_at` an ISO time with zone no older than
 `max_age_hours` (24) and not in the future, `status` one of `open_statuses` (default `받음`, `넘김`,
-`처리 중`; `끝` is refused), `body_sha256` 64 hex characters, and optional `uses` (an integer).
+`처리 중`; `끝` is refused) and `body_sha256` 64 hex characters.
 Anything else, a non-2xx answer, no answer within `timeout_seconds` (5) or a missing setting is
-`403 owner-order-required` before Google. An order already used `limits.writes_per_owner_order` (10)
-times, counting the gate's journal and pending cards or the dashboard's `uses` if higher, is
-`403 owner-order-write-limit`. Then the gate records the use on the dashboard
+`403 owner-order-required` before Google. An order has no write count limit, only the time window
+(owner 2026-10-21 23:55 KST Q353 "횟수 제한 없애고 24시간 창만"; the owner-message write limit below does
+not apply to orders either). Then the gate records the use on the dashboard
 (`POST <api_base>/api/orders/<n>/use`, same header; the answer's `number` must match) and refuses
-the write if that fails; the use is counted when the proof is accepted, so a write the policy then
-parks or refuses still uses one. The order changes only the proof: outbound writes still park on the
+the write if that fails; the use is recorded when the proof is accepted, so a write the policy then
+parks or refuses is still recorded. The order changes only the proof: outbound writes still park on the
 approval card, and Gmail send stays refused. The dashboard keeps its gate token in the agent
 account (0600); the owner's root apply copies it to `/etc/dori-gate/dashboard-orders-token`
 (root:dori-gate 0640) and again whenever the dashboard makes a new one.
