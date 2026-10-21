@@ -1,11 +1,11 @@
-// Discord draws a bare channel or thread URL, and a <#id> mention, as a pill named from the viewer's own client cache.
+// Discord draws a bare channel, thread or message URL, and a <#id> mention, as a pill named from the viewer's own client cache.
 // A thread that client has not loaded (archived, which a ✅ thread is a moment after its rename, and one the owner never
 // joined) is not in that cache, so the pill reads "unknown" (알 수 없음). A masked link [text](<url>) shows its own text
 // and still opens the thread, so each such link in a post becomes one, named from the API when it is sent. The name goes
 // without its status mark (and a status word after it, "✅ 완료 · x"): the mark changes after the post, the name does not.
 
-const HOST = String.raw`https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/(?:\d{5,25}|@me)\/(\d{5,25})`;
-// a channel or thread URL, bare or in <...>; not a message URL (one more /id), and not one already inside a masked link "](".
+const HOST = String.raw`https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/(?:\d{5,25}|@me)\/(\d{5,25})(?:\/\d{5,25})?`;
+// a channel, thread or message URL, bare or in <...>; not one already inside a masked link "](".
 const LINK = new RegExp(String.raw`(?<![(<\w/])(?:<${HOST}>|${HOST})(?![\w/>])|<#(\d{5,25})>`, "g");
 // code spans and blocks stay as written
 const CODE = /```[\s\S]*?```|`[^`\n]*`/g;
@@ -32,7 +32,7 @@ const THREAD_TYPES: ReadonlySet<number> = new Set([10, 11, 12]);
 type Channel = { readonly name?: string; readonly type?: number; readonly guild_id?: string };
 export type ChannelLookup = (id: string) => Promise<Channel>;
 
-// The post's text with each thread link written as [name](<url>). A link whose channel cannot be read, or is not a
+// The post's text with each link to a thread (or to a message in one) written as [name](<url>). A link whose channel cannot be read, or is not a
 // thread (a text channel is always in the client's cache), stays as it was; a failed read is logged, never thrown.
 export const nameThreadLinks = async (text: string, lookup: ChannelLookup): Promise<string> => {
   const ids = new Set<string>();

@@ -32,18 +32,18 @@ const masked = (label: string, id: string) => `[${label}](<${url(id)}>)`;
 test("a thread link goes out as [name](<url>) named without its status mark, in a new post and an edit", async () => {
   const { dc, posted } = discord();
   await dc.send("T1", `이거 눌러 줘: ${url("200000000000000002")} — 그다음 <${url("200000000000000003")}>`);
-  await dc.edit("T1", "M1", `여기: <#200000000000000002>`);
+  await dc.edit("T1", "M1", `여기: <#200000000000000002> 카드: ${url("200000000000000002")}/200000000000000005`);
   expect(posted()).toEqual([
     `이거 눌러 줘: ${masked("릴리스 v2.6.18", "200000000000000002")} — 그다음 ${masked("대시보드 저장 거절(권한 없음)", "200000000000000003")}`,
-    `여기: ${masked("릴리스 v2.6.18", "200000000000000002")}`,
+    `여기: ${masked("릴리스 v2.6.18", "200000000000000002")} 카드: [릴리스 v2.6.18](<${url("200000000000000002")}/200000000000000005>)`,
   ]);
 });
 
-test("a text channel, a message link, a masked link, code, and a thread the bot cannot read stay as written", async () => {
+test("a text channel and a message in it, a masked link, code, and a thread the bot cannot read stay as written", async () => {
   const { dc, posted } = discord();
   const text = [
     url("200000000000000004"),
-    `${url("200000000000000002")}/200000000000000005`,
+    `${url("200000000000000004")}/200000000000000005`,
     `[카드](${url("200000000000000002")})`,
     `[카드](<${url("200000000000000002")}>)`,
     `\`${url("200000000000000002")}\``,
