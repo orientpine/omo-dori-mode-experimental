@@ -42,9 +42,12 @@ A dashboard order is the other proof (owner 2026-10-21 23:23 KST "문지기가 �
 `X-Dori-Owner-Message` is sent; an owner message always wins. With `owner_order` set, the gate
 asks the project-board dashboard on every write, never cached:
 `GET <api_base>/api/orders/<n>` with `X-PB-Gate-Token: <token_file contents>` (`token_header`).
-The answer must be a JSON object with `number` equal to the asked number, `via` `"tailnet"` (made in
-the browser through `tailscale serve`, not on the node), `created_by` one of `owner_logins` (the
-owner's tailnet login, case-insensitive), `created_at` an ISO time with zone no older than
+The answer must be a JSON object with `number` equal to the asked number, `via` `"owner-device"` (made in
+the browser through `tailscale serve` on one of the owner's own devices, as the board decides from its
+`owner_devices`; `tailnet` - a server or other device under the owner's login - and `local` are refused),
+`device` the sending device's tailnet stable node id (and, when the gate config lists `owner_devices`,
+one of them, case-insensitive; the servers share the owner's login, so the login alone cannot tell
+them apart), `created_by` one of `owner_logins` (the owner's tailnet login, case-insensitive), `created_at` an ISO time with zone no older than
 `max_age_hours` (24) and not in the future, `status` one of `open_statuses` (default `받음`, `넘김`,
 `처리 중`; `끝` is refused) and `body_sha256` 64 hex characters.
 Anything else, a non-2xx answer, no answer within `timeout_seconds` (5) or a missing setting is
@@ -117,7 +120,7 @@ Changes/denials are in `changes.jsonl`/`denials.jsonl` (0600), snapshots in
 `snapshots/` (0700 directory, 0600 files). Each Google write carries its original
 owner-message link, pre-change snapshot where applicable, and approval-card link
 when approved. A write on a dashboard order has the order link as `owner_message` and
-`owner_order` `{id, url, body_sha256, created_at}` (`url` is `owner_order.link` with `{id}`
+`owner_order` `{id, url, body_sha256, created_at, device}` (`url` is `owner_order.link` with `{id}`
 filled in, else the API address), next to the written resource's title, so each change can be
 matched with the order's text. Logs exclude request bodies, authorization and query credentials;
 snapshots and parked bodies are confidential state, not diagnostic logs.

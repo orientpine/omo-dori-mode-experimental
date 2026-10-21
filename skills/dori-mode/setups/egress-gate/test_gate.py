@@ -58,7 +58,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.event = {"id": "e", "summary": "Before", "organizer": {"self": True},
                       "attendees": [{"email": "owner@example.com"}], "etag": "old", "iCalUID": "old"}
         self.response_status = 200
-        self.order = {"number": 17, "created_at": gate.utc(), "via": "tailnet",
+        self.order = {"number": 17, "created_at": gate.utc(), "via": "owner-device", "device": "nPHONE11CNTRL",
                       "created_by": "Owner@Example.com", "body_sha256": "a" * 64, "status": "받음", "uses": 0}
         self.order_reply = None
         self.use_reply = None
@@ -806,7 +806,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["owner_message"], self.base + "/api/orders/17")
         self.assertEqual(self.order_uses(), ["/api/orders/17/use"])
         self.assertEqual(row["owner_order"], {"id": "17", "url": self.base + "/api/orders/17",
-                                              "body_sha256": "a" * 64, "created_at": self.order["created_at"]})
+                                              "body_sha256": "a" * 64, "created_at": self.order["created_at"],
+                                              "device": "nPHONE11CNTRL"})
         self.assertEqual(row["resource"]["summary"], "화요일 3시 회의")
         logs = output.getvalue() + (self.state / "changes.jsonl").read_text()
         self.assertNotIn("dashboard-secret", logs)
@@ -823,7 +824,10 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                  "from the future": ({"created_at": ahead}, "17"), "no timezone": ({"created_at": "2026-10-21T00:00:00"}, "17"),
                  "other login": ({"created_by": "guest@example.com"}, "17"),
                  "made on the node, not through the tailnet": ({"via": "local"}, "17"),
+                 "typed on a server of the owner's tailnet": ({"via": "tailnet", "device": "nSERVER11CNTRL"}, "17"),
                  "no route": ({"via": None}, "17"),
+                 "no device": ({"device": ""}, "17"), "device missing": ({"device": None}, "17"),
+                 "device not a name": ({"device": ["nPHONE11CNTRL"]}, "17"),
                  "done": ({"status": "끝"}, "17"), "unknown status": ({"status": "received"}, "17"),
                  "other number": ({"number": 99, "asked_as": 17}, "17"), "no body hash": ({"body_sha256": ""}, "17"),
                  "empty id": ({}, "")}
@@ -837,6 +841,15 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.writes(), [])
         self.assertEqual(self.changes(), [])
         self.assertEqual(self.order_uses(), [])
+
+    async def test_gate_owner_devices_must_also_list_the_device(self):
+        self.config["owner_order"]["owner_devices"] = ["nLAPTOP11CNTRL", "NPHONE11CNTRL"]
+        self.assertEqual((await self.order_request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
+        self.order = {**self.order, "device": "nSERVER11CNTRL"}  # the board called it owner-device, the gate list disagrees
+        status, body = await self.order_request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-order-required"))
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(self.changes()[0]["owner_order"]["device"], "nPHONE11CNTRL")
 
     async def test_malformed_order_number_never_reaches_the_dashboard(self):
         for order in ("../17", "017", "o17", "17/use", "17%2Fuse", "1" * 10, "-17"):
