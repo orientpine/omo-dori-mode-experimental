@@ -30,7 +30,10 @@ HEADER_CAP = 65536
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
        "te", "trailer", "transfer-encoding", "upgrade"}
 GOOGLE_HOSTS = {"www.googleapis.com", "gmail.googleapis.com", "docs.googleapis.com",
-                "tasks.googleapis.com", "sheets.googleapis.com"}
+                "tasks.googleapis.com", "sheets.googleapis.com", "people.googleapis.com"}
+# Contacts are read-only: name-to-address lookup for a recipient, never a contact write or directory listing.
+PEOPLE_READS = re.compile(r"v1/(?:people:(?:searchContacts|batchGet)|otherContacts(?::search)?"
+                          r"|people/me/connections|people/[A-Za-z0-9_-]+)")
 BAD_SCOPES = {"gmail.send", "gmail.compose", "gmail.insert", "gmail.modify",
               "gmail.settings.basic", "gmail.settings.sharing"}
 SHEET = "application/vnd.google-apps.spreadsheet"
@@ -1684,6 +1687,8 @@ class Gate:
                 host, _, route = path[1:].partition("/")
                 if host not in GOOGLE_HOSTS:
                     raise Refused("google-host-denied")
+                if host == "people.googleapis.com" and not (method == "GET" and PEOPLE_READS.fullmatch(route)):
+                    raise Refused("contacts-read-only")
                 query = [(k, v) for k, v in query if k.lower() not in {"access_token", "key"}]
                 if method in READS:
                     outgoing = google_headers(headers, await self.access_token())
