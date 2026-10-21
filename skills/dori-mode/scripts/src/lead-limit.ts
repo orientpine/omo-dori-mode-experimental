@@ -121,7 +121,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
 
   // the limit lifted: the owner hears it where he heard of the limit
   if (mark.noticeFor && !blocked) {
-    const posted = deps.postOwner && mark.noticeChannel ? await deps.postOwner(mark.noticeChannel, words.leadBackText).then((id) => `POSTED ${mark.noticeChannel} ${id}`, (e: unknown) => `NOT_POSTED ${String(e).slice(0, 160)}`) : "NOT_POSTED no owner channel";
+    const posted = deps.postOwner && mark.noticeChannel ? await deps.postOwner(mark.noticeChannel, words.leadBackText).then((id) => `POSTED ${mark.noticeChannel} ${id}`, (e: unknown) => `NOT_POSTED ${String(e).slice(0, 160)}`) : "NOT_POSTED no notice went out";
     save({ pane, ...(mark.wakeKey ? { wakeKey: mark.wakeKey, wokeAt: mark.wokeAt } : {}) });
     out.push(`LEAD_LIMIT_CLEARED ${pane} since ${mark.noticeFor}; ${posted}`);
   }
@@ -132,8 +132,10 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   if (blocked && oldest && next.noticeFor !== blockSince && (until !== undefined ? until - now >= NOTICE_MIN_WAIT_MS : longWait)) {
     const text = until !== undefined ? words.leadLimitText.replaceAll("{until}", clock(deps, until)) : words.leadLimitNoTimeText.replaceAll("{reason}", plain(errors.at(-1)?.error ?? "", 120));
     const channel = placeOf(waiting, inbox.ownerChannel);
-    const posted = deps.postOwner && channel ? await deps.postOwner(channel, text).then((id) => `POSTED ${channel} ${id}`, (e: unknown) => `NOT_POSTED ${String(e).slice(0, 160)}`) : "NOT_POSTED no owner channel";
-    if (posted.startsWith("POSTED ")) save({ ...next, noticeFor: blockSince, noticeChannel: channel });
+    const cannot = !deps.postOwner ? "no bot token" : !channel ? "no owner channel" : "";
+    const posted = cannot ? `NOT_POSTED ${cannot}` : await deps.postOwner!(channel, text).then((id) => `POSTED ${channel} ${id}`, (e: unknown) => `NOT_POSTED ${String(e).slice(0, 160)}`);
+    // a send that failed is tried again next tick; one that can never go out is reported once
+    if (posted.startsWith("POSTED ") || cannot) save({ ...next, noticeFor: blockSince, ...(posted.startsWith("POSTED ") ? { noticeChannel: channel } : {}) });
     out.push(`LEAD_LIMIT_NOTICE ${pane} model failing since ${blockSince}, retry ${until !== undefined ? new Date(until).toISOString() : "unknown"}, ${waiting.length} owner message(s) waiting; ${posted}`);
   }
 

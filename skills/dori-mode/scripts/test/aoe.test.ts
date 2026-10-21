@@ -511,6 +511,17 @@ test("the lead's model out at its usage limit while the owner waits: the owner h
   expect(sent(world)).toHaveLength(1);
 });
 
+test("a Dori without a bot token reports the limit notice it cannot send once, not on every tick", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  const noToken = (ms: number) => ({ ...l.deps(ms), postOwner: undefined });
+  l.reply(T0 - 60 * MIN);
+  l.row(T0 - MIN, "m-1", "도리야?");
+  l.reply(T0 - MIN + 2000, blockedError(T0 + 60 * MIN));
+  expect(await watchTick(noToken(T0))).toEqual([`LEAD_LIMIT_NOTICE aoe_Dori_0a1b2c3d model failing since ${iso(T0 - MIN + 2000)}, retry ${iso(T0 + 60 * MIN)}, 1 owner message(s) waiting; NOT_POSTED no bot token`]);
+  expect(await watchTick(noToken(T0 + 30_000))).toEqual([]);
+});
+
 test("an owner message the lead has not answered for leadWakeMin is typed into its pane once; a short rate limit, a pair row or an answered message is not", async () => {
   const l = limitWorld();
   world.screen = watching("5: Dori inbox");
