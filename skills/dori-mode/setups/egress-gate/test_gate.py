@@ -646,6 +646,35 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
     async def test_gmail_settings_read_is_allowed(self):
         self.assertEqual((await self.request("GET", "/gmail.googleapis.com/gmail/v1/users/me/settings/filters", proof=False))[0], 200)
 
+    async def test_contacts_search_and_lookup_reads_are_proxied_with_the_gate_token(self):
+        for route in ["v1/people:searchContacts?query=kim&readMask=names,emailAddresses",
+                      "v1/otherContacts:search?query=kim&readMask=emailAddresses",
+                      "v1/otherContacts?readMask=emailAddresses", "v1/people/me/connections?personFields=names",
+                      "v1/people/c123?personFields=emailAddresses", "v1/people:batchGet?resourceNames=people/c1"]:
+            status, _ = await self.request("GET", "/people.googleapis.com/" + route, proof=False,
+                                           headers={"authorization": "Bearer caller-secret"})
+            self.assertEqual(status, 200, route)
+            self.assertEqual(urlsplit(self.seen[-1][1]).path, "/" + route.partition("?")[0])
+            self.assertEqual(self.seen[-1][2]["authorization"], "Bearer access-secret")
+
+    async def test_contacts_writes_and_unlisted_reads_are_refused_before_google(self):
+        self.approval()
+        for method, route in [("POST", "v1/people:createContact"), ("PATCH", "v1/people/c1:updateContact"),
+                              ("DELETE", "v1/people/c1:deleteContact"), ("POST", "v1/people:batchCreateContacts"),
+                              ("POST", "v1/people:batchDeleteContacts"), ("PATCH", "v1/people/c1:updateContactPhoto"),
+                              ("POST", "v1/otherContacts/c1:copyOtherContactToMyContactsGroup"),
+                              ("POST", "v1/contactGroups"), ("GET", "v1/contactGroups"),
+                              ("GET", "v1/people:searchDirectoryPeople?query=kim"),
+                              ("GET", "v1/people:listDirectoryPeople"), ("GET", "v1/people/c1/photos"),
+                              ("HEAD", "v1/people:searchContacts"), ("GET", "v2/people:searchContacts")]:
+            before = len(self.seen)
+            status, body = await self.request(method, "/people.googleapis.com/" + route)
+            self.assertEqual(status, 403, (method, route))
+            if method != "HEAD":
+                self.assertEqual(json.loads(body)["error"], "contacts-read-only", (method, route))
+            self.assertFalse([r for r in self.seen[before:] if not r[1].startswith("/api/v10")], (method, route))
+        self.assertFalse(self.service.pending())
+
     async def test_oauth_host_is_not_proxied(self):
         self.assertEqual((await self.request("GET", "/oauth2.googleapis.com/token", proof=False))[0], 403)
 

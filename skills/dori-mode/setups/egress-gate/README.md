@@ -45,6 +45,7 @@ channel/calendar checks are cached for at most ten minutes.
 | Docs | Create and owned/private batchUpdate | Image/URI requests, public/non-owned documents | Other writes |
 | Sheets | Reads | Writes | Non-API routes |
 | Gmail | Reads | Never | Every write; send-capable OAuth scopes |
+| Contacts (`people.googleapis.com`) | GET `people:searchContacts`, `people:batchGet`, `people/<id>`, `people/me/connections`, `otherContacts`, `otherContacts:search` | Never | Every write, contact groups, directory, other paths (`403 contacts-read-only`) |
 | Vault | Owner-initiated Markdown writes | Limits | Delete API, traversal, hidden paths, symlinks |
 
 Direct event writes force `sendUpdates=none` and disable legacy notifications.
@@ -112,6 +113,9 @@ OAuth uses installed-app `client_secret.json` in the state directory, PKCE S256,
 offline consent, and `http://localhost`. Keep it and `owner-bot-token` at 0600.
 Refresh tokens are stored in `google-token.json` (0600), access tokens in memory.
 `auth-finish` rejects sending Gmail scopes and every scope outside the config.
+Contacts lookup needs `contacts.readonly` and `contacts.other.readonly` in `google_scopes`;
+after adding them, run `auth-url` again and have the owner consent once (the old token keeps
+working until then, and contacts reads return Google's 403 until it is replaced).
 Do not put credentials in config, command-line logs, or environment dumps.
 
 `GET /_gate/changes?since=24h` also accepts an ISO timestamp.
