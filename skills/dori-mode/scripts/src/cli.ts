@@ -389,6 +389,7 @@ const deps: FlowDeps = {
         },
         postInThread: async (ref: string, text: string) => postInThread(ownDiscord(discordToken), ref, text),
         requestThreadStatus: async (ref: string, status: "working" | "waiting") => String(await threadStatuses(ownDiscord(discordToken)).request(discordThreadId(ref), status)),
+        postOwner: async (channel: string, text: string) => ownDiscord(discordToken).send(channel, text),
         postLeadAlert: leadAlertPoster((channel, text) => ownDiscord(discordToken).send(channel, text), {
           pair: process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "",
           owner: process.env.DORI_DISCORD_CHANNEL?.trim() ?? "",
@@ -405,6 +406,11 @@ const deps: FlowDeps = {
           : {}),
       }
     : {}),
+  ownerInbox: {
+    path: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+    ownerId: process.env.DORI_DISCORD_OWNER?.trim() ?? "",
+    ownerChannel: process.env.DORI_DISCORD_CHANNEL?.trim() ?? "",
+  },
   channels: [process.env.DORI_DISCORD_CHANNEL, process.env.DORI_DISCORD_PAIR_CHANNEL, process.env.DORI_DISCORD_WATCH_CHANNELS].flatMap((v) => (v ?? "").split(/[\s,]+/)).filter(Boolean),
 };
 const [command = "", ...rest] = process.argv.slice(2);

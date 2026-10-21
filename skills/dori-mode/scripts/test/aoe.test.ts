@@ -459,6 +459,82 @@ test("the lead's own LANE_AUTOTURN_LONG and LANE_AUTOTURN_PAUSED also go out to 
   expect(posts[2]).toStartWith("LEAD_AUTOTURN_PAUSED aoe_Dori_0a1b2c3d 150: ");
 });
 
+const OWNER = "100000000000000001";
+const limitWorld = () => {
+  const w = bgWorld(T0 - 300 * MIN);
+  const inbox = join(state.dir, "inbox.jsonl");
+  writeFileSync(inbox, "");
+  const leadFile = join(state.dir, "sessions", "--home-test-dori--", `2026-01-01T10-00-00-000Z_${SESSION_ID}.jsonl`);
+  mkdirSync(join(state.dir, "sessions", "--home-test-dori--"), { recursive: true });
+  writeFileSync(leadFile, "");
+  const posts: string[][] = [];
+  const deps = (ms: number, patch: Partial<DoriConfig> = {}) => ({
+    ...w.deps(ms),
+    config: { ...w.deps(ms).config, ...patch },
+    ownerInbox: { path: inbox, ownerId: OWNER, ownerChannel: "C-OWNER" },
+    postOwner: async (channel: string, text: string) => (posts.push([channel, text]), `m${posts.length}`),
+  });
+  const row = (ms: number, id: string, content: string, extra: object = {}) => appendFileSync(inbox, `${JSON.stringify({ ts: iso(ms), id, channel_id: "T-THREAD", scope: "thread", author_id: OWNER, content, ...extra })}\n`);
+  const reply = (ms: number, errorMessage?: string) =>
+    appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), type: "message", message: { role: "assistant", content: [], ...(errorMessage ? { stopReason: "error", errorMessage } : { stopReason: "stop" }) } })}\n`);
+  return { deps, posts, row, reply };
+};
+const blockedError = (until: number) => `All Claude accounts for anthropic-subscription are currently blocked (rate limit or auth errors).\n  Soonest automatic retry: ${iso(until)}.\n  /claude-account list  - inspect account states`;
+
+test("the lead's model out at its usage limit while the owner waits: the owner hears the retry time once, the lead is woken when it passes, and the owner hears it is back", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.reply(T0 - 60 * MIN);
+  l.row(T0 - 30 * MIN, "m-1", "요즘 눈만찍고 대답을 안한다??");
+  l.row(T0 - 29 * MIN, "m-pair", "pair talk", { scope: "pair-bot" });
+  l.reply(T0 - 30 * MIN + 3000, blockedError(T0 + 90 * MIN));
+  expect(await watchTick(l.deps(T0))).toEqual([
+    `LEAD_LIMIT_NOTICE aoe_Dori_0a1b2c3d model failing since ${iso(T0 - 30 * MIN + 3000)}, retry ${iso(T0 + 90 * MIN)}, 1 owner message(s) waiting; POSTED T-THREAD m1`,
+  ]);
+  expect(l.posts).toEqual([["T-THREAD", "I can't answer right now: my model is at its usage limit until about 13:30. I'll read your messages then."]]);
+  // the same block: no second notice, and no typing into a lead whose model is still out
+  l.row(T0 + MIN, "m-2", "도리야?");
+  l.reply(T0 + MIN + 3000, blockedError(T0 + 90 * MIN));
+  expect(await watchTick(l.deps(T0 + 2 * MIN))).toEqual([]);
+  expect(sent(world)).toEqual([]);
+  // the retry time passed and nothing woke the lead: one line in its pane, once
+  const woke = await watchTick(l.deps(T0 + 91 * MIN));
+  expect(woke).toEqual([`LEAD_OWNER_WAITING aoe_Dori_0a1b2c3d 2 owner message(s), oldest ${iso(T0 - 30 * MIN)} (121 min), model failing; woke the lead (SUBMITTED)`]);
+  expect(sent(world)).toHaveLength(1);
+  expect(sent(world)[0]).toStartWith("[DORI] LEAD_OWNER_WAITING: 2 owner message(s) since 11:30 have had no reply from you for 121 min");
+  expect(await watchTick(l.deps(T0 + 92 * MIN))).toEqual([]);
+  // a reply works: the owner hears it where he heard of the limit, once
+  l.reply(T0 + 93 * MIN);
+  expect(await watchTick(l.deps(T0 + 94 * MIN))).toEqual([`LEAD_LIMIT_CLEARED aoe_Dori_0a1b2c3d since ${iso(T0 - 30 * MIN + 3000)}; POSTED T-THREAD m2`]);
+  expect(l.posts[1]).toEqual(["T-THREAD", "My model works again; reading your messages now."]);
+  expect(await watchTick(l.deps(T0 + 95 * MIN))).toEqual([]);
+  expect(sent(world)).toHaveLength(1);
+});
+
+test("an owner message the lead has not answered for leadWakeMin is typed into its pane once; a short rate limit, a pair row or an answered message is not", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.reply(T0 - 60 * MIN);
+  l.row(T0 - 59 * MIN, "m-0", "answered");
+  l.reply(T0 - 58 * MIN);
+  l.row(T0 - 9 * MIN, "m-pair", "pair talk", { scope: "pair-bot" });
+  l.row(T0 - 9 * MIN, "m-1", "30프로 여유 규칙 더 줄여 10%해");
+  // an error with a retry a minute away is a short rate limit: no notice
+  l.reply(T0 - 9 * MIN + 2000, blockedError(T0 - 8 * MIN));
+  expect(await watchTick(l.deps(T0))).toEqual([]);
+  expect(await watchTick(l.deps(T0 + MIN, { leadWakeMin: 0 }))).toEqual([]);
+  expect(await watchTick(l.deps(T0 + MIN))).toEqual([`LEAD_OWNER_WAITING aoe_Dori_0a1b2c3d 1 owner message(s), oldest ${iso(T0 - 9 * MIN)} (10 min), model failing; woke the lead (SUBMITTED)`]);
+  expect(sent(world)[0]).toContain('The oldest: "30프로 여유 규칙 더 줄여 10%해"');
+  expect(l.posts).toEqual([]);
+  expect(await watchTick(l.deps(T0 + 2 * MIN))).toEqual([]);
+  // a card answer is the owner too; once the lead replied, nothing waits
+  l.row(T0 + 3 * MIN, "q-1", "", { kind: "answer", answer: "폰만", author_id: undefined, channel_id: undefined, scope: undefined });
+  expect(await watchTick(l.deps(T0 + 14 * MIN))).toEqual([`LEAD_OWNER_WAITING aoe_Dori_0a1b2c3d 2 owner message(s), oldest ${iso(T0 - 9 * MIN)} (23 min), model failing; woke the lead (SUBMITTED)`]);
+  l.reply(T0 + 15 * MIN);
+  expect(await watchTick(l.deps(T0 + 40 * MIN))).toEqual([]);
+  expect(sent(world)).toHaveLength(2);
+});
+
 test("leadAlertPoster posts to the pair channel only, and to the owner's channel only when there is no pair channel", async () => {
   const calls: string[][] = [];
   const post = leadAlertPoster(async (ch, text) => {

@@ -124,6 +124,12 @@ export type DiscordWords = {
   readonly leadPausedText: string;
   readonly leadRepeatText: string;
   readonly leadCompactionStuckText: string;
+  // the owner's line from dori watch when the lead's model calls fail while his message waits (lead-limit.ts):
+  // leadLimitText names the retry time the error gives ({until}, discord.timeZone), leadLimitNoTimeText the error
+  // ({reason}) when it gives none; leadBackText goes to the same place once a reply works again
+  readonly leadLimitText: string;
+  readonly leadLimitNoTimeText: string;
+  readonly leadBackText: string;
   readonly postRawReports: boolean;
   // minutes a done (✅) thread in DORI_DISCORD_CHANNEL stays quiet before freshness archives it (0: never; a thread an open
   // lane, an open card or a pending rename holds is left open)
@@ -161,6 +167,9 @@ export const defaultDiscordWords: DiscordWords = {
   leadPausedText: "omo paused the lead {pane} after {turns} turns on its own ({reason}, since {since}). Other Dori: type one short check message into {pane}; do not stop it.",
   leadRepeatText: "The lead {pane} is still on its own ({turns} turns). A check was already asked for {min} min ago ({at}): send no new message.",
   leadCompactionStuckText: "The lead {pane} answers every message with \"compaction did not complete\" ({turns} times on its screen, due since {since}) and was not moved to a new session: {reason}. Other Dori: tell your lead; this lead needs dori handover to a new session on its host.",
+  leadLimitText: "I can't answer right now: my model is at its usage limit until about {until}. I'll read your messages then.",
+  leadLimitNoTimeText: "I can't answer right now: my model calls fail ({reason}). I'll read your messages once they work again.",
+  leadBackText: "My model works again; reading your messages now.",
   postRawReports: false,
   autoArchiveMin: 30,
   working: "working",
@@ -387,6 +396,9 @@ export type DoriConfig = {
   // dori watch: LANE_AUTOTURN_LONG each time a session has started this many more turns on its own since the last user
   // (or lead) message, only reported, never stopped; with engineTurns.maxPerUserInput 0 omo no longer pauses (0: off)
   readonly autoturnLongTurns: number;
+  // dori watch: minutes an owner message may wait with no working reply from the lead before one LEAD_OWNER_WAITING line
+  // is typed into the lead pane (lead-limit.ts; 0: never typed, the owner's limit notice still goes out)
+  readonly leadWakeMin: number;
   readonly postAfterMin: number;
   readonly closeAfterMin: number;
   readonly heavySlots: number;
@@ -441,6 +453,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   blockedWaitMin: 60,
   autoturnResumeMax: 3,
   autoturnLongTurns: 300,
+  leadWakeMin: 10,
   postAfterMin: 20,
   closeAfterMin: 5,
   heavySlots: 1,
