@@ -1221,7 +1221,7 @@ try {
           const heavy = join(config.stateDir, "heavy");
           for (const slot of existsSync(heavy) ? readdirSync(heavy).filter((n) => n.startsWith("slot.")) : []) {
             const owner = existsSync(join(heavy, slot, "owner")) ? readFileSync(join(heavy, slot, "owner"), "utf8").split(" ") : [];
-            if (pidAlive(Number(owner[0]))) why.push(`heavy:${owner[1] ?? slot}`);
+            if (pidAlive(Number(owner[0]), Date.parse(owner.at(-1) ?? "") || undefined)) why.push(`heavy:${owner[1] ?? slot}`);
           }
           for (const d of backupDirs) if (["index.lock", "dori-state.lock"].some((f) => existsSync(join(d, ".git", f)))) why.push(`git-lock:${d}`);
           return why;

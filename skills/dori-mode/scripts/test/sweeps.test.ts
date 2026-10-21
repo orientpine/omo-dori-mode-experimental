@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { defaultDiscordWords } from "../src/config.ts";
@@ -7,7 +7,7 @@ import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { parseGpuQuery, parsePmon, treeOf, type Usage } from "../src/heavy-headroom.ts";
-import { acquireSlot, releaseSlot, type SlotDeps } from "../src/heavy-slot.ts";
+import { acquireSlot, pidAlive, releaseSlot, type SlotDeps } from "../src/heavy-slot.ts";
 import { guardTick } from "../src/host-guard.ts";
 import { adoptLane, LaunchError } from "../src/launch.ts";
 import type { Lane } from "../src/registry.ts";
@@ -198,6 +198,44 @@ test("a heavy job waits while the last one taken has not shown its load, and two
   expect(got.filter((g) => g.status === "fulfilled").length).toBe(1);
   expect(both.filter((l) => l.startsWith("HEAVY_ADMIT")).length).toBe(1);
   expect(both.some((l) => /^HEAVY_WAIT eval-[bc]: slot\.2 was taken 0s ago/.test(l))).toBe(true);
+});
+
+test("a slot whose pid now belongs to a process started after the claim is taken at the next admission; a live holder keeps its slot", async () => {
+  // Given: slot.1 held by a job that started before its claim, slot.2 by a pid the system gave to a newer process
+  const dir = join(state.dir, "heavy");
+  heldSlot(dir, 1, 100, T0 - 10 * MIN);
+  heldSlot(dir, 2, 200, T0 - 60 * MIN);
+  const started: Record<number, number> = { 100: T0 - 11 * MIN, 200: T0 - 5 * MIN };
+  const logs: string[] = [];
+  const deps = { ...headroomDeps(dir, () => ({ gpu: 45, gpuMem: null, cpu: 20, mem: 25 }), logs), alive: (pid: number, since?: number) => since === undefined || (started[pid] ?? Infinity) <= since };
+  // When
+  const slot = await acquireSlot(deps, "eval-b");
+  // Then: slot.2 is reused, only slot.1 counts beside it, and the 30% verdict reads as before
+  expect(slot).toBe(join(dir, "slot.2"));
+  expect(logs).toEqual(["HEAVY_ADMIT eval-b slot.2: 1 running beside it; gpu 45%+25% -> 30% free, cpu 20%+10% -> 70% free, mem(unified) 25%+10% -> 65% free (needs 30% free each)"]);
+  expect(readFileSync(join(dir, "slot.1", "owner"), "utf8")).toStartWith("100 running eval");
+  // and the real check tells this process from one that took a slot before it started
+  expect(pidAlive(process.pid, Date.now())).toBe(true);
+  expect(pidAlive(process.pid, performance.timeOrigin - MIN)).toBe(false);
+});
+
+test("a holder that ends after its slot was taken over leaves the new job's slot alone", async () => {
+  const dir = join(state.dir, "heavy");
+  const slot = await acquireSlot({ dir, slots: 1, maxLoad: 80, clock: fakeClock(T0), pid: 4242, load: async () => 10, alive: () => true }, "old");
+  writeFileSync(join(slot, "owner"), `5151 next-job ${new Date(T0 + MIN).toISOString()}`);
+  releaseSlot(slot);
+  expect(readFileSync(join(slot, "owner"), "utf8")).toStartWith("5151 next-job");
+});
+
+test("a waiter for full slots is told which jobs hold them and for how long", async () => {
+  const dir = join(state.dir, "heavy");
+  [1, 2, 3, 4].forEach((n) => {
+    mkdirSync(join(dir, `slot.${n}`), { recursive: true });
+    writeFileSync(join(dir, `slot.${n}`, "owner"), `${100 + n} e7-eval-${n} ${new Date(T0 - n * 70 * MIN).toISOString()}`);
+  });
+  const logs: string[] = [];
+  await expect(acquireSlot(headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 0 }), logs, stopAfter(2)), "eval-e", 1)).rejects.toThrow("stop");
+  expect(logs).toEqual(["HEAVY_WAIT eval-e: all 4 slots busy: slot.1 e7-eval-1 pid 101 1h10m, slot.2 e7-eval-2 pid 102 2h20m, slot.3 e7-eval-3 pid 103 3h30m, slot.4 e7-eval-4 pid 104 4h40m"]);
 });
 
 test("waiters take a freed slot in the order they came, not by process id", async () => {
