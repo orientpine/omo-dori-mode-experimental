@@ -234,7 +234,7 @@ const USAGE = `dori <command> [options]
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
   heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low; beside a running one only
-                                       when GPU, memory and CPU each keep heavyHeadroomPct (30) percent free with it
+                                       when GPU, memory and CPU each keep heavyHeadroomPct (10) percent free with it
                                        (HEAVY_ADMIT / HEAVY_WAIT lines on stderr and in state/heavy/heavy.log); waiters
                                        start in the order they came
   heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]

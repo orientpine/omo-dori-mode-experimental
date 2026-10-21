@@ -394,7 +394,7 @@ export type DoriConfig = {
   // dori heavy beside the first heavySlots jobs: up to heavyMaxSlots at once, a job only when GPU use, GPU (or unified)
   // memory, CPU and memory each keep heavyHeadroomPct percent free with it added, and none while a job taken less than
   // heavySettleSec ago has not shown its load. Owner 2026-10-16 20:52 KST: "한 번에 하나의 작업을 돌리라고 하긴 했지만 이렇게
-  // 리소스가 30% 정도로 넉넉하게 남으면 한꺼번에 돌려도 돼" (speech-to-text wrote 리소스 as 리수 수).
+  // 리소스가 30% 정도로 넉넉하게 남으면 한꺼번에 돌려도 돼" (speech-to-text wrote 리소스 as 리수 수). Owner 2026-10-22 02:15 KST lowered 30% to 10%: "30프로 여유 규칙 더 줄여 10%해".
   readonly heavyMaxSlots: number;
   readonly heavyHeadroomPct: number;
   readonly heavySettleSec: number;
@@ -446,7 +446,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   heavySlots: 1,
   heavyMaxLoad: 80,
   heavyMaxSlots: 8,
-  heavyHeadroomPct: 30,
+  heavyHeadroomPct: 10,
   heavySettleSec: 120,
   heavyQueue: { jobs: {}, helpers: [], queue: [], rl: true, jobDir: "/dev/shm/dori-heavy" },
   deadPanePatterns: ["has stopped", "no suitable jobs"],
