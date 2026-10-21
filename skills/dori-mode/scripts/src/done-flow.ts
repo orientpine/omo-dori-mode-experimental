@@ -5,6 +5,7 @@ import { autoturnTick } from "./autoturn.ts";
 import { laneBackground } from "./background.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import type { Question } from "./messenger/discord-cards.ts";
+import { leadLimitTick } from "./lead-limit.ts";
 import { missedAnswersTick } from "./missed-answers.ts";
 import { hasThread, type Lane, type Registry, statusOf, type ThreadPost, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
@@ -33,6 +34,12 @@ export type FlowDeps = {
   // posts the lead's own runaway or pause alert to the pair channel (the other Dori's inbox) and the owner's channel as
   // this Dori's bot, without mentions; one LEAD_ALERT_POSTED / LEAD_ALERT_WARN line per channel (cli wires leadAlertPoster)
   readonly postLeadAlert?: (text: string) => Promise<readonly string[]>;
+  // the inbox the listener writes, the owner's user id and his channel: dori watch reads which owner messages wait for the
+  // lead (lead-limit.ts; cli wires DORI_DISCORD_INBOX, DORI_DISCORD_OWNER, DORI_DISCORD_CHANNEL)
+  readonly ownerInbox?: { readonly path: string; readonly ownerId: string; readonly ownerChannel: string };
+  // posts one line as this Dori's bot in a channel or thread of the owner's and returns the message id (cli wires it when
+  // DORI_DISCORD_TOKEN is set)
+  readonly postOwner?: (channel: string, text: string) => Promise<string>;
   // opens a work thread named for a lane in this Dori's own channel and returns its ref (dori launch --thread new; cli wires it
   // when DORI_DISCORD_TOKEN and DORI_DISCORD_CHANNEL are set)
   readonly openThread?: (title: string) => Promise<string>;
@@ -304,6 +311,7 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
     out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
     out.push(...(await autoturnTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN autoturn check: ${String(e).slice(0, 200)}`])));
     out.push(...(await missedAnswersTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN missed answer check: ${String(e).slice(0, 200)}`])));
+    out.push(...(await leadLimitTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lead limit check: ${String(e).slice(0, 200)}`])));
   }
   return out;
 };
