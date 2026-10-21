@@ -58,12 +58,16 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.event = {"id": "e", "summary": "Before", "organizer": {"self": True},
                       "attendees": [{"email": "owner@example.com"}], "etag": "old", "iCalUID": "old"}
         self.response_status = 200
+        self.order = {"id": "o17", "created_at": gate.utc(), "created_via": "tailnet",
+                      "created_by": "Owner@Example.com", "body_sha256": "a" * 64, "status": "received", "uses": 0}
+        self.order_reply = None
         self.scope = "openid"
         self.fake = await asyncio.start_server(self.fake_request, "127.0.0.1", 0)
         self.addAsyncCleanup(self.close_fake)
         self.base = "http://127.0.0.1:" + str(self.fake.sockets[0].getsockname()[1])
         (self.state / "bot").write_text("MTIz.fake.fake")
         (self.state / "bot").chmod(0o600)
+        (self.state / "dashboard").write_text("dashboard-secret\n")
         (self.state / "client_secret.json").write_text(json.dumps({"installed": {
             "client_id": "client", "client_secret": "secret", "token_uri": self.base + "/token",
             "auth_uri": self.base + "/authorize"}}))
@@ -73,6 +77,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             "clients": [os.getuid()], "admins": [], "owner_id": "1", "owner_guild": "10",
             "owner_emails": ["owner@example.com"],
             "owner_proof": {"token_file": str(self.state / "bot"), "max_age_hours": 24},
+            "owner_order": {"api_base": self.base, "token_file": str(self.state / "dashboard"),
+                            "owner_logins": ["owner@example.com"], "max_age_hours": 24},
             "google_scopes": ["openid", "https://www.googleapis.com/auth/gmail.readonly"],
             "connect_allow": ["example.com", {"host": "*.example.org", "ports": [443]}],
             "upstreams": {host: self.base for host in gate.GOOGLE_HOSTS},
@@ -97,6 +103,17 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             if path == "/token":
                 data = {"access_token": "access-secret", "expires_in": 3600,
                         "refresh_token": "refresh-new", "scope": self.scope}
+            elif path.startswith("/api/orders/"):
+                if headers.get("authorization") != "Bearer dashboard-secret":
+                    status = 401
+                elif self.order_reply is not None:
+                    status, raw = self.order_reply
+                    await gate.reply(writer, status, raw)
+                    return
+                elif path == "/api/orders/" + str(self.order.get("asked_as", self.order["id"])):
+                    data = self.order
+                else:
+                    status = 404
             elif path == "/tokeninfo":
                 data = {"scope": self.scope, "email": "owner@example.com", "expires_in": 3000,
                         "access_token": "must-not-return"}
@@ -760,6 +777,117 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
         self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 202)
         self.assertEqual(len(self.writes()), 30)
+
+    async def order_request(self, order="o17", **kwargs):
+        return await self.request(proof=False, headers={"x-dori-owner-order": order, **kwargs.pop("headers", {})},
+                                  **kwargs)
+
+    def order_reads(self):
+        return [r for r in self.seen if r[1].startswith("/api/orders/")]
+
+    async def test_dashboard_order_is_owner_proof_and_journaled(self):
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            status, _ = await self.order_request(data={"summary": "화요일 3시 회의"})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.writes()), 1)
+        self.assertNotIn("x-dori-owner-order", self.writes()[0][2])
+        row = self.changes()[0]
+        self.assertEqual(row["owner_message"], self.base + "/api/orders/o17")
+        self.assertEqual(row["owner_order"], {"id": "o17", "url": self.base + "/api/orders/o17",
+                                              "body_sha256": "a" * 64, "created_at": self.order["created_at"]})
+        self.assertEqual(row["resource"]["summary"], "화요일 3시 회의")
+        logs = output.getvalue() + (self.state / "changes.jsonl").read_text()
+        self.assertNotIn("dashboard-secret", logs)
+
+    async def test_dashboard_order_link_setting_names_the_page(self):
+        self.config["owner_order"]["link"] = "https://board.example.ts.net/orders/{id}"
+        self.assertEqual((await self.order_request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
+        self.assertEqual(self.changes()[0]["owner_order"]["url"], "https://board.example.ts.net/orders/o17")
+
+    async def test_dashboard_order_that_is_not_the_owners_command_is_refused(self):
+        old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25)).isoformat()
+        ahead = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()
+        cases = {"unknown order": ({}, "o18"), "too old": ({"created_at": old}, "o17"),
+                 "from the future": ({"created_at": ahead}, "o17"), "no timezone": ({"created_at": "2026-10-21T00:00:00"}, "o17"),
+                 "other login": ({"created_by": "guest@example.com"}, "o17"),
+                 "not through the tailnet": ({"created_via": "cli"}, "o17"),
+                 "no route": ({"created_via": None}, "o17"),
+                 "done": ({"status": "done"}, "o17"), "cancelled": ({"status": "cancelled"}, "o17"),
+                 "other id": ({"id": "o99", "asked_as": "o17"}, "o17"), "no body hash": ({"body_sha256": ""}, "o17"),
+                 "bad id": ({}, "../o17"), "empty id": ({}, "")}
+        original = dict(self.order)
+        for name, (change, order) in cases.items():
+            with self.subTest(name):
+                self.order = {**original, **change}
+                status, body = await self.order_request(order)
+                self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required" if not order
+                                                                      else "owner-order-required"))
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.changes(), [])
+
+    async def test_dashboard_order_needs_the_setting_and_its_token(self):
+        self.order_reply = None
+        (self.state / "dashboard").write_text("wrong")
+        self.assertEqual(json.loads((await self.order_request())[1])["error"], "owner-order-required")
+        del self.config["owner_order"]
+        self.assertEqual(json.loads((await self.order_request())[1])["error"], "owner-order-required")
+        self.assertEqual(self.order_reads()[0][2]["authorization"], "Bearer wrong")
+        self.assertEqual(len(self.order_reads()), 1)
+        self.assertEqual(self.writes(), [])
+
+    async def test_dashboard_without_an_answer_refuses_the_write(self):
+        replies = {"server error": (500, b'{"error":"x"}'), "not json": (200, b"<html>"),
+                   "not an object": (200, b"[1]"), "uses not a number": (200, gate.json_bytes({**self.order, "uses": "many"}))}
+        for name, answer in replies.items():
+            with self.subTest(name):
+                self.order_reply = answer
+                self.assertEqual((await self.order_request())[0], 403)
+        self.order_reply = None
+        with socket.socket() as unused:
+            unused.bind(("127.0.0.1", 0))
+            self.config["owner_order"]["api_base"] = "http://127.0.0.1:%d" % unused.getsockname()[1]
+        with self.subTest("dashboard down"):
+            self.assertEqual(json.loads((await self.order_request())[1])["error"], "owner-order-required")
+        self.assertEqual(self.writes(), [])
+
+    async def test_dashboard_order_write_cap(self):
+        self.config["limits"] = {"writes_per_owner_order": 2}
+        for _ in range(2):
+            self.assertEqual((await self.order_request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
+        status, body = await self.order_request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-order-write-limit"))
+        self.assertEqual(len(self.writes()), 2)
+        self.order = {**self.order, "id": "o18", "uses": 2}
+        status, body = await self.order_request("o18", path="/tasks.googleapis.com/tasks/v1/lists/l/tasks")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-order-write-limit"))
+        self.assertEqual(len(self.writes()), 2)
+
+    async def test_dashboard_order_cannot_skip_the_outbound_card(self):
+        self.approval()
+        self.order["id"] = "17"  # a numeric id ends the link like a Discord message link does
+        status, body = await self.order_request("17", data={"attendees": [{"email": "outside@example.net"}]})
+        self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
+        self.assertEqual(self.writes(), [])
+        entry = self.service.pending()[0]
+        self.assertEqual(entry["owner_order"]["id"], "17")
+        self.assertEqual(self.created_threads, ["/channels/20/threads"])
+        self.assertFalse([r for r in self.seen if r[1].startswith("/api/v10/channels/orders")])
+        status, body = await self.order_request("17", path="/gmail.googleapis.com/gmail/v1/users/me/messages/send")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "mail-send-not-here"))
+        self.service.order_facts.clear()  # as after a restart: the pending record carries the order
+        self.approve()
+        await self.service.poll_approvals()
+        self.assertEqual(len(self.writes()), 1)
+        row = self.changes()[0]
+        self.assertEqual((row["owner_order"]["id"], row["approved_by"]), ("17", entry["card"]))
+
+    async def test_owner_message_wins_over_a_dashboard_order(self):
+        status, _ = await self.request(headers={"x-dori-owner-order": "o17"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.changes()[0]["owner_message"], "https://discord.com/channels/10/20/100")
+        self.assertNotIn("owner_order", self.changes()[0])
+        self.assertEqual(self.order_reads(), [])
 
     async def test_pending_listing_and_card_client_protection(self):
         self.approval()

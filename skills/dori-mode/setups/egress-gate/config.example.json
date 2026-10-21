@@ -12,8 +12,15 @@
     "token_file": "/var/lib/dori-gate/owner-bot-token",
     "max_age_hours": 24
   },
+  "owner_order": {
+    "api_base": "http://127.0.0.1:8810",
+    "token_file": "/var/lib/dori-gate/dashboard-orders-token",
+    "owner_logins": ["owner@example.com"],
+    "max_age_hours": 24,
+    "timeout_seconds": 5
+  },
   "approval": {"channel_id": "REPLACE_WITH_APPROVAL_CHANNEL_ID", "poll_seconds": 20},
-  "limits": {"deletes_per_hour": 10, "writes_per_owner_message": 30},
+  "limits": {"deletes_per_hour": 10, "writes_per_owner_message": 30, "writes_per_owner_order": 10},
   "google_scopes": [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",

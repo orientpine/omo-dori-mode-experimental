@@ -37,6 +37,21 @@ Writes require `X-Dori-Owner-Message: channel_id/message_id`; proof must be an
 owner message in the owner guild, no older than 24 hours. Successful proofs and
 channel/calendar checks are cached for at most ten minutes.
 
+A dashboard order is the other proof (owner 2026-10-21 23:23 KST "문지기가 대시보드 지시도
+형 명령으로 인정"): `X-Dori-Owner-Order: <id>` (letters, digits, `_`, `-`; at most 64) when no
+`X-Dori-Owner-Message` is sent; an owner message always wins. With `owner_order` set, the gate
+asks the dashboard on every write, never cached:
+`GET <api_base>/api/orders/<id>` with `Authorization: Bearer <token_file contents>`. The answer must
+be a JSON object with `id` equal to the asked id, `created_via` `"tailnet"`, `created_by` one of
+`owner_logins` (the owner's tailnet login, case-insensitive), `created_at` an ISO time with zone no
+older than `max_age_hours` (24) and not in the future, `status` one of `open_statuses` (default
+`received`, `forwarded`, `in_progress`; `done` and `cancelled` are refused), `body_sha256` 64 hex
+characters, and optional `uses` (an integer). Anything else, a non-2xx answer, no answer within
+`timeout_seconds` (5) or a missing setting is `403 owner-order-required` before Google. An order
+already used `limits.writes_per_owner_order` (10) times, counting the gate's journal and pending
+cards or the dashboard's `uses` if higher, is `403 owner-order-write-limit`. The order changes only
+the proof: outbound writes still park on the approval card, and Gmail send stays refused.
+
 | API | Direct writes | Approval card | Always refused |
 | --- | --- | --- | --- |
 | Calendar | Own/private events, calendars.create, owner ACL, ACL removal | External attendees, foreign organizer, public/non-owned calendar, external ACL | watch, quickAdd, import, move, calendar deletion/update, calendarList writes |
@@ -95,7 +110,10 @@ replayed after restart. Confirm its real upstream state before resubmitting.
 Changes/denials are in `changes.jsonl`/`denials.jsonl` (0600), snapshots in
 `snapshots/` (0700 directory, 0600 files). Each Google write carries its original
 owner-message link, pre-change snapshot where applicable, and approval-card link
-when approved. Logs exclude request bodies, authorization and query credentials;
+when approved. A write on a dashboard order has the order link as `owner_message` and
+`owner_order` `{id, url, body_sha256, created_at}` (`url` is `owner_order.link` with `{id}`
+filled in, else the API address), next to the written resource's title, so each change can be
+matched with the order's text. Logs exclude request bodies, authorization and query credentials;
 snapshots and parked bodies are confidential state, not diagnostic logs.
 New-resource creation has no previous state, so its snapshot is null.
 

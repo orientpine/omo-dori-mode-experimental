@@ -38,6 +38,8 @@ BAD_SCOPES = {"gmail.send", "gmail.compose", "gmail.insert", "gmail.modify",
               "gmail.settings.basic", "gmail.settings.sharing"}
 SHEET = "application/vnd.google-apps.spreadsheet"
 READS = {"GET", "HEAD"}
+# Dashboard order states that still stand for an owner command (done and cancelled orders do not).
+OPEN_ORDER_STATUSES = ("received", "forwarded", "in_progress")
 # Discord fetches every linked URL to build a preview, so a link in a bot message is a request to that host.
 URL = re.compile(r"https?://([^/\s<>\"'`\\)\]|?#]+)", re.I)
 DISCORD_URL_ALLOW = ["discord.com", "*.discord.com", "discordapp.com", "*.discordapp.com", "discord.gg",
@@ -383,6 +385,7 @@ class Gate:
         self.vault_lock = asyncio.Lock()
         self.approval_lock = asyncio.Lock()
         self.approval_task = None
+        self.order_facts = {}
         (self.state / "pending").mkdir(exist_ok=True, mode=0o700)
         (self.state / "pending").chmod(0o700)
 
@@ -427,15 +430,15 @@ class Gate:
     def base(self, host: str) -> str:
         return self.config.get("upstreams", {}).get(host, "https://" + host)
 
-    async def upstream(self, method: str, url: str, headers: dict, body: bytes = b""):
+    async def upstream(self, method: str, url: str, headers: dict, body: bytes = b"", timeout: float = 30):
         """No redirects, ambient proxies, or implicit credential forwarding."""
         parts = urlsplit(url)
         if parts.scheme not in {"http", "https"} or parts.username or parts.password:
             raise Refused("invalid-upstream", 502)
         connection_class = TlsUpstream if parts.scheme == "https" else PlainUpstream
-        connection = connection_class(parts.hostname, parts.port, timeout=30)
+        connection = connection_class(parts.hostname, parts.port, timeout=timeout)
         outgoing = {k: v for k, v in headers.items()
-                    if k.lower() not in HOP | {"host", "content-length", "x-dori-owner-message"}}
+                    if k.lower() not in HOP | {"host", "content-length", "x-dori-owner-message", "x-dori-owner-order"}}
         outgoing["Connection"] = "close"
         outgoing["Content-Length"] = str(len(body))
         try:
@@ -447,8 +450,8 @@ class Gate:
             connection.close()
             raise Refused("upstream-unavailable", 502) from None
 
-    async def fetch(self, method: str, url: str, headers=None, body=b"") -> tuple[int, dict, bytes]:
-        connection, response = await self.upstream(method, url, headers or {}, body)
+    async def fetch(self, method: str, url: str, headers=None, body=b"", timeout=30) -> tuple[int, dict, bytes]:
+        connection, response = await self.upstream(method, url, headers or {}, body, timeout)
         try:
             content = await asyncio.to_thread(response.read, BODY_CAP + 1)
             if len(content) > BODY_CAP:
@@ -457,8 +460,8 @@ class Gate:
         finally:
             connection.close()
 
-    async def fetch_json(self, method, url, headers=None, body=b"") -> dict:
-        status, _, content = await self.fetch(method, url, headers, body)
+    async def fetch_json(self, method, url, headers=None, body=b"", timeout=30) -> dict:
+        status, _, content = await self.fetch(method, url, headers, body, timeout)
         if not 200 <= status < 300:
             raise Refused("upstream-check-failed", 502)
         return json_object(content)
@@ -572,6 +575,8 @@ class Gate:
         return self.remember(key, allowed)
 
     async def proof(self, headers: dict) -> str:
+        if not headers.get("x-dori-owner-message") and headers.get("x-dori-owner-order"):
+            return await self.order_proof(headers)
         reference = headers.get("x-dori-owner-message", "")
         if not re.fullmatch(r"\d+/\d+", reference):
             raise Refused("owner-message-required")
@@ -594,6 +599,46 @@ class Gate:
         link = f"https://discord.com/channels/{self.config['owner_guild']}/{reference}"
         # The cache must not extend the original message's age allowance.
         self.cache[("proof", reference)] = (time.monotonic() + min(600, maximum - age), link)
+        return link
+
+    async def order_proof(self, headers: dict) -> str:
+        """A dashboard order as the owner's command (owner 2026-10-21 23:23 KST Q351 "문지기가 대시보드 지시도
+        형 명령으로 인정"): the gate asks the dashboard itself, on every write, and refuses on any doubt.
+
+        The order must exist under that id, come from the owner's tailnet login, be younger than max_age_hours,
+        still be open, and have been used fewer than writes_per_owner_order times (the gate's own journal and
+        pending cards, or the dashboard's count if higher). Only the proof changes: writes that reach outside
+        still park on the approval card.
+        """
+        settings = self.config.get("owner_order")
+        identity = headers.get("x-dori-owner-order", "")
+        if not settings or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", identity):
+            raise Refused("owner-order-required")
+        base = str(settings["api_base"]).rstrip("/")
+        link = str(settings.get("link", base + "/api/orders/{id}")).replace("{id}", identity)
+        try:
+            token = Path(settings["token_file"]).read_text().strip()
+            data = await self.fetch_json("GET", f"{base}/api/orders/{identity}",
+                                         {"Authorization": "Bearer " + token, "Accept": "application/json"},
+                                         timeout=settings.get("timeout_seconds", 5))
+            stamp = dt.datetime.fromisoformat(str(data["created_at"]).replace("Z", "+00:00"))
+            age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
+            owners = {str(login).lower() for login in settings["owner_logins"]}
+            if (str(data["id"]) != identity or data.get("created_via") != "tailnet"
+                    or str(data.get("created_by", "")).lower() not in owners
+                    or data.get("status") not in settings.get("open_statuses", OPEN_ORDER_STATUSES)
+                    or not 0 <= age <= settings.get("max_age_hours", 24) * 3600
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(data.get("body_sha256", "")))):
+                raise Refused("owner-order-required")
+            reported = int(data.get("uses", 0))
+        except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise Refused("owner-order-required") from None
+        used = (sum(r.get("owner_message") == link for r in self.records(since="1970-01-01T00:00:00+00:00")) +
+                sum(e.get("owner_message") == link for e in self.pending()))
+        if max(used, reported) >= self.config.get("limits", {}).get("writes_per_owner_order", 10):
+            raise Refused("owner-order-write-limit")
+        self.order_facts[link] = dict(id=identity, url=link, body_sha256=data["body_sha256"],
+                                      created_at=data["created_at"])
         return link
 
     def owner_attendees(self, data: dict, reasons: list, existing=False) -> None:
@@ -815,6 +860,8 @@ class Gate:
                    path=journal_path(path, query), status=status, resource=resource,
                    owner_message=proof, snapshot=snapname,
                    restorable=restorable and 200 <= status < 300)
+        if proof in self.order_facts:
+            row["owner_order"] = self.order_facts[proof]
         if approved_by:
             row["approved_by"] = approved_by
         if deleting:
@@ -976,6 +1023,7 @@ class Gate:
                      upstream_url=self.base(host) + "/" + quote(route, safe="/:@") + ("?" + urlencode(query) if query else ""),
                      headers={k: v for k, v in headers.items() if k.lower() in {"content-type", "accept"}},
                      body=base64.b64encode(body).decode(), owner_message=proof,
+                     owner_order=self.order_facts.get(proof),
                      reason=",".join(sorted(set(reasons))), api=api, op=op,
                      channel=channel, message=message, card=link, title=title, thread=thread,
                      content_hash=hashlib.sha256(json_object(response).get("content", content).encode()).hexdigest(), status="pending",
@@ -999,7 +1047,7 @@ class Gate:
         gets a thread on that message (Discord: thread id == message id); anything else opens a new
         thread in the approval channel. Any failure keeps the old place, the channel itself.
         """
-        parts = proof.rsplit("/", 2)
+        parts = proof.rsplit("/", 2) if proof.startswith("https://discord.com/channels/") else []
         origin, message = (parts[-2], parts[-1]) if len(parts) == 3 and parts[-1].isdigit() else ("", "")
         name = f"🔐 {title}"[:100]
         try:
@@ -1083,6 +1131,8 @@ class Gate:
                 elif await self.owner_reacted(base, "✅"):
                     entry["status"] = "executing"
                     private_write(pending_path, json_bytes(entry))
+                    if entry.get("owner_order"):
+                        self.order_facts[entry["owner_message"]] = entry["owner_order"]
                     try:
                         async with self.write_lock:
                             if entry["api"] == "obsidian":
