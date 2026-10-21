@@ -605,7 +605,9 @@ class Gate:
         """A dashboard order as the owner's command (owner 2026-10-21 23:23 KST Q351 "문지기가 대시보드 지시도
         형 명령으로 인정"): the gate asks the dashboard itself, on every write, and refuses on any doubt.
 
-        The order must exist under that number, come from the owner's tailnet login, be younger than
+        The order must exist under that number, come from the owner's tailnet login on one of the owner's own
+        devices (via owner-device and a device id, also in owner_devices when the gate config lists them: the
+        servers share the owner's login, so an order typed on a server is refused), be younger than
         max_age_hours and still be open; the gate then records the use on the dashboard (POST .../use) and
         refuses if that fails. There is no count limit per order, only the time window (owner 2026-10-21
         23:55 KST Q353 "횟수 제한 없애고 24시간 창만"). Only the proof changes: writes that reach outside
@@ -625,7 +627,11 @@ class Gate:
             stamp = dt.datetime.fromisoformat(str(data["created_at"]).replace("Z", "+00:00"))
             age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
             owners = {str(login).lower() for login in settings["owner_logins"]}
-            if (str(data["number"]) != identity or data.get("via") != "tailnet"
+            device = data.get("device")
+            devices = {str(item).lower() for item in settings.get("owner_devices", [])}
+            if (str(data["number"]) != identity or data.get("via") != "owner-device"
+                    or not isinstance(device, str) or not device
+                    or devices and device.lower() not in devices
                     or str(data.get("created_by", "")).lower() not in owners
                     or data.get("status") not in settings.get("open_statuses", OPEN_ORDER_STATUSES)
                     or not 0 <= age <= settings.get("max_age_hours", 24) * 3600
@@ -640,7 +646,7 @@ class Gate:
         except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError):
             raise Refused("owner-order-required") from None
         self.order_facts[link] = dict(id=identity, url=link, body_sha256=data["body_sha256"],
-                                      created_at=data["created_at"])
+                                      created_at=data["created_at"], device=device)
         return link
 
     def owner_attendees(self, data: dict, reasons: list, existing=False) -> None:
