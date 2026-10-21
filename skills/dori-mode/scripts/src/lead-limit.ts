@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { aoeSessions, sessionFor } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { sendVerified } from "./panes.ts";
+import { statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
 
 // The owner wrote and the lead did not answer (owner 2026-10-22 02:14 KST "요즘 눈만찍고 대답을 안한다??"). On 10-21 every
@@ -151,5 +152,87 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
       out.push(`LEAD_OWNER_WAITING ${pane} ${waiting.length} owner message(s), oldest ${new Date(oldest.at).toISOString()} (${min} min)${blocked ? ", model failing" : ""}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane"}`);
     }
   }
+  return out;
+};
+
+// The limit lifted and nobody told the sessions it stopped (owner 2026-10-22 04:41 KST Q356 "바로 깨우기 넣기 (추천)"):
+// omo does not run a failed turn again, so a lead or lane whose newest model reply is a usage-limit error sat until the
+// next message (10-21: the limit lifted at 18:50Z, the lead woke at 18:54Z on the owner's message; lanes waited for a
+// freshness nudge ~15 min later). LIMIT_RESUME_WOKE: on the first tick after the retry time the error names has passed,
+// and an account of that provider is free again in omo's credential pool (when the host's pool file says so), one line
+// is typed into the lead pane and into each working lane (not a paused one) stopped that way, once per block and retry
+// time. Another error, a session that already went on, or a busy pane (submitToPane's prompt rule) gets nothing.
+export const RESUME_TEXT = "[DORI] 한도 풀림 — 하던 일 이어가. Your last model call failed at the usage limit and the limit has lifted; continue the work you were doing.";
+
+// a usage limit, not another error: omo names the time the provider's accounts come back
+export const limitError = (error: string): { readonly until: number; readonly provider?: string } | undefined => {
+  const until = retryAt(error);
+  if (until === undefined || !/blocked|usage limit|rate.?limit|quota|429/i.test(error)) return undefined;
+  const provider = /accounts for ([\w.-]+) are/i.exec(error)?.[1];
+  return provider ? { until, provider } : { until };
+};
+
+// omo's credential pool (<agent dir>/credential-pool-state.json, beside sessionsDir): is any account of the provider free
+// now? No file or no entry for the provider leaves it to the retry time.
+export const poolFree = (sessionsDir: string, provider: string | undefined, now: number): boolean => {
+  if (!provider) return true;
+  let slots: { blockedUntil?: number }[];
+  try {
+    const state = JSON.parse(readFileSync(join(dirname(sessionsDir), "credential-pool-state.json"), "utf8")) as { providers?: Record<string, { lanes?: Record<string, { slots?: Record<string, { blockedUntil?: number }> }> }> };
+    const lanes = state.providers?.[provider]?.lanes;
+    if (!lanes) return true;
+    slots = Object.values(lanes).flatMap((l) => Object.values(l.slots ?? {}));
+  } catch {
+    return true;
+  }
+  return !slots.length || slots.some((s) => !s.blockedUntil || s.blockedUntil <= now);
+};
+
+const resumePath = (deps: FlowDeps): string => join(deps.config.stateDir, "limit-resume.json");
+
+export const limitResumeTick = async (deps: FlowDeps): Promise<string[]> => {
+  const lead = deps.config.leadPane;
+  const lanes = (await deps.registry.open()).filter((l) => l.pane && ["working", "not-done"].includes(statusOf(l)));
+  if (!lead && !lanes.length) return [];
+  const [sessions, table] = await Promise.all([aoeSessions(deps.run), procTable(deps.run)]);
+  const now = deps.clock.now();
+  let marks: Record<string, string> = {};
+  try {
+    marks = JSON.parse(readFileSync(resumePath(deps), "utf8")) as Record<string, string>;
+  } catch {}
+  const targets = [...lanes.map((l) => ({ key: l.key, pane: l.pane ?? "", cwd: l.cwd ?? sessionFor(sessions, l.pane ?? "")?.path ?? "" })), ...(lead && !lanes.some((l) => l.pane === lead) ? [{ key: "lead", pane: lead, cwd: sessionFor(sessions, lead)?.path ?? "" }] : [])];
+  const out: string[] = [];
+  const next: Record<string, string> = {};
+  for (const t of targets) {
+    if (marks[t.pane]) next[t.pane] = marks[t.pane] ?? "";
+    if (!t.cwd || !sessionFor(sessions, t.pane)) continue;
+    let replies: LeadReply[];
+    try {
+      const file = await sessionFile(deps.run, deps.config.sessionsDir, t.pane, t.cwd, table);
+      if (!file) continue;
+      replies = leadReplies(tailOf(file.path, TAIL_BYTES));
+    } catch (e) {
+      out.push(`LANE_WATCH_WARN limit resume check ${t.key}: ${String(e).slice(0, 160)}`);
+      continue;
+    }
+    const last = replies.at(-1);
+    const limit = last?.error && now - last.at < DAY_MS ? limitError(last.error) : undefined;
+    if (!last || !limit || limit.until > now || !poolFree(deps.config.sessionsDir, limit.provider, now)) continue;
+    const lastGood = replies.findLast((r) => !r.error)?.at ?? 0;
+    const since = new Date(replies.find((r) => r.at > lastGood)?.at ?? last.at).toISOString();
+    const key = `${since}|${new Date(limit.until).toISOString()}`;
+    if (marks[t.pane] === key) continue;
+    const head = `LIMIT_RESUME_WOKE ${t.key} ${t.pane} limit error since ${since}, retry ${new Date(limit.until).toISOString()} passed`;
+    // LEAD_OWNER_WAITING already typed into the lead after this retry time: that line woke it
+    const leadMark = t.key === "lead" ? readMark(deps, t.pane) : undefined;
+    if (leadMark?.wakeKey?.endsWith(`|${limit.until}`)) {
+      next[t.pane] = key;
+      continue;
+    }
+    const ok = await sendVerified(deps.run, deps.clock, deps.config, t.pane, RESUME_TEXT);
+    if (ok) next[t.pane] = key;
+    out.push(`${head}; ${ok ? "SUBMITTED" : "NOT_SUBMITTED: the line did not reach the pane, tried again next tick"}`);
+  }
+  if (JSON.stringify(next) !== JSON.stringify(marks)) writeFileSync(resumePath(deps), `${JSON.stringify(next)}\n`);
   return out;
 };

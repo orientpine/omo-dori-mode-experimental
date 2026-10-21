@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { leadAlertPoster } from "../src/autoturn.ts";
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, watchTick } from "../src/done-flow.ts";
+import { RESUME_TEXT } from "../src/lead-limit.ts";
 import type { Question } from "../src/messenger/discord-cards.ts";
 import { missedAnswersTick, sawAnswer } from "../src/missed-answers.ts";
 import type { DoriConfig } from "../src/config.ts";
@@ -477,7 +478,8 @@ const limitWorld = () => {
   const row = (ms: number, id: string, content: string, extra: object = {}) => appendFileSync(inbox, `${JSON.stringify({ ts: iso(ms), id, channel_id: "T-THREAD", scope: "thread", author_id: OWNER, content, ...extra })}\n`);
   const reply = (ms: number, errorMessage?: string) =>
     appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), type: "message", message: { role: "assistant", content: [], ...(errorMessage ? { stopReason: "error", errorMessage } : { stopReason: "stop" }) } })}\n`);
-  return { deps, posts, row, reply };
+  const laneReply = (ms: number, errorMessage?: string) => w.entry(ms, { type: "message", message: { role: "assistant", content: [], ...(errorMessage ? { stopReason: "error", errorMessage } : { stopReason: "stop" }) } });
+  return { deps, posts, row, reply, laneReply };
 };
 const blockedError = (until: number) => `All Claude accounts for anthropic-subscription are currently blocked (rate limit or auth errors).\n  Soonest automatic retry: ${iso(until)}.\n  /claude-account list  - inspect account states`;
 
@@ -530,12 +532,12 @@ test("an owner message the lead has not answered for leadWakeMin is typed into i
   l.reply(T0 - 58 * MIN);
   l.row(T0 - 9 * MIN, "m-pair", "pair talk", { scope: "pair-bot" });
   l.row(T0 - 9 * MIN, "m-1", "30프로 여유 규칙 더 줄여 10%해");
-  // an error with a retry a minute away is a short rate limit: no notice
+  // an error with a retry a minute away is a short rate limit: no notice (its retry passed, so the lead is told to go on)
   l.reply(T0 - 9 * MIN + 2000, blockedError(T0 - 8 * MIN));
-  expect(await watchTick(l.deps(T0))).toEqual([]);
+  expect(await watchTick(l.deps(T0))).toEqual([`LIMIT_RESUME_WOKE lead aoe_Dori_0a1b2c3d limit error since ${iso(T0 - 9 * MIN + 2000)}, retry ${iso(T0 - 8 * MIN)} passed; SUBMITTED`]);
   expect(await watchTick(l.deps(T0 + MIN, { leadWakeMin: 0 }))).toEqual([]);
   expect(await watchTick(l.deps(T0 + MIN))).toEqual([`LEAD_OWNER_WAITING aoe_Dori_0a1b2c3d 1 owner message(s), oldest ${iso(T0 - 9 * MIN)} (10 min), model failing; woke the lead (SUBMITTED)`]);
-  expect(sent(world)[0]).toContain('The oldest: "30프로 여유 규칙 더 줄여 10%해"');
+  expect(sent(world)[1]).toContain('The oldest: "30프로 여유 규칙 더 줄여 10%해"');
   expect(l.posts).toEqual([]);
   expect(await watchTick(l.deps(T0 + 2 * MIN))).toEqual([]);
   // a card answer is the owner too; once the lead replied, nothing waits
@@ -543,7 +545,45 @@ test("an owner message the lead has not answered for leadWakeMin is typed into i
   expect(await watchTick(l.deps(T0 + 14 * MIN))).toEqual([`LEAD_OWNER_WAITING aoe_Dori_0a1b2c3d 2 owner message(s), oldest ${iso(T0 - 9 * MIN)} (23 min), model failing; woke the lead (SUBMITTED)`]);
   l.reply(T0 + 15 * MIN);
   expect(await watchTick(l.deps(T0 + 40 * MIN))).toEqual([]);
+  expect(sent(world)).toHaveLength(3);
+});
+
+test("the limit lifted: the lead and a working lane stopped on a usage-limit error are woken once each on the first tick after the retry time; a paused lane, another error, a session that went on or a still-blocked pool are not", async () => {
+  const l = limitWorld();
+  await idleLane();
+  world.screen = watching("5: Dori inbox");
+  const woke = (key: string, pane: string, since: number, until: number) => `LIMIT_RESUME_WOKE ${key} ${pane} limit error since ${iso(since)}, retry ${iso(until)} passed; SUBMITTED`;
+  const pool = (blockedUntil: number) => writeFileSync(join(state.dir, "credential-pool-state.json"), JSON.stringify({ providers: { "anthropic-subscription": { lanes: { stored: { slots: { a: { blockedUntil }, b: { blockedUntil: T0 + 600 * MIN } } } } } } }));
+  l.reply(T0 - 60 * MIN);
+  l.reply(T0 - 30 * MIN, blockedError(T0 + 10 * MIN));
+  l.reply(T0 - 20 * MIN, blockedError(T0 + 10 * MIN));
+  l.laneReply(T0 - 50 * MIN);
+  l.laneReply(T0 - 29 * MIN, blockedError(T0 + 10 * MIN));
+  // before the retry time, and while every account of the provider is still blocked in omo's pool: nothing
+  expect(await watchTick(l.deps(T0 + 5 * MIN))).toEqual([]);
+  pool(T0 + 20 * MIN);
+  expect(await watchTick(l.deps(T0 + 11 * MIN))).toEqual([]);
+  expect(sent(world)).toEqual([]);
+  // an account is free again: one line each, once
+  pool(T0 + 10 * MIN);
+  expect(await watchTick(l.deps(T0 + 12 * MIN))).toEqual([woke("fix-a", PANE, T0 - 29 * MIN, T0 + 10 * MIN), woke("lead", "aoe_Dori_0a1b2c3d", T0 - 30 * MIN, T0 + 10 * MIN)]);
+  expect(sent(world)).toEqual([RESUME_TEXT, RESUME_TEXT]);
+  expect(await watchTick(l.deps(T0 + 13 * MIN))).toEqual([]);
+  // the lead went on; the lane hits the limit again while the lead paused it: neither is typed into
+  l.reply(T0 + 13 * MIN);
+  await at(T0).registry.write({ ...(await at(T0).registry.read("fix-a"))!, status: "paused", pausedFrom: "working" });
+  l.laneReply(T0 + 14 * MIN, blockedError(T0 + 15 * MIN));
+  expect(await watchTick(l.deps(T0 + 16 * MIN))).toEqual([]);
+  // working again, but its newest error is not a usage limit
+  await at(T0).registry.write({ ...(await at(T0).registry.read("fix-a"))!, status: "working" });
+  l.laneReply(T0 + 17 * MIN, "Connection error: socket hang up");
+  expect(await watchTick(l.deps(T0 + 18 * MIN))).toEqual([]);
   expect(sent(world)).toHaveLength(2);
+  // a new limit block with its own retry time is woken once more
+  l.laneReply(T0 + 19 * MIN, blockedError(T0 + 19 * MIN + 30_000));
+  expect(await watchTick(l.deps(T0 + 20 * MIN))).toEqual([woke("fix-a", PANE, T0 - 29 * MIN, T0 + 19 * MIN + 30_000)]);
+  expect(await watchTick(l.deps(T0 + 21 * MIN))).toEqual([]);
+  expect(sent(world)).toHaveLength(3);
 });
 
 test("leadAlertPoster posts to the pair channel only, and to the owner's channel only when there is no pair channel", async () => {
