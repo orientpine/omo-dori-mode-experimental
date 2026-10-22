@@ -27,7 +27,10 @@ const helperArgv = (rl?: boolean): string[] => {
   const config = join(dir, "config.json");
   const jobs = { upper: upper("helper"), train, rlprobe: { ...upper("helper"), rl: true } };
   writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { jobs, jobDir: join(dir, "jobs"), ...(rl === undefined ? {} : { rl }) } }));
-  return ["env", `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker"];
+  // env -i with this process's environment (no DORI_*, test/preload.ts): src spawns the stand-in without env, and Bun
+  // then hands it the environment bun test started with, which in an aoe window names that Dori's live state dir
+  const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
+  return ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker"];
 };
 
 const ctxWith = (q: Partial<HeavyQueue>, sleep: () => Promise<void> = () => new Promise((r) => setImmediate(r))): HeavyCtx => {
