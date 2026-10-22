@@ -83,6 +83,8 @@ export type Ledger = {
   // words and phrases with no directive in them ("알겠어", "아 그리고", his name for the Dori): words may drop them from original
   readonly fillers: readonly string[];
   readonly files: readonly string[];
+  // a tolerant load (dori directive-audit): the local lines left out and why, one DIRECTIVES_LOCAL_SKIP line each
+  readonly skipped?: readonly string[];
 };
 
 export class DirectiveError extends Error {}
@@ -106,20 +108,65 @@ const readLedger = (path: string): RawLedger => {
   }
 };
 
-// One ledger from the two layers. A local entry with a common id overrides that entry's fields; others are added.
-export const loadLedger = (cfg: Pick<DoriConfig, "directives">): Ledger => {
+// A message link or id in a source: what dori directive-audit looks for (unledgered).
+export const LINK_SOURCE = /discord(?:app)?\.com\/channels\/|\d{15,}/;
+
+// The links layer (config directives.links): rows { id, source } another Dori pushed (dori directives links --push). It
+// only sets the source of an entry the fork ledger already has; any other field, or an id this checkout does not have
+// yet (the fork entry is not merged here), is left alone. It never stops a load: a file that is not there or not JSON is
+// a skipped line.
+const applyLinks = (path: string, byId: Map<string, Directive>, skipped: string[]): void => {
+  if (!existsSync(path)) {
+    skipped.push(`DIRECTIVES_LOCAL_SKIP ${path}: the links file (config directives.links) is not there; sources stay as the other layers give them`);
+    return;
+  }
+  let raw: RawLedger;
+  try {
+    raw = readLedger(path);
+  } catch (e) {
+    skipped.push(`DIRECTIVES_LOCAL_SKIP ${path}: ${(e as Error).message}`);
+    return;
+  }
+  for (const row of raw.entries ?? []) {
+    const { id, source } = (row ?? {}) as { id?: unknown; source?: unknown };
+    const prior = typeof id === "string" ? byId.get(id) : undefined;
+    if (prior && prior.layer === "common" && typeof source === "string" && source.trim()) byId.set(prior.id, { ...prior, source });
+  }
+};
+
+// One ledger from the layers: the fork's (common), the pushed links (links: sources only), the host's (local). A local
+// entry with a common id overrides that entry's fields; others are added. tolerant (dori directive-audit): a local line
+// that would break the ledger (a source-only line for an id the fork does not have, a field that fails the checks, a
+// line that is no entry) is left out with a DIRECTIVES_LOCAL_SKIP line in skipped, the fork entry it overrode stands,
+// and the rest is read; strict (launch, directives check) keeps every line, so ledgerProblems names it.
+export const loadLedger = (cfg: Pick<DoriConfig, "directives">, opts: { readonly tolerant?: boolean } = {}): Ledger => {
   const files: string[] = [];
+  const skipped: string[] = [];
   const byId = new Map<string, Directive>();
+  // the ids the local layer touched, with the entry before it did (undefined: the local layer added it)
+  const touched = new Map<string, Directive | undefined>();
   let kinds: Record<string, string> = {};
   let standing = "";
   let minHits = 3;
   const labels: string[] = [];
   const reviewed: string[] = [];
   const fillers: string[] = [];
-  for (const [layer, path] of [["common", cfg.directives.common], ["local", cfg.directives.local]] as const) {
+  for (const [layer, path] of [["common", cfg.directives.common], ["links", cfg.directives.links ?? ""], ["local", cfg.directives.local]] as const) {
     if (!path) continue;
+    if (layer === "links") {
+      applyLinks(path, byId, skipped);
+      files.push(path);
+      continue;
+    }
     if (!existsSync(path)) throw new DirectiveError(`directive ledger ${path} (config directives.${layer}) does not exist`);
-    const raw = readLedger(path);
+    let raw: RawLedger;
+    try {
+      raw = readLedger(path);
+    } catch (e) {
+      if (layer !== "local" || !opts.tolerant) throw e;
+      skipped.push(`DIRECTIVES_LOCAL_SKIP ${path}: ${(e as Error).message}; the whole local layer is left out`);
+      continue;
+    }
     files.push(path);
     kinds = { ...kinds, ...raw.kinds };
     standing = raw.standing || standing;
@@ -127,13 +174,29 @@ export const loadLedger = (cfg: Pick<DoriConfig, "directives">): Ledger => {
     labels.push(...(raw.labels ?? []));
     reviewed.push(...(raw.reviewed ?? []));
     fillers.push(...(raw.fillers ?? []));
-    for (const e of raw.entries ?? []) {
+    for (const [n, e] of (raw.entries ?? []).entries()) {
+      if (opts.tolerant && layer === "local" && (!e || typeof e !== "object" || typeof (e as { id?: unknown }).id !== "string")) {
+        skipped.push(`DIRECTIVES_LOCAL_SKIP ${path} entry ${n + 1}: not an entry with an id; left out`);
+        continue;
+      }
       const entry = e as Partial<Directive>;
       const prior = entry.id ? byId.get(entry.id) : undefined;
+      if (layer === "local" && !touched.has(entry.id ?? "")) touched.set(entry.id ?? "", prior);
       byId.set(entry.id ?? "", { ...(prior ?? {}), ...entry, layer: prior ? prior.layer : layer } as Directive);
     }
   }
-  return { entries: [...byId.values()], kinds, minHits, labels, standing, reviewed, fillers, files };
+  if (opts.tolerant) {
+    const problems = ledgerProblems({ entries: [...byId.values()], kinds, minHits, labels, standing, reviewed, fillers, files });
+    for (const [id, prior] of touched) {
+      const own = problems.filter((p) => p.startsWith(`directive ${id || "(no id)"}: `)).map((p) => p.slice(`directive ${id || "(no id)"}: `.length));
+      if (!own.length) continue;
+      if (prior) byId.set(id, prior);
+      else byId.delete(id);
+      const what = prior ? "its local line is left out and the fork entry stands" : "not in the fork ledger and not a whole entry; left out";
+      skipped.push(`DIRECTIVES_LOCAL_SKIP ${id || "(no id)"}: ${what} (${own.join("; ")})`);
+    }
+  }
+  return { entries: [...byId.values()], kinds, minHits, labels, standing, reviewed, fillers, files, ...(opts.tolerant ? { skipped } : {}) };
 };
 
 // --- words against original: deletion only ---
@@ -272,8 +335,8 @@ export const ledgerProblems = (ledger: Ledger): string[] => {
   return out;
 };
 
-export const checkedLedger = (cfg: Pick<DoriConfig, "directives">): Ledger => {
-  const ledger = loadLedger(cfg);
+export const checkedLedger = (cfg: Pick<DoriConfig, "directives">, opts: { readonly tolerant?: boolean } = {}): Ledger => {
+  const ledger = loadLedger(cfg, opts);
   const problems = ledgerProblems(ledger);
   if (problems.length) throw new DirectiveError(`directive ledger has problems: ${problems.join("; ")}`);
   return ledger;

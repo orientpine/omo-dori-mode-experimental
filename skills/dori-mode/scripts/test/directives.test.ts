@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { applyDirectives, checkMeaning, meaningCachePath, runDirectiveAudit, withApplied } from "../src/directive-audit.ts";
+import { applyDirectives, auditOrReport, auditStampPath, checkMeaning, dailyAuditSince, linkRows, meaningCachePath, pushLinks, runDirectiveAudit, withApplied } from "../src/directive-audit.ts";
+import { freshnessTick } from "../src/freshness.ts";
+import { run as realRun } from "../src/run.ts";
 import { APPLIED_HEADING, briefGaps, COMMON_LEDGER, DirectiveError, directiveText, ledgerProblems, loadLedger, requireMissing, scopeContext, trimProblem } from "../src/directives.ts";
 import type { Runner } from "../src/run.ts";
 import { DirectiveMissingError, eightSteps, launchLane, renderBrief, uiSteps } from "../src/launch.ts";
@@ -359,4 +361,76 @@ test("the blocks the ledger names are the ones launch inserts", async () => {
   expect(r.text).toContain(await uiSteps());
   expect(r.text).toContain(await eightSteps());
   expect((await deps.registry.list()).length).toBe(0);
+});
+
+test("directive-audit: a bad local line is left out with DIRECTIVES_LOCAL_SKIP and the rest is audited; the lead gets it in the inbox and pane; launch still refuses it", async () => {
+  // a source-only line for an id the fork does not have (Yoodori 2026-10-20), a fork override that breaks a field, and no entry at all
+  const broken = { ...local, entries: [...local.entries, { id: "not-in-fork", source: "https://discord.com/channels/1/2/6" }, { id: "docs-same-pr", mode: "nope" }, "x"] };
+  const deps = await ledgerDeps({ directives: { common: COMMON_LEDGER, local: await write("broken.json", JSON.stringify(broken)) } });
+  expect(ledgerProblems(loadLedger(deps.config)).length).toBeGreaterThan(0);
+  const inbox = await write("inbox.jsonl", "");
+  const dry = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7", dryRun: true });
+  const skips = dry.lines.filter((l) => l.startsWith("DIRECTIVES_LOCAL_SKIP "));
+  expect(skips).toHaveLength(3);
+  expect(skips[0]).toContain("entry 7: not an entry with an id");
+  expect(skips.find((l) => l.startsWith("DIRECTIVES_LOCAL_SKIP not-in-fork:"))).toContain("no name");
+  expect(skips.find((l) => l.startsWith("DIRECTIVES_LOCAL_SKIP docs-same-pr:"))).toContain("the fork entry stands");
+  // the rest of the ledger is still read: the other local entries stand, the fork entry is back as the fork has it
+  const ledger = loadLedger(deps.config, { tolerant: true });
+  expect(ledger.entries.find((e) => e.id === "docs-same-pr")?.mode).toBe(loadLedger({ directives: { common: COMMON_LEDGER, local: "" } }).entries.find((e) => e.id === "docs-same-pr")?.mode);
+  expect(ledger.entries.some((e) => e.id === "options-ledger")).toBe(true);
+  expect(ledger.entries.some((e) => e.id === "not-in-fork")).toBe(false);
+  const r = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
+  const rows = (await Bun.file(inbox).text()).trim().split("\n").map((l) => JSON.parse(l) as { kind: string; content: string });
+  expect(rows.map((x) => x.kind)).toEqual(["directive-audit"]);
+  expect(rows[0]?.content).toStartWith("[DIRECTIVE_AUDIT] 3 local ledger lines left out");
+  expect(sent(world).filter((x) => x.startsWith("[DIRECTIVE_AUDIT] 3 local ledger lines left out"))).toHaveLength(1);
+  expect(r.lines.at(-1)).toBe("DIRECTIVE_AUDIT_SENT lead:p1");
+  expect(await Bun.file(deps.config.watchLog).text()).toMatch(/directive-audit DIRECTIVES_LOCAL_SKIP not-in-fork:/);
+});
+
+test("directive-audit: an audit that cannot run says DIRECTIVE_AUDIT_FAILED to the lead (inbox, pane, watch log) and runs again only a day later from freshness", async () => {
+  const clock = fakeClock(T0);
+  const deps = { ...(await ledgerDeps({ directives: { common: await write("bad-common.json", "{ not json"), local: "" } })), clock };
+  const inbox = await write("inbox.jsonl", "");
+  const r = await auditOrReport(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
+  expect(r.failed).toBe(true);
+  expect(r.lines[0]).toStartWith("DIRECTIVE_AUDIT_FAILED since 2026-10-15T06:00:00.000Z: directive ledger");
+  expect(JSON.parse((await Bun.file(inbox).text()).trim()).kind).toBe("directive-audit");
+  expect(sent(world).filter((x) => x.startsWith("[DIRECTIVE_AUDIT] 지침 감사가 돌지 못함"))).toHaveLength(1);
+  expect(await Bun.file(deps.config.watchLog).text()).toContain("directive-audit DIRECTIVE_AUDIT_FAILED");
+  expect(JSON.parse(await Bun.file(auditStampPath(deps.config.stateDir)).text()).ok).toBe(false);
+  // freshness: the daily run is due a day after the last one, from that run on; not before
+  const ran: string[] = [];
+  const hooks = { signals: async () => ({}), directiveAudit: async (since: string) => (ran.push(since), [`ran ${since}`]) };
+  expect((await freshnessTick(deps, "/home/test", hooks)).filter((a) => a.kind === "directive_audit")).toEqual([]);
+  clock.at = T0 + 25 * 3_600_000;
+  expect((await freshnessTick(deps, "/home/test", hooks)).filter((a) => a.kind === "directive_audit")).toEqual([{ kind: "directive_audit", lane: "lead", detail: `ran ${new Date(T0).toISOString()}` }]);
+  expect(dailyAuditSince(join(state.dir, "fresh"), T0)).toBe(new Date(T0 - 86_400_000).toISOString());
+});
+
+test("directive links live in one place: the local ledger's links of fork ids are pushed to each peer, which reads them as sources only", async () => {
+  const deps = await ledgerDeps();
+  expect(linkRows(deps.config)).toEqual([{ id: "docs-same-pr", source: "https://discord.com/channels/1/2/5" }]);
+  const peerFile = join(state.dir, "peer", "links.json");
+  await Bun.write(join(state.dir, "peer", ".keep"), "");
+  const calls: string[][] = [];
+  // the peer account's sudo: the rest of the command runs as it would for that user
+  const run = async (argv: readonly string[]) => (calls.push([...argv]), argv[0] === "sudo" ? realRun(argv.slice(4)) : { code: 1, out: "", err: "unexpected" });
+  const pushDeps = { ...deps, run, config: { ...deps.config, directives: { ...deps.config.directives, linkPeers: [`okdori:${peerFile}`, "no-path"] } } };
+  const first = await pushLinks(pushDeps);
+  expect(first.ok).toBe(false);
+  expect(first.lines).toEqual([`DIRECTIVE_LINKS_PUSHED okdori ${peerFile}: 1 links`, "DIRECTIVE_LINKS_PUSH_FAIL no-path: give <user>:<absolute path>"]);
+  expect(calls.every((c) => c.slice(0, 4).join(" ") === "sudo -n -u okdori")).toBe(true);
+  const again = await pushLinks({ ...pushDeps, config: { ...pushDeps.config, directives: { ...pushDeps.config.directives, linkPeers: [`okdori:${peerFile}`] } } });
+  expect(again).toEqual({ lines: [`DIRECTIVE_LINKS_SAME okdori ${peerFile}: 1 links`], ok: true });
+  // the peer: no local line for it, the pushed source only; a row for an id it does not have and other fields are left alone
+  const pushed = JSON.parse(await Bun.file(peerFile).text());
+  await Bun.write(peerFile, JSON.stringify({ entries: [...pushed.entries, { id: "docs-same-pr", source: "https://discord.com/channels/1/2/5", mode: "nope" }, { id: "not-merged-here", source: "https://discord.com/channels/1/2/8" }] }));
+  const peer = loadLedger({ directives: { common: COMMON_LEDGER, local: "", links: peerFile } });
+  expect(ledgerProblems(peer)).toEqual([]);
+  expect(peer.entries.find((e) => e.id === "docs-same-pr")?.source).toBe("https://discord.com/channels/1/2/5");
+  expect(peer.entries.some((e) => e.id === "not-merged-here")).toBe(false);
+  // the fork ledger itself still holds no link
+  expect(await Bun.file(COMMON_LEDGER).text()).not.toMatch(/discord(?:app)?\.com/);
 });

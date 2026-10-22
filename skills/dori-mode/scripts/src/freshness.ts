@@ -10,6 +10,7 @@ import { leadAlert } from "./autoturn.ts";
 import { compactionStuckOn, pendingFile, type ReadyMark, readyFile, statusLine } from "./lane-handover.ts";
 import { COMMITTED, crossed, dueReasons, limitsFor, readRollovers, type RolloverEntry, type Signals, type Who } from "./rollover.ts";
 import { auditDue, type Committed, weeklyDue, writeMarker } from "./rollover-audit.ts";
+import { dailyAuditSince, linksDue } from "./directive-audit.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { watchLog } from "./watch-log.ts";
@@ -37,7 +38,7 @@ export const scrubForThread = (line: string, home: string): string =>
     .replace(/`/g, "'")
     .trim();
 
-export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary" | "lead_compaction_stuck"; readonly lane: string; readonly detail: string };
+export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary" | "lead_compaction_stuck" | "directive_audit" | "directive_links"; readonly lane: string; readonly detail: string };
 
 export type RolloverHooks = {
   // the length signals of the session in a pane: context use, compactions, age
@@ -50,6 +51,10 @@ export type RolloverHooks = {
   readonly audit?: (c: Committed) => Promise<string>;
   // puts the week's audit summary in the lead's inbox; the line says what it wrote
   readonly auditSummary?: (week: string) => string;
+  // the daily directive audit (dori directive-audit from `since`), so it runs on every Dori with no timer of its own
+  readonly directiveAudit?: (since: string) => Promise<readonly string[]>;
+  // pushes the owner's message links of the local ledger to the other Dori (directives.linkPeers)
+  readonly directiveLinks?: () => Promise<readonly string[]>;
 };
 
 const pidAlive = (pid: number): boolean => {
@@ -332,5 +337,9 @@ export const freshnessTick = async (deps: FlowDeps, home: string, hooks: Rollove
   }
   const week = hooks.auditSummary ? weeklyDue(deps.config.stateDir, now, deps.config.scorecard.timeZone, deps.config.handover.auditSummaryAt) : undefined;
   if (week && hooks.auditSummary) acts.push({ kind: "audit_summary", lane: "lead", detail: hooks.auditSummary(week) });
+  // links first, so a peer's audit later reads what this Dori's ledger holds now
+  if (hooks.directiveLinks && linksDue(deps.config, now)) for (const detail of await hooks.directiveLinks()) acts.push({ kind: "directive_links", lane: "lead", detail });
+  const since = hooks.directiveAudit ? dailyAuditSince(deps.config.stateDir, now) : undefined;
+  if (since && hooks.directiveAudit) for (const detail of await hooks.directiveAudit(since)) acts.push({ kind: "directive_audit", lane: "lead", detail });
   return acts;
 };

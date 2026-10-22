@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { checkReviewers, ChallengeError, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
-import { APPLIED_HEADING, appliesWhy, briefGaps, type Directive, type DirectiveBlock, DirectiveError, directiveText, type Gap, headingAt, type Ledger, leadGaps, scopeContext, unledgered } from "./directives.ts";
+import { APPLIED_HEADING, appliesWhy, briefGaps, checkedLedger, type Directive, type DirectiveBlock, DirectiveError, directiveText, type Gap, headingAt, type Ledger, leadGaps, LINK_SOURCE, loadLedger, scopeContext, unledgered } from "./directives.ts";
+import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { eightSteps, laneRepo, launchLedger, uiSteps } from "./launch.ts";
 import { sendVerified } from "./panes.ts";
@@ -192,27 +193,147 @@ export const sinceIso = (spec: string, now: number): string => {
   return new Date(t).toISOString();
 };
 
-export type AuditResult = { readonly gaps: readonly Gap[]; readonly lines: readonly string[]; readonly lanes: number };
+export type AuditResult = { readonly gaps: readonly Gap[]; readonly lines: readonly string[]; readonly lanes: number; readonly failed?: boolean };
+
+// The ledger the audit reads: tolerant, so one bad local line is a DIRECTIVES_LOCAL_SKIP line, not an audit that stops.
+const auditLedger = (deps: Pick<FlowDeps, "config">): Ledger => (deps.config.directives.common || deps.config.directives.local ? checkedLedger(deps.config, { tolerant: true }) : launchLedger(deps));
+
+// A row in the lead's inbox (never the owner's channel), like the weekly rollover audit's.
+const toInbox = (inbox: string, deps: Pick<FlowDeps, "clock">, content: string): void => {
+  if (!inbox) return;
+  const ts = iso(deps.clock);
+  mkdirSync(dirname(inbox), { recursive: true });
+  appendFileSync(inbox, `${JSON.stringify({ ts, id: `directive-audit-${ts}`, kind: "directive-audit", content })}\n`);
+};
+
+// Each line in the watch log, the summary in the lead's inbox and typed to the lead; the last line says whether it got there.
+const tellLead = async (deps: FlowDeps, inbox: string, lines: readonly string[], summary: string): Promise<string> => {
+  for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "directive-audit", line });
+  toInbox(inbox, deps, summary);
+  const pane = deps.config.leadPane;
+  const sent = pane ? await sendVerified(deps.run, deps.clock, deps.config, pane, summary) : false;
+  const tail = sent ? `DIRECTIVE_AUDIT_SENT ${pane}` : `DIRECTIVE_AUDIT_NOT_SENT ${pane || "(no leadPane)"}: the summary did not reach the lead's pane; it is in the inbox and the watch log`;
+  watchLog(deps.config.watchLog, deps.clock, { source: "directive-audit", line: tail });
+  return tail;
+};
+
+export const auditStampPath = (stateDir: string): string => join(stateDir, "directives", "audit.json");
+type AuditStamp = { readonly at: string; readonly since: string; readonly ok: boolean };
+const readStamp = (stateDir: string): AuditStamp | undefined => {
+  try {
+    return JSON.parse(readFileSync(auditStampPath(stateDir), "utf8")) as AuditStamp;
+  } catch {
+    return undefined;
+  }
+};
+const writeStamp = (deps: Pick<FlowDeps, "config" | "clock">, since: string, ok: boolean): void => {
+  mkdirSync(dirname(auditStampPath(deps.config.stateDir)), { recursive: true });
+  writeFileSync(auditStampPath(deps.config.stateDir), `${JSON.stringify({ at: iso(deps.clock), since, ok })}\n`);
+};
 
 // The lanes opened since `since` and the owner's messages since then against the ledger. No gap: one DIRECTIVE_AUDIT_OK
-// line on stdout and nothing else (quiet). Gaps: each line in the watch log and one [DIRECTIVE_AUDIT] summary typed to the
-// lead. dryRun: the lines only.
+// line on stdout and nothing else (quiet). Gaps or local lines left out: each line in the watch log and one
+// [DIRECTIVE_AUDIT] summary in the lead's inbox and typed to the lead. dryRun: the lines only. A run that is not a dry run
+// leaves its time in the state dir (auditStampPath), so the daily run in freshness knows it was done.
 export const runDirectiveAudit = async (deps: FlowDeps, opts: { readonly since: string; readonly inbox: string; readonly owner: string; readonly dryRun?: boolean }): Promise<AuditResult> => {
-  const ledger = launchLedger(deps);
+  const ledger = auditLedger(deps);
+  const skipped = ledger.skipped ?? [];
   const lanes = (await deps.registry.list()).filter((l) => l.openedAt >= opts.since).sort((a, b) => a.openedAt.localeCompare(b.openedAt));
   const blocks = await blockTexts();
   const gaps: Gap[] = [];
   for (const l of lanes) gaps.push(...(await laneDirectiveGaps(deps, l, ledger, blocks)));
   gaps.push(...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env.DORI_DISCORD_GUILD?.trim() ?? ""));
-  if (!gaps.length) return { gaps, lanes: lanes.length, lines: [`DIRECTIVE_AUDIT_OK since ${opts.since}: ${lanes.length} lanes and the owner's messages read against ${ledger.entries.length} directives, no gap`] };
-  const lines = gaps.map((g) => g.line);
+  if (!opts.dryRun) writeStamp(deps, opts.since, true);
+  if (!gaps.length && !skipped.length) return { gaps, lanes: lanes.length, lines: [`DIRECTIVE_AUDIT_OK since ${opts.since}: ${lanes.length} lanes and the owner's messages read against ${ledger.entries.length} directives, no gap`] };
+  const lines = [...skipped, ...gaps.map((g) => g.line), `DIRECTIVE_AUDIT_DONE since ${opts.since}: ${lanes.length} lanes and the owner's messages read against ${ledger.entries.length} directives, ${gaps.length} gaps, ${skipped.length} local ledger lines left out`];
   if (opts.dryRun) return { gaps, lanes: lanes.length, lines };
-  for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "directive-audit", line });
   const short = gaps.slice(0, 4).map((g) => (g.lane === "-" ? `unledgered ${g.id}` : `${g.lane} ${g.id}`)).join(", ");
-  const summary = `[DIRECTIVE_AUDIT] ${gaps.length} directive gaps since ${opts.since}: ${short}${gaps.length > 4 ? ", ..." : ""}. Full list: dori directive-audit --since ${opts.since} --dry-run`;
-  const pane = deps.config.leadPane;
-  const sent = pane ? await sendVerified(deps.run, deps.clock, deps.config, pane, summary) : false;
-  const tail = sent ? `DIRECTIVE_AUDIT_SENT ${pane}` : `DIRECTIVE_AUDIT_NOT_SENT ${pane || "(no leadPane)"}: the summary did not reach the lead; the gaps are in the watch log`;
-  watchLog(deps.config.watchLog, deps.clock, { source: "directive-audit", line: tail });
-  return { gaps, lanes: lanes.length, lines: [...lines, tail] };
+  const left = skipped.length ? `${skipped.length} local ledger lines left out (DIRECTIVES_LOCAL_SKIP; fix them in ${deps.config.directives.local || "directives.local"}), ` : "";
+  const summary = `[DIRECTIVE_AUDIT] ${left}${gaps.length} directive gaps since ${opts.since}${short ? `: ${short}${gaps.length > 4 ? ", ..." : ""}` : ""}. Full list: dori directive-audit --since ${opts.since} --dry-run`;
+  return { gaps, lanes: lanes.length, lines: [...lines, await tellLead(deps, opts.inbox, lines, summary)] };
+};
+
+// runDirectiveAudit, and an audit that cannot run (a fork ledger with problems, a file it cannot read) is not a silent
+// exit: DIRECTIVE_AUDIT_FAILED in the watch log, the lead's inbox and pane, and failed set (the CLI exits 1).
+export const auditOrReport = async (deps: FlowDeps, opts: Parameters<typeof runDirectiveAudit>[1]): Promise<AuditResult> => {
+  try {
+    return await runDirectiveAudit(deps, opts);
+  } catch (e) {
+    const line = `DIRECTIVE_AUDIT_FAILED since ${opts.since}: ${e instanceof Error ? e.message : String(e)}`;
+    if (opts.dryRun) return { gaps: [], lanes: 0, lines: [line], failed: true };
+    writeStamp(deps, opts.since, false);
+    const summary = `[DIRECTIVE_AUDIT] 지침 감사가 돌지 못함: ${line.slice(0, 600)}. 고친 뒤 dori directive-audit --since ${opts.since} --dry-run 로 확인`;
+    return { gaps: [], lanes: 0, lines: [line, await tellLead(deps, opts.inbox, [line], summary)], failed: true };
+  }
+};
+
+const DAY_MS = 86_400_000;
+// The daily audit on every Dori, from the freshness loop: due when no audit ran in the last 24 h (the 08:30 timer's run
+// counts), from the last run on (at most 7 days back, 24 h on the first run). undefined: not due.
+export const dailyAuditSince = (stateDir: string, now: number): string | undefined => {
+  const last = readStamp(stateDir);
+  const at = last ? Date.parse(last.at) : Number.NaN;
+  if (!Number.isNaN(at) && now - at < DAY_MS) return undefined;
+  return new Date(Number.isNaN(at) ? now - DAY_MS : Math.max(at, now - 7 * DAY_MS)).toISOString();
+};
+
+// --- links in one place: one Dori's local ledger holds the owner's message links of fork entries; it pushes them to the
+// other Dori (directives.linkPeers), which read them as their links layer (directives.links). The fork holds no links. ---
+
+// The { id, source } rows of the local ledger's lines for fork ids whose source carries a message link or id.
+export const linkRows = (cfg: Pick<DoriConfig, "directives">): { readonly id: string; readonly source: string }[] => {
+  if (!cfg.directives.local || !existsSync(cfg.directives.local)) return [];
+  const common = new Set(loadLedger({ directives: { common: cfg.directives.common, local: "" } }).entries.map((e) => e.id));
+  const raw = JSON.parse(readFileSync(cfg.directives.local, "utf8")) as { entries?: { id?: unknown; source?: unknown }[] };
+  return (raw.entries ?? []).flatMap((e) => (typeof e?.id === "string" && common.has(e.id) && typeof e.source === "string" && LINK_SOURCE.test(e.source) ? [{ id: e.id, source: e.source }] : []));
+};
+
+export const linksStampPath = (stateDir: string): string => join(stateDir, "directives", "links-push.json");
+
+// Writes the rows to every peer as that account (sudo -n -u <user>), only where the file differs; one line per peer.
+export const pushLinks = async (deps: Pick<FlowDeps, "run" | "config" | "clock">): Promise<{ readonly lines: readonly string[]; readonly ok: boolean }> => {
+  const peers = deps.config.directives.linkPeers ?? [];
+  if (!peers.length) return { lines: ["DIRECTIVE_LINKS_NO_PEERS: directives.linkPeers is empty"], ok: true };
+  const rows = linkRows(deps.config);
+  const text = `${JSON.stringify({ about: "The owner's message links of fork directives, pushed by dori directives links --push from one Dori's local ledger. Only the source of an entry the fork ledger has is read from here; edit the links there, not here.", entries: rows }, null, 2)}\n`;
+  const lines: string[] = [];
+  let ok = true;
+  for (const peer of peers) {
+    const m = /^([a-z_][a-z0-9_-]*):(\/\S+)$/.exec(peer);
+    if (!m) {
+      ok = false;
+      lines.push(`DIRECTIVE_LINKS_PUSH_FAIL ${peer}: give <user>:<absolute path>`);
+      continue;
+    }
+    const [, user, path] = m as unknown as [string, string, string];
+    const now = await deps.run(["sudo", "-n", "-u", user, "cat", path], { timeoutMs: 15_000 });
+    if (now.code === 0 && now.out === text.trim()) {
+      lines.push(`DIRECTIVE_LINKS_SAME ${user} ${path}: ${rows.length} links`);
+      continue;
+    }
+    const r = await deps.run(["sudo", "-n", "-u", user, "sh", "-c", 'printf "%s" "$1" > "$2.tmp" && mv -f "$2.tmp" "$2"', "sh", text, path], { timeoutMs: 15_000 });
+    if (r.code === 0) lines.push(`DIRECTIVE_LINKS_PUSHED ${user} ${path}: ${rows.length} links`);
+    else {
+      ok = false;
+      lines.push(`DIRECTIVE_LINKS_PUSH_FAIL ${user} ${path}: ${(r.err || r.out || `exit ${r.code}`).slice(0, 200)}`);
+    }
+  }
+  for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "directive-links", line });
+  if (ok && existsSync(deps.config.directives.local)) {
+    mkdirSync(dirname(linksStampPath(deps.config.stateDir)), { recursive: true });
+    writeFileSync(linksStampPath(deps.config.stateDir), `${JSON.stringify({ at: iso(deps.clock), mtime: statSync(deps.config.directives.local).mtimeMs })}\n`);
+  }
+  return { lines, ok };
+};
+
+// The push is due when there are peers and the local ledger changed since the last good push, or that push is a day old
+// (a peer's file put back by hand is written again).
+export const linksDue = (cfg: Pick<DoriConfig, "directives" | "stateDir">, now: number): boolean => {
+  if (!cfg.directives.linkPeers?.length || !cfg.directives.local || !existsSync(cfg.directives.local)) return false;
+  try {
+    const last = JSON.parse(readFileSync(linksStampPath(cfg.stateDir), "utf8")) as { at: string; mtime: number };
+    return statSync(cfg.directives.local).mtimeMs !== last.mtime || now - Date.parse(last.at) >= DAY_MS;
+  } catch {
+    return true;
+  }
 };
