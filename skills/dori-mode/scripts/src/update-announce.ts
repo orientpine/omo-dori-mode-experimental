@@ -23,7 +23,9 @@ export const announceChange = async (deps: AnnounceDeps, notice: ChangeNotice): 
     ...(notice.keys?.length ? [`CONFIG_NEW_KEY: ${notice.keys.join(", ")}`] : []),
     ...(notice.restarts?.length ? [`Restarts:\n${notice.restarts.join("\n")}`] : []),
     deps.config.update.announce,
-  ].join("\n\n");
+  ].join("\n\n")
+    // a commit or PR title with a backtick or $( would make the pane send refuse the whole notice (ANNOUNCE_FAIL, 2026-10-22 #170)
+    .replace(/`/g, "'").replaceAll("$(", "$ (");
   let reason = "";
   try {
     if (!pane) reason = "leadPane is not configured";
