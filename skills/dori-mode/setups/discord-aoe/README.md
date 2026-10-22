@@ -91,6 +91,7 @@ One `KEY=VALUE` per line, `#` comments, absolute paths (neither systemd nor the 
 | `DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT` | no | no | A channel shared with other Doris and one or more of their bot ids, comma or whitespace separated (e.g. three Doris, each listing the other two bots): `pair` / `pair-bot` inbox rows |
 | `DORI_LEAD_AOE_ID`, `DORI_LEAD_TMUX` | yes (aoe) | no | This Dori's own aoe session: `dori lead`, `self-restart.sh`, `dori-lead.service` |
 | `DORI_AGENT_BIN` | no | no | The agent CLI `self-restart.sh` waits for in the lead's pane (default `omo`) |
+| `DORI_TMUX_UNIT` | no | no | The account's own tmux server unit `self-restart.sh` starts before `aoe` when it exists (default `<user>-tmux.service`, see [own tmux server unit](#own-tmux-server-unit)) |
 | `DORI_ASR_DIR`, `DORI_ASR_LANG`, `DORI_ASR_MODEL` | no | no | Voice notes through `transcribe.sh` (`hooks.transcribe`): whisper.cpp dir, language, model (defaults `~/.dori/asr`, auto, `ggml-large-v3.bin`) |
 | `DORI_ASR_DIARIZE_MIN_SEC`, `DORI_ASR_CHUNK_SEC`, `DORI_ASR_SPEAKER_LABEL`, `DORI_ASR_LONG_OPTS`, `DORI_ASR_RETRY_OPTS`, `DORI_DIAR_DIR`, `DORI_DIAR_FROM` | no | no | Long recordings in `transcribe.sh`: seconds from which audio is a meeting (300), piece length (60), speaker word (`화자` for `ko`, else `Speaker`), extra whisper.cpp options for the pieces (none) and for a repeating span (`-mc 0 -tp 0.4`), where `setup-diarize.sh` installs and `transcribe.sh` looks for the speaker model (`$DORI_ASR_DIR/diar`; set it for a read-only ASR dir, also in a heavy job's `env`); `DORI_DIAR_FROM` is read by `setup-diarize.sh` only |
 | `DORI_TRANSCRIBE_WORKER`, `DORI_TRANSCRIBE_FROM`, `DORI_TRANSCRIBE_LEDGER`, `DORI_TRANSCRIBE_TIMEOUT` | no | no | One transcriber for every Dori on a host (step 4): the transcriber account, the accounts that may hand it recordings, the command that prints the owner's correction ledger (empty: none), and how long `dori-transcribe` waits (14400 s); the first three are read by `transcribe-relay.py` on the queue host only |
@@ -193,6 +194,25 @@ Inside an aoe pane `$TMUX` names the live server and tmux prefers it to `TMUX_TM
 ```bash
 ln -sfn ~/.dori/src/skills/dori-mode/setups/discord-aoe/tmux-guard ~/.local/bin/tmux
 ```
+
+### Own tmux server unit
+
+The default tmux server lives in the cgroup of whatever started it, and it takes every session with it when that unit stops: a server the aoe web terminal started dies when `aoe-serve` restarts (2026-10-22, after a lane had killed the server and the web brought it back). Each Dori account runs its server in its own user unit `<user>-tmux.service`, apart from `aoe-serve` and the dori units:
+
+```ini
+[Service]
+Type=simple
+Delegate=yes
+ExecStart=%h/.dori/src/skills/dori-mode/setups/discord-aoe/tmux-server
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=75
+
+[Install]
+WantedBy=default.target
+```
+
+`tmux-server` starts the server with `tmux -D`, or, when a server is already up (started by the web terminal or by hand), moves that server into the unit without restarting it (`TMUX_SERVER_ADOPTED <pid> from <unit>`; the move needs `Delegate=yes`) and follows it until it ends; `Restart=always` then starts the next one there. A server it cannot move exits 75 (`TMUX_SERVER_ADOPT_FAIL`), which `RestartPreventExitStatus=75` keeps from restarting every few seconds. Add `After=<user>-tmux.service` to `aoe-serve.service` and `dori-lead.service` (a drop-in), and `systemctl --user enable --now <user>-tmux.service`. `self-restart.sh` starts the unit before `aoe`, so a lead revive or boot start lands there too.
 
 ### Google mail and calendar
 
@@ -436,6 +456,9 @@ A stopped lead uses `aoe session start <id>`, then the same prompt wait, `dori t
 three attempts and failure alert as a restart. The first message defaults to `Dori mode`;
 `self-restart.sh --start <aoe-id> <tmux-session> <prompt>` supplies another prompt (an empty
 prompt types nothing). Without `--start`, the script still uses `aoe session restart`.
+Before either, it starts the account's own tmux unit (`DORI_TMUX_UNIT`, default `<user>-tmux.service`, see
+[own tmux server unit](#own-tmux-server-unit)) when that unit exists, so the server does not start inside the unit
+that ran the script.
 
 The unit loads no `dori.env`, and the script reads its env file without exporting it: the first `aoe` after a boot
 starts the tmux server, and every pane inherits that server's environment. The script runs `aoe` without any `DORI_*`

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# ExecStart of a Dori account's own tmux unit (<account>-tmux.service, Delegate=yes, Restart=always).
+# The account's default tmux server must not live inside aoe-serve or a dori unit: a server started by `aoe serve`
+# (the web terminal), a lead restart or a lane lives in that unit's cgroup and dies with every session when that unit
+# stops or restarts (2026-10-22: after a lane killed the server, the aoe web started it again inside aoe-serve.service).
+# A server that is already up is moved into this unit (AttachProcessesToUnit, which needs Delegate=yes) and watched
+# until it ends; with none up, this unit starts it with tmux -D. Restart=always then starts or adopts the next one.
+# Exit 75 (a server it cannot move) is for RestartPreventExitStatus=75, so the unit stops instead of retrying.
+# TMUX_SERVER_ARGS (e.g. "-L qa-x") points it at a test server instead of the default socket.
+set -u
+T=${TMUX_SERVER_BIN:-/usr/bin/tmux}
+unset TMUX
+read -r -a ARGS <<<"${TMUX_SERVER_ARGS:-}"
+CG=$(sed -n 's/^0:://p' /proc/self/cgroup)
+UNIT=${CG##*/}
+
+pid=$("$T" "${ARGS[@]}" display-message -p '#{pid}' 2>/dev/null)
+if [ -n "$pid" ]; then
+  if ! grep -qxF "0::$CG" "/proc/$pid/cgroup" 2>/dev/null; then
+    from=$(sed -n 's/^0:://p' "/proc/$pid/cgroup" 2>/dev/null)
+    if ! busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
+      AttachProcessesToUnit ssau "$UNIT" "" 1 "$pid"; then
+      echo "TMUX_SERVER_ADOPT_FAIL $pid from ${from##*/} (the unit needs Delegate=yes)" >&2
+      exit 75
+    fi
+    echo "TMUX_SERVER_ADOPTED $pid from ${from##*/}"
+  fi
+  exec tail --pid="$pid" -f /dev/null
+fi
+echo "TMUX_SERVER_START"
+exec "$T" "${ARGS[@]}" -D
