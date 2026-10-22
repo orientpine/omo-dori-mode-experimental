@@ -108,6 +108,7 @@ const startScript = async (stopped: boolean, args: string[] = []) => {
   executable(join(bin, "aoe"), `printf '%s\\n' "aoe $*" >> "${log}"`);
   executable(join(bin, "tmux"), `printf '%s\\n' '❯'`);
   executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "systemctl"), "exit 1");
   executable(join(bin, "agent"), "exit 0");
   fakeNvm(["v24.15.0"]);
   const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ...args], {
@@ -140,6 +141,7 @@ test("self-restart restarts the session with what dori launch-env prints: a laun
   executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* cuda=\${CUDA_VISIBLE_DEVICES-unset} hide=\${HIDE_ME-unset}" >> "${log}"`);
   executable(join(bin, "tmux"), `printf '%s\\n' '❯'`);
   executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "systemctl"), "exit 1");
   executable(join(bin, "agent"), "exit 0");
   const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ID, TMUX, ""], {
     env: { ...process.env, HOME: state.dir, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_AGENT_BIN: "agent", HIDE_ME: "from-caller" }, stdout: "pipe", stderr: "pipe",
@@ -158,6 +160,7 @@ test("self-restart gives the session no DORI_* variable and drops them from the 
   executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* dori-vars=$(env | grep -c '^DORI_')" >> "${log}"`);
   executable(join(bin, "tmux"), `case "$1" in\n  show-environment) printf '%s\\n' DORI_DISCORD_TOKEN=leaked DORI_LEAD_TMUX=aoe_zzangdori_1 PATH=/bin ;;\n  set-environment) printf '%s\\n' "tmux $*" >> "${log}" ;;\n  *) printf '%s\\n' '❯' ;;\nesac`);
   executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "systemctl"), "exit 1");
   executable(join(bin, "agent"), "exit 0");
   const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ID, TMUX, ""], {
     env: { ...process.env, HOME: state.dir, DORI_ENV_FILE: envFile, DORI_AGENT_BIN: "agent", DORI_DISCORD_TOKEN: "inherited", DORI_DISCORD_STATE_DIR: "/zzang" }, stdout: "pipe", stderr: "pipe",
@@ -165,6 +168,29 @@ test("self-restart gives the session no DORI_* variable and drops them from the 
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
     code: 0,
     commands: [`dori launch-env ${TMUX}`, "tmux set-environment -g -u DORI_DISCORD_TOKEN", "tmux set-environment -g -u DORI_LEAD_TMUX", `aoe session restart ${ID} dori-vars=0`],
+  });
+});
+
+test("self-restart starts the account's own tmux unit before aoe when that unit exists, so the server does not start in the caller's unit", async () => {
+  const bin = join(state.dir, ".bun/bin");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(state.dir, ".dori"));
+  const log = join(state.dir, "commands");
+  executable(join(bin, "aoe"), `printf '%s\\n' "aoe $*" >> "${log}"`);
+  executable(join(bin, "tmux"), `printf '%s\\n' '❯'`);
+  executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "agent"), "exit 0");
+  executable(join(bin, "systemctl"), `printf '%s\\n' "systemctl $*" >> "${log}"\n[ "$2" != cat ] || [ "$3" = qa-own-tmux.service ]`);
+  const restart = async (unit: string) => {
+    const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/self-restart.sh"), ID, TMUX, ""], {
+      env: { ...process.env, HOME: state.dir, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_AGENT_BIN: "agent", DORI_TMUX_UNIT: unit }, stdout: "pipe", stderr: "pipe",
+    });
+    return p.exited;
+  };
+  expect({ withUnit: await restart("qa-own-tmux.service"), without: await restart("qa-missing-tmux.service"), commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
+    withUnit: 0,
+    without: 0,
+    commands: ["systemctl --user cat qa-own-tmux.service", "systemctl --user start qa-own-tmux.service", `aoe session restart ${ID}`, "systemctl --user cat qa-missing-tmux.service", `aoe session restart ${ID}`],
   });
 });
 
@@ -177,6 +203,7 @@ test("self-restart puts nvm's default node on the session's PATH through the ali
   executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* node=$(command -v node)" >> "${log}"`);
   executable(join(bin, "tmux"), `printf '%s\\n' '❯'`);
   executable(join(bin, "sleep"), "exit 0");
+  executable(join(bin, "systemctl"), "exit 1");
   executable(join(bin, "agent"), "exit 0");
   const nvm = fakeNvm(["v22.22.2", "v24.15.0", "v25.1.0"], { default: "lts/*", "lts/*": "lts/krypton", "lts/krypton": "v24.15.0" });
   const restart = async () => {

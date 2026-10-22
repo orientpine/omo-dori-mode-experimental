@@ -101,6 +101,15 @@ fi
 mapfile -t LAUNCH_ENV < <(printf '%s' "$LAUNCH_ENV_OUT" | sed '/^$/d')
 [ ${#LAUNCH_ENV[@]} -eq 0 ] || log "launch env for $T: ${LAUNCH_ENV[*]}"
 
+# A tmux server that aoe starts here lives in this script's unit (dori-lead, a watch revive, a systemd-run restart):
+# start the account's own tmux unit first (DORI_TMUX_UNIT, default <user>-tmux.service, setups/discord-aoe/tmux-server)
+# so the server lives there and a later restart of aoe-serve or a dori unit does not end every session.
+TMUX_UNIT=${DORI_TMUX_UNIT:-$(id -un)-tmux.service}
+if systemctl --user cat "$TMUX_UNIT" >/dev/null 2>&1; then
+  systemctl --user start "$TMUX_UNIT" || log "TMUX_UNIT_START_FAIL $TMUX_UNIT"
+  for _ in $(seq 50); do no_dori_env tmux display-message -p '#{pid}' >/dev/null 2>&1 && break; sleep 0.1; done
+fi
+
 for attempt in 1 2 3; do
   log "attempt $attempt: aoe session $MODE $ID"
   scrub_tmux_env
