@@ -12,6 +12,8 @@ bun test             # behavior tests with fake herdr/git/gh; nothing real is to
 bunx tsc --noEmit    # typecheck
 ```
 
+`bun test` (run from `scripts/`, where `bunfig.toml` preloads `test/preload.ts`) starts with every `DORI_*` variable removed, so it passes the same inside an aoe window, which carries its Dori's `DORI_CONFIG`, `DORI_ENV_FILE` and `DORI_STATE_DIR`, as in a bare shell; a test that needs one sets it itself. Bun gives a child spawned without `env` the environment the test run started with, so a test whose command stands in for another host passes the cleaned environment explicitly (`heavy-queue.test.ts`: `env -i`).
+
 Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` signals (npm for `published`). The `command`, `file` and `url` signals need nothing extra. The full list of signal kinds is in `sessions.md`. A `command` signal runs with git's `core.quotepath` off (set through `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`, after any entries the environment already has), so `git status`, `git log --name-only` and `git diff --name-only` print a Korean or other non-ASCII path as it is (`보고서.md`, not `"\353\263\264..."`) and a `stdout~` regex or a `grep` on it can match. The host guard reads `sysctl`, `memory_pressure` and `df` on macOS; on Linux it reads `/proc/loadavg` and `df`, and memory and swap read as unknown.
 
 ## Configuration
