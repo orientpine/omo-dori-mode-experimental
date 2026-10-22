@@ -434,3 +434,21 @@ test("directive links live in one place: the local ledger's links of fork ids ar
   // the fork ledger itself still holds no link
   expect(await Bun.file(COMMON_LEDGER).text()).not.toMatch(/discord(?:app)?\.com/);
 });
+
+test("a lane's brief is stored as an absolute path, and one stored relative (older lanes) is read from the lane's cwd, not from wherever the audit runs", async () => {
+  const deps = await ledgerDeps();
+  const full = (await renderBrief(deps, input(await write("full.md", fields)))).text;
+  await write("lanes/rel.brief.md", full);
+  await deps.registry.write({ key: "rel", title: "r", thread: "discord:42", brief: "lanes/rel.brief.md", done: "x", cwd: state.dir, openedAt: "2026-10-16T05:00:00.000Z" });
+  const r = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox: await write("inbox.jsonl", ""), owner: "7", dryRun: true });
+  expect(r.lines.filter((l) => l.includes("is not there"))).toEqual([]);
+  const here = process.cwd();
+  process.chdir(state.dir);
+  try {
+    await write("rel-launch.md", fields);
+    const l = await launchLane({ ...deps, config: { ...deps.config, backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" } }, input("rel-launch.md", { key: "rel-launch" }), () => {});
+    expect(l.lane.brief).toBe(join(state.dir, "rel-launch.md"));
+  } finally {
+    process.chdir(here);
+  }
+});

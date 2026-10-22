@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import { AoeError, envMismatch, forwardEnv, inputLine, laneEnv, openAoeSession, target } from "./aoe.ts";
 import { type Backend, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
@@ -237,7 +239,7 @@ export const laneRepo = async (deps: Pick<FlowDeps, "run">, cwd: string): Promis
 
 export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly pane: string }): Promise<Lane> => {
   await validateLaunch(deps, input);
-  const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock) };
+  const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: resolve(input.brief), done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock) };
   await deps.registry.write(lane);
   return lane;
 };
@@ -337,7 +339,8 @@ export const treeContext = async (deps: FlowDeps, draft: Lane): Promise<string |
 const draftLane = (deps: FlowDeps, input: LaunchInput): Lane => ({
   ...(input.noThread?.trim() ? { noThread: input.noThread.trim() } : {}),
   ...(input.whyNew?.trim() ? { whyNew: input.whyNew.trim() } : {}),
-  key: input.key, title: input.title, thread: input.thread ?? "none", brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, model: input.model ?? deps.config.defaultModel,
+  // the brief as an absolute path: the audit, owner-check and freshness read it from another directory than the lead's
+  key: input.key, title: input.title, thread: input.thread ?? "none", brief: resolve(input.brief), done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, model: input.model ?? deps.config.defaultModel,
   ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock),
 });
 
@@ -429,7 +432,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     ({ draft, text } = await renderBrief(deps, { ...input, thread: ref }));
   }
   await Bun.write(input.brief, text);
-  const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
+  const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${resolve(input.brief)} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   const opened = deps.config.backend === "aoe" ? await openAoe(deps, input.key, cwd, model, prompt, laneEnv(deps.config.launchEnv, input.useGpu)) : await openHerdr(deps, input.key, cwd, model, prompt);
   const lane: Lane = { ...draft, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}) };
   await deps.registry.write(lane);

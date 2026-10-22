@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { checkReviewers, ChallengeError, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
@@ -17,6 +17,9 @@ import { watchLog } from "./watch-log.ts";
 
 export const blockTexts = async (): Promise<Record<DirectiveBlock, string>> => ({ "eight-steps": await eightSteps(), "ui-steps": await uiSteps() });
 
+// A lane launched before briefs were stored absolute keeps the path the lead typed, relative to the lane's cwd.
+const briefOf = (lane: Pick<Lane, "brief" | "cwd">, defaultCwd: string): string => (isAbsolute(lane.brief) ? lane.brief : join(lane.cwd ?? defaultCwd, lane.brief));
+
 const readBrief = async (path: string): Promise<string> => {
   const f = Bun.file(path);
   return (await f.exists()) ? await f.text() : "";
@@ -24,7 +27,7 @@ const readBrief = async (path: string): Promise<string> => {
 
 export const laneDirectiveGaps = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>): Promise<Gap[]> => {
   if (!ledger.entries.length) return [];
-  const brief = await readBrief(lane.brief);
+  const brief = await readBrief(briefOf(lane, deps.config.defaultCwd));
   if (!brief) return [{ lane: lane.key, id: "-", line: `DIRECTIVE_GAP ${lane.key} -: its brief ${lane.brief} is not there to check` }];
   const repo = await laneRepo(deps, lane.cwd ?? deps.config.defaultCwd);
   return [...briefGaps(lane, brief, ledger, repo, blocks), ...leadGaps(lane, ledger)];
@@ -32,7 +35,7 @@ export const laneDirectiveGaps = async (deps: Pick<FlowDeps, "run" | "config">, 
 
 // The directives in scope for a lane, as the owner's words: owner-check reads them next to the brief.
 export const laneDirectiveWords = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger): Promise<string[]> => {
-  const brief = await readBrief(lane.brief);
+  const brief = await readBrief(briefOf(lane, deps.config.defaultCwd));
   const ctx = scopeContext(brief, ledger, { ui: lane.ui, repo: await laneRepo(deps, lane.cwd ?? deps.config.defaultCwd) });
   const waived = new Set((lane.directives?.waived ?? []).map((w) => w.id));
   return ledger.entries.filter((e) => e.words && !waived.has(e.id) && appliesWhy(e, ctx)).map((e) => `[${e.id}, ${e.date}] "${e.words}"`);
@@ -64,7 +67,7 @@ export type ApplyResult = { readonly lines: readonly string[]; readonly added: r
 // fields) is not something to send: it is listed for the lead. Nothing missing: DIRECTIVES_APPLY_NONE and no change.
 export const applyDirectives = async (deps: FlowDeps, lane: Lane, opts: { readonly dryRun?: boolean } = {}): Promise<ApplyResult> => {
   const ledger = launchLedger(deps);
-  const brief = await readBrief(lane.brief);
+  const brief = await readBrief(briefOf(lane, deps.config.defaultCwd));
   if (!brief) throw new DirectiveError(`lane ${lane.key}: its brief ${lane.brief} is not there`);
   const blocks = await blockTexts();
   const gaps = briefGaps(lane, brief, ledger, await laneRepo(deps, lane.cwd ?? deps.config.defaultCwd), blocks);
@@ -88,7 +91,7 @@ export const applyDirectives = async (deps: FlowDeps, lane: Lane, opts: { readon
     watchLog(deps.config.watchLog, deps.clock, { source: "directives", line });
     return { ok: false, added: [], message, lines: [...lines, line] };
   }
-  await Bun.write(lane.brief, withApplied(brief, texts));
+  await Bun.write(briefOf(lane, deps.config.defaultCwd), withApplied(brief, texts));
   await deps.registry.patch(lane.key, { directives: { applied: [...new Set([...(lane.directives?.applied ?? []), ...ids])], waived: lane.directives?.waived ?? [] } });
   const line = `DIRECTIVES_APPLIED ${lane.key}: ${ids.join(", ")} sent to ${lane.pane} (SUBMITTED) and added to ${lane.brief} under "${APPLIED_HEADING.slice(3)}"`;
   watchLog(deps.config.watchLog, deps.clock, { source: "directives", line });
