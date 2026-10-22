@@ -3,9 +3,13 @@
 #
 # Every aoe pane runs with $TMUX set to the default socket, and tmux takes the socket from $TMUX before TMUX_TMPDIR, so
 # `TMUX_TMPDIR=<tmp> tmux kill-server` inside a pane kills the server every Dori session runs on (2026-10-22 09:23Z: a lane's
-# QA cleanup took down the lead and four other sessions this way). A kill-server without -L/-S, or with -L default, -S the
-# default socket or -S the socket $TMUX names, is refused with TMUX_GUARD_REFUSED (exit 1). Every other call goes to the
-# first other tmux on PATH unchanged. To end the live server on purpose, call the real binary by its path.
+# QA cleanup took down the lead and four other sessions this way). The guard works out the socket the way tmux 3.4 does
+# (-S wins over -L whatever their order, the last of each counts, options may be clustered as in -uL name; without -L/-S
+# a non-empty $TMUX not starting with a comma names it; otherwise $TMUX_TMPDIR, when that directory exists, else /tmp, then
+# tmux-<uid>/<label or default>) and refuses a kill-server command (the first command word, or one after an argument
+# ending in an unescaped ;) only when that socket is the default one (/tmp/tmux-<uid>/default) or the one $TMUX names:
+# TMUX_GUARD_REFUSED, exit 1. Every other call, a kill-server on any other socket included, goes to the first other tmux
+# on PATH unchanged, in a shell with or without $TMUX. To end the live server on purpose, call the real binary by its path.
 set -u
 self=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
 real=""
@@ -19,51 +23,80 @@ for d in "${dirs[@]}"; do
 done
 [ -n "$real" ] || { echo "tmux-guard: no other tmux on PATH" >&2; exit 127; }
 
+canon() { readlink -f "$1" 2>/dev/null || printf '%s' "$1"; }
+
 args=("$@")
 n=$#
 i=0
-sock=""
+spath="" sset="" label="" lset=""
+# tmux 3.4 getopt "2c:CDdf:lL:NqS:T:uUvV": c f L S T take a value, glued (-Lname) or as the next word
 while [ "$i" -lt "$n" ]; do
   a=${args[$i]}
   case $a in
-    -L | -S) sock="$a${args[$((i + 1))]:-}"; i=$((i + 2)) ;;
-    -L* | -S*) sock=$a; i=$((i + 1)) ;;
-    -f | -c | -T) i=$((i + 2)) ;;
     --) i=$((i + 1)); break ;;
-    -*) i=$((i + 1)) ;;
+    -?*) ;;
     *) break ;;
   esac
+  i=$((i + 1))
+  k=1
+  while [ "$k" -lt "${#a}" ]; do
+    o=${a:$k:1}
+    k=$((k + 1))
+    case $o in
+      c | f | L | S | T)
+        if [ "$k" -lt "${#a}" ]; then v=${a:$k}; else v=${args[$i]:-}; i=$((i + 1)); fi
+        case $o in
+          L) label=$v; lset=1 ;;
+          S) spath=$v; sset=1 ;;
+        esac
+        break
+        ;;
+    esac
+  done
 done
 
 kill=""
+start=1
 for ((j = i; j < n; j++)); do
   a=${args[$j]}
+  w=$a
+  next=""
+  case $a in
+    *\\\;) ;;
+    *\;) w=${a%;}; next=1 ;;
+  esac
   # tmux takes any unique prefix of a command name: kill-ser, kill-serv, ... kill-server
-  if [ "${#a}" -ge 8 ] && [[ "kill-server" == "$a"* ]]; then
+  if [ -n "$start" ] && [ "${#w}" -ge 8 ] && [[ "kill-server" == "$w"* ]]; then
     kill=1
     break
   fi
+  start=$next
 done
 [ -n "$kill" ] || exec "$real" "$@"
 
-live=""
-if [ -z "$sock" ]; then
-  live="no -L/-S, so tmux targets ${TMUX:+the server \$TMUX names (${TMUX%%,*}), }the live server"
+tmuxenv=""
+case ${TMUX:-} in
+  "" | ,*) ;;
+  *) tmuxenv=${TMUX%%,*} ;;
+esac
+if [ -n "$sset" ]; then
+  target=$spath
+elif [ -z "$lset" ] && [ -n "$tmuxenv" ]; then
+  target=$tmuxenv
 else
-  path=""
-  case $sock in
-    -Ldefault) live="-L default is the live server" ;;
-    -L*) ;;
-    -S*) path=${sock#-S} ;;
-  esac
-  if [ -n "$path" ]; then
-    rp=$(readlink -f "$path" 2>/dev/null || printf '%s' "$path")
-    for t in "/tmp/tmux-$(id -u)/default" "/private/tmp/tmux-$(id -u)/default" "${TMUX%%,*}"; do
-      [ -n "$t" ] || continue
-      [ "$rp" = "$(readlink -f "$t" 2>/dev/null || printf '%s' "$t")" ] && live="-S $path is the live server"
-    done
-  fi
+  dir=/tmp
+  [ -n "${TMUX_TMPDIR:-}" ] && [ -d "$TMUX_TMPDIR" ] && dir=$TMUX_TMPDIR
+  [ -n "$lset" ] || label=default
+  target="$(canon "$dir")/tmux-$(id -u)/$label"
+fi
+
+rt=$(canon "$target")
+live=""
+if [ "$rt" = "$(canon "/tmp/tmux-$(id -u)/default")" ]; then
+  live="the default socket"
+elif [ -n "$tmuxenv" ] && [ "$rt" = "$(canon "$tmuxenv")" ]; then
+  live="the socket \$TMUX names"
 fi
 [ -n "$live" ] || exec "$real" "$@"
-echo "TMUX_GUARD_REFUSED kill-server: $live, which every Dori session (the lead included) runs on. A test server needs -L <name> or -S <socket> on every call (TMUX_TMPDIR does not count inside a pane: \$TMUX wins). Ending the live server on purpose: call $real directly." >&2
+echo "TMUX_GUARD_REFUSED kill-server: this call targets $target, $live: the live server, which every Dori session (the lead included) runs on. A test server needs -L <name> or -S <socket> on every call (TMUX_TMPDIR does not count inside a pane: \$TMUX wins). Ending the live server on purpose: call $real directly." >&2
 exit 1
