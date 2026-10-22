@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# dori-transcribe <audio or video file> [-o out.txt]: hand a recording to the host's transcriber account and get the
+# transcript back, one "[hh:mm:ss] 화자N: ..." line per speaker turn with the owner's correction ledger applied. The file
+# is dropped in ~/outbox/transcribe/; the queue host's transcribe-relay.py (unit dori-transcribe-relay) carries it over
+# and writes ~/inbox/transcribe/<id>.txt or <id>.err; this waits for it, prints it (or writes -o), and removes both.
+# Exit 2 bad input, 4 failed, 5 no answer within DORI_TRANSCRIBE_TIMEOUT seconds (14400).
+set -euo pipefail
+usage() { echo "usage: dori-transcribe <audio or video file> [-o out.txt]" >&2; exit 2; }
+[ $# -ge 1 ] || usage
+src="$1"; shift
+dest=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) dest="${2:-}"; [ -n "$dest" ] || usage; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[ -f "$src" ] || { echo "dori-transcribe: no such file: $src" >&2; exit 2; }
+ext="${src##*.}"; ext="${ext,,}"
+case "$ext" in
+  ogg | oga | opus | mp3 | m4a | aac | wav | flac | webm | mp4 | mov | mkv | amr | 3gp | wma | caf | aiff) ;;
+  *) echo "dori-transcribe: unsupported file type .$ext (ogg, opus, mp3, m4a, aac, wav, flac, webm, mp4, mov, mkv, amr, 3gp, wma, caf, aiff)" >&2; exit 2 ;;
+esac
+out="$HOME/outbox/transcribe" in="$HOME/inbox/transcribe"
+mkdir -p -m 700 "$out" "$in"
+id="$(date +%s)-$$-$RANDOM"
+cp "$src" "$out/.$id.$ext.part"
+mv "$out/.$id.$ext.part" "$out/$id.$ext"
+trap 'rm -f "$out/$id.$ext" "$in/$id.txt" "$in/$id.err"' EXIT
+start=$(date +%s)
+echo "TRANSCRIBE_QUEUED $id" >&2
+deadline=$(( start + ${DORI_TRANSCRIBE_TIMEOUT:-14400} ))
+while [ ! -e "$in/$id.txt" ] && [ ! -e "$in/$id.err" ]; do
+  [ "$(date +%s)" -lt "$deadline" ] || { echo "dori-transcribe: no answer from the transcribe relay within ${DORI_TRANSCRIBE_TIMEOUT:-14400} s" >&2; exit 5; }
+  sleep 1
+done
+if [ -e "$in/$id.err" ]; then
+  cat "$in/$id.err" >&2
+  exit 4
+fi
+if [ -n "$dest" ]; then cp "$in/$id.txt" "$dest"; else cat "$in/$id.txt"; fi
+echo "TRANSCRIBE_DONE $id $(( $(date +%s) - start )) s" >&2
