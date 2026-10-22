@@ -58,6 +58,26 @@ test("logs ANNOUNCE_FAIL when pane delivery fails", async () => {
   } finally { state.done(); }
 });
 
+// 2026-10-22: #170's title had `dori send` in backticks and every lead got ANNOUNCE_FAIL instead of the notice
+test("a commit title with a backtick or $( still reaches the lead, defused, as the pane send refuses both", async () => {
+  // Given
+  const state = withState();
+  try {
+    const sent: string[] = [];
+    const config = { ...defaultConfig(), leadPane: "lead", watchLog: join(state.dir, "lanes.log") };
+    const send = async (_pane: string, text: string) => {
+      if (/`|\$\(/.test(text)) throw new Error("refusing to send text containing a backtick or $(");
+      sent.push(text);
+      return true;
+    };
+    // When
+    const ok = await announceChange({ config, clock: fakeClock(0), print: () => {}, send }, { summary: "tmux: a bare `dori send` works, $(id) stays text", files: [] });
+    // Then
+    expect({ ok, first: sent[0]?.split("\n")[0] }).toEqual({ ok: true, first: "[UPDATE] tmux: a bare 'dori send' works, $ (id) stays text" });
+    expect(await Bun.file(config.watchLog).text()).toContain("update ANNOUNCED lead");
+  } finally { state.done(); }
+});
+
 test("uses each PR title when the git merge log contains multiple bodies", () => {
   // Given
   const log = "Merge pull request #1 from a/b\n\nFirst title\n\nMore detail\0Merge pull request #2 from a/c\n\nSecond title\n";
