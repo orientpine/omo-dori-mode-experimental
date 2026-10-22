@@ -34,7 +34,7 @@ import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
 import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, relatedGate, renderBrief, setDone, setGpu, setThread, threadGate, ThreadMissingError, validateLaunch } from "./launch.ts";
 import { DirectiveError, ledgerProblems, ledgerTable, loadLedger, promptTable } from "./directives.ts";
-import { applyDirectives, checkMeaning, runDirectiveAudit, sinceIso } from "./directive-audit.ts";
+import { applyDirectives, auditOrReport, checkMeaning, linkRows, pushLinks, sinceIso } from "./directive-audit.ts";
 import { addNode, formatIntent, formatTree, gateFix, intentView, laneArea, loadTree, NODE_KINDS, type NodeKind, recordBranch, recordOverride, recordRefusal, requiredMessage, researchCheck, researchFacts, researchHint, sendResearch, setStatus, stuckTop, stuckView, type TreeArea, TreeError, updateTree } from "./explore.ts";
 import { challengeMissing, ChallengeError, checkReviewers, familyOf, reviewers, runChallenge } from "./challenge.ts";
 import { canonical, evidenceLines, inferredLine, inferRepeats, laneEvents, type MetricRepeat, suspects } from "./auto-signals.ts";
@@ -102,7 +102,7 @@ const USAGE = `dori <command> [options]
                                        stops the launch (LAUNCH_DIRECTIVE_MISSING, exit 4, nothing opened) unless
                                        --waive <id> "<reason>" (repeatable) leaves it out: LAUNCH_DIRECTIVE_WAIVED in the
                                        watch log and the registry, and discord.waiveText to the owner
-  directives [table|prompts|check [--static]|apply <key> [--dry-run]]
+  directives [table|prompts|check [--static]|apply <key> [--dry-run]|links [--push]]
                                        the directive ledger: table (default) prints it as one table for the owner; prompts
                                        prints his words next to the prompt each brief gets (형 원문 | 지침문); check
                                        validates both layers and has a reviewer of another family compare every new or
@@ -436,7 +436,7 @@ const flags = parseArgs({
     option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
     from: { type: "string" }, first: { type: "string" }, "open-card": { type: "boolean" },
     "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
-    pull: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" }, "use-gpu": { type: "boolean" }, ui: { type: "boolean" },
+    pull: { type: "boolean" }, push: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" }, "use-gpu": { type: "boolean" }, ui: { type: "boolean" },
     hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" }, template: { type: "boolean" },
     goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
     direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
@@ -667,6 +667,8 @@ const ownerSpeech = async (text: string, what: string, toOwner: () => Promise<bo
 };
 // question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
 const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
+// the inbox dori directive-audit reads the owner's messages from and leaves its notices for the lead in
+const auditInbox = (): string => config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
 // every thread status change goes through this queue: coalesced, retried after a 429, decided by the open cards and
 // the lanes still working in the thread
 // working, or sent back to work by an objection (not-done); a lane that claimed done or is paused waits like the thread
@@ -1103,6 +1105,9 @@ try {
             return r.code === 0 ? `started unit=${unit} log=${log}` : `could not start: ${(r.err || r.out).trim().slice(0, 160)}`;
           },
           auditSummary: (week: string) => sendAuditSummary(deps, laneDeps.inbox ?? join(config.stateDir, "discord", "inbox.jsonl"), week),
+          // the daily directive audit on every Dori, and the owner's links pushed to the other Dori (directives.linkPeers)
+          directiveAudit: async (since: string) => (await auditOrReport(deps, { since, inbox: auditInbox(), owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "" })).lines,
+          directiveLinks: async () => (await pushLinks(deps)).lines,
         };
         for (const a of await freshnessTick(deps, process.env.HOME ?? "", hooks)) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
         // a done thread that a post after its close opened again goes back to the archive once quiet (discord.autoArchiveMin)
@@ -1663,6 +1668,17 @@ try {
       break;
     }
     case "directives": {
+      // the owner's message links of fork entries in this Dori's local ledger, and with --push to directives.linkPeers
+      if (key === "links") {
+        if (!flags.values.push) {
+          console.log(JSON.stringify(linkRows(config), null, 2));
+          break;
+        }
+        const r = await pushLinks(deps);
+        for (const line of r.lines) console.log(line);
+        if (!r.ok) process.exit(1);
+        break;
+      }
       const ledger = loadLedger(config);
       if ((key ?? "table") === "check") {
         const problems = ledgerProblems(ledger);
@@ -1687,15 +1703,15 @@ try {
         console.log(promptTable(ledger));
         break;
       }
-      if (key !== undefined && key !== "table") die("usage: dori directives [table|prompts|check [--static]|apply <key> [--dry-run]]");
+      if (key !== undefined && key !== "table") die("usage: dori directives [table|prompts|check [--static]|apply <key> [--dry-run]|links [--push]]");
       console.log(ledgerTable(ledger));
       break;
     }
     case "directive-audit": {
       const since = sinceIso(opt("since") ?? "24h", Date.now());
-      const inbox = config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
-      const r = await runDirectiveAudit(deps, { since, inbox, owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "", dryRun: Boolean(flags.values["dry-run"]) });
+      const r = await auditOrReport(deps, { since, inbox: auditInbox(), owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "", dryRun: Boolean(flags.values["dry-run"]) });
       for (const line of r.lines) console.log(line);
+      if (r.failed) process.exit(1);
       break;
     }
     case "transcribe":
