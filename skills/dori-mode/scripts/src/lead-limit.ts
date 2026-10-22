@@ -29,7 +29,7 @@ const DAY_MS = 24 * 60 * 60_000;
 // a retry this close needs no notice: a short rate limit, not a usage limit
 const NOTICE_MIN_WAIT_MS = 5 * 60_000;
 
-const tailOf = (path: string, bytes: number): string => {
+export const tailOf = (path: string, bytes: number): string => {
   const text = readFileSync(path, "utf8");
   if (text.length <= bytes) return text;
   const cut = text.slice(-bytes);
@@ -85,12 +85,12 @@ const readMark = (deps: FlowDeps, pane: string): LimitMark => {
   }
 };
 
-const clock = (deps: FlowDeps, at: number): string =>
+export const clock = (deps: FlowDeps, at: number): string =>
   new Date(at).toLocaleTimeString(deps.config.discord.locale, { timeZone: deps.config.discord.timeZone, hour: "2-digit", minute: "2-digit", hour12: false });
 const plain = (s: string, n: number): string => s.replace(/\s+/g, " ").replace(/`/g, "'").replaceAll("$(", "$ (").trim().slice(0, n);
 
 // where the owner reads the notice: the place of his newest message, if it is his (his channel, a thread, his DM)
-const placeOf = (rows: readonly OwnerRow[], fallback: string): string => rows.findLast((r) => r.channel && ["channel", "thread", "dm", "mention"].includes(r.scope ?? ""))?.channel ?? fallback;
+export const placeOf = (rows: readonly OwnerRow[], fallback: string): string => rows.findLast((r) => r.channel && ["channel", "thread", "dm", "mention"].includes(r.scope ?? ""))?.channel ?? fallback;
 
 export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   const pane = deps.config.leadPane;

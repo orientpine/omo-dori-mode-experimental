@@ -64,6 +64,11 @@ if [ -z "${1:-}" ]; then
 else
   ID=$1
   T=${2:-${DORI_LEAD_TMUX:?set DORI_LEAD_TMUX or pass the tmux session}}
+  # --start with an id (dori watch's lead revive): a session that came back meanwhile is left alone
+  if [ "$MODE" = start ] && tmux has-session -t "=$T" 2>/dev/null; then
+    echo "LEAD_ALREADY_RUNNING $T"
+    exit 0
+  fi
 fi
 PROMPT=${3-Dori mode}
 AGENT=${DORI_AGENT_BIN:-omo}

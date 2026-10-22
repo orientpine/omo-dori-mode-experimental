@@ -5,6 +5,7 @@ import { autoturnTick } from "./autoturn.ts";
 import { laneBackground } from "./background.ts";
 import { type DoriConfig, fill } from "./config.ts";
 import type { Question } from "./messenger/discord-cards.ts";
+import { leadDownTick } from "./lead-down.ts";
 import { leadLimitTick, limitResumeTick } from "./lead-limit.ts";
 import { missedAnswersTick } from "./missed-answers.ts";
 import { hasThread, type Lane, type Registry, statusOf, type ThreadPost, withStatus } from "./registry.ts";
@@ -311,6 +312,7 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
     out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
     out.push(...(await autoturnTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN autoturn check: ${String(e).slice(0, 200)}`])));
     out.push(...(await missedAnswersTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN missed answer check: ${String(e).slice(0, 200)}`])));
+    out.push(...(await leadDownTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lead down check: ${String(e).slice(0, 200)}`])));
     out.push(...(await leadLimitTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lead limit check: ${String(e).slice(0, 200)}`])));
     out.push(...(await limitResumeTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN limit resume check: ${String(e).slice(0, 200)}`])));
   }

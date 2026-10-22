@@ -130,6 +130,8 @@ export type DiscordWords = {
   readonly leadLimitText: string;
   readonly leadLimitNoTimeText: string;
   readonly leadBackText: string;
+  // the owner's line when dori watch starts a lead that was down (lead-down.ts; {since}: when it went down, discord.timeZone)
+  readonly leadDownText: string;
   readonly postRawReports: boolean;
   // minutes a done (✅) thread in DORI_DISCORD_CHANNEL stays quiet before freshness archives it (0: never; a thread an open
   // lane, an open card or a pending rename holds is left open)
@@ -170,6 +172,7 @@ export const defaultDiscordWords: DiscordWords = {
   leadLimitText: "I can't answer right now: my model is at its usage limit until about {until}. I'll read your messages then.",
   leadLimitNoTimeText: "I can't answer right now: my model calls fail ({reason}). I'll read your messages once they work again.",
   leadBackText: "My model works again; reading your messages now.",
+  leadDownText: "My session went down at {since}; I'm starting it again in the same conversation and will answer in a few minutes.",
   postRawReports: false,
   autoArchiveMin: 30,
   working: "working",
@@ -399,6 +402,9 @@ export type DoriConfig = {
   // dori watch: minutes an owner message may wait with no working reply from the lead before one LEAD_OWNER_WAITING line
   // is typed into the lead pane (lead-limit.ts; 0: never typed, the owner's limit notice still goes out)
   readonly leadWakeMin: number;
+  // dori watch: minutes the lead's tmux session may be gone (or its pane dead) before dori watch starts it again in the same
+  // conversation and tells the owner once (lead-down.ts; 0: never)
+  readonly leadReviveMin: number;
   readonly postAfterMin: number;
   readonly closeAfterMin: number;
   readonly heavySlots: number;
@@ -454,6 +460,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   autoturnResumeMax: 3,
   autoturnLongTurns: 300,
   leadWakeMin: 10,
+  leadReviveMin: 2,
   postAfterMin: 20,
   closeAfterMin: 5,
   heavySlots: 1,
