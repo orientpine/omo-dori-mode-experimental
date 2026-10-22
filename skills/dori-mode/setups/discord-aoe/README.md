@@ -189,7 +189,7 @@ Paths in that file must be absolute; neither systemd nor these helpers expands `
 
 ### tmux guard
 
-Inside an aoe pane `$TMUX` names the live server and tmux prefers it to `TMUX_TMPDIR`, so a lane's `TMUX_TMPDIR=<tmp> tmux kill-server` ends every session on the host (2026-10-22). `tmux-guard` passes every tmux call through to the real tmux and refuses only a `kill-server` without `-L`/`-S`, with `-L default`, or with `-S` naming the default socket or the one `$TMUX` names (`TMUX_GUARD_REFUSED`, exit 1). Link it ahead of the real tmux on each Dori account (panes, `dori-lanes` and aoe all put `~/.local/bin` first):
+Inside an aoe pane `$TMUX` names the live server and tmux prefers it to `TMUX_TMPDIR`, so a lane's `TMUX_TMPDIR=<tmp> tmux kill-server` ends every session on the host (2026-10-22). `tmux-guard` passes every tmux call through to the real tmux and refuses only a `kill-server` whose socket is the default one (`/tmp/tmux-<uid>/default`) or the one `$TMUX` names (`TMUX_GUARD_REFUSED`, exit 1). It works the socket out as tmux 3.4 does: `-S` wins over `-L` in either order, options may be clustered (`-uL name`), `$TMUX` counts only without `-L`/`-S`, and `TMUX_TMPDIR` only when that directory exists. So a shell without `$TMUX` can end its own `-S`, `-L` or `TMUX_TMPDIR` test server, while `kill-server` with no options, `-L default` or `-S <default socket> -L x` is still refused. Only `kill-server` in a command position counts (first, or after a `;`), so `send-keys ... kill-server` passes. Link it ahead of the real tmux on each Dori account (panes, `dori-lanes` and aoe all put `~/.local/bin` first):
 
 ```bash
 ln -sfn ~/.dori/src/skills/dori-mode/setups/discord-aoe/tmux-guard ~/.local/bin/tmux
