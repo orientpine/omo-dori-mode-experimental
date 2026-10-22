@@ -149,7 +149,7 @@ test("self-restart restarts the session with what dori launch-env prints: a laun
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: [`aoe session restart ${ID} cuda= hide=unset`] });
 });
 
-test("self-restart gives the session no DORI_* variable and drops them from the tmux server's global environment first", async () => {
+test("self-restart gives the session no DORI_* variable and drops them from the tmux server's global environment first, all but the unit's config, env-file and state-dir paths", async () => {
   const bin = join(state.dir, ".bun/bin");
   mkdirSync(bin, { recursive: true });
   mkdirSync(join(state.dir, ".dori"));
@@ -158,7 +158,7 @@ test("self-restart gives the session no DORI_* variable and drops them from the 
   writeFileSync(envFile, "DORI_DISCORD_TOKEN=from-file\nDORI_DISCORD_INBOX=/zzang/inbox.jsonl\n");
   executable(join(bin, "dori"), `printf '%s\\n' "dori $*" >> "${log}"`);
   executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* dori-vars=$(env | grep -c '^DORI_')" >> "${log}"`);
-  executable(join(bin, "tmux"), `case "$1" in\n  show-environment) printf '%s\\n' DORI_DISCORD_TOKEN=leaked DORI_LEAD_TMUX=aoe_zzangdori_1 PATH=/bin ;;\n  set-environment) printf '%s\\n' "tmux $*" >> "${log}" ;;\n  *) printf '%s\\n' '❯' ;;\nesac`);
+  executable(join(bin, "tmux"), `case "$1" in\n  show-environment) printf '%s\\n' DORI_CONFIG=/g/config.json DORI_DISCORD_TOKEN=leaked DORI_ENV_FILE=/g/dori.env DORI_LEAD_TMUX=aoe_zzangdori_1 DORI_STATE_DIR=/g/state PATH=/bin ;;\n  set-environment) printf '%s\\n' "tmux $*" >> "${log}" ;;\n  *) printf '%s\\n' '❯' ;;\nesac`);
   executable(join(bin, "sleep"), "exit 0");
   executable(join(bin, "systemctl"), "exit 1");
   executable(join(bin, "agent"), "exit 0");
@@ -168,6 +168,39 @@ test("self-restart gives the session no DORI_* variable and drops them from the 
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
     code: 0,
     commands: [`dori launch-env ${TMUX}`, "tmux set-environment -g -u DORI_DISCORD_TOKEN", "tmux set-environment -g -u DORI_LEAD_TMUX", `aoe session restart ${ID} dori-vars=0`],
+  });
+});
+
+// 2026-10-22: a GongDori lane window had no DORI_*, and a bare `dori send` found no ~/.dori/dori.env ("DORI_DISCORD_TOKEN is not set")
+test("tmux-server gives the server the unit's DORI_CONFIG, DORI_ENV_FILE and DORI_STATE_DIR, started or adopted, and no other DORI_*", async () => {
+  const log = join(state.dir, "commands");
+  const fake = join(state.dir, "tmux");
+  const holder = Bun.spawn(["cat"], { stdin: "pipe", stdout: "ignore" });
+  executable(fake, `case "$1" in\n  display-message) [ -n "$SERVER" ] && printf '%s\\n' "$SERVER" ;;\n  -D) printf '%s\\n' "tmux -D $(env | grep '^DORI_' | sort | tr '\\n' ' ')" >> "${log}" ;;\n  *) printf '%s\\n' "tmux $*" >> "${log}" ;;\nesac`);
+  const env = { PATH: process.env.PATH ?? "", TMUX_SERVER_BIN: fake, DORI_CONFIG: "/g/config.json", DORI_ENV_FILE: "/g/dori.env", DORI_STATE_DIR: "/g/state", DORI_DISCORD_TOKEN: "from-unit", DORI_LEAD_TMUX: "aoe_x" };
+  const server = (pid: string) => Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/tmux-server")], { env: { ...env, SERVER: pid }, stdout: "pipe", stderr: "pipe" });
+  const started = server("");
+  const startedOut = { code: await started.exited, out: await new Response(started.stdout).text() };
+  // the adopted server (holder) ends only after tmux-server has set the environment and is following it
+  const adopted = server(String(holder.pid));
+  const reader = adopted.stdout.getReader();
+  let out = "";
+  while (!out.includes("DORI_STATE_DIR\n")) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    out += new TextDecoder().decode(chunk.value);
+  }
+  holder.stdin.end();
+  const adoptedOut = { code: await adopted.exited, out };
+  expect({ startedOut, adoptedOut, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({
+    startedOut: { code: 0, out: "TMUX_SERVER_START DORI_CONFIG DORI_ENV_FILE DORI_STATE_DIR\n" },
+    adoptedOut: { code: 0, out: "TMUX_ENV_SET DORI_CONFIG\nTMUX_ENV_SET DORI_ENV_FILE\nTMUX_ENV_SET DORI_STATE_DIR\n" },
+    commands: [
+      "tmux -D DORI_CONFIG=/g/config.json DORI_ENV_FILE=/g/dori.env DORI_STATE_DIR=/g/state ",
+      "tmux set-environment -g DORI_CONFIG /g/config.json",
+      "tmux set-environment -g DORI_ENV_FILE /g/dori.env",
+      "tmux set-environment -g DORI_STATE_DIR /g/state",
+    ],
   });
 });
 

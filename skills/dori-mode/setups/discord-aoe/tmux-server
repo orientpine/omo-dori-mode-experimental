@@ -7,10 +7,18 @@
 # until it ends; with none up, this unit starts it with tmux -D. Restart=always then starts or adopts the next one.
 # Exit 75 (a server it cannot move) is for RestartPreventExitStatus=75, so the unit stops instead of retrying.
 # TMUX_SERVER_ARGS (e.g. "-L qa-x") points it at a test server instead of the default socket.
+# The unit's Environment= names this Dori's DORI_CONFIG, DORI_ENV_FILE and DORI_STATE_DIR (paths, never a token): they
+# go into the server's global environment, so a pane aoe opens or restarts (launch, self-restart, lead revive, the aoe
+# web) runs a bare `dori` as this Dori and reads its token from that dori.env (2026-10-22: a GongDori lane's first
+# `dori send` failed with "DORI_DISCORD_TOKEN is not set" because no window had them). Any other DORI_* is dropped.
 set -u
 T=${TMUX_SERVER_BIN:-/usr/bin/tmux}
 unset TMUX
 read -r -a ARGS <<<"${TMUX_SERVER_ARGS:-}"
+SELECTORS=(DORI_CONFIG DORI_ENV_FILE DORI_STATE_DIR)
+for v in $(env | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  [[ " ${SELECTORS[*]} " == *" $v "* ]] || unset "$v"
+done
 CG=$(sed -n 's/^0:://p' /proc/self/cgroup)
 UNIT=${CG##*/}
 
@@ -25,7 +33,10 @@ if [ -n "$pid" ]; then
     fi
     echo "TMUX_SERVER_ADOPTED $pid from ${from##*/}"
   fi
+  for v in "${SELECTORS[@]}"; do
+    [ -n "${!v:-}" ] && "$T" "${ARGS[@]}" set-environment -g "$v" "${!v}" && echo "TMUX_ENV_SET $v"
+  done
   exec tail --pid="$pid" -f /dev/null
 fi
-echo "TMUX_SERVER_START"
+echo "TMUX_SERVER_START$(for v in "${SELECTORS[@]}"; do [ -n "${!v:-}" ] && printf ' %s' "$v"; done)"
 exec "$T" "${ARGS[@]}" -D

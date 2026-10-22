@@ -13,9 +13,10 @@
 #
 # Another Dori on the same host (its own config and dori.env): run this with its DORI_CONFIG, DORI_ENV_FILE and
 # DORI_STATE_DIR set, so `dori lead`, `dori type` and the failure notice use that Dori's lead, token and channel.
-# The session itself never gets a Dori's variables: aoe and tmux run without any DORI_*, and the tmux server's global
-# environment loses them first. A server first started by a unit that loaded dori.env keeps that file's token, inbox
-# and lead in its global environment and hands them to every pane it opens, another Dori's included.
+# aoe and tmux run without any DORI_*, and the tmux server's global environment loses them first, except
+# DORI_CONFIG, DORI_ENV_FILE and DORI_STATE_DIR, which the account's tmux unit puts there (tmux-server) so the session's
+# bare `dori` acts as this Dori and reads its token from that dori.env. A server first started by a unit that loaded
+# dori.env keeps that file's token, inbox and lead in its global environment and hands them to every pane it opens.
 set -uo pipefail
 CALLER_NODE=$(command -v node 2>/dev/null)
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
@@ -43,7 +44,8 @@ NODE_BIN=$(node_bin)
 # shellcheck disable=SC2046
 no_dori_env() { env $(env | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/-u \1/p') "$@"; }
 scrub_tmux_env() {
-  no_dori_env tmux show-environment -g 2>/dev/null | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/\1/p' | while read -r v; do
+  no_dori_env tmux show-environment -g 2>/dev/null | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/\1/p' |
+    grep -vxE 'DORI_(CONFIG|ENV_FILE|STATE_DIR)' | while read -r v; do
     no_dori_env tmux set-environment -g -u "$v" && log "TMUX_ENV_DROPPED $v"
   done
 }

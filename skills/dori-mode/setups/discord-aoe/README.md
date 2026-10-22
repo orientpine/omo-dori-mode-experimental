@@ -203,6 +203,8 @@ The default tmux server lives in the cgroup of whatever started it, and it takes
 [Service]
 Type=simple
 Delegate=yes
+# this Dori's files (paths only, never a token); here a Dori whose config is not in ~/.dori
+Environment=DORI_CONFIG=%h/.mydori/config.json DORI_ENV_FILE=%h/.mydori/dori.env DORI_STATE_DIR=%h/.mydori/state
 ExecStart=%h/.dori/src/skills/dori-mode/setups/discord-aoe/tmux-server
 Restart=always
 RestartSec=5
@@ -213,6 +215,8 @@ WantedBy=default.target
 ```
 
 `tmux-server` starts the server with `tmux -D`, or, when a server is already up (started by the web terminal or by hand), moves that server into the unit without restarting it (`TMUX_SERVER_ADOPTED <pid> from <unit>`; the move needs `Delegate=yes`) and follows it until it ends; `Restart=always` then starts the next one there. A server it cannot move exits 75 (`TMUX_SERVER_ADOPT_FAIL`), which `RestartPreventExitStatus=75` keeps from restarting every few seconds. Add `After=<user>-tmux.service` to `aoe-serve.service` and `dori-lead.service` (a drop-in), and `systemctl --user enable --now <user>-tmux.service`. `self-restart.sh` starts the unit before `aoe`, so a lead revive or boot start lands there too.
+
+The unit's `DORI_CONFIG`, `DORI_ENV_FILE` and `DORI_STATE_DIR` go into the server's global environment (with `tmux -D` the server starts with them; an adopted server gets them through `tmux set-environment -g`, `TMUX_ENV_SET <name>`), and `tmux-server` drops every other `DORI_*` it inherited. Every pane aoe opens or restarts takes the global environment (`dori launch`, `self-restart.sh`, the lead revive in `dori watch`, a restart from the aoe web), so a bare `dori` in a lead or lane window acts as this Dori and reads its token from that `dori.env`; `self-restart.sh` keeps these three names when it clears the server's `DORI_*`. Without them a Dori whose files are not in `~/.dori` cannot send from a new window (2026-10-22: a GongDori lane's first `dori send` failed with `DORI_DISCORD_TOKEN is not set`). A Dori in `~/.dori` can leave them out. On a server that is already running, `tmux set-environment -g <name> <path>` for the three adds them without a restart; panes started before keep their old environment.
 
 ### Google mail and calendar
 
