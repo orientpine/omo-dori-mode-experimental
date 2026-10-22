@@ -1,0 +1,13 @@
+[Unit]
+Description=Dori transcribe relay (recordings from every Dori account to the transcriber account, transcripts back)
+After=default.target
+
+[Service]
+EnvironmentFile=%h/.dori/dori.env
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -I %h/.dori/src/skills/dori-mode/setups/discord-aoe/transcribe-relay.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
