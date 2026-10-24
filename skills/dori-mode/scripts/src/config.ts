@@ -28,6 +28,7 @@ export type UpdateService = {
 };
 export type UpdateConfig = {
   readonly repo: string;
+  readonly branch: string;
   readonly services: readonly UpdateService[];
   readonly readyTimeoutSec: number;
   readonly alertPane: string;
@@ -445,7 +446,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   backend: "herdr",
   stateDir: join(home, ".dori", "state"),
   watchLog: join(home, ".dori", "state", "lanes.log"),
-  update: { repo: resolve(import.meta.dir, "../../../.."), services: [], readyTimeoutSec: 60, alertPane: "", announce: "Tell the owner in your own channel, briefly, what changed and how your behaviour changes because of it." },
+  update: { repo: resolve(import.meta.dir, "../../../.."), branch: "main", services: [], readyTimeoutSec: 60, alertPane: "", announce: "Tell the owner in your own channel, briefly, what changed and how your behaviour changes because of it." },
   laneWorkspace: "",
   workspaces: [],
   ignorePanes: [],

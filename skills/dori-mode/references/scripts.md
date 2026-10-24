@@ -82,6 +82,7 @@ The fields of `scorecard` are `scorecard.timeZone`, `scorecard.language`, `score
 | Field | Default | Meaning |
 |---|---|---|
 | `update.repo` | git toplevel of the running CLI | clone whose HEAD is applied; `~` is expanded |
+| `update.branch` | `"main"` | the only branch `dori update` applies; on any other branch or a detached HEAD it prints `UPDATE_SKIPPED off-main` |
 | `update.services` | `[]` | user services to restart when their source paths change |
 | `update.services.unit` | required | systemd user unit name |
 | `update.services.paths` | `["skills/dori-mode/scripts/src/"]` | file path prefixes relative to `update.repo` |
@@ -147,6 +148,8 @@ library callers can pass the user id as the fourth argument to `Discord.send`, a
 ### `dori update [--pull] [--dry-run]`
 
 Applies the clone's current HEAD. `--pull` first runs `git -C <update.repo> pull --ff-only`. The first run saves HEAD and sorted known dotted config keys to `<stateDir>/update.json`, prints and logs `UPDATED first-run`, and restarts and announces nothing. If HEAD equals the saved `applied` SHA, it prints `UP_TO_DATE` without writing a watch-log line.
+
+Only `update.branch` is applied. When the clone is on another branch or a detached HEAD (a lane switched branches or checked out an old commit in it, which also starts the path unit), the run prints and logs one `UPDATE_SKIPPED off-main <branch|detached> at <sha7>: only <branch> is applied` line before any pull, and restarts, announces and records nothing. When HEAD is an ancestor of the applied SHA (the branch moved back), it prints and logs `UPDATE_SKIPPED behind <sha7> is an ancestor of applied <sha7>` the same way, so services never go back to older code. Back on the branch, the next run applies its HEAD as usual.
 
 One update runs at a time per `stateDir`: a run first takes `<stateDir>/update.lock` (its pid and start time) and removes it when done, and a second run (a manual `dori update --pull` moves the branch ref, so the path unit starts one at the same moment) waits for it before it pulls or reads HEAD. If the run it waited for already applied that HEAD, it prints and logs one `UPDATE_SKIP <sha7> already applied by the dori update this run waited for` line and restarts and announces nothing; a newer HEAD is applied as usual, so no commit is missed. A lock whose pid is gone is taken over; one still held after `readyTimeoutSec` x services + 300 seconds ends the run with `UPDATE_FAIL update lock: another dori update is running (pid ...)`.
 

@@ -16,7 +16,7 @@ test("sends one summary to leadPane when a merge changes a reference", async () 
     // When
     await applyUpdate({
       config, configPath: join(state.dir, "missing.json"), clock: fakeClock(0),
-      git: async (args) => ({ code: 0, err: "", out: args.includes("rev-parse") ? "new" : args.includes("diff") ? "skills/dori-mode/references/sessions.md" : args.includes("--merges") ? "Merge pull request #23 from acme/change\n\nExplain new lane behaviour\n" : "" }),
+      git: async (args) => ({ code: args.includes("merge-base") ? 1 : 0, err: "", out: args.includes("symbolic-ref") ? "main" : args.includes("rev-parse") ? "new" : args.includes("diff") ? "skills/dori-mode/references/sessions.md" : args.includes("--merges") ? "Merge pull request #23 from acme/change\n\nExplain new lane behaviour\n" : "" }),
       systemctl: async () => ({ code: 0, out: "", err: "" }),
       send: async (pane, text) => { sent.push({ pane, text }); return true; }, print: () => {},
     }, { pull: false, dryRun: false });

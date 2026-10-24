@@ -11,23 +11,31 @@ let state: ReturnType<typeof withState>;
 let deps: UpdateDeps;
 let changes: string;
 let head: string;
+let branch: string | undefined;
+let behind: boolean;
 let lines: string[];
 let calls: string[][];
 let alerts: string[];
 const options = { pull: false, dryRun: false };
 const old = "1111111111111111111111111111111111111111";
 const next = "2222222222222222222222222222222222222222";
+// git as the clone answers it: HEAD's branch (undefined: detached, exit 1), whether HEAD is an ancestor of applied, the rest.
+const answer = (args: readonly string[], at: string) => args.includes("symbolic-ref") ? { code: branch === undefined ? 1 : 0, out: branch ?? "", err: "" }
+  : args.includes("merge-base") ? { code: behind ? 0 : 1, out: "", err: "" }
+  : { code: 0, out: args.includes("rev-parse") ? at : args.includes("diff") ? changes : "", err: "" };
 beforeEach(() => {
   state = withState();
   changes = "skills/dori-mode/scripts/src/cli.ts";
   head = next;
+  branch = "main";
+  behind = false;
   lines = [];
   calls = [];
   alerts = [];
   let time = 0;
   const git: Runner = async (args) => {
     calls.push([...args]);
-    return { code: 0, out: args.includes("rev-parse") ? head : args.includes("diff") ? changes : "", err: "" };
+    return answer(args, head);
   };
   const systemctl: Runner = async (args) => {
     calls.push([...args]);
@@ -183,7 +191,7 @@ test("a run that waited applies a newer HEAD instead of skipping it", async () =
   // Given
   baseline();
   const third = "3333333333333333333333333333333333333333";
-  const git: Runner = async (args) => ({ code: 0, out: args.includes("rev-parse") ? third : args.includes("diff") ? changes : "", err: "" });
+  const git: Runner = async (args) => answer(args, third);
   // When
   await Promise.all([applyUpdate(deps, options), applyUpdate(waiting(git), options)]);
   // Then
@@ -205,7 +213,7 @@ test("takes over the lock of a dori update that died", async () => {
 test("logs UPDATE_FAIL and preserves state when the pull fails", async () => {
   // Given
   baseline();
-  deps = { ...deps, git: async () => ({ code: 1, out: "", err: "not fast-forward" }) };
+  deps = { ...deps, git: async (args) => args.includes("symbolic-ref") ? answer(args, head) : { code: 1, out: "", err: "not fast-forward" } };
   // When
   expect(await applyUpdate(deps, { pull: true, dryRun: false })).toBe(false);
   // Then
@@ -213,6 +221,52 @@ test("logs UPDATE_FAIL and preserves state when the pull fails", async () => {
   expect((await logLines())[0]).toEndWith(lines[0] ?? "");
   expect((await Bun.file(join(state.dir, "update.json")).json()).applied).toBe(old);
   expect(alerts).toEqual(["test-pane [ALERT] dori update: UPDATE_FAIL git pull: not fast-forward"]);
+});
+
+// 2026-10-24: a lane's git switch in ~/.dori/src moved HEAD to 909b014 and the path unit restarted dori-inbound and dori-lanes on that old code.
+for (const [name, on] of [["a lane branch", "gate-summary-denials"], ["a detached HEAD", undefined]] as const) {
+  test(`skips with one UPDATE_SKIPPED line and pulls nothing when the clone is on ${name}`, async () => {
+    // Given
+    baseline();
+    branch = on;
+    // When
+    expect(await applyUpdate(deps, { pull: true, dryRun: false })).toBe(true);
+    // Then
+    const line = `UPDATE_SKIPPED off-main ${on ?? "detached"} at ${next.slice(0, 7)}: only main is applied`;
+    expect(lines).toEqual([line]);
+    expect(await logLines()).toEqual([`1970-01-01T00:00:00.000Z update ${line}`]);
+    expect(calls.some((args) => args.includes("pull") || args[0] === "systemctl")).toBe(false);
+    expect((await Bun.file(join(state.dir, "update.json")).json()).applied).toBe(old);
+    expect(alerts).toEqual([]);
+  });
+}
+
+test("skips a HEAD that is an ancestor of the applied commit and applies the next one on main", async () => {
+  // Given
+  baseline();
+  behind = true;
+  // When
+  expect(await applyUpdate(deps, options)).toBe(true);
+  behind = false;
+  head = "3333333333333333333333333333333333333333";
+  expect(await applyUpdate(deps, options)).toBe(true);
+  // Then
+  expect(lines.slice(0, 1)).toEqual([`UPDATE_SKIPPED behind ${next.slice(0, 7)} is an ancestor of applied ${old.slice(0, 7)}`]);
+  expect(calls).toContainEqual(["git", "-C", state.dir, "merge-base", "--is-ancestor", next, old]);
+  expect(calls.filter((args) => args.includes("restart"))).toHaveLength(1);
+  expect(lines).toContain("UPDATED 1111111..3333333 changed=1 restarted=dori-test");
+  expect((await Bun.file(join(state.dir, "update.json")).json()).applied).toBe(head);
+});
+
+test("follows update.branch when the clone tracks another branch", async () => {
+  // Given
+  baseline();
+  branch = "stable";
+  deps = { ...deps, config: { ...deps.config, update: { ...deps.config.update, branch: "stable" } } };
+  // When
+  expect(await applyUpdate(deps, options)).toBe(true);
+  // Then
+  expect(lines).toContain("UPDATED 1111111..2222222 changed=1 restarted=dori-test");
 });
 
 test("attempts the next matched service when the first restart fails", async () => {

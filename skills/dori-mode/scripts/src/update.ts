@@ -81,6 +81,16 @@ const applyLocked = async (deps: UpdateDeps, options: UpdateOptions, waited: boo
   };
   try {
     if (lockError) throw lockError;
+    // The path unit also fires when a lane checks out another branch or an old commit in this clone (10-24: a lane's
+    // switch to 909b014 restarted dori-inbound and dori-lanes on code without #179). Only update.branch is applied,
+    // and it is not pulled from elsewhere; back on that branch the next run applies its HEAD as usual.
+    const onBranch = await deps.git(["git", "-C", config.update.repo, "symbolic-ref", "-q", "--short", "HEAD"], { timeoutMs: 60_000 });
+    if (onBranch.code > 1) throw new UpdateError(`git symbolic-ref: ${onBranch.err || onBranch.out || `exit ${onBranch.code}`}`);
+    const current = onBranch.code === 0 ? onBranch.out : "";
+    if (current !== config.update.branch) {
+      emit(`UPDATE_SKIPPED off-main ${current || "detached"} at ${(await git(["rev-parse", "HEAD"])).slice(0, 7)}: only ${config.update.branch} is applied`);
+      return true;
+    }
     if (options.pull && !options.dryRun) await git(["pull", "--ff-only"]);
     if (options.pull && options.dryRun) deps.print("DRY_RUN git pull --ff-only (not executed)");
     const head = await git(["rev-parse", "HEAD"]);
@@ -89,6 +99,11 @@ const applyLocked = async (deps: UpdateDeps, options: UpdateOptions, waited: boo
     const keys = knownConfigKeys();
     if (state?.applied === head && waited) { emit(`UPDATE_SKIP ${head.slice(0, 7)} already applied by the dori update this run waited for`); return true; }
     if (state?.applied === head) { deps.print("UP_TO_DATE"); return true; }
+    // A branch moved back (a reset, or the path unit reading a ref mid-switch) never runs older code than it applied.
+    if (state && (await deps.git(["git", "-C", config.update.repo, "merge-base", "--is-ancestor", head, state.applied], { timeoutMs: 60_000 })).code === 0) {
+      emit(`UPDATE_SKIPPED behind ${head.slice(0, 7)} is an ancestor of applied ${state.applied.slice(0, 7)}`);
+      return true;
+    }
     const save = async (): Promise<void> => {
       if (options.dryRun) return;
       mkdirSync(config.stateDir, { recursive: true });
