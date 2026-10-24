@@ -13,7 +13,8 @@ export const EYES = "👀";
 export const LISTENER_INTENTS = 1 | (1 << 9) | (1 << 12) | (1 << 15);
 // 4004 bad token, 4013/4014 invalid or disallowed intents: reconnecting cannot fix these
 const FATAL_CLOSE = new Set([4004, 4013, 4014]);
-const MAX_BACKOFF_MS = 60_000;
+// Short cap: a dead network fails each try at once, so a long wait only delays READY after the link is back.
+const MAX_BACKOFF_MS = 10_000;
 
 export type GatewayConnection = {
   send(data: string): void;
