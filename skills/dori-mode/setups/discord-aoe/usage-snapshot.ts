@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 // bun usage-snapshot.ts [out.png]: capture omo-usage's ANSI TUI and render with headless Firefox.
+// It photographs the omo-usage TUI already running in a tmux pane (the screen the owner reads) and only starts its own
+// omo-usage when no such pane shows a loaded frame: a fresh process has no earlier rows, so an account answering 429
+// loses its bars, and every fresh query pushes the shared tokens back into Anthropic's 429 window.
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,20 +62,71 @@ export function usageHtml(ansi: string): { readonly html: string; readonly heigh
   };
 }
 
+const SNAP_SESSION = "omousage-snap-";
+const drawn = (s: string) => /\[q\] quit/.test(s) && /updated \d{1,2}:\d{2}/.test(s) && !/loading/.test(s);
+// The header's "updated HH:MM:SS"; rows of newer omo-usage carry "updated HH:MM" without seconds.
+const frameStamp = (s: string): string => (s.replace(/\x1b\[[0-9;]*m/g, "").match(/updated (\d{1,2}:\d{2}:\d{2})/)?.[1] ?? "").padStart(8, "0");
+
+// Panes whose process tree runs omo-usage, other than this script's own temporary sessions.
+export async function usagePanes(runner: Runner): Promise<string[]> {
+  const panes = await runner(["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_pid} #{session_name}"]);
+  if (panes.code !== 0 || !panes.out.trim()) return [];
+  const ps = await runner(["ps", "-eo", "pid=,ppid=,args="]);
+  if (ps.code !== 0) return [];
+  const children = new Map<string, string[]>();
+  const args = new Map<string, string>();
+  for (const line of ps.out.split("\n")) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const [, pid = "", ppid = "", cmd = ""] = m;
+    args.set(pid, cmd);
+    children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+  }
+  const found: string[] = [];
+  for (const line of panes.out.split("\n")) {
+    const [id, pid, session = ""] = line.trim().split(/\s+/);
+    if (!id || !pid || session.startsWith(SNAP_SESSION)) continue;
+    const queue = [pid];
+    for (let p = queue.shift(); p !== undefined; p = queue.shift()) {
+      if (/(^|[\s/])omo-usage(\.ts)?(\s|$)/.test(args.get(p) ?? "")) { found.push(id); break; }
+      queue.push(...(children.get(p) ?? []));
+    }
+  }
+  return found;
+}
+
 export async function usageSnapshot(out: string, env: Record<string, string | undefined>, runner: Runner = run, clock: Clock = realClock): Promise<void> {
-  const dir = env.DORI_USAGE_DIR;
-  if (!dir) throw new Error("DORI_USAGE_DIR must point to the omo-usage checkout");
   const snapDir = env.DORI_USAGE_SNAP_DIR || join(homedir(), "snap", "firefox", "common", "omo-usage");
-  const session = `omousage-snap-${process.pid}`;
   const sh = async (argv: string[]): Promise<string> => {
     const r = await runner(argv);
     if (r.code !== 0) throw new Error(`${argv.slice(0, 3).join(" ")}: ${r.err.slice(0, 300)}`);
     return r.out;
   };
+  let ansi = "";
+  const panes = await usagePanes(runner);
+  // A pane mid-refresh shows "loading…" for a few seconds: give each pane up to 10 s, then take the freshest loaded frame.
+  const pending = new Set(panes);
+  for (let i = 0; pending.size > 0 && i < 20; i++) {
+    if (i > 0) await clock.sleep(500);
+    for (const pane of [...pending]) {
+      const r = await runner(["tmux", "capture-pane", "-e", "-p", "-t", pane]);
+      if (r.code !== 0 || !drawn(r.out)) continue;
+      pending.delete(pane);
+      if (!ansi || frameStamp(r.out) > frameStamp(ansi)) ansi = r.out;
+    }
+  }
+  if (!ansi) ansi = await freshUsage(env, sh, clock);
+  await renderPng(out, snapDir, ansi, sh);
+}
+
+// No running omo-usage pane: start one, and say so on the first line of the image.
+async function freshUsage(env: Record<string, string | undefined>, sh: (argv: string[]) => Promise<string>, clock: Clock): Promise<string> {
+  const dir = env.DORI_USAGE_DIR;
+  if (!dir) throw new Error("no running omo-usage pane, and DORI_USAGE_DIR must point to the omo-usage checkout");
+  const session = `${SNAP_SESSION}${process.pid}`;
   // tmux accepts an argv command; paths with spaces never become shell source.
   await sh(["tmux", "new-session", "-d", "-s", session, "-x", "112", "-y", "50", "-c", dir, "bun", "run", "bin/omo-usage.ts"]);
   let ansi = "";
-  const drawn = (s: string) => /\[q\] quit/.test(s) && /updated \d{1,2}:\d{2}/.test(s) && !/loading/.test(s);
   try {
     for (let i = 0; i < 60; i++) {
       ansi = await sh(["tmux", "capture-pane", "-e", "-p", "-t", session]);
@@ -83,6 +137,12 @@ export async function usageSnapshot(out: string, env: Record<string, string | un
     await sh(["tmux", "kill-session", "-t", session]);
   }
   if (!drawn(ansi)) throw new Error("omo-usage did not finish loading within 30 s");
+  return `\x1b[33m  ${FRESH_NOTE}\x1b[0m\n${ansi}`;
+}
+
+export const FRESH_NOTE = "실행 중인 omo-usage 화면이 없어 새로 조회한 값 (429 계정은 이전 값 없음)";
+
+async function renderPng(out: string, snapDir: string, ansi: string, sh: (argv: string[]) => Promise<string>): Promise<void> {
   mkdirSync(snapDir, { recursive: true, mode: 0o700 });
   const page = join(snapDir, `page-${process.pid}.html`);
   const shot = join(snapDir, `shot-${process.pid}.png`);

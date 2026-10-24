@@ -16,7 +16,7 @@ What you get:
 | `self-restart.sh` | The one safe way to restart an aoe session, the Dori's own included, e.g. after an agent update. A lane restarts with `launchEnv` unless it uses the GPU (`dori launch-env`). |
 | `google-watch.ts` (unit `dori-google-watch`) | Read-only zele polling for new unread mail and upcoming calendar events; writes JSONL and remembers notified ids. |
 | `kakao-watch.ts`, `kakao-login.ts` | Optional, for a Dori with its own KakaoTalk account: polls its rooms through agent-messenger, appends new messages to the inbox, prints `KAKAO_MSG` for the Dori's monitor and marks the rooms read, again until it holds. Off unless `DORI_KAKAO_SELF_ID` is set. |
-| `usage-snapshot.ts` | Captures the omo-usage TUI with ANSI colors and renders a PNG using headless Firefox. |
+| `usage-snapshot.ts` | Captures the running omo-usage TUI (or a fresh one) with ANSI colors and renders a PNG using headless Firefox. |
 | `dori.sh` | Starts `dori-inbound` and `dori-google-watch`, starts the current lead session if needed, then attaches to it. Requires the separate `dori lead` PR. |
 | `transcribe.sh`, `setup-asr.sh` | Local speech-to-text with whisper.cpp (CUDA when available) for `hooks.transcribe`. |
 | `transcribe_long.py`, `diarize.py`, `setup-diarize.sh` | Long recordings (meetings) in `transcribe.sh`: a line that whisper.cpp starts repeating is transcribed again, and each speaker turn gets a `[hh:mm:ss] 화자N:` line (pyannote `speaker-diarization-community-1`). |
@@ -301,13 +301,18 @@ and arm the monitor again once (`pgrep -f kakao-watch.ts` shows exactly one).
 
 ### Usage screenshot
 
-Set `DORI_USAGE_DIR` to the omo-usage checkout (required) and optionally `DORI_USAGE_SNAP_DIR`
+Set `DORI_USAGE_DIR` to the omo-usage checkout (used only when no omo-usage is running) and optionally `DORI_USAGE_SNAP_DIR`
 to a Firefox-accessible working directory (default `~/snap/firefox/common/omo-usage`).
 Needs bun, tmux, Firefox, and omo-usage's authenticated accounts.
 Run `bun "$S/usage-snapshot.ts" /absolute/path/to/usage.png`; it prints the PNG path.
 The default output is the OS temporary directory's `omo-usage.png`.
-It creates a temporary tmux session, waits up to 30 seconds for the loaded TUI, captures its colors,
-and removes the session and intermediate HTML/PNG. Run once per request: repeated quota queries may hit rate limits.
+It first looks for tmux panes already running omo-usage (the screen the owner reads), waits up to 10 seconds
+for each to show a loaded frame, and photographs the one with the latest `updated` time, without querying anything:
+the running TUI keeps earlier bars when an account answers 429 and marks them `rate limited`.
+Only when no such pane shows a loaded frame does it create a temporary tmux session in `DORI_USAGE_DIR`,
+wait up to 30 seconds for the loaded TUI, and remove the session afterwards; that image starts with a yellow line
+saying it is a fresh query, where an account answering 429 has no earlier value. Intermediate HTML/PNG are removed.
+Run once per request: repeated fresh quota queries may hit rate limits.
 
 ### Start and attach
 
