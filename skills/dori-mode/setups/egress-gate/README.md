@@ -177,6 +177,11 @@ kind (`일정 4(추가 3·수정 1) · 할 일 1`), the latest three `HH:MM titl
 titles matching `게이트 시험`/`gate test` folded into one line, a count of restorable
 deletes, one line of failed/refused/pending counts, and `자세한 건 <name>에게 물어보면
 올림`. Optional config `"dori_name"` names the Dori in the head and last lines.
+`막힌 쓰기` counts refused writes only: a `denials.jsonl` row whose method is not
+`GET`/`HEAD`/`CONNECT` and whose reason is not an upstream failure (`request-failed`,
+`upstream-unavailable`, ...). Refused CONNECT tunnels (a tool's telemetry host off the allow
+list), refused reads and upstream failures stay in the journal and are not posted; with
+nothing else to say the summary prints `SUMMARY_EMPTY`.
 Links, owner proof, approvals and restore IDs stay in the journal only; the Dori
 reads them from `GET /_gate/changes` and `GET /_gate/pending` when the owner asks.
 Posts using the gate bot to the configured approval channel in chunks below 1900

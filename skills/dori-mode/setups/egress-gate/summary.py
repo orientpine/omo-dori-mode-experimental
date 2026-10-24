@@ -27,6 +27,16 @@ NAMES = {"calendar": "일정", "tasks": "할 일", "drive": "드라이브",
          "docs": "문서", "obsidian": "노트", "sheets": "시트"}
 TEST_TITLE = re.compile(r"게이트\s*시험|gate[ -]?test", re.IGNORECASE)
 SHOWN_TITLES = 3
+# A refused write is a write request the gate turned down. CONNECT tunnels (a Dori tool calling a host off
+# the allow list), reads, and upstreams that did not answer stay in denials.jsonl but are not writes.
+NOT_WRITES = {"GET", "HEAD", "CONNECT"}
+UPSTREAM_FAILURES = {"request-failed", "upstream-unavailable", "upstream-check-failed",
+                     "upstream-response-too-large", "connect-upstream-unreachable", "node-gate-unavailable"}
+
+
+def refused_writes(denials: list) -> list:
+    return [row for row in denials
+            if row.get("method") not in NOT_WRITES and row.get("reason") not in UPSTREAM_FAILURES]
 
 
 def verb(row: dict) -> str:
@@ -95,7 +105,8 @@ def render(changes: list, denials: list, pending: list, hours: float, name: str 
     restorable = sum(1 for row in done if row["restorable"] and verb(row) == "삭제")
     if restorable:
         lines.append(f"되살릴 수 있음 {restorable}건")
-    others = [text for count, text in ((failed, f"실패 {failed}건"), (len(denials), f"막힌 쓰기 {len(denials)}건"),
+    refused = len(refused_writes(denials))
+    others = [text for count, text in ((failed, f"실패 {failed}건"), (refused, f"막힌 쓰기 {refused}건"),
                                        (len(pending), f"승인 기다림 {len(pending)}건")) if count]
     if others:
         lines.append(" · ".join(others))
@@ -113,7 +124,7 @@ def post_summary(config: dict, hours: float) -> int:
         row = json.loads(path.read_text())
         if dt.datetime.fromisoformat(row["ts"]) >= cutoff:
             pending.append(row)
-    if not changes and not denials and not pending:
+    if not changes and not refused_writes(denials) and not pending:
         print("SUMMARY_EMPTY")
         return 0
     def snapshot_title(row: dict) -> str:

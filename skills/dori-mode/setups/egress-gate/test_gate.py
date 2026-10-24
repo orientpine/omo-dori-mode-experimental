@@ -1250,6 +1250,31 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             now.astimezone(dt.timezone(dt.timedelta(hours=9))).strftime("%H:%M Dentist · %H:%M Dinner"),
             "게이트 시험 2건(일정 2)", "되살릴 수 있음 1건", "실패 1건", "자세한 건 유돌에게 물어보면 올림"])
 
+    def test_summary_counts_only_refused_writes(self):
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        def denial(port, method, path, reason):
+            return {"ts": now, "uid": 1005, "port": port, "method": method, "path": path, "reason": reason}
+        denials = [denial("connect", "CONNECT", "http-intake.logs.us5.datadoghq.com:443", "connect-host-denied"),
+                   denial("connect", "CONNECT", "api.anthropic.com:443", "request-failed"),
+                   denial("google", "GET", "/_gate/refusals", "not-found"),
+                   denial("google", "GET", "/www.googleapis.com/drive/v3/files", "upstream-unavailable"),
+                   denial("google", "POST", "/www.googleapis.com/calendar/v3/calendars/primary/events",
+                          "upstream-unavailable"),
+                   denial("google", "PATCH", "/www.googleapis.com/drive/v3/files/f", "owner-message-required"),
+                   denial("discord", "POST", "/api/v10/channels/9/messages", "foreign-channel")]
+        self.assertEqual(summary.render([], denials, [], 24, "유돌").splitlines(),
+                         ["오늘 유돌이 바꾼 것 0건", "막힌 쓰기 2건", "자세한 건 유돌에게 물어보면 올림"])
+        self.assertEqual(len(summary.refused_writes(denials[:5])), 0)
+
+    async def test_summary_without_refused_writes_posts_nothing(self):
+        self.service.deny(1005, "connect", "CONNECT", "us.i.posthog.com:443", "connect-host-denied")
+        self.service.deny(1005, "connect", "CONNECT", "api.anthropic.com:443", "request-failed")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            await asyncio.to_thread(summary.post_summary, self.config, 24)
+        self.assertEqual(output.getvalue().strip(), "SUMMARY_EMPTY")
+        self.assertEqual(self.cards, {})
+
     async def test_vault_path_rejects_traversal_hidden_and_other_prefixes(self):
         self.config["vault"] = {"dir": str(self.state / "vault.git"), "allowed_prefix": "Notes"}
         for path in ("../secret.md", "/secret.md", ".secret.md", "Notes/../a.md", "Notes/.h/a.md",
