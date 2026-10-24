@@ -695,3 +695,13 @@ test("a dropped connection reconnects with growing backoff; a rejected token or 
   expect(t.timeouts).toHaveLength(6);
   expect(logs).toContain("DISCORD_LISTENER_FATAL close=4014");
 });
+
+test("every close code Discord marks do-not-reconnect stops the listener instead of retrying", () => {
+  for (const code of [4004, 4010, 4011, 4012, 4013, 4014]) {
+    const { listener, gw, t, fatal } = setup();
+    listener.start();
+    gw.drop(code);
+    expect(fatal).toEqual([code]);
+    expect(t.timeouts).toEqual([]);
+  }
+});

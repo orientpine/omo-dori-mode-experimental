@@ -12,7 +12,8 @@ export const EYES = "👀";
 // GUILDS | GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT (a privileged intent: turn it on in the Developer Portal)
 export const LISTENER_INTENTS = 1 | (1 << 9) | (1 << 12) | (1 << 15);
 // 4004 bad token, 4013/4014 invalid or disallowed intents: reconnecting cannot fix these
-const FATAL_CLOSE = new Set([4004, 4013, 4014]);
+// Discord's close codes marked "Reconnect: false" (auth, shard, API version, intents).
+const FATAL_CLOSE = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 // Short cap: a dead network fails each try at once, so a long wait only delays READY after the link is back.
 const MAX_BACKOFF_MS = 10_000;
 
