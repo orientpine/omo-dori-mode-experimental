@@ -688,11 +688,20 @@ test("a shadow listener writes the answer row the live one would for a tap or a 
 test("a dropped connection reconnects with growing backoff; a rejected token or intent stops the listener", () => {
   const { listener, gw, t, fatal, logs } = setup();
   listener.start();
-  gw.drop(1006);
-  gw.drop(1006);
-  expect(t.timeouts).toEqual([1000, 2000]);
+  for (let i = 0; i < 6; i++) gw.drop(1006);
+  expect(t.timeouts).toEqual([1000, 2000, 4000, 8000, 10000, 10000]);
   gw.drop(4014);
   expect(fatal).toEqual([4014]);
-  expect(t.timeouts).toHaveLength(2);
+  expect(t.timeouts).toHaveLength(6);
   expect(logs).toContain("DISCORD_LISTENER_FATAL close=4014");
+});
+
+test("every close code Discord marks do-not-reconnect stops the listener instead of retrying", () => {
+  for (const code of [4004, 4010, 4011, 4012, 4013, 4014]) {
+    const { listener, gw, t, fatal } = setup();
+    listener.start();
+    gw.drop(code);
+    expect(fatal).toEqual([code]);
+    expect(t.timeouts).toEqual([]);
+  }
 });
