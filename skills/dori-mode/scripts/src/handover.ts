@@ -15,7 +15,7 @@ import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
-import { sessionDirFor } from "./session-id.ts";
+import { descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
 import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, ROUND_TRIES, section, words } from "./restatement.ts";
 import { appendRollover, approvalProblem, autoReason, clearQuiet, COMMITTED, decidedBy, inboxMessages, LEAD_PREFIX, lastProposal, limitsFor, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, type Signals, sessionSignals, setQuiet, type Step, type Supplement } from "./rollover.ts";
 import { watchLog } from "./watch-log.ts";
@@ -246,6 +246,20 @@ export const liveMonitors = (entries: readonly ManifestEntry[], now: number, ali
     const s = spec(e);
     const launch = s.command ? launchOf(s.command, home) : undefined;
     return launch ? { ...s, launch } : s;
+  });
+
+// The work a monitor that starts work (launch) still runs: the processes under its command besides the readers it follows
+// the work with (tail, grep). They are in the old session's process tree, so closing that session ends them (GongDori's
+// e7-leap chain s21 -> s31 under "dori heavy ... > log 2>&1 & tail --pid" died at its lane handover on 2026-10-24 04:05Z).
+// pid: the monitor's own process; pids: the work under it.
+export type MonitorWork = { readonly pid: number; readonly cmd: string; readonly pids: readonly number[] };
+const READER = /^(?:\S*\/)?(?:tail|grep)\s/;
+export const monitorWork = (entries: readonly ManifestEntry[], table: readonly Proc[], now: number, alive: (pid: number) => boolean, home: string): MonitorWork[] =>
+  entries.flatMap((e) => {
+    const pid = e.runtime?.pid;
+    if (pid === undefined || !e.command || !running(e, now) || !alive(pid) || !launchOf(e.command, home)) return [];
+    const pids = descendants(table, pid).filter((p) => !ended(p) && !READER.test(p.cmd)).map((p) => p.pid);
+    return pids.length ? [{ pid, cmd: e.description || e.command, pids }] : [];
   });
 
 const fillTarget = (argv: readonly string[], target: { readonly pane: string; readonly session: string }): string[] =>
@@ -817,12 +831,16 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   if (facts.from.session && checked.session) new QuestionStore(deps.cardDir).retarget({ session: facts.from.session }, { session: checked.session });
   // committed: the old lead is frozen, not closed, so it spends no tokens and does nothing while its pane and log stay.
   // A rolled-back move never gets here, and before this point it was only told to stay quiet.
-  const ice = await freezePane(deps, config.leadPane, process.pid).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
+  // work a monitor of the old lead started goes on: those monitors are not stopped, and the session closes once it ended
+  const work = facts.from.session ? monitorWork(readManifest(manifestPath(config.sessionsDir, facts.from.cwd, facts.from.session)), await deps.procs(), deps.clock.now(), deps.alive, deps.home) : [];
+  const ice = await freezePane(deps, config.leadPane, process.pid, work.map((j) => j.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
   mark("freeze", !!ice.agentPid);
   if (ice.agentPid) {
     const h = config.handover.frozenCloseH;
     const closeAt = !opts.keepOld && h > 0 ? new Date(deps.clock.now() + h * 3_600_000).toISOString() : undefined;
-    const rec: FrozenRecord = { pane: config.leadPane, aoeId: facts.from.aoeId, at: iso(deps.clock), agentPid: ice.agentPid, pids: ice.pids, ...(closeAt ? { closeAt } : {}), to: pane, ...(facts.from.session ? { session: facts.from.session } : {}), ...(facts.oldLog ? { oldLog: facts.oldLog } : {}) };
+    const keepFor = work.flatMap((j) => j.pids);
+    if (keepFor.length) emit(`HANDOVER_WORK_KEPT ${config.leadPane}: the work its monitors started still runs (${work.map((j) => `${j.cmd.slice(0, 60)}: ${j.pids.join(",")}`).join("; ")}); those monitors are left running and the old session closes once that work ended`);
+    const rec: FrozenRecord = { pane: config.leadPane, aoeId: facts.from.aoeId, at: iso(deps.clock), agentPid: ice.agentPid, pids: ice.pids, ...(closeAt ? { closeAt } : {}), ...(keepFor.length ? { keepFor } : {}), to: pane, ...(facts.from.session ? { session: facts.from.session } : {}), ...(facts.oldLog ? { oldLog: facts.oldLog } : {}) };
     writeFrozen(config.stateDir, rec);
     ctx.frozen = rec;
     emit(`HANDOVER_OLD_FROZEN ${config.leadPane} agent ${ice.agentPid}: ${ice.pids.length} processes stopped (${ice.pids.join(",")}); ${closeAt ? `closes at ${closeAt} (handover.frozenCloseH ${h})` : "kept until closed by hand"}; dori handover thaw ${config.leadPane} resumes it; log ${facts.oldLog ?? "-"}`);

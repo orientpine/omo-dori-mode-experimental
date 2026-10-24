@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import { aoeSessions, closeAoeSession, sessionFor, tmuxPanePid } from "./aoe.ts";
 import type { Runner } from "./run.ts";
-import { AGENT, descendants, type Proc } from "./session-id.ts";
+import { AGENT, descendants, ended, type Proc } from "./session-id.ts";
 
 export type Sig = "SIGSTOP" | "SIGCONT";
 
@@ -20,6 +20,9 @@ export type FrozenRecord = {
   readonly pids: readonly number[];
   // when freshness closes it; absent: it stays until closed by hand (--keep-old, or handover.frozenCloseH 0)
   readonly closeAt?: string;
+  // work a monitor of the old session started (handover.ts monitorWork): it runs on, left unstopped, and the session closes
+  // on the first freshness tick after every one of these pids ended, whatever closeAt says; closing it earlier ends them
+  readonly keepFor?: readonly number[];
   // the lead that replaced it
   readonly to?: string;
   readonly session?: string;
@@ -56,21 +59,22 @@ export const writeFrozen = (stateDir: string, rec: FrozenRecord): void => {
 };
 
 // The agent of a pane and every process under it, the agent first. The caller and its ancestors are left out, so a run
-// inside that pane does not stop itself.
-export const agentTree = (table: readonly Proc[], shellPid: number, self: number): { readonly agent?: Proc; readonly pids: number[] } => {
+// inside that pane does not stop itself, and so is spare (monitors whose work must go on) with everything under it.
+export const agentTree = (table: readonly Proc[], shellPid: number, self: number, spare: readonly number[] = []): { readonly agent?: Proc; readonly pids: number[] } => {
   const agent = descendants(table, shellPid).find((p) => AGENT.test(p.cmd) && !/\bmcp\b/.test(p.cmd));
   if (!agent) return { pids: [] };
   const mine = new Set<number>();
   const parent = new Map(table.map((p) => [p.pid, p.ppid]));
   for (let p: number | undefined = self; p && !mine.has(p); p = parent.get(p)) mine.add(p);
+  for (const root of spare) for (const p of [root, ...descendants(table, root).map((d) => d.pid)]) mine.add(p);
   return { agent, pids: [agent.pid, ...descendants(table, agent.pid).map((p) => p.pid)].filter((p) => !mine.has(p)) };
 };
 
 // Stops the pane's agent and everything under it. pids: those stopped; why: the reason nothing could be stopped.
-export const freezePane = async (deps: FreezeDeps, pane: string, self: number): Promise<{ readonly agentPid?: number; readonly pids: number[]; readonly why?: string }> => {
+export const freezePane = async (deps: FreezeDeps, pane: string, self: number, spare: readonly number[] = []): Promise<{ readonly agentPid?: number; readonly pids: number[]; readonly why?: string }> => {
   const shell = await tmuxPanePid(deps.run, pane);
   if (!shell) return { pids: [], why: `no tmux pane ${pane}` };
-  const { agent, pids } = agentTree(await deps.procs(), shell, self);
+  const { agent, pids } = agentTree(await deps.procs(), shell, self, spare);
   if (!agent) return { pids: [], why: `no agent process under ${pane} (shell ${shell})` };
   if (!pids.includes(agent.pid)) return { pids: [], why: `the agent ${agent.pid} runs this command, so it cannot stop itself` };
   // the agent first: once it is stopped it cannot start anything new while its children are stopped
@@ -103,11 +107,19 @@ export const closeFrozen = async (deps: FreezeDeps, stateDir: string, rec: Froze
   return `HANDOVER_OLD_CLOSED ${closed}${rec.oldLog ? `; its log stays at ${rec.oldLog}` : ""}`;
 };
 
-// The frozen sessions whose closeAt has passed are closed (freshness runs this every tick).
+// The frozen sessions whose closeAt has passed are closed (freshness runs this every tick); one kept for its monitors' work
+// once that work ended (a zombie its stopped parent has not collected counts as ended).
 export const closeDueFrozen = async (deps: FreezeDeps, stateDir: string, now: number): Promise<string[]> => {
   const out: string[] = [];
-  for (const rec of readFrozen(stateDir)) if (rec.closeAt && Date.parse(rec.closeAt) <= now) out.push(await closeFrozen(deps, stateDir, rec));
+  const recs = readFrozen(stateDir);
+  const table = recs.some((r) => r.keepFor?.length) ? await deps.procs() : [];
+  const runs = (pid: number): boolean => table.some((p) => p.pid === pid && !ended(p));
+  for (const rec of recs) {
+    if (rec.keepFor?.length) {
+      if (!rec.keepFor.some(runs)) out.push(`${await closeFrozen(deps, stateDir, rec)} (the work its monitors started ended: ${rec.keepFor.join(",")})`);
+    } else if (rec.closeAt && Date.parse(rec.closeAt) <= now) out.push(await closeFrozen(deps, stateDir, rec));
+  }
   return out;
 };
 
-export const frozenLine = (rec: FrozenRecord): string => `FROZEN ${rec.pane} since ${rec.at} (agent ${rec.agentPid}, ${rec.pids.length} processes; ${rec.closeAt ? `closes at ${rec.closeAt}` : "kept until closed by hand"}; replaced by ${rec.to ?? "-"}; log ${rec.oldLog ?? "-"})`;
+export const frozenLine = (rec: FrozenRecord): string => `FROZEN ${rec.pane} since ${rec.at} (agent ${rec.agentPid}, ${rec.pids.length} processes; ${rec.keepFor?.length ? `closes once the work its monitors started ends (${rec.keepFor.join(",")})` : rec.closeAt ? `closes at ${rec.closeAt}` : "kept until closed by hand"}; replaced by ${rec.to ?? "-"}; log ${rec.oldLog ?? "-"})`;

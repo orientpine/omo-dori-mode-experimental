@@ -728,3 +728,22 @@ test("an old lead's summary without its headings is refused before anything open
   expect(printed.find((l) => l.startsWith("HANDOVER_REFUSED"))).toContain("lacks ## Owner's words and constraints, ## Decisions and why, ## Promised follow-ups, ## In progress, ## Next step (dori handover --template prints the headings)");
   expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "add")).toBe(false);
 });
+
+test("work a monitor of the old lead started is not stopped with it: the old lead freezes around it and its record waits for that work", async () => {
+  // Given: a monitor (pid 103) that put a chain (104) in the background and follows its log (105)
+  const CUT = "cd w; bash qa/chain.sh > /tmp/x/chain.log 2>&1 & pid=$!; tail --pid=$pid -n +1 -f /tmp/x/chain.log";
+  const tree = [...TREE, { pid: 103, ppid: 11, cmd: `/bin/bash -c ${CUT}` }, { pid: 104, ppid: 103, cmd: "bash qa/chain.sh" }, { pid: 105, ppid: 103, cmd: "tail --pid=104 -n +1 -f /tmp/x/chain.log" }];
+  const base = await setup();
+  const deps: HandoverDeps = { ...base, procs: async () => tree };
+  writeManifest("old-sid", [monitor("inbox", INBOX_CMD), monitor("lanes", LANES_CMD, { runtime: { pid: 102 } }), monitor("chain", CUT, { runtime: { pid: 103 } })]);
+  sim.arm = [...sim.arm.slice(0, 2), { description: "chain", command: "tail -n 0 -F /tmp/x/chain.log", pid: 204 }];
+  for (const pid of [103, 104, 105, 204]) live.add(pid);
+  // When
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
+  // Then
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(sigs).toEqual(["SIGSTOP 11", "SIGSTOP 12", "SIGSTOP 13"]);
+  expect(stopped()).toBe(false);
+  expect(printed).toContain(`HANDOVER_WORK_KEPT ${OLD}: the work its monitors started still runs (chain: 104); those monitors are left running and the old session closes once that work ended`);
+  expect(readFrozen(state.dir)).toMatchObject([{ pane: OLD, agentPid: 11, pids: [11, 12, 13], keepFor: [104] }]);
+});

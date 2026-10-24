@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
+import { closeDueFrozen, readFrozen } from "../src/frozen.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
 import { compactionStuckOn, type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine, trainingMark } from "../src/lane-handover.ts";
 import { appendRollover, approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, ownerRolloverText, quietReason, readRollovers, rolloverCause, rolloverStats, sessionSignals } from "../src/rollover.ts";
@@ -1590,4 +1591,50 @@ test("E7 on 2026-10-20: a lane whose monitor starts its chain is moved with a wa
     expect(printed.find((l) => l.startsWith("HANDOVER_VERIFY_FAIL"))).toContain(reason);
     expect((await readLane(again)).pane).toBe(OLD);
   }
+});
+
+test("e7-leap on 2026-10-24: work a monitor of the old session started keeps running; the old session is frozen, not closed, and closes once that work ended", async () => {
+  // Given: GongDori's monitor put its chain in the background and followed its log; the chain runs under the monitor's shell
+  const LOG = "/tmp/x/e7-leap-cut-chain.log";
+  const CUT = `cd w; dori heavy e7-leap-cut-chain -- ssh n "bash cut_chain_mn.sh 400" > ${LOG} 2>&1 & pid=$!; echo "PID cut-chain $pid"; tail --pid=$pid -n +1 -f ${LOG}; echo "EXIT cut-chain"`;
+  table.push({ pid: 30, ppid: 11, cmd: `/bin/bash -c ${CUT}` }, { pid: 31, ppid: 30, cmd: "bun /h/dori/src/cli.ts heavy e7-leap-cut-chain -- ssh n bash cut_chain_mn.sh 400" }, { pid: 32, ppid: 31, cmd: "ssh n bash cut_chain_mn.sh 400" }, { pid: 33, ppid: 30, cmd: `tail --pid=31 -n +1 -f ${LOG}` });
+  for (const pid of [30, 31, 32, 33]) live.add(pid);
+  const base = await setup();
+  writeManifest("old-sid", [monitor("scratch events", EVENTS, 14), monitor("cut chain s21 -> s31", CUT, 30, { filter: "PID|CUT_CHAIN|EXIT" })]);
+  ready(base, [15]);
+  sim.fromNote = true;
+  // closing the old session ends everything in its process tree, the monitor's work with it
+  const deps: LaneHandoverDeps = { ...base, run: async (argv, opts) => {
+    if (argv[0] === "aoe" && argv[1] === "session" && argv[2] === "stop" && argv[3] === OLD_ID) for (const pid of [30, 31, 32, 33]) live.delete(pid);
+    return base.run(argv, opts);
+  } };
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { ...OK, verifyMin: 1 });
+  // Then: moved, the old session not stopped, the chain alive and never signalled, the old agent left frozen
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(stoppedIds()).toEqual([]);
+  expect(live.has(31) && live.has(32)).toBe(true);
+  expect(sigs.filter((s) => / 3[0-3]$/.test(s))).toEqual([]);
+  expect(sigs.filter((s) => s.endsWith(" 11")).at(-1)).toBe("SIGSTOP 11");
+  const note = readFileSync(r.note ?? "", "utf8");
+  expect(note).toContain("## Work the old session's monitors started (1)");
+  expect(note).toContain('- monitor 30 "cut chain s21 -> s31": 31, 32');
+  expect(printed.find((l) => l.startsWith("HANDOVER_MONITOR_WORK demo 1: monitor 30"))).toContain("runs 31,32");
+  expect(printed.find((l) => l.startsWith(`HANDOVER_WORK_KEPT demo ${OLD}: the work its monitors started still runs (cut chain s21 -> s31: 31,32); the old session stays frozen (agent 11`))).toBeDefined();
+  expect(printed).toContain(`HANDOVER_DONE demo ${OLD} -> ${NEW}; old session kept until the work its monitors started ends`);
+  expect(sent(w).some((x) => x.startsWith(`[LEAD] HANDOVER_COMMITTED: the handover is checked; the old session ${OLD} stays open because work its monitors started still runs there`))).toBe(true);
+  expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_CHAINS_ENDED"))).toBe(false);
+  expect(readFrozen(state.dir)).toMatchObject([{ pane: OLD, agentPid: 11, keepFor: [31, 32], to: NEW }]);
+
+  // When: a freshness tick while the chain still runs, then one after it ended (its zombie left behind)
+  expect(await closeDueFrozen(deps, state.dir, deps.clock.now() + 48 * 3_600_000)).toEqual([]);
+  expect(stoppedIds()).toEqual([]);
+  table = table.filter((p) => p.pid !== 32).map((p) => (p.pid === 31 ? { ...p, stat: "Z" } : p));
+  const closed = await closeDueFrozen(deps, state.dir, deps.clock.now());
+  // Then
+  expect(closed).toHaveLength(1);
+  expect(closed[0]).toContain("HANDOVER_OLD_CLOSED");
+  expect(closed[0]).toContain("(the work its monitors started ended: 31,32)");
+  expect(stoppedIds()).toEqual([OLD_ID]);
+  expect(readFrozen(state.dir)).toEqual([]);
 });
