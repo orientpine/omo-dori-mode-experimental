@@ -308,8 +308,9 @@ const USAGE = `dori <command> [options]
                                        back and freezes nothing (HANDOVER_VERIFY_FAIL, exit 3). Run from inside the lead it
                                        detaches itself (systemd-run)
   handover frozen | thaw <pane> | close-frozen [<pane>]
-                                       list the frozen old leads; resume one frozen by mistake; close one now, or every one
-                                       whose close time passed (its log stays)
+                                       list the frozen old sessions (leads, and lanes kept for the work their monitors
+                                       started); resume one frozen by mistake; close one now, or every one whose close time
+                                       passed or whose monitors' work ended (its log stays)
   handover audit <note.md|key|lead> [--dry-run] [--no-send] [--force]
                                        the audit after a committed handover (freshness starts it handover.auditAfterMin
                                        after the commit): the owner's quoted words and recent lead instructions only the

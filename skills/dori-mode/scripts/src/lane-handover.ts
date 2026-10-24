@@ -5,13 +5,16 @@
 // lane's model and thinking level -> point the registry and the question cards at it -> check its status line, its
 // monitors and a [LEAD] probe ack -> only then close the old session. A failed check moves everything back and closes
 // the new session; the old one stays the lane. Detached jobs (outside the pane's process tree) are listed, never touched.
+// Work a monitor of the old session started (a LAUNCHES_WORK monitor: a chain it put in the background) runs under that
+// monitor, so the old session is frozen instead of closed, its monitors left running, and closes once that work ended.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { pendingBackground } from "./background.ts";
 import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, envMismatch, inputLine, laneEnv, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { ackFile, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
+import { freezePane, writeFrozen } from "./frozen.ts";
+import { ackFile, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
 import { awaitPrompt } from "./launch.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
@@ -88,6 +91,8 @@ export type LaneFacts = {
   readonly goal?: string;
   readonly chains: readonly Job[];
   readonly detached: readonly Job[];
+  // work the old session's monitors started (pid: the monitor's process, pids: the work under it); absent: none
+  readonly work?: readonly Job[];
   readonly ready?: ReadyMark;
   readonly laneNote: string;
   readonly approvedBy?: string;
@@ -336,6 +341,9 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   `## Local chains of the old session (${f.chains.length})`,
   ...(f.chains.length ? ["Do NOT start these again now: they still run under the old session until it closes, and a second copy would run the same work twice (duplicate node jobs, results written over). Once the old session is closed and these pids are gone, a [LEAD] HANDOVER_CHAINS_ENDED line tells you; then restart only what is still needed, from its checkpoint or progress files, skipping steps that already finished.", ...f.chains.map(job)] : ["none"]),
   "",
+  ...(f.work?.length
+    ? [`## Work the old session's monitors started (${f.work.length})`, "It runs under a monitor of the old session (marked LAUNCHES_WORK under Monitors), so the handover keeps that session frozen instead of closing it, its monitors left running, and closes it once this work ended. Do not start it again; follow it with the watch-only monitors of step 1.", ...f.work.map((j) => `- monitor ${j.pid} "${j.cmd.slice(0, 120)}": ${(j.pids ?? []).join(", ")}`), ""]
+    : []),
   `## Detached jobs (${f.detached.length})`,
   ...(f.detached.length ? ["They run outside the old session and keep running; the handover does not touch them. Check on them, do not start them twice.", ...f.detached.map(job)] : ["none"]),
   "",
@@ -434,6 +442,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const shell = await tmuxPanePid(deps.run, lane.pane);
   const { agent, chains, tree } = localChains(table, shell, monitorPids);
   if (!agent) return refuse(`no omo agent process under pane ${lane.pane} (shell pid ${shell || "?"})`);
+  const jobs = monitorWork(entries, table, now, deps.alive, deps.home);
   const marked = detachedJobs(table, tree, session, old.id, deps.envOf);
   // a pid in the pane's own tree is no detached job, even when an earlier note listed it (as a chain, before the session's
   // own launcher shell and eval kernel stopped counting as chains)
@@ -479,7 +488,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const laneNote = [ready?.note ?? "", opts.note ? readFileSync(opts.note, "utf8") : ""].filter((t) => t.trim()).join("\n\n");
   const facts: LaneFacts = {
     lane, from: { pane: lane.pane, aoeId: old.id, session, title: old.title, cwd: old.path }, cwd: real, model: splitModel(model).base, thinking, ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(shown.account ? { account: shown.account } : {}),
-    monitors, todos: session ? openTodos(sessionDir, session) : [], goal: session ? openGoal(sessionDir, session) : undefined, chains, detached, ...(ready ? { ready } : {}), laneNote, signals, ...(opts.approvedBy?.trim() ? { approvedBy: opts.approvedBy.trim() } : {}),
+    monitors, todos: session ? openTodos(sessionDir, session) : [], goal: session ? openGoal(sessionDir, session) : undefined, chains, detached, ...(jobs.length ? { work: jobs } : {}), ...(ready ? { ready } : {}), laneNote, signals, ...(opts.approvedBy?.trim() ? { approvedBy: opts.approvedBy.trim() } : {}),
     agentPid: agent.pid, ...(logOf(sessionDir, session) ? { oldLog: logOf(sessionDir, session) } : {}),
     ownerMessages: ownerMessagesFor({ inbox: deps.inbox ?? "", ownerIds: deps.ownerIds ?? [], oldLog: logOf(sessionDir, session), thread: lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : undefined, since: lane.history?.findLast((h) => h.note.startsWith("pane moved "))?.at ?? lane.openedAt, guild: process.env.DORI_DISCORD_GUILD?.trim() }),
   };
@@ -488,6 +497,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   writeFileSync(note, renderLaneNote(facts, at, config.stateDir));
   writeFileSync(join(dir, `${key}-${stamp}.json`), JSON.stringify(facts, null, 1));
   emit(`HANDOVER_NOTE ${note}: ${monitors.length} monitors, ${facts.todos.length} todos, goal ${facts.goal ? "yes" : "no"}, ${chains.length} local chains, ${detached.length} detached jobs, context ${shown.contextPct ?? "?"}%, compactions ${signals.compactions ?? "?"}, age ${signals.ageH ?? "?"} h, ready ${ready ? ready.at : "no"}`);
+  if (jobs.length) emit(`HANDOVER_MONITOR_WORK ${key} ${jobs.length}: ${jobs.map((j) => `monitor ${j.pid} "${j.cmd.slice(0, 60)}" runs ${(j.pids ?? []).join(",")}`).join("; ")}; the old session is frozen, not closed, until it ends`);
   const title = titleFor(old.title, stamp);
   if (opts.dryRun) {
     if (blocked) return { code: 2, note };
@@ -810,6 +820,27 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
     if (facts.chains.length) await tell(deps, pane, `[LEAD] HANDOVER_CHAINS_KEPT: the old session ${from.pane} stays open, so its local chains (${facts.chains.map((c) => c.pid).join(", ")}) still run. Do not start them again.`);
     emit(`HANDOVER_DONE ${lane.key} ${from.pane} -> ${pane}; old session kept (--keep-old)`);
     record("done-kept-old", []);
+    return { code: 0, note, to: pane };
+  }
+  // work a monitor of the old session started still runs under it: closing the session would end it, so the old agent and
+  // everything else under it are frozen, the monitors with work left running, and freshness closes it once the work ended
+  const kept = (facts.work ?? []).filter((c) => running(deps, c));
+  if (kept.length) {
+    // the local chains are left running too: the new session is told they run on, as with --keep-old
+    const ice = await freezePane(deps, from.pane, process.pid, [...kept, ...facts.chains].map((c) => c.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
+    mark("freeze", !!ice.agentPid);
+    if (!ice.agentPid) thaw();
+    const pids = kept.flatMap((c) => c.pids ?? [c.pid]);
+    writeFrozen(config.stateDir, { pane: from.pane, aoeId: from.aoeId, at: iso(deps.clock), agentPid: ice.agentPid ?? 0, pids: ice.pids, keepFor: pids, to: pane, ...(from.session ? { session: from.session } : {}), ...(facts.oldLog ? { oldLog: facts.oldLog } : {}) });
+    const list = kept.map((c) => `${c.cmd.slice(0, 60)}: ${(c.pids ?? [c.pid]).join(",")}`).join("; ");
+    emit(`HANDOVER_WORK_KEPT ${lane.key} ${from.pane}: the work its monitors started still runs (${list}); ${ice.agentPid ? `the old session stays frozen (agent ${ice.agentPid}, ${ice.pids.length} processes stopped, the monitors with work left running)` : `the old agent could not be frozen (${ice.why ?? "nothing stopped"}), so it stays open, told to stay idle,`} and closes once that work ended; dori handover close-frozen ${from.pane} closes it now and ends the work`);
+    if (!ice.agentPid) await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} to ${pane} is done and checked. You are no longer the lane; stay idle and leave running processes alone until the session is closed.`);
+    emit(`HANDOVER_DONE ${lane.key} ${from.pane} -> ${pane}; old session kept until the work its monitors started ends`);
+    record("done-frozen", []);
+    await tell(deps, pane, `[LEAD] ${COMMITTED}: the handover is checked; the old session ${from.pane} stays open because work its monitors started still runs there (${list}), and it closes by itself once that work ended. You are the ${lane.key} lane now. Do not start that work again; follow it with the watch-only monitors of step 1. ${config.launchKeywords}: go on with step 5 of the note.`);
+    emit(`${COMMITTED} ${lane.key} ${pane}`);
+    if (facts.chains.length) await tell(deps, pane, `[LEAD] HANDOVER_CHAINS_KEPT: the old session ${from.pane} stays open, so its local chains (${facts.chains.map((c) => c.pid).join(", ")}) still run until it closes. Do not start them again.`);
+    if (facts.detached.length) emit(`HANDOVER_DETACHED_ALIVE ${facts.detached.filter((d) => deps.alive(d.pid)).length}/${facts.detached.length} (${facts.detached.map((d) => d.pid).join(",")})`);
     return { code: 0, note, to: pane };
   }
   emit(`HANDOVER_DONE ${lane.key} ${from.pane} -> ${pane}; closing ${from.pane}`);
