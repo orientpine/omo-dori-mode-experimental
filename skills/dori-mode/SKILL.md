@@ -111,6 +111,7 @@ Real work runs in its own herdr tab or aoe session, called a lane. The protocol,
 - Destructive clicks (remove, delete, revoke, pay, submit) are bound to the exact target and done once. Never wrap them in a retry; on any error, stop and re-read the state.
 - A "done" is believed only after the live state is read back: the merge SHA, the closed issue, the published version.
 - A merged PR's worktree is deleted in the same turn its merge is read back.
+- Fork work happens in a `git worktree` of the clone; nobody switches branches or checks out old commits in the running clone (`update.repo`), whose services follow its `main`.
 - Work that spends someone's subscription or money needs that person's go for that spend, and the go is revocable until the work starts.
 - Secrets, tokens, internal hostnames and personal data never go into a public issue, PR, gist or message.
 - Build memory as you work and consult it before asking the owner something it already answers.
