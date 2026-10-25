@@ -11,7 +11,7 @@ import { findLead, LeadError } from "./lead.ts";
 import { ackHandover, handover, type HandoverDeps, LEAD_SUMMARY_TEMPLATE, missingWatchers } from "./handover.ts";
 import { laneHandover, type LaneHandoverDeps, markReady, paneSignals, SUMMARY_TEMPLATE } from "./lane-handover.ts";
 import { auditHandover, auditSummary, type Committed, findCommitted, markerFile, reportGap, sendAuditSummary, summaryWeek } from "./rollover-audit.ts";
-import { appendRollover, dueReasons, LEAD_PREFIX, limitsFor, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
+import { appendRollover, dueReasons, holdTyped, LEAD_PREFIX, limitsFor, quietReason, readRollovers, rolloverStats, sessionStart } from "./rollover.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { ConfigError, configPath, envFilePath, fill, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
@@ -723,6 +723,8 @@ try {
       if (!text) die("type needs non-empty text");
       const r = await submitToPane(run, realClock, config, pane, text);
       console.log(r.status === "SUBMITTED" ? `SUBMITTED ${pane}` : `NOT_SUBMITTED ${pane} ${r.reason}`);
+      // a pane a handover is moving: the text is kept for the new session too (lane-handover hands it over at the commit)
+      if (holdTyped(config.stateDir, pane, Date.now(), text)) console.error(`HANDOVER_HELD ${pane}: a handover is moving this session; the text is also kept for the new session and handed to it when the move commits`);
       process.exitCode = r.status === "SUBMITTED" ? 0 : 1;
       break;
     }

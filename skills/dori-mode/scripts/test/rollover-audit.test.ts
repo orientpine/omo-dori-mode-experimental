@@ -35,21 +35,21 @@ const lane = (): Lane => ({ key: "demo", title: "Demo lane", thread: "discord:1"
 const said = (at: string, text: string): string => JSON.stringify({ type: "message", timestamp: at, message: { role: "user", content: [{ type: "text", text }] } });
 
 // One committed lane handover on disk: the old session's log, the note, the facts, the result and the restatement.
-const handover = (o: { readonly log: readonly string[]; readonly restate?: string; readonly todos?: readonly string[]; readonly newTodos?: readonly string[] }) => {
+const handover = (o: { readonly log: readonly string[]; readonly restate?: string; readonly todos?: readonly string[]; readonly newTodos?: readonly string[]; readonly monitors?: readonly unknown[]; readonly newMonitors?: readonly unknown[] }) => {
   mkdirSync(dir(), { recursive: true });
   mkdirSync(sessionDir(), { recursive: true });
   const oldLog = join(sessionDir(), "2026-10-18T00-00-00-000Z_old-sid.jsonl");
   writeFileSync(oldLog, o.log.join("\n"));
   writeFileSync(lane().brief, "Do the work. Done: merged o/r#1.\n");
   writeFileSync(`${stem()}.md`, "# Lane handover demo\n## Conversation summary\n(none)\n");
-  writeFileSync(`${stem()}.json`, JSON.stringify({ lane: lane(), from: { pane: "aoe_demo_old", aoeId: "1a", session: "old-sid", title: "demo", cwd: CWD }, cwd: CWD, model: "anthropic-subscription/claude-opus-5-5", monitors: [], todos: o.todos ?? ["Work: ship it (in_progress)"], chains: [], detached: [], laneNote: "", signals: {}, oldLog }));
+  writeFileSync(`${stem()}.json`, JSON.stringify({ lane: lane(), from: { pane: "aoe_demo_old", aoeId: "1a", session: "old-sid", title: "demo", cwd: CWD }, cwd: CWD, model: "anthropic-subscription/claude-opus-5-5", monitors: o.monitors ?? [], todos: o.todos ?? ["Work: ship it (in_progress)"], chains: [], detached: [], laneNote: "", signals: {}, oldLog }));
   writeFileSync(`${stem()}.result.json`, JSON.stringify({ at: COMMIT, key: "demo", from: {}, to: NEW, note: `${stem()}.md`, result: "done", reasons: [] }));
   writeFileSync(`${stem()}.understood.md`, o.restate ?? RESTATE);
   const todos = (o.newTodos ?? ["ship it"]).map((content) => ({ content, status: "in_progress" }));
   writeFileSync(join(sessionDir(), "2026-10-19T10-00-00-000Z_new-sid.jsonl"), JSON.stringify({ type: "custom", customType: "senpi.todo-state", data: { phases: [{ name: "Work", tasks: todos }] } }));
   const manifest = manifestPath(join(state.dir, "sessions"), CWD, "new-sid");
   mkdirSync(join(manifest, ".."), { recursive: true });
-  writeFileSync(manifest, JSON.stringify({ version: 1, sessionId: "new-sid", monitors: [] }));
+  writeFileSync(manifest, JSON.stringify({ version: 1, sessionId: "new-sid", monitors: o.newMonitors ?? [] }));
 };
 
 // The new session as the fake world sees it: a supplement line makes it add the items to its restatement (fix) and ack.
@@ -275,4 +275,24 @@ test("a handover whose new session was replaced by a later one is not charged wi
   const r = await auditHandover(deps, committedHandovers(state.dir)[0] ?? (() => { throw new Error("no handover"); })(), { classify: async () => ({ verdicts: [] }) });
   expect(r.line).toBe(`HANDOVER_AUDIT_OK demo ${STAMP}: nothing left out`);
   expect(readAudit(state.dir)).toEqual([]);
+});
+
+test("a monitor that starts work, re-armed watch-only as the note asks, is no gap; one never re-armed is sent back without its launching command", async () => {
+  // GongDori e7-leap 2026-10-24 04:15Z: the new session followed the cut chain watch-only, and the audit called the monitor
+  // never armed and sent the launching tool.monitor call back to it, the step that starts a finished chain again
+  const chain = { description: "chain s21 -> s31", command: "cd /w; dori heavy cut-chain -- ssh n 'bash qa/cut.sh 400' > /tmp/cut.log 2>&1 & pid=$!; tail --pid=$pid -n +1 -f /tmp/cut.log", filter: "CUT_CHAIN|EXIT", persistent: true };
+  handover({ log: [], monitors: [chain], newMonitors: [{ description: chain.description, command: "tail -n +1 -F /tmp/cut.log", filter: chain.filter, persistent: true, runtime: { pid: 4242 } }] });
+  const deps = await setup();
+  await auditHandover(deps, committedHandovers(state.dir)[0] ?? (() => { throw new Error("no handover"); })(), { classify: sorter({}) });
+  expect(readAudit(state.dir).filter((x) => x.kind === "monitor")).toEqual([]);
+  expect(sent(w).filter((l) => l.startsWith("[LEAD] HANDOVER_SUPPLEMENT"))).toEqual([]);
+
+  state.done();
+  state = withState();
+  w = newWorld();
+  handover({ log: [], monitors: [chain] });
+  await auditHandover(await setup(), committedHandovers(state.dir)[0] ?? (() => { throw new Error("no handover"); })(), { classify: sorter({}) });
+  const rows = readAudit(state.dir).filter((x) => x.kind === "monitor");
+  expect(rows.map((x) => x.text)).toEqual([chain.description]);
+  expect(rows[0]?.source).toContain("arm the watch-only monitor its line in the note describes, never this command");
 });
