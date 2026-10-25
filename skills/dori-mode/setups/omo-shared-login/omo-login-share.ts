@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { chooseLoginMethod } from "./login-method.js";
 
 const HOME = homedir();
 const BORROWERS = ["okdori", "moodori", "yoodori", "gongdori"] as const;
@@ -441,7 +442,7 @@ async function login(positional: string[], flags: Flags) {
 		},
 		prompt: async (prompt: Json) => {
 			if (prompt.type === "manual_code") return waitForCode(id, prompt.signal ?? controller.signal);
-			if (prompt.type === "select") return prompt.options?.[0]?.value ?? prompt.options?.[0];
+			if (prompt.type === "select") return chooseLoginMethod(providerId, prompt.options);
 			throw new Error(`login needs interactive input (${prompt.type}); run /login in zzangdori's omo instead`);
 		},
 	};
@@ -470,6 +471,11 @@ async function login(positional: string[], flags: Flags) {
 		saveState(state);
 		await sync({ "no-refresh": true, quiet: true });
 		await say(`[LOGIN] omo-shared-login | ${providerId}${account ? `/${account}` : ""} 로그인 완료, 옥돌·무돌·유돌·공돌에 반영함.`);
+	} catch (error) {
+		const message = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+		if (flags.notify)
+			await notifyLead(`[ALERT] omo-shared-login | ${providerId}${account ? `/${account}` : ""} 로그인이 끝나지 못함: ${message}. 다시 하려면 omo-login-share login ${providerId}${account ? ` --account ${account}` : ""} --notify`);
+		throw error;
 	} finally {
 		rmSync(join(LOGIN_DIR, `${id}.pending`), { force: true });
 	}
