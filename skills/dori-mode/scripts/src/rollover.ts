@@ -327,7 +327,36 @@ export const setQuiet = (stateDir: string, pane: string, until: number, why: str
   writeFileSync(quietFile(stateDir, pane), JSON.stringify({ pane, until: new Date(until).toISOString(), why }));
 };
 
-export const clearQuiet = (stateDir: string, pane: string): void => rmSync(quietFile(stateDir, pane), { force: true });
+// What dori type typed into a pane while its quiet mark was live: a lane's old session frozen by its handover reads none of
+// it until it is thawed to be closed, so the lead's instruction typed there (GongDori's e7-leap card Q39 line, 2026-10-24
+// 04:03:28Z) reached only the old session; the lane handover hands these lines to the new session when it commits.
+export const heldFile = (stateDir: string, pane: string): string => join(stateDir, "handover", "quiet", `${pane.replace(/[^\w.-]/g, "_")}.typed.jsonl`);
+export const holdTyped = (stateDir: string, pane: string, now: number, text: string): boolean => {
+  if (!quietReason(stateDir, pane, now)) return false;
+  appendFileSync(heldFile(stateDir, pane), `${JSON.stringify({ at: new Date(now).toISOString(), text })}\n`);
+  return true;
+};
+export const heldTyped = (stateDir: string, pane: string): { readonly at: string; readonly text: string }[] => {
+  let raw = "";
+  try {
+    raw = readFileSync(heldFile(stateDir, pane), "utf8");
+  } catch {
+    return [];
+  }
+  return raw.split("\n").flatMap((line) => {
+    try {
+      const o = JSON.parse(line) as { at?: unknown; text?: unknown };
+      return typeof o.at === "string" && typeof o.text === "string" ? [{ at: o.at, text: o.text }] : [];
+    } catch {
+      return [];
+    }
+  });
+};
+
+export const clearQuiet = (stateDir: string, pane: string): void => {
+  rmSync(quietFile(stateDir, pane), { force: true });
+  rmSync(heldFile(stateDir, pane), { force: true });
+};
 
 export const quietReason = (stateDir: string, pane: string, now: number): string | undefined => {
   if (!pane) return undefined;
@@ -555,3 +584,38 @@ export const ownerMessagesFor = (o: { readonly inbox: string; readonly ownerIds:
   }
   return [...out.values()].sort((a, b) => a.at.localeCompare(b.at)).slice(-(o.max ?? 40));
 };
+
+// A user message of a session log: its line number in the log, its time and its text (the lead's and the owner's lines).
+export type Said = { readonly line: number; readonly at: string; readonly text: string };
+
+// The lead's and the owner's lines in a session log: the text of its user messages, with their time.
+export const userLines = (log: string | undefined): Said[] => {
+  let raw = "";
+  try {
+    raw = log ? readFileSync(log, "utf8") : "";
+  } catch {
+    return [];
+  }
+  const out: Said[] = [];
+  raw.split("\n").forEach((line, i) => {
+    if (!line.includes('"user"')) return;
+    let o: { message?: { role?: string; content?: unknown }; timestamp?: string };
+    try {
+      o = JSON.parse(line) as typeof o;
+    } catch {
+      return;
+    }
+    if (o.message?.role !== "user") return;
+    const c = o.message.content;
+    const text = typeof c === "string" ? c : Array.isArray(c) ? c.flatMap((x: { type?: string; text?: string }) => (x?.type === "text" && typeof x.text === "string" ? [x.text] : [])).join(" ") : "";
+    if (text.trim()) out.push({ line: i + 1, at: o.timestamp ?? "", text });
+  });
+  return out;
+};
+
+// [LEAD] lines that run the machinery (nudges, handover and rollover steps, checks, the directive top-up that the brief
+// also gets) are not instructions the conversation alone holds
+const MACHINE = /^\[LEAD\]\s*(your work thread has had no update|Handover of|An automatic rollover|지침 보충|The handover of)|HANDOVER_|dori handover (ready|ack)|OWNER_CHECK|DIRECTIVE_AUDIT|\bSTUCK\b/;
+
+// The lead's own instructions among a log's user lines (the [LEAD] lines that are not machinery), from since (ms) on.
+export const leadLines = (said: readonly Said[], since: number): Said[] => said.filter((s) => s.text.startsWith("[LEAD]") && !MACHINE.test(s.text) && (Date.parse(s.at) || 0) >= since);

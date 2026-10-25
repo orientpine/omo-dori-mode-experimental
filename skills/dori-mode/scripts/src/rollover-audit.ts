@@ -23,13 +23,13 @@ import { basename, dirname, join } from "node:path";
 import { ChallengeError, checkReviewers, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
 import { laneDirectiveWords } from "./directive-audit.ts";
-import { ackFile, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest } from "./handover.ts";
+import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest, sameCommand } from "./handover.ts";
 import { type LaneFacts, type LaneHandoverDeps, missingFrom, UNDERSTOOD_HEADINGS } from "./lane-handover.ts";
 import { launchLedger } from "./launch.ts";
 import { ownerModels } from "./owner-check.ts";
 import { sendVerified } from "./panes.ts";
 import { covered, fillGaps, flat, type Missing, quoted, section, words as wordsIn } from "./restatement.ts";
-import { inboxMessages, readRollovers } from "./rollover.ts";
+import { inboxMessages, leadLines, readRollovers, type Said, userLines } from "./rollover.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { iso } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
@@ -168,27 +168,7 @@ export const writeMarker = (note: string, m: Marker): void => writeFileSync(mark
 
 // --- the old conversation ---
 
-type Said = { readonly line: number; readonly at: string; readonly text: string };
-
-// The lead's and the owner's lines in a session log: the text of its user messages, with their time.
-export const userLines = (log: string | undefined): Said[] => {
-  const raw = readText(log);
-  const out: Said[] = [];
-  raw.split("\n").forEach((line, i) => {
-    if (!line.includes('"user"')) return;
-    let o: { message?: { role?: string; content?: unknown }; timestamp?: string };
-    try {
-      o = JSON.parse(line) as typeof o;
-    } catch {
-      return;
-    }
-    if (o.message?.role !== "user") return;
-    const c = o.message.content;
-    const text = typeof c === "string" ? c : Array.isArray(c) ? c.flatMap((x: { type?: string; text?: string }) => (x?.type === "text" && typeof x.text === "string" ? [x.text] : [])).join(" ") : "";
-    if (text.trim()) out.push({ line: i + 1, at: o.timestamp ?? "", text });
-  });
-  return out;
-};
+export { userLines };
 
 const QUOTE = /"((?:[^"\\\n]|\\.){6,})"|“([^”\n]{6,})”|「([^」\n]{6,})」/g;
 // the quote is the owner's when the words just before it name him: 형(17:43 KST, <id>): "...", owner 10-18 "...", 형 Q281: "..."
@@ -263,12 +243,8 @@ export const ownerQuotes = (said: readonly Said[], proof: OwnerProof): Candidate
   return out;
 };
 
-// [LEAD] lines that run the machinery (nudges, handover and rollover steps, checks, the directive top-up that the brief
-// also gets) are not instructions the conversation alone holds
-const MACHINE = /^\[LEAD\]\s*(your work thread has had no update|Handover of|An automatic rollover|지침 보충|The handover of)|HANDOVER_|dori handover (ready|ack)|OWNER_CHECK|DIRECTIVE_AUDIT|\bSTUCK\b/;
-
 export const leadInstructions = (said: readonly Said[], since: number): Candidate[] =>
-  said.filter((s) => s.text.startsWith("[LEAD]") && !MACHINE.test(s.text) && (Date.parse(s.at) || 0) >= since).map((s) => ({ kind: "lead instruction", text: s.text.replace(/\s+/g, " ").trim(), at: s.at, line: s.line, context: "" }));
+  leadLines(said, since).map((s) => ({ kind: "lead instruction", text: s.text.replace(/\s+/g, " ").trim(), at: s.at, line: s.line, context: "" }));
 
 // --- what reached the new session ---
 
@@ -313,9 +289,20 @@ const anyGoal = (sessionDir: string, session: string): string | undefined =>
   openGoal(sessionDir, session) ?? readJson<{ goal?: { objective?: string } }>(join(sessionDir, "extensions", "goal", `${session}.json`))?.goal?.objective;
 
 const norm = (text: string, home: string): string => text.replace(/(^|[\s=:'"])~\//g, `$1${home}/`).replace(/\s+/g, " ").trim();
-// a monitor counts as carried when the new session armed the same watch at any time (an ended one-shot watch included)
-const armed = (m: MonitorSpec, entries: ReturnType<typeof readManifest>, home: string): boolean =>
-  entries.some((e) => (m.command ? !!e.command && norm(m.command, home) === norm(e.command, home) : m.path ? !!e.path && norm(m.path, home) === norm(e.path, home) : !!m.description && e.description === m.description));
+// a monitor counts as carried when the new session armed the same watch at any time (an ended one-shot watch included).
+// One that starts work (LAUNCHES_WORK) is carried by the watch-only one the note asks for in its place (a path watch or a
+// command that starts nothing, with its description or filter, or its script's watch-only form): counting only its own
+// command sent e7-leap's correct watch-only re-arm back as "never armed" with the launching tool.monitor call as evidence
+// (audit 2026-10-24 04:15Z), the step that relaunches a finished chain.
+const armed = (m: MonitorSpec, entries: ReturnType<typeof readManifest>, home: string): boolean => {
+  const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
+  if (m.command && launch) {
+    return entries.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))
+      && ((!!m.description && e.description === m.description) || (!!m.filter && e.filter === m.filter) || (!!launch.rearm && !!e.command && sameCommand(launch.rearm, e.command, home))));
+  }
+  return entries.some((e) => (m.command ? !!e.command && norm(m.command, home) === norm(e.command, home) : m.path ? !!e.path && norm(m.path, home) === norm(e.path, home) : !!m.description && e.description === m.description));
+};
+const launchNote = (m: MonitorSpec, home: string): string => (m.command && (m.launch ?? launchOf(m.command, home)) ? "; it starts work (LAUNCHES_WORK): arm the watch-only monitor its line in the note describes, never this command, which would start the work again" : "");
 
 // --- sorting what only the conversation held ---
 
@@ -488,7 +475,7 @@ export const auditHandover = async (deps: LaneHandoverDeps, c: Committed, opts: 
   if (oldGoal && session && !anyGoal(sessionDir, session) && !quoted(flat(restated()), oldGoal.replace(/ \((active|paused|blocked)\)$/, ""))) gaps.push({ kind: "goal", text: oldGoal, under: "Goal", source: "the old session's goal; the new session registered none" });
   const monitors = laneFacts?.monitors ?? leadFacts?.monitors ?? [];
   const manifest = (): ReturnType<typeof readManifest> => (session ? readManifest(manifestPath(config.sessionsDir, cwd, session)) : []);
-  if (session) for (const m of monitors) if (!armed(m, manifest(), deps.home)) gaps.push({ kind: "monitor", text: m.description || m.command || m.path || "?", under: "Next step", source: `the old session's monitor${m.command ? ` (${m.command.slice(0, 120)})` : ""}; never armed in the new session` });
+  if (session) for (const m of monitors) if (!armed(m, manifest(), deps.home)) gaps.push({ kind: "monitor", text: m.description || m.command || m.path || "?", under: "Next step", source: `the old session's monitor${m.command ? ` (${m.command.slice(0, 120)})` : ""}; never armed in the new session${launchNote(m, deps.home)}` });
   if (laneFacts) for (const m of missingFrom(restated(), laneFacts)) if (m.kind !== "owner goal" && !gaps.some((g) => flat(g.text) === flat(m.text))) gaps.push({ ...m, conversation: m.kind === "decision" || m.kind === "owner's words" });
 
   // what the supplement rounds before the commit filled in

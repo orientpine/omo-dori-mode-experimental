@@ -8,7 +8,7 @@ import { autoReadyLine, freshnessTick } from "../src/freshness.ts";
 import { closeDueFrozen, readFrozen } from "../src/frozen.ts";
 import { ackHandover, manifestPath } from "../src/handover.ts";
 import { compactionStuckOn, type LaneFacts, laneHandover, type LaneHandoverDeps, markReady, missingFrom, pendingFile, readyFile, statusLine, trainingMark } from "../src/lane-handover.ts";
-import { appendRollover, approvalProblem, compactionScan, inboxMessages, compactionsIn, crossed, ownerRolloverText, quietReason, readRollovers, rolloverCause, rolloverStats, sessionSignals } from "../src/rollover.ts";
+import { appendRollover, approvalProblem, compactionScan, holdTyped, inboxMessages, compactionsIn, crossed, ownerRolloverText, quietReason, readRollovers, rolloverCause, rolloverStats, sessionSignals } from "../src/rollover.ts";
 import { stuckTop, stuckView } from "../src/explore.ts";
 import { recordFix } from "../src/same-fix.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
@@ -1637,4 +1637,69 @@ test("e7-leap on 2026-10-24: work a monitor of the old session started keeps run
   expect(closed[0]).toContain("(the work its monitors started ended: 31,32)");
   expect(stoppedIds()).toEqual([OLD_ID]);
   expect(readFrozen(state.dir)).toEqual([]);
+});
+
+// the task tool's result for a background task, as the old session logged it
+const taskStarted = (id: string, at: string, what: string) =>
+  appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), `\n${JSON.stringify({ type: "message", timestamp: at, message: { role: "toolResult", toolName: "task", toolCallId: `toolu_${id}`, content: [{ type: "text", text: `Started task ${what} (${id}, running), the task host is still admitting it.` }], details: { run_in_background: true, task_id: id, status: "running" } } })}`);
+// a user line of the old conversation with its time
+const oldSaysAt = (at: string, text: string) => appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), `\n${JSON.stringify({ type: "message", timestamp: at, message: { role: "user", content: [{ type: "text", text }] } })}`);
+
+test("a background task the old session started after its ready mark refuses the move; one the mark covers, or a forced move, is listed in the note with its record", async () => {
+  // Given: GongDori e7-leap 2026-10-24, deep-high task st_01a16c13 started 2 s after the ready mark and answered into the closed session
+  const deps = { ...(await setup()), home: state.dir };
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  const records = join(state.dir, ".omo", "agent", "projects", "work-1", "senpi-task");
+  mkdirSync(join(records, "tasks"), { recursive: true });
+  writeFileSync(join(records, "tasks", "st_01aaa.json"), JSON.stringify({ task_id: "st_01aaa", status: "running" }));
+  ready(deps, [], "2026-10-11T16:30:00Z");
+  taskStarted("st_01aaa", "2026-10-11T16:20:00Z", "deep-high: is the m200 STOP a sync bias");
+  taskStarted("st_01bbb", "2026-10-11T16:31:00Z", "deep-low: survey the cut chain logs");
+  // When
+  const after = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  const forced = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true, force: true });
+  // Then
+  expect([after.code, forced.code]).toEqual([2, 0]);
+  expect(printed.filter((l) => l.startsWith("HANDOVER_REFUSED"))).toEqual([expect.stringContaining("HANDOVER_REFUSED demo: 1 background task(s) still run, and their answers go to the old session: st_01bbb. ")]);
+  const note = readFileSync(forced.note ?? "", "utf8");
+  expect(note).toContain("## Background tasks of the old session (2)");
+  expect(note).toContain(`- st_01aaa (started 2026-10-11T16:20Z): deep-high: is the m200 STOP a sync bias; record ${join(records, "tasks", "st_01aaa.json")}, transcript ${join(records, "children", "st_01aaa", "sessions", "st_01aaa")}`);
+  expect(note).toContain("- st_01bbb (started 2026-10-11T16:31Z): deep-low: survey the cut chain logs; no record found under ~/.omo/agent/projects");
+});
+
+test("the lead's instructions reach the new session as typed: those of the old conversation in the note, those that reached the old session during the move at its end", async () => {
+  // Given: GongDori e7-leap 2026-10-24, the lead typed the card Q39 instruction into the frozen old pane at 04:03:28Z; the old
+  // agent logged it at 04:05:09Z when thawed to be closed, and the note written at 04:03:12Z never had it
+  const base = await setup();
+  const before = "[LEAD] 형(1563321331590631587): 'Gpu학습까지 해서 검증해'. 계획을 문서로만 내지 말고\n학습으로 검증까지 해.";
+  oldSaysAt("2026-10-11T12:00:00Z", before);
+  oldSaysAt("2026-10-11T12:10:00Z", "[LEAD] your work thread has had no update for 16 min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.");
+  const logged = "[LEAD] m200 STOP을 형에게 카드 Q39로 물었어: 답 전엔 학습은 그대로 둬.";
+  const typedOnly = "[LEAD] m300 판정은 규칙 그대로야.";
+  const deps: LaneHandoverDeps = {
+    ...base,
+    signal: (pid, sig) => {
+      sigs.push(`${sig} ${pid}`);
+      // the lead types into the old pane while it is frozen (dori type keeps the text: the pane has a quiet mark), and the
+      // old agent logs the first line once it is thawed to be closed
+      if (sig === "SIGSTOP") for (const t of [logged, typedOnly]) holdTyped(state.dir, OLD, base.clock.now(), t);
+      if (sig === "SIGCONT") oldSaysAt(new Date(base.clock.now() + 1000).toISOString(), logged);
+      return true;
+    },
+  };
+  ready(deps, [15]);
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  // Then
+  expect(r.code).toBe(0);
+  const note = readFileSync(r.note ?? "", "utf8");
+  expect(note).toContain("## The lead's instructions in the old conversation since the last handover (1)\n");
+  expect(note).toContain("  > [LEAD] 형(1563321331590631587): 'Gpu학습까지 해서 검증해'. 계획을 문서로만 내지 말고\n  > 학습으로 검증까지 해.");
+  expect(note).not.toContain("your work thread has had no update");
+  const late = note.split("## The lead's instructions that reached the old session after this note was written (2)\n")[1] ?? "";
+  expect(late).toContain(`  > ${logged}`);
+  expect(late).toContain(`(typed into the old pane while the handover ran):\n  > ${typedOnly}`);
+  expect(sent(w).filter((l) => l.startsWith("[LEAD] HANDOVER_LEAD_LATE 2:"))).toHaveLength(1);
+  expect(printed.find((l) => l.startsWith("HANDOVER_LEAD_LATE demo 2: old log line"))).toBeDefined();
+  expect(existsSync(join(state.dir, "handover", "quiet", `${OLD}.typed.jsonl`))).toBe(false);
 });
