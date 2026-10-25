@@ -80,6 +80,13 @@ omo-login-share code '<what the owner pasted>'                         # Anthrop
 - Anthropic and ChatGPT: the owner approves, then pastes the code (or the
   final page address) shown in the browser into the thread. The lead passes it
   on with `omo-login-share code`.
+- When a login asks for a method, `login-method.js` answers: copy code for
+  Anthropic (the code Anthropic shows), browser login for ChatGPT (the final page
+  address). pi-ai expects the option id back; `bun test` in this folder checks
+  that against the installed pi-ai without contacting either service.
+- A login that cannot finish (no link, wrong code, 30 minutes without a code)
+  sends `[ALERT] ... 로그인이 끝나지 못함: <reason>` to the lead under `--notify`,
+  with the command to try again.
 - `/login` in zzangdori's own omo works the same way: the path unit pushes the
   result to the borrowing accounts.
 
