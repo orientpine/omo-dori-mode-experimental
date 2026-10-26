@@ -1148,8 +1148,9 @@ class Gate:
                                     entry["vault_content"], entry["owner_message"],
                                     approved_by=entry["card"], restoring=entry.get("restoring", False))
                             else:
+                                # The record keeps the query as JSON lists; urlencode takes only pairs as tuples.
                                 status, _, _ = await self.google_write(entry["uid"], entry["method"], entry["path"],
-                                    entry["query"], entry["headers"], base64.b64decode(entry["body"]),
+                                    [tuple(pair) for pair in entry["query"]], entry["headers"], base64.b64decode(entry["body"]),
                                     proof=entry["owner_message"], approved_by=entry["card"], approved_context=entry,
                                     restore=entry.get("restoring", False))
                         # The HTTP status is already in the GATE_WRITE log line; the owner's card says what happened,
@@ -1286,6 +1287,10 @@ class Gate:
             except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
                 # A transient Discord failure leaves the card parked, never executes blindly.
                 print("GATE_APPROVAL_CHECK_FAILED", file=sys.stderr, flush=True)
+            except Exception as error:
+                # 2026-10-25: a TypeError in one approved card's replay ended this loop without a word, and no
+                # card ran after it. Any other failure is logged by its type (never its text) and polling goes on.
+                print(f"GATE_APPROVAL_CHECK_FAILED {type(error).__name__}", file=sys.stderr, flush=True)
             await asyncio.sleep(self.config.get("approval", {}).get("poll_seconds", 20))
 
     async def discord_policy(self, method, path, headers, body):
