@@ -16,7 +16,7 @@ import sys
 import tempfile
 import unittest
 from urllib.parse import parse_qs, quote, urlsplit
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 def load(name):
@@ -393,6 +393,51 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         card = self.cards[entry["message"]]
         self.assertTrue(card.startswith("✅ 실행됨\n승인 필요"), card)
         self.assertIn("outside@example.net", card)
+
+    async def test_an_approved_share_with_query_parameters_executes_with_them(self):
+        # Given: a share parked with its query (2026-10-25: the stored query came back as JSON lists
+        # and the replay died in urlencode, so the owner's ✅ never ran and no later card ran either).
+        self.approval()
+        await self.request(path="/www.googleapis.com/drive/v3/files/f/permissions?sendNotificationEmail=true"
+                                "&supportsAllDrives=true",
+                           data={"type": "user", "role": "reader", "emailAddress": "partner@example.net"})
+        entry = self.approve()
+        # When: the poller sees the owner's ✅.
+        await self.service.poll_approvals()
+        # Then: the share runs once, with the same query, and the card says so.
+        self.assertEqual([urlsplit(w[1]).path for w in self.writes()], ["/drive/v3/files/f/permissions"])
+        self.assertEqual(parse_qs(urlsplit(self.writes()[0][1]).query),
+                         {"sendNotificationEmail": ["true"], "supportsAllDrives": ["true"]})
+        self.assertEqual(self.changes()[0]["approved_by"], entry["card"])
+        self.assertTrue(self.cards[entry["message"]].startswith("✅ 실행됨"))
+        self.assertFalse(self.service.pending())
+
+    async def test_an_unexpected_error_in_one_poll_does_not_stop_later_polls(self):
+        # Given: the first poll fails with an error no branch expects.
+        self.approval()
+        self.config["approval"]["poll_seconds"] = 0
+        polled = asyncio.Event()
+        calls = []
+
+        async def poll():
+            calls.append(1)
+            if len(calls) == 1:
+                raise TypeError("boom")
+            polled.set()
+
+        stderr = io.StringIO()
+        with patch.object(self.service, "poll_approvals", poll), \
+                patch.object(self.service, "close_decided_threads", AsyncMock()), \
+                contextlib.redirect_stderr(stderr):
+            loop = asyncio.create_task(self.service.approval_loop())
+            try:
+                # Then: the loop logs the failure by type and polls again.
+                await asyncio.wait_for(polled.wait(), 5)
+            finally:
+                loop.cancel()
+                await asyncio.gather(loop, return_exceptions=True)
+        self.assertIn("GATE_APPROVAL_CHECK_FAILED TypeError", stderr.getvalue())
+        self.assertNotIn("boom", stderr.getvalue())
 
     async def test_the_bots_own_prefilled_reactions_are_not_an_approval(self):
         self.approval()

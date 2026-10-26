@@ -114,6 +114,10 @@ A card the owner already reacted to is left to the poller.
 Pending requests are private JSON files in `pending/`. Execution is marked
 durably before sending: an interrupted, uncertain write is never automatically
 replayed after restart. Confirm its real upstream state before resubmitting.
+An approved write is replayed with its original query string. The poller keeps running when
+one check fails: a failure it does not expect is logged as `GATE_APPROVAL_CHECK_FAILED <type>`
+(never the error text). On 2026-10-25 a Drive share with a query string ended the poller with
+an unlogged TypeError, and no card ran after it until a restart.
 `GET /_gate/pending` lists IDs, reasons, links, and ages.
 
 Changes/denials are in `changes.jsonl`/`denials.jsonl` (0600), snapshots in
