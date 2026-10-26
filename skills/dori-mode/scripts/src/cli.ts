@@ -902,7 +902,7 @@ try {
     case "challenge": {
       if (flags.values.check) {
         const own = key ? ((await lane(key)).model ?? config.defaultModel) : undefined;
-        const listed = own ? reviewers(own, config.reviewers.models) : [...config.reviewers.models];
+        const listed = own ? reviewers(own, config.reviewers.models, config.reviewers.allowSameFamily === true) : [...config.reviewers.models];
         const checks = await checkReviewers(deps, listed);
         for (const c of checks) console.log(c.call ? `REVIEWER_OK ${c.listed}${c.call !== c.listed ? ` -> ${c.call}` : ""} (${familyOf(c.listed)}): ${c.note}` : `REVIEWER_SKIP ${c.listed} (${familyOf(c.listed)}): ${c.note}`);
         if (!checks.some((c) => c.call)) die("no reviewer in reviewers.models can be called on this host");

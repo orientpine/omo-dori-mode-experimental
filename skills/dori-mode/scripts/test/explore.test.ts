@@ -276,7 +276,7 @@ const hostRunner = (calls: Call[], reviewer?: (model: string) => Ran | undefined
 };
 const challengeWorld = async (fake: Runner, models?: readonly string[], laneModel = "anthropic/claude-opus-5-5") => {
   const base = depsFor(world, fakeClock(T0), state.dir);
-  const deps = { ...base, run: fake, config: { ...base.config, ...(models ? { reviewers: { models } } : {}) } };
+  const deps = { ...base, run: fake, config: { ...base.config, ...(models ? { reviewers: { ...base.config.reviewers, models } } : {}) } };
   const l: Lane = { ...lane, model: laneModel, challengeBefore: ["the full 9-seed run"] };
   await deps.registry.write(l);
   const plan = join(state.dir, "plan.md");
@@ -290,6 +290,22 @@ test("by default the best GPT, then Claude, then Grok model reviews; on a Claude
   expect(reviewers("anthropic-subscription/claude-opus-5-5:medium", order)[0]).toBe("chatgpt-subscription/gpt-6-astra");
   expect(familyOf("github-copilot/gpt-6.1-sol")).toBe("openai");
   expect(reviewers("anthropic/claude-opus-5-5", ["github-copilot/claude-opus-5.5", "xai/grok-4", "google/gemini-3"])).toEqual(["xai/grok-4", "google/gemini-3"]);
+});
+
+test("reviewers.allowSameFamily keeps a same-family reviewer for challenge (not the lane's own model); without it the lane's family is skipped", async () => {
+  const list = ["chatgpt-subscription/gpt-6-astra:xhigh", "anthropic-subscription/claude-fable-5-1:xhigh", "anthropic-subscription/claude-opus-5-5"];
+  const own = "anthropic-subscription/claude-opus-5-5:medium";
+  expect(defaultConfig("/home/test").reviewers.allowSameFamily).toBe(false);
+  expect(reviewers(own, list)).toEqual(["chatgpt-subscription/gpt-6-astra:xhigh"]);
+  expect(reviewers(own, list, true)).toEqual(["chatgpt-subscription/gpt-6-astra:xhigh", "anthropic-subscription/claude-fable-5-1:xhigh"]);
+  const calls: Call[] = [];
+  const off = await challengeWorld(hostRunner(calls), list, own);
+  await expect(runChallenge(off.deps, off.l, off.plan, { model: "anthropic-subscription/claude-fable-5-1:xhigh" })).rejects.toThrow("the lane's own family");
+  expect((await runChallenge(off.deps, off.l, off.plan, { all: true })).reviews.map((v) => v.record.model)).toEqual(["chatgpt-subscription/gpt-6-astra:xhigh"]);
+  const deps = { ...off.deps, config: { ...off.deps.config, reviewers: { models: list, allowSameFamily: true } } };
+  expect((await runChallenge(deps, off.l, off.plan, { all: true })).reviews.map((v) => v.record.model)).toEqual(["chatgpt-subscription/gpt-6-astra:xhigh", "anthropic-subscription/claude-fable-5-1:xhigh"]);
+  expect((await runChallenge(deps, off.l, off.plan, { model: "anthropic-subscription/claude-fable-5-1:xhigh" })).reviews.map((v) => v.record.model)).toEqual(["anthropic-subscription/claude-fable-5-1:xhigh"]);
+  await expect(runChallenge(deps, off.l, off.plan, { model: "anthropic-subscription/claude-opus-5-5" })).rejects.toThrow("the lane's own model");
 });
 
 test("the reviewer reads the plan's repository with read-only tools and writes the review in its first run", async () => {

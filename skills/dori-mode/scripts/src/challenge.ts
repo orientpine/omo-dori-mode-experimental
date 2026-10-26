@@ -41,7 +41,13 @@ export const familyOf = (model: string): string => {
   return FAMILIES.find(([re]) => re.test(id))?.[1] ?? (model.includes("/") ? (model.split("/")[0] ?? id) : id);
 };
 
-export const reviewers = (laneModel: string, candidates: readonly string[]): string[] => candidates.filter((m) => familyOf(m) !== familyOf(laneModel));
+// the model without its provider and thinking suffix (anthropic-subscription/claude-opus-5-5:medium is claude-opus-5-5)
+const bareModel = (model: string): string => (model.split("/").pop() ?? model).replace(/:[^:]*$/, "").toLowerCase();
+
+// Reviewers of another family than the lane's model, in list order. With sameFamily (reviewers.allowSameFamily, for dori
+// challenge only) a model of the lane's family stays too; only the lane's own model is still skipped.
+export const reviewers = (laneModel: string, candidates: readonly string[], sameFamily = false): string[] =>
+  candidates.filter((m) => (sameFamily ? bareModel(m) !== bareModel(laneModel) : familyOf(m) !== familyOf(laneModel)));
 
 export const SECTIONS = ["Reasons this will fail", "Missing alternatives", "Cheapest falsifying test"] as const;
 
@@ -124,9 +130,10 @@ export const runChallenge = async (deps: FlowDeps, lane: Lane, planFile: string,
   if (!plan) throw new ChallengeError(`plan ${planFile} is empty`);
   const cfg = deps.config.explore;
   const own = lane.model ?? deps.config.defaultModel;
-  if (opts.model && familyOf(opts.model) === familyOf(own)) throw new ChallengeError(`--model ${opts.model} is the lane's own family (${familyOf(own)}); pick another family`);
-  const candidates = opts.model ? [opts.model] : reviewers(own, deps.config.reviewers.models);
-  if (!candidates.length) throw new ChallengeError(`no reviewer in reviewers.models is of another family than the lane's model ${own} (${familyOf(own)})`);
+  const sameFamily = deps.config.reviewers.allowSameFamily === true;
+  if (opts.model && !reviewers(own, [opts.model], sameFamily).length) throw new ChallengeError(sameFamily ? `--model ${opts.model} is the lane's own model (${own}); pick another model` : `--model ${opts.model} is the lane's own family (${familyOf(own)}); pick another family, or set reviewers.allowSameFamily`);
+  const candidates = opts.model ? [opts.model] : reviewers(own, deps.config.reviewers.models, sameFamily);
+  if (!candidates.length) throw new ChallengeError(sameFamily ? `no reviewer in reviewers.models other than the lane's own model ${own}` : `no reviewer in reviewers.models is of another family than the lane's model ${own} (${familyOf(own)})`);
   const failures: string[] = [];
   const skip = (line: string): void => {
     failures.push(line);
