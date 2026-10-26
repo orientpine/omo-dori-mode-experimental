@@ -206,7 +206,10 @@ export type Stuck = { readonly hypothesesAt: number; readonly researchAt: number
 
 // Reviewer models of another family for dori challenge and dori owner-check, in order (best GPT, Claude, Grok, then a
 // second model of each family). Each command takes the first callable one of another family than the lane's.
-export type Reviewers = { readonly models: readonly string[] };
+// allowSameFamily: dori challenge (and challenge --check) also keeps a model of the lane's family (only the lane's own
+// model is skipped), so an account can have Claude Fable review a Claude Opus lane. owner-check, intent-check, the
+// directives check and the rollover audit still take another family.
+export type Reviewers = { readonly models: readonly string[]; readonly allowSameFamily: boolean };
 
 // dori scorecard: where the day's numbers come from and how the card reads. Empty paths leave that line as n/a.
 export type Scorecard = {
@@ -484,6 +487,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   },
   reviewers: {
     models: ["chatgpt-subscription/gpt-6-astra", "anthropic-subscription/claude-fable-5-1", "xai/grok-4.7", "chatgpt-subscription/gpt-6.1-sol", "anthropic-subscription/claude-opus-5-5", "xai/grok-4.6", "chatgpt-subscription/gpt-6-luna"],
+    allowSameFamily: false,
   },
   scorecard: {
     timeZone: "UTC",

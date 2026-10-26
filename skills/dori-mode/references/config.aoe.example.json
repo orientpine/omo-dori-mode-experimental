@@ -27,6 +27,9 @@
     "has stopped",
     "no suitable jobs"
   ],
+  "reviewers": {
+    "allowSameFamily": false
+  },
   "guard": {
     "loadAlert": 150,
     "loadOk": 80,
