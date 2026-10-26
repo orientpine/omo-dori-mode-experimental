@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { sessionPath } from "../src/aoe.ts";
 import { leadAlertPoster } from "../src/autoturn.ts";
 import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone, watchTick } from "../src/done-flow.ts";
@@ -98,6 +99,74 @@ test("a session tmux did not give launchEnv gets no lane prompt: STARTUP_ERROR n
   const { r } = await launchWith({ launchEnv: GUARD });
   expect(r.startup).toBe(`STARTUP_ERROR gg aoe_gg_${NEW_AOE_ID.slice(0, 8)}: launchEnv not in the session: CUDA_VISIBLE_DEVICES=(unset); the lane prompt was not sent`);
   expect(sent(world)).toEqual([]);
+});
+
+// a bin dir holding an executable node (or, with bun, a node that is a link to bun as ~/.bun/bin/node can be)
+const nodeDir = (dir: string, opts: { bun?: boolean; broken?: boolean } = {}): string => {
+  mkdirSync(dir, { recursive: true });
+  if (opts.bun) {
+    writeFileSync(join(dir, "bun"), "#!/bin/sh\n");
+    chmodSync(join(dir, "bun"), 0o755);
+    symlinkSync("bun", join(dir, "node"));
+  } else {
+    writeFileSync(join(dir, "node"), "#!/bin/sh\n");
+    chmodSync(join(dir, "node"), opts.broken ? 0o644 : 0o755);
+  }
+  return dir;
+};
+const nvmWith = (root: string, versions: string[], alias?: Record<string, string>): string => {
+  for (const v of versions) nodeDir(join(root, "versions", "node", v, "bin"));
+  for (const [name, to] of Object.entries(alias ?? {})) {
+    mkdirSync(join(root, "alias", name, ".."), { recursive: true });
+    writeFileSync(join(root, "alias", name), `${to}\n`);
+  }
+  return root;
+};
+
+test("sessionPath: a PATH whose node is real stays as it is; without node the nvm node goes in (self-restart.sh order); nothing at all is undefined", () => {
+  const d = state.dir;
+  const bare = `${join(d, "bunbin")}:/usr/bin:/bin`;
+  mkdirSync(join(d, "bunbin"));
+  // a caller with a working node keeps its PATH, even when nvm's default is another version
+  const own = nodeDir(join(d, "own"));
+  const nvm = nvmWith(join(d, "nvm"), ["v22.22.0", "v24.15.0"], { default: "22" });
+  expect(sessionPath(`${own}:/usr/bin`, nvm)).toBe(`${own}:/usr/bin`);
+  // no node on PATH: nvm's default alias wins over the newer version, appended so nothing on PATH is shadowed
+  expect(sessionPath(bare, nvm)).toBe(`${bare}:${nvm}/versions/node/v22.22.0/bin`);
+  // lts/* -> lts/jod -> v22.x is followed through the alias files
+  const lts = nvmWith(join(d, "nvm-lts"), ["v22.1.0", "v24.15.0"], { default: "lts/*", "lts/*": "lts/jod", "lts/jod": "v22.1.0" });
+  expect(sessionPath(bare, lts)).toBe(`${bare}:${lts}/versions/node/v22.1.0/bin`);
+  // no default alias: the newest version (by number, v24 over v9), and a newest whose node is not executable is skipped
+  const plain = nvmWith(join(d, "nvm-plain"), ["v9.0.0", "v24.15.0"]);
+  expect(sessionPath(bare, plain)).toBe(`${bare}:${plain}/versions/node/v24.15.0/bin`);
+  nodeDir(join(plain, "versions", "node", "v25.0.0", "bin"), { broken: true });
+  expect(sessionPath(bare, plain)).toBe(`${bare}:${plain}/versions/node/v24.15.0/bin`);
+  // a node that is only a link to bun: nvm's node goes in front of that dir; without nvm the bun link stays
+  const bunLink = nodeDir(join(d, "bunlink"), { bun: true });
+  expect(sessionPath(`/usr/bin:${bunLink}:/bin`, nvm)).toBe(`/usr/bin:${nvm}/versions/node/v22.22.0/bin:${bunLink}:/bin`);
+  expect(sessionPath(`/usr/bin:${bunLink}:/bin`, join(d, "no-nvm"))).toBe(`/usr/bin:${bunLink}:/bin`);
+  // no node anywhere
+  expect(sessionPath(bare, join(d, "no-nvm"))).toBeUndefined();
+});
+
+test("a launch from a PATH without node (a systemd unit's bare PATH) runs aoe add with nvm's node on PATH; with no node at all it is refused before aoe add", async () => {
+  const saved = { PATH: process.env.PATH, NVM_DIR: process.env.NVM_DIR };
+  const bare = `${join(state.dir, "bunbin")}:/nonexistent`;
+  mkdirSync(join(state.dir, "bunbin"));
+  try {
+    process.env.PATH = bare;
+    process.env.NVM_DIR = nvmWith(join(state.dir, "nvm"), ["v24.15.0"]);
+    const { r } = await launchWith({ launchEnv: GUARD });
+    expect(r.startup).toStartWith("STARTUP_OK gg");
+    expect(world.aoeEnv).toEqual([{ ...GUARD, PATH: `${bare}:${process.env.NVM_DIR}/versions/node/v24.15.0/bin` }]);
+    process.env.NVM_DIR = join(state.dir, "no-nvm");
+    await expect(launchWith({}, false, "hh")).rejects.toThrow(/NO_NODE .*#!\/usr\/bin\/env node/);
+    expect(world.calls.filter((c) => c[0] === "aoe" && c[1] === "add")).toHaveLength(1);
+  } finally {
+    process.env.PATH = saved.PATH;
+    if (saved.NVM_DIR === undefined) delete process.env.NVM_DIR;
+    else process.env.NVM_DIR = saved.NVM_DIR;
+  }
 });
 
 test("launch-env prints NAME=VALUE for an open lane, --unset=NAME for a --use-gpu lane, a closed lane or another session, nothing without launchEnv", async () => {

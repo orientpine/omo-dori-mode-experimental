@@ -1,3 +1,6 @@
+import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
+
 import type { Pane } from "./panes.ts";
 import type { Clock, Runner } from "./run.ts";
 
@@ -126,13 +129,64 @@ export const envMismatch = async (run: Runner, pane: string, env: Readonly<Recor
   return out;
 };
 
+const runnable = (file: string): boolean => {
+  try {
+    accessSync(file, constants.X_OK);
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+const newestFirst = (a: string, b: string): number => {
+  const [x, y] = [a, b].map((v) => v.replace(/^v/, "").split(".").map(Number));
+  for (let i = 0; i < 3; i++) if ((x?.[i] ?? 0) !== (y?.[i] ?? 0)) return (y?.[i] ?? 0) - (x?.[i] ?? 0);
+  return 0;
+};
+
+// nvm's node bin dir the way setups/discord-aoe/self-restart.sh node_bin() picks it: the default alias (followed through
+// lts/* -> lts/<name> -> vX.Y.Z), else the newest installed version; the first whose node is executable wins.
+export const nvmNodeBin = (nvmDir: string): string | undefined => {
+  let v = "default";
+  for (let i = 0; i < 5 && existsSync(join(nvmDir, "alias", v)); i++) v = readFileSync(join(nvmDir, "alias", v), "utf8").replace(/\s/g, "");
+  let versions: string[] = [];
+  try {
+    versions = readdirSync(join(nvmDir, "versions", "node")).filter((n) => n.startsWith("v")).sort(newestFirst);
+  } catch {
+    return undefined;
+  }
+  const want = `v${v.replace(/^v/, "")}`;
+  return [...versions.filter((n) => n.startsWith(want)), ...versions].map((n) => join(nvmDir, "versions", "node", n, "bin")).find((d) => runnable(join(d, "node")));
+};
+
+// The PATH a new session gets. tmux gives a pane the PATH of the client that opened it (aoe add), so a lane launched from
+// a systemd unit or timer with a bare PATH had no node, and senpi task's model probe and omo's hooks
+// (#!/usr/bin/env node) exited 127 (GongDori 2026-10-26). A PATH whose node is real stays as it is; otherwise nvm's node
+// (nvmNodeBin) goes in front of the dir whose node is only a link to bun, or at the end when there is no node, so it
+// shadows nothing else; a bun link without nvm stays. undefined: no node anywhere.
+export const sessionPath = (path: string, nvmDir: string): string | undefined => {
+  const dirs = path.split(":").filter(Boolean);
+  const at = dirs.findIndex((d) => runnable(join(d, "node")));
+  const isBun = at >= 0 && basename(realpathSync(join(dirs[at] ?? "", "node"))) === "bun";
+  if (at >= 0 && !isBun) return path;
+  const nvm = nvmNodeBin(nvmDir);
+  if (!nvm) return at >= 0 ? path : undefined;
+  const cut = at >= 0 ? at : dirs.length;
+  return [...dirs.slice(0, cut), nvm, ...dirs.slice(cut).filter((d) => d !== nvm)].join(":");
+};
+
 // aoe add refuses a title+path pair that already exists, even in the trash (aoe rm --purge clears it).
 // thinking goes in as its own --thinking flag: omo 5.1.30 can start a session at medium although the model id ends in :high.
 // env: laneEnv for the session (see forwardEnv); left out or {} touches neither tmux nor aoe's environment.
+// PATH: sessionPath of this process's PATH, passed to aoe add only when it differs; no node at all refuses (NO_NODE).
 export const openAoeSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly tool: string; readonly model: string; readonly thinking?: string; readonly env?: Readonly<Record<string, string | undefined>> }): Promise<string> => {
   const env = opts.env && Object.keys(opts.env).length ? opts.env : undefined;
+  const callerPath = process.env.PATH ?? "";
+  const nvmDir = process.env.NVM_DIR || join(process.env.HOME ?? "", ".nvm");
+  const path = sessionPath(callerPath, nvmDir);
+  if (path === undefined) throw new AoeError(`NO_NODE no node on PATH (${callerPath}) or in ${nvmDir}: the session's senpi task model probe and omo hooks run #!/usr/bin/env node and would exit 127; install node with nvm or put it on the caller's PATH`);
   if (env) await forwardEnv(run, Object.keys(env));
-  const added = await run(["aoe", "add", opts.cwd, "-t", opts.title, "--tool", opts.tool, "-l", "--extra-args", `--model ${opts.model}${opts.thinking ? ` --thinking ${opts.thinking}` : ""}`], env ? { env } : undefined);
+  const addEnv = path === callerPath ? env : { ...env, PATH: path };
+  const added = await run(["aoe", "add", opts.cwd, "-t", opts.title, "--tool", opts.tool, "-l", "--extra-args", `--model ${opts.model}${opts.thinking ? ` --thinking ${opts.thinking}` : ""}`], addEnv ? { env: addEnv } : undefined);
   if (added.code !== 0) throw new AoeError(`aoe add failed: ${added.err || added.out}`);
   for (let i = 0; i < 30; i++) {
     const s = (await aoeSessions(run)).find((x) => x.title === opts.title && x.path === opts.cwd);
