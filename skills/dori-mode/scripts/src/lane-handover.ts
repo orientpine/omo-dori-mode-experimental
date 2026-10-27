@@ -10,7 +10,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { pendingBackground } from "./background.ts";
+import { pendingBackground, taskOpen, taskRecord, taskRecords } from "./background.ts";
 import { aoeSessions, BUSY_MARK, captureTmux, closeAoeSession, envMismatch, inputLine, laneEnv, openAoeSession, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { freezePane, writeFrozen } from "./frozen.ts";
@@ -113,7 +113,7 @@ export type LaneFacts = {
 export type TaskRun = { readonly id: string; readonly at: string; readonly what?: string; readonly record?: string; readonly transcript?: string };
 
 // The task tool's start line names what the task does: "Started task <what> (st_..., running)".
-const taskRuns = (log: string, ids: readonly { readonly id: string; readonly at: number }[], home: string): TaskRun[] => {
+const taskRuns = (log: string, ids: readonly { readonly id: string; readonly at: number; readonly what?: string }[], home: string): TaskRun[] => {
   const what = new Map([...log.matchAll(/Started task (.{1,240}?) \((st_[0-9a-z]+), running\)/g)].map((m) => [m[2] ?? "", (m[1] ?? "").replace(/\\"/g, '"')]));
   const projects = join(home, ".omo", "agent", "projects");
   let dirs: string[] = [];
@@ -122,9 +122,10 @@ const taskRuns = (log: string, ids: readonly { readonly id: string; readonly at:
   } catch {
     dirs = [];
   }
-  return ids.map(({ id, at }) => {
+  return ids.map(({ id, at, what: summary }) => {
     const dir = dirs.map((d) => join(projects, d, "senpi-task")).find((d) => existsSync(join(d, "tasks", `${id}.json`)));
-    return { id, at: new Date(at).toISOString(), ...(what.get(id) ? { what: what.get(id) } : {}), ...(dir ? { record: join(dir, "tasks", `${id}.json`), transcript: join(dir, "children", id, "sessions", id) } : {}) };
+    const asked = what.get(id) ?? summary;
+    return { id, at: new Date(at).toISOString(), ...(asked ? { what: asked } : {}), ...(dir ? { record: join(dir, "tasks", `${id}.json`), transcript: join(dir, "children", id, "sessions", id) } : {}) };
   });
 };
 
@@ -429,9 +430,9 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     if (!opts.dryRun) watchLog(config.watchLog, deps.clock, { source: "handover", line });
   };
   let fromPane = "";
-  const refuse = (why: string, held?: { readonly blocked: Blocked; readonly pids?: readonly number[] }): LaneHandoverResult => {
+  const refuse = (why: string, held?: { readonly blocked: Blocked; readonly pids?: readonly number[]; readonly tasks?: readonly string[] }): LaneHandoverResult => {
     emit(`HANDOVER_REFUSED ${key}: ${why}`);
-    if (!opts.dryRun && opts.approvedBy?.trim()) appendRollover(config.stateDir, { kind: "rollover", who: "lane", at, key, from: fromPane, approvedBy: opts.approvedBy.trim(), signals: {}, steps: [], result: "refused", reasons: [why], ...(held ? { blocked: held.blocked, ...(held.pids?.length ? { pids: held.pids } : {}) } : {}) });
+    if (!opts.dryRun && opts.approvedBy?.trim()) appendRollover(config.stateDir, { kind: "rollover", who: "lane", at, key, from: fromPane, approvedBy: opts.approvedBy.trim(), signals: {}, steps: [], result: "refused", reasons: [why], ...(held ? { blocked: held.blocked, ...(held.pids?.length ? { pids: held.pids } : {}), ...(held.tasks?.length ? { tasks: held.tasks } : {}) } : {}) });
     return { code: 2 };
   };
   if (config.backend !== "aoe") return refuse("dori handover --lane needs backend aoe");
@@ -502,14 +503,27 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const logText = oldLog ? readFileSync(oldLog, "utf8") : "";
   const background = logText ? pendingBackground(logText, Number.isNaN(agentStart) ? 0 : agentStart) : [];
   const cells = background.filter((j) => j.kind === "eval" && !(ready && j.at <= Date.parse(ready.at)));
-  // a background task's answer goes to the session that started it (GongDori's e7-leap st_01a16c13, started 2 s after the
-  // ready mark, answered into the closed session on 2026-10-24); a ready mark covers the tasks started before it, as cells
-  const tasks = background.filter((j) => j.kind === "task");
-  const lateTasks = tasks.filter((j) => !(ready && j.at <= Date.parse(ready.at)));
+  // a background task's answer goes to the session that started it (GongDori's e7-leap st_01a16c13 answered into the closed
+  // session on 2026-10-24), and a task in its own process keeps working after the move: GongDori's e7-ledger-replay moved
+  // on 2026-10-27 05:37Z because its ready mark covered two tasks started before it, and those and a third that had
+  // woken itself after its completion line went on editing the repository until 06:51Z, out of reach of the new session.
+  // So no ready mark covers a task: one still running holds the move until it ends (or --force). Whether it runs is
+  // senpi's record of it (pending, running, paused); a task the transcript shows started and not ended, without a record,
+  // runs too.
+  const records = session ? taskRecords(deps.home, session) : [];
+  const known = new Set(records.map((r) => r.id));
+  const startedAt = new Map(background.map((j) => [j.id, j.at]));
+  const tasks = [
+    ...records.filter(taskOpen).map((r) => ({ id: r.id, at: Date.parse(r.at ?? "") || startedAt.get(r.id) || 0, ...(r.what ? { what: r.what } : {}) })),
+    ...background.filter((j) => j.kind === "task" && !known.has(j.id)).filter((j) => {
+      const r = taskRecord(deps.home, j.id);
+      return !r || taskOpen(r);
+    }),
+  ];
   const work = [
     ...(uncovered.length ? [`${uncovered.length} local chain(s) would die: ${uncovered.map((c) => `${c.pid} ${c.cmd.slice(0, 80)}`).join("; ")}`] : []),
     ...(cells.length ? [`${cells.length} eval cell(s) still run in the background: ${cells.map((c) => c.id).join(", ")}`] : []),
-    ...(lateTasks.length ? [`${lateTasks.length} background task(s) still run, and their answers go to the old session: ${lateTasks.map((c) => c.id).join(", ")}`] : []),
+    ...(tasks.length ? [`${tasks.length} background task(s) still run, and their answers go to the old session: ${tasks.map((c) => c.id).join(", ")}`] : []),
   ];
   const busy = [
     // a ready mark covers chains only: a turn that started after it (a nudge, a message) still blocks
@@ -522,7 +536,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   if (blocked && !opts.dryRun && opts.idle && !opts.idle.final && !work.length) return { code: 2, retry: true };
   const blockedWhy = `${opts.idle && !work.length ? `the lane stayed busy for ${opts.idle.waitedMin} min: ` : ""}${blockers.join("; ")}. Ask the lane to reach a safe point and write its conversation summary and run dori handover ready ${key} --note FILE in its own pane, or pass --force`;
   // a dry run still writes the note, so a rollover proposal can show it with what blocks the move
-  if (blocked && !opts.dryRun) return refuse(blockedWhy, { blocked: work.length ? "work" : "busy", pids: uncovered.flatMap((c) => c.pids ?? [c.pid]) });
+  if (blocked && !opts.dryRun) return refuse(blockedWhy, { blocked: work.length ? "work" : "busy", pids: uncovered.flatMap((c) => c.pids ?? [c.pid]), tasks: tasks.map((t) => t.id) });
   if (blocked) emit(`HANDOVER_REFUSED ${key}: ${blockedWhy}`);
   else if (blockers.length) emit(`HANDOVER_FORCED ${key}: ${blockers.join("; ")}`);
   if (real !== old.path) emit(`HANDOVER_CWD_SYMLINK ${key}: the lane runs from ${old.path}, a symlink to ${real}; the new session opens in ${real}`);
@@ -608,7 +622,8 @@ const IDLE_POLL_MS = 3_000;
 // lane's lock while it waits, so freshness starts no second run, and tries at once; while only a running turn or an open
 // question holds the lane it watches the screen every few seconds and tries again the moment the turn ends, for up to
 // waitIdleMin minutes. Then a lane still busy is refused (blocked busy, and freshness asks it to reach a safe point).
-// Work that would die (a local chain, a background eval cell) refuses at once (blocked work).
+// Work that would die (a local chain, a background eval cell) or go on unreachable (a background task) refuses at once
+// (blocked work).
 export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: string, opts: LaneHandoverOptions = {}): Promise<LaneHandoverResult> => {
   if (!opts.waitIdleMin || opts.dryRun) return attempt(deps, key, here, opts);
   const emit = (line: string): void => {

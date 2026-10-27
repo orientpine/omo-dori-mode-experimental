@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Runner } from "./run.ts";
@@ -74,6 +74,70 @@ export const pendingBackground = (transcript: string, since = 0, until = Number.
     for (const [kind, id] of startsOf(tool, e.message?.toolCallId ?? "", text, e.message?.details)) if (!open.has(id)) open.set(id, { kind, id, at });
   }
   return [...open.values()];
+};
+
+// senpi's own record of a background task (<home>/.omo/agent/projects/<project>/senpi-task/tasks/<id>.json). Its status
+// is what the transcript cannot tell: a task that wakes itself again after its completion line (GongDori's step3-adopt
+// st_01a17b36 on 2026-10-27, run 38 after 37 completions) still runs although the transcript shows it ended.
+export type TaskRecord = { readonly id: string; readonly status: string; readonly file: string; readonly at?: string; readonly what?: string };
+
+// senpi's task statuses are pending, running, paused, completed, error, cancelled, interrupted and lost; the first three
+// have not ended
+const OPEN_STATUS = new Set(["pending", "running", "paused"]);
+export const taskOpen = (r: TaskRecord): boolean => OPEN_STATUS.has(r.status);
+
+const taskDirs = (home: string): string[] => {
+  const projects = join(home, ".omo", "agent", "projects");
+  try {
+    return readdirSync(projects).map((d) => join(projects, d, "senpi-task", "tasks")).filter((d) => existsSync(d));
+  } catch {
+    return [];
+  }
+};
+
+type RawRecord = { readonly task_id?: string; readonly status?: string; readonly started_at?: string; readonly created_at?: string; readonly task_summary?: string; readonly parent_session_id?: string; readonly root_session_id?: string };
+
+const parseRecord = (file: string, text: string): (TaskRecord & { readonly parent?: string; readonly root?: string }) | undefined => {
+  let r: RawRecord;
+  try {
+    r = JSON.parse(text) as RawRecord;
+  } catch {
+    return undefined;
+  }
+  const id = r.task_id ?? file.slice(file.lastIndexOf("/") + 1, -".json".length);
+  const at = r.started_at ?? r.created_at;
+  return { id, status: r.status ?? "", file, ...(at ? { at } : {}), ...(r.task_summary ? { what: r.task_summary } : {}), ...(r.parent_session_id ? { parent: r.parent_session_id } : {}), ...(r.root_session_id ? { root: r.root_session_id } : {}) };
+};
+
+// The record of one task, under any project; undefined when senpi keeps none.
+export const taskRecord = (home: string, id: string): TaskRecord | undefined => {
+  for (const dir of taskDirs(home)) {
+    const file = join(dir, `${id}.json`);
+    if (existsSync(file)) return parseRecord(file, readFileSync(file, "utf8"));
+  }
+  return undefined;
+};
+
+// The records of the tasks a session started, its own and those of its tasks' tasks (parent or root session).
+export const taskRecords = (home: string, session: string): TaskRecord[] => {
+  if (!session) return [];
+  const out: TaskRecord[] = [];
+  for (const dir of taskDirs(home)) {
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".json")) continue;
+      const file = join(dir, name);
+      let text: string;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      if (!text.includes(session)) continue;
+      const r = parseRecord(file, text);
+      if (r && (r.parent === session || r.root === session)) out.push({ id: r.id, status: r.status, file: r.file, ...(r.at ? { at: r.at } : {}), ...(r.what ? { what: r.what } : {}) });
+    }
+  }
+  return out;
 };
 
 // The lane's own session transcript (the session its pane's omo runs) and the agent's start, or undefined when either

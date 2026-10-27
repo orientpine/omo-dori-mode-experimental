@@ -61,6 +61,8 @@ export type RolloverEntry =
       // automatic start knows when to try again
       readonly blocked?: Blocked;
       readonly pids?: readonly number[];
+      // the old session's background tasks that still ran (st_...), so an automatic start knows when they ended
+      readonly tasks?: readonly string[];
       // the subscription accounts of the old and new session ("" when the status line did not show one)
       readonly accounts?: { readonly from: string; readonly to: string };
       readonly supplementRounds?: number;

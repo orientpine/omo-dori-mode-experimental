@@ -7,6 +7,7 @@ import { readScreen, sendVerified } from "./panes.ts";
 import { type Lane, type RolloverDue, statusOf } from "./registry.ts";
 import { fixTag, recordFix } from "./same-fix.ts";
 import { leadAlert } from "./autoturn.ts";
+import { taskOpen, taskRecord } from "./background.ts";
 import { compactionStuckOn, pendingFile, type ReadyMark, readyFile, statusLine } from "./lane-handover.ts";
 import { COMMITTED, crossed, dueReasons, limitsFor, readRollovers, type RolloverEntry, type Signals, type Who } from "./rollover.ts";
 import { auditDue, type Committed, weeklyDue, writeMarker } from "./rollover-audit.ts";
@@ -47,6 +48,9 @@ export type RolloverHooks = {
   readonly auto?: (who: Who, key: string) => Promise<string>;
   // whether a process still runs (a handover's lock holder, the chain pids a refusal named); process.kill(pid, 0) by default
   readonly alive?: (pid: number) => boolean;
+  // whether a background task (st_...) a refusal named has ended: its senpi record under home has a final status (a task
+  // without a record has not ended)
+  readonly taskEnded?: (id: string) => boolean;
   // starts the audit of a committed handover (dori handover audit, detached); the line says what it started
   readonly audit?: (c: Committed) => Promise<string>;
   // puts the week's audit summary in the lead's inbox; the line says what it wrote
@@ -89,7 +93,7 @@ const lastAuto = (stateDir: string, who: Who, key: string, since: string): Attem
 
 // what the lane is asked when an automatic rollover finds it busy: reach a safe point, write the summary, mark ready, go idle
 export const safePointText = (key: string, why: string): string =>
-  `[LEAD] An automatic rollover of ${key} to a new session is due, but the lane is busy (${why}). At your next safe point: start no new work, write your conversation summary (dori handover ready --template prints its headings) to a file, run dori handover ready ${key} --note <file>, then end your turn. The local chains that command lists end with this session: if one must keep running (a training, eval or deploy run), let it finish or move it out of the session (setsid, systemd-run) first, and say so in your report. The move starts by itself once you are idle; nothing else to do.`;
+  `[LEAD] An automatic rollover of ${key} to a new session is due, but the lane is busy (${why}). At your next safe point: start no new work, write your conversation summary (dori handover ready --template prints its headings) to a file, run dori handover ready ${key} --note <file>, then end your turn.${/background task\(s\) still run/.test(why) ? " The ready mark does not cover your background tasks: the move waits until they end, so start no new ones and let these finish (or end them yourself if their work is no longer needed)." : ""} The local chains that command lists end with this session: if one must keep running (a training, eval or deploy run), let it finish or move it out of the session (setsid, systemd-run) first, and say so in your report. The move starts by itself once you are idle; nothing else to do.`;
 
 const screenSignals = (deps: FlowDeps): RolloverHooks => ({
   signals: async (pane, model) => {
@@ -131,7 +135,8 @@ const leadDueFile = (stateDir: string): string => join(stateDir, "handover", "le
 // With the auto key on, rung 4 of the stuck ladder is a reason too, and a session still in the same pane is started again
 // from what the last automatic run left in the rollover log, never on a fixed clock and never given up: a lane that stayed
 // busy is asked to reach a safe point and started again at once (the run waits for its idle moment); a lane whose chain or
-// eval cell would die is asked, and started again when it marks ready, when those chains ended, or after autoRetryMin; a
+// eval cell would die, or whose background tasks still run, is asked, and started again when it marks ready, when those
+// chains and tasks ended, or after autoRetryMin (tasks still running refuse every start; the lead hears of it once); a
 // move that failed is started again after autoRetryMin, doubling while failures go on (up to 8 times). Only a training or
 // eval chain stops it: the lead moves that lane (the owner's rule). A refusal goes to the watch log only
 // (HANDOVER_REFUSED); the owner hears of a move that happened.
@@ -177,7 +182,21 @@ const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who, key: 
       if (last.blocked === "work") {
         const mark = readJson<ReadyMark>(readyFile(stateDir, key));
         const readied = mark?.pane === pane && mark.at > last.at;
-        const ended = (last.pids ?? []).length > 0 && (last.pids ?? []).every((pid) => !alive(pid));
+        const pids = last.pids ?? [];
+        const tasks = last.tasks ?? [];
+        const taskEnded = hooks.taskEnded ?? (() => false);
+        // the old session's tasks still run after a start that came back (its ready mark covers none): the move waits for
+        // them, and the lead hears of it once in this pane, with what it can do
+        const running = tasks.filter((id) => !taskEnded(id));
+        if (who === "lane" && running.length && (seen.tries ?? 1) >= 2 && !seen.tasksToldAt) {
+          const lead = deps.config.leadPane;
+          const text = `[DORI] ${key}: the automatic rollover is held: background task(s) ${running.join(", ")} of the old session still run, and a move would leave them editing the lane's files out of the new session's reach. It moves by itself once they end. To move it sooner, ask the lane to let them finish or end them, or run dori handover --lane ${key} --approved-by "lead:<reason and signal>" --force (their answers then go to the old session).`;
+          const told = lead ? await sendVerified(deps.run, deps.clock, deps.config, lead, text) : false;
+          seen = { ...seen, tasksToldAt: at };
+          await save(seen);
+          acts.push({ kind: "rollover_auto", lane: key, detail: `held by the old session's background tasks ${running.join(", ")}; ${!lead ? "lead not told: leadPane is not configured" : told ? "lead told" : `lead not told: the note did not reach pane ${lead}`}` });
+        }
+        const ended = pids.length + tasks.length > 0 && pids.every((pid) => !alive(pid)) && !running.length;
         if (!readied && !ended && now - Date.parse(last.at) < retryMs) return acts;
       }
     } else if (last.result === "refused" && last.blocked === "training") {
@@ -233,7 +252,11 @@ const ownerCheckDue = (lane: Lane, now: number, minIntervalMin: number): boolean
 
 // Lanes send [REPORT] lines to the lead pane, so that is where they are read first; the lane's own screen is the fallback.
 // A report not seen before counts as hearing from the lane.
-export const freshnessTick = async (deps: FlowDeps, home: string, hooks: RolloverHooks = screenSignals(deps)): Promise<SweepAct[]> => {
+export const freshnessTick = async (deps: FlowDeps, home: string, given: RolloverHooks = screenSignals(deps)): Promise<SweepAct[]> => {
+  const hooks: RolloverHooks = { taskEnded: (id) => {
+    const r = taskRecord(home, id);
+    return r !== undefined && !taskOpen(r);
+  }, ...given };
   const acts: SweepAct[] = [];
   const now = deps.clock.now();
   const staged = new Set<string>();
