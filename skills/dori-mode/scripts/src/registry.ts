@@ -50,8 +50,9 @@ export type DoneChange = { readonly at: string; readonly from: string; readonly 
 
 // autoAt/tries: the last automatic start in this pane and how many there were; askedAt: when the busy lane was last asked to
 // reach a safe point; failures: moves in a row that failed (they back off); leftToLead: why automatic starts stopped in
-// this pane (a training or eval chain, the owner's rule). gaveUp was written by older versions after autoMaxTries; it is ignored.
-export type RolloverDue = { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean; readonly autoAt?: string; readonly tries?: number; readonly askedAt?: string; readonly failures?: number; readonly leftToLead?: string; readonly gaveUp?: boolean };
+// this pane (a training or eval chain, the owner's rule); tasksToldAt: when the lead was told that the old session's running
+// background tasks hold the move (once per pane). gaveUp was written by older versions after autoMaxTries; it is ignored.
+export type RolloverDue = { readonly pane: string; readonly at: string; readonly crossed: readonly string[]; readonly auto?: boolean; readonly autoAt?: string; readonly tries?: number; readonly askedAt?: string; readonly failures?: number; readonly leftToLead?: string; readonly gaveUp?: boolean; readonly tasksToldAt?: string };
 
 export type Lane = {
   readonly key: string;

@@ -1645,26 +1645,102 @@ const taskStarted = (id: string, at: string, what: string) =>
 // a user line of the old conversation with its time
 const oldSaysAt = (at: string, text: string) => appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), `\n${JSON.stringify({ type: "message", timestamp: at, message: { role: "user", content: [{ type: "text", text }] } })}`);
 
-test("a background task the old session started after its ready mark refuses the move; one the mark covers, or a forced move, is listed in the note with its record", async () => {
-  // Given: GongDori e7-leap 2026-10-24, deep-high task st_01a16c13 started 2 s after the ready mark and answered into the closed session
+// senpi's record of a task of the old session, as it keeps it under <home>/.omo/agent/projects/<project>/senpi-task/tasks
+const taskRecordAt = (home: string, id: string, status: string, extra: Record<string, unknown> = {}) => {
+  const dir = join(home, ".omo", "agent", "projects", "work-1", "senpi-task", "tasks");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${id}.json`), JSON.stringify({ task_id: id, status, parent_session_id: "old-sid", root_session_id: "old-sid", ...extra }));
+  return join(dir, `${id}.json`);
+};
+// the wake line senpi puts in the old conversation when a task's run completes
+const taskWoke = (id: string, at: string) =>
+  appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), `\n${JSON.stringify({ type: "custom_message", customType: "omo-senpi:wake", timestamp: at, content: `task completion (resumed turn) name:step3 id:${id} status:completed` })}`);
+
+test("a background task of the old session that still runs refuses the move, whether it started before or after the ready mark, and also when it woke itself after its completion line; one that ended does not; a forced move lists the running ones in the note with their records", async () => {
+  // Given: GongDori e7-ledger-replay 2026-10-27: its ready mark (05:36:47Z) covered st_01a17bcf and st_01a17bd9, started
+  // before it, so the 05:37:57Z start moved the lane, and st_01a17b36, whose last line in the log was a completion but
+  // whose record said running, was not even listed; all three went on editing the repository until 06:51Z
   const deps = { ...(await setup()), home: state.dir };
   table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
   const records = join(state.dir, ".omo", "agent", "projects", "work-1", "senpi-task");
-  mkdirSync(join(records, "tasks"), { recursive: true });
-  writeFileSync(join(records, "tasks", "st_01aaa.json"), JSON.stringify({ task_id: "st_01aaa", status: "running" }));
+  taskRecordAt(state.dir, "st_01aaa", "running");
+  taskRecordAt(state.dir, "st_01ccc", "running", { started_at: "2026-10-11T14:00:00Z", task_summary: "step3: collect the Spark results" });
+  taskRecordAt(state.dir, "st_01ddd", "completed");
+  taskRecordAt(state.dir, "st_01eee", "cancelled", { parent_session_id: "other-sid", root_session_id: "other-sid" });
   ready(deps, [], "2026-10-11T16:30:00Z");
+  taskStarted("st_01ccc", "2026-10-11T14:00:00Z", "step3: collect the Spark results");
+  taskWoke("st_01ccc", "2026-10-11T15:00:00Z");
   taskStarted("st_01aaa", "2026-10-11T16:20:00Z", "deep-high: is the m200 STOP a sync bias");
+  taskStarted("st_01ddd", "2026-10-11T16:21:00Z", "quick: count the boards");
   taskStarted("st_01bbb", "2026-10-11T16:31:00Z", "deep-low: survey the cut chain logs");
   // When
   const after = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
   const forced = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true, force: true });
   // Then
   expect([after.code, forced.code]).toEqual([2, 0]);
-  expect(printed.filter((l) => l.startsWith("HANDOVER_REFUSED"))).toEqual([expect.stringContaining("HANDOVER_REFUSED demo: 1 background task(s) still run, and their answers go to the old session: st_01bbb. ")]);
+  const refused = printed.filter((l) => l.startsWith("HANDOVER_REFUSED"));
+  expect(refused).toHaveLength(1);
+  expect(/still run, and their answers go to the old session: ([^.]*)\. /.exec(refused[0] ?? "")?.[1]?.split(", ").sort()).toEqual(["st_01aaa", "st_01bbb", "st_01ccc"]);
   const note = readFileSync(forced.note ?? "", "utf8");
-  expect(note).toContain("## Background tasks of the old session (2)");
+  expect(note).toContain("## Background tasks of the old session (3)");
+  expect(note).not.toContain("st_01ddd");
+  expect(note).not.toContain("st_01eee");
+  expect(note).toContain(`- st_01ccc (started 2026-10-11T14:00Z): step3: collect the Spark results; record ${join(records, "tasks", "st_01ccc.json")}`);
   expect(note).toContain(`- st_01aaa (started 2026-10-11T16:20Z): deep-high: is the m200 STOP a sync bias; record ${join(records, "tasks", "st_01aaa.json")}, transcript ${join(records, "children", "st_01aaa", "sessions", "st_01aaa")}`);
   expect(note).toContain("- st_01bbb (started 2026-10-11T16:31Z): deep-low: survey the cut chain logs; no record found under ~/.omo/agent/projects");
+});
+
+test("an automatic start held by the old session's running tasks never moves the lane: the start after its ready mark and the one after autoRetryMin refuse again, the lead hears of it once, and the move goes through at the first sweep after the tasks ended", async () => {
+  // Given: GongDori e7-ledger-replay 2026-10-27: refused at 05:33Z for its tasks, asked for a safe point, marked ready at
+  // 05:36:47Z, and moved by the start of 05:37:57Z while the tasks ran
+  const base = await setup();
+  // the last sweep (minute 37) comes at 16:35, the stamp the fake world names the new session by
+  const T0 = Date.parse("2026-10-11T15:58:00Z");
+  const clock = fakeClock(T0);
+  const deps: LaneHandoverDeps = { ...base, clock, home: state.dir, config: { ...base.config, handover: { ...base.config.handover, laneContextPct: 80, autoRolloverLanes: true, autoRetryMin: 30 } }, reportOwner: async () => "msg-1" };
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  taskRecordAt(state.dir, "st_01bcf", "running");
+  taskRecordAt(state.dir, "st_01bd9", "running");
+  taskStarted("st_01bcf", "2026-10-11T15:45:00Z", "E7 pilot prep");
+  taskStarted("st_01bd9", "2026-10-11T15:56:00Z", "E7 pilot correctness fix");
+  // each automatic start runs the real lane handover
+  const hooks = {
+    signals: async (pane: string) => (pane === OLD ? { contextPct: 85 } : {}),
+    alive: (pid: number) => live.has(pid),
+    auto: async (_who: "lead" | "lane", key: string) => `code ${(await laneHandover(deps, key, "aoe_lead_x", { approvedBy: "auto:handover.autoRolloverLanes" })).code}`,
+  };
+  const tick = async (min: number): Promise<string[]> => {
+    clock.at = T0 + min * 60_000;
+    await deps.registry.patch("demo", { lastReplyAt: clock.at });
+    return (await freshnessTick(deps, state.dir, hooks)).filter((a) => a.lane === "demo" && a.kind.startsWith("rollover")).map((a) => `${a.kind} ${a.detail}`);
+  };
+  const results = () => readRollovers(state.dir).filter((e) => e.kind === "rollover" && e.key === "demo").map((e) => (e.kind === "rollover" ? `${e.result}${e.blocked ? ` ${e.blocked}` : ""}` : ""));
+  const toLead = () => sent(w).filter((t) => t.startsWith("[DORI] demo: the automatic rollover is held"));
+  // When / Then: the first start is refused for the two tasks, and the lane is asked for a safe point
+  expect(await tick(0)).toEqual([expect.stringMatching(/^rollover_due /), "rollover_auto code 2"]);
+  expect(readRollovers(state.dir).at(-1)).toMatchObject({ result: "refused", blocked: "work", tasks: ["st_01bcf", "st_01bd9"] });
+  expect(await tick(1)).toEqual([expect.stringMatching(/^rollover_auto asked aoe_demo_1a1a1a1a to reach a safe point .*background task\(s\) still run/)]);
+  expect(sent(w).find((t) => t.startsWith("[LEAD] An automatic rollover of demo"))).toContain("The ready mark does not cover your background tasks: the move waits until they end");
+  // the lane marks ready: the start that follows is refused again, and the lead is told once
+  ready(deps, [], new Date(T0 + 2 * 60_000).toISOString());
+  expect(await tick(3)).toEqual(["rollover_auto start 2 (context 85% >= 80%; last: refused work): code 2"]);
+  expect(await tick(4)).toEqual(["rollover_auto held by the old session's background tasks st_01bcf, st_01bd9; lead told"]);
+  expect(toLead()).toHaveLength(1);
+  expect(toLead()[0]).toContain("It moves by itself once they end.");
+  // autoRetryMin later it is started again and refused again; the lead is not told a second time
+  expect(await tick(10)).toEqual([]);
+  expect(await tick(34)).toEqual([expect.stringMatching(/^rollover_auto asked /), "rollover_auto start 3 (context 85% >= 80%; last: refused work): code 2"]);
+  expect(await tick(35)).toEqual([]);
+  expect(toLead()).toHaveLength(1);
+  expect(results()).toEqual(["refused work", "refused work", "refused work"]);
+  expect(opened()).toBe(false);
+  // one task ends: still held; the other ends: the next sweep starts the move at once and it goes through
+  taskRecordAt(state.dir, "st_01bcf", "completed");
+  expect(await tick(36)).toEqual([]);
+  taskRecordAt(state.dir, "st_01bd9", "cancelled");
+  expect(await tick(37)).toEqual(["rollover_auto start 4 (context 85% >= 80%; last: refused work): code 0"]);
+  expect(results()).toEqual(["refused work", "refused work", "refused work", "done"]);
+  expect(toLead()).toHaveLength(1);
 });
 
 test("the lead's instructions reach the new session as typed: those of the old conversation in the note, those that reached the old session during the move at its end", async () => {
