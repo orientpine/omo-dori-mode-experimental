@@ -238,10 +238,14 @@ test("directive-audit: a directive that entered the ledger after the lane opened
   const sessions = join(state.dir, "sessions");
   const repo = join(state.dir, "ledger-repo");
   mkdirSync(repo, { recursive: true });
+  // both ledger files in one real repo: the fork's as it is now, and the host's
+  const forkText = await Bun.file(COMMON_LEDGER).text();
+  const commonFile = join(repo, "common.json");
   const localFile = join(repo, "local.json");
+  await Bun.write(commonFile, forkText);
   await Bun.write(localFile, JSON.stringify(local));
-  const base = await ledgerDeps({ sessionsDir: sessions, directives: { common: COMMON_LEDGER, local: localFile } });
-  // git on the local ledger's own repo is real; the rest is the fake world
+  const base = await ledgerDeps({ sessionsDir: sessions, directives: { common: commonFile, local: localFile } });
+  // git on that repo is real; the rest is the fake world
   const run: Runner = (argv, opts) => (argv[0] === "git" && argv.includes(repo) ? realRun(argv, opts) : base.run(argv, opts));
   const deps = { ...base, run };
   const inbox = await write("inbox.jsonl", "");
@@ -258,17 +262,25 @@ test("directive-audit: a directive that entered the ledger after the lane opened
   expect(r.ids).toEqual(expect.arrayContaining(["gappy options-ledger", "gappy docs-same-pr", "early docs-same-pr"]));
   expect(r.ids).not.toContain("early options-ledger");
   expect(r.lines.some((l) => l.startsWith("DIRECTIVE_LATE early options-ledger:"))).toBe(true);
-  // the commit that put options-ledger into the ledger came an hour after gappy opened
+  // the commits that put eight-steps (fork, dated 2026-10-14) and options-ledger (local) into the ledger came an hour after
+  // gappy opened
+  expect(r.ids).toContain("gappy eight-steps");
   const git = (args: string[], at: string) => Bun.$`git -C ${repo} -c user.name=t -c user.email=t@t ${args}`.env({ ...process.env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at }).quiet();
   await git(["init", "-q"], "2026-10-15T00:00:00Z");
+  const fork = JSON.parse(forkText) as { entries: { id: string }[] };
+  await Bun.write(commonFile, JSON.stringify({ ...fork, entries: fork.entries.filter((e) => e.id !== "eight-steps") }, null, 2));
   await Bun.write(localFile, JSON.stringify({ ...local, entries: local.entries.filter((e) => e.id !== "options-ledger") }, null, 2));
-  await git(["add", "local.json"], "2026-10-15T00:00:00Z");
+  await git(["add", "common.json", "local.json"], "2026-10-15T00:00:00Z");
   await git(["commit", "-qm", "before"], "2026-10-15T00:00:00Z");
+  await Bun.write(commonFile, forkText);
   await Bun.write(localFile, JSON.stringify(local, null, 2));
-  await git(["commit", "-qam", "options-ledger"], "2026-10-16T06:00:00Z");
+  await git(["commit", "-qam", "eight-steps, options-ledger"], "2026-10-16T06:00:00Z");
   r = await audit();
-  expect(r.ids).not.toContain("gappy options-ledger");
-  expect(r.lines.some((l) => l.startsWith("DIRECTIVE_LATE gappy options-ledger:") && l.includes("2026-10-16T06:00:00.000Z"))).toBe(true);
+  // the fork ledger is read as committed: its commit time counts
+  expect(r.ids).not.toContain("gappy eight-steps");
+  expect(r.lines.some((l) => l.startsWith("DIRECTIVE_LATE gappy eight-steps:") && l.includes("2026-10-16T06:00:00.000Z"))).toBe(true);
+  // the local ledger is read live and committed later (often in batches): only its date counts, so a same-day entry stays a gap
+  expect(r.ids).toContain("gappy options-ledger");
   // an entry already in the ledger when the lane opened and in neither its brief nor a relay: still a gap
   expect(r.ids).toEqual(expect.arrayContaining(["gappy docs-same-pr", "early docs-same-pr"]));
   // a [LEAD] line that names it, typed into another lane's session, does not supply it to gappy
