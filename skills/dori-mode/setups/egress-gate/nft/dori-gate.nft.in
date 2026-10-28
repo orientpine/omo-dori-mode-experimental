@@ -6,6 +6,11 @@
 #   - loopback, then checked in chain yd_lo: the gate ports, or a socket of its own user slice
 #   - @NODE_IP@ tcp/22 (the node read gate, a forced command)
 # Everything else (DNS included) is rejected and logged with prefix DORI_GATE_DROP / DORI_GATE_LO_DROP.
+#
+# Packets the kernel sends from no user socket (IPv6 neighbor discovery and MLD reports) have no owner, so
+# meta skuid matches neither == nor != and they fall through the uid test. Router/neighbor solicitations,
+# neighbor advertisements (hop limit 255) and MLDv2 reports (hop limit 1) are let out before the reject; both
+# hop limits keep them on the link, and the Dori uid cannot build them (no raw socket).
 table inet dori_gate
 delete table inet dori_gate
 table inet dori_gate {
@@ -17,6 +22,8 @@ table inet dori_gate {
 	chain out {
 		type filter hook output priority filter; policy accept;
 		meta skuid != @UID@ return
+		icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
+		icmpv6 type mld2-listener-report ip6 hoplimit 1 accept
 		oif "lo" ct state new ct mark set 0x0d0d0001
 		oif "lo" accept
 		ct state established,related accept

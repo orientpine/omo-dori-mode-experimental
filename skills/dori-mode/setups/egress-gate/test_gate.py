@@ -1645,5 +1645,27 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(gate.proc_address("::1"), "00000000000000000000000001000000")
 
 
+class FirewallTemplateTests(unittest.TestCase):
+    def out_chain(self):
+        text = Path(__file__).with_name("nft").joinpath("dori-gate.nft.in").read_text()
+        body = text.split("chain out {", 1)[1].split("\n\t}", 1)[0]
+        return [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith("#")][1:]
+
+    def test_kernel_neighbor_discovery_leaves_before_the_reject_and_nothing_else_is_opened(self):
+        rules = self.out_chain()
+        self.assertEqual(rules[0], "meta skuid != @UID@ return")
+        accepts = [rule for rule in rules if rule.endswith(" accept")]
+        self.assertEqual(accepts, [
+            "icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept",
+            "icmpv6 type mld2-listener-report ip6 hoplimit 1 accept",
+            'oif "lo" accept',
+            "ct state established,related accept",
+            "ip daddr @NODE_IP@ tcp dport 22 accept",
+        ])
+        first_drop = next(i for i, rule in enumerate(rules) if " log " in rule or "reject" in rule)
+        self.assertLess(rules.index(accepts[0]), first_drop)
+        self.assertLess(rules.index(accepts[1]), first_drop)
+
+
 if __name__ == "__main__":
     unittest.main()
