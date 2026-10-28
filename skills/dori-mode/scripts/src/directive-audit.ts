@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 
+import { laneSessionFiles, readLeadRelays, type ReportLine } from "./auto-signals.ts";
 import { checkReviewers, ChallengeError, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
-import { APPLIED_HEADING, appliesWhy, briefGaps, checkedLedger, type Directive, type DirectiveBlock, DirectiveError, directiveText, type Gap, headingAt, type Ledger, leadGaps, LINK_SOURCE, loadLedger, scopeContext, unledgered } from "./directives.ts";
+import { APPLIED_HEADING, appliesWhy, briefGaps, checkedLedger, coveredBy, type Directive, type DirectiveBlock, DirectiveError, directiveText, type Gap, headingAt, type Ledger, leadGaps, LINK_SOURCE, loadLedger, scopeContext, unledgered } from "./directives.ts";
 import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { eightSteps, laneRepo, launchLedger, uiSteps } from "./launch.ts";
+import { leadSessionFiles } from "./lead-sessions.ts";
 import { sendVerified } from "./panes.ts";
 import type { Lane } from "./registry.ts";
-import { iso } from "./run.ts";
+import { iso, type Runner } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
 
 // dori directive-audit and owner-check: a launched lane's brief and the lead's actions against the directive ledger.
@@ -25,12 +27,93 @@ const readBrief = async (path: string): Promise<string> => {
   return (await f.exists()) ? await f.text() : "";
 };
 
-export const laneDirectiveGaps = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>): Promise<Gap[]> => {
-  if (!ledger.entries.length) return [];
+// The lead's [LEAD] lines typed into the lane since it opened, read as owner-check reads them: from the lane's own session
+// files (those that carry its reports; the lead's sessions, which get every lane's reports, are not its own).
+const laneRelays = async (deps: Pick<FlowDeps, "config">, lane: Lane, files?: readonly string[]): Promise<ReportLine[]> => {
+  const lead = new Set(leadSessionFiles(deps.config.scorecard.leadSessions, deps.config.stateDir));
+  const own: string[] = [];
+  for (const f of files ?? laneSessionFiles(deps.config, lane)) {
+    if (lead.has(f)) continue;
+    if ((await Bun.file(f).text()).includes(`[REPORT] ${lane.key} |`)) own.push(f);
+  }
+  return readLeadRelays(own, Date.parse(lane.openedAt) || 0);
+};
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const squash = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+// A relay supplies a directive when it names its id or carries its text (what shows it in a brief: tag, words or rule, or
+// the prompt a brief gets for his words; a built-in block as its whole text).
+const supplies = (text: string, id: string, e: Directive | undefined, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>): boolean => {
+  if (new RegExp(`(?<![\\w-])${escapeRe(id)}(?![\\w-])`).test(text)) return true;
+  if (!e) return false;
+  if (e.block) return squash(text).includes(squash(blocks[e.block]));
+  return e.mode === "inject" && (coveredBy(text, e, ledger) || (Boolean(e.prompt) && squash(text).includes(squash(e.prompt ?? ""))));
+};
+
+export type Excused = { readonly gap: Gap; readonly line: string };
+
+// A lane's gaps, and the ones that are not its gaps: a directive that entered the ledger after the lane opened (entered:
+// id -> ms, dori directive-audit; DIRECTIVE_LATE) and one the lead typed into the lane in a [LEAD] line after it opened
+// (DIRECTIVE_RELAYED). files: the session files to look for the lane's own among (default: laneSessionFiles).
+export const laneGapSplit = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>, opts: { readonly entered?: ReadonlyMap<string, number>; readonly files?: readonly string[] } = {}): Promise<{ readonly gaps: Gap[]; readonly excused: Excused[] }> => {
+  if (!ledger.entries.length) return { gaps: [], excused: [] };
   const brief = await readBrief(briefOf(lane, deps.config.defaultCwd));
-  if (!brief) return [{ lane: lane.key, id: "-", line: `DIRECTIVE_GAP ${lane.key} -: its brief ${lane.brief} is not there to check` }];
+  if (!brief) return { gaps: [{ lane: lane.key, id: "-", line: `DIRECTIVE_GAP ${lane.key} -: its brief ${lane.brief} is not there to check` }], excused: [] };
   const repo = await laneRepo(deps, lane.cwd ?? deps.config.defaultCwd);
-  return [...briefGaps(lane, brief, ledger, repo, blocks), ...leadGaps(lane, ledger)];
+  const all = [...briefGaps(lane, brief, ledger, repo, blocks), ...leadGaps(lane, ledger)];
+  const opened = Date.parse(lane.openedAt);
+  const byId = new Map(ledger.entries.map((e) => [e.id, e] as const));
+  const gaps: Gap[] = [];
+  const excused: Excused[] = [];
+  let relays: ReportLine[] | undefined;
+  for (const g of all) {
+    const at = opts.entered?.get(g.id);
+    if (at !== undefined && !Number.isNaN(opened) && at > opened) {
+      excused.push({ gap: g, line: `DIRECTIVE_LATE ${lane.key} ${g.id}: entered the ledger ${new Date(at).toISOString()}, after the lane opened ${lane.openedAt}; not counted` });
+      continue;
+    }
+    relays ??= await laneRelays(deps, lane, opts.files);
+    const r = relays.find((x) => supplies(x.text, g.id, byId.get(g.id), ledger, blocks));
+    if (r) excused.push({ gap: g, line: `DIRECTIVE_RELAYED ${lane.key} ${g.id}: the lead's [LEAD] line of ${r.at} in the lane carries it ("${squash(r.text).slice(0, 100)}"); not counted` });
+    else gaps.push(g);
+  }
+  return { gaps, excused };
+};
+
+export const laneDirectiveGaps = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>, files?: readonly string[]): Promise<Gap[]> => (await laneGapSplit(deps, lane, ledger, blocks, { files })).gaps;
+
+// The first commit that added each id (an `"id": "<id>"` line) to a ledger file in its git repo, in ms. A file outside git,
+// or an id only in uncommitted changes, gives nothing.
+export const firstCommitted = async (run: Runner, file: string): Promise<Map<string, number>> => {
+  const out = new Map<string, number>();
+  if (!file || !existsSync(file)) return out;
+  const r = await run(["git", "-C", dirname(file), "log", "--reverse", "--no-color", "--no-ext-diff", "--unified=0", "--format=COMMIT_AT %cI", "-p", "--", basename(file)], { timeoutMs: 60_000 });
+  if (r.code !== 0) return out;
+  let at = Number.NaN;
+  for (const line of r.out.split("\n")) {
+    if (line.startsWith("COMMIT_AT ")) at = Date.parse(line.slice(10));
+    else {
+      const id = /^\+.*"id"\s*:\s*"([^"]+)"/.exec(line)?.[1];
+      if (id && !Number.isNaN(at) && !out.has(id)) out.set(id, at);
+    }
+  }
+  return out;
+};
+
+// When each directive entered the ledger: its first commit into either ledger file (the earlier of the two), never before
+// the start of its date (a bare YYYY-MM-DD is read as the start of that day in KST, the earliest reading). The earliest
+// evidence wins, so an entry is never later than the ledger shows it.
+export const enteredAt = async (deps: Pick<FlowDeps, "run" | "config">, ledger: Ledger): Promise<Map<string, number>> => {
+  const seen = await Promise.all([deps.config.directives.common, deps.config.directives.local].map((f) => firstCommitted(deps.run, f)));
+  const out = new Map<string, number>();
+  for (const e of ledger.entries) {
+    const day = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(e.date) ? `${e.date}T00:00:00+09:00` : e.date);
+    const commits = seen.flatMap((m) => (m.has(e.id) ? [m.get(e.id) as number] : []));
+    const at = commits.length ? Math.max(day, Math.min(...commits)) : day;
+    if (!Number.isNaN(at)) out.set(e.id, at);
+  }
+  return out;
 };
 
 // The directives in scope for a lane, as the owner's words: owner-check reads them next to the brief.
@@ -243,13 +326,21 @@ export const runDirectiveAudit = async (deps: FlowDeps, opts: { readonly since: 
   const skipped = ledger.skipped ?? [];
   const lanes = (await deps.registry.list()).filter((l) => l.openedAt >= opts.since).sort((a, b) => a.openedAt.localeCompare(b.openedAt));
   const blocks = await blockTexts();
+  const entered = await enteredAt(deps, ledger);
   const gaps: Gap[] = [];
-  for (const l of lanes) gaps.push(...(await laneDirectiveGaps(deps, l, ledger, blocks)));
+  const excused: Excused[] = [];
+  for (const l of lanes) {
+    const s = await laneGapSplit(deps, l, ledger, blocks, { entered });
+    gaps.push(...s.gaps);
+    excused.push(...s.excused);
+  }
+  const notCounted = excused.length ? ` (${excused.length} not counted: entered the ledger after the lane opened, or the lead relayed it in a [LEAD] line; listed with --dry-run)` : "";
+  const excusedLines = opts.dryRun ? excused.map((x) => x.line) : [];
   gaps.push(...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env.DORI_DISCORD_GUILD?.trim() ?? ""));
   if (!opts.dryRun) writeStamp(deps, opts.since, true);
-  if (!gaps.length && !skipped.length) return { gaps, lanes: lanes.length, lines: [`DIRECTIVE_AUDIT_OK since ${opts.since}: ${lanes.length} lanes and the owner's messages read against ${ledger.entries.length} directives, no gap`] };
-  const lines = [...skipped, ...gaps.map((g) => g.line), `DIRECTIVE_AUDIT_DONE since ${opts.since}: ${lanes.length} lanes and the owner's messages read against ${ledger.entries.length} directives, ${gaps.length} gaps, ${skipped.length} local ledger lines left out`];
-  if (opts.dryRun) return { gaps, lanes: lanes.length, lines };
+  if (!gaps.length && !skipped.length) return { gaps, lanes: lanes.length, lines: [...excusedLines, `DIRECTIVE_AUDIT_OK since ${opts.since}: ${lanes.length} lanes and the owner's messages read against ${ledger.entries.length} directives, no gap${notCounted}`] };
+  const lines = [...skipped, ...gaps.map((g) => g.line), `DIRECTIVE_AUDIT_DONE since ${opts.since}: ${lanes.length} lanes and the owner's messages read against ${ledger.entries.length} directives, ${gaps.length} gaps${notCounted}, ${skipped.length} local ledger lines left out`];
+  if (opts.dryRun) return { gaps, lanes: lanes.length, lines: [...excusedLines, ...lines] };
   const short = gaps.slice(0, 4).map((g) => (g.lane === "-" ? `unledgered ${g.id}` : `${g.lane} ${g.id}`)).join(", ");
   const left = skipped.length ? `${skipped.length} local ledger lines left out (DIRECTIVES_LOCAL_SKIP; fix them in ${deps.config.directives.local || "directives.local"}), ` : "";
   const summary = `[DIRECTIVE_AUDIT] ${left}${gaps.length} directive gaps since ${opts.since}${short ? `: ${short}${gaps.length > 4 ? ", ..." : ""}` : ""}. Full list: dori directive-audit --since ${opts.since} --dry-run`;

@@ -336,7 +336,7 @@ export const runOwnerCheck = async (deps: FlowDeps, lane: Lane, opts: { readonly
   // the brief against the directive ledger: a directive in scope that is not in it is a DIRECTIVE_GAP line; the directives
   // in scope go to the reviewer as the owner's words
   const ledger = launchLedger(deps);
-  const directiveLines = (await laneDirectiveGaps(deps, lane, ledger, await blockTexts())).map((g) => `OWNER_CHECK_${g.line}`);
+  const directiveLines = (await laneDirectiveGaps(deps, lane, ledger, await blockTexts(), files)).map((g) => `OWNER_CHECK_${g.line}`);
   for (const line of directiveLines) watchLog(deps.config.watchLog, deps.clock, { source: "owner-check", line });
   const directives = await laneDirectiveWords(deps, lane, ledger);
   const prompt = ownerPrompt(lane, brief, relays, reports, decisions, directives, context);
