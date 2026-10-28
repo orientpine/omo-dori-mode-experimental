@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { applyDirectives, auditOrReport, auditStampPath, checkMeaning, dailyAuditSince, linkRows, meaningCachePath, pushLinks, runDirectiveAudit, withApplied } from "../src/directive-audit.ts";
@@ -207,7 +208,9 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
   expect(sent(world)).toEqual([]);
   // a lane whose brief lacks a directive and has no thread, and a standing directive of the owner nobody put in the ledger
-  await deps.registry.write({ ...clean, key: "gappy", thread: "none", brief: await write("gappy.md", fields), cwd: "/work/hr35-isaac" });
+  // opened after every ledger entry (long-work-thread is dated 2026-10-19): an entry newer than the lane is not its gap
+  const afterLedger = "2099-01-01T00:00:00.000Z";
+  await deps.registry.write({ ...clean, key: "gappy", thread: "none", brief: await write("gappy.md", fields), cwd: "/work/hr35-isaac", openedAt: afterLedger });
   await Bun.write(inbox, [
     JSON.stringify({ ts: "2026-10-16T04:00:00.123456+00:00", id: "777", guild_id: "1", channel_id: "2", author_id: "7", content: "앞으로 lane 보고는 항상 표로 해" }),
     JSON.stringify({ ts: "2026-10-16T04:01:00+00:00", id: "900", author_id: "7", content: "앞으로 이건 지침 아님" }),
@@ -223,12 +226,71 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   expect(log).toMatch(/^\S+ directive-audit DIRECTIVE_GAP gappy docs-same-pr:/m);
   expect(sent(world).filter((t) => t.startsWith("[DIRECTIVE_AUDIT] "))).toHaveLength(1);
   // a waiver on record is not a gap
-  await deps.registry.write({ ...clean, key: "gappy", thread: "none", brief: await write("gappy.md", fields), directives: { applied: [], waived: [{ id: "lane-thread", reason: "ops", at: "t" }] } });
+  await deps.registry.write({ ...clean, key: "gappy", thread: "none", openedAt: afterLedger, brief: await write("gappy.md", fields), directives: { applied: [], waived: [{ id: "lane-thread", reason: "ops", at: "t" }] } });
   expect((await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7", dryRun: true })).gaps.some((g) => g.id === "lane-thread")).toBe(false);
   // a lane launched with --no-thread "<reason>" has no thread on the lead's word: not a thread gap
-  await deps.registry.write({ ...clean, key: "gappy", thread: "none", noThread: "an internal check", brief: await write("gappy.md", fields) });
+  await deps.registry.write({ ...clean, key: "gappy", thread: "none", openedAt: afterLedger, noThread: "an internal check", brief: await write("gappy.md", fields) });
   const threadGaps = (await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7", dryRun: true })).gaps.filter((g) => g.lane === "gappy" && (g.id === "lane-thread" || g.id === "long-work-thread"));
   expect(threadGaps).toEqual([]);
+});
+
+test("directive-audit: a directive that entered the ledger after the lane opened, or that the lead relayed to the lane in a [LEAD] line, is not its gap; one it never got still is", async () => {
+  const sessions = join(state.dir, "sessions");
+  const repo = join(state.dir, "ledger-repo");
+  mkdirSync(repo, { recursive: true });
+  const localFile = join(repo, "local.json");
+  await Bun.write(localFile, JSON.stringify(local));
+  const base = await ledgerDeps({ sessionsDir: sessions, directives: { common: COMMON_LEDGER, local: localFile } });
+  // git on the local ledger's own repo is real; the rest is the fake world
+  const run: Runner = (argv, opts) => (argv[0] === "git" && argv.includes(repo) ? realRun(argv, opts) : base.run(argv, opts));
+  const deps = { ...base, run };
+  const inbox = await write("inbox.jsonl", "");
+  const lane = { key: "gappy", title: "g", thread: "discord:42", brief: await write("gappy.md", fields), done: "x", cwd: "/work/hr35-isaac", openedAt: "2026-10-16T05:00:00.000Z" };
+  await deps.registry.write(lane);
+  // opened 2026-10-15 19:00 KST, before the day options-ledger is dated (2026-10-16)
+  await deps.registry.write({ ...lane, key: "early", brief: await write("early.md", fields), openedAt: "2026-10-15T10:00:00.000Z" });
+  const audit = async () => {
+    const r = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7", dryRun: true });
+    return { ids: r.gaps.map((g) => `${g.lane} ${g.id}`), lines: r.lines };
+  };
+  // the ledger's date: an entry dated after the day the lane opened is not its gap; an entry of the same day still is
+  let r = await audit();
+  expect(r.ids).toEqual(expect.arrayContaining(["gappy options-ledger", "gappy docs-same-pr", "early docs-same-pr"]));
+  expect(r.ids).not.toContain("early options-ledger");
+  expect(r.lines.some((l) => l.startsWith("DIRECTIVE_LATE early options-ledger:"))).toBe(true);
+  // the commit that put options-ledger into the ledger came an hour after gappy opened
+  const git = (args: string[], at: string) => Bun.$`git -C ${repo} -c user.name=t -c user.email=t@t ${args}`.env({ ...process.env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at }).quiet();
+  await git(["init", "-q"], "2026-10-15T00:00:00Z");
+  await Bun.write(localFile, JSON.stringify({ ...local, entries: local.entries.filter((e) => e.id !== "options-ledger") }, null, 2));
+  await git(["add", "local.json"], "2026-10-15T00:00:00Z");
+  await git(["commit", "-qm", "before"], "2026-10-15T00:00:00Z");
+  await Bun.write(localFile, JSON.stringify(local, null, 2));
+  await git(["commit", "-qam", "options-ledger"], "2026-10-16T06:00:00Z");
+  r = await audit();
+  expect(r.ids).not.toContain("gappy options-ledger");
+  expect(r.lines.some((l) => l.startsWith("DIRECTIVE_LATE gappy options-ledger:") && l.includes("2026-10-16T06:00:00.000Z"))).toBe(true);
+  // an entry already in the ledger when the lane opened and in neither its brief nor a relay: still a gap
+  expect(r.ids).toEqual(expect.arrayContaining(["gappy docs-same-pr", "early docs-same-pr"]));
+  // a [LEAD] line that names it, typed into another lane's session, does not supply it to gappy
+  const folder = join(sessions, "--work-hr35-isaac--");
+  mkdirSync(folder, { recursive: true });
+  const user = (at: string, text: string) => JSON.stringify({ type: "message", timestamp: at, message: { role: "user", content: [{ type: "text", text }] } });
+  const relay = "[LEAD] 지침 보충(docs-same-pr): 세션은 작업할 때 관련 문서도 같이 업데이트한다.";
+  await Bun.write(join(folder, "other.jsonl"), [user("2026-10-16T05:30:00.000Z", relay), user("2026-10-16T05:40:00.000Z", "[REPORT] other | milestone | x")].join("\n"));
+  expect((await audit()).ids).toContain("gappy docs-same-pr");
+  // nor does one typed before the lane opened (the session was another lane's then)
+  await Bun.write(join(folder, "gappy.jsonl"), [user("2026-10-16T04:30:00.000Z", relay), user("2026-10-16T05:40:00.000Z", "[REPORT] gappy | milestone | x")].join("\n"));
+  expect((await audit()).ids).toContain("gappy docs-same-pr");
+  // the lead's [LEAD] line in gappy's own session after it opened, by id: supplied
+  await Bun.write(join(folder, "gappy.jsonl"), [user("2026-10-16T05:30:00.000Z", relay), user("2026-10-16T05:40:00.000Z", "[REPORT] gappy | milestone | x")].join("\n"));
+  r = await audit();
+  expect(r.ids).not.toContain("gappy docs-same-pr");
+  expect(r.lines.some((l) => l.startsWith("DIRECTIVE_RELAYED gappy docs-same-pr:"))).toBe(true);
+  // by its text without the id: supplied too; early, which got neither, keeps the gap
+  await Bun.write(join(folder, "gappy.jsonl"), [user("2026-10-16T05:30:00.000Z", "[LEAD] 이것도 따른다: 세션은 작업할 때 관련 문서도 같이 업데이트한다."), user("2026-10-16T05:40:00.000Z", "[REPORT] gappy | milestone | x")].join("\n"));
+  r = await audit();
+  expect(r.ids).not.toContain("gappy docs-same-pr");
+  expect(r.ids).toContain("early docs-same-pr");
 });
 
 test("an owner entry with words goes into briefs as its prompt: a prompt is required, may not ask, and is only for owner words", async () => {
