@@ -101,15 +101,17 @@ export const firstCommitted = async (run: Runner, file: string): Promise<Map<str
   return out;
 };
 
-// When each directive entered the ledger: its first commit into either ledger file (the earlier of the two), never before
-// the start of its date (a bare YYYY-MM-DD is read as the start of that day in KST, the earliest reading). The earliest
-// evidence wins, so an entry is never later than the ledger shows it.
+// When each directive entered the ledger: for a fork entry its first commit into either ledger file (the earlier of the
+// two; a Dori reads the fork ledger only as committed), never before the start of its date (a bare YYYY-MM-DD is read as
+// the start of that day in KST, the earliest reading). A local entry has its date only: the local ledger is read live and
+// committed later, often in batches (2026-10-24 436e08d committed what was added 10-21..24). The earliest evidence wins,
+// so an entry is never later than the ledger shows it.
 export const enteredAt = async (deps: Pick<FlowDeps, "run" | "config">, ledger: Ledger): Promise<Map<string, number>> => {
   const seen = await Promise.all([deps.config.directives.common, deps.config.directives.local].map((f) => firstCommitted(deps.run, f)));
   const out = new Map<string, number>();
   for (const e of ledger.entries) {
     const day = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(e.date) ? `${e.date}T00:00:00+09:00` : e.date);
-    const commits = seen.flatMap((m) => (m.has(e.id) ? [m.get(e.id) as number] : []));
+    const commits = e.layer === "common" ? seen.flatMap((m) => (m.has(e.id) ? [m.get(e.id) as number] : [])) : [];
     const at = commits.length ? Math.max(day, Math.min(...commits)) : day;
     if (!Number.isNaN(at)) out.set(e.id, at);
   }
