@@ -132,6 +132,22 @@ curl -sG -H "$O" --data-urlencode 'q=prompt injection defenses' "$W/search"
 
 The firewall must let the Dori reach the new port: `install.sh` adds `listen.web` to `gate_ports`.
 
+**omo's own tools through the window** (owner 2026-10-29 14:55 KST Q379 "다섯 도리 다 omo 웹 도구(검색·읽기)를
+그대로 쓰되, 속은 창구(검문소)를 거치게"). `omo-web-window.js` is an omo extension that registers `web_search`
+and `webfetch` under omo's own names; a user extension's tool replaces the builtin tool of the same name
+(senpi `ExtensionRunner.getAllRegisteredTools`). Both call this window over plain loopback HTTP (never through
+`HTTP(S)_PROXY`), with an optional `owner_message` argument (`<channel id>/<message id>`, or `order:<n>`; else
+`DORI_OWNER_MESSAGE`) sent as the owner-proof header; without one nothing is sent. A refusal comes back to the
+model as a tool error with the gate's reason and message. The extension also sets `PI_ANTHROPIC_WEB_SEARCH=0`
+and `PI_OPENAI_WEB_SEARCH=0`: otherwise omo hands searches to the model company's server-side search, which
+runs outside the gate. Enable it for one account with one file, `~/.omo/agent/extensions/dori-web-window.js`:
+
+```js
+export { default } from "file:///home/<account>/.dori/src/skills/dori-mode/setups/egress-gate/omo-web-window.js";
+```
+
+Test: `bun test omo-web-window.test.js` (a loopback fake window; `DORI_WEB_WINDOW` points the extension at it).
+
 ## Approval and journal
 
 Outbound changes and the 11th delete/hour or 31st write/owner message are parked,
