@@ -342,7 +342,7 @@ def main():
             os.rmdir(ps[i - 1], dir_fd=chain[i - 1])
         except OSError:
             break
-    sys.stderr.write("MOVED %s\n" % final)
+    sys.stderr.write("MOVED %s\n" % "/".join(ps[:-1] + [final]))
 
 run(main)
 '''
