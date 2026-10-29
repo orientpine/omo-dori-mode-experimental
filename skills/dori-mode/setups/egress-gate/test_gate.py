@@ -1636,6 +1636,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(method, "POST")
         self.assertEqual(parse_qs(form.decode())["q"], ["table tennis ball tracking"])
         self.assertEqual(headers["user-agent"], gate.WEB_AGENT)
+        self.assertEqual(headers["referer"], self.base + "/")
         self.assertFalse({"cookie", "authorization", "x-dori-owner-message"} & set(headers))
         self.assertIn("   https://other.example/found\n", text)
         self.assertIn("https://arxiv.org/abs/2401.00001", text)

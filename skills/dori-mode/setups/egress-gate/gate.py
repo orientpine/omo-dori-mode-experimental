@@ -2000,9 +2000,12 @@ class Gate:
             request = ("GET", endpoint + "?" + urlencode(dict(q=query, count=spec.get("count", 10))),
                        {"X-Subscription-Token": key, "Accept": "application/json"}, b"")
         else:
-            # The page's own form posts q; the gate says who it is (no browser disguise) and sends no cookie.
+            # The page's own form posts q with the page as Referer; the gate says who it is (no browser disguise) and
+            # sends no cookie. Without the Referer DuckDuckGo answered the bot check (202) on 2026-10-29, with it 200.
             endpoint = spec.get("endpoint", "https://html.duckduckgo.com/html/")
+            origin = urlsplit(endpoint)
             request = ("POST", endpoint, {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": WEB_AGENT,
+                                          "Referer": f"{origin.scheme}://{origin.netloc}/",
                                           "Accept": "text/html", "Accept-Encoding": "identity"},
                        urlencode(dict(q=query, kl=spec.get("region", "wt-wt"), b="")).encode())
         task["searches"] += 1
