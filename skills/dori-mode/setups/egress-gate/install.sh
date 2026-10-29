@@ -38,7 +38,7 @@ fi
 uid=$(id -u "$dori"); admin_uid=$(id -u "$admin")
 [ -f "$staging/config.json" ] || { echo "GATE_INSTALL_FAIL $staging/config.json missing" >&2; exit 2; }
 command -v nft >/dev/null || [ -x /usr/sbin/nft ] || { echo "GATE_INSTALL_FAIL nft missing" >&2; exit 2; }
-ports=$(/usr/bin/python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1]))["listen"]; print(", ".join(str(l[k]) for k in ("connect","google","discord")))' "$staging/config.json")
+ports=$(/usr/bin/python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1]))["listen"]; print(", ".join(str(l[k]) for k in ("connect","google","discord","web") if l.get(k) is not None))' "$staging/config.json")
 
 if [ "$dry" = 1 ]; then
   t=$(mktemp -d)
