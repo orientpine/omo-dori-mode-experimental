@@ -25,7 +25,8 @@ const OPEN_MODAL = 9;
 // button: a pick tap; text: the write-my-own box; reply: the owner answered in a message and the lead resolved the card
 export type AnswerKind = "button" | "text" | "reply";
 
-export type QuestionMeta = { readonly thread?: string | null; readonly session?: string | null; readonly tmux?: string | null };
+// channelWhy: why a card with no work thread is in the channel (dori ask --channel); replyTo: the owner's message it answers
+export type QuestionMeta = { readonly thread?: string | null; readonly session?: string | null; readonly tmux?: string | null; readonly channelWhy?: string; readonly replyTo?: string };
 
 export type Question = {
   id: string;
@@ -35,6 +36,8 @@ export type Question = {
   thread: string | null;
   session: string | null;
   tmux: string | null;
+  channelWhy?: string;
+  replyTo?: string;
   created: string;
   message?: string;
   status: "open" | "answered";
@@ -81,7 +84,7 @@ export class QuestionStore {
   create(text: string, options: readonly string[], channel: string, meta: QuestionMeta, at: string): Question {
     const s = this.load();
     s.seq += 1;
-    const q: Question = { id: `Q${s.seq}`, text, options: [...options], channel, thread: meta.thread ?? null, session: meta.session ?? null, tmux: meta.tmux ?? null, created: at, status: "open" };
+    const q: Question = { id: `Q${s.seq}`, text, options: [...options], channel, thread: meta.thread ?? null, session: meta.session ?? null, tmux: meta.tmux ?? null, ...(meta.channelWhy ? { channelWhy: meta.channelWhy } : {}), ...(meta.replyTo ? { replyTo: meta.replyTo } : {}), created: at, status: "open" };
     s.questions.push(q);
     this.save(s);
     return q;
@@ -258,7 +261,8 @@ export class QuestionCards {
     if (!guardText(text).trim()) throw new QuestionError("a question needs text");
     if (!clean.length || clean.length > MAX_OPTIONS) throw new QuestionError(`a question needs 1 to ${MAX_OPTIONS} options, got ${clean.length}`);
     const q = this.store.create(text.trim(), clean, meta.thread || this.settings.channel, meta, this.at());
-    const posted = await this.dc.call<{ id: string }>("POST", `/channels/${q.channel}/messages`, { components: this.card(q), flags: IS_COMPONENTS_V2, allowed_mentions: { users: [this.settings.owner] } });
+    const reply = q.replyTo ? { message_reference: { message_id: q.replyTo, fail_if_not_exists: false } } : {};
+    const posted = await this.dc.call<{ id: string }>("POST", `/channels/${q.channel}/messages`, { components: this.card(q), flags: IS_COMPONENTS_V2, allowed_mentions: { users: [this.settings.owner] }, ...reply });
     this.store.setMessage(q.id, posted.id);
     if (q.thread) await this.mark(q.thread, "waiting");
     return { ...q, message: posted.id };
