@@ -63,6 +63,27 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.order_reply = None
         self.use_reply = None
         self.scope = "openid"
+        self.owner_text = "이거 정리해 줘 <https://example.net/page>"
+        self.search_queries = []
+        self.pages = {}
+        self.web_seen = []
+        self.dns = {"example.net": "93.184.216.34", "arxiv.org": "93.184.216.35", "other.example": "93.184.216.36",
+                    "internal.example": "10.0.0.1"}
+        self.web_fake = await asyncio.start_server(self.web_request, "127.0.0.1", 0)
+        self.addAsyncCleanup(self.web_fake.wait_closed)
+        self.addCleanup(self.web_fake.close)
+        web_port = self.web_fake.sockets[0].getsockname()[1]
+        loop = asyncio.get_running_loop()
+        original_getaddrinfo = loop.getaddrinfo
+
+        async def resolve(host, port, *args, **kwargs):
+            if host in self.dns:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (self.dns[host], port))]
+            return await original_getaddrinfo(host, port, *args, **kwargs)
+        resolver = patch.object(loop, "getaddrinfo", side_effect=resolve)
+        resolver.start()
+        self.addCleanup(resolver.stop)
+        (self.state / "search-key").write_text("search-secret\n")
         self.fake = await asyncio.start_server(self.fake_request, "127.0.0.1", 0)
         self.addAsyncCleanup(self.close_fake)
         self.base = "http://127.0.0.1:" + str(self.fake.sockets[0].getsockname()[1])
@@ -84,7 +105,13 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             "connect_allow": ["example.com", {"host": "*.example.org", "ports": [443]}],
             "upstreams": {host: self.base for host in gate.GOOGLE_HOSTS},
             "discord_api_base": self.base + "/api/v10", "tokeninfo_url": self.base + "/tokeninfo",
+            "web": {"public_sites": ["arxiv.org"], "max_opens_per_task": 6, "max_searches_per_task": 3,
+                    "max_bytes": 4096, "owner_names": ["Owner Person"],
+                    "search": {"provider": "brave", "key_file": str(self.state / "search-key"),
+                               "endpoint": self.base + "/brave/res/v1/web/search"},
+                    "dial": {ip: ["127.0.0.1", web_port] for ip in self.dns.values()}},
         }
+        self.config["listen"]["web"] = 0
         self.service = gate.Gate(self.config)
         await self.service.start()
         self.addAsyncCleanup(self.service.close)
@@ -121,6 +148,20 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                     data = self.order
                 else:
                     status = 404
+            elif path.startswith("/brave/"):
+                if headers.get("x-subscription-token") != "search-secret":
+                    status = 401
+                else:
+                    self.search_queries.append(parse_qs(urlsplit(target).query)["q"][0])
+                    data = {"web": {"results": [{"title": "<strong>Found</strong> page", "url": "https://other.example/found",
+                                                  "description": "a <strong>snippet</strong>"}]}}
+            elif path == "/v1/people/me/connections":
+                data = {"connections": [{"names": [{"displayName": "홍길동"}],
+                                         "emailAddresses": [{"value": "friend@example.org"}],
+                                         "phoneNumbers": [{"value": "+82 10-2345-6789"}]},
+                                        {"names": [{"displayName": "Ada Lovelace"}]}]}
+            elif path == "/v1/otherContacts":
+                data = {"otherContacts": [{"emailAddresses": [{"value": "someone@example.com"}]}]}
             elif path == "/tokeninfo":
                 data = {"scope": self.scope, "email": "owner@example.com", "expires_in": 3000,
                         "access_token": "must-not-return"}
@@ -154,7 +195,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                             data = {}
                     elif method == "GET":
                         if message == "100":
-                            data = {"id": message, "author": {"id": self.author}, "timestamp": self.proof_time}
+                            data = {"id": message, "author": {"id": self.author}, "timestamp": self.proof_time,
+                                    "content": self.owner_text}
                         elif message in self.cards:
                             data = {"id": message, "content": self.cards[message]}
                         else:
@@ -208,6 +250,24 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def web_request(self, reader, writer):
+        try:
+            method, target, headers, body = await gate.read_request(reader)
+            self.web_seen.append((headers.get("host"), method, target, headers, body))
+            status, extra, content = self.pages.get((headers.get("host"), target),
+                                                    (404, {"content-type": "text/plain"}, b"missing"))
+            await gate.reply(writer, status, content, extra)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    def page(self, host, target, content, status=200, content_type="text/html; charset=utf-8", **extra):
+        self.pages[(host, target)] = (status, {"content-type": content_type, **extra},
+                                      content.encode() if isinstance(content, str) else content)
+
+    async def web(self, path, proof=True, origin="20/100", headers=None, method="GET"):
+        return await self.request(method, path, proof=proof, port="web", origin=origin, raw=b"", headers=headers)
 
     async def request(self, method="POST", path="/www.googleapis.com/calendar/v3/calendars/primary/events",
                       data=None, proof=True, port="google", headers=None, raw=None, origin="20/100"):
@@ -1382,6 +1442,179 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
 
 
+    # Web window (port "web"): GET-only fetch and search for the Dori, with the URL source and query rules.
+    def web_rows(self):
+        path = self.state / "web.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    async def test_web_fetches_an_owner_message_link_without_credentials(self):
+        self.page("example.net", "/page", "<html><head><title>T</title><script>steal()</script><style>x{}</style></head>"
+                  "<body><h1>Hello</h1><p>world &amp; more</p><a href='/next'>n</a></body></html>")
+        status, body = await self.web("/fetch?url=" + quote("https://example.net/page", safe=""),
+                                      headers={"cookie": "session=caller", "authorization": "Bearer caller"})
+        self.assertEqual(status, 200, body)
+        text = body.decode()
+        self.assertIn("Hello", text)
+        self.assertIn("world & more", text)
+        self.assertNotIn("steal()", text)
+        self.assertLess(text.index(gate.WEB_BEGIN), text.index("Hello"))
+        self.assertLess(text.index("Hello"), text.index(gate.WEB_END))
+        self.assertIn("https://example.net/next", text.split(gate.WEB_END, 1)[1])
+        host, method, target, headers, request_body = self.web_seen[-1]
+        self.assertEqual((host, method, target, request_body), ("example.net", "GET", "/page", b""))
+        self.assertFalse({"cookie", "authorization", "x-dori-owner-message"} & set(headers))
+        rows = self.web_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(set(rows[0]), {"ts", "uid", "kind", "owner_message", "host", "status", "bytes"})
+        self.assertEqual((rows[0]["kind"], rows[0]["host"], rows[0]["status"]), ("fetch", "example.net", 200))
+        self.assertEqual(rows[0]["owner_message"], "https://discord.com/channels/10/20/100")
+        self.assertNotIn("/page", (self.state / "web.jsonl").read_text())
+
+    async def test_web_refuses_a_url_without_source_and_an_owner_link_with_added_query(self):
+        for url in ("https://other.example/x", "https://example.net/page?d=secret", "https://example.net/pag",
+                    "http://example.net/page"):
+            status, body = await self.web("/fetch?url=" + quote(url, safe=""))
+            self.assertEqual(status, 403, url)
+            self.assertEqual(json.loads(body)["error"], "url-without-source")
+            self.assertEqual(json.loads(body)["message"], "출처 없는 주소. 검색으로 찾아")
+        self.assertFalse(self.web_seen)
+        self.assertNotIn("secret", (self.state / "denials.jsonl").read_text())
+
+    async def test_web_public_site_opens_only_without_a_query(self):
+        self.page("arxiv.org", "/abs/2503.18813", "paper", content_type="text/plain")
+        status, body = await self.web("/fetch?url=" + quote("https://arxiv.org/abs/2503.18813", safe=""))
+        self.assertEqual(status, 200)
+        self.assertIn("paper", body.decode())
+        status, body = await self.web("/fetch?url=" + quote("https://arxiv.org/abs/2503.18813?d=x", safe=""))
+        self.assertEqual((status, json.loads(body)["error"]), (403, "url-without-source"))
+        status, body = await self.web("/fetch?url=" + quote("https://user@arxiv.org/abs/1", safe=""))
+        self.assertEqual(status, 403)
+        self.assertEqual(len(self.web_seen), 1)
+
+    async def test_web_links_the_window_returned_open_in_the_same_task_only(self):
+        self.page("example.net", "/page", "<a href='https://other.example/p?id=1'>x</a>")
+        self.page("other.example", "/p?id=1", "linked", content_type="text/plain")
+        self.assertEqual((await self.web("/fetch?url=" + quote("https://example.net/page", safe="")))[0], 200)
+        status, body = await self.web("/fetch?url=" + quote("https://other.example/p?id=1", safe=""))
+        self.assertEqual(status, 200)
+        self.assertIn("linked", body.decode())
+        status, _ = await self.web("/fetch?url=" + quote("https://other.example/p?id=1&d=x", safe=""))
+        self.assertEqual(status, 403)
+        # Another owner message is another task: the page link is not a source there.
+        self.owner_text = "다른 일"
+        self.service.cache.clear()
+        self.threads.add("21")
+        status, _ = await self.web("/fetch?url=" + quote("https://other.example/p?id=1", safe=""), origin="555/100")
+        self.assertEqual(status, 403)
+
+    async def test_web_redirects_are_followed_three_times_and_rechecked(self):
+        self.page("example.net", "/page", "", status=302, location="https://example.net/r1")
+        self.page("example.net", "/r1", "", status=301, location="/r2")
+        self.page("example.net", "/r2", "", status=307, location="https://other.example/end")
+        self.page("other.example", "/end", "arrived", content_type="text/plain")
+        status, body = await self.web("/fetch?url=" + quote("https://example.net/page", safe=""))
+        self.assertEqual(status, 200, body)
+        self.assertIn("arrived", body.decode())
+        self.assertIn("https://other.example/end", body.decode())
+        self.page("other.example", "/end", "", status=302, location="https://other.example/more")
+        self.page("other.example", "/more", "too far", content_type="text/plain")
+        status, body = await self.web("/fetch?url=" + quote("https://example.net/page", safe=""))
+        self.assertEqual((status, json.loads(body)["error"]), (502, "too-many-redirects"))
+        self.page("example.net", "/page", "", status=302, location="http://internal.example/admin")
+        before = len(self.web_seen)
+        status, body = await self.web("/fetch?url=" + quote("https://example.net/page", safe=""))
+        self.assertEqual((status, json.loads(body)["error"]), (403, "web-private-address"))
+        self.assertEqual(len(self.web_seen), before + 1)
+
+    async def test_web_private_address_and_other_ports_are_refused(self):
+        self.owner_text = "http://internal.example/admin https://example.net:8443/x"
+        for url in ("http://internal.example/admin", "https://example.net:8443/x"):
+            status, body = await self.web("/fetch?url=" + quote(url, safe=""))
+            self.assertEqual(status, 403, url)
+        self.assertFalse(self.web_seen)
+
+    async def test_web_needs_owner_proof_get_and_a_client_uid(self):
+        url = "/fetch?url=" + quote("https://arxiv.org/abs/1", safe="")
+        status, body = await self.web(url, proof=False)
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
+        self.author = "2"
+        self.assertEqual((await self.web(url))[0], 403)
+        self.author = "1"
+        self.assertEqual((await self.web(url, method="POST"))[0], 405)
+        self.config["clients"] = []
+        self.assertEqual((await self.web(url))[0], 403)
+        self.assertFalse(self.web_seen)
+
+    async def test_web_search_returns_wrapped_results_whose_links_then_open(self):
+        self.page("other.example", "/found", "result page", content_type="text/plain")
+        status, body = await self.web("/search?q=" + quote("prompt injection defenses"))
+        self.assertEqual(status, 200, body)
+        text = body.decode()
+        self.assertEqual(self.search_queries, ["prompt injection defenses"])
+        self.assertIn("Found page", text)
+        self.assertNotIn("<strong>", text)
+        self.assertLess(text.index(gate.WEB_BEGIN), text.index("Found page"))
+        self.assertEqual((await self.web("/fetch?url=" + quote("https://other.example/found", safe="")))[0], 200)
+        rows = self.web_rows()
+        self.assertEqual([r["kind"] for r in rows], ["search", "fetch"])
+        self.assertNotIn("injection", (self.state / "web.jsonl").read_text())
+
+    async def test_web_search_refuses_owner_data_shapes_before_asking(self):
+        cases = {"x" * 121: "query-too-long", "": "query-required",
+                 "mail friend@example.org": "query-personal-shape", "전화 010-2345-6789": "query-personal-shape",
+                 "전화 010 2345 6789": "query-personal-shape", "계좌 110-123-456789": "query-personal-shape",
+                 "주민 900101-1234567": "query-personal-shape", "홍길동 연락처": "query-contact",
+                 "홍 길동 주소": "query-contact", "ada lovelace notes": "query-contact",
+                 "owner person cv": "query-contact", "someone@example.com": "query-personal-shape",
+                 "key sk-ant-api03-abcdefghijklmnop": "query-secret-shape",
+                 "token ghp_abcdefghijklmnopqrstuvwxyz0123456789": "query-secret-shape",
+                 "blob Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZg": "query-secret-shape"}
+        for query, reason in cases.items():
+            status, body = await self.web("/search?q=" + quote(query))
+            self.assertEqual((status, json.loads(body)["error"]), (403, reason), query)
+        self.assertEqual(self.search_queries, [])
+        self.assertNotIn("홍길동", (self.state / "denials.jsonl").read_text())
+        status, _ = await self.web("/search?q=" + quote("arXiv 2503.18813 lovelace-free algorithm"))
+        self.assertEqual(status, 200)
+
+    async def test_web_search_fails_closed_without_contacts_or_key(self):
+        with patch.object(self.service, "google_json", AsyncMock(side_effect=gate.Refused("upstream-check-failed", 502))):
+            status, body = await self.web("/search?q=" + quote("rust async"))
+        self.assertEqual((status, json.loads(body)["error"]), (503, "contacts-check-unavailable"))
+        (self.state / "search-key").unlink()
+        status, body = await self.web("/search?q=" + quote("rust async"))
+        self.assertEqual((status, json.loads(body)["error"]), (503, "search-off"))
+        self.assertEqual(self.search_queries, [])
+
+    async def test_web_counts_opens_and_searches_per_task(self):
+        self.page("arxiv.org", "/abs/1", "p", content_type="text/plain")
+        url = "/fetch?url=" + quote("https://arxiv.org/abs/1", safe="")
+        for _ in range(6):
+            self.assertEqual((await self.web(url))[0], 200)
+        status, body = await self.web(url)
+        self.assertEqual((status, json.loads(body)["error"]), (429, "task-open-limit"))
+        for _ in range(3):
+            self.assertEqual((await self.web("/search?q=rust"))[0], 200)
+        status, body = await self.web("/search?q=rust")
+        self.assertEqual((status, json.loads(body)["error"]), (429, "task-search-limit"))
+
+    async def test_web_caps_the_body_and_refuses_binary_content(self):
+        self.page("arxiv.org", "/big", "<p>" + "a" * 10000 + "</p>")
+        status, body = await self.web("/fetch?url=" + quote("https://arxiv.org/big", safe=""))
+        self.assertEqual(status, 200)
+        self.assertLess(body.count(b"a"), 4200)
+        self.assertIn(gate.WEB_TRUNCATED, body.decode())
+        self.page("arxiv.org", "/x.pdf", b"%PDF-1.7", content_type="application/pdf")
+        status, body = await self.web("/fetch?url=" + quote("https://arxiv.org/x.pdf", safe=""))
+        self.assertEqual((status, json.loads(body)["error"]), (415, "unsupported-content-type"))
+
+    async def test_web_dashboard_order_allows_search_but_is_not_an_owner_link_source(self):
+        order = {"x-dori-owner-order": "17"}
+        self.assertEqual((await self.web("/search?q=rust", proof=False, headers=order))[0], 200)
+        status, _ = await self.web("/fetch?url=" + quote("https://example.net/page", safe=""), proof=False, headers=order)
+        self.assertEqual(status, 403)
+
+
 class IPv6FallbackTests(unittest.TestCase):
     def test_ipv4_is_tried_first_and_a_dead_ipv6_address_does_not_block_the_connection(self):
         server = socket.socket(socket.AF_INET)
@@ -1412,6 +1645,7 @@ class NodeGateTests(unittest.IsolatedAsyncioTestCase):
     base_setup = GateTests.asyncSetUp
     close_fake = GateTests.close_fake
     fake_request = GateTests.fake_request
+    web_request = GateTests.web_request
     request = GateTests.request
     approval = GateTests.approval
     changes = GateTests.changes

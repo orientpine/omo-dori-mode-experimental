@@ -19,6 +19,7 @@ socket entry in `/proc/net/tcp` and `/proc/net/tcp6`, not HTTP headers.
 | 3128 | CONNECT only; configured names/ports, public DNS addresses only |
 | 3129 | Google reverse API, journal, restores, OAuth admin, optional vault |
 | 3130 | Discord `/api/v10/*`, owner guild/owner-only DMs |
+| 3131 | Web window: `GET /fetch?url=`, `GET /search?q=` (optional, `listen.web`) |
 
 The Discord Gateway uses the CONNECT port, not the Discord REST port. CONNECT
 copies opaque TLS bytes in both directions; it does not decode WebSocket frames,
@@ -78,6 +79,50 @@ Drive uploads support media and multipart; resumable sessions are refused becaus
 their opaque upload URLs do not preserve the checked metadata endpoint.
 Other unlisted endpoints are denied. Request bodies are capped at 25 MiB;
 vault writes at 1 MiB. Chunked requests are decoded; trailers cannot alter headers.
+
+## Web window
+
+Owner 2026-10-29 10:02 KST "그래 그럼 그렇게 한번 해보자" (stage 1 of the web window, for the gated Dori only).
+The gate reads pages and searches for the Dori; the Dori itself still has no DNS and no web. Off unless
+`listen.web` is set. Both calls are `GET` only and need the same owner proof as a write
+(`X-Dori-Owner-Message`, or `X-Dori-Owner-Order`); one owner message (or order) is one task.
+
+```sh
+W=http://127.0.0.1:3131; O='X-Dori-Owner-Message: <channel id>/<message id>'
+curl -sG -H "$O" --data-urlencode 'url=https://arxiv.org/abs/2503.18813' "$W/fetch"
+curl -sG -H "$O" --data-urlencode 'q=prompt injection defenses' "$W/search"
+```
+
+- **Which URLs open.** Only a URL that is, character for character (fragment aside), one of:
+  (a) a URL written in the owner message of the proof (an order has none);
+  (b) a search result or page link the window returned earlier in the same task, or a redirect target;
+  (c) an `https` URL without `?` on a host in `web.public_sites`.
+  Anything else is `403 url-without-source` with `"message": "출처 없는 주소. 검색으로 찾아"`.
+  Userinfo and ports other than the scheme's own are refused.
+- **How it fetches.** The gate resolves the name, refuses if any address is not public
+  (`web-private-address`), connects to that checked address (no second lookup), and sends a fixed
+  `GET` with no body, cookie, authorization or caller header. Redirects are followed up to
+  `max_redirects` (3), each hop resolved and checked again; one more is `502 too-many-redirects`.
+  The body is read up to `max_bytes` (2 MiB) and cut there. HTML becomes text (scripts, styles, frames
+  dropped, never run) plus its absolute links; text, JSON and XML pass as text; anything else is
+  `415 unsupported-content-type`.
+- **What it returns.** `text/plain`: the address, status and size, then the content between
+  `[남의 글 시작 - ...]` and `[남의 글 끝]`, then the links the task may open next.
+- **Search.** The query is refused before it leaves when it is empty or longer than `max_query_chars`
+  (120), carries a key shape (`query-secret-shape`) or a mail address, phone, resident or account
+  number shape (`query-personal-shape`). Without a search key (`web.search`: `provider` `brave`,
+  `key_file` readable by the gate user only) the answer is then `503 search-off`, and the window
+  still fetches. With one, a name, address or phone of the owner's contacts is `query-contact`
+  (read through the gate's own Contacts grant, plus `owner_emails` and `owner_names`;
+  `503 contacts-check-unavailable` when they cannot be read), and only then is the one search API
+  asked. The key never leaves the gate.
+- **Limits per task.** `max_opens_per_task` (40) fetches and `max_searches_per_task` (20) searches,
+  then `429`. Tasks are kept in memory for 24 hours; a restart empties them (rule (b) starts over).
+- **Log.** Every fetch hop and search appends `{ts, uid, kind, owner_message, host, status, bytes}` to
+  `web.jsonl` (0600) and prints `GATE_WEB <kind> <host> <status> <bytes>`; never a path, query or
+  content. Refusals go to `denials.jsonl` as `GET /fetch` or `GET /search` with the reason.
+
+The firewall must let the Dori reach the new port: `install.sh` adds `listen.web` to `gate_ports`.
 
 ## Approval and journal
 
@@ -244,6 +289,7 @@ python3 -I -m py_compile gate.py gatectl.py summary.py test_gate.py
 
 Tests use ephemeral loopback fake Google/Discord upstreams and temporary private
 state. Trusted test injection points: `upstreams` (host to base URL),
+`web.dial` (checked public address to a loopback plain-HTTP `[host, port]`), `web.search.endpoint`,
 `discord_api_base`, `tokeninfo_url`, `proc_tcp_paths`, installed-client `token_uri`,
 and ephemeral listener ports (`0`). Never make config writable by the client UID.
 
