@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { currentTmuxSession, paneActivity } from "./aoe.ts";
+import { type AskPlace, AskPlaceError, askPlace } from "./ask-place.ts";
 import { leadAlertPoster } from "./autoturn.ts";
 import { findLead, LeadError } from "./lead.ts";
 import { ackHandover, handover, type HandoverDeps, LEAD_SUMMARY_TEMPLATE, missingWatchers } from "./handover.ts";
@@ -286,8 +287,13 @@ const USAGE = `dori <command> [options]
                                        inbox row, voice is transcribed, question-card answers are recorded; with
                                        DORI_DISCORD_WATCH_CHANNELS + DORI_DISCORD_WATCH_BOTS a monitoring bot's problem
                                        alert there (DORI_DISCORD_WATCH_MATCH) is a scope:"watch" row for the lead
-  ask --text Q --option A [--option B ...] [--thread REF] [--session ID] [--tmux NAME]
-                                       post a Discord question card; the first option is the recommended one
+  ask --text Q --option A [--option B ...] [--thread REF | --reply-to MSG | --channel "<reason>"] [--session ID] [--tmux NAME]
+                                       post a Discord question card; the first option is the recommended one. It goes in
+                                       its work's thread: --thread, else the open lane thread of the asking session
+                                       (--tmux, --session or this pane) or the one thread mapped to it (ASK_THREAD_AUTO);
+                                       --reply-to answers the owner's own message where he wrote it; --channel "<reason>"
+                                       posts in the channel with the reason on the card; none found: ASK_THREAD_REQUIRED
+                                       (exit 2), nothing posted
   questions [--open]                   list tracked question cards
   reopen <Qn> / resolve <Qn> [--answer TEXT]
                                        put a card's buttons back / forget a settled question; a card still open (the
@@ -448,7 +454,7 @@ const flags = parseArgs({
     static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
     remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
     job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" },
-    reply: { type: "string" }, again: { type: "boolean" }, posted: { type: "string" }, "post-summary": { type: "boolean" },
+    reply: { type: "string" }, again: { type: "boolean" }, channel: { type: "string" }, "reply-to": { type: "string" }, posted: { type: "string" }, "post-summary": { type: "boolean" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -1447,10 +1453,39 @@ try {
     }
     case "ask": {
       await quietGuard();
-      const thread = opt("thread")?.replace(/^discord:/, "");
       // a card is for the owner: only he answers it
       await ownerSpeech([need("text"), ...((flags.values.option as string[] | undefined) ?? [])].join("\n"), "ask", async () => true);
-      const q = await questionCards(discordClient()).ask(postable(need("text"), "ask"), (flags.values.option as string[] | undefined) ?? [], { thread: thread || null, session: opt("session") || null, tmux: opt("tmux") || null });
+      const text = postable(need("text"), "ask");
+      let place: AskPlace;
+      try {
+        place = askPlace({
+          thread: threadOpt(),
+          channel: flags.values.channel === true ? "" : opt("channel"),
+          replyTo: flags.values["reply-to"] === true ? "" : opt("reply-to"),
+          tmux: opt("tmux"),
+          session: opt("session"),
+          here: config.backend === "aoe" ? await currentTmuxSession(run).catch(() => "") : (process.env.HERDR_PANE_ID ?? ""),
+          lanes: await deps.registry.open(),
+          threads: threads(cardDir()),
+          inbox: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+          owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "",
+        });
+      } catch (e) {
+        if (e instanceof AskPlaceError) die(e.message, 2);
+        throw e;
+      }
+      const thread = place.kind === "channel" ? null : place.thread;
+      const q = await questionCards(discordClient()).ask(text, (flags.values.option as string[] | undefined) ?? [], {
+        thread,
+        session: opt("session") || null,
+        // the lane found from this pane is where its answer is relayed, as if --tmux had named it
+        tmux: opt("tmux") || (place.kind === "thread" ? place.pane : undefined) || null,
+        ...(place.kind === "channel" ? { channelWhy: place.why } : {}),
+        ...(place.kind === "reply" ? { replyTo: place.replyTo } : {}),
+      });
+      if (place.kind === "thread" && place.line) console.log(place.line);
+      if (place.kind === "channel") console.log(`ASK_CHANNEL ${q.id}: ${place.why}`);
+      if (place.kind === "reply") console.log(`ASK_REPLY ${q.id} ${place.replyTo} ${place.thread ? `in thread discord:${place.thread}` : "in the channel"}`);
       console.log(`ASKED ${q.id} message=${q.message}`);
       break;
     }
