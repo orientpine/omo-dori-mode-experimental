@@ -117,7 +117,8 @@ curl -sG -H "$O" --data-urlencode 'q=prompt injection defenses' "$W/search"
   provider asked:
   - `"provider": "duckduckgo-html"` (owner 2026-10-29 14:12 KST Q377: no key, no cost, not an official
     API): the gate posts `q` to `https://html.duckduckgo.com/html/` (`kl` from `region`, default `wt-wt`)
-    with its own User-Agent and no cookie, reads the result titles, links and snippets, unwraps
+    with its own User-Agent, the page itself as `Referer` (as its own form does; without it DuckDuckGo answers
+    its bot check) and no cookie, reads the result titles, links and snippets, unwraps
     `duckduckgo.com/l/?uddg=` hops to the real address (that address becomes a rule (b) source; the
     hop itself never does) and drops ads. DuckDuckGo's bot check (an `anomaly` page, or 202/403/429)
     is `503 search-blocked`, logged as status `blocked`, and every search answers the same for
