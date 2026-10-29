@@ -1,0 +1,145 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const SCRIPT = join(import.meta.dir, "../../setups/discord-aoe/dori-file-relay");
+let root = "";
+let homes = "";
+
+// Three fake Dori accounts as folders; helpers run as the test user without sudo (DORI_FILE_RELAY_TEST_HOMES).
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "dori-file-relay-"));
+  homes = join(root, "homes");
+  for (const a of ["za", "yo", "mo"]) mkdirSync(join(homes, a, `.${a}`), { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, "tmp"));
+});
+afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+const env = (extra: Record<string, string> = {}) => ({
+  PATH: process.env.PATH ?? "/usr/bin:/bin",
+  TMPDIR: join(root, "tmp"),
+  DORI_FILE_RELAY_TEST_HOMES: homes,
+  DORI_FILE_RELAY_STATE: join(root, "state"),
+  DORI_FILE_RELAY_DORIS: "zzangdori=za:~/.za/inbox.jsonl yoodori=yo:~/.yo/inbox.jsonl moodori=mo:~/.mo/inbox.jsonl",
+  DORI_FILE_RELAY_SETTLE_SEC: "0",
+  DORI_FILE_RELAY_INTERVAL: "0",
+  ...extra,
+});
+
+const run = async (args: string[], extra: Record<string, string> = {}) => {
+  const p = Bun.spawn(["/usr/bin/python3", "-I", SCRIPT, ...args], { env: env(extra), stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  return { out, err, code };
+};
+const serve = (cycles: number, extra: Record<string, string> = {}) => run(["--serve", "--cycles", String(cycles)], extra);
+
+const home = (a: string, ...p: string[]) => join(homes, a, ...p);
+const put = (path: string, body: string | Buffer) => {
+  mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+  writeFileSync(path, body, { mode: 0o600 });
+};
+const sha = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
+const mode = (p: string) => statSync(p).mode & 0o777;
+const kst = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+const lines = (p: string) => (existsSync(p) ? readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const inbox = (a: string) => lines(home(a, `.${a}`, "inbox.jsonl"));
+const relayLog = () => lines(join(root, "state", "relay.log"));
+
+test("a file in to-<dori> reaches the other's inbox/from-<me>, wakes its lead once and moves to sent", async () => {
+  expect((await serve(1)).code).toBe(0);
+  expect(mode(home("mo", "outbox", "to-yoodori"))).toBe(0o700);
+  expect(existsSync(home("mo", "outbox", "to-moodori"))).toBe(false);
+  const body = `SECRET-MARKER-7731 ${"x".repeat(5000)}`;
+  put(home("mo", "outbox", "to-yoodori", "deck", "a b.pdf"), body);
+
+  expect((await serve(1)).code).toBe(0); // seen once: not yet steady
+  expect(existsSync(home("yo", "inbox", "from-moodori"))).toBe(false);
+
+  expect((await serve(2)).code).toBe(0);
+  const got = home("yo", "inbox", "from-moodori", "deck", "a b.pdf");
+  expect(sha(readFileSync(got))).toBe(sha(body));
+  expect(mode(got)).toBe(0o600);
+  expect(mode(home("yo", "inbox", "from-moodori"))).toBe(0o700);
+  expect(mode(home("yo", "inbox", "from-moodori", "deck"))).toBe(0o700);
+  expect(existsSync(home("mo", "outbox", "to-yoodori", "deck"))).toBe(false);
+  expect(readFileSync(home("mo", "outbox", "sent", kst(), "to-yoodori", "deck", "a b.pdf"), "utf8")).toBe(body);
+
+  const rows = inbox("yo");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ kind: "file-delivered", from: "moodori", to: "yoodori", path: "from-moodori/deck/a b.pdf", bytes: body.length, sha256: sha(body), replaced: false });
+  const ok = relayLog().filter((r) => r.result === "ok");
+  expect(ok).toHaveLength(1);
+  expect(ok[0]).toMatchObject({ mode: "auto", from: "mo", to: "yo", sha256: sha(body), woke: true });
+  for (const f of [home("yo", ".yo", "inbox.jsonl"), join(root, "state", "relay.log")]) expect(readFileSync(f, "utf8")).not.toContain("SECRET-MARKER");
+
+  expect((await serve(2)).code).toBe(0); // nothing is sent twice
+  expect(inbox("yo")).toHaveLength(1);
+  expect(inbox("za")).toHaveLength(0);
+});
+
+test("a symlink, a hard link, a fifo and a file over the cap are set aside in .failed with the reason, never delivered", async () => {
+  await serve(1);
+  const to = home("mo", "outbox", "to-zzangdori");
+  symlinkSync("/etc/passwd", join(to, "link"));
+  put(join(to, "h1"), "hard");
+  linkSync(join(to, "h1"), home("mo", "outbox", "h2"));
+  expect((await Bun.spawn(["mkfifo", join(to, "pipe")]).exited)).toBe(0);
+  put(join(to, "big.bin"), "y".repeat(64));
+
+  expect((await serve(2, { DORI_FILE_RELAY_MAX_BYTES: "32" })).code).toBe(0);
+  expect(existsSync(home("za", "inbox"))).toBe(false);
+  expect(inbox("za")).toHaveLength(0);
+  const why = (n: string) => JSON.parse(readFileSync(join(to, ".failed", `${n}.why`), "utf8")).reason;
+  expect(why("link")).toBe("symlink");
+  expect(why("h1")).toBe("hard-link");
+  expect(why("pipe")).toBe("not-a-regular-file");
+  expect(why("big.bin")).toBe("too-large");
+  expect(readdirSync(to)).toEqual([".failed"]);
+  expect(relayLog().filter((r) => r.result === "failed")).toHaveLength(4);
+});
+
+test("a file still open for writing, and a .part name, wait until the writer is done", async () => {
+  await serve(1);
+  const path = home("mo", "outbox", "to-yoodori", "rec.wav");
+  put(home("mo", "outbox", "to-yoodori", "half.pdf.part"), "partial");
+  const w = Bun.spawn(["/usr/bin/python3", "-c", "import sys; f = open(sys.argv[1], 'a'); f.write('one'); f.flush(); print('READY', flush=True); sys.stdin.read(); f.write('two'); f.close()", path], { stdin: "pipe", stdout: "pipe" });
+  const reader = w.stdout.getReader();
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain("READY");
+
+  await serve(3);
+  expect(existsSync(home("yo", "inbox", "from-moodori", "rec.wav"))).toBe(false);
+
+  w.stdin.end();
+  expect(await w.exited).toBe(0);
+  await serve(2);
+  expect(readFileSync(home("yo", "inbox", "from-moodori", "rec.wav"), "utf8")).toBe("onetwo");
+  expect(existsSync(home("yo", "inbox", "from-moodori", "half.pdf.part"))).toBe(false);
+  expect(existsSync(home("mo", "outbox", "to-yoodori", "half.pdf.part"))).toBe(true);
+});
+
+test("the same name sent again replaces the receiver's copy and says so", async () => {
+  await serve(1);
+  const path = home("za", "outbox", "to-moodori", "brief.md");
+  put(path, "v1");
+  await serve(2);
+  put(path, "v2 longer");
+  await serve(2);
+  expect(readFileSync(home("mo", "inbox", "from-zzangdori", "brief.md"), "utf8")).toBe("v2 longer");
+  expect(inbox("mo").map((r) => [r.sha256, r.replaced])).toEqual([[sha("v1"), false], [sha("v2 longer"), true]]);
+  const sent = readdirSync(home("za", "outbox", "sent", kst(), "to-moodori"));
+  expect(sent).toHaveLength(2);
+  expect(sent).toContain("brief.md");
+});
+
+test("by hand, one file still goes outbox to inbox and an existing dest still needs --replace", async () => {
+  put(home("mo", "outbox", "deck.pdf"), "deck");
+  const a = await run(["mo", "deck.pdf", "yo", "axmvp/"]);
+  expect(a.code).toBe(0);
+  expect(a.out).toBe(`RELAYED yo:${home("yo", "inbox", "axmvp", "deck.pdf")} bytes=4 sha256=${sha("deck")}\n`);
+  expect(await run(["mo", "deck.pdf", "yo", "axmvp/"])).toMatchObject({ code: 3, out: "RELAY_REFUSED dest-exists\n" });
+  expect((await run(["--replace", "mo", "deck.pdf", "yo", "axmvp/"])).code).toBe(0);
+  expect(await run(["mo", "../yo/inbox/axmvp/deck.pdf", "za"])).toMatchObject({ code: 3, out: "RELAY_REFUSED path-escape\n" });
+  expect(relayLog().map((r) => r.result)).toEqual(["ok", "refused", "ok", "refused"]);
+});

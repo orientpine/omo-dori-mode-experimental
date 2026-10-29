@@ -1,0 +1,13 @@
+[Unit]
+Description=Dori file relay (a file in one Dori's ~/outbox/to-<dori>/ goes to that Dori's ~/inbox/from-<sender>/, its lead is woken)
+After=default.target
+
+[Service]
+EnvironmentFile=%h/.dori/dori.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -I %h/.dori/src/skills/dori-mode/setups/discord-aoe/dori-file-relay --serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
