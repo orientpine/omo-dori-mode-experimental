@@ -4,7 +4,7 @@
   "listen": {"connect": 3128, "google": 3129, "discord": 3130, "web": 3131},
   "web": {
     "public_sites": ["arxiv.org", "docs.python.org", "developer.mozilla.org"],
-    "search": {"provider": "brave", "key_file": "/var/lib/dori-gate/search-key"},
+    "search": {"provider": "duckduckgo-html", "region": "wt-wt", "rest_seconds": 600},
     "max_query_chars": 120,
     "max_opens_per_task": 40,
     "max_searches_per_task": 20,

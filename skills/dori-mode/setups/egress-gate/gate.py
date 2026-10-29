@@ -107,6 +107,25 @@ def web_contact_hit(query: str, names, emails, phones) -> bool:
     return False
 
 
+def ddg_results(page: str) -> list[tuple[str, str, str]]:
+    """(title, real URL, snippet) from DuckDuckGo's no-JS results page; its /l/?uddg= hops are unwrapped, ads dropped."""
+    plain = lambda value: html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+    found = []
+    for block in re.split(r'<div class="result[ "]', page)[1:]:
+        anchor = re.search(r'<a\b[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>', block)
+        if not anchor or "result--ad" in block[:200]:
+            continue
+        href = html.unescape(anchor[1])
+        href = "https:" + href if href.startswith("//") else href
+        parts = urlsplit(href)
+        if parts.hostname and parts.hostname.endswith("duckduckgo.com"):
+            href = dict(parse_qsl(parts.query)).get("uddg", "")
+        snippet = re.search(r'class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)</a>', block)
+        if href:
+            found.append((plain(anchor[2]), href, plain(snippet[1]) if snippet else ""))
+    return found
+
+
 def web_target(url: str) -> str:
     """The URL to open, without its fragment; only plain http(s) on the scheme's own port."""
     if not url or len(url) > 4096 or any(ord(c) <= 32 or ord(c) == 127 for c in url):
@@ -578,6 +597,7 @@ class Gate:
         self.approval_task = None
         self.order_facts = {}
         self.web_tasks = {}
+        self.search_rest_until = 0.0
         (self.state / "pending").mkdir(exist_ok=True, mode=0o700)
         (self.state / "pending").chmod(0o700)
 
@@ -1955,42 +1975,66 @@ class Gate:
         return response.status, {k.lower(): v for k, v in response.getheaders()}, raw[:limit], len(raw) > limit
 
     async def web_search(self, uid, proof, task, query, settings) -> bytes:
-        """Query shape, then whether search is on at all, then the owner's contacts, then the one search API."""
+        """Query shape, then whether search is on at all, then the owner's contacts, then the one search provider:
+        DuckDuckGo's no-JS page (owner 2026-10-29 14:12 KST Q377, no key, not an official API) or Brave's API."""
         refusal = web_query_refusal(query, settings.get("max_query_chars", 120))
         if refusal:
             raise Refused(refusal)
         spec = settings.get("search") or {}
+        provider = spec.get("provider")
         key_file = Path(spec["key_file"]) if spec.get("key_file") else None
-        if spec.get("provider") != "brave" or not key_file or not key_file.is_file():
+        if not (provider == "duckduckgo-html" or provider == "brave" and key_file and key_file.is_file()):
             raise Refused("search-off", 503)
         if web_contact_hit(query, *await self.web_terms(settings)):
             raise Refused("query-contact")
+        if time.monotonic() < self.search_rest_until:
+            raise Refused("search-blocked", 503)
         if task["searches"] >= settings.get("max_searches_per_task", 20):
             raise Refused("task-search-limit", 429)
-        key = key_file.read_text().strip()
-        if not key:
-            raise Refused("search-off", 503)
+        timeout = settings.get("timeout_seconds", 20)
+        if provider == "brave":
+            key = key_file.read_text().strip()
+            if not key:
+                raise Refused("search-off", 503)
+            endpoint = spec.get("endpoint", "https://api.search.brave.com/res/v1/web/search")
+            request = ("GET", endpoint + "?" + urlencode(dict(q=query, count=spec.get("count", 10))),
+                       {"X-Subscription-Token": key, "Accept": "application/json"}, b"")
+        else:
+            # The page's own form posts q; the gate says who it is (no browser disguise) and sends no cookie.
+            endpoint = spec.get("endpoint", "https://html.duckduckgo.com/html/")
+            request = ("POST", endpoint, {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": WEB_AGENT,
+                                          "Accept": "text/html", "Accept-Encoding": "identity"},
+                       urlencode(dict(q=query, kl=spec.get("region", "wt-wt"), b="")).encode())
         task["searches"] += 1
-        endpoint = spec.get("endpoint", "https://api.search.brave.com/res/v1/web/search")
         host = urlsplit(endpoint).hostname
         try:
-            status, _, content = await self.fetch("GET", endpoint + "?" + urlencode(dict(q=query, count=spec.get("count", 10))),
-                                                  {"X-Subscription-Token": key, "Accept": "application/json"},
-                                                  timeout=settings.get("timeout_seconds", 20))
+            status, _, content = await self.fetch(*request, timeout=timeout)
         except Refused:
             self.web_log(uid, "search", proof, host, "unavailable", 0)
             raise
+        page = content.decode("utf-8", "replace") if provider != "brave" else ""
+        if provider != "brave" and (status in {202, 403, 429} or "anomaly-modal" in page or "anomaly.js" in page):
+            # DuckDuckGo's bot check: say so plainly and stop asking for a while instead of retrying into it.
+            self.search_rest_until = time.monotonic() + spec.get("rest_seconds", 600)
+            self.web_log(uid, "search", proof, host, "blocked", len(content))
+            print(f"GATE_WEB_SEARCH_BLOCKED {host} rest={spec.get('rest_seconds', 600)}s", file=sys.stderr, flush=True)
+            raise Refused("search-blocked", 503)
         self.web_log(uid, "search", proof, host, status, len(content))
         if not 200 <= status < 300:
             raise Refused("search-failed", 502)
         plain = lambda value: html.unescape(re.sub(r"<[^>]+>", "", str(value or ""))).strip()
+        if provider == "brave":
+            items = json_object(content).get("web", {}).get("results", [])
+            results = [(plain(i.get("title")), str(i.get("url", "")), plain(i.get("description")))
+                       for i in (items if isinstance(items, list) else []) if isinstance(i, dict)]
+        else:
+            results = ddg_results(page)[:spec.get("count", 10)]
         lines, found = [], []
-        results = json_object(content).get("web", {}).get("results", [])
-        for number, item in enumerate(results if isinstance(results, list) else [], 1):
-            with contextlib.suppress(Refused, AttributeError):
-                url = web_target(str(item.get("url", "")))
+        for title, address, snippet in results:
+            with contextlib.suppress(Refused):
+                url = web_target(address)
                 found.append(url)
-                lines += [f"{number}. {plain(item.get('title'))}", f"   {url}", f"   {plain(item.get('description'))}"]
+                lines += [f"{len(found)}. {title}", f"   {url}", f"   {snippet}"]
         self.web_remember(task, found)
         return "\n".join([f"검색어: {query}", WEB_BEGIN, *lines, WEB_END]).encode() + b"\n"
 

@@ -110,12 +110,20 @@ curl -sG -H "$O" --data-urlencode 'q=prompt injection defenses' "$W/search"
   `[남의 글 시작 - ...]` and `[남의 글 끝]`, then the links the task may open next.
 - **Search.** The query is refused before it leaves when it is empty or longer than `max_query_chars`
   (120), carries a key shape (`query-secret-shape`) or a mail address, phone, resident or account
-  number shape (`query-personal-shape`). Without a search key (`web.search`: `provider` `brave`,
-  `key_file` readable by the gate user only) the answer is then `503 search-off`, and the window
-  still fetches. With one, a name, address or phone of the owner's contacts is `query-contact`
-  (read through the gate's own Contacts grant, plus `owner_emails` and `owner_names`;
-  `503 contacts-check-unavailable` when they cannot be read), and only then is the one search API
-  asked. The key never leaves the gate.
+  number shape (`query-personal-shape`). Without a provider in `web.search` the answer is then
+  `503 search-off`, and the window still fetches. With one, a name, address or phone of the owner's
+  contacts is `query-contact` (read through the gate's own Contacts grant, plus `owner_emails` and
+  `owner_names`; `503 contacts-check-unavailable` when they cannot be read), and only then is the
+  provider asked:
+  - `"provider": "duckduckgo-html"` (owner 2026-10-29 14:12 KST Q377: no key, no cost, not an official
+    API): the gate posts `q` to `https://html.duckduckgo.com/html/` (`kl` from `region`, default `wt-wt`)
+    with its own User-Agent and no cookie, reads the result titles, links and snippets, unwraps
+    `duckduckgo.com/l/?uddg=` hops to the real address (that address becomes a rule (b) source; the
+    hop itself never does) and drops ads. DuckDuckGo's bot check (an `anomaly` page, or 202/403/429)
+    is `503 search-blocked`, logged as status `blocked`, and every search answers the same for
+    `rest_seconds` (600) without asking DuckDuckGo again.
+  - `"provider": "brave"` with `key_file` (readable by the gate user only): the Brave Search API;
+    no key file is `503 search-off`. The key never leaves the gate.
 - **Limits per task.** `max_opens_per_task` (40) fetches and `max_searches_per_task` (20) searches,
   then `429`. Tasks are kept in memory for 24 hours; a restart empties them (rule (b) starts over).
 - **Log.** Every fetch hop and search appends `{ts, uid, kind, owner_message, host, status, bytes}` to

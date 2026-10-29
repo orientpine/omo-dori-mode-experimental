@@ -65,6 +65,17 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.scope = "openid"
         self.owner_text = "이거 정리해 줘 <https://example.net/page>"
         self.search_queries = []
+        self.ddg_requests = []
+        self.ddg_page = (
+            '<div class="result results_links web-result"><h2 class="result__title">'
+            '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fother.example%2Ffound&amp;rut=abc">'
+            '<b>Found</b> page</a></h2><a class="result__snippet" href="x">a <b>snippet</b> &amp; more</a></div>'
+            '<div class="result results_links web-result"><h2 class="result__title">'
+            '<a rel="nofollow" class="result__a" href="https://arxiv.org/abs/2401.00001">Direct paper</a></h2>'
+            '<a class="result__snippet" href="https://arxiv.org/abs/2401.00001">direct snippet</a></div>'
+            '<div class="result result--ad"><h2 class="result__title"><a rel="nofollow" class="result__a" '
+            'href="https://ads.example/buy">Ad</a></h2>'
+            '<a class="result__snippet" href="y">buy</a></div>')
         self.pages = {}
         self.web_seen = []
         self.dns = {"example.net": "93.184.216.34", "arxiv.org": "93.184.216.35", "other.example": "93.184.216.36",
@@ -148,6 +159,10 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                     data = self.order
                 else:
                     status = 404
+            elif path == "/ddg/html/":
+                self.ddg_requests.append((method, headers, body))
+                await gate.reply(writer, 200, self.ddg_page.encode(), {"content-type": "text/html; charset=utf-8"})
+                return
             elif path.startswith("/brave/"):
                 if headers.get("x-subscription-token") != "search-secret":
                     status = 401
@@ -1607,6 +1622,48 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.page("arxiv.org", "/x.pdf", b"%PDF-1.7", content_type="application/pdf")
         status, body = await self.web("/fetch?url=" + quote("https://arxiv.org/x.pdf", safe=""))
         self.assertEqual((status, json.loads(body)["error"]), (415, "unsupported-content-type"))
+
+    def use_duckduckgo(self):
+        self.config["web"]["search"] = {"provider": "duckduckgo-html", "endpoint": self.base + "/ddg/html/"}
+
+    async def test_web_duckduckgo_search_unwraps_result_links_which_then_open(self):
+        self.use_duckduckgo()
+        self.page("other.example", "/found", "result page", content_type="text/plain")
+        status, body = await self.web("/search?q=" + quote("table tennis ball tracking"))
+        self.assertEqual(status, 200, body)
+        text = body.decode()
+        method, headers, form = self.ddg_requests[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(parse_qs(form.decode())["q"], ["table tennis ball tracking"])
+        self.assertEqual(headers["user-agent"], gate.WEB_AGENT)
+        self.assertFalse({"cookie", "authorization", "x-dori-owner-message"} & set(headers))
+        self.assertIn("   https://other.example/found\n", text)
+        self.assertIn("https://arxiv.org/abs/2401.00001", text)
+        self.assertIn("Found page", text)
+        self.assertIn("a snippet & more", text)
+        self.assertNotIn("uddg", text)
+        self.assertNotIn("ads.example", text)
+        self.assertLess(text.index(gate.WEB_BEGIN), text.index("Found page"))
+        self.assertEqual((await self.web("/fetch?url=" + quote("https://other.example/found", safe="")))[0], 200)
+        self.assertEqual((await self.web("/fetch?url=" + quote("https://duckduckgo.com/l/?uddg=x", safe="")))[0], 403)
+        self.assertEqual([r["host"] for r in self.web_rows()], ["127.0.0.1", "other.example"])
+        self.assertNotIn("tennis", (self.state / "web.jsonl").read_text())
+        status, body = await self.web("/search?q=" + quote("mail friend@example.org"))
+        self.assertEqual((status, json.loads(body)["error"]), (403, "query-personal-shape"))
+        self.assertEqual(len(self.ddg_requests), 1)
+
+    async def test_web_duckduckgo_challenge_is_search_blocked_and_the_window_rests(self):
+        self.use_duckduckgo()
+        self.ddg_page = '<html><div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div></html>'
+        status, body = await self.web("/search?q=rust")
+        self.assertEqual((status, json.loads(body)["error"]), (503, "search-blocked"))
+        self.assertEqual(self.web_rows()[-1]["status"], "blocked")
+        self.ddg_page = '<a class="result__a" href="https://arxiv.org/abs/1">ok</a>'
+        status, body = await self.web("/search?q=rust")
+        self.assertEqual((status, json.loads(body)["error"]), (503, "search-blocked"))
+        self.assertEqual(len(self.ddg_requests), 1)
+        self.service.search_rest_until = 0
+        self.assertEqual((await self.web("/search?q=rust"))[0], 200)
 
     async def test_web_dashboard_order_allows_search_but_is_not_an_owner_link_source(self):
         order = {"x-dori-owner-order": "17"}
