@@ -71,7 +71,7 @@ test("a file in to-<dori> reaches the other's inbox/from-<me>, wakes its lead on
   expect(rows[0]).toMatchObject({ kind: "file-delivered", from: "moodori", to: "yoodori", path: "from-moodori/deck/a b.pdf", bytes: body.length, sha256: sha(body), replaced: false });
   const ok = relayLog().filter((r) => r.result === "ok");
   expect(ok).toHaveLength(1);
-  expect(ok[0]).toMatchObject({ mode: "auto", from: "mo", to: "yo", sha256: sha(body), woke: true });
+  expect(ok[0]).toMatchObject({ mode: "auto", from: "mo", to: "yo", sha256: sha(body), woke: true, sent_as: `sent/${kst()}/to-yoodori/deck/a b.pdf` });
   for (const f of [home("yo", ".yo", "inbox.jsonl"), join(root, "state", "relay.log")]) expect(readFileSync(f, "utf8")).not.toContain("SECRET-MARKER");
 
   expect((await serve(2)).code).toBe(0); // nothing is sent twice
@@ -97,7 +97,12 @@ test("a symlink, a hard link, a fifo and a file over the cap are set aside in .f
   expect(why("pipe")).toBe("not-a-regular-file");
   expect(why("big.bin")).toBe("too-large");
   expect(readdirSync(to)).toEqual([".failed"]);
-  expect(relayLog().filter((r) => r.result === "failed")).toHaveLength(4);
+  expect(relayLog().filter((r) => r.result === "failed").map((r) => r.failed_as).sort()).toEqual([".failed/big.bin", ".failed/h1", ".failed/link", ".failed/pipe"]);
+  mkdirSync(join(to, "sub", "deep"), { recursive: true });
+  symlinkSync("/etc/passwd", join(to, "sub", "deep", "link2"));
+  await serve(1);
+  expect(relayLog().at(-1)).toMatchObject({ result: "failed", reason: "symlink", failed_as: ".failed/sub/deep/link2" });
+  expect(existsSync(join(to, ".failed", "sub", "deep", "link2.why"))).toBe(true);
 });
 
 test("a file still open for writing, and a .part name, wait until the writer is done", async () => {
