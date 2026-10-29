@@ -1,0 +1,715 @@
+#!/usr/bin/python3 -I
+"""dori-file-relay: hand files from one Dori account to another on this host.
+
+    dori-file-relay [--replace] <from> <file> <to> [dest]    one file, by hand
+    dori-file-relay --serve [--cycles N]                     the delivery service (unit dori-file-relay)
+
+Runs as the account that may sudo -n -u every Dori account on the host (oriclaw/ZzangDori on ori0a83) and uses only
+those rights; no new root, sudo or firewall rule. Accounts: DORI_FILE_RELAY_DORIS (below) or oriclaw okdori moodori
+yoodori gongdori.
+
+By hand: <file> is read as <from> and only from /home/<from>/outbox (relative to it, or an absolute path under it). The
+copy is written as <to> into /home/<to>/inbox (dest relative to it, default the same name; a dest ending in / keeps the
+name), mode 0600, inbox and new folders 0700. Refused (exit 3, RELAY_REFUSED <reason>): unknown or same account, a path
+leaving the folder (.., absolute elsewhere), a symlink anywhere on the path, a non-regular file, a file with more than one
+hard link, a file over the size cap (DORI_FILE_RELAY_MAX_BYTES, default 100 MiB), an existing dest without --replace.
+Success prints RELAYED <to>:<path> bytes=<n> sha256=<hex> after the receiver re-read the file and got the same sha256.
+
+Service: DORI_FILE_RELAY_DORIS names the Dori accounts as space-separated <dori>=<account>:<lead inbox> items (the inbox
+path may start with ~/, the receiving account's home), e.g. zzangdori=oriclaw:~/.zzangdori/inbox.jsonl
+okdori=okdori:~/.okdori/state/discord/inbox.jsonl. Each account gets ~/outbox/to-<other dori>/ (0700). A file put
+there, in subfolders too, goes to the other's ~/inbox/from-<dori>/<same relative path> with the same checks as by hand;
+a file of the same name there is replaced by the new one. A file is taken only when it is not being written: names
+starting with . or ending in .part .tmp .crdownload .swp ~ are skipped, and it must look the same (size, mtime, inode)
+on two scans in a row, be unchanged for DORI_FILE_RELAY_SETTLE_SEC (10) and not be open for writing by any process of
+its account. Scans run every DORI_FILE_RELAY_INTERVAL seconds (10). Delivered: the receiver's lead inbox gets one
+kind "file-delivered" line (dori names, relative path, bytes, sha256; never the content), then the sender's file moves
+to ~/outbox/sent/<KST date>/to-<dori>/<path>. Refused, or failing 3 times: the file moves to
+~/outbox/to-<dori>/.failed/<path> with <path>.why next to it (the reason).
+
+Every hand call and every delivery appends one JSON line to ~/.local/state/dori-file-relay/relay.log: names, bytes,
+sha256 and the result only, never the file's content.
+"""
+import fcntl
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+DEFAULT_ACCOUNTS = ("oriclaw", "okdori", "moodori", "yoodori", "gongdori")
+DEFAULT_MAX = 100 * 1024 * 1024
+STATE = os.environ.get("DORI_FILE_RELAY_STATE") or os.path.expanduser("~/.local/state/dori-file-relay")
+LOG = os.path.join(STATE, "relay.log")
+CHUNK = 1 << 20
+# Tests only: every account is a folder under this root and helpers run as the caller, without sudo.
+TEST_HOMES = os.environ.get("DORI_FILE_RELAY_TEST_HOMES", "")
+# The helper's code arrives on stdin (first n bytes); a writer's file data follows it.
+BOOT = ("import sys;n=int(sys.argv[1]);"
+        "exec(compile(sys.stdin.buffer.read(n),'dori-file-relay-'+sys.argv[2],'exec'))")
+
+COMMON = r'''
+import errno, hashlib, json, os, pwd, stat, sys, time
+CHUNK = 1 << 20
+NOFOLLOW_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+class Refused(Exception):
+    pass
+
+def parts(rel):
+    if not rel or rel.startswith("/") or "\x00" in rel:
+        raise Refused("bad-path")
+    ps = rel.split("/")
+    if len(ps) > 8 or any(p in ("", ".", "..") for p in ps):
+        raise Refused("path-escape")
+    return ps
+
+def lstat_at(name, fd):
+    try:
+        return os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+def open_dir(name, fd, me):
+    st = lstat_at(name, fd)
+    if st is None:
+        raise Refused("not-found")
+    if stat.S_ISLNK(st.st_mode):
+        raise Refused("symlink")
+    if not stat.S_ISDIR(st.st_mode):
+        raise Refused("not-a-directory")
+    if st.st_uid != me:
+        raise Refused("folder-not-owned")
+    try:
+        return os.open(name, NOFOLLOW_DIR, dir_fd=fd)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise Refused("symlink") from None
+        raise
+
+def make_dir(name, fd, me):
+    if lstat_at(name, fd) is None:
+        os.mkdir(name, 0o700, dir_fd=fd)
+    return open_dir(name, fd, me)
+
+def home_fd():
+    home = sys.argv[3] or pwd.getpwuid(os.getuid()).pw_dir
+    if not sys.argv[3] and (not home.startswith("/home/") or home.count("/") != 2):
+        raise Refused("odd-home")
+    return os.open(home, NOFOLLOW_DIR), home
+
+def run(main):
+    try:
+        main()
+    except Refused as e:
+        sys.stderr.write("REFUSED %s\n" % e)
+        sys.exit(3)
+'''
+
+READER = COMMON + r'''
+def main():
+    rel, cap = sys.argv[4], int(sys.argv[5])
+    me = os.getuid()
+    ps = parts(rel)
+    fd, _ = home_fd()
+    fd = open_dir("outbox", fd, me)
+    for p in ps[:-1]:
+        fd = open_dir(p, fd, me)
+    st = lstat_at(ps[-1], fd)
+    if st is None:
+        raise Refused("not-found")
+    if stat.S_ISLNK(st.st_mode):
+        raise Refused("symlink")
+    if not stat.S_ISREG(st.st_mode):
+        raise Refused("not-a-regular-file")
+    if st.st_nlink != 1:
+        raise Refused("hard-link")
+    if st.st_size > cap:
+        raise Refused("too-large")
+    try:
+        f = os.open(ps[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise Refused("symlink") from None
+        raise
+    fst = os.fstat(f)
+    if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino) or not stat.S_ISREG(fst.st_mode) or fst.st_nlink != 1:
+        raise Refused("changed-while-reading")
+    h, total, out = hashlib.sha256(), 0, sys.stdout.buffer
+    while True:
+        b = os.read(f, CHUNK)
+        if not b:
+            break
+        total += len(b)
+        if total > cap:
+            raise Refused("too-large")
+        h.update(b)
+        out.write(b)
+    out.flush()
+    end = os.fstat(f)
+    if end.st_mtime_ns != fst.st_mtime_ns or end.st_size != total:
+        raise Refused("changed-while-reading")
+    sys.stderr.write("READ %d %s %d %d %d\n" % (total, h.hexdigest(), fst.st_dev, fst.st_ino, fst.st_mtime_ns))
+
+run(main)
+'''
+
+WRITER = COMMON + r'''
+def main():
+    rel, cap, want_sha, want_size, replace = sys.argv[4], int(sys.argv[5]), sys.argv[6], int(sys.argv[7]), sys.argv[8] == "1"
+    me = os.getuid()
+    ps = parts(rel)
+    fd, home = home_fd()
+    for name in ["inbox"] + ps[:-1]:
+        fd = make_dir(name, fd, me)
+    final = ps[-1]
+    st = lstat_at(final, fd)
+    if st is not None:
+        if stat.S_ISLNK(st.st_mode):
+            raise Refused("dest-symlink")
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused("dest-not-a-regular-file")
+        if not replace:
+            raise Refused("dest-exists")
+    tmp = ".dori-file-relay-%d-%s.part" % (os.getpid(), os.urandom(4).hex())
+    f = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=fd)
+    placed = False
+    try:
+        os.fchmod(f, 0o600)
+        h, total, src = hashlib.sha256(), 0, sys.stdin.buffer
+        while True:
+            b = src.read(CHUNK)
+            if not b:
+                break
+            total += len(b)
+            if total > cap:
+                raise Refused("too-large")
+            h.update(b)
+            os.write(f, b)
+        os.fsync(f)
+        os.close(f)
+        if total != want_size or h.hexdigest() != want_sha:
+            raise Refused("sha-mismatch-in-transit")
+        if replace:
+            os.replace(tmp, final, src_dir_fd=fd, dst_dir_fd=fd)
+        else:
+            try:
+                os.link(tmp, final, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+            except FileExistsError:
+                raise Refused("dest-exists") from None
+            os.unlink(tmp, dir_fd=fd)
+        placed = True
+    finally:
+        if not placed:
+            try:
+                os.unlink(tmp, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+    g = os.open(final, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+    gst = os.fstat(g)
+    h2 = hashlib.sha256()
+    while True:
+        b = os.read(g, CHUNK)
+        if not b:
+            break
+        h2.update(b)
+    if h2.hexdigest() != want_sha or gst.st_uid != me or (gst.st_mode & 0o777) != 0o600:
+        raise Refused("readback-mismatch")
+    sys.stderr.write("WROTE %d %d %s %s/inbox/%s\n" % (1 if st is not None else 0, total, want_sha, home, rel))
+
+run(main)
+'''
+
+# Lists every entry under ~/outbox/to-<dori>/ (made 0700 when missing) as one JSON object on stdout.
+SCAN = COMMON + r'''
+SKIP_SUFFIX = (".part", ".tmp", ".crdownload", ".swp", "~")
+
+def open_for_write():
+    """(dev, ino) of every file a process of this account holds open for writing."""
+    me, out = os.getuid(), set()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            if os.stat("/proc/" + pid).st_uid != me:
+                continue
+            fds = os.listdir("/proc/%s/fd" % pid)
+        except OSError:
+            continue
+        for n in fds:
+            try:
+                with open("/proc/%s/fdinfo/%s" % (pid, n)) as f:
+                    flags = next(int(l.split()[1], 8) for l in f if l.startswith("flags:"))
+                if flags & 3 == 0:
+                    continue
+                st = os.stat("/proc/%s/fd/%s" % (pid, n))
+                out.add((st.st_dev, st.st_ino))
+            except (OSError, StopIteration, ValueError):
+                pass
+    return out
+
+def main():
+    targets = json.loads(sys.argv[4])
+    me = os.getuid()
+    fd, _ = home_fd()
+    ob = make_dir("outbox", fd, me)
+    rows, errors = [], []
+
+    def walk(dfd, to, prefix, depth):
+        for name in sorted(os.listdir(dfd)):
+            if name.startswith(".") or name.endswith(SKIP_SUFFIX):
+                continue
+            st = lstat_at(name, dfd)
+            if st is None:
+                continue
+            row = {"to": to, "rel": prefix + name, "size": st.st_size, "mtime": st.st_mtime_ns, "dev": st.st_dev,
+                   "ino": st.st_ino, "nlink": st.st_nlink}
+            if stat.S_ISDIR(st.st_mode):
+                if st.st_uid != me:
+                    rows.append(dict(row, type="folder-not-owned"))
+                elif depth >= 6:
+                    rows.append(dict(row, type="path-too-deep"))
+                else:
+                    sub = os.open(name, NOFOLLOW_DIR, dir_fd=dfd)
+                    try:
+                        walk(sub, to, prefix + name + "/", depth + 1)
+                    finally:
+                        os.close(sub)
+            elif stat.S_ISREG(st.st_mode):
+                rows.append(dict(row, type="reg"))
+            elif stat.S_ISLNK(st.st_mode):
+                rows.append(dict(row, type="symlink"))
+            else:
+                rows.append(dict(row, type="not-a-regular-file"))
+
+    for to in targets:
+        try:
+            tfd = make_dir("to-" + to, ob, me)
+        except Refused as e:
+            errors.append({"to": to, "error": str(e)})
+            continue
+        try:
+            walk(tfd, to, "", 0)
+        finally:
+            os.close(tfd)
+    if any(r["type"] == "reg" for r in rows):
+        writing = open_for_write()
+        for r in rows:
+            r["writing"] = (r["dev"], r["ino"]) in writing
+    sys.stdout.write(json.dumps({"rows": rows, "errors": errors}))
+
+run(main)
+'''
+
+# Moves ~/outbox/<tdir>/<rel> to ~/outbox/sent/<date>/<tdir>/<rel> (op sent, only if it is still the file that was sent)
+# or to ~/outbox/<tdir>/.failed/<rel> with <rel>.why (op failed; the reason JSON comes on stdin).
+MOVE = COMMON + r'''
+def main():
+    op, tdir, rel, ident, stamp = sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7], sys.argv[8]
+    why = sys.stdin.buffer.read()
+    me = os.getuid()
+    ps = parts(rel)
+    if not tdir.startswith("to-") or "/" in tdir:
+        raise Refused("bad-path")
+    fd, _ = home_fd()
+    ob = open_dir("outbox", fd, me)
+    chain = [open_dir(tdir, ob, me)]
+    for p in ps[:-1]:
+        chain.append(open_dir(p, chain[-1], me))
+    st = lstat_at(ps[-1], chain[-1])
+    if st is None:
+        raise Refused("gone")
+    if ident != "-" and json.loads(ident) != [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns]:
+        raise Refused("changed-after-send")
+    dfd = ob
+    for name in (["sent", stamp, tdir] if op == "sent" else [tdir, ".failed"]) + ps[:-1]:
+        dfd = make_dir(name, dfd, me)
+    final = ps[-1]
+    if lstat_at(final, dfd) is not None or (op == "failed" and lstat_at(final + ".why", dfd) is not None):
+        stem, dot, ext = final.rpartition(".")
+        tag = time.strftime("%H%M%S") + "-" + os.urandom(2).hex()
+        final = "%s-%s.%s" % (stem, tag, ext) if stem else "%s-%s" % (final, tag)
+    os.rename(ps[-1], final, src_dir_fd=chain[-1], dst_dir_fd=dfd)
+    if op == "failed":
+        w = os.open(final + ".why", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+        os.write(w, why)
+        os.close(w)
+    for i in range(len(ps) - 1, 0, -1):  # folders the file emptied, never to-<dori> itself
+        try:
+            os.rmdir(ps[i - 1], dir_fd=chain[i - 1])
+        except OSError:
+            break
+    sys.stderr.write("MOVED %s\n" % final)
+
+run(main)
+'''
+
+# Appends the line on stdin to the account's lead inbox (a regular file under its home).
+INBOX = COMMON + r'''
+def main():
+    path = sys.argv[4]
+    _, home = home_fd()
+    if path.startswith("~/"):
+        path = os.path.join(home, path[2:])
+    if not os.path.realpath(path).startswith(os.path.realpath(home) + "/"):
+        raise Refused("inbox-outside-home")
+    line = sys.stdin.buffer.read()
+    f = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(f).st_mode):
+            raise Refused("inbox-not-a-regular-file")
+        os.write(f, line)
+    finally:
+        os.close(f)
+    sys.stderr.write("APPENDED\n")
+
+run(main)
+'''
+
+
+class Refused(Exception):
+    pass
+
+
+def log(entry: dict) -> None:
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **entry}
+    fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, (json.dumps(entry, ensure_ascii=False) + "\n").encode())
+    finally:
+        os.close(fd)
+
+
+def under(path: str, account: str, folder: str) -> str:
+    """Return path relative to /home/<account>/<folder>; an absolute path elsewhere is refused."""
+    for prefix in (f"/home/{account}/{folder}/", f"~/{folder}/"):
+        if path.startswith(prefix):
+            return path[len(prefix):]
+    if path.startswith("/") or path.startswith("~"):
+        raise Refused(f"outside-{folder}")
+    return path
+
+
+def helper(account: str, role: str, code: str, args: list) -> tuple:
+    data = code.encode()
+    if TEST_HOMES:
+        prefix, home = [], os.path.join(TEST_HOMES, account)
+    else:
+        prefix, home = ["sudo", "-n", "-u", account, "-H", "--"], ""
+    cmd = [*prefix, "/usr/bin/python3", "-I", "-c", BOOT, str(len(data)), role, home, *args]
+    return subprocess.Popen(cmd, cwd="/", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True), data
+
+
+def call(account: str, role: str, code: str, args: list, data: bytes = b"", timeout: int = 120) -> tuple:
+    """Run a small helper to the end: (stdout, last stderr line); a refusal raises Refused, a failure RuntimeError."""
+    p, boot = helper(account, role, code, args)
+    try:
+        out, err = p.communicate(boot + data, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        raise RuntimeError(f"{role} timed out") from None
+    line = last_line(err)
+    if p.returncode == 3 and line.startswith("REFUSED "):
+        raise Refused(line.split(" ", 1)[1])
+    if p.returncode != 0:
+        raise RuntimeError(f"{role} rc={p.returncode} {line[:200]}")
+    return out, line
+
+
+def last_line(stderr: bytes) -> str:
+    lines = [l for l in stderr.decode(errors="replace").splitlines() if l.strip()]
+    return lines[-1] if lines else ""
+
+
+def relay(src_acct: str, src: str, dst_acct: str, dest: str | None, replace: bool, cap: int, entry: dict,
+          accounts: tuple) -> tuple:
+    """Copy one file; returns (RELAYED message, info with bytes, sha256, ident of the file read, replaced)."""
+    for a in (src_acct, dst_acct):
+        if a not in accounts:
+            raise Refused("unknown-account")
+    if src_acct == dst_acct:
+        raise Refused("same-account")
+    rel = under(src, src_acct, "outbox")
+    entry["src"] = f"{src_acct}:outbox/{rel}"
+    name = rel.rsplit("/", 1)[-1]
+    if dest is None:
+        drel = name
+    else:
+        drel = under(dest, dst_acct, "inbox")
+        if drel == "" or drel.endswith("/"):
+            drel += name
+    entry["dest"] = f"{dst_acct}:inbox/{drel}"
+    for r in (rel, drel):
+        ps = r.split("/")
+        if not r or len(ps) > 8 or any(p in ("", ".", "..") for p in ps) or "\x00" in r:
+            raise Refused("path-escape")
+
+    stage = tempfile.mkdtemp(prefix="dori-file-relay.")
+    staged = os.path.join(stage, "data")
+    try:
+        # 1. read as <from> into a private staging file
+        p, code = helper(src_acct, "reader", READER, [rel, str(cap)])
+        out = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        p.stdin.write(code)
+        p.stdin.close()
+        while True:
+            b = p.stdout.read(CHUNK)
+            if not b:
+                break
+            os.write(out, b)
+        os.close(out)
+        err = p.stderr.read()
+        p.wait()
+        line = last_line(err)
+        if p.returncode == 3 and line.startswith("REFUSED "):
+            raise Refused(line.split(" ", 1)[1])
+        if p.returncode != 0 or not line.startswith("READ "):
+            raise RuntimeError(f"reader rc={p.returncode} {line[:200]}")
+        _, size_s, sha, dev, ino, mtime = line.split()
+        size = int(size_s)
+        h = hashlib.sha256()
+        with open(staged, "rb") as f:
+            for b in iter(lambda: f.read(CHUNK), b""):
+                h.update(b)
+        if os.path.getsize(staged) != size or h.hexdigest() != sha:
+            raise RuntimeError("staging sha mismatch")
+        entry.update(bytes=size, sha256=sha)
+
+        # 2. write as <to> into its inbox, the receiver re-reads and checks the sha
+        p, code = helper(dst_acct, "writer", WRITER, [drel, str(cap), sha, str(size), "1" if replace else "0"])
+        try:
+            p.stdin.write(code)
+            with open(staged, "rb") as f:
+                for b in iter(lambda: f.read(CHUNK), b""):
+                    p.stdin.write(b)
+            p.stdin.close()
+        except BrokenPipeError:
+            pass
+        err = p.stderr.read()
+        p.wait()
+        line = last_line(err)
+        if p.returncode == 3 and line.startswith("REFUSED "):
+            raise Refused(line.split(" ", 1)[1])
+        if p.returncode != 0 or not line.startswith("WROTE "):
+            raise RuntimeError(f"writer rc={p.returncode} {line[:200]}")
+        _, replaced, _, _, path = line.split(" ", 4)
+        info = {"bytes": size, "sha256": sha, "ident": [int(dev), int(ino), size, int(mtime)], "drel": drel,
+                "replaced": replaced == "1"}
+        return f"RELAYED {dst_acct}:{path} bytes={size} sha256={sha}", info
+    finally:
+        try:
+            os.unlink(staged)
+        except FileNotFoundError:
+            pass
+        os.rmdir(stage)
+
+
+def parse_doris(spec: str) -> dict:
+    """DORI_FILE_RELAY_DORIS -> {dori: (account, inbox)}."""
+    doris = {}
+    for item in spec.split():
+        name, _, rest = item.partition("=")
+        acct, _, inbox = (rest or name).partition(":")
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", name) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", acct):
+            raise ValueError(f"bad DORI_FILE_RELAY_DORIS item {item!r}")
+        doris[name] = (acct, inbox)
+    return doris
+
+
+# A refusal that can clear by itself: the next scan tries again.
+RETRY = {"not-found", "changed-while-reading", "changed-after-send"}
+MAX_ERRORS = 3
+
+
+class Server:
+    def __init__(self, doris: dict, cap: int, settle: float, interval: float):
+        self.doris, self.cap, self.settle, self.interval = doris, cap, settle, interval
+        self.accounts = tuple(a for a, _ in doris.values())
+        self.prev, self.errors, self.delivered, self.scan_errors = {}, {}, {}, {}
+
+    def kst_date(self) -> str:
+        return time.strftime("%Y-%m-%d", time.gmtime(time.time() + 9 * 3600))
+
+    def scan(self, name: str) -> list:
+        acct = self.doris[name][0]
+        others = [d for d in self.doris if d != name]
+        try:
+            out, _ = call(acct, "scan", SCAN, [json.dumps(others)])
+            res = json.loads(out)
+            problem = json.dumps(res["errors"], sort_keys=True) if res["errors"] else ""
+        except (Refused, RuntimeError, ValueError) as e:
+            res, problem = {"rows": []}, f"{type(e).__name__}: {e}"[:300]
+        if problem != self.scan_errors.get(name, ""):  # logged once when it starts and once when it clears
+            log({"mode": "auto", "event": "scan_problem" if problem else "scan_ok", "dori": name, "account": acct,
+                 "reason": problem})
+            self.scan_errors[name] = problem
+        return res["rows"]
+
+    def move(self, name: str, row: dict, op: str, ident: list | None, why: dict | None = None) -> str:
+        _, line = call(self.doris[name][0], "move", MOVE,
+                       [op, "to-" + row["to"], row["rel"], json.dumps(ident) if ident else "-", self.kst_date()],
+                       json.dumps(why or {}, ensure_ascii=False).encode())
+        return line.split(" ", 1)[1] if line.startswith("MOVED ") else ""
+
+    def fail(self, name: str, row: dict, reason: str, entry: dict) -> None:
+        why = {"reason": reason, "to": row["to"], "path": row["rel"], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        try:
+            moved = self.move(name, row, "failed", None, why)
+            entry.update(result="failed", reason=reason, failed_as=f".failed/{moved}" if moved else "")
+        except (Refused, RuntimeError) as e:
+            entry.update(result="failed", reason=reason, failed_move=str(e)[:200])
+        log(entry)
+
+    def wake(self, name: str, to: str, info: dict) -> None:
+        acct, inbox = self.doris[to]
+        path = info["drel"]
+        now = time.time()
+        line = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + ".%03dZ" % (int(now * 1000) % 1000),
+            "id": f"file-delivered-{info['sha256'][:12]}-{int(now)}",
+            "kind": "file-delivered",
+            "from": name,
+            "to": to,
+            "path": path,
+            "bytes": info["bytes"],
+            "sha256": info["sha256"],
+            "replaced": info["replaced"],
+            "content": (f"{name}가 파일을 보냈어: ~/inbox/{path} ({info['bytes']} B, sha256 {info['sha256'][:12]}…)"
+                        + (", 같은 이름의 옛 파일을 바꿈" if info["replaced"] else "")
+                        + ". 파일 내용은 이 줄에 없어."),
+        }
+        if not inbox:
+            raise RuntimeError("no inbox set")
+        call(acct, "inbox", INBOX, [inbox], (json.dumps(line, ensure_ascii=False) + "\n").encode())
+
+    def deliver(self, name: str, row: dict, key: tuple, sig: tuple) -> None:
+        src_acct, dst_acct = self.doris[name][0], self.doris[row["to"]][0]
+        entry = {"mode": "auto", "from": src_acct, "to": dst_acct, "replace": True, "max_bytes": self.cap}
+        if row["type"] != "reg":
+            entry["src"] = f"{src_acct}:outbox/to-{row['to']}/{row['rel']}"
+            return self.fail(name, row, row["type"], entry)
+        try:
+            _, info = relay(src_acct, f"to-{row['to']}/{row['rel']}", dst_acct, f"from-{name}/{row['rel']}", True,
+                            self.cap, entry, self.accounts)
+        except Refused as e:
+            if str(e) in RETRY:
+                return log(dict(entry, result="retry", reason=str(e)))
+            return self.fail(name, row, str(e), entry)
+        except Exception as e:  # logged; after MAX_ERRORS the file is set aside with the reason
+            n = self.errors[key] = self.errors.get(key, 0) + 1
+            reason = f"{type(e).__name__}: {e}"[:300]
+            if n >= MAX_ERRORS:
+                return self.fail(name, row, f"error x{n}: {reason}", entry)
+            return log(dict(entry, result="error", reason=reason, attempt=n))
+        entry.update(result="ok", replaced=info["replaced"])
+        try:
+            self.wake(name, row["to"], info)
+            entry["woke"] = True
+        except (Refused, RuntimeError) as e:
+            entry.update(woke=False, wake_error=str(e)[:200])
+        try:
+            entry["sent_as"] = f"sent/{self.kst_date()}/to-{row['to']}/{self.move(name, row, 'sent', info['ident'])}"
+        except (Refused, RuntimeError) as e:  # still there: not sent twice while this service runs
+            self.delivered[key] = sig
+            entry["sent_move"] = str(e)[:200]
+        self.errors.pop(key, None)
+        log(entry)
+
+    def cycle(self) -> None:
+        now, seen = time.time_ns(), set()
+        for name in self.doris:
+            for row in self.scan(name):
+                key = (name, row["to"], row["rel"])
+                sig = (row["type"], row["size"], row["mtime"], row["dev"], row["ino"], row["nlink"])
+                seen.add(key)
+                steady = self.prev.get(key) == sig
+                self.prev[key] = sig
+                if row["type"] == "reg":
+                    if row.get("writing") or not steady or now - row["mtime"] < self.settle * 1e9:
+                        continue
+                    if self.delivered.get(key) == sig:
+                        continue
+                self.deliver(name, row, key, sig)
+        for d in (self.prev, self.errors, self.delivered):
+            for k in [k for k in d if k not in seen]:
+                del d[k]
+
+    def serve(self, cycles: int) -> None:
+        log({"mode": "auto", "event": "start", "doris": {d: a for d, (a, _) in self.doris.items()},
+             "settle_sec": self.settle, "interval_sec": self.interval})
+        n = 0
+        while cycles == 0 or n < cycles:
+            if n:
+                time.sleep(self.interval)
+            self.cycle()
+            n += 1
+
+
+def number(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    try:
+        cap = int(os.environ.get("DORI_FILE_RELAY_MAX_BYTES", DEFAULT_MAX))
+    except ValueError:
+        cap = DEFAULT_MAX
+    try:
+        doris = parse_doris(os.environ.get("DORI_FILE_RELAY_DORIS", ""))
+    except ValueError as e:
+        sys.stderr.write(f"dori-file-relay: {e}\n")
+        return 2
+    if args[:1] == ["--serve"]:
+        cycles = int(args[2]) if args[1:2] == ["--cycles"] and len(args) == 3 else 0
+        if len(args) not in (1, 3) or (len(args) == 3 and args[1] != "--cycles"):
+            sys.stderr.write(__doc__)
+            return 2
+        if len(doris) < 2:
+            sys.stderr.write("dori-file-relay --serve: set DORI_FILE_RELAY_DORIS (two Dori accounts or more)\n")
+            return 2
+        os.makedirs(STATE, mode=0o700, exist_ok=True)
+        lock = open(os.path.join(STATE, "serve.lock"), "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.stderr.write("dori-file-relay --serve: already running\n")
+            return 1
+        Server(doris, cap, number("DORI_FILE_RELAY_SETTLE_SEC", 10), number("DORI_FILE_RELAY_INTERVAL", 10)).serve(cycles)
+        return 0
+    replace = "--replace" in args
+    args = [a for a in args if a != "--replace"]
+    if len(args) not in (3, 4) or any(a in ("-h", "--help") for a in args):
+        sys.stderr.write(__doc__)
+        return 2
+    accounts = tuple(dict.fromkeys([*DEFAULT_ACCOUNTS, *(a for a, _ in doris.values())]))
+    entry = {"from": args[0], "to": args[2], "replace": replace, "max_bytes": cap}
+    try:
+        msg, _ = relay(args[0], args[1], args[2], args[3] if len(args) == 4 else None, replace, cap, entry, accounts)
+    except Refused as e:
+        entry.update(result="refused", reason=str(e))
+        log(entry)
+        print(f"RELAY_REFUSED {e}")
+        return 3
+    except Exception as e:  # logged and reported, never swallowed
+        entry.update(result="error", reason=f"{type(e).__name__}: {e}"[:300])
+        log(entry)
+        print(f"RELAY_ERROR {entry['reason']}")
+        return 1
+    entry["result"] = "ok"
+    log(entry)
+    print(msg)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
