@@ -45,6 +45,9 @@ type KChat = { chat_id: string; type?: string | number; display_name?: string; u
 // account's notices arrive in): synced and marked like any room, the account's read mark there stayed where it was, so
 // such a room is never marked read. The type comes from chat list or from CHATONROOM, never from a room id.
 export const NO_READ_MARK_TYPES: ReadonlySet<string> = new Set(["PlusChat"]);
+// Open chat (오픈채팅) room types as CHATONROOM names them. The server rejects a NOTIREAD in such a room unless it carries
+// the room's link id (li); in any other room the li key must be absent.
+export const OPEN_CHAT_TYPES: ReadonlySet<string> = new Set(["OM", "OD"]);
 // Failed marks of one log id before the watcher stops and waits for a newer message in that room.
 export const MARKREAD_TRIES = 5;
 
@@ -109,8 +112,9 @@ type Long = { toString(): string };
 type LocoReply = { statusCode: number; body: Record<string, unknown> };
 export type KakaoSession = {
   syncMessages(chatId: Long, count: number, cur: Long, max: Long): Promise<LocoReply>;
-  markRead(chatId: Long, watermark: Long): Promise<LocoReply>;
+  markRead(chatId: Long, watermark: Long, linkId?: Long): Promise<LocoReply>;
   getChatInfo(chatId: Long): Promise<LocoReply>;
+  getChannelInfo(chatId: Long): Promise<LocoReply>;
 };
 // type is set only when the room is of a type in NO_READ_MARK_TYPES; then nothing was marked.
 export type MarkBack = { status: number; watermark: string | null; type?: string };
@@ -129,6 +133,29 @@ async function serverReadMark(session: KakaoSession, chatId: Long, self: string)
   return { mark: at >= 0 ? (marks[at] ?? null) : null, type: typeof room.body.t === "string" ? room.body.t : null };
 }
 
+// A 64-bit id as LOCO decodes it: a plain number when it fits, a BSON Long / { low, high } past 2^53. Zero means none.
+const idString = (v: unknown): string | null => {
+  let id: bigint | null = null;
+  if (typeof v === "number" && Number.isSafeInteger(v)) id = BigInt(v);
+  else if (typeof v === "bigint") id = v;
+  else if (typeof v === "string" && /^\d+$/.test(v)) id = BigInt(v);
+  else if (v && typeof v === "object" && "low" in v && "high" in v) {
+    const { low, high } = v as { low: number; high: number };
+    id = (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0);
+  }
+  return id !== null && id > 0n ? id.toString() : null;
+};
+
+// An open chat's link id from CHATINFO, which only reads the room and leaves its read state alone.
+async function openLinkId(session: KakaoSession, chatId: Long): Promise<string> {
+  const info = await session.getChannelInfo(chatId);
+  if (info.statusCode !== 0) throw new Error(`CHATINFO failed: statusCode=${info.statusCode}`);
+  const chat = info.body.chatInfo;
+  const li = idString(chat && typeof chat === "object" ? (chat as Record<string, unknown>).li : undefined);
+  if (li === null) throw new Error(`CHATINFO gave no link id for open chat ${chatId}`);
+  return li;
+}
+
 // The server acks NOTIREAD with status 0 and still drops it unless the same session first synced the chat from the
 // account's read mark up to the target (SYNCMSG), which left the sender's "1" while the CLI said success. So: read the
 // server's mark, sync from it and mark in a fresh session, then read the mark back in another fresh session.
@@ -138,9 +165,10 @@ export async function markReadConfirmed(open: OpenSession, long: (id: string) =>
   if (type !== null && NO_READ_MARK_TYPES.has(type)) return { status: 0, watermark: before, type };
   if (before !== null && BigInt(before) >= BigInt(logId)) return { status: 0, watermark: before };
   const status = await open(async (session) => {
+    const li = type !== null && OPEN_CHAT_TYPES.has(type) ? await openLinkId(session, long(chatId)) : null;
     const sync = await session.syncMessages(long(chatId), 80, long(before ?? from), long(logId));
     if (sync.statusCode !== 0) throw new Error(`SYNCMSG failed: statusCode=${sync.statusCode}`);
-    const mark = await session.markRead(long(chatId), long(logId));
+    const mark = li === null ? await session.markRead(long(chatId), long(logId)) : await session.markRead(long(chatId), long(logId), long(li));
     if (mark.statusCode !== 0) throw new Error(`NOTIREAD failed: statusCode=${mark.statusCode}`);
     return typeof mark.body.status === "number" ? mark.body.status : 0;
   });
