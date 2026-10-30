@@ -188,8 +188,9 @@ An approved write is replayed with its original query string. The poller keeps r
 one check fails: a failure it does not expect is logged as `GATE_APPROVAL_CHECK_FAILED <type>`
 (never the error text). On 2026-10-25 a Drive share with a query string ended the poller with
 an unlogged TypeError, and no card ran after it until a restart.
-`GET /_gate/pending` lists IDs, reasons, links, ages, and `status` (`merged` with its `batch` for a card
-waiting on a batch).
+`GET /_gate/pending` lists IDs, reasons, links, owner messages, ages, and `status` (`merged` with its `batch`
+for a card waiting on a batch). A Drive card parked only by the owner-message limit also shows `item`: the
+batch item that write is, ready to copy onto a batch list so the card merges.
 
 ### Batch approval
 

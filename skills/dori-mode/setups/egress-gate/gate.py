@@ -1350,6 +1350,30 @@ class Gate:
                     batch["refs"][item["ref"]] = made
         self.save_batch(batch)
 
+    def parked_key(self, entry: dict) -> tuple | None:
+        """The batch item a card parked only by the owner-message limit stands for; None for any other card."""
+        if entry.get("reason") != "owner-message-write-limit" or entry.get("api") != "drive":
+            return None
+        body = base64.b64decode(entry["body"])
+        try:
+            return batch_write_key(entry["method"], entry["path"], [tuple(p) for p in entry["query"]], entry["headers"],
+                                   body, self.metadata(entry["headers"], body, "/upload/drive/" in entry["path"]))
+        except Refused:
+            return None
+
+    def pending_row(self, entry: dict, now) -> dict:
+        """GET /_gate/pending: a limit card also names its batch item, so the Dori can put it on its list as is."""
+        row = dict(id=entry["id"], reason=entry["reason"], card=entry["card"], owner_message=entry["owner_message"],
+                   age=(now - dt.datetime.fromisoformat(entry["ts"])).total_seconds(), status=entry.get("status", "pending"))
+        if entry.get("batch"):
+            row["batch"] = entry["batch"]
+        key = self.parked_key(entry)
+        if key is not None:
+            fields = {"folder": ("name", "parent"), "upload": ("name", "parent", "size", "sha256"),
+                      "move": ("file", "from", "to")}[key[0]]
+            row["item"] = dict(kind=key[0], **dict(zip(fields, key[1:])))
+        return row
+
     def batch_card(self, title: str, items: list, names: dict, merged: int, proof: str) -> str:
         """The one card: in-account and no deletes first, then counts and size, the folder tree, the owner message."""
         kinds = [item["kind"] for item in items]
@@ -1425,15 +1449,8 @@ class Gate:
             # Cards the owner-message limit parked for this same message and list, still undecided, join the batch.
             merging, taken = [], set()
             for entry in self.pending():
-                if (entry.get("owner_message") != proof or entry.get("reason") != "owner-message-write-limit"
-                        or entry.get("status") != "pending" or entry.get("api") != "drive"):
-                    continue
-                parked = base64.b64decode(entry["body"])
-                try:
-                    key = batch_write_key(entry["method"], entry["path"], [tuple(p) for p in entry["query"]],
-                                          entry["headers"], parked,
-                                          self.metadata(entry["headers"], parked, "/upload/drive/" in entry["path"]))
-                except Refused:
+                key = self.parked_key(entry)
+                if entry.get("owner_message") != proof or entry.get("status") != "pending" or key is None:
                     continue
                 index = next((i for i, item in enumerate(items)
                               if i not in taken and key is not None and batch_item_key(item, {}) == key), None)
@@ -2575,10 +2592,7 @@ class Gate:
                     return
                 if path == "/_gate/pending" and method == "GET":
                     now = dt.datetime.now(dt.timezone.utc)
-                    await reply(writer, 200, json_bytes([dict(id=e["id"], reason=e["reason"],
-                        card=e["card"], age=(now - dt.datetime.fromisoformat(e["ts"])).total_seconds(),
-                        status=e.get("status", "pending"), **({"batch": e["batch"]} if e.get("batch") else {}))
-                        for e in self.pending()]))
+                    await reply(writer, 200, json_bytes([self.pending_row(e, now) for e in self.pending()]))
                     return
                 if path == "/_gate/batch" and method == "POST":
                     await reply(writer, *await self.batch_submit(uid, headers, body))
