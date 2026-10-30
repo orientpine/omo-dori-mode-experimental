@@ -124,7 +124,11 @@ export type Lane = {
   // finding, for the re-read the lead may send)
   readonly ownerCheck?: { readonly at: string; readonly lastReportAt: string; readonly day: string; readonly today: number; readonly model: string; readonly kinds: readonly string[]; readonly finding?: string; readonly rereadAt?: string };
   readonly receipt?: unknown;
+  // the last LANE_DIED for this pane (lane-death.ts): reason for the lead, why for the log, told once the lead had it
+  readonly died?: LaneDied;
 };
+
+export type LaneDied = { readonly pane: string; readonly at: string; readonly reason: string; readonly why: string; readonly told: boolean };
 
 export type AutoturnMark = { readonly since?: string; readonly resumes?: readonly string[]; readonly long?: AutoturnLongMark };
 // the last LANE_AUTOTURN_LONG: the user message its run counts from and the multiple of autoturnLongTurns it reported

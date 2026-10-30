@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 
 import { fill, type HeavyJob } from "./config.ts";
 import { treeOf } from "./heavy-headroom.ts";
+import { spawnScoped } from "./heavy-mem.ts";
 
 // A dori heavy --job run lives in one folder: in/ (inputs, named <n>-<file> so their order survives a tar), out/ (result
 // files), tmp/ (the job's TMPDIR), and after the run code and stdout. The same folder shape travels between hosts as tar.
@@ -76,13 +77,18 @@ const inputs = (dir: string): string[] =>
     .filter((n) => /^\d+-/.test(n))
     .sort((a, b) => Number(a.split("-")[0]) - Number(b.split("-")[0]));
 
-export const runJob = async (job: HeavyJob, dir: string, args: readonly string[]): Promise<JobResult> => {
+// the job runs in its own memory-capped scope (heavy-mem.ts): free is heavyHeadroomPct, log the heavy log
+export type JobRun = { readonly label: string; readonly free: number; readonly log?: (line: string) => void };
+
+export const runJob = async (job: HeavyJob, dir: string, args: readonly string[], scope: JobRun = { label: "job", free: 10 }): Promise<JobResult> => {
   const values: Record<string, string> = { in: join(dir, "in"), out: join(dir, "out") };
   inputs(dir).forEach((n, i) => (values[`in${i}`] = join(dir, "in", n)));
   const env = { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: process.env.HOME ?? "/", LANG: process.env.LANG ?? "C.UTF-8", TMPDIR: join(dir, "tmp"), ...job.env };
-  const p = Bun.spawn([...fill(job.argv, values), ...args], { cwd: dir, env, stdin: "ignore", stdout: Bun.file(join(dir, "stdout")), stderr: "inherit" });
-  const forget = onStop(() => killTree(p.pid));
-  const code = await p.exited;
+  let forget = () => {};
+  const code = await spawnScoped({ ...scope, cmd: [...fill(job.argv, values), ...args] }, { cwd: dir, env, stdin: "ignore", stdout: Bun.file(join(dir, "stdout")), stderr: "inherit" }, (pid) => {
+    const f = onStop(() => killTree(pid));
+    forget = () => void f();
+  });
   forget();
   writeFileSync(join(dir, "code"), String(code));
   return readResult(dir);
