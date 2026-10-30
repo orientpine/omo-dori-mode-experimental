@@ -179,8 +179,16 @@ export async function markReadConfirmed(open: OpenSession, long: (id: string) =>
   if (before !== null && BigInt(before) >= BigInt(logId)) return { status: 0, watermark: before };
   const status = await open(async (session) => {
     const li = type !== null && OPEN_CHAT_TYPES.has(type) ? await openLinkId(session, long(chatId)) : null;
-    const sync = await session.syncMessages(long(chatId), 80, long(before ?? from), long(logId));
+    const cur = before ?? from;
+    const sync = await session.syncMessages(long(chatId), 80, long(cur), long(logId));
     if (sync.statusCode !== 0) throw new Error(`SYNCMSG failed: statusCode=${sync.statusCode}`);
+    // The server syncs nothing older than its floor: from a read mark below it SYNCMSG answers isOK false with the floor
+    // as minLogId, and a NOTIREAD after that is acked and dropped. So such a sync is sent once more from the floor.
+    const floor = idString(sync.body.minLogId);
+    if (sync.body.isOK === false && floor !== null && BigInt(floor) > BigInt(cur)) {
+      const again = await session.syncMessages(long(chatId), 80, long(floor), long(logId));
+      if (again.statusCode !== 0) throw new Error(`SYNCMSG failed: statusCode=${again.statusCode}`);
+    }
     const mark = li === null ? await session.markRead(long(chatId), long(logId)) : await session.markRead(long(chatId), long(logId), long(li));
     if (mark.statusCode !== 0) throw new Error(`NOTIREAD failed: statusCode=${mark.statusCode}`);
     return typeof mark.body.status === "number" ? mark.body.status : 0;

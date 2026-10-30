@@ -145,6 +145,29 @@ test("a mark reads the server's read mark, syncs from it and marks in a fresh se
   expect(sessions.splice(0)[1]).toEqual(["SYNCMSG 100 80 5 8", "NOTIREAD 100 8"]);
 });
 
+test("a sync from a read mark below the server's floor (isOK false, minLogId) is sent again from the floor before NOTIREAD, which the server drops otherwise", async () => {
+  const sessions: string[][] = [];
+  let server = "4";
+  // The server keeps nothing older than log 6: a sync from below it is not OK, and a NOTIREAD after it changes nothing.
+  const open: OpenSession = async (fn) => {
+    const calls: string[] = [];
+    sessions.push(calls);
+    let synced = false;
+    return fn({
+      syncMessages: async (c, n, cur, max) => {
+        calls.push(`SYNCMSG ${c} ${n} ${cur} ${max}`);
+        synced = BigInt(String(cur)) >= 6n;
+        return { statusCode: 0, body: synced ? { isOK: true } : { isOK: false, minLogId: { low: 6, high: 0 } } };
+      },
+      markRead: async (c, wm) => (calls.push(`NOTIREAD ${c} ${wm}`), synced && (server = String(wm)), { statusCode: 0, body: { status: 0 } }),
+      getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { a: [1, 9], w: ["8", server] } }),
+      getChannelInfo: async (c) => (calls.push(`CHATINFO ${c}`), { statusCode: 0, body: {} }),
+    });
+  };
+  expect(await markReadConfirmed(open, String, "100", "7", "5", "9")).toEqual({ status: 0, watermark: "7" });
+  expect(sessions).toEqual([["CHATONROOM 100"], ["SYNCMSG 100 80 4 7", "SYNCMSG 100 80 6 7", "NOTIREAD 100 7"], ["CHATONROOM 100"]]);
+});
+
 test("a mark in a room of a type the server keeps no read mark in (a KakaoTalk channel) reads the type and sends no SYNCMSG or NOTIREAD", async () => {
   const sessions: string[][] = [];
   const open: OpenSession = async (fn) => {
