@@ -75,7 +75,8 @@ export type InboxMessage = {
   readonly transcript: string | null;
   readonly attachments: readonly { readonly url: string; readonly filename: string; readonly content_type: string | null }[];
   readonly reply_to: string | null;
-  readonly via?: "owner-webhook";
+  // unknown-webhook: a recording an unregistered webhook posted in the Dori's channel (information, not the owner's request)
+  readonly via?: "owner-webhook" | "unknown-webhook";
   readonly webhook_id?: string;
   // a thread message while question cards are still open there: the owner may have answered in text, so the lead
   // resolves the card (dori resolve <Qn>); the listener never resolves it on a guess
@@ -137,6 +138,8 @@ const OWN_SCOPES = new Set(["dm", "channel", "thread", "pair", "pair-bot", "ment
 // a problem alert: a new problem found, a new failure that is not "none", or a repeated failure (Korean monitoring copy)
 export const WATCH_MATCH = /새로 확인된 문제|신규 실패: (?!없음)|반복 실패/;
 const WATCH_NOTE = "a problem alert another app posted in a watched channel: check what failed and why, fix it or open a lane to fix it, and tell the owner in your own channel with this link; do not post in the watched channel";
+// the owner's Shortcut webhook may move to this Dori's channel without its id being registered: keep the recording, ask for the id
+const unknownHookNote = (id: string): string => `an unregistered webhook posted this recording in your channel; it is not counted as the owner's request. If it is the owner's (e.g. his iOS Shortcut), register it: put DORI_DISCORD_OWNER_WEBHOOK=${id} in this Dori's dori.env and restart its inbound listener`;
 const MENTION_NOTE = "the owner called this Dori in a channel it does not own: answer in your own channel or work thread and include this link (that takes the eyes off); do not post there";
 // a Discord message link in the bot's own post: the eyes come off the message it points to
 const MESSAGE_LINK = /discord(?:app)?\.com\/channels\/\d+\/(\d+)\/(\d+)/g;
@@ -257,7 +260,8 @@ export class DiscordListener {
     const hook = webhookVerdict(m, { guild: this.d.guild, channel: this.d.channel, ownerWebhook: this.d.ownerWebhook ?? "" });
     if (hook === "unknown" && !this.seen.has(m.id)) this.d.log(`DISCORD_WEBHOOK_UNKNOWN id=${m.webhook_id} name=${JSON.stringify(m.author.username ?? "")} message=${m.id}`);
     const viaWebhook = hook === "owner";
-    if (this.seen.has(m.id) || (!viaWebhook && !fromPairBot && !fromWatch && (m.author.bot || m.author.id !== this.d.owner))) return;
+    const unknownRecording = hook === "unknown" && !!audioAttachment(m.attachments);
+    if (this.seen.has(m.id) || (!viaWebhook && !unknownRecording && !fromPairBot && !fromWatch && (m.author.bot || m.author.id !== this.d.owner))) return;
     let scope: InboxMessage["scope"];
     if (!m.guild_id) {
       scope = "dm";
@@ -300,6 +304,7 @@ export class DiscordListener {
       attachments: (m.attachments ?? []).map((a) => ({ url: a.url, filename: a.filename, content_type: a.content_type ?? null })),
       reply_to: m.message_reference?.message_id ?? null,
       ...(viaWebhook ? { via: "owner-webhook" as const, webhook_id: m.webhook_id } : {}),
+      ...(unknownRecording ? { via: "unknown-webhook" as const, webhook_id: m.webhook_id, note: unknownHookNote(m.webhook_id ?? "") } : {}),
       ...(open.length ? { open_cards: open, note } : {}),
       ...(scope === "mention" ? { note: MENTION_NOTE, link: `https://discord.com/channels/${this.d.guild}/${m.channel_id}/${m.id}` } : {}),
       ...(scope === "watch" ? { note: WATCH_NOTE, link: `https://discord.com/channels/${this.d.guild}/${m.channel_id}/${m.id}` } : {}),

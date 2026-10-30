@@ -270,11 +270,17 @@ test("the owner's webhook posting an iOS Shortcut recording (video/mp4 .m4a) is 
   expect(logs.some((l) => l.startsWith("DISCORD_WEBHOOK_UNKNOWN"))).toBe(false);
 });
 
-test("with no owner webhook set, a webhook post is not a request; its id is logged so it can be registered", async () => {
+// 2026-10-30: the owner moved his Shortcut webhook to another Dori's channel, where no id was registered, and four recordings vanished
+test("with no owner webhook set, a webhook recording in the channel lands transcribed with a note to register its id, not as the owner's; a webhook text post is only logged", async () => {
   const { listener, inbox, logs } = setup(() => ({}), { transcribe: async () => "ship it" });
   await listener.onMessage(hook("1004", "800000000000000008"));
-  expect(inbox()).toEqual([]);
+  await listener.onMessage(msg("1005", { content: "build failed", webhook_id: "900000000000000009", author: { id: "900000000000000009", bot: true, username: "CI" } }));
+  await listener.onMessage(msg("1006", { content: "", author: { id: "555" }, attachments: [{ url: "https://cdn.example/r.m4a", filename: "Recording.m4a", content_type: "video/mp4" }] }));
+  expect(inbox()).toEqual([
+    expect.objectContaining({ id: "1004", scope: "channel", author_id: "800000000000000008", transcript: "ship it", via: "unknown-webhook", webhook_id: "800000000000000008", note: expect.stringContaining("DORI_DISCORD_OWNER_WEBHOOK=800000000000000008") }),
+  ]);
   expect(logs).toContain(`DISCORD_WEBHOOK_UNKNOWN id=800000000000000008 name="Voice" message=1004`);
+  expect(logs).toContain(`DISCORD_WEBHOOK_UNKNOWN id=900000000000000009 name="CI" message=1005`);
 });
 
 test("a tap on a card inside its work thread is taken, lands in the inbox with its session and tmux, and turns the thread working; a tap from an unrelated channel is ignored", async () => {

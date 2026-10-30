@@ -95,7 +95,8 @@ From now on, a post from that webhook in the Dori's channel counts as yours. It 
 | Symptom | Cause and fix |
 |---|---|
 | Nothing appears in Discord | **Request Body** is set to **File** (**파일**) instead of **Form** (**양식**). Discord doesn't accept a raw file body. Use Form with a File field. Also check that the method is POST and that the URL was pasted in full. |
-| The message appears but has no eyes reaction, and the log shows `DISCORD_WEBHOOK_UNKNOWN` | No webhook is registered yet. Do step 4. |
+| The log shows `DISCORD_WEBHOOK_UNKNOWN`, and the inbox row has `"via":"unknown-webhook"` and a note asking to register the id | No webhook is registered in this Dori yet. The recording is kept and transcribed, but it is not counted as your request. Do step 4. |
+| Recordings stopped reaching one Dori after you moved the webhook to another Dori's channel | A webhook posts only to its current channel, and the id is registered per Dori. Register the same id in the `dori.env` of the Dori that owns the new channel (step 4) and restart its listener. |
 | No eyes reaction and no log line | `DORI_DISCORD_OWNER_WEBHOOK` holds a different id (for example, the webhook was recreated), or the webhook posts to another channel or server. Check its channel and the id in its URL. |
 | You changed `dori.env` and nothing happened | The listener reads `dori.env` only at start. Restart `dori-inbound`. |
 | The row arrives with `"transcript":null` | Speech-to-text is not set up or failed. Look for `DISCORD_TRANSCRIBE_FAIL` in the log and see `setup-asr.sh`. iPhone recordings are `.m4a` files that Discord often labels `video/mp4`. The listener recognises them by their extension, so this is not the cause. |
@@ -106,5 +107,5 @@ From now on, a post from that webhook in the Dori's channel counts as yours. It 
 
 - **Whoever has the webhook URL can give your Dori orders as you.** Never share it in a screenshot, a screen recording, a chat or an issue. Don't keep it in notes that sync to shared places.
 - If it leaks, delete the webhook in **Server Settings > Integrations > Webhooks**, create a new one, put the new URL in the Shortcut, and register the new id (step 4). The old URL stops working immediately.
-- Only one webhook id counts, and only in the Dori's channel. Other webhooks, including integrations other people add, are never treated as you.
+- Only one webhook id counts, and only in the Dori's channel. Other webhooks, including integrations other people add, are never treated as you. While no id is registered, a recording from a webhook in the channel lands in the inbox as information with a note asking to register its id, never as your request.
 - Like any message, a voice note is a request only when it is yours. Text quoted inside it is still something to read, not an instruction.
