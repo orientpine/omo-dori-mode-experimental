@@ -905,6 +905,223 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 202)
         self.assertEqual(len(self.writes()), 30)
 
+    # Owner 2026-10-30 10:56 KST Q390 "묶음 승인 만들기: 정리 목록 전체를 카드 하나로 보여 주고 ✅ 한 번이면 그 목록만
+    # 실행, 지금 29장도 거기 합침": one card for a whole in-account cleanup list, and only that list runs.
+    FOLDER = "application/vnd.google-apps.folder"
+
+    def batch_items(self):
+        import hashlib
+        return [{"kind": "folder", "ref": "f1", "name": "짱돌", "parent": "root1"},
+                {"kind": "upload", "name": "a.md", "parent_ref": "f1", "size": 5,
+                 "sha256": hashlib.sha256(b"hello").hexdigest()},
+                {"kind": "move", "file": "m1", "from": "old1", "to_ref": "f1"}]
+
+    async def submit_batch(self, items=None, title="도리집 정리", origin="20/100"):
+        status, body = await self.request("POST", "/_gate/batch", origin=origin,
+                                          data={"title": title, "items": self.batch_items() if items is None else items})
+        return status, json.loads(body)
+
+    def batch_card_posts(self):
+        return [r for r in self.seen if r[0] == "POST" and r[1].endswith("/messages")]
+
+    def react(self, message, emoji="✅", owner="1"):
+        self.reactions[(message, quote(emoji))] = [{"id": owner, "bot": False}]
+
+    async def batch_folder(self, batch, name="짱돌", parent="root1"):
+        return await self.request(path="/www.googleapis.com/drive/v3/files?fields=id", proof=False,
+                                  data={"name": name, "mimeType": self.FOLDER, "parents": [parent]},
+                                  headers={"x-dori-batch": batch})
+
+    async def batch_upload(self, batch, content=b"hello", parent="new"):
+        meta = json.dumps({"name": "a.md", "parents": [parent]})
+        raw = (f"--b0\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n"
+               f"--b0\r\nContent-Type: text/markdown\r\n\r\n").encode() + content + b"\r\n--b0--\r\n"
+        return await self.request(path="/www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+                                  raw=raw, proof=False, headers={"x-dori-batch": batch,
+                                                                 "content-type": "multipart/related; boundary=b0"})
+
+    async def batch_move(self, batch, to="new"):
+        return await self.request("PATCH", f"/www.googleapis.com/drive/v3/files/m1?addParents={to}&removeParents=old1"
+                                  "&fields=id", proof=False, headers={"x-dori-batch": batch})
+
+    async def test_a_batch_is_one_card_and_its_approval_runs_only_the_list_past_the_write_limit(self):
+        # Given: the owner message already used its one write, so every further write would be a card.
+        self.approval()
+        self.config["limits"] = {"writes_per_owner_message": 1}
+        self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
+        # When: YooDori hands in the cleanup list.
+        status, answer = await self.submit_batch()
+        # Then: one card, first line says in-account and no deletes, with counts, size, tree and the owner message.
+        self.assertEqual((status, answer["status"]), (202, "pending_approval"))
+        self.assertEqual(len(self.batch_card_posts()), 1)
+        batch = self.service.batch(answer["batch"])
+        lines = self.cards[batch["message"]].splitlines()
+        self.assertEqual(lines[0], "묶음 승인 · 형 계정 안 쓰기 · 지우기 없음")
+        self.assertEqual(lines[1], "도리집 정리: 폴더 1개 만들기 · 파일 1개 올리기 · 1개 옮기기 · 합계 5B")
+        self.assertIn("Before › 짱돌", "\n".join(lines))
+        self.assertIn("근거: https://discord.com/channels/10/20/100", lines)
+        self.assertEqual(lines[-1], "✅ 실행 · ⛔ 취소")
+        # When: nothing runs before the owner's ✅, then the owner approves.
+        self.assertEqual(json.loads((await self.batch_folder(answer["batch"]))[1])["error"], "batch-not-approved")
+        self.react(batch["message"])
+        await self.service.poll_approvals()
+        before = len(self.writes())
+        # Then: each listed write passes once, without the owner-message limit, journaled with the card and snapshot.
+        self.assertEqual((await self.batch_folder(answer["batch"]))[0], 200)
+        self.assertEqual((await self.batch_upload(answer["batch"]))[0], 200)
+        self.assertEqual((await self.batch_move(answer["batch"]))[0], 200)
+        self.assertEqual(len(self.writes()) - before, 3)
+        rows = self.changes()[-3:]
+        self.assertEqual({(r["approved_by"], r["batch"]) for r in rows}, {(batch["card"], answer["batch"])})
+        self.assertTrue(rows[-1]["snapshot"] and rows[-1]["restorable"])
+        self.assertTrue(self.cards[batch["message"]].startswith("✅ 승인됨\n묶음 승인"))
+        self.assertEqual(self.service.pending(), [])
+        # And: a write outside the batch is judged exactly as before (a card past the limit).
+        self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 202)
+
+    async def test_an_approved_batch_refuses_writes_not_on_the_list_and_never_runs_one_twice(self):
+        self.approval()
+        _, answer = await self.submit_batch()
+        self.react(self.service.batch(answer["batch"])["message"])
+        await self.service.poll_approvals()
+        cases = {"other name": (lambda: self.batch_folder(answer["batch"], name="공돌")),
+                 "other folder": (lambda: self.batch_folder(answer["batch"], parent="root2")),
+                 "child before its folder exists": (lambda: self.batch_upload(answer["batch"]))}
+        for name, call in cases.items():
+            with self.subTest(name):
+                status, body = await call()
+                self.assertEqual((status, json.loads(body)["error"]), (403, "batch-item-not-listed"))
+        self.assertEqual((await self.batch_folder(answer["batch"]))[0], 200)
+        status, body = await self.batch_folder(answer["batch"])
+        self.assertEqual((status, json.loads(body)["error"]), (403, "batch-item-used"))
+        status, body = await self.request("PATCH", "/www.googleapis.com/drive/v3/files/m1", proof=False,
+                                          data={"trashed": True}, headers={"x-dori-batch": answer["batch"]})
+        self.assertEqual((status, json.loads(body)["error"]), (403, "batch-item-not-listed"))
+        self.assertEqual(len(self.writes()), 1)
+
+    async def test_a_list_with_a_delete_is_refused_whole(self):
+        self.approval()
+        for name, extra in {"trash": {"kind": "trash", "file": "m1"}, "delete": {"kind": "delete", "file": "m1"},
+                            "trashed move": {"kind": "move", "file": "m1", "from": "old1", "to": "root1",
+                                             "trashed": True}}.items():
+            with self.subTest(name):
+                status, answer = await self.submit_batch(self.batch_items() + [extra])
+                self.assertEqual((status, answer["error"], answer["reasons"]), (403, "batch-refused", ["batch-delete"]))
+        self.assertEqual((self.batch_card_posts(), self.service.batches()), ([], []))
+
+    async def test_a_list_reaching_outside_the_account_is_refused_whole(self):
+        self.approval()
+        cases = {"share": ({"kind": "share", "file": "m1", "emailAddress": "partner@example.net"}, "batch-sharing"),
+                 "permission": ({"kind": "permission", "file": "m1"}, "batch-sharing"),
+                 "external url": ({"kind": "folder", "name": "https://evil.example/x", "parent": "root1"},
+                                  "batch-external-url"),
+                 "invite": ({"kind": "invite", "email": "partner@example.net"}, "batch-calendar"),
+                 "mail": ({"kind": "mail", "to": "partner@example.net"}, "batch-mail"),
+                 "unlisted folder": ({"kind": "upload", "name": "b.md", "parent_ref": "nope", "size": 1,
+                                      "sha256": "0" * 64}, "batch-parent-not-listed")}
+        for name, (extra, reason) in cases.items():
+            with self.subTest(name):
+                status, answer = await self.submit_batch(self.batch_items() + [extra])
+                self.assertEqual((status, answer["error"], answer["reasons"]), (403, "batch-refused", [reason]))
+        self.file_owned = False
+        status, answer = await self.submit_batch()
+        self.assertEqual((status, answer["reasons"]), (403, ["batch-not-owned"]))
+        self.assertEqual((self.batch_card_posts(), self.service.batches()), ([], []))
+
+    async def test_a_changed_hash_or_changed_content_is_refused(self):
+        self.approval()
+        _, answer = await self.submit_batch()
+        self.react(self.service.batch(answer["batch"])["message"])
+        await self.service.poll_approvals()
+        changed = answer["batch"][:-1] + ("0" if answer["batch"][-1] != "0" else "1")
+        for header in (changed, "not-a-hash"):
+            status, body = await self.batch_folder(header)
+            self.assertEqual((status, json.loads(body)["error"]), (403, "batch-unknown"))
+        self.assertEqual((await self.batch_folder(answer["batch"]))[0], 200)
+        status, body = await self.batch_upload(answer["batch"], content=b"HELLO")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "batch-item-not-listed"))
+        self.assertEqual(len(self.writes()), 1)
+
+    async def test_owner_cancel_refuses_the_whole_batch(self):
+        self.approval()
+        _, answer = await self.submit_batch()
+        batch = self.service.batch(answer["batch"])
+        self.react(batch["message"], "✅")
+        self.react(batch["message"], "⛔")
+        await self.service.poll_approvals()
+        self.assertTrue(self.cards[batch["message"]].startswith("⛔ 취소됨\n"))
+        status, body = await self.batch_folder(answer["batch"])
+        self.assertEqual((status, json.loads(body)["error"]), (403, "batch-not-approved"))
+        self.assertEqual(self.writes(), [])
+
+    async def test_an_undecided_batch_expires_and_an_approved_one_closes_after_a_day(self):
+        self.approval()
+        _, answer = await self.submit_batch()
+        batch = self.service.batch(answer["batch"])
+        batch["ts"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25)).isoformat()
+        self.service.save_batch(batch)
+        self.react(batch["message"])
+        await self.service.poll_approvals()
+        self.assertTrue(self.cards[batch["message"]].startswith("만료됨\n"))
+        self.assertEqual(json.loads((await self.batch_folder(answer["batch"]))[1])["error"], "batch-not-approved")
+        _, answer = await self.submit_batch(title="두 번째")
+        batch = self.service.batch(answer["batch"])
+        self.react(batch["message"])
+        await self.service.poll_approvals()
+        batch = self.service.batch(answer["batch"])
+        batch["approved_at"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25)).isoformat()
+        self.service.save_batch(batch)
+        status, body = await self.batch_folder(answer["batch"])
+        self.assertEqual((status, json.loads(body)["error"]), (403, "batch-expired"))
+        self.assertEqual(self.writes(), [])
+
+    async def test_waiting_cards_on_the_list_merge_into_the_batch_and_close_with_its_decision(self):
+        # Given: two writes parked by the owner-message limit, one on the list and one not.
+        self.approval()
+        self.config["limits"] = {"writes_per_owner_message": 1}
+        self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
+        folder = {"mimeType": self.FOLDER, "parents": ["root1"]}
+        self.assertEqual((await self.request(path="/www.googleapis.com/drive/v3/files?fields=id",
+                                             data={"name": "짱돌", **folder}))[0], 202)
+        self.assertEqual((await self.request(path="/www.googleapis.com/drive/v3/files?fields=id",
+                                             data={"name": "옥돌", **folder}))[0], 202)
+        listed, other = self.service.pending()
+        other_card = self.cards[other["message"]]
+        # When: the batch comes in.
+        _, answer = await self.submit_batch()
+        batch = self.service.batch(answer["batch"])
+        # Then: the listed card says it merged, with the batch card's link; the other card is untouched.
+        self.assertEqual(answer["merged"], 1)
+        self.assertTrue(self.cards[listed["message"]].startswith(f"🔗 묶음 카드로 합침 → {batch['card']}\n승인 필요"))
+        self.assertEqual(self.cards[other["message"]], other_card)
+        self.assertIn("합친 대기 카드: 1장", self.cards[batch["message"]])
+        # And: a ✅ on the old card no longer decides it, and the poller does not call the edit tampering.
+        self.react(listed["message"])
+        await self.service.poll_approvals()
+        self.assertEqual(len(self.service.pending()), 2)
+        before = len(self.writes())
+        # When: the owner approves the batch card.
+        self.react(batch["message"])
+        await self.service.poll_approvals()
+        # Then: the merged write runs once under the batch, its card closes with the same decision, the other waits.
+        self.assertEqual(len(self.writes()) - before, 1)
+        self.assertEqual(self.changes()[-1]["batch"], answer["batch"])
+        self.assertTrue(self.cards[listed["message"]].startswith("✅ 실행됨\n🔗 묶음 카드로 합침"))
+        self.assertEqual([e["id"] for e in self.service.pending()], [other["id"]])
+        self.assertEqual(json.loads((await self.batch_folder(answer["batch"]))[1])["error"], "batch-item-used")
+        # And: a ⛔ on a batch closes its merged cards as cancelled without running them.
+        await self.request(path="/www.googleapis.com/drive/v3/files?fields=id", data={"name": "짱돌", "mimeType": self.FOLDER,
+                                                                                     "parents": ["root2"]})
+        items = [{"kind": "folder", "name": "짱돌", "parent": "root2"}]
+        _, answer = await self.submit_batch(items, title="취소할 묶음")
+        merged = [e for e in self.service.pending() if e.get("batch") == answer["batch"]][0]
+        self.react(self.service.batch(answer["batch"])["message"], "⛔")
+        writes = len(self.writes())
+        await self.service.poll_approvals()
+        self.assertEqual(len(self.writes()), writes)
+        self.assertTrue(self.cards[merged["message"]].startswith("⛔ 취소됨\n🔗 묶음 카드로 합침"))
+        self.assertEqual([e["id"] for e in self.service.pending()], [other["id"]])
+
     async def order_request(self, order="17", **kwargs):
         return await self.request(proof=False, headers={"x-dori-owner-order": order, **kwargs.pop("headers", {})},
                                   **kwargs)
