@@ -214,6 +214,7 @@ On 2026-10-14 the owner still saw "1" on messages a Dori had read in KakaoTalk, 
 
 - **Read the result back from the place the other person sees.** A mark counts only when the account's own read mark (CHATONROOM watermarks) has reached the message, read in a separate session; anything short of that is a loud `KAKAO_MARKREAD_FAIL` with the server's mark.
 - **A changed protocol call is tried live before it ships.** The packet shape that moved the mark is the one the watcher sends; an untried variant (a one-message sync window) was caught by `dori challenge` before the PR.
+- **A sync the server answers "not OK" is not a sync.** On 2026-10-30 every mark in a room whose read mark was days old failed again, first blamed on that morning's agent-messenger 2.40.0 update, though the same failure showed on 2.38.1 hours before it. From such a mark SYNCMSG came back `isOK: false` with `minLogId` 3960899371008000000, the server's floor, and the NOTIREAD after it was acked and dropped (the room's unread count stayed 1). Synced once more from the floor (`isOK: true`), the same NOTIREAD moved the mark to the message. Rooms that seemed to recover had only moved by the Dori's own replies. The watcher now re-syncs from `minLogId` when the server names one.
 
 ## 25. A room the server keeps no read mark in is not marked, and no mark is retried forever
 
