@@ -2,7 +2,7 @@
 // KakaoTalk watcher for a Dori with its own Kakao account (agent-messenger kakaotalk). Off unless DORI_KAKAO_SELF_ID is set.
 // Polls every known room, appends new messages to the inbox, prints one KAKAO_MSG line each for the lead's monitor and
 // marks them read. --once performs one tick and exits; --mark-read <chat> <log id> is the one-session mark a tick runs.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { envFilePath, loadEnvFile, resolveInstance } from "../../scripts/src/config.ts";
@@ -18,6 +18,7 @@ export type KakaoOptions = {
   readonly cursors: string;
   readonly marked: string;
   readonly gaveUp: string;
+  readonly syncDir: string;
   readonly inbox: string;
   readonly pollMs: number;
   readonly sweepMs: number;
@@ -38,7 +39,7 @@ export type KakaoState = {
   lastSweep: number;
   lastDiscover: number;
 };
-type KMsg = { log_id: string; author_id: number | string; author_name?: string; message: string; sent_at: number };
+type KMsg = { log_id: string; author_id: number | string | { low: number; high: number }; author_name?: string; message: string; sent_at: number };
 type KChat = { chat_id: string; type?: string | number; display_name?: string; unread_count?: number };
 
 // Room types whose read mark the server does not move. A PlusChat is a KakaoTalk channel (the "카카오계정" room the
@@ -69,6 +70,7 @@ export const kakaoOptions = (env: Record<string, string | undefined>): KakaoOpti
     cursors: join(dir, "kakao-cursors.json"),
     marked: join(dir, "kakao-markread.json"),
     gaveUp: join(dir, "kakao-markread-giveup.json"),
+    syncDir: env.AGENT_MESSENGER_CONFIG_DIR || join(homedir(), ".config", "agent-messenger"),
     inbox: env.DORI_KAKAO_INBOX || env.DORI_DISCORD_INBOX || join(stateDir, "discord", "inbox.jsonl"),
     pollMs: positive(env.DORI_KAKAO_POLL_MS, 8000),
     sweepMs: positive(env.DORI_KAKAO_SWEEP_MS, 300_000),
@@ -77,6 +79,17 @@ export const kakaoOptions = (env: Record<string, string | undefined>): KakaoOpti
 };
 
 const readJson = <T>(path: string, fallback: T): T => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as T) : fallback);
+// Every room the account's logins have seen, from agent-messenger's own sync state. Each login writes the rooms it was
+// told about there, so a room that first showed up in a message list login is here even though chat list never shows it.
+export const syncedRoomIds = (dir: string): string[] => {
+  if (!existsSync(dir)) return [];
+  const files = readdirSync(dir).filter((f) => /^kakaotalk-sync-state-.*\.json$/.test(f));
+  const longs = files.flatMap((f) => readJson<{ chatIds?: { low: number; high: number }[] }>(join(dir, f), {}).chatIds ?? []);
+  return [...new Set(longs.map((id) => ((BigInt(id.high >>> 0) << 32n) | BigInt(id.low >>> 0)).toString()))];
+};
+// agent-messenger prints a user id past 2^53 (an open chat profile) as a BSON Long { low, high, unsigned }.
+export const userId = (v: KMsg["author_id"]): string =>
+  typeof v === "object" && v !== null ? ((BigInt(v.high >>> 0) << 32n) | BigInt(v.low >>> 0)).toString() : String(v);
 const save = (path: string, value: unknown) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 // The first tick sweeps with every known room counted as unread: a mark-read that returned success before a restart
 // but left the badge is not remembered anywhere else, so each room is marked once more at start.
@@ -233,6 +246,18 @@ export async function kakaoTick(o: KakaoOptions, s: KakaoState, runner: Runner, 
       }
       if (typeof c.type === "string") noteType(o, s, name, c.type, log);
     }
+    // With a sync state chat list can come back empty, so it finds a new room only if its own login is the first to hear
+    // of it. The sync state keeps what every login heard. Such a room has no display name yet, so its id names it.
+    try {
+      for (const id of syncedRoomIds(o.syncDir)) {
+        if (known.has(id) || Object.values(s.rooms).some((v) => String(v.id) === id)) continue;
+        s.rooms[id] = { id };
+        save(o.rooms, s.rooms);
+        log(`KAKAO_NEW_ROOM ${id} ${id}`);
+      }
+    } catch (e) {
+      log(`KAKAO_DISCOVER_FAIL sync state: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   // A mark-read can exit 0 and still leave the badge, so rooms with an unread hint or recent messages are marked again.
@@ -271,7 +296,7 @@ export async function kakaoTick(o: KakaoOptions, s: KakaoState, runner: Runner, 
       if (BigInt(m.log_id) <= BigInt(s.cursors[id] ?? "0")) continue;
       s.cursors[id] = m.log_id;
       s.advancedAt[id] = now();
-      const author = String(m.author_id);
+      const author = userId(m.author_id);
       if (author === o.self) continue;
       const row = {
         ts: new Date(now()).toISOString(),
@@ -281,13 +306,13 @@ export async function kakaoTick(o: KakaoOptions, s: KakaoState, runner: Runner, 
         room: name,
         author_id: author,
         author_name: m.author_name ?? null,
-        author_kind: author === o.owner ? "owner" : "member",
+        author_kind: o.owner.split(",").map((x) => x.trim()).includes(author) ? "owner" : "member",
         content: m.message,
         sent_at: m.sent_at,
         mentions_self: o.mention ? o.mention.test(m.message) : false,
       };
       appendFileSync(o.inbox, `${JSON.stringify(row)}\n`);
-      log(`KAKAO_MSG ${name} ${m.log_id} ${m.author_name ?? m.author_id}: ${m.message.slice(0, 120).replace(/\n/g, " ")}`);
+      log(`KAKAO_MSG ${name} ${m.log_id} ${m.author_name ?? author}: ${m.message.slice(0, 120).replace(/\n/g, " ")}`);
     }
     save(o.cursors, s.cursors);
     const target = s.cursors[id] ?? "";
