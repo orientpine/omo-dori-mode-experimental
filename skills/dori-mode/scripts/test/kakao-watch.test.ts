@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loginArgv, phoneLogin, readAccount } from "../../setups/discord-aoe/kakao-login.ts";
 import { kakaoOptions, kakaoTick, loadKakaoState, markReadConfirmed, type KakaoOptions, type KakaoSession, type OpenSession } from "../../setups/discord-aoe/kakao-watch.ts";
@@ -21,7 +21,7 @@ type Msg = ReturnType<typeof msg>;
 
 const setup = (files: { rooms?: object; cursors?: object; marked?: object }, env: Record<string, string> = {}) => {
   const dir = scratch();
-  const o = kakaoOptions({ DORI_KAKAO_STATE_DIR: dir, DORI_KAKAO_INBOX: join(dir, "inbox.jsonl"), DORI_KAKAO_SELF_ID: "9", DORI_KAKAO_OWNER_ID: "1", DORI_KAKAO_MENTION: "dori", DORI_KAKAO_POLL_MS: "1000", DORI_KAKAO_SWEEP_MS: "60000", ...env });
+  const o = kakaoOptions({ DORI_KAKAO_STATE_DIR: dir, DORI_KAKAO_INBOX: join(dir, "inbox.jsonl"), DORI_KAKAO_SELF_ID: "9", DORI_KAKAO_OWNER_ID: "1", DORI_KAKAO_MENTION: "dori", DORI_KAKAO_POLL_MS: "1000", DORI_KAKAO_SWEEP_MS: "60000", AGENT_MESSENGER_CONFIG_DIR: join(dir, "am"), ...env });
   if (files.rooms) writeFileSync(o.rooms, JSON.stringify(files.rooms));
   if (files.cursors) writeFileSync(o.cursors, JSON.stringify(files.cursors));
   if (files.marked) writeFileSync(o.marked, JSON.stringify(files.marked));
@@ -83,6 +83,7 @@ test("Kakao watcher environment sets ids, mention, paths and intervals; nothing 
     cursors: "/s/kakao-cursors.json",
     marked: "/s/kakao-markread.json",
     gaveUp: "/s/kakao-markread-giveup.json",
+    syncDir: join(homedir(), ".config", "agent-messenger"),
     inbox: "/i",
     pollMs: 5,
     sweepMs: 6,
@@ -284,6 +285,36 @@ test("a room seen for the first time starts at its newest message, unmarked back
   await w.at(0);
   expect([k.marks(), inbox(o), json(o.cursors), json(o.marked), json(o.rooms)]).toEqual([[], [], { "100": "4", "200": "8" }, { "100": "4", "200": "8" }, { R: { id: "100" }, "New room": { id: "200" } }]);
   expect(w.lines).toEqual(["KAKAO_NEW_ROOM New room 200", "KAKAO_CURSOR_INIT R 4", "KAKAO_CURSOR_INIT New room 8"]);
+});
+
+test("a room only the sync state knows is added once, by its unsigned id, when chat list comes back empty; a broken sync state is logged and polling goes on", async () => {
+  const o = setup({ rooms: { R: { id: "100" } } });
+  mkdirSync(o.syncDir, { recursive: true });
+  const sync = join(o.syncDir, "kakaotalk-sync-state-abc.json");
+  const big = (BigInt(2) << 56n) + 3_000_000_000n;
+  const long = (v: bigint) => ({ low: Number(BigInt.asIntN(32, v)), high: Number(BigInt.asIntN(32, v >> 32n)) });
+  writeFileSync(sync, JSON.stringify({ chatIds: [long(100n), long(big)] }));
+  const k = fakeKakao({ "100": [msg("4", 2, "old")], [String(big)]: [msg("8", 2, "x")] });
+  const w = ticker(o, k.runner);
+  await w.at(0);
+  await w.at(30_000);
+  expect(json(o.rooms)).toEqual({ R: { id: "100" }, [String(big)]: { id: String(big) } });
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_NEW_ROOM"))).toEqual([`KAKAO_NEW_ROOM ${big} ${big}`]);
+  writeFileSync(sync, "{broken");
+  await w.at(60_000);
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_DISCOVER_FAIL sync state:")).length).toBe(1);
+  expect(k.calls.filter((c) => c[5] === "list" && c[6] === "100").length).toBe(3);
+});
+
+test("an open chat author past 2^53 comes as a BSON Long and is written as its decimal id; any id in the owner list is the owner", async () => {
+  const o = setup({ rooms: { OM: { id: "300" } }, cursors: { "300": "1" } }, { DORI_KAKAO_OWNER_ID: "1, 7185371331051498725" });
+  const big = 7185371331051498725n;
+  const long = { low: Number(BigInt.asIntN(32, big)), high: Number(BigInt.asIntN(32, big >> 32n)), unsigned: false };
+  const k = fakeKakao({ "300": [msg("1", 2, "old"), { ...msg("2", 2, "hi"), author_id: long, author_name: null } as unknown as Msg, msg("3", 5, "member")] });
+  const w = ticker(o, k.runner);
+  await w.at(0);
+  expect(inbox(o).map((r) => [r.author_id, r.author_kind])).toEqual([[String(big), "owner"], ["5", "member"]]);
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_MSG"))[0]).toBe(`KAKAO_MSG OM 2 ${big}: hi`);
 });
 
 const fakeCli = (dir: string) => {
