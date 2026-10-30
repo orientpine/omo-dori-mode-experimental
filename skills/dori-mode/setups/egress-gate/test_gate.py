@@ -1087,6 +1087,11 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                              data={"name": "옥돌", **folder}))[0], 202)
         listed, other = self.service.pending()
         other_card = self.cards[other["message"]]
+        # And: the waiting list names each limit card's batch item, so the Dori can copy it onto its list.
+        rows = json.loads((await self.request("GET", "/_gate/pending", proof=False))[1])
+        self.assertEqual([(r["item"], r["owner_message"]) for r in rows],
+                         [({"kind": "folder", "name": name, "parent": "root1"}, "https://discord.com/channels/10/20/100")
+                          for name in ("짱돌", "옥돌")])
         # When: the batch comes in.
         _, answer = await self.submit_batch()
         batch = self.service.batch(answer["batch"])
