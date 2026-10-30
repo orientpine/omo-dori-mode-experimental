@@ -188,7 +188,58 @@ An approved write is replayed with its original query string. The poller keeps r
 one check fails: a failure it does not expect is logged as `GATE_APPROVAL_CHECK_FAILED <type>`
 (never the error text). On 2026-10-25 a Drive share with a query string ended the poller with
 an unlogged TypeError, and no card ran after it until a restart.
-`GET /_gate/pending` lists IDs, reasons, links, and ages.
+`GET /_gate/pending` lists IDs, reasons, links, ages, and `status` (`merged` with its `batch` for a card
+waiting on a batch).
+
+### Batch approval
+
+Owner 2026-10-30 10:56 KST Q390 "묶음 승인 만들기: 정리 목록 전체를 카드 하나로 보여 주고 ✅ 한 번이면 그 목록만 실행,
+지금 29장도 거기 합침". A cleanup with more in-account Drive writes than the owner-message limit goes on one card:
+
+```
+POST /_gate/batch                      (google port, X-Dori-Owner-Message: <channel>/<message>)
+{"title": "도리집 정리", "items": [
+  {"kind": "folder", "ref": "f1", "name": "짱돌", "parent": "<folder id>"},
+  {"kind": "folder", "name": "2026-10", "parent_ref": "f1"},
+  {"kind": "upload", "name": "a.md", "parent_ref": "f1", "size": 5, "sha256": "<hex of the bytes>"},
+  {"kind": "move", "file": "<file id>", "from": "<folder id>", "to_ref": "f1"}]}
+-> 202 {"status": "pending_approval", "batch": "<sha256>", "card": "<link>", "merged": <n>}
+```
+
+Only these three kinds exist. A folder made in the batch is named by its `ref`; a later item points at it
+with `parent_ref`/`to_ref`. The whole list is refused (`403 batch-refused` with `reasons`) when an item
+deletes or trashes (`batch-delete`), shares or comments (`batch-sharing`), invites (`batch-calendar`) or mails
+(`batch-mail`), holds a URL (`batch-external-url`), points at a ref the list does not make
+(`batch-parent-not-listed`), or names an existing file or folder that is not the owner's own, is in a shared
+drive or is public (`batch-not-owned`); any other kind or field is `batch-kind-not-allowed`/`batch-invalid`.
+
+The card goes where any card goes (the card-thread rules above). Its first line is
+`묶음 승인 · 형 계정 안 쓰기 · 지우기 없음`, then the counts per kind and the upload total, the folder tree
+(each existing folder with the new top folders under it), the number of merged waiting cards, and the owner
+message. The batch id is the SHA-256 of the owner message, title and items; the same list again returns the
+same card.
+
+After the owner's ✅ a write carrying `X-Dori-Batch: <batch>` (no owner-message header needed) runs for 24
+hours when it is exactly one open listed item: a folder create (`POST /drive/v3/files`, name, folder
+mimeType, one parent), a multipart upload (`uploadType=multipart`, name, one parent, the same size and
+SHA-256), or a move (`PATCH /drive/v3/files/<id>?addParents=<to>&removeParents=<from>`, empty body). It
+skips only the owner-message write limit; any other reason (not owned, public, spreadsheet) is
+`batch-write-needs-card`. Other writes are `batch-item-not-listed`, a second run of a done (or uncertain)
+item `batch-item-used`, a wrong id `batch-unknown`, before ✅ or after ⛔/expiry `batch-not-approved`, after
+the day `batch-expired`. A listed write the service refused (non-2xx) can be sent again; one whose answer
+never came is never sent again. Each write is journaled as usual with `approved_by` (the batch card) and
+`batch`. `GET /_gate/batch/<batch>` shows the status, each item's state and the ids of folders made so far.
+Writes without the header are judged exactly as before.
+
+Undecided cards the owner-message limit parked for the same owner message that are on the list are merged
+when the batch is posted: the card gets `🔗 묶음 카드로 합침 → <batch card>` on top and stops answering its own
+reactions. When the batch card is decided they close with it: ✅ runs each once under the batch
+(`✅ 실행됨`), ⛔ or expiry closes them unrun, and their threads follow the thread rules. Cards with any other
+reason and cards not on the list stay as they are. If the batch card goes missing or is edited, its merged
+cards go back to waiting on their own.
+
+For the Dori: "한 형 글에서 형 드라이브 안 쓰기(폴더 만들기·올리기·옮기기)가 30건을 넘을 것 같으면 하나씩 카드를 만들지 말고
+목록 전체를 POST /_gate/batch로 한 번 내고, 형 ✅ 뒤 각 쓰기에 X-Dori-Batch 머리를 붙인다."
 
 Changes/denials are in `changes.jsonl`/`denials.jsonl` (0600), snapshots in
 `snapshots/` (0700 directory, 0600 files). Each Google write carries its original

@@ -376,10 +376,11 @@ def url_host_allowed(host: str, allowed: list[str]) -> bool:
 class Refused(Exception):
     """An intentional boundary rejection; never includes upstream text."""
 
-    def __init__(self, reason: str, status: int = 403):
+    def __init__(self, reason: str, status: int = 403, extra: dict | None = None):
         super().__init__(reason)
         self.reason = reason
         self.status = status
+        self.extra = extra or {}
 
 
 def utc() -> str:
@@ -566,9 +567,141 @@ THREAD_STATUSES = ("✅ 완료", "⛔ 취소", "⌛ 만료", "❗ 실패")
 UPSTREAM_FAILED = "❗ 실행 실패"
 
 
+# Batch approval (owner 2026-10-30 10:56 KST Q390 "묶음 승인 만들기: 정리 목록 전체를 카드 하나로 보여 주고 ✅ 한 번이면
+# 그 목록만 실행, 지금 29장도 거기 합침"): a list of in-account Drive writes on one card. Only these three kinds
+# exist; anything that deletes, shares, invites, mails or names a URL refuses the whole list.
+FOLDER = "application/vnd.google-apps.folder"
+BATCH_FIELDS = {"folder": {"kind", "ref", "name", "parent", "parent_ref"},
+                "upload": {"kind", "name", "parent", "parent_ref", "size", "sha256"},
+                "move": {"kind", "file", "from", "to", "to_ref"}}
+BATCH_FORBIDDEN = {"delete": "batch-delete", "trash": "batch-delete", "untrash": "batch-delete",
+                   "emptytrash": "batch-delete", "share": "batch-sharing", "permission": "batch-sharing",
+                   "permissions": "batch-sharing", "comment": "batch-sharing", "calendar": "batch-calendar",
+                   "invite": "batch-calendar", "event": "batch-calendar", "mail": "batch-mail",
+                   "email": "batch-mail", "send": "batch-mail"}
+BATCH_ID = re.compile(r"[0-9a-f]{64}")
+DRIVE_ID = re.compile(r"[A-Za-z0-9_-]{1,200}")
+BATCH_MAX_ITEMS = 5000
+BATCH_HOURS = 24
+BATCH_MERGED = "🔗 묶음 카드로 합침 → "
+
+
+def batch_name(value) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= 255 and not any(ord(c) < 32 or ord(c) == 127 for c in value)
+
+
+def batch_refusals(items) -> tuple[list[str], set]:
+    """Why a whole list is refused, and the existing Drive ids it names (their ownership is checked next)."""
+    if not isinstance(items, list) or not 0 < len(items) <= BATCH_MAX_ITEMS:
+        return ["batch-invalid"], set()
+    refs = [i["ref"] for i in items if isinstance(i, dict) and i.get("kind") == "folder" and isinstance(i.get("ref"), str)]
+    reasons, existing = set(), set()
+    if len(refs) != len(set(refs)):
+        reasons.add("batch-invalid")
+    for item in items:
+        if not isinstance(item, dict):
+            reasons.add("batch-invalid")
+            continue
+        kind = str(item.get("kind", "")).lower().replace("_", "").replace("-", "")
+        if any("://" in json.dumps(value, ensure_ascii=False) for value in item.values()):
+            reasons.add("batch-external-url")
+        elif kind in BATCH_FORBIDDEN:
+            reasons.add(BATCH_FORBIDDEN[kind])
+        elif "trashed" in item:
+            reasons.add("batch-delete")
+        elif kind not in BATCH_FIELDS or item["kind"] != kind or set(item) - BATCH_FIELDS[kind]:
+            reasons.add("batch-kind-not-allowed" if kind not in BATCH_FIELDS else "batch-invalid")
+        else:
+            target, ref = ("to", "to_ref") if kind == "move" else ("parent", "parent_ref")
+            ids = [item.get(target)] + ([item.get("file"), item.get("from")] if kind == "move" else [])
+            if ((target in item) == (ref in item) or kind != "move" and not batch_name(item.get("name"))
+                    or any(not DRIVE_ID.fullmatch(str(i)) or not isinstance(i, str) for i in ids if i is not None)
+                    or kind == "move" and (item.get("file") is None or item.get("from") is None)
+                    or kind == "upload" and not (isinstance(item.get("size"), int) and not isinstance(item["size"], bool)
+                                                 and item["size"] >= 0
+                                                 and BATCH_ID.fullmatch(str(item.get("sha256", ""))))
+                    or "ref" in item and not batch_name(item["ref"])):
+                reasons.add("batch-invalid")
+            elif ref in item and item[ref] not in refs:
+                reasons.add("batch-parent-not-listed")
+            else:
+                existing.update(i for i in ids if i is not None)
+    return sorted(reasons), existing
+
+
+def batch_item_key(item: dict, refs: dict) -> tuple | None:
+    """A listed item as the write it stands for; a folder made earlier in the batch stands in for its ref."""
+    kind = item["kind"]
+    target = item.get("to" if kind == "move" else "parent") or refs.get(item.get("to_ref" if kind == "move" else "parent_ref"))
+    if not target:
+        return None
+    if kind == "move":
+        return "move", item["file"], item["from"], target
+    if kind == "folder":
+        return "folder", item["name"], target
+    return "upload", item["name"], target, item["size"], item["sha256"]
+
+
+def multipart_media(headers: dict, body: bytes) -> tuple[dict, bytes] | None:
+    """The metadata and the file bytes of a Drive multipart upload, split on its boundary."""
+    found = re.search(r'boundary="?([^";]+)"?', headers.get("content-type", ""))
+    if not found:
+        return None
+    parts = body.split(b"--" + found[1].encode())
+    if len(parts) != 4 or not parts[3].startswith(b"--"):
+        return None
+    pieces = []
+    for part in parts[1:3]:
+        split = re.match(rb"\r?\n.*?\r?\n\r?\n", part, re.S)
+        if not split:
+            return None
+        pieces.append(re.sub(rb"\r?\n\Z", b"", part[split.end():]))
+    try:
+        return json_object(pieces[0]), pieces[1]
+    except Refused:
+        return None
+
+
+def batch_write_key(method: str, path: str, query: list, headers: dict, body: bytes, data: dict) -> tuple | None:
+    """A Drive write as one of the three batch kinds, or None when it is anything else."""
+    host, _, route = path[1:].partition("/")
+    keys = {k for k, _ in query}
+    params = dict(query)
+    if host != "www.googleapis.com" or len(keys) != len(query):
+        return None
+    parents = data.get("parents")
+    if method == "POST" and route == "drive/v3/files":
+        if (keys - {"fields", "supportsAllDrives"} or set(data) - {"name", "mimeType", "parents"}
+                or data.get("mimeType") != FOLDER or not isinstance(parents, list) or len(parents) != 1):
+            return None
+        return "folder", data.get("name"), parents[0]
+    if method == "POST" and route == "upload/drive/v3/files":
+        split = multipart_media(headers, body)
+        if (keys - {"fields", "supportsAllDrives", "uploadType"} or params.get("uploadType") != "multipart"
+                or not split or split[0] != data or set(data) - {"name", "mimeType", "parents"}
+                or str(data.get("mimeType", "")).startswith("application/vnd.google-apps.")
+                or not isinstance(parents, list) or len(parents) != 1):
+            return None
+        return "upload", data.get("name"), parents[0], len(split[1]), hashlib.sha256(split[1]).hexdigest()
+    moved = re.fullmatch(r"drive/v3/files/([^/]+)", route)
+    if method == "PATCH" and moved:
+        if (keys - {"fields", "supportsAllDrives", "addParents", "removeParents"} or data
+                or "," in params.get("addParents", ",") or "," in params.get("removeParents", ",")):
+            return None
+        return "move", moved[1], params["removeParents"], params["addParents"]
+    return None
+
+
+def byte_size(size: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+
+
 def thread_status(outcome: str) -> str | None:
     """The thread prefix for a card outcome line; None for outcomes that leave the thread alone."""
-    return {"✅ 실행됨": "✅ 완료", UPSTREAM_FAILED: "❗ 실패", "⛔ 취소됨": "⛔ 취소", "만료됨": "⌛ 만료",
+    return {"✅ 실행됨": "✅ 완료", "✅ 승인됨": "✅ 완료", UPSTREAM_FAILED: "❗ 실패", "⛔ 취소됨": "⛔ 취소", "만료됨": "⌛ 만료",
             "실행 실패": "❗ 실패"}.get(outcome)
 
 
@@ -598,8 +731,9 @@ class Gate:
         self.order_facts = {}
         self.web_tasks = {}
         self.search_rest_until = 0.0
-        (self.state / "pending").mkdir(exist_ok=True, mode=0o700)
-        (self.state / "pending").chmod(0o700)
+        for name in ("pending", "batches"):
+            (self.state / name).mkdir(exist_ok=True, mode=0o700)
+            (self.state / name).chmod(0o700)
 
     def cached(self, key):
         entry = self.cache.get(key)
@@ -1052,7 +1186,7 @@ class Gate:
         raise Refused("write-not-allowed")
 
     def record(self, uid, api, op, method, path, query, status, response, proof, snapshot, approved_by=None,
-               deleting=False, prepared=None) -> dict:
+               deleting=False, prepared=None, batch=None) -> dict:
         identity = Path(prepared).stem if prepared else f"{time.time_ns():020d}-{secrets.token_hex(6)}"
         snapname = None
         if prepared is not None:
@@ -1084,6 +1218,8 @@ class Gate:
             row["owner_order"] = self.order_facts[proof]
         if approved_by:
             row["approved_by"] = approved_by
+        if batch:
+            row["batch"] = batch
         if deleting:
             row["delete"] = True
         self.append("changes.jsonl", row)
@@ -1091,7 +1227,11 @@ class Gate:
         return row
 
     async def google_write(self, uid, method, path, query, headers, body, proof=None, restore=False,
-                           approved_by=None, writer=None, approved_context=None):
+                           approved_by=None, writer=None, approved_context=None, batch=None):
+        if batch is None and "x-dori-batch" in headers and not approved_by:
+            # The owner's ✅ on the batch card is the proof for its listed writes, for a day after it.
+            batch = self.open_batch(uid, headers["x-dori-batch"])
+            proof = batch["owner_message"]
         link = proof if proof is not None else await self.proof(headers)
         reasons = []
         api, op, snapshot = await self.policy(method, path, query, headers, body, reasons)
@@ -1101,6 +1241,13 @@ class Gate:
                 raise Refused("approval-context-changed")
         data = self.metadata(headers, body, "/upload/drive/" in path)
         reasons.extend(self.limit_reasons(uid, link, method, op, data))
+        claimed = None
+        if batch is not None:
+            # Only the owner-message write limit is lifted; any other reason still needs its own card.
+            if set(reasons) - {"owner-message-write-limit"}:
+                raise Refused("batch-write-needs-card")
+            claimed = self.batch_claim(batch, batch_write_key(method, path, query, headers, body, data))
+            approved_by = approved_by or batch["card"]
         if reasons and not approved_by:
             return await self.park(uid, method, path, query, headers, body, link, api, op, reasons, data, snapshot,
                                    restoring=restore)
@@ -1116,6 +1263,8 @@ class Gate:
         if snapshot is not None:
             prepared = f"snapshots/{time.time_ns():020d}-{secrets.token_hex(6)}.json"
             private_write(self.state / prepared, json_bytes(snapshot))
+        if claimed is not None:
+            self.batch_settle(batch, claimed, "running")
         status = 502
         try:
             connection, answer = await self.upstream(method, url, outgoing, body)
@@ -1138,11 +1287,16 @@ class Gate:
                 connection.close()
         except (Refused, OSError, http.client.HTTPException):
             self.record(uid, api, op, method, path, query, status, b"{}", link, snapshot,
-                        approved_by, prepared=prepared)
+                        approved_by, prepared=prepared, batch=batch and batch["id"])
+            if claimed is not None:
+                self.batch_settle(batch, claimed, "uncertain")  # it may have run: never send it twice
             raise Refused("upstream-unavailable", 502) from None
         self.record(uid, api, ("restore." if restore else "") + op, method, path, query,
                     status, response, link, snapshot, approved_by,
-                    deleting=op == "files.update" and data.get("trashed") is True, prepared=prepared)
+                    deleting=op == "files.update" and data.get("trashed") is True, prepared=prepared,
+                    batch=batch and batch["id"])
+        if claimed is not None:
+            self.batch_settle(batch, claimed, "done" if 200 <= status < 300 else "open", response)
         if api == "calendar" and op.startswith("acl."):
             self.cache = {key: value for key, value in self.cache.items() if key[0] != "calendar"}
         if streaming:
@@ -1151,6 +1305,251 @@ class Gate:
 
     def pending(self) -> list:
         return [json.loads(path.read_text()) for path in sorted((self.state / "pending").glob("*.json"))]
+
+    def batches(self) -> list:
+        return [json.loads(path.read_text()) for path in sorted((self.state / "batches").glob("*.json"))]
+
+    def batch(self, identity: str) -> dict | None:
+        path = self.state / "batches" / (identity + ".json")
+        return json.loads(path.read_text()) if BATCH_ID.fullmatch(identity) and path.exists() else None
+
+    def save_batch(self, batch: dict) -> None:
+        private_write(self.state / "batches" / (batch["id"] + ".json"), json_bytes(batch))
+
+    def open_batch(self, uid, identity: str) -> dict:
+        """The approved batch a write names; its listed writes run for BATCH_HOURS after the owner's ✅."""
+        batch = self.batch(identity) if isinstance(identity, str) else None
+        if batch is None or batch["uid"] != uid:
+            raise Refused("batch-unknown")
+        if batch["status"] != "approved":
+            raise Refused("batch-not-approved")
+        if (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(batch["approved_at"])
+                >= dt.timedelta(hours=BATCH_HOURS)):
+            raise Refused("batch-expired")
+        return batch
+
+    @staticmethod
+    def batch_claim(batch: dict, key) -> int:
+        """The open listed item a write is; a write already done (or uncertain) under the batch never runs again."""
+        used = False
+        for index, item in enumerate(batch["items"]):
+            if key is None or batch_item_key(item, batch["refs"]) != key:
+                continue
+            if batch["state"][index] == "open":
+                return index
+            used = True
+        raise Refused("batch-item-used" if used else "batch-item-not-listed")
+
+    def batch_settle(self, batch: dict, index: int, state: str, response: bytes = b"") -> None:
+        batch["state"][index] = state
+        item = batch["items"][index]
+        if state == "done" and item["kind"] == "folder" and item.get("ref"):
+            with contextlib.suppress(Refused):
+                made = str(json_object(response).get("id") or "")
+                if DRIVE_ID.fullmatch(made):
+                    batch["refs"][item["ref"]] = made
+        self.save_batch(batch)
+
+    def batch_card(self, title: str, items: list, names: dict, merged: int, proof: str) -> str:
+        """The one card: in-account and no deletes first, then counts and size, the folder tree, the owner message."""
+        kinds = [item["kind"] for item in items]
+        counts = [f"폴더 {kinds.count('folder')}개 만들기" if "folder" in kinds else "",
+                  f"파일 {kinds.count('upload')}개 올리기" if "upload" in kinds else "",
+                  f"{kinds.count('move')}개 옮기기" if "move" in kinds else ""]
+        if "upload" in kinds:
+            counts.append("합계 " + byte_size(sum(i["size"] for i in items if i["kind"] == "upload")))
+        folders = {item["ref"]: item for item in items if item["kind"] == "folder" and "ref" in item}
+        tree = {}
+        for item in items:
+            node, top = item, None
+            for _ in range(len(folders) + 1):  # a ref chain longer than the folder list is a loop
+                target = node.get("to" if node["kind"] == "move" else "parent")
+                if target:
+                    break
+                node = top = folders[node.get("to_ref" if node["kind"] == "move" else "parent_ref")]
+            else:
+                continue
+            group = tree.setdefault(target, dict(top=[], folder=0, upload=0, move=0))
+            group[item["kind"]] += 1
+            if item["kind"] == "folder" and top is None:
+                group["top"].append(item["name"])
+        lines = ["묶음 승인 · 형 계정 안 쓰기 · 지우기 없음",
+                 defang(f"{title}: " + " · ".join(c for c in counts if c)), "폴더 나무:"]
+        for target, group in list(tree.items())[:8]:
+            shown = ", ".join(group["top"][:4]) + (f" 외 {len(group['top']) - 4}개" if len(group["top"]) > 4 else "")
+            lines.append(defang(f"· {names.get(target, target)}" + (f" › {shown}" if shown else "")
+                                + f" (폴더 {group['folder']} · 파일 {group['upload']} · 옮김 {group['move']})")[:200])
+        if len(tree) > 8:
+            lines.append(f"· 외 {len(tree) - 8}곳")
+        if merged:
+            lines.append(f"합친 대기 카드: {merged}장")
+        lines += [f"근거: {proof}", "✅ 실행 · ⛔ 취소"]
+        return "\n".join(lines)
+
+    async def batch_submit(self, uid, headers, body) -> tuple[int, bytes]:
+        """POST /_gate/batch {title, items}: refuse the whole list or post its one card in the approval channel."""
+        approval = self.config.get("approval")
+        if not approval:
+            raise Refused("approval-not-configured", 503)
+        proof = await self.proof(headers)
+        request = json_object(body)
+        title, items = request.get("title"), request.get("items")
+        reasons, existing = batch_refusals(items)
+        if set(request) - {"title", "items"} or not batch_name(title) or len(title) > 80:
+            reasons = sorted(set(reasons) | {"batch-invalid"})
+        elif "://" in title:
+            reasons = sorted(set(reasons) | {"batch-external-url"})
+        names = {}
+        for file_id in sorted(existing) if not reasons else []:
+            found = []
+            data = await self.drive_owned(file_id, found)
+            if found:
+                reasons = ["batch-not-owned"]
+                break
+            names[file_id] = " ".join(str(data.get("name") or file_id).splitlines())
+        if reasons:
+            raise Refused("batch-refused", extra={"reasons": reasons})
+        identity = hashlib.sha256(json.dumps({"owner_message": proof, "title": title, "items": items},
+                                             ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        async with self.approval_lock:
+            known = self.batch(identity)
+            if known:
+                if known["status"] not in {"pending", "approved"}:
+                    raise Refused("batch-already-decided", 409)
+                return 200, json_bytes(dict(status=known["status"], batch=identity, card=known["card"],
+                                            merged=len(known["merged"])))
+            channel = str(approval["channel_id"])
+            authorization = "Bot " + Path(self.config["owner_proof"]["token_file"]).read_text().strip()
+            if not await self.channel_allowed(channel, authorization, dm=False):
+                raise Refused("approval-channel-not-owned")
+            # Cards the owner-message limit parked for this same message and list, still undecided, join the batch.
+            merging, taken = [], set()
+            for entry in self.pending():
+                if (entry.get("owner_message") != proof or entry.get("reason") != "owner-message-write-limit"
+                        or entry.get("status") != "pending" or entry.get("api") != "drive"):
+                    continue
+                parked = base64.b64decode(entry["body"])
+                try:
+                    key = batch_write_key(entry["method"], entry["path"], [tuple(p) for p in entry["query"]],
+                                          entry["headers"], parked,
+                                          self.metadata(entry["headers"], parked, "/upload/drive/" in entry["path"]))
+                except Refused:
+                    continue
+                index = next((i for i, item in enumerate(items)
+                              if i not in taken and key is not None and batch_item_key(item, {}) == key), None)
+                base = f"/channels/{entry['channel']}/messages/{entry['message']}"
+                if index is None or await self.owner_reacted(base, "⛔") or await self.owner_reacted(base, "✅"):
+                    continue
+                taken.add(index)
+                merging.append((entry, index))
+            thread = await self.card_thread(channel, proof, f"묶음 승인 · {title[:40]}")
+            content = self.batch_card(title, items, names, len(merging), proof)
+            status, _, response = await self.bot_call("POST", f"/channels/{thread}/messages",
+                                                     {"content": content, "allowed_mentions": {"parse": []}, "flags": 4})
+            if not 200 <= status < 300:
+                raise Refused("approval-post-failed", 502)
+            message = str(json_object(response)["id"])
+            link = f"https://discord.com/channels/{self.config['owner_guild']}/{thread}/{message}"
+            batch = dict(id=identity, ts=utc(), uid=uid, owner_message=proof, owner_order=self.order_facts.get(proof),
+                         title=title, items=items, state=["open"] * len(items), refs={}, channel=thread,
+                         message=message, card=link, thread=thread, status="pending",
+                         content_hash=hashlib.sha256(json_object(response).get("content", content).encode()).hexdigest(),
+                         merged=[entry["id"] for entry, _ in merging])
+            self.save_batch(batch)
+            for emoji in ("✅", "⛔"):
+                status, _, _ = await self.bot_call("PUT", f"/channels/{thread}/messages/{message}/reactions/{quote(emoji)}/@me")
+                if not 200 <= status < 300:
+                    self.deny(uid, "google", "POST", "/_gate/batch", "approval-reaction-failed")
+            for entry, index in merging:
+                base = f"/channels/{entry['channel']}/messages/{entry['message']}"
+                status, _, answer = await self.bot_call("GET", base)
+                original = json_object(answer).get("content", "") if 200 <= status < 300 else ""
+                text = (BATCH_MERGED + link + "\n" + original)[:2000]
+                status, _, answer = await self.bot_call("PATCH", base, {"content": text, "allowed_mentions": {"parse": []}})
+                if not 200 <= status < 300:
+                    continue  # the card stays as it was and is decided on its own
+                entry.update(status="merged", batch=identity, batch_item=index,
+                             content_hash=hashlib.sha256(json_object(answer).get("content", text).encode()).hexdigest())
+                private_write(self.state / "pending" / (entry["id"] + ".json"), json_bytes(entry))
+        return 202, json_bytes(dict(status="pending_approval", batch=identity, card=link, merged=len(merging)))
+
+    async def poll_batches(self) -> None:
+        """A batch card is decided like a card (gone, tampered, a day old, ⛔ before ✅), and its merged cards with it."""
+        for batch in self.batches():
+            if batch["status"] != "pending":
+                continue
+            base = f"/channels/{batch['channel']}/messages/{batch['message']}"
+            status, _, body = await self.bot_call("GET", base)
+            outcome, edit = None, True
+            if status == 404:
+                outcome, edit = "card-gone", False
+            elif status != 200:
+                continue
+            elif hashlib.sha256(json_object(body).get("content", "").encode()).hexdigest() != batch["content_hash"]:
+                outcome, edit = "card-tampered", False
+            elif (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(batch["ts"])
+                    >= dt.timedelta(hours=BATCH_HOURS)):
+                outcome = "만료됨"
+            elif await self.owner_reacted(base, "⛔"):
+                outcome = "⛔ 취소됨"
+            elif await self.owner_reacted(base, "✅"):
+                outcome = "✅ 승인됨"
+            if not outcome:
+                continue
+            async with self.write_lock:
+                approved = outcome == "✅ 승인됨"
+                batch["status"] = {"✅ 승인됨": "approved", "⛔ 취소됨": "cancelled", "만료됨": "expired"}.get(outcome, outcome)
+                if approved:
+                    batch["approved_at"] = utc()
+                else:
+                    self.deny(batch["uid"], "google", "POST", "/_gate/batch", outcome)
+                self.save_batch(batch)
+                if edit:
+                    original = json_object(body).get("content", "")
+                    await self.bot_call("PATCH", base, {"content": (outcome + "\n" + original)[:2000],
+                                                         "allowed_mentions": {"parse": []}})
+                await self.close_merged(batch, outcome if edit else None)
+            if edit:
+                await self.close_card_thread(batch["thread"], outcome)
+
+    async def close_merged(self, batch: dict, outcome: str | None) -> None:
+        """Merged cards take the batch's decision: ✅ runs each once under the batch, ⛔ or expiry cancels it. A batch
+        card that went missing or was edited decides nothing, so its merged cards go back to waiting on their own."""
+        for entry in self.pending():
+            if entry.get("batch") != batch["id"] or entry.get("status") != "merged":
+                continue
+            pending_path = self.state / "pending" / (entry["id"] + ".json")
+            base = f"/channels/{entry['channel']}/messages/{entry['message']}"
+            if outcome is None:
+                status, _, body = await self.bot_call("GET", base)
+                entry.update(status="pending", content_hash=hashlib.sha256(
+                    (json_object(body).get("content", "") if status == 200 else "").encode()).hexdigest())
+                entry.pop("batch", None)
+                private_write(pending_path, json_bytes(entry))
+                continue
+            result = outcome
+            if outcome == "✅ 승인됨":
+                entry["status"] = "executing"
+                private_write(pending_path, json_bytes(entry))
+                if entry.get("owner_order"):
+                    self.order_facts[entry["owner_message"]] = entry["owner_order"]
+                try:
+                    status, _, _ = await self.google_write(
+                        entry["uid"], entry["method"], entry["path"], [tuple(pair) for pair in entry["query"]],
+                        entry["headers"], base64.b64decode(entry["body"]), proof=entry["owner_message"],
+                        approved_by=batch["card"], approved_context=entry, batch=batch)
+                    result = "✅ 실행됨" if 200 <= status < 300 else UPSTREAM_FAILED
+                except Refused as error:
+                    result = "실행 실패"
+                    self.deny(entry["uid"], "google", entry["method"], entry["path"], error.reason)
+            elif outcome == "⛔ 취소됨" or outcome == "만료됨":
+                self.deny(entry["uid"], "google", entry["method"], entry["path"], outcome)
+            pending_path.unlink()
+            status, _, body = await self.bot_call("GET", base)
+            original = json_object(body).get("content", "") if status == 200 else ""
+            await self.bot_call("PATCH", base, {"content": (result + "\n" + original)[:2000],
+                                                 "allowed_mentions": {"parse": []}})
+            await self.close_card_thread(entry.get("thread"), result)
 
     def limit_reasons(self, uid, proof, method, op, data) -> list:
         if uid not in self.config["clients"]:
@@ -1327,9 +1726,12 @@ class Gate:
 
     async def poll_approvals(self):
         async with self.approval_lock:
+            await self.poll_batches()
             for entry in self.pending():
                 pending_path = self.state / "pending" / (entry["id"] + ".json")
                 base = f"/channels/{entry['channel']}/messages/{entry['message']}"
+                if entry.get("status") == "merged":
+                    continue  # its batch card decides it (poll_batches)
                 if entry.get("status") == "executing":
                     # Never replay an uncertain write after a crash.
                     self.deny(entry["uid"], "google", entry["method"], entry["path"], "approval-execution-uncertain")
@@ -1391,7 +1793,8 @@ class Gate:
         channel = str(self.config.get("approval", {}).get("channel_id", ""))
         if not prefix or not thread or str(thread) == channel:
             return
-        if any(e.get("thread") == thread for e in self.pending()):
+        if (any(e.get("thread") == thread for e in self.pending())
+                or any(b["thread"] == thread and b["status"] == "pending" for b in self.batches())):
             return
         try:
             status, _, body = await self.bot_call("GET", f"/channels/{thread}")
@@ -1509,7 +1912,7 @@ class Gate:
         if not path.startswith("/api/v10/"):
             raise Refused("not-allowed")
         route = path[len("/api/v10"):]
-        for entry in self.pending():
+        for entry in self.pending() + self.batches():
             protected = f"/channels/{entry['channel']}/messages/{entry['message']}"
             if (route == protected and method in {"PATCH", "DELETE"} or
                     route.startswith(protected + "/reactions") and method in {"PUT", "DELETE"}):
@@ -2173,8 +2576,20 @@ class Gate:
                 if path == "/_gate/pending" and method == "GET":
                     now = dt.datetime.now(dt.timezone.utc)
                     await reply(writer, 200, json_bytes([dict(id=e["id"], reason=e["reason"],
-                        card=e["card"], age=(now - dt.datetime.fromisoformat(e["ts"])).total_seconds())
+                        card=e["card"], age=(now - dt.datetime.fromisoformat(e["ts"])).total_seconds(),
+                        status=e.get("status", "pending"), **({"batch": e["batch"]} if e.get("batch") else {}))
                         for e in self.pending()]))
+                    return
+                if path == "/_gate/batch" and method == "POST":
+                    await reply(writer, *await self.batch_submit(uid, headers, body))
+                    return
+                if path.startswith("/_gate/batch/") and method == "GET":
+                    batch = self.batch(path.rsplit("/", 1)[1])
+                    if batch is None or batch["uid"] != uid and uid not in self.config["admins"]:
+                        raise Refused("batch-unknown", 404)
+                    await reply(writer, 200, json_bytes(dict(
+                        {k: batch.get(k) for k in ("id", "status", "title", "card", "ts", "approved_at", "refs", "merged")},
+                        items=[dict(item, state=state) for item, state in zip(batch["items"], batch["state"])])))
                     return
                 if re.fullmatch(r"/_gate/restore/[0-9a-f-]+", path) and method == "POST":
                     async with self.write_lock:
@@ -2218,7 +2633,7 @@ class Gate:
             await reply(writer, status, response, response_headers)
         except Refused as error:
             self.deny(uid, port, method, target, error.reason)
-            payload = {"error": error.reason}
+            payload = {"error": error.reason, **error.extra}
             if error.reason == "mail-send-not-here":
                 payload["message"] = "Mail goes through the owner's approval card."
             if error.reason == "url-without-source":
