@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { defaultDiscordWords } from "../src/config.ts";
@@ -7,7 +7,7 @@ import { deadPaneTick } from "../src/dead-panes.ts";
 import { claimDone } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { parseGpuQuery, parsePmon, treeOf, type Usage } from "../src/heavy-headroom.ts";
-import { acquireSlot, pidAlive, releaseSlot, type SlotDeps } from "../src/heavy-slot.ts";
+import { acquire, acquireSlot, pidAlive, releaseSlot, type SlotDeps } from "../src/heavy-slot.ts";
 import { guardTick } from "../src/host-guard.ts";
 import { adoptLane, LaunchError } from "../src/launch.ts";
 import type { Lane } from "../src/registry.ts";
@@ -159,7 +159,7 @@ const eval25: Usage = { gpu: 25, gpuMem: null, cpu: 10, mem: 10 };
 const headroomDeps = (dir: string, host: () => Usage, logs: string[], clock: Clock = fakeClock(T0)): SlotDeps & { calls: number } => {
   const d = {
     dir, slots: 1, maxLoad: 80, clock, pid: 4242, load: async () => 10, alive: (pid: number) => pid !== 999999, calls: 0,
-    headroom: { maxSlots: 4, free: 30, settleSec: 120, usage: async (pids: readonly number[]) => { d.calls++; return { host: host(), unified: true, jobs: pids.map(() => eval25) }; } },
+    headroom: { maxSlots: 4, free: 30, settleSec: 120, usage: async (pids: readonly number[]) => { d.calls++; return { host: host(), unified: true, jobs: pids.map(() => eval25), memTotalKb: 100_000_000 }; } },
     log: (l: string) => logs.push(l),
   };
   return d;
@@ -179,6 +179,29 @@ test("a heavy job starts beside a running one when every resource keeps 30% free
   await expect(acquireSlot(busy, "eval-c", 1)).rejects.toThrow("stop");
   expect(waits).toEqual(["HEAVY_WAIT eval-c: 2 running; gpu 46%+25% -> 29% free, cpu 20%+10% -> 70% free, mem(unified) 25%+10% -> 65% free (needs 30% free each)"]);
   expect(busy.calls).toBe(3);
+});
+
+test("with --mem even the first heavy job waits until its memory keeps headroom free, counting what a running job said it needs and does not use yet", async () => {
+  const dir = join(state.dir, "heavy");
+  // Given: nothing runs, half of 100,000,000 KB is in use
+  const waits: string[] = [];
+  await expect(acquire(headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 50 }), waits, stopAfter(2)), "big", { pollMs: 1, memKb: 30_000_000 })).rejects.toThrow("stop");
+  expect(waits).toEqual(["HEAVY_WAIT big: memory: needs 28.6G, 47.7G available, 0M held for running jobs still loading -> 20% free (needs 30% free)"]);
+  const logs: string[] = [];
+  const got = await acquire(headroomDeps(dir, () => ({ gpu: 0, gpuMem: null, cpu: 0, mem: 50 }), logs), "fits", { pollMs: 1, memKb: 15_000_000 });
+  expect(got).toEqual({ slot: join(dir, "slot.1") });
+  expect(readFileSync(join(dir, "slot.1", "mem"), "utf8")).toBe("15000000");
+  rmSync(join(dir, "slot.1"), { recursive: true });
+  // Given: a job said 40,000,000 KB and uses 10% (10,000,000 KB) so far, the host is 25% used: 30,000,000 KB more is coming
+  heldSlot(dir, 1, 100, T0 - 10 * MIN);
+  writeFileSync(join(dir, "slot.1", "mem"), "40000000");
+  const host = () => ({ gpu: 45, gpuMem: null, cpu: 20, mem: 25 });
+  const held: string[] = [];
+  await expect(acquire(headroomDeps(dir, host, held, stopAfter(2)), "second", { pollMs: 1, memKb: 20_000_000 })).rejects.toThrow("stop");
+  expect(held).toEqual(["HEAVY_WAIT second: memory: needs 19.1G, 71.5G available, 28.6G held for running jobs still loading -> 25% free (needs 30% free)"]);
+  const beside: string[] = [];
+  expect(await acquire(headroomDeps(dir, host, beside), "small", { pollMs: 1, memKb: 10_000_000 })).toEqual({ slot: join(dir, "slot.2") });
+  expect(beside).toEqual(["HEAVY_ADMIT small slot.2: 1 running beside it; gpu 45%+25% -> 30% free, cpu 20%+10% -> 70% free (needs 30% free each); memory: needs 9.5G, 71.5G available, 28.6G held for running jobs still loading -> 35% free (needs 30% free)"]);
 });
 
 test("a heavy job waits while the last one taken has not shown its load, and two waiters never take one headroom twice", async () => {

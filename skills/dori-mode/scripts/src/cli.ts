@@ -28,6 +28,7 @@ import { ownerSpeechProblem, plainSummaryProblem } from "./close-summary.ts";
 import { literalNewlineProblem } from "./messenger/literal-newline.ts";
 import { autoReadyLine, freshnessTick } from "./freshness.ts";
 import { sampleUsage } from "./heavy-headroom.ts";
+import { neverFits, parseMem, readMeminfo, spawnScoped } from "./heavy-mem.ts";
 import { heavyJobCommand, HeavyJobError, heavyServe } from "./heavy-queue.ts";
 import { acquireSlot, pidAlive, releaseSlot, type SlotDeps } from "./heavy-slot.ts";
 import { heavyWorker } from "./heavy-worker.ts";
@@ -234,10 +235,15 @@ const USAGE = `dori <command> [options]
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
-  heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low; beside a running one only
+  heavy <label> [--mem SIZE] -- <command ...>
+                                       run a heavy command when a slot is free and load is low; beside a running one only
                                        when GPU, memory and CPU each keep heavyHeadroomPct (10) percent free with it
                                        (HEAVY_ADMIT / HEAVY_WAIT lines on stderr and in state/heavy/heavy.log); waiters
-                                       start in the order they came
+                                       start in the order they came. The command runs in its own systemd user scope
+                                       (HEAVY_SCOPE) capped at MemoryMax: --mem (e.g. 70G), else what keeps 10% free at
+                                       its start; over it only the job is killed (HEAVY_OOM, exit 137), never the lane
+                                       that started it. --mem also waits until that much memory keeps 10% free (counting
+                                       what running jobs said and do not use yet) and refuses one that never fits
   heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]
                                        run heavyQueue.jobs.<name> in the GPU line of all hosts: on the queue host here
                                        first, then on a heavyQueue.helpers host (an rl job only where its heavyQueue.rl), else wait;
@@ -453,7 +459,7 @@ const flags = parseArgs({
     answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
     static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
     remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
-    job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" },
+    job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" }, mem: { type: "string" },
     reply: { type: "string" }, again: { type: "boolean" }, channel: { type: "string" }, "reply-to": { type: "string" }, posted: { type: "string" }, "post-summary": { type: "boolean" },
   },
 });
@@ -518,6 +524,8 @@ const heavyDeps = (load: () => Promise<number>): SlotDeps => ({
   headroom: { maxSlots: config.heavyMaxSlots, free: config.heavyHeadroomPct, settleSec: config.heavySettleSec, usage: (pids) => sampleUsage(run, pids) },
   log: (line) => {
     console.error(line);
+    // a refusal comes before any slot work made the folder
+    mkdirSync(`${config.stateDir}/heavy`, { recursive: true });
     appendFileSync(`${config.stateDir}/heavy/heavy.log`, `${new Date().toISOString()} ${line}\n`);
   },
 });
@@ -1175,11 +1183,20 @@ try {
         process.exitCode = await heavyJobCommand({ q: config.heavyQueue, deps: heavyDeps(load) }, { req: { label: jobLabel, kind: jobName, rl: Boolean(flags.values.rl), args: cmd }, files: many("in").map((f) => resolve(f)), ...(out ? { out: resolve(out) } : {}) });
         break;
       }
-      if (!label || label === "--" || !cmd.length) die("usage: dori heavy <label> -- <command ...>");
-      const slot = await acquireSlot(heavyDeps(load), label ?? "");
+      const name = label && label !== "--" && !label.startsWith("-") && cmd.length ? label : die("usage: dori heavy <label> [--mem SIZE] -- <command ...>");
+      const memOpt = opt("mem");
+      const needBytes = memOpt === undefined ? undefined : (parseMem(memOpt) ?? die(`dori heavy --mem takes a size like 70G or 200M, not "${memOpt}"`));
+      const deps = heavyDeps(load);
+      const host = readMeminfo();
+      const never = needBytes && host ? neverFits(needBytes, host, config.heavyHeadroomPct) : undefined;
+      if (never) {
+        deps.log?.(`HEAVY_REFUSED ${name}: ${never}`);
+        process.exitCode = 2;
+        break;
+      }
+      const slot = await acquireSlot(deps, name, 15_000, needBytes ? needBytes / 1024 : undefined);
       try {
-        const child = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
-        process.exitCode = await child.exited;
+        process.exitCode = await spawnScoped({ label: name, cmd, free: config.heavyHeadroomPct, ...(needBytes ? { needBytes } : {}), ...(deps.log ? { log: deps.log } : {}) }, { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
       } finally {
         releaseSlot(slot);
       }

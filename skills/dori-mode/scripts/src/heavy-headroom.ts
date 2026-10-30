@@ -5,7 +5,8 @@ import type { Runner } from "./run.ts";
 // Percent used of each resource. gpu and gpuMem are null when the host has no GPU nvidia-smi can read; gpuMem is also null
 // on a unified-memory GPU (GB10, Jetson: nvidia-smi reports memory as [N/A]), where GPU memory is system memory (mem).
 export type Usage = { readonly gpu: number | null; readonly gpuMem: number | null; readonly cpu: number; readonly mem: number };
-export type UsageSample = { readonly host: Usage; readonly unified: boolean; readonly jobs: readonly Usage[] };
+// memTotalKb: the host's memory (0 where /proc/meminfo is missing), so a job's memory estimate can be weighed in percent
+export type UsageSample = { readonly host: Usage; readonly unified: boolean; readonly jobs: readonly Usage[]; readonly memTotalKb: number };
 
 const RESOURCES = ["gpu", "gpuMem", "cpu", "mem"] as const;
 type Resource = (typeof RESOURCES)[number];
@@ -17,10 +18,12 @@ export type Verdict = { readonly ok: boolean; readonly short: readonly string[];
 
 // A new job fits when every measured resource keeps at least `free` percent free with it added. Its use is guessed from the
 // heavy jobs running now: the largest use of each resource among them (a new eval looks like the evals already running).
-export const headroomVerdict = (s: UsageSample, free: number): Verdict => {
+// skip: resources weighed elsewhere (memory when the job gave its own --mem estimate)
+export const headroomVerdict = (s: UsageSample, free: number, skip: readonly string[] = []): Verdict => {
   const short: string[] = [];
   const parts: string[] = [];
   for (const r of RESOURCES) {
+    if (skip.includes(r)) continue;
     const used = s.host[r];
     if (used === null) continue;
     const est = Math.max(0, ...s.jobs.map((j) => j[r] ?? 0));
@@ -112,7 +115,7 @@ export const sampleUsage = async (run: Runner, jobPids: readonly number[]): Prom
       mem: memTotalKb ? (100 * t.rssKb) / totalKb : 0,
     };
   });
-  return { host, unified, jobs };
+  return { host, unified, jobs, memTotalKb };
 };
 
 // macOS: memory_pressure -Q prints the free percentage
