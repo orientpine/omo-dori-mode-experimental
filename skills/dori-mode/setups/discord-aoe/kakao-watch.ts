@@ -26,15 +26,16 @@ export type KakaoOptions = {
 };
 // cursors: newest log id taken into the inbox; marked: newest log id a mark-read succeeded for. They differ while a
 // mark-read is pending, failed (retried at retryAt, backing off) or re-armed by a sweep. gaveUp: the log id whose mark
-// failed MARKREAD_TRIES times; that room is not marked again until a newer message moves its cursor.
+// failed MARKREAD_TRIES times; that room is not marked again until a newer message moves its cursor. confirmed: the
+// log id this run saw the server's read mark reach; a sweep leaves that room alone until a newer message.
 export type KakaoState = {
   rooms: Record<string, { id: string; type?: string }>;
   cursors: Record<string, string>;
   marked: Record<string, string>;
+  confirmed: Record<string, string>;
   gaveUp: Record<string, string>;
   fails: Record<string, number>;
   retryAt: Record<string, number>;
-  advancedAt: Record<string, number>;
   unread: Set<string>;
   lastSweep: number;
   lastDiscover: number;
@@ -99,10 +100,10 @@ export const loadKakaoState = (o: KakaoOptions): KakaoState => {
     rooms,
     cursors: readJson(o.cursors, {}),
     marked: readJson(o.marked, {}),
+    confirmed: {},
     gaveUp: readJson(o.gaveUp, {}),
     fails: {},
     retryAt: {},
-    advancedAt: {},
     unread: new Set(Object.values(rooms).map((r) => String(r.id))),
     lastSweep: -Infinity,
     lastDiscover: -Infinity,
@@ -268,11 +269,12 @@ export async function kakaoTick(o: KakaoOptions, s: KakaoState, runner: Runner, 
     }
   }
 
-  // A mark-read can exit 0 and still leave the badge, so rooms with an unread hint or recent messages are marked again.
+  // A room with an unread hint is marked again, unless the server's read mark was already seen at its marked log id:
+  // that mark does not move back, and re-arming it only repeats KAKAO_MARKREAD_OK on the same id every sweep.
   if (now() - s.lastSweep >= o.sweepMs) {
     s.lastSweep = now();
     for (const { id } of Object.values(s.rooms)) {
-      if (s.unread.has(id) || now() - (s.advancedAt[id] ?? -Infinity) < 6 * o.sweepMs) delete s.marked[id];
+      if (s.unread.has(id) && s.confirmed[id] !== s.marked[id]) delete s.marked[id];
     }
     s.unread.clear();
   }
@@ -303,7 +305,6 @@ export async function kakaoTick(o: KakaoOptions, s: KakaoState, runner: Runner, 
     for (const m of sorted) {
       if (BigInt(m.log_id) <= BigInt(s.cursors[id] ?? "0")) continue;
       s.cursors[id] = m.log_id;
-      s.advancedAt[id] = now();
       const author = userId(m.author_id);
       if (author === o.self) continue;
       const row = {
@@ -339,6 +340,7 @@ export async function kakaoTick(o: KakaoOptions, s: KakaoState, runner: Runner, 
     if (back && back.status === 0 && back.watermark !== null && BigInt(back.watermark) >= BigInt(target)) {
       const after = s.fails[id] ? ` after ${s.fails[id]} failed` : "";
       s.marked[id] = target;
+      s.confirmed[id] = target;
       delete s.fails[id];
       delete s.retryAt[id];
       save(o.marked, s.marked);

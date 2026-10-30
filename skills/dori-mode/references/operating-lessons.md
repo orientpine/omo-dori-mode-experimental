@@ -197,7 +197,7 @@ What holds now:
 On 2026-10-14 the owner found two unread messages in one of a Dori's KakaoTalk group rooms. Its watcher had taken both in (13:16 and 13:17 UTC) and marked the room read each time; it marked a room read only when its read cursor moved and printed a line only on failure, and that Dori's session had never received one `KAKAO_MARKREAD_FAIL`. So retrying failures alone would not have cleared the badge. The watcher also lived only in that Dori's local `bin`, where no other Dori could use or fix it.
 
 - **Keep what was marked read apart from what was read.** `kakao-markread.json` sits beside `kakao-cursors.json`; a room whose cursor is ahead is marked again with backoff, and a restart retries what is still pending.
-- **Do not trust a success code for something the owner sees.** Every sweep marks again the rooms with recent messages and the rooms `chat list` shows unread.
+- **Do not trust a success code for something the owner sees.** A mark counts when the server's read mark reaches it (#24). A sweep marks again only an unread room not yet confirmed that way: re-arming confirmed rooms printed the same `KAKAO_MARKREAD_OK` every five minutes for half an hour.
 - **`chat list` is a delta.** agent-messenger's `kakaotalk chat list` returns only chats changed since the account's last sync (it can return `[]`), so "no unread rooms" from it proves nothing; use its counts as a hint only.
 - **A helper one Dori needs today goes into the fork anyway** (#20): off by default, with that Dori's ids, names and paths in its `dori.env`. The local copy is deleted once the fork's version runs.
 

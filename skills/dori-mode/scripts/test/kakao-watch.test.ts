@@ -286,19 +286,52 @@ test("a mark-read still pending when the watcher restarts is retried without tak
   expect([k.marks(), inbox(o), json(o.marked)]).toEqual([["100 6"], [], { "100": "6" }]);
 });
 
-test("every room is marked once at start; later sweeps mark again a room chat list shows unread and a room with recent messages, not an idle one", async () => {
-  const o = setup({ rooms: { A: { id: "100" }, B: { id: "200" }, C: { id: "300" } }, cursors: { "100": "5", "200": "9", "300": "3" }, marked: { "100": "5", "200": "9", "300": "3" } });
-  const chats = [{ chat_id: "200", display_name: "B", unread_count: 2 }];
-  const k = fakeKakao({ "100": [msg("5", 2, "old"), msg("6", 2, "new")], "200": [msg("9", 2, "read")], "300": [msg("3", 2, "idle")] }, chats);
+test("every room is marked once at start; a sweep marks again only an unread room the server was never seen to confirm", async () => {
+  const o = setup({ rooms: { A: { id: "100" }, B: { id: "200" }, C: { id: "300" }, D: { id: "400" } }, cursors: { "100": "5", "200": "9", "300": "3" }, marked: { "100": "5", "200": "9", "300": "3" } });
+  const chats = [{ chat_id: "200", display_name: "B", unread_count: 2 }, { chat_id: "400", display_name: "D", unread_count: 1 }];
+  const k = fakeKakao({ "100": [msg("5", 2, "old"), msg("6", 2, "new")], "200": [msg("9", 2, "read")], "300": [msg("3", 2, "idle")], "400": [msg("8", 2, "backlog")] }, chats);
   const w = ticker(o, k.runner);
   await w.at(0);
   await w.at(30_000);
   expect(k.marks()).toEqual(["100 6", "200 9", "300 3"]);
   await w.at(60_000);
-  expect(k.marks()).toEqual(["100 6", "200 9", "300 3", "100 6", "200 9"]);
+  expect(k.marks()).toEqual(["100 6", "200 9", "300 3", "400 8"]);
+  await w.at(120_000);
   chats.length = 0;
   await w.at(6 * 60_000 + 1);
-  expect(k.marks()).toEqual(["100 6", "200 9", "300 3", "100 6", "200 9"]);
+  expect(k.marks()).toEqual(["100 6", "200 9", "300 3", "400 8"]);
+});
+
+test("a room the server confirmed sends nothing in later sweeps, even with an unread hint and a recent message; a new message is marked once", async () => {
+  const o = setup({ rooms: { R: { id: "100" } }, cursors: { "100": "5" }, marked: { "100": "5" } });
+  const msgs = [msg("5", 2, "old"), msg("6", 2, "new")];
+  const k = fakeKakao({ "100": msgs }, [{ chat_id: "100", display_name: "R", unread_count: 1 }]);
+  // The --mark-read child's real packets against a server that keeps the read mark between sessions.
+  const packets: string[] = [];
+  let server = "4";
+  const open: OpenSession = async (fn) =>
+    fn({
+      syncMessages: async (c, n, cur, max) => (packets.push(`SYNCMSG ${c} ${cur} ${max}`), { statusCode: 0, body: {} }),
+      markRead: async (c, wm) => (packets.push(`NOTIREAD ${c} ${wm}`), (server = String(wm)), { statusCode: 0, body: { status: 0 } }),
+      getChatInfo: async (c) => (packets.push(`CHATONROOM ${c}`), { statusCode: 0, body: { a: [9], w: [server] } }),
+      getChannelInfo: async (c) => (packets.push(`CHATINFO ${c}`), { statusCode: 0, body: {} }),
+    });
+  const runner: Runner = async (argv, opts) => {
+    if (argv[4] !== "--mark-read") return k.runner(argv, opts);
+    return { code: 0, out: JSON.stringify(await markReadConfirmed(open, String, argv[5] ?? "", argv[6] ?? "", argv[7] ?? "", "9")), err: "" };
+  };
+  const w = ticker(o, runner);
+  await w.at(0);
+  expect(packets.splice(0)).toEqual(["CHATONROOM 100", "SYNCMSG 100 4 6", "NOTIREAD 100 6", "CHATONROOM 100"]);
+  await w.at(60_000);
+  await w.at(120_000);
+  expect(packets.splice(0)).toEqual([]);
+  msgs.push(msg("7", 2, "newer"));
+  await w.at(121_000);
+  expect(packets.splice(0)).toEqual(["CHATONROOM 100", "SYNCMSG 100 6 7", "NOTIREAD 100 7", "CHATONROOM 100"]);
+  await w.at(180_000);
+  expect(packets).toEqual([]);
+  expect(w.lines.filter((l) => l.startsWith("KAKAO_MARKREAD"))).toEqual(["KAKAO_MARKREAD_OK R 6 server 6", "KAKAO_MARKREAD_OK R 7 server 7"]);
 });
 
 test("a room seen for the first time starts at its newest message, unmarked backlog untouched; a new chat is added", async () => {
