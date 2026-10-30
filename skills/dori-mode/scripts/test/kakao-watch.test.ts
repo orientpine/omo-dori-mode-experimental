@@ -130,6 +130,7 @@ test("a mark reads the server's read mark, syncs from it and marks in a fresh se
       syncMessages: async (c, n, cur, max) => (calls.push(`SYNCMSG ${c} ${n} ${cur} ${max}`), { statusCode: 0, body: {} }),
       markRead: async (c, wm) => (calls.push(`NOTIREAD ${c} ${wm}`), applies && (server = String(wm)), { statusCode: 0, body: { status: 0 } }),
       getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { a: [1, 9], w: ["8", server] } }),
+      getChannelInfo: async (c) => (calls.push(`CHATINFO ${c}`), { statusCode: 0, body: { chatInfo: { li: 0 } } }),
     });
   };
   expect(await markReadConfirmed(open, String, "100", "7", "5", "9")).toEqual({ status: 0, watermark: "7" });
@@ -152,11 +153,34 @@ test("a mark in a room of a type the server keeps no read mark in (a KakaoTalk c
       syncMessages: async (c) => (calls.push(`SYNCMSG ${c}`), { statusCode: 0, body: {} }),
       markRead: async (c) => (calls.push(`NOTIREAD ${c}`), { statusCode: 0, body: { status: 0 } }),
       getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { t: "PlusChat", a: [1, 9], w: ["3", "4"] } }),
+      getChannelInfo: async (c) => (calls.push(`CHATINFO ${c}`), { statusCode: 0, body: {} }),
     };
     return fn(session);
   };
   expect(await markReadConfirmed(open, String, "100", "7", "5", "9")).toEqual({ status: 0, watermark: "4", type: "PlusChat" });
   expect(sessions).toEqual([["CHATONROOM 100"]]);
+});
+
+test("a mark in an open chat sends the room's link id from CHATINFO with NOTIREAD; without one it fails and marks nothing", async () => {
+  const sessions: string[][] = [];
+  let server = "4";
+  let li: unknown = { low: 77777, high: 1 };
+  // The server applies a NOTIREAD in an open chat only when it carries the room's link id.
+  const open: OpenSession = async (fn) => {
+    const calls: string[] = [];
+    sessions.push(calls);
+    return fn({
+      syncMessages: async (c, n, cur, max) => (calls.push(`SYNCMSG ${c} ${n} ${cur} ${max}`), { statusCode: 0, body: {} }),
+      markRead: async (c, wm, link) => (calls.push(`NOTIREAD ${c} ${wm} li ${link}`), link !== undefined && (server = String(wm)), { statusCode: 0, body: { status: link === undefined ? -1 : 0 } }),
+      getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { t: "OM", a: [1, 9], w: ["8", server] } }),
+      getChannelInfo: async (c) => (calls.push(`CHATINFO ${c}`), { statusCode: 0, body: { chatInfo: { chatId: 100, li } } }),
+    });
+  };
+  expect(await markReadConfirmed(open, String, "100", "7", "5", "9")).toEqual({ status: 0, watermark: "7" });
+  expect(sessions.splice(0)).toEqual([["CHATONROOM 100"], ["CHATINFO 100", "SYNCMSG 100 80 4 7", "NOTIREAD 100 7 li 4295045073"], ["CHATONROOM 100"]]);
+  li = 0;
+  await expect(markReadConfirmed(open, String, "100", "8", "5", "9")).rejects.toThrow("CHATINFO gave no link id for open chat 100");
+  expect(sessions.splice(0)).toEqual([["CHATONROOM 100"], ["CHATINFO 100"]]);
 });
 
 test("a channel room is never marked read: once its type is known (from the mark or from chat list) it gets one SKIP line, its messages still come in, other rooms are marked", async () => {
