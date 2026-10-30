@@ -436,7 +436,7 @@ A message:
 {"ts":"2026-01-02T03:00:00Z","id":"<message id>","channel_id":"<id>","scope":"channel","author_id":"<owner id>","content":"ship it","transcript":null,"attachments":[],"reply_to":null}
 ```
 
-`scope` is `channel`, `thread` or `dm`. With a pair channel set (`DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT`, one or more bot ids separated by commas or whitespace) it can also be `pair` (the owner there) or `pair-bot` (any listed Dori bot: information, not a request). A voice note has `transcript` filled. A post from the owner's registered webhook (`DORI_DISCORD_OWNER_WEBHOOK`, see [ios-shortcut-voice.md](ios-shortcut-voice.md)) has `author_id` set to the owner and also carries `"via":"owner-webhook"` and `webhook_id`. A reply has `reply_to`: read that message first.
+`scope` is `channel`, `thread` or `dm`. With a pair channel set (`DORI_DISCORD_PAIR_CHANNEL`, `DORI_DISCORD_PAIR_BOT`, one or more bot ids separated by commas or whitespace) it can also be `pair` (the owner there) or `pair-bot` (any listed Dori bot: information, not a request). A voice note has `transcript` filled. A post from the owner's registered webhook (`DORI_DISCORD_OWNER_WEBHOOK`, see [ios-shortcut-voice.md](ios-shortcut-voice.md)) has `author_id` set to the owner and also carries `"via":"owner-webhook"` and `webhook_id`. While no owner webhook is registered, a recording from a webhook in the channel lands with `author_id` set to the webhook, `"via":"unknown-webhook"`, `webhook_id` and a `note` asking to register that id: information, not the owner's request. A reply has `reply_to`: read that message first.
 
 A KakaoTalk message (`kakao-watch.ts`):
 
