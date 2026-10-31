@@ -38,6 +38,14 @@ Writes require `X-Dori-Owner-Message: channel_id/message_id`; proof must be an
 owner message in the owner guild, no older than 24 hours. Successful proofs and
 channel/calendar checks are cached for at most ten minutes.
 
+The owner's one voice webhook also counts as an owner message (owner 2026-10-31 20:18 KST Q425 "받기: 그 웹훅 하나만,
+24시간 한도·바깥 쓰기 승인 카드 그대로, 형 sudo 한 줄"). With `owner_proof.owner_webhook_id` and
+`owner_proof.owner_webhook_channel` both set, a message passes when its `webhook_id` and `author.id` both equal
+that id and the proof's channel is that channel. A thread of the channel does not count. Another webhook, another
+channel or a bot's post is refused with `owner-message-required`, and with either key empty only the owner's account
+counts. Everything else about a proof stays: the 24 hours, the write limit per message, the outbound cards. Card
+buttons and reactions are still the owner's account only. The id goes in the root-owned config and nowhere else.
+
 A dashboard order is the other proof (owner 2026-10-21 23:23 KST "문지기가 대시보드 지시도
 형 명령으로 인정"): `X-Dori-Owner-Order: <n>` (the dashboard order number, 1-999999999) when no
 `X-Dori-Owner-Message` is sent; an owner message always wins. With `owner_order` set, the gate

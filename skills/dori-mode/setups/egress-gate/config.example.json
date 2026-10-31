@@ -21,7 +21,9 @@
   "owner_emails": ["owner@example.com"],
   "owner_proof": {
     "token_file": "/var/lib/dori-gate/owner-bot-token",
-    "max_age_hours": 24
+    "max_age_hours": 24,
+    "owner_webhook_id": "",
+    "owner_webhook_channel": ""
   },
   "owner_order": {
     "api_base": "http://127.0.0.1:8810",
