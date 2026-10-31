@@ -920,6 +920,16 @@ class Gate:
                    [str(r.get("id")) for r in data.get("recipients", [])] == [str(self.config["owner_id"])])
         return self.remember(key, allowed)
 
+    def owner_wrote(self, data: dict, channel: str) -> bool:
+        """The owner's account, or his one registered webhook in its one channel (owner 2026-10-31 Q425)."""
+        author = str(data["author"]["id"])
+        if author == str(self.config["owner_id"]):
+            return True
+        settings = self.config["owner_proof"]
+        webhook = str(settings.get("owner_webhook_id") or "")
+        return bool(webhook) and channel == str(settings.get("owner_webhook_channel") or "") \
+            and str(data.get("webhook_id") or "") == webhook and author == webhook
+
     async def proof(self, headers: dict) -> str:
         if not headers.get("x-dori-owner-message") and headers.get("x-dori-owner-order"):
             return await self.order_proof(headers)
@@ -938,7 +948,7 @@ class Gate:
             stamp = dt.datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
             age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
             maximum = self.config["owner_proof"].get("max_age_hours", 24) * 3600
-            if str(data["author"]["id"]) != str(self.config["owner_id"]) or age < 0 or age > maximum:
+            if not self.owner_wrote(data, channel) or age < 0 or age > maximum:
                 raise Refused("owner-message-required")
         except (Refused, OSError, ValueError, KeyError, TypeError):
             raise Refused("owner-message-required") from None

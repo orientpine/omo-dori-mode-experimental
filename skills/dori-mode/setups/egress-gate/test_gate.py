@@ -47,6 +47,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.thread_patches = []
         self.thread_history = {}
         self.author = "1"
+        self.webhook = None
         self.proof_time = gate.utc()
         self.calendar_role = "owner"
         self.calendar_public = False
@@ -212,6 +213,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                         if message == "100":
                             data = {"id": message, "author": {"id": self.author}, "timestamp": self.proof_time,
                                     "content": self.owner_text}
+                            if self.webhook:
+                                data["webhook_id"] = self.webhook
                         elif message in self.cards:
                             data = {"id": message, "content": self.cards[message]}
                         else:
@@ -354,6 +357,81 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             return False if not dm else await original(channel, authorization, dm)
         with patch.object(self.service, "channel_allowed", foreign):
             self.assertEqual((await self.request())[0], 403)
+
+    def owner_webhook(self, posted_by="77"):
+        """Webhook 77 is registered for channel 20; the proof message came from posted_by."""
+        self.config["owner_proof"].update(owner_webhook_id="77", owner_webhook_channel="20")
+        self.author = self.webhook = posted_by
+
+    async def test_the_registered_webhook_is_owner_proof_in_its_channel(self):
+        self.owner_webhook()
+        status, _ = await self.request()
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(self.changes()[0]["owner_message"], "https://discord.com/channels/10/20/100")
+
+    async def test_another_webhook_is_refused(self):
+        self.owner_webhook(posted_by="78")
+        self.assertEqual((await self.request())[0], 403)
+        self.assertFalse(self.writes())
+
+    async def test_the_registered_webhook_is_refused_in_another_channel(self):
+        self.owner_webhook()
+        self.assertEqual((await self.request(origin="23/100"))[0], 403)
+        self.assertFalse(self.writes())
+
+    async def test_the_registered_webhook_is_refused_after_24_hours(self):
+        self.owner_webhook()
+        self.proof_time = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25)).isoformat()
+        self.assertEqual((await self.request())[0], 403)
+        self.assertFalse(self.writes())
+
+    async def test_an_author_with_the_webhook_id_but_no_webhook_mark_is_refused(self):
+        # Given: a bot or user whose author id equals the registered id, and the reverse mismatch.
+        for author, webhook in (("77", None), ("2", "77")):
+            with self.subTest(author=author, webhook=webhook):
+                self.owner_webhook()
+                self.author, self.webhook = author, webhook
+                self.assertEqual((await self.request())[0], 403)
+        self.assertFalse(self.writes())
+
+    async def test_a_webhook_is_refused_without_the_full_registration(self):
+        for settings in ({}, {"owner_webhook_id": "", "owner_webhook_channel": "20"},
+                         {"owner_webhook_id": "77"}):
+            with self.subTest(settings=settings):
+                self.config["owner_proof"].pop("owner_webhook_id", None)
+                self.config["owner_proof"].pop("owner_webhook_channel", None)
+                self.config["owner_proof"].update(settings)
+                self.author = self.webhook = "77"
+                self.assertEqual((await self.request())[0], 403)
+        self.assertFalse(self.writes())
+
+    async def test_the_owner_still_counts_with_a_webhook_registered(self):
+        self.owner_webhook(posted_by="1")
+        self.webhook = None
+        self.assertEqual((await self.request(origin="23/100"))[0], 200)
+
+    async def test_the_registered_webhook_keeps_the_write_limit_and_the_outbound_card(self):
+        self.approval()
+        self.owner_webhook()
+        self.config["limits"] = {"writes_per_owner_message": 1}
+        self.assertEqual((await self.request())[0], 200)
+        status, body = await self.request()
+        self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
+        self.assertEqual(len(self.writes()), 1)
+        self.config["limits"] = {}
+        status, body = await self.request(data={"attendees": [{"email": "outside@example.net"}]})
+        self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
+        self.assertEqual(len(self.writes()), 1)
+
+    async def test_a_card_reaction_from_the_registered_webhook_is_no_approval(self):
+        self.approval()
+        self.owner_webhook()
+        status, _ = await self.request(data={"attendees": [{"email": "outside@example.net"}]})
+        self.assertEqual(status, 202)
+        self.approve(owner="77")
+        await self.service.poll_approvals()
+        self.assertFalse(self.writes())
 
     async def test_calendar_notifications_are_disabled(self):
         status, _ = await self.request(path="/www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&sendNotifications=true")
