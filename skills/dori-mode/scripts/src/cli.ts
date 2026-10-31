@@ -19,7 +19,8 @@ import { ConfigError, configPath, envFilePath, fill, loadConfig, loadEnvFile, re
 import { checkRepo, commitDir, initRepo, logDir, restoreDir, type StateGitDeps, stateGitDirs } from "./state-git.ts";
 import { approve, backupTick, type BackupDeps, envFilesIn, guardDir, loadSecrets, msToNextSlot, previewDir, pushAll, pushCheck } from "./state-backup.ts";
 import { backupRemoteUrl, backupVisibility } from "./backup-visibility.ts";
-import { sendVerified, submitToPane } from "./panes.ts";
+import { paneTranscriptHas, sendVerified, submitToPane } from "./panes.ts";
+import { retryLaneTells } from "./lane-tells.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
@@ -736,7 +737,8 @@ try {
       const text = file ? (await Bun.file(file).text()).trim() : need("text");
       if (!text) die("type needs non-empty text");
       const r = await submitToPane(run, realClock, config, pane, text);
-      console.log(r.status === "SUBMITTED" ? `SUBMITTED ${pane}` : `NOT_SUBMITTED ${pane} ${r.reason}`);
+      if (r.pane !== pane) console.error(`FORWARDED ${pane} -> ${r.pane}: ${pane} was frozen by a handover, so the text went to the session that replaced it`);
+      console.log(r.status === "SUBMITTED" ? `SUBMITTED ${r.pane}` : `NOT_SUBMITTED ${r.pane} ${r.reason}`);
       // a pane a handover is moving: the text is kept for the new session too (lane-handover hands it over at the commit)
       if (holdTyped(config.stateDir, pane, Date.now(), text)) console.error(`HANDOVER_HELD ${pane}: a handover is moving this session; the text is also kept for the new session and handed to it when the move commits`);
       process.exitCode = r.status === "SUBMITTED" ? 0 : 1;
@@ -1147,6 +1149,11 @@ try {
             )
             .catch((e: unknown) => [`THREAD_AUTO_ARCHIVE_WARN ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 200)}`]);
           for (const line of archived) console.log(line);
+        }
+        // a lane a lead handover could not tell (told=no) is told once a turn runs there, or the lead hears of it
+        for (const line of await retryLaneTells({ run, clock: realClock, config, registry: deps.registry, delivered: (pane, text, since) => paneTranscriptHas(run, config.sessionsDir, pane, text, since) })) {
+          watchLog(config.watchLog, realClock, { source: "handover", line });
+          console.log(line);
         }
         // a frozen old lead is closed handover.frozenCloseH hours after its handover
         for (const line of await closeDueFrozen(freezeDeps, config.stateDir, Date.now())) {

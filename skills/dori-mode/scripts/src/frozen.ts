@@ -53,6 +53,16 @@ export const readFrozen = (stateDir: string): FrozenRecord[] => {
 // panes sync and dead-panes leave alone: a frozen old lead is neither an unregistered session nor a dead one
 export const frozenPanes = (stateDir: string): string[] => readFrozen(stateDir).map((r) => r.pane);
 
+// The session that replaced a frozen pane, followed through later handovers (a lead replaced twice), else undefined. A
+// text typed into a frozen agent lands in its tty and is read by no one, so dori type sends it here instead
+// (2026-10-31: a lane told nothing of a lead handover sent two reports into the frozen old lead).
+export const replacementOf = (stateDir: string, pane: string): string | undefined => {
+  const next = new Map(readFrozen(stateDir).flatMap((r) => (r.to ? [[r.pane, r.to] as const] : [])));
+  let at = next.get(pane);
+  for (const seen = new Set([pane]); at && next.has(at) && !seen.has(at); at = next.get(at)) seen.add(at);
+  return at;
+};
+
 export const writeFrozen = (stateDir: string, rec: FrozenRecord): void => {
   mkdirSync(frozenDir(stateDir), { recursive: true });
   writeFileSync(frozenFile(stateDir, rec.pane), JSON.stringify(rec, null, 1));

@@ -256,6 +256,18 @@ test("moves config, env, lanes and cards to the new session, checks monitors and
   expect(printed.findIndex((l) => l === `HANDOVER_COMMITTED lead ${NEW}`)).toBeGreaterThan(frozenAt);
 });
 
+test("a lane that does not take the lead notice is kept for the freshness retry instead of being left told=no", async () => {
+  // Given: the lane's pane keeps the typed text in its box, as a pane that takes nothing does
+  const deps = await setup();
+  w.screens[lane().pane ?? ""] = "❯ [LEAD] The lead moved";
+  // When
+  const r = await handover(deps, { approvedBy: APPROVED, title: "lead2" });
+  // Then
+  expect(r).toMatchObject({ code: 0, to: NEW });
+  expect(printed).toContain("HANDOVER_LANE demo brief=rewritten told=no (freshness retries it)");
+  expect(JSON.parse(readFileSync(join(state.dir, "handover", "lane-tells.json"), "utf8"))).toEqual({ demo: { pane: "aoe_demo_12345678", lead: NEW, at: "2026-10-11T16:35:00.000Z", tries: 1 } });
+});
+
 test("writes channel scope when sending the inbox probe", async () => {
   // Given
   const deps = await setup();

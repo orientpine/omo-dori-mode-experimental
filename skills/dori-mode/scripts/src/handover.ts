@@ -9,6 +9,7 @@ import { type HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
+import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
 import { compactionStuckOn } from "./lane-handover.ts";
 import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
@@ -539,10 +540,10 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
     }
     const fresh = (await deps.registry.read(lane.key)) ?? lane;
     await deps.registry.write({ ...fresh, history: [...(fresh.history ?? []), { at, status: statusOf(fresh), note: `lead moved ${from.pane} -> ${to.pane} (dori handover)` }] });
-    const told = lane.pane
-      ? await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] The lead moved to tmux session ${to.pane}. Send every [REPORT] there from now on: ["dori","type","${to.pane}","--text","<report line>"]. Your brief's footer says the same now.`)
-      : false;
-    out.push(`HANDOVER_LANE ${lane.key} brief=${brief} told=${told ? "yes" : "no"}`);
+    const told = lane.pane ? await sendVerified(deps.run, deps.clock, deps.config, lane.pane, leadMovedText(to.pane)) : false;
+    // a lane that did not take it is retried by freshness (lane-tells.ts) instead of being left told=no
+    if (lane.pane) noteLaneTell(deps.config.stateDir, lane.key, lane.pane, to.pane, at, told);
+    out.push(`HANDOVER_LANE ${lane.key} brief=${brief} told=${told ? "yes" : `no${lane.pane ? " (freshness retries it)" : ""}`}`);
   }
   const cards = new QuestionStore(deps.cardDir).retarget({ tmux: from.pane }, { tmux: to.pane });
   out.push(`HANDOVER_CARDS ${cards.length ? cards.join(",") : "none"} -> ${to.pane}`);

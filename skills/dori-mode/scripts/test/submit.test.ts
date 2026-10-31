@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config.ts";
-import { SEND_CHUNK_BYTES, sendVerified, submitToPane } from "../src/panes.ts";
+import { writeFrozen } from "../src/frozen.ts";
+import { SEND_CHUNK_BYTES, sendVerified, submitToPane, transcriptHas } from "../src/panes.ts";
 import { editorText, type PaneKeys, SUBMIT_TIMING, submitText } from "../src/submit.ts";
 import { announceChange } from "../src/update-announce.ts";
 import { fakeClock, fakeRunner, newWorld, withState } from "./fakes.ts";
@@ -49,6 +50,63 @@ test("an empty box without a running turn is NOT_SUBMITTED, even when the transc
   expect(r.status).toBe("NOT_SUBMITTED");
   expect(r.reason).toStartWith("input box empty but no running turn");
   expect(log.enters).toBe(1);
+});
+
+// omo empties the box with no running turn on screen two ways: a short turn that ends between screen reads (delivered), and
+// a text typed while the main turn waits on its children, which omo queues undelivered (pingpong-analytics, 2026-10-31)
+test("an empty box with no running turn on screen is SUBMITTED once the session's transcript has the text", async () => {
+  const { keys } = keysFor([EMPTY]);
+  let checks = 0;
+  const r = await submitText({ ...keys, delivered: async () => ++checks >= 3 }, fakeClock(0), "[LEAD] hello");
+  expect(r).toEqual({ status: "SUBMITTED", reason: "input box empty and the session's transcript has the text" });
+});
+
+test("a text omo took from the box but never put in the transcript stays NOT_SUBMITTED, and the reason says so", async () => {
+  const { keys } = keysFor([EMPTY]);
+  const r = await submitText({ ...keys, delivered: async () => false }, fakeClock(0), "[LEAD] hello");
+  expect(r.status).toBe("NOT_SUBMITTED");
+  expect(r.reason).toStartWith("input box empty but no running turn");
+  expect(r.reason).toContain("the text is not in the session's transcript");
+});
+
+test("the transcript counts a user message with the text's first line from the send on, not an older one or the agent quoting it", () => {
+  const line = (role: string, at: string, text: string) => JSON.stringify({ type: "message", timestamp: at, message: { role, content: [{ type: "text", text }] } });
+  const text = "[LEAD] The lead moved to tmux session aoe_new\nsecond line";
+  const since = Date.parse("2026-10-31T07:01:30Z");
+  expect(transcriptHas(line("user", "2026-10-31T07:01:33Z", "[LEAD] The lead moved to tmux session aoe_new\nsecond line"), text, since)).toBe(true);
+  expect(transcriptHas(line("user", "2026-10-31T06:59:00Z", "[LEAD] The lead moved to tmux session aoe_new"), text, since)).toBe(false);
+  expect(transcriptHas(line("assistant", "2026-10-31T07:01:40Z", "[LEAD] The lead moved to tmux session aoe_new"), text, since)).toBe(false);
+});
+
+test("a text typed into a pane a handover froze goes to the session that replaced it, never into the frozen pane", async () => {
+  // Given: the old lead was frozen and replaced, as on 2026-10-31 when a lane sent two reports into the frozen one
+  const world = newWorld();
+  world.screen = EMPTY;
+  const config = { ...defaultConfig("/home/test"), backend: "aoe" as const, stateDir: state.dir, watchLog: join(state.dir, "lanes.log") };
+  writeFrozen(state.dir, { pane: "aoe_lead_old", aoeId: "a", at: "2026-10-31T07:03:09Z", agentPid: 11, pids: [11], to: "aoe_lead_new" });
+  // When
+  const r = await submitToPane(fakeRunner(world), fakeClock(0), config, "aoe_lead_old", "[REPORT] demo | milestone | done");
+  // Then
+  expect(r).toMatchObject({ status: "SUBMITTED", pane: "aoe_lead_new" });
+  const typedInto = world.calls.filter((c) => c[0] === "tmux" && c[1] === "send-keys").map((c) => c[c.indexOf("-t") + 1]);
+  expect(typedInto.length).toBeGreaterThan(0);
+  expect(typedInto.every((t) => t === "=aoe_lead_new:")).toBe(true);
+  expect(await Bun.file(config.watchLog).text()).toContain("submit FORWARDED aoe_lead_old -> aoe_lead_new");
+});
+
+test("a pane whose agent is stopped (frozen mid-turn, its screen still showing the running turn) is NOT_SUBMITTED and nothing is typed", async () => {
+  // Given: the frozen screen still shows esc to interrupt, as QA saw on a lead frozen during a turn
+  const world = newWorld();
+  world.screen = RUNNING;
+  const base = fakeRunner(world);
+  const run: typeof base = async (argv, opts) => (argv[0] === "ps" && argv[1] === "-A" ? { code: 0, out: "   11    10 Tl+  /home/u/.bun/bin/bun /x/senpi/dist/bundle/cli.js\n", err: "" } : base(argv, opts));
+  const config = { ...defaultConfig("/home/test"), backend: "aoe" as const, stateDir: state.dir, watchLog: join(state.dir, "lanes.log") };
+  // When
+  const r = await submitToPane(run, fakeClock(0), config, "aoe_lead_old", "[REPORT] demo | milestone | done");
+  // Then
+  expect(r.status).toBe("NOT_SUBMITTED");
+  expect(r.reason).toStartWith("the agent in the pane is stopped (pid 11, frozen)");
+  expect(world.calls.some((c) => c[0] === "tmux" && c[1] === "send-keys")).toBe(false);
 });
 
 test("the text echoed in the transcript above the box is not unsent text", async () => {
