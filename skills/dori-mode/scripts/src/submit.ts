@@ -11,6 +11,11 @@ export type PaneKeys = {
   readonly type: (text: string) => Promise<string | undefined>;
   readonly enter: () => Promise<void>;
   readonly read: () => Promise<string>;
+  // the agent's own record: true once the session's transcript holds the text as a user message. omo can empty the input
+  // box without a visible running turn either way: a short turn ends between two screen reads, while a text typed when
+  // the main turn waits on its children sits in omo's input queue, undelivered, until that turn's prompt returns
+  // (pingpong-analytics, 2026-10-31: three lead texts never reached its transcript)
+  readonly delivered?: () => Promise<boolean>;
 };
 
 export type SubmitTiming = { readonly settleMs: number; readonly pollMs: number; readonly clearPolls: number; readonly busyPolls: number };
@@ -97,8 +102,12 @@ export const submitText = async (keys: PaneKeys, clock: Clock, text: string, tim
   for (let poll = 0; poll < timing.busyPolls; poll++) {
     if (turnRunning(screen)) return { status: "SUBMITTED", reason: "input box empty and the turn runs" };
     if (steeringQueued(screen, text)) return { status: "SUBMITTED", reason: "input box empty and the text waits in the Steering queue" };
+    if (keys.delivered && (await keys.delivered())) return { status: "SUBMITTED", reason: "input box empty and the session's transcript has the text" };
     await clock.sleep(timing.pollMs);
     screen = await keys.read();
   }
-  return failed(`input box empty but no running turn ("${BUSY_MARK}") within ${(timing.busyPolls * timing.pollMs) / 1000}s`);
+  const within = `within ${(timing.busyPolls * timing.pollMs) / 1000}s`;
+  return failed(keys.delivered
+    ? `input box empty but no running turn ("${BUSY_MARK}") and the text is not in the session's transcript ${within} (omo holds a text typed while the main turn waits on its children; it may arrive when that turn ends)`
+    : `input box empty but no running turn ("${BUSY_MARK}") ${within}`);
 };
