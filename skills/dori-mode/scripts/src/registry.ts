@@ -25,7 +25,8 @@ export type LaneStatus = "working" | "done-claimed" | "verified-done" | "not-don
 // summary: the lane's words for the owner's thread (dori claim-done --summary), posted when the lane closes, unless posted
 // names the lane's result already in that thread (its own post shortly before the claim, or --posted): then the close posts
 // nothing more, so the owner does not read the result twice (owner 2026-10-21 "지금 왜 두번씩 답변하는지")
-export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly summary?: string; readonly posted?: string };
+// idleAt: when dori watch first saw the lane's pane idle after the claim, cleared when a turn ran before IDLE_SETTLE_MS
+export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly summary?: string; readonly posted?: string; readonly idleAt?: number };
 // a message the lane's own session posted in its work thread (dori send, dori thread reply|wait|done run in its pane)
 export type ThreadPost = { readonly id: string; readonly at: string; readonly text: string };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };

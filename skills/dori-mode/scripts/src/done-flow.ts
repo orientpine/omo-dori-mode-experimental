@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 
-import { closeAoeSession, paneActivity } from "./aoe.ts";
+import { closeAoeSession, paneActivity, paneLife } from "./aoe.ts";
 import { autoturnTick } from "./autoturn.ts";
 import { laneBackground } from "./background.ts";
 import { type DoriConfig, fill } from "./config.ts";
@@ -11,7 +11,10 @@ import { leadLimitTick, limitResumeTick } from "./lead-limit.ts";
 import { missedAnswersTick } from "./missed-answers.ts";
 import { hasThread, type Lane, type Registry, statusOf, type ThreadPost, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
-import { sendVerified } from "./panes.ts";
+import { sendVerified, submitToPane } from "./panes.ts";
+import type { Submitted } from "./submit.ts";
+import { replacementOf } from "./frozen.ts";
+import { watchLog } from "./watch-log.ts";
 import { checkDone, type SignalIo } from "./done-signals.ts";
 import { ownerSummary } from "./close-summary.ts";
 
@@ -99,6 +102,57 @@ export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, su
     await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
   }
   return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}${postedLine}`;
+};
+
+// The lead often gives a lane new work right after it claimed done (the owner's feedback on its result). On 2026-10-31
+// Moodori's dori-promo claimed at 07:16:55Z, the lead typed two new instructions into it at 07:19 and 07:22 (both
+// SUBMITTED), the lane started on them, and the watch closed it at 07:22:29Z in the middle of that work: five minutes after
+// the claim without an objection. The claim is now taken back when the lead types into the lane (dori type) or the lane
+// runs a new turn after it sat idle: the lane is working again, without a timer, until it claims again.
+export const reopenClaim = async (deps: FlowDeps, lane: Lane, why: string): Promise<string> => {
+  await deps.registry.write(withStatus(lane, "working", `REOPENED: ${why}`, iso(deps.clock), { claim: undefined, idleSince: undefined, blocked: undefined, lastReplyAt: deps.clock.now() }));
+  return `LANE_CLAIM_REOPENED ${lane.key} ${lane.pane ?? "-"} ${why}`;
+};
+
+const reopenedText = (key: string, why: string): string =>
+  `[LEAD] your done claim for ${key} is taken back: ${why}. The lane is working again and does not close on a timer; when this work is done, claim again with dori claim-done ${key}.`;
+
+// Who closed a closed lane: the watch closes a claim it settled (verified-done just before closed), else dori close did.
+export const closerOf = (lane: Lane): string => {
+  const h = lane.history ?? [];
+  const i = h.findLastIndex((e) => e.status === "closed");
+  return h[i - 1]?.status === "verified-done" ? "the watch (automatic close after the done claim)" : "dori close (the lead)";
+};
+
+// dori type: a text the lead types into a lane. Into a done-claimed lane it is new work, so the claim is taken back first
+// (LANE_CLAIM_REOPENED in the watch log, then the lane is told after the text). Into the pane of a closed lane nothing is
+// typed: NOT_SUBMITTED <pane> LANE_IS_CLOSED <key> with when and who closed it, instead of the screen check's "no ❯
+// prompt", which the lead read as a busy lane for 30 minutes (Moodori 2026-10-31 07:23Z). A gone or dead pane is named the
+// same way by the screen check (PANE_GONE / PANE_DEAD).
+export const typeIntoPane = async (deps: FlowDeps, pane: string, text: string): Promise<Submitted & { readonly pane: string; readonly notes: readonly string[] }> => {
+  const log = (line: string) => watchLog(deps.config.watchLog, deps.clock, { source: "type", line });
+  const notes: string[] = [];
+  // a pane a handover froze forwards its text to the session that replaced it (submitToPane): no lane check here
+  const forwarded = replacementOf(deps.config.stateDir, pane) !== undefined;
+  const lane = forwarded ? null : await deps.registry.byPane(pane);
+  if (!lane && !forwarded) {
+    const closed = (await deps.registry.list()).filter((l) => l.pane === pane && statusOf(l) === "closed").sort((a, b) => (a.closedAt ?? "").localeCompare(b.closedAt ?? "")).at(-1);
+    if (closed) {
+      const gone = deps.config.backend === "aoe" && !(await paneLife(deps.run, pane)).live ? "; its pane is gone" : "";
+      const reason = `LANE_IS_CLOSED ${closed.key} closed at ${closed.closedAt} by ${closerOf(closed)}${gone}: nothing was typed; no lane reads this pane, launch a new lane (dori launch) for new work`;
+      log(`NOT_SUBMITTED ${pane} ${reason}`);
+      return { status: "NOT_SUBMITTED", reason, pane, notes };
+    }
+  }
+  const why = "the lead typed a new instruction into the lane (dori type)";
+  if (lane && statusOf(lane) === "done-claimed") {
+    const line = await reopenClaim(deps, lane, why);
+    log(line);
+    notes.push(line);
+  }
+  const r = await submitToPane(deps.run, deps.clock, deps.config, pane, text);
+  if (notes.length && lane?.pane && r.status === "SUBMITTED") await sendVerified(deps.run, deps.clock, deps.config, r.pane, reopenedText(lane.key, why));
+  return { ...r, notes };
 };
 
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
@@ -275,6 +329,9 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   if (blocked.length) return [await objectDone(deps, lane, blocked)];
   const failing = (await checkDone(lane.done, deps.run, signalIo(deps, lane))).filter((c) => !c.ok).map((c) => `${c.signal} -> ${c.detail}`);
   if (failing.length) return [await objectDone(deps, lane, failing)];
+  // the checks take seconds: a dori type that took the claim back meanwhile wins
+  const fresh = await deps.registry.read(lane.key);
+  if (fresh && statusOf(fresh) !== "done-claimed") return [];
   const verified = withStatus(lane, "verified-done", "Done signals read back live", iso(deps.clock));
   await deps.registry.write(verified);
   const note = `Done: ${evidence}`;
@@ -306,8 +363,15 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
       lane = { ...lane, claim: { ...claim, emitted: true } };
       await deps.registry.write(lane);
     }
+    if (deps.config.backend === "aoe" && lane.pane) {
+      const reopened = await claimTurn(deps, lane, lane.claim ?? claim);
+      if (reopened) {
+        out.push(reopened);
+        continue;
+      }
+    }
     if (deps.clock.now() - Date.parse(claim.at) < windowMs(deps)) continue;
-    out.push(...(await settle(deps, lane, claim.evidence)));
+    out.push(...(await settle(deps, (await deps.registry.read(lane.key)) ?? lane, claim.evidence)));
   }
   if (deps.config.backend === "aoe") {
     out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
@@ -323,6 +387,28 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
 
 // a turn that ended counts as stopped only after it stays ended this long (a goal wake or the next step may follow)
 export const IDLE_SETTLE_MS = 45_000;
+
+// A claimed lane answers the claim's [LEAD] line and may get a goal wake, both within IDLE_SETTLE_MS of going idle. Once it
+// stayed idle that long, a main turn running again (omo's busy mark) is new work: a text typed some other way than dori
+// type, a background result. The claim is taken back and the lane told. A turn before that only restarts the idle clock.
+const claimTurn = async (deps: FlowDeps, lane: Lane, claim: NonNullable<Lane["claim"]>): Promise<string | undefined> => {
+  const pane = lane.pane ?? "";
+  const act = (await paneActivity(deps.run, [pane])).get(pane);
+  const now = deps.clock.now();
+  if (act === "idle") {
+    if (claim.idleAt === undefined) await deps.registry.patch(lane.key, { claim: { ...claim, idleAt: now } });
+    return undefined;
+  }
+  if (act !== "busy" || claim.idleAt === undefined) return undefined;
+  if (now - claim.idleAt < IDLE_SETTLE_MS) {
+    await deps.registry.patch(lane.key, { claim: { ...claim, idleAt: undefined } });
+    return undefined;
+  }
+  const why = `the lane ran a new turn after it sat idle since ${new Date(claim.idleAt).toISOString()}`;
+  const line = await reopenClaim(deps, lane, why);
+  await sendVerified(deps.run, deps.clock, deps.config, pane, reopenedText(lane.key, why));
+  return line;
+};
 
 // LANE_BLOCKED once each time a working lane's agent stops for a human: aoe says waiting or error, an omo question is
 // open, or the turn ended and stayed idle; never while the screen shows a running turn. An idle lane whose session still

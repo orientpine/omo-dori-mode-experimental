@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { aoeSessions, captureTmux, listAoePanes, sessionFor, target, tmuxPanePid, waitForPrompt } from "./aoe.ts";
+import { aoeSessions, captureTmux, listAoePanes, paneLife, sessionFor, target, tmuxPanePid, waitForPrompt } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { Backend, DoriConfig } from "./config.ts";
 import { replacementOf } from "./frozen.ts";
@@ -117,6 +117,9 @@ const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, t
   config.backend === "aoe"
     ? {
         type: async (text) => {
+          // named, so a lead does not read a missing pane as a busy one (the prompt check below would say "no ❯ prompt")
+          const life = await paneLife(run, pane);
+          if (!life.live) return life.how === "gone" ? `PANE_GONE: there is no tmux session ${pane} (it ended, or the name is wrong); nothing was typed` : `PANE_DEAD: the program in ${pane} exited (status ${life.status}); nothing was typed`;
           const stopped = await stoppedAgent(run, pane);
           if (stopped) return `the agent in the pane is stopped (pid ${stopped}, frozen): nothing would read the text, so it was not typed`;
           if (!(await waitForPrompt(run, clock, pane, 10, 1_000))) return "no ❯ prompt in the pane";

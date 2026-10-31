@@ -143,7 +143,7 @@ The Dori sees `LANE_DONE_CLAIMED`, and the lane is told it closes in five minute
 dori object-done fix-login --reason "the changelog entry is missing"
 ```
 
-The reason goes straight to the lane, which keeps working and claims again later. If nobody objects, `dori watch` closes the lane once the window is up. Before it does, it reads every `Done =` signal live again, and it refuses if a worktree still has commits that never reached a remote or uncommitted tracked changes. Either one turns the claim back into not-done, with the reason. Restarting the watcher doesn't reset the clock.
+The reason goes straight to the lane, which keeps working and claims again later. If nobody objects, `dori watch` closes the lane once the window is up. Before it does, it reads every `Done =` signal live again, and it refuses if a worktree still has commits that never reached a remote or uncommitted tracked changes. Either one turns the claim back into not-done, with the reason. Restarting the watcher doesn't reset the clock. New work in the window takes the claim back instead: when you `dori type` into the lane (or its turn runs again after it went quiet), the watch log says `LANE_CLAIM_REOPENED`, the lane keeps working and claims again later. Typing into a lane that is already closed says `LANE_IS_CLOSED` with when and who closed it.
 
 ### What counts as done
 
