@@ -16,7 +16,7 @@ The key is in your brief's lane footer. If you leave it out, the lane registered
 ## What happens next
 
 1. The Dori gets a `LANE_DONE_CLAIMED` event, and you get a `[LEAD]` line saying when the lane closes.
-2. Stay idle and start no new work.
+2. Stay idle and start no new work. If the lead gives you new work now (a `dori type` into your pane, often the owner's feedback on your result), your claim is taken back: you get `[LEAD] your done claim for <key> is taken back: ...`, the lane is working again and nothing closes it on a timer. Do that work, then claim again.
 3. If the Dori does not object within 5 minutes, the watcher closes the lane. Before closing, it reads back every `Done =` signal live. It refuses to close if any of your worktrees still has uncommitted tracked changes, or commits that are on no remote.
 4. Closing posts your summary in your thread first (unless your result is already there, see above), and only once it went out marks the thread done (with a Discord token by renaming it to its done mark and archiving it, else through the thread hook), unless another open lane or an open question card still uses the thread: then your summary is only posted there and the thread keeps its status. No summary, or a post that failed, and the lane stays open (`CLOSE_SUMMARY_MISSING` / `CLOSE_SUMMARY_NOT_SENT`): you get `[LEAD] not done` with the line to claim again. It closes your tab, and removes your worktrees. A lane with no usable thread ref gets `THREAD_MISSING <key>` instead of a silent skip; the lead fixes the ref with `dori set-thread <key> <adapter>:<id>`.
 

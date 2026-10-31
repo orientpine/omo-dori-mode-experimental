@@ -81,6 +81,16 @@ export const captureTmux = async (run: Runner, pane: string, lines?: number): Pr
   return lines ? out.split("\n").slice(-lines).join("\n") : out;
 };
 
+export type PaneLife = { readonly live: true } | { readonly live: false; readonly how: "gone" } | { readonly live: false; readonly how: "dead"; readonly status: number };
+
+// gone: no tmux session of that name; dead: the session is there, its pane's program exited (remain-on-exit)
+export const paneLife = async (run: Runner, pane: string): Promise<PaneLife> => {
+  if ((await run(["tmux", "has-session", "-t", `=${pane}`])).code !== 0) return { live: false, how: "gone" };
+  const r = await run(["tmux", "display-message", "-p", "-t", `=${pane}:`, "#{pane_dead} #{pane_dead_status}"]);
+  const [dead = "", status = ""] = r.out.trim().split(" ");
+  return r.code === 0 && dead === "1" ? { live: false, how: "dead", status: Number(status) } : { live: true };
+};
+
 export const tmuxPanePid = async (run: Runner, pane: string): Promise<number> => {
   const r = await run(["tmux", "display-message", "-p", "-t", target(pane), "#{pane_pid}"]);
   return r.code === 0 ? Number(r.out.trim()) || 0 : 0;

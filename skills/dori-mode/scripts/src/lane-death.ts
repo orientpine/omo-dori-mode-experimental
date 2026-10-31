@@ -1,3 +1,4 @@
+import { paneLife } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { submitToPane } from "./panes.ts";
 import type { Submitted } from "./submit.ts";
@@ -21,15 +22,6 @@ const JOURNAL_BACK_MS = 30 * 60_000;
 
 // first check that found each pane not live, for the second check (in memory: a restart of the watch only delays it a tick)
 const notLive = new Map<string, number>();
-
-export type PaneLife = { readonly live: true } | { readonly live: false; readonly how: "gone" } | { readonly live: false; readonly how: "dead"; readonly status: number };
-
-export const paneLife = async (run: Runner, pane: string): Promise<PaneLife> => {
-  if ((await run(["tmux", "has-session", "-t", `=${pane}`])).code !== 0) return { live: false, how: "gone" };
-  const r = await run(["tmux", "display-message", "-p", "-t", `=${pane}:`, "#{pane_dead} #{pane_dead_status}"]);
-  const [dead = "", status = ""] = r.out.trim().split(" ");
-  return r.code === 0 && dead === "1" ? { live: false, how: "dead", status: Number(status) } : { live: true };
-};
 
 // the journal line that says the lane's aoe-session scope (aoe-session-<first 8 of the aoe id>...) met the OOM killer
 export const oomLine = async (run: Runner, pane: string, sinceMs: number): Promise<string | undefined> => {

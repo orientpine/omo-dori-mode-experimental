@@ -24,7 +24,7 @@ import { retryLaneTells } from "./lane-tells.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick } from "./dead-panes.ts";
-import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, recordThreadPost, resumeLane, watchTick } from "./done-flow.ts";
+import { claimDone, closeLane, type FlowDeps, LaneStateError, objectDone, pauseLane, recordThreadPost, resumeLane, typeIntoPane, watchTick } from "./done-flow.ts";
 import { ownerSpeechProblem, plainSummaryProblem } from "./close-summary.ts";
 import { literalNewlineProblem } from "./messenger/literal-newline.ts";
 import { autoReadyLine, freshnessTick } from "./freshness.ts";
@@ -736,7 +736,8 @@ try {
       const file = opt("text-file");
       const text = file ? (await Bun.file(file).text()).trim() : need("text");
       if (!text) die("type needs non-empty text");
-      const r = await submitToPane(run, realClock, config, pane, text);
+      const r = await typeIntoPane(deps, pane, text);
+      for (const note of r.notes) console.error(note);
       if (r.pane !== pane) console.error(`FORWARDED ${pane} -> ${r.pane}: ${pane} was frozen by a handover, so the text went to the session that replaced it`);
       console.log(r.status === "SUBMITTED" ? `SUBMITTED ${r.pane}` : `NOT_SUBMITTED ${r.pane} ${r.reason}`);
       // a pane a handover is moving: the text is kept for the new session too (lane-handover hands it over at the commit)

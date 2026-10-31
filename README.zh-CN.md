@@ -143,7 +143,7 @@ Dori 收到 `LANE_DONE_CLAIMED`,lane 会被告知 5 分钟后关闭。这期间�
 dori object-done fix-login --reason "缺少 changelog 条目"
 ```
 
-理由会原样发给 lane,lane 修好后再次声明完成。如果没人反对，时间一到 `dori watch` 就会关闭这条 lane。关闭前它会重新实时读取每个 `Done =` 信号；如果 worktree 里还有没推到远端的提交或未提交的改动，它就不关闭，声明会带着原因退回 not-done。重启 watcher 不会让 5 分钟重新计时。
+理由会原样发给 lane,lane 修好后再次声明完成。如果没人反对，时间一到 `dori watch` 就会关闭这条 lane。关闭前它会重新实时读取每个 `Done =` 信号；如果 worktree 里还有没推到远端的提交或未提交的改动，它就不关闭，声明会带着原因退回 not-done。重启 watcher 不会让 5 分钟重新计时。这期间给它新的工作，完成声明就会撤回：用 `dori type` 给 lane 新指示，或安静下来的 lane 又开始一轮，监视日志会记下 `LANE_CLAIM_REOPENED`，lane 继续工作，之后再声明完成。对已经关闭的 lane 执行 `dori type`，会返回 `LANE_IS_CLOSED`，并说明何时、由谁关闭。
 
 ### 怎样才算完成
 
