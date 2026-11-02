@@ -104,6 +104,15 @@ test("a cwd that is no git checkout raises no objection of its own", async () =>
   expect(lines.at(-1)).toStartWith("LANE_CLOSED demo-lane ");
 });
 
+test("a cwd git cannot read holds the lane as unreadable git state, not as no checkout", async () => {
+  world.worktreeList = cwdOnly;
+  world.revParseErr = "fatal: bad config line 1 in file .git/config";
+  await claimDone(at(T0), lane, "merged acme/app#1");
+  await watchTick(at(T0 + 6 * MIN));
+  expect((await at(T0).registry.read("demo-lane"))?.objection?.reasons).toEqual(["unpushed work in /repo (git state unreadable)"]);
+  expect(closedVia()).toHaveLength(0);
+});
+
 test("a Done signal that does not read back live becomes the objection", async () => {
   world.issueState = "OPEN";
   await claimDone(at(T0), lane, "merged acme/app#1");

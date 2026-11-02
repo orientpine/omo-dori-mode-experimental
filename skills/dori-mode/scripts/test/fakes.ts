@@ -19,6 +19,8 @@ export type World = {
   worktreeList?: string;
   // false: the checked path is no git checkout, and every git -C there fails as git would
   inGit?: boolean;
+  // set: git rev-parse fails with this stderr (a repository git cannot read, not a missing one)
+  revParseErr?: string;
   stuckReads: number;
   screen: string;
   screens: Record<string, string>;
@@ -95,6 +97,7 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
   if (cmd === "tmux") return ok();
   if (cmd === "git" && w.inGit === false) return { code: 128, out: "", err: "fatal: not a git repository (or any of the parent directories): .git" };
   if (cmd === "git" && argv.includes("worktree") && argv.includes("list")) return ok(w.worktreeList ?? `worktree /repo\nbranch refs/heads/main\n\nworktree ${WT}\nbranch refs/heads/demo-lane`);
+  if (cmd === "git" && argv.includes("rev-parse") && w.revParseErr) return { code: 128, out: "", err: w.revParseErr };
   if (cmd === "git" && argv.includes("rev-parse") && argv.includes("--is-inside-work-tree")) return ok("true\n");
   if (cmd === "git" && argv.includes("status")) return ok(w.dirtyIn?.[argv[2] ?? ""] ?? w.dirty);
   if (cmd === "git" && argv.includes("rev-list")) return ok(w.aheadIn?.[argv[2] ?? ""] ?? w.aheadCount);
