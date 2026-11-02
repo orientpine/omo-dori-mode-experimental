@@ -41,25 +41,19 @@ if [ -d "$src/.git" ]; then
   elif [ "${origin%.git}" != "${repo%.git}" ]; then
     echo "warning: $src pulls from ${origin:-no origin}, not $repo; not updating it." >&2
     echo "  To follow $repo: git -C \"$src\" remote set-url origin \"$repo\" && git -C \"$src\" pull --ff-only" >&2
-  elif ! git -C "$src" fetch --quiet; then
-    echo "error: could not fetch updates for $src; git's message above says why. The checkout was left as it is." >&2
-    exit 1
-  elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
-    # Local work is named only when it is what blocks the fast-forward: commits upstream lacks, or a changed or
-    # untracked file that upstream changed too. Any other failure (no upstream branch, a lock file) is git's message.
-    ahead="$(git -C "$src" log --oneline '@{u}..HEAD' 2>/dev/null || true)"
-    in_way="$(git -C "$src" -c core.quotePath=false status --porcelain --no-renames --untracked-files=all | cut -c4- |
-      grep -Fx -f <(git -C "$src" -c core.quotePath=false diff --name-only HEAD '@{u}' 2>/dev/null) || true)"
-    if [ -z "$ahead$in_way" ]; then
-      echo "error: could not update $src; git's message above says why." >&2
-      exit 1
-    fi
+  elif ! git -C "$src" pull --ff-only --quiet; then
+    # git's message above says why the pull failed; this only adds what local work the checkout holds and the two
+    # ways on, without guessing whether that work is the cause (a lock file or a remote that cannot be reached is not).
+    echo "error: could not update $src with git pull --ff-only; git's message above says why." >&2
     changes="$(git -C "$src" status --short)"
-    echo "error: could not update $src: local work there is in the way of git pull --ff-only." >&2
-    [ -z "$changes" ] || { echo "  Changed files (git status --short):"; printf '%s\n' "$changes" | sed 's/^/    /'; } >&2
-    [ -z "$ahead" ] || { echo "  Local commits upstream lacks:"; printf '%s\n' "$ahead" | sed 's/^/    /'; } >&2
-    echo "  To keep it and install the checkout as it is, run install.sh again with DORI_NO_PULL=1 (curl ... | DORI_NO_PULL=1 bash)." >&2
-    echo "  To drop it and update: git -C \"$src\" fetch && git -C \"$src\" reset --hard '@{u}', then run install.sh again." >&2
+    ahead="$(git -C "$src" log --oneline '@{u}..HEAD' 2>/dev/null || true)"
+    if [ -n "$changes$ahead" ]; then
+      [ -z "$changes" ] || { echo "  Local changes in that checkout (git status --short):"; printf '%s\n' "$changes" | sed 's/^/    /'; } >&2
+      [ -z "$ahead" ] || { echo "  Local commits upstream lacks:"; printf '%s\n' "$ahead" | sed 's/^/    /'; } >&2
+      echo "  If that local work is what is in the way:" >&2
+      echo "    to keep it and install the checkout as it is, run install.sh again with DORI_NO_PULL=1 (curl ... | DORI_NO_PULL=1 bash);" >&2
+      echo "    to drop it and update: git -C \"$src\" fetch && git -C \"$src\" reset --hard '@{u}', then run install.sh again." >&2
+    fi
     exit 1
   fi
 else

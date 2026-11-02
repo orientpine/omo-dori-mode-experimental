@@ -86,23 +86,34 @@ test("a local commit upstream lacks stops install.sh with that commit listed; DO
   expect(readFileSync(join(src, file), "utf8")).toBe("v1\n");
 });
 
-test("a fetch that fails, or a pull that fails for another reason, is not blamed on unrelated local edits", () => {
-  const { upstream, src, commitUpstream, install } = setup();
-  writeFileSync(join(src, "README.local"), "notes\n");
+test("a pull that fails with no local work in the checkout stops install.sh with git's reason and no advice to drop work", () => {
+  const { src, commitUpstream, install } = setup();
   commitUpstream("v2\n");
-  // a lock file stops the fast-forward; the untracked note is not in its way
   writeFileSync(join(src, ".git/index.lock"), "");
-  const locked = install();
-  expect(locked.code).toBe(1);
-  expect(locked.err).toContain("git's message above says why");
-  expect(locked.err).not.toContain("DORI_NO_PULL");
-  rmSync(join(src, ".git/index.lock"));
-  // the remote is gone: a fetch failure says so and changes nothing
-  rmSync(upstream, { recursive: true, force: true });
-  const unreachable = install();
-  expect(unreachable.code).toBe(1);
-  expect(unreachable.err).toContain(`could not fetch updates for ${src}`);
-  expect(unreachable.err).not.toContain("reset --hard");
+  const r = install();
+  expect(r.code).toBe(1);
+  expect(r.err).toContain(`could not update ${src} with git pull --ff-only; git's message above says why.`);
+  expect(r.err).not.toContain("DORI_NO_PULL");
+  expect(r.err).not.toContain("reset --hard");
+});
+
+test("an upstream rename of a locally edited file lists the edit; an upstream branch that is gone stops the install", () => {
+  const { upstream, src, file, install } = setup();
+  git(upstream, "mv", file, `${file}.moved`);
+  git(upstream, "commit", "-qm", "move");
+  writeFileSync(join(src, file), "patched\n");
+  const renamed = install();
+  expect(renamed.code).toBe(1);
+  expect(renamed.err).toContain(` M ${file}`);
+  expect(renamed.err).toContain("DORI_NO_PULL=1");
+  git(src, "checkout", "-q", "--", file);
+  git(upstream, "checkout", "-q", "-b", "other");
+  git(upstream, "branch", "-q", "-D", "main");
+  const before = git(src, "rev-parse", "HEAD");
+  const gone = install();
+  expect(gone.code).toBe(1);
+  expect(gone.err).toContain(`could not update ${src}`);
+  expect(git(src, "rev-parse", "HEAD")).toBe(before);
 });
 
 test("DORI_NO_PULL=1 installs the checkout as it is, local edit and all", () => {
