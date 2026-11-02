@@ -2,7 +2,10 @@ import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { paneLife } from "./aoe.ts";
-import { pendingBackground } from "./background.ts";
+import { homedir } from "node:os";
+
+import { pendingBackground, pidAlive } from "./background.ts";
+import { liveMonitors, manifestPath, readManifest } from "./handover.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type GoalRead, laneGoal } from "./goal.ts";
 import { readScreen, submitToPane } from "./panes.ts";
@@ -19,7 +22,9 @@ import { turnRunning } from "./submit.ts";
 // then every 10 s while the turn is idle) and dori watch, every 30 s, finishes it for a lane launch left pending.
 // Either way a turn counts as ended without a goal only after three idle reads in a row, so a gap between tool calls or
 // turns is no end.
-export const GOAL_WAIT = { everyMs: 10_000, idleChecks: 3 } as const;
+// a mark still pending after 25 minutes (the longest first turn measured took 1383 s) is told once even with background
+// work, so no lane stays pending forever
+export const GOAL_WAIT = { everyMs: 10_000, idleChecks: 3, maxPendingMs: 25 * 60_000 } as const;
 
 export const lastLines = (screen: string): string =>
   screen.split("\n").map((s) => s.trim()).filter(Boolean).slice(-3).join(" / ").replace(/\/(Users|home|Volumes|private|tmp)\/\S+/g, "(local path)").slice(0, 240) || "(blank)";
@@ -51,10 +56,20 @@ export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | 
 // parser) from the transcript of the lane's exact session, under the cwd or its real path; laneBackground's own lookup
 // finds the session by the pane's process and only on aoe. A read that fails counts as none.
 // jobs started before the agent itself are not its own: a restarted session keeps its transcript, and a job the old agent
-// left unfinished died with it (laneBackground has the same cutoff). Known boundary, the same as laneBackground's: the
-// persistent monitors a restart restores predate the new agent and are not seen (backlog item resumed-monitor-background)
+// left unfinished died with it (laneBackground has the same cutoff); a persistent monitor the restart restored counts while
+// the session's monitor manifest says it runs (handover.ts liveMonitors), as in laneBackground
 export const firstTurnRuns = async (deps: FlowDeps, pane: string, cwd: string, session: string, screen: string): Promise<boolean> =>
-  turnRunning(screen) || ownJobs(deps.config.sessionsDir, cwd, session, await agentStart(deps, pane)) > 0;
+  turnRunning(screen) || ownJobs(deps.config.sessionsDir, cwd, session, await agentStart(deps, pane)) > 0 || restoredMonitors(deps.config.sessionsDir, cwd, session, deps.clock.now()) > 0;
+
+const restoredMonitors = (sessionsDir: string, cwd: string, session: string, now: number): number => {
+  if (!session) return 0;
+  const at = resolve(cwd);
+  let real = at;
+  try {
+    real = realpathSync(at);
+  } catch {}
+  return Math.max(...[...new Set([at, real])].map((dir) => liveMonitors(readManifest(manifestPath(sessionsDir, dir, session)), now, pidAlive, homedir()).length));
+};
 
 const agentStart = async (deps: FlowDeps, pane: string): Promise<number> => {
   const shell = await shellPidOf(pane, { run: deps.run, sessionsDir: deps.config.sessionsDir, backend: deps.config.backend });
@@ -115,9 +130,15 @@ export const pendingGoalTick = async (deps: FlowDeps): Promise<string[]> => {
       continue;
     }
     const screen = await readScreen(deps.run, deps.config.backend, lane.pane, 40);
+    if (mark.at !== undefined && deps.clock.now() - mark.at >= GOAL_WAIT.maxPendingMs) {
+      await deps.registry.patch(lane.key, { pendingGoal: undefined });
+      out.push(`LANE_NO_GOAL ${lane.key} ${lane.pane}: still pending 25 minutes after launch with ${noGoalWhy(goal)}; last lines: ${lastLines(screen)}`);
+      out.push(await tellLead(deps, lane.key, noGoalText(lane.key)));
+      continue;
+    }
     const idle = (await firstTurnRuns(deps, lane.pane, cwd, lane.session ?? "", screen)) ? 0 : mark.idle + 1;
     if (idle < GOAL_WAIT.idleChecks) {
-      if (idle !== mark.idle) await deps.registry.patch(lane.key, { pendingGoal: { idle } });
+      if (idle !== mark.idle) await deps.registry.patch(lane.key, { pendingGoal: { ...mark, idle } });
       continue;
     }
     await deps.registry.patch(lane.key, { pendingGoal: undefined });

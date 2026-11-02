@@ -516,7 +516,7 @@ const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: strin
     const bad = STARTUP_FAILURE.exec(screen);
     if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad[0]}`;
     if (await firstTurnRuns(deps, pane, cwd, session, screen)) {
-      await deps.registry.patch(key, { pendingGoal: { idle: 0 } });
+      await deps.registry.patch(key, { pendingGoal: { idle: 0, at: deps.clock.now() } });
       return `STARTUP_PENDING_GOAL ${key} ${pane}: its first turn is still on and has set no goal yet; dori watch says LANE_NO_GOAL if it ends without one`;
     }
     if (idle >= GOAL_WAIT.idleChecks) return `STARTUP_NO_GOAL ${key} ${pane}: the agent runs but ${noGoalWhy(goal)}: its first turn ended ${20 + ((idle - 1) * GOAL_WAIT.everyMs) / 1_000} s after its prompt; last lines: ${lastLines(screen)}`;

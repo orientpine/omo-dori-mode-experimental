@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { laneBackground } from "../src/background.ts";
 import { appendFileSync, chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -313,7 +314,7 @@ test("a first turn still running with no goal is STARTUP_PENDING_GOAL at once, a
   const r = await goalLaunch(["none"]);
   expect(r.startup).toBe(`STARTUP_PENDING_GOAL smoke ${pendingPane}: its first turn is still on and has set no goal yet; dori watch says LANE_NO_GOAL if it ends without one`);
   expect(r.read).toBe(1);
-  expect((await at(T0).registry.read("smoke"))?.pendingGoal).toEqual({ idle: 0 });
+  expect((await at(T0).registry.read("smoke"))?.pendingGoal?.idle).toBe(0);
 });
 
 test("an idle read, then a running turn (a gap between tool calls), is STARTUP_PENDING_GOAL, not a missing goal", async () => {
@@ -346,7 +347,7 @@ test("three idle watch reads in a row say LANE_NO_GOAL and tell the lead once; a
   expect(await watchWith("none", IDLE)).toEqual([]);
   expect(await watchWith("none", IDLE)).toEqual([]);
   expect(await watchWith("none", BUSY)).toEqual([]);
-  expect((await at(T0).registry.read("smoke"))?.pendingGoal).toEqual({ idle: 0 });
+  expect((await at(T0).registry.read("smoke"))?.pendingGoal?.idle).toBe(0);
   expect(await watchWith("none", IDLE)).toEqual([]);
   expect(await watchWith("none", IDLE)).toEqual([]);
   const told = await watchWith("none", IDLE);
@@ -363,7 +364,7 @@ test("a pending lane whose session is gone is left to the lane death check, neve
   const base = at(T0);
   const gone: FlowDeps = { ...base, readGoal: async () => "none", run: async (argv, o) => (argv[1] === "has-session" ? { code: 1, out: "", err: "can't find session" } : base.run(argv, o)) };
   for (let i = 0; i < 4; i++) expect(goalLines(await watchTick(gone))).toEqual([]);
-  expect((await at(T0).registry.read("smoke"))?.pendingGoal).toEqual({ idle: 0 });
+  expect((await at(T0).registry.read("smoke"))?.pendingGoal?.idle).toBe(0);
 });
 
 // lane c of the 2026-11-02 QA: the harness moved its sleep 150 to the background after 5 s, the turn ended, and its goal
@@ -394,7 +395,7 @@ test("dori watch counts no idle read while the lane waits on a background job of
   expect((await goalLaunch(["none"], undefined, { sessionsDir: sessions })).startup).toStartWith("STARTUP_PENDING_GOAL smoke");
   const own: Partial<FlowDeps> = { config: { ...at(T0).config, sessionsDir: sessions } };
   for (let i = 0; i < 4; i++) expect(await watchWith("none", IDLE, own)).toEqual([]);
-  expect((await at(T0).registry.read("smoke"))?.pendingGoal).toEqual({ idle: 0 });
+  expect((await at(T0).registry.read("smoke"))?.pendingGoal?.idle).toBe(0);
   jobEnds();
   expect(await watchWith("none", IDLE, own)).toEqual([]);
   expect(await watchWith("none", IDLE, own)).toEqual([]);
@@ -432,7 +433,7 @@ test("a herdr pending lane waiting on a background job of its own is not told; o
   const deps = herdrWatch(sessions);
   await deps.registry.write({ key: "hp", title: "hp", thread: "none", brief: "/b", done: "file /x", openedAt: "2026-01-01T00:00:00Z", pane: "w:p9", session: ID, cwd: "/tmp/w", pendingGoal: { idle: 0 } });
   for (let i = 0; i < 4; i++) expect(goalLines(await watchTick(deps))).toEqual([]);
-  expect((await deps.registry.read("hp"))?.pendingGoal).toEqual({ idle: 0 });
+  expect((await deps.registry.read("hp"))?.pendingGoal?.idle).toBe(0);
   world.ps = "500 1 bash";
   const gone = (await watchTick(deps)).filter((l) => /^LANE_NO_GOAL/.test(l));
   expect(gone[0]).toBe("LANE_NO_GOAL_AGENT_GONE hp w:p9: no agent runs in the pane any more before it set a goal");
@@ -451,6 +452,52 @@ test("a job record from before the agent's own start (a restarted session) keeps
   expect(await watchWith("none", IDLE, own)).toEqual([]);
   expect(await watchWith("none", IDLE, own)).toEqual([]);
   expect((await watchWith("none", IDLE, own))[0]).toStartWith(`LANE_NO_GOAL smoke ${pendingPane}`);
+});
+
+// a persistent monitor omo restored after a same-session restart: its start record predates the new agent, and the
+// session's monitor manifest (extensions/terminal/<id>.json) says it runs while its recorded process lives
+const restoredMonitor = (sessions: string, cwd: string, pid: number) => {
+  const dir = join(sessions, `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`, "extensions", "terminal");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${ID}.json`), JSON.stringify({ monitors: [{ description: "result file", command: "until [ -f /tmp/r ]; do sleep 5; done", runtime: { pid } }] }));
+};
+const restartedLane = (sessions: string) => {
+  world.ps = `10 1 /bin/bash /dev/fd/4\n11 10 /home/u/.bun/bin/bun /x/senpi/dist/bundle/cli.js --extension /x/plugin --model m --session-id ${ID}`;
+  sessionFiles(sessions, "/tmp/w")(ID, "QA. Read and execute the lane brief");
+};
+const DEAD_PID = 2147480000;
+
+test("a persistent monitor restored after a restart keeps a pending lane's first turn on while its process lives; once it is gone, three idle reads say LANE_NO_GOAL", async () => {
+  const sessions = join(state.dir, "sessions");
+  restartedLane(sessions);
+  restoredMonitor(sessions, "/tmp/w", process.pid);
+  world.screen = IDLE;
+  expect((await goalLaunch(["none"], undefined, { sessionsDir: sessions })).startup).toStartWith(`STARTUP_PENDING_GOAL smoke ${pendingPane}`);
+  const own: Partial<FlowDeps> = { config: { ...at(T0).config, sessionsDir: sessions } };
+  for (let i = 0; i < 4; i++) expect(await watchWith("none", IDLE, own)).toEqual([]);
+  restoredMonitor(sessions, "/tmp/w", DEAD_PID);
+  expect(await watchWith("none", IDLE, own)).toEqual([]);
+  expect(await watchWith("none", IDLE, own)).toEqual([]);
+  expect((await watchWith("none", IDLE, own))[0]).toStartWith(`LANE_NO_GOAL smoke ${pendingPane}: its first turn ended`);
+});
+
+test("laneBackground, the blocked check's reading, counts a persistent monitor restored after a restart while its process lives", async () => {
+  const sessions = join(state.dir, "sessions");
+  restartedLane(sessions);
+  restoredMonitor(sessions, "/tmp/w", process.pid);
+  expect((await laneBackground(at(T0).run, sessions, PANE, "/tmp/w"))?.map((j) => j.id)).toEqual(["restored:result file"]);
+  restoredMonitor(sessions, "/tmp/w", DEAD_PID);
+  expect(await laneBackground(at(T0).run, sessions, PANE, "/tmp/w")).toEqual([]);
+});
+
+test("a lane still pending 25 minutes after launch is LANE_NO_GOAL once, even while its first turn runs", async () => {
+  await pendingLane();
+  const later: Partial<FlowDeps> = { clock: fakeClock(T0 + 25 * 60_000) };
+  expect(await watchWith("none", BUSY)).toEqual([]);
+  const told = await watchWith("none", BUSY, later);
+  expect(told[0]).toStartWith(`LANE_NO_GOAL smoke ${pendingPane}: still pending 25 minutes after launch`);
+  expect(told[1]).toStartWith("LANE_NO_GOAL_TOLD smoke");
+  expect(await watchWith("none", BUSY, later)).toEqual([]);
 });
 
 test("a herdr lane is held to its goal the same way: STARTUP_NO_GOAL without one, STARTUP_OK once it shows, STARTUP_ERROR when its agent ends", async () => {

@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { liveMonitors, manifestPath, readManifest } from "./handover.ts";
 import type { Runner } from "./run.ts";
 import { type Proc, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
@@ -197,12 +199,24 @@ export const sessionFile = async (run: Runner, sessionsDir: string, pane: string
   return name ? { path: join(dir, name), pid: hit.pid } : undefined;
 };
 
-// Known boundary: jobs count only from the agent's own start, so after a same-session restart the persistent monitors
-// omo restores (their start records predate the new agent) are not seen; fixed together with pending-goal.ts in backlog
-// item resumed-monitor-background.
+// A persistent monitor omo restored after a same-session restart has its start record before the new agent, so the start
+// cutoff misses it; it counts while the session's monitor manifest says it runs (handover.ts liveMonitors: its recorded
+// process lives), as restored:<description>.
+export const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const laneBackground = async (run: Runner, sessionsDir: string, pane: string, cwd: string, until = Number.POSITIVE_INFINITY, notBefore = 0): Promise<BackgroundJob[] | undefined> => {
   const file = await sessionFile(run, sessionsDir, pane, cwd);
   if (!file) return undefined;
   const started = Date.parse((await run(["ps", "-o", "lstart=", "-p", String(file.pid)])).out.trim());
-  return pendingBackground(readFileSync(file.path, "utf8"), Math.max(Number.isNaN(started) ? 0 : started, notBefore), until);
+  const jobs = pendingBackground(readFileSync(file.path, "utf8"), Math.max(Number.isNaN(started) ? 0 : started, notBefore), until);
+  const id = /_([^_]+)\.jsonl$/.exec(file.path)?.[1];
+  const restored = id ? liveMonitors(readManifest(manifestPath(sessionsDir, cwd, id)), Date.now(), pidAlive, homedir()) : [];
+  return [...jobs, ...restored.map((m) => ({ kind: "monitor" as const, id: `restored:${m.description}`, at: 0 }))];
 };
