@@ -51,16 +51,36 @@ export const sessionGoal = async (deps: FlowDeps, pane: string): Promise<GoalRea
   return file ? readGoalFile(file) : "unknown";
 };
 
-// The goal of the session whose transcript holds `marker` (the lane's own launch prompt names its key), among
-// transcripts written since `since`. Matching by pid and start time can pick a sibling lane opened seconds apart in
-// the same directory, since omo's child processes carry no PI_SESSION_ID; a lane key is unique, so its prompt is not.
-// Both the cwd and its real path are searched: omo may keep a symlinked cwd's sessions under either.
+// The text of a transcript's first user message: what was typed to start the session (a lane's launch prompt).
+const firstUserText = (transcript: string): string | undefined => {
+  for (const line of transcript.split("\n")) {
+    if (!line.includes('"user"')) continue;
+    let entry: { type?: unknown; message?: { role?: unknown; content?: unknown } };
+    try {
+      entry = JSON.parse(line) as typeof entry;
+    } catch {
+      continue;
+    }
+    if (entry.type !== "message" || entry.message?.role !== "user") continue;
+    const content = entry.message.content;
+    if (typeof content === "string") return content;
+    return Array.isArray(content) ? content.map((p) => (p as { text?: unknown }).text).filter((t): t is string => typeof t === "string").join("\n") : "";
+  }
+  return undefined;
+};
+
+// The goal of the session started by the prompt holding `marker` (a lane's launch prompt names its unique key), among
+// transcripts written since `since`. Matching by pid and start time can pick a sibling lane opened seconds apart in the
+// same directory, since omo's child processes carry no PI_SESSION_ID; and only the first user message counts, so a lead
+// or sibling that quoted the prompt (a captured pane in a tool result) is not taken for the lane. Both the cwd and its
+// real path are searched: omo may keep a symlinked cwd's sessions under either.
 export const laneGoal = (sessionsDir: string, cwd: string, marker: string, since: number): GoalRead => {
   const at = resolve(cwd);
   let real = at;
   try {
     real = realpathSync(at);
   } catch {}
+  let found: GoalRead = "unknown";
   for (const dir of new Set([sessionDirFor(sessionsDir, at), sessionDirFor(sessionsDir, real)])) {
     let names: string[];
     try {
@@ -71,15 +91,17 @@ export const laneGoal = (sessionsDir: string, cwd: string, marker: string, since
     for (const name of names) {
       const path = join(dir, name);
       try {
-        if (statSync(path).mtimeMs < since || !readFileSync(path, "utf8").includes(marker)) continue;
+        if (statSync(path).mtimeMs < since || !firstUserText(readFileSync(path, "utf8"))?.includes(marker)) continue;
       } catch {
         continue;
       }
       const file = goalFileOf(path);
-      return file ? readGoalFile(file) : "unknown";
+      const goal = file ? readGoalFile(file) : "unknown";
+      if (typeof goal === "object") return goal;
+      if (goal === "none") found = "none";
     }
   }
-  return "unknown";
+  return found;
 };
 
 const count = (screen: string, re: RegExp): number => screen.split("\n").filter((l) => re.test(l)).length;

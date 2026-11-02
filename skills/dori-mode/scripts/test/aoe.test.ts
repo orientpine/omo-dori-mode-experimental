@@ -330,14 +330,17 @@ test("the goal is read from omo's own files of the session whose transcript hold
   symlinkSync(real, link);
   const dir = join(sessions, `--${realpathSync(real).replace(/^\//, "").replace(/\//g, "-")}--`);
   mkdirSync(join(dir, "extensions", "goal"), { recursive: true });
-  const session = (id: string, prompt: string, goal?: string) => {
-    writeFileSync(join(dir, `2026-01-01T12-00-00-000Z_${id}.jsonl`), `${JSON.stringify({ type: "message", text: prompt })}\n`);
+  const line = (role: string, text: string) => JSON.stringify({ type: "message", message: { role, content: [{ type: "text", text }] } });
+  const session = (id: string, prompt: string, goal?: string, quoted?: string) => {
+    const lines = [JSON.stringify({ type: "session", id }), line("user", prompt), ...(quoted ? [line("toolResult", quoted)] : [])];
+    writeFileSync(join(dir, `2026-01-01T12-00-00-000Z_${id}.jsonl`), `${lines.join("\n")}\n`);
     if (goal) writeFileSync(join(dir, "extensions", "goal", `${id}.json`), JSON.stringify({ goal: { status: goal } }));
   };
   const deps: FlowDeps = { ...at(T0), readGoal: undefined, config: { ...at(T0).config, sessionsDir: sessions } };
   const lane = { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: link };
-  // only a sibling lane in the same directory has a session, with a goal: it is not this lane's
-  session("11111111-1111-1111-1111-111111111111", "ulw. You are the other lane; report as", "active");
+  // only a sibling lane in the same directory has a session, with a goal, and it captured this lane's pane (the prompt
+  // is in one of its tool results): it is not this lane's
+  session("11111111-1111-1111-1111-111111111111", "ulw. You are the other lane; report as", "active", "❯ ulw. You are the smoke0 lane; report as the brief's footer says.");
   expect((await launchLane(deps, { ...lane, key: "smoke0", title: "smoke0" })).startup).toStartWith(`STARTUP_NO_GOAL smoke0 aoe_smoke0_${NEW_AOE_ID.slice(0, 8)}: the agent runs but no goal found for its session`);
   // this lane's own session has none
   session("22222222-2222-2222-2222-222222222222", "ulw. You are the smoke lane; report as");
