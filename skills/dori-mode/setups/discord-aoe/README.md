@@ -333,8 +333,10 @@ tokens are in `dori.env`, so the monitor can be armed before the owner has insta
 
 - **Connection.** `SLACK_WATCH_START team <team> bot <bot>`, then `SLACK_WATCH_READY` on Slack's hello. Every envelope
   is acked at once. Slack refreshes a connection every few hours (`SLACK_WATCH_REFRESH <reason>`); the watcher opens a
-  new one (`SLACK_WATCH_RECONNECTED`). A connection that cannot be opened is `SLACK_CONNECT_FAIL`, retried from 1 s up
-  to every 60 s.
+  new one (`SLACK_WATCH_RECONNECTED`). A connection that dies without a close (the machine slept, a route dropped) is
+  found by a WebSocket ping every 30 s: no frame and no pong since the last one prints `SLACK_WATCH_STALE ...` and
+  opens a new one. A connection that cannot be opened is `SLACK_CONNECT_FAIL`, and an `auth.test` that fails at start
+  (Slack or the network down) is `SLACK_AUTH_FAIL`; both are retried from 1 s up to every 60 s instead of exiting.
 - **Messages.** A person's message (plain, `thread_broadcast` or `file_share`) becomes one inbox row. Bot messages,
   the app's own, edits and deletes are not taken in. A mention in a channel arrives twice (`app_mention` and
   `message.channels`) and Slack retries an envelope it thinks was lost: each message is taken in once.

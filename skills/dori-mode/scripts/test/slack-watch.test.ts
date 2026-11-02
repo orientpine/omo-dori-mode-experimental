@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { missingTokens, slackWatchOptions, startWatch, writeEnvValues } from "../../setups/discord-aoe/slack-watch.ts";
+import { missingTokens, runSocket, slackWatchOptions, startWatch, writeEnvValues } from "../../setups/discord-aoe/slack-watch.ts";
 import { run } from "../src/run.ts";
 
 const WATCH = join(import.meta.dir, "..", "..", "setups", "discord-aoe", "slack-watch.ts");
@@ -33,6 +33,8 @@ const fakeSlack = () => {
   };
   let opens = 0;
   let port = 0;
+  let pings = 0;
+  const failing = { auth: 0 };
   const server = Bun.serve({
     port: 0,
     fetch: async (req, srv) => {
@@ -43,6 +45,10 @@ const fakeSlack = () => {
       calls.push({ method, auth: req.headers.get("authorization") ?? "", body });
       changed();
       const reply = (x: object) => Response.json({ ok: true, ...x });
+      if (method === "auth.test" && failing.auth > 0) {
+        failing.auth--;
+        return new Response("unavailable", { status: 503 });
+      }
       if (method === "auth.test") return reply({ user_id: "UBOT", bot_id: "BBOT", user: "okdori", team: "Lab" });
       if (method === "apps.connections.open") {
         opens++;
@@ -60,6 +66,10 @@ const fakeSlack = () => {
       },
       message: (_ws, m) => {
         acks.push(String((JSON.parse(String(m)) as { envelope_id?: string }).envelope_id));
+        changed();
+      },
+      ping: () => {
+        pings++;
         changed();
       },
     },
@@ -86,10 +96,10 @@ const fakeSlack = () => {
     sockets.at(-1)?.send(JSON.stringify({ envelope_id: envelope, type: "events_api", payload: { event } }));
     return envelope;
   };
-  return { calls, acks, sockets, opens: () => opens, until, changed, event, api: `http://localhost:${port}/api`, server };
+  return { calls, acks, sockets, opens: () => opens, pings: () => pings, failing, until, changed, event, api: `http://localhost:${port}/api`, server };
 };
 
-const watcher = async (slack: ReturnType<typeof fakeSlack>, threads: object[] = []) => {
+const watcher = async (slack: ReturnType<typeof fakeSlack>, threads: object[] = [], pingMs = 30_000) => {
   const dir = scratch();
   writeFileSync(join(dir, "slack-threads.json"), JSON.stringify(threads));
   const o = slackWatchOptions({ DORI_SLACK_APP_TOKEN: APP, DORI_SLACK_TOKEN: BOT, DORI_SLACK_OWNER_ID: "UOWNER", DORI_SLACK_API: slack.api }, dir);
@@ -98,7 +108,7 @@ const watcher = async (slack: ReturnType<typeof fakeSlack>, threads: object[] = 
   const done = startWatch(o, (l) => {
     lines.push(l);
     slack.changed();
-  }, stop);
+  }, stop, pingMs);
   cleanups.push(async () => {
     stop.stopped = true;
     slack.server.stop(true);
@@ -173,6 +183,59 @@ test("a disconnect from Slack opens a fresh connection and messages keep arrivin
   expect(slack.opens()).toBe(2);
   expect(w.lines).toContain("SLACK_WATCH_REFRESH refresh_requested");
   expect(w.msgs()).toEqual(["SLACK_MSG D2 - dm name-UGUEST: still there?"]);
+});
+
+test("a Slack outage at start is waited out (SLACK_AUTH_FAIL), not an exit; a healthy connection answers pings and is kept", async () => {
+  // Given auth.test fails once
+  const slack = fakeSlack();
+  slack.failing.auth = 1;
+  // When
+  const w = await watcher(slack, [], 50);
+  await slack.until("three pings answered", () => slack.pings() >= 3);
+  // Then
+  expect(w.lines.filter((l) => l.startsWith("SLACK_AUTH_FAIL"))).toEqual(["SLACK_AUTH_FAIL slack auth.test: 503, retry in 1s"]);
+  expect(w.lines.filter((l) => l.startsWith("SLACK_WATCH_STALE"))).toEqual([]);
+  expect(slack.opens()).toBe(1);
+});
+
+test("a connection that goes silent without a close is replaced by a fresh one", async () => {
+  // Given a socket that takes pings and never answers anything after its hello
+  const lines: string[] = [];
+  const opened: string[] = [];
+  const stop = { stopped: false };
+  let wake = () => {};
+  const done = runSocket(
+    {
+      connect: async () => `wss://fake/${opened.length + 1}`,
+      open: (url, on) => {
+        opened.push(url);
+        queueMicrotask(() => on.message(JSON.stringify({ type: "hello" })));
+        return { send: () => {}, close: () => {}, ping: () => {} };
+      },
+      handle: async () => {},
+      log: (l) => {
+        lines.push(l);
+        wake();
+      },
+      sleep: async () => {},
+      pingMs: 20,
+    },
+    stop,
+  );
+  // When
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no reconnect: ${lines.join(" | ")}`)), 5000);
+    wake = () => {
+      if (!lines.includes("SLACK_WATCH_RECONNECTED")) return;
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+  stop.stopped = true;
+  await done;
+  // Then
+  expect(lines.slice(0, 3)).toEqual(["SLACK_WATCH_READY", "SLACK_WATCH_STALE no frame or pong for 0.02s, opening a new connection", "SLACK_WATCH_RECONNECTED"]);
+  expect(opened.slice(0, 2)).toEqual(["wss://fake/1", "wss://fake/2"]);
 });
 
 test("without tokens the watcher is off and exits 0; a member's token is refused", async () => {

@@ -131,18 +131,21 @@ export class SlackWatch {
   }
 }
 
-export type Sock = { send: (data: string) => void; close: () => void };
+export type Sock = { send: (data: string) => void; close: () => void; ping: () => void };
 export type SocketDeps = {
-  readonly open: (url: string, on: { message: (data: string) => void; close: () => void }) => Sock;
+  readonly open: (url: string, on: { message: (data: string) => void; close: () => void; pong: () => void }) => Sock;
   readonly connect: () => Promise<string>;
   readonly handle: (ev: SlackEvent) => Promise<unknown>;
   readonly log: (line: string) => void;
   readonly sleep: (ms: number) => Promise<void>;
+  readonly pingMs: number;
 };
 
 // Socket Mode until stopped: open a connection URL, ack every envelope at once, hand events_api payloads on, and on a
-// disconnect message or a closed socket open a fresh URL (Slack refreshes connections every few hours). Failures to
-// connect back off from 1 s to 60 s. Resolves only when stop() was called (tests).
+// disconnect message or a closed socket open a fresh URL (Slack refreshes connections every few hours). A connection
+// that dies without a close (sleep, a dropped route) is found by a ping every pingMs: no frame and no pong since the
+// last one closes it and opens a fresh URL. Failures to connect back off from 1 s to 60 s. Resolves only when
+// stop.stopped is set (tests).
 export const runSocket = async (deps: SocketDeps, stop: { stopped: boolean } = { stopped: false }): Promise<void> => {
   let ready = false;
   let wait = 1000;
@@ -160,14 +163,21 @@ export const runSocket = async (deps: SocketDeps, stop: { stopped: boolean } = {
     }
     await new Promise<void>((done) => {
       let finished = false;
+      let heard = true;
+      let health: ReturnType<typeof setInterval> | undefined;
       const end = () => {
         if (finished) return;
         finished = true;
+        clearInterval(health);
         done();
       };
       const sock = deps.open(url, {
         close: end,
+        pong: () => {
+          heard = true;
+        },
         message: (data) => {
+          heard = true;
           let env: { envelope_id?: string; type?: string; reason?: string; payload?: { event?: SlackEvent } };
           try {
             env = JSON.parse(data);
@@ -190,6 +200,20 @@ export const runSocket = async (deps: SocketDeps, stop: { stopped: boolean } = {
           }
         },
       });
+      health = setInterval(() => {
+        if (stop.stopped || !heard) {
+          if (!stop.stopped) deps.log(`SLACK_WATCH_STALE no frame or pong for ${deps.pingMs / 1000}s, opening a new connection`);
+          sock.close();
+          end();
+          return;
+        }
+        heard = false;
+        try {
+          sock.ping();
+        } catch {
+          // a socket that cannot even send a ping is dead: the next tick finds it silent and replaces it
+        }
+      }, deps.pingMs);
     });
     if (!stop.stopped) await deps.sleep(1000);
   }
@@ -204,9 +228,19 @@ const slackCall = (api: string, token: string) => async (method: string, params:
 
 const readThreads = (file: string) => async (): Promise<readonly LedgerThread[]> => (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as LedgerThread[]) : []);
 
-export const startWatch = async (o: SlackWatchOptions, log: (line: string) => void, stop?: { stopped: boolean }): Promise<void> => {
+export const startWatch = async (o: SlackWatchOptions, log: (line: string) => void, stop: { stopped: boolean } = { stopped: false }, pingMs = 30_000): Promise<void> => {
   const bot = slackCall(o.api, o.botToken);
-  const me = await bot("auth.test", {});
+  // a network error or a Slack outage at start is waited out like a failed connect, never an exit the monitor misses
+  let me: Record<string, unknown> | undefined;
+  for (let wait = 1000; !me; wait = Math.min(wait * 2, 60_000)) {
+    try {
+      me = await bot("auth.test", {});
+    } catch (e) {
+      log(`SLACK_AUTH_FAIL ${e instanceof Error ? e.message : String(e)}, retry in ${wait / 1000}s`);
+      if (stop.stopped) return;
+      await Bun.sleep(wait);
+    }
+  }
   const self = { userId: String(me.user_id ?? ""), botId: String(me.bot_id ?? "") };
   mkdirSync(dirname(o.inbox), { recursive: true, mode: 0o700 });
   const watch = new SlackWatch(o, self, { call: bot, threads: readThreads(o.threads), append: (row) => appendFileSync(o.inbox, `${JSON.stringify(row)}\n`), log, now: Date.now });
@@ -219,11 +253,13 @@ export const startWatch = async (o: SlackWatchOptions, log: (line: string) => vo
         ws.addEventListener("message", (e) => on.message(String(e.data)));
         ws.addEventListener("close", () => on.close());
         ws.addEventListener("error", () => on.close());
-        return { send: (d) => ws.send(d), close: () => ws.close() };
+        ws.addEventListener("pong", () => on.pong());
+        return { send: (d) => ws.send(d), close: () => ws.close(), ping: () => ws.ping() };
       },
       handle: (ev) => watch.handle(ev),
       log,
       sleep: (ms) => Bun.sleep(ms),
+      pingMs,
     },
     stop,
   );
