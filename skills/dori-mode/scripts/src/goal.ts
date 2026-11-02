@@ -51,36 +51,38 @@ export const sessionGoal = async (deps: FlowDeps, pane: string): Promise<GoalRea
   return file ? readGoalFile(file) : "unknown";
 };
 
-// A transcript's first user message, what was typed to start the session (a lane's launch prompt), and when.
-const firstUserMessage = (transcript: string): { readonly text: string; readonly at: number } | undefined => {
-  for (const line of transcript.split("\n")) {
-    if (!line.includes('"user"')) continue;
+// Every user message of a transcript, what was typed into that session (a lane's launch prompt is one), with when.
+// A pane one agent captured and quoted to another is a tool result (role toolResult), never a user message.
+const userMessages = (transcript: string): { readonly text: string; readonly at: number }[] =>
+  transcript.split("\n").flatMap((line) => {
+    if (!line.includes('"user"')) return [];
     let entry: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown } };
     try {
       entry = JSON.parse(line) as typeof entry;
     } catch {
-      continue;
+      return [];
     }
-    if (entry.type !== "message" || entry.message?.role !== "user") continue;
+    if (entry.type !== "message" || entry.message?.role !== "user") return [];
     const content = entry.message.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((p) => (p as { text?: unknown }).text).filter((t): t is string => typeof t === "string").join("\n") : "";
-    return { text, at: typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN };
-  }
-  return undefined;
-};
+    return [{ text, at: typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN }];
+  });
 
-// The goal of the session started, since `since`, by the prompt holding `marker` (a lane's launch prompt names its
-// key; the time tells it from an older session of the same key, e.g. another Dori instance's, in the same cwd). Matching by pid and start time can pick a sibling lane opened seconds apart in the
-// same directory, since omo's child processes carry no PI_SESSION_ID; and only the first user message counts, so a lead
-// or sibling that quoted the prompt (a captured pane in a tool result) is not taken for the lane. Both the cwd and its
-// real path are searched: omo may keep a symlinked cwd's sessions under either.
+// The goal of the one session a launch typed its prompt into: a transcript written since `since` holding a user
+// message with `marker` (the lane's key and that launch's own token) typed since then. Every user message counts, not
+// only the first: with an `agentCommand` that resumes a session the prompt follows its earlier messages. A lead or
+// sibling that captured the lane's pane holds the prompt in a tool result, which is not one; and when several sessions
+// hold the token (a prompt sent again by hand) none of them is known to be this lane's, so no goal is read from any.
+// Both the cwd and its real path are searched: omo may keep a symlinked cwd's sessions under either. Reading the pane's
+// own session instead would pick a sibling lane opened seconds apart in the same directory, since omo's child processes
+// carry no PI_SESSION_ID and the session is then found by start time.
 export const laneGoal = (sessionsDir: string, cwd: string, marker: string, since: number): GoalRead => {
   const at = resolve(cwd);
   let real = at;
   try {
     real = realpathSync(at);
   } catch {}
-  let found: GoalRead = "unknown";
+  const goals = new Map<string, GoalRead>();
   for (const dir of new Set([sessionDirFor(sessionsDir, at), sessionDirFor(sessionsDir, real)])) {
     let names: string[];
     try {
@@ -92,18 +94,15 @@ export const laneGoal = (sessionsDir: string, cwd: string, marker: string, since
       const path = join(dir, name);
       try {
         if (statSync(path).mtimeMs < since) continue;
-        const first = firstUserMessage(readFileSync(path, "utf8"));
-        if (!first?.text.includes(marker) || !(first.at >= since)) continue;
+        if (!userMessages(readFileSync(path, "utf8")).some((m) => m.text.includes(marker) && m.at >= since)) continue;
       } catch {
         continue;
       }
       const file = goalFileOf(path);
-      const goal = file ? readGoalFile(file) : "unknown";
-      if (typeof goal === "object") return goal;
-      if (goal === "none") found = "none";
+      goals.set(name, file ? readGoalFile(file) : "unknown");
     }
   }
-  return found;
+  return goals.size === 1 ? ([...goals.values()][0] as GoalRead) : "unknown";
 };
 
 const count = (screen: string, re: RegExp): number => screen.split("\n").filter((l) => re.test(l)).length;
