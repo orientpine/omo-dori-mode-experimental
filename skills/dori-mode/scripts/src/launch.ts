@@ -515,7 +515,7 @@ const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: strin
     const screen = await readScreen(deps.run, deps.config.backend, pane, 40);
     const bad = STARTUP_FAILURE.exec(screen);
     if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad[0]}`;
-    if (firstTurnRuns(deps, cwd, session, screen)) {
+    if (await firstTurnRuns(deps, pane, cwd, session, screen)) {
       await deps.registry.patch(key, { pendingGoal: { idle: 0 } });
       return `STARTUP_PENDING_GOAL ${key} ${pane}: its first turn is still on and has set no goal yet; dori watch says LANE_NO_GOAL if it ends without one`;
     }

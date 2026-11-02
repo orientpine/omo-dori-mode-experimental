@@ -50,10 +50,20 @@ export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | 
 // the job did). The jobs are read the way done-flow reads them (background.ts pendingBackground, laneBackground's own
 // parser) from the transcript of the lane's exact session, under the cwd or its real path; laneBackground's own lookup
 // finds the session by the pane's process and only on aoe. A read that fails counts as none.
-export const firstTurnRuns = (deps: FlowDeps, cwd: string, session: string, screen: string): boolean =>
-  turnRunning(screen) || ownJobs(deps.config.sessionsDir, cwd, session) > 0;
+// jobs started before the agent itself are not its own: a restarted session keeps its transcript, and a job the old agent
+// left unfinished died with it (laneBackground has the same cutoff)
+export const firstTurnRuns = async (deps: FlowDeps, pane: string, cwd: string, session: string, screen: string): Promise<boolean> =>
+  turnRunning(screen) || ownJobs(deps.config.sessionsDir, cwd, session, await agentStart(deps, pane)) > 0;
 
-const ownJobs = (sessionsDir: string, cwd: string, session: string): number => {
+const agentStart = async (deps: FlowDeps, pane: string): Promise<number> => {
+  const shell = await shellPidOf(pane, { run: deps.run, sessionsDir: deps.config.sessionsDir, backend: deps.config.backend });
+  const table = shell ? await procTable(deps.run) : [];
+  const agent = [...table.filter((p) => p.pid === shell), ...descendants(table, shell)].find((p) => AGENT.test(p.cmd) && !ended(p));
+  const at = agent ? Date.parse((await deps.run(["ps", "-o", "lstart=", "-p", String(agent.pid)])).out.trim()) : Number.NaN;
+  return Number.isNaN(at) ? 0 : at;
+};
+
+const ownJobs = (sessionsDir: string, cwd: string, session: string, since: number): number => {
   if (!session) return 0;
   const at = resolve(cwd);
   let real = at;
@@ -63,7 +73,7 @@ const ownJobs = (sessionsDir: string, cwd: string, session: string): number => {
   for (const dir of new Set([sessionDirFor(sessionsDir, at), sessionDirFor(sessionsDir, real)])) {
     try {
       const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
-      if (name) return pendingBackground(readFileSync(join(dir, name), "utf8")).length;
+      if (name) return pendingBackground(readFileSync(join(dir, name), "utf8"), since).length;
     } catch {}
   }
   return 0;
@@ -104,7 +114,7 @@ export const pendingGoalTick = async (deps: FlowDeps): Promise<string[]> => {
       continue;
     }
     const screen = await readScreen(deps.run, deps.config.backend, lane.pane, 40);
-    const idle = firstTurnRuns(deps, cwd, lane.session ?? "", screen) ? 0 : mark.idle + 1;
+    const idle = (await firstTurnRuns(deps, lane.pane, cwd, lane.session ?? "", screen)) ? 0 : mark.idle + 1;
     if (idle < GOAL_WAIT.idleChecks) {
       if (idle !== mark.idle) await deps.registry.patch(lane.key, { pendingGoal: { idle } });
       continue;

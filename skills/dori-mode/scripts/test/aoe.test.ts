@@ -441,6 +441,18 @@ test("a herdr pending lane waiting on a background job of its own is not told; o
   expect((await watchTick(deps)).filter((l) => /^LANE_NO_GOAL/.test(l))).toEqual([]);
 });
 
+test("a job record from before the agent's own start (a restarted session) keeps no first turn on: three idle reads say LANE_NO_GOAL", async () => {
+  const sessions = join(state.dir, "sessions");
+  detachedJob(sessions, "/tmp/w");
+  world.screen = BUSY;
+  expect((await goalLaunch(["none"], undefined, { sessionsDir: sessions })).startup).toStartWith("STARTUP_PENDING_GOAL smoke");
+  world.agentStart = new Date(T0 + 60_000).toUTCString();
+  const own: Partial<FlowDeps> = { config: { ...at(T0).config, sessionsDir: sessions } };
+  expect(await watchWith("none", IDLE, own)).toEqual([]);
+  expect(await watchWith("none", IDLE, own)).toEqual([]);
+  expect((await watchWith("none", IDLE, own))[0]).toStartWith(`LANE_NO_GOAL smoke ${pendingPane}`);
+});
+
 test("a herdr lane is held to its goal the same way: STARTUP_NO_GOAL without one, STARTUP_OK once it shows, STARTUP_ERROR when its agent ends", async () => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
