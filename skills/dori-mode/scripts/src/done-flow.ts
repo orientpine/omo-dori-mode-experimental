@@ -296,7 +296,11 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
   for (const wt of checked) {
     if (!exists(wt)) continue;
     const dirty = await git(["git", "-C", wt, "status", "--porcelain", "--untracked-files=no"]);
-    const ahead = await git(["git", "-C", wt, "rev-list", "--count", "HEAD", "--not", "--remotes"]);
+    let ahead = await git(["git", "-C", wt, "rev-list", "--count", "HEAD", "--not", "--remotes"]);
+    // a fresh repository's branch has no commit yet (an unborn HEAD): rev-list fails, but there is nothing to push;
+    // it is unborn only when HEAD names a branch that resolves to no commit. A HEAD that resolves but cannot be read
+    // (a missing object) stays unreadable. Its staged files still show in status.
+    if (ahead.code !== 0 && (await git(["git", "-C", wt, "rev-parse", "-q", "--verify", "HEAD"])).code === 1 && (await git(["git", "-C", wt, "symbolic-ref", "-q", "HEAD"])).code === 0) ahead = { code: 0, out: "0", err: "" };
     if (dirty.code !== 0 || ahead.code !== 0) reasons.push(`unpushed work in ${wt} (git state unreadable)`);
     else if (dirty.out.trim() || Number(ahead.out.trim()) > 0) reasons.push(`unpushed work in ${wt}`);
   }

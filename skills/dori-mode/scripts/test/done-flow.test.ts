@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { claimDone, closeLane, objectDone, unpushedWork, watchTick } from "../src/done-flow.ts";
@@ -152,6 +152,25 @@ test("a dangling .git symlink holds the lane, and a GIT_DIR in the watcher's env
     if (saved === undefined) delete process.env.GIT_DIR;
     else process.env.GIT_DIR = saved;
   }
+});
+
+test("a fresh repository with no commit yet is checked for staged work, not called unreadable; a HEAD git cannot read is", async () => {
+  const realDeps = { ...at(T0), run, exists: existsSync, config: { ...at(T0).config, defaultCwd: state.dir } };
+  const fresh = join(state.dir, "fresh");
+  expect((await run(["git", "init", "-q", "-b", "main", fresh])).code).toBe(0);
+  expect(await unpushedWork(realDeps, { ...lane, cwd: fresh })).toEqual([]);
+  writeFileSync(join(fresh, "a.txt"), "one\n");
+  expect((await run(["git", "-C", fresh, "add", "a.txt"])).code).toBe(0);
+  expect(await unpushedWork(realDeps, { ...lane, cwd: fresh })).toEqual([`unpushed work in ${fresh}`]);
+  // a history git cannot walk: HEAD resolves and status reads its tree, but the parent commit's object is gone
+  const commit = (m: string) => run(["git", "-C", fresh, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", m]);
+  expect((await commit("one")).code).toBe(0);
+  const parent = (await run(["git", "-C", fresh, "rev-parse", "HEAD"])).out;
+  writeFileSync(join(fresh, "a.txt"), "two\n");
+  expect((await commit("two")).code).toBe(0);
+  rmSync(join(fresh, ".git", "objects", parent.slice(0, 2), parent.slice(2)));
+  expect((await run(["git", "-C", fresh, "status", "--porcelain"])).code).toBe(0);
+  expect(await unpushedWork(realDeps, { ...lane, cwd: fresh })).toEqual([`unpushed work in ${fresh} (git state unreadable)`]);
 });
 
 // git says "not a git repository" for a .git file pointing nowhere or a bad HEAD too: a .git entry makes it unreadable
