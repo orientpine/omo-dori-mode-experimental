@@ -456,14 +456,15 @@ test("a job record from before the agent's own start (a restarted session) keeps
 
 // a persistent monitor omo restored after a same-session restart: its start record predates the new agent, and the
 // session's monitor manifest (extensions/terminal/<id>.json) says it runs while its recorded process lives
-const restoredMonitor = (sessions: string, cwd: string, pid: number) => {
+const restoredMonitor = (sessions: string, cwd: string, pid: number, createdAt = T0 - 60_000) => {
   const dir = join(sessions, `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`, "extensions", "terminal");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${ID}.json`), JSON.stringify({ monitors: [{ description: "result file", command: "until [ -f /tmp/r ]; do sleep 5; done", runtime: { pid } }] }));
+  writeFileSync(join(dir, `${ID}.json`), JSON.stringify({ monitors: [{ description: "result file", command: "until [ -f /tmp/r ]; do sleep 5; done", createdAt, runtime: { pid } }] }));
 };
 const restartedLane = (sessions: string) => {
   world.ps = `10 1 /bin/bash /dev/fd/4\n11 10 /home/u/.bun/bin/bun /x/senpi/dist/bundle/cli.js --extension /x/plugin --model m --session-id ${ID}`;
   sessionFiles(sessions, "/tmp/w")(ID, "QA. Read and execute the lane brief");
+  world.agentStart = new Date(T0).toUTCString();
 };
 const DEAD_PID = 2147480000;
 
@@ -488,6 +489,13 @@ test("laneBackground, the blocked check's reading, counts a persistent monitor r
   expect((await laneBackground(at(T0).run, sessions, PANE, "/tmp/w"))?.map((j) => j.id)).toEqual(["restored:result file"]);
   restoredMonitor(sessions, "/tmp/w", DEAD_PID);
   expect(await laneBackground(at(T0).run, sessions, PANE, "/tmp/w")).toEqual([]);
+});
+
+test("laneBackground does not count a live watcher the current agent armed as restored: with no restart its age window holds", async () => {
+  const sessions = join(state.dir, "sessions");
+  restartedLane(sessions);
+  restoredMonitor(sessions, "/tmp/w", process.pid, T0 + 60_000);
+  expect(await laneBackground(at(T0).run, sessions, PANE, "/tmp/w", Number.POSITIVE_INFINITY, T0 + 120_000)).toEqual([]);
 });
 
 test("a lane still pending 25 minutes after launch is LANE_NO_GOAL once, even while its first turn runs", async () => {

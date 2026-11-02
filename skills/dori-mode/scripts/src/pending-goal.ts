@@ -2,10 +2,7 @@ import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { paneLife } from "./aoe.ts";
-import { homedir } from "node:os";
-
-import { pendingBackground, pidAlive } from "./background.ts";
-import { liveMonitors, manifestPath, readManifest } from "./handover.ts";
+import { pendingBackground, restoredMonitors } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type GoalRead, laneGoal } from "./goal.ts";
 import { readScreen, submitToPane } from "./panes.ts";
@@ -59,16 +56,21 @@ export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | 
 // left unfinished died with it (laneBackground has the same cutoff); a persistent monitor the restart restored counts while
 // the session's monitor manifest says it runs (handover.ts liveMonitors), as in laneBackground
 export const firstTurnRuns = async (deps: FlowDeps, pane: string, cwd: string, session: string, screen: string): Promise<boolean> =>
-  turnRunning(screen) || ownJobs(deps.config.sessionsDir, cwd, session, await agentStart(deps, pane)) > 0 || restoredMonitors(deps.config.sessionsDir, cwd, session, deps.clock.now()) > 0;
+  turnRunning(screen) || (await ownOrRestored(deps, pane, cwd, session));
 
-const restoredMonitors = (sessionsDir: string, cwd: string, session: string, now: number): number => {
+const ownOrRestored = async (deps: FlowDeps, pane: string, cwd: string, session: string): Promise<boolean> => {
+  const since = await agentStart(deps, pane);
+  return ownJobs(deps.config.sessionsDir, cwd, session, since) > 0 || restoredIn(deps.config.sessionsDir, cwd, session, since, deps.clock.now()) > 0;
+};
+
+const restoredIn = (sessionsDir: string, cwd: string, session: string, since: number, now: number): number => {
   if (!session) return 0;
   const at = resolve(cwd);
   let real = at;
   try {
     real = realpathSync(at);
   } catch {}
-  return Math.max(...[...new Set([at, real])].map((dir) => liveMonitors(readManifest(manifestPath(sessionsDir, dir, session)), now, pidAlive, homedir()).length));
+  return Math.max(...[...new Set([at, real])].map((dir) => restoredMonitors(sessionsDir, dir, session, since, now).length));
 };
 
 const agentStart = async (deps: FlowDeps, pane: string): Promise<number> => {
