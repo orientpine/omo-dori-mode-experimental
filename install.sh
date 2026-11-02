@@ -4,7 +4,7 @@
 #        curl -fsSL https://raw.githubusercontent.com/orientpine/omo-dori-mode-experimental/main/install.sh | DORI_BACKEND=aoe bash
 # Needs: git, bun 1.3+, and the lane backend: herdr, or aoe and tmux.
 # Optional env: DORI_BACKEND (herdr or aoe, default herdr), DORI_REPO (clone URL), DORI_SRC (clone dir),
-# SKILLS_DIR (where your agent loads skills).
+# SKILLS_DIR (where your agent loads skills), DORI_NO_PULL=1 (install an existing checkout as it is, without pulling).
 set -euo pipefail
 
 repo="${DORI_REPO:-https://github.com/orientpine/omo-dori-mode-experimental.git}"
@@ -31,13 +31,29 @@ have herdr || { have aoe && have tmux; } || echo "warning: no lane backend found
 have gh || echo "note: gh not found; the done checks that read PRs and issues need it" >&2
 have agent-messenger || echo "note: agent-messenger not found; it is optional for Slack, Telegram and Discord messaging" >&2
 
+# A pull that local work blocks used to end with git's bare abort and no way to install the checkout as it is
+# (dori-superagent issue #48 reproduced here (MIT): https://github.com/sisyphuslabs/dori-superagent/issues/48).
+# Now it names the checkout and its local work and gives both ways on; DORI_NO_PULL=1 installs it without pulling.
 if [ -d "$src/.git" ]; then
   origin="$(git -C "$src" remote get-url origin 2>/dev/null || true)"
-  if [ "${origin%.git}" != "${repo%.git}" ]; then
+  if [ "${DORI_NO_PULL:-}" = 1 ]; then
+    echo "DORI_NO_PULL=1: installing $src as it is, without pulling." >&2
+  elif [ "${origin%.git}" != "${repo%.git}" ]; then
     echo "warning: $src pulls from ${origin:-no origin}, not $repo; not updating it." >&2
     echo "  To follow $repo: git -C \"$src\" remote set-url origin \"$repo\" && git -C \"$src\" pull --ff-only" >&2
-  else
-    git -C "$src" pull --ff-only --quiet
+  elif ! git -C "$src" pull --ff-only --quiet; then
+    changes="$(git -C "$src" status --short)"
+    ahead="$(git -C "$src" log --oneline '@{u}..HEAD' 2>/dev/null || true)"
+    if [ -z "$changes$ahead" ]; then
+      echo "error: could not update $src; git's message above says why." >&2
+      exit 1
+    fi
+    echo "error: could not update $src: local work there is in the way of git pull --ff-only." >&2
+    [ -z "$changes" ] || { echo "  Changed files (git status --short):"; printf '%s\n' "$changes" | sed 's/^/    /'; } >&2
+    [ -z "$ahead" ] || { echo "  Local commits upstream lacks:"; printf '%s\n' "$ahead" | sed 's/^/    /'; } >&2
+    echo "  To keep it and install the checkout as it is, run install.sh again with DORI_NO_PULL=1 (curl ... | DORI_NO_PULL=1 bash)." >&2
+    echo "  To drop it and update: git -C \"$src\" fetch && git -C \"$src\" reset --hard '@{u}', then run install.sh again." >&2
+    exit 1
   fi
 else
   git clone --quiet --depth 1 "$repo" "$src"
