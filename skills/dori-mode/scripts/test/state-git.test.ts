@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { BACKUP_DEFAULTS } from "../src/state-backup.ts";
-import { checkRepo, commitDir, restoreDir, type StateGitDeps, stateGitDirs, tokenShape } from "../src/state-git.ts";
+import { checkRepo, commitDir, EXCLUDES, restoreDir, type StateGitDeps, stateGitDirs, tokenShape } from "../src/state-git.ts";
 
 let dir: string;
 let lines: string[];
@@ -167,6 +167,24 @@ test("a restore to a commit from before an exclude leaves the file the exclude n
   // Then
   expect(r.at(-1)).toStartWith(`STATE_GIT_RESTORED ${dir}`);
   expect(readFileSync(join(dir, "lanes/x.json"), "utf8")).toBe('{"status":"open"}\n');
+  expect(readFileSync(join(dir, diff), "utf8")).toBe("+new\n");
+  expect(tracked()).not.toContain(diff);
+});
+
+test("a restore right after an update, before any commit, uses the new excludes", async () => {
+  // Given: a repo with the excludes of the version before (no review-diff rule) that tracks a review diff
+  const diff = "state/receipts/reviews/o__r_7@abc.diff";
+  put("lanes/x.json", '{"status":"open"}\n');
+  await commitDir(deps(), dir);
+  writeFileSync(join(dir, ".git/info/exclude"), `${EXCLUDES.filter((l) => !l.includes("receipts/reviews")).join("\n")}\n`);
+  put(diff, "+old\n");
+  sh("add", diff);
+  sh("commit", "-q", "--no-verify", "-m", "old version");
+  const old = sh("rev-parse", "HEAD");
+  // When: the diff changes on disk and the old commit is restored, with no commit run in between
+  put(diff, "+new\n");
+  await restoreDir(deps(), dir, old, []);
+  // Then
   expect(readFileSync(join(dir, diff), "utf8")).toBe("+new\n");
   expect(tracked()).not.toContain(diff);
 });

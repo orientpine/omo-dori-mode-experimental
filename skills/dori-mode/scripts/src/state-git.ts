@@ -329,6 +329,9 @@ export const restoreDir = async (deps: StateGitDeps, dir: string, target: string
   const sha = await resolveTarget(deps, dir, target);
   if (!sha) return [`STATE_GIT_NO_TARGET ${dir} has no commit at or before ${target}`];
   const r = await withLock(deps, dir, 30_000, async () => {
+    // the fork's excludes as of this version, also when no commit ran since an update: the snapshot and the files
+    // kept below follow them
+    writeExclude(dir);
     const lines = (await commitLocked(deps, dir, `before restore to ${sha.slice(0, 7)}`)).lines.filter((l) => !l.startsWith("STATE_GIT_NOCHANGE"));
     const before = await must(deps, dir, ["rev-parse", "--short", "HEAD"]);
     const when = await must(deps, dir, ["log", "-1", "--date=format-local:%Y-%m-%d %H:%M", "--format=%cd", sha]);
