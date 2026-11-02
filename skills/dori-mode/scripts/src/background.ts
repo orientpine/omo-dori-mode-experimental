@@ -197,6 +197,9 @@ export const sessionFile = async (run: Runner, sessionsDir: string, pane: string
   return name ? { path: join(dir, name), pid: hit.pid } : undefined;
 };
 
+// Known boundary: jobs count only from the agent's own start, so after a same-session restart the persistent monitors
+// omo restores (their start records predate the new agent) are not seen; fixed together with pending-goal.ts in backlog
+// item resumed-monitor-background.
 export const laneBackground = async (run: Runner, sessionsDir: string, pane: string, cwd: string, until = Number.POSITIVE_INFINITY, notBefore = 0): Promise<BackgroundJob[] | undefined> => {
   const file = await sessionFile(run, sessionsDir, pane, cwd);
   if (!file) return undefined;

@@ -51,7 +51,8 @@ export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | 
 // parser) from the transcript of the lane's exact session, under the cwd or its real path; laneBackground's own lookup
 // finds the session by the pane's process and only on aoe. A read that fails counts as none.
 // jobs started before the agent itself are not its own: a restarted session keeps its transcript, and a job the old agent
-// left unfinished died with it (laneBackground has the same cutoff)
+// left unfinished died with it (laneBackground has the same cutoff). Known boundary, the same as laneBackground's: the
+// persistent monitors a restart restores predate the new agent and are not seen (backlog item resumed-monitor-background)
 export const firstTurnRuns = async (deps: FlowDeps, pane: string, cwd: string, session: string, screen: string): Promise<boolean> =>
   turnRunning(screen) || ownJobs(deps.config.sessionsDir, cwd, session, await agentStart(deps, pane)) > 0;
 
