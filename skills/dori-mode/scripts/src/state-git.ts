@@ -48,6 +48,8 @@ export const EXCLUDES = [
   "*inbox*.jsonl", "answers*.jsonl", "*events*.jsonl", "briefs/",
   "# logs, locks, caches, QA evidence, trash",
   "*.log", "*.lock", "*.pid", "*.tmp", "*.swp", "*cache*", "qa/", "qa-*", "trash-*/", "gpu/",
+  "# dori review's PR diffs: gh pr diff rebuilds them, and a PR's test fixtures look like tokens (the review .md and receipt .json stay)",
+  "**/receipts/reviews/*.diff",
   "# checkouts, worktrees, models, binaries, archives, media",
   "src/", "wt/", "node_modules/", "models/", "whisper.cpp/", "research/",
   "*.zip", "*.tar", "*.tar.*", "*.tgz", "*.gz", "*.7z", "*.bin", "*.gguf", "*.onnx", "*.so", "*.o",
@@ -256,6 +258,13 @@ const commitLocked = async (deps: StateGitDeps, dir: string, message?: string): 
   if (big.length) {
     writeExclude(dir, big.map((p) => `/${p}`));
     lines.push(`STATE_GIT_BIG ${dir} left out ${big.length} file(s) over ${deps.settings.maxFileKb} KB: ${big.slice(0, 3).join(", ")}${big.length > 3 ? " ..." : ""}`);
+  }
+  // git keeps tracking a file an exclude covers: one committed before a new default (dori review's diffs before
+  // 2026-11-02) is taken out of the index here, and stays on disk
+  const covered = (await must(deps, dir, ["ls-files", "-z", "-c", "-i", `--exclude-from=${join(gitDir(dir), "info", "exclude")}`])).split("\0").filter(Boolean);
+  if (covered.length) {
+    await must(deps, dir, ["rm", "-q", "--cached", "--", ...covered]);
+    lines.push(`STATE_GIT_UNTRACK ${dir} ${covered.length} file(s) the excludes now cover, kept on disk: ${covered.slice(0, 3).join(", ")}${covered.length > 3 ? " ..." : ""}`);
   }
   await must(deps, dir, ["add", "-A"]);
   let list = await staged(deps, dir);

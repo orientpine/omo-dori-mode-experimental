@@ -80,6 +80,31 @@ test("token-shaped content is not committed, the rest of the change is, and the 
   expect((await commitDir(deps(), dir)).lines.some((l) => l.startsWith("STATE_GIT_REFUSED"))).toBe(false);
 });
 
+test("dori review's PR diffs stay out, one committed before is untracked and kept, the review and its receipts stay in", async () => {
+  // Given: receipts and a review in git, and a diff committed before the excludes covered it
+  const reviews = "state/receipts/reviews";
+  put("state/receipts/o__r_7@abc.review.json", '{"verdict":"CLEAR"}\n');
+  put(`${reviews}/o__r_7@abc-2026-11-02T08-00-00-000Z.md`, "VERDICT: CLEAR\n");
+  await commitDir(deps(), dir);
+  put(`${reviews}/o__r_7@abc.diff`, "+old\n");
+  sh("add", "-f", `${reviews}/o__r_7@abc.diff`);
+  sh("commit", "-q", "--no-verify", "-m", "old default");
+  // When: a new review's diff carries a PR's token-shaped test fixture
+  put(`${reviews}/o__r_7@def.diff`, `+const t = "${GHP}";\n`);
+  put(`${reviews}/o__r_7@abc..def.diff`, `+const t = "${GHP}";\n`);
+  const r = await commitDir(deps(), dir);
+  // Then
+  expect(r.lines.filter((l) => l.startsWith("STATE_GIT_REFUSED"))).toEqual([]);
+  expect(r.lines.some((l) => l.startsWith(`STATE_GIT_UNTRACK ${dir} 1 file(s)`))).toBe(true);
+  expect(tracked()).toEqual([".gitignore", "state/receipts/o__r_7@abc.review.json", `${reviews}/o__r_7@abc-2026-11-02T08-00-00-000Z.md`]);
+  expect(existsSync(join(dir, `${reviews}/o__r_7@abc.diff`))).toBe(true);
+  // a token in the review text, or in a diff elsewhere, is still refused
+  put(`${reviews}/o__r_7@def-2026-11-02T09-00-00-000Z.md`, `quoted ${GHP}\n`);
+  put("state/lanes/patch.diff", `+${GHP}\n`);
+  const again = await commitDir(deps(), dir);
+  expect(again.lines.filter((l) => l.startsWith("STATE_GIT_REFUSED")).map((l) => l.split(" ")[2]).sort()).toEqual(["state/lanes/patch.diff", `${reviews}/o__r_7@def-2026-11-02T09-00-00-000Z.md`]);
+});
+
 test("the pre-commit check refuses a forced env file and token-shaped content in a manual commit", async () => {
   // Given
   put("config.json", "{}\n");
