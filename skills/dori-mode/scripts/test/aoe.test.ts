@@ -330,9 +330,9 @@ test("the goal is read from omo's own files of the session whose transcript hold
   symlinkSync(real, link);
   const dir = join(sessions, `--${realpathSync(real).replace(/^\//, "").replace(/\//g, "-")}--`);
   mkdirSync(join(dir, "extensions", "goal"), { recursive: true });
-  const line = (role: string, text: string) => JSON.stringify({ type: "message", message: { role, content: [{ type: "text", text }] } });
-  const session = (id: string, prompt: string, goal?: string, quoted?: string) => {
-    const lines = [JSON.stringify({ type: "session", id }), line("user", prompt), ...(quoted ? [line("toolResult", quoted)] : [])];
+  const line = (role: string, text: string, at = T0 + 1_000) => JSON.stringify({ type: "message", timestamp: new Date(at).toISOString(), message: { role, content: [{ type: "text", text }] } });
+  const session = (id: string, prompt: string, goal?: string, quoted?: string, at?: number) => {
+    const lines = [JSON.stringify({ type: "session", id }), line("user", prompt, at), ...(quoted ? [line("toolResult", quoted)] : [])];
     writeFileSync(join(dir, `2026-01-01T12-00-00-000Z_${id}.jsonl`), `${lines.join("\n")}\n`);
     if (goal) writeFileSync(join(dir, "extensions", "goal", `${id}.json`), JSON.stringify({ goal: { status: goal } }));
   };
@@ -342,8 +342,10 @@ test("the goal is read from omo's own files of the session whose transcript hold
   // is in one of its tool results): it is not this lane's
   session("11111111-1111-1111-1111-111111111111", "ulw. You are the other lane; report as", "active", "❯ ulw. You are the smoke0 lane; report as the brief's footer says.");
   expect((await launchLane(deps, { ...lane, key: "smoke0", title: "smoke0" })).startup).toStartWith(`STARTUP_NO_GOAL smoke0 aoe_smoke0_${NEW_AOE_ID.slice(0, 8)}: the agent runs but no goal found for its session`);
-  // this lane's own session has none
+  // this lane's own session has none; an older session of the same key (another Dori instance's, still being written)
+  // has one, but its prompt was typed before this launch
   session("22222222-2222-2222-2222-222222222222", "ulw. You are the smoke lane; report as");
+  session("44444444-4444-4444-4444-444444444444", "ulw. You are the smoke lane; report as", "active", undefined, T0 - 3_600_000);
   expect((await launchLane(deps, lane)).startup).toStartWith(`STARTUP_NO_GOAL smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: the agent runs but no goal in its session`);
   // the next lane writes its goal: read from its own session's goal file
   session("33333333-3333-3333-3333-333333333333", "ulw. You are the smoke2 lane; report as", "active");

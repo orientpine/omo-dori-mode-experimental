@@ -51,11 +51,11 @@ export const sessionGoal = async (deps: FlowDeps, pane: string): Promise<GoalRea
   return file ? readGoalFile(file) : "unknown";
 };
 
-// The text of a transcript's first user message: what was typed to start the session (a lane's launch prompt).
-const firstUserText = (transcript: string): string | undefined => {
+// A transcript's first user message, what was typed to start the session (a lane's launch prompt), and when.
+const firstUserMessage = (transcript: string): { readonly text: string; readonly at: number } | undefined => {
   for (const line of transcript.split("\n")) {
     if (!line.includes('"user"')) continue;
-    let entry: { type?: unknown; message?: { role?: unknown; content?: unknown } };
+    let entry: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown } };
     try {
       entry = JSON.parse(line) as typeof entry;
     } catch {
@@ -63,14 +63,14 @@ const firstUserText = (transcript: string): string | undefined => {
     }
     if (entry.type !== "message" || entry.message?.role !== "user") continue;
     const content = entry.message.content;
-    if (typeof content === "string") return content;
-    return Array.isArray(content) ? content.map((p) => (p as { text?: unknown }).text).filter((t): t is string => typeof t === "string").join("\n") : "";
+    const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((p) => (p as { text?: unknown }).text).filter((t): t is string => typeof t === "string").join("\n") : "";
+    return { text, at: typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN };
   }
   return undefined;
 };
 
-// The goal of the session started by the prompt holding `marker` (a lane's launch prompt names its unique key), among
-// transcripts written since `since`. Matching by pid and start time can pick a sibling lane opened seconds apart in the
+// The goal of the session started, since `since`, by the prompt holding `marker` (a lane's launch prompt names its
+// key; the time tells it from an older session of the same key, e.g. another Dori instance's, in the same cwd). Matching by pid and start time can pick a sibling lane opened seconds apart in the
 // same directory, since omo's child processes carry no PI_SESSION_ID; and only the first user message counts, so a lead
 // or sibling that quoted the prompt (a captured pane in a tool result) is not taken for the lane. Both the cwd and its
 // real path are searched: omo may keep a symlinked cwd's sessions under either.
@@ -91,7 +91,9 @@ export const laneGoal = (sessionsDir: string, cwd: string, marker: string, since
     for (const name of names) {
       const path = join(dir, name);
       try {
-        if (statSync(path).mtimeMs < since || !firstUserText(readFileSync(path, "utf8"))?.includes(marker)) continue;
+        if (statSync(path).mtimeMs < since) continue;
+        const first = firstUserMessage(readFileSync(path, "utf8"));
+        if (!first?.text.includes(marker) || !(first.at >= since)) continue;
       } catch {
         continue;
       }
