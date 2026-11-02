@@ -41,11 +41,11 @@ if [ -d "$src/.git" ]; then
   elif [ "${origin%.git}" != "${repo%.git}" ]; then
     echo "warning: $src pulls from ${origin:-no origin}, not $repo; not updating it." >&2
     echo "  To follow $repo: git -C \"$src\" remote set-url origin \"$repo\" && git -C \"$src\" pull --ff-only" >&2
-  elif ! git -C "$src" -c merge.autostash=false -c rebase.autostash=false -c pull.twohead=recursive pull --ff-only --quiet; then
+  elif ! git -C "$src" -c pull.autostash=false -c merge.autostash=false -c rebase.autostash=false -c pull.twohead=recursive pull --ff-only --quiet; then
     # git's message above says why the pull failed; this adds the local work git status sees and both ways on, given
     # whatever it shows: an edit can hide from status (update-index --assume-unchanged), and the failure need not be
-    # that work (a lock file, a remote that cannot be reached). The -c overrides keep a local merge.autostash or
-    # pull.twohead=ours from turning the fast-forward into a stash pop or a merge (config, not --no-autostash, which git
+    # that work (a lock file, a remote that cannot be reached). The -c overrides keep a local pull/merge/rebase.autostash
+    # or pull.twohead=ours from turning the fast-forward into a stash pop or a merge (config, not --no-autostash, which git
     # before 2.27 refuses without --rebase).
     echo "error: could not update $src with git pull --ff-only; git's message above says why." >&2
     changes="$(git -C "$src" status --short --untracked-files=all)"

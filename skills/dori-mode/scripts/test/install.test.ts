@@ -109,7 +109,19 @@ test("an edit hidden from git status (assume-unchanged) still gets the way to in
   expect(readFileSync(join(src, file), "utf8")).toBe("patched\n");
 });
 
-test("a checkout's merge.autostash or pull.twohead=ours does not turn the update into a stash pop or a merge commit", () => {
+test("a checkout's pull.autostash, merge.autostash or pull.twohead=ours does not turn the update into a stash pop or a merge commit", () => {
+  for (const key of ["pull.autostash", "merge.autostash"]) {
+    const { src, file, commitUpstream, install } = setup();
+    git(src, "config", key, "true");
+    writeFileSync(join(src, file), "patched\n");
+    commitUpstream("v2\n");
+    const before = git(src, "rev-parse", "HEAD");
+    const r = install();
+    expect([key, r.code]).toEqual([key, 1]);
+    expect(r.err).toContain("DORI_NO_PULL=1");
+    expect(git(src, "rev-parse", "HEAD")).toBe(before);
+    expect(readFileSync(join(src, file), "utf8")).toBe("patched\n");
+  }
   const { upstream, src, file, commitUpstream, install } = setup();
   git(src, "config", "merge.autostash", "true");
   git(src, "config", "pull.twohead", "ours");
