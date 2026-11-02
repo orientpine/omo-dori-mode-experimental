@@ -244,7 +244,15 @@ export const discoverWorktrees = async (lane: Lane, run: Runner, extraRoots: rea
 export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
   const exists = deps.exists ?? existsSync;
   const reasons: string[] = [];
-  for (const wt of await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])) {
+  // dori-superagent issue #40 reproduced here (MIT): https://github.com/sisyphuslabs/dori-superagent/issues/40
+  // A lane with no worktree of its own works in its cwd, so that checkout is what is checked; one with its own worktree
+  // is checked there only, and the human's checkout in its cwd does not hold it. A cwd that is no git checkout has no
+  // work to push. (discoverWorktrees itself stays as it is: closeLane removes what it finds, never the cwd.)
+  const own = await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd]);
+  const cwd = lane.cwd ?? deps.config.defaultCwd;
+  const inGit = async (dir: string) => (await deps.run(["git", "-C", dir, "rev-parse", "--is-inside-work-tree"])).out.trim() === "true";
+  const checked = own.length ? own : exists(cwd) && (await inGit(cwd)) ? [cwd] : [];
+  for (const wt of checked) {
     if (!exists(wt)) continue;
     const dirty = await deps.run(["git", "-C", wt, "status", "--porcelain", "--untracked-files=no"]);
     const ahead = await deps.run(["git", "-C", wt, "rev-list", "--count", "HEAD", "--not", "--remotes"]);

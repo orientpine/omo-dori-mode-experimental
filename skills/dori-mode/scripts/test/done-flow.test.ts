@@ -67,6 +67,43 @@ test("uncommitted tracked changes also block the close", async () => {
   expect(closedVia()).toHaveLength(0);
 });
 
+// dori-superagent issue #40 reproduced here (MIT): https://github.com/sisyphuslabs/dori-superagent/issues/40
+// A lane that never made a worktree works straight in its cwd; its work there was checked nowhere.
+const cwdOnly = "worktree /repo\nHEAD 1111111\nbranch refs/heads/main";
+
+test("a lane with no worktree of its own and uncommitted changes in its cwd is not closed", async () => {
+  world.worktreeList = cwdOnly;
+  world.dirty = " M src/app.ts";
+  await claimDone(at(T0), lane, "merged acme/app#1");
+  await watchTick(at(T0 + 6 * MIN));
+  expect((await at(T0).registry.read("demo-lane"))?.objection?.reasons).toEqual(["unpushed work in /repo"]);
+  expect(closedVia()).toHaveLength(0);
+});
+
+test("a lane with no worktree of its own and unpushed commits in its cwd is not closed", async () => {
+  world.worktreeList = cwdOnly;
+  world.aheadCount = "1";
+  await claimDone(at(T0), lane, "merged acme/app#1");
+  await watchTick(at(T0 + 6 * MIN));
+  expect((await at(T0).registry.read("demo-lane"))?.objection?.reasons).toEqual(["unpushed work in /repo"]);
+  expect(closedVia()).toHaveLength(0);
+});
+
+test("a lane with a clean worktree of its own is not held by changes in the human's checkout", async () => {
+  world.dirtyIn = { "/repo": " M notes.md" };
+  world.aheadIn = { "/repo": "3" };
+  await claimDone(at(T0), lane, "merged acme/app#1 abc123", SUMMARY);
+  const lines = await watchTick(at(T0 + 6 * MIN));
+  expect(lines.at(-1)).toStartWith("LANE_CLOSED demo-lane ");
+});
+
+test("a cwd that is no git checkout raises no objection of its own", async () => {
+  world.inGit = false;
+  await claimDone(at(T0), lane, "merged acme/app#1 abc123", SUMMARY);
+  const lines = await watchTick(at(T0 + 6 * MIN));
+  expect(lines.at(-1)).toStartWith("LANE_CLOSED demo-lane ");
+});
+
 test("a Done signal that does not read back live becomes the objection", async () => {
   world.issueState = "OPEN";
   await claimDone(at(T0), lane, "merged acme/app#1");
