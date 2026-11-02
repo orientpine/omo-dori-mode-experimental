@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { AoeError, BUSY_MARK, envMismatch, forwardEnv, inputLine, laneEnv, openAoeSession, paneLife, target, WAKE_MARKS } from "./aoe.ts";
 import { type Backend, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { type GoalRead, sessionGoal } from "./goal.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { hasThread, LANE_KEY, type Lane, NO_THREAD, threadRefProblem } from "./registry.ts";
 import { areaLabel, type AreaQuery, areaSignals, pastSignalsSection, tagsOf } from "./lane-signals.ts";
@@ -485,8 +486,35 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const screen = await readScreen(deps.run, deps.config.backend, opened.pane, 40);
   const bad = STARTUP_FAILURE.exec(screen);
   if (bad) return { lane, startup: `STARTUP_ERROR ${input.key} ${opened.pane}: ${bad[0]}` };
-  if (deps.config.backend !== "aoe") return { lane, startup: `STARTUP_OK ${input.key} ${opened.pane}` };
-  return { lane, startup: await aoeStartup(deps, input.key, opened.pane, screen) };
+  const started = deps.config.backend === "aoe" ? await aoeStartup(deps, input.key, opened.pane, screen) : `STARTUP_OK ${input.key} ${opened.pane}`;
+  if (!started.startsWith("STARTUP_OK")) return { lane, startup: started };
+  return { lane, startup: (await startupGoal(deps, input.key, opened.pane, cwd)) ?? started };
+};
+
+// A running agent is not yet a good start: a lane that never sets its goal does its first turn and stops, and the lead
+// found the quiet lane long after a STARTUP_OK (dori-superagent issue #50 reproduced here (MIT):
+// https://github.com/sisyphuslabs/dori-superagent/issues/50; upstream PR #51 reads herdr's screen, this reads the goal
+// store `dori pause`/`dori resume` confirm with, goal.ts). Read right after the 20 s check, then every 10 s for up to
+// 60 s more, so a goal set a little late is still a start; a session that ends meanwhile is STARTUP_ERROR, and no goal
+// by then is STARTUP_NO_GOAL with the last lines (exit 3, like the other non-OK results).
+export const GOAL_WAIT = { checks: 6, everyMs: 10_000 } as const;
+
+const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: string): Promise<string | undefined> => {
+  const read = deps.readGoal ?? ((p: string) => sessionGoal(deps, p, cwd));
+  let goal: GoalRead = "unknown";
+  for (let check = 0; ; check++) {
+    goal = await read(pane);
+    if (typeof goal === "object") return undefined;
+    if (check === GOAL_WAIT.checks) break;
+    await deps.clock.sleep(GOAL_WAIT.everyMs);
+    if (deps.config.backend === "aoe") {
+      const life = await paneLife(deps.run, pane);
+      if (!life.live) return `STARTUP_ERROR ${key} ${pane}: ${life.how === "gone" ? "the tmux session is gone" : `the agent exited (status ${life.status})`}`;
+    }
+  }
+  const screen = await readScreen(deps.run, deps.config.backend, pane, 40);
+  const why = goal === "none" ? "no goal in its session" : "its goal store could not be read";
+  return `STARTUP_NO_GOAL ${key} ${pane}: the agent runs but ${why} ${20 + (GOAL_WAIT.checks * GOAL_WAIT.everyMs) / 1_000} s after its prompt; last lines: ${lastLines(screen)}`;
 };
 
 // No failure word on screen is not a start (ported from dori-superagent 40034ad, #7, MIT,

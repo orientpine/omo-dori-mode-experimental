@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { captureTmux, paneLife } from "./aoe.ts";
+import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { paneTranscript, typeLine } from "./panes.ts";
 
@@ -44,8 +45,11 @@ export const readGoalFile = (file: string): GoalRead => {
   }
 };
 
-export const sessionGoal = async (deps: FlowDeps, pane: string): Promise<GoalRead> => {
-  const path = await paneTranscript(deps.run, deps.config.sessionsDir, pane).catch(() => undefined);
+// cwd: a herdr pane's session is found from the agent under its shell (aoe finds the cwd from its own session list)
+export const sessionGoal = async (deps: FlowDeps, pane: string, cwd?: string): Promise<GoalRead> => {
+  const path = deps.config.backend !== "aoe" && cwd
+    ? (await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, undefined, deps.config.backend).catch(() => undefined))?.path
+    : await paneTranscript(deps.run, deps.config.sessionsDir, pane).catch(() => undefined);
   const file = path ? goalFileOf(path) : undefined;
   return file ? readGoalFile(file) : "unknown";
 };

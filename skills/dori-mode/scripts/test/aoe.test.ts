@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { sessionPath } from "../src/aoe.ts";
 import { leadAlertPoster } from "../src/autoturn.ts";
 import { deadPaneTick, newDeadPaneState, UNRECOGNISED_ALERT_AFTER } from "../src/dead-panes.ts";
-import { claimDone, watchTick } from "../src/done-flow.ts";
+import { claimDone, type FlowDeps, watchTick } from "../src/done-flow.ts";
+import type { GoalRead } from "../src/goal.ts";
 import { RESUME_TEXT } from "../src/lead-limit.ts";
 import type { Question } from "../src/messenger/discord-cards.ts";
 import { missedAnswersTick, sawAnswer } from "../src/missed-answers.ts";
@@ -24,7 +25,8 @@ const PANE = "aoe_fix-a_abcdef12";
 
 let state: ReturnType<typeof withState>;
 let world: World;
-const at = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" });
+// launches here start lanes whose goal store holds a goal; the tests of dori-superagent issue #50 below override it
+const at = (ms: number): FlowDeps => ({ ...depsFor(world, fakeClock(ms), state.dir, { backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" }), readGoal: async () => ({ status: "active" }) });
 
 beforeEach(() => {
   state = withState();
@@ -262,6 +264,52 @@ test("a lane whose session ended within 20 s of its prompt is a STARTUP_ERROR, t
   const deps = { ...after20s(base, () => { ended = true; world.screen = ""; }), run: async (argv: readonly string[], o?: Parameters<typeof base.run>[1]) => (ended && argv[1] === "has-session" ? { code: 1, out: "", err: "can't find session" } : base.run(argv, o)) };
   const r = await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
   expect(r.startup).toBe(`STARTUP_ERROR smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: the tmux session is gone`);
+});
+
+// dori-superagent issue #50 reproduced here (MIT): https://github.com/sisyphuslabs/dori-superagent/issues/50
+// A lane that runs but never set its goal stops after its first turn, so a running agent is not yet a good start.
+const goalLaunch = async (reads: readonly GoalRead[], during?: (read: number) => void) => {
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "# brief\n");
+  let read = 0;
+  const deps: FlowDeps = { ...at(T0), readGoal: async () => { during?.(read); return reads[Math.min(read++, reads.length - 1)] as GoalRead; } };
+  const r = await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  return { startup: r.startup, read };
+};
+
+test("a running lane whose session never holds a goal is STARTUP_NO_GOAL with its last lines after the goal wait", async () => {
+  world.screen = "working on it\n❯ ";
+  const r = await goalLaunch(["none"]);
+  expect(r.startup).toBe(`STARTUP_NO_GOAL smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: the agent runs but no goal in its session 80 s after its prompt; last lines: working on it / ❯`);
+  expect(r.read).toBe(7);
+});
+
+test("a goal that shows up after the first check is still STARTUP_OK", async () => {
+  const r = await goalLaunch(["none", "unknown", { status: "active" }]);
+  expect(r.startup).toBe(`STARTUP_OK smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}`);
+  expect(r.read).toBe(3);
+});
+
+test("a session that ends while launch waits for its goal is a STARTUP_ERROR, not a missing goal", async () => {
+  const base = at(T0);
+  let ended = false;
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "# brief\n");
+  const deps: FlowDeps = { ...base, readGoal: async () => { ended = true; return "none"; }, run: async (argv, o) => (ended && argv[1] === "has-session" ? { code: 1, out: "", err: "can't find session" } : base.run(argv, o)) };
+  const r = await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  expect(r.startup).toBe(`STARTUP_ERROR smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: the tmux session is gone`);
+});
+
+test("a herdr lane is held to its goal the same way: STARTUP_NO_GOAL without one, STARTUP_OK once it shows", async () => {
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "# brief\n");
+  const herdr = (reads: readonly GoalRead[]): FlowDeps => {
+    let read = 0;
+    const base = depsFor(world, fakeClock(T0), state.dir);
+    return { ...base, readGoal: async () => reads[Math.min(read++, reads.length - 1)] as GoalRead, run: async (argv, o) => (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create" ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w:p9" }, tab_id: "w:t9" } }), err: "" } : base.run(argv, o)) };
+  };
+  expect((await launchLane(herdr(["none"]), { noThread: "test lane", key: "hd", title: "hd", brief, done: "file /tmp/ok", cwd: "/tmp/w" })).startup).toStartWith("STARTUP_NO_GOAL hd w:p9: the agent runs but no goal in its session 80 s after its prompt");
+  expect((await launchLane(herdr(["unknown", { status: "active" }]), { noThread: "test lane", key: "hd2", title: "hd2", brief, done: "file /tmp/ok", cwd: "/tmp/w" })).startup).toBe("STARTUP_OK hd2 w:p9");
 });
 
 test("an aoe pane resumed with --session <session file> gets the uuid from the file name, not the path", async () => {
