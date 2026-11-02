@@ -86,15 +86,41 @@ test("a local commit upstream lacks stops install.sh with that commit listed; DO
   expect(readFileSync(join(src, file), "utf8")).toBe("v1\n");
 });
 
-test("a pull that fails with no local work in the checkout stops install.sh with git's reason and no advice to drop work", () => {
+test("a pull that fails with nothing local to list still gives both ways on, and says git's message is the reason", () => {
   const { src, commitUpstream, install } = setup();
   commitUpstream("v2\n");
   writeFileSync(join(src, ".git/index.lock"), "");
   const r = install();
   expect(r.code).toBe(1);
   expect(r.err).toContain(`could not update ${src} with git pull --ff-only; git's message above says why.`);
-  expect(r.err).not.toContain("DORI_NO_PULL");
-  expect(r.err).not.toContain("reset --hard");
+  expect(r.err).not.toContain("Local changes in that checkout");
+  expect(r.err).toContain("DORI_NO_PULL=1");
+  expect(r.err).toContain("If local work there is in the way");
+});
+
+test("an edit hidden from git status (assume-unchanged) still gets the way to install the checkout as it is", () => {
+  const { src, file, commitUpstream, install } = setup();
+  git(src, "update-index", "--assume-unchanged", file);
+  writeFileSync(join(src, file), "patched\n");
+  commitUpstream("v2\n");
+  const r = install();
+  expect(r.code).toBe(1);
+  expect(r.err).toContain("DORI_NO_PULL=1");
+  expect(readFileSync(join(src, file), "utf8")).toBe("patched\n");
+});
+
+test("a checkout's merge.autostash or pull.twohead=ours does not turn the update into a stash pop or a merge commit", () => {
+  const { upstream, src, file, commitUpstream, install } = setup();
+  git(src, "config", "merge.autostash", "true");
+  git(src, "config", "pull.twohead", "ours");
+  writeFileSync(join(src, file), "patched\n");
+  commitUpstream("v2\n");
+  const stashed = install();
+  expect(stashed.code).toBe(1);
+  expect(readFileSync(join(src, file), "utf8")).toBe("patched\n");
+  git(src, "checkout", "-q", "--", file);
+  expect(install().code).toBe(0);
+  expect(git(src, "rev-parse", "HEAD")).toBe(git(upstream, "rev-parse", "HEAD"));
 });
 
 test("an upstream rename of a locally edited file lists the edit; an upstream branch that is gone stops the install", () => {
@@ -114,6 +140,20 @@ test("an upstream rename of a locally edited file lists the edit; an upstream br
   expect(gone.code).toBe(1);
   expect(gone.err).toContain(`could not update ${src}`);
   expect(git(src, "rev-parse", "HEAD")).toBe(before);
+});
+
+test("an untracked file in the way is listed even when the checkout hides untracked files from git status", () => {
+  const { upstream, src, install } = setup();
+  git(src, "config", "status.showUntrackedFiles", "no");
+  writeFileSync(join(upstream, "new.txt"), "theirs\n");
+  git(upstream, "add", "new.txt");
+  git(upstream, "commit", "-qm", "add new.txt");
+  writeFileSync(join(src, "new.txt"), "mine\n");
+  const r = install();
+  expect(r.code).toBe(1);
+  expect(r.err).toContain("?? new.txt");
+  expect(r.err).toContain("DORI_NO_PULL=1");
+  expect(readFileSync(join(src, "new.txt"), "utf8")).toBe("mine\n");
 });
 
 test("DORI_NO_PULL=1 installs the checkout as it is, local edit and all", () => {
