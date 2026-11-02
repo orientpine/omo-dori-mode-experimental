@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
-import { claimDone, closeLane, objectDone, watchTick } from "../src/done-flow.ts";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { claimDone, closeLane, objectDone, unpushedWork, watchTick } from "../src/done-flow.ts";
+import { run } from "../src/run.ts";
 import { sendVerified, UnsafeTextError } from "../src/panes.ts";
 import { SUBMIT_TIMING } from "../src/submit.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
@@ -103,6 +107,51 @@ test("a cwd that is no git checkout raises no objection of its own", async () =>
   await claimDone(noGitDir(T0), lane, "merged acme/app#1 abc123", SUMMARY);
   const lines = await watchTick(noGitDir(T0 + 6 * MIN));
   expect(lines.at(-1)).toStartWith("LANE_CLOSED demo-lane ");
+});
+
+test("a cwd that is a symlink into a subdirectory of a real checkout is checked there", async () => {
+  const g = async (...a: string[]) => expect((await run(["git", ...a])).code).toBe(0);
+  const repo = join(state.dir, "checkout");
+  await g("init", "-q", "--bare", "-b", "main", join(state.dir, "origin.git"));
+  await g("clone", "-q", join(state.dir, "origin.git"), repo);
+  mkdirSync(join(repo, "sub"));
+  writeFileSync(join(repo, "sub", "a.txt"), "one\n");
+  await g("-C", repo, "add", "sub/a.txt");
+  await g("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one");
+  await g("-C", repo, "push", "-q", "origin", "main");
+  writeFileSync(join(repo, "sub", "a.txt"), "two\n");
+  const link = join(state.dir, "lane-src");
+  symlinkSync(join(repo, "sub"), link);
+  const deps = { ...at(T0), run, exists: existsSync, config: { ...at(T0).config, defaultCwd: state.dir } };
+  expect(await unpushedWork(deps, { ...lane, cwd: link })).toEqual([`unpushed work in ${link}`]);
+  // the same checkout broken: its .git is found on the physical path, not the symlink's
+  writeFileSync(join(repo, ".git", "config"), "[core\n");
+  expect(await unpushedWork(deps, { ...lane, cwd: link })).toEqual([`unpushed work in ${link} (git state unreadable)`]);
+});
+
+test("a dangling .git symlink holds the lane, and a GIT_DIR in the watcher's environment does not hide the cwd's work", async () => {
+  const realDeps = { ...at(T0), run, exists: existsSync, config: { ...at(T0).config, defaultCwd: state.dir } };
+  const dangling = join(state.dir, "dangling");
+  mkdirSync(dangling);
+  symlinkSync(join(state.dir, "gone"), join(dangling, ".git"));
+  expect(await unpushedWork(realDeps, { ...lane, cwd: dangling })).toEqual([`unpushed work in ${dangling} (git state unreadable)`]);
+  const repo = join(state.dir, "plain");
+  expect((await run(["git", "init", "-q", repo])).code).toBe(0);
+  writeFileSync(join(repo, "a.txt"), "one\n");
+  expect((await run(["git", "-C", repo, "add", "a.txt"])).code).toBe(0);
+  expect((await run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"])).code).toBe(0);
+  writeFileSync(join(repo, "a.txt"), "two\n");
+  const saved = process.env.GIT_DIR;
+  process.env.GIT_DIR = join(state.dir, "nowhere");
+  try {
+    expect(await unpushedWork(realDeps, { ...lane, cwd: repo })).toEqual([`unpushed work in ${repo}`]);
+    // the lane's own worktree, found by its name, is still found: the human's dirty checkout does not hold the lane
+    expect((await run(["git", "-C", repo, "worktree", "add", "-q", "-b", "demo-lane", join(state.dir, "wt", "demo-lane")], { env: { GIT_DIR: undefined } })).code).toBe(0);
+    expect(await unpushedWork(realDeps, { ...lane, cwd: repo })).toEqual([`unpushed work in ${join(state.dir, "wt", "demo-lane")}`]);
+  } finally {
+    if (saved === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = saved;
+  }
 });
 
 // git says "not a git repository" for a .git file pointing nowhere or a bad HEAD too: a .git entry makes it unreadable

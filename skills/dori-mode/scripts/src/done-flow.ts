@@ -1,5 +1,5 @@
 import { type GoalAct, goalCommand, type GoalRead, liveSession } from "./goal.ts";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import { closeAoeSession, paneActivity, paneLife } from "./aoe.ts";
@@ -242,34 +242,61 @@ export const discoverWorktrees = async (lane: Lane, run: Runner, extraRoots: rea
   return [...found];
 };
 
+// `git rev-parse --local-env-vars` (git 2.43) and GIT_CEILING_DIRECTORIES, each unset for a child git
+const GIT_REPO_ENV_CLEARED: Readonly<Record<string, undefined>> = Object.fromEntries(
+  ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"].map((k) => [k, undefined]),
+);
+
 export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
   const exists = deps.exists ?? existsSync;
   const reasons: string[] = [];
   // dori-superagent issue #40 reproduced here (MIT): https://github.com/sisyphuslabs/dori-superagent/issues/40
   // A lane with no worktree of its own works in its cwd, so that checkout is what is checked; one with its own worktree
-  // is checked there only, and the human's checkout in its cwd does not hold it. A cwd with no .git entry in it or above
-  // it is no checkout and has no work to push. With one, a failed git probe is unreadable git state and holds the lane:
-  // git prints the same "not a git repository" for a missing repository and a broken one (bad HEAD, a .git file
-  // pointing nowhere), so its message cannot tell them apart. (discoverWorktrees stays as it is: closeLane removes what
-  // it finds, never the cwd.)
-  const own = await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd]);
+  // is checked there only, and the human's checkout in its cwd does not hold it. Git is asked first, and a checkout it
+  // finds is checked. When it fails, a .git entry in the cwd or above it (on the physical path, as git walks it, so a
+  // cwd that is a symlink into a repository counts) means a broken checkout: unreadable git state, which holds the lane.
+  // Without one the cwd is no checkout and has no work to push. Git's message cannot tell the two apart: it prints
+  // "not a git repository" for a missing repository and for a bad HEAD or a .git file pointing nowhere alike (git's
+  // setup.c skips a .git it cannot use and walks on up). A .git entry counts when lstat sees it, so a dangling .git
+  // symlink holds too; only ENOENT or ENOTDIR mean none. Every git call here, the worktree discovery too, runs without
+  // the repository overrides git lists in `git rev-parse --local-env-vars` and without GIT_CEILING_DIRECTORIES: from the
+  // watcher's environment they would point git at another repository, index or object store, or stop its walk.
+  // (discoverWorktrees stays as it is: closeLane removes what it finds, never the cwd.)
+  const git: Runner = (argv, opts) => deps.run(argv, { ...opts, env: { ...opts?.env, ...GIT_REPO_ENV_CLEARED } });
+  const own = await discoverWorktrees(lane, git, [deps.config.defaultCwd]);
   const cwd = lane.cwd ?? deps.config.defaultCwd;
+  const present = (p: string): boolean => {
+    if (exists(p)) return true;
+    try {
+      lstatSync(p);
+      return true;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      return code !== "ENOENT" && code !== "ENOTDIR";
+    }
+  };
   const underGit = (dir: string): boolean => {
-    for (let d = resolve(dir); ; d = dirname(d)) {
-      if (exists(join(d, ".git"))) return true;
+    let d = resolve(dir);
+    try {
+      d = realpathSync(d);
+    } catch {
+      // a path the file system cannot resolve is walked as written
+    }
+    for (; ; d = dirname(d)) {
+      if (present(join(d, ".git"))) return true;
       if (dirname(d) === d) return false;
     }
   };
   let checked = own;
-  if (!own.length && exists(cwd) && underGit(cwd)) {
-    const probe = await deps.run(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"]);
-    if (probe.code !== 0) reasons.push(`unpushed work in ${cwd} (git state unreadable)`);
-    else checked = probe.out.trim() === "true" ? [cwd] : [];
+  if (!own.length && exists(cwd)) {
+    const probe = await git(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"]);
+    if (probe.code === 0) checked = probe.out.trim() === "true" ? [cwd] : [];
+    else if (underGit(cwd)) reasons.push(`unpushed work in ${cwd} (git state unreadable)`);
   }
   for (const wt of checked) {
     if (!exists(wt)) continue;
-    const dirty = await deps.run(["git", "-C", wt, "status", "--porcelain", "--untracked-files=no"]);
-    const ahead = await deps.run(["git", "-C", wt, "rev-list", "--count", "HEAD", "--not", "--remotes"]);
+    const dirty = await git(["git", "-C", wt, "status", "--porcelain", "--untracked-files=no"]);
+    const ahead = await git(["git", "-C", wt, "rev-list", "--count", "HEAD", "--not", "--remotes"]);
     if (dirty.code !== 0 || ahead.code !== 0) reasons.push(`unpushed work in ${wt} (git state unreadable)`);
     else if (dirty.out.trim() || Number(ahead.out.trim()) > 0) reasons.push(`unpushed work in ${wt}`);
   }
