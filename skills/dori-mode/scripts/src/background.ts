@@ -1,7 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Backend } from "./config.ts";
 import type { Runner } from "./run.ts";
 import { type Proc, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
@@ -185,8 +184,8 @@ export const strayTasks = (home: string, session: string, alive: (pid: number) =
 // cannot be read. Jobs started before the agent process started died with the earlier process; jobs started before
 // notBefore (a server or watcher left running for hours) are not what the lane waits on.
 // The transcript file of the session a pane's omo runs, and that agent's pid, or undefined when either cannot be read.
-export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[], backend: Backend = "aoe"): Promise<{ readonly path: string; readonly pid: number } | undefined> => {
-  const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend });
+export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[]): Promise<{ readonly path: string; readonly pid: number } | undefined> => {
+  const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend: "aoe" });
   if (!hit.id || !hit.pid) return undefined;
   const dir = sessionDirFor(sessionsDir, cwd);
   let name: string | undefined;

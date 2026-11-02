@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { sessionPath } from "../src/aoe.ts";
@@ -300,16 +300,51 @@ test("a session that ends while launch waits for its goal is a STARTUP_ERROR, no
   expect(r.startup).toBe(`STARTUP_ERROR smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: the tmux session is gone`);
 });
 
-test("a herdr lane is held to its goal the same way: STARTUP_NO_GOAL without one, STARTUP_OK once it shows", async () => {
+test("a herdr lane is held to its goal the same way: STARTUP_NO_GOAL without one, STARTUP_OK once it shows, STARTUP_ERROR when its agent ends", async () => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
+  world.ps = "500 1 bash\n501 500 omo --model m";
   const herdr = (reads: readonly GoalRead[]): FlowDeps => {
     let read = 0;
     const base = depsFor(world, fakeClock(T0), state.dir);
-    return { ...base, readGoal: async () => reads[Math.min(read++, reads.length - 1)] as GoalRead, run: async (argv, o) => (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create" ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w:p9" }, tab_id: "w:t9" } }), err: "" } : base.run(argv, o)) };
+    return { ...base, readGoal: async () => reads[Math.min(read++, reads.length - 1)] as GoalRead, run: async (argv, o) => {
+      if (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create") return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w:p9" }, tab_id: "w:t9" } }), err: "" };
+      if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "process-info") return { code: 0, out: JSON.stringify({ result: { process_info: { shell_pid: 500 } } }), err: "" };
+      return base.run(argv, o);
+    } };
   };
-  expect((await launchLane(herdr(["none"]), { noThread: "test lane", key: "hd", title: "hd", brief, done: "file /tmp/ok", cwd: "/tmp/w" })).startup).toStartWith("STARTUP_NO_GOAL hd w:p9: the agent runs but no goal in its session 80 s after its prompt");
-  expect((await launchLane(herdr(["unknown", { status: "active" }]), { noThread: "test lane", key: "hd2", title: "hd2", brief, done: "file /tmp/ok", cwd: "/tmp/w" })).startup).toBe("STARTUP_OK hd2 w:p9");
+  const input = (key: string) => ({ noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  expect((await launchLane(herdr(["none"]), input("hd"))).startup).toStartWith("STARTUP_NO_GOAL hd w:p9: the agent runs but no goal in its session 80 s after its prompt");
+  expect((await launchLane(herdr(["unknown", { status: "active" }]), input("hd2"))).startup).toBe("STARTUP_OK hd2 w:p9");
+  world.ps = "500 1 bash";
+  expect((await launchLane(herdr(["none"]), input("hd3"))).startup).toBe("STARTUP_ERROR hd3 w:p9: no agent runs in the pane any more");
+});
+
+test("the goal is read from omo's own files of the session whose transcript holds the lane's prompt, under a symlinked cwd's real path, never a sibling's", async () => {
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "# brief\n");
+  const sessions = join(state.dir, "sessions");
+  const real = join(state.dir, "real");
+  const link = join(state.dir, "link");
+  mkdirSync(real, { recursive: true });
+  symlinkSync(real, link);
+  const dir = join(sessions, `--${realpathSync(real).replace(/^\//, "").replace(/\//g, "-")}--`);
+  mkdirSync(join(dir, "extensions", "goal"), { recursive: true });
+  const session = (id: string, prompt: string, goal?: string) => {
+    writeFileSync(join(dir, `2026-01-01T12-00-00-000Z_${id}.jsonl`), `${JSON.stringify({ type: "message", text: prompt })}\n`);
+    if (goal) writeFileSync(join(dir, "extensions", "goal", `${id}.json`), JSON.stringify({ goal: { status: goal } }));
+  };
+  const deps: FlowDeps = { ...at(T0), readGoal: undefined, config: { ...at(T0).config, sessionsDir: sessions } };
+  const lane = { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: link };
+  // only a sibling lane in the same directory has a session, with a goal: it is not this lane's
+  session("11111111-1111-1111-1111-111111111111", "ulw. You are the other lane; report as", "active");
+  expect((await launchLane(deps, { ...lane, key: "smoke0", title: "smoke0" })).startup).toStartWith(`STARTUP_NO_GOAL smoke0 aoe_smoke0_${NEW_AOE_ID.slice(0, 8)}: the agent runs but no goal found for its session`);
+  // this lane's own session has none
+  session("22222222-2222-2222-2222-222222222222", "ulw. You are the smoke lane; report as");
+  expect((await launchLane(deps, lane)).startup).toStartWith(`STARTUP_NO_GOAL smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: the agent runs but no goal in its session`);
+  // the next lane writes its goal: read from its own session's goal file
+  session("33333333-3333-3333-3333-333333333333", "ulw. You are the smoke2 lane; report as", "active");
+  expect((await launchLane(deps, { ...lane, key: "smoke2", title: "smoke2" })).startup).toBe(`STARTUP_OK smoke2 aoe_smoke2_${NEW_AOE_ID.slice(0, 8)}`);
 });
 
 test("an aoe pane resumed with --session <session file> gets the uuid from the file name, not the path", async () => {

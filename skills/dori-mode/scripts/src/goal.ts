@@ -1,10 +1,10 @@
-import { readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { captureTmux, paneLife } from "./aoe.ts";
-import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { paneTranscript, typeLine } from "./panes.ts";
+import { sessionDirFor } from "./session-id.ts";
 
 // A paused lane must not keep working through its omo goal: between turns omo starts the next one on its own while the
 // goal is active, so a lane the lead paused kept spending turns (ported from dori-superagent 0057f49, #12, MIT,
@@ -45,13 +45,41 @@ export const readGoalFile = (file: string): GoalRead => {
   }
 };
 
-// cwd: a herdr pane's session is found from the agent under its shell (aoe finds the cwd from its own session list)
-export const sessionGoal = async (deps: FlowDeps, pane: string, cwd?: string): Promise<GoalRead> => {
-  const path = deps.config.backend !== "aoe" && cwd
-    ? (await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, undefined, deps.config.backend).catch(() => undefined))?.path
-    : await paneTranscript(deps.run, deps.config.sessionsDir, pane).catch(() => undefined);
+export const sessionGoal = async (deps: FlowDeps, pane: string): Promise<GoalRead> => {
+  const path = await paneTranscript(deps.run, deps.config.sessionsDir, pane).catch(() => undefined);
   const file = path ? goalFileOf(path) : undefined;
   return file ? readGoalFile(file) : "unknown";
+};
+
+// The goal of the session whose transcript holds `marker` (the lane's own launch prompt names its key), among
+// transcripts written since `since`. Matching by pid and start time can pick a sibling lane opened seconds apart in
+// the same directory, since omo's child processes carry no PI_SESSION_ID; a lane key is unique, so its prompt is not.
+// Both the cwd and its real path are searched: omo may keep a symlinked cwd's sessions under either.
+export const laneGoal = (sessionsDir: string, cwd: string, marker: string, since: number): GoalRead => {
+  const at = resolve(cwd);
+  let real = at;
+  try {
+    real = realpathSync(at);
+  } catch {}
+  for (const dir of new Set([sessionDirFor(sessionsDir, at), sessionDirFor(sessionsDir, real)])) {
+    let names: string[];
+    try {
+      names = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const path = join(dir, name);
+      try {
+        if (statSync(path).mtimeMs < since || !readFileSync(path, "utf8").includes(marker)) continue;
+      } catch {
+        continue;
+      }
+      const file = goalFileOf(path);
+      return file ? readGoalFile(file) : "unknown";
+    }
+  }
+  return "unknown";
 };
 
 const count = (screen: string, re: RegExp): number => screen.split("\n").filter((l) => re.test(l)).length;
