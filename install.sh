@@ -41,13 +41,20 @@ if [ -d "$src/.git" ]; then
   elif [ "${origin%.git}" != "${repo%.git}" ]; then
     echo "warning: $src pulls from ${origin:-no origin}, not $repo; not updating it." >&2
     echo "  To follow $repo: git -C \"$src\" remote set-url origin \"$repo\" && git -C \"$src\" pull --ff-only" >&2
-  elif ! git -C "$src" pull --ff-only --quiet; then
-    changes="$(git -C "$src" status --short)"
+  elif ! git -C "$src" fetch --quiet; then
+    echo "error: could not fetch updates for $src; git's message above says why. The checkout was left as it is." >&2
+    exit 1
+  elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
+    # Local work is named only when it is what blocks the fast-forward: commits upstream lacks, or a changed or
+    # untracked file that upstream changed too. Any other failure (no upstream branch, a lock file) is git's message.
     ahead="$(git -C "$src" log --oneline '@{u}..HEAD' 2>/dev/null || true)"
-    if [ -z "$changes$ahead" ]; then
+    in_way="$(git -C "$src" -c core.quotePath=false status --porcelain --no-renames --untracked-files=all | cut -c4- |
+      grep -Fx -f <(git -C "$src" -c core.quotePath=false diff --name-only HEAD '@{u}' 2>/dev/null) || true)"
+    if [ -z "$ahead$in_way" ]; then
       echo "error: could not update $src; git's message above says why." >&2
       exit 1
     fi
+    changes="$(git -C "$src" status --short)"
     echo "error: could not update $src: local work there is in the way of git pull --ff-only." >&2
     [ -z "$changes" ] || { echo "  Changed files (git status --short):"; printf '%s\n' "$changes" | sed 's/^/    /'; } >&2
     [ -z "$ahead" ] || { echo "  Local commits upstream lacks:"; printf '%s\n' "$ahead" | sed 's/^/    /'; } >&2

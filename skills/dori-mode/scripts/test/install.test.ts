@@ -69,6 +69,42 @@ test("a local edit in the way of the pull stops install.sh with the checkout, th
   expect(readFileSync(join(src, file), "utf8")).toBe("patched\n");
 });
 
+test("a local commit upstream lacks stops install.sh with that commit listed; DORI_NO_PULL=1 then installs without updating", () => {
+  const { src, file, commitUpstream, install } = setup();
+  writeFileSync(join(src, "local.txt"), "mine\n");
+  git(src, "add", "local.txt");
+  git(src, "commit", "-qm", "my local commit");
+  const mine = git(src, "rev-parse", "HEAD");
+  commitUpstream("v2\n");
+  const r = install();
+  expect(r.code).toBe(1);
+  expect(r.err).toContain("Local commits upstream lacks:");
+  expect(r.err).toContain("my local commit");
+  expect(git(src, "rev-parse", "HEAD")).toBe(mine);
+  expect(install({ DORI_NO_PULL: "1" }).code).toBe(0);
+  expect(git(src, "rev-parse", "HEAD")).toBe(mine);
+  expect(readFileSync(join(src, file), "utf8")).toBe("v1\n");
+});
+
+test("a fetch that fails, or a pull that fails for another reason, is not blamed on unrelated local edits", () => {
+  const { upstream, src, commitUpstream, install } = setup();
+  writeFileSync(join(src, "README.local"), "notes\n");
+  commitUpstream("v2\n");
+  // a lock file stops the fast-forward; the untracked note is not in its way
+  writeFileSync(join(src, ".git/index.lock"), "");
+  const locked = install();
+  expect(locked.code).toBe(1);
+  expect(locked.err).toContain("git's message above says why");
+  expect(locked.err).not.toContain("DORI_NO_PULL");
+  rmSync(join(src, ".git/index.lock"));
+  // the remote is gone: a fetch failure says so and changes nothing
+  rmSync(upstream, { recursive: true, force: true });
+  const unreachable = install();
+  expect(unreachable.code).toBe(1);
+  expect(unreachable.err).toContain(`could not fetch updates for ${src}`);
+  expect(unreachable.err).not.toContain("reset --hard");
+});
+
 test("DORI_NO_PULL=1 installs the checkout as it is, local edit and all", () => {
   const { src, file, commitUpstream, install } = setup();
   const before = git(src, "rev-parse", "HEAD");
