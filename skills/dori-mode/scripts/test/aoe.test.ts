@@ -318,6 +318,9 @@ test("a herdr lane is held to its goal the same way: STARTUP_NO_GOAL without one
   const input = (key: string) => ({ noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" });
   expect((await launchLane(herdr(["none"]), input("hd"))).startup).toStartWith("STARTUP_NO_GOAL hd w:p9: the agent runs but no goal in its session 80 s after its prompt");
   expect((await launchLane(herdr(["unknown", { status: "active" }]), input("hd2"))).startup).toBe("STARTUP_OK hd2 w:p9");
+  // herdr runs the agent with the lane's own prompt in its command line: a key or brief named mcp is not an MCP server
+  world.ps = "500 1 bash\n501 500 omo --model m ulw. Read and execute the lane brief at /tmp/mcp.md in full. You are the mcp-fix lane (launch 1234abcd); report as the brief's footer says.";
+  expect((await launchLane(herdr([{ status: "active" }]), input("mcp-fix"))).startup).toBe("STARTUP_OK mcp-fix w:p9");
   world.ps = "500 1 bash";
   expect((await launchLane(herdr(["none"]), input("hd3"))).startup).toBe("STARTUP_ERROR hd3 w:p9: no agent runs in the pane any more");
   // a goal of an agent that already ended is no start either: the agent is read before its goal, every time
