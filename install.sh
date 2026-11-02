@@ -73,7 +73,7 @@ if [ -d "$src/.git" ]; then
       if [ -n "$branch" ]; then
         echo "  Branch $branch there follows no upstream branch, so there is nothing to pull. To follow $follow again: git -C \"$src\" branch --set-upstream-to=$follow, then run install.sh again." >&2
       else
-        echo "  That checkout is on no branch (detached HEAD), so there is nothing to pull. To follow $follow again: git -C \"$src\" switch ${follow#origin/}, then run install.sh again." >&2
+        echo "  That checkout is on no branch (detached HEAD), so there is nothing to pull. To follow $follow again: git -C \"$src\" switch ${follow#origin/} && git -C \"$src\" branch --set-upstream-to=$follow, then run install.sh again." >&2
       fi
     fi
     exit 1
