@@ -1,5 +1,6 @@
 import { type GoalAct, goalCommand, type GoalRead, liveSession } from "./goal.ts";
 import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 import { closeAoeSession, paneActivity, paneLife } from "./aoe.ts";
 import { autoturnTick } from "./autoturn.ts";
@@ -246,17 +247,24 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
   const reasons: string[] = [];
   // dori-superagent issue #40 reproduced here (MIT): https://github.com/sisyphuslabs/dori-superagent/issues/40
   // A lane with no worktree of its own works in its cwd, so that checkout is what is checked; one with its own worktree
-  // is checked there only, and the human's checkout in its cwd does not hold it. A cwd git says is no repository has no
-  // work to push; any other failed probe (a broken repository) is unreadable git state, which holds the lane.
-  // (discoverWorktrees itself stays as it is: closeLane removes what it finds, never the cwd.)
+  // is checked there only, and the human's checkout in its cwd does not hold it. A cwd with no .git entry in it or above
+  // it is no checkout and has no work to push. With one, a failed git probe is unreadable git state and holds the lane:
+  // git prints the same "not a git repository" for a missing repository and a broken one (bad HEAD, a .git file
+  // pointing nowhere), so its message cannot tell them apart. (discoverWorktrees stays as it is: closeLane removes what
+  // it finds, never the cwd.)
   const own = await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd]);
   const cwd = lane.cwd ?? deps.config.defaultCwd;
+  const underGit = (dir: string): boolean => {
+    for (let d = resolve(dir); ; d = dirname(d)) {
+      if (exists(join(d, ".git"))) return true;
+      if (dirname(d) === d) return false;
+    }
+  };
   let checked = own;
-  if (!own.length && exists(cwd)) {
-    // LC_ALL=C: git's message is matched below, and a localized git would word it otherwise
-    const probe = await deps.run(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"], { env: { LC_ALL: "C" } });
-    if (probe.code === 0) checked = probe.out.trim() === "true" ? [cwd] : [];
-    else if (!/not a git repository/i.test(probe.err)) reasons.push(`unpushed work in ${cwd} (git state unreadable)`);
+  if (!own.length && exists(cwd) && underGit(cwd)) {
+    const probe = await deps.run(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"]);
+    if (probe.code !== 0) reasons.push(`unpushed work in ${cwd} (git state unreadable)`);
+    else checked = probe.out.trim() === "true" ? [cwd] : [];
   }
   for (const wt of checked) {
     if (!exists(wt)) continue;

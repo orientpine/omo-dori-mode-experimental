@@ -99,14 +99,16 @@ test("a lane with a clean worktree of its own is not held by changes in the huma
 
 test("a cwd that is no git checkout raises no objection of its own", async () => {
   world.inGit = false;
-  await claimDone(at(T0), lane, "merged acme/app#1 abc123", SUMMARY);
-  const lines = await watchTick(at(T0 + 6 * MIN));
+  const noGitDir = (ms: number) => ({ ...at(ms), exists: (p: string) => !p.endsWith("/.git") });
+  await claimDone(noGitDir(T0), lane, "merged acme/app#1 abc123", SUMMARY);
+  const lines = await watchTick(noGitDir(T0 + 6 * MIN));
   expect(lines.at(-1)).toStartWith("LANE_CLOSED demo-lane ");
 });
 
-test("a cwd git cannot read holds the lane as unreadable git state, not as no checkout", async () => {
+// git says "not a git repository" for a .git file pointing nowhere or a bad HEAD too: a .git entry makes it unreadable
+test.each(["fatal: bad config line 1 in file .git/config", "fatal: not a git repository: /repo/.git/worktrees/gone"])("a cwd with a .git git cannot read holds the lane as unreadable git state (%s)", async (err) => {
   world.worktreeList = cwdOnly;
-  world.revParseErr = "fatal: bad config line 1 in file .git/config";
+  world.revParseErr = err;
   await claimDone(at(T0), lane, "merged acme/app#1");
   await watchTick(at(T0 + 6 * MIN));
   expect((await at(T0).registry.read("demo-lane"))?.objection?.reasons).toEqual(["unpushed work in /repo (git state unreadable)"]);
