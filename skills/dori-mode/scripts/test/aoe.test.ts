@@ -269,12 +269,12 @@ test("a lane whose session ended within 20 s of its prompt is a STARTUP_ERROR, t
 
 // dori-superagent issue #50 reproduced here (MIT): https://github.com/sisyphuslabs/dori-superagent/issues/50
 // A lane that runs but never set its goal stops after its first turn, so a running agent is not yet a good start.
-const goalLaunch = async (reads: readonly GoalRead[], during?: (read: number) => void, config: Partial<DoriConfig> = {}) => {
+const goalLaunch = async (reads: readonly GoalRead[], during?: (read: number) => void, config: Partial<DoriConfig> = {}, cwd = "/tmp/w") => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
   let read = 0;
   const deps: FlowDeps = { ...at(T0), config: { ...at(T0).config, ...config }, readGoal: async () => { during?.(read); return reads[Math.min(read++, reads.length - 1)] as GoalRead; } };
-  const r = await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  const r = await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd });
   return { startup: r.startup, read };
 };
 
@@ -399,6 +399,46 @@ test("dori watch counts no idle read while the lane waits on a background job of
   expect(await watchWith("none", IDLE, own)).toEqual([]);
   expect(await watchWith("none", IDLE, own)).toEqual([]);
   expect((await watchWith("none", IDLE, own))[0]).toStartWith(`LANE_NO_GOAL smoke ${pendingPane}: its first turn ended with no goal in its session`);
+});
+
+test("a first turn waiting on a background job whose transcript sits under a symlinked cwd's real path is STARTUP_PENDING_GOAL", async () => {
+  const sessions = join(state.dir, "sessions");
+  const real = join(state.dir, "real-job");
+  const link = join(state.dir, "link-job");
+  mkdirSync(real, { recursive: true });
+  symlinkSync(real, link);
+  detachedJob(sessions, realpathSync(real));
+  world.screen = IDLE;
+  expect((await goalLaunch(["none"], undefined, { sessionsDir: sessions }, link)).startup).toStartWith(`STARTUP_PENDING_GOAL smoke ${pendingPane}`);
+});
+
+test("a pending lane whose done claim was rejected (not-done) is still read: three idle reads say LANE_NO_GOAL", async () => {
+  await pendingLane();
+  await at(T0).registry.patch("smoke", { status: "not-done" });
+  for (let i = 0; i < 2; i++) expect(await watchWith("none", IDLE)).toEqual([]);
+  expect((await watchWith("none", IDLE))[0]).toStartWith(`LANE_NO_GOAL smoke ${pendingPane}`);
+});
+
+// herdr has no lane death check of its own, and a herdr lane's background jobs are read from its exact session's transcript
+const herdrWatch = (sessions: string): FlowDeps => {
+  const base = depsFor(world, fakeClock(T0), state.dir, { sessionsDir: sessions });
+  return { ...base, readGoal: async () => "none", run: async (argv, o) => (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "process-info" ? { code: 0, out: JSON.stringify({ result: { process_info: { shell_pid: 500 } } }), err: "" } : base.run(argv, o)) };
+};
+
+test("a herdr pending lane waiting on a background job of its own is not told; once its agent is gone it is LANE_NO_GOAL_AGENT_GONE, told once", async () => {
+  const sessions = join(state.dir, "sessions");
+  detachedJob(sessions, "/tmp/w");
+  world.ps = "500 1 bash\n501 500 omo --model m";
+  const deps = herdrWatch(sessions);
+  await deps.registry.write({ key: "hp", title: "hp", thread: "none", brief: "/b", done: "file /x", openedAt: "2026-01-01T00:00:00Z", pane: "w:p9", session: ID, cwd: "/tmp/w", pendingGoal: { idle: 0 } });
+  for (let i = 0; i < 4; i++) expect(goalLines(await watchTick(deps))).toEqual([]);
+  expect((await deps.registry.read("hp"))?.pendingGoal).toEqual({ idle: 0 });
+  world.ps = "500 1 bash";
+  const gone = (await watchTick(deps)).filter((l) => /^LANE_NO_GOAL/.test(l));
+  expect(gone[0]).toBe("LANE_NO_GOAL_AGENT_GONE hp w:p9: no agent runs in the pane any more before it set a goal");
+  expect(gone[1]).toStartWith("LANE_NO_GOAL_");
+  expect((await deps.registry.read("hp"))?.pendingGoal).toBeUndefined();
+  expect((await watchTick(deps)).filter((l) => /^LANE_NO_GOAL/.test(l))).toEqual([]);
 });
 
 test("a herdr lane is held to its goal the same way: STARTUP_NO_GOAL without one, STARTUP_OK once it shows, STARTUP_ERROR when its agent ends", async () => {

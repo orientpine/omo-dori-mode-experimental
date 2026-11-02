@@ -1,10 +1,13 @@
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
+
 import { paneLife } from "./aoe.ts";
-import { laneBackground } from "./background.ts";
+import { pendingBackground } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type GoalRead, laneGoal } from "./goal.ts";
 import { readScreen, submitToPane } from "./panes.ts";
 import { statusOf } from "./registry.ts";
-import { AGENT, descendants, ended, procTable, shellPidOf } from "./session-id.ts";
+import { AGENT, descendants, ended, procTable, sessionDirFor, shellPidOf } from "./session-id.ts";
 import { turnRunning } from "./submit.ts";
 
 // A started lane has to set its goal (dori-superagent issue #50 reproduced here (MIT):
@@ -44,24 +47,55 @@ export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | 
 // A first turn is still on while its turn runs on screen, and while the agent waits on background work of its own: a
 // job it detached (an eval or a bash the harness moved to the background, a task, a monitor) wakes it when it ends, and
 // such a lane often sets its goal then (QA 2026-11-02: a sleep 150 detached after 5 s, the turn ended, the goal came when
-// the job did). The jobs are done-flow's own reading of the session (background.ts laneBackground); a read that fails
-// counts as none.
-export const firstTurnRuns = async (deps: FlowDeps, pane: string, cwd: string, screen: string): Promise<boolean> =>
-  turnRunning(screen) || Boolean((await laneBackground(deps.run, deps.config.sessionsDir, pane, cwd).catch(() => undefined))?.length);
+// the job did). The jobs are read the way done-flow reads them (background.ts pendingBackground, laneBackground's own
+// parser) from the transcript of the lane's exact session, under the cwd or its real path; laneBackground's own lookup
+// finds the session by the pane's process and only on aoe. A read that fails counts as none.
+export const firstTurnRuns = (deps: FlowDeps, cwd: string, session: string, screen: string): boolean =>
+  turnRunning(screen) || ownJobs(deps.config.sessionsDir, cwd, session) > 0;
+
+const ownJobs = (sessionsDir: string, cwd: string, session: string): number => {
+  if (!session) return 0;
+  const at = resolve(cwd);
+  let real = at;
+  try {
+    real = realpathSync(at);
+  } catch {}
+  for (const dir of new Set([sessionDirFor(sessionsDir, at), sessionDirFor(sessionsDir, real)])) {
+    try {
+      const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
+      if (name) return pendingBackground(readFileSync(join(dir, name), "utf8")).length;
+    } catch {}
+  }
+  return 0;
+};
+
+const tellLead = async (deps: FlowDeps, key: string, text: string): Promise<string> => {
+  const lead = deps.config.leadPane;
+  const sent = lead ? await submitToPane(deps.run, deps.clock, deps.config, lead, text) : { status: "NOT_SUBMITTED" as const, reason: "no leadPane" };
+  return sent.status === "SUBMITTED" ? `LANE_NO_GOAL_TOLD ${key} ${lead}` : `LANE_NO_GOAL_NOT_TOLD ${key}: ${sent.reason}`;
+};
 
 export const noGoalText = (key: string): string => `[DORI] LANE_NO_GOAL ${key}: 첫 턴이 goal 없이 끝남 — pane 보고 goal 세우라고 해`;
 
 // dori watch: each lane dori launch marked pending (STARTUP_PENDING_GOAL) is read again. A goal clears the mark
 // (LANE_GOAL_SET); a running turn or a background job of its own resets the idle count kept on the mark; the third idle
 // read in a row says LANE_NO_GOAL and types one line into the lead's pane, once (no retry, like a lane's death:
-// LANE_NO_GOAL_TOLD or _NOT_TOLD), and clears the mark. A lane whose agent is gone is left to the lane death check; a lane
-// that is not working (paused, claimed, closed) or names no session is skipped.
+// LANE_NO_GOAL_TOLD or _NOT_TOLD), and clears the mark. A lane whose agent is gone is left to the lane death check on aoe;
+// on herdr, which has none, it is LANE_NO_GOAL_AGENT_GONE, told once the same way. Working and not-done lanes are read;
+// paused, claimed and closed ones, and a lane that names no session, are skipped.
 export const pendingGoalTick = async (deps: FlowDeps): Promise<string[]> => {
   const out: string[] = [];
   for (const lane of await deps.registry.list()) {
     const mark = lane.pendingGoal;
-    if (!mark || !lane.pane || statusOf(lane) !== "working" || (!lane.session && !deps.readGoal)) continue;
-    if (await agentGone(deps, lane.pane)) continue;
+    if (!mark || !lane.pane || !["working", "not-done"].includes(statusOf(lane)) || (!lane.session && !deps.readGoal)) continue;
+    const gone = await agentGone(deps, lane.pane);
+    if (gone && deps.config.backend === "aoe") continue;
+    if (gone) {
+      await deps.registry.patch(lane.key, { pendingGoal: undefined });
+      out.push(`LANE_NO_GOAL_AGENT_GONE ${lane.key} ${lane.pane}: ${gone} before it set a goal`);
+      out.push(await tellLead(deps, lane.key, `[DORI] LANE_NO_GOAL ${lane.key}: 에이전트가 goal 없이 꺼짐(${gone}) — pane 확인`));
+      continue;
+    }
     const cwd = lane.cwd ?? deps.config.defaultCwd;
     const goal = await goalReader(deps, cwd, lane.session ?? "")(lane.pane);
     if (typeof goal === "object") {
@@ -70,16 +104,14 @@ export const pendingGoalTick = async (deps: FlowDeps): Promise<string[]> => {
       continue;
     }
     const screen = await readScreen(deps.run, deps.config.backend, lane.pane, 40);
-    const idle = (await firstTurnRuns(deps, lane.pane, cwd, screen)) ? 0 : mark.idle + 1;
+    const idle = firstTurnRuns(deps, cwd, lane.session ?? "", screen) ? 0 : mark.idle + 1;
     if (idle < GOAL_WAIT.idleChecks) {
       if (idle !== mark.idle) await deps.registry.patch(lane.key, { pendingGoal: { idle } });
       continue;
     }
     await deps.registry.patch(lane.key, { pendingGoal: undefined });
     out.push(`LANE_NO_GOAL ${lane.key} ${lane.pane}: its first turn ended with ${noGoalWhy(goal)}; last lines: ${lastLines(screen)}`);
-    const lead = deps.config.leadPane;
-    const sent = lead ? await submitToPane(deps.run, deps.clock, deps.config, lead, noGoalText(lane.key)) : { status: "NOT_SUBMITTED" as const, reason: "no leadPane" };
-    out.push(sent.status === "SUBMITTED" ? `LANE_NO_GOAL_TOLD ${lane.key} ${lead}` : `LANE_NO_GOAL_NOT_TOLD ${lane.key}: ${sent.reason}`);
+    out.push(await tellLead(deps, lane.key, noGoalText(lane.key)));
   }
   return out;
 };
