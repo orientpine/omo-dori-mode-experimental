@@ -1,8 +1,10 @@
 // Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/blob/90f02c19fd86ce70cfd6a74f521c9acd24428cc3/skills/dori-mode/scripts/src/checkpoints.ts
-// (upstream PR #61 (4ea8bd1)), with two fork changes marked "Fork change" (review of orientpine#297: the stale-lock
-// takeover runs under a guard and removes the lock in place; an identical replay is flushed before it is acknowledged).
+// (upstream PR #61 (4ea8bd1)), with fork changes marked "Fork change" (reviews of orientpine#297): the writer lock is a
+// kernel flock (no takeover by age), an identical replay is flushed before it is acknowledged, and a record is appended
+// whole or not at all.
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { dlopen, FFIType } from "bun:ffi";
+import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -29,37 +31,32 @@ const payload = (value: CheckpointInput): string => JSON.stringify({
   step: value.step, result: value.result, evidence: value.evidence, remoteEffects: value.remoteEffects,
 });
 
-/** A write holds the lock for milliseconds, so a lock this old was left behind even if its pid is alive again (pid reuse). */
-export const LOCK_STALE_MS = 2 * 60_000;
 type LockOwner = { readonly pid: number; readonly host: string; readonly at: string; readonly nonce: string };
-type LockSeen = { readonly raw: string | null; readonly ino: number; readonly mtimeMs: number };
 
-// raw is null for the lock directory an earlier build used; null overall when there is no lock.
-const inspect = (lock: string): LockSeen | null => {
+// Fork change (reviews of orientpine#297): the writer lock is a kernel flock on the lock file, not a lock file whose
+// owner record is checked and then deleted. A check and a delete on a pathname are never one step, so upstream's takeover
+// of a stale lock could delete a live writer's lock and let two writers append at once. The kernel drops a flock when its
+// process dies, so a writer killed mid-write never locks the lane and nothing is taken over by age.
+const LOCK_EX = 2;
+const LOCK_NB = 4;
+const libc = dlopen(process.platform === "darwin" ? "libc.dylib" : "libc.so.6", {
+  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+});
+
+const ownerOf = (lock: string): LockOwner | null => {
+  let raw: string;
   try {
-    const stat = statSync(lock);
-    return { raw: stat.isDirectory() ? null : readFileSync(lock, "utf8"), ino: stat.ino, mtimeMs: stat.mtimeMs };
+    raw = readFileSync(lock, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
-};
-const ownerOf = (raw: string | null): LockOwner | null => {
-  if (!raw) return null;
   try {
     const v = JSON.parse(raw) as Partial<LockOwner> | null;
     return typeof v?.pid === "number" && typeof v.host === "string" && typeof v.at === "string" && typeof v.nonce === "string" ? v as LockOwner : null;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    return null; // a writer stopped between creating the lock and writing its record
-  }
-};
-const alive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    return null; // a writer stopped between taking the lock and writing its record
   }
 };
 
@@ -100,9 +97,10 @@ export class Checkpoints {
   }
 
   /**
-   * Take the journal's writer lock and return its release. The lock file records pid, host, time and a nonce. A live
-   * writer's lock is refused. A lock whose pid is dead on this host, or that is LOCK_STALE_MS old, is taken over: so a
-   * writer killed mid-write never locks the lane. A lock with no owner record or an unreadable time is aged by its mtime.
+   * Take the journal's writer lock and return its release. The lock is a flock on <journal>.lock held by this open file:
+   * another writer, in this process or another, is refused with the owner record (pid, host, time) the holder wrote. The
+   * release removes the lock file while still holding it, so a writer that opened the old file finds it no longer at the
+   * path once it gets the flock, and opens the path again.
    */
   lock(key: string, now: number): () => void {
     const path = this.path(key);
@@ -110,72 +108,30 @@ export class Checkpoints {
     const lock = `${path}.lock`;
     const record = JSON.stringify({ pid: process.pid, host: hostname(), at: new Date(now).toISOString(), nonce: randomUUID() } satisfies LockOwner);
     for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const fd = openSync(lock, "wx", 0o600);
-        try {
-          writeSync(fd, record);
-          fsyncSync(fd);
-        } finally {
-          closeSync(fd);
-        }
-        // A lock taken over after LOCK_STALE_MS belongs to its new owner; leave it. Move the lock aside first, so no
-        // takeover can land between the ownership check and the removal, and remove it only if its record is ours.
-        return () => {
-          const aside = `${lock}.${process.pid}.${randomUUID()}.release`;
-          try {
-            renameSync(lock, aside);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-            throw error;
-          }
-          if (inspect(aside)?.raw === record) {
-            rmSync(aside, { force: true });
-            return;
-          }
-          // Another writer's lock: put it back without replacing a newer one, and never delete it.
-          try {
-            linkSync(aside, lock);
-          } catch (error) {
-            throw new CheckpointError(`checkpoint writer lock of ${key} belongs to another writer and could not be put back; it is at ${aside}: ${(error as Error).message}`);
-          }
-          rmSync(aside, { force: true });
-        };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const fd = openSync(lock, "a+", 0o600);
+      if (libc.symbols.flock(fd, LOCK_EX | LOCK_NB) !== 0) {
+        closeSync(fd);
+        const owner = ownerOf(lock);
+        const since = owner ? Date.parse(owner.at) : NaN;
+        throw new CheckpointError(`checkpoint writer locked: ${key} (${owner ? `pid ${owner.pid}` : "no owner record"}${Number.isFinite(since) ? `, ${Math.max(0, Math.round((now - since) / 1000))} s old` : ""})`);
       }
-      const seen = inspect(lock);
-      if (!seen) continue;
-      const owner = ownerOf(seen.raw);
-      const at = owner ? Date.parse(owner.at) : NaN;
-      const since = Number.isFinite(at) ? at : seen.mtimeMs;
-      const dead = owner !== null && owner.host === hostname() && !alive(owner.pid);
-      if (!dead && now - since < LOCK_STALE_MS) {
-        throw new CheckpointError(`checkpoint writer locked: ${key} (${owner ? `pid ${owner.pid}` : "no owner record"}, ${Math.max(0, Math.round((now - since) / 1000))} s old)`);
+      const named = statSync(lock, { throwIfNoEntry: false });
+      if (!named || named.ino !== fstatSync(fd).ino) {
+        closeSync(fd); // a release removed (or replaced) the file between our open and our flock
+        continue;
       }
-      // Fork change (review of orientpine#297): a stale lock is taken over only under a takeover guard, and removed in
-      // place once the guard holder read it again and found the same lock. Upstream moved it aside first; when that was a
-      // live writer's lock taken in between, the path stood empty until it was put back, a third writer could lock it, and
-      // the live writer's lock was then deleted, so two writers held the journal.
-      const guard = `${lock}.takeover`;
-      let held: number;
-      try {
-        held = openSync(guard, "wx", 0o600);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        // A guard is held for microseconds: one this old was left by a writer killed while taking a lock over.
-        const since = statSync(guard, { throwIfNoEntry: false })?.mtimeMs;
-        if (since !== undefined && now - since >= LOCK_STALE_MS) rmSync(guard, { force: true });
-        throw new CheckpointError(`checkpoint writer locked: ${key} (another writer is taking a stale lock over; retry)`);
-      }
-      try {
-        const again = inspect(lock);
-        if (again?.ino === seen.ino && again.raw === seen.raw) rmSync(lock, { recursive: true, force: true });
-      } finally {
-        closeSync(held);
-        rmSync(guard, { force: true });
-      }
+      ftruncateSync(fd, 0);
+      writeSync(fd, record);
+      fsyncSync(fd);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        rmSync(lock, { force: true });
+        closeSync(fd);
+      };
     }
-    throw new CheckpointError(`checkpoint writer locked: ${key} (the lock changed hands while taking it over; retry)`);
+    throw new CheckpointError(`checkpoint writer locked: ${key} (the lock file changed while taking it; retry)`);
   }
 
   write(key: string, input: CheckpointInput, now: number): { checkpoint: Checkpoint; unchanged: boolean } {
@@ -204,8 +160,22 @@ export class Checkpoints {
       const created = !existsSync(path);
       const fd = openSync(path, "a", 0o600);
       try {
-        writeSync(fd, `${JSON.stringify(checkpoint)}\n`);
-        fsyncSync(fd);
+        // Fork change (review of orientpine#297): the whole record or nothing. A short write (a full disk) is written on
+        // until done; one that fails is cut off again, so the journal keeps its valid lines and nothing is acknowledged.
+        const bytes = Buffer.from(`${JSON.stringify(checkpoint)}\n`);
+        const before = fstatSync(fd).size;
+        try {
+          for (let done = 0; done < bytes.length;) {
+            const n = writeSync(fd, bytes, done, bytes.length - done);
+            if (n <= 0) throw new CheckpointError(`checkpoint not written: ${path} took ${done} of ${bytes.length} bytes`);
+            done += n;
+          }
+          fsyncSync(fd);
+        } catch (error) {
+          ftruncateSync(fd, before);
+          fsyncSync(fd);
+          throw error;
+        }
       } finally {
         closeSync(fd);
       }

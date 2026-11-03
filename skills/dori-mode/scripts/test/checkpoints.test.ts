@@ -6,7 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 
-import { CheckpointError, Checkpoints, LOCK_STALE_MS, type CheckpointInput } from "../src/checkpoints.ts";
+import { CheckpointError, Checkpoints, type CheckpointInput } from "../src/checkpoints.ts";
 import { Registry } from "../src/registry.ts";
 import { withState } from "./fakes.ts";
 
@@ -164,63 +164,50 @@ describe("checkpoints", () => {
     } finally { state.done(); }
   });
 
-  test("a lock older than the bound is taken over even when its pid is alive; a younger one is refused", () => {
+  // Fork change (reviews of orientpine#297): the writer lock is a kernel flock, so upstream's three cases of taking a
+  // lock over by age (a live pid's lock after two minutes, an unreadable time aged by mtime, a release racing that
+  // takeover) are replaced by what the flock guarantees instead.
+  test("a held lock is refused however old its owner record says it is; released, the next writer locks at once", () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
-      journal.lock("demo-lane", 1000); // never released: this process stays alive
-      expect(() => journal.write("demo-lane", input, 1000 + LOCK_STALE_MS - 1)).toThrow("writer locked");
-      journal.write("demo-lane", input, 1000 + LOCK_STALE_MS);
-      expect(journal.read("demo-lane")).toHaveLength(1);
-      // The lock directory an earlier build left behind has no owner record; its age decides.
-      mkdirSync(`${journal.path("demo-lane")}.lock`);
-      expect(() => journal.write("demo-lane", next, Date.now())).toThrow("writer locked");
-      journal.write("demo-lane", next, Date.now() + LOCK_STALE_MS + 1000);
-      expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy", "next"]);
+      const release = journal.lock("demo-lane", 1000); // held by this process, on its own open file
+      expect(() => journal.write("demo-lane", input, 1000 + 60 * 60_000)).toThrow(`writer locked: demo-lane (pid ${process.pid}, 3600 s old)`);
+      expect(journal.read("demo-lane")).toEqual([]);
+      release();
+      journal.write("demo-lane", input, 2000);
+      expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy"]);
+      expect(existsSync(`${journal.path("demo-lane")}.lock`)).toBe(false);
     } finally { state.done(); }
   });
 
-  test("a lock whose owner time cannot be read is aged by its mtime, not taken over at once", () => {
+  test("a lock file no writer holds never blocks, whatever record it has", () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
       const lock = `${journal.path("demo-lane")}.lock`;
       mkdirSync(dirname(lock), { recursive: true });
-      // A live writer on this host whose record holds an unreadable time.
-      writeFileSync(lock, JSON.stringify({ pid: process.pid, host: hostname(), at: "not a time", nonce: "n" }));
-      const changed = statSync(lock).mtimeMs;
-      expect(() => journal.write("demo-lane", input, changed + LOCK_STALE_MS - 1000)).toThrow(`writer locked: demo-lane (pid ${process.pid}`);
-      expect(journal.read("demo-lane")).toEqual([]);
-      journal.write("demo-lane", input, changed + LOCK_STALE_MS);
-      expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy"]);
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, host: hostname(), at: new Date().toISOString(), nonce: "left" }));
+      journal.write("demo-lane", input, Date.now());
+      writeFileSync(lock, "not json");
+      journal.write("demo-lane", next, Date.now());
+      expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy", "next"]);
+      expect(existsSync(lock)).toBe(false);
     } finally { state.done(); }
   });
 
-  test("a release leaves the lock a stale takeover installed between its ownership check and its removal", () => {
+  test("a second release is a no-op and never removes the lock another writer took after the first", () => {
     const state = withState();
-    const original = fs.readFileSync;
     try {
       const journal = new Checkpoints(state.dir);
       const lock = `${journal.path("demo-lane")}.lock`;
-      const release = journal.lock("demo-lane", 1000);
-      let other: (() => void) | undefined;
-      // The release reads its record back; right after that read, a second writer takes the now stale lock over.
-      const spy = spyOn(fs, "readFileSync").mockImplementation(((path: string, options: BufferEncoding) => {
-        const raw = original(path, options);
-        if (String(path).startsWith(lock)) {
-          spy.mockRestore();
-          other = new Checkpoints(state.dir).lock("demo-lane", 1000 + LOCK_STALE_MS);
-        }
-        return raw;
-      }) as typeof fs.readFileSync);
-      release();
-      spy.mockRestore();
-      expect(other).toBeDefined();
-      expect(existsSync(lock)).toBe(true);
-      expect(JSON.parse(readFileSync(lock, "utf8")).at).toBe(new Date(1000 + LOCK_STALE_MS).toISOString());
-      release(); // a release that finds the other writer's lock in place puts it back
-      expect(JSON.parse(readFileSync(lock, "utf8")).at).toBe(new Date(1000 + LOCK_STALE_MS).toISOString());
-      other!();
+      const first = journal.lock("demo-lane", 1000);
+      first();
+      const second = new Checkpoints(state.dir).lock("demo-lane", 2000);
+      first();
+      expect(JSON.parse(readFileSync(lock, "utf8")).at).toBe(new Date(2000).toISOString());
+      expect(() => journal.write("demo-lane", input, 3000)).toThrow("writer locked: demo-lane");
+      second();
       expect(readdirSync(dirname(lock))).toEqual([]);
     } finally { state.done(); }
   });
