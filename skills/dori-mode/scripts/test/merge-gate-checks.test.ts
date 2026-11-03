@@ -13,8 +13,8 @@ const ME = { name: "Lane Dori", email: "lane@example.org" };
 const sha = (c: string): string => c.repeat(40);
 const commit = (c: string, over: Partial<PrCommit> = {}): PrCommit => ({ sha: sha(c), subject: "feat: x", author: ME, committer: ME, parents: 1, files: [{ path: "src/x.ts", lines: 3 }], ...over });
 const AT_HEAD = new Set(["src/x.ts", "test/x.test.ts"]);
-const check = (commits: PrCommit[], o: { identity?: { name: string; email: string }; noTest?: string; atHead?: Set<string> } = {}) =>
-  checkCommits("acme/app", commits, { atHead: o.atHead ?? AT_HEAD, ...(o.identity ? { identity: o.identity } : {}), ...(o.noTest ? { noTest: o.noTest } : {}) });
+const check = (commits: PrCommit[], o: { identity?: { name: string; email: string }; noTest?: string; atHead?: Set<string>; executables?: Set<string> } = {}) =>
+  checkCommits("acme/app", commits, { atHead: o.atHead ?? AT_HEAD, ...(o.executables ? { executables: o.executables } : {}), ...(o.identity ? { identity: o.identity } : {}), ...(o.noTest ? { noTest: o.noTest } : {}) });
 
 test("a wrong commit email names the commit and both roles, with the address masked", () => {
   const r = check([commit("1", { author: { ...ME, email: "other@corp.io" }, committer: { ...ME, email: "Other@corp.io" } })], { identity: ME });
@@ -100,6 +100,21 @@ test("--no-test waives the fix-test rule with its reason, never the identity che
   expect(check([commit("1", { author: { ...ME, email: "o@x.y" } })], { identity: ME, noTest: "r" }).problems).toHaveLength(1);
 });
 
+test("an extensionless executable at the head is source, so a fix of it needs a test (review of #305)", () => {
+  const relay = "skills/dori-mode/setups/discord-aoe/dori-file-relay";
+  const fix = commit("1", { subject: "fix: relay", files: [{ path: relay, lines: 4 }] });
+  expect(check([fix], { atHead: new Set([relay]), executables: new Set([relay]) }).problems).toEqual([expect.stringMatching(/^fix commit 111111111111 changes source/)]);
+  expect(check([fix], { atHead: new Set([relay]) }).problems).toEqual([]);
+});
+
+test("a test changed in one commit and renamed unchanged in a later one still counts (review of #305)", () => {
+  const files = (path: string, lines: number, oldPath?: string) => [{ path, lines, ...(oldPath ? { oldPath } : {}) }];
+  const commits = [commit("1", { subject: "fix: x" }), commit("2", { subject: "test: x", files: files("test/a.test.ts", 6) }), commit("3", { subject: "test: move", files: files("test/b.test.ts", 0, "test/a.test.ts") })];
+  expect(check(commits, { atHead: new Set(["src/x.ts", "test/b.test.ts"]) }).problems).toEqual([]);
+  const gone = [...commits, commit("4", { subject: "chore", files: files("test/b.test.ts", 6) })];
+  expect(check(gone, { atHead: new Set(["src/x.ts"]) }).problems).toHaveLength(1);
+});
+
 test("a merge commit's files are not the PR's own: its source changes need no test", () => {
   expect(check([commit("1", { subject: "fix: x", parents: 2 })]).problems).toEqual([]);
 });
@@ -121,6 +136,7 @@ test("from a real checkout: renames, identities and files are read from git, the
   mkdirSync(join(root, "src"));
   mkdirSync(join(root, "test"));
   writeFileSync(join(root, "src/a.ts"), "export const a = 1;\n");
+  writeFileSync(join(root, "tool"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
   writeFileSync(join(root, "test/a.test.ts"), "import { a } from '../src/a.ts';\nexpect(a).toBe(1);\n".repeat(5));
   await git("add", ".");
   await git("commit", "-q", "-m", "base");
@@ -135,6 +151,7 @@ test("from a real checkout: renames, identities and files are read from git, the
     return argv[0] === "gh" ? { code: 0, out: `${head}\n`, err: "" } : run(argv, opts);
   };
   const read = await readPrCommits({ run: runner }, { repo: "acme/app", number: "7", id: "acme/app#7" }, root, head);
+  expect([...read.executables]).toEqual(["tool"]);
   expect(calls[0]).toEqual(["gh", "api", "--paginate", "repos/acme/app/pulls/7/commits?per_page=100", "--jq", ".[].sha"]);
   expect(read.commits).toEqual([{ sha: head, subject: "Fix: a is two", author: ME, committer: ME, parents: 1, files: [{ path: "src/a.ts", lines: 2 }, { path: "test/b.test.ts", oldPath: "test/a.test.ts", lines: 0 }] }]);
   expect(checkCommits("acme/app", read.commits, { atHead: read.atHead, identity: ME }).problems).toEqual([expect.stringMatching(/^fix commit [0-9a-f]{12} changes source/)]);

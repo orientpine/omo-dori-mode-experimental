@@ -36,7 +36,7 @@ const runner = (w: Gh): Runner => async (argv) => {
   const one = listed.find((c) => c.sha === argv.at(-1));
   if (argv[3] === "log" && one) return ok(`Lane\0${one.email ?? "lane@example.org"}\0Lane\0${one.email ?? "lane@example.org"}\0${"0".repeat(40)}\0${one.subject}\n`);
   if (argv[3] === "show" && one) return ok(one.numstat ?? "3\t1\tsrc/x.ts\0");
-  if (argv[3] === "ls-tree") return ok((w.atHead ?? ["src/x.ts"]).map((p) => `${p}\0`).join(""));
+  if (argv[3] === "ls-tree") return ok((w.atHead ?? ["src/x.ts"]).map((p) => `100644 blob ${"0".repeat(40)}\t${p}\0`).join(""));
   if (a.startsWith("gh pr merge") && argv.includes("--disable-auto")) return ok();
   if (a.startsWith("gh pr merge") && w.mergeRejects) return { code: 1, out: "", err: "GraphQL: Head branch was modified. Review and try the merge again." };
   if (a.startsWith("gh pr merge")) {

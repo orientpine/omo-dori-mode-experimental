@@ -115,7 +115,7 @@ export const maskEmail = (email: string): string => email.replace(/^(.{0,2})[^@]
 
 export type CheckResult = { readonly problems: readonly string[]; readonly lines: readonly string[]; readonly waiver?: string };
 
-export const checkCommits = (repo: string, commits: readonly PrCommit[], o: { readonly atHead: ReadonlySet<string>; readonly identity?: Identity; readonly noTest?: string }): CheckResult => {
+export const checkCommits = (repo: string, commits: readonly PrCommit[], o: { readonly atHead: ReadonlySet<string>; readonly executables?: ReadonlySet<string>; readonly identity?: Identity; readonly noTest?: string }): CheckResult => {
   const problems: string[] = [];
   const lines: string[] = [];
   const want = o.identity;
@@ -140,9 +140,17 @@ export const checkCommits = (repo: string, commits: readonly PrCommit[], o: { re
   }
   // a merge commit's files came from the base branch, not from this PR
   const own = commits.filter((c) => c.parents <= 1);
-  const fixes = own.filter((c) => FIX.test(c.subject) && c.files.some((f) => isSourcePath(f.path) || (f.oldPath !== undefined && isSourcePath(f.oldPath))));
-  const counts = (f: PrFile): boolean => isTestPath(f.path) && f.lines > 0 && o.atHead.has(f.path);
-  const tests = [...new Set(own.flatMap((c) => c.files.filter(counts).map((f) => f.path)))];
+  // an extensionless script that is executable at the head (setups/discord-aoe/dori-file-relay) is source too
+  const source = (p: string): boolean => isSourcePath(p) || (o.executables?.has(p) === true && !isTestPath(p));
+  const fixes = own.filter((c) => FIX.test(c.subject) && c.files.some((f) => source(f.path) || (f.oldPath !== undefined && source(f.oldPath))));
+  // where a test changed in commit i is at the head: later commits may rename it with no changed line
+  const finalPath = (i: number, path: string): string => own.slice(i + 1).reduce((p, c) => c.files.find((f) => f.oldPath === p)?.path ?? p, path);
+  const counted = (i: number, f: PrFile): string | undefined => {
+    const at = finalPath(i, f.path);
+    return isTestPath(f.path) && f.lines > 0 && isTestPath(at) && o.atHead.has(at) ? at : undefined;
+  };
+  const testsOf = (c: PrCommit): string[] => c.files.flatMap((f) => counted(own.indexOf(c), f) ?? []);
+  const tests = [...new Set(own.flatMap(testsOf))];
   let fixTest = "no-fix";
   let waiver: string | undefined;
   if (fixes.length && !tests.length) {
@@ -154,7 +162,7 @@ export const checkCommits = (repo: string, commits: readonly PrCommit[], o: { re
     } else problems.push(`fix commit ${shas} changes source and no commit of the PR adds or changes a test (a test file renamed with no changed line, or deleted at the head, does not count); add a test, or pass --no-test "<reason>" when the fix cannot have one`);
   } else if (fixes.length) {
     fixTest = "tested";
-    for (const c of fixes) if (!c.files.some(counts)) lines.push(`FIXTEST_NOTE fix commit ${short(c.sha)} has no test of its own; another commit of the PR changes ${tests.join(", ")}`);
+    for (const c of fixes) if (!testsOf(c).length) lines.push(`FIXTEST_NOTE fix commit ${short(c.sha)} has no test of its own; another commit of the PR changes ${tests.join(", ")}`);
   }
   return { problems, lines: [...lines, ...(problems.length ? [] : [`CHECKS_OK {pr} identity=${identity} fix-test=${fixTest}`])], ...(waiver ? { waiver } : {}) };
 };
@@ -176,7 +184,7 @@ const parseNumstat = (out: string): PrFile[] => {
   return files;
 };
 
-export const readPrCommits = async (deps: Pick<FlowDeps, "run">, pr: PrRef, root: string, head: string): Promise<{ commits: PrCommit[]; atHead: Set<string> }> => {
+export const readPrCommits = async (deps: Pick<FlowDeps, "run">, pr: PrRef, root: string, head: string): Promise<{ commits: PrCommit[]; atHead: Set<string>; executables: Set<string> }> => {
   const list = await deps.run(["gh", "api", "--paginate", `repos/${pr.repo}/pulls/${pr.number}/commits?per_page=100`, "--jq", ".[].sha"]);
   if (list.code !== 0) throw new GateRefusal(`REVIEW_REFUSED cannot read the commits of ${pr.id}: ${why(list)}`);
   const shas = list.out.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -197,9 +205,11 @@ export const readPrCommits = async (deps: Pick<FlowDeps, "run">, pr: PrRef, root
     }
     commits.push({ sha: s, subject, author: { name: an, email: ae }, committer: { name: cn, email: ce }, parents: n, files });
   }
-  const tree = await deps.run(["git", "-C", root, "ls-tree", "-r", "-z", "--name-only", head]);
+  const tree = await deps.run(["git", "-C", root, "ls-tree", "-r", "-z", head]);
   if (tree.code !== 0) throw new GateRefusal(`REVIEW_REFUSED cannot list the files at ${short(head)} in ${root}: ${why(tree)}`);
-  return { commits, atHead: new Set(tree.out.split("\0").filter(Boolean)) };
+  // "<mode> <type> <object>\t<path>"
+  const entries = tree.out.split("\0").filter(Boolean).map((e) => ({ mode: e.slice(0, e.indexOf(" ")), path: e.slice(e.indexOf("\t") + 1) }));
+  return { commits, atHead: new Set(entries.map((e) => e.path)), executables: new Set(entries.filter((e) => e.mode === "100755").map((e) => e.path)) };
 };
 
 type View = { readonly state: string; readonly headRefOid: string; readonly autoMergeRequest?: unknown; readonly statusCheckRollup?: readonly unknown[] | null; readonly mergedAt?: string | null; readonly mergeCommit?: { readonly oid?: string } | null; readonly title?: string };
@@ -304,7 +314,7 @@ export const reviewPr = async (deps: FlowDeps, pr: PrRef, opts: ReviewOptions): 
   rmSync(receiptPath(deps.config.stateDir, pr, sha, "tests"), { force: true });
   const read = await readPrCommits(deps, pr, root, sha);
   const identity = Object.entries(cfg.identities ?? {}).find(([r]) => r.toLowerCase() === pr.repo.toLowerCase())?.[1];
-  const checked = checkCommits(pr.repo, read.commits, { atHead: read.atHead, ...(identity ? { identity } : {}), ...(opts.noTest ? { noTest: opts.noTest } : {}) });
+  const checked = checkCommits(pr.repo, read.commits, { atHead: read.atHead, executables: read.executables, ...(identity ? { identity } : {}), ...(opts.noTest ? { noTest: opts.noTest } : {}) });
   if (checked.problems.length) throw new GateRefusal(`REVIEW_CHECKS_FAILED ${pr.id} head=${short(sha)}: ${checked.problems.join("; ")}; no receipt, no tests run`);
   const checks = checked.lines.map((l) => l.replace("{pr}", `${pr.id} head=${sha}`));
   lines.push(...checks);
