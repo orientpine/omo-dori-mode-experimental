@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Checkpoints } from "../src/checkpoints.ts";
@@ -352,6 +352,39 @@ describe("supervision", () => {
     } finally { f.done(); }
   });
 
+  test("a lane told not done keeps working and stays supervised: its cap and a hung call still reach the lead", async () => {
+    const f = fixture({ defaults: { wallMinutes: 1 }, staleAfterMinutes: 0 });
+    try {
+      const rejected = { ...lane, status: "not-done" as const };
+      f.clock.at += 2 * 60_000;
+      expect((await f.supervisor.sweep(rejected, "Working 25m")).alerts).toEqual(["wallMinutes ceiling reached (1)"]);
+      f.clock.at += 60_000;
+      expect((await f.supervisor.sweep(rejected, "Working 26m")).alerts).toEqual([HUNG_MESSAGE]);
+    } finally { f.done(); }
+  });
+
+  test("a file written inside an untracked directory counts as activity", async () => {
+    const f = fixture();
+    try {
+      const repo = join(f.dir, "repo");
+      mkdirSync(join(repo, "out"), { recursive: true });
+      writeFileSync(join(repo, "a.ts"), "one");
+      const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", repo, ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+      git("init", "-q");
+      git("add", "a.ts");
+      git("commit", "-qm", "one");
+      const log = join(repo, "out", "train.log");
+      writeFileSync(log, "step 1\n");
+      const real = new Supervision({ ...f.deps, run }, f.options);
+      const working = { ...lane, cwd: repo };
+      await real.sweep(working, "Running 21m");
+      f.clock.at += 20 * 60_000;
+      appendFileSync(log, "step 2\n");
+      utimesSync(log, new Date(f.clock.at), new Date(f.clock.at));
+      expect((await real.sweep(working, "Running 41m")).hung).toBe(false);
+    } finally { f.done(); }
+  });
+
   test("a lane that claimed done is not alerted on, even past its caps with a long timer", async () => {
     const f = fixture({ defaults: { wallMinutes: 0 }, staleAfterMinutes: 0 });
     try {
@@ -405,6 +438,23 @@ describe("usage from the lane's omo transcript", () => {
     } finally { state.done(); }
   });
 
+  test("a lane whose cwd is a symlink: sessions filed under the written path and under its real path both count", async () => {
+    const state = withState();
+    try {
+      const sessionsDir = join(state.dir, "sessions");
+      const real = join(state.dir, "real-repo");
+      const link = join(state.dir, "link-repo");
+      mkdirSync(real, { recursive: true });
+      symlinkSync(real, link);
+      mkdirSync(sessionDirFor(sessionsDir, link), { recursive: true });
+      mkdirSync(sessionDirFor(sessionsDir, real), { recursive: true });
+      writeFileSync(join(sessionDirFor(sessionsDir, link), "a_old-1.jsonl"), turn("2026-10-29T00:01:00Z", 200, 1));
+      writeFileSync(join(sessionDirFor(sessionsDir, real), "b_new-2.jsonl"), turn("2026-10-29T04:01:00Z", 120, 0.25));
+      const read = laneSessionUsage(async () => ({ code: 1, out: "", err: "" }), sessionsDir);
+      expect(await read({ ...lane, cwd: link, session: "new-2", priorSessions: ["old-1"] })).toEqual({ session: "old-1,new-2", tokens: 320, costUsd: 1.25 });
+    } finally { state.done(); }
+  });
+
   test("no transcript means unknown usage, and a token cap says it cannot be checked", async () => {
     const f = fixture({ defaults: { tokens: 300 } });
     try {
@@ -454,6 +504,16 @@ describe("supervision in the freshness sweep and the close", () => {
       expect((await freshnessTick(deps(T0 + 7 * 60_000), "/home/test")).filter((a) => a.kind === "lane_cap")).toEqual([]);
       expect(typed(world.calls, "w:p7")).toEqual([]);
       expect(world.calls.some((c) => c.includes("close") || c.includes("kill"))).toBe(false);
+    } finally { state.done(); }
+  });
+
+  test("a lane told not done is still swept: its cap reaches the lead", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const deps = depsFor(world, fakeClock(T0 + 6 * 60_000), state.dir, { nudgeAfterMin: 999, supervision: { ...defaultSupervision(), defaults: { wallMinutes: 5 } } });
+      await deps.registry.write({ ...working, status: "not-done" });
+      expect((await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "lane_cap").map((a) => a.detail.split(";")[0])).toEqual(["wallMinutes ceiling reached (5)"]);
     } finally { state.done(); }
   });
 

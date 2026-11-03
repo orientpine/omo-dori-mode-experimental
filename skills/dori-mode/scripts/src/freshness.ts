@@ -349,6 +349,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     // a lane told "not done" keeps working: it is moved to a new session like a working one (cyto-p2-timers carried 306k
     // after its 13th compaction on 10-19 and was never started); its reports, nudges and posts stay as they were
     if (statusOf(lane) === "not-done") {
+      acts.push(...(await superviseLane(deps, lane)));
       acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, lane.rolloverDue, stuckTop(lane), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
       continue;
     }

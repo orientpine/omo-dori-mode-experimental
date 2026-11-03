@@ -923,7 +923,8 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   Object.assign(ctx.sizes, { ...(oldK !== undefined ? { oldK } : {}), ...(fresh.first !== undefined ? { firstK: fresh.first } : {}), ...(fresh.last !== undefined ? { checkedK: fresh.last } : {}), ...(newLog ? { newLog } : {}) });
   emit(`HANDOVER_SIZE ${lane.key} old ${oldK ?? "?"}k -> new first ${fresh.first ?? "?"}k, checked ${fresh.last ?? "?"}k (${sizePct(ctx.sizes) ?? "?"}% of the old)`);
   // the outgoing session is kept on the lane, so the lane's cost counts every session it had (supervision.ts laneSessionUsage)
-  const outgoing = (await deps.registry.read(lane.key))?.session;
+  // the session found in the old pane, else the registry's (an adopted lane has none recorded until dori sync --write)
+  const outgoing = facts.from.session || (await deps.registry.read(lane.key))?.session;
   await deps.registry.patch(lane.key, { session: checked.session, sessionVia: "handover", ...(outgoing && outgoing !== checked.session ? { priorSessions: [...(lane.priorSessions ?? []).filter((s) => s !== outgoing), outgoing] } : {}) });
   rmSync(readyFile(config.stateDir, lane.key), { force: true });
   if (opts.keepOld) {

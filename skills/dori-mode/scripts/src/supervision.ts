@@ -3,7 +3,7 @@
 // this fork's registry and freshness sweep. Upstream keeps a reports.jsonl journal per lane (#30, not ported): there a
 // ceiling appends a blocker report. Here a lane's newest report is lane.lastReport in the registry, and a ceiling or a hung
 // call is told to the lead (alert) once per change. Nothing stops, closes or types into the lane.
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { Checkpoints, takeLock } from "./checkpoints.ts";
@@ -146,18 +146,27 @@ export const transcriptUsage = (text: string, since: string): { tokens: number; 
 export const laneSessionUsage = (run: Runner, sessionsDir: string) => async (lane: Lane): Promise<SessionUsage | null> => {
   const ids = [...(lane.priorSessions ?? []), ...(lane.session ? [lane.session] : [])];
   if (ids.length && lane.cwd) {
-    let names: string[];
+    // omo files a session under the directory it started in: the cwd as written, or its real path (a handover opens the
+    // new session in the real path of a symlinked cwd)
+    let real = lane.cwd;
     try {
-      names = readdirSync(sessionDirFor(sessionsDir, lane.cwd));
+      real = realpathSync(lane.cwd);
     } catch {
-      return null;
+      // a cwd that is gone keeps its written path
     }
+    const files = [...new Set([sessionDirFor(sessionsDir, lane.cwd), sessionDirFor(sessionsDir, real)])].flatMap((dir) => {
+      try {
+        return readdirSync(dir).map((name) => join(dir, name));
+      } catch {
+        return [];
+      }
+    });
     let tokens = 0;
     let costUsd: number | null = 0;
     for (const id of ids) {
-      const name = names.find((n) => n.endsWith(`_${id}.jsonl`));
-      if (!name) return null;
-      const one = transcriptUsage(readFileSync(join(sessionDirFor(sessionsDir, lane.cwd), name), "utf8"), lane.openedAt);
+      const file = files.find((f) => f.endsWith(`_${id}.jsonl`));
+      if (!file) return null;
+      const one = transcriptUsage(readFileSync(file, "utf8"), lane.openedAt);
       tokens += one.tokens;
       costUsd = costUsd === null || one.costUsd === null ? null : costUsd + one.costUsd;
     }
@@ -198,6 +207,8 @@ type Observation = {
   readonly activeAt: number;
   readonly alerts: readonly string[];
 };
+
+const ACTIVITY_FILES = 5000;
 
 export const HUNG_MESSAGE = "Working/Running timer exceeded threshold without fresh report, checkpoint, or file activity";
 
@@ -274,7 +285,7 @@ export class Supervision {
     // git prints the changed paths relative to the repository's top, not to the lane's cwd (a lane in a subdirectory)
     const top = this.settings.gitActivity && lane.cwd ? (await this.deps.run(["git", "-C", lane.cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 10_000 })) : undefined;
     if (lane.cwd && top?.code === 0 && top.out.trim()) {
-      const result = await this.deps.run(["git", "-C", lane.cwd, "status", "--porcelain=v1", "-z", "--untracked-files=normal"], { timeoutMs: 10_000, preserveOutput: true });
+      const result = await this.deps.run(["git", "-C", lane.cwd, "status", "--porcelain=v1", "-z", "--untracked-files=all"], { timeoutMs: 10_000, preserveOutput: true });
       if (result.code === 0) {
         const entries = result.out.split("\0");
         for (let index = 0; index < entries.length; index++) {
@@ -291,7 +302,9 @@ export class Supervision {
         }
       }
     }
-    const files = [...paths].sort().map((path) => {
+    // every untracked file is listed (a file written inside an untracked directory is progress); at most ACTIVITY_FILES
+    // are looked at, so a huge untracked tree does not make each sweep slow
+    const files = [...paths].sort().slice(0, ACTIVITY_FILES).map((path) => {
       try {
         const stat = lstatSync(path);
         return [path, stat.mtimeMs, stat.ctimeMs, stat.size];
@@ -305,7 +318,8 @@ export class Supervision {
 
   // One look at a working lane: its ceilings, a hung call on its screen. Each alert reaches the lead once per change.
   async sweep(lane: Lane, screen: string): Promise<SupervisionResult> {
-    if (statusOf(lane) !== "working" || !lane.pane) return { enabled: false, alerts: [], undelivered: [], capped: [], hung: false, usage: null };
+    // a lane told "not done" keeps working, so it is supervised like a working one; paused and finished lanes are not
+    if (!["working", "not-done"].includes(statusOf(lane)) || !lane.pane) return { enabled: false, alerts: [], undelivered: [], capped: [], hung: false, usage: null };
     const now = this.deps.clock.now();
     const path = join(this.dir(lane.key), "supervision.json");
     // The observation is a cache of the last sweep: one that cannot be read (a crash mid-write, an edit) is started over,
