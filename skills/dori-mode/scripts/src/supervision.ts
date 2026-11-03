@@ -3,10 +3,11 @@
 // this fork's registry and freshness sweep. Upstream keeps a reports.jsonl journal per lane (#30, not ported): there a
 // ceiling appends a blocker report. Here a lane's newest report is lane.lastReport in the registry, and a ceiling or a hung
 // call is told to the lead (alert) once per change. Nothing stops, closes or types into the lane.
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import { Checkpoints } from "./checkpoints.ts";
+import { Checkpoints, takeLock } from "./checkpoints.ts";
+import { sessionDirFor } from "./session-id.ts";
 import { fill } from "./config.ts";
 import { paneTranscript } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
@@ -17,13 +18,11 @@ export type BudgetName = (typeof BUDGET_NAMES)[number];
 // a number is a ceiling, null turns it off; an absent field leaves the one below it (defaults < lanes.<key> < the lane's own)
 export type BudgetLimits = { readonly wallMinutes?: number | null; readonly tokens?: number | null; readonly costUsd?: number | null };
 export type Usage = { readonly tokens: number | null; readonly costUsd: number | null };
-// session: the omo transcript the reading came from (no usageArgv); sessionTokens/sessionCostUsd: that session's own share
+// session: the sessions the reading summed (no usageArgv)
 export type UsageSnapshot = Usage & {
   readonly key: string;
   readonly at: string;
   readonly session?: string;
-  readonly sessionTokens?: number;
-  readonly sessionCostUsd?: number | null;
   readonly final?: true;
 };
 export type SessionUsage = { readonly session: string; readonly tokens: number; readonly costUsd: number | null };
@@ -141,8 +140,29 @@ export const transcriptUsage = (text: string, since: string): { tokens: number; 
   return { tokens, costUsd: cost };
 };
 
-// The default usage source: the omo transcript of the session in the lane's pane (null when there is none).
-export const paneSessionUsage = (run: Runner, sessionsDir: string) => async (lane: Lane): Promise<SessionUsage | null> => {
+// The default usage source: the omo transcripts of every session the lane had (lane.priorSessions, then lane.session),
+// found by id in the session directory of its cwd, else the transcript of the session in its pane (a lane with no
+// recorded session). A session whose transcript is not found leaves the usage unknown (null), never a smaller number.
+export const laneSessionUsage = (run: Runner, sessionsDir: string) => async (lane: Lane): Promise<SessionUsage | null> => {
+  const ids = [...(lane.priorSessions ?? []), ...(lane.session ? [lane.session] : [])];
+  if (ids.length && lane.cwd) {
+    let names: string[];
+    try {
+      names = readdirSync(sessionDirFor(sessionsDir, lane.cwd));
+    } catch {
+      return null;
+    }
+    let tokens = 0;
+    let costUsd: number | null = 0;
+    for (const id of ids) {
+      const name = names.find((n) => n.endsWith(`_${id}.jsonl`));
+      if (!name) return null;
+      const one = transcriptUsage(readFileSync(join(sessionDirFor(sessionsDir, lane.cwd), name), "utf8"), lane.openedAt);
+      tokens += one.tokens;
+      costUsd = costUsd === null || one.costUsd === null ? null : costUsd + one.costUsd;
+    }
+    return { session: ids.join(","), tokens, costUsd };
+  }
   const path = lane.pane ? await paneTranscript(run, sessionsDir, lane.pane) : undefined;
   if (!path || !existsSync(path)) return null;
   return { session: path, ...transcriptUsage(readFileSync(path, "utf8"), lane.openedAt) };
@@ -242,33 +262,25 @@ export class Supervision {
       return snapshot;
     }
     const current = await (this.deps.sessionUsage?.(lane) ?? Promise.resolve(null));
-    if (!current) return { key: lane.key, at, tokens: null, costUsd: null };
-    const earlier = new Map<string, UsageSnapshot>();
-    for (const r of this.readings(lane.key)) if (r.session && r.session !== current.session) earlier.set(r.session, r);
-    const prior = [...earlier.values()];
-    const costs = [current.costUsd, ...prior.map((r) => r.sessionCostUsd ?? null)];
-    const snapshot: UsageSnapshot = {
-      key: lane.key, at,
-      tokens: current.tokens + prior.reduce((sum, r) => sum + (r.sessionTokens ?? 0), 0),
-      costUsd: costs.some((c) => c === null) ? null : costs.reduce<number>((sum, c) => sum + (c ?? 0), 0),
-      session: current.session, sessionTokens: current.tokens, sessionCostUsd: current.costUsd,
-    };
+    const snapshot: UsageSnapshot = { key: lane.key, at, tokens: current?.tokens ?? null, costUsd: current?.costUsd ?? null, ...(current ? { session: current.session } : {}) };
     const last = this.readings(lane.key).at(-1);
-    if (persist && !(last && last.session === snapshot.session && last.sessionTokens === snapshot.sessionTokens && last.sessionCostUsd === snapshot.sessionCostUsd)) this.record(snapshot);
+    if (persist && current && !(last && last.tokens === snapshot.tokens && last.costUsd === snapshot.costUsd && last.session === snapshot.session)) this.record(snapshot);
     return snapshot;
   }
 
   private async activity(lane: Lane): Promise<string> {
     const paths = new Set([...this.settings.activityPaths, ...(lane.activityPaths ?? [])].map((path) => resolve(lane.cwd ?? ".", path)));
     const changes: string[] = [];
-    if (this.settings.gitActivity && lane.cwd) {
+    // git prints the changed paths relative to the repository's top, not to the lane's cwd (a lane in a subdirectory)
+    const top = this.settings.gitActivity && lane.cwd ? (await this.deps.run(["git", "-C", lane.cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 10_000 })) : undefined;
+    if (lane.cwd && top?.code === 0 && top.out.trim()) {
       const result = await this.deps.run(["git", "-C", lane.cwd, "status", "--porcelain=v1", "-z", "--untracked-files=normal"], { timeoutMs: 10_000, preserveOutput: true });
       if (result.code === 0) {
         const entries = result.out.split("\0");
         for (let index = 0; index < entries.length; index++) {
           const entry = entries[index];
           if (!entry) continue;
-          const path = resolve(lane.cwd, entry.slice(3));
+          const path = resolve(top.out.trim(), entry.slice(3));
           const rel = relative(resolve(lane.cwd), path);
           // Dependency churn and paths outside the lane's cwd are not the lane's progress.
           if (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../") && !rel.split("/").includes("node_modules")) {
@@ -333,7 +345,8 @@ export class Supervision {
     const unavailable = (["tokens", "costUsd"] as const)
       .filter((name) => typeof limits[name] === "number" && (usage?.[name] ?? null) === null)
       .map((name) => `${name} ceiling cannot be checked: usage unavailable`);
-    const alerts = [...(capped.length ? capped : hung ? [HUNG_MESSAGE] : []), ...unavailable];
+    // caps and a hung call are told apart, each once: a lane already told about its cap that then hangs is told that too
+    const alerts = [...capped, ...(hung ? [HUNG_MESSAGE] : []), ...unavailable];
     const fresh = alerts.filter((message) => !previous?.alerts.includes(message));
     // Deliver before saving, so only alerts that reached the lead count as sent; a failed one is sent again next sweep.
     const undelivered: string[] = [];
@@ -354,7 +367,19 @@ export class Supervision {
 
   // The lane's last usage reading at close. A close that already recorded its final reading (a retried or second close)
   // returns it and runs no hook, so a cost ledger gets each lane once; {closeKey} is the same on every attempt.
+  // Two closes at once (the watcher and a manual close) take turns on a lock per lane; the second finds the first's final
+  // reading and runs no hook.
   async close(lane: Lane): Promise<UsageSnapshot> {
+    mkdirSync(this.dir(lane.key), { recursive: true });
+    const release = takeLock(join(this.dir(lane.key), "cost.lock"), this.deps.clock.now(), "cost record", lane.key);
+    try {
+      return await this.closeLocked(lane);
+    } finally {
+      release();
+    }
+  }
+
+  private async closeLocked(lane: Lane): Promise<UsageSnapshot> {
     const recorded = this.readings(lane.key).findLast((entry) => entry.final === true);
     if (recorded) return recorded;
     const snapshot = await this.usage(lane, this.deps.clock.now(), false);

@@ -69,6 +69,8 @@ export type Lane = {
   readonly tab?: string;
   readonly session?: string;
   readonly sessionVia?: string;
+  // the sessions this lane had before its current one, oldest first (a handover adds the outgoing one)
+  readonly priorSessions?: readonly string[];
   readonly brief: string;
   readonly done: string;
   // every change of the Done line after launch (dori done-set): the line before and after, and why

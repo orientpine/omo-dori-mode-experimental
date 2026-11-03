@@ -6,8 +6,11 @@ import { Checkpoints } from "../src/checkpoints.ts";
 import { loadConfig } from "../src/config.ts";
 import type { Lane } from "../src/registry.ts";
 import type { Runner } from "../src/run.ts";
-import { defaultSupervision, HUNG_MESSAGE, type SessionUsage, Supervision, type SupervisionSettings, supervisionProblem, transcriptUsage, workingTimer } from "../src/supervision.ts";
-import { closeLane } from "../src/done-flow.ts";
+import { sessionDirFor } from "../src/session-id.ts";
+import { defaultSupervision, HUNG_MESSAGE, laneSessionUsage, type SessionUsage, Supervision, type SupervisionSettings, supervisionProblem, transcriptUsage, workingTimer } from "../src/supervision.ts";
+import { claimDone, closeLane, watchTick } from "../src/done-flow.ts";
+import { takeLock } from "../src/checkpoints.ts";
+import { run } from "../src/run.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
@@ -25,7 +28,7 @@ const fixture = (settings: Partial<SupervisionSettings> = {}) => {
   let session: SessionUsage | null = null;
   const run: Runner = async (argv) => {
     calls.push([...argv]);
-    return { code: 0, out: argv[0] === "usage" ? usage : argv[0] === "git" ? dirty : "", err: "" };
+    return { code: 0, out: argv[0] === "usage" ? usage : argv[0] === "git" ? (argv.includes("rev-parse") ? argv[2] ?? "" : dirty) : "", err: "" };
   };
   const deps = { stateDir: state.dir, clock, run, alert: (_lane: Lane, message: string) => { alerts.push(message); return true; }, sessionUsage: async () => session };
   const options: SupervisionSettings = { ...defaultSupervision(), ...settings };
@@ -299,6 +302,56 @@ describe("supervision", () => {
   });
 
   // upstream: "terminal progress is not overwritten by budget or hung reports"
+  test("a lane told about its cap that then hangs is told that too", async () => {
+    const f = fixture({ defaults: { wallMinutes: 1 }, staleAfterMinutes: 0 });
+    try {
+      f.clock.at += 2 * 60_000;
+      expect((await f.supervisor.sweep(lane, "Working 25m")).alerts).toEqual(["wallMinutes ceiling reached (1)"]);
+      f.clock.at += 60_000;
+      expect((await f.supervisor.sweep(lane, "Working 26m")).alerts).toEqual([HUNG_MESSAGE]);
+      expect(f.alerts).toEqual(["wallMinutes ceiling reached (1)", HUNG_MESSAGE]);
+    } finally { f.done(); }
+  });
+
+  test("two closes at once take turns: the one that finds the cost record taken is refused and runs no hook", async () => {
+    const f = fixture({ usageArgv: ["usage"], recordCostArgv: ["record", "{tokens}"] });
+    try {
+      f.setUsage('{"tokens":7,"costUsd":0.5}');
+      const dir = join(f.dir, "lane-state", lane.key);
+      mkdirSync(dir, { recursive: true });
+      const held = takeLock(join(dir, "cost.lock"), f.clock.now(), "cost record", lane.key);
+      await expect(f.supervisor.close(lane)).rejects.toThrow(`cost record locked: ${lane.key}`);
+      expect(f.calls.some((args) => args[0] === "record")).toBe(false);
+      held();
+      expect((await f.supervisor.close(lane)).final).toBe(true);
+      expect((await f.supervisor.close(lane)).final).toBe(true);
+      expect(f.calls.filter((args) => args[0] === "record")).toHaveLength(1);
+    } finally { f.done(); }
+  });
+
+  test("a lane working in a subdirectory of its repository: git's root-relative changed paths count as its activity", async () => {
+    const f = fixture();
+    try {
+      const repo = join(f.dir, "repo");
+      const file = join(repo, "sub", "a.ts");
+      mkdirSync(join(repo, "sub"), { recursive: true });
+      writeFileSync(file, "one");
+      const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", repo, ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+      git("init", "-q");
+      git("add", ".");
+      git("commit", "-qm", "one");
+      writeFileSync(file, "two");
+      const real = new Supervision({ ...f.deps, run }, f.options);
+      const inSub = { ...lane, cwd: join(repo, "sub") };
+      await real.sweep(inSub, "Running 21m");
+      f.clock.at += 20 * 60_000;
+      utimesSync(file, new Date(f.clock.at), new Date(f.clock.at));
+      expect((await real.sweep(inSub, "Running 41m")).hung).toBe(false);
+      f.clock.at += 20 * 60_000;
+      expect((await real.sweep(inSub, "Running 61m")).hung).toBe(true);
+    } finally { f.done(); }
+  });
+
   test("a lane that claimed done is not alerted on, even past its caps with a long timer", async () => {
     const f = fixture({ defaults: { wallMinutes: 0 }, staleAfterMinutes: 0 });
     try {
@@ -331,17 +384,25 @@ describe("usage from the lane's omo transcript", () => {
     expect(transcriptUsage([text, turn("2026-10-29T00:04:00Z", 10)].join("\n"), lane.openedAt)).toEqual({ tokens: 160, costUsd: null });
   });
 
-  test("a token cap counts every session of the lane: a handover's new transcript adds to the old one's last reading", async () => {
-    const f = fixture({ defaults: { tokens: 300 } });
+  test("every session the lane had counts, read whole from its transcript; a session with no transcript leaves the usage unknown", async () => {
+    const state = withState();
     try {
-      f.setSession({ session: "/s/old.jsonl", tokens: 200, costUsd: 1 });
-      expect((await f.supervisor.sweep(lane, "")).capped).toEqual([]);
-      f.setSession({ session: "/s/new.jsonl", tokens: 120, costUsd: 0.5 });
-      f.clock.at += 60_000;
-      const r = await f.supervisor.sweep(lane, "");
-      expect(r.usage).toMatchObject({ tokens: 320, costUsd: 1.5, session: "/s/new.jsonl" });
-      expect(r.alerts).toEqual(["tokens ceiling reached (300)"]);
-    } finally { f.done(); }
+      const sessionsDir = join(state.dir, "sessions");
+      const cwd = "/work/repo";
+      const dir = sessionDirFor(sessionsDir, cwd);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "2026-10-29T00-00-00_old-1.jsonl"), [turn("2026-10-29T00:01:00Z", 200, 1), turn("2026-10-29T03:00:00Z", 50, 0.5)].join("\n"));
+      writeFileSync(join(dir, "2026-10-29T04-00-00_new-2.jsonl"), turn("2026-10-29T04:01:00Z", 120, 0.25));
+      const read = laneSessionUsage(async () => ({ code: 1, out: "", err: "" }), sessionsDir);
+      const moved = { ...lane, cwd, session: "new-2", priorSessions: ["old-1"] };
+      expect(await read(moved)).toEqual({ session: "old-1,new-2", tokens: 370, costUsd: 1.75 });
+      expect(await read({ ...moved, priorSessions: ["gone-0", "old-1"] })).toBeNull();
+      const f = fixture({ defaults: { tokens: 300 } });
+      try {
+        const capped = await new Supervision({ ...f.deps, sessionUsage: read }, f.options).sweep(moved, "");
+        expect(capped.alerts).toEqual(["tokens ceiling reached (300)"]);
+      } finally { f.done(); }
+    } finally { state.done(); }
   });
 
   test("no transcript means unknown usage, and a token cap says it cannot be checked", async () => {
@@ -418,6 +479,37 @@ describe("supervision in the freshness sweep and the close", () => {
       expect((await freshnessTick(deps, "/home/test")).map((a) => a.kind)).toEqual(["supervision_error"]);
       expect(JSON.parse(readFileSync(path, "utf8")).alerts).toEqual([]);
       expect(await freshnessTick(deps, "/home/test")).toEqual([]);
+    } finally { state.done(); }
+  });
+
+  test("a close refused after its Done signals (no summary for a thread) records no cost; the close that goes through takes the reading then", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const deps = depsFor(world, fakeClock(T0), state.dir);
+      const threaded = { ...working, thread: "discord:1566844859174756462" };
+      await deps.registry.write(threaded);
+      const refused = await closeLane(deps, threaded, "verified");
+      expect(refused.closed).toBe(false);
+      expect(refused.lines.some((l) => l.startsWith("COST "))).toBe(false);
+      expect(existsSync(join(state.dir, "lane-state", "quiet-lane", "cost.jsonl"))).toBe(false);
+      const closed = await closeLane(deps, working, "verified");
+      expect(closed.closed).toBe(true);
+      expect(closed.lines).toContain("COST quiet-lane tokens=unknown costUsd=unknown");
+    } finally { state.done(); }
+  });
+
+  test("an automatic close by the watcher prints the lane's COST line too", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const at = (ms: number) => depsFor(world, fakeClock(ms), state.dir);
+      const claimed = { ...working, done: "file /etc/hostname" };
+      await at(T0).registry.write(claimed);
+      await claimDone(at(T0), claimed, "file written");
+      const lines = await watchTick(at(T0 + 5 * 60_000 + 1));
+      expect(lines.at(-1)).toStartWith("LANE_CLOSED quiet-lane");
+      expect(lines).toContain("COST quiet-lane tokens=unknown costUsd=unknown");
     } finally { state.done(); }
   });
 

@@ -21,7 +21,7 @@ import { watchLog } from "./watch-log.ts";
 import { checkDone, type SignalIo } from "./done-signals.ts";
 import { gateMissing } from "./merge-gate.ts";
 import { ownerSummary } from "./close-summary.ts";
-import { paneSessionUsage, Supervision } from "./supervision.ts";
+import { laneSessionUsage, Supervision } from "./supervision.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -347,14 +347,6 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   if (checks.some((c) => !c.ok)) return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };
   const ungated = await gateMissing(deps, lane.done);
   if (ungated.length) return { closed: false, lines: [...lines, ...ungated, `REFUSED ${lane.key}: a PR of a gated repo was not merged through dori merge`] };
-  // the lane's cost, recorded once (src/supervision.ts close); a reading or hook that fails is printed and never keeps a
-  // verified lane open
-  try {
-    const cost = await new Supervision({ stateDir: deps.config.stateDir, run: deps.run, clock: deps.clock, sessionUsage: paneSessionUsage(deps.run, deps.config.sessionsDir) }, deps.config.supervision).close(lane);
-    lines.push(`COST ${lane.key} tokens=${cost.tokens ?? "unknown"} costUsd=${cost.costUsd ?? "unknown"}`);
-  } catch (e) {
-    lines.push(`COST ${lane.key} not recorded: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
-  }
   let threadText = "";
   const already = summary?.trim() || !hasThread(lane) ? undefined : (posted ?? lane.claim?.posted);
   if (already) lines.push(`CLOSE_SUMMARY_SKIPPED ${lane.key}: its result is already in the thread (${already}); no second post`);
@@ -428,6 +420,15 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
       cleanup.push(`thread not set done: ${why}`);
     }
   }
+  // the lane's cost, recorded once (src/supervision.ts close), after every point that can still refuse the close: a refused
+  // close leaves the lane working, and its later close takes the reading then. A reading or hook that fails is printed and
+  // never keeps a verified lane open.
+  try {
+    const cost = await new Supervision({ stateDir: deps.config.stateDir, run: deps.run, clock: deps.clock, sessionUsage: laneSessionUsage(deps.run, deps.config.sessionsDir) }, deps.config.supervision).close(lane);
+    lines.push(`COST ${lane.key} tokens=${cost.tokens ?? "unknown"} costUsd=${cost.costUsd ?? "unknown"}`);
+  } catch (e) {
+    lines.push(`COST ${lane.key} not recorded: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+  }
   // an aoe session or a herdr pane is closed by its own backend (the pane id says which; a herdr pane's tab goes only when
   // the pane is all it holds); a lane of another herdr agent keeps the tab/pane close it had
   if (lane.pane && omoPane(deps.config, lane.pane)) {
@@ -481,7 +482,7 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
     if (gate) return [gate, await objectDone(deps, current, [`${gate.startsWith("CLOSE_SUMMARY_MISSING ") ? "no summary for the owner's thread" : "the summary did not reach the owner's thread"} (${gate.split(": ").slice(1).join(": ").slice(0, 300)}); claim again with dori claim-done ${lane.key} --evidence \"...\" --summary \"<2 to 5 plain lines in the owner's language: what changed, what is left, when it reaches where it is used>\"`])];
     return [await objectDone(deps, current, result.lines.filter((l) => l.startsWith("SIGNAL NOT")))];
   }
-  return [...result.lines.filter((l) => l.startsWith("CLOSE_SUMMARY ") || l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ") || l.startsWith("THREAD_STATUS_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
+  return [...result.lines.filter((l) => l.startsWith("CLOSE_SUMMARY ") || l.startsWith("COST ") || l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ") || l.startsWith("THREAD_STATUS_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
 };
 
 export const watchTick = async (deps: FlowDeps): Promise<string[]> => {

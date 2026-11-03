@@ -922,7 +922,9 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   const oldK = facts.oldLog ? contextK(facts.oldLog).last : undefined;
   Object.assign(ctx.sizes, { ...(oldK !== undefined ? { oldK } : {}), ...(fresh.first !== undefined ? { firstK: fresh.first } : {}), ...(fresh.last !== undefined ? { checkedK: fresh.last } : {}), ...(newLog ? { newLog } : {}) });
   emit(`HANDOVER_SIZE ${lane.key} old ${oldK ?? "?"}k -> new first ${fresh.first ?? "?"}k, checked ${fresh.last ?? "?"}k (${sizePct(ctx.sizes) ?? "?"}% of the old)`);
-  await deps.registry.patch(lane.key, { session: checked.session, sessionVia: "handover" });
+  // the outgoing session is kept on the lane, so the lane's cost counts every session it had (supervision.ts laneSessionUsage)
+  const outgoing = (await deps.registry.read(lane.key))?.session;
+  await deps.registry.patch(lane.key, { session: checked.session, sessionVia: "handover", ...(outgoing && outgoing !== checked.session ? { priorSessions: [...(lane.priorSessions ?? []).filter((s) => s !== outgoing), outgoing] } : {}) });
   rmSync(readyFile(config.stateDir, lane.key), { force: true });
   if (opts.keepOld) {
     thaw();

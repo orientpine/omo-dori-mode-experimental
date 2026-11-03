@@ -14,7 +14,7 @@ import { dailyAuditSince, linksDue } from "./directive-audit.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { watchLog } from "./watch-log.ts";
-import { HUNG_MESSAGE, paneSessionUsage, Supervision } from "./supervision.ts";
+import { HUNG_MESSAGE, laneSessionUsage, Supervision } from "./supervision.ts";
 
 // Any status word counts as hearing from the lane (pingpong-analytics reports "| working |"); the footer's placeholder
 // "| <milestone|...> | <one plain line ..." never does, nor a template line a lane's code prints before filling it in
@@ -296,7 +296,7 @@ const superviseLane = async (deps: FlowDeps, lane: Lane): Promise<SweepAct[]> =>
   const lead = deps.config.leadPane;
   const told = new Map<string, string>();
   const supervision = new Supervision({
-    stateDir: deps.config.stateDir, run: deps.run, clock: deps.clock, sessionUsage: paneSessionUsage(deps.run, deps.config.sessionsDir),
+    stateDir: deps.config.stateDir, run: deps.run, clock: deps.clock, sessionUsage: laneSessionUsage(deps.run, deps.config.sessionsDir),
     alert: async (l, message) => {
       if (!lead) {
         told.set(message, "lead not told: leadPane is not configured");

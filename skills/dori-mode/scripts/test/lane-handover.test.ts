@@ -384,6 +384,7 @@ test("moves the lane: same cwd, model and thinking, registry and cards repointed
   // Given
   const deps = await setup();
   ready(deps, [15]);
+  await deps.registry.patch("demo", { session: "old-sid" });
   // When
   const r = await laneHandover(deps, "demo", "aoe_lead_x", OK);
   // Then
@@ -397,6 +398,8 @@ test("moves the lane: same cwd, model and thinking, registry and cards repointed
   expect(sent(w).some((t) => t.startsWith("You are the demo lane in a new session") && t.includes(r.note ?? "?"))).toBe(true);
   const now = await readLane(deps);
   expect(now).toMatchObject({ pane: NEW, session: "new-sid", thread: "discord:12345678", brief: lane().brief });
+  // the outgoing session stays on the lane, so its cost still counts (supervision.ts laneSessionUsage)
+  expect(now.priorSessions).toEqual(["old-sid"]);
   expect(new QuestionStore(join(state.dir, "discord")).get("Q1")).toMatchObject({ tmux: NEW });
   expect(printed).toContain(`HANDOVER_STATUS_OK ${NEW} claude-opus-5-5 thinking high`);
   expect(printed).toContain(`HANDOVER_MONITORS_OK 2 in ${NEW} (session new-sid)`);
