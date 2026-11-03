@@ -450,13 +450,16 @@ export type Rendered = {
 // the ledger in scope it lacks, then Past signals, the hypothesis tree, and the footer.
 // What launch keeps of the ledger it read (lane.directives.ledger, every entry) and of the version of each entry it
 // applied (versions), as entryHash: of the text that covers it in the brief, its own (the lead's brief has it) or, for
-// an entry with a pointer, the pointer's (in the lead's brief or put in by launch), never both for one cover.
-export const launchRecord = (ledger: Ledger, applied: readonly string[], blocks: Readonly<Record<DirectiveBlock, string>>, lead: string): { readonly ledger: Record<string, string>; readonly versions: Record<string, string> } => {
+// an entry with a pointer, the pointer's (in the lead's brief or put in by launch), never both for one cover; a built-in
+// block only when the brief launch wrote (body) has it whole, as the audit reads it (a partial frame keeps no version).
+export const launchRecord = (ledger: Ledger, applied: readonly string[], blocks: Readonly<Record<DirectiveBlock, string>>, lead: string, body: string): { readonly ledger: Record<string, string>; readonly versions: Record<string, string> } => {
+  const flat = (s: string): string => s.replace(/\s+/g, " ").trim();
   const hash = new Map(ledger.entries.map((e) => [e.id, entryHash(e, blocks)] as const));
   const byId = new Map(ledger.entries.map((e) => [e.id, e] as const));
   const covers = (id: string): string[] => {
     const e = byId.get(id);
-    if (!e || e.mode !== "inject" || e.block) return [id];
+    if (e?.block) return flat(body).includes(flat(blocks[e.block])) ? [id] : [];
+    if (!e || e.mode !== "inject") return [id];
     // a pointer the lead's brief does not have, all of whose entries it has as their own texts: those cover it
     const named = ledger.entries.filter((x) => x.via === id);
     if (named.length && !hasDirective(lead, e) && named.every((x) => hasDirective(lead, x))) return named.map((x) => x.id);
@@ -480,17 +483,18 @@ export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<R
   const ui = Boolean(input.ui) || plan.blocks.includes("ui-steps");
   const at = iso(deps.clock);
   const blocks = { "eight-steps": await eightSteps(), "ui-steps": await uiSteps() };
-  const draft: Lane = { ...draftLane(deps, input), ...(ui ? { ui: true } : {}), ...(ledger.entries.length ? { directives: { applied: plan.applied, waived: plan.waived.map(({ e, reason }) => ({ id: e.id, reason, at })), ...launchRecord(ledger, plan.applied, blocks, raw) } } : {}) };
-  const past = await pastSignals(deps, input, draft.cwd ?? deps.config.defaultCwd);
-  const tree = await treeContext(deps, draft);
   const skipEight = plan.waived.some(({ e }) => e.block === "eight-steps");
   const eight = skipEight ? { text: raw, added: false, missing: [] } : withEightSteps(raw, blocks["eight-steps"]);
   const lead = withDirectives(eight.text, plan.add);
+  const body = ui ? withUiSteps(lead, blocks["ui-steps"]) : lead;
+  const draft: Lane = { ...draftLane(deps, input), ...(ui ? { ui: true } : {}), ...(ledger.entries.length ? { directives: { applied: plan.applied, waived: plan.waived.map(({ e, reason }) => ({ id: e.id, reason, at })), ...launchRecord(ledger, plan.applied, blocks, raw, body) } } : {}) };
+  const past = await pastSignals(deps, input, draft.cwd ?? deps.config.defaultCwd);
+  const tree = await treeContext(deps, draft);
   const steps = stepsLine(input.key, eight);
   const hint = uiWarning(input, raw, ledger, ui);
   const added = addedLine(input.key, plan);
   const lines = [...(hint ? [hint] : []), ...(added ? [added] : []), ...waivedLines(input.key, plan)];
-  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, blocks["ui-steps"]) : lead}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos))}` };
+  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${body}\n${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos))}` };
 };
 
 // The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.

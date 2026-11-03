@@ -393,6 +393,17 @@ test("a pointer's gap is judged by the text that covered it at launch: the point
   const c = await runDirectiveAudit(ownChanged, { since: "2026-10-21T00:00:00.000Z", inbox, owner: "7", dryRun: true });
   expect(c.gaps.map((g) => `${g.lane} ${g.id}`)).not.toContain("ptr-own repo-rules");
   expect(c.lines.some((l) => l.startsWith("DIRECTIVE_CHANGED ptr-own repo-rules:"))).toBe(true);
+  // mixed: the lead's brief has rule-a tagged, launch puts the pointer in for rule-b; rule-a reworded (its tag still
+  // covers it) and the unchanged pointer taken out: rule-b's covering text is the same, so a gap
+  const r2 = await renderBrief(base2, input(await write("ptr-mix.md", `${fields}\n[형 결정 rule-a, 2026-07-14, 원문 없음: 리드 기록]\n규칙 A 원문\n`)));
+  const rec2 = r2.draft.directives!;
+  expect([rec2.versions?.["rule-a"], rec2.versions?.["rule-b"], rec2.versions?.["repo-rules"]].map((v) => v !== undefined)).toEqual([true, false, true]);
+  const pointerText = directiveText(loadLedger(base2.config).entries.find((e) => e.id === "repo-rules")!);
+  expect(r2.text).toContain(pointerText);
+  await ownChanged.registry.write({ ...r2.draft, openedAt: "2026-10-21T05:00:00.000Z", key: "ptr-mix", brief: await write("ptr-mix-brief.md", r2.text.replace(pointerText, "")) });
+  const d = await runDirectiveAudit(ownChanged, { since: "2026-10-21T00:00:00.000Z", inbox, owner: "7", dryRun: true });
+  expect(d.gaps.map((g) => `${g.lane} ${g.id}`)).toContain("ptr-mix repo-rules");
+  expect(d.lines.some((l) => l.startsWith("DIRECTIVE_CHANGED ptr-mix repo-rules:"))).toBe(false);
 });
 
 test("a built-in block's version is its doc text: a doc-only update is a changed version for an untouched launched brief, a block taken out still counts", async () => {
@@ -410,6 +421,14 @@ test("a built-in block's version is its doc text: a doc-only update is a changed
   // the same block taken out of the brief, the doc unchanged: a gap
   const cut = { ...lane, brief: await write("blk-cut.md", r0.text.replace(blocks["eight-steps"], "")) };
   expect((await laneGapSplit(deps, cut, ledger, blocks, { files: [] })).gaps.map((g) => g.id)).toContain("eight-steps");
+  // a partial frame (the lead's own steps 1 and 8): launch leaves it and keeps no version of the block, so a doc-only
+  // update does not make its old omission a changed version
+  const r1 = await renderBrief(deps, input(await write("blk-part.md", `${fields}\n1. 조사: 내 방식으로 본다.\n8. 보고: 표로 낸다.\n`)));
+  expect(r1.draft.directives?.versions?.["eight-steps"]).toBeUndefined();
+  const part = { ...r1.draft, key: "blk-part", openedAt: "2026-10-16T05:00:00.000Z", brief: await write("blk-part-brief.md", r1.text) };
+  const p = await laneGapSplit(deps, part, ledger, newer, { files: [] });
+  expect(p.gaps.map((g) => g.id)).toContain("eight-steps");
+  expect(p.excused.some((x) => x.line.startsWith("DIRECTIVE_CHANGED blk-part eight-steps:"))).toBe(false);
 });
 
 test("an owner entry with words goes into briefs as its prompt: a prompt is required, may not ask, and is only for owner words", async () => {

@@ -60,19 +60,30 @@ export const dailyAuditHook = <T>(cfg: Pick<DoriConfig, "directives">, hook: T):
 
 // What launch recorded shows about a gap (lane.directives, dori launch and dori directives apply write it): ledger, every
 // entry of the ledger launch read, and versions, the version (entryHash) of each entry it put in or found in the brief
-// (only the text that covered it: its own, or its pointer's). None of the gap's entries in the ledger launch read: it
-// came after, late. A text that covered one of them (a block with its doc text) recorded in another version than the
-// ledger's now: it changed after; an entry behind a pointer that covered it is not recorded, so its change does not
-// excuse the pointer's gap. An entry launch read and did not apply, or applied in the version of now, is a gap
+// (only the text that covered it: its own, or its pointer's; a block launch wrote whole). Each entry the brief lacks
+// behind the gap (gap.entries) is judged alone: not in the ledger launch read, late; the text that covered it (its own
+// version if recorded, else its pointer's) recorded in another version than the ledger's now, changed. The gap is late
+// when all are late, changed when each is late or changed; one entry whose covering text is the same is a gap, whatever
+// changed beside it. An entry launch read and did not apply, or applied in the version of now, is a gap
 // whatever else (launch judged its scope otherwise, or the text left the brief). No record (a lane launched before launch
 // kept one) says nothing: the gap counts. A require or lead entry is not a text launch puts in: its gap counts.
 const launchRecord = (lane: Lane, g: Gap, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>): "late" | "changed" | undefined => {
   const rec = lane.directives;
   if (!rec?.ledger) return undefined;
-  const own = ledger.entries.filter((e) => e.id === g.id || e.via === g.id);
-  if (!own.length || own.some((e) => e.mode === "require" || e.mode === "lead")) return undefined;
-  if (own.every((e) => rec.ledger?.[e.id] === undefined)) return "late";
-  return own.some((e) => rec.versions?.[e.id] !== undefined && rec.versions[e.id] !== entryHash(e, blocks)) ? "changed" : undefined;
+  const byId = new Map(ledger.entries.map((e) => [e.id, e] as const));
+  const missing = (g.entries ?? [g.id]).map((id) => byId.get(id));
+  if (!missing.length || missing.some((e) => !e || e.mode === "require" || e.mode === "lead")) return undefined;
+  // a pointer launch found covered by its entries' own texts (no version of its own, theirs recorded) goes with them
+  const byNamed = (e: Directive): boolean => rec.versions?.[e.id] === undefined && ledger.entries.some((x) => x.via === e.id && rec.versions?.[x.id] !== undefined);
+  const alone = (missing as Directive[]).filter((e) => !byNamed(e) || !missing.some((x) => x?.via === e.id));
+  if (!alone.length) return undefined;
+  const judged = alone.map((e): "late" | "changed" | undefined => {
+    if (rec.ledger?.[e.id] === undefined) return "late";
+    const cover = rec.versions?.[e.id] !== undefined ? e : e.via && rec.versions?.[e.via] !== undefined ? byId.get(e.via) : undefined;
+    return cover && rec.versions?.[cover.id] !== entryHash(cover, blocks) ? "changed" : undefined;
+  });
+  if (judged.every((j) => j === "late")) return "late";
+  return judged.every((j) => j !== undefined) ? "changed" : undefined;
 };
 
 // A lane's gaps, and the ones that are not its gaps: a directive that entered the ledger after the lane opened (entered:

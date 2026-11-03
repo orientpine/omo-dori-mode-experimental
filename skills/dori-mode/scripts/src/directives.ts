@@ -563,14 +563,15 @@ export const waivedLines = (key: string, plan: DirectivePlan): string[] => plan.
 
 // --- after the launch: intent-check and the daily audit ---
 
-export type Gap = { readonly lane: string; readonly id: string; readonly line: string };
+// entries: the entries in scope the brief lacks behind the gap (an entry with a pointer is a gap of its pointer; absent: id)
+export type Gap = { readonly lane: string; readonly id: string; readonly line: string; readonly entries?: readonly string[] };
 
 // A launched lane's brief against the ledger now: inject directives in scope it lacks, require directives it fails,
 // minus the waivers on record. The built-in blocks count when their first line is in the brief.
 export const briefGaps = (lane: Pick<Lane, "key" | "directives" | "ui">, brief: string, ledger: Ledger, repo: string, blockLines: Readonly<Record<DirectiveBlock, string>>): Gap[] => {
   const ctx = scopeContext(brief, ledger, { ui: lane.ui, repo });
   const waived = new Set((lane.directives?.waived ?? []).map((w) => w.id));
-  const out: Gap[] = [];
+  const out: (Gap & { entries: string[] })[] = [];
   for (const e of ledger.entries) {
     if (e.mode === "lead" || waived.has(e.id)) continue;
     const why = appliesWhy(e, ctx);
@@ -578,7 +579,10 @@ export const briefGaps = (lane: Pick<Lane, "key" | "directives" | "ui">, brief: 
     const lacks = e.block ? !squash(brief).includes(squash(blockLines[e.block])) : e.mode === "inject" ? !coveredBy(brief, e, ledger) : requireMissing(brief, e).length > 0;
     // an entry with a pointer is a gap of its pointer: that is the text to send
     const shown = e.mode === "inject" && !e.block ? (pointerOf(e, ledger) ?? e) : e;
-    if (lacks && !out.some((g) => g.id === shown.id)) out.push({ lane: lane.key, id: shown.id, line: `DIRECTIVE_GAP ${lane.key} ${shown.id}: ${shown.name} applies (${shown === e ? why : `${why}, for ${e.id}`}) and is not in the brief` });
+    if (!lacks) continue;
+    const had = out.find((g) => g.id === shown.id);
+    if (had) had.entries.push(e.id);
+    else out.push({ lane: lane.key, id: shown.id, entries: [e.id], line: `DIRECTIVE_GAP ${lane.key} ${shown.id}: ${shown.name} applies (${shown === e ? why : `${why}, for ${e.id}`}) and is not in the brief` });
   }
   return out;
 };
