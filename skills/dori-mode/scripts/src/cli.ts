@@ -176,7 +176,7 @@ const USAGE = `dori <command> [options]
                                        nothing without launchEnv); used by setups/discord-aoe/self-restart.sh
   sync   [--write]                     registry vs live panes; read-only unless --write; a SIGNALS line per open lane with a record
   checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]...
-                                       record a finished step in <stateDir>/lanes/<key>/checkpoints.jsonl (locked, fsynced);
+                                       record a finished step in <stateDir>/lane-state/<key>/checkpoints.jsonl (locked);
                                        the same step again with the same data is a no-op, with other data it is refused;
                                        one --remote-effect per receipt (a push, a merge), each recorded under one step only
   checkpoints <key>                    print the lane's finished steps (JSON); read them before resuming remote work

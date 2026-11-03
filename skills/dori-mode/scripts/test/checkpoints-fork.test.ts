@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { dirname } from "node:path";
 
 import { CheckpointError, Checkpoints, type CheckpointInput } from "../src/checkpoints.ts";
+import { Registry } from "../src/registry.ts";
 import { withState } from "./fakes.ts";
 
 // The fork changes to the upstream journal (src/checkpoints.ts "Fork change"), from the reviews of orientpine#297.
@@ -103,6 +104,20 @@ describe("checkpoints (fork changes)", () => {
       expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy"]);
       journal.write("demo-lane", next, 3000);
       expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy", "next"]);
+    } finally { state.done(); }
+  });
+
+  test("checkpoint state lives apart from the registry: lanes foo.json and foo both checkpoint, and the registry still lists both", async () => {
+    const state = withState();
+    try {
+      const registry = new Registry(state.dir);
+      for (const key of ["foo.json", "foo"]) await registry.write({ key, title: key, thread: "none", brief: "/b.md", done: "file x", openedAt: new Date(1000).toISOString() });
+      const journal = new Checkpoints(state.dir);
+      journal.write("foo.json", input, 2000);
+      journal.write("foo", input, 2000);
+      expect((await registry.list()).map((l) => l.key).sort()).toEqual(["foo", "foo.json"]);
+      expect(journal.read("foo.json").map((c) => c.step)).toEqual(["deploy"]);
+      expect(journal.read("foo").map((c) => c.step)).toEqual(["deploy"]);
     } finally { state.done(); }
   });
 });

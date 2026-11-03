@@ -1,7 +1,7 @@
 // Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/blob/90f02c19fd86ce70cfd6a74f521c9acd24428cc3/skills/dori-mode/scripts/src/checkpoints.ts
 // (upstream PR #61 (4ea8bd1)), with fork changes marked "Fork change" (reviews of orientpine#297): the writer lock is a
 // kernel flock (no takeover by age), an identical replay is flushed before it is acknowledged, and a record is appended
-// whole or not at all.
+// whole or not at all, and per-lane state lives in <stateDir>/lane-state/<key>/, apart from the registry.
 import { randomUUID } from "node:crypto";
 import { dlopen, FFIType } from "bun:ffi";
 import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
@@ -74,7 +74,10 @@ export class Checkpoints {
 
   path(key: string): string {
     if (!LANE_KEY.test(key)) throw new CheckpointError(`invalid lane key: ${key}`);
-    return join(this.stateDir, "lanes", key, "checkpoints.jsonl");
+    // Fork change (review 3 of orientpine#297): per-lane state lives apart from the registry's <stateDir>/lanes/<key>.json
+    // files. Under lanes/<key>/, a lane keyed foo.json would make a directory the registry reads as a lane, and a lane
+    // keyed foo.json could not checkpoint while a lane foo exists.
+    return join(this.stateDir, "lane-state", key, "checkpoints.jsonl");
   }
 
   read(key: string): Checkpoint[] {
