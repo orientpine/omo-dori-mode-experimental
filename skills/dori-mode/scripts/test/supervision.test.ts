@@ -128,6 +128,22 @@ describe("supervision", () => {
     } finally { f.done(); }
   });
 
+  test("an explicit activity file that is a symlink: writes through the unchanged link count as progress", async () => {
+    const f = fixture();
+    try {
+      const target = join(f.dir, "train.log");
+      writeFileSync(target, "step 1\n");
+      symlinkSync(target, join(f.dir, "latest.log"));
+      const activeLane = { ...lane, cwd: f.dir, activityPaths: ["latest.log"] };
+      await f.supervisor.sweep(activeLane, "Running 21m");
+      f.clock.at += 20 * 60_000;
+      appendFileSync(target, "step 2\n");
+      expect((await f.supervisor.sweep(activeLane, "Running 41m")).hung).toBe(false);
+      f.clock.at += 20 * 60_000;
+      expect((await f.supervisor.sweep(activeLane, "Running 61m")).hung).toBe(true);
+    } finally { f.done(); }
+  });
+
   test("explicit file and git changed-file activity suppress stalls without scanning", async () => {
     const f = fixture();
     try {
@@ -653,6 +669,49 @@ describe("supervision in the freshness sweep and the close", () => {
       const closed = await closeLane(deps, working, "verified");
       expect(closed.closed).toBe(true);
       expect(closed.lines).toContain("COST quiet-lane tokens=unknown costUsd=unknown");
+    } finally { state.done(); }
+  });
+
+  test("a close that finds another close taking the cost tears nothing down; once that one is gone the close goes through", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const deps = depsFor(world, fakeClock(T0), state.dir);
+      await deps.registry.write(working);
+      const dir = join(state.dir, "lane-state", "quiet-lane");
+      mkdirSync(dir, { recursive: true });
+      const held = takeLock(join(dir, "cost.lock"), T0, "cost record", "quiet-lane");
+      const busy = await closeLane(deps, working, "verified");
+      expect(busy.closed).toBe(false);
+      expect(busy.lines.at(-1)).toStartWith("CLOSE_IN_PROGRESS quiet-lane: cost record locked: quiet-lane");
+      expect(world.calls.some((c) => c.includes("close") || (c.includes("worktree") && c.includes("remove")))).toBe(false);
+      expect((await deps.registry.read("quiet-lane"))?.status).not.toBe("closed");
+      held();
+      const closed = await closeLane(deps, working, "verified");
+      expect(closed.closed).toBe(true);
+      expect(closed.lines).toContain("COST quiet-lane tokens=unknown costUsd=unknown");
+    } finally { state.done(); }
+  });
+
+  test("the watcher's close that finds a manual close taking the cost leaves the lane to it and does not tell the lane it is not done", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const at = (ms: number) => depsFor(world, fakeClock(ms), state.dir);
+      const claimed = { ...working, done: "file /etc/hostname" };
+      await at(T0).registry.write(claimed);
+      await claimDone(at(T0), claimed, "file written");
+      const dir = join(state.dir, "lane-state", "quiet-lane");
+      mkdirSync(dir, { recursive: true });
+      const held = takeLock(join(dir, "cost.lock"), T0, "cost record", "quiet-lane");
+      const sent = world.calls.length;
+      const lines = await watchTick(at(T0 + 5 * 60_000 + 1));
+      held();
+      expect(lines.some((l) => l.startsWith("CLOSE_IN_PROGRESS quiet-lane"))).toBe(true);
+      expect(lines.some((l) => l.startsWith("LANE_CLOSED") || l.startsWith("NOT_DONE"))).toBe(false);
+      expect(typed(world.calls.slice(sent), "w:p7")).toEqual([]);
+      expect(world.calls.slice(sent).some((c) => c.includes("close") || (c.includes("worktree") && c.includes("remove")))).toBe(false);
+      expect((await at(T0).registry.read("quiet-lane"))?.status).toBe("verified-done");
     } finally { state.done(); }
   });
 

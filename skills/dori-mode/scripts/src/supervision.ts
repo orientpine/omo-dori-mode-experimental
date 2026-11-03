@@ -6,7 +6,7 @@
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import { Checkpoints, takeLock } from "./checkpoints.ts";
+import { CheckpointError, Checkpoints, takeLock } from "./checkpoints.ts";
 import { fill } from "./config.ts";
 import { paneTranscript } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
@@ -206,6 +206,11 @@ const ACTIVITY_FILES = 5000;
 
 export const HUNG_MESSAGE = "Working/Running timer exceeded threshold without fresh report, checkpoint, or file activity";
 
+// Another close holds this lane's cost record; that close finishes the lane (pane, worktrees, registry).
+export class CostRecordBusy extends Error {
+  override readonly name = "CostRecordBusy";
+}
+
 export class Supervision {
   readonly checkpoints: Checkpoints;
   constructor(readonly deps: SupervisionDeps, readonly settings: SupervisionSettings = defaultSupervision()) {
@@ -274,7 +279,9 @@ export class Supervision {
   }
 
   private async activity(lane: Lane): Promise<string> {
-    const paths = new Set([...this.settings.activityPaths, ...(lane.activityPaths ?? [])].map((path) => resolve(lane.cwd ?? ".", path)));
+    // the paths configured by hand: always looked at, and through a symlink (a latest.log pointing at a growing log)
+    const explicit = new Set([...this.settings.activityPaths, ...(lane.activityPaths ?? [])].map((path) => resolve(lane.cwd ?? ".", path)));
+    const paths = new Set<string>();
     const changes: string[] = [];
     // git prints the changed paths relative to the repository's top, not to the lane's cwd (a lane in a subdirectory)
     const top = this.settings.gitActivity && lane.cwd ? (await this.deps.run(["git", "-C", lane.cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 10_000 })) : undefined;
@@ -305,10 +312,14 @@ export class Supervision {
     }
     // every untracked file is listed (a file written inside an untracked directory is progress); at most ACTIVITY_FILES
     // are looked at, so a huge untracked tree does not make each sweep slow
-    const files = [...paths].sort().slice(0, ACTIVITY_FILES).map((path) => {
+    const files = [...[...explicit].sort(), ...[...paths].filter((path) => !explicit.has(path)).sort()].slice(0, ACTIVITY_FILES).map((path) => {
       try {
         const stat = lstatSync(path);
-        return [path, stat.mtimeMs, stat.ctimeMs, stat.size];
+        const own = [path, stat.mtimeMs, stat.ctimeMs, stat.size];
+        if (!explicit.has(path) || !stat.isSymbolicLink()) return own;
+        // the link's own metadata (a retarget counts) and its target's (writes through the link count); a dangling link is null
+        const target = statSync(path, { throwIfNoEntry: false });
+        return [...own, target ? [target.mtimeMs, target.ctimeMs, target.size] : null];
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         return [path, null];
@@ -384,9 +395,17 @@ export class Supervision {
   // returns it and runs no hook, so a cost ledger gets each lane once; {closeKey} is the same on every attempt.
   // Two closes at once (the watcher and a manual close) take turns on a lock per lane; the second finds the first's final
   // reading and runs no hook.
+  // A close that finds the lock taken throws CostRecordBusy: the other close owns the lane's teardown from here.
   async close(lane: Lane): Promise<UsageSnapshot> {
     mkdirSync(this.dir(lane.key), { recursive: true });
-    const release = takeLock(join(this.dir(lane.key), "cost.lock"), this.deps.clock.now(), "cost record", lane.key);
+    let release: () => void;
+    try {
+      release = takeLock(join(this.dir(lane.key), "cost.lock"), this.deps.clock.now(), "cost record", lane.key);
+    } catch (error) {
+      // takeLock throws CheckpointError only when another holder has the lock; any other error is a real failure
+      if (error instanceof CheckpointError) throw new CostRecordBusy(error.message);
+      throw error;
+    }
     try {
       return await this.closeLocked(lane);
     } finally {

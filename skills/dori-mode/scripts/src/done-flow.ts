@@ -21,7 +21,7 @@ import { watchLog } from "./watch-log.ts";
 import { checkDone, type SignalIo } from "./done-signals.ts";
 import { gateMissing } from "./merge-gate.ts";
 import { ownerSummary } from "./close-summary.ts";
-import { laneSessionUsage, Supervision } from "./supervision.ts";
+import { CostRecordBusy, laneSessionUsage, Supervision } from "./supervision.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -427,6 +427,9 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
     const cost = await new Supervision({ stateDir: deps.config.stateDir, run: deps.run, clock: deps.clock, sessionUsage: laneSessionUsage(deps.run, deps.config.sessionsDir) }, deps.config.supervision).close(lane);
     lines.push(`COST ${lane.key} tokens=${cost.tokens ?? "unknown"} costUsd=${cost.costUsd ?? "unknown"}`);
   } catch (e) {
+    // Another close (the watcher and a manual close at once) is taking the lane's reading, maybe through its live pane:
+    // this one tears nothing down, so that reading is not lost and the other close finishes the lane.
+    if (e instanceof CostRecordBusy) return { closed: false, lines: [...lines, ...warnings, `CLOSE_IN_PROGRESS ${lane.key}: ${e.message}; the other close finishes the lane`] };
     lines.push(`COST ${lane.key} not recorded: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
   }
   // an aoe session or a herdr pane is closed by its own backend (the pane id says which; a herdr pane's tab goes only when
@@ -476,6 +479,9 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   // the claim's summary is read by closeLane itself; an explicit summary there would post even when the result is in the thread
   const result = await closeLane(deps, verified, note);
   if (!result.closed) {
+    // a manual close got there first and finishes the lane: nothing to tell the lane
+    const busy = result.lines.find((l) => l.startsWith("CLOSE_IN_PROGRESS "));
+    if (busy) return [busy];
     const current = (await deps.registry.read(lane.key)) ?? verified;
     // no summary, or it did not go out: the lead gets the line, and the lane (still idle in its session) is told how to claim again
     const gate = result.lines.find((l) => l.startsWith("CLOSE_SUMMARY_MISSING ") || l.startsWith("CLOSE_SUMMARY_NOT_SENT "));
