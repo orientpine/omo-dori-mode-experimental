@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -432,6 +433,11 @@ const squash = (s: string): string => s.replace(/\s+/g, " ").trim();
 // trigger and the basis stay in the ledger and its table.
 export const directiveTag = (e: Directive): string =>
   e.by === "lead" ? `[리드 규칙 ${e.id}]` : e.words ? `[형 지침 ${e.id}, ${e.date}]` : `[형 결정 ${e.id}, ${e.date}, 원문 없음: 리드 기록]`;
+// What a lane's record keeps of an entry (dori launch, dori directives apply): a hash of what decides a brief's text and
+// scope, so the audit can tell the version a lane got from the ledger's now without reading the brief. A built-in block's
+// text is its reference doc's (blocks), not the ledger's: a doc-only change is a new version.
+export const entryHash = (e: Directive, blocks: Readonly<Record<DirectiveBlock, string>>): string =>
+  createHash("sha256").update(JSON.stringify([directiveText(e), e.scope, e.mode, e.require ?? null, e.block ?? null, e.via ?? null, e.block ? blocks[e.block] : null])).digest("hex").slice(0, 16);
 export const directiveText = (e: Directive): string => `${directiveTag(e)}\n${e.by === "owner" && e.words ? (e.prompt ?? e.words) : (e.rule ?? "")}`;
 export const hasDirective = (brief: string, e: Directive): boolean => {
   const b = squash(brief);

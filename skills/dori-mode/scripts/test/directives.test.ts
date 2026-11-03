@@ -2,11 +2,11 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-import { applyDirectives, auditOrReport, auditStampPath, checkMeaning, dailyAuditHook, dailyAuditSince, leadThreadGaps, linkRows, meaningCachePath, memoryRepoFor, pushLinks, runDirectiveAudit, withApplied } from "../src/directive-audit.ts";
+import { applyDirectives, auditOrReport, auditStampPath, checkMeaning, dailyAuditHook, dailyAuditSince, laneGapSplit, leadThreadGaps, linkRows, meaningCachePath, memoryRepoFor, pushLinks, runDirectiveAudit, withApplied } from "../src/directive-audit.ts";
 import { loadConfig } from "../src/config.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { run as realRun } from "../src/run.ts";
-import { APPLIED_HEADING, briefGaps, checkedLedger, COMMON_LEDGER, DirectiveError, directiveLine, directiveText, ledgerProblems, loadLedger, messageLines, requireMissing, retiredError, scopeContext, textDirectives, trimProblem } from "../src/directives.ts";
+import { APPLIED_HEADING, briefGaps, checkedLedger, COMMON_LEDGER, DirectiveError, DIRECTIVES_HEADING, directiveLine, directiveText, ledgerProblems, loadLedger, messageLines, requireMissing, retiredError, scopeContext, textDirectives, trimProblem } from "../src/directives.ts";
 import type { Runner } from "../src/run.ts";
 import { DirectiveMissingError, eightSteps, launchLane, renderBrief, uiSteps } from "../src/launch.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -320,6 +320,96 @@ test("directives.dailyAudit false keeps the freshness loop from auditing this Do
   expect(ran).toEqual([]);
   const manual = await auditOrReport({ ...deps, config: { ...deps.config, directives: { ...deps.config.directives, dailyAudit: false } } }, { since: "2026-10-15T06:00:00.000Z", inbox: await write("inbox.jsonl", ""), owner: "7", dryRun: true });
   expect(manual.lines.some((l) => /^DIRECTIVE_AUDIT_(OK|DONE) /.test(l))).toBe(true);
+});
+
+test("directive-audit reads launch's record, never the brief or commit times: an entry not in the ledger launch read is late, one launch put in an earlier version of is changed; one launch read and left out, one whose text left the brief, and a lane with no record still count", async () => {
+  const base = await ledgerDeps();
+  const inbox = await write("inbox.jsonl", "");
+  // a real launch render: the lane record keeps the ledger it read and the versions it put in
+  const r0 = await renderBrief(base, input(await write("b.md", fields)));
+  const rec = r0.draft.directives!;
+  expect(rec.ledger?.["docs-same-pr"]).toBeDefined();
+  expect(rec.versions?.["options-ledger"]).toBe(rec.ledger?.["options-ledger"]);
+  const lane = { ...r0.draft, key: "x", openedAt: "2026-10-16T05:00:00.000Z" };
+  // after the launch: docs-same-pr re-dated and reworded (as outbound-all-cards in 026a905), a new entry copied in with an
+  // old date (as dori-to-okdori in 2771f8e)
+  const later = { ...local, entries: [...local.entries.filter((e) => e.id !== "docs-same-pr"), { id: "docs-same-pr", source: "https://discord.com/channels/1/2/5", date: "2026-10-16", prompt: "세션은 작업할 때 관련 문서도 같은 PR에서 업데이트한다." }, { id: "copied-in", name: "옮겨 온 항목", by: "owner", basis: "fixture basis line", words: "이 저장소 일은 표로 남겨", prompt: "이 저장소 일은 표로 남긴다.", date: "2026-10-10", source: "https://discord.com/channels/1/2/9", scope: { repos: ["hr35-isaac"] }, mode: "inject" }] };
+  const deps = await ledgerDeps({ directives: { common: COMMON_LEDGER, local: await write("later.json", JSON.stringify(later)) } });
+  const brief = r0.text;
+  await deps.registry.write({ ...lane, key: "launched", brief: await write("launched.md", brief) });
+  // the same lane without a record: nothing is known of when
+  await deps.registry.write({ ...lane, key: "bare", brief: await write("bare.md", brief), directives: undefined });
+  // the falsifying case: copied-in was in the live ledger launch read, launch left it out (scope judged otherwise): a gap
+  await deps.registry.write({ ...lane, key: "omitted", brief: await write("omitted.md", brief), directives: { ...rec, ledger: { ...rec.ledger, "copied-in": "0".repeat(16) } } });
+  // options-ledger unchanged, its text taken out of the brief after launch: a gap
+  const options = loadLedger(deps.config).entries.find((e) => e.id === "options-ledger")!;
+  await deps.registry.write({ ...lane, key: "edited", brief: await write("edited.md", brief.replace(directiveText(options), "")) });
+  const r = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7", dryRun: true });
+  const ids = r.gaps.map((g) => `${g.lane} ${g.id}`);
+  const late = (k: string, id: string) => r.lines.some((l) => l.startsWith(`DIRECTIVE_LATE ${k} ${id}:`) && l.includes("directives.ledger"));
+  expect(ids).not.toContain("launched copied-in");
+  expect(late("launched", "copied-in")).toBe(true);
+  expect(ids).not.toContain("launched docs-same-pr");
+  expect(r.lines.some((l) => l.startsWith("DIRECTIVE_CHANGED launched docs-same-pr:") && l.includes("directives.versions"))).toBe(true);
+  expect(ids).toEqual(expect.arrayContaining(["bare copied-in", "bare docs-same-pr", "omitted copied-in", "edited options-ledger"]));
+  expect(late("omitted", "copied-in")).toBe(false);
+});
+
+test("a pointer's gap is judged by the text that covered it at launch: the pointer's version when the pointer went in (an entry behind it that changed does not excuse its removal), the entries' own when the brief had them", async () => {
+  const repoRule = (id: string, rule: string) => ({ id, name: id, by: "owner", basis: "fixture basis line", words: "", rule, date: "2026-07-14", source: "x", scope: { repos: ["hr35-isaac"] }, mode: "inject", via: "repo-rules" });
+  const pointer = { id: "repo-rules", name: "저장소 규칙", by: "lead", basis: "fixture basis line", rule: "이 저장소 AGENTS.md의 규칙을 읽고 그대로 따른다.", date: "2026-10-20", source: "x", scope: { repos: ["hr35-isaac"] }, mode: "inject" };
+  const at = (entries: unknown[]) => ({ ...local, entries: [...local.entries, ...entries] });
+  const base = await ledgerDeps({ directives: { common: COMMON_LEDGER, local: await write("ptr0.json", JSON.stringify(at([repoRule("rule-a", "규칙 A 원문"), pointer]))) }, backend: "aoe" });
+  const r0 = await renderBrief(base, input(await write("ptr.md", fields)));
+  const rec = r0.draft.directives!;
+  // launch put in the pointer for rule-a: the pointer's version is what covers it, rule-a's own is not recorded
+  expect(rec.versions?.["repo-rules"]).toBe(rec.ledger?.["repo-rules"]);
+  expect(rec.versions?.["rule-a"]).toBeUndefined();
+  const removed = r0.text.replace(directiveText(loadLedger(base.config).entries.find((e) => e.id === "repo-rules")!), "");
+  const lane = { ...r0.draft, openedAt: "2026-10-21T05:00:00.000Z" };
+  const inbox = await write("inbox.jsonl", "");
+  // rule-a reworded after launch, the unchanged pointer taken out of the brief: a gap
+  const ruleChanged = await ledgerDeps({ directives: { common: COMMON_LEDGER, local: await write("ptr1.json", JSON.stringify(at([repoRule("rule-a", "규칙 A 새 원문"), pointer]))) }, backend: "aoe" });
+  await ruleChanged.registry.write({ ...lane, key: "ptr-gone", brief: await write("ptr-gone.md", removed) });
+  const a = await runDirectiveAudit(ruleChanged, { since: "2026-10-21T00:00:00.000Z", inbox, owner: "7", dryRun: true });
+  expect(a.gaps.map((g) => `${g.lane} ${g.id}`)).toContain("ptr-gone repo-rules");
+  expect(a.lines.some((l) => l.startsWith("DIRECTIVE_CHANGED ptr-gone repo-rules:"))).toBe(false);
+  // the pointer's own text changed after launch (an untouched brief keeps its tag and has no gap): its gap is the new version's
+  const ptrChanged = await ledgerDeps({ directives: { common: COMMON_LEDGER, local: await write("ptr2.json", JSON.stringify(at([repoRule("rule-a", "규칙 A 원문"), { ...pointer, rule: "이 저장소 AGENTS.md와 CONTRIBUTING.md의 규칙을 따른다." }]))) }, backend: "aoe" });
+  await ptrChanged.registry.write({ ...lane, key: "ptr-new", brief: await write("ptr-new.md", removed) });
+  const b = await runDirectiveAudit(ptrChanged, { since: "2026-10-21T00:00:00.000Z", inbox, owner: "7", dryRun: true });
+  expect(b.gaps.map((g) => `${g.lane} ${g.id}`)).not.toContain("ptr-new repo-rules");
+  expect(b.lines.some((l) => l.startsWith("DIRECTIVE_CHANGED ptr-new repo-rules:"))).toBe(true);
+  // a lead's brief with both texts of their own (no pointer goes in): those are recorded, and rule-a reworded after
+  // launch makes the pointer's gap in the untouched brief a changed version
+  const both = at([repoRule("rule-a", "규칙 A 원문"), repoRule("rule-b", "규칙 B 원문"), pointer]);
+  const base2 = await ledgerDeps({ directives: { common: COMMON_LEDGER, local: await write("ptr3.json", JSON.stringify(both)) }, backend: "aoe" });
+  const r1 = await renderBrief(base2, input(await write("ptr-own.md", `${fields}\n규칙 A 원문\n\n규칙 B 원문\n`)));
+  expect(r1.text).not.toContain("[리드 규칙 repo-rules]");
+  const rec1 = r1.draft.directives!;
+  expect([rec1.versions?.["rule-a"], rec1.versions?.["rule-b"], rec1.versions?.["repo-rules"]].map((v) => v !== undefined)).toEqual([true, true, false]);
+  const ownChanged = await ledgerDeps({ directives: { common: COMMON_LEDGER, local: await write("ptr4.json", JSON.stringify(at([repoRule("rule-a", "규칙 A 새 원문"), repoRule("rule-b", "규칙 B 원문"), pointer]))) }, backend: "aoe" });
+  await ownChanged.registry.write({ ...r1.draft, openedAt: "2026-10-21T05:00:00.000Z", key: "ptr-own", brief: await write("ptr-own-brief.md", r1.text) });
+  const c = await runDirectiveAudit(ownChanged, { since: "2026-10-21T00:00:00.000Z", inbox, owner: "7", dryRun: true });
+  expect(c.gaps.map((g) => `${g.lane} ${g.id}`)).not.toContain("ptr-own repo-rules");
+  expect(c.lines.some((l) => l.startsWith("DIRECTIVE_CHANGED ptr-own repo-rules:"))).toBe(true);
+});
+
+test("a built-in block's version is its doc text: a doc-only update is a changed version for an untouched launched brief, a block taken out still counts", async () => {
+  const deps = await ledgerDeps();
+  const blocks = { "eight-steps": await eightSteps(), "ui-steps": await uiSteps() };
+  const r0 = await renderBrief(deps, input(await write("blk.md", fields)));
+  const lane = { ...r0.draft, key: "blk", openedAt: "2026-10-16T05:00:00.000Z", brief: await write("blk-brief.md", r0.text) };
+  const ledger = loadLedger(deps.config);
+  expect((await laneGapSplit(deps, lane, ledger, blocks, { files: [] })).gaps.map((g) => g.id)).not.toContain("eight-steps");
+  // sessions.md's steps updated, the ledger entry as it was: the untouched brief has the old block
+  const newer = { ...blocks, "eight-steps": `${blocks["eight-steps"]}\n9. 정리: 새 단계.` };
+  const s = await laneGapSplit(deps, lane, ledger, newer, { files: [] });
+  expect(s.gaps.map((g) => g.id)).not.toContain("eight-steps");
+  expect(s.excused.some((x) => x.line.startsWith("DIRECTIVE_CHANGED blk eight-steps:"))).toBe(true);
+  // the same block taken out of the brief, the doc unchanged: a gap
+  const cut = { ...lane, brief: await write("blk-cut.md", r0.text.replace(blocks["eight-steps"], "")) };
+  expect((await laneGapSplit(deps, cut, ledger, blocks, { files: [] })).gaps.map((g) => g.id)).toContain("eight-steps");
 });
 
 test("an owner entry with words goes into briefs as its prompt: a prompt is required, may not ask, and is only for owner words", async () => {

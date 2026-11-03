@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { laneSessionFiles, readLeadRelays, type ReportLine } from "./auto-signals.ts";
 import { checkReviewers, ChallengeError, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
-import { APPLIED_HEADING, appliesWhy, briefGaps, checkedLedger, coveredBy, type Directive, type DirectiveBlock, DirectiveError, directiveText, duplicated, type Gap, headingAt, type Ledger, leadGaps, LINK_SOURCE, loadLedger, scopeContext, unledgered } from "./directives.ts";
+import { APPLIED_HEADING, appliesWhy, briefGaps, checkedLedger, coveredBy, type Directive, type DirectiveBlock, DirectiveError, directiveText, duplicated, entryHash, type Gap, headingAt, type Ledger, leadGaps, LINK_SOURCE, loadLedger, scopeContext, unledgered } from "./directives.ts";
 import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { eightSteps, laneRepo, launchLedger, uiSteps } from "./launch.ts";
@@ -52,15 +52,33 @@ const supplies = (text: string, id: string, e: Directive | undefined, ledger: Le
   return e.mode === "inject" && (coveredBy(text, e, ledger) || (Boolean(e.prompt) && squash(text).includes(squash(e.prompt ?? ""))));
 };
 
+export type Excused = { readonly gap: Gap; readonly line: string };
+
 // The freshness loop's daily audit, unless directives.dailyAudit is false (another Dori audits this one); dori
 // directive-audit by hand does not read it.
 export const dailyAuditHook = <T>(cfg: Pick<DoriConfig, "directives">, hook: T): T | undefined => (cfg.directives.dailyAudit === false ? undefined : hook);
 
-export type Excused = { readonly gap: Gap; readonly line: string };
+// What launch recorded shows about a gap (lane.directives, dori launch and dori directives apply write it): ledger, every
+// entry of the ledger launch read, and versions, the version (entryHash) of each entry it put in or found in the brief
+// (only the text that covered it: its own, or its pointer's). None of the gap's entries in the ledger launch read: it
+// came after, late. A text that covered one of them (a block with its doc text) recorded in another version than the
+// ledger's now: it changed after; an entry behind a pointer that covered it is not recorded, so its change does not
+// excuse the pointer's gap. An entry launch read and did not apply, or applied in the version of now, is a gap
+// whatever else (launch judged its scope otherwise, or the text left the brief). No record (a lane launched before launch
+// kept one) says nothing: the gap counts. A require or lead entry is not a text launch puts in: its gap counts.
+const launchRecord = (lane: Lane, g: Gap, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>): "late" | "changed" | undefined => {
+  const rec = lane.directives;
+  if (!rec?.ledger) return undefined;
+  const own = ledger.entries.filter((e) => e.id === g.id || e.via === g.id);
+  if (!own.length || own.some((e) => e.mode === "require" || e.mode === "lead")) return undefined;
+  if (own.every((e) => rec.ledger?.[e.id] === undefined)) return "late";
+  return own.some((e) => rec.versions?.[e.id] !== undefined && rec.versions[e.id] !== entryHash(e, blocks)) ? "changed" : undefined;
+};
 
 // A lane's gaps, and the ones that are not its gaps: a directive that entered the ledger after the lane opened (entered:
-// id -> ms, dori directive-audit; DIRECTIVE_LATE) and one the lead typed into the lane in a [LEAD] line after it opened
-// (DIRECTIVE_RELAYED). files: the session files to look for the lane's own among (default: laneSessionFiles).
+// id -> ms, dori directive-audit; or not in the ledger launch read, by its record: DIRECTIVE_LATE), one launch put in as
+// an earlier version (its record; DIRECTIVE_CHANGED) and one the lead typed into the lane in a [LEAD] line after it
+// opened (DIRECTIVE_RELAYED). files: the session files to look for the lane's own among (default: laneSessionFiles).
 export const laneGapSplit = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>, opts: { readonly entered?: ReadonlyMap<string, number>; readonly files?: readonly string[] } = {}): Promise<{ readonly gaps: Gap[]; readonly excused: Excused[] }> => {
   if (!ledger.entries.length) return { gaps: [], excused: [] };
   const brief = await readBrief(briefOf(lane, deps.config.defaultCwd));
@@ -76,6 +94,15 @@ export const laneGapSplit = async (deps: Pick<FlowDeps, "run" | "config">, lane:
     const at = opts.entered?.get(g.id);
     if (at !== undefined && !Number.isNaN(opened) && at > opened) {
       excused.push({ gap: g, line: `DIRECTIVE_LATE ${lane.key} ${g.id}: entered the ledger ${new Date(at).toISOString()}, after the lane opened ${lane.openedAt}; not counted` });
+      continue;
+    }
+    const rec = launchRecord(lane, g, ledger, blocks);
+    if (rec === "late") {
+      excused.push({ gap: g, line: `DIRECTIVE_LATE ${lane.key} ${g.id}: not in the ledger launch read (lane record directives.ledger), after the lane opened ${lane.openedAt}; not counted` });
+      continue;
+    }
+    if (rec === "changed") {
+      excused.push({ gap: g, line: `DIRECTIVE_CHANGED ${lane.key} ${g.id}: launch put in another version than the ledger's now (lane record directives.versions); it changed after the lane opened ${lane.openedAt}; not counted (dori directives apply sends the new text)` });
       continue;
     }
     relays ??= await laneRelays(deps, lane, opts.files);
@@ -182,7 +209,7 @@ export const applyDirectives = async (deps: FlowDeps, lane: Lane, opts: { readon
     return { ok: false, added: [], message, lines: [...lines, line] };
   }
   await Bun.write(briefOf(lane, deps.config.defaultCwd), withApplied(brief, texts));
-  await deps.registry.patch(lane.key, { directives: { applied: [...new Set([...(lane.directives?.applied ?? []), ...ids])], waived: lane.directives?.waived ?? [] } });
+  await deps.registry.patch(lane.key, { directives: { ...lane.directives, applied: [...new Set([...(lane.directives?.applied ?? []), ...ids])], waived: lane.directives?.waived ?? [], ...(lane.directives?.ledger ? { versions: { ...lane.directives.versions, ...Object.fromEntries(send.map((e) => [e.id, entryHash(e, blocks)])) } } : {}) } });
   const line = `DIRECTIVES_APPLIED ${lane.key}: ${ids.join(", ")} sent to ${lane.pane} (SUBMITTED) and added to ${lane.brief} under "${APPLIED_HEADING.slice(3)}"`;
   watchLog(deps.config.watchLog, deps.clock, { source: "directives", line });
   return { ok: true, added: ids, message, lines: [...lines, line] };
@@ -387,7 +414,7 @@ export const runDirectiveAudit = async (deps: FlowDeps, opts: { readonly since: 
     gaps.push(...s.gaps);
     excused.push(...s.excused);
   }
-  const notCounted = excused.length ? ` (${excused.length} not counted: entered the ledger after the lane opened, or the lead relayed it in a [LEAD] line; listed with --dry-run)` : "";
+  const notCounted = excused.length ? ` (${excused.length} not counted: entered the ledger after the lane opened, changed after launch put it in, or the lead relayed it in a [LEAD] line; listed with --dry-run)` : "";
   const excusedLines = opts.dryRun ? excused.map((x) => x.line) : [];
   gaps.push(...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env.DORI_DISCORD_GUILD?.trim() ?? ""));
   if (opts.threads) gaps.push(...leadThreadGaps(opts.threads, await deps.registry.list(), opts.since));
