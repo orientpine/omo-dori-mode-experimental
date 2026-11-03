@@ -2828,6 +2828,7 @@ test("review 320 round 3: a request that keeps coming back busy past readyMin is
   // Then
   expect(resumes).toHaveLength(4);
   expect(sent(w).filter((x) => x.startsWith("[DORI] demo: the handover you asked for") && x.includes("stayed busy"))).toHaveLength(1);
+});
 
 test("a lead's approval without a signal gets the measured one from the records: the stuck rung, the crossed threshold, the last proposal; nothing measured, nothing filled", () => {
   // Given: 17 of 81 refusals were the approval's wording (no signal word 9), each typed again within a minute
