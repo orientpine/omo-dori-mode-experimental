@@ -4,7 +4,7 @@
 // whole or not at all, and per-lane state lives in <stateDir>/lane-state/<key>/, apart from the registry.
 import { randomUUID } from "node:crypto";
 import { dlopen, FFIType } from "bun:ffi";
-import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -161,12 +161,16 @@ export class Checkpoints {
       }
       const checkpoint: Checkpoint = { key, at, ...JSON.parse(payload(input)) };
       const created = !existsSync(path);
-      const fd = openSync(path, "a", 0o600);
+      const fd = openSync(path, "a+", 0o600);
       try {
         // Fork change (review of orientpine#297): the whole record or nothing. A short write (a full disk) is written on
         // until done; one that fails is cut off again, so the journal keeps its valid lines and nothing is acknowledged.
-        const bytes = Buffer.from(`${JSON.stringify(checkpoint)}\n`);
+        // A last record a writer left without its newline (interrupted after the closing brace) gets one first, in the
+        // same write, so the new record starts its own line.
         const before = fstatSync(fd).size;
+        const last = Buffer.alloc(1);
+        const separator = before > 0 && readSync(fd, last, 0, 1, before - 1) === 1 && last[0] !== 0x0a ? "\n" : "";
+        const bytes = Buffer.from(`${separator}${JSON.stringify(checkpoint)}\n`);
         try {
           for (let done = 0; done < bytes.length;) {
             const n = writeSync(fd, bytes, done, bytes.length - done);

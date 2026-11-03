@@ -120,4 +120,18 @@ describe("checkpoints (fork changes)", () => {
       expect(journal.read("foo").map((c) => c.step)).toEqual(["deploy"]);
     } finally { state.done(); }
   });
+
+  test("a last record left without its newline gets one before the next record, so both stay readable", () => {
+    const state = withState();
+    try {
+      const journal = new Checkpoints(state.dir);
+      const path = journal.path("demo-lane");
+      mkdirSync(dirname(path), { recursive: true });
+      appendFileSync(path, JSON.stringify({ key: "demo-lane", at: new Date(1000).toISOString(), ...input }));
+      expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy"]);
+      journal.write("demo-lane", next, 2000);
+      expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy", "next"]);
+      expect(readFileSync(path, "utf8").endsWith("\n")).toBe(true);
+    } finally { state.done(); }
+  });
 });
