@@ -287,12 +287,19 @@ export class Supervision {
     if (lane.cwd && top?.code === 0 && top.out.trim()) {
       const result = await this.deps.run(["git", "-C", lane.cwd, "status", "--porcelain=v1", "-z", "--untracked-files=all"], { timeoutMs: 10_000, preserveOutput: true });
       if (result.code === 0) {
+        // git prints real paths: compare them with the cwd's real path (a symlinked cwd), else every change looks outside it
+        let cwdReal = resolve(lane.cwd);
+        try {
+          cwdReal = realpathSync(lane.cwd);
+        } catch {
+          // a cwd that is gone keeps its written path
+        }
         const entries = result.out.split("\0");
         for (let index = 0; index < entries.length; index++) {
           const entry = entries[index];
           if (!entry) continue;
           const path = resolve(top.out.trim(), entry.slice(3));
-          const rel = relative(resolve(lane.cwd), path);
+          const rel = relative(cwdReal, path);
           // Dependency churn and paths outside the lane's cwd are not the lane's progress.
           if (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../") && !rel.split("/").includes("node_modules")) {
             paths.add(path);

@@ -1341,6 +1341,8 @@ test("when the old session ends during the checks, the new one stays the lane in
   expect(r).toMatchObject({ code: 1, to: NEW });
   expect(printed.find((l) => l.startsWith("HANDOVER_OLD_GONE demo"))).toBeDefined();
   expect((await readLane(deps)).pane).toBe(NEW);
+  // the move is committed, so the lane's sessions are too: its cost counts the old session and the new one
+  expect(await readLane(deps)).toMatchObject({ session: "new-sid", priorSessions: ["old-sid"] });
   expect(stoppedIds()).toEqual([]);
   expect(sent(w).some((x) => x.startsWith("[LEAD] HANDOVER_COMMITTED: the old session ended during the checks"))).toBe(true);
 });

@@ -344,22 +344,30 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
   const now = deps.clock.now();
   let leadScreen: string | undefined;
   let leadLines: readonly string[] | undefined;
-  for (const lane of await deps.registry.open()) {
-    if (!lane.pane) continue;
-    // a lane told "not done" keeps working: it is moved to a new session like a working one (cyto-p2-timers carried 306k
-    // after its 13th compaction on 10-19 and was never started); its reports, nudges and posts stay as they were
-    if (statusOf(lane) === "not-done") {
-      acts.push(...(await superviseLane(deps, lane)));
-      acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, lane.rolloverDue, stuckTop(lane), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
-      continue;
-    }
-    if (statusOf(lane) !== "working") continue;
+  // a lane's newest report: in the lead's transcript first, then the lead's screen, then the lane's own screen
+  const lastReport = async (lane: Lane): Promise<string | null> => {
     leadScreen ??= deps.config.leadPane ? await readScreen(deps.run, deps.config.backend, deps.config.leadPane, 3000) : "";
     leadLines ??= await (hooks.leadTranscript?.() ?? Promise.resolve(undefined)).then((t) => t?.split("\n") ?? [], (e: unknown) => {
       watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `FRESHNESS_WARN lead transcript not read: ${String(e).slice(0, 200)}` });
       return [];
     });
-    const report = transcriptReport(leadLines, lane.key) ?? lastReportLine(leadScreen, lane.key) ?? lastReportLine(await readScreen(deps.run, deps.config.backend, lane.pane, 200), lane.key);
+    return transcriptReport(leadLines, lane.key) ?? lastReportLine(leadScreen, lane.key) ?? lastReportLine(await readScreen(deps.run, deps.config.backend, lane.pane ?? "", 200), lane.key);
+  };
+  for (const lane of await deps.registry.open()) {
+    if (!lane.pane) continue;
+    // a lane told "not done" keeps working: it is moved to a new session like a working one (cyto-p2-timers carried 306k
+    // after its 13th compaction on 10-19 and was never started); its reports, nudges and posts stay as they were
+    if (statusOf(lane) === "not-done") {
+      // its newest report still counts as progress for the hung check (its nudges and posts stay off)
+      const reported = await lastReport(lane);
+      const seen = reported && reported !== lane.lastReport ? { ...lane, lastReport: reported, lastReplyAt: now } : lane;
+      if (seen !== lane) await deps.registry.patch(lane.key, { lastReport: seen.lastReport, lastReplyAt: now });
+      acts.push(...(await superviseLane(deps, seen)));
+      acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, lane.rolloverDue, stuckTop(lane), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
+      continue;
+    }
+    if (statusOf(lane) !== "working") continue;
+    const report = await lastReport(lane);
     let current = lane;
     if (report && report !== lane.lastReport) {
       current = { ...current, lastReport: report, lastReplyAt: now };

@@ -385,6 +385,29 @@ describe("supervision", () => {
     } finally { f.done(); }
   });
 
+  test("a lane whose cwd is a symlink into its repository: changes git prints under the real path count", async () => {
+    const f = fixture();
+    try {
+      const repo = join(f.dir, "repo");
+      mkdirSync(repo, { recursive: true });
+      const file = join(repo, "a.ts");
+      writeFileSync(file, "one");
+      const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", repo, ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+      git("init", "-q");
+      git("add", ".");
+      git("commit", "-qm", "one");
+      writeFileSync(file, "two");
+      const link = join(f.dir, "link");
+      symlinkSync(repo, link);
+      const real = new Supervision({ ...f.deps, run }, f.options);
+      const linked = { ...lane, cwd: link };
+      await real.sweep(linked, "Running 21m");
+      f.clock.at += 20 * 60_000;
+      utimesSync(file, new Date(f.clock.at), new Date(f.clock.at));
+      expect((await real.sweep(linked, "Running 41m")).hung).toBe(false);
+    } finally { f.done(); }
+  });
+
   test("a lane that claimed done is not alerted on, even past its caps with a long timer", async () => {
     const f = fixture({ defaults: { wallMinutes: 0 }, staleAfterMinutes: 0 });
     try {
@@ -514,6 +537,22 @@ describe("supervision in the freshness sweep and the close", () => {
       const deps = depsFor(world, fakeClock(T0 + 6 * 60_000), state.dir, { nudgeAfterMin: 999, supervision: { ...defaultSupervision(), defaults: { wallMinutes: 5 } } });
       await deps.registry.write({ ...working, status: "not-done" });
       expect((await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "lane_cap").map((a) => a.detail.split(";")[0])).toEqual(["wallMinutes ceiling reached (5)"]);
+    } finally { state.done(); }
+  });
+
+  test("a lane told not done that keeps reporting is not called hung: its new report counts as progress", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { nudgeAfterMin: 999 });
+      await deps(T0).registry.write({ ...working, status: "not-done", lastReport: "[REPORT] quiet-lane | milestone | first" });
+      world.screens["w:p7"] = "── • Running bash (21m 0s • esc to interrupt) ──\n❯ ";
+      world.screens["lead:p1"] = " [REPORT] quiet-lane | milestone | first\n❯ ";
+      await freshnessTick(deps(T0), "/home/test");
+      world.screens["w:p7"] = "── • Running bash (41m 0s • esc to interrupt) ──\n❯ ";
+      world.screens["lead:p1"] = " [REPORT] quiet-lane | milestone | first\n [REPORT] quiet-lane | milestone | objection fixed, rerunning the checks\n❯ ";
+      expect((await freshnessTick(deps(T0 + 20 * 60_000), "/home/test")).filter((a) => a.kind === "stalled")).toEqual([]);
+      expect((await deps(T0).registry.read("quiet-lane"))?.lastReport).toContain("objection fixed");
     } finally { state.done(); }
   });
 

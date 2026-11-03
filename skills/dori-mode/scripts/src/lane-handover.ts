@@ -668,6 +668,19 @@ export const laneHandover = async (deps: LaneHandoverDeps, key: string, here: st
 
 type Check = { readonly reasons: string[]; readonly session: string; readonly account?: string; readonly supplements?: readonly Supplement[] };
 
+// Every committed move records the lane's sessions: the new one, and the outgoing one (found in the old pane, else the
+// registry's: an adopted lane has none recorded until dori sync --write) kept in priorSessions, so the lane's cost counts
+// every session it had (supervision.ts laneSessionUsage).
+const keepSessions = async (deps: LaneHandoverDeps, key: string, found: string, next: string): Promise<void> => {
+  const now = await deps.registry.read(key);
+  const outgoing = found || now?.session;
+  const prior = [...(now?.priorSessions ?? [])].filter((s) => s !== outgoing && s !== next);
+  await deps.registry.patch(key, {
+    ...(next ? { session: next, sessionVia: "handover" } : {}),
+    ...(outgoing && outgoing !== next ? { priorSessions: [...prior, outgoing] } : {}),
+  });
+};
+
 const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, understood: string, emit: (line: string) => void): Promise<Check> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
@@ -904,6 +917,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
     emit(`HANDOVER_OLD_GONE ${lane.key}: ${from.pane} ended during the checks (${checked.reasons.join("; ")}); the lane stays on ${pane}`);
     await tell(deps, pane, `[LEAD] ${COMMITTED}: the old session ended during the checks, so you are the ${lane.key} lane now although a check failed (${checked.reasons.join("; ")}); tell the lead what you see. ${config.launchKeywords}: go on with step 5 of the note.`);
     record("kept-new-old-gone", checked.reasons);
+    await keepSessions(deps, lane.key, facts.from.session, checked.session || (await deps.sessionOf(pane, facts.cwd).catch(() => "")));
     await forwardLate(deps, facts, ctx, pane);
     await endStrayTasks(deps, { who: lane.key, session: from.session, pane, note, emit });
     if (facts.chains.length) await chainsEnded(deps, lane.key, facts.chains, pane, emit);
@@ -922,10 +936,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   const oldK = facts.oldLog ? contextK(facts.oldLog).last : undefined;
   Object.assign(ctx.sizes, { ...(oldK !== undefined ? { oldK } : {}), ...(fresh.first !== undefined ? { firstK: fresh.first } : {}), ...(fresh.last !== undefined ? { checkedK: fresh.last } : {}), ...(newLog ? { newLog } : {}) });
   emit(`HANDOVER_SIZE ${lane.key} old ${oldK ?? "?"}k -> new first ${fresh.first ?? "?"}k, checked ${fresh.last ?? "?"}k (${sizePct(ctx.sizes) ?? "?"}% of the old)`);
-  // the outgoing session is kept on the lane, so the lane's cost counts every session it had (supervision.ts laneSessionUsage)
-  // the session found in the old pane, else the registry's (an adopted lane has none recorded until dori sync --write)
-  const outgoing = facts.from.session || (await deps.registry.read(lane.key))?.session;
-  await deps.registry.patch(lane.key, { session: checked.session, sessionVia: "handover", ...(outgoing && outgoing !== checked.session ? { priorSessions: [...(lane.priorSessions ?? []).filter((s) => s !== outgoing), outgoing] } : {}) });
+  await keepSessions(deps, lane.key, facts.from.session, checked.session);
   rmSync(readyFile(config.stateDir, lane.key), { force: true });
   if (opts.keepOld) {
     thaw();
