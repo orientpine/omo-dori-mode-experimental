@@ -1,5 +1,6 @@
-// Ported unchanged from https://github.com/sisyphuslabs/omo-dori-mode-experimental/blob/90f02c19fd86ce70cfd6a74f521c9acd24428cc3/skills/dori-mode/scripts/src/checkpoints.ts
-// (upstream PR #61 (4ea8bd1)). Keep the body byte-for-byte equal to upstream; fork wiring lives in cli.ts.
+// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/blob/90f02c19fd86ce70cfd6a74f521c9acd24428cc3/skills/dori-mode/scripts/src/checkpoints.ts
+// (upstream PR #61 (4ea8bd1)), with two fork changes marked "Fork change" (review of orientpine#297: the stale-lock
+// takeover runs under a guard and removes the lock in place; an identical replay is flushed before it is acknowledged).
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
@@ -59,6 +60,15 @@ const alive = (pid: number): boolean => {
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+const flush = (path: string): void => {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
   }
 };
 
@@ -142,27 +152,27 @@ export class Checkpoints {
       if (!dead && now - since < LOCK_STALE_MS) {
         throw new CheckpointError(`checkpoint writer locked: ${key} (${owner ? `pid ${owner.pid}` : "no owner record"}, ${Math.max(0, Math.round((now - since) / 1000))} s old)`);
       }
-      // Move the stale lock aside under a unique name, then check it is the one judged stale: another writer may have
-      // taken it over and locked again in between. Rename keeps the inode, so the inode and record identify it.
-      const moved = `${lock}.${process.pid}.${randomUUID()}.stale`;
+      // Fork change (review of orientpine#297): a stale lock is taken over only under a takeover guard, and removed in
+      // place once the guard holder read it again and found the same lock. Upstream moved it aside first; when that was a
+      // live writer's lock taken in between, the path stood empty until it was put back, a third writer could lock it, and
+      // the live writer's lock was then deleted, so two writers held the journal.
+      const guard = `${lock}.takeover`;
+      let held: number;
       try {
-        renameSync(lock, moved);
+        held = openSync(guard, "wx", 0o600);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        // A guard is held for microseconds: one this old was left by a writer killed while taking a lock over.
+        const since = statSync(guard, { throwIfNoEntry: false })?.mtimeMs;
+        if (since !== undefined && now - since >= LOCK_STALE_MS) rmSync(guard, { force: true });
+        throw new CheckpointError(`checkpoint writer locked: ${key} (another writer is taking a stale lock over; retry)`);
       }
-      const taken = inspect(moved);
-      if (taken?.ino === seen.ino && taken.raw === seen.raw) {
-        rmSync(moved, { recursive: true, force: true });
-        continue;
-      }
-      // That was a live writer's lock: put it back without replacing a newer one.
       try {
-        linkSync(moved, lock);
-      } catch (error) {
-        throw new CheckpointError(`checkpoint writer locked: ${key} (a live writer's lock could not be put back: ${(error as Error).message})`);
+        const again = inspect(lock);
+        if (again?.ino === seen.ino && again.raw === seen.raw) rmSync(lock, { recursive: true, force: true });
       } finally {
-        rmSync(moved, { recursive: true, force: true });
+        closeSync(held);
+        rmSync(guard, { force: true });
       }
     }
     throw new CheckpointError(`checkpoint writer locked: ${key} (the lock changed hands while taking it over; retry)`);
@@ -179,6 +189,10 @@ export class Checkpoints {
       const previous = recorded.find((entry) => entry.step === input.step);
       if (previous) {
         if (payload(previous) !== payload(input)) throw new CheckpointError(`conflicting checkpoint step: ${input.step}`);
+        // Fork change (review of orientpine#297): the record may be one a writer killed before its fsync appended, so it is
+        // flushed (with the journal's directory entry) before it is acknowledged.
+        flush(path);
+        flush(dirname(path));
         return { checkpoint: previous, unchanged: true };
       }
       // A receipt names one completed remote effect; recording it under a second step would read as a second effect.
