@@ -21,6 +21,7 @@ import { watchLog } from "./watch-log.ts";
 import { checkDone, type SignalIo } from "./done-signals.ts";
 import { gateMissing } from "./merge-gate.ts";
 import { ownerSummary } from "./close-summary.ts";
+import { paneSessionUsage, Supervision } from "./supervision.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -346,6 +347,14 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   if (checks.some((c) => !c.ok)) return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };
   const ungated = await gateMissing(deps, lane.done);
   if (ungated.length) return { closed: false, lines: [...lines, ...ungated, `REFUSED ${lane.key}: a PR of a gated repo was not merged through dori merge`] };
+  // the lane's cost, recorded once (src/supervision.ts close); a reading or hook that fails is printed and never keeps a
+  // verified lane open
+  try {
+    const cost = await new Supervision({ stateDir: deps.config.stateDir, run: deps.run, clock: deps.clock, sessionUsage: paneSessionUsage(deps.run, deps.config.sessionsDir) }, deps.config.supervision).close(lane);
+    lines.push(`COST ${lane.key} tokens=${cost.tokens ?? "unknown"} costUsd=${cost.costUsd ?? "unknown"}`);
+  } catch (e) {
+    lines.push(`COST ${lane.key} not recorded: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+  }
   let threadText = "";
   const already = summary?.trim() || !hasThread(lane) ? undefined : (posted ?? lane.claim?.posted);
   if (already) lines.push(`CLOSE_SUMMARY_SKIPPED ${lane.key}: its result is already in the thread (${already}); no second post`);

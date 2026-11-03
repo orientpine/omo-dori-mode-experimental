@@ -1,6 +1,8 @@
 import { mkdirSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
+import type { BudgetLimits } from "./supervision.ts";
+
 export const LANE_KEY = /^[a-z0-9][a-z0-9._-]{1,60}$/;
 
 // A lane's work thread: <adapter>:<id>, or "none" for a lane without one. Discord ids are numeric snowflakes.
@@ -129,6 +131,11 @@ export type Lane = {
   // the last dori intent-check: when, up to which report, by which reviewer, what it found (finding: the first finding, for
   // the re-read the lead may send)
   readonly intentCheck?: { readonly at: string; readonly lastReportAt: string; readonly model: string; readonly kinds: readonly string[]; readonly finding?: string; readonly rereadAt?: string };
+  // lane caps of this lane over the config's (dori launch --wall-minutes/--token-limit/--cost-limit, dori caps), extra files
+  // whose change counts as activity (launch --activity-path), and the last supervision failure freshness printed (once)
+  readonly budget?: BudgetLimits;
+  readonly activityPaths?: readonly string[];
+  readonly supervisionError?: string;
   readonly receipt?: unknown;
   // the last LANE_DIED for this pane (lane-death.ts): reason for the lead, why for the log, told once the lead had it
   readonly died?: LaneDied;
