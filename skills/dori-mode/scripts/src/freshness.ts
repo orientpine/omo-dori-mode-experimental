@@ -299,8 +299,8 @@ const superviseLane = async (deps: FlowDeps, lane: Lane): Promise<SweepAct[]> =>
     stateDir: deps.config.stateDir, run: deps.run, clock: deps.clock, sessionUsage: laneSessionUsage(deps.run, deps.config.sessionsDir),
     alert: async (l, message) => {
       if (!lead) {
-        told.set(message, "lead not told: leadPane is not configured");
-        return true;
+        told.set(message, "lead not told: leadPane is not configured; sent again next sweep");
+        return false;
       }
       const ok = await sendVerified(deps.run, deps.clock, deps.config, lead, supervisionNote(l, message, settings));
       told.set(message, ok ? "lead told" : `lead not told: the note did not reach pane ${lead}; sent again next sweep`);

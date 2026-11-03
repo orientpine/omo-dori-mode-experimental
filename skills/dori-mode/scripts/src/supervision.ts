@@ -7,7 +7,6 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFile
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { Checkpoints, takeLock } from "./checkpoints.ts";
-import { sessionDirFor } from "./session-id.ts";
 import { fill } from "./config.ts";
 import { paneTranscript } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
@@ -141,22 +140,17 @@ export const transcriptUsage = (text: string, since: string): { tokens: number; 
 };
 
 // The default usage source: the omo transcripts of every session the lane had (lane.priorSessions, then lane.session),
-// found by id in the session directory of its cwd, else the transcript of the session in its pane (a lane with no
-// recorded session). A session whose transcript is not found leaves the usage unknown (null), never a smaller number.
+// found by id anywhere under the sessions directory (ids are unique; a lane's sessions may sit under its written cwd, its
+// real path, or the pane's own cwd for an adopted lane). A lane with no recorded session reads the transcript of the
+// session in its pane. Unknown, never smaller: a session whose transcript is not found, or a move whose new session is
+// not known yet (priorSessions but no session), makes the usage unknown.
 export const laneSessionUsage = (run: Runner, sessionsDir: string) => async (lane: Lane): Promise<SessionUsage | null> => {
-  const ids = [...(lane.priorSessions ?? []), ...(lane.session ? [lane.session] : [])];
-  if (ids.length && lane.cwd) {
-    // omo files a session under the directory it started in: the cwd as written, or its real path (a handover opens the
-    // new session in the real path of a symlinked cwd)
-    let real = lane.cwd;
-    try {
-      real = realpathSync(lane.cwd);
-    } catch {
-      // a cwd that is gone keeps its written path
-    }
-    const files = [...new Set([sessionDirFor(sessionsDir, lane.cwd), sessionDirFor(sessionsDir, real)])].flatMap((dir) => {
+  const ids = [...new Set([...(lane.priorSessions ?? []), ...(lane.session ? [lane.session] : [])])];
+  if (lane.priorSessions?.length && !lane.session) return null;
+  if (ids.length) {
+    const files = readdirSync(sessionsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).flatMap((d) => {
       try {
-        return readdirSync(dir).map((name) => join(dir, name));
+        return readdirSync(join(sessionsDir, d.name)).filter((n) => n.endsWith(".jsonl")).map((n) => join(sessionsDir, d.name, n));
       } catch {
         return [];
       }

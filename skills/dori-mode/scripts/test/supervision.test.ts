@@ -4,12 +4,13 @@ import { join } from "node:path";
 
 import { Checkpoints } from "../src/checkpoints.ts";
 import { loadConfig } from "../src/config.ts";
-import type { Lane } from "../src/registry.ts";
+import { type Lane, Registry } from "../src/registry.ts";
 import type { Runner } from "../src/run.ts";
 import { sessionDirFor } from "../src/session-id.ts";
 import { defaultSupervision, HUNG_MESSAGE, laneSessionUsage, type SessionUsage, Supervision, type SupervisionSettings, supervisionProblem, transcriptUsage, workingTimer } from "../src/supervision.ts";
 import { claimDone, closeLane, watchTick } from "../src/done-flow.ts";
 import { takeLock } from "../src/checkpoints.ts";
+import { keepSessions } from "../src/lane-handover.ts";
 import { run } from "../src/run.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
@@ -478,11 +479,55 @@ describe("usage from the lane's omo transcript", () => {
     } finally { state.done(); }
   });
 
+  test("a session is found by its id wherever omo filed it: an adopted lane whose recorded cwd is not where it runs", async () => {
+    const state = withState();
+    try {
+      const sessionsDir = join(state.dir, "sessions");
+      mkdirSync(join(sessionsDir, "--home-me-project--"), { recursive: true });
+      writeFileSync(join(sessionsDir, "--home-me-project--", "a_s9.jsonl"), turn("2026-10-29T00:01:00Z", 42, 0.5));
+      const read = laneSessionUsage(async () => ({ code: 1, out: "", err: "" }), sessionsDir);
+      expect(await read({ ...lane, cwd: "/home/me/default-cwd", session: "s9" })).toEqual({ session: "s9", tokens: 42, costUsd: 0.5 });
+    } finally { state.done(); }
+  });
+
   test("no transcript means unknown usage, and a token cap says it cannot be checked", async () => {
     const f = fixture({ defaults: { tokens: 300 } });
     try {
       expect((await f.supervisor.sweep(lane, "")).alerts).toEqual(["tokens ceiling cannot be checked: usage unavailable"]);
     } finally { f.done(); }
+  });
+});
+
+describe("a lane's session history", () => {
+  test("whatever path changes a lane's session, the registry keeps the outgoing one, once and in order", async () => {
+    const state = withState();
+    try {
+      const registry = new Registry(state.dir);
+      await registry.write({ ...lane, session: "s1" });
+      await registry.patch(lane.key, { session: "s2" });
+      await registry.write({ ...lane, session: "s3" });
+      await registry.patch(lane.key, { lastReport: "[REPORT] demo-lane | milestone | x" });
+      await registry.patch(lane.key, { session: "s1" });
+      expect(await registry.read(lane.key)).toMatchObject({ session: "s1", priorSessions: ["s2", "s3"] });
+    } finally { state.done(); }
+  });
+});
+
+describe("a move whose new session is not known yet", () => {
+  test("leaves the lane with no current session and its usage unknown, never the old transcript twice", async () => {
+    const state = withState();
+    try {
+      const registry = new Registry(state.dir);
+      await registry.write({ ...lane, session: "s1" });
+      await keepSessions({ registry } as never, lane.key, "", "");
+      const moved = await registry.read(lane.key);
+      expect(moved?.session).toBeUndefined();
+      expect(moved?.priorSessions).toEqual(["s1"]);
+      const sessionsDir = join(state.dir, "sessions");
+      mkdirSync(join(sessionsDir, "--work--"), { recursive: true });
+      writeFileSync(join(sessionsDir, "--work--", "a_s1.jsonl"), JSON.stringify({ type: "message", timestamp: "2026-10-29T00:01:00Z", message: { role: "assistant", usage: { totalTokens: 100, cost: { total: 1 } } } }));
+      expect(await laneSessionUsage(async () => ({ code: 1, out: "", err: "" }), sessionsDir)(moved as Lane)).toBeNull();
+    } finally { state.done(); }
   });
 });
 
@@ -553,6 +598,19 @@ describe("supervision in the freshness sweep and the close", () => {
       world.screens["lead:p1"] = " [REPORT] quiet-lane | milestone | first\n [REPORT] quiet-lane | milestone | objection fixed, rerunning the checks\n❯ ";
       expect((await freshnessTick(deps(T0 + 20 * 60_000), "/home/test")).filter((a) => a.kind === "stalled")).toEqual([]);
       expect((await deps(T0).registry.read("quiet-lane"))?.lastReport).toContain("objection fixed");
+    } finally { state.done(); }
+  });
+
+  test("with no lead pane the cap note counts as not sent: once a lead pane is set, it goes out", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const deps = (ms: number, leadPane: string) => depsFor(world, fakeClock(ms), state.dir, { leadPane, nudgeAfterMin: 999, supervision: { ...defaultSupervision(), defaults: { wallMinutes: 5 } } });
+      await deps(T0, "").registry.write(working);
+      const first = (await freshnessTick(deps(T0 + 6 * 60_000, ""), "/home/test")).filter((a) => a.kind === "lane_cap");
+      expect(first.map((a) => a.detail)).toEqual(["wallMinutes ceiling reached (5); lead not told: leadPane is not configured; sent again next sweep"]);
+      const second = (await freshnessTick(deps(T0 + 7 * 60_000, "lead:p1"), "/home/test")).filter((a) => a.kind === "lane_cap");
+      expect(second.map((a) => a.detail)).toEqual(["wallMinutes ceiling reached (5); lead told"]);
     } finally { state.done(); }
   });
 

@@ -186,6 +186,12 @@ export class Registry {
   // temp file + rename so a concurrent reader never sees a half-written lane
   async write(lane: Lane): Promise<void> {
     mkdirSync(this.dir, { recursive: true });
+    // A lane's sessions are history: whatever path changes its session (a handover, dori sync --write, a revive), the
+    // outgoing one is kept in priorSessions, so its cost counts every session it had (supervision.ts laneSessionUsage)
+    const before = await this.read(lane.key).catch(() => null);
+    const outgoing = before?.session && before.session !== lane.session ? [before.session] : [];
+    const prior = [...new Set([...(before?.priorSessions ?? []), ...(lane.priorSessions ?? []), ...outgoing])].filter((s) => s !== lane.session);
+    if (prior.length) lane = { ...lane, priorSessions: prior };
     const tmp = `${this.path(lane.key)}.${process.pid}.tmp`;
     await Bun.write(tmp, JSON.stringify(lane, null, 1));
     renameSync(tmp, this.path(lane.key));

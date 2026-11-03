@@ -637,7 +637,7 @@ const killedRun = async (deps: LaneHandoverDeps, pid: number) => {
   await deps.registry.patch("demo", { pane: NEW });
   new QuestionStore(join(state.dir, "discord")).retarget({ tmux: OLD }, { tmux: NEW });
   mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
-  writeFileSync(pendingFile(state.dir, "demo"), JSON.stringify({ key: "demo", pid, at: "2026-10-11T16:20:00Z", from: OLD, to: NEW, note: "/x.md", chains: [{ pid: 15, cmd: "bash -c sleep 7200; echo chain-done", pids: [15, 16] }] }));
+  writeFileSync(pendingFile(state.dir, "demo"), JSON.stringify({ key: "demo", pid, at: "2026-10-11T16:20:00Z", from: OLD, to: NEW, note: "/x.md", chains: [{ pid: 15, cmd: "bash -c sleep 7200; echo chain-done", pids: [15, 16] }], fromSession: "old-sid", cwd: CWD }));
 };
 
 test("a run killed midway (crash, reboot) is repaired by the next run: old session alive -> back to it, new one closed", async () => {
@@ -670,6 +670,8 @@ test("a killed run whose old session is already gone keeps the lane on the new o
   // Then
   expect(r.code).toBe(3);
   expect(printed).toContain(`HANDOVER_RECOVERED demo kept on ${NEW}: the old session ${OLD} is gone`);
+  // the recovery records the lane's sessions like a finished move: the new one, and the outgoing one kept for its cost
+  expect(await readLane(deps)).toMatchObject({ session: "new-sid", priorSessions: ["old-sid"] });
   // the new session is released, and told whether the old chains still run (here they do: no restart)
   expect(sent(w).some((t) => t.startsWith(`[LEAD] HANDOVER_COMMITTED: the handover was interrupted after the old session ${OLD} closed`))).toBe(true);
   expect(printed).toContain("HANDOVER_CHAIN_SURVIVED demo 15; the new session was told not to restart them");
