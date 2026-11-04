@@ -113,19 +113,39 @@ test("a text posted while a Slack share uploads stays the channel's last post wh
     expect(again.duplicate).toBe(true);
   }));
 
-test("a Slack file share is the channel's last post, though Slack names no message for it", () =>
+// the Slack HTTP fake shared by the share tests: chat.postMessage answers the next ts, an upload goes through
+const slackApi = (ts: { n: number }): Http => async (req) => {
+  const method = req.url.split("/").pop();
+  const body = method === "chat.postMessage" ? { ok: true, channel: "C1", ts: `${++ts.n}.000100` } : method === "files.getUploadURLExternal" ? { ok: true, upload_url: "http://slack.test/up", file_id: "F1" } : { ok: true };
+  return { status: 200, headers: {}, body: JSON.stringify(body) };
+};
+const deck = [{ filename: "deck.pdf", length: 3, read: async () => new Uint8Array([1, 2, 3]) }];
+
+// review 4 of #338: a share is not recorded at all (it names no ts), so it never takes the record from a text; the text
+// before it, sent again across the share, is refused (--again posts), and nothing can post twice whatever the clock
+test("a Slack file share is not the channel's last post: the text before it is refused once more, and --again posts it", () =>
   withDir(async (dir) => {
     setPostLedger(dir);
-    let ts = 1700000100;
-    const http: Http = async (req) => {
-      const method = req.url.split("/").pop();
-      const body = method === "chat.postMessage" ? { ok: true, channel: "C1", ts: `${++ts}.000100` } : method === "files.getUploadURLExternal" ? { ok: true, upload_url: "http://slack.test/up", file_id: "F1" } : { ok: true };
-      return { status: 200, headers: {}, body: JSON.stringify(body) };
-    };
-    const slack = new Slack(http, fakeClock(1700000200_000), { token: "t" }, "http://slack.test/api");
+    const slack = new Slack(slackApi({ n: 1700000100 }), fakeClock(1700000200_000), { token: "t" }, "http://slack.test/api");
     const text = { parts: { platform: "slack", where: "C1/" }, text: "\ubc30\ud3ec \ub05d\ub0ac\uc5b4" };
-    await sendOnce(dir, "slack:C1", text, async () => ({ id: (await slack.post("C1", text.text)).ts }));
-    await slack.upload("C1", [{ filename: "deck.pdf", length: 3, read: async () => new Uint8Array([1, 2, 3]) }]);
-    const again = await sendOnce(dir, "slack:C1", text, async () => ({ id: (await slack.post("C1", text.text)).ts }), AFTER);
-    expect(again.duplicate).toBe(false);
+    const post = async () => ({ id: (await slack.post("C1", text.text)).ts });
+    await sendOnce(dir, "slack:C1", text, post);
+    await slack.upload("C1", deck);
+    const again = await sendOnce(dir, "slack:C1", text, post, AFTER);
+    const forced = await sendOnce(dir, "slack:C1", text, post, { ...AFTER, again: true });
+    expect({ again: again.duplicate, forced: forced.duplicate }).toEqual({ again: true, forced: false });
+  }));
+
+// review 4 of #338: the host clock 30 s ahead of Slack's; upload, then text B; B after the window is still refused
+test("with the host clock ahead of Slack's, a text posted right after a share stays the channel's last post", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    const ts = { n: 1700000100 };
+    const slack = new Slack(slackApi(ts), fakeClock((ts.n + 30) * 1000), { token: "t" }, "http://slack.test/api");
+    const b = { parts: { platform: "slack", where: "C1/" }, text: "\ub2e4\ub978 \uae00" };
+    const post = async () => ({ id: (await slack.post("C1", b.text)).ts });
+    await slack.upload("C1", deck);
+    await sendOnce(dir, "slack:C1", b, post);
+    const again = await sendOnce(dir, "slack:C1", b, post, AFTER);
+    expect(again.duplicate).toBe(true);
   }));
