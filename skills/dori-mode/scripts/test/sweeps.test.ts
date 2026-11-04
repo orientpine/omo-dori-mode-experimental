@@ -45,6 +45,20 @@ test("a lead note that does not reach the lead pane is reported as not told, and
   expect((await deps(T0).registry.read("quiet-lane"))?.lastAutoReplyAt).toBeUndefined();
 });
 
+test("a silent lane with no leadPane configured stays due, so the lead configured later still gets the note for the same silence", async () => {
+  // Given a Dori whose leadPane is not set yet (review #339).
+  const noLead = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { leadPane: undefined });
+  await noLead(T0).registry.write({ ...working, lastReport: "[REPORT] quiet-lane | milestone | tests green, PR open", lastNudgeAt: T0 + 16 * MIN });
+  world.screens["w:p7"] = "working on it\n❯ ";
+  // When a sweep finds it silent without a lead, and one after the lead is set, with no new report in between.
+  const first = await freshnessTick(noLead(T0 + 21 * MIN), "/home/test");
+  const later = await freshnessTick(depsFor(world, fakeClock(T0 + 26 * MIN), state.dir), "/home/test");
+  // Then the first says the lead was not told, and the second tells it.
+  expect(first.map((a) => [a.kind, a.detail])).toEqual([["lead-tell-failed", "21 min silent; leadPane is not configured"]]);
+  expect(later.map((a) => a.kind)).toEqual(["lead-told"]);
+  expect(sent(world).filter((t) => t.startsWith("[DORI] quiet-lane: 26 min"))).toHaveLength(1);
+});
+
 test("a lane silent past the nudge time is nudged once, then the lead is told once and nothing is posted in its thread", async () => {
   const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { hooks: { threadReply: ["notify", "{thread}", "{text}"] } });
   await deps(T0).registry.write(working);

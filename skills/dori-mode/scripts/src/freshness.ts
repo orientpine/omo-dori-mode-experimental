@@ -517,13 +517,12 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
         continue;
       }
       const pane = deps.config.leadPane;
+      // a lead not told leaves the lane due, so a lead configured later or a note that arrives on the next sweep still counts
       if (!pane) {
-        await deps.registry.patch(lane.key, { lastAutoReplyAt: now });
         acts.push({ kind: "lead-tell-failed", lane: lane.key, detail: `${silentMin} min silent; leadPane is not configured` });
         continue;
       }
       const note = `[DORI] ${lane.key}: ${silentMin} min without a new report. Nothing was posted in its thread. If the owner needs to know where it stands, tell him in one plain line. Last report: ${known.replace(/`/g, "'").replaceAll("$(", "$ (")}`;
-      // a note that did not arrive leaves the lane due, so the next sweep tries again
       if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, note))) {
         acts.push({ kind: "lead-tell-failed", lane: lane.key, detail: `${silentMin} min silent; the note did not reach pane ${pane}` });
         continue;
