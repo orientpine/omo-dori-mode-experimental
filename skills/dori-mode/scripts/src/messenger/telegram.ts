@@ -48,9 +48,9 @@ export class Telegram {
 
   async edit(t: TgTarget, messageId: number, text: string, rich = false): Promise<void> {
     // held from the request to the record, so two edits at once are recorded in the order Telegram applied them
-    await withMessageLock(tgPlace(t), String(messageId), async () => {
+    await withMessageLock(`telegram:${t.chatId}`, String(messageId), async () => {
       await this.call("editMessageText", { chat_id: t.chatId, message_id: messageId, text: guardText(text), ...(rich ? { parse_mode: "HTML" } : {}) });
-      noteEdited(tgPlace(t), String(messageId), text);
+      noteEdited(tgPlace(t), String(messageId), text, { platform: "telegram", chat: String(t.chatId) });
     });
   }
 

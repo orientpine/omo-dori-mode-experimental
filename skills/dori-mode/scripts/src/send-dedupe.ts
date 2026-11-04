@@ -119,10 +119,30 @@ const writeLast = (dir: string, place: string, last: Last): void => {
 // An edit is never checked, but an edit of the place's last post changes what that post holds: its record takes the
 // edited text with the post's own reply target, ping and files (reviews of #338: send A, edit it to B, and A was refused
 // for good; then B as the same reply went out again). A post with no text of its own keeps its record.
-const noteEdit = (dir: string, place: string, id: string, text: string): void => {
+// the newest record of every place, for an edit that names its message but not the thread or topic it is in
+const allLasts = (dir: string): (Last & { readonly file: string })[] => {
+  const newest = new Map<string, string>();
+  for (const name of readdirSync(dir).filter((n) => n.startsWith(LAST_PREFIX) && n.endsWith(".json")).sort()) newest.set(name.slice(0, name.indexOf("-", LAST_PREFIX.length)), name);
+  return [...newest.values()].flatMap((name) => {
+    try {
+      const l = JSON.parse(readFileSync(join(dir, name), "utf8")) as Last;
+      return typeof l.key === "string" && typeof l.id === "string" && typeof l.at === "number" ? [{ ...l, file: join(dir, name) }] : [];
+    } catch (e) {
+      if (e instanceof SyntaxError) return [];
+      ignoreMissing(e);
+      return [];
+    }
+  });
+};
+
+// chat: the channel or chat an edit names; a message in one of its threads or topics is found there by its id (review 7
+// of #338: a Telegram topic message edited with only the chat left the topic's record on the old text)
+export type EditScope = { readonly platform: string; readonly chat: string };
+const noteEdit = (dir: string, place: string, id: string, text: string, scope?: EditScope): void => {
   mkdirSync(dir, { recursive: true });
-  const last = readLast(dir, place);
-  if (last?.id === id && last.parts) writeMark(last.file, { at: last.at, key: postKey({ parts: last.parts, text }), id, parts: last.parts });
+  const direct = readLast(dir, place);
+  const found = direct?.id === id ? [direct] : scope ? allLasts(dir).filter((l) => l.id === id && l.parts?.platform === scope.platform && l.parts.where.startsWith(`${scope.chat}/`)) : [];
+  for (const last of found) if (last.parts) writeMark(last.file, { at: last.at, key: postKey({ parts: last.parts, text }), id, parts: last.parts });
 };
 
 // Every message this process posts or edits goes through here from the messenger clients, so the last post of a place
@@ -138,8 +158,8 @@ export const notePosted = (place: string, id: string, post?: Post): void => {
   mkdirSync(ledgerDir, { recursive: true });
   writeLast(ledgerDir, place, { at: Date.now(), id, key: post ? postKey(post) : sendKey(["no-text", id]), ...(post ? { parts: post.parts } : {}) });
 };
-export const noteEdited = (place: string, id: string, text: string): void => {
-  if (ledgerDir) noteEdit(ledgerDir, place, id, text);
+export const noteEdited = (place: string, id: string, text: string, scope?: EditScope): void => {
+  if (ledgerDir) noteEdit(ledgerDir, place, id, text, scope);
 };
 
 // One edit of a message at a time, from its request to its record (review 5 of #338): two edits of one message at once
@@ -148,15 +168,16 @@ export const noteEdited = (place: string, id: string, text: string): void => {
 // its age, so an edit still retrying after a minute keeps it (review 6 of #338), the kernel lets go when its editor dies,
 // and a release only ever removes the editor's own lock. A waiter gives up after EDIT_LOCK_WAIT_MS and edits nothing.
 const EDIT_LOCK_WAIT_MS = 10 * 60_000;
-export const withMessageLock = async <T>(place: string, id: string, edit: () => Promise<T>): Promise<T> => {
+// chat: the channel or chat the message is in (not its thread or topic, which an edit need not name)
+export const withMessageLock = async <T>(chat: string, id: string, edit: () => Promise<T>): Promise<T> => {
   if (!ledgerDir) return edit();
   mkdirSync(ledgerDir, { recursive: true });
-  const path = join(ledgerDir, `edit-${sendKey([place, id])}.lock`);
+  const path = join(ledgerDir, `edit-${sendKey([chat, id])}.lock`);
   const since = Date.now();
   let release: () => void;
   for (;;) {
     try {
-      release = takeLock(path, Date.now(), "message edit", `${place} ${id}`);
+      release = takeLock(path, Date.now(), "message edit", `${chat} ${id}`);
       break;
     } catch (e) {
       if (!(e instanceof CheckpointError)) throw e;
@@ -173,7 +194,9 @@ export const withMessageLock = async <T>(place: string, id: string, edit: () => 
 
 const prune = (dir: string, now: number): void => {
   for (const name of readdirSync(dir)) {
-    if (name.startsWith(LAST_PREFIX)) continue;
+    // only the window's marks and a crashed writer's temp files age out: a last-post record has no age, and an edit lock
+    // a live editor still holds must keep its name however long it runs (review 7 of #338)
+    if (!/^[0-9a-f]{32}\.json$/.test(name) && !name.endsWith(".tmp")) continue;
     const path = join(dir, name);
     try {
       if (now - statSync(path).mtimeMs > KEEP_MS) unlinkSync(path);

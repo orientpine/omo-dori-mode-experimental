@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Discord } from "../src/messenger/discord.ts";
 import type { Http } from "../src/messenger/http.ts";
 import { Slack } from "../src/messenger/slack.ts";
+import { Telegram } from "../src/messenger/telegram.ts";
 import { notePosted, type PostParts, type Sent, sendKey, sendOnce, setPostLedger } from "../src/send-dedupe.ts";
 import { fakeClock } from "./fakes.ts";
 
@@ -175,6 +176,60 @@ test("an edit lock older than a minute whose editor still runs is not taken over
     await Promise.all([editB, editC]);
     const c = await sendOnce(dir, `discord:${T}`, discordText(held ?? ""), async () => dc.post(T, held ?? ""), AFTER);
     expect({ held, repeat: c.duplicate }).toEqual({ held: "C", repeat: true });
+  }));
+
+// review 7 of #338: a day-old send cleanup (prune) must not delete an edit lock its editor still holds
+test("an edit lock older than a day whose editor still runs survives the cleanup of old send marks", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    let n = 700;
+    let held: string | undefined;
+    let releaseB: () => void = () => {};
+    const bAnswered = new Promise<void>((r) => (releaseB = r));
+    let cPatched: () => void = () => {};
+    const cSent = new Promise<void>((r) => (cPatched = r));
+    const http: Http = async (req) => {
+      if (req.method === "PATCH") {
+        held = (JSON.parse(String(req.body)) as { content: string }).content;
+        if (held === "B") await bAnswered;
+        if (held === "C") cPatched();
+        return { status: 200, headers: {}, body: "{}" };
+      }
+      return { status: 200, headers: {}, body: JSON.stringify(req.url.endsWith("/messages") ? { id: String(1566900000000000000n + BigInt(++n)), content: "" } : {}) };
+    };
+    const dc = new Discord(http, fakeClock(0), "t", "http://discord.test");
+    const first = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"));
+    const editB = dc.edit(T, first.id, "B");
+    const old = (Date.now() - 25 * 3_600_000) / 1000;
+    utimesSync(join(dir, `edit-${sendKey([`discord:${T}`, first.id])}.lock`), old, old);
+    await sendOnce(dir, "discord:1566900000000000002", discordText("elsewhere"), async () => dc.post("1566900000000000002", "elsewhere"));
+    const editC = dc.edit(T, first.id, "C");
+    // as above: B answers once C's request arrived, or after 1 s without one (the lock held C back)
+    await Promise.race([cSent, Bun.sleep(1000)]);
+    releaseB();
+    await Promise.all([editB, editC]);
+    const c = await sendOnce(dir, `discord:${T}`, discordText(held ?? ""), async () => dc.post(T, held ?? ""), AFTER);
+    expect({ held, repeat: c.duplicate }).toEqual({ held: "C", repeat: true });
+  }));
+
+// review 7 of #338: a Telegram topic message edited with only the chat (no --thread) still moves its topic's record
+test("a Telegram topic message edited without its topic moves that topic's record", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    let id = 40;
+    const http: Http = async (req) => {
+      const body = JSON.parse(String(req.body)) as { text?: string };
+      const result = req.url.endsWith("/sendMessage") ? { message_id: ++id, text: body.text } : true;
+      return { status: 200, headers: {}, body: JSON.stringify({ ok: true, result }) };
+    };
+    const tg = new Telegram(http, fakeClock(0), "b", "http://telegram.test");
+    const topic = (text: string) => ({ parts: { platform: "telegram", where: "-100/42" }, text });
+    const post = (text: string) => async () => ({ id: String((await tg.post({ chatId: "-100", threadId: 42 }, text)).id) });
+    const a = await sendOnce(dir, "telegram:-100/42", topic("A"), post("A"));
+    await tg.edit({ chatId: "-100" }, Number(a.id), "B");
+    const b = await sendOnce(dir, "telegram:-100/42", topic("B"), post("B"), AFTER);
+    const again = await sendOnce(dir, "telegram:-100/42", topic("A"), post("A"), AFTER);
+    expect({ b: b.duplicate, a: again.duplicate }).toEqual({ b: true, a: false });
   }));
 
 // the Slack HTTP fake shared by the share tests: chat.postMessage answers the next ts, an upload goes through

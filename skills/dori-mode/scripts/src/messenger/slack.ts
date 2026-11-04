@@ -56,12 +56,12 @@ export class Slack {
     return { channel: String(r.channel), ts: String(r.ts), ...(typeof said === "string" ? { text: said } : {}) };
   }
 
-  // threadTs: the thread the message is in, for the repeat check's record of that place
+  // threadTs: the thread the message is in, if known; without it the record is found in the channel by the message ts
   async edit(channel: string, ts: string, text: string, threadTs?: string): Promise<void> {
     // held from the request to the record, so two edits at once are recorded in the order Slack applied them
-    await withMessageLock(slackPlace(channel, threadTs), ts, async () => {
+    await withMessageLock(`slack:${channel}`, ts, async () => {
       await this.call("chat.update", { channel, ts, text: guardText(text) });
-      noteEdited(slackPlace(channel, threadTs), ts, text);
+      noteEdited(slackPlace(channel, threadTs), ts, text, { platform: "slack", chat: channel });
     });
   }
 
