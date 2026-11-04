@@ -1,5 +1,5 @@
 // upstream dori-superagent #76 (https://github.com/sisyphuslabs/dori-superagent/pull/76, closes its issue #74), as merged there
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { Telegram } from "./telegram.ts";
@@ -41,6 +41,25 @@ export const fileTgInboundStore = (path: string): TgInboundStore => ({
     writeFileSync(path, String(offset));
   },
 });
+
+/**
+ * Write a whole line to `fd` before returning (the fork's addition, reviews 1-2 of orientpine#350): console.log drops a
+ * failed write, and writeSync may take only part of the bytes on a nonblocking fd or a full file system. No progress or
+ * an error throws, so an `emit` built on it never lets the offset pass a message whose line is not out.
+ */
+export const writeLineSync = (
+  line: string,
+  fd = 1,
+  write: (fd: number, buf: Uint8Array, off: number, len: number) => number = writeSync,
+): number => {
+  const buf = Buffer.from(line, "utf8");
+  for (let off = 0; off < buf.length; ) {
+    const n = write(fd, buf, off, buf.length - off);
+    if (!(n > 0)) throw new Error(`stdout took no bytes of a line (${off} of ${buf.length} written)`);
+    off += n;
+  }
+  return buf.length;
+};
 
 type TgUser = { readonly id: number; readonly is_bot?: boolean; readonly username?: string; readonly first_name?: string };
 type TgMessage = {

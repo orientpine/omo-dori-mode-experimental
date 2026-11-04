@@ -148,7 +148,7 @@ The CLI is a thin layer over typed modules you can import in your own scripts:
 | `src/messenger/voice.ts` | `transcribe`: voice note to text through your hook |
 | `src/messenger/thread-ledger.ts` | `ThreadLedger`: every thread the Dori posts in, persisted; given to `Slack`, it records each `chat.postMessage` (also raw `call`s) |
 | `src/messenger/slack-inbound.ts` | `pollSlackInbound`: threads view, the ledger's threads and unread counts, deduplicated, own messages filtered |
-| `src/messenger/telegram-inbound.ts` | `pollTelegramInbound`: owner-gated `getUpdates` long-poll, persisted offset, DMs and the group gate |
+| `src/messenger/telegram-inbound.ts` | `pollTelegramInbound`: owner-gated `getUpdates` long-poll, persisted offset, DMs and the group gate; `writeLineSync`: a whole line out (short writes continued, no progress or an error throws) |
 | `src/messenger/slack-presence.ts` | `slackPresence`: hold a user account active |
 | `src/routing.ts` | `canLaunch`, `idleLaneFor`: the routing checks |
 
@@ -532,7 +532,7 @@ Prints `INBOUND <source> <chat> <thread> <update-id> <from> <text>` — `source`
 - the full text is printed, JSON-escaped on one line: `getUpdates` cannot fetch a message again;
 - reuses the bot token the skill already stores (`DORI_TELEGRAM_TOKEN`).
 
-Nothing starts it on its own (`dori serve` and the services run `inbound discord` only); without `DORI_TELEGRAM_TOKEN`, or with an id that is blank, not an integer, or (owner, topic) not positive, it exits 1 before any call. An `INBOUND` line that cannot be written (stdout closed) leaves the offset before its message.
+Nothing starts it on its own (`dori serve` and the services run `inbound discord` only); without `DORI_TELEGRAM_TOKEN`, or with an id that is blank, not an integer, or (owner, topic) not positive, it exits 1 before any call. An `INBOUND` line that cannot be written whole (stdout closed, a write that stops partway) leaves the offset before its message.
 
 ### `dori inbound discord`
 Runs until stopped (run it as a service, see `setups/discord-aoe/`). It connects to the gateway with the message-content intent and handles:

@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { Telegram } from "../src/messenger/telegram.ts";
-import { fileTgInboundStore, pollTelegramInbound } from "../src/messenger/telegram-inbound.ts";
+import { fileTgInboundStore, pollTelegramInbound, writeLineSync } from "../src/messenger/telegram-inbound.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const OWNER = 5250;
@@ -173,6 +173,8 @@ test("the store creates its state dir on first save", async () => {
 
 // review 1 of #350: dori inbound telegram itself. A line that cannot be written leaves the offset before its message, and
 // a blank or out-of-range id is refused before any call.
+// review 2 of #350: a Telegram setting in the shell running the tests is not the test's
+const inherited = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_TELEGRAM_")));
 const inbound = async (vars: Record<string, string>, tail = "") => {
   const dir = mkdtempSync(join(state.dir, "cli-"));
   const log = join(dir, "http.log");
@@ -181,7 +183,7 @@ const inbound = async (vars: Record<string, string>, tail = "") => {
   writeFileSync(join(dir, "batch.json"), JSON.stringify([{ update_id: 90, message: msg(OWNER, OWNER, "private", "owner dm") }]));
   const argv = ["bun", "--preload", join(import.meta.dir, "telegram-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "inbound", "telegram"];
   const p = Bun.spawn(["bash", "-c", `"$@"${tail}`, "inbound", ...argv], {
-    env: { ...process.env, DORI_CONFIG: join(dir, "config.json"), DORI_ENV_FILE: join(dir, "missing.env"), DORI_STATE_DIR: join(dir, "state"), DORI_TEST_TG_LOG: log, DORI_TEST_TG_BATCH: join(dir, "batch.json"), DORI_TELEGRAM_TOKEN: "fake", DORI_TELEGRAM_OWNER_ID: String(OWNER), ...vars },
+    env: { ...inherited, DORI_CONFIG: join(dir, "config.json"), DORI_ENV_FILE: join(dir, "missing.env"), DORI_STATE_DIR: join(dir, "state"), DORI_TEST_TG_LOG: log, DORI_TEST_TG_BATCH: join(dir, "batch.json"), DORI_TELEGRAM_TOKEN: "fake", DORI_TELEGRAM_OWNER_ID: String(OWNER), ...vars },
     stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
@@ -208,4 +210,24 @@ test.each([
   ["topic id 0", { DORI_TELEGRAM_GROUP_ID: String(GROUP), DORI_TELEGRAM_TOPIC_ID: "0" }, 'DORI_TELEGRAM_TOPIC_ID must be a positive topic id, got: "0"'],
 ] as const)("dori inbound telegram refuses %s before any call", async (_, vars, err) => {
   expect(await inbound(vars)).toEqual({ code: 1, out: "", err, calls: 0, offset: undefined });
+});
+
+// review 2 of #350: a write that takes only part of the line is continued until all of it is out; no progress or an
+// error throws, so pollTelegramInbound keeps the offset before that message
+test("writeLineSync finishes a line written a few bytes at a time", () => {
+  const out: string[] = [];
+  const n = writeLineSync("INBOUND dm 1 - 2 3 \"héllo\"\n", 1, (_fd, buf, off, len) => { const k = Math.min(3, len); out.push(Buffer.from(buf.subarray(off, off + k)).toString("latin1")); return k; });
+  expect(Buffer.from(out.join(""), "latin1").toString("utf8")).toBe("INBOUND dm 1 - 2 3 \"héllo\"\n");
+  expect(n).toBe(Buffer.byteLength("INBOUND dm 1 - 2 3 \"héllo\"\n"));
+});
+
+test.each([
+  ["no progress", "tg-off-short-1", (_fd: number, _buf: Uint8Array, off: number): number => (off === 0 ? 4 : 0)],
+  ["an error after part of the line", "tg-off-short-2", (_fd: number, _buf: Uint8Array, off: number): number => { if (off > 0) throw new Error("EIO"); return 4; }],
+] as const)("a line cut short by %s keeps the offset before its message", async (_, file, write) => {
+  const { http } = telegramFake([[{ update_id: 95, message: msg(OWNER, OWNER, "private", "cut short") }]]);
+  const store = fileTgInboundStore(join(state.dir, file));
+  store.save(95);
+  await expect(pollTelegramInbound(mk(http), store, { ownerId: OWNER }, (i) => { writeLineSync(`${i.text}\n`, 1, write); })).rejects.toThrow();
+  expect(store.load()).toBe(95);
 });

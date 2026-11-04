@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // allow: SIZE_OK — existing command dispatcher; command behavior lives in separate modules.
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -69,7 +69,7 @@ import { clearEyes, Slack, slackRowIds, slackUnreact } from "./messenger/slack.t
 import type { UploadFile } from "./messenger/slack.ts";
 import { type DiscordFile, discordMessageProblem, filesKey, readDiscordFiles, readUploads, UploadRefused } from "./messenger/upload-files.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
-import { fileTgInboundStore, pollTelegramInbound } from "./messenger/telegram-inbound.ts";
+import { fileTgInboundStore, pollTelegramInbound, writeLineSync } from "./messenger/telegram-inbound.ts";
 import { ThreadLedger } from "./messenger/thread-ledger.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
@@ -1943,10 +1943,10 @@ try {
         const topicId = process.env.DORI_TELEGRAM_TOPIC_ID === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID", "topic");
         console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
         await every(loopMin, async () => {
-          // Full text, JSON-escaped on one line: getUpdates cannot fetch a message twice. writeSync, not console.log, which
-          // drops a failed write (a closed stdout): the line must be out before the offset moves past its message.
+          // Full text, JSON-escaped on one line: getUpdates cannot fetch a message twice. writeLineSync, not console.log,
+          // which drops a failed write (a closed stdout): the whole line is out before the offset moves past its message.
           await pollTelegramInbound(tg, store, { ownerId, groupChatId, topicId }, (i) =>
-            writeSync(1, `INBOUND ${i.source} ${i.chat} ${i.thread ?? "-"} ${i.updateId} ${i.from} ${JSON.stringify(i.text ?? "")}\n`));
+            void writeLineSync(`INBOUND ${i.source} ${i.chat} ${i.thread ?? "-"} ${i.updateId} ${i.from} ${JSON.stringify(i.text ?? "")}\n`));
         });
         break;
       }
