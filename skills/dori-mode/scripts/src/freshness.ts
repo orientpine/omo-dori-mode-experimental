@@ -347,7 +347,7 @@ const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pa
   // the lead hears of one stale mark once
   if (stale && claim?.request === asked.at && claim.result === "stale-mark" && claim.readyAt === mark?.at) return [];
   writeFileSync(claimed, `${JSON.stringify({ request: asked.at, since, approvedBy: by, at: new Date(now).toISOString(), ...(readied ? { readyAt: mark?.at } : {}), ...(claim?.toldAt && claim.since === since ? { toldAt: claim.toldAt } : {}), result: stale ? "stale-mark" : why ? "skipped" : "started" })}\n`);
-  const cause = asked.blocked === "busy" ? "the lane was busy; the run waits for its idle moment" : readied ? `the ready mark of ${mark?.at} in ${pane} follows it` : `the work it named ended (${named.join(", ")})`;
+  const cause = asked.blocked === "busy" ? "the lane was busy; the run waits for its idle moment" : asked.blocked === "suspended" ? "the lane's agent was stopped; the run resumes it first, and moves the lane once it runs" : readied ? `the ready mark of ${mark?.at} in ${pane} follows it` : `the work it named ended (${named.join(", ")})`;
   if (why) {
     const lead = deps.config.leadPane;
     const text = asked.request
@@ -360,7 +360,7 @@ const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pa
   const toldAt = claim?.toldAt && (claim.request === asked.at || claim.since === since) ? claim.toldAt : undefined;
   if (!toldAt && now - Date.parse(since) > min * 60_000) {
     const lead = deps.config.leadPane;
-    const told = lead ? await sendVerified(deps.run, deps.clock, deps.config, lead, `[DORI] ${key}: the handover you asked for at ${since} still waits: the lane stayed busy (${asked.blocked}). It goes on starting by itself at the lane's idle moment; to move it now, run dori handover --lane ${key} --approved-by "<the same approval>" --force.`) : false;
+    const told = lead ? await sendVerified(deps.run, deps.clock, deps.config, lead, `[DORI] ${key}: the handover you asked for at ${since} still waits: the lane${asked.blocked === "suspended" ? "'s agent stayed stopped (suspended; it moves once the agent runs again)" : ` stayed busy (${asked.blocked})`}. It goes on starting by itself at the lane's idle moment; to move it now, run dori handover --lane ${key} --approved-by "<the same approval>" --force.`) : false;
     watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `HANDOVER_PENDING_STALE ${key} waiting: the request of ${since} (refused ${asked.blocked}) still waits after ${min} min; ${!lead ? "lead not told: leadPane is not configured" : told ? "lead told" : "lead not told"}` });
     // kept only once the lead got it (or there is no lead to tell): a note that did not arrive goes again next sweep
     if (told || !lead) writeFileSync(claimed, `${JSON.stringify({ ...readJson<object>(claimed), toldAt: new Date(now).toISOString() })}\n`);

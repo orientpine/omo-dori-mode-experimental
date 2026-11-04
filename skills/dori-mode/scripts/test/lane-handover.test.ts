@@ -1596,6 +1596,51 @@ test("a caller whose approval is refused takes nothing over and logs no row: the
   expect(opened()).toBe(false);
 });
 
+test("a lead's waiting request whose resumed run finds the agent stopped stays waiting: freshness starts it again, nothing is typed while the agent is stopped, and after the lead's fg it moves the lane (review 333 round 6)", async () => {
+  // Given: the lead's busy request waits; the lane's agent 11 is stopped in the background and a resume does not bring it back
+  const base = await setup();
+  const T0 = Date.parse("2026-10-11T16:35:00Z");
+  const clock = fakeClock(T0);
+  let agent = { pid: 11, state: "T", ppid: 10, pgrp: 11, session: 10, tpgid: 10 };
+  const deps: LaneHandoverDeps = { ...base, clock: { now: () => clock.at, sleep: async (ms: number) => { clock.at += ms; simulate(); } }, reportOwner: async () => "msg-1", stat: (pid) => (pid === 11 ? agent : undefined), signal: () => true };
+  const serves: { readonly at: string; readonly pane: string }[] = [];
+  const hooks = { signals: async () => ({}), alive: () => false, resume: async (_k: string, _by: string, _r: unknown, s: { readonly at: string; readonly pane: string }) => { serves.push(s); return { started: true, line: "unit=u1" }; } };
+  const tick = async (min: number): Promise<string[]> => {
+    clock.at = T0 + min * 60_000;
+    await deps.registry.patch("demo", { lastReplyAt: clock.at });
+    return (await freshnessTick(deps, "/home/test", hooks)).filter((a) => a.kind === "ready_resume").map((a) => a.detail.split(":")[0] ?? "");
+  };
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  // its safe-point ask has not reached the lane yet: a later refusal would carry it on, and freshness would type it
+  appendRollover(state.dir, { ...WAITING, at: new Date(T0).toISOString(), safePoint: { why: "a turn is running", told: false } });
+  w.screens[OLD] = BUSY;
+  const typed = sent(w).length;
+  // When: the run freshness started for it finds the agent stopped
+  clock.at = T0 + 60_000;
+  const stuck = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, waitIdleMin: 5, serves: { at: new Date(T0).toISOString(), pane: OLD } });
+  // Then: refused as suspended, the request still waits, and nothing was typed into the pane (its foreground may be the shell)
+  expect(stuck.code).toBe(2);
+  const row = rolloverRows().at(-1);
+  expect([row?.result, row?.blocked, row?.resumes]).toEqual(["refused", "suspended", new Date(T0).toISOString()]);
+  expect(waitingRequest(readRollovers(state.dir), "demo", OLD)?.at).toBe(row?.at);
+  expect(row?.safePoint).toBeUndefined();
+  // freshness starts it again at its next sweep, for the new row, and types nothing into the pane
+  expect(await tick(2)).toEqual(["started"]);
+  expect(serves[0]?.at).toBe(row?.at);
+  expect(sent(w).slice(typed)).toEqual([]);
+  // When: the lead brings the agent back by hand (fg) and the lane is idle
+  agent = { ...agent, state: "S", tpgid: 11 };
+  w.screens[OLD] = HIGH;
+  const from = printed.length;
+  await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, waitIdleMin: 5, serves: serves[0] });
+  // Then: the same approved request goes on and moves the lane (the fake world checks only a new session opened at 16:35, so
+  // the move's own checks are not what this test reads)
+  const after = printed.slice(from);
+  expect(after.some((l) => l.startsWith("HANDOVER_REFUSED") || l.startsWith("HANDOVER_REQUEST_GONE") || l.startsWith("LANE_SUSPENDED"))).toBe(false);
+  expect(after.some((l) => l.startsWith(`HANDOVER_FROZEN demo agent 11 in ${OLD}`))).toBe(true);
+  expect(after.some((l) => l.startsWith(`HANDOVER_STARTED demo ${OLD} -> `))).toBe(true);
+});
+
 test("a run that finds a dead journal while another run holds the lane's lock repairs nothing: the repair waits for the lock like any writer (review 320 round 12)", async () => {
   // Given: a dead run's journal, and a live run (77) that holds the lock and is repairing it
   const base = await setup();
