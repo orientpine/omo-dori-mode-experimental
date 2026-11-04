@@ -167,3 +167,16 @@ test("resume stops a background omo that still runs before it types fg, so the s
   expect(calls[0]).toEqual(["herdr", "pane", "send-text", "w2:p2", "\x03"]);
   expect(line).toBe("AGENT_RESUMED w2:p2 agent 200: stopped so that only the shell reads the line, fg typed into the shell, raw tty mode given back, redrawn");
 });
+
+test("resume types nothing more when the ctrl-C that drops the shell's pending input could not be sent", async () => {
+  const rows = pane();
+  const k = kernel(rows);
+  k.signal(200, "SIGSTOP");
+  k.signal(200, "SIGCONT");
+  rows.get(200)!.state = "T";
+  const { r, calls } = io(rows, k);
+  const failing: ResumeIO = { ...r, run: async (argv, opts) => (argv[0] === "herdr" && argv[2] === "send-text" ? (calls.push([...argv]), { code: 1, out: "", err: "send failed" }) : r.run(argv, opts)) };
+  const line = await resumeAgent(failing, "w2:p2", 200);
+  expect(line).toBe("AGENT_RESUME_FAIL w2:p2 agent 200: could not drop the shell's pending input (ctrl-C not sent); nothing more typed (state T, tty foreground group 100, its group 200)");
+  expect(calls).toEqual([["herdr", "pane", "send-text", "w2:p2", "\x03"]]);
+});

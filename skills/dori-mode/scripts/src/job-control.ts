@@ -130,8 +130,9 @@ export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Prom
     // ctrl-C first: the shell is the tty's foreground group (the agent a stopped background job), so it drops its whole
     // pending input (text after the cursor and an open quote's continuation lines too; ctrl-U kills only what is before
     // the cursor) and draws a fresh prompt for fg alone (herdr QA 2026-11-04)
-    if (isHerdrPane(pane)) await io.run(["herdr", "pane", "send-text", pane, "\x03"]);
-    else await io.run(["tmux", "send-keys", "-t", pane, "-l", "\x03"]);
+    const dropped = isHerdrPane(pane) ? await io.run(["herdr", "pane", "send-text", pane, "\x03"]) : await io.run(["tmux", "send-keys", "-t", pane, "-l", "\x03"]);
+    // without it the shell's pending input would run with fg: nothing more is typed
+    if (dropped.code !== 0) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: ${[...done, "could not drop the shell's pending input (ctrl-C not sent)"].join(", ")}; nothing more typed (${where(stat(pid))})`;
     await io.clock.sleep(REDRAW_MS);
     if (isHerdrPane(pane)) await io.run(["herdr", "pane", "run", pane, "fg"]);
     else {

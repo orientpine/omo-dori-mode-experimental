@@ -178,3 +178,79 @@ test("a lane line the lead could not take is not sent again (it may still arrive
   expect(w.calls.length).toBe(typed);
   expect(resumes).toBe(1);
 });
+
+test("a line refused before anything was typed (no lead pane) is kept and sent once the lead takes lines, whether the resume worked or not; the agent is not touched again", async () => {
+  // Given: two stopped lanes, one the resume brings back and one it cannot, and no lead pane for now
+  const panes: Record<string, string> = { "aoe_ok_aaaa1111": "live", "aoe_bad_bbbb2222": "live" };
+  const { w, deps } = world(panes);
+  // the lead pane id is a herdr one: herdr has no such pane for now
+  w.herdrGone = ["lead:p1"];
+  await deps(T0).registry.write(laneOf("ok", "aoe_ok_aaaa1111"));
+  await deps(T0).registry.write(laneOf("bad", "aoe_bad_bbbb2222"));
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "T", 201: "T" };
+  let resumes = 0;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_ok_aaaa1111" ? 200 : pane === "aoe_bad_bbbb2222" ? 201 : undefined),
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => {
+      resumes++;
+      if (pid === 201) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: fg typed into the shell, still not the running foreground job`;
+      states[pid] = "S";
+      return `AGENT_RESUMED ${pane} agent ${pid}: fg typed into the shell`;
+    },
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  expect(await tick(T0)).toEqual([]);
+  const refused = await tick(T0 + 30 * S);
+  expect(refused.filter((l) => l.startsWith("LANE_SUSPENDED_NOT_TOLD"))).toHaveLength(2);
+  expect(refused.every((l) => !l.startsWith("LANE_SUSPENDED_NOT_TOLD") || l.includes("nothing was typed"))).toBe(true);
+  // still no lead: kept, nothing new printed
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  expect(sent(w)).toEqual([]);
+  // When: the lead pane is back
+  w.herdrGone = [];
+  // Then: both lines go once, and neither agent is resumed again
+  const told = await tick(T0 + 90 * S);
+  expect(told.filter((l) => l.startsWith("LANE_SUSPENDED_TOLD")).map((l) => l.split(" ")[1])).toEqual(expect.arrayContaining(["ok", "bad"]));
+  expect(sent(w)).toHaveLength(2);
+  expect(await tick(T0 + 120 * S)).toEqual([]);
+  expect(sent(w)).toHaveLength(2);
+  expect(resumes).toBe(2);
+});
+
+test("two suspensions of one pane while the lead is away are two lines, each sent once; a line a stopped watch was sending is dropped, not sent again", async () => {
+  // Given: one lane stopped twice (each time brought back) while herdr has no lead pane
+  const { w, deps } = world({ "aoe_two_cccc3333": "live" });
+  await deps(T0).registry.write(laneOf("two", "aoe_two_cccc3333"));
+  w.herdrGone = ["lead:p1"];
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "T" };
+  let resumes = 0;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_two_cccc3333" ? 200 : undefined),
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => {
+      resumes++;
+      states[pid] = "S";
+      return `AGENT_RESUMED ${pane} agent ${pid}: its process group continued`;
+    },
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  await tick(T0 + 30 * S);
+  states[200] = "T";
+  await tick(T0 + 60 * S);
+  await tick(T0 + 90 * S);
+  expect(resumes).toBe(2);
+  // a record a watch left in the middle of a send
+  writeFileSync(join(state.dir, "suspended", "notices", "aoe_x-1-1.json"), JSON.stringify({ key: "x", text: "[DORI] x", at: "2026-10-30T00:00:00.000Z", state: "sending" }));
+  // When: the lead pane is back
+  w.herdrGone = [];
+  const out = await tick(T0 + 120 * S);
+  // Then: both incidents go once each, the half-sent one is dropped, and nothing is resumed again
+  expect(out.filter((l) => l.startsWith("LANE_SUSPENDED_TOLD two"))).toHaveLength(2);
+  expect(out).toContain("LANE_SUSPENDED_NOT_TOLD x: a watch stopped while sending the line of 2026-10-30T00:00:00.000Z; it may have arrived, so it is not sent again");
+  expect(sent(w)).toHaveLength(2);
+  expect(await tick(T0 + 150 * S)).toEqual([]);
+  expect(sent(w)).toHaveLength(2);
+  expect(resumes).toBe(2);
+});
