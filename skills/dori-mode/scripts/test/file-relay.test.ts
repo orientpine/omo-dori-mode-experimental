@@ -222,3 +222,17 @@ test("a file that keeps failing to deliver, with .failed in the way, is logged a
   await serve(4);
   expect(JSON.parse(readFileSync(join(to, ".failed", "locked.pdf.why"), "utf8")).reason).toStartWith("error x3");
 });
+
+test("a refusal whose .failed move error names a fresh destination each scan is still logged once", async () => {
+  await serve(1);
+  const to = home("mo", "outbox", "to-yoodori");
+  mkdirSync(join(to, ".failed"), { mode: 0o700 });
+  writeFileSync(join(to, ".failed", "link"), "earlier", { mode: 0o600 });
+  chmodSync(join(to, ".failed"), 0o500); // the move picks link-<time>-<random> and is denied
+  symlinkSync("/etc/passwd", join(to, "link"));
+  expect((await serve(3)).code).toBe(0);
+  expect(relayLog().filter((r) => r.src === "mo:outbox/to-yoodori/link")).toHaveLength(1);
+  chmodSync(join(to, ".failed"), 0o700);
+  await serve(1);
+  expect(readdirSync(join(to, ".failed")).filter((n) => n.startsWith("link-") && n.endsWith(".why"))).toHaveLength(1);
+});
