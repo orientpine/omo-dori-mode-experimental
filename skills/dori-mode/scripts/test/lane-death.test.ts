@@ -1,6 +1,12 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import { type FlowDeps, watchTick } from "../src/done-flow.ts";
+import { writeFrozen } from "../src/frozen.ts";
+import type { JobStat } from "../src/job-control.ts";
+import { laneSuspendTick, type SuspendIO } from "../src/lane-death.ts";
 import type { Lane } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
 
@@ -78,4 +84,338 @@ test("a gone session is told as tmux 세션 없음; a paused lane and a pane bac
   panes.aoe_swap_cccc3333 = "live";
   expect(died(await watchTick(deps(T0 + 30 * S)))).toEqual(["LANE_DIED gone aoe_gone_aaaa1111: tmux session gone", "LANE_DIED_TOLD gone lead:p1"]);
   expect(sent(w)).toEqual(["[DORI] 레인 gone 꺼짐(tmux 세션 없음) — 이어서 살릴지 정해"]);
+});
+
+// handover-simplify on 2026-11-03: a rolled-back handover left its omo stopped behind its last busy screen for 18 hours
+const held = (states: Record<number, "S" | "T" | "bg">): ((pid: number) => JobStat | undefined) => (pid) => {
+  const s = states[pid];
+  if (!s) return undefined;
+  return { pid, state: s === "T" ? "T" : "S", ppid: 100, pgrp: pid, session: 100, tpgid: s === "bg" ? 100 : pid };
+};
+const shellOf = (pid: number): JobStat | undefined => (pid === 100 ? { pid: 100, state: "S", ppid: 1, pgrp: 100, session: 100, tpgid: 100 } : undefined);
+
+test("a lane whose omo stays stopped is told to the lead once and brought back; the lead's own stopped omo is too", async () => {
+  // Given: the lane's agent 200 is stopped (T) and the lead's agent 300 is a background job of its shell
+  const { w, deps } = world({ "aoe_hs_aaaa1111": "live" });
+  await deps(T0).registry.write(laneOf("handover-simplify", "aoe_hs_aaaa1111"));
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "T", 300: "bg" };
+  const resumed: string[] = [];
+  let fails = false;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_hs_aaaa1111" ? 200 : pane === "lead:p1" ? 300 : undefined),
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => {
+      if (fails) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: the shell 100 holds 2 jobs, so fg could pick another`;
+      resumed.push(`${pane} ${pid}`);
+      states[pid] = "S";
+      return `AGENT_RESUMED ${pane} agent ${pid}: fg typed into the shell`;
+    },
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  // When / Then: the first check only notes it, the second tells the lead and resumes both
+  expect(await tick(T0)).toEqual([]);
+  // the lead first, so the lane's line reaches a lead that runs again
+  expect(await tick(T0 + 30 * S)).toEqual([
+    "LANE_SUSPENDED lead lead:p1: agent 300 background (state S, tty foreground group 100, its group 300); its screen is stale, resuming it",
+    "AGENT_RESUMED lead:p1 agent 300: fg typed into the shell",
+    "LANE_SUSPENDED_TOLD lead lead:p1",
+    "LANE_SUSPENDED handover-simplify aoe_hs_aaaa1111: agent 200 stopped (state T, tty foreground group 200, its group 200); its screen is stale, resuming it",
+    "AGENT_RESUMED aoe_hs_aaaa1111 agent 200: fg typed into the shell",
+    "LANE_SUSPENDED_TOLD handover-simplify lead:p1",
+  ]);
+  expect(resumed).toEqual(["lead:p1 300", "aoe_hs_aaaa1111 200"]);
+  expect(sent(w)).toEqual(["[DORI] 리드 omo 멈춤(셸 뒤 작업으로 밀림) — 스스로 되살렸어, 하던 일을 잇는지 봐", "[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 스스로 되살렸어, 하던 일을 잇는지 봐"]);
+  // brought back: nothing is marked, and a second stop of the lane is told again
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  states[200] = "T";
+  fails = true;
+  expect(await tick(T0 + 90 * S)).toEqual([]);
+  expect((await tick(T0 + 120 * S)).at(-1)).toBe("LANE_SUSPENDED_TOLD handover-simplify lead:p1");
+  // nothing is typed for it: the line gives the lead the exact fg to type by hand (tmux keys for an aoe pane)
+  expect(sent(w).at(-1)).toBe("[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: tmux capture-pane -p -t aoe_hs_aaaa1111 로 그 셸 줄을 본 뒤 tmux send-keys -t aoe_hs_aaaa1111 -H 03 && sleep 0.3 && tmux send-keys -t aoe_hs_aaaa1111 fg Enter 를 그대로 쳐(문자 ^C 한 바이트가 줄에 남은 글자와 마우스 찌꺼기를 실행하지 않고 버리고, 열린 따옴표도; 0.3초 뒤 빈 줄에 fg. 엔터를 먼저 치면 그 줄이 실행되고, ^C와 fg를 한 번에 보내면 ^C가 fg까지 지워). ctrl 키 이름(send-keys ctrl+c)은 멈춘 omo가 켜 둔 키 모드 때문에 글자로 찍혀. 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)");
+  // still stopped: not told twice; once it runs the mark goes
+  expect(await tick(T0 + 150 * S)).toEqual([]);
+  expect(await tick(T0 + 180 * S)).toEqual([]);
+  expect(sent(w).length).toBe(3);
+  states[200] = "S";
+  expect(await tick(T0 + 210 * S)).toEqual(["LANE_RUNNING_AGAIN handover-simplify aoe_hs_aaaa1111"]);
+});
+
+test("an agent a handover froze on purpose is never taken for a suspended lane", async () => {
+  const { w, deps } = world({ "aoe_mv_bbbb2222": "live", "aoe_old_cccc3333": "live" });
+  await deps(T0).registry.write(laneOf("moving", "aoe_mv_bbbb2222"));
+  await deps(T0).registry.write(laneOf("frozenold", "aoe_old_cccc3333"));
+  writeFrozen(state.dir, { pane: "aoe_old_cccc3333", aoeId: "x", at: new Date(T0).toISOString(), agentPid: 201, pids: [201] });
+  mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
+  writeFileSync(join(state.dir, "handover", "lanes", "moving.lock"), JSON.stringify({ pid: 4242, at: new Date(T0).toISOString() }));
+  const io: SuspendIO = { agentOf: async (pane) => (pane === "aoe_mv_bbbb2222" ? 200 : pane === "aoe_old_cccc3333" ? 201 : undefined), stat: (pid) => held({ 200: "T", 201: "T" })(pid) ?? shellOf(pid), resume: async () => "AGENT_RESUMED x" };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, (pid) => pid === 4242);
+  expect(await tick(T0)).toEqual([]);
+  expect(await tick(T0 + 30 * S)).toEqual([]);
+  expect(sent(w)).toEqual([]);
+});
+
+test("a lane line the lead could not take is not sent again (it may still arrive), and the agent is not touched again", async () => {
+  // Given: the lane's agent stays stopped (resume fails) and the lead pane cannot be seen taking the line
+  const { w, deps } = world({ "aoe_hs_aaaa1111": "live" });
+  await deps(T0).registry.write(laneOf("stuck", "aoe_hs_aaaa1111"));
+  let resumes = 0;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_hs_aaaa1111" ? 200 : undefined),
+    stat: (pid) => held({ 200: "T" })(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => (resumes++, `AGENT_RESUME_FAIL ${pane} agent ${pid}: fg typed into the shell, still not the running foreground job`),
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  expect(await tick(T0)).toEqual([]);
+  w.stuckReads = 10_000;
+  expect((await tick(T0 + 30 * S)).at(-1)).toStartWith("LANE_SUSPENDED_NOT_TOLD stuck:");
+  const typed = w.calls.length;
+  // When: the lead pane takes lines again
+  w.stuckReads = 0;
+  // Then: nothing is sent twice and the agent is resumed only once
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  expect(await tick(T0 + 90 * S)).toEqual([]);
+  expect(w.calls.length).toBe(typed);
+  expect(resumes).toBe(1);
+});
+
+test("a line refused before anything was typed (no lead pane) is kept and sent once the lead takes lines, whether the resume worked or not; the agent is not touched again", async () => {
+  // Given: two stopped lanes, one the resume brings back and one it cannot, and no lead pane for now
+  const panes: Record<string, string> = { "aoe_ok_aaaa1111": "live", "aoe_bad_bbbb2222": "live" };
+  const { w, deps } = world(panes);
+  // the lead pane id is a herdr one: herdr has no such pane for now
+  w.herdrGone = ["lead:p1"];
+  await deps(T0).registry.write(laneOf("ok", "aoe_ok_aaaa1111"));
+  await deps(T0).registry.write(laneOf("bad", "aoe_bad_bbbb2222"));
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "T", 201: "T" };
+  let resumes = 0;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_ok_aaaa1111" ? 200 : pane === "aoe_bad_bbbb2222" ? 201 : undefined),
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => {
+      resumes++;
+      if (pid === 201) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: fg typed into the shell, still not the running foreground job`;
+      states[pid] = "S";
+      return `AGENT_RESUMED ${pane} agent ${pid}: fg typed into the shell`;
+    },
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  expect(await tick(T0)).toEqual([]);
+  const refused = await tick(T0 + 30 * S);
+  expect(refused.filter((l) => l.startsWith("LANE_SUSPENDED_NOT_TOLD"))).toHaveLength(2);
+  expect(refused.every((l) => !l.startsWith("LANE_SUSPENDED_NOT_TOLD") || l.includes("nothing was typed"))).toBe(true);
+  // still no lead: kept, nothing new printed
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  expect(sent(w)).toEqual([]);
+  // When: the lead pane is back
+  w.herdrGone = [];
+  // Then: both lines go once, and neither agent is resumed again
+  const told = await tick(T0 + 90 * S);
+  expect(told.filter((l) => l.startsWith("LANE_SUSPENDED_TOLD")).map((l) => l.split(" ")[1])).toEqual(expect.arrayContaining(["ok", "bad"]));
+  expect(sent(w)).toHaveLength(2);
+  expect(await tick(T0 + 120 * S)).toEqual([]);
+  expect(sent(w)).toHaveLength(2);
+  expect(resumes).toBe(2);
+});
+
+test("two suspensions of one pane while the lead is away are two lines, each sent once; a line a stopped watch was sending is dropped, not sent again", async () => {
+  // Given: one lane stopped twice (each time brought back) while herdr has no lead pane
+  const { w, deps } = world({ "aoe_two_cccc3333": "live" });
+  await deps(T0).registry.write(laneOf("two", "aoe_two_cccc3333"));
+  w.herdrGone = ["lead:p1"];
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "T" };
+  let resumes = 0;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_two_cccc3333" ? 200 : undefined),
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => {
+      resumes++;
+      states[pid] = "S";
+      return `AGENT_RESUMED ${pane} agent ${pid}: its process group continued`;
+    },
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  await tick(T0 + 30 * S);
+  states[200] = "T";
+  await tick(T0 + 60 * S);
+  await tick(T0 + 90 * S);
+  expect(resumes).toBe(2);
+  // a record a watch left in the middle of a send
+  mkdirSync(join(state.dir, "suspended", "pending"), { recursive: true });
+  writeFileSync(join(state.dir, "suspended", "pending", "aoe_x.json"), JSON.stringify([{ key: "x", pid: 1, kind: "recovered", text: "[DORI] x", at: "2026-10-30T00:00:00.000Z", state: "sending" }]));
+  // When: the lead pane is back
+  w.herdrGone = [];
+  const out = await tick(T0 + 120 * S);
+  // Then: both incidents go once each, the half-sent one is dropped, and nothing is resumed again
+  expect(out.filter((l) => l.startsWith("LANE_SUSPENDED_TOLD two"))).toHaveLength(2);
+  expect(out).toContain("LANE_SUSPENDED_NOT_TOLD x: a watch stopped while sending the line of 2026-10-30T00:00:00.000Z; it may have arrived, so it is not sent again");
+  expect(sent(w)).toHaveLength(2);
+  expect(await tick(T0 + 150 * S)).toEqual([]);
+  expect(sent(w)).toHaveLength(2);
+  expect(resumes).toBe(2);
+});
+
+test("a watch that stops while sending the line of an agent it could not bring back does not tell it again after a restart", async () => {
+  const { w, deps } = world({ "aoe_cr_dddd4444": "live" });
+  await deps(T0).registry.write(laneOf("crash", "aoe_cr_dddd4444"));
+  let resumes = 0;
+  let markBeforeSend = false;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_cr_dddd4444" ? 200 : undefined),
+    stat: (pid) => held({ 200: "T" })(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => (resumes++, `AGENT_RESUME_FAIL ${pane} agent ${pid}: fg typed into the shell, still not the running foreground job`),
+  };
+  // the watch dies inside the send: the lead pane read throws once the line is being submitted
+  const dying = (ms: number): FlowDeps => {
+    const d = deps(ms);
+    return { ...d, run: async (argv, opts) => {
+      if (argv[0] === "herdr" && argv[2] === "send-text" && argv[3] === "lead:p1") {
+        markBeforeSend = existsSync(join(state.dir, "suspended", "aoe_cr_dddd4444.json"));
+        throw new Error("watch stopped");
+      }
+      return d.run(argv, opts);
+    } };
+  };
+  await laneSuspendTick(deps(T0), io, () => false);
+  await expect(laneSuspendTick(dying(T0 + 30 * S), io, () => false)).rejects.toThrow("watch stopped");
+  expect(markBeforeSend).toBe(true);
+  // the restarted watch: the half-sent line is dropped and the still-stopped agent is not repaired or told again
+  const after = await laneSuspendTick(deps(T0 + 60 * S), io, () => false);
+  expect(after.filter((l) => l.startsWith("LANE_SUSPENDED "))).toEqual([]);
+  expect(after.some((l) => l.includes("not sent again"))).toBe(true);
+  expect(await laneSuspendTick(deps(T0 + 90 * S), io, () => false)).toEqual([]);
+  expect(resumes).toBe(1);
+  expect(sent(w)).toEqual([]);
+});
+
+test("a failed lookup keeps the mark of an agent left stopped; once a hand-typed fg brings it back, its tty is given raw mode and the mark goes", async () => {
+  // Given: a lane agent the watch could not bring back (marked) and a herdr lane id for the exact fg advice
+  const { w, deps } = world({});
+  await deps(T0).registry.write(laneOf("bg", "w5:p7"));
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "bg" };
+  let lookup: "ok" | "fails" | "unreadable" = "ok";
+  const resumed: string[] = [];
+  const io: SuspendIO = {
+    agentOf: async (pane) => {
+      if (lookup === "fails") throw new Error("herdr down");
+      return pane === "w5:p7" ? 200 : undefined;
+    },
+    stat: (pid) => (lookup === "unreadable" ? undefined : held(states)(pid) ?? shellOf(pid)),
+    resume: async (pane, pid) => {
+      resumed.push(`${pane} ${pid} ${states[pid]}`);
+      return states[pid] === "bg" ? `AGENT_RESUME_FAIL ${pane} agent ${pid}: its shell holds the tty and it is a background job; type fg in ${pane}` : `AGENT_RESUMED ${pane} agent ${pid}: raw tty mode given back, redrawn`;
+    },
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  await tick(T0 + 30 * S);
+  expect(sent(w).at(-1)).toBe("[DORI] 레인 bg 멈춤(셸 뒤 작업으로 밀림) — 셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: herdr pane read w5:p7 로 그 셸 줄을 본 뒤 herdr pane send-text w5:p7 $'\\x03' && sleep 0.3 && herdr pane send-text w5:p7 $'fg\\r' 를 그대로 쳐(문자 ^C 한 바이트가 줄에 남은 글자와 마우스 찌꺼기를 실행하지 않고 버리고, 열린 따옴표도; 0.3초 뒤 빈 줄에 fg. 엔터를 먼저 치면 그 줄이 실행되고, ^C와 fg를 한 번에 보내면 ^C가 fg까지 지워). ctrl 키 이름(send-keys ctrl+c)은 멈춘 omo가 켜 둔 키 모드 때문에 글자로 찍혀. 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)");
+  // When: the lookup fails, then the process cannot be read, while the agent stays a background job
+  lookup = "fails";
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  lookup = "unreadable";
+  expect(await tick(T0 + 90 * S)).toEqual([]);
+  lookup = "ok";
+  // Then: the mark held, so the same agent is not repaired or told again
+  expect(await tick(T0 + 120 * S)).toEqual([]);
+  expect(await tick(T0 + 150 * S)).toEqual([]);
+  expect(sent(w)).toHaveLength(1);
+  expect(resumed).toEqual(["w5:p7 200 bg"]);
+  // When: someone types fg (the agent runs in the foreground again)
+  states[200] = "S";
+  // Then: its tty gets raw mode back and the mark goes
+  expect(await tick(T0 + 180 * S)).toEqual(["AGENT_RESUMED w5:p7 agent 200: raw tty mode given back, redrawn", "LANE_RUNNING_AGAIN bg w5:p7"]);
+  expect(resumed).toEqual(["w5:p7 200 bg", "w5:p7 200 S"]);
+});
+
+test("a kept fg advice is dropped, not sent, once its agent runs again: a lane's while the lead was away, and the lead's own", async () => {
+  // Given: a lane agent and the lead's agent left background jobs of their shells while herdr has no lead pane
+  const { w, deps } = world({});
+  await deps(T0).registry.write(laneOf("bg", "w5:p7"));
+  w.herdrGone = ["lead:p1"];
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "bg", 300: "bg" };
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "w5:p7" ? 200 : pane === "lead:p1" ? 300 : undefined),
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => (states[pid] === "bg" ? `AGENT_RESUME_FAIL ${pane} agent ${pid}: its shell holds the tty and it is a background job; type fg in ${pane}` : `AGENT_RESUMED ${pane} agent ${pid}: raw tty mode given back, redrawn`),
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  const first = await tick(T0 + 30 * S);
+  expect(first.filter((l) => l.startsWith("LANE_SUSPENDED_NOT_TOLD"))).toHaveLength(2);
+  // When: someone types fg in both panes, and the lead pane is back
+  states[200] = "S";
+  states[300] = "S";
+  w.herdrGone = [];
+  const out = await tick(T0 + 60 * S);
+  // Then: both come back (raw mode), and neither kept line, whose fg would now go to a running omo, is sent
+  expect(out.filter((l) => l.startsWith("LANE_RUNNING_AGAIN"))).toHaveLength(2);
+  expect(out.filter((l) => /^LANE_SUSPENDED_NOT_TOLD \S+: agent (200|300) runs again, so its fg advice \(line of .+\) is not sent$/.test(l))).toHaveLength(2);
+  expect(sent(w)).toEqual([]);
+  expect(await tick(T0 + 90 * S)).toEqual([]);
+  expect(sent(w)).toEqual([]);
+});
+
+test("a kept fg advice whose agent cannot be read is kept, not dropped: once the agent reads as still held, the line goes", async () => {
+  // Given: a lane agent left a background job while herdr has no lead pane (its line kept)
+  const { w, deps } = world({});
+  await deps(T0).registry.write(laneOf("bg", "w5:p7"));
+  w.herdrGone = ["lead:p1"];
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "bg" };
+  let readable = true;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "w5:p7" ? 200 : undefined),
+    stat: (pid) => (readable ? held(states)(pid) ?? shellOf(pid) : undefined),
+    resume: async (pane, pid) => `AGENT_RESUME_FAIL ${pane} agent ${pid}: its shell holds the tty and it is a background job; type fg in ${pane}`,
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  await tick(T0 + 30 * S);
+  // When: the lead is back but the agent's process cannot be read
+  w.herdrGone = [];
+  readable = false;
+  // Then: nothing is sent and nothing is reported as recovered
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  expect(sent(w)).toEqual([]);
+  // When: it can be read again and is still a background job
+  readable = true;
+  const out = await tick(T0 + 90 * S);
+  // Then: the kept line goes once
+  expect(out.filter((l) => l.startsWith("LANE_SUSPENDED_TOLD bg"))).toHaveLength(1);
+  expect(sent(w)).toHaveLength(1);
+});
+
+test("a pending line follows its pane: kept unsent while a handover freezes the pane, dropped once the lane runs in another pane or the pane runs another agent", async () => {
+  // Given: two lanes left background jobs while herdr has no lead pane, so both lines are pending
+  const { w, deps } = world({});
+  await deps(T0).registry.write(laneOf("moved", "w5:p7"));
+  await deps(T0).registry.write(laneOf("reowned", "w5:p8"));
+  w.herdrGone = ["lead:p1"];
+  const agents: Record<string, number> = { "w5:p7": 200, "w5:p8": 210 };
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "bg", 210: "bg", 211: "bg" };
+  const io: SuspendIO = {
+    agentOf: async (pane) => agents[pane],
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => `AGENT_RESUME_FAIL ${pane} agent ${pid}: its shell holds the tty and it is a background job; type fg in ${pane}`,
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  expect((await tick(T0 + 30 * S)).filter((l) => l.startsWith("LANE_SUSPENDED_NOT_TOLD"))).toHaveLength(2);
+  // When: a handover freezes w5:p7 on purpose, w5:p8 now runs another agent (211, also held), and the lead is back
+  writeFrozen(state.dir, { pane: "w5:p7", aoeId: "x", at: new Date(T0 + 40 * S).toISOString(), agentPid: 200, pids: [200], to: "w5:p9" });
+  agents["w5:p8"] = 211;
+  w.herdrGone = [];
+  const out = await tick(T0 + 60 * S);
+  // Then: the frozen pane's line waits unsent, and the re-owned pane's old line is dropped, not sent
+  expect(out).toContain("LANE_SUSPENDED_NOT_TOLD reowned: w5:p8 now runs agent 211, so the line about agent 210 (line of " + new Date(T0 + 30 * S).toISOString() + ") is not sent");
+  expect(sent(w).filter((t) => t.includes("moved") || t.includes("reowned"))).toEqual([]);
+  // When: the handover commits and the lane runs in w5:p9 (a new agent, running)
+  await deps(T0).registry.write(laneOf("moved", "w5:p9"));
+  agents["w5:p9"] = 220;
+  states[220] = "S";
+  const after = await tick(T0 + 90 * S);
+  // Then: the line about the old pane is dropped, not sent
+  expect(after).toContain("LANE_SUSPENDED_NOT_TOLD moved: w5:p7 is no longer watched, so the line about agent 200 (line of " + new Date(T0 + 30 * S).toISOString() + ") is not sent");
+  expect(sent(w).filter((t) => t.includes("레인 moved"))).toEqual([]);
 });

@@ -7,7 +7,8 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { currentTmuxSession, paneActivity, paneLife } from "./aoe.ts";
-import { isHerdrPane } from "./herdr.ts";
+import { herdrAgentPid, isHerdrPane } from "./herdr.ts";
+import { jobSignal, readStat, resumeAfterThaw, reviveLive } from "./job-control.ts";
 import { reviveHerdr } from "./herdr-sessions.ts";
 import { fileLog, installTaskRefusal, serve, serveLoops, spawnLoop, TASK_NAME, taskArgv } from "./serve.ts";
 import { winSignal } from "./win-suspend.ts";
@@ -94,7 +95,7 @@ const USAGE = `dori <command> [options]
                                        Task Scheduler to start at logon with no execution time limit
   revive <herdr pane> [--text TEXT]    start the omo session recorded for a herdr pane whose agent is gone again in that
                                        pane (omo --session-id), wait for its prompt and type TEXT; REVIVE_OK or REVIVE_FAIL;
-                                       a pane whose agent runs is left alone (REVIVE_ALREADY_RUNNING)
+                                       a pane whose agent runs gets the no-typing resume check (REVIVE_RESUMED, REVIVE_ALREADY_RUNNING)
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" --thread REF|new [--why-new "<reason>"] | --no-thread "<reason>" [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
          [--goal "owner words"] [--challenge-before STEP ...] [--use-gpu] [--ui] [--dry-run]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...]
@@ -685,7 +686,8 @@ const reportOwner = discordToken && process.env.DORI_DISCORD_CHANNEL?.trim()
   ? { reportOwner: async (thread: string | null, text: string): Promise<string> => discordClient().send(thread ?? env("DORI_DISCORD_CHANNEL"), text) }
   : {};
 const sessionOfPane = async (pane: string, cwd: string): Promise<string> => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id;
-const sendSignal: HandoverDeps["signal"] = (pid, sig) => {
+// a shell's foreground job is stopped with its shell and resumed before it, so the tty stays with it (job-control.ts)
+const sendSignal: HandoverDeps["signal"] = jobSignal((pid, sig) => {
   if (process.platform === "win32" && (sig === "SIGSTOP" || sig === "SIGCONT")) return winSignal(pid, sig);
   try {
     process.kill(pid, sig);
@@ -693,7 +695,7 @@ const sendSignal: HandoverDeps["signal"] = (pid, sig) => {
   } catch {
     return false;
   }
-};
+});
 const freezeDeps = { run, procs: () => procTable(run), signal: sendSignal };
 const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)): LaneHandoverDeps => ({
   ...deps,
@@ -1985,7 +1987,11 @@ try {
       if (!isHerdrPane(pane)) die("revive takes a herdr pane id (an aoe session restarts with self-restart.sh)");
       // dori never ends a live herdr agent: only a pane whose agent is gone is started again
       if ((await paneLife(run, pane)).live) {
-        console.log(`REVIVE_ALREADY_RUNNING ${pane}`);
+        // a live agent is brought back as far as it can be without typing (stopped, background, or a cooked tty), never started again
+        const agent = await herdrAgentPid(run, pane);
+        const line = agent ? await reviveLive({ run, clock: realClock, signal: sendSignal }, pane, agent) : `REVIVE_ALREADY_RUNNING ${pane}`;
+        console.log(line);
+        if (line.startsWith("REVIVE_FAIL")) process.exitCode = 1;
         break;
       }
       const line = await reviveHerdr(run, realClock, config, pane, opt("text") ?? "", (p, t) => sendVerified(run, realClock, config, p, t));
@@ -2130,7 +2136,12 @@ try {
         break;
       }
       if (key === "thaw") {
-        const line = thawFrozen(freezeDeps, config.stateDir, flags.positionals[1]?.trim() || die("usage: dori handover thaw <pane>"));
+        const pane = flags.positionals[1]?.trim() || die("usage: dori handover thaw <pane>");
+        const agent = readFrozen(config.stateDir).find((r) => r.pane === pane)?.agentPid;
+        const thawed = thawFrozen(freezeDeps, config.stateDir, pane);
+        // checked once resumed: the agent is again its tty's running foreground job, or is brought back to it
+        const fg = agent && !thawed.startsWith("FROZEN_NONE") ? await resumeAfterThaw({ run, clock: realClock, signal: sendSignal }, pane, agent) : "";
+        const line = fg ? `${thawed}; ${fg}` : thawed;
         watchLog(config.watchLog, realClock, { source: "handover", line });
         console.log(line);
         if (line.startsWith("FROZEN_NONE")) process.exit(1);
