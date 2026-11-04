@@ -1987,9 +1987,10 @@ try {
       if (!isHerdrPane(pane)) die("revive takes a herdr pane id (an aoe session restarts with self-restart.sh)");
       // dori never ends a live herdr agent: only a pane whose agent is gone is started again
       if ((await paneLife(run, pane)).live) {
-        // a live agent is brought back as far as it can be without typing (stopped, background, or a cooked tty), never started again
-        const agent = await herdrAgentPid(run, pane);
-        const line = agent ? await reviveLive({ run, clock: realClock, signal: sendSignal }, pane, agent) : `REVIVE_ALREADY_RUNNING ${pane}`;
+        // a live agent is brought back as far as it can be without typing (stopped, background, or a cooked tty), never started
+        // again; one a handover froze on purpose is left to dori handover thaw
+        const frozen = readFrozen(config.stateDir).some((r) => r.pane === pane);
+        const line = await reviveLive({ run, clock: realClock, signal: sendSignal }, pane, frozen ? undefined : await herdrAgentPid(run, pane), frozen);
         console.log(line);
         if (line.startsWith("REVIVE_FAIL")) process.exitCode = 1;
         break;

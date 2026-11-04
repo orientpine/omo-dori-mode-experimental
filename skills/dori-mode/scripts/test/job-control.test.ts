@@ -247,6 +247,23 @@ test.skipIf(!existsSync("/proc/self/stat"))("by default the guard knows the real
   expect(sent).toEqual([]);
 });
 
+test("revive of a pane a handover froze on purpose touches nothing and names dori handover thaw, which thaws its whole record", async () => {
+  // Given: the handover froze omo with its shell (a frozen record holds the pane)
+  const rows = pane();
+  const k = kernel(rows);
+  const frozen = jobSignal(k.signal, k.stat, { pid: 1, pgrp: 1 });
+  frozen(200, "SIGSTOP");
+  const before = k.sent.length;
+  const { r, calls } = io(rows, k);
+  // When / Then: nothing is signalled or typed, whether its agent is found or not
+  for (const agent of [200, undefined]) {
+    expect(await reviveLive(r, "w2:p2", agent, true)).toBe("REVIVE_FAIL w2:p2: a handover froze it on purpose (it has a frozen record), so it is not resumed here; dori handover thaw w2:p2 thaws it with every process of its record");
+  }
+  expect(k.sent.length).toBe(before);
+  expect(calls).toEqual([]);
+  expect(rows.get(200)?.state).toBe("T");
+});
+
 test("revive of a live agent where its process cannot be read (no /proc: macOS, Windows) stays the old successful no-op", async () => {
   const rows = pane();
   const k = kernel(rows);
