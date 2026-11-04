@@ -155,7 +155,9 @@ export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Prom
 // tty bash left cooked gets raw mode back (REVIVE_RESUMED), a healthy one is left alone (REVIVE_ALREADY_RUNNING), and a
 // background one gets the fg advice (REVIVE_FAIL)
 export const reviveLive = async (io: ResumeIO, pane: string, pid: number): Promise<string> => {
+  // where the agent cannot be read (no /proc: macOS, native Windows) the pane's liveness check is all there is
+  if (!(io.stat ?? readStat)(pid)) return `REVIVE_ALREADY_RUNNING ${pane}`;
   const line = await resumeAgent(io, pane, pid);
   if (line.startsWith("AGENT_RUNNING")) return `REVIVE_ALREADY_RUNNING ${pane}`;
-  return line.replace(/^AGENT_RESUMED /, "REVIVE_RESUMED ").replace(/^AGENT_(RESUME_FAIL|GONE) /, "REVIVE_FAIL ");
+  return line.replace(/^AGENT_RESUMED /, "REVIVE_RESUMED ").replace(/^AGENT_RESUME_FAIL /, "REVIVE_FAIL ");
 };

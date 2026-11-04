@@ -204,6 +204,8 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       out.push(`LANE_SUSPENDED_NOT_TOLD ${notice.key}: a watch stopped while sending the line of ${notice.at}; it may have arrived, so it is not sent again`);
       continue;
     }
+    // an agent that cannot be read is no news: its line waits (unsent) until the agent reads as held or running again
+    if (notice.pid !== undefined && !io.stat(notice.pid)) continue;
     if (notice.pid !== undefined && !holdOf(io.stat, notice.pid)) {
       rmSync(f, { force: true });
       out.push(`LANE_SUSPENDED_NOT_TOLD ${notice.key}: agent ${notice.pid} runs again, so its fg advice (line of ${notice.at}) is not sent`);

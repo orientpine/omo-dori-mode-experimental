@@ -355,3 +355,32 @@ test("a kept fg advice is dropped, not sent, once its agent runs again: a lane's
   expect(await tick(T0 + 90 * S)).toEqual([]);
   expect(sent(w)).toEqual([]);
 });
+
+test("a kept fg advice whose agent cannot be read is kept, not dropped: once the agent reads as still held, the line goes", async () => {
+  // Given: a lane agent left a background job while herdr has no lead pane (its line kept)
+  const { w, deps } = world({});
+  await deps(T0).registry.write(laneOf("bg", "w5:p7"));
+  w.herdrGone = ["lead:p1"];
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "bg" };
+  let readable = true;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "w5:p7" ? 200 : undefined),
+    stat: (pid) => (readable ? held(states)(pid) ?? shellOf(pid) : undefined),
+    resume: async (pane, pid) => `AGENT_RESUME_FAIL ${pane} agent ${pid}: its shell holds the tty and it is a background job; type fg in ${pane}`,
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  await tick(T0 + 30 * S);
+  // When: the lead is back but the agent's process cannot be read
+  w.herdrGone = [];
+  readable = false;
+  // Then: nothing is sent and nothing is reported as recovered
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  expect(sent(w)).toEqual([]);
+  // When: it can be read again and is still a background job
+  readable = true;
+  const out = await tick(T0 + 90 * S);
+  // Then: the kept line goes once
+  expect(out.filter((l) => l.startsWith("LANE_SUSPENDED_TOLD bg"))).toHaveLength(1);
+  expect(sent(w)).toHaveLength(1);
+});

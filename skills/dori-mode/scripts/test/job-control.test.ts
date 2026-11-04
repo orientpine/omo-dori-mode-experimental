@@ -187,3 +187,12 @@ test("by default the guard knows the real process: its own pid and group are ref
   expect(signal(0, "SIGSTOP")).toBe(false);
   expect(sent).toEqual([]);
 });
+
+test("revive of a live agent where its process cannot be read (no /proc: macOS, Windows) stays the old successful no-op", async () => {
+  const rows = pane();
+  const k = kernel(rows);
+  const { r, calls } = io(rows, k);
+  expect(await reviveLive({ ...r, stat: () => undefined }, "w2:p2", 200)).toBe("REVIVE_ALREADY_RUNNING w2:p2");
+  expect(calls).toEqual([]);
+  expect(k.sent).toEqual([]);
+});
