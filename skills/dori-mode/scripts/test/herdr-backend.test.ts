@@ -221,6 +221,16 @@ test.each([
   ["pwsh -Command", [{ name: "pwsh", argv: ["pwsh", "-Command", "ls"] }], false],
   ["exec'd agent", [{ name: "bun", argv: ["bun", "omo.js"] }], false],
   ["an empty foreground group is doubt", [], true],
+  // review of #347: Windows names keep their path and .exe, and pwsh reads commands from the terminal with an operand of -
+  ["pwsh.exe by Windows path", [{ name: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", argv: ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"] }], true],
+  ["powershell.exe -NoLogo", [{ name: "powershell.exe", argv: ["powershell.exe", "-NoLogo"] }], true],
+  ["pwsh.exe -Command ls runs a command", [{ name: "pwsh.exe", argv: ["pwsh.exe", "-Command", "ls"] }], false],
+  ["pwsh -File - reads the terminal", [{ name: "pwsh", argv: ["pwsh", "-File", "-"] }], true],
+  ["pwsh -Command - reads the terminal", [{ name: "pwsh", argv: ["pwsh", "-Command", "-"] }], true],
+  ["pwsh -Command with no operand", [{ name: "pwsh", argv: ["pwsh", "-Command"] }], true],
+  ["cmd.exe prompt", [{ name: "cmd.exe", argv: ["C:\\Windows\\System32\\cmd.exe"] }], true],
+  ["cmd /k keeps a prompt", [{ name: "cmd.exe", argv: ["cmd.exe", "/k", "dir"] }], true],
+  ["cmd /c runs a command", [{ name: "cmd.exe", argv: ["cmd.exe", "/C", "dir"] }], false],
 ] as const)("interactiveShellInFront (upstream #69): %s", (_, procs, want) => {
   expect(interactiveShellInFront({ foreground_processes: procs })).toBe(want);
 });

@@ -44,14 +44,20 @@ export const herdrShellPid = async (run: Runner, pane: string): Promise<number> 
 // upstream dori-superagent #69 (https://github.com/sisyphuslabs/dori-superagent/pull/69, its src/herdr.ts and
 // skills/dori-mode/scripts/src/panes.ts), ported as is
 const SHELLS: ReadonlySet<string> = new Set([
-  "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox",
+  "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox", "cmd",
 ]);
-const baseName = (value: unknown): string => String(value ?? "").replace(/^-/, "").split("/").pop()!.toLowerCase();
+// beyond upstream (review of #347): herdr on Windows names a process by its path with \ and .exe (pwsh.exe), and cmd.exe
+// is a shell there too
+const baseName = (value: unknown): string => String(value ?? "").replace(/^-/, "").split(/[\\/]/).pop()!.toLowerCase().replace(/\.exe$/, "");
 // A shell runs a command (not a prompt) only with an explicit command flag: -c, also inside combined short flags such
 // as -lc, or PowerShell's -Command/-File/-EncodedCommand (whole words only: its other long flags contain a 'c'). Any
 // other operand (a script path, --rcfile FILE, -o OPT) stays held.
-const runsCommand = (shell: string, arg: string): boolean =>
-  shell === "pwsh" || shell === "powershell" ? /^-(c|command|f|file|e|ec|encodedcommand)$/i.test(arg) : /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
+// Beyond upstream (review of #347): pwsh -File - and -Command - (or no operand) read commands from the terminal, so they
+// are held; cmd runs one with /c, while /k keeps its prompt.
+const runsCommand = (shell: string, arg: string, next: string | undefined): boolean =>
+  shell === "pwsh" || shell === "powershell"
+    ? /^-(c|command|f|file|e|ec|encodedcommand)$/i.test(arg) && next !== undefined && next !== "-"
+    : shell === "cmd" ? /^\/c$/i.test(arg) : /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
 // PowerShell's -NoExit keeps an interactive prompt after the command runs, so that shell is held.
 const keepsPrompt = (shell: string, arg: string): boolean => (shell === "pwsh" || shell === "powershell") && /^-(noe|noexit)$/i.test(arg);
 
@@ -67,7 +73,7 @@ export const shellInFrontName = (info: unknown): string | undefined => {
     let args = Array.isArray(proc?.argv) ? proc.argv.map(String).slice(1) : undefined;
     if (name === "busybox" && args && args.length > 0) [name, args] = [baseName(args[0]), args.slice(1)];
     if (!SHELLS.has(name)) continue;
-    if (args === undefined || !args.some((a) => runsCommand(name, a)) || args.some((a) => keepsPrompt(name, a))) return name;
+    if (args === undefined || !args.some((a, i, all) => runsCommand(name, a, all[i + 1])) || args.some((a) => keepsPrompt(name, a))) return name;
   }
   return undefined;
 };
