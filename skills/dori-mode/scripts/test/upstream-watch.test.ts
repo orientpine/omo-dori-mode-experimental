@@ -51,6 +51,9 @@ beforeEach(() => {
     // more files than one page and than gh pr list shows (100); the skills/ change is the 101st
     // merged, but into a branch other than upstream main: not in main, so not a candidate
     pr(44, "fix(dori-mode): lane sweep on the next branch", ["skills/dori-mode/scripts/src/sweeps.ts"], { baseRefName: "next" }),
+    // proposals: open, and closed without a merge
+    pr(45, "fix(dori-mode): retry a lost send", ["skills/dori-mode/scripts/src/send.ts"], { state: "OPEN", mergedAt: null, mergeCommit: null }),
+    pr(46, "fix(dori-mode): an abandoned idea", ["skills/dori-mode/scripts/src/x.ts"], { state: "CLOSED", mergedAt: null, mergeCommit: null }),
     pr(40, "fix: rename the docs pages", [...Array.from({ length: 100 }, (_, i) => `docs/page-${String(i).padStart(3, "0")}.md`), "skills/dori-mode/zz-late.ts"]),
   ]);
   const issue = (number: number, title: string, state = "OPEN") => ({ number, title, state, url: `${UP}/issues/${number}`, createdAt: "2026-11-02T00:00:00Z" });
@@ -87,28 +90,28 @@ const inbox = (): Record<string, string>[] => {
 };
 const seen = () => JSON.parse(readFileSync(join(root, "state/seen.json"), "utf8")).items as Record<string, { class: string }>;
 
-test("only owner decisions and port candidates reach the inbox; what we already have or do not use goes to one weekly line", async () => {
+test("ports (in upstream main) and integration asks (open issues, PRs outside main) reach the inbox; what we already have or do not use goes to one weekly line", async () => {
   const r = await run([], { UPSTREAM_WATCH_THREAD: "discord:42" });
   expect(r.code).toBe(0);
   const rows = inbox();
   expect(rows.filter((x) => x.kind === "upstream-change").every((x) => x.thread === "discord:42" && x.content!.includes("dori launch --thread discord:42"))).toBe(true);
   expect(rows.filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([
-    ["pr:21", "3"],
-    ["pr:23", "3"],
     ["pr:30", "4"],
     ["pr:40", "4"],
+    ["pr-proposed:44", "3"],
+    ["pr-proposed:45", "3"],
+    ["issue:29", "3"],
     [`commit:${"b".repeat(40)}`, "4"],
   ]);
   const classes = Object.fromEntries(Object.entries(seen()).map(([k, v]) => [k, v.class]));
-  expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:16": "2", "pr:17": "2", "issue:27": "2", "issue:29": "2", "issue:31": "2" });
-  // an open issue is not in upstream main: recorded only, until a merged PR or a main commit brings it
+  expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:16": "2", "pr:17": "2", "issue:27": "2", "issue:31": "2", "pr:21": "2", "pr:23": "2", "pr-proposed:46": "2" });
+  // not in upstream main: the merged-elsewhere PR is no pr:N item, so its later merge into main is a new one
   expect(seen()["pr:44"]).toBeUndefined();
   const weekly = rows.filter((x) => x.kind === "upstream-weekly");
   expect(weekly).toHaveLength(1);
   expect(weekly[0]!.thread).toBe("discord:42");
   expect(weekly[0]!.content).toContain("① 이미 있음 5건");
-  expect(weekly[0]!.content).toContain("② 원본 main에 아직 없음 2건: 이슈 #29, 이슈 #31");
-  expect(r.out).toContain("inbox_lines=5 weekly=True");
+  expect(r.out).toContain("inbox_lines=6 weekly=True");
 });
 
 test("a second run and a seeded run write nothing more", async () => {
@@ -118,7 +121,7 @@ test("a second run and a seeded run write nothing more", async () => {
   expect(inbox()).toHaveLength(before);
   rmSync(join(root, "state"), { recursive: true });
   rmSync(join(root, "inbox.jsonl"));
-  expect((await run(["--seed"])).out).toContain("new=15 inbox_lines=0");
+  expect((await run(["--seed"])).out).toContain("new=18 inbox_lines=0");
   expect(inbox()).toHaveLength(0);
   expect((await run()).out).toContain("new=0 inbox_lines=0");
 });
@@ -127,10 +130,10 @@ test("an item is recorded only after its inbox line is written, so a failed appe
   mkdirSync(join(root, "inbox.jsonl"));
   const failed = await run();
   expect(failed.code).not.toBe(0);
-  expect(existsSync(join(root, "state/seen.json")) ? Object.keys(seen()).filter((k) => ["pr:21", "pr:23", "pr:30", "issue:29"].includes(k)) : []).toEqual([]);
+  expect(existsSync(join(root, "state/seen.json")) ? Object.keys(seen()).filter((k) => ["pr:30", "pr:40", "pr-proposed:45", "issue:29"].includes(k)) : []).toEqual([]);
   rmSync(join(root, "inbox.jsonl"), { recursive: true });
   expect((await run()).code).toBe(0);
-  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item)).toContain("pr:21");
+  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item)).toContain("pr:30");
 });
 
 test("a failing gh records nothing and exits 3; the third failure in a row tells the lead once", async () => {
@@ -150,13 +153,15 @@ test("a failing gh records nothing and exits 3; the third failure in a row tells
 });
 
 test("an item the owner already decided is marked by hand and never reaches the inbox", async () => {
-  expect((await run(["--mark", "pr:23", "--why", "owner chose; lane backlog-loop"])).out).toContain("UPSTREAM_MARKED pr:23");
+  expect((await run(["--mark", "pr:30", "--why", "owner chose; lane backlog-loop"])).out).toContain("UPSTREAM_MARKED pr:30");
+  expect((await run(["--mark", "pr-proposed:45"])).out).toContain("UPSTREAM_MARKED pr-proposed:45");
   expect((await run(["--mark", "23"])).code).not.toBe(0);
   await run();
   const items = inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item);
-  expect(items).toContain("pr:21");
-  expect(items).not.toContain("pr:23");
-  expect(seen()["pr:23"]!.class).toBe("decided");
+  expect(items).toContain("pr:40");
+  expect(items).not.toContain("pr:30");
+  expect(items).not.toContain("pr-proposed:45");
+  expect(seen()["pr:30"]!.class).toBe("decided");
 });
 
 test("without an inbox setting the line goes to the listener's inbox under DORI_STATE_DIR", async () => {
@@ -164,7 +169,7 @@ test("without an inbox setting the line goes to the listener's inbox under DORI_
   mkdirSync(join(state, "discord"), { recursive: true });
   const env = { UPSTREAM_WATCH_INBOX: "", UPSTREAM_WATCH_STATE_DIR: "", DORI_STATE_DIR: state };
   expect((await run([], env)).code).toBe(0);
-  expect(readFileSync(join(state, "discord/inbox.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l).item)).toContain("pr:21");
+  expect(readFileSync(join(state, "discord/inbox.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l).item)).toContain("pr:30");
   expect(existsSync(join(state, "upstream-watch/seen.json"))).toBe(true);
   expect(existsSync(join(root, "inbox.jsonl"))).toBe(false);
 });
@@ -246,33 +251,36 @@ else:
   expect(inbox()).toHaveLength(1);
 });
 
-test("a PR at GitHub's 3000-file cap goes to the lead as a decision by itself, and the other items still arrive", async () => {
+test("a PR at GitHub's 3000-file cap is still a port, for the lead to check by hand, and the other items still arrive", async () => {
   json("files-30.json", Array.from({ length: 3000 }, (_, i) => ({ filename: `docs/f${i}.md`, patch: null })));
   const r = await run();
   expect(r.code).toBe(0);
   const rows = inbox().filter((x) => x.kind === "upstream-change");
-  expect(rows.find((x) => x.item === "pr:30")).toMatchObject({ class: "3" });
+  expect(rows.find((x) => x.item === "pr:30")).toMatchObject({ class: "4" });
   expect(rows.find((x) => x.item === "pr:30")!.reason).toContain("PR #30 lists 3000 files");
-  expect(rows.map((x) => x.item)).toContain("pr:21");
+  expect(rows.map((x) => x.item)).toContain("pr:40");
 });
 
-test("with a neutral title the file contents decide: outbound code found in a patch, and code without a patch, both go to the owner", async () => {
+test("in upstream main, outbound code found in a patch and code without a patch are ports with a note for the lane, not owner decisions", async () => {
   json("prs.json", [
     { number: 41, title: "refactor: client cleanup", url: `${UP}/pull/41`, mergedAt: "2026-11-02T00:00:00Z", mergeCommit: { oid: "4".repeat(40) }, body: "" },
     { number: 42, title: "refactor: tidy the store", url: `${UP}/pull/42`, mergedAt: "2026-11-02T00:00:00Z", mergeCommit: { oid: "5".repeat(40) }, body: "" },
     { number: 43, title: "refactor: move a file", url: `${UP}/pull/43`, mergedAt: "2026-11-02T00:00:00Z", mergeCommit: { oid: "6".repeat(40) }, body: "" },
   ]);
-  json("files-41.json", [{ filename: "src/client.ts", patch: "@@ -0,0 +1 @@\n+await post('https://t.omo.dev/v1/logs')", status: "modified", changes: 1 }]);
-  json("files-42.json", [{ filename: "src/store.ts", patch: null, status: "modified", changes: 900 }]);
+  json("files-41.json", [{ filename: "skills/dori-mode/scripts/src/client.ts", patch: "@@ -0,0 +1 @@\n+await post('https://t.omo.dev/v1/logs')", status: "modified", changes: 1 }]);
+  json("files-42.json", [{ filename: "skills/dori-mode/scripts/src/store.ts", patch: null, status: "modified", changes: 900 }]);
   json("files-43.json", [{ filename: "src/old.ts", patch: null, status: "removed", changes: 40 }, { filename: "README.md", patch: null, status: "modified", changes: 2 }]);
   json("issues.json", []);
   writeFileSync(join(gh, "commits.jsonl"), "");
   expect((await run()).code).toBe(0);
-  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr:41", "3"], ["pr:42", "3"]]);
+  const rows = inbox().filter((x) => x.kind === "upstream-change");
+  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:41", "4"], ["pr:42", "4"]]);
+  expect(rows[0]!.reason).toContain("살필 것: 바깥으로 데이터를 보냄(skills/dori-mode/scripts/src/client.ts에 t.omo.dev)");
+  expect(rows[1]!.reason).toContain("살필 것: 내용을 못 읽음(patch 없음: skills/dori-mode/scripts/src/store.ts), 리드가 손으로 확인");
   expect(seen()["pr:43"]!.class).toBe("2");
 });
 
-test("a dependency added to a skills package.json goes to the owner whatever its version spec; version and scripts lines do not", async () => {
+test("a dependency added to a skills package.json is noted for the lane whatever its version spec; version and scripts lines are not", async () => {
   const pkg = "skills/dori-mode/scripts/package.json";
   // a hunk inside the dependencies block, adding one entry with the given spec
   const midBlock = (spec: string) => `@@ -3,6 +3,7 @@\n   "dependencies": {\n     "a": "^1.0.0",\n+    "b": "${spec}",\n     "c": "2.0.0"\n   }`;
@@ -294,7 +302,8 @@ test("a dependency added to a skills package.json goes to the owner whatever its
   writeFileSync(join(gh, "commits.jsonl"), "");
   expect((await run()).code).toBe(0);
   const rows = inbox().filter((x) => x.kind === "upstream-change");
-  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:50", "3"], ["pr:51", "3"], ["pr:52", "3"], ["pr:53", "3"], ["pr:54", "3"], ["pr:55", "4"], ["pr:56", "3"], ["pr:57", "3"]]);
+  expect(rows.every((x) => x.class === "4")).toBe(true);
+  expect(rows.filter((x) => x.reason!.includes("새 의존성")).map((x) => x.item)).toEqual(["pr:50", "pr:51", "pr:52", "pr:53", "pr:54", "pr:56", "pr:57"]);
   expect(rows.find((x) => x.item === "pr:50")!.reason).toContain(`${pkg}에 left`);
   expect(rows.find((x) => x.item === "pr:51")!.reason).toContain(`${pkg}에 b`);
   expect(rows.find((x) => x.item === "pr:56")!.reason).toContain(`${pkg}에 helper, 블록을 패치로 못 가림`);
