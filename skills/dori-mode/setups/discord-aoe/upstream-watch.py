@@ -410,11 +410,11 @@ def gather(repo: str, branch: str, here: Here) -> list[dict]:
             # its own key, so the same PR merged into main later is a new pr:N item; a merged one may already be on record
             # as pr:N from before proposals had their own key
             items.append({"key": f"pr-proposed:{pr['number']}", "label": f"PR #{pr['number']} 제안", "title": pr["title"],
-                          "url": pr["url"], "classify": lambda pr=pr: classify_proposal(pr, here),
+                          "url": pr["url"], "open": pr.get("state") == "OPEN", "classify": lambda pr=pr: classify_proposal(pr, here),
                           **({"was": f"pr:{pr['number']}"} if pr.get("mergedAt") else {})})
     for issue in sorted(issues(repo), key=lambda i: i["number"]):
         items.append({"key": f"issue:{issue['number']}", "label": f"이슈 #{issue['number']}", "title": issue["title"],
-                      "url": issue["url"], "classify": lambda issue=issue: classify_issue(issue, here, closed_by)})
+                      "url": issue["url"], "open": issue.get("state") == "OPEN", "classify": lambda issue=issue: classify_issue(issue, here, closed_by)})
     merged = {p["number"] for p in prs}
     listed, reached_ours = [], False
     # Newest first: once one commit is in our history, every older one is too, even where our
@@ -440,6 +440,14 @@ def gather(repo: str, branch: str, here: Here) -> list[dict]:
         items.append({"key": f"commit:{sha}", "label": f"커밋 {sha[:9]}", "title": first,
                       "url": c.get("html_url") or f"https://github.com/{repo}/commit/{sha}", "classify": classify_commit})
     return items
+
+
+def unseen(item: dict, seen: dict) -> bool:
+    if item.get("was") in seen:
+        return False
+    record = seen.get(item["key"])
+    # an issue or proposed PR recorded while closed and open again is read again; a hand decision has no "open" and stays
+    return record is None or (item.get("open") is True and record.get("open") is False)
 
 
 def weekly_record(repo: str, minor: list[dict], now: datetime) -> dict:
@@ -488,7 +496,7 @@ def main(argv: list[str]) -> int:
         repo, aliases, branch = upstream_repo()
         here = Here(aliases)
         items = gather(repo, branch, here)
-        fresh = [i for i in items if i["key"] not in state["items"] and i.get("was") not in state["items"]]
+        fresh = [i for i in items if unseen(i, state["items"])]
         for item in fresh:
             try:
                 item["cls"], item["why"] = ("0", "seed") if seed else item["classify"]()
@@ -512,6 +520,11 @@ def main(argv: list[str]) -> int:
         return 3
     state["fails"] = 0
     state.pop("incomplete_alerted", None)
+    # a known issue or proposed PR that closed: its record follows, so opening it again later counts as new
+    for item in items:
+        record = state["items"].get(item["key"])
+        if item not in fresh and record is not None and "open" in item and "open" in record:
+            record["open"] = item["open"]
     notified = 0
     counts = {"1": 0, "2": 0, "3": 0, "4": 0}
     for item in fresh:
@@ -537,7 +550,7 @@ def main(argv: list[str]) -> int:
             state["minor"].append({"key": item["key"], "label": item["label"], "cls": cls})
         if cls in counts:
             counts[cls] += 1
-        state["items"][item["key"]] = {"class": cls, "why": item["why"], "at": stamp(now)}
+        state["items"][item["key"]] = {"class": cls, "why": item["why"], "at": stamp(now), **({"open": item["open"]} if "open" in item else {})}
         save_state(state_path, state)
         print(f"UPSTREAM_ITEM {item['key']} class={cls} {item['why']}")
     weekly = False

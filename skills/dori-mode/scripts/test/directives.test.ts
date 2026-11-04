@@ -6,7 +6,7 @@ import { laneGapSplit, applyDirectives, auditOrReport, auditStampPath, checkMean
 import { loadConfig } from "../src/config.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { run as realRun } from "../src/run.ts";
-import { APPLIED_HEADING, appliesUnder, appliesWhy, briefGaps, checkedLedger, COMMON_LEDGER, DirectiveError, directiveLine, directiveText, hasDirective, ledgerProblems, loadLedger, messageLines, requireMissing, retiredError, scopeContext, textDirectives, trimProblem } from "../src/directives.ts";
+import { APPLIED_HEADING, appliesUnder, appliesWhy, briefGaps, checkedLedger, COMMON_LEDGER, DirectiveError, directiveLine, directiveText, hasDirective, ledgerProblems, loadLedger, messageLines, planDirectives, requireMissing, retiredError, scopeContext, textDirectives, trimProblem } from "../src/directives.ts";
 import type { Runner } from "../src/run.ts";
 import { DirectiveMissingError, eightSteps, launchLane, renderBrief, uiSteps } from "../src/launch.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -638,16 +638,19 @@ test("a briefOnly entry reaches a brief only when its scope hits, and the lead's
   expect(thread.find(({ e }) => e.id === "pair-route")?.why).toBe("all lanes");
 });
 
-// the owner's "없는 건 없애" goes into briefs with the lead's limit (only after he saw the inventory) every time, never alone
-test("a brief that gets upstream-released-only also gets upstream-cleanup-after-table", async () => {
+// the owner's "없는 건 없애" never goes into a brief without the lead's limit (only after he saw the inventory): the owner
+// entry goes in as its pointer, the lead rule, whichever of the two the scope rule or the model picks
+test("a brief never gets upstream-released-only without its limit: it goes in as the pointer upstream-port-rule", async () => {
   const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
-  const owner = ledger.entries.find((e) => e.id === "upstream-released-only")!;
-  const limit = ledger.entries.find((e) => e.id === "upstream-cleanup-after-table")!;
-  expect(limit.scope).toEqual(owner.scope);
-  expect(limit.mode).toBe(owner.mode);
-  const ctx = scopeContext("원본 main 커밋 이식: 원본 PR #37을 우리 쪽에 들이는 이식 레인. upstream 링크를 주석으로 단다.", ledger, { repo: "some-repo" });
-  expect(appliesWhy(owner, ctx)).toBeDefined();
-  expect(appliesWhy(limit, ctx)).toBeDefined();
+  const brief = "원본 main 커밋 이식: 원본 PR #37을 우리 쪽에 들이는 이식 레인. upstream 링크를 주석으로 단다.";
+  const ctx = scopeContext(brief, ledger, { repo: "some-repo" });
+  for (const picked of [["upstream-released-only"], ["upstream-port-rule"], ["upstream-released-only", "upstream-port-rule"]]) {
+    const pick = { model: "m", picked: picked.map((id) => ({ id, why: "x" })) };
+    const added = planDirectives(brief, ledger, ctx, {}, pick).add.map(({ e }) => e.id);
+    expect(added).toContain("upstream-port-rule");
+    expect(added).not.toContain("upstream-released-only");
+  }
+  expect(planDirectives(brief, ledger, ctx).add.map(({ e }) => e.id)).toContain("upstream-port-rule");
 });
 
 test("no scope narrowed for briefs hits the eight-step template by itself: it would be every lane again", async () => {
