@@ -1,6 +1,7 @@
 // upstream dori-superagent #76 (https://github.com/sisyphuslabs/dori-superagent/pull/76, closes its issue #74): its test, with the
 // state dir removed after the file (upstream leaves an empty afterEach)
 import { afterAll, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
@@ -168,4 +169,43 @@ test("the store creates its state dir on first save", async () => {
   const out = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1);
   expect(store.load()).toBe(81);
+});
+
+// review 1 of #350: dori inbound telegram itself. A line that cannot be written leaves the offset before its message, and
+// a blank or out-of-range id is refused before any call.
+const inbound = async (vars: Record<string, string>, tail = "") => {
+  const dir = mkdtempSync(join(state.dir, "cli-"));
+  const log = join(dir, "http.log");
+  writeFileSync(log, "");
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ stateDir: join(dir, "state") }));
+  writeFileSync(join(dir, "batch.json"), JSON.stringify([{ update_id: 90, message: msg(OWNER, OWNER, "private", "owner dm") }]));
+  const argv = ["bun", "--preload", join(import.meta.dir, "telegram-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "inbound", "telegram"];
+  const p = Bun.spawn(["bash", "-c", `"$@"${tail}`, "inbound", ...argv], {
+    env: { ...process.env, DORI_CONFIG: join(dir, "config.json"), DORI_ENV_FILE: join(dir, "missing.env"), DORI_STATE_DIR: join(dir, "state"), DORI_TEST_TG_LOG: log, DORI_TEST_TG_BATCH: join(dir, "batch.json"), DORI_TELEGRAM_TOKEN: "fake", DORI_TELEGRAM_OWNER_ID: String(OWNER), ...vars },
+    stdout: "pipe", stderr: "pipe",
+  });
+  const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  const offsetFile = join(dir, "state", "telegram-offset");
+  return { code, out: out.trim(), err: err.trim(), calls: readFileSync(log, "utf8").split("\n").filter(Boolean).length, offset: existsSync(offsetFile) ? readFileSync(offsetFile, "utf8") : undefined };
+};
+
+test("dori inbound telegram prints the owner's message and then moves the offset past it", async () => {
+  expect(await inbound({})).toMatchObject({ code: 0, out: `INBOUND_READY telegram owner=${OWNER} group=- topic=-\nINBOUND dm ${OWNER} - 90 ${OWNER} "owner dm"`, calls: 1, offset: "91" });
+});
+
+test("a line that cannot be written (stdout closed) keeps the offset before its message", async () => {
+  const closed = join(mkdtempSync(join(state.dir, "closed-")), "stdout-closed");
+  const r = await inbound({ DORI_TEST_TG_AFTER: closed }, ` | { exec 0<&-; : > '${closed}'; }`);
+  expect({ calls: r.calls, offset: r.offset }).toEqual({ calls: 1, offset: undefined });
+});
+
+test.each([
+  ["a blank owner id", { DORI_TELEGRAM_OWNER_ID: "" }, 'DORI_TELEGRAM_OWNER_ID must be an integer, got: ""'],
+  ["a whitespace owner id", { DORI_TELEGRAM_OWNER_ID: "  " }, 'DORI_TELEGRAM_OWNER_ID must be an integer, got: "  "'],
+  ["owner id 0", { DORI_TELEGRAM_OWNER_ID: "0" }, 'DORI_TELEGRAM_OWNER_ID must be a positive user id, got: "0"'],
+  ["a blank group id", { DORI_TELEGRAM_GROUP_ID: "" }, 'DORI_TELEGRAM_GROUP_ID must be an integer, got: ""'],
+  ["a blank topic id", { DORI_TELEGRAM_GROUP_ID: String(GROUP), DORI_TELEGRAM_TOPIC_ID: "" }, 'DORI_TELEGRAM_TOPIC_ID must be an integer, got: ""'],
+  ["topic id 0", { DORI_TELEGRAM_GROUP_ID: String(GROUP), DORI_TELEGRAM_TOPIC_ID: "0" }, 'DORI_TELEGRAM_TOPIC_ID must be a positive topic id, got: "0"'],
+] as const)("dori inbound telegram refuses %s before any call", async (_, vars, err) => {
+  expect(await inbound(vars)).toEqual({ code: 1, out: "", err, calls: 0, offset: undefined });
 });

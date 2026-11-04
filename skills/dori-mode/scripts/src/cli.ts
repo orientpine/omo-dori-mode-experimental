@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // allow: SIZE_OK — existing command dispatcher; command behavior lives in separate modules.
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -1930,20 +1930,23 @@ try {
       if (key === "telegram") {
         const tg = new Telegram(fetchHttp, realClock, process.env.DORI_TELEGRAM_TOKEN ?? die("DORI_TELEGRAM_TOKEN is not set"));
         const store = fileTgInboundStore(`${config.stateDir}/telegram-offset`);
-        const num = (name: string): number => {
+        // review 1 of #350: Number("") is 0, so a blank id is refused rather than read as 0, and so are ids Telegram never gives
+        const num = (name: string, positive?: string): number => {
           const raw = process.env[name] ?? die(`${name} is not set`);
           const n = Number(raw);
-          if (!Number.isSafeInteger(n)) die(`${name} must be an integer, got: ${raw}`);
+          if (!raw.trim() || !Number.isSafeInteger(n)) die(`${name} must be an integer, got: ${JSON.stringify(raw)}`);
+          if (positive && n <= 0) die(`${name} must be a positive ${positive} id, got: ${JSON.stringify(raw)}`);
           return n;
         };
-        const ownerId = num("DORI_TELEGRAM_OWNER_ID");
+        const ownerId = num("DORI_TELEGRAM_OWNER_ID", "user");
         const groupChatId = process.env.DORI_TELEGRAM_GROUP_ID === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
-        const topicId = process.env.DORI_TELEGRAM_TOPIC_ID === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID");
+        const topicId = process.env.DORI_TELEGRAM_TOPIC_ID === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID", "topic");
         console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
         await every(loopMin, async () => {
-          // Full text, JSON-escaped on one line: getUpdates cannot fetch a message twice.
+          // Full text, JSON-escaped on one line: getUpdates cannot fetch a message twice. writeSync, not console.log, which
+          // drops a failed write (a closed stdout): the line must be out before the offset moves past its message.
           await pollTelegramInbound(tg, store, { ownerId, groupChatId, topicId }, (i) =>
-            console.log(`INBOUND ${i.source} ${i.chat} ${i.thread ?? "-"} ${i.updateId} ${i.from} ${JSON.stringify(i.text ?? "")}`));
+            writeSync(1, `INBOUND ${i.source} ${i.chat} ${i.thread ?? "-"} ${i.updateId} ${i.from} ${JSON.stringify(i.text ?? "")}\n`));
         });
         break;
       }

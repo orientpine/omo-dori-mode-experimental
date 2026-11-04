@@ -532,7 +532,7 @@ Prints `INBOUND <source> <chat> <thread> <update-id> <from> <text>` — `source`
 - the full text is printed, JSON-escaped on one line: `getUpdates` cannot fetch a message again;
 - reuses the bot token the skill already stores (`DORI_TELEGRAM_TOKEN`).
 
-Nothing starts it on its own (`dori serve` and the services run `inbound discord` only); without `DORI_TELEGRAM_TOKEN` it exits 1 before any call.
+Nothing starts it on its own (`dori serve` and the services run `inbound discord` only); without `DORI_TELEGRAM_TOKEN`, or with an id that is blank, not an integer, or (owner, topic) not positive, it exits 1 before any call. An `INBOUND` line that cannot be written (stdout closed) leaves the offset before its message.
 
 ### `dori inbound discord`
 Runs until stopped (run it as a service, see `setups/discord-aoe/`). It connects to the gateway with the message-content intent and handles:
