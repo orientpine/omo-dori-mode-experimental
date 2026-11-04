@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readHerdrSessions, recordHerdrSession, reviveHerdr } from "../src/herdr-sessions.ts";
+import { herdrLeadSession, readHerdrSessions, recordHerdrSession, reviveHerdr } from "../src/herdr-sessions.ts";
 import { findLead } from "../src/lead.ts";
 import { leadDownTick } from "../src/lead-down.ts";
 import type { Runner } from "../src/run.ts";
@@ -110,7 +110,7 @@ test("a lead started with its own --session-dir has its /thinking read from the 
   world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
   world.ps = `4000 1 -bash\n4001 4000 omo --session-dir ${own} --session-id ${id} --model p/m:high`;
   await leadDownTick(deps);
-  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ model: "p/m:medium", logDir: own });
+  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ model: "p/m:medium", log });
   appendFileSync(log, entry({ type: "thinking_level_change", thinkingLevel: "low", provider: "p", modelId: "m" }));
   world.ps = "4000 1 -bash";
   world.herdrDead = ["w1:p1"];
@@ -118,6 +118,36 @@ test("a lead started with its own --session-dir has its /thinking read from the 
   const ran = world.calls.filter((c) => c[2] === "run").at(-1)?.[4] ?? "";
   if (process.platform === "win32") expect(winData(ran).slice(2)).toEqual(["omo", "--session-id", id, "--session-dir", own, "--model", "p/m", "--thinking", "low"]);
   else expect(ran).toEndWith(` omo --session-id ${id} --session-dir ${own} --model p/m --thinking low`);
+});
+
+test("the log path omo hands its children (PI_SESSION_FILE) wins, spaces and all, and a later check that finds no log keeps the recorded one", async () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  // a session resumed from its file (herdr restores omo with --session <file>), in a folder with a space, outside sessionsDir
+  const spaced = join(dir, "my sessions");
+  mkdirSync(spaced, { recursive: true });
+  const log = join(spaced, `2026-11-04T16-00-00-000Z_${id}.jsonl`);
+  const entry = (e: object) => `${JSON.stringify(e)}\n`;
+  writeFileSync(log, entry({ type: "thinking_level_change", thinkingLevel: "high", provider: "p", modelId: "m" }) + entry({ type: "thinking_level_change", thinkingLevel: "medium", provider: "p", modelId: "m" }));
+  world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
+  world.ps = `4000 1 -bash\n4001 4000 omo --session ${log} --model p/m:high\n4002 4001 python3 -u prelude.py`;
+  let env = `python3 -u prelude.py HOME=/h PI_SESSION_ID=${id} PI_SESSION_FILE=${log} PI_SESSION_CWD=${dir}`;
+  const base = omo({ leadPane: "w1:p1", leadReviveMin: 5, sessionsDir: join(dir, "sessions") });
+  const run: Runner = async (argv, o) => (argv[1] === "eww" && argv.at(-1) === "4002" ? { code: 0, out: env, err: "" } : base.run(argv, o));
+  const deps = { ...base, run };
+  await leadDownTick(deps);
+  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ session: id, model: "p/m:medium", log });
+  // checked again while the child shows the session but not its file (and the spaced --session word cannot name it): the
+  // record keeps the log it had
+  env = `python3 -u prelude.py PI_SESSION_ID=${id}`;
+  await herdrLeadSession(run, deps.config, "w1:p1", true);
+  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ model: "p/m:medium", log });
+  appendFileSync(log, entry({ type: "thinking_level_change", thinkingLevel: "low", provider: "p", modelId: "m" }));
+  world.ps = "4000 1 -bash";
+  world.herdrDead = ["w1:p1"];
+  expect(await reviveHerdr(run, deps.clock, deps.config, "w1:p1", "", async () => true)).toBe(`REVIVE_OK w1:p1 session ${id}`);
+  const ran = world.calls.filter((c) => c[2] === "run").at(-1)?.[4] ?? "";
+  if (process.platform === "win32") expect(winData(ran).slice(2)).toEqual(["omo", "--session-id", id, "--model", "p/m", "--thinking", "low"]);
+  else expect(ran).toEndWith(` omo --session-id ${id} --model p/m --thinking low`);
 });
 
 test("an unchanged herdr lead record gets its check time on each read, so the next read waits its ten minutes", async () => {
