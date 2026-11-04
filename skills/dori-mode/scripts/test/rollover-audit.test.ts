@@ -300,7 +300,7 @@ test("a monitor that starts work, re-armed watch-only as the note asks, is no ga
 
 // A committed lead handover on disk, its old lead frozen until the audit (owner Q476)
 const LEAD_OLD = "aoe_lead_1b1b1b1b";
-const leadHandover = (log: readonly string[]) => {
+const leadHandover = (log: readonly string[], frozen: { readonly closeAt?: string } = { closeAt: "2026-10-20T10:01:00.000Z" }) => {
   const top = join(state.dir, "handover");
   mkdirSync(top, { recursive: true });
   mkdirSync(sessionDir(), { recursive: true });
@@ -311,7 +311,7 @@ const leadHandover = (log: readonly string[]) => {
   writeFileSync(join(top, "20261019-100000.json"), JSON.stringify({ cwd: CWD, oldLog, todos: [], monitors: [], leadNote: "" }));
   writeFileSync(join(top, "20261019-100000.result.json"), JSON.stringify({ at: COMMIT, note, to: { pane: NEW, session: "new-sid" }, result: "done-frozen", reasons: [] }));
   writeFileSync(join(sessionDir(), "2026-10-19T10-00-00-000Z_new-sid.jsonl"), "");
-  writeFrozen(state.dir, { pane: LEAD_OLD, aoeId: "1b1b1b1b00001111", at: COMMIT, agentPid: 11, pids: [11, 12], closeAt: "2026-10-20T10:01:00.000Z", to: NEW });
+  writeFrozen(state.dir, { pane: LEAD_OLD, aoeId: "1b1b1b1b00001111", at: COMMIT, agentPid: 11, pids: [11, 12], ...frozen, to: NEW });
   w.aoe.push({ id: "1b1b1b1b00001111", title: "lead", path: CWD, tool: "omo", profile: "main" });
   w.tmux.push(LEAD_OLD);
 };
@@ -341,4 +341,35 @@ test("an audit that leaves something out keeps the old lead frozen until frozenC
   // Then
   expect(deps.printed.find((l) => l.startsWith(`HANDOVER_OLD_KEPT_FROZEN ${LEAD_OLD}: the audit left 1 item(s) not filled in`))).toContain("2026-10-20T10:01:00.000Z");
   expect(readFrozen(state.dir).map((r) => r.pane)).toEqual([LEAD_OLD]);
+});
+
+test("an old lead kept by hand (--keep-old, or frozenCloseH 0) stays frozen after an audit that passed", async () => {
+  // Given: review #321, a passed audit closed a session the lead had asked to keep
+  leadHandover([said("2026-10-19T09:00:00Z", `[LEAD] 형(18:04 KST, ${OWNER_MSG}): "${QUOTE}" — 고쳐`)], {});
+  const deps = { ...(await setup()), config: { ...(await setup()).config, leadPane: NEW } };
+  const sorted: Classify = async (items) => ({ verdicts: items.map(() => ({ verdict: "DONE" as const, why: "done" })), model: "test/model" });
+  // When
+  await leadAudit(deps, sorted);
+  // Then
+  expect(deps.printed.find((l) => l.startsWith("HANDOVER_OLD_CLOSED"))).toBeUndefined();
+  expect(deps.printed.find((l) => l.startsWith(`HANDOVER_OLD_KEPT_FROZEN ${LEAD_OLD}`))).toContain("kept until it is closed by hand");
+  expect(readFrozen(state.dir).map((r) => r.pane)).toEqual([LEAD_OLD]);
+  expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "rm")).toBe(false);
+});
+
+test("an old lead the passed audit could not close is stopped again and left for the next freshness tick to close", async () => {
+  // Given: review #321, a failed close left the resumed old lead running next to the new one for up to 24 h
+  leadHandover([said("2026-10-19T09:00:00Z", `[LEAD] 형(18:04 KST, ${OWNER_MSG}): "${QUOTE}" — 고쳐`)]);
+  const base = await setup();
+  const sigs: string[] = [];
+  const deps = { ...base, config: { ...base.config, leadPane: NEW }, signal: (pid: number, sig: string) => (sigs.push(`${sig} ${pid}`), true), run: async (argv: readonly string[]) => (argv[0] === "aoe" && argv[1] === "rm" ? { code: 1, out: "", err: "device busy" } : base.run(argv)) };
+  const sorted: Classify = async (items) => ({ verdicts: items.map(() => ({ verdict: "DONE" as const, why: "done" })), model: "test/model" });
+  // When
+  await leadAudit(deps, sorted);
+  // Then
+  expect(deps.printed.find((l) => l.startsWith(`HANDOVER_OLD_CLOSE_FAIL ${LEAD_OLD}`))).toContain("stopped again");
+  expect(sigs).toEqual(["SIGCONT 12", "SIGCONT 11", "SIGSTOP 11", "SIGSTOP 12"]);
+  const [rec] = readFrozen(state.dir);
+  expect(rec?.pane).toBe(LEAD_OLD);
+  expect(Date.parse(rec?.closeAt ?? "")).toBeLessThanOrEqual(deps.clock.now());
 });
