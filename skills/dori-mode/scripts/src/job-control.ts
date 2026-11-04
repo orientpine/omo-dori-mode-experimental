@@ -132,3 +132,12 @@ export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Prom
   }
   return done.length ? `AGENT_RESUMED ${pane} agent ${pid}: ${done.join(", ")}` : `AGENT_RUNNING ${pane} agent ${pid}`;
 };
+
+// dori revive on a pane whose agent lives: the same check with nothing typed, so one a hand-typed fg brought forward on a
+// tty bash left cooked gets raw mode back (REVIVE_RESUMED), a healthy one is left alone (REVIVE_ALREADY_RUNNING), and a
+// background one gets the fg advice (REVIVE_FAIL)
+export const reviveLive = async (io: ResumeIO, pane: string, pid: number): Promise<string> => {
+  const line = await resumeAgent(io, pane, pid);
+  if (line.startsWith("AGENT_RUNNING")) return `REVIVE_ALREADY_RUNNING ${pane}`;
+  return line.replace(/^AGENT_RESUMED /, "REVIVE_RESUMED ").replace(/^AGENT_(RESUME_FAIL|GONE) /, "REVIVE_FAIL ");
+};

@@ -132,7 +132,7 @@ test("a lane whose omo stays stopped is told to the lead once and brought back; 
   expect(await tick(T0 + 90 * S)).toEqual([]);
   expect((await tick(T0 + 120 * S)).at(-1)).toBe("LANE_SUSPENDED_TOLD handover-simplify lead:p1");
   // nothing is typed for it: the line gives the lead the exact fg to type by hand (tmux keys for an aoe pane)
-  expect(sent(w).at(-1)).toBe("[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: tmux send-keys -t aoe_hs_aaaa1111 Enter fg Enter 를 한 번에 보내(앞 엔터가 셸 줄에 쌓인 마우스·키 찌꺼기를 비워; 멈춘 omo가 켜 둔 키 모드 때문에 ctrl 키는 글자로 찍히니 쓰지 마). 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)");
+  expect(sent(w).at(-1)).toBe("[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: tmux capture-pane -p -t aoe_hs_aaaa1111 로 그 셸 줄을 본 뒤 tmux send-keys -t aoe_hs_aaaa1111 -H 03 && sleep 0.3 && tmux send-keys -t aoe_hs_aaaa1111 fg Enter 를 그대로 쳐(문자 ^C 한 바이트가 줄에 남은 글자와 마우스 찌꺼기를 실행하지 않고 버리고, 열린 따옴표도; 0.3초 뒤 빈 줄에 fg. 엔터를 먼저 치면 그 줄이 실행되고, ^C와 fg를 한 번에 보내면 ^C가 fg까지 지워). ctrl 키 이름(send-keys ctrl+c)은 멈춘 omo가 켜 둔 키 모드 때문에 글자로 찍혀. 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)");
   // still stopped: not told twice; once it runs the mark goes
   expect(await tick(T0 + 150 * S)).toEqual([]);
   expect(await tick(T0 + 180 * S)).toEqual([]);
@@ -309,7 +309,7 @@ test("a failed lookup keeps the mark of an agent left stopped; once a hand-typed
   const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
   await tick(T0);
   await tick(T0 + 30 * S);
-  expect(sent(w).at(-1)).toBe("[DORI] 레인 bg 멈춤(셸 뒤 작업으로 밀림) — 셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: herdr pane send-text w5:p7 $'\\rfg\\r' 를 한 번에 보내(앞 엔터가 셸 줄에 쌓인 마우스·키 찌꺼기를 비워; 멈춘 omo가 켜 둔 키 모드 때문에 ctrl 키는 글자로 찍히니 쓰지 마). 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)");
+  expect(sent(w).at(-1)).toBe("[DORI] 레인 bg 멈춤(셸 뒤 작업으로 밀림) — 셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: herdr pane read w5:p7 로 그 셸 줄을 본 뒤 herdr pane send-text w5:p7 $'\\x03' && sleep 0.3 && herdr pane send-text w5:p7 $'fg\\r' 를 그대로 쳐(문자 ^C 한 바이트가 줄에 남은 글자와 마우스 찌꺼기를 실행하지 않고 버리고, 열린 따옴표도; 0.3초 뒤 빈 줄에 fg. 엔터를 먼저 치면 그 줄이 실행되고, ^C와 fg를 한 번에 보내면 ^C가 fg까지 지워). ctrl 키 이름(send-keys ctrl+c)은 멈춘 omo가 켜 둔 키 모드 때문에 글자로 찍혀. 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)");
   // When: the lookup fails, then the process cannot be read, while the agent stays a background job
   lookup = "fails";
   expect(await tick(T0 + 60 * S)).toEqual([]);
@@ -326,4 +326,32 @@ test("a failed lookup keeps the mark of an agent left stopped; once a hand-typed
   // Then: its tty gets raw mode back and the mark goes
   expect(await tick(T0 + 180 * S)).toEqual(["AGENT_RESUMED w5:p7 agent 200: raw tty mode given back, redrawn", "LANE_RUNNING_AGAIN bg w5:p7"]);
   expect(resumed).toEqual(["w5:p7 200 bg", "w5:p7 200 S"]);
+});
+
+test("a kept fg advice is dropped, not sent, once its agent runs again: a lane's while the lead was away, and the lead's own", async () => {
+  // Given: a lane agent and the lead's agent left background jobs of their shells while herdr has no lead pane
+  const { w, deps } = world({});
+  await deps(T0).registry.write(laneOf("bg", "w5:p7"));
+  w.herdrGone = ["lead:p1"];
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "bg", 300: "bg" };
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "w5:p7" ? 200 : pane === "lead:p1" ? 300 : undefined),
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => (states[pid] === "bg" ? `AGENT_RESUME_FAIL ${pane} agent ${pid}: its shell holds the tty and it is a background job; type fg in ${pane}` : `AGENT_RESUMED ${pane} agent ${pid}: raw tty mode given back, redrawn`),
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  const first = await tick(T0 + 30 * S);
+  expect(first.filter((l) => l.startsWith("LANE_SUSPENDED_NOT_TOLD"))).toHaveLength(2);
+  // When: someone types fg in both panes, and the lead pane is back
+  states[200] = "S";
+  states[300] = "S";
+  w.herdrGone = [];
+  const out = await tick(T0 + 60 * S);
+  // Then: both come back (raw mode), and neither kept line, whose fg would now go to a running omo, is sent
+  expect(out.filter((l) => l.startsWith("LANE_RUNNING_AGAIN"))).toHaveLength(2);
+  expect(out.filter((l) => /^LANE_SUSPENDED_NOT_TOLD \S+: agent (200|300) runs again, so its fg advice \(line of .+\) is not sent$/.test(l))).toHaveLength(2);
+  expect(sent(w)).toEqual([]);
+  expect(await tick(T0 + 90 * S)).toEqual([]);
+  expect(sent(w)).toEqual([]);
 });

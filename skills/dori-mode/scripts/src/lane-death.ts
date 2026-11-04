@@ -96,7 +96,8 @@ const readMark = (file: string): SuspendMark | undefined => {
 const notTyped = (reason: string): boolean => /nothing was typed|so it was not typed|^no ❯ prompt in the pane/.test(reason);
 // one record per incident, written before its line is sent (state sending) and kept only after a refusal before typing
 // (state kept). A sending record a stopped watch left behind may have reached the lead: it is dropped, never sent again.
-type Notice = { readonly key: string; readonly text: string; readonly at: string; readonly state: "sending" | "kept" };
+// pid: the agent a line with fg advice is about; once it is no longer held, that advice would go to a running omo
+type Notice = { readonly key: string; readonly text: string; readonly at: string; readonly state: "sending" | "kept"; readonly pid?: number };
 const noticeDir = (stateDir: string): string => join(stateDir, "suspended", "notices");
 
 // first check that found each pane's agent held, for the second one (in memory, like notLive)
@@ -158,10 +159,15 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     const back = await io.resume(t.pane, pid);
     out.push(back);
     const resumed = back.startsWith("AGENT_RESUMED");
-    // one write: the first enter flushes what piled up on the shell line (mouse reports and CSI-u keys the stopped omo's
-    // terminal modes still produce, herdr QA 2026-11-04), so the fg lands on an empty line; a ctrl key would come as text too
-    const fgBy = isHerdrPane(t.pane) ? `herdr pane send-text ${t.pane} $'\\rfg\\r'` : `tmux send-keys -t ${t.pane} Enter fg Enter`;
-    const outcome = resumed ? "스스로 되살렸어, 하던 일을 잇는지 봐" : `셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: ${fgBy} 를 한 번에 보내(앞 엔터가 셸 줄에 쌓인 마우스·키 찌꺼기를 비워; 멈춘 omo가 켜 둔 키 모드 때문에 ctrl 키는 글자로 찍히니 쓰지 마). 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)`;
+    // the shell line may hold text typed for omo, mouse reports and CSI-u keys the stopped omo's terminal modes still
+    // produce (herdr QA 2026-11-04): an enter would run it. A literal ^C byte (send-text, not a key name, which comes as
+    // CSI-u text) makes the tty send the shell SIGINT, which drops the line unrun, an open quote included (H68). The fg goes
+    // 0.3 s later in a write of its own: mouse reports keep landing on that line in bursts, so a fg sent apart from the ^C
+    // lands on new junk, and one in the same write is flushed with the line (herdr QA round 9, F77)
+    const [look, chain] = isHerdrPane(t.pane)
+      ? [`herdr pane read ${t.pane}`, `herdr pane send-text ${t.pane} $'\\x03' && sleep 0.3 && herdr pane send-text ${t.pane} $'fg\\r'`]
+      : [`tmux capture-pane -p -t ${t.pane}`, `tmux send-keys -t ${t.pane} -H 03 && sleep 0.3 && tmux send-keys -t ${t.pane} fg Enter`];
+    const outcome = resumed ? "스스로 되살렸어, 하던 일을 잇는지 봐" : `셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: ${look} 로 그 셸 줄을 본 뒤 ${chain} 를 그대로 쳐(문자 ^C 한 바이트가 줄에 남은 글자와 마우스 찌꺼기를 실행하지 않고 버리고, 열린 따옴표도; 0.3초 뒤 빈 줄에 fg. 엔터를 먼저 치면 그 줄이 실행되고, ^C와 fg를 한 번에 보내면 ^C가 fg까지 지워). ctrl 키 이름(send-keys ctrl+c)은 멈춘 omo가 켜 둔 키 모드 때문에 글자로 찍혀. 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)`;
     const text = laneSuspendedText(t.who === "lead" ? "리드 omo" : `레인 ${t.key}`, hold, outcome);
     // only an agent left held needs the mark (one brought back runs, and a later stop of it is told again); it is written
     // before the line goes, so a watch that stops while sending does not find the agent unmarked and tell it again
@@ -170,7 +176,7 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold } satisfies SuspendMark));
     }
     const name = `${t.pane.replace(/[^\w.-]/g, "_")}-${pid}-${now}.json`;
-    const rec: Notice = { key: t.key, text, at: new Date(now).toISOString(), state: "sending" };
+    const rec: Notice = { key: t.key, text, at: new Date(now).toISOString(), state: "sending", ...(resumed ? {} : { pid }) };
     if (lead) {
       mkdirSync(noticeDir(stateDir), { recursive: true });
       writeFileSync(join(noticeDir(stateDir), name), JSON.stringify(rec));
@@ -196,6 +202,11 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     if (notice.state !== "kept") {
       rmSync(f, { force: true });
       out.push(`LANE_SUSPENDED_NOT_TOLD ${notice.key}: a watch stopped while sending the line of ${notice.at}; it may have arrived, so it is not sent again`);
+      continue;
+    }
+    if (notice.pid !== undefined && !holdOf(io.stat, notice.pid)) {
+      rmSync(f, { force: true });
+      out.push(`LANE_SUSPENDED_NOT_TOLD ${notice.key}: agent ${notice.pid} runs again, so its fg advice (line of ${notice.at}) is not sent`);
       continue;
     }
     writeFileSync(f, JSON.stringify({ ...notice, state: "sending" } satisfies Notice));

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 
-import { holdOf, type JobStat, jobSignal, type ResumeIO, resumeAgent } from "../src/job-control.ts";
+import { holdOf, type JobStat, jobSignal, type ResumeIO, resumeAgent, reviveLive } from "../src/job-control.ts";
 
 // A herdr pane as measured on 2026-11-04 (pane w2:p2): its interactive bash 100 leads session 100 on the tty, and omo 200
 // is that shell's foreground job (its own process group 200), with a child 201 in the same group.
@@ -143,4 +143,19 @@ test("an omo brought forward by a typed fg gets the raw mode bash took away, and
   expect(typed(calls)).toEqual([]);
   expect(calls.some((c) => c.includes("-icanon") && c.includes("-echo"))).toBe(true);
   expect(calls.filter((c) => c[3] === "cols").map((c) => c[4])).toEqual(["118", "119"]);
+});
+
+test("revive of a live agent runs the same no-typing check: a cooked foreground omo gets raw mode back, a healthy one is left alone, a background one gets the fg advice", async () => {
+  const rows = pane();
+  const k = kernel(rows);
+  const cooked = io(rows, k, { cooked: true });
+  expect(await reviveLive(cooked.r, "w2:p2", 200)).toBe("REVIVE_RESUMED w2:p2 agent 200: raw tty mode given back, redrawn");
+  expect(typed(cooked.calls)).toEqual([]);
+  const raw = io(rows, k, { cooked: false });
+  expect(await reviveLive(raw.r, "w2:p2", 200)).toBe("REVIVE_ALREADY_RUNNING w2:p2");
+  k.signal(200, "SIGSTOP");
+  k.signal(200, "SIGCONT");
+  const bg = io(rows, k);
+  expect(await reviveLive(bg.r, "w2:p2", 200)).toStartWith("REVIVE_FAIL w2:p2 agent 200: its shell holds the tty and it is a background job");
+  expect(bg.calls).toEqual([]);
 });
