@@ -308,8 +308,9 @@ const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pa
   const claimed = resumeFile(stateDir, key);
   const claim = readJson<{ request?: string; since?: string; approvedBy?: string; result?: string; toldAt?: string; readyAt?: string; at?: string }>(claimed);
   const by = (asked.approvedBy ?? "").trim();
-  // the first ask of this waiting request: a run started again for it and refused again carries it on
-  const since = claim?.since && claim.approvedBy === by && claim.result === "started" ? claim.since : claim?.request === asked.at && claim.since ? claim.since : asked.at;
+  // the first ask of this waiting request: a run started again for it and refused again carries it on (its row names the
+  // request it was started for); a new request with the same approval starts its own wait (review 320 round 15)
+  const since = claim?.since && asked.resumes && claim.request === asked.resumes ? claim.since : claim?.request === asked.at && claim.since ? claim.since : asked.at;
   // a refusal started once (or skipped for good) is done; one still waiting, or skipped for a stale ready mark, is looked at
   // again: a fresh mark or its work ending still starts it (review 320)
   // a started run that died before it wrote another row (no live run holds the lane, checked below) is started again once
@@ -473,8 +474,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       acts.push(...(await superviseLane(deps, seen)));
       const resumed = await readyResume(deps, hooks, lane.key, lane.pane);
       acts.push(...resumed);
-      // a lead's request still waiting holds the lane too: no automatic start beside it (review 320 round 13)
-      if (resumed.some((a) => a.detail.startsWith("started")) || waitingRequest(readRollovers(deps.config.stateDir), lane.key, lane.pane)) continue;
+      if (resumed.some((a) => a.detail.startsWith("started"))) continue;
       acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, lane.rolloverDue, stuckTop(lane), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
       continue;
     }
@@ -503,8 +503,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     const resumed = await readyResume(deps, hooks, lane.key, lane.pane);
     acts.push(...resumed);
     // the start just made holds the lane: no automatic start beside it in this sweep
-    // a lead's request still waiting holds the lane too: no automatic start beside it (review 320 round 13)
-    if (!resumed.some((a) => a.detail.startsWith("started")) && !waitingRequest(readRollovers(deps.config.stateDir), lane.key, lane.pane)) acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue, stuckTop(current), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
+    if (!resumed.some((a) => a.detail.startsWith("started"))) acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue, stuckTop(current), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
     const heard = lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);
     if (silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {

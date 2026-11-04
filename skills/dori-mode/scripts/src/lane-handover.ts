@@ -596,14 +596,45 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   // an auto: approval without the grant of a run freshness started is borrowed: refused first, and never logged, since a
   // row approved auto: is read by freshness as its own run's result (lastAuto) and ends a lead's waiting request
   const borrowed = decidedBy(opts.approvedBy?.trim() ?? "") === "auto" && !granted;
-  const refuse = (why: string, held?: { readonly blocked: Blocked; readonly pids?: readonly number[]; readonly tasks?: readonly string[]; readonly safePoint?: { readonly why: string; readonly told: boolean } }): LaneHandoverResult => {
+  // I1 for the rollover log too: a refusal row (the lane's waiting request, read under the lock by a run started again for
+  // it) is written only by a run that holds the lane's lock. A run freshness started holds it for its whole wait; any other
+  // takes it for the write. One that finds it held by a live run writes nothing and goes the takeover way, so the holder
+  // steps aside for this request or is mid-move and keeps the lane (review 320 round 15)
+  let holding = Boolean(opts.idle);
+  const rowLock = join(dir, `${key}.lock`);
+  const forRow = async (): Promise<{ readonly release: () => void; readonly log: boolean } | { readonly via: LaneHandoverResult }> => {
+    if (holding || borrowed || opts.dryRun || !opts.approvedBy?.trim()) return { release: () => {}, log: true };
+    mkdirSync(dir, { recursive: true });
+    const locked = takeLock(rowLock, deps.alive, at);
+    if (!locked) {
+      holding = true;
+      return { release: () => { holding = false; rmSync(rowLock, { force: true }); }, log: true };
+    }
+    const holder = lockHolder(rowLock, deps.alive);
+    if (!holder) {
+      emit(`HANDOVER_NOT_LOGGED ${key}: ${locked}; the refusal below is not logged, so the lane's waiting request stays as it was`);
+      return { release: () => {}, log: false };
+    }
+    const stop = await handOver(deps, key, holder, opts, at, emit);
+    return { via: stop ?? (await attempt(deps, key, here, { ...opts, ...(opts.boundPane ?? fromPane ? { boundPane: opts.boundPane ?? fromPane } : {}) }, granted)) };
+  };
+  const refuse = async (why: string, held?: { readonly blocked: Blocked; readonly pids?: readonly number[]; readonly tasks?: readonly string[]; readonly safePoint?: { readonly why: string; readonly told: boolean } }): Promise<LaneHandoverResult> => {
+    const gate = await forRow();
+    if ("via" in gate) return gate.via;
+    try {
+      return refused(why, held, gate.log);
+    } finally {
+      gate.release();
+    }
+  };
+  const refused = (why: string, held: { readonly blocked: Blocked; readonly pids?: readonly number[]; readonly tasks?: readonly string[]; readonly safePoint?: { readonly why: string; readonly told: boolean } } | undefined, log: boolean): LaneHandoverResult => {
     emit(`HANDOVER_REFUSED ${key}: ${why}`);
     if (borrowed) return { code: 2 };
     // a run refused while the lane was busy keeps the options it was given (the note as an absolute path): a ready mark
     // starts it again with them (freshness readyResume)
     const safePoint = held?.safePoint ?? (held && fromPane && opts.approvedBy?.trim() && decidedBy(opts.approvedBy.trim()) !== "auto" ? untoldAsk(config.stateDir, key, fromPane) : undefined);
     const request: RolloverRequest = { ...(opts.note ? { note: resolve(opts.note) } : {}), ...(opts.model ? { model: opts.model } : {}), ...(opts.thinking ? { thinking: opts.thinking } : {}), ...(opts.keepOld ? { keepOld: true } : {}), ...(opts.verifyMin ? { verifyMin: opts.verifyMin } : {}) };
-    if (!opts.dryRun && opts.approvedBy?.trim()) appendRollover(config.stateDir, { kind: "rollover", who: "lane", at, key, from: fromPane, approvedBy: opts.approvedBy.trim(), signals: {}, steps: [], result: "refused", reasons: [why], ...(held ? { blocked: held.blocked, ...(held.pids?.length ? { pids: held.pids } : {}), ...(held.tasks?.length ? { tasks: held.tasks } : {}), request, ...(safePoint ? { safePoint } : {}) } : {}) });
+    if (log && !opts.dryRun && opts.approvedBy?.trim()) appendRollover(config.stateDir, { kind: "rollover", who: "lane", at, key, from: fromPane, approvedBy: opts.approvedBy.trim(), signals: {}, steps: [], result: "refused", reasons: [why], ...(held ? { blocked: held.blocked, ...(held.pids?.length ? { pids: held.pids } : {}), ...(held.tasks?.length ? { tasks: held.tasks } : {}), request, ...(safePoint ? { safePoint } : {}) } : {}), ...(opts.serves ? { resumes: opts.serves.at } : {}) });
     return { code: 2 };
   };
   if (borrowed) return refuse(`a lane moves to a new session only with an approval: ${approvalProblem(opts.approvedBy, () => undefined, { on: config.handover.autoRolloverLanes, key: "handover.autoRolloverLanes", granted }, key, "", [])} (--dry-run needs none)`);
@@ -675,17 +706,13 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     return { code: 0, to: lane.pane };
   }
   // a run freshness started holds the lane's lock here (I1), and only under it is the waiting request read for good: a resumed
-  // run moves only for the request it was started for, while the lane is still in that request's pane, and an automatic run
-  // gives way to a lead's waiting request; either leaves no row, so the waiting request stays the last (review 320 round 14)
+  // run moves only for the request it was started for, while the lane is still in that request's pane; it leaves no row, so
+  // the waiting request stays the last (review 320 round 14)
   if (opts.idle) {
     const waiting = waitingRequest(readRollovers(config.stateDir), key, lane.pane);
     if (opts.serves && (lane.pane !== opts.serves.pane || waiting?.at !== opts.serves.at)) {
       emit(`HANDOVER_REQUEST_GONE ${key}: the request of ${opts.serves.at} in ${opts.serves.pane} is no longer the lane's waiting one (the lane is in ${lane.pane}${waiting ? `, waiting request ${waiting.at}` : ", no request waits"}); nothing is moved`);
       return { code: lane.pane !== opts.serves.pane ? 0 : 2, ...(lane.pane !== opts.serves.pane ? { to: lane.pane } : {}) };
-    }
-    if (!opts.serves && waiting && decidedBy(opts.approvedBy?.trim() ?? "") === "auto") {
-      emit(`HANDOVER_YIELDED ${key}: the lead's request of ${waiting.at} waits for this lane; the automatic run leaves the move to it`);
-      return { code: 2 };
     }
   }
   // a dry run needs no approval, but a given one is checked the same way, so it can be tried before the real run
@@ -792,9 +819,18 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     // Whether the pane took the ask is kept on the request: freshness asks again until it does (review 320 round 8)
     const waits = !opts.idle && !!opts.approvedBy?.trim() && decidedBy(opts.approvedBy.trim()) !== "auto";
     const asked = blockers.join("; ");
-    const told = waits ? await tell(deps, lane.pane, safePointText(key, asked, "lead")) : false;
-    const r = refuse(blockedWhy, { blocked: work.length ? "work" : "busy", pids: uncovered.flatMap((c) => c.pids ?? [c.pid]), tasks: tasks.map((t) => t.id), ...(waits ? { safePoint: { why: asked, told } } : {}) });
-    if (waits) {
+    // the lock for the row is taken before the ask, so a run that goes the takeover way instead asks the lane nothing
+    const gate = await forRow();
+    if ("via" in gate) return gate.via;
+    let r: LaneHandoverResult;
+    let told = false;
+    try {
+      told = waits ? await tell(deps, lane.pane, safePointText(key, asked, "lead")) : false;
+      r = refused(blockedWhy, { blocked: work.length ? "work" : "busy", pids: uncovered.flatMap((c) => c.pids ?? [c.pid]), tasks: tasks.map((t) => t.id), ...(waits ? { safePoint: { why: asked, told } } : {}) }, gate.log);
+    } finally {
+      gate.release();
+    }
+    if (waits && gate.log) {
       emit(`HANDOVER_PENDING ${key}: the move waits and ${work.length ? "starts by itself once the lane marks ready or the work it named ended" : "starts by itself the moment the lane is idle"} (freshness, same approval and options; a run of yours with --force takes it over and moves it now); ${told ? "the lane was asked for its safe point" : `the request for a safe point did not reach ${lane.pane}`}`);
     }
     return r;
