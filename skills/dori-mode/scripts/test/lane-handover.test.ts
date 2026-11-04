@@ -1623,7 +1623,8 @@ test("a lead's waiting request whose resumed run finds the agent stopped stays w
   const row = rolloverRows().at(-1);
   expect([row?.result, row?.blocked, row?.resumes]).toEqual(["refused", "suspended", new Date(T0).toISOString()]);
   expect(waitingRequest(readRollovers(state.dir), "demo", OLD)?.at).toBe(row?.at);
-  expect(row?.safePoint).toBeUndefined();
+  // the ask the lane has not taken is kept on the row, and held back while the agent is stopped
+  expect(row?.safePoint).toEqual({ why: "a turn is running", told: false });
   // freshness starts it again at its next sweep, for the new row, and types nothing into the pane
   expect(await tick(2)).toEqual(["started"]);
   expect(serves[0]?.at).toBe(row?.at);
@@ -1639,6 +1640,39 @@ test("a lead's waiting request whose resumed run finds the agent stopped stays w
   expect(after.some((l) => l.startsWith("HANDOVER_REFUSED") || l.startsWith("HANDOVER_REQUEST_GONE") || l.startsWith("LANE_SUSPENDED"))).toBe(false);
   expect(after.some((l) => l.startsWith(`HANDOVER_FROZEN demo agent 11 in ${OLD}`))).toBe(true);
   expect(after.some((l) => l.startsWith(`HANDOVER_STARTED demo ${OLD} -> `))).toBe(true);
+});
+
+test("an ask the lane has not taken survives a suspended refusal: after the lead's fg, a run refused for work that still runs carries it on and freshness types it then (review 333 round 7)", async () => {
+  // Given: the lead's busy request with an ask that has not reached the lane; its started run finds the agent stopped
+  const base = await setup();
+  const T0 = Date.parse("2026-10-11T16:35:00Z");
+  const clock = fakeClock(T0);
+  let agent = { pid: 11, state: "T", ppid: 10, pgrp: 11, session: 10, tpgid: 10 };
+  const deps: LaneHandoverDeps = { ...base, clock: { now: () => clock.at, sleep: async (ms: number) => { clock.at += ms; } }, reportOwner: async () => "msg-1", stat: (pid) => (pid === 11 ? agent : undefined), signal: () => true };
+  const serves: { readonly at: string; readonly pane: string }[] = [];
+  const hooks = { signals: async () => ({}), alive: (pid: number) => pid === 15 || pid === 16, resume: async (_k: string, _by: string, _r: unknown, s: { readonly at: string; readonly pane: string }) => { serves.push(s); return { started: true, line: "unit=u1" }; } };
+  const tick = async (min: number): Promise<void> => {
+    clock.at = T0 + min * 60_000;
+    await deps.registry.patch("demo", { lastReplyAt: clock.at });
+    await freshnessTick(deps, "/home/test", hooks);
+  };
+  const asks = () => sent(w).filter((t) => t.startsWith("[LEAD] The lead moves demo to a new session"));
+  appendRollover(state.dir, { ...WAITING, at: new Date(T0).toISOString(), safePoint: { why: "a turn is running", told: false } });
+  w.screens[OLD] = HIGH;
+  clock.at = T0 + 60_000;
+  await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, waitIdleMin: 5, serves: { at: new Date(T0).toISOString(), pane: OLD } });
+  expect(rolloverRows().at(-1)?.blocked).toBe("suspended");
+  await tick(2);
+  expect(asks()).toEqual([]);
+  // When: the lead's fg brings the agent back, and the run started again finds the lane's local chains (15, 16) still running
+  agent = { ...agent, state: "S", tpgid: 11 };
+  clock.at = T0 + 3 * 60_000;
+  await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, waitIdleMin: 5, serves: serves[0] ?? { at: "", pane: OLD } });
+  // Then: refused for that work, with the ask carried on; the next sweep types it into the lane
+  const row = rolloverRows().at(-1);
+  expect([row?.blocked, row?.safePoint?.told]).toEqual(["work", false]);
+  await tick(4);
+  expect(asks()).toHaveLength(1);
 });
 
 test("a run that finds a dead journal while another run holds the lane's lock repairs nothing: the repair waits for the lock like any writer (review 320 round 12)", async () => {

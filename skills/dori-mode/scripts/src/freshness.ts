@@ -296,7 +296,9 @@ const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pa
   // the safe-point ask the pane did not take (a herdr question open, a pane gone for a moment) is typed again each sweep
   // until it is, once per request: without it the lane never learns it should mark ready (review 320 round 8)
   const askFile = safePointFile(stateDir, key);
-  if (asked.safePoint && !asked.safePoint.told && readJson<{ request?: string }>(askFile)?.request !== asked.at && !handoverRunning(stateDir, "lane", key, hooks.alive ?? pidAlive)) {
+  // never while the request waits on a stopped agent (suspended): the pane's foreground may be the shell, which would take the
+  // ask as a command; the row after the agent runs again carries it on, and it is typed then (review 333 round 7)
+  if (asked.blocked !== "suspended" && asked.safePoint && !asked.safePoint.told && readJson<{ request?: string }>(askFile)?.request !== asked.at && !handoverRunning(stateDir, "lane", key, hooks.alive ?? pidAlive)) {
     // a text the pane refuses outright (an unsafe character) is a failed delivery, tried again next sweep, never a throw that
     // ends the sweep for every lane after this one (review 320 round 9)
     if (await sendVerified(deps.run, deps.clock, deps.config, pane, safePointText(key, asked.safePoint.why, "lead")).catch(() => false)) {
