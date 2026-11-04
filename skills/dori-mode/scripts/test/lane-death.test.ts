@@ -171,3 +171,17 @@ test("a failed lookup or an unreadable process keeps the mark, a watch restart d
   expect((await tick(T0 + 210 * S)).map((l) => l.split(":")[0])).toEqual(["LANE_SUSPENDED bg w5"]);
   expect((await tick(T0 + 240 * S))).toEqual([]);
 });
+
+test("an agent replaced between the two checks is confirmed afresh: the new one is named only after its own second check", async () => {
+  const { deps } = world({});
+  await deps(T0).registry.write(laneOf("swap", "w5:p8"));
+  let agent = 200;
+  const io: SuspendIO = { agentOf: async (pane) => (pane === "w5:p8" ? agent : undefined), stat: (pid) => held({ 200: "T", 201: "T" })(pid) ?? shellOf(pid) };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  expect(await tick(T0)).toEqual([]);
+  agent = 201;
+  expect(await tick(T0 + 30 * S)).toEqual([]);
+  const named = await tick(T0 + 60 * S);
+  expect(named).toHaveLength(1);
+  expect(named[0]).toStartWith("LANE_SUSPENDED swap w5:p8: agent 201 stopped");
+});

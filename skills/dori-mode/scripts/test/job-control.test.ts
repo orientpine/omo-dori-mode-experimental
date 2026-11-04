@@ -77,10 +77,62 @@ test("an agent that leads its own session (a tmux pane running it directly) gets
 
 test("a failed stop of the agent resumes the shell it stopped first", () => {
   const rows = pane();
-  const sent: string[] = [];
-  const signal = jobSignal((pid, sig) => (sent.push(`${sig} ${pid}`), pid !== 200), (pid) => rows.get(pid));
+  const k = kernel(rows);
+  const signal = jobSignal((pid, sig: "SIGSTOP" | "SIGCONT") => pid !== 200 && k.signal(pid, sig), k.stat);
   expect(signal(200, "SIGSTOP")).toBe(false);
-  expect(sent).toEqual(["SIGSTOP 100", "SIGSTOP 200", "SIGCONT 100"]);
+  expect(k.sent).toEqual(["SIGSTOP 100", "SIGCONT 100"]);
+  expect(rows.get(100)?.state).toBe("S");
+});
+
+// Linux delivers a SIGSTOP asynchronously: kill() returns before the shell is stopped. Stopping its job before then lets
+// bash, still running, see the job stop and take the tty back.
+const lateKernel = (rows: Map<number, Row>, reads: number) => {
+  const k = kernel(rows);
+  let left = -1;
+  const order: string[] = [];
+  const signal = (pid: number, sig: "SIGSTOP" | "SIGCONT"): boolean => {
+    order.push(`${sig} ${pid} (shell ${rows.get(100)?.state})`);
+    if (pid === 100 && sig === "SIGSTOP") {
+      k.sent.push(`${sig} ${pid}`);
+      left = reads;
+      return true;
+    }
+    if (pid === 100) left = -1;
+    return k.signal(pid, sig);
+  };
+  const stat = (pid: number) => {
+    if (pid === 100 && left > 0 && --left === 0) rows.get(100)!.state = "T";
+    return k.stat(pid);
+  };
+  return { ...k, signal, stat, order };
+};
+
+test("the job is stopped only once its shell reads stopped: a late stop of the shell is waited for, so the tty stays with the job", () => {
+  // Given: the shell's stop lands only after a few reads of its state
+  const rows = pane();
+  const k = lateKernel(rows, 4);
+  const naps: number[] = [];
+  const signal = jobSignal(k.signal, k.stat, { pid: 1, pgrp: 1 }, { sleep: (ms) => naps.push(ms), ms: 1_000 });
+  // When
+  expect(signal(200, "SIGSTOP")).toBe(true);
+  // Then: the agent's stop went after the shell read T, and the shell never took the tty
+  expect(k.order).toEqual(["SIGSTOP 100 (shell S)", "SIGSTOP 200 (shell T)"]);
+  expect(naps.length).toBeGreaterThan(0);
+  expect(rows.get(200)?.tpgid).toBe(200);
+});
+
+test("a shell that does not stop in time is resumed and its job is not stopped (the freeze fails safe)", () => {
+  // Given: the shell's stop never lands
+  const rows = pane();
+  const k = lateKernel(rows, Number.POSITIVE_INFINITY);
+  let slept = 0;
+  const signal = jobSignal(k.signal, k.stat, { pid: 1, pgrp: 1 }, { sleep: (ms) => (slept += ms), ms: 200 });
+  // When / Then
+  expect(signal(200, "SIGSTOP")).toBe(false);
+  expect(k.order).toEqual(["SIGSTOP 100 (shell S)", "SIGCONT 100 (shell S)"]);
+  expect(rows.get(200)?.state).toBe("S");
+  expect(slept).toBeGreaterThanOrEqual(200);
+  expect(slept).toBeLessThan(400);
 });
 
 const io = (rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { cooked?: boolean } = {}) => {

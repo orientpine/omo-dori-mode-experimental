@@ -57,9 +57,24 @@ const refusedTarget = (pid: number, self: SelfIds): string | undefined => {
   return undefined;
 };
 
-// SIGSTOP to a shell's foreground job stops the shell first; SIGCONT to it resumes the shell after it. Other signals and
-// other processes pass through as they are, past the target guard above (SIGNAL_REFUSED on stderr, false).
-export const jobSignal = <S extends string>(raw: (pid: number, sig: S) => boolean, stat: StatOf = readStat, self: SelfIds = { pid: process.pid, pgrp: readStat(process.pid)?.pgrp }): ((pid: number, sig: S) => boolean) => (pid, sig) => {
+// kill() returns before a SIGSTOP has stopped its target (Linux delivers it asynchronously): the job is stopped only once its
+// shell reads T, checked every 10 ms for up to ms. A synchronous nap, since a signal path is synchronous.
+export type StopWait = { readonly sleep: (ms: number) => void; readonly ms: number };
+const nap = new Int32Array(new SharedArrayBuffer(4));
+const realWait: StopWait = { sleep: (ms) => void Atomics.wait(nap, 0, 0, ms), ms: 1_000 };
+const reachesStop = (stat: StatOf, pid: number, wait: StopWait): boolean => {
+  for (let waited = 0; ; waited += 10) {
+    if (stat(pid)?.state === "T") return true;
+    if (waited >= wait.ms) return false;
+    wait.sleep(10);
+  }
+};
+
+// SIGSTOP to a shell's foreground job stops the shell first and waits for it to read stopped; SIGCONT to it resumes the
+// shell after it. A shell that does not stop in time is resumed and the job is left running (false: the freeze fails, it
+// never half-happens). Other signals and other processes pass through as they are, past the target guard above
+// (SIGNAL_REFUSED on stderr, false).
+export const jobSignal = <S extends string>(raw: (pid: number, sig: S) => boolean, stat: StatOf = readStat, self: SelfIds = { pid: process.pid, pgrp: readStat(process.pid)?.pgrp }, wait: StopWait = realWait): ((pid: number, sig: S) => boolean) => (pid, sig) => {
   const signal = (p: number, s: S): boolean => {
     const why = refusedTarget(p, self);
     if (!why) return raw(p, s);
@@ -70,6 +85,11 @@ export const jobSignal = <S extends string>(raw: (pid: number, sig: S) => boolea
   const shell = jobShell(stat, pid);
   if (sig === "SIGSTOP") {
     if (shell && !signal(shell.pid, sig)) return false;
+    if (shell && !reachesStop(stat, shell.pid, wait)) {
+      signal(shell.pid, "SIGCONT" as S);
+      console.error(`SIGNAL_REFUSED ${sig} ${pid}: its shell ${shell.pid} did not read stopped within ${wait.ms} ms, so the job was not stopped`);
+      return false;
+    }
     const sent = signal(pid, sig);
     if (!sent && shell) signal(shell.pid, "SIGCONT" as S);
     return sent;

@@ -75,8 +75,8 @@ const readMark = (file: string): SuspendMark | undefined => {
   }
 };
 
-// first check that found each pane's agent held, for the second one (in memory, like notLive)
-const seenHeld = new Map<string, number>();
+// first check that found each pane's agent held, and which agent, for the second one (in memory, like notLive)
+const seenHeld = new Map<string, { readonly pid: number; readonly since: number }>();
 
 export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(deps), alive: (pid: number) => boolean = pidAlive): Promise<string[]> => {
   const out: string[] = [];
@@ -107,12 +107,13 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       continue;
     }
     if (marked?.pid === pid) continue;
+    // another agent in the pane since the first check starts its own confirmation
     const first = seenHeld.get(t.pane);
-    if (first === undefined) {
-      seenHeld.set(t.pane, now);
+    if (first?.pid !== pid) {
+      seenHeld.set(t.pane, { pid, since: now });
       continue;
     }
-    if (now - first < CONFIRM_MS) continue;
+    if (now - first.since < CONFIRM_MS) continue;
     seenHeld.delete(t.pane);
     const s = io.stat(pid);
     mkdirSync(join(stateDir, "suspended"), { recursive: true });
