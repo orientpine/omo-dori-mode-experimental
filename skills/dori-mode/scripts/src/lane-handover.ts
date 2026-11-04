@@ -334,7 +334,13 @@ export const foreignPids = (table: readonly Proc[], tree: ReadonlySet<number>): 
 const carried = (dir: string, key: string, alive: (pid: number) => boolean, known: ReadonlySet<number>): Job[] => {
   let files: string[] = [];
   try {
-    files = readdirSync(dir).filter((n) => new RegExp(`^${escape(key)}-\\d{8}-\\d{6}\\.json$`).test(n)).sort();
+    // <key>-<stamp>.json, or <key>-<stamp>-<pid>.json for a run that wrote second in the same second (the newer one)
+    const name = new RegExp(`^${escape(key)}-(\\d{8}-\\d{6})(?:-(\\d+))?\\.json$`);
+    const order = (n: string): string => {
+      const m = name.exec(n);
+      return `${m?.[1] ?? ""}-${m?.[2] === undefined ? "0" : "1"}-${(m?.[2] ?? "").padStart(10, "0")}`;
+    };
+    files = readdirSync(dir).filter((n) => name.test(n)).sort((a, b) => order(a).localeCompare(order(b)));
   } catch {
     return [];
   }
@@ -618,8 +624,34 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
       return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? lane.pane }, granted);
     }
     if (opts.dryRun) return refuse(`an interrupted handover (${pending.from} -> ${pending.to}, ${pending.at}) left ${pendingFile(config.stateDir, key)}; run without --dry-run to repair it first`);
-    emit(`HANDOVER_INTERRUPTED ${key}: the run from ${pending.at} (pid ${pending.pid}) ended between opening ${pending.to} and finishing; repairing`);
-    await recover(deps, pending, emit);
+    // the repair writes the registry and removes the journal, so it holds the lane's lock like any writer (I1): a run that
+    // finds the lock held waits for its holder the takeover way, and the journal is read again under the lock, so a repair
+    // done meanwhile (or a newer move's journal) is never repaired or removed twice (review 320 round 12). A run freshness
+    // started (idle) already holds the lock.
+    const lockFile = join(dir, `${key}.lock`);
+    if (!opts.idle) {
+      mkdirSync(dir, { recursive: true });
+      const locked = takeLock(lockFile, deps.alive, at);
+      if (locked) {
+        const holder = lockHolder(lockFile, deps.alive);
+        if (!holder) return refuse(locked);
+        const stop = await handOver(deps, key, holder, opts, at, emit);
+        if (stop) return stop;
+        return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? lane.pane }, granted);
+      }
+    }
+    let repaired = false;
+    try {
+      const again = readPending(config.stateDir, key);
+      if (again && again.pid === pending.pid && again.at === pending.at) {
+        emit(`HANDOVER_INTERRUPTED ${key}: the run from ${pending.at} (pid ${pending.pid}) ended between opening ${pending.to} and finishing; repairing`);
+        await recover(deps, again, emit);
+        repaired = true;
+      }
+    } finally {
+      if (!opts.idle) rmSync(lockFile, { force: true });
+    }
+    if (!repaired) return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? lane.pane }, granted);
     return { code: 3 };
   }
   // a run that waited for a holder asked for the session it found then: once an interrupted move is repaired (above), a

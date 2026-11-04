@@ -1476,6 +1476,27 @@ test("a forcing run that finds a live run mid-move (its pending journal) logs no
   expect(takeovers()).toEqual([]);
 });
 
+test("a run that finds a dead journal while another run holds the lane's lock repairs nothing: the repair waits for the lock like any writer (review 320 round 12)", async () => {
+  // Given: a dead run's journal, and a live run (77) that holds the lock and is repairing it
+  const base = await setup();
+  const lanes = join(state.dir, "handover", "lanes");
+  mkdirSync(lanes, { recursive: true });
+  const journal = { key: "demo", pid: 88, at: "2026-10-11T16:30:00Z", from: OLD, to: NEW, note: join(lanes, "demo-20261011-163000.md") };
+  writeFileSync(pendingFile(state.dir, "demo"), JSON.stringify(journal));
+  writeFileSync(join(lanes, "demo.lock"), JSON.stringify({ pid: 77, at: "2026-10-11T16:35:00Z" }));
+  live.add(77);
+  appendRollover(state.dir, WAITING);
+  // When
+  const r = await laneHandover({ ...base, reportOwner: async () => "msg-1" }, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, force: true });
+  // Then
+  expect(r.code).toBe(2);
+  expect(printed.some((l) => l.startsWith("HANDOVER_INTERRUPTED"))).toBe(false);
+  expect(printed.some((l) => l.startsWith("HANDOVER_REFUSED demo: another handover is running (pid 77"))).toBe(true);
+  expect(JSON.parse(readFileSync(pendingFile(state.dir, "demo"), "utf8"))).toMatchObject({ pid: 88 });
+  expect(stoppedIds()).toEqual([]);
+  expect(JSON.parse(readFileSync(join(lanes, "demo.lock"), "utf8"))).toMatchObject({ pid: 77 });
+});
+
 test("a safe-point request that did not reach the lane is kept on the waiting request, and freshness asks again once the pane takes text, once (review 320 round 8)", async () => {
   // Given: the lane's pane refuses the text (a herdr question open) while a long chain runs
   const base = await setup();
@@ -1569,6 +1590,21 @@ test("an ask that did not reach the lane outlives the resumed run's own refusal:
   expect([busy.code, resumed.code]).toEqual([2, 2]);
   expect(row).toMatchObject({ result: "refused", blocked: "work", safePoint: { told: false } });
   expect(asks()).toHaveLength(1);
+});
+
+test("a newer facts snapshot written beside one of the same second is the one read next time: a job only it lists stays listed (review 320 round 10)", async () => {
+  // Given: two runs in one second, the second wrote demo-<stamp>-<pid>.json
+  const deps = await setup();
+  const lanes = join(state.dir, "handover", "lanes");
+  mkdirSync(lanes, { recursive: true });
+  writeFileSync(join(lanes, "demo-20261010-120000.json"), JSON.stringify({ detached: [], chains: [] }));
+  writeFileSync(join(lanes, "demo-20261010-120000-4242.json"), JSON.stringify({ detached: [{ pid: 41, cmd: "sleep 9999" }], chains: [] }));
+  table = baseTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  // Then
+  expect(printed.at(-1)).toMatch(/detached jobs left alone: (?:\d+,)*41(?:,\d+)*$/);
+  expect(r.note).toBeDefined();
 });
 
 // omo's input box sits between two ─ borders; the status lines under it can quote "esc to interrupt" (here the cwd and a
