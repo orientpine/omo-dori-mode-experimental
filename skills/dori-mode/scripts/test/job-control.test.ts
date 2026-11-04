@@ -1,10 +1,5 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { expect, test } from "bun:test";
 
-const lockDir = (): string => mkdtempSync(join(tmpdir(), "resume-lock-"));
 
 import { holdOf, type JobStat, jobSignal, type ResumeIO, resumeAgent } from "../src/job-control.ts";
 
@@ -86,7 +81,7 @@ test("a failed stop of the agent resumes the shell it stopped first", () => {
   expect(sent).toEqual(["SIGSTOP 100", "SIGSTOP 200", "SIGCONT 100"]);
 });
 
-const io = (rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { jobs?: number; cooked?: boolean; fgWorks?: boolean } = {}) => {
+const io = (rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { cooked?: boolean } = {}) => {
   const calls: string[][] = [];
   let cooked = opts.cooked ?? true;
   const r: ResumeIO = {
@@ -94,14 +89,8 @@ const io = (rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { jobs?:
     signal: k.signal,
     stat: k.stat,
     tty: () => "/dev/pts/17",
-    lockDir: lockDir(),
-    jobs: () => Array.from({ length: opts.jobs ?? 1 }, (_, i) => 200 + i * 100),
     run: async (argv) => {
       calls.push([...argv]);
-      if (argv[0] === "herdr" && argv[2] === "run" && argv[4] === "fg" && opts.fgWorks !== false) {
-        k.setTpgid(200);
-        rows.get(200)!.state = "S";
-      }
       if (argv[0] === "stty" && argv[3] === "-a") return { code: 0, out: cooked ? "isig icanon iexten echo" : "-isig -icanon -iexten -echo", err: "" };
       if (argv[0] === "stty" && argv[3] === "size") return { code: 0, out: "40 119\n", err: "" };
       if (argv[0] === "stty" && argv.includes("-icanon")) cooked = false;
@@ -110,113 +99,48 @@ const io = (rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { jobs?:
   };
   return { r, calls };
 };
+const typed = (calls: string[][]): string[][] => calls.filter((c) => c[0] !== "stty");
 
-test("resume brings a background omo back: drops the shell's pending input, types fg, gives back raw mode and redraws", async () => {
-  // Given: the unbracketed freeze left omo stopped in the background and bash cooked the tty
-  const rows = pane();
-  const k = kernel(rows);
-  k.signal(200, "SIGSTOP");
-  k.signal(200, "SIGCONT");
-  rows.get(200)!.state = "T";
-  const { r, calls } = io(rows, k);
-  // When
-  const line = await resumeAgent(r, "w2:p2", 200);
-  // Then: bash's pending input is dropped (ctrl-C) before fg, the tty is raw again and omo is the running foreground job
-  expect(line).toBe("AGENT_RESUMED w2:p2 agent 200: fg typed into the shell, raw tty mode given back, redrawn");
-  expect(calls.slice(0, 2)).toEqual([["herdr", "pane", "send-text", "w2:p2", "\x03"], ["herdr", "pane", "run", "w2:p2", "fg"]]);
-  expect(calls.some((c) => c[0] === "stty" && c.includes("-icanon") && c.includes("-echo"))).toBe(true);
-  expect(calls.filter((c) => c[0] === "stty" && c[3] === "cols").map((c) => c[4])).toEqual(["118", "119"]);
-  expect(holdOf(k.stat, 200)).toBeUndefined();
+test("resume of a background omo types nothing into its shell and says the fg to type by hand", async () => {
+  // Given: the unbracketed freeze left omo a background job of its shell (stopped, or running)
+  for (const stopped of [true, false]) {
+    const rows = pane();
+    const k = kernel(rows);
+    k.signal(200, "SIGSTOP");
+    k.signal(200, "SIGCONT");
+    if (stopped) rows.get(200)!.state = "T";
+    const { r, calls } = io(rows, k);
+    // When
+    const line = await resumeAgent(r, "w2:p2", 200);
+    // Then: no key and no signal goes anywhere; the line names what to type
+    expect(line).toBe(`AGENT_RESUME_FAIL w2:p2 agent 200: its shell holds the tty and it is a background job; type fg in w2:p2 (state ${stopped ? "T" : "S"}, tty foreground group 100, its group 200)`);
+    expect(calls).toEqual([]);
+    expect(k.sent.slice(2)).toEqual([]);
+  }
 });
 
-test("resume of a stopped foreground omo only continues it; a running one is left alone", async () => {
+test("resume of a stopped foreground omo only continues it; a running one on a raw tty is left alone", async () => {
   const rows = pane();
   const k = kernel(rows);
   rows.get(200)!.state = "T";
   rows.get(201)!.state = "T";
-  const { r, calls } = io(rows, k);
+  const { r, calls } = io(rows, k, { cooked: false });
   expect(await resumeAgent(r, "w2:p2", 200)).toBe("AGENT_RESUMED w2:p2 agent 200: its process group continued");
-  expect(calls).toEqual([]);
+  expect(typed(calls)).toEqual([]);
   expect(k.sent).toEqual(["SIGCONT -200"]);
   expect(await resumeAgent(r, "w2:p2", 200)).toBe("AGENT_RUNNING w2:p2 agent 200");
 });
 
-test("resume types nothing when the shell holds more than one job, and says what is left to do", async () => {
+test("an omo brought forward by a typed fg gets the raw mode bash took away, and a full repaint, without a key typed", async () => {
+  // Given: omo runs in the foreground again but bash left the tty cooked (icanon, echo)
   const rows = pane();
   const k = kernel(rows);
-  k.signal(200, "SIGSTOP");
-  k.signal(200, "SIGCONT");
-  const { r, calls } = io(rows, k, { jobs: 2 });
-  expect(await resumeAgent(r, "w2:p2", 200)).toBe("AGENT_RESUME_FAIL w2:p2 agent 200: the shell 100 holds 2 jobs, so fg could pick another; type fg with the job of pid 200 in the pane (state S, tty foreground group 100, its group 200)");
-  expect(calls).toEqual([]);
-});
-
-test("resume that fg could not bring forward says so", async () => {
-  const rows = pane();
-  const k = kernel(rows);
-  k.signal(200, "SIGSTOP");
-  k.signal(200, "SIGCONT");
-  const { r } = io(rows, k, { fgWorks: false });
-  expect(await resumeAgent(r, "w2:p2", 200)).toBe("AGENT_RESUME_FAIL w2:p2 agent 200: stopped so that only the shell reads the line, fg typed into the shell, still not the running foreground job (state T, tty foreground group 100, its group 200)");
-});
-
-test("resume stops a background omo that still runs before it types fg, so the shell and not omo reads the line", async () => {
-  // Given: thawed into the background and running (no key typed yet)
-  const rows = pane();
-  const k = kernel(rows);
-  k.signal(200, "SIGSTOP");
-  k.signal(200, "SIGCONT");
-  const { r, calls } = io(rows, k);
+  const { r, calls } = io(rows, k, { cooked: true });
   // When
   const line = await resumeAgent(r, "w2:p2", 200);
-  // Then: its group is stopped before anything is typed
-  expect(k.sent.slice(2)).toEqual(["SIGSTOP -200"]);
-  expect(calls[0]).toEqual(["herdr", "pane", "send-text", "w2:p2", "\x03"]);
-  expect(line).toBe("AGENT_RESUMED w2:p2 agent 200: stopped so that only the shell reads the line, fg typed into the shell, raw tty mode given back, redrawn");
-});
-
-test("resume types nothing more when the ctrl-C that drops the shell's pending input could not be sent", async () => {
-  const rows = pane();
-  const k = kernel(rows);
-  k.signal(200, "SIGSTOP");
-  k.signal(200, "SIGCONT");
-  rows.get(200)!.state = "T";
-  const { r, calls } = io(rows, k);
-  const failing: ResumeIO = { ...r, run: async (argv, opts) => (argv[0] === "herdr" && argv[2] === "send-text" ? (calls.push([...argv]), { code: 1, out: "", err: "send failed" }) : r.run(argv, opts)) };
-  const line = await resumeAgent(failing, "w2:p2", 200);
-  expect(line).toBe("AGENT_RESUME_FAIL w2:p2 agent 200: could not drop the shell's pending input (ctrl-C not sent); nothing more typed (state T, tty foreground group 100, its group 200)");
-  expect(calls).toEqual([["herdr", "pane", "send-text", "w2:p2", "\x03"]]);
-});
-
-test("a second repair of the same agent while one runs types nothing (watch and revive at once)", async () => {
-  const rows = pane();
-  const k = kernel(rows);
-  k.signal(200, "SIGSTOP");
-  k.signal(200, "SIGCONT");
-  const { r, calls } = io(rows, k);
-  writeFileSync(join(r.lockDir!, `dori-resume-${process.getuid?.() ?? 0}-200.lock`), "4242");
-  const busy: ResumeIO = { ...r, alive: (pid) => pid === 4242 };
-  expect(await resumeAgent(busy, "w2:p2", 200)).toBe("AGENT_RESUME_BUSY w2:p2 agent 200: another repair of it runs; nothing typed");
-  expect(calls).toEqual([]);
-  // a lock whose holder ended is taken over
-  expect(await resumeAgent({ ...r, alive: () => false }, "w2:p2", 200)).toStartWith("AGENT_RESUMED w2:p2 agent 200:");
-});
-
-test("fg is not typed when the tty changed hands after the ctrl-C (another process brought the agent forward)", async () => {
-  const rows = pane();
-  const k = kernel(rows);
-  k.signal(200, "SIGSTOP");
-  k.signal(200, "SIGCONT");
-  rows.get(200)!.state = "T";
-  const { r, calls } = io(rows, k);
-  const racing: ResumeIO = { ...r, run: async (argv, opts) => {
-    const got = await r.run(argv, opts);
-    if (argv[0] === "herdr" && argv[2] === "send-text") {
-      k.setTpgid(200);
-      rows.get(200)!.state = "S";
-    }
-    return got;
-  } };
-  expect(await resumeAgent(racing, "w2:p2", 200)).toContain("the tty changed hands before fg; fg not typed");
-  expect(calls.some((c) => c[2] === "run")).toBe(false);
+  // Then: only stty touches the tty (its mode and width), nothing is sent to the pane
+  expect(line).toBe("AGENT_RESUMED w2:p2 agent 200: raw tty mode given back, redrawn");
+  expect(typed(calls)).toEqual([]);
+  expect(calls.some((c) => c.includes("-icanon") && c.includes("-echo"))).toBe(true);
+  expect(calls.filter((c) => c[3] === "cols").map((c) => c[4])).toEqual(["118", "119"]);
 });

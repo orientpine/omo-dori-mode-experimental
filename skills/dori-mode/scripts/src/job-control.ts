@@ -4,12 +4,10 @@
 // first key typed into the pane stopped it again with SIGTTIN (handover-simplify, w1:p26, 2026-11-03 15:41Z: the rollback
 // thawed it, it stayed T for 18 hours behind its last "esc to interrupt" and freshness refused 54 rollovers as busy).
 // Measured on herdr 0.9.5 (2026-11-04, pane w2:p2): with the shell stopped before the agent and resumed after it, the tty
-// stays with the agent and its mode is untouched. jobSignal does that for every SIGSTOP and SIGCONT; resumeAgent repairs
-// an agent that a stop without it already put in the background.
-import { readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+// stays with the agent and its mode is untouched. jobSignal does that for every SIGSTOP and SIGCONT; resumeAgent brings
+// back what it can of an agent stopped some other way, without typing into its pane.
+import { readFileSync, readlinkSync } from "node:fs";
 
-import { isHerdrPane } from "./herdr.ts";
 import type { Clock, Runner } from "./run.ts";
 
 // /proc/<pid>/stat fields 3-8: state, parent, process group, session, tty foreground process group (tpgid, -1: no tty)
@@ -70,44 +68,6 @@ export type ResumeIO = {
   readonly stat?: StatOf;
   // the agent's tty (/dev/pts/N)
   readonly tty?: (pid: number) => string | undefined;
-  // the process groups of the shell's jobs (its children outside its own group)
-  readonly jobs?: (shell: JobStat) => Promise<number[]> | number[];
-  // where the per-agent lock goes (default: /tmp, one path for every process of this user)
-  readonly lockDir?: string;
-  readonly alive?: (pid: number) => boolean;
-};
-
-const pidAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-// One repair of an agent at a time across processes (dori watch and dori revive): the second would type its fg into the
-// agent the first brought forward. The lock names its holder; one whose holder ended is taken over.
-const takeResumeLock = (dir: string, pid: number, alive: (pid: number) => boolean): string | undefined => {
-  const file = join(dir, `dori-resume-${process.getuid?.() ?? 0}-${pid}.lock`);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(file, String(process.pid), { flag: "wx" });
-      return file;
-    } catch {
-      const holder = Number(readFileSafe(file));
-      if (holder > 0 && holder !== process.pid && alive(holder)) return undefined;
-      rmSync(file, { force: true });
-    }
-  }
-  return undefined;
-};
-const readFileSafe = (file: string): string => {
-  try {
-    return readFileSync(file, "utf8").trim();
-  } catch {
-    return "";
-  }
 };
 
 const ttyOf = (pid: number): string | undefined => {
@@ -119,40 +79,24 @@ const ttyOf = (pid: number): string | undefined => {
   }
 };
 
-const jobsOf = (run: Runner, stat: StatOf) => async (shell: JobStat): Promise<number[]> => {
-  const kids = (await run(["ps", "-o", "pid=", "--ppid", String(shell.pid)])).out.split("\n").map(Number).filter((n) => n > 0);
-  return [...new Set(kids.flatMap((k) => stat(k)?.pgrp ?? []).filter((g) => g !== shell.pgrp))];
-};
-
 // libuv's raw mode (uv_tty_set_mode UV_TTY_MODE_RAW), the mode omo runs its tty in: measured equal, stty -g for stty -g
 const RAW = ["-brkint", "-icrnl", "-inpck", "-istrip", "-ixon", "-isig", "-icanon", "-iexten", "-echo", "cs8", "opost", "onlcr"];
-const FG_WAIT_MS = 10_000;
-const POLL_MS = 500;
 const REDRAW_MS = 500;
 
 const foreground = (s: JobStat | undefined): boolean => !!s && s.state !== "T" && s.tpgid > 0 && s.pgrp === s.tpgid;
 const where = (s: JobStat | undefined): string => (s ? `state ${s.state}, tty foreground group ${s.tpgid}, its group ${s.pgrp}` : "gone");
 
-// Brings a pane's agent back to the running foreground job of its tty, as the lead did by typing fg: a stopped foreground
-// job is continued; a background one is brought forward with fg typed into its shell (its pending input dropped first:
-// keys sent while the shell held the tty pile up on its prompt), and the raw mode bash took away is given back, with a resize that
-// makes omo draw its screen again. AGENT_RUNNING (nothing to do), AGENT_RESUMED, AGENT_RESUME_FAIL or AGENT_GONE.
+// Brings a pane's agent back as far as it can without typing anything: a stopped foreground job is continued (and a
+// stopped shell after it), and an agent that runs in the foreground on a tty bash left cooked gets libuv's raw mode back
+// with a width change that makes omo paint its whole screen again (no key goes to the pane: stty sets the tty's mode).
+// An agent its shell holds as a background job is not typed into: only a fg typed in that shell can give it the tty back
+// (tcsetpgrp works only inside the tty's session, TIOCSTI needs CAP_SYS_ADMIN since Linux 6.2), and a typed line races
+// whoever else types there (review of #332, round 5). The line says what to type instead.
+// AGENT_RUNNING (nothing to do), AGENT_RESUMED, AGENT_RESUME_FAIL or AGENT_GONE.
 export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Promise<string> => {
-  const lock = takeResumeLock(io.lockDir ?? "/tmp", pid, io.alive ?? pidAlive);
-  if (!lock) return `AGENT_RESUME_BUSY ${pane} agent ${pid}: another repair of it runs; nothing typed`;
-  try {
-    return await resumeLocked(io, pane, pid);
-  } finally {
-    rmSync(lock, { force: true });
-  }
-};
-
-const resumeLocked = async (io: ResumeIO, pane: string, pid: number): Promise<string> => {
   const stat = io.stat ?? readStat;
   const first = stat(pid);
   if (!first) return `AGENT_GONE ${pane} agent ${pid}`;
-  // no tty to own (no /proc, or a process without one): nothing to check
-  if (first.state !== "T" && (first.tpgid <= 0 || foreground(first))) return `AGENT_RUNNING ${pane} agent ${pid}`;
   const done: string[] = [];
   if (first.state === "T" && first.pgrp === first.tpgid) {
     io.signal(-first.pgrp, "SIGCONT");
@@ -163,45 +107,19 @@ const resumeLocked = async (io: ResumeIO, pane: string, pid: number): Promise<st
     io.signal(shell.pid, "SIGCONT");
     done.push("its shell continued");
   }
-  let now = stat(pid);
-  if (!foreground(now) && now && shell && shell.pid === now.session && now.tpgid === shell.pgrp) {
-    const jobs = await (io.jobs ?? jobsOf(io.run, stat))(shell);
-    if (jobs.length !== 1 || jobs[0] !== now.pgrp) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: the shell ${shell.pid} holds ${jobs.length} jobs, so fg could pick another; type fg with the job of pid ${pid} in the pane (${where(now)})`;
-    // a background omo that runs waits on the tty too: the line typed next would stop it (SIGTTIN) instead of reaching
-    // the shell (herdr QA 2026-11-04), so it is stopped first; fg continues it
-    if (now.state !== "T") {
-      io.signal(-now.pgrp, "SIGSTOP");
-      for (let waited = 0; stat(pid)?.state !== "T" && waited < FG_WAIT_MS; waited += POLL_MS) await io.clock.sleep(POLL_MS);
-      done.push("stopped so that only the shell reads the line");
-    }
-    // ctrl-C first: the shell is the tty's foreground group (the agent a stopped background job), so it drops its whole
-    // pending input (text after the cursor and an open quote's continuation lines too; ctrl-U kills only what is before
-    // the cursor) and draws a fresh prompt for fg alone (herdr QA 2026-11-04)
-    const dropped = isHerdrPane(pane) ? await io.run(["herdr", "pane", "send-text", pane, "\x03"]) : await io.run(["tmux", "send-keys", "-t", pane, "-l", "\x03"]);
-    // without it the shell's pending input would run with fg: nothing more is typed
-    if (dropped.code !== 0) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: ${[...done, "could not drop the shell's pending input (ctrl-C not sent)"].join(", ")}; nothing more typed (${where(stat(pid))})`;
-    await io.clock.sleep(REDRAW_MS);
-    // fg goes to the shell only while the shell still holds the tty and the agent is still its stopped job
-    const before = stat(pid);
-    const shellNow = stat(shell.pid);
-    if (!before || before.state !== "T" || !shellNow || before.tpgid !== shellNow.pgrp) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: ${[...done, "the tty changed hands before fg"].join(", ")}; fg not typed (${where(before)})`;
-    if (isHerdrPane(pane)) await io.run(["herdr", "pane", "run", pane, "fg"]);
-    else {
-      await io.run(["tmux", "send-keys", "-t", pane, "-l", "fg"]);
-      await io.run(["tmux", "send-keys", "-t", pane, "Enter"]);
-    }
-    done.push("fg typed into the shell");
-    for (let waited = 0; !foreground(stat(pid)) && waited < FG_WAIT_MS; waited += POLL_MS) await io.clock.sleep(POLL_MS);
-    now = stat(pid);
-    const tty = (io.tty ?? ttyOf)(pid);
-    if (foreground(now) && tty) {
-      const mode = (await io.run(["stty", "-F", tty, "-a"])).out;
-      if (/(^|\s)icanon(\s|$)/.test(mode)) {
-        await io.run(["stty", "-F", tty, ...RAW]);
-        done.push("raw tty mode given back");
-      }
-      // a width change makes omo lay out and paint its whole screen again (a height change repaints only changed lines,
-      // and bash's lines stay on screen: herdr QA 2026-11-04)
+  const now = stat(pid);
+  if (!foreground(now)) {
+    if (now && now.tpgid <= 0 && now.state !== "T") return done.length ? `AGENT_RESUMED ${pane} agent ${pid}: ${done.join(", ")}` : `AGENT_RUNNING ${pane} agent ${pid}`;
+    return `AGENT_RESUME_FAIL ${pane} agent ${pid}: ${done.length ? `${done.join(", ")}, but ` : ""}its shell holds the tty and it is a background job; type fg in ${pane} (${where(now)})`;
+  }
+  // in the foreground: a tty bash cooked when it took it (icanon) is given back to omo's raw mode
+  const tty = (io.tty ?? ttyOf)(pid);
+  if (tty) {
+    const mode = await io.run(["stty", "-F", tty, "-a"]);
+    if (mode.code === 0 && /(^|\s)icanon(\s|$)/.test(mode.out)) {
+      await io.run(["stty", "-F", tty, ...RAW]);
+      done.push("raw tty mode given back");
+      // a width change makes omo lay out and paint its whole screen again (a height change repaints only changed lines)
       const cols = Number((await io.run(["stty", "-F", tty, "size"])).out.trim().split(/\s+/)[1]);
       if (cols > 1) {
         await io.run(["stty", "-F", tty, "cols", String(cols - 1)]);
@@ -212,7 +130,5 @@ const resumeLocked = async (io: ResumeIO, pane: string, pid: number): Promise<st
       }
     }
   }
-  now = stat(pid);
-  if (foreground(now) || (now && now.tpgid <= 0 && now.state !== "T")) return `AGENT_RESUMED ${pane} agent ${pid}: ${done.join(", ") || "it runs again"}`;
-  return `AGENT_RESUME_FAIL ${pane} agent ${pid}: ${done.length ? `${done.join(", ")}, still` : "it is"} not the running foreground job (${where(now)})`;
+  return done.length ? `AGENT_RESUMED ${pane} agent ${pid}: ${done.join(", ")}` : `AGENT_RUNNING ${pane} agent ${pid}`;
 };

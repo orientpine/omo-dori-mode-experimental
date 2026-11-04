@@ -131,8 +131,8 @@ test("a lane whose omo stays stopped is told to the lead once and brought back; 
   fails = true;
   expect(await tick(T0 + 90 * S)).toEqual([]);
   expect((await tick(T0 + 120 * S)).at(-1)).toBe("LANE_SUSPENDED_TOLD handover-simplify lead:p1");
-  // an aoe pane has no dori revive: the line says what to type instead
-  expect(sent(w).at(-1)).toBe("[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 되살리지 못했어(agent 200: the shell 100 holds 2 jobs, so fg could pick another) — aoe_hs_aaaa1111에서 fg를 쳐 봐");
+  // nothing is typed for it: the line gives the lead the exact fg to type by hand (tmux keys for an aoe pane)
+  expect(sent(w).at(-1)).toBe("[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: tmux send-keys -t aoe_hs_aaaa1111 Enter fg Enter 를 한 번에 보내(앞 엔터가 셸 줄에 쌓인 마우스·키 찌꺼기를 비워; 멈춘 omo가 켜 둔 키 모드 때문에 ctrl 키는 글자로 찍히니 쓰지 마). 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)");
   // still stopped: not told twice; once it runs the mark goes
   expect(await tick(T0 + 150 * S)).toEqual([]);
   expect(await tick(T0 + 180 * S)).toEqual([]);
@@ -286,4 +286,44 @@ test("a watch that stops while sending the line of an agent it could not bring b
   expect(await laneSuspendTick(deps(T0 + 90 * S), io, () => false)).toEqual([]);
   expect(resumes).toBe(1);
   expect(sent(w)).toEqual([]);
+});
+
+test("a failed lookup keeps the mark of an agent left stopped; once a hand-typed fg brings it back, its tty is given raw mode and the mark goes", async () => {
+  // Given: a lane agent the watch could not bring back (marked) and a herdr lane id for the exact fg advice
+  const { w, deps } = world({});
+  await deps(T0).registry.write(laneOf("bg", "w5:p7"));
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "bg" };
+  let lookup: "ok" | "fails" | "unreadable" = "ok";
+  const resumed: string[] = [];
+  const io: SuspendIO = {
+    agentOf: async (pane) => {
+      if (lookup === "fails") throw new Error("herdr down");
+      return pane === "w5:p7" ? 200 : undefined;
+    },
+    stat: (pid) => (lookup === "unreadable" ? undefined : held(states)(pid) ?? shellOf(pid)),
+    resume: async (pane, pid) => {
+      resumed.push(`${pane} ${pid} ${states[pid]}`);
+      return states[pid] === "bg" ? `AGENT_RESUME_FAIL ${pane} agent ${pid}: its shell holds the tty and it is a background job; type fg in ${pane}` : `AGENT_RESUMED ${pane} agent ${pid}: raw tty mode given back, redrawn`;
+    },
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  await tick(T0 + 30 * S);
+  expect(sent(w).at(-1)).toBe("[DORI] 레인 bg 멈춤(셸 뒤 작업으로 밀림) — 셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: herdr pane send-text w5:p7 $'\\rfg\\r' 를 한 번에 보내(앞 엔터가 셸 줄에 쌓인 마우스·키 찌꺼기를 비워; 멈춘 omo가 켜 둔 키 모드 때문에 ctrl 키는 글자로 찍히니 쓰지 마). 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)");
+  // When: the lookup fails, then the process cannot be read, while the agent stays a background job
+  lookup = "fails";
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  lookup = "unreadable";
+  expect(await tick(T0 + 90 * S)).toEqual([]);
+  lookup = "ok";
+  // Then: the mark held, so the same agent is not repaired or told again
+  expect(await tick(T0 + 120 * S)).toEqual([]);
+  expect(await tick(T0 + 150 * S)).toEqual([]);
+  expect(sent(w)).toHaveLength(1);
+  expect(resumed).toEqual(["w5:p7 200 bg"]);
+  // When: someone types fg (the agent runs in the foreground again)
+  states[200] = "S";
+  // Then: its tty gets raw mode back and the mark goes
+  expect(await tick(T0 + 180 * S)).toEqual(["AGENT_RESUMED w5:p7 agent 200: raw tty mode given back, redrawn", "LANE_RUNNING_AGAIN bg w5:p7"]);
+  expect(resumed).toEqual(["w5:p7 200 bg", "w5:p7 200 S"]);
 });

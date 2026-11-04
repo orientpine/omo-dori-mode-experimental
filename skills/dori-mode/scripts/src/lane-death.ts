@@ -49,8 +49,9 @@ export const laneDiedText = (key: string, reason: string): string => `[DORI] 레
 // open lane's agent and of the lead's:
 // - LANE_SUSPENDED <key> <pane>: agent <pid> stopped|background, once seen so on two checks CONFIRM_MS apart; a pane a
 //   handover froze on purpose (a frozen record, or a handover of that lane or of the lead running) is left alone;
-// - it is brought back at once (job-control.ts resumeAgent: continued, or fg typed into its shell), and the lead gets one
-//   line saying whether that worked (LANE_SUSPENDED_TOLD / _NOT_TOLD). A line refused before anything was typed is kept in
+// - what can be done without typing is done at once (job-control.ts resumeAgent: a stopped foreground job or shell is
+//   continued); one its shell holds as a background job is never typed into, and the lead gets one line saying whether it
+//   came back or the exact fg to type by hand (once typed, the next check gives the tty bash cooked its raw mode back) (LANE_SUSPENDED_TOLD / _NOT_TOLD). A line refused before anything was typed is kept in
 //   <state>/suspended/notices and sent again on later ticks until the lead takes it; one typed but not seen taken may still
 //   arrive, so it is not sent again (LANE_DIED's rule). One the resume could not bring back gets a
 //   mark per pane, so it is not told twice; the mark goes once that agent runs again (LANE_RUNNING_AGAIN). One brought back
@@ -123,16 +124,28 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       continue;
     }
     const pid = await io.agentOf(t.pane).catch(() => undefined);
-    const hold = pid ? holdOf(io.stat, pid) : undefined;
-    if (!pid || !hold) {
+    // no agent found or its process unreadable is no news: a mark stays until the agent is seen running
+    if (!pid || !io.stat(pid)) {
       seenHeld.delete(t.pane);
-      if (existsSync(file)) {
+      continue;
+    }
+    const hold = holdOf(io.stat, pid);
+    const marked = readMark(file);
+    if (!hold) {
+      seenHeld.delete(t.pane);
+      if (marked) {
+        // the agent it was left on runs again (someone typed fg): the tty bash cooked gets omo's raw mode back, which
+        // types nothing (resumeAgent); a new agent in the pane just ends the mark
+        if (marked.pid === pid) {
+          const back = await io.resume(t.pane, pid);
+          if (back.startsWith("AGENT_RESUMED")) out.push(back);
+        }
         rmSync(file, { force: true });
         out.push(`LANE_RUNNING_AGAIN ${t.key} ${t.pane}`);
       }
       continue;
     }
-    if (readMark(file)?.pid === pid) continue;
+    if (marked?.pid === pid) continue;
     const first = seenHeld.get(t.pane);
     if (first === undefined) {
       seenHeld.set(t.pane, now);
@@ -145,7 +158,10 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     const back = await io.resume(t.pane, pid);
     out.push(back);
     const resumed = back.startsWith("AGENT_RESUMED");
-    const outcome = resumed ? "스스로 되살렸어, 하던 일을 잇는지 봐" : `되살리지 못했어(${back.replace(/^AGENT_RESUME_FAIL \S+ /, "").slice(0, 160)}) — ${isHerdrPane(t.pane) ? `dori revive ${t.pane}로 다시 해 봐` : `${t.pane}에서 fg를 쳐 봐`}`;
+    // one write: the first enter flushes what piled up on the shell line (mouse reports and CSI-u keys the stopped omo's
+    // terminal modes still produce, herdr QA 2026-11-04), so the fg lands on an empty line; a ctrl key would come as text too
+    const fgBy = isHerdrPane(t.pane) ? `herdr pane send-text ${t.pane} $'\\rfg\\r'` : `tmux send-keys -t ${t.pane} Enter fg Enter`;
+    const outcome = resumed ? "스스로 되살렸어, 하던 일을 잇는지 봐" : `셸이 tty를 쥐고 있어 손으로 fg를 한 번 쳐야 돌아와: ${fgBy} 를 한 번에 보내(앞 엔터가 셸 줄에 쌓인 마우스·키 찌꺼기를 비워; 멈춘 omo가 켜 둔 키 모드 때문에 ctrl 키는 글자로 찍히니 쓰지 마). 친 뒤 tty가 cooked로 남아 키를 안 받으면 다음 dori watch 확인(30초 안)이 raw 모드로 돌려놓아(아무것도 치지 않음)`;
     const text = laneSuspendedText(t.who === "lead" ? "리드 omo" : `레인 ${t.key}`, hold, outcome);
     // only an agent left held needs the mark (one brought back runs, and a later stop of it is told again); it is written
     // before the line goes, so a watch that stops while sending does not find the agent unmarked and tell it again
