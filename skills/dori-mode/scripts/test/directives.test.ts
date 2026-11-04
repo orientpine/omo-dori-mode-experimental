@@ -680,6 +680,20 @@ test("upstream-port-rule written by dori directives apply meets upstream-release
   expect(relaunch.missing.map(({ e }) => e.id).filter((i) => i.startsWith("upstream"))).toEqual([]);
 });
 
+// a brief launched before has its footer; a relaunch puts the rule after it: the audit and the next relaunch still read it
+test("relaunch -> audit -> relaunch of an older rendered upstream brief keeps upstream-released-only met", async () => {
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
+  const task = "원본 main 커밋 이식: 원본 PR #37을 우리 쪽에 들이는 이식 레인. upstream 링크를 주석으로 단다.";
+  const old = `${task}\n\n## Lane footer (written by dori launch)\n- Key: k.\n`;
+  const plan = (brief: string) => planDirectives(brief, ledger, scopeContext(brief, ledger, { repo: "r" }), {}, { model: "m", picked: ["upstream-port-rule"].map((id) => ({ id, why: "x" })) });
+  const first = plan(old);
+  expect(first.missing.map(({ e }) => e.id).filter((i) => i.startsWith("upstream"))).toEqual([]);
+  const relaunched = withDirectives(old, first.add);
+  expect(briefGaps({ key: "k" }, relaunched, ledger, "r", { "eight-steps": "", "ui-steps": "" }).map((g) => g.id).filter((i) => i.startsWith("upstream"))).toEqual([]);
+  const again = planDirectives(relaunched, ledger, scopeContext(relaunched, ledger, { repo: "r" }), {}, { model: "m", picked: [] });
+  expect({ add: again.add.map(({ e }) => e.id).filter((i) => i.startsWith("upstream")), missing: again.missing.map(({ e }) => e.id).filter((i) => i.startsWith("upstream")) }).toEqual({ add: [], missing: [] });
+});
+
 // a require entry is met by what the brief has or by what the same plan injects into it; nothing else meets it
 test("a require entry is checked against the brief plus the texts the plan injects", async () => {
   const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });

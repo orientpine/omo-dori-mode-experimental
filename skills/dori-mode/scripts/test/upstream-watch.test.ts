@@ -241,6 +241,15 @@ test("right after --seed, a closed PR or issue that opens or merges into another
   expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item).sort()).toEqual(["issue:33", "pr-proposed:46"]);
 });
 
+test("a PR merged outside main that the old watcher recorded as pr:N is classified again and asked once when it is class 3 now", async () => {
+  mkdirSync(join(root, "state"));
+  writeFileSync(join(root, "state/seen.json"), JSON.stringify({ items: { "pr:44": { class: "2", why: "herdr 하네스", at: "2026-11-01T00:00:00.000Z" } }, minor: [], fails: 0 }));
+  await run();
+  await run();
+  const items = inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item);
+  expect(items.filter((i) => i === "pr-proposed:44")).toHaveLength(1);
+});
+
 test("an item the owner already decided is marked by hand and never reaches the inbox", async () => {
   expect((await run(["--mark", "pr:30", "--why", "owner chose; lane backlog-loop"])).out).toContain("UPSTREAM_MARKED pr:30");
   expect((await run(["--mark", "pr-proposed:45"])).out).toContain("UPSTREAM_MARKED pr-proposed:45");

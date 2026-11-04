@@ -492,7 +492,8 @@ def main(argv: list[str]) -> int:
         # an issue or proposed PR follows upstream (opened again, merged into another branch, retitled): it is classified
         # again every run from what was just read (no gh call), and asked once per time it turns class 3; a hand decision stays
         for item in items:
-            record = state["items"].get(item["key"])
+            # a merged proposal the old watcher recorded as pr:N is read through that record
+            record = state["items"].get(item["key"]) or (state["items"].get(item["was"]) if item.get("was") else None)
             if item.get("recheck") and not seed and record is not None and record.get("class") != "decided":
                 # a record without "asked" (the old watcher's, or --seed's class 0): asked when it reached the lead or was seeded
                 asked = record.get("asked", record.get("class") in ("0", "3", "4"))
