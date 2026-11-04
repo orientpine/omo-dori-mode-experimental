@@ -74,6 +74,8 @@ export type LaneHandoverOptions = {
   readonly waitIdleMin?: number;
   // set by a run that waited for another run's lock: the lane's pane it found then (internal)
   readonly boundPane?: string;
+  // the waiting request a resumed run was started for (freshness readyResume): its time and the pane it was asked in
+  readonly serves?: { readonly at: string; readonly pane: string };
   // set by that waiting loop: it holds the lock; final means the wait is over, so a lane still busy is refused
   readonly idle?: { readonly final: boolean; readonly since: number; readonly waitedMin: number };
 };
@@ -671,6 +673,20 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     }
     emit(`HANDOVER_ALREADY_MOVED ${key}: the lane moved from ${opts.boundPane} to ${lane.pane} while this run waited; it is not moved again`);
     return { code: 0, to: lane.pane };
+  }
+  // a run freshness started holds the lane's lock here (I1), and only under it is the waiting request read for good: a resumed
+  // run moves only for the request it was started for, while the lane is still in that request's pane, and an automatic run
+  // gives way to a lead's waiting request; either leaves no row, so the waiting request stays the last (review 320 round 14)
+  if (opts.idle) {
+    const waiting = waitingRequest(readRollovers(config.stateDir), key, lane.pane);
+    if (opts.serves && (lane.pane !== opts.serves.pane || waiting?.at !== opts.serves.at)) {
+      emit(`HANDOVER_REQUEST_GONE ${key}: the request of ${opts.serves.at} in ${opts.serves.pane} is no longer the lane's waiting one (the lane is in ${lane.pane}${waiting ? `, waiting request ${waiting.at}` : ", no request waits"}); nothing is moved`);
+      return { code: lane.pane !== opts.serves.pane ? 0 : 2, ...(lane.pane !== opts.serves.pane ? { to: lane.pane } : {}) };
+    }
+    if (!opts.serves && waiting && decidedBy(opts.approvedBy?.trim() ?? "") === "auto") {
+      emit(`HANDOVER_YIELDED ${key}: the lead's request of ${waiting.at} waits for this lane; the automatic run leaves the move to it`);
+      return { code: 2 };
+    }
   }
   // a dry run needs no approval, but a given one is checked the same way, so it can be tried before the real run
   const unapproved = opts.dryRun && !opts.approvedBy?.trim() ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLanes, key: "handover.autoRolloverLanes", granted }, key, lane.pane ?? "", readRollovers(config.stateDir), Boolean(deps.reportOwner), inboxMessages(deps.inbox ?? "", deps.ownerIds ?? []));

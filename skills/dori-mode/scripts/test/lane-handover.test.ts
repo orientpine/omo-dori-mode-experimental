@@ -1614,7 +1614,7 @@ test("a lead's request waiting for work keeps the lane from automatic rollovers,
     signals: async (pane: string) => (pane === OLD ? { contextPct: 85 } : {}),
     alive: (pid: number) => running.has(pid),
     auto: async (who: "lead" | "lane", key: string) => { autoRuns.push(`${who}:${key}`); return "started"; },
-    resume: async (key: string, approvedBy: string) => { resumes.push(`${key} ${approvedBy}`); return { started: true, line: "unit=u1" }; },
+    resume: async (key: string, approvedBy: string, _request: unknown, serves?: { at: string; pane: string }) => { resumes.push(`${key} ${approvedBy} ${serves?.at}@${serves?.pane}`); return { started: true, line: "unit=u1" }; },
   };
   const tick = async () => {
     await deps.registry.patch("demo", { lastReplyAt: deps.clock.now() });
@@ -1632,7 +1632,55 @@ test("a lead's request waiting for work keeps the lane from automatic rollovers,
   expect(first.some((a) => a.kind === "rollover_auto")).toBe(false);
   expect(second.some((a) => a.kind === "rollover_auto")).toBe(false);
   expect(third.filter((a) => a.kind === "ready_resume").map((a) => a.detail.split(":")[0])).toEqual(["started"]);
-  expect(resumes).toEqual([`demo ${LEAD_STUCK}`]);
+  expect(resumes).toEqual([`demo ${LEAD_STUCK} 2026-10-11T16:20:00.000Z@${OLD}`]);
+});
+
+test("an automatic run that holds the lane's lock gives way to a lead's request waiting for the lane: it moves nothing and logs no row (review 320 round 14)", async () => {
+  // Given: the automatic run was dispatched before the lead's request was refused for chain 15; the lane then marked ready
+  const base = await setup();
+  const deps: LaneHandoverDeps = { ...base, config: { ...base.config, handover: { ...base.config.handover, autoRolloverLanes: true } }, reportOwner: async () => "msg-1" };
+  appendRollover(state.dir, { kind: "rollover", who: "lane", at: new Date(deps.clock.now() - 60_000).toISOString(), key: "demo", from: OLD, approvedBy: LEAD_STUCK, signals: {}, steps: [], result: "refused", reasons: ["x"], blocked: "work", pids: [15], request: { keepOld: true } });
+  ready(deps, [15]);
+  const rows = rolloverRows().length;
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", autoRun(deps, { waitIdleMin: 5 }));
+  // Then
+  expect(r.code).toBe(2);
+  expect(printed.some((l) => l.startsWith("HANDOVER_YIELDED demo"))).toBe(true);
+  expect(opened()).toBe(false);
+  expect(rolloverRows()).toHaveLength(rows);
+});
+
+test("a resumed run moves only for the request it was started for: one a --force already finished, with the lane in the new pane, moves nothing again (review 320 round 14)", async () => {
+  // Given: the lead's request of 16:20 waited; a --force finished it meanwhile (done row, lane in NEW)
+  const base = await setup();
+  const deps: LaneHandoverDeps = { ...base, reportOwner: async () => "msg-1" };
+  const at = "2026-10-11T16:20:00.000Z";
+  appendRollover(state.dir, { ...WAITING, at });
+  appendRollover(state.dir, { kind: "rollover", who: "lane", at: "2026-10-11T16:25:00.000Z", key: "demo", from: OLD, to: NEW, approvedBy: LEAD_STUCK, signals: {}, steps: [], result: "done", reasons: [] });
+  await deps.registry.patch("demo", { pane: NEW });
+  const rows = rolloverRows().length;
+  // When: the run freshness started for the 16:20 request before it saw the move
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, waitIdleMin: 5, serves: { at, pane: OLD } });
+  // Then
+  expect(r.code).toBe(0);
+  expect(printed.some((l) => l.startsWith(`HANDOVER_REQUEST_GONE demo: the request of ${at} in ${OLD}`))).toBe(true);
+  expect(opened()).toBe(false);
+  expect(rolloverRows()).toHaveLength(rows);
+});
+
+test("a resumed run whose request still waits, with the lane still in its pane, moves the lane (review 320 round 14)", async () => {
+  // Given: the lead's request of 16:20 waits for chain 15, and the lane marked ready after it
+  const base = await setup();
+  const deps: LaneHandoverDeps = { ...base, reportOwner: async () => "msg-1" };
+  const at = new Date(deps.clock.now() - 60_000).toISOString();
+  appendRollover(state.dir, { ...WAITING, at, blocked: "work", pids: [15] });
+  ready(deps, [15]);
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, waitIdleMin: 5, serves: { at, pane: OLD } });
+  // Then
+  expect(r.code).toBe(0);
+  expect(printed).toContain(`HANDOVER_COMMITTED demo ${NEW}`);
 });
 
 test("a safe-point ask whose cause quotes a backtick or $( still reaches the lane, and a sweep that cannot type it goes on with the other lanes (review 320 round 9)", async () => {

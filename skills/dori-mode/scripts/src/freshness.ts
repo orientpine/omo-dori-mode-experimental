@@ -90,7 +90,7 @@ export type RolloverHooks = {
   // starts again, detached, a lane handover the lead (or the owner) approved that was refused while the lane was busy,
   // with the same approval and the options that run was given, once the lane marked ready (readyResume); started false
   // when it could not be started
-  readonly resume?: (key: string, approvedBy: string, request: RolloverRequest) => Promise<{ readonly started: boolean; readonly line: string }>;
+  readonly resume?: (key: string, approvedBy: string, request: RolloverRequest, serves: { readonly at: string; readonly pane: string }) => Promise<{ readonly started: boolean; readonly line: string }>;
   // whether a process still runs (a handover's lock holder, the chain pids a refusal named); process.kill(pid, 0) by default
   readonly alive?: (pid: number) => boolean;
   // whether a background task (st_...) a refusal named has ended: its senpi record under home has a final status (a task
@@ -364,7 +364,8 @@ const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pa
     // kept only once the lead got it (or there is no lead to tell): a note that did not arrive goes again next sweep
     if (told || !lead) writeFileSync(claimed, `${JSON.stringify({ ...readJson<object>(claimed), toldAt: new Date(now).toISOString() })}\n`);
   }
-  const r = await hooks.resume(key, by, asked.request ?? {});
+  // the run checks under the lane's lock that this request still waits in this pane (review 320 round 14)
+  const r = await hooks.resume(key, by, asked.request ?? {}, { at: asked.at, pane });
   // the claim is given back for the next sweep; a stale note already delivered stays delivered (review 320)
   if (!r.started) writeFileSync(claimed, `${JSON.stringify({ request: "", since, approvedBy: by, result: "started", ...(readJson<{ toldAt?: string }>(claimed)?.toldAt ? { toldAt: readJson<{ toldAt?: string }>(claimed)?.toldAt } : {}) })}\n`);
   return log(r.started
