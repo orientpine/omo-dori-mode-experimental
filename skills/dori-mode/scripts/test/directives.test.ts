@@ -648,6 +648,11 @@ test("upstream-released-only is a lead record: no brief gets its text from the l
     expect([...plan.add.map(({ e }) => e.id), ...plan.missing.map(({ e }) => e.id)]).not.toContain("upstream-released-only");
   }
   expect(textDirectives("원본 main에 들어간 것만 이식", ledger).map(({ e }) => e.id)).toContain("upstream-released-only");
+  // what the lead reads (inbox hints, dori thread open) never says to remove without the limit
+  const hint = messageLines("원본 main에 들어간 것만 이식", ledger).find((l) => l.includes("upstream-released-only"))!;
+  const thread = textDirectives("원본 코드 적용", ledger, { all: true }).filter(({ e }) => e.id === "upstream-released-only").map(({ e }) => directiveLine(e));
+  expect(thread).toHaveLength(1);
+  for (const line of [hint, ...thread]) expect(line).not.toMatch(/없애|없앤/);
 });
 
 test("no scope narrowed for briefs hits the eight-step template by itself: it would be every lane again", async () => {

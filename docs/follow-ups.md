@@ -41,7 +41,7 @@ What would close it: one argv source in session-id.ts, used by `resolveSession` 
 
 ## Directives: launch and audit enforce the removal limit of upstream-released-only (#344)
 
-The owner's words in upstream-released-only carry "없는 건 없애" inside one sentence, so they cannot be trimmed and must not reach a brief without the lead's limit (remove only what is already ported and not in upstream main, after he saw the inventory and picked). #344 keeps the entry as a lead record (mode lead, check none): no brief gets its text, and the lead writes the limit into upstream briefs by hand. Still to do, as one PR:
+The owner's words in upstream-released-only carry "없는 건 없애" inside one sentence, so they cannot be trimmed and must not reach a brief without the lead's limit (remove only what is already ported and not in upstream main, after he saw the inventory and picked). #344 keeps the entry as a lead record (mode lead, check none) whose words leave that sentence out (his whole message stays in original): no brief gets its text, what the lead reads never says to remove without the limit, and the lead writes the limit into upstream briefs by hand. Still to do, as one PR:
 - a lead rule (inject, same keyword scope) that carries the whole port rule with the limit sentence;
 - the owner entry as `require` of that sentence (not the rule's heading, which a reused brief can carry alone);
 - `planDirectives` and `briefGaps` check a require against the lead's text plus every ledger rule held in full anywhere in the brief (launch's block, `dori directives apply`'s, a relaunch's text after an older footer) plus what the plan injects.
