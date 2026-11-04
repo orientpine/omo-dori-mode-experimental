@@ -232,6 +232,29 @@ test("a Telegram topic message edited without its topic moves that topic's recor
     expect({ b: b.duplicate, a: again.duplicate }).toEqual({ b: true, a: false });
   }));
 
+// review 8 of #338: an edit that lands after Discord created the message but before the posting command recorded it
+// (another command edited it from its id) is kept: the record holds the edited text with the post's own parts
+test("an edit made between a message's creation and its record is kept in the record", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    let n = 800;
+    let other: Discord | undefined;
+    const http: Http = async (req) => {
+      if (req.method === "POST" && req.url.endsWith("/messages")) {
+        const id = String(1566900000000000000n + BigInt(++n));
+        if ((JSON.parse(String(req.body)) as { content?: string }).content === "A") await (other as Discord).edit(T, id, "B");
+        return { status: 200, headers: {}, body: JSON.stringify({ id, content: "A" }) };
+      }
+      return { status: 200, headers: {}, body: "{}" };
+    };
+    const dc = new Discord(http, fakeClock(0), "t", "http://discord.test");
+    other = new Discord(http, fakeClock(0), "t", "http://discord.test");
+    await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"));
+    const b = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => dc.post(T, "B"), AFTER);
+    const a = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"), AFTER);
+    expect({ b: b.duplicate, a: a.duplicate }).toEqual({ b: true, a: false });
+  }));
+
 // the Slack HTTP fake shared by the share tests: chat.postMessage answers the next ts, an upload goes through
 const slackApi = (ts: { n: number }): Http => async (req) => {
   const method = req.url.split("/").pop();

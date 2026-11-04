@@ -1799,7 +1799,7 @@ try {
       // place's last post (src/send-dedupe.ts); a repeat exits SEND_DUPLICATE_EXIT, a post prints what the service holds
       const place = platform === "discord" ? `discord:${thread ?? to}` : `${platform}:${to}${thread ? `/${thread}` : ""}`;
       const sentDir = join(config.stateDir, "sent");
-      const message: Post = { parts: { platform, where: platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, files: filesKey(discordFiles) }, text };
+      let message: Post = { parts: { platform, where: platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, files: filesKey(discordFiles) }, text };
       // an edit is never checked; the messenger client moves the place's last-post record when it edits that post
       const once = async (post: () => Promise<Sent>) => {
         const r = await sendOnce(sentDir, place, message, post, { again: Boolean(flags.values.again) });
@@ -1846,6 +1846,8 @@ try {
         await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
         if (edit) await dc.edit(to, edit, text);
         else {
+          // the check keys the text as it goes out (ping in front, thread links named), as Discord.post records it
+          message = { ...message, text: await dc.prepare(text, ping) };
           const r = await once(() => dc.post(thread ?? to, text, !flags.values["no-typing"], ping, reply, discordFiles));
           if (!r.duplicate) await notePost(thread ?? to, r.id, withFileNames(body, discordFiles));
         }
@@ -2118,7 +2120,8 @@ try {
       // message; a text without emoji has the same key as `dori send discord --to <thread id>`, so the two commands do
       // not post one text twice either
       const place = `discord:${discordThreadId(ref ?? "")}`;
-      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, { parts: { platform: "discord", where: discordThreadId(ref ?? ""), files: filesKey(files) }, text: withoutEmoji(body) }, post, { again: Boolean(flags.values.again) });
+      const threadText = await dc.prepare(withoutEmoji(body));
+      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, { parts: { platform: "discord", where: discordThreadId(ref ?? ""), files: filesKey(files) }, text: threadText }, post, { again: Boolean(flags.values.again) });
       if (verb === "done") {
         // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;

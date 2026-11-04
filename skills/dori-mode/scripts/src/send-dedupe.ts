@@ -24,7 +24,8 @@ type Mark = { readonly at: number; readonly id?: string };
 export type PostParts = { readonly platform: string; readonly where: string; readonly reply?: string; readonly ping?: string; readonly files?: readonly string[] };
 export type Post = { readonly parts: PostParts; readonly text: string };
 // parts: a text post's own, so an edit keeps them; none for a post with no text of its own (a card, a file share)
-type Last = { readonly at: number; readonly key: string; readonly id: string; readonly parts?: PostParts };
+// editedText: an edit that came before the post was recorded (no parts yet); the post's record takes that text
+type Last = { readonly at: number; readonly key: string; readonly id: string; readonly parts?: PostParts; readonly editedText?: string };
 // what a post returned: its id and the content the service answered it holds (undefined when the answer had none)
 export type Sent = { readonly id: string; readonly content?: string };
 // last: the place's last post had this content (any age); otherwise the same content went there within the window
@@ -142,7 +143,10 @@ const noteEdit = (dir: string, place: string, id: string, text: string, scope?: 
   mkdirSync(dir, { recursive: true });
   const direct = readLast(dir, place);
   const found = direct?.id === id ? [direct] : scope ? allLasts(dir).filter((l) => l.id === id && l.parts?.platform === scope.platform && l.parts.where.startsWith(`${scope.chat}/`)) : [];
-  for (const last of found) if (last.parts) writeMark(last.file, { at: last.at, key: postKey({ parts: last.parts, text }), id, parts: last.parts });
+  for (const last of found) writeMark(last.file, last.parts ? { at: last.at, key: postKey({ parts: last.parts, text }), id, parts: last.parts } : { at: last.at, key: sendKey(["edited", id, text]), id, editedText: text });
+  // no record yet: the message was just created and its post not recorded (review 8 of #338); leave the edited text for
+  // it (an older message's edit sorts below the place's newest record and is removed on write)
+  if (!found.length) writeLast(dir, place, { at: Date.now(), key: sendKey(["edited", id, text]), id, editedText: text });
 };
 
 // Every message this process posts or edits goes through here from the messenger clients, so the last post of a place
@@ -156,7 +160,10 @@ export const setPostLedger = (dir: string | undefined): void => {
 export const notePosted = (place: string, id: string, post?: Post): void => {
   if (!ledgerDir) return;
   mkdirSync(ledgerDir, { recursive: true });
-  writeLast(ledgerDir, place, { at: Date.now(), id, key: post ? postKey(post) : sendKey(["no-text", id]), ...(post ? { parts: post.parts } : {}) });
+  // an edit that came before this record holds the text the message has now
+  const early = readLast(ledgerDir, place);
+  const text = early?.id === id && early.editedText !== undefined ? early.editedText : post?.text;
+  writeLast(ledgerDir, place, { at: Date.now(), id, key: post && text !== undefined ? postKey({ parts: post.parts, text }) : sendKey(["no-text", id]), ...(post ? { parts: post.parts } : {}) });
 };
 export const noteEdited = (place: string, id: string, text: string, scope?: EditScope): void => {
   if (ledgerDir) noteEdit(ledgerDir, place, id, text, scope);
