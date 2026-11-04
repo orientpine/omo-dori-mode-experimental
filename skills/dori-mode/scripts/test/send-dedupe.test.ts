@@ -2,40 +2,89 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { noteEdit, type Sent, sendKey, sendOnce } from "../src/send-dedupe.ts";
+import { Discord } from "../src/messenger/discord.ts";
+import type { Http } from "../src/messenger/http.ts";
+import { Slack } from "../src/messenger/slack.ts";
+import { type PostParts, type Sent, sendOnce, setPostLedger } from "../src/send-dedupe.ts";
+import { fakeClock } from "./fakes.ts";
 
 // windowMs 0: the 10 minute window is over, only the place's last post still counts
 const AFTER = { windowMs: 0 };
+const T = "1566900000000000001";
+const discordText = (text: string, extra: Partial<PostParts> = {}) => ({ parts: { platform: "discord", where: T, ...extra }, text });
+
+const withDir = async (body: (dir: string) => Promise<void>) => {
+  const dir = mkdtempSync(join(tmpdir(), "send-dedupe-"));
+  try {
+    await body(dir);
+  } finally {
+    setPostLedger(undefined);
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+// a Discord whose every created message gets the next snowflake, and which answers edits
+const discordApi = () => {
+  let n = 200;
+  const http: Http = async (req) => ({ status: 200, headers: {}, body: JSON.stringify(req.method === "POST" && req.url.endsWith("/messages") ? { id: String(1566900000000000000n + BigInt(++n)), content: "" } : {}) });
+  return new Discord(http, fakeClock(0), "t", "http://discord.test");
+};
 
 // review of #338: a thread reply posts, then waits for its status; a send posted meanwhile must stay the place's last post
-test("a post that finishes after a later post to the same place never takes the last-post record from it", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "send-dedupe-"));
-  try {
+test("a post that finishes after a later post to the same place never takes the last-post record from it", () =>
+  withDir(async (dir) => {
     let finishA: (s: Sent) => void = () => {};
-    const a = sendOnce(dir, "discord:1", sendKey(["A"]), () => new Promise<Sent>((r) => (finishA = r)));
-    const b = await sendOnce(dir, "discord:1", sendKey(["B"]), async () => ({ id: "1566900000000000102", content: "B" }));
+    const a = sendOnce(dir, `discord:${T}`, discordText("A"), () => new Promise<Sent>((r) => (finishA = r)));
+    const b = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => ({ id: "1566900000000000102", content: "B" }));
     finishA({ id: "1566900000000000101", content: "A" });
     await a;
-    const againB = await sendOnce(dir, "discord:1", sendKey(["B"]), async () => ({ id: "1566900000000000103" }), AFTER);
-    const againA = await sendOnce(dir, "discord:1", sendKey(["A"]), async () => ({ id: "1566900000000000104" }), AFTER);
-    expect({ b: b.duplicate, againB, againA: againA.duplicate }).toEqual({ b: false, againB: { id: "1566900000000000102", duplicate: true, ageMs: againB.duplicate ? againB.ageMs : -1, last: true }, againA: false });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+    const againB = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => ({ id: "1566900000000000103" }), AFTER);
+    const againA = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => ({ id: "1566900000000000104" }), AFTER);
+    expect({ b: b.duplicate, againB: [againB.id, againB.duplicate], againA: againA.duplicate }).toEqual({ b: false, againB: ["1566900000000000102", true], againA: false });
+  }));
 
-test("an edit of the place's last post makes the edited text its record; an edit of an older message changes nothing", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "send-dedupe-"));
-  try {
-    await sendOnce(dir, "slack:C1", sendKey(["A"]), async () => ({ id: "1700000100.000100" }));
-    noteEdit(dir, "slack:C1", "1700000000.000001", sendKey(["X"]));
-    const stillA = await sendOnce(dir, "slack:C1", sendKey(["A"]), async () => ({ id: "1700000100.000200" }), AFTER);
-    noteEdit(dir, "slack:C1", "1700000100.000100", sendKey(["B"]));
-    const a = await sendOnce(dir, "slack:C1", sendKey(["A"]), async () => ({ id: "1700000100.000300" }), AFTER);
-    noteEdit(dir, "slack:C1", "1700000100.000300", sendKey(["B"]));
-    const b = await sendOnce(dir, "slack:C1", sendKey(["B"]), async () => ({ id: "1700000100.000400" }), AFTER);
-    expect({ stillA: stillA.duplicate, a: [a.id, a.duplicate], b: [b.id, b.duplicate] }).toEqual({ stillA: true, a: ["1700000100.000300", false], b: ["1700000100.000300", true] });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+// review 2 of #338: a lane's close posts its summary straight through Discord (done-flow postInThread), not dori send
+test("a post the CLI makes past dori send (a close summary, a card) is the place's last post too", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    const dc = discordApi();
+    await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"));
+    await dc.send(T, "B");
+    const a = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"), AFTER);
+    await dc.call("POST", `/channels/${T}/messages`, { components: [] });
+    const b = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"), AFTER);
+    const repeat = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"), AFTER);
+    expect({ a: a.duplicate, afterCard: b.duplicate, repeat: repeat.duplicate }).toEqual({ a: false, afterCard: false, repeat: true });
+  }));
+
+// review 2 of #338: send A as a reply, edit it to B; B as the same reply again is the repeat
+test("an edit of the place's last post keeps its reply target and files and takes the edited text; an older message's edit changes nothing", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    const dc = discordApi();
+    const asReply = { reply: "1566800000000000009", files: ["a.png:abc"] };
+    const first = await sendOnce(dir, `discord:${T}`, discordText("A", asReply), async () => dc.post(T, "A"));
+    await dc.edit(T, "1566800000000000001", "X");
+    const stillA = await sendOnce(dir, `discord:${T}`, discordText("A", asReply), async () => dc.post(T, "A"), AFTER);
+    await dc.edit(T, first.id, "B");
+    const b = await sendOnce(dir, `discord:${T}`, discordText("B", asReply), async () => dc.post(T, "B"), AFTER);
+    const plainB = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => dc.post(T, "B"), AFTER);
+    expect({ stillA: stillA.duplicate, b: [b.id, b.duplicate], plainB: plainB.duplicate }).toEqual({ stillA: true, b: [first.id, true], plainB: false });
+  }));
+
+test("a Slack file share is the channel's last post, though Slack names no message for it", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    let ts = 1700000100;
+    const http: Http = async (req) => {
+      const method = req.url.split("/").pop();
+      const body = method === "chat.postMessage" ? { ok: true, channel: "C1", ts: `${++ts}.000100` } : method === "files.getUploadURLExternal" ? { ok: true, upload_url: "http://slack.test/up", file_id: "F1" } : { ok: true };
+      return { status: 200, headers: {}, body: JSON.stringify(body) };
+    };
+    const slack = new Slack(http, fakeClock(1700000200_000), { token: "t" }, "http://slack.test/api");
+    const text = { parts: { platform: "slack", where: "C1/" }, text: "\ubc30\ud3ec \ub05d\ub0ac\uc5b4" };
+    await sendOnce(dir, "slack:C1", text, async () => ({ id: (await slack.post("C1", text.text)).ts }));
+    await slack.upload("C1", [{ filename: "deck.pdf", length: 3, read: async () => new Uint8Array([1, 2, 3]) }]);
+    const again = await sendOnce(dir, "slack:C1", text, async () => ({ id: (await slack.post("C1", text.text)).ts }), AFTER);
+    expect(again.duplicate).toBe(false);
+  }));

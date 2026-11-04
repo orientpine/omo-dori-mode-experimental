@@ -76,7 +76,7 @@ import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener, eyesOff } from "./messenger/discord-listener.ts";
 import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS } from "./messenger/discord-thread.ts";
-import { duplicateLine, noteEdit, SEND_DUPLICATE_EXIT, type Sent, sendKey, sendOnce, sentLine } from "./send-dedupe.ts";
+import { duplicateLine, type Post, SEND_DUPLICATE_EXIT, type Sent, sendOnce, sentLine, setPostLedger } from "./send-dedupe.ts";
 import { mapThread, standThread, threads, unstandThread } from "./messenger/thread-map.ts";
 import { archiveDoneThreads } from "./messenger/thread-archive.ts";
 import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
@@ -506,6 +506,8 @@ await resolveInstance(process.cwd());
 const foreignEnv = await loadEnvFile(envFilePath());
 if (foreignEnv.length) console.error(`DORI_ENV_FOREIGN dropped ${foreignEnv.length} inherited variables of another Dori (its bot token differs from ${envFilePath()}): ${foreignEnv.join(" ")}`);
 const config = await loadConfig().catch((e: unknown) => (e instanceof ConfigError ? die(`CONFIG_INVALID ${e.message}`, 2) : Promise.reject(e)));
+// every message this process posts or edits becomes its place's last post, for the repeat check of dori send
+setPostLedger(join(config.stateDir, "sent"));
 const discordToken = process.env.DORI_DISCORD_TOKEN?.trim();
 const deps: FlowDeps = {
   run,
@@ -1797,21 +1799,17 @@ try {
       // place's last post (src/send-dedupe.ts); a repeat exits SEND_DUPLICATE_EXIT, a post prints what the service holds
       const place = platform === "discord" ? `discord:${thread ?? to}` : `${platform}:${to}${thread ? `/${thread}` : ""}`;
       const sentDir = join(config.stateDir, "sent");
-      const dedupeKey = sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, text, ...filesKey(discordFiles)]);
-      // an edit of the place's last post: that post now holds the edited text, so its repeat check follows it
-      const edited = () => noteEdit(sentDir, place, edit ?? "", dedupeKey);
+      const message: Post = { parts: { platform, where: platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, files: filesKey(discordFiles) }, text };
+      // an edit is never checked; the messenger client moves the place's last-post record when it edits that post
       const once = async (post: () => Promise<Sent>) => {
-        const r = await sendOnce(sentDir, place, dedupeKey, post, { again: Boolean(flags.values.again) });
+        const r = await sendOnce(sentDir, place, message, post, { again: Boolean(flags.values.again) });
         console.log(r.duplicate ? duplicateLine(place, r) : sentLine("SENT", r));
         if (r.duplicate) process.exitCode = SEND_DUPLICATE_EXIT;
         return r;
       };
       if (platform === "slack") {
         const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env.DORI_SLACK_COOKIE }, process.env.DORI_SLACK_API?.trim() || undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
-        if (edit) {
-          await slack.edit(to, edit, text);
-          edited();
-        }
+        if (edit) await slack.edit(to, edit, text, thread);
         else {
           let posted: { channel: string; ts: string } | undefined;
           // files are shared once per call and never by the repeat check: a failure exits non-zero and a person calls again.
@@ -1837,10 +1835,7 @@ try {
       } else if (platform === "telegram") {
         const tg = new Telegram(fetchHttp, realClock, token("DORI_TELEGRAM_TOKEN"));
         const target = { chatId: to, ...(thread ? { threadId: Number(thread) } : {}) };
-        if (edit) {
-          await tg.edit(target, Number(edit), text);
-          edited();
-        }
+        if (edit) await tg.edit(target, Number(edit), text);
         else
           await once(async () => {
             const m = await tg.post(target, text);
@@ -1849,10 +1844,8 @@ try {
       } else if (platform === "discord") {
         const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")), discordApi());
         await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
-        if (edit) {
-          await dc.edit(to, edit, text);
-          edited();
-        } else {
+        if (edit) await dc.edit(to, edit, text);
+        else {
           const r = await once(() => dc.post(thread ?? to, text, !flags.values["no-typing"], ping, reply, discordFiles));
           if (!r.duplicate) await notePost(thread ?? to, r.id, withFileNames(body, discordFiles));
         }
@@ -2123,7 +2116,7 @@ try {
       await ownerSpeech(body, `thread ${verb}`, () => ownerPlace(dc, discordThreadId(ref ?? "")));
       // the same key as `dori send discord --to <thread id>`, so the two commands do not post one text twice either
       const place = `discord:${discordThreadId(ref ?? "")}`;
-      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, body, ...filesKey(files)]), post, { again: Boolean(flags.values.again) });
+      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, { parts: { platform: "discord", where: discordThreadId(ref ?? ""), files: filesKey(files) }, text: body }, post, { again: Boolean(flags.values.again) });
       if (verb === "done") {
         // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;

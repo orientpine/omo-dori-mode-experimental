@@ -2,7 +2,11 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Clock } from "../run.ts";
 import { guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
+import { notePosted, noteEdited } from "../send-dedupe.ts";
 import { type ThreadLedger, tsAfter } from "./thread-ledger.ts";
+
+// the place a message is in for the repeat check of dori send (send-dedupe.ts): the channel, or the thread in it
+const slackPlace = (channel: string, threadTs?: string): string => `slack:${channel}${threadTs ? `/${threadTs}` : ""}`;
 
 export type SlackAuth = { readonly token: string; readonly cookie?: string };
 // text: what Slack answered the message holds (chat.postMessage's message.text), when it said
@@ -47,12 +51,15 @@ export class Slack {
 
   async post(channel: string, text: string, threadTs?: string): Promise<Posted> {
     const r = await this.call("chat.postMessage", { channel, text: guardText(text), ...(threadTs ? { thread_ts: threadTs } : {}) });
+    notePosted(slackPlace(channel, threadTs), String(r.ts), { parts: { platform: "slack", where: `${channel}/${threadTs ?? ""}` }, text });
     const said = (r.message as { text?: unknown } | undefined)?.text;
     return { channel: String(r.channel), ts: String(r.ts), ...(typeof said === "string" ? { text: said } : {}) };
   }
 
-  async edit(channel: string, ts: string, text: string): Promise<void> {
+  // threadTs: the thread the message is in, for the repeat check's record of that place
+  async edit(channel: string, ts: string, text: string, threadTs?: string): Promise<void> {
     await this.call("chat.update", { channel, ts, text: guardText(text) });
+    noteEdited(slackPlace(channel, threadTs), ts, text);
   }
 
   // Every file gets its own upload URL and bytes, then one completeUploadExternal shares them all as one message, with
@@ -69,6 +76,8 @@ export class Slack {
       done.push({ id: String(slot.file_id), title: f.title ?? f.filename });
     }
     await this.call("files.completeUploadExternal", { files: done, channel_id: channel, ...(threadTs ? { thread_ts: threadTs } : {}), ...(text ? { initial_comment: text } : {}) }, ONCE);
+    // the share names no message ts; a ts is seconds since the epoch, so now stands in for it as the place's last post
+    notePosted(slackPlace(channel, threadTs), (this.clock.now() / 1000).toFixed(6));
     return done.map((f) => f.id);
   }
 

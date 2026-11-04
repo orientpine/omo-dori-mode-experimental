@@ -18,7 +18,12 @@ const POLL_MS = 200;
 const KEEP_MS = 24 * 60 * 60_000;
 
 type Mark = { readonly at: number; readonly id?: string };
-type Last = { readonly at: number; readonly key: string; readonly id: string };
+// where a message goes and what besides its text makes it this message (dori send's repeat key, without the text):
+// where is the channel or thread for Discord, "<to>/<thread>" for Slack and Telegram; files are filesKey entries
+export type PostParts = { readonly platform: string; readonly where: string; readonly reply?: string; readonly ping?: string; readonly files?: readonly string[] };
+export type Post = { readonly parts: PostParts; readonly text: string };
+// parts: a text post's own, so an edit keeps them; none for a post with no text of its own (a card, a file share)
+type Last = { readonly at: number; readonly key: string; readonly id: string; readonly parts?: PostParts };
 // what a post returned: its id and the content the service answered it holds (undefined when the answer had none)
 export type Sent = { readonly id: string; readonly content?: string };
 // last: the place's last post had this content (any age); otherwise the same content went there within the window
@@ -32,6 +37,9 @@ const ignoreMissing = (e: unknown): void => {
 
 // the place a message goes (platform, channel or thread), what it replies to, who it pings and its text
 export const sendKey = (parts: readonly (string | undefined)[]): string => createHash("sha256").update(JSON.stringify(parts.map((p) => p ?? ""))).digest("hex").slice(0, 32);
+const postKey = (p: Post): string => sendKey([p.parts.platform, p.parts.where, p.parts.reply, p.parts.ping, p.text, ...(p.parts.files ?? [])]);
+// the place a repeat line names: discord:<channel or thread>, slack:<channel>[/<thread ts>], telegram:<chat>[/<topic>]
+export const placeName = (p: PostParts): string => `${p.platform}:${p.where.replace(/\/$/, "")}`;
 
 const readMark = (path: string): Mark | undefined => {
   let raw: string;
@@ -73,11 +81,10 @@ const order = (id: string, at: number): string => {
   return m ? `${(m[1] ?? "").padStart(24, "0")}.${(m[2] ?? "").padEnd(9, "0")}` : `~${String(at).padStart(16, "0")}`;
 };
 
-const readLast = (dir: string, place: string): (Last & { readonly file: string }) | undefined => {
+// the newest record's file; the older ones are removed, so a place keeps one file however often it is posted to
+const newestLast = (dir: string, place: string): string | undefined => {
   const prefix = lastPrefix(place);
   const files = readdirSync(dir).filter((n) => n.startsWith(prefix) && n.endsWith(".json")).sort();
-  const newest = files.at(-1);
-  if (newest === undefined) return undefined;
   for (const older of files.slice(0, -1)) {
     try {
       unlinkSync(join(dir, older));
@@ -85,7 +92,13 @@ const readLast = (dir: string, place: string): (Last & { readonly file: string }
       ignoreMissing(e);
     }
   }
-  const file = join(dir, newest);
+  const newest = files.at(-1);
+  return newest === undefined ? undefined : join(dir, newest);
+};
+
+const readLast = (dir: string, place: string): (Last & { readonly file: string }) | undefined => {
+  const file = newestLast(dir, place);
+  if (file === undefined) return undefined;
   try {
     const l = JSON.parse(readFileSync(file, "utf8")) as Last;
     return typeof l.key === "string" && typeof l.id === "string" && typeof l.at === "number" ? { ...l, file } : undefined;
@@ -97,14 +110,35 @@ const readLast = (dir: string, place: string): (Last & { readonly file: string }
   }
 };
 
-const writeLast = (dir: string, place: string, last: Last): void => writeMark(join(dir, `${lastPrefix(place)}${order(last.id, last.at)}.json`), last);
+const writeLast = (dir: string, place: string, last: Last): void => {
+  writeMark(join(dir, `${lastPrefix(place)}${order(last.id, last.at)}.json`), last);
+  newestLast(dir, place);
+};
 
 // An edit is never checked, but an edit of the place's last post changes what that post holds: its record takes the
-// edited content's key (review of #338: send A, edit it to B, and A again was refused for good as the last post).
-export const noteEdit = (dir: string, place: string, id: string, key: string): void => {
+// edited text with the post's own reply target, ping and files (reviews of #338: send A, edit it to B, and A was refused
+// for good; then B as the same reply went out again). A post with no text of its own keeps its record.
+const noteEdit = (dir: string, place: string, id: string, text: string): void => {
   mkdirSync(dir, { recursive: true });
   const last = readLast(dir, place);
-  if (last?.id === id) writeMark(last.file, { at: last.at, key, id });
+  if (last?.id === id && last.parts) writeMark(last.file, { at: last.at, key: postKey({ parts: last.parts, text }), id, parts: last.parts });
+};
+
+// Every message this process posts or edits goes through here from the messenger clients, so the last post of a place
+// is the last one this Dori made there, by dori send or not (review 2 of #338: a lane's close posted its summary
+// straight through Discord, and the text before it was then refused as the last post). The CLI sets the folder once;
+// without it (a library use, a unit test) nothing is recorded.
+let ledgerDir: string | undefined;
+export const setPostLedger = (dir: string | undefined): void => {
+  ledgerDir = dir;
+};
+export const notePosted = (place: string, id: string, post?: Post): void => {
+  if (!ledgerDir) return;
+  mkdirSync(ledgerDir, { recursive: true });
+  writeLast(ledgerDir, place, { at: Date.now(), id, key: post ? postKey(post) : sendKey(["no-text", id]), ...(post ? { parts: post.parts } : {}) });
+};
+export const noteEdited = (place: string, id: string, text: string): void => {
+  if (ledgerDir) noteEdit(ledgerDir, place, id, text);
 };
 
 const prune = (dir: string, now: number): void => {
@@ -123,7 +157,8 @@ const prune = (dir: string, now: number): void => {
 // goes (platform, channel or thread); key is sendKey of the place and the content. The claim is a file created with
 // O_EXCL, so of two senders started together exactly one sends; the other waits for its id. A send that fails removes
 // its claim and leaves the last post as it was, so a retry after a real failure still goes out.
-export const sendOnce = async (dir: string, place: string, key: string, send: () => Promise<Sent>, opts: SendOnceOptions = {}): Promise<SendOnceResult> => {
+export const sendOnce = async (dir: string, place: string, post: Post, send: () => Promise<Sent>, opts: SendOnceOptions = {}): Promise<SendOnceResult> => {
+  const key = postKey(post);
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
   const windowMs = opts.windowMs ?? SEND_DEDUPE_MS;
@@ -132,7 +167,7 @@ export const sendOnce = async (dir: string, place: string, key: string, send: ()
   const path = join(dir, `${key}.json`);
   const posted = (sent: Sent): SendOnceResult => {
     writeMark(path, { at: now(), id: sent.id });
-    writeLast(dir, place, { at: now(), key, id: sent.id });
+    writeLast(dir, place, { at: now(), key, id: sent.id, parts: post.parts });
     return { id: sent.id, duplicate: false, content: sent.content };
   };
   if (opts.again) return posted(await send());

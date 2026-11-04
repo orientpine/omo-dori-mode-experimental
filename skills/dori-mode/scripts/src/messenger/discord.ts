@@ -1,7 +1,8 @@
 import type { Clock } from "../run.ts";
 import { DEFAULT_RETRY, guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
 import { nameThreadLinks } from "./thread-links.ts";
-import type { DiscordFile } from "./upload-files.ts";
+import { notePosted, noteEdited } from "../send-dedupe.ts";
+import { type DiscordFile, filesKey } from "./upload-files.ts";
 
 const retryAfter = (body: string): number | undefined => {
   try {
@@ -42,7 +43,12 @@ export class Discord {
       const wait = res.status === 429 ? (retryAfter(res.body) ?? (Number.isFinite(header) && header > 0 ? header : undefined)) : undefined;
       throw new MessengerError(`discord ${method} ${path}: ${res.status} ${res.body.slice(0, 160)}`, res.status, undefined, wait);
     }
-    return (res.body ? JSON.parse(res.body) : {}) as T;
+    const answer = (res.body ? JSON.parse(res.body) : {}) as T;
+    // any new message (a card too) is the channel's last post now; post() then records a text post's own parts
+    const channel = method === "POST" ? /^\/channels\/(\d+)\/messages$/.exec(path)?.[1] : undefined;
+    const id = (answer as { id?: unknown }).id;
+    if (channel && typeof id === "string") notePosted(`discord:${channel}`, id);
+    return answer;
   }
 
   // reply: the id of a message in the same channel this one answers (shown as a Discord reply; no ping to its author)
@@ -54,6 +60,7 @@ export class Discord {
   // send, with the content Discord answered the new message holds (dori send prints it: send-dedupe.ts sentLine)
   async post(channelId: string, content: string, typing = false, ping?: string, reply?: string, files: readonly DiscordFile[] = []): Promise<{ id: string; content?: string }> {
     guardText(content);
+    const post = { parts: { platform: "discord", where: channelId, reply, ping, files: filesKey(files) }, text: content };
     if (ping !== undefined && (ping.length === 0 || /[^0-9]/.test(ping))) throw new MessengerError("--ping takes a digits-only user id", 400);
     if (ping !== undefined && !content.includes(`<@${ping}>`)) content = `<@${ping}> ${content}`;
     content = await this.namedLinks(content);
@@ -63,7 +70,10 @@ export class Discord {
       });
     }
     const payload = { ...(content || !files.length ? { content: guardText(content) } : {}), allowed_mentions: { parse: [], ...(ping !== undefined ? { users: [ping] } : {}) }, ...(reply !== undefined ? { message_reference: { message_id: reply, fail_if_not_exists: false } } : {}) };
-    const posted = (m: { id: string; content?: unknown }) => ({ id: m.id, ...(typeof m.content === "string" ? { content: m.content } : {}) });
+    const posted = (m: { id: string; content?: unknown }) => {
+      notePosted(`discord:${channelId}`, m.id, post);
+      return { id: m.id, ...(typeof m.content === "string" ? { content: m.content } : {}) };
+    };
     if (!files.length) return posted(await this.call<{ id: string; content?: unknown }>("POST", `/channels/${channelId}/messages`, payload));
     const form = new FormData();
     form.append("payload_json", JSON.stringify({ ...payload, attachments: files.map((f, id) => ({ id, filename: f.filename })) }));
@@ -73,6 +83,7 @@ export class Discord {
 
   async edit(channelId: string, messageId: string, content: string): Promise<void> {
     await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: guardText(await this.namedLinks(guardText(content))) });
+    noteEdited(`discord:${channelId}`, messageId, content);
   }
 
   // a thread link the owner's client has not loaded shows as "unknown"; it goes out as [name](<url>) (thread-links.ts)
