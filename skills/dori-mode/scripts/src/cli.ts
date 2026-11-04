@@ -69,6 +69,7 @@ import { clearEyes, Slack, slackRowIds, slackUnreact } from "./messenger/slack.t
 import type { UploadFile } from "./messenger/slack.ts";
 import { type DiscordFile, discordMessageProblem, filesKey, readDiscordFiles, readUploads, UploadRefused } from "./messenger/upload-files.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
+import { fileTgInboundStore, pollTelegramInbound } from "./messenger/telegram-inbound.ts";
 import { ThreadLedger } from "./messenger/thread-ledger.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
@@ -395,6 +396,9 @@ const USAGE = `dori <command> [options]
   transcribe <audio-file>              run hooks.transcribe and print the text
   inbound slack [--loop MIN]           print INBOUND lines: unread thread replies (threads view), replies in threads
                                        the Dori posted in (any helper), DMs and channels with unread mentions
+  inbound telegram [--loop MIN]        print INBOUND lines: the owner's Telegram DMs and his messages in the configured
+                                       group topic (DORI_TELEGRAM_TOKEN, DORI_TELEGRAM_OWNER_ID, optional
+                                       DORI_TELEGRAM_GROUP_ID, DORI_TELEGRAM_TOPIC_ID), owner-gated getUpdates
   inbound discord                      long-running gateway listener: the owner's messages get an eyes reaction and an
                                        inbox row, voice is transcribed, question-card answers are recorded; with
                                        DORI_DISCORD_WATCH_CHANNELS + DORI_DISCORD_WATCH_BOTS a monitoring bot's problem
@@ -1922,7 +1926,28 @@ try {
         listener.start();
         await new Promise(() => {});
       }
-      if (key !== "slack") die("inbound supports slack and discord");
+      // upstream dori-superagent #76 (https://github.com/sisyphuslabs/dori-superagent/pull/76): telegram inbound
+      if (key === "telegram") {
+        const tg = new Telegram(fetchHttp, realClock, process.env.DORI_TELEGRAM_TOKEN ?? die("DORI_TELEGRAM_TOKEN is not set"));
+        const store = fileTgInboundStore(`${config.stateDir}/telegram-offset`);
+        const num = (name: string): number => {
+          const raw = process.env[name] ?? die(`${name} is not set`);
+          const n = Number(raw);
+          if (!Number.isSafeInteger(n)) die(`${name} must be an integer, got: ${raw}`);
+          return n;
+        };
+        const ownerId = num("DORI_TELEGRAM_OWNER_ID");
+        const groupChatId = process.env.DORI_TELEGRAM_GROUP_ID === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
+        const topicId = process.env.DORI_TELEGRAM_TOPIC_ID === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID");
+        console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
+        await every(loopMin, async () => {
+          // Full text, JSON-escaped on one line: getUpdates cannot fetch a message twice.
+          await pollTelegramInbound(tg, store, { ownerId, groupChatId, topicId }, (i) =>
+            console.log(`INBOUND ${i.source} ${i.chat} ${i.thread ?? "-"} ${i.updateId} ${i.from} ${JSON.stringify(i.text ?? "")}`));
+        });
+        break;
+      }
+      if (key !== "slack") die("inbound supports slack, discord and telegram");
       const auth = { token: process.env.DORI_SLACK_TOKEN ?? die("DORI_SLACK_TOKEN is not set"), cookie: process.env.DORI_SLACK_COOKIE };
       const ledger = new ThreadLedger(`${config.stateDir}/slack-threads.json`);
       const slack = new Slack(fetchHttp, realClock, auth, process.env.DORI_SLACK_API?.trim() || undefined, ledger);
