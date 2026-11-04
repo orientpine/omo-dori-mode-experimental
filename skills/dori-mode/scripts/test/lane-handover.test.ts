@@ -1545,6 +1545,96 @@ test("a run that waited twice keeps the pane it first found: the lane moved mean
   expect(opened()).toBe(false);
 });
 
+test("a run that first arrives after the lane was repointed waits on the move's source: a repair that rolled back leaves the request to run (review 320 round 13)", async () => {
+  const outcome = "rolled-back" as "rolled-back" | "finished";
+  // Given: a live run (77) repointed the lane OLD -> NEW and still holds its journal; this run is given no boundPane
+  const base = await setup();
+  const lanes = join(state.dir, "handover", "lanes");
+  mkdirSync(lanes, { recursive: true });
+  await base.registry.patch("demo", { pane: NEW });
+  writeFileSync(pendingFile(state.dir, "demo"), JSON.stringify({ key: "demo", pid: 77, at: "2026-10-11T16:30:00Z", from: OLD, to: NEW, note: join(lanes, "demo-20261011-163000.md") }));
+  live.add(77);
+  let done = false;
+  const deps: LaneHandoverDeps = { ...base, reportOwner: async () => "msg-1", clock: { ...base.clock, sleep: async () => {
+    if (!done) {
+      // the holder ends within the wait: its repair put the lane back on OLD, or its move finished on NEW
+      done = true;
+      if (outcome === "rolled-back") await base.registry.patch("demo", { pane: OLD });
+      rmSync(pendingFile(state.dir, "demo"), { force: true });
+      live.delete(77);
+    }
+    simulate();
+  } } };
+  // When
+  await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, force: true });
+  // Then
+  const moved = printed.some((l) => l.startsWith("HANDOVER_ALREADY_MOVED demo"));
+  expect([outcome, moved]).toEqual([outcome, outcome === "finished"]);
+  if (outcome === "finished") expect(printed).toContain(`HANDOVER_ALREADY_MOVED demo: the lane moved from ${OLD} to ${NEW} while this run waited; it is not moved again`);
+  expect([outcome, opened()]).toEqual([outcome, outcome === "rolled-back"]);
+});
+
+test("a run that first arrives after the lane was repointed waits on the move's source: a holder that finished the move makes it already moved, not moved again (review 320 round 13)", async () => {
+  const outcome = "finished" as "rolled-back" | "finished";
+  // Given: a live run (77) repointed the lane OLD -> NEW and still holds its journal; this run is given no boundPane
+  const base = await setup();
+  const lanes = join(state.dir, "handover", "lanes");
+  mkdirSync(lanes, { recursive: true });
+  await base.registry.patch("demo", { pane: NEW });
+  writeFileSync(pendingFile(state.dir, "demo"), JSON.stringify({ key: "demo", pid: 77, at: "2026-10-11T16:30:00Z", from: OLD, to: NEW, note: join(lanes, "demo-20261011-163000.md") }));
+  live.add(77);
+  let done = false;
+  const deps: LaneHandoverDeps = { ...base, reportOwner: async () => "msg-1", clock: { ...base.clock, sleep: async () => {
+    if (!done) {
+      // the holder ends within the wait: its repair put the lane back on OLD, or its move finished on NEW
+      done = true;
+      if (outcome === "rolled-back") await base.registry.patch("demo", { pane: OLD });
+      rmSync(pendingFile(state.dir, "demo"), { force: true });
+      live.delete(77);
+    }
+    simulate();
+  } } };
+  // When
+  await laneHandover(deps, "demo", "aoe_lead_x", { approvedBy: LEAD_STUCK, force: true });
+  // Then
+  const moved = printed.some((l) => l.startsWith("HANDOVER_ALREADY_MOVED demo"));
+  expect([outcome, moved]).toEqual([outcome, outcome === "finished"]);
+  if (outcome === "finished") expect(printed).toContain(`HANDOVER_ALREADY_MOVED demo: the lane moved from ${OLD} to ${NEW} while this run waited; it is not moved again`);
+  expect([outcome, opened()]).toEqual([outcome, outcome === "rolled-back"]);
+});
+
+test("a lead's request waiting for work keeps the lane from automatic rollovers, and an automatic refusal logged after it does not hide it: the request starts with its own options once the work ended (review 320 round 13)", async () => {
+  // Given: the lane is past its context limit with the auto key on, and the lead's --keep-old request waits for chain 501
+  const base = await setup();
+  const deps = { ...base, config: { ...base.config, handover: { ...base.config.handover, laneContextPct: 80, autoRolloverLanes: true } } };
+  const running = new Set<number>([501]);
+  const autoRuns: string[] = [];
+  const resumes: string[] = [];
+  const hooks = {
+    signals: async (pane: string) => (pane === OLD ? { contextPct: 85 } : {}),
+    alive: (pid: number) => running.has(pid),
+    auto: async (who: "lead" | "lane", key: string) => { autoRuns.push(`${who}:${key}`); return "started"; },
+    resume: async (key: string, approvedBy: string) => { resumes.push(`${key} ${approvedBy}`); return { started: true, line: "unit=u1" }; },
+  };
+  const tick = async () => {
+    await deps.registry.patch("demo", { lastReplyAt: deps.clock.now() });
+    return freshnessTick(deps, "/home/test", hooks);
+  };
+  appendRollover(state.dir, { kind: "rollover", who: "lane", at: "2026-10-11T16:20:00.000Z", key: "demo", from: OLD, approvedBy: LEAD_STUCK, signals: {}, steps: [], result: "refused", reasons: ["x"], blocked: "work", pids: [501], request: { keepOld: true } });
+  // When: a sweep while the work runs; then an automatic run started before the request logs its own refusal; the work ends
+  const first = await tick();
+  appendRollover(state.dir, { kind: "rollover", who: "lane", at: "2026-10-11T16:21:00.000Z", key: "demo", from: OLD, approvedBy: "auto:handover.autoRolloverLanes", decidedBy: "auto", signals: {}, steps: [], result: "refused", reasons: ["x"], blocked: "work", pids: [501] });
+  const second = await tick();
+  running.delete(501);
+  const third = await tick();
+  // Then
+  expect(autoRuns).toEqual([]);
+  expect(first.some((a) => a.kind === "rollover_auto")).toBe(false);
+  expect(second.some((a) => a.kind === "rollover_auto")).toBe(false);
+  expect(third.filter((a) => a.kind === "ready_resume").map((a) => a.detail.split(":")[0])).toEqual(["started"]);
+  expect(resumes).toEqual([`demo ${LEAD_STUCK}`]);
+});
+
 test("a safe-point ask whose cause quotes a backtick or $( still reaches the lane, and a sweep that cannot type it goes on with the other lanes (review 320 round 9)", async () => {
   // Given: a chain whose command line has a backtick and $( (an ordinary shell command)
   const base = await setup();

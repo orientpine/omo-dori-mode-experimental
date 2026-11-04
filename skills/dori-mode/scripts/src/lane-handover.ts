@@ -376,7 +376,9 @@ export const safePointFile = (stateDir: string, key: string): string => join(sta
 // lane's pane now. A ready mark the lane writes after it starts that same move again (freshness readyResume); an automatic
 // run comes back from freshness's rolloverDue instead, and a run that went ahead or failed later ends the request.
 export const waitingRequest = (entries: readonly RolloverEntry[], key: string, pane: string): Extract<RolloverEntry, { kind: "rollover" }> | undefined => {
-  const last = entries.findLast((e): e is Extract<RolloverEntry, { kind: "rollover" }> => e.kind === "rollover" && e.who === "lane" && e.key === key);
+  // an automatic run's refusal leaves a lead's waiting request waiting: a run started before it logs its refusal after it
+  // (review 320 round 13)
+  const last = entries.findLast((e): e is Extract<RolloverEntry, { kind: "rollover" }> => e.kind === "rollover" && e.who === "lane" && e.key === key && !(e.result === "refused" && !!e.approvedBy?.trim() && decidedBy(e.approvedBy.trim()) === "auto"));
   const by = last?.approvedBy?.trim() ?? "";
   return last && last.result === "refused" && (last.blocked === "work" || last.blocked === "busy") && last.from === pane && by && decidedBy(by) !== "auto" ? last : undefined;
 };
@@ -615,13 +617,15 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
   const pending = readPending(config.stateDir, key);
   if (pending) {
+    // a run waiting on a move in flight asks for the move's source, not the pane the lane points at now: a repair that rolls
+    // back puts the lane there again and this request runs; a move that finished leaves it elsewhere (review 320 round 13)
     if (pending.pid !== process.pid && deps.alive(pending.pid)) {
       if (opts.dryRun || opts.idle) return refuse(`another handover of ${key} is running (pid ${pending.pid}, started ${pending.at})`);
       // a run mid-move: this one goes the takeover way, which logs no rollover row, so the lane's waiting request stays its
       // last and outlives that run dying before it repointed (review 320 round 8)
       const stop = await handOver(deps, key, { pid: pending.pid, at: pending.at }, opts, at, emit);
       if (stop) return stop;
-      return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? lane.pane }, granted);
+      return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? pending.from }, granted);
     }
     if (opts.dryRun) return refuse(`an interrupted handover (${pending.from} -> ${pending.to}, ${pending.at}) left ${pendingFile(config.stateDir, key)}; run without --dry-run to repair it first`);
     // the repair writes the registry and removes the journal, so it holds the lane's lock like any writer (I1): a run that
@@ -637,7 +641,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
         if (!holder) return refuse(locked);
         const stop = await handOver(deps, key, holder, opts, at, emit);
         if (stop) return stop;
-        return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? lane.pane }, granted);
+        return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? pending.from }, granted);
       }
     }
     let repaired = false;
@@ -651,7 +655,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     } finally {
       if (!opts.idle) rmSync(lockFile, { force: true });
     }
-    if (!repaired) return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? lane.pane }, granted);
+    if (!repaired) return attempt(deps, key, here, { ...opts, boundPane: opts.boundPane ?? pending.from }, granted);
     return { code: 3 };
   }
   // a run that waited for a holder asked for the session it found then: once an interrupted move is repaired (above), a

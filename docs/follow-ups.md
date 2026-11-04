@@ -13,3 +13,7 @@ Until then a run that dies after repointing the lane, before it finishes, leaves
 ## Lane handover: an exception after the commit with --keep-old rolls the move back (#320)
 
 With `--keep-old`, the new session is told `HANDOVER_COMMITTED` before the post-commit steps (the note append, the owner report). If one of them throws, the run's exception repair uses `recover()`, which closes the new session while the old one is alive, as on main. A process that dies there is handled the same way by the next run. The lead accepted this as main's behaviour on 2026-11-04. The record above closes it: the committed phase makes recovery finish the move.
+
+## Lane handover: a crash between the idle-moment freeze and the journal leaves the old agent stopped (#320)
+
+An automatic start (`--wait-idle`, or a waiting request `freshness` starts again) freezes the lane's agent at its idle moment, before the new session opens and before the pending journal is written. A run that dies in that window leaves the agent stopped (state T) with no journal, so no later run knows to thaw it. The code is the same as on main (plan challenge of review 320 round 13). What would close it: write the journal, or the per-lane record above, with the frozen agent's pid and start time before the `SIGSTOP`, so the repair under the lock thaws exactly that process; until then the lead resumes a stopped lane by hand (#332, open, has `dori watch` report it as `LANE_SUSPENDED`).
