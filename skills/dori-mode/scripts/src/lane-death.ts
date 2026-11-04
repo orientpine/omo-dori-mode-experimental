@@ -61,7 +61,7 @@ export type SuspendIO = {
   readonly resume: (pane: string, pid: number) => Promise<string>;
 };
 
-type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold; readonly told: boolean };
+type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold };
 
 const kill = (pid: number, sig: "SIGSTOP" | "SIGCONT"): boolean => {
   try {
@@ -147,6 +147,12 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     const resumed = back.startsWith("AGENT_RESUMED");
     const outcome = resumed ? "스스로 되살렸어, 하던 일을 잇는지 봐" : `되살리지 못했어(${back.replace(/^AGENT_RESUME_FAIL \S+ /, "").slice(0, 160)}) — ${isHerdrPane(t.pane) ? `dori revive ${t.pane}로 다시 해 봐` : `${t.pane}에서 fg를 쳐 봐`}`;
     const text = laneSuspendedText(t.who === "lead" ? "리드 omo" : `레인 ${t.key}`, hold, outcome);
+    // only an agent left held needs the mark (one brought back runs, and a later stop of it is told again); it is written
+    // before the line goes, so a watch that stops while sending does not find the agent unmarked and tell it again
+    if (!resumed) {
+      mkdirSync(join(stateDir, "suspended"), { recursive: true });
+      writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold } satisfies SuspendMark));
+    }
     const name = `${t.pane.replace(/[^\w.-]/g, "_")}-${pid}-${now}.json`;
     const rec: Notice = { key: t.key, text, at: new Date(now).toISOString(), state: "sending" };
     if (lead) {
@@ -158,11 +164,6 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     out.push(told ? `LANE_SUSPENDED_TOLD ${t.key} ${lead}` : `LANE_SUSPENDED_NOT_TOLD ${t.key}: ${sent.reason}`);
     if (lead) settle(name, rec, sent);
     kept.add(name);
-    // only an agent left held needs the mark: one brought back runs, and a later stop of it is told again
-    if (!resumed) {
-      mkdirSync(join(stateDir, "suspended"), { recursive: true });
-      writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold, told } satisfies SuspendMark));
-    }
   }
   // kept lines go again (the agent is not touched again); one still refused before typing stays, any other outcome ends it
   const dir = noticeDir(stateDir);

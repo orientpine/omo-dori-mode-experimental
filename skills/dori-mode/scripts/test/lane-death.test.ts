@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -253,4 +253,37 @@ test("two suspensions of one pane while the lead is away are two lines, each sen
   expect(await tick(T0 + 150 * S)).toEqual([]);
   expect(sent(w)).toHaveLength(2);
   expect(resumes).toBe(2);
+});
+
+test("a watch that stops while sending the line of an agent it could not bring back does not tell it again after a restart", async () => {
+  const { w, deps } = world({ "aoe_cr_dddd4444": "live" });
+  await deps(T0).registry.write(laneOf("crash", "aoe_cr_dddd4444"));
+  let resumes = 0;
+  let markBeforeSend = false;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_cr_dddd4444" ? 200 : undefined),
+    stat: (pid) => held({ 200: "T" })(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => (resumes++, `AGENT_RESUME_FAIL ${pane} agent ${pid}: fg typed into the shell, still not the running foreground job`),
+  };
+  // the watch dies inside the send: the lead pane read throws once the line is being submitted
+  const dying = (ms: number): FlowDeps => {
+    const d = deps(ms);
+    return { ...d, run: async (argv, opts) => {
+      if (argv[0] === "herdr" && argv[2] === "send-text" && argv[3] === "lead:p1") {
+        markBeforeSend = existsSync(join(state.dir, "suspended", "aoe_cr_dddd4444.json"));
+        throw new Error("watch stopped");
+      }
+      return d.run(argv, opts);
+    } };
+  };
+  await laneSuspendTick(deps(T0), io, () => false);
+  await expect(laneSuspendTick(dying(T0 + 30 * S), io, () => false)).rejects.toThrow("watch stopped");
+  expect(markBeforeSend).toBe(true);
+  // the restarted watch: the half-sent line is dropped and the still-stopped agent is not repaired or told again
+  const after = await laneSuspendTick(deps(T0 + 60 * S), io, () => false);
+  expect(after.filter((l) => l.startsWith("LANE_SUSPENDED "))).toEqual([]);
+  expect(after.some((l) => l.includes("not sent again"))).toBe(true);
+  expect(await laneSuspendTick(deps(T0 + 90 * S), io, () => false)).toEqual([]);
+  expect(resumes).toBe(1);
+  expect(sent(w)).toEqual([]);
 });

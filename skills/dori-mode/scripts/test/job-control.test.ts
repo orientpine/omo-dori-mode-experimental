@@ -1,4 +1,10 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { expect, test } from "bun:test";
+
+const lockDir = (): string => mkdtempSync(join(tmpdir(), "resume-lock-"));
 
 import { holdOf, type JobStat, jobSignal, type ResumeIO, resumeAgent } from "../src/job-control.ts";
 
@@ -88,6 +94,7 @@ const io = (rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { jobs?:
     signal: k.signal,
     stat: k.stat,
     tty: () => "/dev/pts/17",
+    lockDir: lockDir(),
     jobs: () => Array.from({ length: opts.jobs ?? 1 }, (_, i) => 200 + i * 100),
     run: async (argv) => {
       calls.push([...argv]);
@@ -179,4 +186,37 @@ test("resume types nothing more when the ctrl-C that drops the shell's pending i
   const line = await resumeAgent(failing, "w2:p2", 200);
   expect(line).toBe("AGENT_RESUME_FAIL w2:p2 agent 200: could not drop the shell's pending input (ctrl-C not sent); nothing more typed (state T, tty foreground group 100, its group 200)");
   expect(calls).toEqual([["herdr", "pane", "send-text", "w2:p2", "\x03"]]);
+});
+
+test("a second repair of the same agent while one runs types nothing (watch and revive at once)", async () => {
+  const rows = pane();
+  const k = kernel(rows);
+  k.signal(200, "SIGSTOP");
+  k.signal(200, "SIGCONT");
+  const { r, calls } = io(rows, k);
+  writeFileSync(join(r.lockDir!, `dori-resume-${process.getuid?.() ?? 0}-200.lock`), "4242");
+  const busy: ResumeIO = { ...r, alive: (pid) => pid === 4242 };
+  expect(await resumeAgent(busy, "w2:p2", 200)).toBe("AGENT_RESUME_BUSY w2:p2 agent 200: another repair of it runs; nothing typed");
+  expect(calls).toEqual([]);
+  // a lock whose holder ended is taken over
+  expect(await resumeAgent({ ...r, alive: () => false }, "w2:p2", 200)).toStartWith("AGENT_RESUMED w2:p2 agent 200:");
+});
+
+test("fg is not typed when the tty changed hands after the ctrl-C (another process brought the agent forward)", async () => {
+  const rows = pane();
+  const k = kernel(rows);
+  k.signal(200, "SIGSTOP");
+  k.signal(200, "SIGCONT");
+  rows.get(200)!.state = "T";
+  const { r, calls } = io(rows, k);
+  const racing: ResumeIO = { ...r, run: async (argv, opts) => {
+    const got = await r.run(argv, opts);
+    if (argv[0] === "herdr" && argv[2] === "send-text") {
+      k.setTpgid(200);
+      rows.get(200)!.state = "S";
+    }
+    return got;
+  } };
+  expect(await resumeAgent(racing, "w2:p2", 200)).toContain("the tty changed hands before fg; fg not typed");
+  expect(calls.some((c) => c[2] === "run")).toBe(false);
 });

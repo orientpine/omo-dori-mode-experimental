@@ -6,7 +6,8 @@
 // Measured on herdr 0.9.5 (2026-11-04, pane w2:p2): with the shell stopped before the agent and resumed after it, the tty
 // stays with the agent and its mode is untouched. jobSignal does that for every SIGSTOP and SIGCONT; resumeAgent repairs
 // an agent that a stop without it already put in the background.
-import { readFileSync, readlinkSync } from "node:fs";
+import { readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { isHerdrPane } from "./herdr.ts";
 import type { Clock, Runner } from "./run.ts";
@@ -71,6 +72,42 @@ export type ResumeIO = {
   readonly tty?: (pid: number) => string | undefined;
   // the process groups of the shell's jobs (its children outside its own group)
   readonly jobs?: (shell: JobStat) => Promise<number[]> | number[];
+  // where the per-agent lock goes (default: /tmp, one path for every process of this user)
+  readonly lockDir?: string;
+  readonly alive?: (pid: number) => boolean;
+};
+
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// One repair of an agent at a time across processes (dori watch and dori revive): the second would type its fg into the
+// agent the first brought forward. The lock names its holder; one whose holder ended is taken over.
+const takeResumeLock = (dir: string, pid: number, alive: (pid: number) => boolean): string | undefined => {
+  const file = join(dir, `dori-resume-${process.getuid?.() ?? 0}-${pid}.lock`);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(file, String(process.pid), { flag: "wx" });
+      return file;
+    } catch {
+      const holder = Number(readFileSafe(file));
+      if (holder > 0 && holder !== process.pid && alive(holder)) return undefined;
+      rmSync(file, { force: true });
+    }
+  }
+  return undefined;
+};
+const readFileSafe = (file: string): string => {
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
+  }
 };
 
 const ttyOf = (pid: number): string | undefined => {
@@ -101,6 +138,16 @@ const where = (s: JobStat | undefined): string => (s ? `state ${s.state}, tty fo
 // keys sent while the shell held the tty pile up on its prompt), and the raw mode bash took away is given back, with a resize that
 // makes omo draw its screen again. AGENT_RUNNING (nothing to do), AGENT_RESUMED, AGENT_RESUME_FAIL or AGENT_GONE.
 export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Promise<string> => {
+  const lock = takeResumeLock(io.lockDir ?? "/tmp", pid, io.alive ?? pidAlive);
+  if (!lock) return `AGENT_RESUME_BUSY ${pane} agent ${pid}: another repair of it runs; nothing typed`;
+  try {
+    return await resumeLocked(io, pane, pid);
+  } finally {
+    rmSync(lock, { force: true });
+  }
+};
+
+const resumeLocked = async (io: ResumeIO, pane: string, pid: number): Promise<string> => {
   const stat = io.stat ?? readStat;
   const first = stat(pid);
   if (!first) return `AGENT_GONE ${pane} agent ${pid}`;
@@ -134,6 +181,10 @@ export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Prom
     // without it the shell's pending input would run with fg: nothing more is typed
     if (dropped.code !== 0) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: ${[...done, "could not drop the shell's pending input (ctrl-C not sent)"].join(", ")}; nothing more typed (${where(stat(pid))})`;
     await io.clock.sleep(REDRAW_MS);
+    // fg goes to the shell only while the shell still holds the tty and the agent is still its stopped job
+    const before = stat(pid);
+    const shellNow = stat(shell.pid);
+    if (!before || before.state !== "T" || !shellNow || before.tpgid !== shellNow.pgrp) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: ${[...done, "the tty changed hands before fg"].join(", ")}; fg not typed (${where(before)})`;
     if (isHerdrPane(pane)) await io.run(["herdr", "pane", "run", pane, "fg"]);
     else {
       await io.run(["tmux", "send-keys", "-t", pane, "-l", "fg"]);
