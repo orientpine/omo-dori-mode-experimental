@@ -73,13 +73,17 @@ const agentArgv = (pid: number, cmd: string): string[] => {
   return cmd.split(/\s+/);
 };
 
-// The log file of session id that the agent at pid runs: omo hands its children the exact path (PI_SESSION_FILE, read as
-// resolveSession reads their PI_SESSION_ID; Windows has no such read), else what its arguments name (argvSessionLog).
-export const sessionLog = async (run: Runner, table: readonly Proc[], pid: number, id: string, sessionsDir: string, cwd: string): Promise<string | undefined> => {
+// The log file of session id that the agent at pid runs, by how sure each source is: the exact path omo hands its children
+// (PI_SESSION_FILE, read as resolveSession reads their PI_SESSION_ID; Windows has no such read; only bash and eval
+// children get it), else the log recorded before for this session (kept), else what the agent's arguments name
+// (argvSessionLog), a guess where their word boundaries are lost (macOS splits on whitespace): a guess never replaces a
+// log found before.
+export const sessionLog = async (run: Runner, table: readonly Proc[], pid: number, id: string, sessionsDir: string, cwd: string, kept?: string): Promise<string | undefined> => {
   for (const child of process.platform === "win32" ? [] : descendants(table, pid).slice(0, 40)) {
     const file = ENV_FILE.exec((await run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out)?.[1];
     if (file?.endsWith(`_${id}.jsonl`) && existsSync(file)) return file;
   }
+  if (kept?.endsWith(`_${id}.jsonl`) && existsSync(kept)) return kept;
   return argvSessionLog(agentArgv(pid, table.find((p) => p.pid === pid)?.cmd ?? ""), sessionsDir, cwd, id);
 };
 
@@ -119,12 +123,12 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   const table = await procTable(run);
   const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr" });
   if (!hit.id) return kept?.session ?? "";
-  // what the session runs now (its log), else what its agent was started with; a log found before for this session is kept
-  // when this read finds none
+  // what the session runs now (its log), else the model recorded for this same session (a log that cannot be read does not
+  // send it back to the launch one), else what its agent was started with
   const cmd = table.find((p) => p.pid === hit.pid)?.cmd ?? "";
-  const found = hit.pid ? await sessionLog(run, table, hit.pid, hit.id, config.sessionsDir, cwd) : undefined;
-  const log = found ?? (kept?.session === hit.id && kept.log && existsSync(kept.log) ? kept.log : undefined);
-  const model = (log ? sessionModel(log) : undefined) ?? modelOf(cmd);
+  const same = kept?.session === hit.id ? kept : undefined;
+  const log = hit.pid ? await sessionLog(run, table, hit.pid, hit.id, config.sessionsDir, cwd, same?.log) : same?.log;
+  const model = (log ? sessionModel(log) : undefined) ?? same?.model ?? modelOf(cmd);
   // recorded on every read, unchanged or not: its time is when it was last checked (lead-down reads again after 10 min)
   if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(log ? { log } : {}), at: new Date().toISOString() });
   return hit.id;

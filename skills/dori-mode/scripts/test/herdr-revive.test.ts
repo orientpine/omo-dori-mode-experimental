@@ -2,11 +2,11 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { herdrLeadSession, readHerdrSessions, recordHerdrSession, reviveHerdr } from "../src/herdr-sessions.ts";
+import { argvSessionLog, herdrLeadSession, readHerdrSessions, recordHerdrSession, reviveHerdr } from "../src/herdr-sessions.ts";
 import { findLead } from "../src/lead.ts";
 import { leadDownTick } from "../src/lead-down.ts";
 import type { Runner } from "../src/run.ts";
-import { sessionDirFor } from "../src/session-id.ts";
+import { sessionDirFor, winArgv } from "../src/session-id.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, type World } from "./fakes.ts";
 
 // The names, values and arguments a Windows agent line carries, decoded from its base64 data in order.
@@ -120,7 +120,8 @@ test("a lead started with its own --session-dir has its /thinking read from the 
   else expect(ran).toEndWith(` omo --session-id ${id} --session-dir ${own} --model p/m --thinking low`);
 });
 
-test("the log path omo hands its children (PI_SESSION_FILE) wins, spaces and all, and a later check that finds no log keeps the recorded one", async () => {
+// Windows reads no child environment (resolveSession and sessionLog skip it there)
+test.skipIf(process.platform === "win32")("the log path omo hands its children (PI_SESSION_FILE) wins, spaces and all, and a later check that finds no log keeps the recorded one", async () => {
   const id = "11111111-2222-4333-8444-555555555555";
   // a session resumed from its file (herdr restores omo with --session <file>), in a folder with a space, outside sessionsDir
   const spaced = join(dir, "my sessions");
@@ -148,6 +149,43 @@ test("the log path omo hands its children (PI_SESSION_FILE) wins, spaces and all
   const ran = world.calls.filter((c) => c[2] === "run").at(-1)?.[4] ?? "";
   if (process.platform === "win32") expect(winData(ran).slice(2)).toEqual(["omo", "--session-id", id, "--model", "p/m", "--thinking", "low"]);
   else expect(ran).toEndWith(` omo --session-id ${id} --model p/m --thinking low`);
+});
+
+test("a guessed log never replaces the one recorded for the same session, and a check that reads no log keeps the recorded model", async () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  const entry = (e: object) => `${JSON.stringify(e)}\n`;
+  const level = (l: string) => entry({ type: "thinking_level_change", thinkingLevel: l, provider: "p", modelId: "m" });
+  // the real log in "my sessions" (now low) and a stale copy of the same session in "my", where a whitespace split points
+  const real = join(dir, "my sessions");
+  const stale = join(dir, "my");
+  mkdirSync(real, { recursive: true });
+  mkdirSync(stale, { recursive: true });
+  const log = join(real, `2026-11-04T16-00-00-000Z_${id}.jsonl`);
+  writeFileSync(log, level("medium") + level("low"));
+  writeFileSync(join(stale, `2026-11-04T15-00-00-000Z_${id}.jsonl`), level("high"));
+  recordHerdrSession(dir, "w1:p1", { session: id, cwd: dir, model: "p/m:medium", log, at: new Date(0).toISOString() });
+  world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
+  world.ps = `4000 1 -bash\n4001 4000 omo --session-id ${id} --session-dir ${real} --model p/m:high`;
+  const deps = omo({ leadPane: "w1:p1", sessionsDir: join(dir, "sessions") });
+  expect(await herdrLeadSession(deps.run, deps.config, "w1:p1", true)).toBe(id);
+  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ log, model: "p/m:low" });
+  // the log is gone and the guess finds nothing: the model stays the session's last one, not the launch :high
+  rmSync(log);
+  rmSync(stale, { recursive: true });
+  await herdrLeadSession(deps.run, deps.config, "w1:p1", true);
+  expect(readHerdrSessions(dir)["w1:p1"]?.model).toBe("p/m:low");
+});
+
+test("a Windows command line with a quoted spaced --session-dir or --session names the log (winArgv, run on every platform)", () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  const spaced = join(dir, "my sessions");
+  mkdirSync(spaced, { recursive: true });
+  const log = join(spaced, `2026-11-04T16-00-00-000Z_${id}.jsonl`);
+  writeFileSync(log, "");
+  expect(argvSessionLog(winArgv(`omo.exe --session-id ${id} --session-dir "${spaced}" --model p/m:high`), join(dir, "sessions"), dir, id)).toBe(log);
+  expect(argvSessionLog(winArgv(`omo.exe --session "${log}" --model p/m:high`), join(dir, "sessions"), dir, id)).toBe(log);
+  // split on whitespace, the same line names no log (the macOS limit, docs/follow-ups.md)
+  expect(argvSessionLog(`omo --session-id ${id} --session-dir ${spaced}`.split(/\s+/), join(dir, "sessions"), dir, id)).toBeUndefined();
 });
 
 test("an unchanged herdr lead record gets its check time on each read, so the next read waits its ten minutes", async () => {
