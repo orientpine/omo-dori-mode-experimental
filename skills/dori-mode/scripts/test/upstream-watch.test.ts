@@ -26,7 +26,7 @@ beforeEach(() => {
   mkdirSync(src);
   mkdirSync(gh);
   sh(["git", "init", "-q"], src);
-  writeFileSync(join(src, "cite.ts"), `// ${UP}/commit/40034ad1a557b92a34aa1450565adcafd3352c96\n// ${UP}/issues/22\n// https://github.com/orientpine/omo-dori-mode-experimental/pull/30\n`);
+  writeFileSync(join(src, "cite.ts"), `// ${UP}/commit/40034ad1a557b92a34aa1450565adcafd3352c96\n// ${UP}/issues/22\n// ${UP}/pull/47\n// https://github.com/orientpine/omo-dori-mode-experimental/pull/30\n`);
   sh(["git", "add", "."], src);
   sh(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "root"], src);
   ourRoot = sh(["git", "rev-parse", "HEAD"], src);
@@ -54,6 +54,8 @@ beforeEach(() => {
     // proposals: open, and closed without a merge
     pr(45, "fix(dori-mode): retry a lost send", ["skills/dori-mode/scripts/src/send.ts"], { state: "OPEN", mergedAt: null, mergeCommit: null }),
     pr(46, "fix(dori-mode): an abandoned idea", ["skills/dori-mode/scripts/src/x.ts"], { state: "CLOSED", mergedAt: null, mergeCommit: null }),
+    // merged outside main, and our code already cites it: already here, not an integration ask
+    pr(47, "fix(dori-mode): a fix we took from the next branch", ["skills/dori-mode/scripts/src/y.ts"], { baseRefName: "next" }),
     pr(40, "fix: rename the docs pages", [...Array.from({ length: 100 }, (_, i) => `docs/page-${String(i).padStart(3, "0")}.md`), "skills/dori-mode/zz-late.ts"]),
   ]);
   const issue = (number: number, title: string, state = "OPEN") => ({ number, title, state, url: `${UP}/issues/${number}`, createdAt: "2026-11-02T00:00:00Z" });
@@ -104,13 +106,13 @@ test("ports (in upstream main) and integration asks (open issues, PRs outside ma
     [`commit:${"b".repeat(40)}`, "4"],
   ]);
   const classes = Object.fromEntries(Object.entries(seen()).map(([k, v]) => [k, v.class]));
-  expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:16": "2", "pr:17": "2", "issue:27": "2", "issue:31": "2", "pr:21": "2", "pr:23": "2", "pr-proposed:46": "2" });
+  expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:16": "2", "pr:17": "2", "issue:27": "2", "issue:31": "2", "pr:21": "2", "pr:23": "2", "pr-proposed:46": "2", "pr-proposed:47": "1" });
   // not in upstream main: the merged-elsewhere PR is no pr:N item, so its later merge into main is a new one
   expect(seen()["pr:44"]).toBeUndefined();
   const weekly = rows.filter((x) => x.kind === "upstream-weekly");
   expect(weekly).toHaveLength(1);
   expect(weekly[0]!.thread).toBe("discord:42");
-  expect(weekly[0]!.content).toContain("① 이미 있음 5건");
+  expect(weekly[0]!.content).toContain("① 이미 있음 6건");
   expect(r.out).toContain("inbox_lines=6 weekly=True");
 });
 
@@ -121,7 +123,7 @@ test("a second run and a seeded run write nothing more", async () => {
   expect(inbox()).toHaveLength(before);
   rmSync(join(root, "state"), { recursive: true });
   rmSync(join(root, "inbox.jsonl"));
-  expect((await run(["--seed"])).out).toContain("new=18 inbox_lines=0");
+  expect((await run(["--seed"])).out).toContain("new=19 inbox_lines=0");
   expect(inbox()).toHaveLength(0);
   expect((await run()).out).toContain("new=0 inbox_lines=0");
 });
@@ -155,12 +157,15 @@ test("a failing gh records nothing and exits 3; the third failure in a row tells
 test("an item the owner already decided is marked by hand and never reaches the inbox", async () => {
   expect((await run(["--mark", "pr:30", "--why", "owner chose; lane backlog-loop"])).out).toContain("UPSTREAM_MARKED pr:30");
   expect((await run(["--mark", "pr-proposed:45"])).out).toContain("UPSTREAM_MARKED pr-proposed:45");
+  // a merged PR the watch saw as pr:N before proposals had their own key is not sent again as pr-proposed:N
+  expect((await run(["--mark", "pr:44", "--why", "seen before the upgrade"])).code).toBe(0);
   expect((await run(["--mark", "23"])).code).not.toBe(0);
   await run();
   const items = inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item);
   expect(items).toContain("pr:40");
   expect(items).not.toContain("pr:30");
   expect(items).not.toContain("pr-proposed:45");
+  expect(items).not.toContain("pr-proposed:44");
   expect(seen()["pr:30"]!.class).toBe("decided");
 });
 
@@ -220,9 +225,10 @@ esac
   const r = await run([], { UPSTREAM_WATCH_GH_DIR: "", PATH: `${bin}:/usr/bin:/bin` });
   expect(r.code).toBe(0);
   const items = inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item ?? "");
-  // pr:22 is class 1: our checkout cites upstream issue #22, and GitHub numbers PRs and issues together.
-  expect(items.filter((i) => i.startsWith("pr:"))).toHaveLength(149);
+  // pr:22 and pr:47 are class 1: our checkout cites upstream issue #22 and pull #47, and GitHub numbers PRs and issues together.
+  expect(items.filter((i) => i.startsWith("pr:"))).toHaveLength(148);
   expect(items).not.toContain("pr:22");
+  expect(items).not.toContain("pr:47");
   expect(items).toContain(`commit:${"f".repeat(40)}`);
   expect(items.filter((i) => i.startsWith("commit:"))).toHaveLength(1);
   expect(seen()[`commit:${"9".repeat(40)}`]!.class).toBe("2");

@@ -330,7 +330,14 @@ def classify_pr(repo: str, pr: dict, here: Here) -> tuple[str, str]:
 ISSUE_HARNESS = re.compile(r"herdr|superharness|superagent|\bduty\b|pane run|hourly loop", re.I)
 
 
-def classify_proposal(pr: dict, branch: str) -> tuple[str, str]:
+def classify_proposal(pr: dict, here: Here) -> tuple[str, str]:
+    n, sha = pr["number"], (pr.get("mergeCommit") or {}).get("oid")
+    if here.cites_number(n) or here.cites_commit(sha):
+        return "1", "우리 코드가 이 PR을 인용"
+    if cited := [i for i in map(int, CLOSES.findall(pr.get("body") or "")) if here.cites_number(i)]:
+        return "1", f"우리 코드가 이 PR이 닫은 이슈 #{cited[0]}를 인용"
+    if pr.get("mergedAt") and here.has_commit(sha):
+        return "1", "우리 이력에 이미 있음"
     if PR_HARNESS.search(pr["title"]):
         return "2", "herdr 하네스"
     if pr.get("mergedAt"):
@@ -400,9 +407,11 @@ def gather(repo: str, branch: str, here: Here) -> list[dict]:
             items.append({"key": f"pr:{pr['number']}", "label": f"PR #{pr['number']} 머지", "title": pr["title"],
                           "url": pr["url"], "classify": lambda pr=pr: classify_pr(repo, pr, here)})
         else:
-            # its own key, so the same PR merged into main later is a new pr:N item
+            # its own key, so the same PR merged into main later is a new pr:N item; a merged one may already be on record
+            # as pr:N from before proposals had their own key
             items.append({"key": f"pr-proposed:{pr['number']}", "label": f"PR #{pr['number']} 제안", "title": pr["title"],
-                          "url": pr["url"], "classify": lambda pr=pr: classify_proposal(pr, branch)})
+                          "url": pr["url"], "classify": lambda pr=pr: classify_proposal(pr, here),
+                          **({"was": f"pr:{pr['number']}"} if pr.get("mergedAt") else {})})
     for issue in sorted(issues(repo), key=lambda i: i["number"]):
         items.append({"key": f"issue:{issue['number']}", "label": f"이슈 #{issue['number']}", "title": issue["title"],
                       "url": issue["url"], "classify": lambda issue=issue: classify_issue(issue, here, closed_by)})
@@ -479,7 +488,7 @@ def main(argv: list[str]) -> int:
         repo, aliases, branch = upstream_repo()
         here = Here(aliases)
         items = gather(repo, branch, here)
-        fresh = [i for i in items if i["key"] not in state["items"]]
+        fresh = [i for i in items if i["key"] not in state["items"] and i.get("was") not in state["items"]]
         for item in fresh:
             try:
                 item["cls"], item["why"] = ("0", "seed") if seed else item["classify"]()
