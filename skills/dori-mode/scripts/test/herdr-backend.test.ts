@@ -178,66 +178,55 @@ test("upstream #66/#70 on herdr: an omo pane with a question open, and a bare-ag
 
 // upstream dori-superagent #69 (https://github.com/sisyphuslabs/dori-superagent/pull/69): herdr keeps calling an agent
 // suspended with Ctrl+Z idle while its shell is in front, and that shell would run the text as a command
-test("upstream #69 on herdr: a bare-agent pane with a shell in front, an unreadable or empty foreground, or an agent in no running state gets nothing; an agent with an sh -c child is typed into", async () => {
+test("upstream #69 on herdr: a bare-agent pane with a shell in front (sh -c included), an unreadable or empty foreground, or an agent in no running state gets nothing; an agent alone in front is typed into", async () => {
   const bare = omo({ agentCommand: ["claude", "{prompt}"] });
   const pane = (p: Record<string, unknown> = {}): Runner => async (argv, o) => (argv[2] === "get" ? { code: 0, out: JSON.stringify({ result: { pane: { pane_id: "w1:p2", agent: "claude", agent_status: "idle", ...p } } }), err: "" } : fakeRunner(world)(argv, o));
   const submit = (p?: Record<string, unknown>) => submitToPane(pane(p), bare.clock, bare.config, "w1:p2", "rm -rf /tmp/x");
   world.herdrFront = { "w1:p2": [{ name: "zsh", argv: ["-zsh"] }] };
-  expect(await submit()).toMatchObject({ status: "NOT_SUBMITTED", reason: "the agent in w1:p2 is not in front: an interactive shell (zsh) is, after the agent exited or was suspended with Ctrl+Z, and it would run the text; nothing was typed" });
+  expect(await submit()).toMatchObject({ status: "NOT_SUBMITTED", reason: "the agent in w1:p2 is not in front: a shell (zsh) is, after the agent exited or was suspended with Ctrl+Z, or as its child, and it could run the text; nothing was typed" });
+  world.herdrFront = { "w1:p2": [{ name: "claude", argv: ["claude"] }, { name: "bash", argv: ["bash", "-c", "while read -r l; do eval \"$l\"; done"] }] };
+  expect((await submit()).status).toBe("NOT_SUBMITTED");
   world.herdrFront = { "w1:p2": [] };
-  expect(await submit()).toMatchObject({ status: "NOT_SUBMITTED", reason: "herdr pane process-info shows nothing in front of w1:p2, so a shell in front cannot be ruled out; nothing was typed" });
+  expect(await submit()).toMatchObject({ status: "NOT_SUBMITTED", reason: "herdr pane process-info shows nothing readable in front of w1:p2, so a shell in front cannot be ruled out; nothing was typed" });
+  world.herdrFront = { "w1:p2": [{ name: "claude", argv: ["claude"] }, {}] };
+  expect((await submit()).status).toBe("NOT_SUBMITTED");
   world.herdrFront = { "w1:p2": null };
   expect(await submit()).toMatchObject({ status: "NOT_SUBMITTED", reason: "herdr pane process-info could not be read for w1:p2, so a shell in front cannot be ruled out; nothing was typed" });
   world.herdrFront = { "w1:p2": [{ name: "claude", argv: ["claude"] }] };
   expect(await submit({ agent_status: "unknown" })).toMatchObject({ status: "NOT_SUBMITTED", reason: "the agent in w1:p2 is in state unknown, not idle, working, blocked or done, so it may not be reading; nothing was typed" });
   expect(sent(world)).toEqual([]);
-  world.herdrFront = { "w1:p2": [{ name: "claude", argv: ["claude"] }, { name: "sh", argv: ["sh", "-c", "true"] }] };
+  expect(world.calls.filter((c) => c[2] === "send-keys")).toEqual([]);
   await submit();
   expect(sent(world)).toEqual(["rm -rf /tmp/x"]);
 });
 
-// upstream #69's table from its test/herdr.test.ts; a PowerShell or cmd running a command is held here, where upstream
-// delivers (reviews 1 and 2 of #347: their command lines cannot be read safely)
+// upstream #69's table from its test/herdr.test.ts, and the cases reviews 1-3 of #347 and the dori challenge of its plan
+// raised. Upstream lets a shell running a command (-c, -lc, pwsh -Command, -File) through; here every shell in front
+// holds, since its command line proves nothing about who reads the input.
 test.each([
   ["login shell", [{ name: "-bash", argv: ["-bash"] }], true],
   ["interactive zsh by path, upper case", [{ name: "/bin/ZSH", argv: ["/bin/zsh", "-i"] }], true],
-  ["bash -C (noclobber) is still interactive", [{ name: "bash", argv: ["bash", "-C"] }], true],
   ["busybox sh applet", [{ name: "busybox", argv: ["busybox", "sh"] }], true],
   ["shell entry without argv", [{ name: "fish" }], true],
-  ["agent with a sh -c child", [{ name: "omo", argv: ["omo"] }, { name: "sh", argv: ["sh", "-c", "sleep 1"] }], false],
-  ["shell running a script is held, the safe side", [{ name: "bash", argv: ["bash", "tool.sh"] }], true],
-  ["interactive bash with --rcfile FILE", [{ name: "bash", argv: ["bash", "--rcfile", "/tmp/rc"] }], true],
-  ["interactive zsh with -o OPT", [{ name: "zsh", argv: ["zsh", "-o", "vi"] }], true],
-  ["login shell running a command: -lc", [{ name: "bash", argv: ["bash", "-lc", "make"] }], false],
-  ["pwsh -File is held", [{ name: "pwsh", argv: ["pwsh", "-File", "x.ps1"] }], true],
-  ["bash -f (noglob) is still interactive", [{ name: "bash", argv: ["bash", "-f"] }], true],
-  ["bash --init-file F", [{ name: "bash", argv: ["bash", "--init-file", "/tmp/rc"] }], true],
-  ["fish -C cmd (init command, still interactive)", [{ name: "fish", argv: ["fish", "-C", "set x 1"] }], true],
-  ["bash -ic cmd runs a command", [{ name: "bash", argv: ["bash", "-ic", "make"] }], false],
-  ["pwsh -EncodedCommand is held", [{ name: "pwsh", argv: ["pwsh", "-EncodedCommand", "ZQBjAGgAbwA="] }], true],
-  ["pwsh -Interactive", [{ name: "pwsh", argv: ["pwsh", "-Interactive"] }], true],
-  ["pwsh -NoProfile -ExecutionPolicy Bypass", [{ name: "pwsh", argv: ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass"] }], true],
-  ["pwsh -NoExit -Command keeps a prompt", [{ name: "pwsh", argv: ["pwsh", "-NoExit", "-Command", "ls"] }], true],
-  ["powershell -c is held", [{ name: "powershell", argv: ["powershell", "-c", "ls"] }], true],
-  ["pwsh -Command is held", [{ name: "pwsh", argv: ["pwsh", "-Command", "ls"] }], true],
-  ["exec'd agent", [{ name: "bun", argv: ["bun", "omo.js"] }], false],
-  ["an empty foreground group is doubt", [], true],
-  // review of #347: Windows names keep their path and .exe, and pwsh reads commands from the terminal with an operand of -
-  ["pwsh.exe by Windows path", [{ name: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", argv: ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"] }], true],
-  ["powershell.exe -NoLogo", [{ name: "powershell.exe", argv: ["powershell.exe", "-NoLogo"] }], true],
-  ["pwsh.exe -Command ls is held", [{ name: "pwsh.exe", argv: ["pwsh.exe", "-Command", "ls"] }], true],
-  ["pwsh -File - reads the terminal", [{ name: "pwsh", argv: ["pwsh", "-File", "-"] }], true],
-  ["pwsh -Command - reads the terminal", [{ name: "pwsh", argv: ["pwsh", "-Command", "-"] }], true],
-  ["pwsh -Command with no operand", [{ name: "pwsh", argv: ["pwsh", "-Command"] }], true],
+  ["bash --rcfile FILE", [{ name: "bash", argv: ["bash", "--rcfile", "/tmp/rc"] }], true],
+  ["zsh -oemacs -i (review 3)", [{ name: "zsh", argv: ["zsh", "-oemacs", "-i"] }], true],
+  ["fish -C cmd", [{ name: "fish", argv: ["fish", "-C", "set x 1"] }], true],
+  ["pwsh -NoExit -Command", [{ name: "pwsh", argv: ["pwsh", "-NoExit", "-Command", "ls"] }], true],
+  ["pwsh -NoEx -Command (review 2)", [{ name: "pwsh", argv: ["pwsh", "-NoEx", "-Command", "ls"] }], true],
+  ["pwsh -File - (review 1)", [{ name: "pwsh", argv: ["pwsh", "-File", "-"] }], true],
+  ["cmd /k cmd /c (review 2)", [{ name: "cmd.exe", argv: ["cmd.exe", "/k", "cmd", "/c", "echo ready"] }], true],
+  ["pwsh.exe by Windows path (review 1)", [{ name: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", argv: ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"] }], true],
   ["cmd.exe prompt", [{ name: "cmd.exe", argv: ["C:\\Windows\\System32\\cmd.exe"] }], true],
-  ["cmd /k keeps a prompt", [{ name: "cmd.exe", argv: ["cmd.exe", "/k", "dir"] }], true],
-  ["cmd /c is held", [{ name: "cmd.exe", argv: ["cmd.exe", "/C", "dir"] }], true],
-  // review 2 of #347
-  ["cmd /k cmd /c keeps a prompt", [{ name: "cmd.exe", argv: ["cmd.exe", "/k", "cmd", "/c", "echo ready"] }], true],
-  ["pwsh -NoEx -Command keeps a prompt", [{ name: "pwsh", argv: ["pwsh", "-NoEx", "-Command", "ls"] }], true],
-  ["bash -o vi -c x: -c not first, held", [{ name: "bash", argv: ["bash", "-o", "vi", "-c", "x"] }], true],
-  ["bash -c with no command", [{ name: "bash", argv: ["bash", "-c"] }], true],
-  ["busybox sh -c runs a command", [{ name: "busybox", argv: ["busybox", "sh", "-c", "true"] }], false],
+  ["agent with a sh -c child: held, upstream delivers", [{ name: "omo", argv: ["omo"] }, { name: "sh", argv: ["sh", "-c", "sleep 1"] }], true],
+  ["bash -lc make: held, upstream delivers", [{ name: "bash", argv: ["bash", "-lc", "make"] }], true],
+  ["pwsh -Command ls: held, upstream delivers", [{ name: "pwsh", argv: ["pwsh", "-Command", "ls"] }], true],
+  ["cmd /c dir: held", [{ name: "cmd.exe", argv: ["cmd.exe", "/C", "dir"] }], true],
+  ["bash -c read/eval loop (challenge)", [{ name: "bash", argv: ["bash", "-c", "while read -r l; do eval \"$l\"; done"] }], true],
+  ["a shell by argv[0] under another name", [{ name: "x", argv: ["/bin/bash"] }], true],
+  ["an empty foreground group is doubt", [], true],
+  ["an entry with no name is doubt (challenge)", [{ name: "omo", argv: ["omo"] }, {}], true],
+  ["exec'd agent", [{ name: "bun", argv: ["bun", "omo.js"] }], false],
+  ["agent with a non-shell child", [{ name: "claude", argv: ["claude"] }, { name: "git", argv: ["git", "status"] }], false],
 ] as const)("interactiveShellInFront (upstream #69): %s", (_, procs, want) => {
   expect(interactiveShellInFront({ foreground_processes: procs })).toBe(want);
 });

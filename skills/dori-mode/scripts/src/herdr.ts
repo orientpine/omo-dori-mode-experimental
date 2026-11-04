@@ -42,37 +42,29 @@ const processInfo = async (run: Runner, pane: string): Promise<ProcessInfo | und
 export const herdrShellPid = async (run: Runner, pane: string): Promise<number> => Number((await processInfo(run, pane))?.shell_pid ?? 0);
 
 // upstream dori-superagent #69 (https://github.com/sisyphuslabs/dori-superagent/pull/69, its src/herdr.ts and
-// skills/dori-mode/scripts/src/panes.ts): its shell list, with the exception for a shell running a command made
-// narrower, so that it fails closed (reviews 1 and 2 of #347: PowerShell matches 39 switches by any prefix, -NoEx is
-// -NoExit, and cmd /k cmd /c keeps a prompt, so no reading of those command lines is safe)
+// skills/dori-mode/scripts/src/panes.ts): its shell list. Upstream lets a shell running a command (sh -c, pwsh -Command)
+// through as the agent's child; here every shell in the foreground holds the text, whatever its arguments, because no
+// reading of a command line proves the agent owns the input (reviews 1-3 of #347 and the dori challenge of its plan:
+// pwsh prefix-matches 39 switches, cmd /k cmd /c, zsh -oemacs -i, and bash -c 'while read -r l; do eval "$l"; done').
 const SHELLS: ReadonlySet<string> = new Set([
   "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox", "cmd",
 ]);
-// the shells whose -c always runs the one command after it and exits (POSIX sh and its kin)
-const POSIX_SHELLS: ReadonlySet<string> = new Set(["sh", "ash", "bash", "zsh", "dash", "ksh", "mksh"]);
-// beyond upstream (review of #347): herdr on Windows names a process by its path with \ and .exe (pwsh.exe), and cmd.exe
-// is a shell there too
+// herdr on Windows names a process by its path with \ and .exe (pwsh.exe, cmd.exe)
 const baseName = (value: unknown): string => String(value ?? "").replace(/^-/, "").split(/[\\/]/).pop()!.toLowerCase().replace(/\.exe$/, "");
-// A shell runs a command (not a prompt) only as a POSIX shell whose first argument is -c (also inside combined short
-// flags such as -lc) with the command after it. Every other foreground shell is held: one at its prompt, one with any
-// other first argument (a script, --rcfile FILE, -o OPT), and every fish, csh, nu, PowerShell or cmd, -Command and /c
-// included (upstream delivers to those; here they are held).
-const runsCommand = (shell: string, args: readonly string[]): boolean =>
-  POSIX_SHELLS.has(shell) && /^-[A-Za-z]*c[A-Za-z]*$/.test(args[0] ?? "") && args[1] !== undefined && args[1] !== "-" && args[1] !== "--";
 
-// The interactive shell herdr pane process-info shows in the pane's foreground group (its name), "" for an empty or
-// unreadable group (doubt), else undefined. herdr still reports an agent suspended with Ctrl+Z as idle while its shell is
-// in front; a shell running a command flag (sh -c ...) is the agent's child and does not count.
+// The shell herdr pane process-info shows in the pane's foreground group (its name), "" for an empty group or an entry
+// with no readable name (doubt), else undefined. herdr still reports an agent suspended with Ctrl+Z as idle while its
+// shell is in front.
 export const interactiveShellInFront = (info: unknown): boolean => shellInFrontName(info) !== undefined;
 export const shellInFrontName = (info: unknown): string | undefined => {
   const procs = (info as { foreground_processes?: unknown } | undefined)?.foreground_processes;
   if (!Array.isArray(procs) || procs.length === 0) return "";
   for (const proc of procs as { name?: unknown; argv?: unknown }[]) {
-    let name = baseName(proc?.name);
-    let args = Array.isArray(proc?.argv) ? proc.argv.map(String).slice(1) : undefined;
-    if (name === "busybox" && args && args.length > 0) [name, args] = [baseName(args[0]), args.slice(1)];
-    if (!SHELLS.has(name)) continue;
-    if (args === undefined || !runsCommand(name, args)) return name;
+    const name = baseName(proc?.name);
+    if (!name) return "";
+    const argv0 = Array.isArray(proc?.argv) ? baseName(proc.argv[0]) : "";
+    if (SHELLS.has(name)) return name;
+    if (SHELLS.has(argv0)) return argv0;
   }
   return undefined;
 };

@@ -151,8 +151,8 @@ const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, t
         const info = await herdrResult(run, ["pane", "process-info", "--pane", pane]);
         if (!info) return `herdr pane process-info could not be read for ${pane}, so a shell in front cannot be ruled out; nothing was typed`;
         const shell = shellInFrontName(info.process_info);
-        if (shell === "") return `herdr pane process-info shows nothing in front of ${pane}, so a shell in front cannot be ruled out; nothing was typed`;
-        if (shell !== undefined) return `the agent in ${pane} is not in front: an interactive shell (${shell}) is, after the agent exited or was suspended with Ctrl+Z, and it would run the text; nothing was typed`;
+        if (shell === "") return `herdr pane process-info shows nothing readable in front of ${pane}, so a shell in front cannot be ruled out; nothing was typed`;
+        if (shell !== undefined) return `the agent in ${pane} is not in front: a shell (${shell}) is, after the agent exited or was suspended with Ctrl+Z, or as its child, and it could run the text; nothing was typed`;
         return (await run(["herdr", "pane", "send-text", pane, text])).code === 0 ? undefined : "herdr send-text failed";
       },
       enter: async () => { await run(["herdr", "pane", "send-keys", pane, "enter"]); },
