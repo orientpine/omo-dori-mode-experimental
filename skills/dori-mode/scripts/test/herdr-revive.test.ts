@@ -98,6 +98,28 @@ test("a lead's /thinking (and /model) change is what its record keeps and its re
   else expect(ran).toMatch(new RegExp(` omo --session-id ${id} --model p/n --thinking low$`));
 });
 
+test("a lead started with its own --session-dir has its /thinking read from the log in that folder, for the record and the revive", async () => {
+  const own = join(dir, "own-sessions");
+  const deps = omo({ leadPane: "w1:p1", leadReviveMin: 5, sessionsDir: join(dir, "sessions"), agentCommand: ["omo", "--session-dir", own, "--model", "{model}", "{prompt}"] });
+  const id = "11111111-2222-4333-8444-555555555555";
+  // omo keeps the logs of a --session-dir session right in that folder, with no per-cwd folder
+  mkdirSync(own, { recursive: true });
+  const log = join(own, `2026-11-04T16-00-00-000Z_${id}.jsonl`);
+  const entry = (e: object) => `${JSON.stringify(e)}\n`;
+  writeFileSync(log, entry({ type: "thinking_level_change", thinkingLevel: "high", provider: "p", modelId: "m" }) + entry({ type: "thinking_level_change", thinkingLevel: "medium", provider: "p", modelId: "m" }));
+  world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
+  world.ps = `4000 1 -bash\n4001 4000 omo --session-dir ${own} --session-id ${id} --model p/m:high`;
+  await leadDownTick(deps);
+  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ model: "p/m:medium", logDir: own });
+  appendFileSync(log, entry({ type: "thinking_level_change", thinkingLevel: "low", provider: "p", modelId: "m" }));
+  world.ps = "4000 1 -bash";
+  world.herdrDead = ["w1:p1"];
+  expect(await reviveHerdr(deps.run, deps.clock, deps.config, "w1:p1", "", async () => true)).toBe(`REVIVE_OK w1:p1 session ${id}`);
+  const ran = world.calls.filter((c) => c[2] === "run").at(-1)?.[4] ?? "";
+  if (process.platform === "win32") expect(winData(ran).slice(2)).toEqual(["omo", "--session-id", id, "--session-dir", own, "--model", "p/m", "--thinking", "low"]);
+  else expect(ran).toEndWith(` omo --session-id ${id} --session-dir ${own} --model p/m --thinking low`);
+});
+
 test("an unchanged herdr lead record gets its check time on each read, so the next read waits its ten minutes", async () => {
   const deps = omo({ leadPane: "w1:p1", leadReviveMin: 5, sessionsDir: dir });
   // checked 11 minutes before the (fake) clock: due again

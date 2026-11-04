@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { DoriConfig } from "./config.ts";
 import { agentPath, herdrAgentArgv } from "./aoe.ts";
@@ -11,8 +11,8 @@ import { argvSessionId, hasSessionSelector, procTable, resolveSession, sessionDi
 // A herdr server that stops ends every agent in its panes and gives back the same pane ids with fresh shells (herdr 0.9.5,
 // measured 2026-11-03), unlike an aoe session, which aoe starts again in its conversation. So the omo session a herdr lead
 // runs is kept here while it runs (dori lead, dori watch's lead check), and the lead is started again in that conversation
-// from it (reviveHerdr) when its agent is gone.
-export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly at: string };
+// from it (reviveHerdr) when its agent is gone. logDir: the folder its session log is in (sessionLogDir).
+export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly logDir?: string; readonly at: string };
 
 const file = (stateDir: string): string => join(stateDir, "herdr-sessions.json");
 
@@ -35,11 +35,18 @@ const modelOf = (cmd: string): string | undefined => {
   return at >= 0 ? words[at + 1] : words.find((w) => w.startsWith("--model="))?.slice("--model=".length);
 };
 
-// The model and thinking a session runs now, "<provider>/<model>:<level>", from its own log: omo writes a model_change for
-// /model and a thinking_level_change for /thinking (and both at its start), which its command line never shows. undefined
-// when the log or those entries cannot be read.
-export const sessionModel = (sessionsDir: string, cwd: string, session: string): string | undefined => {
-  const dir = sessionDirFor(sessionsDir, cwd);
+// The folder an agent started with argv in cwd keeps its session logs in: its own --session-dir (omo writes the logs right
+// in it, measured 2026-11-04), else sessionsDir's folder for cwd.
+export const sessionLogDir = (argv: readonly string[], sessionsDir: string, cwd: string): string => {
+  const at = argv.findIndex((a) => a === "--session-dir" || a.startsWith("--session-dir="));
+  const own = at < 0 ? undefined : argv[at]?.startsWith("--session-dir=") ? argv[at]?.slice("--session-dir=".length) : argv[at + 1];
+  return own ? resolve(cwd, own) : sessionDirFor(sessionsDir, cwd);
+};
+
+// The model and thinking a session runs now, "<provider>/<model>:<level>", from its own log in dir: omo writes a
+// model_change for /model and a thinking_level_change for /thinking (and both at its start), which its command line never
+// shows. undefined when the log or those entries cannot be read.
+export const sessionModel = (dir: string, session: string): string | undefined => {
   let text: string;
   try {
     const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
@@ -74,10 +81,12 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   const table = await procTable(run);
   const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr" });
   if (!hit.id) return kept?.session ?? "";
-  // what the session runs now (its log), else what its agent was started with
-  const model = sessionModel(config.sessionsDir, cwd, hit.id) ?? modelOf(table.find((p) => p.pid === hit.pid)?.cmd ?? "");
+  // what the session runs now (its log, where its agent's arguments keep it), else what its agent was started with
+  const cmd = table.find((p) => p.pid === hit.pid)?.cmd ?? "";
+  const logDir = sessionLogDir(cmd.split(/\s+/), config.sessionsDir, cwd);
+  const model = sessionModel(logDir, hit.id) ?? modelOf(cmd);
   // recorded on every read, unchanged or not: its time is when it was last checked (lead-down reads again after 10 min)
-  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), at: new Date().toISOString() });
+  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), logDir, at: new Date().toISOString() });
   return hit.id;
 };
 
@@ -111,7 +120,8 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
     // The level goes in as its own --thinking (aoe.ts herdrAgentArgv: omo can start at another level than a :suffix says).
     if (hasSessionSelector(config.agentCommand.slice(1))) return `REVIVE_FAIL ${pane}: agentCommand picks its session itself (${config.agentCommand.join(" ")}); revive needs one without a session selector`;
     const tool = config.agentCommand[0] ?? "omo";
-    const { base, thinking } = splitModel((config.sessionsDir ? sessionModel(config.sessionsDir, rec.cwd, rec.session) : undefined) || rec.model || config.defaultModel);
+    const logDir = rec.logDir || sessionLogDir(config.agentCommand, config.sessionsDir, rec.cwd);
+    const { base, thinking } = splitModel(sessionModel(logDir, rec.session) || rec.model || config.defaultModel);
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, rec.session);
     // the screen is cleared first, so a ❯ the ended agent left there is gone before the new one draws
     const clear = process.platform === "win32" ? "Clear-Host; " : "clear && ";
