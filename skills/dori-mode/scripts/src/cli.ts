@@ -75,7 +75,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener, eyesOff } from "./messenger/discord-listener.ts";
-import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS } from "./messenger/discord-thread.ts";
+import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS, withoutEmoji } from "./messenger/discord-thread.ts";
 import { duplicateLine, SEND_DUPLICATE_EXIT, type Sent, sendKey, sendOnce, sentLine } from "./send-dedupe.ts";
 import { mapThread, standThread, threads, unstandThread } from "./messenger/thread-map.ts";
 import { archiveDoneThreads } from "./messenger/thread-archive.ts";
@@ -2115,9 +2115,10 @@ try {
       if (tooBig) die(tooBig, 2);
       const dc = discordClient();
       await ownerSpeech(body, `thread ${verb}`, () => ownerPlace(dc, discordThreadId(ref ?? "")));
-      // the same key as `dori send discord --to <thread id>`, so the two commands do not post one text twice either
+      // keyed on the text as it is posted (postInThread removes emoji, review 10 of #338): for a text without emoji the
+      // same key as `dori send discord --to <thread id>`, so the two commands do not post one text twice either
       const place = `discord:${discordThreadId(ref ?? "")}`;
-      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, body, ...filesKey(files)]), post, { again: Boolean(flags.values.again) });
+      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, withoutEmoji(body), ...filesKey(files)]), post, { again: Boolean(flags.values.again) });
       if (verb === "done") {
         // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;
@@ -2136,10 +2137,12 @@ try {
         if (verb === "done") unstandThread(cardDir(), t);
         return statuses.request(t, s);
       };
-      // a repeat is not posted, but the status still goes through: a done after a reply with the same words still closes
-      const r = await threadOnce(() => threadHook(dc, verb as ThreadVerb, ref ?? "", body, config.discord, mark, files));
-      if (r.duplicate) await mark(discordThreadId(ref ?? ""), VERB_STATUS[verb as ThreadVerb]);
-      else await notePost(discordThreadId(ref ?? ""), r.id, withFileNames(body, files));
+      // only the post is inside the repeat check, so it is recorded as soon as Discord made it; the status step comes after
+      // (review 10 of #338: a slow status step left the post unrecorded past the claim's minute). A repeat is not posted,
+      // but the status still goes through: a done after a reply with the same words still closes
+      const r = await threadOnce(() => postInThread(dc, ref ?? "", body, files));
+      await mark(discordThreadId(ref ?? ""), VERB_STATUS[verb as ThreadVerb]);
+      if (!r.duplicate) await notePost(discordThreadId(ref ?? ""), r.id, withFileNames(body, files));
       console.log(`${r.duplicate ? duplicateLine(place, r) : sentLine("POSTED", r)}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
       // wait and done still set their status, so only a reply that posted nothing exits as a repeat
       if (r.duplicate && verb === "reply") process.exitCode = SEND_DUPLICATE_EXIT;

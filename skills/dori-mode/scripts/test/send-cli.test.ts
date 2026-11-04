@@ -236,6 +236,67 @@ test("the same outgoing message from equivalent inputs (a --ping already in the 
   }
 });
 
+// review 10 of #338: thread reply posts its text without emoji, so its repeat check keys that text: "Finished 🎉" in a
+// thread and then "Finished" to the same thread is one message, within the 10 minutes and after them
+test("a thread reply with emoji and the same text without them, sent to that thread, is the repeat at any age", async () => {
+  const state = withState();
+  try {
+    const ref = "discord:300000000000000003";
+    const reply = await sendCli(state.dir, ["thread", "reply", ref, "Finished \u{1F389}"]);
+    const soon = await sendCli(state.dir, ["send", "discord", "--to", "300000000000000003", "--no-typing", "--text", "Finished"]);
+    ageMarks(state.dir, 11);
+    const later = await sendCli(state.dir, ["thread", "reply", ref, "Finished"]);
+    expect({ codes: [reply.code, soon.code, later.code], soon: soon.out.split(": ")[0], later: later.out.split(": ")[0], posted: later.posted }).toEqual({
+      codes: [0, 3, 3], soon: "SEND_DUPLICATE discord:300000000000000003 900", later: "SEND_DUPLICATE discord:300000000000000003 900", posted: ["Finished"],
+    });
+  } finally {
+    state.done();
+  }
+});
+
+// review 10 of #338: thread reply sets the thread's status after its post; a status step held past the claim's minute
+// must not let the same reply post again, so the post is recorded before the status step starts
+test("a thread reply whose status step is held still counts as posted: the same reply meanwhile is the repeat", async () => {
+  const state = withState();
+  const posts: string[] = [];
+  let posted: () => void = () => {};
+  const postSeen = new Promise<void>((r) => (posted = r));
+  let release: () => void = () => {};
+  const released = new Promise<void>((r) => (release = r));
+  let heldOne = false;
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (req) => {
+    const path = new URL(req.url).pathname;
+    if (req.method === "POST" && path.endsWith("/messages")) {
+      const body = (await req.json()) as { content: string };
+      posts.push(body.content);
+      posted();
+      return Response.json({ id: String(posts.length), content: body.content });
+    }
+    // the first command's status step reads the thread first: that one read is held until the test lets it go
+    if (req.method === "GET" && posts.length && !heldOne) {
+      heldOne = true;
+      await released;
+    }
+    return Response.json({});
+  } });
+  const reply = () => run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake",
+    `DORI_DISCORD_API=http://127.0.0.1:${server.port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "thread", "reply", "discord:300000000000000004", "same words"]);
+  try {
+    const first = reply();
+    await postSeen;
+    // the first command is past its post and inside its status step; its claim is now older than the takeover minute
+    ageMarks(state.dir, 2);
+    const second = await reply();
+    release();
+    await first;
+    expect({ code: second.code, out: second.out.split(": ")[0], posts }).toEqual({ code: 3, out: "SEND_DUPLICATE discord:300000000000000004 1", posts: ["same words"] });
+  } finally {
+    release();
+    server.stop(true);
+    state.done();
+  }
+});
+
 test("an older text after the 10 minutes is no repeat once another post came after it; within them it still is", async () => {
   const state = withState();
   const d = discordServer();
