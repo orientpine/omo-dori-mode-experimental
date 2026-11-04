@@ -114,22 +114,25 @@ test("a lane whose omo stays stopped is told to the lead once and brought back; 
   const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
   // When / Then: the first check only notes it, the second tells the lead and resumes both
   expect(await tick(T0)).toEqual([]);
+  // the lead first, so the lane's line reaches a lead that runs again
   expect(await tick(T0 + 30 * S)).toEqual([
-    "LANE_SUSPENDED handover-simplify aoe_hs_aaaa1111: agent 200 stopped (state T, tty foreground group 200, its group 200); its screen is stale, resuming it",
-    "AGENT_RESUMED aoe_hs_aaaa1111 agent 200: fg typed into the shell",
-    "LANE_SUSPENDED_TOLD handover-simplify lead:p1",
     "LANE_SUSPENDED lead lead:p1: agent 300 background (state S, tty foreground group 100, its group 300); its screen is stale, resuming it",
     "AGENT_RESUMED lead:p1 agent 300: fg typed into the shell",
     "LANE_SUSPENDED_TOLD lead lead:p1",
+    "LANE_SUSPENDED handover-simplify aoe_hs_aaaa1111: agent 200 stopped (state T, tty foreground group 200, its group 200); its screen is stale, resuming it",
+    "AGENT_RESUMED aoe_hs_aaaa1111 agent 200: fg typed into the shell",
+    "LANE_SUSPENDED_TOLD handover-simplify lead:p1",
   ]);
-  expect(sent(w)).toEqual(["[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 스스로 되살렸어, 하던 일을 잇는지 봐", "[DORI] 리드 omo 멈춤(셸 뒤 작업으로 밀림) — 스스로 되살렸어, 하던 일을 잇는지 봐"]);
+  expect(resumed).toEqual(["lead:p1 300", "aoe_hs_aaaa1111 200"]);
+  expect(sent(w)).toEqual(["[DORI] 리드 omo 멈춤(셸 뒤 작업으로 밀림) — 스스로 되살렸어, 하던 일을 잇는지 봐", "[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 스스로 되살렸어, 하던 일을 잇는지 봐"]);
   // brought back: nothing is marked, and a second stop of the lane is told again
   expect(await tick(T0 + 60 * S)).toEqual([]);
   states[200] = "T";
   fails = true;
   expect(await tick(T0 + 90 * S)).toEqual([]);
   expect((await tick(T0 + 120 * S)).at(-1)).toBe("LANE_SUSPENDED_TOLD handover-simplify lead:p1");
-  expect(sent(w).at(-1)).toBe("[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 되살리지 못했어(agent 200: the shell 100 holds 2 jobs, so fg could pick another) — dori revive aoe_hs_aaaa1111로 다시 해 봐");
+  // an aoe pane has no dori revive: the line says what to type instead
+  expect(sent(w).at(-1)).toBe("[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 되살리지 못했어(agent 200: the shell 100 holds 2 jobs, so fg could pick another) — aoe_hs_aaaa1111에서 fg를 쳐 봐");
   // still stopped: not told twice; once it runs the mark goes
   expect(await tick(T0 + 150 * S)).toEqual([]);
   expect(await tick(T0 + 180 * S)).toEqual([]);
@@ -150,4 +153,28 @@ test("an agent a handover froze on purpose is never taken for a suspended lane",
   expect(await tick(T0)).toEqual([]);
   expect(await tick(T0 + 30 * S)).toEqual([]);
   expect(sent(w)).toEqual([]);
+});
+
+test("a lane line the lead could not take goes again on a later check, without touching the agent a second time", async () => {
+  // Given: the lane's agent stays stopped (resume fails) and the lead pane cannot take a line at first
+  const { w, deps } = world({ "aoe_hs_aaaa1111": "live" });
+  await deps(T0).registry.write(laneOf("stuck", "aoe_hs_aaaa1111"));
+  let resumes = 0;
+  const io: SuspendIO = {
+    agentOf: async (pane) => (pane === "aoe_hs_aaaa1111" ? 200 : undefined),
+    stat: (pid) => held({ 200: "T" })(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => (resumes++, `AGENT_RESUME_FAIL ${pane} agent ${pid}: fg typed into the shell, still not the running foreground job`),
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  expect(await tick(T0)).toEqual([]);
+  w.stuckReads = 10_000;
+  expect((await tick(T0 + 30 * S)).at(-1)).toStartWith("LANE_SUSPENDED_NOT_TOLD stuck:");
+  const before = sent(w).length;
+  // When: the lead pane takes lines again
+  w.stuckReads = 0;
+  // Then: the same line goes once, and the agent is not resumed again
+  expect(await tick(T0 + 60 * S)).toEqual(["LANE_SUSPENDED_TOLD stuck lead:p1"]);
+  expect(await tick(T0 + 90 * S)).toEqual([]);
+  expect(sent(w).slice(before)).toEqual(["[DORI] 레인 stuck 멈춤(프로세스 정지) — 되살리지 못했어(agent 200: fg typed into the shell, still not the running foreground job) — aoe_hs_aaaa1111에서 fg를 쳐 봐"]);
+  expect(resumes).toBe(1);
 });

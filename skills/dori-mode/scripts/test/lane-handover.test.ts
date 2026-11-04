@@ -1417,6 +1417,19 @@ test("an automatic start whose lane stays busy for the whole wait is refused as 
   expect(existsSync(join(state.dir, "handover", "lanes", "demo.lock"))).toBe(false);
 });
 
+test("a dry run (a rollover proposal's preview) says a stopped agent is stopped and signals or types nothing", async () => {
+  const base = await setup();
+  const sigsHere: string[] = [];
+  const deps: LaneHandoverDeps = { ...base, stat: (pid) => (pid === 11 ? { pid: 11, state: "T", ppid: 10, pgrp: 11, session: 10, tpgid: 11 } : undefined), signal: (pid, sig) => (sigsHere.push(`${sig} ${pid}`), true) };
+  w.screens[OLD] = BUSY;
+  const callsBefore = w.calls.length;
+  await laneHandover(deps, "demo", "aoe_lead_x", { dryRun: true });
+  expect(printed).toContain("LANE_SUSPENDED demo aoe_demo_1a1a1a1a: agent 11 is stopped, so its screen is stale; a run resumes it first (dry run: left as it is)");
+  expect(sigsHere).toEqual([]);
+  expect(w.calls.slice(callsBefore).filter((c) => c[0] === "stty" || (c[0] === "herdr" && c[2] === "send-text") || (c[0] === "tmux" && c[1] === "send-keys"))).toEqual([]);
+  expect(printed.some((l) => l.startsWith("AGENT_RESUME"))).toBe(false);
+});
+
 test("an automatic start does not take a stopped agent's stale busy screen for a turn: it resumes the agent and moves it; one that stays stopped is refused as suspended at once", async () => {
   // Given: the lane's agent 11 is stopped (T) behind the last screen it drew, a running turn (handover-simplify, 2026-11-03)
   const base = await setup();

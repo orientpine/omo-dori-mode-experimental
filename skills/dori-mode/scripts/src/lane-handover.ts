@@ -561,7 +561,9 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   // a stopped agent's screen is stale (its last "esc to interrupt" stays drawn: handover-simplify was refused as busy 54
   // times on 2026-11-03/04): it is brought back first, and its screen is judged only once it runs
   const held = holdOf(deps.stat ?? readStat, agent.pid);
-  if (held) {
+  // a dry run (a rollover proposal's preview) only says so: nothing is signalled or typed without an approval
+  if (held && opts.dryRun) emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, so its screen is stale; a run resumes it first (dry run: left as it is)`);
+  else if (held) {
     emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, so its screen is stale; resuming it`);
     const back = await resumeAgent(deps, lane.pane, agent.pid);
     emit(back);

@@ -59,7 +59,7 @@ export type SuspendIO = {
   readonly resume: (pane: string, pid: number) => Promise<string>;
 };
 
-type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold; readonly told: boolean };
+type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold; readonly told: boolean; readonly text: string };
 
 const kill = (pid: number, sig: "SIGSTOP" | "SIGCONT"): boolean => {
   try {
@@ -96,7 +96,8 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
   const { stateDir, leadPane: lead, ignorePanes } = deps.config;
   const frozen = new Set(frozenPanes(stateDir));
   const lanes = (await deps.registry.open()).filter((l) => l.pane && l.pane !== lead && !ignorePanes.includes(l.pane) && statusOf(l) !== "paused");
-  const targets = [...lanes.map((l) => ({ who: "lane" as const, key: l.key, pane: l.pane as string })), ...(lead ? [{ who: "lead" as const, key: "lead", pane: lead }] : [])];
+  // the lead first: a lane's line can reach it only once it runs again
+  const targets = [...(lead ? [{ who: "lead" as const, key: "lead", pane: lead }] : []), ...lanes.map((l) => ({ who: "lane" as const, key: l.key, pane: l.pane as string }))];
   for (const t of targets) {
     const file = markFile(stateDir, t.pane);
     if (frozen.has(t.pane) || handoverRunning(stateDir, t.who, t.key, alive)) {
@@ -113,7 +114,18 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       }
       continue;
     }
-    if (readMark(file)?.pid === pid) continue;
+    const marked = readMark(file);
+    if (marked?.pid === pid) {
+      // told once; a line that did not reach the lead (it was stopped too, or busy) goes again, the agent is not touched
+      if (!marked.told && lead) {
+        const again = await submitToPane(deps.run, deps.clock, deps.config, lead, marked.text);
+        if (again.status === "SUBMITTED") {
+          writeFileSync(file, JSON.stringify({ ...marked, told: true } satisfies SuspendMark));
+          out.push(`LANE_SUSPENDED_TOLD ${t.key} ${lead}`);
+        }
+      }
+      continue;
+    }
     const first = seenHeld.get(t.pane);
     if (first === undefined) {
       seenHeld.set(t.pane, now);
@@ -126,7 +138,7 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     const back = await io.resume(t.pane, pid);
     out.push(back);
     const resumed = back.startsWith("AGENT_RESUMED");
-    const outcome = resumed ? "스스로 되살렸어, 하던 일을 잇는지 봐" : `되살리지 못했어(${back.replace(/^AGENT_RESUME_FAIL \S+ /, "").slice(0, 160)}) — dori revive ${t.pane}로 다시 해 봐`;
+    const outcome = resumed ? "스스로 되살렸어, 하던 일을 잇는지 봐" : `되살리지 못했어(${back.replace(/^AGENT_RESUME_FAIL \S+ /, "").slice(0, 160)}) — ${isHerdrPane(t.pane) ? `dori revive ${t.pane}로 다시 해 봐` : `${t.pane}에서 fg를 쳐 봐`}`;
     const text = laneSuspendedText(t.who === "lead" ? "리드 omo" : `레인 ${t.key}`, hold, outcome);
     const sent: Submitted = lead ? await submitToPane(deps.run, deps.clock, deps.config, lead, text) : { status: "NOT_SUBMITTED", reason: "no leadPane" };
     const told = sent.status === "SUBMITTED";
@@ -134,7 +146,7 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     // only an agent left held needs the mark: one brought back runs, and a later stop of it is told again
     if (!resumed) {
       mkdirSync(join(stateDir, "suspended"), { recursive: true });
-      writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold, told } satisfies SuspendMark));
+      writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold, told, text } satisfies SuspendMark));
     }
   }
   return out;
