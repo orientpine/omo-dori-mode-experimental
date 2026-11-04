@@ -219,27 +219,8 @@ test("the text of the place's last post is a repeat at any age (SEND_DUPLICATE, 
   }
 });
 
-test("send --edit of the place's last post makes the edited text its record: the old text posts again, the edited one is the repeat", async () => {
-  const state = withState();
-  const d = discordServer();
-  const to = ["--to", "1561963113488842792"];
-  // review 2 of #338: the edited post is still the reply it was, so the same reply with the edited text is the repeat
-  const reply = ["--reply", "1561976021270396959"];
-  try {
-    await sendTo(state.dir, d.server.port, [...to, ...reply, "--text", "첫 글"]);
-    const edit = await sendTo(state.dir, d.server.port, [...to, "--edit", "1", "--text", "고친 글"]);
-    ageMarks(state.dir, 11);
-    const edited = await sendTo(state.dir, d.server.port, [...to, ...reply, "--text", "고친 글"]);
-    const old = await sendTo(state.dir, d.server.port, [...to, ...reply, "--text", "첫 글"]);
-    expect({ edit: edit.code, edited: [edited.code, edited.out.split(": ")[0]], old: word2(old.out), posts: d.posts.length }).toEqual({ edit: 0, edited: [3, `SEND_DUPLICATE ${PLACE} 1`], old: "SENT 2", posts: 2 });
-  } finally {
-    d.stop();
-    state.done();
-  }
-});
-
 // review 8 of #338: "hello" with --ping and "<@ID> hello" with the same --ping go out as one message, so the second is
-// the repeat; the check keys the text as it goes out (ping in front), as the record does
+// the repeat
 test("the same outgoing message from equivalent inputs (a --ping already in the text) is the repeat", async () => {
   const state = withState();
   const d = discordServer();

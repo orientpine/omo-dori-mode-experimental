@@ -1,5 +1,4 @@
 import type { Clock } from "../run.ts";
-import { notePosted, noteEdited, withMessageLock } from "../send-dedupe.ts";
 import { guardText, type Http, MessengerError, withBackoff } from "./http.ts";
 
 export type TgTarget = { readonly chatId: number | string; readonly threadId?: number };
@@ -12,9 +11,6 @@ const retryAfter = (body: string): number | undefined => {
     return undefined;
   }
 };
-
-// the place a message is in for the repeat check of dori send (send-dedupe.ts): the chat, or the topic in it
-const tgPlace = (t: TgTarget): string => `telegram:${t.chatId}${t.threadId ? `/${t.threadId}` : ""}`;
 
 export class Telegram {
   constructor(
@@ -42,16 +38,11 @@ export class Telegram {
   // send, with the text Telegram answered the new message holds (dori send prints it: send-dedupe.ts sentLine)
   async post(t: TgTarget, text: string, rich = false): Promise<{ id: number; text?: string }> {
     const r = await this.call<{ message_id: number; text?: unknown }>("sendMessage", { ...this.where(t), text: guardText(text), ...(rich ? { parse_mode: "HTML" } : {}) });
-    notePosted(tgPlace(t), String(r.message_id), { parts: { platform: "telegram", where: `${t.chatId}/${t.threadId ?? ""}` }, text });
     return { id: r.message_id, ...(typeof r.text === "string" ? { text: r.text } : {}) };
   }
 
   async edit(t: TgTarget, messageId: number, text: string, rich = false): Promise<void> {
-    // held from the request to the record, so two edits at once are recorded in the order Telegram applied them
-    await withMessageLock(`telegram:${t.chatId}`, String(messageId), async () => {
-      await this.call("editMessageText", { chat_id: t.chatId, message_id: messageId, text: guardText(text), ...(rich ? { parse_mode: "HTML" } : {}) });
-      noteEdited(tgPlace(t), String(messageId), text, { platform: "telegram", chat: String(t.chatId) });
-    });
+    await this.call("editMessageText", { chat_id: t.chatId, message_id: messageId, text: guardText(text), ...(rich ? { parse_mode: "HTML" } : {}) });
   }
 
   async typing(t: TgTarget): Promise<void> {

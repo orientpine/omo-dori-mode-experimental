@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { CheckpointError, takeLock } from "./checkpoints.ts";
 
 // The same post twice in a row is a slip, never news (owner 2026-10-20 "왜 두번씩 말해!": one reply of the lead carried two
 // identical tool calls, both ran `dori send` at the same moment and the thread got the message twice). A new message with
@@ -19,13 +18,7 @@ const POLL_MS = 200;
 const KEEP_MS = 24 * 60 * 60_000;
 
 type Mark = { readonly at: number; readonly id?: string };
-// where a message goes and what besides its text makes it this message (dori send's repeat key, without the text):
-// where is the channel or thread for Discord, "<to>/<thread>" for Slack and Telegram; files are filesKey entries
-export type PostParts = { readonly platform: string; readonly where: string; readonly reply?: string; readonly ping?: string; readonly files?: readonly string[] };
-export type Post = { readonly parts: PostParts; readonly text: string };
-// parts: a text post's own, so an edit keeps them; none for a post with no text of its own (a card, a file share)
-// editedText: an edit that came before the post was recorded (no parts yet); the post's record takes that text
-type Last = { readonly at: number; readonly key: string; readonly id: string; readonly parts?: PostParts; readonly editedText?: string };
+type Last = { readonly at: number; readonly key: string; readonly id: string };
 // what a post returned: its id and the content the service answered it holds (undefined when the answer had none)
 export type Sent = { readonly id: string; readonly content?: string };
 // last: the place's last post had this content (any age); otherwise the same content went there within the window
@@ -39,9 +32,6 @@ const ignoreMissing = (e: unknown): void => {
 
 // the place a message goes (platform, channel or thread), what it replies to, who it pings and its text
 export const sendKey = (parts: readonly (string | undefined)[]): string => createHash("sha256").update(JSON.stringify(parts.map((p) => p ?? ""))).digest("hex").slice(0, 32);
-const postKey = (p: Post): string => sendKey([p.parts.platform, p.parts.where, p.parts.reply, p.parts.ping, p.text, ...(p.parts.files ?? [])]);
-// the place a repeat line names: discord:<channel or thread>, slack:<channel>[/<thread ts>], telegram:<chat>[/<topic>]
-export const placeName = (p: PostParts): string => `${p.platform}:${p.where.replace(/\/$/, "")}`;
 
 const readMark = (path: string): Mark | undefined => {
   let raw: string;
@@ -83,10 +73,11 @@ const order = (id: string, at: number): string => {
   return m ? `${(m[1] ?? "").padStart(24, "0")}.${(m[2] ?? "").padEnd(9, "0")}` : `~${String(at).padStart(16, "0")}`;
 };
 
-// the newest record's file; the older ones are removed, so a place keeps one file however often it is posted to
-const newestLast = (dir: string, place: string): string | undefined => {
+const readLast = (dir: string, place: string): (Last & { readonly file: string }) | undefined => {
   const prefix = lastPrefix(place);
   const files = readdirSync(dir).filter((n) => n.startsWith(prefix) && n.endsWith(".json")).sort();
+  const newest = files.at(-1);
+  if (newest === undefined) return undefined;
   for (const older of files.slice(0, -1)) {
     try {
       unlinkSync(join(dir, older));
@@ -94,13 +85,7 @@ const newestLast = (dir: string, place: string): string | undefined => {
       ignoreMissing(e);
     }
   }
-  const newest = files.at(-1);
-  return newest === undefined ? undefined : join(dir, newest);
-};
-
-const readLast = (dir: string, place: string): (Last & { readonly file: string }) | undefined => {
-  const file = newestLast(dir, place);
-  if (file === undefined) return undefined;
+  const file = join(dir, newest);
   try {
     const l = JSON.parse(readFileSync(file, "utf8")) as Last;
     return typeof l.key === "string" && typeof l.id === "string" && typeof l.at === "number" ? { ...l, file } : undefined;
@@ -112,98 +97,11 @@ const readLast = (dir: string, place: string): (Last & { readonly file: string }
   }
 };
 
-const writeLast = (dir: string, place: string, last: Last): void => {
-  writeMark(join(dir, `${lastPrefix(place)}${order(last.id, last.at)}.json`), last);
-  newestLast(dir, place);
-};
-
-// An edit is never checked, but an edit of the place's last post changes what that post holds: its record takes the
-// edited text with the post's own reply target, ping and files (reviews of #338: send A, edit it to B, and A was refused
-// for good; then B as the same reply went out again). A post with no text of its own keeps its record.
-// the newest record of every place, for an edit that names its message but not the thread or topic it is in
-const allLasts = (dir: string): (Last & { readonly file: string })[] => {
-  const newest = new Map<string, string>();
-  for (const name of readdirSync(dir).filter((n) => n.startsWith(LAST_PREFIX) && n.endsWith(".json")).sort()) newest.set(name.slice(0, name.indexOf("-", LAST_PREFIX.length)), name);
-  return [...newest.values()].flatMap((name) => {
-    try {
-      const l = JSON.parse(readFileSync(join(dir, name), "utf8")) as Last;
-      return typeof l.key === "string" && typeof l.id === "string" && typeof l.at === "number" ? [{ ...l, file: join(dir, name) }] : [];
-    } catch (e) {
-      if (e instanceof SyntaxError) return [];
-      ignoreMissing(e);
-      return [];
-    }
-  });
-};
-
-// chat: the channel or chat an edit names; a message in one of its threads or topics is found there by its id (review 7
-// of #338: a Telegram topic message edited with only the chat left the topic's record on the old text)
-export type EditScope = { readonly platform: string; readonly chat: string };
-const noteEdit = (dir: string, place: string, id: string, text: string, scope?: EditScope): void => {
-  mkdirSync(dir, { recursive: true });
-  const direct = readLast(dir, place);
-  const found = direct?.id === id ? [direct] : scope ? allLasts(dir).filter((l) => l.id === id && l.parts?.platform === scope.platform && l.parts.where.startsWith(`${scope.chat}/`)) : [];
-  for (const last of found) writeMark(last.file, last.parts ? { at: last.at, key: postKey({ parts: last.parts, text }), id, parts: last.parts } : { at: last.at, key: sendKey(["edited", id, text]), id, editedText: text });
-  // no record yet: the message was just created and its post not recorded (review 8 of #338); leave the edited text for
-  // it (an older message's edit sorts below the place's newest record and is removed on write)
-  if (!found.length) writeLast(dir, place, { at: Date.now(), key: sendKey(["edited", id, text]), id, editedText: text });
-};
-
-// Every message this process posts or edits goes through here from the messenger clients, so the last post of a place
-// is the last one this Dori made there, by dori send or not (review 2 of #338: a lane's close posted its summary
-// straight through Discord, and the text before it was then refused as the last post). The CLI sets the folder once;
-// without it (a library use, a unit test) nothing is recorded.
-let ledgerDir: string | undefined;
-export const setPostLedger = (dir: string | undefined): void => {
-  ledgerDir = dir;
-};
-export const notePosted = (place: string, id: string, post?: Post): void => {
-  if (!ledgerDir) return;
-  mkdirSync(ledgerDir, { recursive: true });
-  // an edit that came before this record holds the text the message has now
-  const early = readLast(ledgerDir, place);
-  const text = early?.id === id && early.editedText !== undefined ? early.editedText : post?.text;
-  writeLast(ledgerDir, place, { at: Date.now(), id, key: post && text !== undefined ? postKey({ parts: post.parts, text }) : sendKey(["no-text", id]), ...(post ? { parts: post.parts } : {}) });
-};
-export const noteEdited = (place: string, id: string, text: string, scope?: EditScope): void => {
-  if (ledgerDir) noteEdit(ledgerDir, place, id, text, scope);
-};
-
-// One edit of a message at a time, from its request to its record (review 5 of #338): two edits of one message at once
-// were recorded in the order their answers came, so the record could hold B while the message held C. The lock is the
-// kernel lock dori checkpoint uses (takeLock: a flock, or on Windows a delete-on-close handle): it is never taken over by
-// its age, so an edit still retrying after a minute keeps it (review 6 of #338), the kernel lets go when its editor dies,
-// and a release only ever removes the editor's own lock. A waiter gives up after EDIT_LOCK_WAIT_MS and edits nothing.
-const EDIT_LOCK_WAIT_MS = 10 * 60_000;
-// chat: the channel or chat the message is in (not its thread or topic, which an edit need not name)
-export const withMessageLock = async <T>(chat: string, id: string, edit: () => Promise<T>): Promise<T> => {
-  if (!ledgerDir) return edit();
-  mkdirSync(ledgerDir, { recursive: true });
-  const path = join(ledgerDir, `edit-${sendKey([chat, id])}.lock`);
-  const since = Date.now();
-  let release: () => void;
-  for (;;) {
-    try {
-      release = takeLock(path, Date.now(), "message edit", `${chat} ${id}`);
-      break;
-    } catch (e) {
-      if (!(e instanceof CheckpointError)) throw e;
-      if (Date.now() - since > EDIT_LOCK_WAIT_MS) throw new Error(`EDIT_LOCKED ${e.message}; waited ${Math.round(EDIT_LOCK_WAIT_MS / 60_000)} min, nothing edited`);
-    }
-    await Bun.sleep(POLL_MS);
-  }
-  try {
-    return await edit();
-  } finally {
-    release();
-  }
-};
+const writeLast = (dir: string, place: string, last: Last): void => writeMark(join(dir, `${lastPrefix(place)}${order(last.id, last.at)}.json`), last);
 
 const prune = (dir: string, now: number): void => {
   for (const name of readdirSync(dir)) {
-    // only the window's marks and a crashed writer's temp files age out: a last-post record has no age, and an edit lock
-    // a live editor still holds must keep its name however long it runs (review 7 of #338)
-    if (!/^[0-9a-f]{32}\.json$/.test(name) && !name.endsWith(".tmp")) continue;
+    if (name.startsWith(LAST_PREFIX)) continue;
     const path = join(dir, name);
     try {
       if (now - statSync(path).mtimeMs > KEEP_MS) unlinkSync(path);
@@ -216,10 +114,8 @@ const prune = (dir: string, now: number): void => {
 // Sends once per key and window, and never when the place's last post has the same key. place names where the message
 // goes (platform, channel or thread); key is sendKey of the place and the content. The claim is a file created with
 // O_EXCL, so of two senders started together exactly one sends; the other waits for its id. A send that fails removes
-// its claim and leaves the last post as it was, so a retry after a real failure still goes out. send must post through a
-// messenger client, which records the new message as the place's last post (setPostLedger on dir).
-export const sendOnce = async (dir: string, place: string, post: Post, send: () => Promise<Sent>, opts: SendOnceOptions = {}): Promise<SendOnceResult> => {
-  const key = postKey(post);
+// its claim and leaves the last post as it was, so a retry after a real failure still goes out.
+export const sendOnce = async (dir: string, place: string, key: string, send: () => Promise<Sent>, opts: SendOnceOptions = {}): Promise<SendOnceResult> => {
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
   const windowMs = opts.windowMs ?? SEND_DEDUPE_MS;
@@ -227,9 +123,8 @@ export const sendOnce = async (dir: string, place: string, post: Post, send: () 
   prune(dir, now());
   const path = join(dir, `${key}.json`);
   const posted = (sent: Sent): SendOnceResult => {
-    // the place's last-post record was written once, by the messenger client when the message was created (notePosted):
-    // writing it again here would undo an edit made while this command still ran (review 3 of #338)
     writeMark(path, { at: now(), id: sent.id });
+    writeLast(dir, place, { at: now(), key, id: sent.id });
     return { id: sent.id, duplicate: false, content: sent.content };
   };
   if (opts.again) return posted(await send());

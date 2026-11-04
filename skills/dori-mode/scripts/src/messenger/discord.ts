@@ -1,8 +1,7 @@
 import type { Clock } from "../run.ts";
 import { DEFAULT_RETRY, guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
 import { nameThreadLinks } from "./thread-links.ts";
-import { notePosted, noteEdited, withMessageLock } from "../send-dedupe.ts";
-import { type DiscordFile, filesKey } from "./upload-files.ts";
+import type { DiscordFile } from "./upload-files.ts";
 
 const retryAfter = (body: string): number | undefined => {
   try {
@@ -36,15 +35,6 @@ export class Discord {
 
   // a FormData body is multipart: fetch writes its Content-Type with the boundary
   async call<T = unknown>(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: Record<string, unknown> | FormData): Promise<T> {
-    const answer = await this.request<T>(method, path, body);
-    // any new message made through call (a card) is the channel's last post now; post() records its own, once
-    const channel = method === "POST" ? /^\/channels\/(\d+)\/messages$/.exec(path)?.[1] : undefined;
-    const id = (answer as { id?: unknown }).id;
-    if (channel && typeof id === "string") notePosted(`discord:${channel}`, id);
-    return answer;
-  }
-
-  private async request<T>(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: Record<string, unknown> | FormData): Promise<T> {
     const form = body instanceof FormData;
     const res = await withBackoff(this.http, this.clock, { method, url: `${this.base}${path}`, headers: { Authorization: `Bot ${this.botToken}`, ...(form ? {} : { "Content-Type": "application/json" }) }, ...(body ? { body: form ? body : JSON.stringify(body) } : {}) }, this.policy, retryAfter);
     if (res.status >= 300) {
@@ -62,44 +52,27 @@ export class Discord {
   }
 
   // send, with the content Discord answered the new message holds (dori send prints it: send-dedupe.ts sentLine)
-  // The text as it goes out: the ping in front (once) and thread links named. dori send keys its repeat check on it,
-  // and post records the same text, so two inputs that make one message are one repeat (review 8 of #338).
-  // Prepared text prepares to itself.
-  async prepare(content: string, ping?: string): Promise<string> {
+  async post(channelId: string, content: string, typing = false, ping?: string, reply?: string, files: readonly DiscordFile[] = []): Promise<{ id: string; content?: string }> {
     guardText(content);
     if (ping !== undefined && (ping.length === 0 || /[^0-9]/.test(ping))) throw new MessengerError("--ping takes a digits-only user id", 400);
     if (ping !== undefined && !content.includes(`<@${ping}>`)) content = `<@${ping}> ${content}`;
-    return this.namedLinks(content);
-  }
-
-  async post(channelId: string, content: string, typing = false, ping?: string, reply?: string, files: readonly DiscordFile[] = []): Promise<{ id: string; content?: string }> {
-    content = await this.prepare(content, ping);
-    const post = { parts: { platform: "discord", where: channelId, reply, ping, files: filesKey(files) }, text: content };
+    content = await this.namedLinks(content);
     if (typing) {
       await this.once().typing(channelId).catch((e: unknown) => {
         console.error(`DISCORD_TYPING_FAIL ${e instanceof Error ? e.message : String(e)}`);
       });
     }
     const payload = { ...(content || !files.length ? { content: guardText(content) } : {}), allowed_mentions: { parse: [], ...(ping !== undefined ? { users: [ping] } : {}) }, ...(reply !== undefined ? { message_reference: { message_id: reply, fail_if_not_exists: false } } : {}) };
-    const posted = (m: { id: string; content?: unknown }) => {
-      notePosted(`discord:${channelId}`, m.id, post);
-      return { id: m.id, ...(typeof m.content === "string" ? { content: m.content } : {}) };
-    };
-    // request, not call: the record is written once, here, with the post's parts
-    if (!files.length) return posted(await this.request<{ id: string; content?: unknown }>("POST", `/channels/${channelId}/messages`, payload));
+    const posted = (m: { id: string; content?: unknown }) => ({ id: m.id, ...(typeof m.content === "string" ? { content: m.content } : {}) });
+    if (!files.length) return posted(await this.call<{ id: string; content?: unknown }>("POST", `/channels/${channelId}/messages`, payload));
     const form = new FormData();
     form.append("payload_json", JSON.stringify({ ...payload, attachments: files.map((f, id) => ({ id, filename: f.filename })) }));
     for (const [i, f] of files.entries()) form.append(`files[${i}]`, new Blob([f.bytes], { type: f.type }), f.filename);
-    return posted(await this.request<{ id: string; content?: unknown }>("POST", `/channels/${channelId}/messages`, form));
+    return posted(await this.call<{ id: string; content?: unknown }>("POST", `/channels/${channelId}/messages`, form));
   }
 
   async edit(channelId: string, messageId: string, content: string): Promise<void> {
-    // held from the request to the record, so two edits at once are recorded in the order Discord applied them
-    await withMessageLock(`discord:${channelId}`, messageId, async () => {
-      const final = guardText(await this.namedLinks(guardText(content)));
-      await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: final });
-      noteEdited(`discord:${channelId}`, messageId, final);
-    });
+    await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: guardText(await this.namedLinks(guardText(content))) });
   }
 
   // a thread link the owner's client has not loaded shows as "unknown"; it goes out as [name](<url>) (thread-links.ts)

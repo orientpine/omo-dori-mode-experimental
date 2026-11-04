@@ -2,11 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Clock } from "../run.ts";
 import { guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
-import { notePosted, noteEdited, withMessageLock } from "../send-dedupe.ts";
 import { type ThreadLedger, tsAfter } from "./thread-ledger.ts";
-
-// the place a message is in for the repeat check of dori send (send-dedupe.ts): the channel, or the thread in it
-const slackPlace = (channel: string, threadTs?: string): string => `slack:${channel}${threadTs ? `/${threadTs}` : ""}`;
 
 export type SlackAuth = { readonly token: string; readonly cookie?: string };
 // text: what Slack answered the message holds (chat.postMessage's message.text), when it said
@@ -51,18 +47,12 @@ export class Slack {
 
   async post(channel: string, text: string, threadTs?: string): Promise<Posted> {
     const r = await this.call("chat.postMessage", { channel, text: guardText(text), ...(threadTs ? { thread_ts: threadTs } : {}) });
-    notePosted(slackPlace(channel, threadTs), String(r.ts), { parts: { platform: "slack", where: `${channel}/${threadTs ?? ""}` }, text });
     const said = (r.message as { text?: unknown } | undefined)?.text;
     return { channel: String(r.channel), ts: String(r.ts), ...(typeof said === "string" ? { text: said } : {}) };
   }
 
-  // threadTs: the thread the message is in, if known; without it the record is found in the channel by the message ts
-  async edit(channel: string, ts: string, text: string, threadTs?: string): Promise<void> {
-    // held from the request to the record, so two edits at once are recorded in the order Slack applied them
-    await withMessageLock(`slack:${channel}`, ts, async () => {
-      await this.call("chat.update", { channel, ts, text: guardText(text) });
-      noteEdited(slackPlace(channel, threadTs), ts, text, { platform: "slack", chat: channel });
-    });
+  async edit(channel: string, ts: string, text: string): Promise<void> {
+    await this.call("chat.update", { channel, ts, text: guardText(text) });
   }
 
   // Every file gets its own upload URL and bytes, then one completeUploadExternal shares them all as one message, with
@@ -79,10 +69,6 @@ export class Slack {
       done.push({ id: String(slot.file_id), title: f.title ?? f.filename });
     }
     await this.call("files.completeUploadExternal", { files: done, channel_id: channel, ...(threadTs ? { thread_ts: threadTs } : {}), ...(text ? { initial_comment: text } : {}) }, ONCE);
-    // The share names no message ts (Slack shares it after answering), and a local-clock stand-in cannot be ordered
-    // against Slack's ts (reviews 3 and 4 of #338), so the share is not recorded as the channel's last post: the text
-    // before it, sent again across the share, is refused (--again posts it), and nothing posts twice whatever the clock.
-    // Recording it under its real ts: docs/follow-ups.md.
     return done.map((f) => f.id);
   }
 
