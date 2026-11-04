@@ -196,7 +196,8 @@ test("upstream #69 on herdr: a bare-agent pane with a shell in front, an unreada
   expect(sent(world)).toEqual(["rm -rf /tmp/x"]);
 });
 
-// the same table as upstream #69's test/herdr.test.ts
+// upstream #69's table from its test/herdr.test.ts; a PowerShell or cmd running a command is held here, where upstream
+// delivers (reviews 1 and 2 of #347: their command lines cannot be read safely)
 test.each([
   ["login shell", [{ name: "-bash", argv: ["-bash"] }], true],
   ["interactive zsh by path, upper case", [{ name: "/bin/ZSH", argv: ["/bin/zsh", "-i"] }], true],
@@ -208,29 +209,35 @@ test.each([
   ["interactive bash with --rcfile FILE", [{ name: "bash", argv: ["bash", "--rcfile", "/tmp/rc"] }], true],
   ["interactive zsh with -o OPT", [{ name: "zsh", argv: ["zsh", "-o", "vi"] }], true],
   ["login shell running a command: -lc", [{ name: "bash", argv: ["bash", "-lc", "make"] }], false],
-  ["pwsh -File", [{ name: "pwsh", argv: ["pwsh", "-File", "x.ps1"] }], false],
+  ["pwsh -File is held", [{ name: "pwsh", argv: ["pwsh", "-File", "x.ps1"] }], true],
   ["bash -f (noglob) is still interactive", [{ name: "bash", argv: ["bash", "-f"] }], true],
   ["bash --init-file F", [{ name: "bash", argv: ["bash", "--init-file", "/tmp/rc"] }], true],
   ["fish -C cmd (init command, still interactive)", [{ name: "fish", argv: ["fish", "-C", "set x 1"] }], true],
   ["bash -ic cmd runs a command", [{ name: "bash", argv: ["bash", "-ic", "make"] }], false],
-  ["pwsh -EncodedCommand", [{ name: "pwsh", argv: ["pwsh", "-EncodedCommand", "ZQBjAGgAbwA="] }], false],
+  ["pwsh -EncodedCommand is held", [{ name: "pwsh", argv: ["pwsh", "-EncodedCommand", "ZQBjAGgAbwA="] }], true],
   ["pwsh -Interactive", [{ name: "pwsh", argv: ["pwsh", "-Interactive"] }], true],
   ["pwsh -NoProfile -ExecutionPolicy Bypass", [{ name: "pwsh", argv: ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass"] }], true],
   ["pwsh -NoExit -Command keeps a prompt", [{ name: "pwsh", argv: ["pwsh", "-NoExit", "-Command", "ls"] }], true],
-  ["powershell -c", [{ name: "powershell", argv: ["powershell", "-c", "ls"] }], false],
-  ["pwsh -Command", [{ name: "pwsh", argv: ["pwsh", "-Command", "ls"] }], false],
+  ["powershell -c is held", [{ name: "powershell", argv: ["powershell", "-c", "ls"] }], true],
+  ["pwsh -Command is held", [{ name: "pwsh", argv: ["pwsh", "-Command", "ls"] }], true],
   ["exec'd agent", [{ name: "bun", argv: ["bun", "omo.js"] }], false],
   ["an empty foreground group is doubt", [], true],
   // review of #347: Windows names keep their path and .exe, and pwsh reads commands from the terminal with an operand of -
   ["pwsh.exe by Windows path", [{ name: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", argv: ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"] }], true],
   ["powershell.exe -NoLogo", [{ name: "powershell.exe", argv: ["powershell.exe", "-NoLogo"] }], true],
-  ["pwsh.exe -Command ls runs a command", [{ name: "pwsh.exe", argv: ["pwsh.exe", "-Command", "ls"] }], false],
+  ["pwsh.exe -Command ls is held", [{ name: "pwsh.exe", argv: ["pwsh.exe", "-Command", "ls"] }], true],
   ["pwsh -File - reads the terminal", [{ name: "pwsh", argv: ["pwsh", "-File", "-"] }], true],
   ["pwsh -Command - reads the terminal", [{ name: "pwsh", argv: ["pwsh", "-Command", "-"] }], true],
   ["pwsh -Command with no operand", [{ name: "pwsh", argv: ["pwsh", "-Command"] }], true],
   ["cmd.exe prompt", [{ name: "cmd.exe", argv: ["C:\\Windows\\System32\\cmd.exe"] }], true],
   ["cmd /k keeps a prompt", [{ name: "cmd.exe", argv: ["cmd.exe", "/k", "dir"] }], true],
-  ["cmd /c runs a command", [{ name: "cmd.exe", argv: ["cmd.exe", "/C", "dir"] }], false],
+  ["cmd /c is held", [{ name: "cmd.exe", argv: ["cmd.exe", "/C", "dir"] }], true],
+  // review 2 of #347
+  ["cmd /k cmd /c keeps a prompt", [{ name: "cmd.exe", argv: ["cmd.exe", "/k", "cmd", "/c", "echo ready"] }], true],
+  ["pwsh -NoEx -Command keeps a prompt", [{ name: "pwsh", argv: ["pwsh", "-NoEx", "-Command", "ls"] }], true],
+  ["bash -o vi -c x: -c not first, held", [{ name: "bash", argv: ["bash", "-o", "vi", "-c", "x"] }], true],
+  ["bash -c with no command", [{ name: "bash", argv: ["bash", "-c"] }], true],
+  ["busybox sh -c runs a command", [{ name: "busybox", argv: ["busybox", "sh", "-c", "true"] }], false],
 ] as const)("interactiveShellInFront (upstream #69): %s", (_, procs, want) => {
   expect(interactiveShellInFront({ foreground_processes: procs })).toBe(want);
 });

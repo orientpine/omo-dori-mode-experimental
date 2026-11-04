@@ -42,24 +42,23 @@ const processInfo = async (run: Runner, pane: string): Promise<ProcessInfo | und
 export const herdrShellPid = async (run: Runner, pane: string): Promise<number> => Number((await processInfo(run, pane))?.shell_pid ?? 0);
 
 // upstream dori-superagent #69 (https://github.com/sisyphuslabs/dori-superagent/pull/69, its src/herdr.ts and
-// skills/dori-mode/scripts/src/panes.ts), ported as is
+// skills/dori-mode/scripts/src/panes.ts): its shell list, with the exception for a shell running a command made
+// narrower, so that it fails closed (reviews 1 and 2 of #347: PowerShell matches 39 switches by any prefix, -NoEx is
+// -NoExit, and cmd /k cmd /c keeps a prompt, so no reading of those command lines is safe)
 const SHELLS: ReadonlySet<string> = new Set([
   "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox", "cmd",
 ]);
+// the shells whose -c always runs the one command after it and exits (POSIX sh and its kin)
+const POSIX_SHELLS: ReadonlySet<string> = new Set(["sh", "ash", "bash", "zsh", "dash", "ksh", "mksh"]);
 // beyond upstream (review of #347): herdr on Windows names a process by its path with \ and .exe (pwsh.exe), and cmd.exe
 // is a shell there too
 const baseName = (value: unknown): string => String(value ?? "").replace(/^-/, "").split(/[\\/]/).pop()!.toLowerCase().replace(/\.exe$/, "");
-// A shell runs a command (not a prompt) only with an explicit command flag: -c, also inside combined short flags such
-// as -lc, or PowerShell's -Command/-File/-EncodedCommand (whole words only: its other long flags contain a 'c'). Any
-// other operand (a script path, --rcfile FILE, -o OPT) stays held.
-// Beyond upstream (review of #347): pwsh -File - and -Command - (or no operand) read commands from the terminal, so they
-// are held; cmd runs one with /c, while /k keeps its prompt.
-const runsCommand = (shell: string, arg: string, next: string | undefined): boolean =>
-  shell === "pwsh" || shell === "powershell"
-    ? /^-(c|command|f|file|e|ec|encodedcommand)$/i.test(arg) && next !== undefined && next !== "-"
-    : shell === "cmd" ? /^\/c$/i.test(arg) : /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
-// PowerShell's -NoExit keeps an interactive prompt after the command runs, so that shell is held.
-const keepsPrompt = (shell: string, arg: string): boolean => (shell === "pwsh" || shell === "powershell") && /^-(noe|noexit)$/i.test(arg);
+// A shell runs a command (not a prompt) only as a POSIX shell whose first argument is -c (also inside combined short
+// flags such as -lc) with the command after it. Every other foreground shell is held: one at its prompt, one with any
+// other first argument (a script, --rcfile FILE, -o OPT), and every fish, csh, nu, PowerShell or cmd, -Command and /c
+// included (upstream delivers to those; here they are held).
+const runsCommand = (shell: string, args: readonly string[]): boolean =>
+  POSIX_SHELLS.has(shell) && /^-[A-Za-z]*c[A-Za-z]*$/.test(args[0] ?? "") && args[1] !== undefined && args[1] !== "-" && args[1] !== "--";
 
 // The interactive shell herdr pane process-info shows in the pane's foreground group (its name), "" for an empty or
 // unreadable group (doubt), else undefined. herdr still reports an agent suspended with Ctrl+Z as idle while its shell is
@@ -73,7 +72,7 @@ export const shellInFrontName = (info: unknown): string | undefined => {
     let args = Array.isArray(proc?.argv) ? proc.argv.map(String).slice(1) : undefined;
     if (name === "busybox" && args && args.length > 0) [name, args] = [baseName(args[0]), args.slice(1)];
     if (!SHELLS.has(name)) continue;
-    if (args === undefined || !args.some((a, i, all) => runsCommand(name, a, all[i + 1])) || args.some((a) => keepsPrompt(name, a))) return name;
+    if (args === undefined || !runsCommand(name, args)) return name;
   }
   return undefined;
 };
