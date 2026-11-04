@@ -24,7 +24,8 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const omo = (patch = {}) => depsFor(world, fakeClock(0), dir, { backend: "herdr", ...patch });
 
-// where a lead's session log is read: where its arguments keep their word boundaries (Linux /proc, a Windows command line)
+// where a lead's session log is looked for from its arguments: where they keep their word boundaries (Linux /proc, a
+// Windows command line); macOS reads only the exactly known logs
 const readsLogs = process.platform === "linux" || process.platform === "win32";
 
 
@@ -233,21 +234,52 @@ test.if(process.platform === "linux")("arguments without their word boundaries (
   expect(rec?.log).toBeUndefined();
 });
 
-// macOS keeps main's behaviour until its arguments can be read with their word boundaries (KERN_PROCARGS2, docs/follow-ups.md)
-test.if(process.platform === "darwin")("on macOS the record and the revive keep the launch --model, as on main, even with a log there", async () => {
+// The macOS path, run here: process.platform set to darwin for the call, so the agent's arguments are not read (ps loses
+// their word boundaries; KERN_PROCARGS2 is a follow-up) even where this host's /proc could give them
+const asPlatform = async (platform: string, fn: () => Promise<void>): Promise<void> => {
+  const own = Object.getOwnPropertyDescriptor(process, "platform");
+  if (!own) throw new Error("process.platform has no descriptor");
+  Object.defineProperty(process, "platform", { ...own, value: platform });
+  try {
+    await fn();
+  } finally {
+    Object.defineProperty(process, "platform", own);
+  }
+};
+
+test.if(process.platform !== "win32")("on macOS only exactly known logs are read: no log from the arguments, the child's PI_SESSION_FILE, then the log recorded before, and the revive reads that log with --thinking apart", async () => {
   const id = "11111111-2222-4333-8444-555555555555";
-  const logDir = sessionDirFor(dir, dir);
-  mkdirSync(logDir, { recursive: true });
-  writeFileSync(join(logDir, `2026-11-04T16-00-00-000Z_${id}.jsonl`), `${JSON.stringify({ type: "thinking_level_change", thinkingLevel: "low", provider: "p", modelId: "m" })}\n`);
+  const level = (l: string) => `${JSON.stringify({ type: "thinking_level_change", thinkingLevel: l, provider: "p", modelId: "m" })}\n`;
+  const own = join(dir, "own");
+  mkdirSync(own);
+  const log = join(own, `2026-11-04T16-00-00-000Z_${id}.jsonl`);
+  writeFileSync(log, level("high") + level("medium"));
   world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
-  world.ps = `4000 1 -bash\n4001 4000 omo --session-id ${id} --model p/m:high`;
-  const deps = omo({ leadPane: "w1:p1", sessionsDir: dir });
-  await herdrLeadSession(deps.run, deps.config, "w1:p1", true);
-  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ model: "p/m:high" });
-  world.ps = "4000 1 -bash";
-  world.herdrDead = ["w1:p1"];
-  expect(await reviveHerdr(deps.run, deps.clock, deps.config, "w1:p1", "", async () => true)).toBe(`REVIVE_OK w1:p1 session ${id}`);
-  expect(world.calls.filter((c) => c[2] === "run").at(-1)?.[4] ?? "").toEndWith(` omo --session-id ${id} --model p/m:high`);
+  world.ps = `4000 1 -bash\n4001 4000 omo --session-dir ${own} --session-id ${id} --model p/m:high\n4002 4001 python3 -u prelude.py`;
+  let env = `python3 -u prelude.py PI_SESSION_ID=${id}`;
+  const base = omo({ leadPane: "w1:p1", sessionsDir: join(dir, "sessions") });
+  const run: Runner = async (argv, o) => (argv[1] === "eww" && argv.at(-1) === "4002" ? { code: 0, out: env, err: "" } : base.run(argv, o));
+  await asPlatform("darwin", async () => {
+    // the arguments name the log, but they are not read on macOS: the launch model, as on main
+    expect(await herdrLeadSession(run, base.config, "w1:p1", true)).toBe(id);
+    expect(readHerdrSessions(dir)["w1:p1"]?.model).toBe("p/m:high");
+    expect(readHerdrSessions(dir)["w1:p1"]?.log).toBeUndefined();
+    // a child shows the file: read and recorded
+    env = `python3 -u prelude.py PI_SESSION_ID=${id} PI_SESSION_FILE=${log}`;
+    await herdrLeadSession(run, base.config, "w1:p1", true);
+    expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ model: "p/m:medium", log });
+    // no child shows it any more: the recorded log is read again
+    env = `python3 -u prelude.py PI_SESSION_ID=${id}`;
+    appendFileSync(log, level("low"));
+    await herdrLeadSession(run, base.config, "w1:p1", true);
+    expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ model: "p/m:low", log });
+    // and the revive reads it once more, with the level as its own --thinking
+    appendFileSync(log, level("minimal"));
+    world.ps = "4000 1 -bash";
+    world.herdrDead = ["w1:p1"];
+    expect(await reviveHerdr(run, base.clock, base.config, "w1:p1", "", async () => true)).toBe(`REVIVE_OK w1:p1 session ${id}`);
+  });
+  expect(world.calls.filter((c) => c[2] === "run").at(-1)?.[4] ?? "").toEndWith(` omo --session-id ${id} --model p/m --thinking minimal`);
 });
 
 test("an unchanged herdr lead record gets its check time on each read, so the next read waits its ten minutes", async () => {

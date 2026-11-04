@@ -59,14 +59,12 @@ export const argvSessionLog = (argv: readonly string[], sessionsDir: string, cwd
 // a child's PI_SESSION_FILE in ps eww: the value runs up to its .jsonl, so a path with spaces stays whole
 const ENV_FILE = /(?:^|\s)PI_SESSION_FILE=(.+?\.jsonl)(?=\s|$)/;
 
-// A lead's session log is read only where its agent's arguments keep their word boundaries (agentArgv); elsewhere
-// (macOS, until KERN_PROCARGS2 is read: docs/follow-ups.md) the record and the revive keep the launch --model, as before.
-const READS_LOGS = process.platform === "linux" || process.platform === "win32";
-
 // The agent's own arguments with their word boundaries: a Windows command line split as Windows does (winArgv), Linux's
-// /proc cmdline when it is the same process the table shows; undefined when they cannot be told (never a whitespace split).
+// /proc cmdline when it is the same process the table shows; undefined when they cannot be told (never a whitespace split),
+// so on macOS, whose ps loses them, no log is looked for from them (KERN_PROCARGS2 would keep them: docs/follow-ups.md).
 const agentArgv = async (run: Runner, pid: number, cmd: string): Promise<string[] | undefined> => {
   if (process.platform === "win32") return winArgv(cmd);
+  if (process.platform !== "linux") return undefined;
   const ran = await run(["cat", `/proc/${pid}/cmdline`]);
   if (ran.code !== 0) return undefined;
   const argv = ran.out.split("\0").filter((a, i, all) => a || i < all.length - 1);
@@ -77,9 +75,8 @@ const agentArgv = async (run: Runner, pid: number, cmd: string): Promise<string[
 // The log file of session id that the agent at pid runs now: the exact path omo hands its children (PI_SESSION_FILE, read
 // as resolveSession reads their PI_SESSION_ID; Windows has no such read; only bash and eval children get it), else what
 // the agent's arguments name (argvSessionLog; a --session to another copy of the session goes over the one recorded),
-// else the log recorded before for this session (kept). undefined where logs are not read (READS_LOGS).
+// else the log recorded before for this session (kept): on macOS only the first and the last, the paths known exactly.
 export const sessionLog = async (run: Runner, table: readonly Proc[], pid: number, id: string, sessionsDir: string, cwd: string, kept?: string): Promise<string | undefined> => {
-  if (!READS_LOGS) return undefined;
   for (const child of process.platform === "win32" ? [] : descendants(table, pid).slice(0, 40)) {
     const file = ENV_FILE.exec((await run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out)?.[1];
     if (file?.endsWith(`_${id}.jsonl`) && existsSync(file)) return file;
@@ -129,7 +126,7 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   // what the session runs now (its log), else the model recorded for this same session (a log that cannot be read does not
   // send it back to the launch one), else what its agent was started with
   const cmd = table.find((p) => p.pid === hit.pid)?.cmd ?? "";
-  const same = READS_LOGS && kept?.session === hit.id ? kept : undefined;
+  const same = kept?.session === hit.id ? kept : undefined;
   const log = hit.pid ? await sessionLog(run, table, hit.pid, hit.id, config.sessionsDir, cwd, same?.log) : same?.log;
   const model = (log ? sessionModel(log) : undefined) ?? same?.model ?? modelOf(cmd);
   // recorded on every read, unchanged or not: its time is when it was last checked (lead-down reads again after 10 min)
@@ -167,9 +164,8 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
     // The level goes in as its own --thinking (aoe.ts herdrAgentArgv: omo can start at another level than a :suffix says).
     if (hasSessionSelector(config.agentCommand.slice(1))) return `REVIVE_FAIL ${pane}: agentCommand picks its session itself (${config.agentCommand.join(" ")}); revive needs one without a session selector`;
     const tool = config.agentCommand[0] ?? "omo";
-    const log = !READS_LOGS ? undefined : rec.log && existsSync(rec.log) ? rec.log : argvSessionLog(config.agentCommand, config.sessionsDir, rec.cwd, rec.session);
-    const model = (log ? sessionModel(log) : undefined) || rec.model || config.defaultModel;
-    const { base, thinking } = READS_LOGS ? splitModel(model) : { base: model, thinking: undefined };
+    const log = rec.log && existsSync(rec.log) ? rec.log : argvSessionLog(config.agentCommand, config.sessionsDir, rec.cwd, rec.session);
+    const { base, thinking } = splitModel((log ? sessionModel(log) : undefined) || rec.model || config.defaultModel);
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, rec.session);
     // the screen is cleared first, so a ❯ the ended agent left there is gone before the new one draws
     const clear = process.platform === "win32" ? "Clear-Host; " : "clear && ";
