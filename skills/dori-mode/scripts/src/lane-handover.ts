@@ -745,7 +745,10 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   }
   // a dry run needs no approval, but a given one is checked the same way, so it can be tried before the real run
   const unapproved = opts.dryRun && !opts.approvedBy?.trim() ? undefined : approvalProblem(opts.approvedBy, (id) => new QuestionStore(deps.cardDir).get(id), { on: config.handover.autoRolloverLanes, key: "handover.autoRolloverLanes", granted }, key, lane.pane ?? "", readRollovers(config.stateDir), Boolean(deps.reportOwner), inboxMessages(deps.inbox ?? "", deps.ownerIds ?? []));
-  if (unapproved) return refuse(`a lane moves to a new session only with an approval: ${unapproved} (--dry-run needs none)`);
+  // a refused approval is no request: it hands nothing to a run holding the lane's lock (that run would step aside for it),
+  // and its row would hide the lane's waiting request; only an automatic one leaves its row (freshness reads it as its run's
+  // result, and waitingRequest skips it) (review 333 round 5)
+  if (unapproved) return refused(`a lane moves to a new session only with an approval: ${unapproved} (--dry-run needs none)`, undefined, decidedBy(opts.approvedBy?.trim() ?? "") === "auto");
   if (opts.dryRun && opts.approvedBy?.trim()) emit(`HANDOVER_APPROVAL_OK ${JSON.stringify(opts.approvedBy.trim())}`);
   const lockFile = join(dir, `${key}.lock`);
   // a run that finds another holding the lane hands it this request instead of a second move or a refusal: a run waiting
