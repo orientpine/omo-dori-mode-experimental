@@ -123,17 +123,19 @@ test("a lane whose omo stays stopped is told to the lead once and brought back; 
     "LANE_SUSPENDED_TOLD lead lead:p1",
   ]);
   expect(sent(w)).toEqual(["[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 스스로 되살렸어, 하던 일을 잇는지 봐", "[DORI] 리드 omo 멈춤(셸 뒤 작업으로 밀림) — 스스로 되살렸어, 하던 일을 잇는지 봐"]);
-  // running again: the marks go, and a second stop of the lane is told again
-  expect(await tick(T0 + 60 * S)).toEqual(["LANE_RUNNING_AGAIN handover-simplify aoe_hs_aaaa1111", "LANE_RUNNING_AGAIN lead lead:p1"]);
+  // brought back: nothing is marked, and a second stop of the lane is told again
+  expect(await tick(T0 + 60 * S)).toEqual([]);
   states[200] = "T";
   fails = true;
   expect(await tick(T0 + 90 * S)).toEqual([]);
   expect((await tick(T0 + 120 * S)).at(-1)).toBe("LANE_SUSPENDED_TOLD handover-simplify lead:p1");
   expect(sent(w).at(-1)).toBe("[DORI] 레인 handover-simplify 멈춤(프로세스 정지) — 되살리지 못했어(agent 200: the shell 100 holds 2 jobs, so fg could pick another) — dori revive aoe_hs_aaaa1111로 다시 해 봐");
-  // still stopped: not told twice
+  // still stopped: not told twice; once it runs the mark goes
   expect(await tick(T0 + 150 * S)).toEqual([]);
   expect(await tick(T0 + 180 * S)).toEqual([]);
   expect(sent(w).length).toBe(3);
+  states[200] = "S";
+  expect(await tick(T0 + 210 * S)).toEqual(["LANE_RUNNING_AGAIN handover-simplify aoe_hs_aaaa1111"]);
 });
 
 test("an agent a handover froze on purpose is never taken for a suspended lane", async () => {

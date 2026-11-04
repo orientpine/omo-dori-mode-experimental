@@ -91,6 +91,7 @@ const jobsOf = (run: Runner, stat: StatOf) => async (shell: JobStat): Promise<nu
 const RAW = ["-brkint", "-icrnl", "-inpck", "-istrip", "-ixon", "-isig", "-icanon", "-iexten", "-echo", "cs8", "opost", "onlcr"];
 const FG_WAIT_MS = 10_000;
 const POLL_MS = 500;
+const REDRAW_MS = 500;
 
 const foreground = (s: JobStat | undefined): boolean => !!s && s.state !== "T" && s.tpgid > 0 && s.pgrp === s.tpgid;
 const where = (s: JobStat | undefined): string => (s ? `state ${s.state}, tty foreground group ${s.tpgid}, its group ${s.pgrp}` : "gone");
@@ -119,6 +120,13 @@ export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Prom
   if (!foreground(now) && now && shell && shell.pid === now.session && now.tpgid === shell.pgrp) {
     const jobs = await (io.jobs ?? jobsOf(io.run, stat))(shell);
     if (jobs.length !== 1 || jobs[0] !== now.pgrp) return `AGENT_RESUME_FAIL ${pane} agent ${pid}: the shell ${shell.pid} holds ${jobs.length} jobs, so fg could pick another; type fg with the job of pid ${pid} in the pane (${where(now)})`;
+    // a background omo that runs waits on the tty too: the line typed next would stop it (SIGTTIN) instead of reaching
+    // the shell (herdr QA 2026-11-04), so it is stopped first; fg continues it
+    if (now.state !== "T") {
+      io.signal(-now.pgrp, "SIGSTOP");
+      for (let waited = 0; stat(pid)?.state !== "T" && waited < FG_WAIT_MS; waited += POLL_MS) await io.clock.sleep(POLL_MS);
+      done.push("stopped so that only the shell reads the line");
+    }
     if (isHerdrPane(pane)) {
       await io.run(["herdr", "pane", "send-text", pane, "\x15"]);
       await io.run(["herdr", "pane", "run", pane, "fg"]);
@@ -136,10 +144,14 @@ export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Prom
         await io.run(["stty", "-F", tty, ...RAW]);
         done.push("raw tty mode given back");
       }
-      const rows = Number((await io.run(["stty", "-F", tty, "size"])).out.trim().split(/\s+/)[0]);
-      if (rows > 1) {
-        await io.run(["stty", "-F", tty, "rows", String(rows - 1)]);
-        await io.run(["stty", "-F", tty, "rows", String(rows)]);
+      // a width change makes omo lay out and paint its whole screen again (a height change repaints only changed lines,
+      // and bash's lines stay on screen: herdr QA 2026-11-04)
+      const cols = Number((await io.run(["stty", "-F", tty, "size"])).out.trim().split(/\s+/)[1]);
+      if (cols > 1) {
+        await io.run(["stty", "-F", tty, "cols", String(cols - 1)]);
+        // omo must see the narrower width before it gets the old one back, or the two changes read as none
+        await io.clock.sleep(REDRAW_MS);
+        await io.run(["stty", "-F", tty, "cols", String(cols)]);
         done.push("redrawn");
       }
     }

@@ -118,7 +118,7 @@ test("resume brings a background omo back: clears the prompt, types fg, gives ba
   expect(line).toBe("AGENT_RESUMED w2:p2 agent 200: fg typed into the shell, raw tty mode given back, redrawn");
   expect(calls.slice(0, 2)).toEqual([["herdr", "pane", "send-text", "w2:p2", "\x15"], ["herdr", "pane", "run", "w2:p2", "fg"]]);
   expect(calls.some((c) => c[0] === "stty" && c.includes("-icanon") && c.includes("-echo"))).toBe(true);
-  expect(calls.filter((c) => c[0] === "stty" && c[3] === "rows").map((c) => c[4])).toEqual(["39", "40"]);
+  expect(calls.filter((c) => c[0] === "stty" && c[3] === "cols").map((c) => c[4])).toEqual(["118", "119"]);
   expect(holdOf(k.stat, 200)).toBeUndefined();
 });
 
@@ -150,5 +150,20 @@ test("resume that fg could not bring forward says so", async () => {
   k.signal(200, "SIGSTOP");
   k.signal(200, "SIGCONT");
   const { r } = io(rows, k, { fgWorks: false });
-  expect(await resumeAgent(r, "w2:p2", 200)).toBe("AGENT_RESUME_FAIL w2:p2 agent 200: fg typed into the shell, still not the running foreground job (state S, tty foreground group 100, its group 200)");
+  expect(await resumeAgent(r, "w2:p2", 200)).toBe("AGENT_RESUME_FAIL w2:p2 agent 200: stopped so that only the shell reads the line, fg typed into the shell, still not the running foreground job (state T, tty foreground group 100, its group 200)");
+});
+
+test("resume stops a background omo that still runs before it types fg, so the shell and not omo reads the line", async () => {
+  // Given: thawed into the background and running (no key typed yet)
+  const rows = pane();
+  const k = kernel(rows);
+  k.signal(200, "SIGSTOP");
+  k.signal(200, "SIGCONT");
+  const { r, calls } = io(rows, k);
+  // When
+  const line = await resumeAgent(r, "w2:p2", 200);
+  // Then: its group is stopped before anything is typed
+  expect(k.sent.slice(2)).toEqual(["SIGSTOP -200"]);
+  expect(calls[0]).toEqual(["herdr", "pane", "send-text", "w2:p2", "\x15"]);
+  expect(line).toBe("AGENT_RESUMED w2:p2 agent 200: stopped so that only the shell reads the line, fg typed into the shell, raw tty mode given back, redrawn");
 });
