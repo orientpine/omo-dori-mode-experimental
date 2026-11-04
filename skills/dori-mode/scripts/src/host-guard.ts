@@ -25,10 +25,11 @@ const sampleMemFreePct = async (run: Runner): Promise<number | null> => {
   if (Number.isFinite(mac)) return mac;
   const mi = await run(["cat", "/proc/meminfo"]);
   const m = mi.code === 0 ? parseMeminfo(mi.out) : undefined;
-  return m ? Math.round((100 * m.availKb) / m.totalKb) : null;
+  return m ? (100 * m.availKb) / m.totalKb : null;
 };
 
-export const memFreeText = (pct: number | null): string => (pct === null ? "memory free unknown" : `memory free ${pct}%`);
+// unrounded in the sample so 19.9% stays under a 20% floor; shown rounded down so the line never claims the floor
+export const memFreeText = (pct: number | null): string => (pct === null ? "memory free unknown" : `memory free ${Math.floor(pct)}%`);
 
 export const sampleHost = async (run: Runner, backend: Backend, dataPath = "/"): Promise<HostSample> => {
   const load = await run(["sysctl", "-n", "vm.loadavg"]);
