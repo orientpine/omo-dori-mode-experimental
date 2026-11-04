@@ -7,7 +7,8 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { currentTmuxSession, paneActivity, paneLife } from "./aoe.ts";
-import { isHerdrPane } from "./herdr.ts";
+import { herdrAgentPid, isHerdrPane } from "./herdr.ts";
+import { holdOf, jobSignal, readStat, resumeAgent } from "./job-control.ts";
 import { reviveHerdr } from "./herdr-sessions.ts";
 import { fileLog, installTaskRefusal, serve, serveLoops, spawnLoop, TASK_NAME, taskArgv } from "./serve.ts";
 import { winSignal } from "./win-suspend.ts";
@@ -685,7 +686,8 @@ const reportOwner = discordToken && process.env.DORI_DISCORD_CHANNEL?.trim()
   ? { reportOwner: async (thread: string | null, text: string): Promise<string> => discordClient().send(thread ?? env("DORI_DISCORD_CHANNEL"), text) }
   : {};
 const sessionOfPane = async (pane: string, cwd: string): Promise<string> => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id;
-const sendSignal: HandoverDeps["signal"] = (pid, sig) => {
+// a shell's foreground job is stopped with its shell and resumed before it, so the tty stays with it (job-control.ts)
+const sendSignal: HandoverDeps["signal"] = jobSignal((pid, sig) => {
   if (process.platform === "win32" && (sig === "SIGSTOP" || sig === "SIGCONT")) return winSignal(pid, sig);
   try {
     process.kill(pid, sig);
@@ -693,7 +695,7 @@ const sendSignal: HandoverDeps["signal"] = (pid, sig) => {
   } catch {
     return false;
   }
-};
+});
 const freezeDeps = { run, procs: () => procTable(run), signal: sendSignal };
 const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)): LaneHandoverDeps => ({
   ...deps,
@@ -1985,6 +1987,14 @@ try {
       if (!isHerdrPane(pane)) die("revive takes a herdr pane id (an aoe session restarts with self-restart.sh)");
       // dori never ends a live herdr agent: only a pane whose agent is gone is started again
       if ((await paneLife(run, pane)).live) {
+        // a stopped agent (state T, or left a background job of its shell) is brought back, not started again
+        const agent = await herdrAgentPid(run, pane);
+        if (agent && holdOf(readStat, agent)) {
+          const line = await resumeAgent({ run, clock: realClock, signal: sendSignal }, pane, agent);
+          console.log(line.replace(/^AGENT_RESUMED /, "REVIVE_RESUMED ").replace(/^AGENT_RESUME_FAIL /, "REVIVE_FAIL "));
+          if (!line.startsWith("AGENT_RESUMED")) process.exitCode = 1;
+          break;
+        }
         console.log(`REVIVE_ALREADY_RUNNING ${pane}`);
         break;
       }
@@ -2130,7 +2140,12 @@ try {
         break;
       }
       if (key === "thaw") {
-        const line = thawFrozen(freezeDeps, config.stateDir, flags.positionals[1]?.trim() || die("usage: dori handover thaw <pane>"));
+        const pane = flags.positionals[1]?.trim() || die("usage: dori handover thaw <pane>");
+        const agent = readFrozen(config.stateDir).find((r) => r.pane === pane)?.agentPid;
+        const thawed = thawFrozen(freezeDeps, config.stateDir, pane);
+        // checked once resumed: the agent is again its tty's running foreground job, or is brought back to it
+        const fg = agent && !thawed.startsWith("FROZEN_NONE") ? await resumeAgent({ run, clock: realClock, signal: sendSignal }, pane, agent) : "";
+        const line = fg ? `${thawed}; ${fg}` : thawed;
         watchLog(config.watchLog, realClock, { source: "handover", line });
         console.log(line);
         if (line.startsWith("FROZEN_NONE")) process.exit(1);

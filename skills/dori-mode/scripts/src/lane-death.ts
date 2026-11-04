@@ -1,5 +1,13 @@
-import { paneLife } from "./aoe.ts";
-import { isHerdrPane } from "./herdr.ts";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { paneLife, tmuxPanePid } from "./aoe.ts";
+import { pidAlive } from "./background.ts";
+import { handoverRunning } from "./freshness.ts";
+import { frozenPanes } from "./frozen.ts";
+import { herdrAgentPid, isHerdrPane } from "./herdr.ts";
+import { type Hold, holdOf, jobSignal, readStat, resumeAgent, type StatOf } from "./job-control.ts";
+import { procTable, topAgent } from "./session-id.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { submitToPane } from "./panes.ts";
 import type { Submitted } from "./submit.ts";
@@ -34,6 +42,99 @@ export const oomLine = async (run: Runner, pane: string, sinceMs: number): Promi
 };
 
 export const laneDiedText = (key: string, reason: string): string => `[DORI] 레인 ${key} 꺼짐(${reason}) — 이어서 살릴지 정해`;
+
+// 2026-11-03 15:41Z a rolled-back handover thawed handover-simplify's omo into a background job of its shell, where the
+// next key stopped it again (T). Its screen kept its last "esc to interrupt", so every check reading screens took it for
+// busy for 18 hours (freshness refused 54 rollovers) and nobody was told. dori watch now also reads the process of each
+// open lane's agent and of the lead's:
+// - LANE_SUSPENDED <key> <pane>: agent <pid> stopped|background, once seen so on two checks CONFIRM_MS apart; a pane a
+//   handover froze on purpose (a frozen record, or a handover of that lane or of the lead running) is left alone;
+// - it is brought back at once (job-control.ts resumeAgent: continued, or fg typed into its shell), and the lead gets one
+//   line saying whether that worked (LANE_SUSPENDED_TOLD / _NOT_TOLD, no retry). A mark per pane keeps it from being told
+//   twice for one agent; it goes once that agent runs again (LANE_RUNNING_AGAIN), so a second stop is told again.
+export type SuspendIO = {
+  readonly agentOf: (pane: string) => Promise<number | undefined>;
+  readonly stat: StatOf;
+  readonly resume: (pane: string, pid: number) => Promise<string>;
+};
+
+type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold; readonly resumed: boolean; readonly told: boolean };
+
+const kill = (pid: number, sig: "SIGSTOP" | "SIGCONT"): boolean => {
+  try {
+    process.kill(pid, sig);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const suspendIO = (deps: FlowDeps): SuspendIO => ({
+  agentOf: async (pane) => (isHerdrPane(pane) ? herdrAgentPid(deps.run, pane) : topAgent(await procTable(deps.run), await tmuxPanePid(deps.run, pane))?.pid),
+  stat: readStat,
+  resume: (pane, pid) => resumeAgent({ run: deps.run, clock: deps.clock, signal: jobSignal(kill) }, pane, pid),
+});
+
+export const laneSuspendedText = (who: string, hold: Hold, outcome: string): string => `[DORI] ${who} 멈춤(${hold === "stopped" ? "프로세스 정지" : "셸 뒤 작업으로 밀림"}) — ${outcome}`;
+
+const markFile = (stateDir: string, pane: string): string => join(stateDir, "suspended", `${pane.replace(/[^\w.-]/g, "_")}.json`);
+const readMark = (file: string): SuspendMark | undefined => {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as SuspendMark;
+  } catch {
+    return undefined;
+  }
+};
+
+// first check that found each pane's agent held, for the second one (in memory, like notLive)
+const seenHeld = new Map<string, number>();
+
+export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(deps), alive: (pid: number) => boolean = pidAlive): Promise<string[]> => {
+  const out: string[] = [];
+  const now = deps.clock.now();
+  const { stateDir, leadPane: lead, ignorePanes } = deps.config;
+  const frozen = new Set(frozenPanes(stateDir));
+  const lanes = (await deps.registry.open()).filter((l) => l.pane && l.pane !== lead && !ignorePanes.includes(l.pane) && statusOf(l) !== "paused");
+  const targets = [...lanes.map((l) => ({ who: "lane" as const, key: l.key, pane: l.pane as string })), ...(lead ? [{ who: "lead" as const, key: "lead", pane: lead }] : [])];
+  for (const t of targets) {
+    const file = markFile(stateDir, t.pane);
+    if (frozen.has(t.pane) || handoverRunning(stateDir, t.who, t.key, alive)) {
+      seenHeld.delete(t.pane);
+      continue;
+    }
+    const pid = await io.agentOf(t.pane).catch(() => undefined);
+    const hold = pid ? holdOf(io.stat, pid) : undefined;
+    if (!pid || !hold) {
+      seenHeld.delete(t.pane);
+      if (existsSync(file)) {
+        rmSync(file, { force: true });
+        out.push(`LANE_RUNNING_AGAIN ${t.key} ${t.pane}`);
+      }
+      continue;
+    }
+    if (readMark(file)?.pid === pid) continue;
+    const first = seenHeld.get(t.pane);
+    if (first === undefined) {
+      seenHeld.set(t.pane, now);
+      continue;
+    }
+    if (now - first < CONFIRM_MS) continue;
+    seenHeld.delete(t.pane);
+    const s = io.stat(pid);
+    out.push(`LANE_SUSPENDED ${t.key} ${t.pane}: agent ${pid} ${hold} (state ${s?.state ?? "?"}, tty foreground group ${s?.tpgid ?? "?"}, its group ${s?.pgrp ?? "?"}); its screen is stale, resuming it`);
+    const back = await io.resume(t.pane, pid);
+    out.push(back);
+    const resumed = back.startsWith("AGENT_RESUMED");
+    const outcome = resumed ? "스스로 되살렸어, 하던 일을 잇는지 봐" : `되살리지 못했어(${back.replace(/^AGENT_RESUME_FAIL \S+ /, "").slice(0, 160)}) — dori revive ${t.pane}로 다시 해 봐`;
+    const text = laneSuspendedText(t.who === "lead" ? "리드 omo" : `레인 ${t.key}`, hold, outcome);
+    const sent: Submitted = lead ? await submitToPane(deps.run, deps.clock, deps.config, lead, text) : { status: "NOT_SUBMITTED", reason: "no leadPane" };
+    const told = sent.status === "SUBMITTED";
+    out.push(told ? `LANE_SUSPENDED_TOLD ${t.key} ${lead}` : `LANE_SUSPENDED_NOT_TOLD ${t.key}: ${sent.reason}`);
+    mkdirSync(join(stateDir, "suspended"), { recursive: true });
+    writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold, resumed, told } satisfies SuspendMark));
+  }
+  return out;
+};
 
 export const laneDeathTick = async (deps: FlowDeps): Promise<string[]> => {
   const out: string[] = [];

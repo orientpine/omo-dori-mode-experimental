@@ -1417,6 +1417,52 @@ test("an automatic start whose lane stays busy for the whole wait is refused as 
   expect(existsSync(join(state.dir, "handover", "lanes", "demo.lock"))).toBe(false);
 });
 
+test("an automatic start does not take a stopped agent's stale busy screen for a turn: it resumes the agent and moves it; one that stays stopped is refused as suspended at once", async () => {
+  // Given: the lane's agent 11 is stopped (T) behind the last screen it drew, a running turn (handover-simplify, 2026-11-03)
+  const base = await setup();
+  const c = fakeClock(Date.parse("2026-10-11T16:35:00Z"));
+  let sleeps = 0;
+  let agent = { pid: 11, state: "T", ppid: 10, pgrp: 11, session: 10, tpgid: 11 };
+  let resumes = true;
+  const order: string[] = [];
+  const deps: LaneHandoverDeps = {
+    ...base,
+    clock: { now: () => c.at, sleep: async (ms: number) => { c.at += ms; sleeps++; } },
+    config: { ...base.config, handover: { ...base.config.handover, autoRolloverLanes: true } },
+    reportOwner: async () => "msg-1",
+    stat: (pid) => (pid === 11 ? agent : undefined),
+    signal: (pid, sig) => {
+      order.push(`${sig} ${pid}`);
+      if (pid === -11 && sig === "SIGCONT" && resumes) {
+        agent = { ...agent, state: "S" };
+        w.screens[OLD] = HIGH;
+      }
+      return true;
+    },
+  };
+  table = aoeTable().filter((p) => p.pid !== 15 && p.pid !== 16);
+  w.screens[OLD] = BUSY;
+  // When
+  const r = await laneHandover(deps, "demo", "aoe_lead_x", autoRun(deps, { waitIdleMin: 20 }));
+  // Then: brought back and moved at once, never waited on as busy
+  expect(printed).toContain("LANE_SUSPENDED demo aoe_demo_1a1a1a1a: agent 11 is stopped, so its screen is stale; resuming it");
+  expect(printed).toContain("AGENT_RESUMED aoe_demo_1a1a1a1a agent 11: its process group continued");
+  expect(printed.some((l) => l.startsWith("HANDOVER_WAIT_IDLE"))).toBe(false);
+  expect(order[0]).toBe("SIGCONT -11");
+  expect(r.code).toBe(0);
+  // and one that a resume does not bring back is refused as suspended, without the wait
+  agent = { ...agent, state: "T" };
+  resumes = false;
+  sleeps = 0;
+  w.screens[OLD] = BUSY;
+  const stuck = await laneHandover(deps, "demo", "aoe_lead_x", autoRun(deps, { waitIdleMin: 20 }));
+  expect(stuck.code).toBe(2);
+  expect(sleeps).toBe(0);
+  const last = readRollovers(state.dir).flatMap((e) => (e.kind === "rollover" ? [e] : [])).at(-1);
+  expect([last?.result, last?.blocked]).toEqual(["refused", "suspended"]);
+  expect(last?.reasons[0]).toContain("its screen is stale, so it is judged neither busy nor idle");
+});
+
 // omo's input box sits between two ─ borders; the status lines under it can quote "esc to interrupt" (here the cwd and a
 // session title), while omo's own running-turn mark is on the box's top border
 const QUOTED = HIGH.replace("old transcript line\n❯ \n────", "old transcript line\n────\n❯ \n────").replace("~/work •", "~/work/esc to interrupt •").replace("(OmO) mem:x", "(OmO) Fix esc to interrupt indicator");

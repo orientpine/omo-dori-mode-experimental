@@ -19,6 +19,7 @@ import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
 import { endOldMonitors } from "./handover-monitors.ts";
 import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
 import { awaitPrompt } from "./launch.ts";
+import { holdOf, readStat, resumeAgent, type StatOf } from "./job-control.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { herdrResult, isHerdrPane } from "./herdr.ts";
 import { omoSession, sendVerified } from "./panes.ts";
@@ -33,6 +34,8 @@ import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quot
 import { watchLog } from "./watch-log.ts";
 
 export type LaneHandoverDeps = FlowDeps & {
+  // a process's /proc stat (job-control.ts readStat when not given)
+  readonly stat?: StatOf;
   readonly cardDir: string;
   readonly home: string;
   // the omo session id of the agent running in a pane ("" when it cannot be told)
@@ -555,6 +558,15 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const shell = await tmuxPanePid(deps.run, lane.pane);
   const { agent, chains, tree } = localChains(table, shell, monitorPids);
   if (!agent) return refuse(`no omo agent process under pane ${lane.pane} (shell pid ${shell || "?"})`);
+  // a stopped agent's screen is stale (its last "esc to interrupt" stays drawn: handover-simplify was refused as busy 54
+  // times on 2026-11-03/04): it is brought back first, and its screen is judged only once it runs
+  const held = holdOf(deps.stat ?? readStat, agent.pid);
+  if (held) {
+    emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, so its screen is stale; resuming it`);
+    const back = await resumeAgent(deps, lane.pane, agent.pid);
+    emit(back);
+    if (holdOf(deps.stat ?? readStat, agent.pid) && !opts.force) return refuse(`the agent ${agent.pid} in ${lane.pane} stays stopped (${back}); its screen is stale, so it is judged neither busy nor idle`, { blocked: "suspended" });
+  }
   const jobs = monitorWork(entries, table, now, deps.alive, deps.home);
   const marked = detachedJobs(table, tree, session, old.id, deps.envOf);
   // a pid in the pane's own tree is no detached job, even when an earlier note listed it (as a chain, before the session's
@@ -656,7 +668,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
       emit(frozen ? `HANDOVER_FROZEN ${key} agent ${agent.pid} in ${lane.pane} at its idle moment (${Math.round((deps.clock.now() - opts.idle.since) / 1000)} s after the automatic start)` : `HANDOVER_FREEZE_FAIL ${key} agent ${agent.pid}: it stays told and quiet only`);
       const after = await captureTmux(deps.run, lane.pane);
       if (turnRunning(after) || QUESTION_MARK.test(after)) {
-        if (frozen) emit(deps.signal(agent.pid, "SIGCONT") ? `HANDOVER_THAWED ${key} agent ${agent.pid}: a turn started as it was frozen` : `HANDOVER_THAW_FAIL ${key} agent ${agent.pid}`);
+        if (frozen) for (const line of await thawAgent(deps, key, lane.pane, agent.pid, ": a turn started as it was frozen")) emit(line);
         if (!opts.idle.final) return { code: 2, retry: true };
         return refuse(`the lane stayed busy for ${opts.idle.waitedMin} min: a turn started as it was frozen`, { blocked: "busy" });
       }
@@ -838,6 +850,14 @@ type MoveContext = { readonly note: string; readonly at: string; readonly title:
 
 const tell = (deps: LaneHandoverDeps, pane: string, text: string) => sendVerified(deps.run, deps.clock, deps.config, pane, text).catch(() => false);
 
+// A thawed agent goes on where it was: resumed, then checked to be its tty's running foreground job again, and brought back
+// to it when not (job-control.ts resumeAgent); the repair or its failure is a line of its own.
+const thawAgent = async (deps: LaneHandoverDeps, key: string, pane: string, pid: number, why = ""): Promise<string[]> => {
+  if (!deps.signal(pid, "SIGCONT")) return [`HANDOVER_THAW_FAIL ${key} agent ${pid}`];
+  const fg = await resumeAgent(deps, pane, pid);
+  return [`HANDOVER_THAWED ${key} agent ${pid}${why}`, ...(fg.startsWith("AGENT_RESUME") ? [fg] : [])];
+};
+
 export const LATE_LEAD_HEADING = "The lead's instructions that reached the old session after this note was written";
 
 // The lead's instructions that came after the note was written: [LEAD] lines the old session logged since then and what
@@ -882,7 +902,7 @@ export const recover = async (deps: LaneHandoverDeps, p: Pending, emit: (line: s
   const oldAlive = await agentAlive(deps.run, sessions, p.from);
   const newAlive = await agentAlive(deps.run, sessions, p.to);
   if (oldAlive) {
-    if (p.agentPid) deps.signal(p.agentPid, "SIGCONT");
+    if (p.agentPid) for (const line of await thawAgent(deps, p.key, p.from, p.agentPid)) emit(line);
     await pointLane(deps, p.key, p.to, p.from, `pane back to ${p.from}: interrupted handover repaired`, emit);
     const closed = newAlive ? await closeAoeSession(deps.run, p.to) : `${p.to} already gone`;
     await tell(deps, p.from, `[LEAD] The handover of ${p.key} was stopped before it finished. You stay the ${p.key} lane: carry on where you were.`);
@@ -912,7 +932,7 @@ const moveLane = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, facts
     ctx.mark("open", true);
   } catch (e) {
     ctx.mark("open", false);
-    if (ctx.frozen && facts.agentPid) emit(deps.signal(facts.agentPid, "SIGCONT") ? `HANDOVER_THAWED ${lane.key} agent ${facts.agentPid}` : `HANDOVER_THAW_FAIL ${lane.key} agent ${facts.agentPid}`);
+    if (ctx.frozen && facts.agentPid) for (const line of await thawAgent(deps, lane.key, from.pane, facts.agentPid)) emit(line);
     emit(`HANDOVER_FAIL ${lane.key}: could not open the new session: ${e instanceof Error ? e.message : String(e)}; nothing moved, ${from.pane} stays the lane`);
     return { code: 3, note };
   }
@@ -942,12 +962,12 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   const record = (result: string, reasons: readonly string[]) =>
     writeFileSync(note.replace(/\.md$/, ".result.json"), JSON.stringify({ at: iso(deps.clock), key: lane.key, from, to: pane, note, approvedBy: facts.approvedBy, signals: facts.signals, result, reasons, ...(Object.keys(ctx.sizes).length ? { sizes: ctx.sizes } : {}) }, null, 1));
   let frozen = ctx.frozen;
-  const thaw = (): void => {
-    if (frozen && facts.agentPid) emit(deps.signal(facts.agentPid, "SIGCONT") ? `HANDOVER_THAWED ${lane.key} agent ${facts.agentPid}` : `HANDOVER_THAW_FAIL ${lane.key} agent ${facts.agentPid}`);
+  const thaw = async (): Promise<void> => {
+    if (frozen && facts.agentPid) for (const line of await thawAgent(deps, lane.key, from.pane, facts.agentPid)) emit(line);
     frozen = false;
   };
   const discard = async (why: string): Promise<LaneHandoverResult> => {
-    thaw();
+    await thaw();
     const closed = await closeAoeSession(deps.run, pane);
     await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} failed (${why}). You stay the ${lane.key} lane: carry on where you were.`);
     emit(`HANDOVER_ROLLED_BACK ${lane.key}: ${from.pane} stays the lane; new session ${pane}: ${closed}`);
@@ -1012,7 +1032,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   await keepSessions(deps, lane.key, facts.from.session, checked.session);
   rmSync(readyFile(config.stateDir, lane.key), { force: true });
   if (opts.keepOld) {
-    thaw();
+    await thaw();
     await tell(deps, from.pane, `[LEAD] Handover of ${lane.key} to ${pane} is done and checked. You are no longer the lane; stay idle until the lead closes you.`);
     await tell(deps, pane, `[LEAD] ${COMMITTED}: the handover is checked and the old session ${from.pane} stays open but idle; you are the ${lane.key} lane now. ${config.launchKeywords}: go on with step 5 of the note.`);
     if (facts.chains.length) await tell(deps, pane, `[LEAD] HANDOVER_CHAINS_KEPT: the old session ${from.pane} stays open, so its local chains (${facts.chains.map((c) => c.pid).join(", ")}) still run. Do not start them again.`);
@@ -1030,7 +1050,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
     for (const line of await endOldMonitors(deps, facts, [...kept, ...facts.chains].map((c) => c.pid))) emit(line);
     const ice = await freezePane(deps, from.pane, process.pid, [...kept, ...facts.chains].map((c) => c.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
     mark("freeze", !!ice.agentPid);
-    if (!ice.agentPid) thaw();
+    if (!ice.agentPid) await thaw();
     const pids = kept.flatMap((c) => c.pids ?? [c.pid]);
     writeFrozen(config.stateDir, { pane: from.pane, aoeId: from.aoeId, at: iso(deps.clock), agentPid: ice.agentPid ?? 0, pids: ice.pids, keepFor: pids, to: pane, ...(from.session ? { session: from.session } : {}), ...(facts.oldLog ? { oldLog: facts.oldLog } : {}) });
     const list = kept.map((c) => `${c.cmd.slice(0, 60)}: ${(c.pids ?? [c.pid]).join(",")}`).join("; ");
@@ -1050,7 +1070,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   emit(`HANDOVER_DONE ${lane.key} ${from.pane} -> ${pane}; closing ${from.pane}`);
   record("done", []);
   // resumed only to be closed: a stopped process does not act on the hangup
-  thaw();
+  await thaw();
   const closed = await closeAoeSession(deps.run, from.pane);
   const ok = isClosedLine(closed);
   mark("close", ok);
