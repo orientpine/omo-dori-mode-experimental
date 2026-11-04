@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { currentTmuxSession, paneActivity, paneLife } from "./aoe.ts";
 import { herdrAgentPid, isHerdrPane } from "./herdr.ts";
-import { jobSignal, readStat, resumeAgent, reviveLive } from "./job-control.ts";
+import { jobSignal, readStat, resumeAfterThaw, reviveLive } from "./job-control.ts";
 import { reviveHerdr } from "./herdr-sessions.ts";
 import { fileLog, installTaskRefusal, serve, serveLoops, spawnLoop, TASK_NAME, taskArgv } from "./serve.ts";
 import { winSignal } from "./win-suspend.ts";
@@ -2140,7 +2140,7 @@ try {
         const agent = readFrozen(config.stateDir).find((r) => r.pane === pane)?.agentPid;
         const thawed = thawFrozen(freezeDeps, config.stateDir, pane);
         // checked once resumed: the agent is again its tty's running foreground job, or is brought back to it
-        const fg = agent && !thawed.startsWith("FROZEN_NONE") ? await resumeAgent({ run, clock: realClock, signal: sendSignal }, pane, agent) : "";
+        const fg = agent && !thawed.startsWith("FROZEN_NONE") ? await resumeAfterThaw({ run, clock: realClock, signal: sendSignal }, pane, agent) : "";
         const line = fg ? `${thawed}; ${fg}` : thawed;
         watchLog(config.watchLog, realClock, { source: "handover", line });
         console.log(line);

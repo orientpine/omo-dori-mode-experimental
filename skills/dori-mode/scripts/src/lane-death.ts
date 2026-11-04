@@ -91,14 +91,34 @@ const readMark = (file: string): SuspendMark | undefined => {
 };
 
 // A line the submit check refused before typing anything (the lead pane gone, dead, stopped, a question open, no prompt)
-// never reached the lead: it is kept and sent again on a later tick. One typed but not seen taken may still arrive, so it
-// is not sent again (LANE_DIED's rule).
+// never reached the lead: it waits and is sent on a later tick. One typed but not seen taken may still arrive, so it is
+// not sent again (LANE_DIED's rule).
 const notTyped = (reason: string): boolean => /nothing was typed|so it was not typed|^no ❯ prompt in the pane/.test(reason);
-// one record per incident, written before its line is sent (state sending) and kept only after a refusal before typing
-// (state kept). A sending record a stopped watch left behind may have reached the lead: it is dropped, never sent again.
-// pid: the agent a line with fg advice is about; once it is no longer held, that advice would go to a running omo
-type Notice = { readonly key: string; readonly text: string; readonly at: string; readonly state: "sending" | "kept"; readonly pid?: number };
-const noticeDir = (stateDir: string): string => join(stateDir, "suspended", "notices");
+// One line per incident waits in its pane's pending file until the lead takes it, and is sent only from that pane's check
+// below: after the pane passed the frozen and handover exclusions, while it still runs the agent the line is about, and a
+// line with fg advice only while that agent is still held. A pane frozen, excluded or unreadable keeps its lines unsent; a
+// pane no longer watched, or running another agent, drops them. Each line is marked sending before it goes, so a watch
+// that stops mid-send does not send it twice (it may have arrived).
+type Pending = { readonly key: string; readonly pane?: string; readonly pid: number; readonly kind: Hold | "recovered"; readonly text: string; readonly at: string; readonly state: "sending" | "kept" };
+const pendingDir = (stateDir: string): string => join(stateDir, "suspended", "pending");
+const paneName = (pane: string): string => pane.replace(/[^\w.-]/g, "_");
+const readPending = (file: string): Pending[] => {
+  try {
+    const v = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    return Array.isArray(v) ? (v as Pending[]) : [];
+  } catch {
+    return [];
+  }
+};
+const writePending = (file: string, list: readonly Pending[]): void => {
+  if (!list.length) {
+    rmSync(file, { force: true });
+    return;
+  }
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, JSON.stringify(list));
+};
+const mayHaveArrived = (p: Pending): string => `LANE_SUSPENDED_NOT_TOLD ${p.key}: a watch stopped while sending the line of ${p.at}; it may have arrived, so it is not sent again`;
 
 // first check that found each pane's agent held, for the second one (in memory, like notLive)
 const seenHeld = new Map<string, number>();
@@ -111,12 +131,32 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
   const lanes = (await deps.registry.open()).filter((l) => l.pane && l.pane !== lead && !ignorePanes.includes(l.pane) && statusOf(l) !== "paused");
   // the lead first: a lane's line can reach it only once it runs again
   const targets = [...(lead ? [{ who: "lead" as const, key: "lead", pane: lead }] : []), ...lanes.map((l) => ({ who: "lane" as const, key: l.key, pane: l.pane as string }))];
-  // the records of this tick are tried again from the next one
-  const kept = new Set<string>();
-  const settle = (name: string, rec: Notice, sent: Submitted): void => {
-    const f = join(noticeDir(stateDir), name);
-    if (sent.status !== "SUBMITTED" && notTyped(sent.reason)) writeFileSync(f, JSON.stringify({ ...rec, state: "kept" } satisfies Notice));
-    else rmSync(f, { force: true });
+  const pendingFile = (pane: string): string => join(pendingDir(stateDir), `${paneName(pane)}.json`);
+  // one line goes: written as sending first, then kept only after a refusal before typing
+  const send = async (t: (typeof targets)[number], file: string, p: Pending, fresh: boolean): Promise<void> => {
+    writePending(file, [...readPending(file).filter((q) => q.at !== p.at || q.pid !== p.pid), { ...p, state: "sending" }]);
+    const sent: Submitted = await submitToPane(deps.run, deps.clock, deps.config, lead as string, p.text);
+    const rest = readPending(file).filter((q) => q.at !== p.at || q.pid !== p.pid);
+    const keep = sent.status !== "SUBMITTED" && notTyped(sent.reason);
+    writePending(file, keep ? [...rest, { ...p, state: "kept" }] : rest);
+    const of = fresh ? "" : ` (line of ${p.at})`;
+    if (sent.status === "SUBMITTED") out.push(`LANE_SUSPENDED_TOLD ${p.key} ${lead}${of}`);
+    else if (fresh || !keep) out.push(`LANE_SUSPENDED_NOT_TOLD ${p.key}: ${sent.reason}${of}`);
+  };
+  // the waiting lines of a pane that passed the exclusions and reads as running agent pid
+  const sendPending = async (t: (typeof targets)[number], pid: number, hold: Hold | undefined): Promise<void> => {
+    if (!lead) return;
+    const file = pendingFile(t.pane);
+    for (const p of readPending(file)) {
+      const drop = (line: string): void => {
+        writePending(file, readPending(file).filter((q) => q.at !== p.at || q.pid !== p.pid));
+        out.push(line);
+      };
+      if (p.state === "sending") drop(mayHaveArrived(p));
+      else if (p.pid !== pid) drop(`LANE_SUSPENDED_NOT_TOLD ${p.key}: ${t.pane} now runs agent ${pid}, so the line about agent ${p.pid} (line of ${p.at}) is not sent`);
+      else if (p.kind !== "recovered" && !hold) drop(`LANE_SUSPENDED_NOT_TOLD ${p.key}: agent ${p.pid} runs again, so its fg advice (line of ${p.at}) is not sent`);
+      else await send(t, file, p, false);
+    }
   };
   for (const t of targets) {
     const file = markFile(stateDir, t.pane);
@@ -131,6 +171,7 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       continue;
     }
     const hold = holdOf(io.stat, pid);
+    await sendPending(t, pid, hold);
     const marked = readMark(file);
     if (!hold) {
       seenHeld.delete(t.pane);
@@ -175,47 +216,20 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       mkdirSync(join(stateDir, "suspended"), { recursive: true });
       writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold } satisfies SuspendMark));
     }
-    const name = `${t.pane.replace(/[^\w.-]/g, "_")}-${pid}-${now}.json`;
-    const rec: Notice = { key: t.key, text, at: new Date(now).toISOString(), state: "sending", ...(resumed ? {} : { pid }) };
-    if (lead) {
-      mkdirSync(noticeDir(stateDir), { recursive: true });
-      writeFileSync(join(noticeDir(stateDir), name), JSON.stringify(rec));
+    if (!lead) {
+      out.push(`LANE_SUSPENDED_NOT_TOLD ${t.key}: no leadPane`);
+      continue;
     }
-    const sent: Submitted = lead ? await submitToPane(deps.run, deps.clock, deps.config, lead, text) : { status: "NOT_SUBMITTED", reason: "no leadPane" };
-    const told = sent.status === "SUBMITTED";
-    out.push(told ? `LANE_SUSPENDED_TOLD ${t.key} ${lead}` : `LANE_SUSPENDED_NOT_TOLD ${t.key}: ${sent.reason}`);
-    if (lead) settle(name, rec, sent);
-    kept.add(name);
+    await send(t, pendingFile(t.pane), { key: t.key, pane: t.pane, pid, kind: resumed ? "recovered" : hold, text, at: new Date(now).toISOString(), state: "sending" }, true);
   }
-  // kept lines go again (the agent is not touched again); one still refused before typing stays, any other outcome ends it
-  const dir = noticeDir(stateDir);
+  // lines of a pane no longer watched (the lane closed, paused or moved to another pane) are dropped, never sent
+  const watched = new Set(targets.map((t) => paneName(t.pane)));
+  const dir = pendingDir(stateDir);
   for (const name of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith(".json")).sort() : []) {
-    if (kept.has(name) || !lead) continue;
+    if (watched.has(name.slice(0, -5))) continue;
     const f = join(dir, name);
-    let notice: Notice;
-    try {
-      notice = JSON.parse(readFileSync(f, "utf8")) as Notice;
-    } catch {
-      rmSync(f, { force: true });
-      continue;
-    }
-    if (notice.state !== "kept") {
-      rmSync(f, { force: true });
-      out.push(`LANE_SUSPENDED_NOT_TOLD ${notice.key}: a watch stopped while sending the line of ${notice.at}; it may have arrived, so it is not sent again`);
-      continue;
-    }
-    // an agent that cannot be read is no news: its line waits (unsent) until the agent reads as held or running again
-    if (notice.pid !== undefined && !io.stat(notice.pid)) continue;
-    if (notice.pid !== undefined && !holdOf(io.stat, notice.pid)) {
-      rmSync(f, { force: true });
-      out.push(`LANE_SUSPENDED_NOT_TOLD ${notice.key}: agent ${notice.pid} runs again, so its fg advice (line of ${notice.at}) is not sent`);
-      continue;
-    }
-    writeFileSync(f, JSON.stringify({ ...notice, state: "sending" } satisfies Notice));
-    const again = await submitToPane(deps.run, deps.clock, deps.config, lead, notice.text);
-    settle(name, notice, again);
-    if (again.status !== "SUBMITTED" && notTyped(again.reason)) continue;
-    out.push(again.status === "SUBMITTED" ? `LANE_SUSPENDED_TOLD ${notice.key} ${lead} (line of ${notice.at})` : `LANE_SUSPENDED_NOT_TOLD ${notice.key}: ${again.reason} (line of ${notice.at})`);
+    for (const p of readPending(f)) out.push(p.state === "sending" ? mayHaveArrived(p) : `LANE_SUSPENDED_NOT_TOLD ${p.key}: ${p.pane ?? name.slice(0, -5)} is no longer watched, so the line about agent ${p.pid} (line of ${p.at}) is not sent`);
+    rmSync(f, { force: true });
   }
   return out;
 };

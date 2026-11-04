@@ -161,3 +161,7 @@ export const reviveLive = async (io: ResumeIO, pane: string, pid: number): Promi
   if (line.startsWith("AGENT_RUNNING")) return `REVIVE_ALREADY_RUNNING ${pane}`;
   return line.replace(/^AGENT_RESUMED /, "REVIVE_RESUMED ").replace(/^AGENT_RESUME_FAIL /, "REVIVE_FAIL ");
 };
+
+// the check after a thaw (dori handover thaw): nothing to say where the agent cannot be read (no /proc: macOS, native
+// Windows), where the thaw line alone is the outcome
+export const resumeAfterThaw = async (io: ResumeIO, pane: string, pid: number): Promise<string> => ((io.stat ?? readStat)(pid) ? resumeAgent(io, pane, pid) : "");

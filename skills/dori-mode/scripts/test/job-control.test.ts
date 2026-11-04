@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "bun:test";
 
 
-import { holdOf, type JobStat, jobSignal, type ResumeIO, resumeAgent, reviveLive } from "../src/job-control.ts";
+import { holdOf, type JobStat, jobSignal, type ResumeIO, resumeAfterThaw, resumeAgent, reviveLive } from "../src/job-control.ts";
 
 // A herdr pane as measured on 2026-11-04 (pane w2:p2): its interactive bash 100 leads session 100 on the tty, and omo 200
 // is that shell's foreground job (its own process group 200), with a child 201 in the same group.
@@ -195,4 +195,12 @@ test("revive of a live agent where its process cannot be read (no /proc: macOS, 
   expect(await reviveLive({ ...r, stat: () => undefined }, "w2:p2", 200)).toBe("REVIVE_ALREADY_RUNNING w2:p2");
   expect(calls).toEqual([]);
   expect(k.sent).toEqual([]);
+});
+
+test("the resume check after a thaw says nothing where the agent cannot be read (no /proc), and runs it where it can", async () => {
+  const rows = pane();
+  const k = kernel(rows);
+  const { r } = io(rows, k, { cooked: false });
+  expect(await resumeAfterThaw({ ...r, stat: () => undefined }, "w2:p2", 200)).toBe("");
+  expect(await resumeAfterThaw(r, "w2:p2", 200)).toBe("AGENT_RUNNING w2:p2 agent 200");
 });

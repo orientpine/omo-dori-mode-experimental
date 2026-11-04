@@ -242,7 +242,8 @@ test("two suspensions of one pane while the lead is away are two lines, each sen
   await tick(T0 + 90 * S);
   expect(resumes).toBe(2);
   // a record a watch left in the middle of a send
-  writeFileSync(join(state.dir, "suspended", "notices", "aoe_x-1-1.json"), JSON.stringify({ key: "x", text: "[DORI] x", at: "2026-10-30T00:00:00.000Z", state: "sending" }));
+  mkdirSync(join(state.dir, "suspended", "pending"), { recursive: true });
+  writeFileSync(join(state.dir, "suspended", "pending", "aoe_x.json"), JSON.stringify([{ key: "x", pid: 1, kind: "recovered", text: "[DORI] x", at: "2026-10-30T00:00:00.000Z", state: "sending" }]));
   // When: the lead pane is back
   w.herdrGone = [];
   const out = await tick(T0 + 120 * S);
@@ -383,4 +384,38 @@ test("a kept fg advice whose agent cannot be read is kept, not dropped: once the
   // Then: the kept line goes once
   expect(out.filter((l) => l.startsWith("LANE_SUSPENDED_TOLD bg"))).toHaveLength(1);
   expect(sent(w)).toHaveLength(1);
+});
+
+test("a pending line follows its pane: kept unsent while a handover freezes the pane, dropped once the lane runs in another pane or the pane runs another agent", async () => {
+  // Given: two lanes left background jobs while herdr has no lead pane, so both lines are pending
+  const { w, deps } = world({});
+  await deps(T0).registry.write(laneOf("moved", "w5:p7"));
+  await deps(T0).registry.write(laneOf("reowned", "w5:p8"));
+  w.herdrGone = ["lead:p1"];
+  const agents: Record<string, number> = { "w5:p7": 200, "w5:p8": 210 };
+  const states: Record<number, "S" | "T" | "bg"> = { 200: "bg", 210: "bg", 211: "bg" };
+  const io: SuspendIO = {
+    agentOf: async (pane) => agents[pane],
+    stat: (pid) => held(states)(pid) ?? shellOf(pid),
+    resume: async (pane, pid) => `AGENT_RESUME_FAIL ${pane} agent ${pid}: its shell holds the tty and it is a background job; type fg in ${pane}`,
+  };
+  const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
+  await tick(T0);
+  expect((await tick(T0 + 30 * S)).filter((l) => l.startsWith("LANE_SUSPENDED_NOT_TOLD"))).toHaveLength(2);
+  // When: a handover freezes w5:p7 on purpose, w5:p8 now runs another agent (211, also held), and the lead is back
+  writeFrozen(state.dir, { pane: "w5:p7", aoeId: "x", at: new Date(T0 + 40 * S).toISOString(), agentPid: 200, pids: [200], to: "w5:p9" });
+  agents["w5:p8"] = 211;
+  w.herdrGone = [];
+  const out = await tick(T0 + 60 * S);
+  // Then: the frozen pane's line waits unsent, and the re-owned pane's old line is dropped, not sent
+  expect(out).toContain("LANE_SUSPENDED_NOT_TOLD reowned: w5:p8 now runs agent 211, so the line about agent 210 (line of " + new Date(T0 + 30 * S).toISOString() + ") is not sent");
+  expect(sent(w).filter((t) => t.includes("moved") || t.includes("reowned"))).toEqual([]);
+  // When: the handover commits and the lane runs in w5:p9 (a new agent, running)
+  await deps(T0).registry.write(laneOf("moved", "w5:p9"));
+  agents["w5:p9"] = 220;
+  states[220] = "S";
+  const after = await tick(T0 + 90 * S);
+  // Then: the line about the old pane is dropped, not sent
+  expect(after).toContain("LANE_SUSPENDED_NOT_TOLD moved: w5:p7 is no longer watched, so the line about agent 200 (line of " + new Date(T0 + 30 * S).toISOString() + ") is not sent");
+  expect(sent(w).filter((t) => t.includes("레인 moved"))).toEqual([]);
 });
