@@ -618,6 +618,14 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     const stop = await handOver(deps, key, holder, opts, at, emit);
     return { via: stop ?? (await attempt(deps, key, here, { ...opts, ...(opts.boundPane ?? fromPane ? { boundPane: opts.boundPane ?? fromPane } : {}) }, granted)) };
   };
+  // a resumed run's request, read under the lane's lock: no longer the lane's waiting one in that pane, it moves nothing
+  const requestGone = (pane: string): LaneHandoverResult | undefined => {
+    if (!opts.serves) return undefined;
+    const waiting = waitingRequest(readRollovers(config.stateDir), key, pane);
+    if (pane === opts.serves.pane && waiting?.at === opts.serves.at) return undefined;
+    emit(`HANDOVER_REQUEST_GONE ${key}: the request of ${opts.serves.at} in ${opts.serves.pane} is no longer the lane's waiting one (the lane is in ${pane}${waiting ? `, waiting request ${waiting.at}` : ", no request waits"}); nothing is moved`);
+    return { code: pane !== opts.serves.pane ? 0 : 2, ...(pane !== opts.serves.pane ? { to: pane } : {}) };
+  };
   const refuse = async (why: string, held?: { readonly blocked: Blocked; readonly pids?: readonly number[]; readonly tasks?: readonly string[]; readonly safePoint?: { readonly why: string; readonly told: boolean } }): Promise<LaneHandoverResult> => {
     const gate = await forRow();
     if ("via" in gate) return gate.via;
@@ -646,6 +654,13 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   if (statusOf(lane) === "closed") return refuse("the lane is closed");
   if (!lane.pane) return refuse("the lane has no pane");
   fromPane = lane.pane;
+  // a run freshness started again for a request the lead has since replaced (or a move finished) leaves here, before any
+  // refusal of its own: a row it logged would hide the newer waiting request (review 320 round 16). It holds the lane's
+  // lock; a move's journal names the pane the request was for, so a dead move is still repaired by this run
+  if (opts.idle && opts.serves) {
+    const gone = requestGone(readPending(config.stateDir, key)?.from ?? lane.pane);
+    if (gone) return gone;
+  }
   if (here === lane.pane) return refuse(`run it from the lead, not from the lane's own pane; the lane marks a safe point with dori handover ready ${key} and tells the lead`);
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
   const pending = readPending(config.stateDir, key);
@@ -709,10 +724,14 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   // run moves only for the request it was started for, while the lane is still in that request's pane; it leaves no row, so
   // the waiting request stays the last (review 320 round 14)
   if (opts.idle) {
+    const gone = opts.serves ? requestGone(lane.pane) : undefined;
+    if (gone) return gone;
+    // an automatic run gives way to a lead's waiting request; every refusal row is written under this lock, so none is
+    // published beside it (review 320 rounds 14-16)
     const waiting = waitingRequest(readRollovers(config.stateDir), key, lane.pane);
-    if (opts.serves && (lane.pane !== opts.serves.pane || waiting?.at !== opts.serves.at)) {
-      emit(`HANDOVER_REQUEST_GONE ${key}: the request of ${opts.serves.at} in ${opts.serves.pane} is no longer the lane's waiting one (the lane is in ${lane.pane}${waiting ? `, waiting request ${waiting.at}` : ", no request waits"}); nothing is moved`);
-      return { code: lane.pane !== opts.serves.pane ? 0 : 2, ...(lane.pane !== opts.serves.pane ? { to: lane.pane } : {}) };
+    if (!opts.serves && waiting && decidedBy(opts.approvedBy?.trim() ?? "") === "auto") {
+      emit(`HANDOVER_YIELDED ${key}: the lead's request of ${waiting.at} waits for this lane; the automatic run leaves the move to it`);
+      return { code: 2 };
     }
   }
   // a dry run needs no approval, but a given one is checked the same way, so it can be tried before the real run

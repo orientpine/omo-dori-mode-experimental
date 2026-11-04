@@ -457,7 +457,8 @@ const USAGE = `dori <command> [options]
                                        runs or watches a training or eval chain (handover.trainingTags, trainingWatch);
                                        --wait-idle MIN (freshness's automatic start): waits up to MIN minutes for a running
                                        turn to end and freezes the old agent at that idle moment, before the new session opens;
-                                       --request-at AT --request-pane PANE (freshness's start again of a
+                                       under the lane's lock an automatic run gives way to a lead's waiting request
+                                       (HANDOVER_YIELDED); --request-at AT --request-pane PANE (freshness's start again of a
                                        waiting request): moves only while that request still waits in PANE (HANDOVER_REQUEST_GONE);
                                        writes a note (brief, owner goal, Done, the owner's messages since the last handover, todos, goal,
                                        monitors, local chains, detached jobs, last reports, model and thinking), opens a

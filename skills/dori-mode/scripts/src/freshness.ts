@@ -316,7 +316,7 @@ const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pa
   // a started run that died before it wrote another row (no live run holds the lane, checked below) is started again once
   // its startup grace has passed, with no new event needed: the request stays decided (review 320, plan challenge 14:48Z)
   const abandoned = claim?.result === "started" && deps.clock.now() - Date.parse(claim.at ?? "") > STARTED_GRACE_MS;
-  if (claim?.request === asked.at && claim.result !== "waiting" && claim.result !== "stale-mark" && !abandoned) return [];
+  if (claim?.request === asked.at && claim.result !== "waiting" && claim.result !== "stale-mark" && claim.result !== "launch-failed" && !abandoned) return [];
   const alive = hooks.alive ?? pidAlive;
   if (handoverRunning(stateDir, "lane", key, alive)) return [];
   const now = deps.clock.now();
@@ -368,7 +368,8 @@ const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pa
   // the run checks under the lane's lock that this request still waits in this pane (review 320 round 14)
   const r = await hooks.resume(key, by, asked.request ?? {}, { at: asked.at, pane });
   // the claim is given back for the next sweep; a stale note already delivered stays delivered (review 320)
-  if (!r.started) writeFileSync(claimed, `${JSON.stringify({ request: "", since, approvedBy: by, result: "started", ...(readJson<{ toldAt?: string }>(claimed)?.toldAt ? { toldAt: readJson<{ toldAt?: string }>(claimed)?.toldAt } : {}) })}\n`);
+  // it keeps the request it was for, so the wait keeps its age and its told note (review 320 round 16)
+  if (!r.started) writeFileSync(claimed, `${JSON.stringify({ request: asked.at, since, approvedBy: by, result: "launch-failed", ...(readJson<{ toldAt?: string }>(claimed)?.toldAt ? { toldAt: readJson<{ toldAt?: string }>(claimed)?.toldAt } : {}) })}\n`);
   return log(r.started
     ? `HANDOVER_READY_RESUMED ${key} started: ${readied ? `the ready mark of ${mark?.at} in ${pane} follows the request of ${asked.at}` : `${cause}; the request of ${asked.at}`} (refused ${asked.blocked}); started again with the same approval ${JSON.stringify(by)}: ${r.line}`
     : `HANDOVER_READY_RESUME_FAILED ${key} failed: the request of ${asked.at} could not be started again (${r.line}); the next sweep tries again`);
@@ -474,7 +475,8 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       acts.push(...(await superviseLane(deps, seen)));
       const resumed = await readyResume(deps, hooks, lane.key, lane.pane);
       acts.push(...resumed);
-      if (resumed.some((a) => a.detail.startsWith("started"))) continue;
+      // a lead's request still waiting holds the lane too: no automatic start beside it (review 320 round 13)
+      if (resumed.some((a) => a.detail.startsWith("started")) || waitingRequest(readRollovers(deps.config.stateDir), lane.key, lane.pane)) continue;
       acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, lane.rolloverDue, stuckTop(lane), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
       continue;
     }
@@ -503,7 +505,8 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     const resumed = await readyResume(deps, hooks, lane.key, lane.pane);
     acts.push(...resumed);
     // the start just made holds the lane: no automatic start beside it in this sweep
-    if (!resumed.some((a) => a.detail.startsWith("started"))) acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue, stuckTop(current), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
+    // a lead's request still waiting holds the lane too: no automatic start beside it (review 320 round 13)
+    if (!resumed.some((a) => a.detail.startsWith("started")) && !waitingRequest(readRollovers(deps.config.stateDir), lane.key, lane.pane)) acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue, stuckTop(current), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
     const heard = lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);
     if (silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
