@@ -7,8 +7,8 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { currentTmuxSession, paneActivity, paneLife } from "./aoe.ts";
-import { herdrAgentPid, isHerdrPane } from "./herdr.ts";
-import { jobSignal, readStat, resumeAfterThaw, reviveLive } from "./job-control.ts";
+import { isHerdrPane } from "./herdr.ts";
+import { jobSignal, resumeAfterThaw } from "./job-control.ts";
 import { reviveHerdr } from "./herdr-sessions.ts";
 import { fileLog, installTaskRefusal, serve, serveLoops, spawnLoop, TASK_NAME, taskArgv } from "./serve.ts";
 import { winSignal } from "./win-suspend.ts";
@@ -95,7 +95,7 @@ const USAGE = `dori <command> [options]
                                        Task Scheduler to start at logon with no execution time limit
   revive <herdr pane> [--text TEXT]    start the omo session recorded for a herdr pane whose agent is gone again in that
                                        pane (omo --session-id), wait for its prompt and type TEXT; REVIVE_OK or REVIVE_FAIL;
-                                       a pane whose agent runs gets the no-typing resume check (REVIVE_RESUMED, REVIVE_ALREADY_RUNNING)
+                                       a pane whose agent runs is left alone (REVIVE_ALREADY_RUNNING)
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" --thread REF|new [--why-new "<reason>"] | --no-thread "<reason>" [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
          [--goal "owner words"] [--challenge-before STEP ...] [--use-gpu] [--ui] [--dry-run]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...]
@@ -1987,12 +1987,7 @@ try {
       if (!isHerdrPane(pane)) die("revive takes a herdr pane id (an aoe session restarts with self-restart.sh)");
       // dori never ends a live herdr agent: only a pane whose agent is gone is started again
       if ((await paneLife(run, pane)).live) {
-        // a live agent is brought back as far as it can be without typing (stopped, background, or a cooked tty), never started
-        // again; one a handover froze on purpose is left to dori handover thaw
-        const frozen = readFrozen(config.stateDir).some((r) => r.pane === pane);
-        const line = await reviveLive({ run, clock: realClock, signal: sendSignal }, pane, frozen ? undefined : await herdrAgentPid(run, pane), frozen);
-        console.log(line);
-        if (line.startsWith("REVIVE_FAIL")) process.exitCode = 1;
+        console.log(`REVIVE_ALREADY_RUNNING ${pane}`);
         break;
       }
       const line = await reviveHerdr(run, realClock, config, pane, opt("text") ?? "", (p, t) => sendVerified(run, realClock, config, p, t));

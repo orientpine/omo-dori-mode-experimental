@@ -171,20 +171,6 @@ export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Prom
   return done.length ? `AGENT_RESUMED ${pane} agent ${pid}: ${done.join(", ")}` : `AGENT_RUNNING ${pane} agent ${pid}`;
 };
 
-// dori revive on a pane whose agent lives: the same check with nothing typed, so one a hand-typed fg brought forward on a
-// tty bash left cooked gets raw mode back (REVIVE_RESUMED), a healthy one is left alone (REVIVE_ALREADY_RUNNING), and a
-// background one gets the fg advice (REVIVE_FAIL). A pane a handover froze on purpose (frozen: it has a frozen record) is
-// left as it is: resuming its agent alone would leave the record, its forwarding and its other stopped processes behind,
-// so it names dori handover thaw, which thaws the whole record (REVIVE_FAIL).
-export const reviveLive = async (io: ResumeIO, pane: string, pid: number | undefined, frozen = false): Promise<string> => {
-  if (frozen) return `REVIVE_FAIL ${pane}: a handover froze it on purpose (it has a frozen record), so it is not resumed here; dori handover thaw ${pane} thaws it with every process of its record`;
-  // no agent found, or one that cannot be read (no /proc: macOS, native Windows): the pane's liveness check is all there is
-  if (!pid || !(io.stat ?? readStat)(pid)) return `REVIVE_ALREADY_RUNNING ${pane}`;
-  const line = await resumeAgent(io, pane, pid);
-  if (line.startsWith("AGENT_RUNNING")) return `REVIVE_ALREADY_RUNNING ${pane}`;
-  return line.replace(/^AGENT_RESUMED /, "REVIVE_RESUMED ").replace(/^AGENT_RESUME_FAIL /, "REVIVE_FAIL ");
-};
-
 // the check after a thaw (dori handover thaw): nothing to say where the agent cannot be read (no /proc: macOS, native
 // Windows), where the thaw line alone is the outcome
 export const resumeAfterThaw = async (io: ResumeIO, pane: string, pid: number): Promise<string> => ((io.stat ?? readStat)(pid) ? resumeAgent(io, pane, pid) : "");
