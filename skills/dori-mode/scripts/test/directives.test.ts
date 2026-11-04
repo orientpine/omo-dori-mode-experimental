@@ -6,7 +6,7 @@ import { laneGapSplit, applyDirectives, auditOrReport, auditStampPath, checkMean
 import { loadConfig } from "../src/config.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { run as realRun } from "../src/run.ts";
-import { APPLIED_HEADING, appliesUnder, appliesWhy, briefGaps, checkedLedger, COMMON_LEDGER, DirectiveError, directiveLine, directiveText, hasDirective, ledgerProblems, loadLedger, messageLines, planDirectives, requireMissing, retiredError, scopeContext, textDirectives, trimProblem } from "../src/directives.ts";
+import { APPLIED_HEADING, appliesUnder, appliesWhy, briefGaps, checkedLedger, COMMON_LEDGER, DirectiveError, directiveLine, directiveText, hasDirective, ledgerProblems, loadLedger, messageLines, planDirectives, withDirectives, requireMissing, retiredError, scopeContext, textDirectives, trimProblem } from "../src/directives.ts";
 import type { Runner } from "../src/run.ts";
 import { DirectiveMissingError, eightSteps, launchLane, renderBrief, uiSteps } from "../src/launch.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -638,19 +638,46 @@ test("a briefOnly entry reaches a brief only when its scope hits, and the lead's
   expect(thread.find(({ e }) => e.id === "pair-route")?.why).toBe("all lanes");
 });
 
-// the owner's "없는 건 없애" never goes into a brief without the lead's limit (only after he saw the inventory): the owner
-// entry goes in as its pointer, the lead rule, whichever of the two the scope rule or the model picks
-test("a brief never gets upstream-released-only without its limit: it goes in as the pointer upstream-port-rule", async () => {
+// the owner's "없는 건 없애" never goes into a brief without the lead's limit (only after he saw the inventory): his entry
+// requires the lead rule, which the plan injects; when it is not injected (the model left it out) the launch stops
+test("upstream-released-only requires upstream-port-rule: injected, or the launch stops; the owner text alone never passes", async () => {
   const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
-  const brief = "원본 main 커밋 이식: 원본 PR #37을 우리 쪽에 들이는 이식 레인. upstream 링크를 주석으로 단다.";
-  const ctx = scopeContext(brief, ledger, { repo: "some-repo" });
-  for (const picked of [["upstream-released-only"], ["upstream-port-rule"], ["upstream-released-only", "upstream-port-rule"]]) {
-    const pick = { model: "m", picked: picked.map((id) => ({ id, why: "x" })) };
-    const added = planDirectives(brief, ledger, ctx, {}, pick).add.map(({ e }) => e.id);
-    expect(added).toContain("upstream-port-rule");
-    expect(added).not.toContain("upstream-released-only");
-  }
-  expect(planDirectives(brief, ledger, ctx).add.map(({ e }) => e.id)).toContain("upstream-port-rule");
+  const owner = ledger.entries.find((e) => e.id === "upstream-released-only")!;
+  const rule = ledger.entries.find((e) => e.id === "upstream-port-rule")!;
+  const task = "원본 main 커밋 이식: 원본 PR #37을 우리 쪽에 들이는 이식 레인. upstream 링크를 주석으로 단다.";
+  const plan = (brief: string, picked?: string[]) =>
+    planDirectives(brief, ledger, scopeContext(brief, ledger, { repo: "some-repo" }), {}, picked ? { model: "m", picked: picked.map((id) => ({ id, why: "x" })) } : undefined);
+  const ids = (p: ReturnType<typeof plan>) => ({ add: p.add.map(({ e }) => e.id).filter((i) => i.startsWith("upstream")), missing: p.missing.map(({ e }) => e.id).filter((i) => i.startsWith("upstream")) });
+  expect(ids(plan(task))).toEqual({ add: ["upstream-port-rule"], missing: [] });
+  expect(ids(plan(task, ["upstream-port-rule"]))).toEqual({ add: ["upstream-port-rule"], missing: [] });
+  expect(ids(plan(task, []))).toEqual({ add: [], missing: ["upstream-released-only"] });
+  expect(ids(plan(`${task}\n\n[형 지침 upstream-released-only, 2026-11-05]\n${owner.prompt}`, []))).toEqual({ add: [], missing: ["upstream-released-only"] });
+  expect(ids(plan(`${task}\n\n${directiveText(rule)}`, []))).toEqual({ add: [], missing: [] });
+  // a reused brief with the owner text and only the lead rule's heading, not its limit, does not pass
+  expect(ids(plan(`${task}\n\n[형 지침 upstream-released-only, 2026-11-05]\n${owner.prompt}\n\n[리드 규칙 upstream-port-rule]\n`, ["upstream-released-only"]))).toEqual({ add: [], missing: ["upstream-released-only"] });
+});
+
+// the daily audit reads a launched brief the same way: the ledger block launch put in meets the require
+test("a launched upstream brief is no audit gap for upstream-released-only; one with only the owner text is", async () => {
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
+  const owner = ledger.entries.find((e) => e.id === "upstream-released-only")!;
+  const task = "원본 main 커밋 이식: 원본 PR #37을 우리 쪽에 들이는 이식 레인. upstream 링크를 주석으로 단다.";
+  const launched = withDirectives(task, planDirectives(task, ledger, scopeContext(task, ledger, { repo: "r" })).add);
+  const gaps = (brief: string) => briefGaps({ key: "k" }, brief, ledger, "r", { "eight-steps": "", "ui-steps": "" }).map((g) => g.id).filter((i) => i.startsWith("upstream"));
+  expect(gaps(launched)).toEqual([]);
+  expect(gaps(`${task}\n\n[형 지침 upstream-released-only, 2026-11-05]\n${owner.prompt}`)).toContain("upstream-released-only");
+});
+
+// a require entry is met by what the brief has or by what the same plan injects into it; nothing else meets it
+test("a require entry is checked against the brief plus the texts the plan injects", async () => {
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
+  const req = { ...ledger.entries.find((e) => e.id === "upstream-released-only")!, id: "needs-x", require: ["XYZZY-MARK"] };
+  const inj = { ...ledger.entries.find((e) => e.id === "upstream-port-rule")!, id: "gives-x", rule: "XYZZY-MARK 규칙" };
+  const l = { ...ledger, entries: [req, inj] };
+  const brief = "원본 이식 레인";
+  const p = (picked: string[]) => planDirectives(brief, l, scopeContext(brief, l, { repo: "r" }), {}, { model: "m", picked: picked.map((id) => ({ id, why: "x" })) });
+  expect(p(["gives-x"]).missing.map(({ e }) => e.id)).toEqual([]);
+  expect(p([]).missing.map(({ e }) => e.id)).toEqual(["needs-x"]);
 });
 
 test("no scope narrowed for briefs hits the eight-step template by itself: it would be every lane again", async () => {

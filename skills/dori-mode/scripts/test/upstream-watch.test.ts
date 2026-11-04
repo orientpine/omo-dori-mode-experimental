@@ -59,7 +59,7 @@ beforeEach(() => {
     pr(40, "fix: rename the docs pages", [...Array.from({ length: 100 }, (_, i) => `docs/page-${String(i).padStart(3, "0")}.md`), "skills/dori-mode/zz-late.ts"]),
   ]);
   const issue = (number: number, title: string, state = "OPEN") => ({ number, title, state, url: `${UP}/issues/${number}`, createdAt: "2026-11-02T00:00:00Z" });
-  json("issues.json", [issue(22, "freshness: lastReportLine selects templates", "CLOSED"), issue(27, "Telemetry", "CLOSED"), issue(29, "freshness: other report-template shapes"), issue(31, "dori send fails for agents launched with pane run")]);
+  json("issues.json", [issue(22, "freshness: lastReportLine selects templates", "CLOSED"), issue(27, "Telemetry", "CLOSED"), issue(29, "freshness: other report-template shapes"), issue(31, "dori send fails for agents launched with pane run"), issue(33, "an idea closed without code", "CLOSED")]);
   const commit = (sha: string, message: string) => ({ sha, commit: { message }, html_url: `${UP}/commit/${sha}` });
   writeFileSync(join(gh, "commits.jsonl"), [
     commit("b".repeat(40), "direct: fix the lane sweep"),
@@ -123,7 +123,7 @@ test("a second run and a seeded run write nothing more", async () => {
   expect(inbox()).toHaveLength(before);
   rmSync(join(root, "state"), { recursive: true });
   rmSync(join(root, "inbox.jsonl"));
-  expect((await run(["--seed"])).out).toContain("new=19 inbox_lines=0");
+  expect((await run(["--seed"])).out).toContain("new=20 inbox_lines=0");
   expect(inbox()).toHaveLength(0);
   expect((await run()).out).toContain("new=0 inbox_lines=0");
 });
@@ -169,6 +169,63 @@ test("a PR closed without a merge and reopened later is an integration ask then;
   // #45 was open, then closed, then open again: asked once more; #46 the owner decided by hand: not again
   expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr-proposed:45", "3"]]);
   expect(seen()["pr-proposed:46"]!.class).toBe("decided");
+});
+
+test("a PR closed without a merge and merged into another branch later is an integration ask then", async () => {
+  await run();
+  expect(seen()["pr-proposed:46"]!.class).toBe("2");
+  const prs = JSON.parse(readFileSync(join(gh, "prs.json"), "utf8")) as Record<string, unknown>[];
+  for (const p of prs) if (p.number === 46) Object.assign(p, { state: "MERGED", mergedAt: "2026-11-03T00:00:00Z", baseRefName: "next", mergeCommit: { oid: "4".repeat(39) + "6" } });
+  json("prs.json", prs);
+  const before = inbox().length;
+  await run();
+  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr-proposed:46", "3"]]);
+});
+
+test("a record the old watcher wrote has no lifecycle: the upgraded watcher fills it in, so a closed issue opened again is read again", async () => {
+  await run();
+  const path = join(root, "state/seen.json");
+  const old = JSON.parse(readFileSync(path, "utf8"));
+  for (const r of Object.values(old.items) as Record<string, unknown>[]) { delete r.open; delete r.status; }
+  writeFileSync(path, JSON.stringify(old));
+  expect((await run()).out).toContain("new=0 inbox_lines=0");
+  const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
+  for (const i of issues) if (i.number === 33) i.state = "OPEN";
+  json("issues.json", issues);
+  const before = inbox().length;
+  await run();
+  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["issue:33", "3"]]);
+});
+
+test("a closed issue the old watcher recorded and that opened again before the upgrade is asked once", async () => {
+  // the old watcher's record: class 2, no lifecycle fields
+  mkdirSync(join(root, "state"));
+  writeFileSync(join(root, "state/seen.json"), JSON.stringify({ items: { "issue:33": { class: "2", why: "코드 없이 닫힘", at: "2026-11-01T00:00:00.000Z" } }, minor: [], fails: 0 }));
+  const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
+  for (const i of issues) if (i.number === 33) i.state = "OPEN";
+  json("issues.json", issues);
+  await run();
+  await run();
+  expect(inbox().filter((x) => x.kind === "upstream-change" && x.item === "issue:33").map((x) => x.class)).toEqual(["3"]);
+});
+
+test("an open issue the old watcher already sent as class 4 is not asked again", async () => {
+  mkdirSync(join(root, "state"));
+  writeFileSync(join(root, "state/seen.json"), JSON.stringify({ items: { "issue:29": { class: "4", why: "열린 이슈, 우리 쪽 재현 먼저", at: "2026-11-01T00:00:00.000Z" } }, minor: [], fails: 0 }));
+  await run();
+  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item)).not.toContain("issue:29");
+});
+
+test("an open issue first read as the herdr harness and retitled to our code is asked then", async () => {
+  await run();
+  expect(seen()["issue:31"]!.class).toBe("2");
+  const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
+  for (const i of issues) if (i.number === 31) i.title = "dori send fails for agents started by dori launch";
+  json("issues.json", issues);
+  const before = inbox().length;
+  await run();
+  await run();
+  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["issue:31", "3"]]);
 });
 
 test("an item the owner already decided is marked by hand and never reaches the inbox", async () => {
