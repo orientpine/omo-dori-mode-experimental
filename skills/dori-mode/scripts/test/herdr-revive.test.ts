@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readHerdrSessions, recordHerdrSession, reviveHerdr } from "../src/herdr-sessions.ts";
 import { findLead } from "../src/lead.ts";
 import { leadDownTick } from "../src/lead-down.ts";
 import type { Runner } from "../src/run.ts";
+import { sessionDirFor } from "../src/session-id.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, type World } from "./fakes.ts";
 
 // The names, values and arguments a Windows agent line carries, decoded from its base64 data in order.
@@ -72,6 +73,29 @@ test("a herdr lead with no record yet (just handed over) is recorded on the firs
   expect(readHerdrSessions(dir)["w1:p1"]).toBeUndefined();
   expect(await leadDownTick(deps)).toEqual([]);
   expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ session: "11111111-2222-4333-8444-555555555555", model: "m/x" });
+});
+
+test("a lead's /thinking (and /model) change is what its record keeps and its revive opens with, not its launch --model", async () => {
+  const deps = omo({ leadPane: "w1:p1", leadReviveMin: 5, sessionsDir: dir });
+  const id = "11111111-2222-4333-8444-555555555555";
+  const logDir = sessionDirFor(dir, dir);
+  mkdirSync(logDir, { recursive: true });
+  const log = join(logDir, `2026-11-04T16-00-00-000Z_${id}.jsonl`);
+  const entry = (e: object) => `${JSON.stringify(e)}\n`;
+  // what omo writes: the start's model and level, then the owner's /thinking medium
+  writeFileSync(log, entry({ type: "session", id, cwd: dir }) + entry({ type: "model_change", provider: "p", modelId: "m" }) + entry({ type: "thinking_level_change", thinkingLevel: "high", provider: "p", modelId: "m" }) + entry({ type: "thinking_level_change", thinkingLevel: "medium", provider: "p", modelId: "m" }));
+  world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
+  world.ps = `4000 1 -bash\n4001 4000 omo --session-id ${id} --model p/m:high`;
+  await leadDownTick(deps);
+  expect(readHerdrSessions(dir)["w1:p1"]?.model).toBe("p/m:medium");
+  // changed again after the last check (/model, then /thinking low), and then its agent is gone: the revive reads the log
+  appendFileSync(log, entry({ type: "model_change", provider: "p", modelId: "n" }) + entry({ type: "thinking_level_change", thinkingLevel: "low", provider: "p", modelId: "n" }));
+  world.ps = "4000 1 -bash";
+  world.herdrDead = ["w1:p1"];
+  expect(await reviveHerdr(deps.run, deps.clock, deps.config, "w1:p1", "", async () => true)).toBe(`REVIVE_OK w1:p1 session ${id}`);
+  const ran = world.calls.filter((c) => c[2] === "run").at(-1)?.[4] ?? "";
+  if (process.platform === "win32") expect(winData(ran).slice(2)).toEqual(["omo", "--session-id", id, "--model", "p/n", "--thinking", "low"]);
+  else expect(ran).toMatch(new RegExp(` omo --session-id ${id} --model p/n --thinking low$`));
 });
 
 test("an unchanged herdr lead record gets its check time on each read, so the next read waits its ten minutes", async () => {

@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { DoriConfig } from "./config.ts";
 import { agentPath, herdrAgentArgv } from "./aoe.ts";
 import { agentLine, herdrAgentPid, herdrSessions, herdrShellPid, HerdrShellError, requireHerdrPwsh } from "./herdr.ts";
 import type { Clock, Runner } from "./run.ts";
-import { argvSessionId, hasSessionSelector, procTable, resolveSession } from "./session-id.ts";
+import { splitModel } from "./lane-handover.ts";
+import { argvSessionId, hasSessionSelector, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // A herdr server that stops ends every agent in its panes and gives back the same pane ids with fresh shells (herdr 0.9.5,
 // measured 2026-11-03), unlike an aoe session, which aoe starts again in its conversation. So the omo session a herdr lead
@@ -34,6 +35,36 @@ const modelOf = (cmd: string): string | undefined => {
   return at >= 0 ? words[at + 1] : words.find((w) => w.startsWith("--model="))?.slice("--model=".length);
 };
 
+// The model and thinking a session runs now, "<provider>/<model>:<level>", from its own log: omo writes a model_change for
+// /model and a thinking_level_change for /thinking (and both at its start), which its command line never shows. undefined
+// when the log or those entries cannot be read.
+export const sessionModel = (sessionsDir: string, cwd: string, session: string): string | undefined => {
+  const dir = sessionDirFor(sessionsDir, cwd);
+  let text: string;
+  try {
+    const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
+    if (!name) return undefined;
+    text = readFileSync(join(dir, name), "utf8");
+  } catch {
+    return undefined;
+  }
+  let model: string | undefined;
+  let level: string | undefined;
+  for (const line of text.split("\n")) {
+    if (!line.includes('"model_change"') && !line.includes('"thinking_level_change"')) continue;
+    let e: { type?: unknown; provider?: unknown; modelId?: unknown; thinkingLevel?: unknown };
+    try {
+      e = JSON.parse(line) as typeof e;
+    } catch {
+      continue;
+    }
+    if (e.type !== "model_change" && e.type !== "thinking_level_change") continue;
+    if (typeof e.provider === "string" && typeof e.modelId === "string") model = `${e.provider}/${e.modelId}`;
+    if (e.type === "thinking_level_change" && typeof e.thinkingLevel === "string") level = e.thinkingLevel;
+  }
+  return model ? `${model}${level ? `:${level}` : ""}` : undefined;
+};
+
 // The omo session of a herdr pane: read from its running agent (and recorded) when live, else the recorded one; "" when
 // neither tells.
 export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriConfig, "stateDir" | "sessionsDir">>, pane: string, live: boolean): Promise<string> => {
@@ -43,7 +74,8 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   const table = await procTable(run);
   const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr" });
   if (!hit.id) return kept?.session ?? "";
-  const model = modelOf(table.find((p) => p.pid === hit.pid)?.cmd ?? "");
+  // what the session runs now (its log), else what its agent was started with
+  const model = sessionModel(config.sessionsDir, cwd, hit.id) ?? modelOf(table.find((p) => p.pid === hit.pid)?.cmd ?? "");
   // recorded on every read, unchanged or not: its time is when it was last checked (lead-down reads again after 10 min)
   if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), at: new Date().toISOString() });
   return hit.id;
@@ -60,7 +92,7 @@ const omoInputBox = (screen: string): boolean => {
 // A server that just started spawns its restored panes a second or two later (pane_not_found until then), and herdr 0.9.5
 // itself starts an omo it recognised (as pi) again with --session <its file> (measured 2026-11-03): the pane is waited
 // for, and an agent already running there only gets the prompt.
-export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriConfig, "stateDir" | "agentCommand" | "defaultModel">, pane: string, prompt: string, type: (pane: string, text: string) => Promise<boolean>): Promise<string> => {
+export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriConfig, "stateDir" | "sessionsDir" | "agentCommand" | "defaultModel">, pane: string, prompt: string, type: (pane: string, text: string) => Promise<boolean>): Promise<string> => {
   const rec = readHerdrSessions(config.stateDir)[pane];
   if (!rec || !argvSessionId(["--session-id", rec.session])) return `REVIVE_FAIL ${pane}: no omo session recorded for this pane (${file(config.stateDir)})`;
   if (!(await herdrSessions(run)).some((s) => s.pane === pane)) return `REVIVE_FAIL ${pane}: herdr has no such pane (its tab was closed); open a new session instead`;
@@ -74,10 +106,13 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
       if (error instanceof HerdrShellError) return `REVIVE_FAIL ${pane}: ${error.message}`;
       throw error;
     }
-    // the configured agentCommand with its own options (a --session-dir included), the recorded session and model
+    // the configured agentCommand with its own options (a --session-dir included), the recorded session, and the model and
+    // thinking the session ran last (its log, read now: a /thinking after the last record counts), else the recorded model.
+    // The level goes in as its own --thinking (aoe.ts herdrAgentArgv: omo can start at another level than a :suffix says).
     if (hasSessionSelector(config.agentCommand.slice(1))) return `REVIVE_FAIL ${pane}: agentCommand picks its session itself (${config.agentCommand.join(" ")}); revive needs one without a session selector`;
     const tool = config.agentCommand[0] ?? "omo";
-    const argv = herdrAgentArgv(config.agentCommand, rec.model || config.defaultModel, undefined, rec.session);
+    const { base, thinking } = splitModel((config.sessionsDir ? sessionModel(config.sessionsDir, rec.cwd, rec.session) : undefined) || rec.model || config.defaultModel);
+    const argv = herdrAgentArgv(config.agentCommand, base, thinking, rec.session);
     // the screen is cleared first, so a ❯ the ended agent left there is gone before the new one draws
     const clear = process.platform === "win32" ? "Clear-Host; " : "clear && ";
     const ran = await run(["herdr", "pane", "run", pane, `${clear}${agentLine(argv, { PATH: agentPath(tool) })}`], { cwd: existsSync(rec.cwd) ? rec.cwd : undefined });
