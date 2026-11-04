@@ -28,8 +28,7 @@ export type Who = "lead" | "lane";
 
 // work: a local chain or a background eval cell would die; busy: a turn ran or a question stayed open; training: the
 // owner's rule keeps automatic starts away from a lane with a training or eval chain
-// suspended: the lane's agent stayed stopped after a resume, so its screen tells nothing (job-control.ts)
-export type Blocked = "work" | "busy" | "training" | "suspended";
+export type Blocked = "work" | "busy" | "training";
 
 // who decided a rollover: the lead (lead:<reason>), the owner (an answered card or their message), or the automation key
 export type DecidedBy = "lead" | "owner" | "auto";

@@ -20,7 +20,7 @@ import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
 import { endOldMonitors } from "./handover-monitors.ts";
 import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
 import { awaitPrompt } from "./launch.ts";
-import { holdOf, readStat, resumeAgent, type StatOf } from "./job-control.ts";
+import { resumeAgent, type StatOf } from "./job-control.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { herdrResult, isHerdrPane } from "./herdr.ts";
 import { omoSession, sendVerified } from "./panes.ts";
@@ -385,9 +385,7 @@ export const waitingRequest = (entries: readonly RolloverEntry[], key: string, p
   // (review 320 round 13)
   const last = entries.findLast((e): e is Extract<RolloverEntry, { kind: "rollover" }> => e.kind === "rollover" && e.who === "lane" && e.key === key && !(e.result === "refused" && !!e.approvedBy?.trim() && decidedBy(e.approvedBy.trim()) === "auto"));
   const by = last?.approvedBy?.trim() ?? "";
-  // a run that found the lane's agent stopped (suspended) leaves the request waiting too: once the agent runs again, the
-  // next start moves it (review 333 round 6)
-  return last && last.result === "refused" && (last.blocked === "work" || last.blocked === "busy" || last.blocked === "suspended") && last.from === pane && by && decidedBy(by) !== "auto" ? last : undefined;
+  return last && last.result === "refused" && (last.blocked === "work" || last.blocked === "busy") && last.from === pane && by && decidedBy(by) !== "auto" ? last : undefined;
 };
 
 // The safe-point ask of the lane's waiting request that has not reached the lane yet: neither the refusing run nor freshness
@@ -645,8 +643,6 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     if (borrowed) return { code: 2 };
     // a run refused while the lane was busy keeps the options it was given (the note as an absolute path): a ready mark
     // starts it again with them (freshness readyResume)
-    // an ask the lane has not taken is carried on a suspended row too: freshness holds it back while the agent is stopped
-    // and types it once a later row (the agent runs again) carries it on (review 333 round 7)
     const safePoint = held?.safePoint ?? (held && fromPane && opts.approvedBy?.trim() && decidedBy(opts.approvedBy.trim()) !== "auto" ? untoldAsk(config.stateDir, key, fromPane) : undefined);
     const request: RolloverRequest = { ...(opts.note ? { note: resolve(opts.note) } : {}), ...(opts.model ? { model: opts.model } : {}), ...(opts.thinking ? { thinking: opts.thinking } : {}), ...(opts.keepOld ? { keepOld: true } : {}), ...(opts.verifyMin ? { verifyMin: opts.verifyMin } : {}) };
     if (log && !opts.dryRun && opts.approvedBy?.trim()) appendRollover(config.stateDir, { kind: "rollover", who: "lane", at, key, from: fromPane, approvedBy: opts.approvedBy.trim(), signals: {}, steps: [], result: "refused", reasons: [why], ...(held ? { blocked: held.blocked, ...(held.pids?.length ? { pids: held.pids } : {}), ...(held.tasks?.length ? { tasks: held.tasks } : {}), request, ...(safePoint ? { safePoint } : {}) } : {}), ...(opts.serves ? { resumes: opts.serves.at } : {}) });
@@ -791,28 +787,6 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const shell = await tmuxPanePid(deps.run, lane.pane);
   const { agent, chains, tree } = localChains(table, shell, monitorPids);
   if (!agent) return refuse(`no omo agent process under pane ${lane.pane} (shell pid ${shell || "?"})`);
-  // a stopped agent's screen is stale (its last "esc to interrupt" stays drawn: handover-simplify was refused as busy 54
-  // times on 2026-11-03/04): it is brought back first, and its screen is judged only once it runs
-  const held = holdOf(deps.stat ?? readStat, agent.pid);
-  // a dry run (a rollover proposal's preview) only says so: nothing is signalled or typed without an approval
-  // another run of this lane froze it on purpose (its lock or its pending journal names a live pid): left as it is, the
-  // lock below refuses this run
-  const other = [join(config.stateDir, "handover", "lanes", `${key}.lock`), pendingFile(config.stateDir, key)].some((f) => {
-    try {
-      const pid = (JSON.parse(readFileSync(f, "utf8")) as { pid?: number }).pid;
-      return typeof pid === "number" && pid !== process.pid && deps.alive(pid);
-    } catch {
-      return false;
-    }
-  });
-  if (held && other) emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, but another handover of this lane runs (it froze the agent): left as it is`);
-  else if (held && opts.dryRun) emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, so its screen is stale; a run resumes it first (dry run: left as it is)`);
-  else if (held) {
-    emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, so its screen is stale; resuming it`);
-    const back = await resumeAgent(deps, lane.pane, agent.pid);
-    emit(back);
-    if (holdOf(deps.stat ?? readStat, agent.pid) && !opts.force) return refuse(`the agent ${agent.pid} in ${lane.pane} stays stopped (${back}); its screen is stale, so it is judged neither busy nor idle`, { blocked: "suspended" });
-  }
   const jobs = monitorWork(entries, table, now, deps.alive, deps.home);
   const marked = detachedJobs(table, tree, session, old.id, deps.envOf);
   // a pid in the pane's own tree is no detached job, even when an earlier note listed it (as a chain, before the session's
