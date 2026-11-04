@@ -194,7 +194,7 @@ const logOf = (dir: string, session: string): string | undefined => {
 // Written once the new session exists and removed when the run ends either way: a run killed in between (crash, reboot,
 // SIGKILL) leaves it behind, and the next dori handover --lane for that lane repairs the state from it first.
 // fromSession and cwd: the outgoing session and where the new one opens, so a recovery records the lane's sessions too
-export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[]; readonly agentPid?: number; readonly fromSession?: string; readonly cwd?: string; readonly committed?: string };
+export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[]; readonly agentPid?: number; readonly fromSession?: string; readonly cwd?: string };
 
 const POLL_MS = 5_000;
 const THINKING = /^(.*):(off|minimal|low|medium|high|xhigh|max)$/;
@@ -405,12 +405,6 @@ const readJson = <T>(file: string): T | undefined => {
 };
 const readReady = (stateDir: string, key: string): ReadyMark | undefined => readJson<ReadyMark>(readyFile(stateDir, key));
 const readPending = (stateDir: string, key: string): Pending | undefined => readJson<Pending>(pendingFile(stateDir, key));
-// the move's journal records the commit before the new session is told it is the lane: a run that dies after it is finished,
-// never rolled back (I3)
-const markCommitted = (stateDir: string, key: string, at: string): void => {
-  const j = readPending(stateDir, key);
-  if (j) writeFileSync(pendingFile(stateDir, key), JSON.stringify({ ...j, committed: at }, null, 1));
-};
 
 // dori handover ready, run by the lane in its own pane at a safe point: records the local chains it accepts losing (the
 // chain running this command is left out) and the lane's own notes for the new session.
@@ -1037,16 +1031,7 @@ export const recover = async (deps: LaneHandoverDeps, p: Pending, emit: (line: s
   const sessions = await liveSessions(deps.run);
   const oldAlive = await agentAlive(deps.run, sessions, p.from);
   const newAlive = await agentAlive(deps.run, sessions, p.to);
-  if (p.committed) {
-    // past the commit the move is finished, never rolled back: the new session may already work as the lane (I3, review
-    // 320 round 11). The old one, frozen or kept, is resumed and told it is no longer the lane.
-    if (p.agentPid) deps.signal(p.agentPid, "SIGCONT");
-    await pointLane(deps, p.key, p.from, p.to, `pane kept on ${p.to}: the interrupted handover had committed at ${p.committed}`, emit);
-    if (newAlive) await tell(deps, p.to, `[LEAD] ${COMMITTED}: the handover was interrupted after it committed; you are the ${p.key} lane now. ${deps.config.launchKeywords}: go on with step 5 of the note ${p.note}.`);
-    if (oldAlive) await tell(deps, p.from, `[LEAD] Handover of ${p.key} to ${p.to} is done and checked. You are no longer the lane; stay idle until the lead closes you.`);
-    emit(`HANDOVER_RECOVERED ${p.key} kept on ${p.to}: the move had committed${oldAlive ? `; ${p.from} stays open, idle` : ""}`);
-    await keepSessions(deps, p.key, p.fromSession ?? "", p.cwd ? await deps.sessionOf(p.to, p.cwd).catch(() => "") : "");
-  } else if (oldAlive) {
+  if (oldAlive) {
     if (p.agentPid) deps.signal(p.agentPid, "SIGCONT");
     await pointLane(deps, p.key, p.to, p.from, `pane back to ${p.from}: interrupted handover repaired`, emit);
     const closed = newAlive ? await closeAoeSession(deps.run, p.to) : `${p.to} already gone`;
@@ -1153,7 +1138,6 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   if (checked.reasons.length && !(await agentAlive(deps.run, await liveSessions(deps.run), from.pane))) {
     // nothing to go back to: the old session ended during the checks, so the new one stays the lane
     emit(`HANDOVER_OLD_GONE ${lane.key}: ${from.pane} ended during the checks (${checked.reasons.join("; ")}); the lane stays on ${pane}`);
-    markCommitted(config.stateDir, lane.key, iso(deps.clock));
     await tell(deps, pane, `[LEAD] ${COMMITTED}: the old session ended during the checks, so you are the ${lane.key} lane now although a check failed (${checked.reasons.join("; ")}); tell the lead what you see. ${config.launchKeywords}: go on with step 5 of the note.`);
     record("kept-new-old-gone", checked.reasons);
     await keepSessions(deps, lane.key, facts.from.session, checked.session || (await deps.sessionOf(pane, facts.cwd).catch(() => "")));
@@ -1167,7 +1151,6 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
     await pointLane(deps, lane.key, pane, from.pane, `pane moved back to ${from.pane}: handover check failed`, emit);
     return discard(checked.reasons.join("; "));
   }
-  markCommitted(config.stateDir, lane.key, iso(deps.clock));
   if (facts.account && checked.account && facts.account !== checked.account) emit(`HANDOVER_ACCOUNT ${lane.key} ${facts.account} -> ${checked.account} (the account pool chose it for the new session)`);
   ctx.accounts.to = checked.account;
   // what the move bought, from the two session logs: the old session's last context, the new one's first and its context now

@@ -291,13 +291,12 @@ const STARTED_GRACE_MS = 2 * 60_000;
 const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pane: string): Promise<SweepAct[]> => {
   if (!hooks.resume) return [];
   const stateDir = deps.config.stateDir;
-  // a resumed run that died mid-move (its journal names a dead process and this pane as the move's source or target) left a
-  // move to repair: the request of the pane it came from is started again, before any ready or expiry check, so its run
-  // repairs the move first (HANDOVER_INTERRUPTED; a committed one is finished, never rolled back), once per grace period
-  // while the journal is there (review 320 rounds 10 and 11)
+  // a resumed run that died after it repointed the lane (its journal: from the request's pane to this one, a dead process)
+  // left the move uncommitted: the request of the pane it came from is started again, so its run repairs the move first
+  // (HANDOVER_INTERRUPTED), once per grace period while the journal is there (review 320 round 10)
   const alive0 = hooks.alive ?? pidAlive;
   const journal = readJson<Pending>(pendingFile(stateDir, key));
-  const broken = journal && (journal.to === pane || journal.from === pane) && !alive0(journal.pid) ? journal : undefined;
+  const broken = journal && journal.to === pane && journal.from !== pane && !alive0(journal.pid) ? journal : undefined;
   const asked = waitingRequest(readRollovers(stateDir), key, broken ? broken.from : pane);
   if (!asked) return [];
   if (broken) {
@@ -311,8 +310,8 @@ const readyResume = async (deps: FlowDeps, hooks: RolloverHooks, key: string, pa
     const by = (asked.approvedBy ?? "").trim();
     const r = await hooks.resume(key, by, asked.request ?? {});
     const line = r.started
-      ? `HANDOVER_INTERRUPTED_RESUMED ${key} started: the run of pid ${broken.pid} died mid-move (${broken.from} -> ${broken.to}, journal of ${broken.at}${broken.committed ? ", committed" : ""}); the request of ${asked.at} started again with the same approval ${JSON.stringify(by)} repairs it first: ${r.line}`
-      : `HANDOVER_INTERRUPTED_RESUME_FAILED ${key} failed: the run of pid ${broken.pid} died mid-move (${broken.from} -> ${broken.to}); the request of ${asked.at} could not be started again (${r.line}); the next sweep tries again`;
+      ? `HANDOVER_INTERRUPTED_RESUMED ${key} started: the run of pid ${broken.pid} died after it repointed the lane to ${pane} (journal of ${broken.at}); the request of ${asked.at} started again with the same approval ${JSON.stringify(by)} repairs it first: ${r.line}`
+      : `HANDOVER_INTERRUPTED_RESUME_FAILED ${key} failed: the run of pid ${broken.pid} died after it repointed the lane to ${pane}; the request of ${asked.at} could not be started again (${r.line}); the next sweep tries again`;
     if (!r.started) rmSync(repairFile, { force: true });
     watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line });
     return [{ kind: "ready_resume", lane: key, detail: line.slice(line.indexOf(" ", line.indexOf(" ") + 1) + 1) }];

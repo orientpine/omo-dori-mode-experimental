@@ -1608,51 +1608,7 @@ test("a resumed run that died after it repointed the lane is started again by fr
   await freshnessTick(deps, "/home/test", hooks);
   // Then: started at once, not again within the grace period, again after it while the journal is still there
   expect(resumes).toEqual([`demo ${LEAD_STUCK}`, `demo ${LEAD_STUCK}`]);
-  expect(readFileSync(deps.config.watchLog, "utf8")).toContain(`HANDOVER_INTERRUPTED_RESUMED demo started: the run of pid 999 died mid-move (${OLD} -> ${NEW}, journal of 2026-10-11T16:30:00Z)`);
-});
-
-// The crash-point table (rollover.md, "One waiting handover: what always holds", I2 I3 I5 I7): a lead's waiting request whose
-// run died at each step of its move is finished by freshness sweeps alone. The sweep starts the request again in this
-// process (the real laneHandover, as the detached unit would), and nobody runs anything by hand.
-const sweepOnly = (deps: LaneHandoverDeps) => ({
-  signals: async () => ({}),
-  alive: (pid: number) => live.has(pid),
-  resume: async (key: string, approvedBy: string, request: { keepOld?: boolean }) => {
-    const r = await laneHandover(deps, key, "aoe_lead_x", { approvedBy, ...(request.keepOld ? { keepOld: true } : {}), waitIdleMin: 20 });
-    return { started: true, line: `exit ${r.code}` };
-  },
-});
-const sweep = async (deps: LaneHandoverDeps, at: number) => {
-  await deps.registry.patch("demo", { lastReplyAt: at });
-  return freshnessTick(deps, "/home/test", sweepOnly(deps));
-};
-
-test.each([
-  { crash: "after the journal, before the repoint, its ready mark expired", repointed: false, committed: false, keepOld: false },
-  { crash: "after the repoint, before the commit", repointed: true, committed: false, keepOld: false },
-  { crash: "after the commit, the old session kept (--keep-old)", repointed: true, committed: true, keepOld: true },
-])("crash point table: a waiting request's run that died $crash is finished by sweeps alone, and a committed move is never rolled back (review 320 round 11)", async ({ repointed, committed, keepOld }) => {
-  // Given
-  const base = await setup();
-  const T0 = Date.parse("2026-10-11T17:30:00Z");
-  const clock = fakeClock(T0);
-  const deps: LaneHandoverDeps = { ...base, clock: { ...clock, sleep: async (ms: number) => { clock.at += ms; simulate(); } }, reportOwner: async () => "msg-1" };
-  appendRollover(state.dir, { ...WAITING, blocked: "work", pids: [15], request: keepOld ? { keepOld: true } : {} });
-  ready(deps, [15], "2026-10-11T16:25:00.000Z");
-  await killedRun(deps, 999);
-  if (!repointed) await deps.registry.patch("demo", { pane: OLD });
-  const journal = JSON.parse(readFileSync(pendingFile(state.dir, "demo"), "utf8")) as object;
-  writeFileSync(pendingFile(state.dir, "demo"), JSON.stringify({ ...journal, agentPid: 11, ...(committed ? { committed: "2026-10-11T16:21:00Z" } : {}) }));
-  // When: freshness sweeps, nothing else
-  await sweep(deps, T0);
-  // Then: the journal is repaired, the frozen old agent is resumed, and the lane is where the move left it
-  expect(existsSync(pendingFile(state.dir, "demo"))).toBe(false);
-  expect((await readLane(deps)).pane).toBe(committed ? NEW : OLD);
-  expect(stoppedIds()).toEqual(committed ? [] : [NEW_AOE_ID]);
-  expect(sigs).toContain("SIGCONT 11");
-  if (committed) expect(sent(w).some((t) => t.startsWith(`[LEAD] ${"HANDOVER_COMMITTED"}`) && t.includes("you are the demo lane now"))).toBe(true);
-  // a rolled-back move leaves the lead's request waiting, its options kept, for the next start (I2, I7)
-  if (!committed) expect(waitingRequest(readRollovers(state.dir), "demo", OLD)).toMatchObject({ approvedBy: LEAD_STUCK, request: keepOld ? { keepOld: true } : {} });
+  expect(readFileSync(deps.config.watchLog, "utf8")).toContain(`HANDOVER_INTERRUPTED_RESUMED demo started: the run of pid 999 died after it repointed the lane to ${NEW}`);
 });
 
 // omo's input box sits between two ─ borders; the status lines under it can quote "esc to interrupt" (here the cwd and a
