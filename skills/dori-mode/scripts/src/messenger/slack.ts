@@ -68,6 +68,7 @@ export class Slack {
   // a failure ends the send as a failure and a person calls it again. Returns the file ids in order.
   async upload(channel: string, files: readonly UploadFile[], threadTs?: string, comment?: string): Promise<string[]> {
     const text = comment ? guardText(comment) : undefined;
+    const started = this.clock.now();
     const done: { id: string; title: string }[] = [];
     for (const f of files) {
       const slot = await this.call("files.getUploadURLExternal", { filename: f.filename, length: f.length }, undefined, true);
@@ -76,8 +77,10 @@ export class Slack {
       done.push({ id: String(slot.file_id), title: f.title ?? f.filename });
     }
     await this.call("files.completeUploadExternal", { files: done, channel_id: channel, ...(threadTs ? { thread_ts: threadTs } : {}), ...(text ? { initial_comment: text } : {}) }, ONCE);
-    // the share names no message ts; a ts is seconds since the epoch, so now stands in for it as the place's last post
-    notePosted(slackPlace(channel, threadTs), (this.clock.now() / 1000).toFixed(6));
+    // The share names no message ts (Slack shares it after answering), so the time its request started stands in for
+    // one: a text posted while it uploaded stays newer, so an overlap can only refuse a repeat, never post one twice
+    // (review 3 of #338). A ts is seconds since the epoch.
+    notePosted(slackPlace(channel, threadTs), (started / 1000).toFixed(6));
     return done.map((f) => f.id);
   }
 

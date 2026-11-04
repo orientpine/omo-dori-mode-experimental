@@ -75,7 +75,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener, eyesOff } from "./messenger/discord-listener.ts";
-import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS } from "./messenger/discord-thread.ts";
+import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS, withoutEmoji } from "./messenger/discord-thread.ts";
 import { duplicateLine, type Post, SEND_DUPLICATE_EXIT, type Sent, sendOnce, sentLine, setPostLedger } from "./send-dedupe.ts";
 import { mapThread, standThread, threads, unstandThread } from "./messenger/thread-map.ts";
 import { archiveDoneThreads } from "./messenger/thread-archive.ts";
@@ -2114,9 +2114,11 @@ try {
       if (tooBig) die(tooBig, 2);
       const dc = discordClient();
       await ownerSpeech(body, `thread ${verb}`, () => ownerPlace(dc, discordThreadId(ref ?? "")));
-      // the same key as `dori send discord --to <thread id>`, so the two commands do not post one text twice either
+      // the text as it is posted (emoji removed, postInThread), so the key is the one Discord.post records for the new
+      // message; a text without emoji has the same key as `dori send discord --to <thread id>`, so the two commands do
+      // not post one text twice either
       const place = `discord:${discordThreadId(ref ?? "")}`;
-      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, { parts: { platform: "discord", where: discordThreadId(ref ?? ""), files: filesKey(files) }, text: body }, post, { again: Boolean(flags.values.again) });
+      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, { parts: { platform: "discord", where: discordThreadId(ref ?? ""), files: filesKey(files) }, text: withoutEmoji(body) }, post, { again: Boolean(flags.values.again) });
       if (verb === "done") {
         // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;

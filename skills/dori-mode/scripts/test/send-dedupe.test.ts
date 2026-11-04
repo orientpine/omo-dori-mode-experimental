@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Discord } from "../src/messenger/discord.ts";
 import type { Http } from "../src/messenger/http.ts";
 import { Slack } from "../src/messenger/slack.ts";
-import { type PostParts, type Sent, sendOnce, setPostLedger } from "../src/send-dedupe.ts";
+import { notePosted, type PostParts, type Sent, sendOnce, setPostLedger } from "../src/send-dedupe.ts";
 import { fakeClock } from "./fakes.ts";
 
 // windowMs 0: the 10 minute window is over, only the place's last post still counts
@@ -33,13 +33,16 @@ const discordApi = () => {
 // review of #338: a thread reply posts, then waits for its status; a send posted meanwhile must stay the place's last post
 test("a post that finishes after a later post to the same place never takes the last-post record from it", () =>
   withDir(async (dir) => {
+    setPostLedger(dir);
+    // a messenger client records the message when it is created, as Discord.post does
+    const created = (id: string, text: string): Sent => (notePosted(`discord:${T}`, id, discordText(text)), { id, content: text });
     let finishA: (s: Sent) => void = () => {};
     const a = sendOnce(dir, `discord:${T}`, discordText("A"), () => new Promise<Sent>((r) => (finishA = r)));
-    const b = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => ({ id: "1566900000000000102", content: "B" }));
-    finishA({ id: "1566900000000000101", content: "A" });
+    const b = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => created("1566900000000000102", "B"));
+    finishA(created("1566900000000000101", "A"));
     await a;
-    const againB = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => ({ id: "1566900000000000103" }), AFTER);
-    const againA = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => ({ id: "1566900000000000104" }), AFTER);
+    const againB = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => created("1566900000000000103", "B"), AFTER);
+    const againA = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => created("1566900000000000104", "A"), AFTER);
     expect({ b: b.duplicate, againB: [againB.id, againB.duplicate], againA: againA.duplicate }).toEqual({ b: false, againB: ["1566900000000000102", true], againA: false });
   }));
 
@@ -58,18 +61,56 @@ test("a post the CLI makes past dori send (a close summary, a card) is the place
   }));
 
 // review 2 of #338: send A as a reply, edit it to B; B as the same reply again is the repeat
-test("an edit of the place's last post keeps its reply target and files and takes the edited text; an older message's edit changes nothing", () =>
+test("an edit of the place's last post keeps its reply target and takes the edited text; an older message's edit changes nothing", () =>
   withDir(async (dir) => {
     setPostLedger(dir);
     const dc = discordApi();
-    const asReply = { reply: "1566800000000000009", files: ["a.png:abc"] };
-    const first = await sendOnce(dir, `discord:${T}`, discordText("A", asReply), async () => dc.post(T, "A"));
+    const asReply = { reply: "1566800000000000009", files: [] };
+    const first = await sendOnce(dir, `discord:${T}`, discordText("A", asReply), async () => dc.post(T, "A", false, undefined, asReply.reply));
     await dc.edit(T, "1566800000000000001", "X");
-    const stillA = await sendOnce(dir, `discord:${T}`, discordText("A", asReply), async () => dc.post(T, "A"), AFTER);
+    const stillA = await sendOnce(dir, `discord:${T}`, discordText("A", asReply), async () => dc.post(T, "A", false, undefined, asReply.reply), AFTER);
     await dc.edit(T, first.id, "B");
-    const b = await sendOnce(dir, `discord:${T}`, discordText("B", asReply), async () => dc.post(T, "B"), AFTER);
+    const b = await sendOnce(dir, `discord:${T}`, discordText("B", asReply), async () => dc.post(T, "B", false, undefined, asReply.reply), AFTER);
     const plainB = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => dc.post(T, "B"), AFTER);
     expect({ stillA: stillA.duplicate, b: [b.id, b.duplicate], plainB: plainB.duplicate }).toEqual({ stillA: true, b: [first.id, true], plainB: false });
+  }));
+
+// review 3 of #338: thread reply's post is recorded, then it waits for its status while another command edits the post
+test("an edit made while the posting command still runs stays the post's record", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    const dc = discordApi();
+    await sendOnce(dir, `discord:${T}`, discordText("A"), async () => {
+      const p = await dc.post(T, "A");
+      await dc.edit(T, p.id, "B");
+      return p;
+    });
+    const b = await sendOnce(dir, `discord:${T}`, discordText("B"), async () => dc.post(T, "B"), AFTER);
+    const a = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"), AFTER);
+    expect({ b: b.duplicate, a: a.duplicate }).toEqual({ b: true, a: false });
+  }));
+
+// review 3 of #338: a text posted while a file share is still uploading is newer than the share's request
+test("a text posted while a Slack share uploads stays the channel's last post when the share answers later", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    const clock = fakeClock(1700000200_000);
+    let ts = 1700000300;
+    let slack: Slack | undefined;
+    const text = { parts: { platform: "slack", where: "C1/" }, text: "다른 글" };
+    const http: Http = async (req) => {
+      const method = req.url.split("/").pop();
+      if (method === "files.completeUploadExternal") {
+        await sendOnce(dir, "slack:C1", text, async () => ({ id: (await (slack as Slack).post("C1", text.text)).ts }));
+        clock.at = 1700000400_000;
+      }
+      const body = method === "chat.postMessage" ? { ok: true, channel: "C1", ts: `${++ts}.000100` } : method === "files.getUploadURLExternal" ? { ok: true, upload_url: "http://slack.test/up", file_id: "F1" } : { ok: true };
+      return { status: 200, headers: {}, body: JSON.stringify(body) };
+    };
+    slack = new Slack(http, clock, { token: "t" }, "http://slack.test/api");
+    await slack.upload("C1", [{ filename: "deck.pdf", length: 3, read: async () => new Uint8Array([1, 2, 3]) }]);
+    const again = await sendOnce(dir, "slack:C1", text, async () => ({ id: (await slack.post("C1", text.text)).ts }), AFTER);
+    expect(again.duplicate).toBe(true);
   }));
 
 test("a Slack file share is the channel's last post, though Slack names no message for it", () =>

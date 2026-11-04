@@ -156,7 +156,8 @@ const prune = (dir: string, now: number): void => {
 // Sends once per key and window, and never when the place's last post has the same key. place names where the message
 // goes (platform, channel or thread); key is sendKey of the place and the content. The claim is a file created with
 // O_EXCL, so of two senders started together exactly one sends; the other waits for its id. A send that fails removes
-// its claim and leaves the last post as it was, so a retry after a real failure still goes out.
+// its claim and leaves the last post as it was, so a retry after a real failure still goes out. send must post through a
+// messenger client, which records the new message as the place's last post (setPostLedger on dir).
 export const sendOnce = async (dir: string, place: string, post: Post, send: () => Promise<Sent>, opts: SendOnceOptions = {}): Promise<SendOnceResult> => {
   const key = postKey(post);
   const now = opts.now ?? Date.now;
@@ -166,8 +167,9 @@ export const sendOnce = async (dir: string, place: string, post: Post, send: () 
   prune(dir, now());
   const path = join(dir, `${key}.json`);
   const posted = (sent: Sent): SendOnceResult => {
+    // the place's last-post record was written once, by the messenger client when the message was created (notePosted):
+    // writing it again here would undo an edit made while this command still ran (review 3 of #338)
     writeMark(path, { at: now(), id: sent.id });
-    writeLast(dir, place, { at: now(), key, id: sent.id, parts: post.parts });
     return { id: sent.id, duplicate: false, content: sent.content };
   };
   if (opts.again) return posted(await send());
