@@ -515,14 +515,18 @@ export const coveredBy = (brief: string, e: Directive, ledger: Pick<Ledger, "ent
 // injected: the ledger texts launch puts (or put) into this brief; a require entry may name one of them (its rule's sentence)
 export const requireMissing = (brief: string, e: Directive, injected = ""): string[] =>
   (e.require ?? []).filter((re) => !new RegExp(re, "m").test(`${leadText(brief)}\n${injected}`));
-// The ledger block dori launch put into a brief (under DIRECTIVES_HEADING), or "" when there is none.
+// The ledger texts dori put into a brief: launch's block (DIRECTIVES_HEADING) and dori directives apply's (APPLIED_HEADING).
 export const ledgerBlock = (brief: string): string => {
   const own = beforeGenerated(brief);
-  const at = headingAt(own, DIRECTIVES_HEADING);
-  if (at < 0) return "";
-  const rest = own.slice(at + DIRECTIVES_HEADING.length);
-  const next = rest.search(/\n## /);
-  return next < 0 ? rest : rest.slice(0, next);
+  const out: string[] = [];
+  for (const heading of [DIRECTIVES_HEADING, APPLIED_HEADING]) {
+    const at = headingAt(own, heading);
+    if (at < 0) continue;
+    const rest = own.slice(at + heading.length);
+    const next = rest.search(/\n## /);
+    out.push(next < 0 ? rest : rest.slice(0, next));
+  }
+  return out.join("\n\n");
 };
 
 // --- the owner's message and a thread the lead opens: the work the lead does without a lane brief ---

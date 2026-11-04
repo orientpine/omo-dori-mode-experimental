@@ -503,6 +503,9 @@ def main(argv: list[str]) -> int:
                     record["asked"] = False
         for item in fresh:
             try:
+                if seed:
+                    # an issue or proposed PR is asked later only if it turns class 3; so the seed keeps what it is now
+                    item["asked"] = item.get("recheck") and item["classify"]()[0] == "3"
                 item["cls"], item["why"] = ("0", "seed") if seed else item["classify"]()
             except Incomplete as error:
                 # this item alone could not be read in full: a port all the same, the lead checks it by hand; the rest go on
@@ -549,7 +552,7 @@ def main(argv: list[str]) -> int:
             state["minor"].append({"key": item["key"], "label": item["label"], "cls": cls})
         if cls in counts:
             counts[cls] += 1
-        state["items"][item["key"]] = {"class": cls, "why": item["why"], "at": stamp(now), **({"asked": cls in ("0", "3")} if item.get("recheck") else {})}
+        state["items"][item["key"]] = {"class": cls, "why": item["why"], "at": stamp(now), **({"asked": item["asked"] if cls == "0" else cls == "3"} if item.get("recheck") else {})}
         save_state(state_path, state)
         print(f"UPSTREAM_ITEM {item['key']} class={cls} {item['why']}")
     weekly = False

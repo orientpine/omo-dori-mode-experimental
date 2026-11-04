@@ -228,6 +228,19 @@ test("an open issue first read as the herdr harness and retitled to our code is 
   expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["issue:31", "3"]]);
 });
 
+test("right after --seed, a closed PR or issue that opens or merges into another branch is asked; what was open at the seed is not", async () => {
+  expect((await run(["--seed"])).code).toBe(0);
+  const prs = JSON.parse(readFileSync(join(gh, "prs.json"), "utf8")) as Record<string, unknown>[];
+  for (const p of prs) if (p.number === 46) Object.assign(p, { state: "MERGED", mergedAt: "2026-11-03T00:00:00Z", baseRefName: "next", mergeCommit: { oid: "4".repeat(39) + "6" } });
+  json("prs.json", prs);
+  const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
+  for (const i of issues) if (i.number === 33) i.state = "OPEN";
+  json("issues.json", issues);
+  await run();
+  await run();
+  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item).sort()).toEqual(["issue:33", "pr-proposed:46"]);
+});
+
 test("an item the owner already decided is marked by hand and never reaches the inbox", async () => {
   expect((await run(["--mark", "pr:30", "--why", "owner chose; lane backlog-loop"])).out).toContain("UPSTREAM_MARKED pr:30");
   expect((await run(["--mark", "pr-proposed:45"])).out).toContain("UPSTREAM_MARKED pr-proposed:45");
