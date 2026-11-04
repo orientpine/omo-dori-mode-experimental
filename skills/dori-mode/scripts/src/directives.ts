@@ -512,18 +512,7 @@ export const coveredBy = (brief: string, e: Directive, ledger: Pick<Ledger, "ent
   const named = ledger.entries.filter((x) => x.via === e.id);
   return named.length > 0 && named.every((x) => hasDirective(brief, x));
 };
-// injected: the ledger texts launch puts (or put) into this brief; a require entry may name one of them (its rule's sentence)
-export const requireMissing = (brief: string, e: Directive, injected = ""): string[] =>
-  (e.require ?? []).filter((re) => !new RegExp(re, "m").test(`${leadText(brief)}\n${injected}`));
-// The ledger rules a brief holds in full, wherever dori put them (launch's block, dori directives apply's, a relaunch's
-// text after an older footer): an inject entry counts only when its whole text is there, not its heading alone.
-export const ledgerTexts = (brief: string, ledger: Pick<Ledger, "entries">): string => {
-  const b = squash(brief);
-  return ledger.entries
-    .filter((e) => e.mode === "inject" && !e.block && b.includes(squash(directiveText(e))))
-    .map((e) => directiveText(e))
-    .join("\n\n");
-};
+export const requireMissing = (brief: string, e: Directive): string[] => (e.require ?? []).filter((re) => !new RegExp(re, "m").test(leadText(brief)));
 
 // --- the owner's message and a thread the lead opens: the work the lead does without a lane brief ---
 
@@ -590,7 +579,6 @@ export const planDirectives = (brief: string, ledger: Ledger, ctx: ScopeContext,
   const missing: { e: Directive; patterns: string[]; why: string }[] = [];
   const waived: { e: Directive; reason: string }[] = [];
   const applied: string[] = [];
-  const requires: { e: Directive; why: string }[] = [];
   for (const e of ledger.entries) {
     if (e.mode === "lead") continue;
     const why = appliesUnder(e, ctx, pick);
@@ -605,13 +593,10 @@ export const planDirectives = (brief: string, ledger: Ledger, ctx: ScopeContext,
     const shown = e.mode === "inject" && !e.block ? (pointerOf(e, ledger) ?? e) : e;
     if (e.mode === "inject" && e.block) blocks.push(e.block);
     else if (e.mode === "inject" && !coveredBy(brief, e, ledger) && !add.some((a) => a.e.id === shown.id)) add.push({ e: shown, why: shown === e ? why : `${why}, for ${e.id}` });
-    else if (e.mode === "require") requires.push({ e, why });
-  }
-  // a require entry is met by the lead's text, by the ledger block already in the brief, or by what this plan puts in
-  const injected = [ledgerTexts(brief, ledger), ...add.map(({ e }) => directiveText(e))].join("\n\n");
-  for (const { e, why } of requires) {
-    const patterns = requireMissing(brief, e, injected);
-    if (patterns.length) missing.push({ e, patterns, why });
+    else if (e.mode === "require") {
+      const patterns = requireMissing(brief, e);
+      if (patterns.length) missing.push({ e, patterns, why });
+    }
   }
   return { add, blocks, missing, waived, applied };
 };
@@ -643,7 +628,7 @@ export const briefGaps = (lane: Pick<Lane, "key" | "directives" | "ui">, brief: 
     if (e.mode === "lead" || waived.has(e.id)) continue;
     const why = appliesUnder(e, ctx, lane.directives?.pick);
     if (!why) continue;
-    const lacks = e.block ? !squash(brief).includes(squash(blockLines[e.block])) : e.mode === "inject" ? !coveredBy(brief, e, ledger) : requireMissing(brief, e, ledgerTexts(brief, ledger)).length > 0;
+    const lacks = e.block ? !squash(brief).includes(squash(blockLines[e.block])) : e.mode === "inject" ? !coveredBy(brief, e, ledger) : requireMissing(brief, e).length > 0;
     // an entry with a pointer is a gap of its pointer: that is the text to send
     const shown = e.mode === "inject" && !e.block ? (pointerOf(e, ledger) ?? e) : e;
     if (lacks && !out.some((g) => g.id === shown.id)) out.push({ lane: lane.key, id: shown.id, line: `DIRECTIVE_GAP ${lane.key} ${shown.id}: ${shown.name} applies (${shown === e ? why : `${why}, for ${e.id}`}) and is not in the brief` });

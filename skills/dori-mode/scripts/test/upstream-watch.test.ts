@@ -250,6 +250,17 @@ test("a PR merged outside main that the old watcher recorded as pr:N is classifi
   expect(items.filter((i) => i === "pr-proposed:44")).toHaveLength(1);
 });
 
+test("an issue a merged PR closed and that opened again is asked", async () => {
+  await run();
+  expect(seen()["issue:27"]!.class).toBe("2");
+  const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
+  for (const i of issues) if (i.number === 27) Object.assign(i, { state: "OPEN", title: "anonymous usage counts come back after the fix" });
+  json("issues.json", issues);
+  const before = inbox().length;
+  await run();
+  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["issue:27", "3"]]);
+});
+
 test("an item the owner already decided is marked by hand and never reaches the inbox", async () => {
   expect((await run(["--mark", "pr:30", "--why", "owner chose; lane backlog-loop"])).out).toContain("UPSTREAM_MARKED pr:30");
   expect((await run(["--mark", "pr-proposed:45"])).out).toContain("UPSTREAM_MARKED pr-proposed:45");

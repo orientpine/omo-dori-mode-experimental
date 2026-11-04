@@ -351,10 +351,9 @@ def classify_issue(issue: dict, here: Here, closed_by: dict[int, int]) -> tuple[
     n, title = issue["number"], issue["title"]
     if here.cites_number(n):
         return "1", "우리 코드가 이 이슈를 인용"
-    if n in closed_by:
-        return "2", f"머지된 PR #{closed_by[n]}가 닫음(그 PR로 판단)"
+    # a merged PR's "Fixes #N" counts only while the issue stays closed: opened again, it is open work again
     if issue.get("state") != "OPEN":
-        return "2", "코드 없이 닫힘"
+        return "2", f"머지된 PR #{closed_by[n]}가 닫음(그 PR로 판단)" if n in closed_by else "코드 없이 닫힘"
     if ISSUE_HARNESS.search(title):
         return "2", "herdr 하네스"
     return "3", "원본 main에 없음(열린 이슈), 검토 거리"
