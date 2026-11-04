@@ -113,6 +113,35 @@ test("a text posted while a Slack share uploads stays the channel's last post wh
     expect(again.duplicate).toBe(true);
   }));
 
+// review 5 of #338: two edits of one message at once; the first one's answer comes last. The service holds the edit it
+// applied last, and the record must say the same, so a repeat of that text is refused
+test("two edits of one message at once: the record holds the text the service applied last, though the first edit answers last", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    let n = 300;
+    let held: string | undefined;
+    let releaseB: () => void = () => {};
+    const bAnswered = new Promise<void>((r) => (releaseB = r));
+    const http: Http = async (req) => {
+      if (req.method === "PATCH") {
+        held = (JSON.parse(String(req.body)) as { content: string }).content;
+        if (held === "B") await bAnswered;
+        return { status: 200, headers: {}, body: "{}" };
+      }
+      return { status: 200, headers: {}, body: JSON.stringify(req.url.endsWith("/messages") ? { id: String(1566900000000000000n + BigInt(++n)), content: "" } : {}) };
+    };
+    const dc = new Discord(http, fakeClock(0), "t", "http://discord.test");
+    const first = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"));
+    const editB = dc.edit(T, first.id, "B");
+    // the second edit is under way before the first one answers
+    const editC = dc.edit(T, first.id, "C");
+    await Promise.resolve();
+    releaseB();
+    await Promise.all([editB, editC]);
+    const c = await sendOnce(dir, `discord:${T}`, discordText(held ?? ""), async () => dc.post(T, held ?? ""), AFTER);
+    expect({ held, repeat: c.duplicate }).toEqual({ held: "C", repeat: true });
+  }));
+
 // the Slack HTTP fake shared by the share tests: chat.postMessage answers the next ts, an upload goes through
 const slackApi = (ts: { n: number }): Http => async (req) => {
   const method = req.url.split("/").pop();

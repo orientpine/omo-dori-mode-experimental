@@ -1,7 +1,7 @@
 import type { Clock } from "../run.ts";
 import { DEFAULT_RETRY, guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
 import { nameThreadLinks } from "./thread-links.ts";
-import { notePosted, noteEdited } from "../send-dedupe.ts";
+import { notePosted, noteEdited, withMessageLock } from "../send-dedupe.ts";
 import { type DiscordFile, filesKey } from "./upload-files.ts";
 
 const retryAfter = (body: string): number | undefined => {
@@ -82,8 +82,11 @@ export class Discord {
   }
 
   async edit(channelId: string, messageId: string, content: string): Promise<void> {
-    await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: guardText(await this.namedLinks(guardText(content))) });
-    noteEdited(`discord:${channelId}`, messageId, content);
+    // held from the request to the record, so two edits at once are recorded in the order Discord applied them
+    await withMessageLock(`discord:${channelId}`, messageId, async () => {
+      await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: guardText(await this.namedLinks(guardText(content))) });
+      noteEdited(`discord:${channelId}`, messageId, content);
+    });
   }
 
   // a thread link the owner's client has not loaded shows as "unknown"; it goes out as [name](<url>) (thread-links.ts)

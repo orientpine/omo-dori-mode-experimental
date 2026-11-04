@@ -1,5 +1,5 @@
 import type { Clock } from "../run.ts";
-import { notePosted, noteEdited } from "../send-dedupe.ts";
+import { notePosted, noteEdited, withMessageLock } from "../send-dedupe.ts";
 import { guardText, type Http, MessengerError, withBackoff } from "./http.ts";
 
 export type TgTarget = { readonly chatId: number | string; readonly threadId?: number };
@@ -47,8 +47,11 @@ export class Telegram {
   }
 
   async edit(t: TgTarget, messageId: number, text: string, rich = false): Promise<void> {
-    await this.call("editMessageText", { chat_id: t.chatId, message_id: messageId, text: guardText(text), ...(rich ? { parse_mode: "HTML" } : {}) });
-    noteEdited(tgPlace(t), String(messageId), text);
+    // held from the request to the record, so two edits at once are recorded in the order Telegram applied them
+    await withMessageLock(tgPlace(t), String(messageId), async () => {
+      await this.call("editMessageText", { chat_id: t.chatId, message_id: messageId, text: guardText(text), ...(rich ? { parse_mode: "HTML" } : {}) });
+      noteEdited(tgPlace(t), String(messageId), text);
+    });
   }
 
   async typing(t: TgTarget): Promise<void> {

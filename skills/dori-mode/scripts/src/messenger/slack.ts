@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Clock } from "../run.ts";
 import { guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
-import { notePosted, noteEdited } from "../send-dedupe.ts";
+import { notePosted, noteEdited, withMessageLock } from "../send-dedupe.ts";
 import { type ThreadLedger, tsAfter } from "./thread-ledger.ts";
 
 // the place a message is in for the repeat check of dori send (send-dedupe.ts): the channel, or the thread in it
@@ -58,8 +58,11 @@ export class Slack {
 
   // threadTs: the thread the message is in, for the repeat check's record of that place
   async edit(channel: string, ts: string, text: string, threadTs?: string): Promise<void> {
-    await this.call("chat.update", { channel, ts, text: guardText(text) });
-    noteEdited(slackPlace(channel, threadTs), ts, text);
+    // held from the request to the record, so two edits at once are recorded in the order Slack applied them
+    await withMessageLock(slackPlace(channel, threadTs), ts, async () => {
+      await this.call("chat.update", { channel, ts, text: guardText(text) });
+      noteEdited(slackPlace(channel, threadTs), ts, text);
+    });
   }
 
   // Every file gets its own upload URL and bytes, then one completeUploadExternal shares them all as one message, with

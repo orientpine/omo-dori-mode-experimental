@@ -141,6 +141,42 @@ export const noteEdited = (place: string, id: string, text: string): void => {
   if (ledgerDir) noteEdit(ledgerDir, place, id, text);
 };
 
+// One edit of a message at a time, from its request to its record (review 5 of #338): two edits of one message at once
+// were recorded in the order their answers came, so the record could hold B while the message held C. The lock is a file
+// created with O_EXCL, as sendOnce's claim; a lock older than PENDING_MS belongs to an editor that died and is taken over.
+export const withMessageLock = async <T>(place: string, id: string, edit: () => Promise<T>): Promise<T> => {
+  if (!ledgerDir) return edit();
+  mkdirSync(ledgerDir, { recursive: true });
+  const path = join(ledgerDir, `edit-${sendKey([place, id])}.lock`);
+  for (;;) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(path, "wx");
+    } catch (e) {
+      if (code(e) !== "EEXIST") throw e;
+    }
+    if (fd !== undefined) {
+      closeSync(fd);
+      break;
+    }
+    try {
+      if (Date.now() - statSync(path).mtimeMs > PENDING_MS) unlinkSync(path);
+    } catch (e) {
+      ignoreMissing(e);
+    }
+    await Bun.sleep(POLL_MS);
+  }
+  try {
+    return await edit();
+  } finally {
+    try {
+      unlinkSync(path);
+    } catch (e) {
+      ignoreMissing(e);
+    }
+  }
+};
+
 const prune = (dir: string, now: number): void => {
   for (const name of readdirSync(dir)) {
     if (name.startsWith(LAST_PREFIX)) continue;
