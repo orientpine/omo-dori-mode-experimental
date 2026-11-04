@@ -41,6 +41,37 @@ const processInfo = async (run: Runner, pane: string): Promise<ProcessInfo | und
 
 export const herdrShellPid = async (run: Runner, pane: string): Promise<number> => Number((await processInfo(run, pane))?.shell_pid ?? 0);
 
+// upstream dori-superagent #69 (https://github.com/sisyphuslabs/dori-superagent/pull/69, its src/herdr.ts and
+// skills/dori-mode/scripts/src/panes.ts), ported as is
+const SHELLS: ReadonlySet<string> = new Set([
+  "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox",
+]);
+const baseName = (value: unknown): string => String(value ?? "").replace(/^-/, "").split("/").pop()!.toLowerCase();
+// A shell runs a command (not a prompt) only with an explicit command flag: -c, also inside combined short flags such
+// as -lc, or PowerShell's -Command/-File/-EncodedCommand (whole words only: its other long flags contain a 'c'). Any
+// other operand (a script path, --rcfile FILE, -o OPT) stays held.
+const runsCommand = (shell: string, arg: string): boolean =>
+  shell === "pwsh" || shell === "powershell" ? /^-(c|command|f|file|e|ec|encodedcommand)$/i.test(arg) : /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
+// PowerShell's -NoExit keeps an interactive prompt after the command runs, so that shell is held.
+const keepsPrompt = (shell: string, arg: string): boolean => (shell === "pwsh" || shell === "powershell") && /^-(noe|noexit)$/i.test(arg);
+
+// The interactive shell herdr pane process-info shows in the pane's foreground group (its name), "" for an empty or
+// unreadable group (doubt), else undefined. herdr still reports an agent suspended with Ctrl+Z as idle while its shell is
+// in front; a shell running a command flag (sh -c ...) is the agent's child and does not count.
+export const interactiveShellInFront = (info: unknown): boolean => shellInFrontName(info) !== undefined;
+export const shellInFrontName = (info: unknown): string | undefined => {
+  const procs = (info as { foreground_processes?: unknown } | undefined)?.foreground_processes;
+  if (!Array.isArray(procs) || procs.length === 0) return "";
+  for (const proc of procs as { name?: unknown; argv?: unknown }[]) {
+    let name = baseName(proc?.name);
+    let args = Array.isArray(proc?.argv) ? proc.argv.map(String).slice(1) : undefined;
+    if (name === "busybox" && args && args.length > 0) [name, args] = [baseName(args[0]), args.slice(1)];
+    if (!SHELLS.has(name)) continue;
+    if (args === undefined || !args.some((a) => runsCommand(name, a)) || args.some((a) => keepsPrompt(name, a))) return name;
+  }
+  return undefined;
+};
+
 export class HerdrShellError extends Error {
   readonly code = "HERDR_SHELL_UNSUPPORTED";
   constructor(readonly pane: string, readonly executable: string, readonly version: string, need = "Windows herdr panes need pwsh 7.3+") {
