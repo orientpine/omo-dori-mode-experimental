@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Discord } from "../src/messenger/discord.ts";
 import type { Http } from "../src/messenger/http.ts";
 import { Slack } from "../src/messenger/slack.ts";
-import { notePosted, type PostParts, type Sent, sendOnce, setPostLedger } from "../src/send-dedupe.ts";
+import { notePosted, type PostParts, type Sent, sendKey, sendOnce, setPostLedger } from "../src/send-dedupe.ts";
 import { fakeClock } from "./fakes.ts";
 
 // windowMs 0: the 10 minute window is over, only the place's last post still counts
@@ -136,6 +136,41 @@ test("two edits of one message at once: the record holds the text the service ap
     // the second edit is under way before the first one answers
     const editC = dc.edit(T, first.id, "C");
     await Promise.resolve();
+    releaseB();
+    await Promise.all([editB, editC]);
+    const c = await sendOnce(dir, `discord:${T}`, discordText(held ?? ""), async () => dc.post(T, held ?? ""), AFTER);
+    expect({ held, repeat: c.duplicate }).toEqual({ held: "C", repeat: true });
+  }));
+
+// review 6 of #338: an edit still running after a minute (HTTP retries wait up to 60 s each) keeps its lock; the next
+// edit of the message waits for it instead of taking the lock over by its age
+test("an edit lock older than a minute whose editor still runs is not taken over: the next edit waits for it", () =>
+  withDir(async (dir) => {
+    setPostLedger(dir);
+    let n = 400;
+    let held: string | undefined;
+    let releaseB: () => void = () => {};
+    const bAnswered = new Promise<void>((r) => (releaseB = r));
+    let cPatched: () => void = () => {};
+    const cSent = new Promise<void>((r) => (cPatched = r));
+    const http: Http = async (req) => {
+      if (req.method === "PATCH") {
+        held = (JSON.parse(String(req.body)) as { content: string }).content;
+        if (held === "B") await bAnswered;
+        if (held === "C") cPatched();
+        return { status: 200, headers: {}, body: "{}" };
+      }
+      return { status: 200, headers: {}, body: JSON.stringify(req.url.endsWith("/messages") ? { id: String(1566900000000000000n + BigInt(++n)), content: "" } : {}) };
+    };
+    const dc = new Discord(http, fakeClock(0), "t", "http://discord.test");
+    const first = await sendOnce(dir, `discord:${T}`, discordText("A"), async () => dc.post(T, "A"));
+    const editB = dc.edit(T, first.id, "B");
+    const old = (Date.now() - 120_000) / 1000;
+    utimesSync(join(dir, `edit-${sendKey([`discord:${T}`, first.id])}.lock`), old, old);
+    const editC = dc.edit(T, first.id, "C");
+    // B answers once C's edit request arrived (a takeover lets it through while B runs), or after 1 s without one
+    // (the lock held C back; a takeover retries every 200 ms, so 1 s tells the two apart)
+    await Promise.race([cSent, Bun.sleep(1000)]);
     releaseB();
     await Promise.all([editB, editC]);
     const c = await sendOnce(dir, `discord:${T}`, discordText(held ?? ""), async () => dc.post(T, held ?? ""), AFTER);

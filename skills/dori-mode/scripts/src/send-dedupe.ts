@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { CheckpointError, takeLock } from "./checkpoints.ts";
 
 // The same post twice in a row is a slip, never news (owner 2026-10-20 "왜 두번씩 말해!": one reply of the lead carried two
 // identical tool calls, both ran `dori send` at the same moment and the thread got the message twice). A new message with
@@ -142,38 +143,31 @@ export const noteEdited = (place: string, id: string, text: string): void => {
 };
 
 // One edit of a message at a time, from its request to its record (review 5 of #338): two edits of one message at once
-// were recorded in the order their answers came, so the record could hold B while the message held C. The lock is a file
-// created with O_EXCL, as sendOnce's claim; a lock older than PENDING_MS belongs to an editor that died and is taken over.
+// were recorded in the order their answers came, so the record could hold B while the message held C. The lock is the
+// kernel lock dori checkpoint uses (takeLock: a flock, or on Windows a delete-on-close handle): it is never taken over by
+// its age, so an edit still retrying after a minute keeps it (review 6 of #338), the kernel lets go when its editor dies,
+// and a release only ever removes the editor's own lock. A waiter gives up after EDIT_LOCK_WAIT_MS and edits nothing.
+const EDIT_LOCK_WAIT_MS = 10 * 60_000;
 export const withMessageLock = async <T>(place: string, id: string, edit: () => Promise<T>): Promise<T> => {
   if (!ledgerDir) return edit();
   mkdirSync(ledgerDir, { recursive: true });
   const path = join(ledgerDir, `edit-${sendKey([place, id])}.lock`);
+  const since = Date.now();
+  let release: () => void;
   for (;;) {
-    let fd: number | undefined;
     try {
-      fd = openSync(path, "wx");
-    } catch (e) {
-      if (code(e) !== "EEXIST") throw e;
-    }
-    if (fd !== undefined) {
-      closeSync(fd);
+      release = takeLock(path, Date.now(), "message edit", `${place} ${id}`);
       break;
-    }
-    try {
-      if (Date.now() - statSync(path).mtimeMs > PENDING_MS) unlinkSync(path);
     } catch (e) {
-      ignoreMissing(e);
+      if (!(e instanceof CheckpointError)) throw e;
+      if (Date.now() - since > EDIT_LOCK_WAIT_MS) throw new Error(`EDIT_LOCKED ${e.message}; waited ${Math.round(EDIT_LOCK_WAIT_MS / 60_000)} min, nothing edited`);
     }
     await Bun.sleep(POLL_MS);
   }
   try {
     return await edit();
   } finally {
-    try {
-      unlinkSync(path);
-    } catch (e) {
-      ignoreMissing(e);
-    }
+    release();
   }
 };
 
