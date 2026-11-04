@@ -259,8 +259,8 @@ test("a thread reply with emoji and the same text without them, sent to that thr
 test("a thread reply whose status step is held still counts as posted: the same reply meanwhile is the repeat", async () => {
   const state = withState();
   const posts: string[] = [];
-  let posted: () => void = () => {};
-  const postSeen = new Promise<void>((r) => (posted = r));
+  let inStatus: () => void = () => {};
+  const statusHeld = new Promise<void>((r) => (inStatus = r));
   let release: () => void = () => {};
   const released = new Promise<void>((r) => (release = r));
   let heldOne = false;
@@ -269,12 +269,13 @@ test("a thread reply whose status step is held still counts as posted: the same 
     if (req.method === "POST" && path.endsWith("/messages")) {
       const body = (await req.json()) as { content: string };
       posts.push(body.content);
-      posted();
       return Response.json({ id: String(posts.length), content: body.content });
     }
-    // the first command's status step reads the thread first: that one read is held until the test lets it go
+    // the first command's status step reads the thread first: that one read is held until the test lets it go, and the
+    // test goes on only once the first command is inside it (its post answered, its status step started)
     if (req.method === "GET" && posts.length && !heldOne) {
       heldOne = true;
+      inStatus();
       await released;
     }
     return Response.json({});
@@ -283,7 +284,7 @@ test("a thread reply whose status step is held still counts as posted: the same 
     `DORI_DISCORD_API=http://127.0.0.1:${server.port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "thread", "reply", "discord:300000000000000004", "same words"]);
   try {
     const first = reply();
-    await postSeen;
+    await statusHeld;
     // the first command is past its post and inside its status step; its claim is now older than the takeover minute
     ageMarks(state.dir, 2);
     const second = await reply();
