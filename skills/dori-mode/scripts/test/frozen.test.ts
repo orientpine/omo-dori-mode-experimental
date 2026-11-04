@@ -98,6 +98,55 @@ test("a frozen session closed early still forwards texts to the session that rep
   expect(replacementOf(state.dir, OLD, Date.parse("2026-10-11T21:00:00Z"))).toBeUndefined();
 });
 
+test("a close that failed and a retry that closed still forward texts to the replacement until the first close time", async () => {
+  // Given: review #321 round 2, the retry set closeAt to now and the alias was lost
+  writeFrozen(state.dir, rec());
+  const base = fakeRunner(w);
+  let rmFails = true;
+  const deps = { run: async (argv: readonly string[]) => (argv[0] === "aoe" && argv[1] === "rm" && rmFails ? { code: 1, out: "", err: "device busy" } : base(argv)), procs: async () => [], signal };
+  // When: the audit's close fails, the next tick closes it
+  const failed = await closeFrozen(deps, state.dir, rec(), Date.parse("2026-10-11T16:45:00Z"));
+  rmFails = false;
+  const retried = await closeDueFrozen(deps, state.dir, Date.parse("2026-10-11T16:46:00Z"));
+  // Then
+  expect(failed).toStartWith(`HANDOVER_OLD_CLOSE_FAIL ${OLD}`);
+  expect(retried).toEqual([`HANDOVER_OLD_CLOSED aoe session ${OLD_ID} (${OLD}) stopped and trashed; its log stays at /s/old.jsonl`]);
+  expect(readFrozen(state.dir)).toEqual([]);
+  expect(replacementOf(state.dir, OLD, Date.parse("2026-10-11T21:00:00Z"))).toBe("aoe_lead2_5e5e5e5e");
+});
+
+test("a close that throws after the old session was resumed stops it again and leaves it due, like a close that failed", async () => {
+  // Given: review #321 round 2, the second aoe list (inside the close) exits nonzero and throws
+  writeFrozen(state.dir, rec());
+  const base = fakeRunner(w);
+  let lists = 0;
+  const deps = { run: async (argv: readonly string[]) => (argv[0] === "aoe" && argv[1] === "list" && ++lists > 1 ? { code: 1, out: "", err: "aoe: database locked" } : base(argv)), procs: async () => [], signal };
+  // When
+  const line = await closeFrozen(deps, state.dir, rec(), Date.parse("2026-10-11T16:45:00Z"));
+  // Then
+  expect(line).toStartWith(`HANDOVER_OLD_CLOSE_FAIL ${OLD}: `);
+  expect(line).toContain("database locked");
+  expect(line).toContain("stopped again (3/3 processes)");
+  expect(sigs).toEqual(["SIGCONT 13", "SIGCONT 12", "SIGCONT 11", "SIGSTOP 11", "SIGSTOP 12", "SIGSTOP 13"]);
+  expect(readFrozen(state.dir).map((r) => r.closeAt)).toEqual(["2026-10-11T16:45:00.000Z"]);
+});
+
+test("a close whose first session listing throws resumes nothing, keeps the record due and says so; a thaw drops the forwarding", async () => {
+  // Given
+  writeFrozen(state.dir, rec());
+  const base = fakeRunner(w);
+  const deps = { run: async (argv: readonly string[]) => (argv[0] === "aoe" && argv[1] === "list" ? { code: 1, out: "", err: "aoe: database locked" } : base(argv)), procs: async () => [], signal };
+  // When
+  const line = await closeFrozen(deps, state.dir, rec(), Date.parse("2026-10-11T16:45:00Z"));
+  const forwarded = replacementOf(state.dir, OLD, Date.parse("2026-10-11T21:00:00Z"));
+  thawFrozen({ signal }, state.dir, OLD);
+  // Then
+  expect(line).toBe(`HANDOVER_OLD_CLOSE_FAIL ${OLD}: the sessions could not be listed (aoe list failed: aoe: database locked); still frozen, the next freshness tick tries again`);
+  expect(sigs).toEqual(["SIGCONT 13", "SIGCONT 12", "SIGCONT 11"]);
+  expect(forwarded).toBe("aoe_lead2_5e5e5e5e");
+  expect(replacementOf(state.dir, OLD, Date.parse("2026-10-11T21:00:00Z"))).toBeUndefined();
+});
+
 test("sync and dead-panes leave a frozen old lead alone: it is neither an unregistered session nor a dead pane", async () => {
   // Given
   const base = depsFor(w, fakeClock(0), state.dir, { backend: "herdr", deadPanePatterns: ["has stopped"] });

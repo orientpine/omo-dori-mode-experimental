@@ -94,13 +94,12 @@ const readForwards = (stateDir: string): Forward[] => {
   });
 };
 
-// The frozen record goes; its forwarding stays until the record would have been closed by the clock.
-const forget = (stateDir: string, rec: FrozenRecord, now: number): void => {
-  if (rec.to && rec.closeAt && Date.parse(rec.closeAt) > now) {
-    mkdirSync(forwardDir(stateDir), { recursive: true });
-    writeFileSync(forwardFile(stateDir, rec.pane), JSON.stringify({ pane: rec.pane, to: rec.to, until: rec.closeAt } satisfies Forward));
-  }
-  rmSync(frozenFile(stateDir, rec.pane), { force: true });
+// Written before any close attempt, so neither a failed close nor its retry (which sets closeAt to now) can lose it:
+// the forwarding lasts until the record would have been closed by the clock (review #321).
+const keepForwarding = (stateDir: string, rec: FrozenRecord, now: number): void => {
+  if (!rec.to || !rec.closeAt || Date.parse(rec.closeAt) <= now || existsSync(forwardFile(stateDir, rec.pane))) return;
+  mkdirSync(forwardDir(stateDir), { recursive: true });
+  writeFileSync(forwardFile(stateDir, rec.pane), JSON.stringify({ pane: rec.pane, to: rec.to, until: rec.closeAt } satisfies Forward));
 };
 
 export const writeFrozen = (stateDir: string, rec: FrozenRecord): void => {
@@ -141,6 +140,8 @@ export const thawFrozen = (deps: Pick<FreezeDeps, "signal">, stateDir: string, p
   if (!rec) return `FROZEN_NONE ${pane}: no frozen session recorded for this pane (dori handover frozen lists them)`;
   const n = resume(deps, rec);
   rmSync(frozenFile(stateDir, pane), { force: true });
+  // running again: texts for it stay with it
+  rmSync(forwardFile(stateDir, pane), { force: true });
   return `HANDOVER_OLD_THAWED ${pane}: ${n}/${new Set(rec.pids).size} processes resumed (agent ${rec.agentPid})`;
 };
 
@@ -148,19 +149,32 @@ export const thawFrozen = (deps: Pick<FreezeDeps, "signal">, stateDir: string, p
 // aoe. Its conversation log is not touched. A close that fails stops it again, so the old and the new lead never both run,
 // and one the clock closes is due again at once, so the next freshness tick tries again (review #321).
 export const closeFrozen = async (deps: FreezeDeps, stateDir: string, rec: FrozenRecord, now = Date.now()): Promise<string> => {
-  if (!sessionFor(await liveSessions(deps.run), rec.pane)) {
-    forget(stateDir, rec, now);
+  keepForwarding(stateDir, rec, now);
+  const due = (): void => {
+    if (rec.closeAt) writeFrozen(stateDir, { ...rec, closeAt: new Date(now).toISOString() });
+  };
+  const retry = rec.closeAt ? "the next freshness tick tries again" : `dori handover close-frozen ${rec.pane} tries again`;
+  let open;
+  try {
+    open = sessionFor(await liveSessions(deps.run), rec.pane);
+  } catch (e) {
+    due();
+    return `HANDOVER_OLD_CLOSE_FAIL ${rec.pane}: the sessions could not be listed (${e instanceof Error ? e.message : String(e)}); still frozen, ${retry}`;
+  }
+  if (!open) {
+    rmSync(frozenFile(stateDir, rec.pane), { force: true });
     return `HANDOVER_OLD_GONE ${rec.pane}: the frozen session is no longer open; record removed`;
   }
   resume(deps, rec);
-  const closed = await closeAoeSession(deps.run, rec.pane);
+  // from here on the old session runs: a close that throws is met like one that failed
+  const closed = await closeAoeSession(deps.run, rec.pane).catch((e: unknown) => `close threw: ${e instanceof Error ? e.message : String(e)}`);
   if (!isClosedLine(closed)) {
     const pids = [...new Set(rec.pids)];
     const stopped = pids.filter((p) => deps.signal(p, "SIGSTOP")).length;
-    if (rec.closeAt) writeFrozen(stateDir, { ...rec, closeAt: new Date(now).toISOString() });
-    return `HANDOVER_OLD_CLOSE_FAIL ${rec.pane}: ${closed}; stopped again (${stopped}/${pids.length} processes), ${rec.closeAt ? "the next freshness tick tries again" : `dori handover close-frozen ${rec.pane} tries again`}`;
+    due();
+    return `HANDOVER_OLD_CLOSE_FAIL ${rec.pane}: ${closed}; stopped again (${stopped}/${pids.length} processes), ${retry}`;
   }
-  forget(stateDir, rec, now);
+  rmSync(frozenFile(stateDir, rec.pane), { force: true });
   return `HANDOVER_OLD_CLOSED ${closed}${rec.oldLog ? `; its log stays at ${rec.oldLog}` : ""}`;
 };
 
