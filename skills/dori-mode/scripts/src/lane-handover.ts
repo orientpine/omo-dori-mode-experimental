@@ -562,7 +562,18 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   // times on 2026-11-03/04): it is brought back first, and its screen is judged only once it runs
   const held = holdOf(deps.stat ?? readStat, agent.pid);
   // a dry run (a rollover proposal's preview) only says so: nothing is signalled or typed without an approval
-  if (held && opts.dryRun) emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, so its screen is stale; a run resumes it first (dry run: left as it is)`);
+  // another run of this lane froze it on purpose (its lock or its pending journal names a live pid): left as it is, the
+  // lock below refuses this run
+  const other = [join(config.stateDir, "handover", "lanes", `${key}.lock`), pendingFile(config.stateDir, key)].some((f) => {
+    try {
+      const pid = (JSON.parse(readFileSync(f, "utf8")) as { pid?: number }).pid;
+      return typeof pid === "number" && pid !== process.pid && deps.alive(pid);
+    } catch {
+      return false;
+    }
+  });
+  if (held && other) emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, but another handover of this lane runs (it froze the agent): left as it is`);
+  else if (held && opts.dryRun) emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, so its screen is stale; a run resumes it first (dry run: left as it is)`);
   else if (held) {
     emit(`LANE_SUSPENDED ${key} ${lane.pane}: agent ${agent.pid} is ${held}, so its screen is stale; resuming it`);
     const back = await resumeAgent(deps, lane.pane, agent.pid);

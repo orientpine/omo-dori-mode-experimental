@@ -1417,6 +1417,20 @@ test("an automatic start whose lane stays busy for the whole wait is refused as 
   expect(existsSync(join(state.dir, "handover", "lanes", "demo.lock"))).toBe(false);
 });
 
+test("a stopped agent that another handover run of the lane froze is left as it is: no signal, nothing typed", async () => {
+  const base = await setup();
+  const sigsHere: string[] = [];
+  const deps: LaneHandoverDeps = { ...base, alive: (pid) => pid === 4242 || base.alive(pid), stat: (pid) => (pid === 11 ? { pid: 11, state: "T", ppid: 10, pgrp: 11, session: 10, tpgid: 11 } : undefined), signal: (pid, sig) => (sigsHere.push(`${sig} ${pid}`), true) };
+  mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
+  writeFileSync(join(state.dir, "handover", "lanes", "demo.lock"), JSON.stringify({ pid: 4242, at: "2026-10-11T16:30:00Z" }));
+  w.screens[OLD] = HIGH;
+  const callsBefore = w.calls.length;
+  await laneHandover(deps, "demo", "aoe_lead_x", OK);
+  expect(printed).toContain("LANE_SUSPENDED demo aoe_demo_1a1a1a1a: agent 11 is stopped, but another handover of this lane runs (it froze the agent): left as it is");
+  expect(sigsHere).toEqual([]);
+  expect(w.calls.slice(callsBefore).filter((c) => c[0] === "stty" || (c[0] === "herdr" && c[2] === "send-text") || (c[0] === "tmux" && c[1] === "send-keys"))).toEqual([]);
+});
+
 test("a dry run (a rollover proposal's preview) says a stopped agent is stopped and signals or types nothing", async () => {
   const base = await setup();
   const sigsHere: string[] = [];

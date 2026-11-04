@@ -97,8 +97,8 @@ const foreground = (s: JobStat | undefined): boolean => !!s && s.state !== "T" &
 const where = (s: JobStat | undefined): string => (s ? `state ${s.state}, tty foreground group ${s.tpgid}, its group ${s.pgrp}` : "gone");
 
 // Brings a pane's agent back to the running foreground job of its tty, as the lead did by typing fg: a stopped foreground
-// job is continued; a background one is brought forward with fg typed into its shell (the line cleared first: keys sent
-// while the shell held the tty pile up on its prompt), and the raw mode bash took away is given back, with a resize that
+// job is continued; a background one is brought forward with fg typed into its shell (its pending input dropped first:
+// keys sent while the shell held the tty pile up on its prompt), and the raw mode bash took away is given back, with a resize that
 // makes omo draw its screen again. AGENT_RUNNING (nothing to do), AGENT_RESUMED, AGENT_RESUME_FAIL or AGENT_GONE.
 export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Promise<string> => {
   const stat = io.stat ?? readStat;
@@ -127,11 +127,15 @@ export const resumeAgent = async (io: ResumeIO, pane: string, pid: number): Prom
       for (let waited = 0; stat(pid)?.state !== "T" && waited < FG_WAIT_MS; waited += POLL_MS) await io.clock.sleep(POLL_MS);
       done.push("stopped so that only the shell reads the line");
     }
-    if (isHerdrPane(pane)) {
-      await io.run(["herdr", "pane", "send-text", pane, "\x15"]);
-      await io.run(["herdr", "pane", "run", pane, "fg"]);
-    } else {
-      await io.run(["tmux", "send-keys", "-t", pane, "-l", "\x15fg"]);
+    // ctrl-C first: the shell is the tty's foreground group (the agent a stopped background job), so it drops its whole
+    // pending input (text after the cursor and an open quote's continuation lines too; ctrl-U kills only what is before
+    // the cursor) and draws a fresh prompt for fg alone (herdr QA 2026-11-04)
+    if (isHerdrPane(pane)) await io.run(["herdr", "pane", "send-text", pane, "\x03"]);
+    else await io.run(["tmux", "send-keys", "-t", pane, "-l", "\x03"]);
+    await io.clock.sleep(REDRAW_MS);
+    if (isHerdrPane(pane)) await io.run(["herdr", "pane", "run", pane, "fg"]);
+    else {
+      await io.run(["tmux", "send-keys", "-t", pane, "-l", "fg"]);
       await io.run(["tmux", "send-keys", "-t", pane, "Enter"]);
     }
     done.push("fg typed into the shell");

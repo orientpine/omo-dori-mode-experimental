@@ -50,7 +50,8 @@ export const laneDiedText = (key: string, reason: string): string => `[DORI] 레
 // - LANE_SUSPENDED <key> <pane>: agent <pid> stopped|background, once seen so on two checks CONFIRM_MS apart; a pane a
 //   handover froze on purpose (a frozen record, or a handover of that lane or of the lead running) is left alone;
 // - it is brought back at once (job-control.ts resumeAgent: continued, or fg typed into its shell), and the lead gets one
-//   line saying whether that worked (LANE_SUSPENDED_TOLD / _NOT_TOLD, no retry). One the resume could not bring back gets a
+//   line saying whether that worked (LANE_SUSPENDED_TOLD / _NOT_TOLD, no retry: a submit check that could not see it
+//   taken may still see it arrive later, so a second send could reach the lead twice, as LANE_DIED's rule says). One the resume could not bring back gets a
 //   mark per pane, so it is not told twice; the mark goes once that agent runs again (LANE_RUNNING_AGAIN). One brought back
 //   gets none, so a later stop of it is told again.
 export type SuspendIO = {
@@ -59,7 +60,7 @@ export type SuspendIO = {
   readonly resume: (pane: string, pid: number) => Promise<string>;
 };
 
-type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold; readonly told: boolean; readonly text: string };
+type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold; readonly told: boolean };
 
 const kill = (pid: number, sig: "SIGSTOP" | "SIGCONT"): boolean => {
   try {
@@ -114,18 +115,7 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       }
       continue;
     }
-    const marked = readMark(file);
-    if (marked?.pid === pid) {
-      // told once; a line that did not reach the lead (it was stopped too, or busy) goes again, the agent is not touched
-      if (!marked.told && lead) {
-        const again = await submitToPane(deps.run, deps.clock, deps.config, lead, marked.text);
-        if (again.status === "SUBMITTED") {
-          writeFileSync(file, JSON.stringify({ ...marked, told: true } satisfies SuspendMark));
-          out.push(`LANE_SUSPENDED_TOLD ${t.key} ${lead}`);
-        }
-      }
-      continue;
-    }
+    if (readMark(file)?.pid === pid) continue;
     const first = seenHeld.get(t.pane);
     if (first === undefined) {
       seenHeld.set(t.pane, now);
@@ -146,7 +136,7 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     // only an agent left held needs the mark: one brought back runs, and a later stop of it is told again
     if (!resumed) {
       mkdirSync(join(stateDir, "suspended"), { recursive: true });
-      writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold, told, text } satisfies SuspendMark));
+      writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold, told } satisfies SuspendMark));
     }
   }
   return out;

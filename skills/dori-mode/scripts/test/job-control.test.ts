@@ -104,7 +104,7 @@ const io = (rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { jobs?:
   return { r, calls };
 };
 
-test("resume brings a background omo back: clears the prompt, types fg, gives back raw mode and redraws", async () => {
+test("resume brings a background omo back: drops the shell's pending input, types fg, gives back raw mode and redraws", async () => {
   // Given: the unbracketed freeze left omo stopped in the background and bash cooked the tty
   const rows = pane();
   const k = kernel(rows);
@@ -114,9 +114,9 @@ test("resume brings a background omo back: clears the prompt, types fg, gives ba
   const { r, calls } = io(rows, k);
   // When
   const line = await resumeAgent(r, "w2:p2", 200);
-  // Then: the junk on bash's line is cleared before fg, the tty is raw again and omo is the running foreground job
+  // Then: bash's pending input is dropped (ctrl-C) before fg, the tty is raw again and omo is the running foreground job
   expect(line).toBe("AGENT_RESUMED w2:p2 agent 200: fg typed into the shell, raw tty mode given back, redrawn");
-  expect(calls.slice(0, 2)).toEqual([["herdr", "pane", "send-text", "w2:p2", "\x15"], ["herdr", "pane", "run", "w2:p2", "fg"]]);
+  expect(calls.slice(0, 2)).toEqual([["herdr", "pane", "send-text", "w2:p2", "\x03"], ["herdr", "pane", "run", "w2:p2", "fg"]]);
   expect(calls.some((c) => c[0] === "stty" && c.includes("-icanon") && c.includes("-echo"))).toBe(true);
   expect(calls.filter((c) => c[0] === "stty" && c[3] === "cols").map((c) => c[4])).toEqual(["118", "119"]);
   expect(holdOf(k.stat, 200)).toBeUndefined();
@@ -164,6 +164,6 @@ test("resume stops a background omo that still runs before it types fg, so the s
   const line = await resumeAgent(r, "w2:p2", 200);
   // Then: its group is stopped before anything is typed
   expect(k.sent.slice(2)).toEqual(["SIGSTOP -200"]);
-  expect(calls[0]).toEqual(["herdr", "pane", "send-text", "w2:p2", "\x15"]);
+  expect(calls[0]).toEqual(["herdr", "pane", "send-text", "w2:p2", "\x03"]);
   expect(line).toBe("AGENT_RESUMED w2:p2 agent 200: stopped so that only the shell reads the line, fg typed into the shell, raw tty mode given back, redrawn");
 });

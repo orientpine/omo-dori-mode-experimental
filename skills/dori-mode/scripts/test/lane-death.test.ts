@@ -155,8 +155,8 @@ test("an agent a handover froze on purpose is never taken for a suspended lane",
   expect(sent(w)).toEqual([]);
 });
 
-test("a lane line the lead could not take goes again on a later check, without touching the agent a second time", async () => {
-  // Given: the lane's agent stays stopped (resume fails) and the lead pane cannot take a line at first
+test("a lane line the lead could not take is not sent again (it may still arrive), and the agent is not touched again", async () => {
+  // Given: the lane's agent stays stopped (resume fails) and the lead pane cannot be seen taking the line
   const { w, deps } = world({ "aoe_hs_aaaa1111": "live" });
   await deps(T0).registry.write(laneOf("stuck", "aoe_hs_aaaa1111"));
   let resumes = 0;
@@ -169,12 +169,12 @@ test("a lane line the lead could not take goes again on a later check, without t
   expect(await tick(T0)).toEqual([]);
   w.stuckReads = 10_000;
   expect((await tick(T0 + 30 * S)).at(-1)).toStartWith("LANE_SUSPENDED_NOT_TOLD stuck:");
-  const before = sent(w).length;
+  const typed = w.calls.length;
   // When: the lead pane takes lines again
   w.stuckReads = 0;
-  // Then: the same line goes once, and the agent is not resumed again
-  expect(await tick(T0 + 60 * S)).toEqual(["LANE_SUSPENDED_TOLD stuck lead:p1"]);
+  // Then: nothing is sent twice and the agent is resumed only once
+  expect(await tick(T0 + 60 * S)).toEqual([]);
   expect(await tick(T0 + 90 * S)).toEqual([]);
-  expect(sent(w).slice(before)).toEqual(["[DORI] 레인 stuck 멈춤(프로세스 정지) — 되살리지 못했어(agent 200: fg typed into the shell, still not the running foreground job) — aoe_hs_aaaa1111에서 fg를 쳐 봐"]);
+  expect(w.calls.length).toBe(typed);
   expect(resumes).toBe(1);
 });
