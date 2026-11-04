@@ -45,9 +45,27 @@ export const holdOf = (stat: StatOf, pid: number): Hold | undefined => {
   return p.tpgid > 0 && p.pgrp !== p.tpgid && p.session !== p.pid && stat(p.ppid)?.pid === p.session ? "background" : undefined;
 };
 
+// kill(0) signals the caller's own process group, kill(-1) every process it may signal: a pid 0 in a QA frozen record
+// stopped handover-simplify's omo itself (w1:p2D, 2026-11-04 09:41Z, two hours T with no frozen record). No signal goes to
+// 0, 1 or -1, a non-integer, this process or its own process group (as pid or -pid); another group (-pgid) still may.
+export type SelfIds = { readonly pid: number; readonly pgrp?: number };
+const refusedTarget = (pid: number, self: SelfIds): string | undefined => {
+  if (!Number.isInteger(pid)) return "not an integer pid";
+  if (Math.abs(pid) <= 1) return pid === 0 ? "0 is the caller's own process group" : pid === 1 ? "1 is init" : "-1 is every process";
+  if (Math.abs(pid) === self.pid) return "this process";
+  if (self.pgrp !== undefined && Math.abs(pid) === self.pgrp) return "this process's own process group";
+  return undefined;
+};
+
 // SIGSTOP to a shell's foreground job stops the shell first; SIGCONT to it resumes the shell after it. Other signals and
-// other processes pass through as they are.
-export const jobSignal = <S extends string>(signal: (pid: number, sig: S) => boolean, stat: StatOf = readStat): ((pid: number, sig: S) => boolean) => (pid, sig) => {
+// other processes pass through as they are, past the target guard above (SIGNAL_REFUSED on stderr, false).
+export const jobSignal = <S extends string>(raw: (pid: number, sig: S) => boolean, stat: StatOf = readStat, self: SelfIds = { pid: process.pid, pgrp: readStat(process.pid)?.pgrp }): ((pid: number, sig: S) => boolean) => (pid, sig) => {
+  const signal = (p: number, s: S): boolean => {
+    const why = refusedTarget(p, self);
+    if (!why) return raw(p, s);
+    console.error(`SIGNAL_REFUSED ${s} ${p}: ${why}`);
+    return false;
+  };
   if (sig !== "SIGSTOP" && sig !== "SIGCONT") return signal(pid, sig);
   const shell = jobShell(stat, pid);
   if (sig === "SIGSTOP") {

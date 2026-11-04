@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { expect, test } from "bun:test";
 
 
@@ -158,4 +160,30 @@ test("revive of a live agent runs the same no-typing check: a cooked foreground 
   const bg = io(rows, k);
   expect(await reviveLive(bg.r, "w2:p2", 200)).toStartWith("REVIVE_FAIL w2:p2 agent 200: its shell holds the tty and it is a background job");
   expect(bg.calls).toEqual([]);
+});
+
+test("a signal to pid 0, 1 or -1, a non-integer, this process or its own process group is refused and sent nowhere; another group still gets it", () => {
+  // Given: dori runs as pid 300 in process group 301 (kill(0) or kill(-301) would stop dori itself, as a pid 0 in a frozen
+  // record did to handover-simplify's omo on 2026-11-04 09:41Z, two hours stopped with no record)
+  const sent: string[] = [];
+  const signal = jobSignal((pid, sig: "SIGSTOP" | "SIGCONT" | "SIGTERM") => (sent.push(`${sig} ${pid}`), true), () => undefined, { pid: 300, pgrp: 301 });
+  // When / Then
+  for (const pid of [0, 1, -1, 1.5, Number.NaN, 300, -300, 301, -301]) {
+    for (const sig of ["SIGSTOP", "SIGCONT", "SIGTERM"] as const) expect(signal(pid, sig)).toBe(false);
+  }
+  expect(sent).toEqual([]);
+  // another process group (a stopped job continued as a whole, a monitor chain ended) is still signalled
+  expect(signal(-200, "SIGCONT")).toBe(true);
+  expect(signal(200, "SIGSTOP")).toBe(true);
+  expect(sent).toEqual(["SIGCONT -200", "SIGSTOP 200"]);
+});
+
+test("by default the guard knows the real process: its own pid and group are refused", () => {
+  const sent: string[] = [];
+  const signal = jobSignal((pid, sig: "SIGSTOP") => (sent.push(`${sig} ${pid}`), true), () => undefined);
+  const own = Number(readFileSync("/proc/self/stat", "utf8").split(") ")[1]?.split(" ")[2]);
+  expect(signal(process.pid, "SIGSTOP")).toBe(false);
+  expect(signal(-own, "SIGSTOP")).toBe(false);
+  expect(signal(0, "SIGSTOP")).toBe(false);
+  expect(sent).toEqual([]);
 });
