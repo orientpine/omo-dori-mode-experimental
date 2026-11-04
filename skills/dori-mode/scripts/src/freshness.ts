@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { watchLog } from "./watch-log.ts";
 import { HUNG_MESSAGE, laneSessionUsage, Supervision } from "./supervision.ts";
+import { isRepeat } from "./send-dedupe.ts";
 
 // Any status word counts as hearing from the lane (pingpong-analytics reports "| working |"); the footer's placeholder
 // "| <milestone|...> | <one plain line ..." never does, nor a template line a lane's code prints before filling it in
@@ -80,7 +81,7 @@ export const scrubForThread = (line: string, home: string): string =>
     .replace(/`/g, "'")
     .trim();
 
-export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "post-failed" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary" | "lead_compaction_stuck" | "directive_audit" | "directive_links" | "lane_cap" | "stalled" | "usage_unknown" | "supervision_error" | "ready_resume"; readonly lane: string; readonly detail: string };
+export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "posted" | "post-repeat" | "post-failed" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary" | "lead_compaction_stuck" | "directive_audit" | "directive_links" | "lane_cap" | "stalled" | "usage_unknown" | "supervision_error" | "ready_resume"; readonly lane: string; readonly detail: string };
 
 export type RolloverHooks = {
   // the length signals of the session in a pane: context use, compactions, age
@@ -527,8 +528,11 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       const words = deps.config.discord;
       const text = words.postRawReports ? `Progress (from the lane's last report): ${scrubForThread(known, home)}` : words.quietText.replaceAll("{min}", String(silentMin));
       const replied = await deps.run(fill(hook, { thread: lane.thread, text, key: lane.key }));
-      // a hook that failed posted nothing: say so, and leave the lane due so the next sweep tries again
-      if (replied.code !== 0) {
+      // a hook that failed posted nothing: say so, and leave the lane due so the next sweep tries again; a hook that
+      // found this text already the thread's last post (dori thread reply: SEND_DUPLICATE, exit 3) posted nothing either,
+      // but the thread shows it, so trying again each sweep would only repeat the refusal
+      const repeat = isRepeat(replied);
+      if (replied.code !== 0 && !repeat) {
         acts.push({ kind: "post-failed", lane: lane.key, detail: `threadReply hook exit ${replied.code}: ${(replied.err || replied.out).slice(0, 160)}` });
         continue;
       }
@@ -536,10 +540,10 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       let lead = "";
       if (!words.postRawReports) {
         const pane = deps.config.leadPane;
-        const note = `[DORI] ${lane.key}: ${silentMin} min without a new report, so its thread got a short status line instead of the report. Tell the owner where it stands in plain words. Last report: ${known.replace(/`/g, "'").replaceAll("$(", "$ (")}`;
+        const note = `[DORI] ${lane.key}: ${silentMin} min without a new report, so its thread ${repeat ? "already shows the same status line (not posted again)" : "got a short status line"} instead of the report. Tell the owner where it stands in plain words. Last report: ${known.replace(/`/g, "'").replaceAll("$(", "$ (")}`;
         lead = !pane ? "; lead not told: leadPane is not configured" : (await sendVerified(deps.run, deps.clock, deps.config, pane, note)) ? "; lead told" : `; lead not told: the note did not reach pane ${pane}`;
       }
-      acts.push({ kind: "posted", lane: lane.key, detail: `${text}${lead}` });
+      acts.push({ kind: repeat ? "post-repeat" : "posted", lane: lane.key, detail: `${text}${repeat ? " (already the thread's last post, not posted again)" : ""}${lead}` });
     }
   }
   const lead = deps.config.leadPane;

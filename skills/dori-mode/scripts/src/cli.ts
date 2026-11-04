@@ -76,7 +76,7 @@ import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener, eyesOff } from "./messenger/discord-listener.ts";
 import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadHook, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS } from "./messenger/discord-thread.ts";
-import { duplicateLine, SEND_DUPLICATE_EXIT, type Sent, sendKey, sendOnce, sentLine } from "./send-dedupe.ts";
+import { duplicateLine, noteEdit, SEND_DUPLICATE_EXIT, type Sent, sendKey, sendOnce, sentLine } from "./send-dedupe.ts";
 import { mapThread, standThread, threads, unstandThread } from "./messenger/thread-map.ts";
 import { archiveDoneThreads } from "./messenger/thread-archive.ts";
 import { ThreadStatusQueue } from "./messenger/thread-status-queue.ts";
@@ -1796,15 +1796,22 @@ try {
       // a new message goes out once per place, reply target, ping and text in SEND_DEDUPE_MS, and never when it is the
       // place's last post (src/send-dedupe.ts); a repeat exits SEND_DUPLICATE_EXIT, a post prints what the service holds
       const place = platform === "discord" ? `discord:${thread ?? to}` : `${platform}:${to}${thread ? `/${thread}` : ""}`;
+      const sentDir = join(config.stateDir, "sent");
+      const dedupeKey = sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, text, ...filesKey(discordFiles)]);
+      // an edit of the place's last post: that post now holds the edited text, so its repeat check follows it
+      const edited = () => noteEdit(sentDir, place, edit ?? "", dedupeKey);
       const once = async (post: () => Promise<Sent>) => {
-        const r = await sendOnce(join(config.stateDir, "sent"), place, sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, text, ...filesKey(discordFiles)]), post, { again: Boolean(flags.values.again) });
+        const r = await sendOnce(sentDir, place, dedupeKey, post, { again: Boolean(flags.values.again) });
         console.log(r.duplicate ? duplicateLine(place, r) : sentLine("SENT", r));
         if (r.duplicate) process.exitCode = SEND_DUPLICATE_EXIT;
         return r;
       };
       if (platform === "slack") {
         const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env.DORI_SLACK_COOKIE }, process.env.DORI_SLACK_API?.trim() || undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
-        if (edit) await slack.edit(to, edit, text);
+        if (edit) {
+          await slack.edit(to, edit, text);
+          edited();
+        }
         else {
           let posted: { channel: string; ts: string } | undefined;
           // files are shared once per call and never by the repeat check: a failure exits non-zero and a person calls again.
@@ -1830,7 +1837,10 @@ try {
       } else if (platform === "telegram") {
         const tg = new Telegram(fetchHttp, realClock, token("DORI_TELEGRAM_TOKEN"));
         const target = { chatId: to, ...(thread ? { threadId: Number(thread) } : {}) };
-        if (edit) await tg.edit(target, Number(edit), text);
+        if (edit) {
+          await tg.edit(target, Number(edit), text);
+          edited();
+        }
         else
           await once(async () => {
             const m = await tg.post(target, text);
@@ -1839,8 +1849,10 @@ try {
       } else if (platform === "discord") {
         const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")), discordApi());
         await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
-        if (edit) await dc.edit(to, edit, text);
-        else {
+        if (edit) {
+          await dc.edit(to, edit, text);
+          edited();
+        } else {
           const r = await once(() => dc.post(thread ?? to, text, !flags.values["no-typing"], ping, reply, discordFiles));
           if (!r.duplicate) await notePost(thread ?? to, r.id, withFileNames(body, discordFiles));
         }

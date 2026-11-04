@@ -44,6 +44,19 @@ test("a thread reply hook that fails is recorded as failed, not posted, and the 
   expect((await deps(T0).registry.read("quiet-lane"))?.lastAutoReplyAt).toBeUndefined();
 });
 
+test("a reply hook whose text is already the thread's last post (SEND_DUPLICATE, exit 3) is no failure: not retried, and the lead still hears", async () => {
+  const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { hooks: { threadReply: ["repeat-hook", "{thread}", "{text}"] } });
+  await deps(T0).registry.write(working);
+  world.screen = "noise\n[REPORT] quiet-lane | milestone | tests green, PR open\n❯ ";
+  expect(await freshnessTick(deps(T0), "/home/test")).toEqual([]);
+  expect((await freshnessTick(deps(T0 + 16 * MIN), "/home/test")).map((a) => a.kind)).toEqual(["nudged"]);
+  const first = await freshnessTick(deps(T0 + 21 * MIN), "/home/test");
+  const again = await freshnessTick(deps(T0 + 23 * MIN), "/home/test");
+  expect({ first: first.map((a) => a.kind), again: again.map((a) => a.kind), replied: (await deps(T0).registry.read("quiet-lane"))?.lastAutoReplyAt }).toEqual({ first: ["post-repeat"], again: [], replied: T0 + 21 * MIN });
+  expect(first[0]?.detail).toContain("lead told");
+  expect(sent(world).at(-1)).toContain("already shows the same status line");
+});
+
 test("a lane silent past the nudge time is nudged once, then its last report is posted for it", async () => {
   const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { hooks: { threadReply: ["notify", "{thread}", "{text}"] } });
   await deps(T0).registry.write(working);

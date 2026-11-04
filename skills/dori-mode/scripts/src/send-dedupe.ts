@@ -61,20 +61,50 @@ const writeMark = (path: string, mark: Mark | Last): void => {
   renameSync(tmp, path);
 };
 
-// one file a place, kept with no age: the last post must still count a week later
+// A record per post, kept with no age (the last post must still count a week later), named so that the newest message
+// of a place sorts last: Discord snowflakes, Slack ts and Telegram message ids grow with time. Which post finished
+// writing first does not matter (review of #338: a thread reply posts, then waits for its status while a later send
+// posts and records), and no lock is needed, since every post writes its own file; older ones are removed on read.
 const LAST_PREFIX = "last-";
-const lastPath = (dir: string, place: string): string => join(dir, `${LAST_PREFIX}${sendKey([place])}.json`);
+const lastPrefix = (place: string): string => `${LAST_PREFIX}${sendKey([place])}-`;
+const order = (id: string, at: number): string => {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(id);
+  // an id that is no number (test fakes only) sorts by the time it was recorded, after every numeric one
+  return m ? `${(m[1] ?? "").padStart(24, "0")}.${(m[2] ?? "").padEnd(9, "0")}` : `~${String(at).padStart(16, "0")}`;
+};
 
-const readLast = (path: string): Last | undefined => {
+const readLast = (dir: string, place: string): (Last & { readonly file: string }) | undefined => {
+  const prefix = lastPrefix(place);
+  const files = readdirSync(dir).filter((n) => n.startsWith(prefix) && n.endsWith(".json")).sort();
+  const newest = files.at(-1);
+  if (newest === undefined) return undefined;
+  for (const older of files.slice(0, -1)) {
+    try {
+      unlinkSync(join(dir, older));
+    } catch (e) {
+      ignoreMissing(e);
+    }
+  }
+  const file = join(dir, newest);
   try {
-    const l = JSON.parse(readFileSync(path, "utf8")) as Last;
-    return typeof l.key === "string" && typeof l.id === "string" && typeof l.at === "number" ? l : undefined;
+    const l = JSON.parse(readFileSync(file, "utf8")) as Last;
+    return typeof l.key === "string" && typeof l.id === "string" && typeof l.at === "number" ? { ...l, file } : undefined;
   } catch (e) {
     // written by rename, so a file is whole or absent; anything else unreadable is no record
     if (e instanceof SyntaxError) return undefined;
     ignoreMissing(e);
     return undefined;
   }
+};
+
+const writeLast = (dir: string, place: string, last: Last): void => writeMark(join(dir, `${lastPrefix(place)}${order(last.id, last.at)}.json`), last);
+
+// An edit is never checked, but an edit of the place's last post changes what that post holds: its record takes the
+// edited content's key (review of #338: send A, edit it to B, and A again was refused for good as the last post).
+export const noteEdit = (dir: string, place: string, id: string, key: string): void => {
+  mkdirSync(dir, { recursive: true });
+  const last = readLast(dir, place);
+  if (last?.id === id) writeMark(last.file, { at: last.at, key, id });
 };
 
 const prune = (dir: string, now: number): void => {
@@ -100,14 +130,13 @@ export const sendOnce = async (dir: string, place: string, key: string, send: ()
   mkdirSync(dir, { recursive: true });
   prune(dir, now());
   const path = join(dir, `${key}.json`);
-  const lastFile = lastPath(dir, place);
   const posted = (sent: Sent): SendOnceResult => {
     writeMark(path, { at: now(), id: sent.id });
-    writeMark(lastFile, { at: now(), key, id: sent.id });
+    writeLast(dir, place, { at: now(), key, id: sent.id });
     return { id: sent.id, duplicate: false, content: sent.content };
   };
   if (opts.again) return posted(await send());
-  const last = readLast(lastFile);
+  const last = readLast(dir, place);
   if (last?.key === key) return { id: last.id, duplicate: true, ageMs: Math.max(0, now() - last.at), last: true };
   for (;;) {
     let fd: number | undefined;
@@ -153,6 +182,8 @@ export const sendOnce = async (dir: string, place: string, key: string, send: ()
 
 // a repeat is not posted; the CLI exits SEND_DUPLICATE_EXIT so a caller cannot read it as a new post
 export const SEND_DUPLICATE_EXIT = 3;
+// a hook command (dori thread reply) that posted nothing because the text is already there: not a failure to retry
+export const isRepeat = (r: { readonly code: number; readonly out: string }): boolean => r.code === SEND_DUPLICATE_EXIT && /^SEND_DUPLICATE /m.test(r.out);
 
 const ago = (ms: number): string => {
   const s = Math.round(ms / 1000);

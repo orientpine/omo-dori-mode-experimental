@@ -219,6 +219,23 @@ test("the text of the place's last post is a repeat at any age (SEND_DUPLICATE, 
   }
 });
 
+test("send --edit of the place's last post makes the edited text its record: the old text posts again, the edited one is the repeat", async () => {
+  const state = withState();
+  const d = discordServer();
+  const to = ["--to", "1561963113488842792"];
+  try {
+    await sendTo(state.dir, d.server.port, [...to, "--text", "첫 글"]);
+    const edit = await sendTo(state.dir, d.server.port, [...to, "--edit", "1", "--text", "고친 글"]);
+    ageMarks(state.dir, 11);
+    const edited = await sendTo(state.dir, d.server.port, [...to, "--text", "고친 글"]);
+    const old = await sendTo(state.dir, d.server.port, [...to, "--text", "첫 글"]);
+    expect({ edit: edit.code, edited: [edited.code, edited.out.split(": ")[0]], old: word2(old.out), posts: d.posts.length }).toEqual({ edit: 0, edited: [3, `SEND_DUPLICATE ${PLACE} 1`], old: "SENT 2", posts: 2 });
+  } finally {
+    d.stop();
+    state.done();
+  }
+});
+
 test("an older text after the 10 minutes is no repeat once another post came after it; within them it still is", async () => {
   const state = withState();
   const d = discordServer();
