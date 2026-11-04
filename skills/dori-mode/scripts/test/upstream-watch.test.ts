@@ -49,6 +49,8 @@ beforeEach(() => {
     pr(25, "fix(dori-mode): skip report templates", ["skills/dori-mode/scripts/src/freshness.ts"], { body: "Fixes #22" }),
     pr(30, "fix(dori-mode): keep reports in reports.jsonl", ["skills/dori-mode/scripts/src/cli.ts"]),
     // more files than one page and than gh pr list shows (100); the skills/ change is the 101st
+    // merged, but into a branch other than upstream main: not in main, so not a candidate
+    pr(44, "fix(dori-mode): lane sweep on the next branch", ["skills/dori-mode/scripts/src/sweeps.ts"], { baseRefName: "next" }),
     pr(40, "fix: rename the docs pages", [...Array.from({ length: 100 }, (_, i) => `docs/page-${String(i).padStart(3, "0")}.md`), "skills/dori-mode/zz-late.ts"]),
   ]);
   const issue = (number: number, title: string, state = "OPEN") => ({ number, title, state, url: `${UP}/issues/${number}`, createdAt: "2026-11-02T00:00:00Z" });
@@ -95,16 +97,18 @@ test("only owner decisions and port candidates reach the inbox; what we already 
     ["pr:23", "3"],
     ["pr:30", "4"],
     ["pr:40", "4"],
-    ["issue:29", "4"],
     [`commit:${"b".repeat(40)}`, "4"],
   ]);
   const classes = Object.fromEntries(Object.entries(seen()).map(([k, v]) => [k, v.class]));
-  expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:16": "2", "pr:17": "2", "issue:27": "2", "issue:31": "2" });
+  expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:16": "2", "pr:17": "2", "issue:27": "2", "issue:29": "2", "issue:31": "2" });
+  // an open issue is not in upstream main: recorded only, until a merged PR or a main commit brings it
+  expect(seen()["pr:44"]).toBeUndefined();
   const weekly = rows.filter((x) => x.kind === "upstream-weekly");
   expect(weekly).toHaveLength(1);
   expect(weekly[0]!.thread).toBe("discord:42");
   expect(weekly[0]!.content).toContain("① 이미 있음 5건");
-  expect(r.out).toContain("inbox_lines=6 weekly=True");
+  expect(weekly[0]!.content).toContain("② 원본 main에 아직 없음 2건: 이슈 #29, 이슈 #31");
+  expect(r.out).toContain("inbox_lines=5 weekly=True");
 });
 
 test("a second run and a seeded run write nothing more", async () => {
