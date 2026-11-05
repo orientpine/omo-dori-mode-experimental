@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { inWindow, keepConfig, keepTick, totp, vpnState, type KeepDeps, type KeepOptions, type VpnState } from "../../setups/moodori-vpn-keep/keep.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { credsFrom, inWindow, keepConfig, keepRun, keepTick, totp, vpnState, type KeepDeps, type KeepOptions, type VpnState } from "../../setups/moodori-vpn-keep/keep.ts";
+
+const KEEP = join(import.meta.dir, "../../setups/moodori-vpn-keep/keep.ts");
 
 const BASE = { enabled: true, pcSsh: "user@pc.example", vpnUrl: "https://vpn.example.com/", credsCommand: ["printf", "id\\npw\\n"], motpFile: "~/motp.json" };
 const options = (over: Record<string, unknown> = {}): KeepOptions => {
@@ -37,6 +42,43 @@ test("the window is weekdays 08:00-19:59 in Seoul time, whatever the host's zone
   expect(at("2026-11-05T11:00:00Z")).toBe(false); // Thu 20:00 KST
   expect(at("2026-11-06T23:30:00Z")).toBe(false); // Sat 08:30 KST
   expect(at("2026-11-07T23:30:00Z")).toBe(false); // Sun 08:30 KST
+});
+
+test("the account lines keep every byte but the line ends: a password may start or end in a space", () => {
+  expect(credsFrom("id\n pw with spaces \n")).toEqual(["id", " pw with spaces "]);
+  expect(credsFrom("id\r\npw \r\n")).toEqual(["id", "pw "]);
+  expect(credsFrom("id\n")).toBeNull();
+  expect(credsFrom("")).toBeNull();
+});
+
+test("a running keep reads its config before every check and exits 0 once enabled is no longer true", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vpn-keep-"));
+  const path = join(dir, "vpn-keep.json");
+  writeFileSync(path, JSON.stringify({ ...BASE, days: [0, 1, 2, 3, 4, 5, 6], hours: [0, 24] }));
+  const printed: string[] = [];
+  let checks = 0;
+  let sleeps = 0;
+  const code = await keepRun(path, {
+    once: false,
+    makeDeps: () => deps("UP", [], { state: async () => { checks++; return "UP"; } }).d,
+    sleep: async () => {
+      if (++sleeps > 1) throw new Error(`still checking after enabled: false (${checks} checks)`);
+      writeFileSync(path, JSON.stringify({ ...BASE, enabled: false }));
+    },
+    now: () => MON_10_KST,
+    print: (line) => printed.push(line),
+  });
+  expect({ code, checks, printed }).toEqual({ code: 0, checks: 1, printed: [`VPN_KEEP_OFF ${path} (enabled is not true)`] });
+});
+
+test("keep.ts takes DORI_VPN_KEEP_CONFIG from dori.env (DORI_ENV_FILE) like the other setups", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vpn-keep-env-"));
+  writeFileSync(join(dir, "dori.env"), `DORI_VPN_KEEP_CONFIG=${join(dir, "from-env-file.json")}\n`);
+  const env: Record<string, string | undefined> = { ...process.env, DORI_ENV_FILE: join(dir, "dori.env") };
+  delete env.DORI_VPN_KEEP_CONFIG;
+  const p = Bun.spawn([process.execPath, KEEP, "--once"], { env: env as Record<string, string>, stdout: "pipe", stderr: "pipe" });
+  const [out, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+  expect({ code, off: out.includes(`VPN_KEEP_OFF ${join(dir, "from-env-file.json")} (no config file)`) }).toEqual({ code: 0, off: true });
 });
 
 test("MOTP is RFC 6238 TOTP-SHA256 with 6 digits", () => {

@@ -8,6 +8,7 @@ import { createHmac } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { envFilePath, loadEnvFile } from "../../scripts/src/config.ts";
 import { realClock, run, type Clock, type Runner } from "../../scripts/src/run.ts";
 
 export type KeepOptions = {
@@ -105,6 +106,12 @@ export const totp = (secretHex: string, nowMs: number): string => {
   return String(n % 1e6).padStart(6, "0");
 };
 
+// stdout of credsCommand: the id line, then the password line, kept byte for byte (a password may end in a space)
+export const credsFrom = (out: string): [string, string] | null => {
+  const [id = "", pw = ""] = out.split(/\r?\n/);
+  return id && pw ? [id, pw] : null;
+};
+
 export type KeepState = { fails: number };
 export type KeepDeps = {
   readonly paused: () => Promise<boolean>;
@@ -154,10 +161,10 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
     await clock.sleep(4000);
   };
   const creds = async (): Promise<[string, string]> => {
-    const r = await runner(o.credsCommand, { timeoutMs: 30_000 });
-    const [id = "", pw = ""] = r.out.split("\n");
-    if (r.code !== 0 || !id || !pw) throw new Error(`credsCommand gave no id and password (exit ${r.code})`); // never its output
-    return [id, pw];
+    const r = await runner(o.credsCommand, { timeoutMs: 30_000, preserveOutput: true });
+    const c = r.code === 0 ? credsFrom(r.out) : null;
+    if (!c) throw new Error(`credsCommand gave no id and password (exit ${r.code})`); // never its output
+    return c;
   };
   const motp = () => {
     const secret = (JSON.parse(readFileSync(o.motpFile, "utf8").trim()) as { secret?: unknown }).secret;
@@ -247,28 +254,49 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
 export const configPath = (env: Record<string, string | undefined>, home: string = homedir()): string =>
   env.DORI_VPN_KEEP_CONFIG || join(home, ".dori", "vpn-keep.json");
 
-if (import.meta.main) {
-  const path = configPath(process.env);
-  let config: KeepConfig;
-  try {
-    config = keepConfig(existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined);
-  } catch (e) {
-    console.log(`VPN_KEEP_CONFIG_BAD ${path} ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(2);
-  }
-  if (!config.on) {
-    console.log(`VPN_KEEP_OFF ${path} (${config.reason})`);
-    process.exit(0);
-  }
-  const o = config.options;
-  const deps = realDeps(o);
+export type KeepRunOptions = {
+  readonly once: boolean;
+  readonly makeDeps: (o: KeepOptions) => KeepDeps;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly now: () => Date;
+  readonly print: (line: string) => void;
+};
+
+// The config file is read again before every check, so "enabled": false (or a changed value) takes effect while it
+// runs. Returns the exit code: 0 off, 2 a bad config.
+export async function keepRun(path: string, r: KeepRunOptions): Promise<number> {
   const state: KeepState = { fails: 0 };
-  const once = process.argv.includes("--once");
-  deps.log(`VPN_KEEP_ON ${path} days=${o.days.join(",")} hours=${o.hours[0]}-${o.hours[1]} ${o.timeZone} every ${o.intervalMs} ms${once ? " once" : ""}`);
+  let started = false;
   for (;;) {
+    let config: KeepConfig;
+    try {
+      config = keepConfig(existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined);
+    } catch (e) {
+      r.print(`VPN_KEEP_CONFIG_BAD ${path} ${e instanceof Error ? e.message : String(e)}`);
+      return 2;
+    }
+    if (!config.on) {
+      r.print(`VPN_KEEP_OFF ${path} (${config.reason})`);
+      return 0;
+    }
+    const o = config.options;
+    const deps = r.makeDeps(o);
+    if (!started) deps.log(`VPN_KEEP_ON ${path} days=${o.days.join(",")} hours=${o.hours[0]}-${o.hours[1]} ${o.timeZone} every ${o.intervalMs} ms${r.once ? " once" : ""}`);
+    started = true;
     let wait = o.intervalMs;
-    try { wait = await keepTick(o, state, deps, new Date()); } catch (e) { deps.log(`ERR ${e instanceof Error ? e.message : String(e)}`); }
-    if (once) process.exit(0);
-    await Bun.sleep(wait);
+    try { wait = await keepTick(o, state, deps, r.now()); } catch (e) { deps.log(`ERR ${e instanceof Error ? e.message : String(e)}`); }
+    if (r.once) return 0;
+    await r.sleep(wait);
   }
+}
+
+if (import.meta.main) {
+  await loadEnvFile(envFilePath());
+  process.exit(await keepRun(configPath(process.env), {
+    once: process.argv.includes("--once"),
+    makeDeps: (o) => realDeps(o),
+    sleep: (ms) => Bun.sleep(ms),
+    now: () => new Date(),
+    print: (line) => console.log(`${new Date().toISOString()} ${line}`),
+  }));
 }

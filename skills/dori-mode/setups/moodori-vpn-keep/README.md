@@ -32,7 +32,9 @@ the MOTP key or code is ever printed.
 
 ## Config
 
-`~/.dori/vpn-keep.json` (`DORI_VPN_KEEP_CONFIG` names another file), mode 0600. See `config.example.json`. The company
+`~/.dori/vpn-keep.json` (`DORI_VPN_KEEP_CONFIG`, in the environment or `dori.env`, names another file), mode 0600.
+It is read again before every check, so a change or `"enabled": false` takes effect at the next check (after a
+running 15 minute rest). See `config.example.json`. The company
 VPN address, the PC's address and the account's source live only here, never in the repository.
 
 | Key | Meaning | Default |
@@ -84,8 +86,8 @@ systemctl --user daemon-reload && systemctl --user enable --now moodori-vpn-keep
 tail -f ~/.dori/vpn-keep.log
 ```
 
-Roll back: `systemctl --user disable --now moodori-vpn-keep` (or set `"enabled": false`; the unit then exits with
-`VPN_KEEP_OFF` and stays stopped).
+Roll back: `systemctl --user disable --now moodori-vpn-keep` (or set `"enabled": false`: at its next check the
+running keep prints `VPN_KEEP_OFF`, exits 0 and the unit stays stopped).
 
 ## Known limits
 
