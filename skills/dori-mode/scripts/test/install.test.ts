@@ -194,3 +194,16 @@ test("DORI_NO_PULL=true and DORI_NO_PULL=yes install the checkout as it is like 
   expect(install({ DORI_NO_PULL: "0" }).code).toBe(0);
   expect(git(src, "rev-parse", "HEAD")).toBe(git(upstream, "rev-parse", "HEAD"));
 });
+
+// dori-superagent PR #85 (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/85
+test("a branch with no upstream gets git's reason and the way to install as it is, never a reset to an upstream it lacks", () => {
+  const { src, file, install } = setup();
+  writeFileSync(join(src, file), "patched\n");
+  git(src, "branch", "--unset-upstream");
+  const r = install();
+  expect(r.code).toBe(1);
+  expect(r.err).toContain("git's message above says why");
+  expect(r.err).toContain("DORI_NO_PULL=1");
+  expect(r.err).not.toContain("reset --hard");
+  expect(readFileSync(join(src, file), "utf8")).toBe("patched\n");
+});

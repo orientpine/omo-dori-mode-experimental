@@ -55,7 +55,11 @@ if [ -d "$src/.git" ]; then
     [ -z "$changes" ] || { echo "  Local changes in that checkout (git status --short):"; printf '%s\n' "$changes" | sed 's/^/    /'; } >&2
     [ -z "$ahead" ] || { echo "  Local commits upstream lacks:"; printf '%s\n' "$ahead" | sed 's/^/    /'; } >&2
     echo "  To install the checkout as it is, without pulling: run install.sh again with DORI_NO_PULL=1 (curl ... | DORI_NO_PULL=1 bash)." >&2
-    echo "  If local work there is in the way and you want to drop it to update: git -C \"$src\" fetch && git -C \"$src\" reset --hard '@{u}', then run install.sh again." >&2
+    # A branch with no upstream has no @{u} to reset to; git's message above says how to set one (dori-superagent PR #85 (MIT):
+    # https://github.com/sisyphuslabs/dori-superagent/pull/85).
+    if git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null 2>&1; then
+      echo "  If local work there is in the way and you want to drop it to update: git -C \"$src\" fetch && git -C \"$src\" reset --hard '@{u}', then run install.sh again." >&2
+    fi
     exit 1
   fi
 else
