@@ -1,6 +1,6 @@
 // Upstream test from https://github.com/sisyphuslabs/dori-superagent/pull/96 (commit 067b70f).
 import { expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { run } from "../src/run.ts";
@@ -197,13 +197,44 @@ test("when two writers close one item, the first close wins, the second is a no-
     const late = (op: string, field: string, text: string, at: number) => JSON.stringify({ op, id: item.id, at: new Date(at).toISOString(), [field]: text });
     writeFileSync(log.path, `${readFileSync(log.path, "utf8")}${late("close", "result", "second answer", T0 + 2)}\n${late("note", "text", "late note", T0 + 3)}\n`);
     // When reading; then the first result stands, the second close is dropped quietly, and the late note is a warning.
+    // (Fork change: every append starts with its own newline, so the two records above are lines 2 and 4.)
     const read = log.read();
     expect(read.items.map((i) => [i.result, i.closedAt, i.notes])).toEqual([["first answer", new Date(T0 + 1).toISOString(), []]]);
     expect(read.problems).toEqual([]);
-    expect(read.warnings).toEqual([`${log.path}:4: worklog item ${item.id} was already closed; note ignored`]);
+    expect(read.warnings).toEqual([`${log.path}:6: worklog item ${item.id} was already closed; note ignored`]);
     // And list still names it.
     const listed = await cliIn(state.dir)("worklog", "list");
-    expect([listed.code, listed.err.trim()]).toEqual([0, `WORKLOG_WARNING ${log.path}:4: worklog item ${item.id} was already closed; note ignored`]);
+    expect([listed.code, listed.err.trim()]).toEqual([0, `WORKLOG_WARNING ${log.path}:6: worklog item ${item.id} was already closed; note ignored`]);
+  } finally { state.done(); }
+});
+
+// Fork tests from the reviews of orientpine#352: the cases upstream's tests cover only one at a time.
+test("a torn record another writer leaves after this writer looked at the tail does not swallow this writer's change", () => {
+  // Given an item, and another writer killed mid-record right before our append lands.
+  const state = withState();
+  try {
+    const item = new Worklog(state.dir).add("Keep the update", "discord:1/1", T0);
+    const path = join(state.dir, "worklog.jsonl");
+    const log = new Worklog(state.dir, () => appendFileSync(path, `{"op":"note","id":"${item.id}","at`));
+    // When we set its next step; then the next step is in the record, and the torn line is skipped quietly.
+    log.next(item.id, "merge after CI", T0 + 1);
+    expect(new Worklog(state.dir).read()).toMatchObject({ items: [{ id: item.id, next: "merge after CI" }], problems: [], warnings: [] });
+  } finally { state.done(); }
+});
+
+test("a record whose op is an inherited name (toString, __proto__) is damage, not a close: the item stays open", () => {
+  // Given an open item and two records naming it with an op only Object.prototype has.
+  const state = withState();
+  try {
+    const log = new Worklog(state.dir);
+    const item = log.add("Still open", "discord:1/2", T0);
+    const bad = (op: string) => `{"op":${JSON.stringify(op)},"id":"${item.id}","at":"${new Date(T0 + 1).toISOString()}"}`;
+    writeFileSync(log.path, `${readFileSync(log.path, "utf8")}${bad("toString")}\n${bad("__proto__")}\n`);
+    // When reading; then the item is still open and both lines are named.
+    const read = log.read();
+    expect(log.open().map((i) => i.id)).toEqual([item.id]);
+    expect(read.problems).toHaveLength(2);
+    expect(read.problems.every((p) => p.includes('worklog field "op" must be add, next, note or close'))).toBe(true);
   } finally { state.done(); }
 });
 
@@ -244,6 +275,6 @@ test("a torn line is skipped quietly, mid-record or last; the next record starts
     // And a line that does not begin like a record is still named.
     writeFileSync(log.path, `${readFileSync(log.path, "utf8")}\n["not", "a record"\n`);
     expect(log.read().problems).toHaveLength(1);
-    expect((await cliIn(state.dir)("worklog", "list")).err).toContain(`WORKLOG_WARNING ${log.path}:5: `);
+    expect((await cliIn(state.dir)("worklog", "list")).err).toContain(`WORKLOG_WARNING ${log.path}:6: `);
   } finally { state.done(); }
 });

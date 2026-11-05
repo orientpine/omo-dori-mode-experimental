@@ -1,6 +1,6 @@
 // Ported from upstream sisyphuslabs/dori-superagent#96 (https://github.com/sisyphuslabs/dori-superagent/pull/96, commit 067b70f).
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 export type WorklogItem = {
@@ -38,7 +38,8 @@ const parseEvent = (value: unknown): Event => {
   if (typeof record.id !== "string" || !ID.test(record.id)) throw new WorklogError('worklog field "id" must be 8 lowercase hex digits');
   if (!isoTime(record.at)) throw new WorklogError('worklog field "at" must be an ISO time as toISOString writes it');
   const fields: Record<string, Record<string, number>> = { add: { title: 200, source: 400 }, next: { text: 1000 }, note: { text: 1000 }, close: { result: 1000 } };
-  const wanted = typeof record.op === "string" ? fields[record.op] : undefined;
+  // Fork change (review of orientpine#352): only the four ops themselves; an inherited name (toString, __proto__) is no op.
+  const wanted = typeof record.op === "string" && Object.hasOwn(fields, record.op) ? fields[record.op] : undefined;
   if (!wanted) throw new WorklogError('worklog field "op" must be add, next, note or close');
   const unknown = Object.keys(record).find((name) => !["op", "id", "at", ...Object.keys(wanted)].includes(name));
   if (unknown !== undefined) throw new WorklogError(`unknown worklog field "${unknown}"`);
@@ -82,7 +83,8 @@ export class Worklog {
   readonly path: string;
   readonly markdownPath: string;
 
-  constructor(readonly stateDir: string) {
+  /** beforeAppend runs right before the record is appended (fork change for tests: another writer's append lands there). */
+  constructor(readonly stateDir: string, private readonly beforeAppend: () => void = () => {}) {
     this.path = join(stateDir, "worklog.jsonl");
     this.markdownPath = join(stateDir, "worklog.md");
   }
@@ -156,7 +158,7 @@ export class Worklog {
         }
         if (event.op === "next") items.set(event.id, { ...item, next: event.text });
         else if (event.op === "note") items.set(event.id, { ...item, notes: [...item.notes, { at: event.at, text: event.text }] });
-        else items.set(event.id, { ...item, closedAt: event.at, result: event.result });
+        else if (event.op === "close") items.set(event.id, { ...item, closedAt: event.at, result: event.result });
       } catch (error) {
         if (!(error instanceof WorklogError)) throw error;
         problems.push(`${this.path}:${index + 1}: ${error.message}`);
@@ -170,13 +172,14 @@ export class Worklog {
     mkdirSync(this.stateDir, { recursive: true });
     // Check before the append, so a refused render leaves the record unchanged too.
     this.ensureOwnedMarkdown();
-    const fd = openSync(this.path, "a+", 0o600);
+    const fd = openSync(this.path, "a", 0o600);
     try {
       // A writer that stopped mid-record left no newline: start on a fresh line so only the torn line is damaged.
-      const size = fstatSync(fd).size;
-      const last = Buffer.alloc(1);
-      const torn = size > 0 && readSync(fd, last, 0, 1, size - 1) === 1 && last[0] !== 0x0a;
-      writeSync(fd, `${torn ? "\n" : ""}${JSON.stringify(event)}\n`);
+      // Fork change (review of orientpine#352): the newline goes into the same append every time. Upstream looked at the
+      // tail first, and a torn record another writer left between that look and this append swallowed this record.
+      // The blank lines it leaves are skipped by every reader.
+      this.beforeAppend();
+      writeSync(fd, `\n${JSON.stringify(event)}\n`);
     } finally {
       closeSync(fd);
     }
