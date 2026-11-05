@@ -179,3 +179,18 @@ test("DORI_NO_PULL=1 installs the checkout as it is, local edit and all", () => 
   expect(git(src, "rev-parse", "HEAD")).toBe(before);
   expect(readFileSync(join(src, file), "utf8")).toBe("patched\n");
 });
+
+// dori-superagent PR #85 reproduced here (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/85
+test("DORI_NO_PULL=true and DORI_NO_PULL=yes install the checkout as it is like DORI_NO_PULL=1; DORI_NO_PULL=0 still pulls", () => {
+  const { upstream, src, commitUpstream, install } = setup();
+  const before = git(src, "rev-parse", "HEAD");
+  commitUpstream("v2\n");
+  for (const value of ["true", "yes"]) {
+    const r = install({ DORI_NO_PULL: value });
+    expect(r.code).toBe(0);
+    expect(r.err).toContain(`DORI_NO_PULL=${value}: installing`);
+    expect(git(src, "rev-parse", "HEAD")).toBe(before);
+  }
+  expect(install({ DORI_NO_PULL: "0" }).code).toBe(0);
+  expect(git(src, "rev-parse", "HEAD")).toBe(git(upstream, "rev-parse", "HEAD"));
+});
