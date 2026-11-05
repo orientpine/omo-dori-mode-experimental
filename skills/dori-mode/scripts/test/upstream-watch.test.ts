@@ -98,6 +98,7 @@ test("ports (in upstream main) and integration asks (open issues, PRs outside ma
   const rows = inbox();
   expect(rows.filter((x) => x.kind === "upstream-change").every((x) => x.thread === "discord:42" && x.content!.includes("dori launch --thread discord:42"))).toBe(true);
   expect(rows.filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([
+    ["pr:23", "4"],
     ["pr:30", "4"],
     ["pr:40", "4"],
     ["pr-proposed:44", "3"],
@@ -106,14 +107,14 @@ test("ports (in upstream main) and integration asks (open issues, PRs outside ma
     [`commit:${"b".repeat(40)}`, "4"],
   ]);
   const classes = Object.fromEntries(Object.entries(seen()).map(([k, v]) => [k, v.class]));
-  expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:16": "2", "pr:17": "2", "issue:27": "2", "issue:31": "2", "pr:21": "2", "pr:23": "2", "pr-proposed:46": "2", "pr-proposed:47": "1" });
+  expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:16": "2", "pr:17": "2", "issue:27": "2", "issue:31": "2", "pr:21": "2", "pr-proposed:46": "2", "pr-proposed:47": "1" });
   // not in upstream main: the merged-elsewhere PR is no pr:N item, so its later merge into main is a new one
   expect(seen()["pr:44"]).toBeUndefined();
   const weekly = rows.filter((x) => x.kind === "upstream-weekly");
   expect(weekly).toHaveLength(1);
   expect(weekly[0]!.thread).toBe("discord:42");
   expect(weekly[0]!.content).toContain("① 이미 있음 6건");
-  expect(r.out).toContain("inbox_lines=6 weekly=True");
+  expect(r.out).toContain("inbox_lines=7 weekly=True");
 });
 
 test("a second run and a seeded run write nothing more", async () => {
@@ -387,10 +388,66 @@ test("in upstream main, outbound code found in a patch and code without a patch 
   writeFileSync(join(gh, "commits.jsonl"), "");
   expect((await run()).code).toBe(0);
   const rows = inbox().filter((x) => x.kind === "upstream-change");
-  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:41", "4"], ["pr:42", "4"]]);
+  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:41", "4"], ["pr:42", "4"], ["pr:43", "4"]]);
   expect(rows[0]!.reason).toContain("살필 것: 바깥으로 데이터를 보냄(skills/dori-mode/scripts/src/client.ts에 t.omo.dev)");
   expect(rows[1]!.reason).toContain("살필 것: 내용을 못 읽음(patch 없음: skills/dori-mode/scripts/src/store.ts), 리드가 손으로 확인");
-  expect(seen()["pr:43"]!.class).toBe("2");
+  // a removed root file has no patch to read and is no blind spot
+  expect(rows[2]!.reason).not.toContain("못 읽음");
+});
+
+test("in upstream main, a change only to the root harness is a same-defect review, never a port of its files; telemetry and docs are not ours (owner Q19)", async () => {
+  const main = (number: number, title: string) => ({ number, title, url: `${UP}/pull/${number}`, mergedAt: "2026-11-02T00:00:00Z", mergeCommit: { oid: `${number}`.padStart(40, "8") }, body: "" });
+  const files: Record<number, string[]> = {
+    60: ["src/harness.ts", "test/harness.test.ts", "prompts/lead.md"],
+    61: ["package.json"],
+    // the telemetry feature wires itself into the harness too: still telemetry
+    62: ["src/telemetry.ts", "src/cli.ts", "test/telemetry.test.ts", "README.md"],
+    63: ["src/telemetry.ts"],
+    64: ["README.md", "docs/guide.md"],
+    65: ["skills/dori-mode/scripts/src/panes.ts", "src/herdr-free.ts"],
+  };
+  json("prs.json", [main(60, "fix(send): keep a failed flush from stopping delivery"), main(61, "chore: bump the version"), main(62, "feat(telemetry): anonymous usage counts"), main(63, "refactor: tidy a module"), main(64, "docs: a guide"), main(65, "fix(send): hold delivery in both stacks")]);
+  for (const [n, paths] of Object.entries(files)) json(`files-${n}.json`, paths.map((filename) => ({ filename, patch: "@@ -0,0 +1 @@\n+x", status: "modified", changes: 1 })));
+  json("issues.json", []);
+  writeFileSync(join(gh, "commits.jsonl"), JSON.stringify({ sha: "d".repeat(40), commit: { message: "direct: fix the duty tick" }, html_url: `${UP}/commit/${"d".repeat(40)}` }));
+  json(`commit-${"d".repeat(40)}.json`, [{ filename: "src/harness.ts", patch: "+x", status: "modified", changes: 1 }]);
+  expect((await run()).code).toBe(0);
+  const rows = inbox().filter((x) => x.kind === "upstream-change");
+  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:60", "4"], ["pr:61", "4"], ["pr:65", "4"], [`commit:${"d".repeat(40)}`, "4"]]);
+  const root = rows.filter((x) => x.item !== "pr:65");
+  expect(root.every((x) => x.reason!.startsWith("루트 하네스") && x.content!.includes("루트 하네스 파일은 들이지 않는다") && !x.content!.includes("이식 레인"))).toBe(true);
+  // skills/ changed too: a port of the skills/ part as before, and the root part is not brought in
+  expect(rows.find((x) => x.item === "pr:65")!.content).toContain("이식 레인");
+  expect(rows.find((x) => x.item === "pr:65")!.reason).toContain("루트 하네스 1파일도 바뀜");
+  const items = seen() as Record<string, { class: string; why: string }>;
+  expect(Object.fromEntries(["pr:62", "pr:63", "pr:64"].map((k) => [k, [items[k]!.class, items[k]!.why]]))).toEqual({
+    "pr:62": ["2", "원격 측정은 안 들임(형 Q19)"],
+    "pr:63": ["2", "원격 측정은 안 들임(형 Q19)"],
+    "pr:64": ["2", "skills/ 밖만 바뀜(문서)"],
+  });
+});
+
+test("a root-only main PR the old watcher put aside (class 2, or an old class-3 owner question) is reviewed once; a decided, a docs or a ported one is not", async () => {
+  const main = (number: number, title: string) => ({ number, title, url: `${UP}/pull/${number}`, mergedAt: "2026-11-02T00:00:00Z", mergeCommit: { oid: `${number}`.padStart(40, "9") }, body: "" });
+  json("prs.json", [main(17, "docs(readme): avatar"), main(21, "feat(telemetry): anonymous usage counts"), main(34, "fix: deliver to omo panes started with pane run"), main(84, "fix(send): wait for the pane"), main(90, "fix(dori-mode): a port we did")]);
+  const files: Record<number, string[]> = { 17: ["README.md"], 21: ["src/telemetry.ts"], 34: ["src/harness.ts"], 84: ["src/herdr.ts"], 90: ["skills/dori-mode/scripts/src/a.ts"] };
+  for (const [n, paths] of Object.entries(files)) json(`files-${n}.json`, paths.map((filename) => ({ filename, patch: "@@ -0,0 +1 @@\n+x", status: "modified", changes: 1 })));
+  json("issues.json", []);
+  writeFileSync(join(gh, "commits.jsonl"), "");
+  mkdirSync(join(root, "state"));
+  const at = "2026-11-01T00:00:00.000Z";
+  writeFileSync(join(root, "state/seen.json"), JSON.stringify({ items: {
+    "pr:17": { class: "2", why: "skills/ 밖만 바뀜(루트 하네스·문서)", at },
+    "pr:21": { class: "decided", why: "형 Q458 안 가져오기", at },
+    "pr:34": { class: "3", why: "자율 범위가 바뀜(loop), 이슈 #31, #32 닫음", at },
+    "pr:84": { class: "2", why: "skills/ 밖만 바뀜(루트 하네스·문서), 이슈 #56 닫음", at },
+    "pr:90": { class: "4", why: "skills/ 1파일 바뀜", at },
+  }, minor: [], fails: 0 }));
+  expect((await run()).code).toBe(0);
+  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr:34", "4"], ["pr:84", "4"]]);
+  expect(seen()["pr:21"]!.class).toBe("decided");
+  expect((await run()).out).toContain("inbox_lines=0");
+  expect(inbox().filter((x) => x.kind === "upstream-change")).toHaveLength(2);
 });
 
 test("a dependency added to a skills package.json is noted for the lane whatever its version spec; version and scripts lines are not", async () => {
