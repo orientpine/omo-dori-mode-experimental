@@ -405,22 +405,28 @@ test("in upstream main, a change only to the root harness is a same-defect revie
     63: ["src/telemetry.ts"],
     64: ["README.md", "docs/guide.md"],
     65: ["skills/dori-mode/scripts/src/panes.ts", "src/herdr-free.ts"],
+    // telemetry wired in under a title without the word: still telemetry
+    66: ["src/telemetry.ts", "src/cli.ts"],
+    // a harness fix that also touches telemetry: reviewed, with the telemetry part named as not brought in
+    67: ["src/harness.ts", "src/telemetry.ts"],
   };
-  json("prs.json", [main(60, "fix(send): keep a failed flush from stopping delivery"), main(61, "chore: bump the version"), main(62, "feat(telemetry): anonymous usage counts"), main(63, "refactor: tidy a module"), main(64, "docs: a guide"), main(65, "fix(send): hold delivery in both stacks")]);
+  json("prs.json", [main(60, "fix(send): keep a failed flush from stopping delivery"), main(61, "chore: bump the version"), main(62, "feat(telemetry): anonymous usage counts"), main(63, "refactor: tidy a module"), main(64, "docs: a guide"), main(65, "fix(send): hold delivery in both stacks"), main(66, "feat: anonymous usage counts like omo"), main(67, "fix(send): keep the duty tick alive")]);
   for (const [n, paths] of Object.entries(files)) json(`files-${n}.json`, paths.map((filename) => ({ filename, patch: "@@ -0,0 +1 @@\n+x", status: "modified", changes: 1 })));
   json("issues.json", []);
   writeFileSync(join(gh, "commits.jsonl"), JSON.stringify({ sha: "d".repeat(40), commit: { message: "direct: fix the duty tick" }, html_url: `${UP}/commit/${"d".repeat(40)}` }));
   json(`commit-${"d".repeat(40)}.json`, [{ filename: "src/harness.ts", patch: "+x", status: "modified", changes: 1 }]);
   expect((await run()).code).toBe(0);
   const rows = inbox().filter((x) => x.kind === "upstream-change");
-  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:60", "4"], ["pr:61", "4"], ["pr:65", "4"], [`commit:${"d".repeat(40)}`, "4"]]);
+  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:60", "4"], ["pr:61", "4"], ["pr:65", "4"], ["pr:67", "4"], [`commit:${"d".repeat(40)}`, "4"]]);
+  expect(rows.find((x) => x.item === "pr:67")!.reason).toContain("원격 측정(src/telemetry.ts)도 바뀜, 그 부분은 안 들임(형 Q19)");
   const root = rows.filter((x) => x.item !== "pr:65");
   expect(root.every((x) => x.reason!.startsWith("루트 하네스") && x.content!.includes("루트 하네스 파일은 들이지 않는다") && !x.content!.includes("이식 레인"))).toBe(true);
   // skills/ changed too: a port of the skills/ part as before, and the root part is not brought in
   expect(rows.find((x) => x.item === "pr:65")!.content).toContain("이식 레인");
   expect(rows.find((x) => x.item === "pr:65")!.reason).toContain("루트 하네스 1파일도 바뀜");
   const items = seen() as Record<string, { class: string; why: string }>;
-  expect(Object.fromEntries(["pr:62", "pr:63", "pr:64"].map((k) => [k, [items[k]!.class, items[k]!.why]]))).toEqual({
+  expect(Object.fromEntries(["pr:62", "pr:63", "pr:64", "pr:66"].map((k) => [k, [items[k]!.class, items[k]!.why]]))).toEqual({
+    "pr:66": ["2", "원격 측정은 안 들임(형 Q19)"],
     "pr:62": ["2", "원격 측정은 안 들임(형 Q19)"],
     "pr:63": ["2", "원격 측정은 안 들임(형 Q19)"],
     "pr:64": ["2", "skills/ 밖만 바뀜(문서)"],

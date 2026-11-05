@@ -320,8 +320,12 @@ def classify_change(title: str, paths: list[str], diff: str, blind: list[str] | 
     root = [p for p in paths if ROOT_HARNESS.search(p)]
     if not ours and not root:
         return "2", "skills/ 밖만 바뀜(문서)"
-    if not ours and (all(TELEMETRY.match(p) for p in root) or (re.search(r"telemetry", title, re.I) and "src/telemetry.ts" in root)):
+    # telemetry, by its files or by an outbound title (usage counts, analytics) over its file; wiring may touch other files
+    telemetry = any(TELEMETRY.match(p) for p in root)
+    if not ours and telemetry and (all(TELEMETRY.match(p) for p in root) or OUTBOUND_TITLE.search(title)):
         return "2", "원격 측정은 안 들임(형 Q19)"
+    if telemetry:
+        why.insert(0, "원격 측정(src/telemetry.ts)도 바뀜, 그 부분은 안 들임(형 Q19)")
     if not ours:
         return "4", "; ".join([f"{ROOT_WHY} {len(root)}파일만 바뀜(skills/ 없음)"] + [f"살필 것: {w}" for w in why])
     # in upstream main: ported without the owner's approval; what needs care goes to the lane as a note
