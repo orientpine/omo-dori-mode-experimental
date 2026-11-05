@@ -119,7 +119,19 @@ export type KeepDeps = {
   readonly ensureAgents: () => Promise<void>;
   readonly login: () => Promise<string>; // "OK", "no login page", or why it failed
   readonly restartAgent: () => Promise<void>;
+  readonly wait: (ms: number) => Promise<void>;
   readonly log: (line: string) => void;
+};
+
+// A portal login counts only when the tunnel then comes up: sslvpn.log's start line and the SecuwaySSL process.
+export const UP_CHECKS = 6;
+export const UP_EVERY_MS = 5000;
+const vpnBack = async (d: KeepDeps): Promise<boolean> => {
+  for (let i = 0; i < UP_CHECKS; i++) {
+    await d.wait(UP_EVERY_MS);
+    if ((await d.state().catch((): VpnState => "DOWN")) === "UP") return true;
+  }
+  return false;
 };
 
 // One check; returns how long to wait before the next. A login that throws counts as a failed attempt, so a broken
@@ -140,6 +152,7 @@ export async function keepTick(o: KeepOptions, s: KeepState, d: KeepDeps, now: D
     await d.restartAgent();
     r = await attempt();
   } else if (r !== "OK") r = await attempt();
+  if (r === "OK" && !(await vpnBack(d))) r = `OK portal, VPN still down after ${(UP_CHECKS * UP_EVERY_MS) / 1000} s`;
   d.log(`RELOGIN ${r}`);
   s.fails = r === "OK" ? 0 : s.fails + 1;
   if (s.fails < o.maxFails) return o.intervalMs;
@@ -148,7 +161,82 @@ export async function keepTick(o: KeepOptions, s: KeepState, d: KeepDeps, now: D
   return o.restMs;
 }
 
-type Cdp = { send: (method: string, params?: Record<string, unknown>) => Promise<any>; dialogs: string[]; close: () => void };
+export type Send = (method: string, params?: Record<string, unknown>) => Promise<any>;
+export type Cdp = { readonly send: Send; readonly dialogs: string[]; readonly close: () => void };
+type Frame = { readonly id: string; readonly url: string };
+
+// A page script that throws comes back as exceptionDetails, not as an error: make it one.
+export const evalIn = async (send: Send, contextId: number, expression: string): Promise<unknown> => {
+  const r = (await send("Runtime.evaluate", { expression, contextId, returnByValue: true }))?.result;
+  if (!r || r.exceptionDetails) throw new Error(`page script failed: ${r?.exceptionDetails?.exception?.description ?? r?.exceptionDetails?.text ?? "no result"}`);
+  return r.result?.value;
+};
+const world = async (send: Send, frame: Frame): Promise<number> => {
+  const id = (await send("Page.createIsolatedWorld", { frameId: frame.id }))?.result?.executionContextId;
+  if (typeof id !== "number") throw new Error("no script context in the login frame");
+  return id;
+};
+// Types text only into the named field once it is found, emptied and focused, then checks the field holds that many
+// characters; any miss throws before (or right after) typing, so a secret never goes into another field or the next step.
+export const typeInto = async (send: Send, contextId: number, name: string, text: string): Promise<void> => {
+  const focused = await evalIn(send, contextId, `(()=>{const e=document.querySelector('[name=${name}]');if(!e)return false;e.value='';e.focus();return document.activeElement===e&&e.value===''})()`);
+  if (focused !== true) throw new Error(`${name} field not found or not focused`);
+  await send("Input.insertText", { text });
+  const length = await evalIn(send, contextId, `(()=>{const e=document.querySelector('[name=${name}]');return e&&document.activeElement===e?e.value.length:-1})()`);
+  if (length !== text.length) throw new Error(`${name} field holds ${length} characters, not ${text.length}`);
+};
+const clickIn = async (send: Send, contextId: number, what: string, find: string): Promise<void> => {
+  const found = await evalIn(send, contextId, `(()=>{const e=${find};if(!e)return false;setTimeout(()=>e.click(),0);return true})()`);
+  if (found !== true) throw new Error(`${what} not found`);
+};
+
+// The Secuway portal: agent check page -> login.jsp (account) -> flag3_cert (MOTP) -> bookmark. "OK" only at the
+// bookmark page; "no login page" when the agent check page never moves on (the caller restarts the agent).
+export async function loginFlow(V: Cdp, vpnUrl: string, creds: () => Promise<[string, string]>, motp: () => string, clock: Clock): Promise<string> {
+  const frames = async (): Promise<Frame[]> => {
+    const all: Frame[] = [];
+    const walk = (f: any) => { all.push(f.frame); (f.childFrames || []).forEach(walk); };
+    walk((await V.send("Page.getFrameTree")).result.frameTree);
+    return all;
+  };
+  const waitFrame = async (re: RegExp, tries: number, everyMs: number, skip: RegExp | null = null): Promise<Frame | undefined> => {
+    for (let i = 0; i < tries; i++) {
+      await clock.sleep(everyMs);
+      const f = (await frames()).find((x) => re.test(x.url) && !(skip && skip.test(x.url)));
+      if (f) return f;
+    }
+    return undefined;
+  };
+  await V.send("Page.enable");
+  const nav = (await V.send("Page.navigate", { url: vpnUrl }))?.result;
+  if (nav?.errorText) throw new Error(`navigate: ${nav.errorText}`);
+  const fr = await waitFrame(/login\.jsp/, 45, 2000, /act=1/);
+  if (!fr) return "no login page";
+  await clock.sleep(1500);
+  const ctx = await world(V.send, fr);
+  const otpChoice = await evalIn(V.send, ctx, `(()=>{const e=document.querySelector("input[name=vxs][value='2']");if(!e)return false;e.click();return e.checked===true})()`);
+  if (otpChoice !== true) throw new Error("OTP login choice not found or not chosen");
+  const [id, pw] = await creds();
+  await typeInto(V.send, ctx, "userid", id);
+  await typeInto(V.send, ctx, "userpw", pw);
+  const left = 30 - (Math.floor(clock.now() / 1000) % 30);
+  if (left < 15) await clock.sleep(left * 1000 + 500); // the code must not expire before it is sent
+  await clickIn(V.send, ctx, "login button", `document.querySelector('a[href*="go("]')`);
+  const cf = await waitFrame(/flag3_cert/, 40, 500);
+  if (!cf) return `no cert ${V.dialogs.join("|")}`;
+  let c2 = 0;
+  for (let i = 0; i < 20 && !c2; i++) {
+    try {
+      const c = await world(V.send, cf);
+      if ((await evalIn(V.send, c, "!!document.querySelector('[name=usersms]')")) === true) c2 = c;
+    } catch { /* the frame is still loading */ }
+    if (!c2) await clock.sleep(300);
+  }
+  if (!c2) return "no otp field";
+  await typeInto(V.send, c2, "usersms", motp());
+  await clickIn(V.send, c2, "OTP send button", `[...document.querySelectorAll('a')].find(a=>a.innerText.trim()==='전송')`);
+  return (await waitFrame(/bookmark/, 15, 2000)) ? "OK" : `FAIL ${V.dialogs.join("|")}`;
+}
 const timeout = <T>(p: Promise<T>, ms: number, what: string, clock: Clock): Promise<T> =>
   Promise.race([p, clock.sleep(ms).then((): never => { throw new Error(`timeout ${what}`); })]);
 
@@ -209,53 +297,17 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
       }
     };
     const send = (method: string, params: Record<string, unknown> = {}) =>
-      timeout(new Promise<any>((r) => { const id = ++n; waiting.set(id, r); ws.send(JSON.stringify({ id, method, params })); }), 10_000, method, clock);
+      timeout(new Promise<any>((r, j) => {
+        const id = ++n;
+        waiting.set(id, (m) => (m.error ? j(new Error(`${method}: ${m.error.message ?? "protocol error"}`)) : r(m)));
+        ws.send(JSON.stringify({ id, method, params }));
+      }), 10_000, method, clock);
     return { send, dialogs, close: () => ws.close() };
   };
   const login = async (): Promise<string> => {
     const V = await cdp();
     try {
-      await V.send("Page.enable");
-      const frame = async (re: RegExp) => {
-        const all: { id: string; url: string }[] = [];
-        const walk = (f: any) => { all.push(f.frame); (f.childFrames || []).forEach(walk); };
-        walk((await V.send("Page.getFrameTree")).result.frameTree);
-        return all.find((f) => re.test(f.url));
-      };
-      await V.send("Page.navigate", { url: o.vpnUrl });
-      let fr: { id: string; url: string } | undefined;
-      for (let i = 0; i < 45 && !fr; i++) { await clock.sleep(2000); const f = await frame(/login\.jsp/); if (f && !/act=1/.test(f.url)) fr = f; }
-      if (!fr) return "no login page"; // the agent check page (activexloading.jsp) did not move on
-      await clock.sleep(1500);
-      const ctx = (await V.send("Page.createIsolatedWorld", { frameId: fr.id })).result.executionContextId;
-      const ev = (x: string) => V.send("Runtime.evaluate", { expression: x, contextId: ctx, returnByValue: true });
-      await ev(`document.querySelector("input[name=vxs][value='2']").click()`);
-      const [id, pw] = await creds();
-      await ev(`var e=document.querySelector('[name=userid]');e.value='';e.focus()`);
-      await V.send("Input.insertText", { text: id });
-      await ev(`var e=document.querySelector('[name=userpw]');e.value='';e.focus()`);
-      await V.send("Input.insertText", { text: pw });
-      const left = 30 - (Math.floor(clock.now() / 1000) % 30);
-      if (left < 15) await clock.sleep(left * 1000 + 500); // the code must not expire before it is sent
-      await ev(`setTimeout(()=>document.querySelector('a[href*="go("]').click(),0);1`);
-      let cf: { id: string; url: string } | undefined;
-      for (let i = 0; i < 40 && !cf; i++) { await clock.sleep(500); cf = await frame(/flag3_cert/); }
-      if (!cf) return `no cert ${V.dialogs.join("|")}`;
-      let c2 = 0;
-      let ready = false;
-      for (let i = 0; i < 20 && !ready; i++) {
-        try {
-          c2 = (await V.send("Page.createIsolatedWorld", { frameId: cf.id })).result.executionContextId;
-          ready = (await V.send("Runtime.evaluate", { expression: "!!document.querySelector('[name=usersms]')", contextId: c2, returnByValue: true })).result.result?.value === true;
-        } catch { /* the frame is still loading */ }
-        if (!ready) await clock.sleep(300);
-      }
-      const ce = (x: string) => V.send("Runtime.evaluate", { expression: x, contextId: c2, returnByValue: true });
-      await ce(`var e=document.querySelector('[name=usersms]');e.value='';e.focus();1`);
-      await V.send("Input.insertText", { text: motp() });
-      await ce(`setTimeout(()=>[...document.querySelectorAll('a')].find(a=>a.innerText.trim()==='전송').click(),0);1`);
-      for (let i = 0; i < 15; i++) { await clock.sleep(2000); if (await frame(/bookmark/)) return "OK"; }
-      return `FAIL ${V.dialogs.join("|")}`;
+      return await loginFlow(V, o.vpnUrl, creds, motp, clock);
     } finally {
       V.close();
     }
@@ -265,6 +317,7 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
     state: async () => vpnState(await ps(STATE_PS)),
     ensureAgents,
     login,
+    wait: (ms) => clock.sleep(ms),
     restartAgent: async () => { await ps(`Stop-Process -Name SecuwayUPort -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-ScheduledTask -TaskName '${o.secuwayTask}'; Start-Sleep 8`); },
     log: (line) => console.log(`${new Date(clock.now()).toISOString()} ${line}`),
   };

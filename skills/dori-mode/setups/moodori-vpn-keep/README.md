@@ -18,15 +18,20 @@ Every minute inside the window (`days`, `hours`, `timeZone`):
    running, starts MooDori's Edge through `edgeTask` if its debugging port does not answer, and opens the ssh tunnel
    `127.0.0.1:<cdpPort>` to that port.
 3. Logs in on `vpnUrl` through Edge (CDP): the account from `credsCommand`, then the MOTP code (TOTP HMAC-SHA256,
-   6 digits, 30 s) from the key in `motpFile`. When the login page never appears (the agent check page hangs), it
-   restarts the agent once and tries again; any other failure is tried once more.
-4. Three failed rounds in a row (`maxFails`; a login that errors counts too) rest 15 minutes (`restMs`), so the
+   6 digits, 30 s) from the key in `motpFile`. A secret is typed only into its own field once that field is found,
+   emptied and focused, and the field must then hold that many characters; a field that is missing or not focused, a
+   page script that throws, a navigation error or a CDP error stops the login before anything else is typed or sent.
+   When the login page never appears (the agent check page hangs), it restarts the agent once and tries again; any
+   other failure is tried once more.
+4. The portal's bookmark page is not yet a recovery: within 30 s (every 5 s) the VPN state from step 1 must read up,
+   else the round failed (`RELOGIN OK portal, VPN still down after 30 s`). An up check ends a run of failed rounds.
+5. Three failed rounds in a row (`maxFails`; a login that errors counts too) rest 15 minutes (`restMs`), so the
    account is not tried every minute.
 
 `touch /tmp/moodori-vpn-keep.pause` (`pauseFile`) pauses it; remove the file to resume.
 
 Log lines (`~/.dori/vpn-keep.log`): `VPN_KEEP_ON ...` at start, `DOWN` / `NOLOG`, `AGENT_RESTART`,
-`RELOGIN OK|FAIL ...|no cert ...|ERR ...`, `GIVEUP after 3 fails, resting 15 min`, `ERR ...`. `VPN_KEEP_OFF` (exit 0)
+`RELOGIN OK|OK portal, VPN still down ...|FAIL ...|no cert ...|no otp field|ERR ...`, `GIVEUP after 3 fails, resting 15 min`, `ERR ...`. `VPN_KEEP_OFF` (exit 0)
 when off, `VPN_KEEP_CONFIG_BAD` (exit 2) for an enabled config with a missing or wrong value. Neither the account nor
 the MOTP key or code is ever printed.
 

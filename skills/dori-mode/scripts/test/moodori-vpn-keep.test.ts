@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { credsFrom, inWindow, keepConfig, keepRun, keepTick, realDeps, totp, vpnState, type KeepDeps, type KeepOptions, type Tunnel, type TunnelProc, type VpnState } from "../../setups/moodori-vpn-keep/keep.ts";
+import { credsFrom, inWindow, keepConfig, keepRun, keepTick, loginFlow, realDeps, totp, typeInto, vpnState, type Cdp, type KeepDeps, type KeepOptions, type Tunnel, type TunnelProc, type VpnState } from "../../setups/moodori-vpn-keep/keep.ts";
 
 const KEEP = join(import.meta.dir, "../../setups/moodori-vpn-keep/keep.ts");
 
@@ -118,11 +118,14 @@ test("MOTP is RFC 6238 TOTP-SHA256 with 6 digits", () => {
 });
 
 const MON_10_KST = new Date("2026-11-02T01:00:00Z");
-const deps = (state: VpnState, logins: string[], over: Partial<KeepDeps> = {}) => {
+// state: one answer for every check, or answers in turn (the last one repeats)
+const deps = (state: VpnState | VpnState[], logins: string[], over: Partial<KeepDeps> = {}) => {
   const calls: string[] = [];
+  const states = Array.isArray(state) ? [...state] : [state];
   const d: KeepDeps = {
     paused: async () => false,
-    state: async () => { calls.push("state"); return state; },
+    state: async () => { calls.push("state"); return (states.length > 1 ? states.shift() : states[0]) ?? "DOWN"; },
+    wait: async () => { calls.push("wait"); },
     ensureAgents: async () => { calls.push("agents"); },
     login: async () => { const r = logins.shift() ?? "FAIL"; calls.push(`login:${r}`); if (r.startsWith("throw")) throw new Error(r); return r; },
     restartAgent: async () => { calls.push("restart"); },
@@ -147,14 +150,14 @@ test("an up VPN, a pause file or the time outside the window does nothing but wa
 
 test("a down VPN starts the agents and logs in; a login page that never comes restarts the agent once", async () => {
   const o = options();
-  const ok = deps("DOWN", ["OK"]);
+  const ok = deps(["DOWN", "DOWN", "UP"], ["OK"]);
   const s = { fails: 2 };
   expect(await keepTick(o, s, ok.d, MON_10_KST)).toBe(60000);
-  expect(ok.calls).toEqual(["state", "log:DOWN", "agents", "login:OK", "log:RELOGIN OK"]);
+  expect(ok.calls).toEqual(["state", "log:DOWN", "agents", "login:OK", "wait", "state", "wait", "state", "log:RELOGIN OK"]);
   expect(s.fails).toBe(0);
-  const stuck = deps("NOLOG", ["no login page", "OK"]);
+  const stuck = deps(["NOLOG", "UP"], ["no login page", "OK"]);
   await keepTick(o, { fails: 0 }, stuck.d, MON_10_KST);
-  expect(stuck.calls).toEqual(["state", "log:NOLOG", "agents", "login:no login page", "log:AGENT_RESTART", "restart", "login:OK", "log:RELOGIN OK"]);
+  expect(stuck.calls).toEqual(["state", "log:NOLOG", "agents", "login:no login page", "log:AGENT_RESTART", "restart", "login:OK", "wait", "state", "log:RELOGIN OK"]);
 });
 
 test("three failed rounds in a row rest 15 minutes and start counting again; a login that throws is a failed round; an up VPN ends the run", async () => {
@@ -175,4 +178,81 @@ test("three failed rounds in a row rest 15 minutes and start counting again; a l
   expect(await keepTick(o, s, deps("DOWN", ["FAIL a", "FAIL b"]).d, MON_10_KST)).toBe(60000);
   expect(logs).toEqual(["log:RELOGIN FAIL y", "log:RELOGIN FAIL z", "log:RELOGIN FAIL w", "log:GIVEUP after 3 fails, resting 15 min", "log:RELOGIN FAIL u"]);
   expect(s.fails).toBe(1);
+});
+
+test("a portal login whose tunnel never comes up within 30 s is a failed round, so three of them still rest", async () => {
+  const o = options();
+  const s = { fails: 0 };
+  const waits: number[] = [];
+  let r = deps("DOWN", []);
+  for (let i = 0; i < 3; i++) {
+    r = deps("DOWN", ["OK"]);
+    waits.push(await keepTick(o, s, r.d, MON_10_KST));
+  }
+  expect(waits).toEqual([60000, 60000, 900000]);
+  expect(r.calls.filter((c) => c === "wait").length).toBe(6);
+  expect(r.calls.filter((c) => c.startsWith("log:RELOGIN") || c.startsWith("log:GIVEUP"))).toEqual(["log:RELOGIN OK portal, VPN still down after 30 s", "log:GIVEUP after 3 fails, resting 15 min"]);
+});
+
+// A scripted Secuway portal behind a fake CDP: frames move on after the login and the OTP send buttons are clicked.
+type Page = { otpChoice?: boolean; focus?: Record<string, boolean>; throwOn?: string; holds?: Record<string, number>; noOtpField?: boolean; navError?: string; protocolError?: string };
+const fakePortal = (page: Page = {}) => {
+  const typed: string[] = [];
+  const clicked: string[] = [];
+  let stage: "login" | "cert" | "done" = "login";
+  let focused = "";
+  const value: Record<string, number> = {};
+  const frame = (url: string) => ({ frame: { id: "top", url: "https://vpn.example.com/" }, childFrames: [{ frame: { id: "f", url } }] });
+  const send = async (method: string, params: Record<string, any> = {}): Promise<any> => {
+    if (page.protocolError === method) throw new Error(`${method}: protocol error`);
+    if (method === "Page.navigate") return { result: page.navError ? { errorText: page.navError } : { frameId: "top" } };
+    if (method === "Page.getFrameTree") return { result: { frameTree: frame(stage === "login" ? "https://vpn.example.com/login.jsp" : stage === "cert" ? "https://vpn.example.com/flag3_cert.jsp" : "https://vpn.example.com/bookmark.jsp") } };
+    if (method === "Page.createIsolatedWorld") return { result: { executionContextId: 7 } };
+    if (method === "Input.insertText") { typed.push(`${focused}=${params.text}`); value[focused] = page.holds?.[focused] ?? String(params.text).length; return { result: {} }; }
+    if (method !== "Runtime.evaluate") return { result: {} };
+    const x = String(params.expression);
+    const name = /\[name=(\w+)\]/.exec(x)?.[1] ?? "";
+    if (page.throwOn && x.includes(`[name=${page.throwOn}]`)) return { result: { result: { type: "object" }, exceptionDetails: { text: "Uncaught", exception: { description: "TypeError: e is null" } } } };
+    const val = (v: unknown) => ({ result: { result: { type: typeof v, value: v } } });
+    if (x.includes("vxs")) return val(page.otpChoice ?? true);
+    if (x.startsWith("!!")) return val(!page.noOtpField);
+    if (x.includes("e.focus()")) { const ok = page.focus?.[name] ?? true; if (ok) focused = name; return val(ok); }
+    if (x.includes("e.value.length")) return val(focused === name ? value[name] ?? 0 : -1);
+    if (x.includes("go(")) { clicked.push("login"); stage = "cert"; return val(true); }
+    if (x.includes("전송")) { clicked.push("otp"); stage = "done"; return val(true); }
+    return val(undefined);
+  };
+  const V: Cdp = { send, dialogs: [], close: () => {} };
+  return { V, typed, clicked };
+};
+const instant = { now: () => 15_000, sleep: async () => {} };
+const flow = (page: Page) => {
+  const p = fakePortal(page);
+  const run = loginFlow(p.V, "https://vpn.example.com/", async () => ["the-id", "the-pw"], () => "123456", instant).catch((e: Error) => `THROW ${e.message}`);
+  return run.then((r) => ({ r, typed: p.typed, clicked: p.clicked }));
+};
+
+test("the login flow types the account and the MOTP code each into its own focused field and ends OK at the bookmark page", async () => {
+  expect(await flow({})).toEqual({ r: "OK", typed: ["userid=the-id", "userpw=the-pw", "usersms=123456"], clicked: ["login", "otp"] });
+});
+
+test("a field that is missing, not focused, throws in the page or does not hold the text gets no secret and stops the login", async () => {
+  expect(await flow({ otpChoice: false })).toEqual({ r: "THROW OTP login choice not found or not chosen", typed: [], clicked: [] });
+  expect(await flow({ focus: { userpw: false } })).toEqual({ r: "THROW userpw field not found or not focused", typed: ["userid=the-id"], clicked: [] });
+  expect(await flow({ throwOn: "userid" })).toEqual({ r: "THROW page script failed: TypeError: e is null", typed: [], clicked: [] });
+  expect(await flow({ holds: { userpw: 3 } })).toEqual({ r: "THROW userpw field holds 3 characters, not 6", typed: ["userid=the-id", "userpw=the-pw"], clicked: [] });
+  expect(await flow({ focus: { usersms: false } })).toEqual({ r: "THROW usersms field not found or not focused", typed: ["userid=the-id", "userpw=the-pw"], clicked: ["login"] });
+  expect(await flow({ noOtpField: true })).toEqual({ r: "no otp field", typed: ["userid=the-id", "userpw=the-pw"], clicked: ["login"] });
+});
+
+test("a navigation error or a CDP protocol error fails the login before anything is typed", async () => {
+  expect(await flow({ navError: "net::ERR_NAME_NOT_RESOLVED" })).toEqual({ r: "THROW navigate: net::ERR_NAME_NOT_RESOLVED", typed: [], clicked: [] });
+  expect(await flow({ protocolError: "Page.createIsolatedWorld" })).toEqual({ r: "THROW Page.createIsolatedWorld: protocol error", typed: [], clicked: [] });
+});
+
+test("typeInto sends no text when the page script throws", async () => {
+  const sent: string[] = [];
+  const send = async (method: string) => { sent.push(method); return { result: { result: { type: "object" }, exceptionDetails: { text: "Uncaught" } } }; };
+  await expect(typeInto(send, 1, "userpw", "x")).rejects.toThrow("page script failed: Uncaught");
+  expect(sent).toEqual(["Runtime.evaluate"]);
 });
