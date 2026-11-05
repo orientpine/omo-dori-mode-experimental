@@ -9,7 +9,8 @@ and asks the owner to integrate it when it looks needed; the merged PR or main c
 Each new item gets one rule-based class:
   1 already here    our code cites it (a dori-superagent pull/issue/commit link), the PR closes an issue
                     we cite, or the commit is already in our history
-  2 not ours        the herdr harness; neither skills/ nor the root harness changed (docs, README); a telemetry
+  2 not ours        an open issue or proposed PR about upstream's herdr harness; in main, neither skills/ nor the
+                    root harness changed (docs, README), whatever the title says (the fork runs on herdr too); a telemetry
                     change (the owner's Q19: telemetry is not brought in); an issue closed without code; a PR closed
                     without a merge
   3 integration ask an open issue, an open PR or a PR merged into another branch: not in upstream main; the lead
@@ -88,7 +89,7 @@ ACTION = {
 ROOT_HARNESS = re.compile(r"^(?:src|prompts|test)/|^package\.json$")
 TELEMETRY = re.compile(r"^(?:src/telemetry\.ts|test/telemetry[^/]*)$")
 ROOT_WHY = "루트 하네스"
-OLD_ROOT_WHY = "skills/ 밖만 바뀜(루트 하네스·문서)"
+OLD_ROOT_WHY = ("skills/ 밖만 바뀜(루트 하네스·문서)", "herdr 하네스")
 
 
 class GhError(Exception):
@@ -301,8 +302,7 @@ def new_deps(diff: str) -> str | None:
 
 
 def classify_change(title: str, paths: list[str], diff: str, blind: list[str] | None = None) -> tuple[str, str]:
-    if PR_HARNESS.search(title):
-        return "2", "herdr 하네스"
+    # in main the files decide, not a herdr title: the fork runs on herdr as upstream does (the herdr move is done)
     added = added_by_file(diff)
     ours = [p for p in paths if p.startswith("skills/")]
     why = []
@@ -343,7 +343,7 @@ def classify_pr(repo: str, pr: dict, here: Here) -> tuple[str, str]:
         return "1", f"우리 코드가 이 PR이 닫은 이슈 #{cited[0]}를 인용"
     if here.has_commit(sha):
         return "1", "우리 이력에 이미 있음"
-    entries = [] if PR_HARNESS.search(pr["title"]) else pr_files(repo, n)
+    entries = pr_files(repo, n)
     cls, why = classify_change(pr["title"], [f["filename"] for f in entries], as_diff(entries), unread(entries))
     return cls, why + (f", 이슈 {', '.join(f'#{i}' for i in closes)} 닫음" if closes else "")
 
@@ -381,8 +381,8 @@ def classify_issue(issue: dict, here: Here, closed_by: dict[int, int]) -> tuple[
 
 
 def old_root(record: dict) -> bool:
-    # a main item the old watcher put aside as root-only: class 2 "skills/ 밖만", or its class-3 owner question
-    # (autonomy) for a PR that had no skills/ change; reviewed once (q19), a hand decision stays
+    # a main item the old watcher put aside: class 2 "skills/ 밖만" or "herdr 하네스" (by its title, files unread), or its
+    # class-3 owner question (autonomy) for a PR that had no skills/ change; reviewed once (q19), a hand decision stays
     why = record.get("why") or ""
     return not record.get("q19") and (
         (record.get("class") == "2" and why.startswith(OLD_ROOT_WHY))
