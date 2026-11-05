@@ -442,8 +442,8 @@ test("in upstream main, a change only to the root harness is a same-defect revie
 
 test("a root-only main PR the old watcher put aside (class 2, or an old class-3 owner question) is reviewed once; a decided, a docs or a ported one is not", async () => {
   const main = (number: number, title: string) => ({ number, title, url: `${UP}/pull/${number}`, mergedAt: "2026-11-02T00:00:00Z", mergeCommit: { oid: `${number}`.padStart(40, "9") }, body: "" });
-  json("prs.json", [main(17, "docs(readme): avatar"), main(21, "feat(telemetry): anonymous usage counts"), main(34, "fix: deliver to omo panes started with pane run"), main(84, "fix(send): wait for the pane"), main(90, "fix(dori-mode): a port we did"), main(63, "fix(send): deliver to an omo herdr calls working"), main(47, "fix(send): a herdr fix our code cites")]);
-  const files: Record<number, string[]> = { 17: ["README.md"], 21: ["src/telemetry.ts"], 34: ["src/harness.ts"], 84: ["src/herdr.ts"], 90: ["skills/dori-mode/scripts/src/a.ts"], 63: ["src/herdr.ts"], 47: ["src/herdr.ts"] };
+  json("prs.json", [main(17, "docs(readme): avatar"), main(21, "feat(telemetry): anonymous usage counts"), main(34, "fix: deliver to omo panes started with pane run"), main(84, "fix(send): wait for the pane"), main(90, "fix(dori-mode): a port we did"), main(63, "fix(send): deliver to an omo herdr calls working"), main(47, "fix(send): a herdr fix our code cites"), main(91, "fix(herdr): hold delivery in both stacks")]);
+  const files: Record<number, string[]> = { 17: ["README.md"], 21: ["src/telemetry.ts"], 34: ["src/harness.ts"], 84: ["src/herdr.ts"], 90: ["skills/dori-mode/scripts/src/a.ts"], 63: ["src/herdr.ts"], 47: ["src/herdr.ts"], 91: ["skills/dori-mode/scripts/src/panes.ts", "src/herdr.ts"] };
   for (const [n, paths] of Object.entries(files)) json(`files-${n}.json`, paths.map((filename) => ({ filename, patch: "@@ -0,0 +1 @@\n+x", status: "modified", changes: 1 })));
   json("issues.json", []);
   writeFileSync(join(gh, "commits.jsonl"), "");
@@ -458,12 +458,15 @@ test("a root-only main PR the old watcher put aside (class 2, or an old class-3 
     // put aside by its herdr title, files unread: reviewed once like the rest; one our code cites is already here
     "pr:63": { class: "2", why: "herdr 하네스", at },
     "pr:47": { class: "2", why: "herdr 하네스, 이슈 #54 닫음", at },
+    // its files were never read: it changes skills/ too, so it is a port now, sent once
+    "pr:91": { class: "2", why: "herdr 하네스", at },
   }, minor: [], fails: 0 }));
   expect((await run()).code).toBe(0);
-  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr:34", "4"], ["pr:63", "4"], ["pr:84", "4"]]);
+  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr:34", "4"], ["pr:63", "4"], ["pr:84", "4"], ["pr:91", "4"]]);
+  expect(inbox().find((x) => x.item === "pr:91")!.content).toContain("이식 레인");
   expect(seen()["pr:21"]!.class).toBe("decided");
   expect((await run()).out).toContain("inbox_lines=0");
-  expect(inbox().filter((x) => x.kind === "upstream-change")).toHaveLength(3);
+  expect(inbox().filter((x) => x.kind === "upstream-change")).toHaveLength(4);
 });
 
 test("a dependency added to a skills package.json is noted for the lane whatever its version spec; version and scripts lines are not", async () => {

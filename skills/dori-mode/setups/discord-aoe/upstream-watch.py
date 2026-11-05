@@ -19,7 +19,8 @@ Each new item gets one rule-based class:
                     with care (data sent outside, autonomy, a new dependency, owner-felt behavior, content not read).
                     One that changes only the root harness (src/ prompts/ test/ package.json) is a same-defect review
                     (owner Q19): the lane fixes the same defect in our skills/dori-mode code and never brings root
-                    files in. A root-only main item the old watcher put aside (class 2, or class 3) comes once.
+                    files in. A main item the old watcher put aside (class 2 by a herdr title or without a skills/
+                    change, or class 3) is classified once more and comes once if it is class 4 now.
 Classes 3 and 4 append one kind "upstream-change" line each to the lead inbox. Classes 1 and 2 are kept
 and sent as one kind "upstream-weekly" line at most once a week. An item is recorded as seen only after
 its inbox line is written, so a failed append is retried next hour. A failed gh call records nothing
@@ -579,8 +580,9 @@ def main(argv: list[str]) -> int:
     counts = {"1": 0, "2": 0, "3": 0, "4": 0}
     for item in fresh:
         cls = item["cls"]
-        # (one that cannot be read in full now still goes to the lead to check by hand)
-        if item.get("again") and not (cls == "4" and item["why"].startswith((ROOT_WHY, UNREAD_WHY))):
+        # class 4 now (a root review, a port of a herdr-titled skills/ change whose files were never read, or one not
+        # read in full) goes to the lead once; anything else is only marked as looked at again
+        if item.get("again") and cls != "4":
             state["items"][item["key"]]["q19"] = True
             save_state(state_path, state)
             continue
