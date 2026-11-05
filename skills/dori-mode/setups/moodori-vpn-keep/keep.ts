@@ -127,7 +127,10 @@ export type KeepDeps = {
 export async function keepTick(o: KeepOptions, s: KeepState, d: KeepDeps, now: Date): Promise<number> {
   if (!inWindow(now, o) || (await d.paused())) return o.intervalMs;
   const state = await d.state();
-  if (state === "UP") return o.intervalMs;
+  if (state === "UP") {
+    s.fails = 0; // a recovery (by hand too) ends the run of failed rounds
+    return o.intervalMs;
+  }
   d.log(state);
   await d.ensureAgents();
   const attempt = () => d.login().catch((e: unknown) => `ERR ${e instanceof Error ? e.message : String(e)}`);
@@ -149,15 +152,31 @@ type Cdp = { send: (method: string, params?: Record<string, unknown>) => Promise
 const timeout = <T>(p: Promise<T>, ms: number, what: string, clock: Clock): Promise<T> =>
   Promise.race([p, clock.sleep(ms).then((): never => { throw new Error(`timeout ${what}`); })]);
 
-export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = realClock): KeepDeps {
+// The ssh tunnel this keep started. A forward keeps the PC and port it started with, so a changed config stops it.
+export type TunnelProc = { readonly kill: () => void; readonly exited: Promise<number> };
+export type Tunnel = { proc?: TunnelProc; key?: string };
+export type Spawn = (argv: readonly string[]) => TunnelProc;
+export const stopTunnel = async (t: Tunnel): Promise<void> => {
+  const proc = t.proc;
+  t.proc = undefined;
+  t.key = undefined;
+  if (proc) { proc.kill(); await proc.exited; }
+};
+const spawnTunnel: Spawn = (argv) => Bun.spawn([...argv], { stdout: "ignore", stderr: "ignore" });
+
+export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = realClock, tunnel: Tunnel = {}, spawn: Spawn = spawnTunnel): KeepDeps {
   const base = `http://127.0.0.1:${o.cdpPort}`;
   const ps = async (cmd: string): Promise<string> =>
     (await runner(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", o.pcSsh, "powershell", "-NoProfile", "-EncodedCommand", Buffer.from(cmd, "utf16le").toString("base64")], { timeoutMs: 90_000 })).out;
-  const tunnelUp = () => timeout(fetch(`${base}/json/version`), 4000, "cdp version", clock).then((r) => r.ok, () => false);
+  const tunnelUp = () => fetch(`${base}/json/version`, { signal: AbortSignal.timeout(4000) }).then((r) => r.ok, () => false);
   const ensureAgents = async () => {
     await ps(`if(-not (Get-Process SecuwayUPort -ErrorAction SilentlyContinue)){Start-ScheduledTask -TaskName '${o.secuwayTask}'; Start-Sleep 5}; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 4) | Out-Null}catch{Start-ScheduledTask -TaskName '${o.edgeTask}'; Start-Sleep 8}`);
+    const key = `${o.pcSsh} ${o.cdpPort}:127.0.0.1:${o.edgePort}`;
+    if (tunnel.key !== undefined && tunnel.key !== key) await stopTunnel(tunnel);
     if (await tunnelUp()) return;
-    Bun.spawn(["ssh", "-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30", "-L", `${o.cdpPort}:127.0.0.1:${o.edgePort}`, o.pcSsh], { stdout: "ignore", stderr: "ignore" });
+    await stopTunnel(tunnel);
+    tunnel.proc = spawn(["ssh", "-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30", "-L", `${o.cdpPort}:127.0.0.1:${o.edgePort}`, o.pcSsh]);
+    tunnel.key = key;
     await clock.sleep(4000);
   };
   const creds = async (): Promise<[string, string]> => {
@@ -256,7 +275,7 @@ export const configPath = (env: Record<string, string | undefined>, home: string
 
 export type KeepRunOptions = {
   readonly once: boolean;
-  readonly makeDeps: (o: KeepOptions) => KeepDeps;
+  readonly makeDeps: (o: KeepOptions, tunnel: Tunnel) => KeepDeps;
   readonly sleep: (ms: number) => Promise<void>;
   readonly now: () => Date;
   readonly print: (line: string) => void;
@@ -266,6 +285,7 @@ export type KeepRunOptions = {
 // runs. Returns the exit code: 0 off, 2 a bad config.
 export async function keepRun(path: string, r: KeepRunOptions): Promise<number> {
   const state: KeepState = { fails: 0 };
+  const tunnel: Tunnel = {};
   let started = false;
   for (;;) {
     let config: KeepConfig;
@@ -273,19 +293,24 @@ export async function keepRun(path: string, r: KeepRunOptions): Promise<number> 
       config = keepConfig(existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined);
     } catch (e) {
       r.print(`VPN_KEEP_CONFIG_BAD ${path} ${e instanceof Error ? e.message : String(e)}`);
+      await stopTunnel(tunnel);
       return 2;
     }
     if (!config.on) {
       r.print(`VPN_KEEP_OFF ${path} (${config.reason})`);
+      await stopTunnel(tunnel);
       return 0;
     }
     const o = config.options;
-    const deps = r.makeDeps(o);
+    const deps = r.makeDeps(o, tunnel);
     if (!started) deps.log(`VPN_KEEP_ON ${path} days=${o.days.join(",")} hours=${o.hours[0]}-${o.hours[1]} ${o.timeZone} every ${o.intervalMs} ms${r.once ? " once" : ""}`);
     started = true;
     let wait = o.intervalMs;
     try { wait = await keepTick(o, state, deps, r.now()); } catch (e) { deps.log(`ERR ${e instanceof Error ? e.message : String(e)}`); }
-    if (r.once) return 0;
+    if (r.once) {
+      await stopTunnel(tunnel);
+      return 0;
+    }
     await r.sleep(wait);
   }
 }
@@ -294,7 +319,7 @@ if (import.meta.main) {
   await loadEnvFile(envFilePath());
   process.exit(await keepRun(configPath(process.env), {
     once: process.argv.includes("--once"),
-    makeDeps: (o) => realDeps(o),
+    makeDeps: (o, tunnel) => realDeps(o, run, realClock, tunnel),
     sleep: (ms) => Bun.sleep(ms),
     now: () => new Date(),
     print: (line) => console.log(`${new Date().toISOString()} ${line}`),

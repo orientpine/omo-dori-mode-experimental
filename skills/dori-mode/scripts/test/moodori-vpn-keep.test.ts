@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { credsFrom, inWindow, keepConfig, keepRun, keepTick, totp, vpnState, type KeepDeps, type KeepOptions, type VpnState } from "../../setups/moodori-vpn-keep/keep.ts";
+import { credsFrom, inWindow, keepConfig, keepRun, keepTick, realDeps, totp, vpnState, type KeepDeps, type KeepOptions, type Tunnel, type TunnelProc, type VpnState } from "../../setups/moodori-vpn-keep/keep.ts";
 
 const KEEP = join(import.meta.dir, "../../setups/moodori-vpn-keep/keep.ts");
 
@@ -58,9 +58,13 @@ test("a running keep reads its config before every check and exits 0 once enable
   const printed: string[] = [];
   let checks = 0;
   let sleeps = 0;
+  let killed = 0;
   const code = await keepRun(path, {
     once: false,
-    makeDeps: () => deps("UP", [], { state: async () => { checks++; return "UP"; } }).d,
+    makeDeps: (_o, tunnel) => {
+      tunnel.proc ??= { kill: () => { killed++; }, exited: Promise.resolve(0) };
+      return deps("UP", [], { state: async () => { checks++; return "UP"; } }).d;
+    },
     sleep: async () => {
       if (++sleeps > 1) throw new Error(`still checking after enabled: false (${checks} checks)`);
       writeFileSync(path, JSON.stringify({ ...BASE, enabled: false }));
@@ -68,7 +72,33 @@ test("a running keep reads its config before every check and exits 0 once enable
     now: () => MON_10_KST,
     print: (line) => printed.push(line),
   });
-  expect({ code, checks, printed }).toEqual({ code: 0, checks: 1, printed: [`VPN_KEEP_OFF ${path} (enabled is not true)`] });
+  expect({ code, checks, killed, printed }).toEqual({ code: 0, checks: 1, killed: 1, printed: [`VPN_KEEP_OFF ${path} (enabled is not true)`] });
+});
+
+test("the tunnel keeps its PC: a config naming another PC or port stops the old tunnel even while it answers", async () => {
+  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("{}") });
+  const port = probe.port;
+  probe.stop(true);
+  const spawned: string[] = [];
+  let kills = 0;
+  const spawn = (argv: readonly string[]): TunnelProc => { spawned.push(argv.slice(-2).join(" ")); return { kill: () => { kills++; }, exited: Promise.resolve(0) }; };
+  const tunnel: Tunnel = {};
+  const clock = { now: () => Date.now(), sleep: async () => {} };
+  const quiet = async () => ({ code: 0, out: "", err: "" });
+  const ensure = (over: Record<string, unknown>) => realDeps(options({ cdpPort: port, ...over }), quiet, clock, tunnel, spawn).ensureAgents();
+  await ensure({ pcSsh: "a@pc-one" }); // nothing answers: start the tunnel
+  const old = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("{}") }); // the started tunnel answers
+  try {
+    await ensure({ pcSsh: "a@pc-one" });
+    const before = { spawned: [...spawned], kills };
+    await ensure({ pcSsh: "b@pc-two" });
+    expect({ before, after: { spawned, kills, key: tunnel.key } }).toEqual({
+      before: { spawned: [`${port}:127.0.0.1:9222 a@pc-one`], kills: 0 },
+      after: { spawned: [`${port}:127.0.0.1:9222 a@pc-one`], kills: 1, key: undefined },
+    });
+  } finally {
+    old.stop(true);
+  }
 });
 
 test("keep.ts takes DORI_VPN_KEEP_CONFIG from dori.env (DORI_ENV_FILE) like the other setups", async () => {
@@ -127,7 +157,7 @@ test("a down VPN starts the agents and logs in; a login page that never comes re
   expect(stuck.calls).toEqual(["state", "log:NOLOG", "agents", "login:no login page", "log:AGENT_RESTART", "restart", "login:OK", "log:RELOGIN OK"]);
 });
 
-test("three failed rounds in a row rest 15 minutes and start counting again; a login that throws is a failed round", async () => {
+test("three failed rounds in a row rest 15 minutes and start counting again; a login that throws is a failed round; an up VPN ends the run", async () => {
   const o = options();
   const s = { fails: 0 };
   const waits: number[] = [];
@@ -138,6 +168,11 @@ test("three failed rounds in a row rest 15 minutes and start counting again; a l
     logs.push(...r.calls.filter((c) => c.startsWith("log:RELOGIN") || c.startsWith("log:GIVEUP")));
   }
   expect(waits).toEqual([60000, 60000, 900000, 60000]);
+  await keepTick(o, s, deps("UP", []).d, MON_10_KST);
+  expect(s.fails).toBe(0); // an up VPN in between: the next failure is the first of a new run
+  s.fails = 2;
+  await keepTick(o, s, deps("UP", []).d, MON_10_KST);
+  expect(await keepTick(o, s, deps("DOWN", ["FAIL a", "FAIL b"]).d, MON_10_KST)).toBe(60000);
   expect(logs).toEqual(["log:RELOGIN FAIL y", "log:RELOGIN FAIL z", "log:RELOGIN FAIL w", "log:GIVEUP after 3 fails, resting 15 min", "log:RELOGIN FAIL u"]);
   expect(s.fails).toBe(1);
 });
