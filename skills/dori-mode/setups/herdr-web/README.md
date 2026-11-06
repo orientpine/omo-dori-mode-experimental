@@ -21,10 +21,20 @@ and panes without an agent to none. Herdr's own agent status is not used to judg
 
 Copy and paste: herdr copies a mouse selection (drag, or double-click a word) with OSC 52, and ttyd 1.7.7's xterm.js has
 no OSC 52 handler, so the page adds one (`clipboard.ts`) that writes the text to the browser's clipboard; Ctrl+V,
-Ctrl+Shift+V and Cmd+V paste the clipboard into the terminal. Two buttons at the bottom right serve a phone, where a
-finger cannot drag a selection in herdr: Copy shows the screen's text, selectable with the phone's own long press, with
-buttons that copy herdr's last selection or the whole screen; Paste reads the clipboard (the phone asks once) and types
-it. A program's request to read the clipboard (OSC 52 `?`) is never answered. The clipboard needs the https page.
+Ctrl+Shift+V and Cmd+V paste the clipboard into the terminal. Two buttons at the bottom right serve a phone: Copy shows
+the screen's text, selectable with the phone's own long press, with buttons that copy herdr's last selection or the
+whole screen; Paste reads the clipboard (the phone asks once) and types it. When a phone refuses a clipboard write that
+arrives after the finger lifted, the toast offers Tap to copy. A program's request to read the clipboard (OSC 52 `?`) is
+never answered. The clipboard needs the https page.
+
+Touch (`touch.ts`): herdr turns on mouse tracking, and ttyd 1.7.7's xterm.js then ignores touch, so on a phone nothing
+scrolled and nothing could be selected. On a touch-first screen (`pointer: coarse`) narrower than 960px the page lays
+the terminal out 960px wide (about 119 columns instead of 46 at 390px) and handles one-finger gestures itself: a
+sideways drag pans the terminal (a thin bar at the bottom shows the position), an up/down drag sends wheel events at
+the finger so herdr scrolls the pane under it, and a long press (450 ms) then a drag is a mouse drag, so herdr selects
+the text and copies it as on a desktop. A tap is left to the browser, so it still focuses the terminal and opens the
+keyboard, and two fingers still zoom. Desktop browsers and touchscreen laptops (a fine primary pointer) get the same page
+as before.
 
 The proxy takes the passphrase from `HERDR_WEB_PASSPHRASE` in its env file below; when that is unset it reuses
 `AOE_SERVE_PASSPHRASE` from `~/.config/agent-of-empires/serve.env` (optional, so an account that never ran aoe needs no
@@ -112,7 +122,10 @@ bun test skills/dori-mode/setups/herdr-web
 The split-account test uses separate helper/proxy processes with different HOME, XDG_CONFIG_HOME and fake herdr data.
 The delayed-runner tests advance a fake clock while a collection is unresolved; they use no sleeps.
 The browser-layout test runs inside `bun test` using the installed omo browser skill and Chromium headless shell 1248.
-It renders 20 two-line labels at 390x844 and checks the bar cap, scrolling and remaining terminal height. Set
+It renders 20 two-line labels at 390x844 and checks the bar cap, scrolling and remaining terminal height.
+`touch.test.mjs` turns the same page into a 390px touch screen and drives it with CDP touch input: drags must pan and
+clamp the terminal and send wheel events, a long press must become a mouse drag that copies, a tap must send nothing,
+and the desktop page must keep its full-width terminal. Set
 `OMOWRIGHT_LOADER` or `HERDR_WEB_CHROMIUM` to override their paths; the defaults use the current user's omo install and
 `~/.cache/ms-playwright/chromium_headless_shell-1248/`. The test fails rather than skips when either is unavailable.
 

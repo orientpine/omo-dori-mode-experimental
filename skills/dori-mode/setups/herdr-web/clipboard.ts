@@ -1,8 +1,9 @@
 // Copy and paste for herdr in ttyd's page. herdr copies a mouse selection (drag, double-click) with OSC 52 to the terminal
 // it runs in, and ttyd 1.7.7's xterm.js has no OSC 52 handler, so nothing reached the browser's clipboard; Ctrl+V reached
 // the terminal as ^V. This page code writes OSC 52 text to the clipboard, pastes on Ctrl+V, Ctrl+Shift+V and Cmd+V, and
-// gives a phone, where a finger cannot drag a selection in herdr, two buttons: Copy shows the screen's text to select
-// natively (and copies herdr's last selection or the whole screen), Paste reads the clipboard into the terminal.
+// gives a phone two buttons: Copy shows the screen's text to select natively (and copies herdr's last selection or the
+// whole screen), Paste reads the clipboard into the terminal. A phone's long-press drag (touch.ts) reaches herdr as a
+// mouse drag, so its selection arrives here as OSC 52 too.
 // Clipboard reads (OSC 52 "?") are never answered: a program in a pane must not read the browser's clipboard.
 const style = `<style>
 #dori-clip{position:fixed;right:8px;bottom:8px;z-index:20;display:flex;gap:6px}
@@ -10,6 +11,8 @@ const style = `<style>
 background:#1d2330;color:#eee;opacity:.9}
 #dori-clip-toast{position:fixed;right:8px;bottom:52px;z-index:21;padding:6px 10px;border-radius:6px;background:#263b2c;
 color:#e8ffe8;font:13px system-ui}
+#dori-clip-toast button{margin-left:8px;font:13px system-ui;padding:4px 10px;border-radius:6px;border:1px solid #4a5468;
+background:#1d2330;color:#eee}
 #dori-clip-panel{position:fixed;inset:10% 4% auto;max-height:80%;z-index:30;display:flex;flex-direction:column;gap:8px;
 padding:10px;border-radius:8px;background:#151923;border:1px solid #4a5468}
 #dori-clip-panel[hidden],#dori-clip-toast[hidden]{display:none}
@@ -32,11 +35,19 @@ const script = `<script>
   const panel = document.getElementById("dori-clip-panel");
   const text = document.getElementById("dori-clip-text");
   let toastTimer;
-  const toast = (message) => {
-    toastBox.textContent = message;
+  // A phone may refuse a clipboard write that arrives after the finger lifted; a tap on the toast's button retries it.
+  const toast = (message, action) => {
+    toastBox.replaceChildren(message);
+    if (action) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = action.label;
+      button.addEventListener("click", (event) => { event.preventDefault(); action.run(); });
+      toastBox.append(button);
+    }
     toastBox.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toastBox.hidden = true; }, 2500);
+    toastTimer = setTimeout(() => { toastBox.hidden = true; }, action ? 8000 : 2500);
   };
   const write = async (value) => {
     try { await navigator.clipboard.writeText(value); return true; } catch { return false; }
@@ -74,7 +85,9 @@ const script = `<script>
       const value = decode(data);
       if (value === null) return true;
       state.last = value;
-      write(value).then((ok) => toast(ok ? "Copied" : "Selection ready: press Copy"));
+      write(value).then((ok) => ok ? toast("Copied") : toast("Selection ready", {
+        label: "Tap to copy", run: async () => toast(await write(value) ? "Copied" : "Copy failed"),
+      }));
       return true;
     });
     t.attachCustomKeyEventHandler((event) => {
