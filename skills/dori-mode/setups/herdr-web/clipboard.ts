@@ -2,8 +2,8 @@
 // it runs in, and ttyd 1.7.7's xterm.js has no OSC 52 handler, so nothing reached the browser's clipboard; Ctrl+V reached
 // the terminal as ^V. This page code writes OSC 52 text to the clipboard, pastes on Ctrl+V, Ctrl+Shift+V and Cmd+V, and
 // gives a phone two buttons: Copy shows the screen's text to select natively (and copies herdr's last selection or the
-// whole screen), Paste reads the clipboard into the terminal. A phone's long-press drag (touch.ts) is a Shift drag
-// that xterm selects itself, and touch.ts copies it.
+// whole screen), Paste reads the clipboard into the terminal. A phone's long-press drag (touch.ts) selects with xterm's
+// own selection and copies it through the same copy(), so a refused write offers Tap to copy too.
 // Clipboard reads (OSC 52 "?") are never answered: a program in a pane must not read the browser's clipboard.
 const style = `<style>
 #dori-clip{position:fixed;right:8px;bottom:8px;z-index:20;display:flex;gap:6px}
@@ -57,6 +57,11 @@ const script = `<script>
     if (b64 === "?" || !b64) return null;
     try { return new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))); } catch { return null; }
   };
+  state.copy = async (value) => {
+    state.last = value;
+    if (await write(value)) return toast("Copied");
+    toast("Selection ready", { label: "Tap to copy", run: async () => toast(await write(value) ? "Copied" : "Copy failed") });
+  };
   const screenText = () => {
     const t = window.term, b = t.buffer.active, lines = [];
     for (let y = 0; y < t.rows; y++) lines.push(b.getLine(b.viewportY + y)?.translateToString(true) ?? "");
@@ -83,11 +88,7 @@ const script = `<script>
     if (!t?.parser) return setTimeout(hook, 200);
     t.parser.registerOscHandler(52, (data) => {
       const value = decode(data);
-      if (value === null) return true;
-      state.last = value;
-      write(value).then((ok) => ok ? toast("Copied") : toast("Selection ready", {
-        label: "Tap to copy", run: async () => toast(await write(value) ? "Copied" : "Copy failed"),
-      }));
+      if (value !== null) state.copy(value);
       return true;
     });
     t.attachCustomKeyEventHandler((event) => {

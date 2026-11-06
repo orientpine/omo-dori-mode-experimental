@@ -4,8 +4,9 @@
 // 960px wide and turns one-finger gestures into what herdr already understands from a mouse:
 // - a sideways drag pans the wider terminal (a thin bar at the bottom shows where you are);
 // - an up/down drag sends wheel events at the finger, so herdr scrolls the pane under it;
-// - a long press, then a drag, is a Shift mouse drag: xterm makes its own selection even when the pane's program (an
-//   agent TUI) has taken the mouse, as Shift-drag does on a desktop, and the text is copied when the finger lifts;
+// - a long press, then a drag, selects the cells from the press to the finger with xterm's own selection, so it works
+//   when the pane's program (an agent TUI) has taken the mouse and nothing reaches that program; the text is copied
+//   when the finger lifts or the gesture is cancelled (clipboard.ts shows Tap to copy when the browser refuses);
 // - a tap is left to the browser, so it still focuses the terminal and brings up the keyboard; two fingers still zoom.
 // Desktop browsers and touchscreen laptops (a fine primary pointer) are unchanged.
 const width = 960;
@@ -43,28 +44,27 @@ const script = `<div id="dori-pan" aria-hidden="true"><span></span></div>
   narrowTouch.addEventListener("change", () => setPan(pan));
   setPan(0);
   const at = (point) => ({ bubbles: true, cancelable: true, view: window, clientX: point.clientX, clientY: point.clientY });
-  // detail is the click count: xterm starts a single-click selection only when it is 1.
-  const mouse = (type, point, buttons) => screen()?.dispatchEvent(new MouseEvent(type, { ...at(point), button: 0, buttons, shiftKey: true, detail: 1 }));
+  const cellAt = (point) => {
+    const t = window.term, r = screen().getBoundingClientRect();
+    const col = Math.floor((point.clientX - r.left) / (r.width / t.cols));
+    const row = Math.floor((point.clientY - r.top) / (r.height / t.rows));
+    return { col: Math.min(t.cols - 1, Math.max(0, col)), row: t.buffer.active.viewportY + Math.min(t.rows - 1, Math.max(0, row)) };
+  };
+  const select = (from, to) => {
+    const [a, b] = [cellAt(from), cellAt(to)].sort((x, y) => x.row - y.row || x.col - y.col);
+    window.term.select(a.col, a.row, (b.row - a.row) * window.term.cols + b.col - a.col + 1);
+  };
   const copySelection = () => {
     const text = window.term?.getSelection?.();
-    if (text) navigator.clipboard?.writeText(text).catch(() => {});
+    if (text) window.__doriClip.copy(text);
   };
   const wheel = (deltaY, point) => screen()?.dispatchEvent(new WheelEvent("wheel", { ...at(point), deltaY, deltaMode: 0 }));
-  // xterm ends a selection before the cell under the pointer; a fingertip covers that letter, so it is taken too.
-  const reach = (point) => {
-    const cell = (screen()?.getBoundingClientRect().width ?? 0) / (window.term?.cols || 1);
-    return { clientX: point.clientX + Math.sign(point.clientX - gesture.x) * cell / 2, clientY: point.clientY };
-  };
   const lineHeight = () => Math.max(8, (screen()?.getBoundingClientRect().height ?? 0) / (window.term?.rows || 1));
   const setMode = (mode) => { if (mode) root.dataset.doriTouch = mode; else delete root.dataset.doriTouch; };
   const clear = () => { if (gesture) clearTimeout(gesture.timer); gesture = null; setMode(""); };
-  // A selection that ends without a lift (a second finger, touchcancel) still releases the button it pressed, so xterm
-  // finishes the selection and drops its document drag handlers, and the selection is copied.
+  // A selection that ends without a lift (a second finger, touchcancel) is still copied.
   const cancel = () => {
-    if (gesture?.mode === "select") {
-      mouse("mouseup", reach(gesture.last), 0);
-      copySelection();
-    }
+    if (gesture?.mode === "select") copySelection();
     clear();
   };
   document.addEventListener("touchstart", (event) => {
@@ -77,7 +77,7 @@ const script = `<div id="dori-pan" aria-hidden="true"><span></span></div>
       gesture.mode = "select";
       setMode("select");
       navigator.vibrate?.(15);
-      mouse("mousedown", gesture.last, 1);
+      select(gesture.last, gesture.last);
     }, longPress);
     setMode("wait");
   }, { capture: true, passive: true });
@@ -93,7 +93,7 @@ const script = `<div id="dori-pan" aria-hidden="true"><span></span></div>
       gesture.mode = Math.abs(t.clientX - gesture.x) > Math.abs(t.clientY - gesture.y) ? "pan-x" : "pan-y";
       setMode(gesture.mode);
     }
-    if (gesture.mode === "select") mouse("mousemove", reach(t), 1);
+    if (gesture.mode === "select") select({ clientX: gesture.x, clientY: gesture.y }, t);
     else if (gesture.mode === "pan-x") setPan(pan - (t.clientX - gesture.last.clientX));
     else {
       gesture.rest += gesture.last.clientY - t.clientY;
@@ -108,14 +108,11 @@ const script = `<div id="dori-pan" aria-hidden="true"><span></span></div>
   }, { capture: true, passive: false });
   const finish = (event) => {
     if (!gesture) return;
-    const { mode, last } = gesture;
-    const end = mode === "select" ? reach(event.changedTouches[0] ?? last) : null;
+    const { mode } = gesture;
     clear();
     if (mode === "wait") return;
     event.preventDefault();
-    if (mode !== "select") return;
-    mouse("mouseup", end, 0);
-    copySelection();
+    if (mode === "select") copySelection();
   };
   document.addEventListener("touchend", finish, { capture: true, passive: false });
   document.addEventListener("touchcancel", cancel, { capture: true });
