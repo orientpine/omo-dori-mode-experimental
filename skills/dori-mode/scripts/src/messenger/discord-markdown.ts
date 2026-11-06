@@ -10,12 +10,15 @@ export const DISCORD_TEXT_MAX = 2000;
 
 const SHOWN_AS_WRITTEN = new RegExp(
   [
+    // a backslash escapes the next character, so an escaped backtick opens no code and an escaped _ stays as it is
+    "\\\\[\\s\\S]",
     "```[\\s\\S]*?```",
     // a code span opens with one backtick or two and closes with the same run, over lines too
     "``[\\s\\S]+?``",
     "`[^`]+`",
-    // a masked link's address ends at its own parenthesis, so the next link's label is still text
-    "\\]\\((?:<[^<>\\n]*>|[^()\\s]*)\\)",
+    // a masked link's address ends at its own parenthesis, so the next link's label is still text; the label's "]"
+    // stays text, so emphasis written in the label keeps its closing edge
+    "(?<=\\])\\((?:<[^<>\\n]*>|[^()\\s]*)\\)",
     "<(?:https?:\\/\\/[^\\s<>]+|@[!&]?\\d+|#\\d+|a?:\\w+:\\d+|\\/[^<>:\\n]+:\\d+|t:-?\\d+(?::[tTdDfFR])?)>",
     "https?:\\/\\/[^\\s<>]+",
   ].join("|"),
@@ -38,18 +41,19 @@ export const escapeUnderscores = (text: string): string => {
   }
   let out = "";
   for (let i = 0; i < text.length; i++) {
-    if (masked[i] === "_" && !kept.has(i)) {
-      let slashes = 0;
-      while (masked[i - 1 - slashes] === "\\") slashes++;
-      if (slashes % 2 === 0) out += "\\";
-    }
+    if (masked[i] === "_" && !kept.has(i)) out += "\\";
     out += text[i];
   }
   return out;
 };
 
-// A text that fits Discord's limit only without the escapes goes out as written rather than refused (400).
-export const discordText = (text: string): string => {
-  const escaped = escapeUnderscores(text);
-  return escaped.length <= DISCORD_TEXT_MAX || text.length > DISCORD_TEXT_MAX ? escaped : text;
+// A text that fits its limit only without the escapes goes out as written rather than refused (400) or cut. build makes
+// the whole text from its parts, escaping those it passes through md, so the limit is checked before any slicing.
+export const fitEscaped = (build: (md: (part: string) => string) => string, max: number): string => {
+  const escaped = build(escapeUnderscores);
+  if (escaped.length <= max) return escaped;
+  const plain = build((part) => part);
+  return plain.length <= max ? plain : escaped;
 };
+
+export const discordText = (text: string): string => fitEscaped((md) => md(text), DISCORD_TEXT_MAX);

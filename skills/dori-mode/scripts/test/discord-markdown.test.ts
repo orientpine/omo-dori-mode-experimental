@@ -56,6 +56,10 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   // only their addresses, so the second label is escaped
   for (const t of ["``a_b `x` c_d``", "`a_b\nc_d`"]) expect(await sent(t)).toBe(t);
   expect(await sent("[one](https://example.com)[a_b_c](https://example.org/x_y) e_f")).toBe("[one](https://example.com)[a\\_b\\_c](https://example.org/x_y) e\\_f");
+  // review 2 of #358: emphasis in a link label stays; an escaped backtick opens no code, so the real span after it stays
+  expect(await sent("[__word__](https://example.com) [_x_](<https://example.com>)")).toBe("[__word__](https://example.com) [_x_](<https://example.com>)");
+  expect(await sent("\\` then `a_b_c` and d_e")).toBe("\\` then `a_b_c` and d\\_e");
+  expect(await sent("\\\\`a_b`")).toBe("\\\\`a_b`");
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
@@ -92,6 +96,28 @@ test("a card that fits Discord's 4000 characters of text only unescaped goes out
     await new QuestionCards(dc, new QuestionStore(`${state.dir}/discord`), { channel: "C1", owner: "1", words: defaultDiscordWords }, () => 0).ask("q_x_y?", options);
     const texts = JSON.stringify(seen.filter((r) => r.method === "POST").map((r) => JSON.parse(String(r.body)).components));
     expect({ escaped: texts.includes("a\\\\_"), plain: texts.includes("a_".repeat(200)) }).toEqual({ escaped: false, plain: true });
+  } finally {
+    state.done();
+  }
+});
+
+test("a card option or answered card that fits its slot only unescaped keeps all its text (review 2 of #358)", async () => {
+  const state = withState();
+  const seen: HttpRequest[] = [];
+  const http: Http = async (req) => {
+    seen.push(req);
+    return { status: 200, headers: {}, body: '{"id":"M1"}' };
+  };
+  try {
+    const dc = new Discord(http, fakeClock(0), "b");
+    const cards = new QuestionCards(dc, new QuestionStore(`${state.dir}/discord`), { channel: "C1", owner: "1", words: defaultDiscordWords }, () => 0);
+    const long = `${"a_".repeat(400)}KEEP`;
+    const q = await cards.ask(`${"q_".repeat(950)}?`, [long, "b_c"], { thread: "T9" });
+    await cards.resolve(q.id, "ANSWER_SHOWN");
+    // a card asked in its thread folds there; one in the channel leaves the summary line in the thread
+    await cards.afterAnswer({ ...q, channel: "C1", status: "answered", answer: "ANSWER_SHOWN", answerKind: "reply", answeredAt: "2026-01-01T00:00:00Z" });
+    const bodies = seen.filter((r) => r.method !== "GET" && /messages/.test(r.url)).map((r) => String(r.body));
+    expect({ option: bodies[0]?.includes("KEEP"), answer: bodies.slice(1).map((b) => b.includes("ANSWER")) }).toEqual({ option: true, answer: [true, true] });
   } finally {
     state.done();
   }

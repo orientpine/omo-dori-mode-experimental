@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
 import type { ThreadStatus } from "./discord-thread.ts";
-import { escapeUnderscores as md } from "./discord-markdown.ts";
+import { fitEscaped } from "./discord-markdown.ts";
 import { guardText } from "./http.ts";
 import { ThreadStatusQueue } from "./thread-status-queue.ts";
 
@@ -169,28 +169,32 @@ const pickLabel = (n: number, w: DiscordWords): string => `${w.pick.replace("{n}
 // The first option renders as the primary button, so put the recommended answer first.
 // Discord clips a button label to one line, so each option's full text sits in a section
 // text (type 9 + 10, wraps freely) with a short pick button beside it. The question, options and answer have their
-// underscores escaped as every post does (discord-markdown.ts), so a path in them is not drawn in italics; a card whose
-// text fits Discord's 4000 characters a message only unescaped goes out unescaped (review 1 of #358).
+// underscores escaped as every post does (discord-markdown.ts), so a path in them is not drawn in italics. Each text is
+// measured whole before it is cut to its limit, and a text (or a card's 4000 characters of text) that fits only
+// unescaped goes out unescaped, so escaping never cuts off text that fit before (reviews 1 and 2 of #358).
 const CARD_TEXT_MAX = 4000;
+type Fit = (build: (md: (part: string) => string) => string, max: number) => string;
+const plainFit: Fit = (build, max) => build((part) => part).slice(0, max);
+const escapedFit: Fit = (build, max) => fitEscaped(build, max).slice(0, max);
 const cardText = (node: unknown): number =>
   Array.isArray(node) ? node.reduce((n: number, c) => n + cardText(c), 0)
   : node && typeof node === "object" ? Object.entries(node).reduce((n, [k, v]) => n + (k === "content" && typeof v === "string" ? v.length : cardText(v)), 0)
   : 0;
 export const openCard = (q: Question, ownerId: string, w: DiscordWords): object[] => {
-  const escaped = buildOpenCard(q, ownerId, w, md);
+  const escaped = buildOpenCard(q, ownerId, w, escapedFit);
   if (cardText(escaped) <= CARD_TEXT_MAX) return escaped;
-  const plain = buildOpenCard(q, ownerId, w, (t) => t);
+  const plain = buildOpenCard(q, ownerId, w, plainFit);
   return cardText(plain) <= CARD_TEXT_MAX ? plain : escaped;
 };
-const buildOpenCard = (q: Question, ownerId: string, w: DiscordWords, md: (t: string) => string): object[] => [
+const buildOpenCard = (q: Question, ownerId: string, w: DiscordWords, fit: Fit): object[] => [
   {
     type: 17,
     accent_color: OPEN_ACCENT,
     components: [
-      { type: 10, content: `<@${ownerId}> **${q.id}** ${md(q.text)}${where(q)}`.slice(0, 3000) },
+      { type: 10, content: fit((md) => `<@${ownerId}> **${q.id}** ${md(q.text)}${where(q)}`, 3000) },
       ...q.options.map((option, i) => ({
         type: 9,
-        components: [{ type: 10, content: `**${i + 1}.** ${md(option)}`.slice(0, 1000) }],
+        components: [{ type: 10, content: fit((md) => `**${i + 1}.** ${md(option)}`, 1000) }],
         accessory: { type: 2, style: i === 0 ? 1 : 2, label: pickLabel(i + 1, w), custom_id: customId.option(q.id, i) },
       })),
       { type: 1, components: [{ type: 2, style: 2, label: w.other.slice(0, 80), custom_id: customId.other(q.id) }] },
@@ -202,7 +206,7 @@ export const doneCard = (q: Question, w: DiscordWords): object[] => [
   {
     type: 17,
     accent_color: DONE_ACCENT,
-    components: [{ type: 10, content: `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${md(q.text)}${where(q)}\n→ **${md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`.slice(0, 3000) }],
+    components: [{ type: 10, content: escapedFit((md) => `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${md(q.text)}${where(q)}\n→ **${md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`, 3000) }],
   },
 ];
 
@@ -366,7 +370,7 @@ export class QuestionCards {
   async afterAnswer(q: Question): Promise<void> {
     if (!q.thread) return;
     if (q.channel !== q.thread) {
-      await this.dc.call("POST", `/channels/${q.thread}/messages`, { content: `${q.id} ${md(q.text)}\n→ ${md(q.answer ?? "")} (${stamp(q.answeredAt, this.settings.words)})`.slice(0, 2000), flags: SUPPRESS_NOTIFICATIONS, allowed_mentions: { parse: [] } });
+      await this.dc.call("POST", `/channels/${q.thread}/messages`, { content: escapedFit((md) => `${q.id} ${md(q.text)}\n→ ${md(q.answer ?? "")} (${stamp(q.answeredAt, this.settings.words)})`, 2000), flags: SUPPRESS_NOTIFICATIONS, allowed_mentions: { parse: [] } });
     }
     await this.mark(q.thread, "working");
   }
