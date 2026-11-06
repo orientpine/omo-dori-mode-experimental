@@ -31,8 +31,12 @@ Touch (`touch.ts`): herdr turns on mouse tracking, and ttyd 1.7.7's xterm.js the
 scrolled and nothing could be selected. On a touch-first screen (`pointer: coarse`) narrower than 960px the page lays
 the terminal out 960px wide (about 119 columns instead of 46 at 390px) and handles one-finger gestures itself: a
 sideways drag pans the terminal (a thin bar at the bottom shows the position), an up/down drag sends wheel events at
-the finger so herdr scrolls the pane under it, and a long press (450 ms) then a drag is a mouse drag, so herdr selects
-the text and copies it as on a desktop. A tap is left to the browser, so it still focuses the terminal and opens the
+the finger so herdr scrolls the pane under it, and a long press (450 ms) then a drag selects the cells from the
+press to the finger with the terminal's own selection (xterm's selection API, no mouse events), so it works the same on
+every platform, including an iPad that reports itself as a Mac, and over an agent TUI that has taken the mouse, which
+never sees the gesture. The text is copied when the finger lifts or the gesture is cancelled; when the browser refuses
+the write, the toast offers Tap to copy. Like a desktop Shift-drag, a selection over several rows takes whole screen
+rows, including the sidebar. A tap is left to the browser, so it still focuses the terminal and opens the
 keyboard, and two fingers still zoom. Desktop browsers and touchscreen laptops (a fine primary pointer) get the same page
 as before.
 
@@ -124,7 +128,7 @@ The delayed-runner tests advance a fake clock while a collection is unresolved; 
 The browser-layout test runs inside `bun test` using the installed omo browser skill and Chromium headless shell 1248.
 It renders 20 two-line labels at 390x844 and checks the bar cap, scrolling and remaining terminal height.
 `touch.test.mjs` turns the same page into a 390px touch screen and drives it with CDP touch input: drags must pan and
-clamp the terminal and send wheel events, a long press must become a mouse drag that copies, a tap must send nothing,
+clamp the terminal and send wheel events, a long press must select through xterm's selection API and copy (a refused copy must offer Tap to copy), a tap must send nothing,
 and the desktop page must keep its full-width terminal. Set
 `OMOWRIGHT_LOADER` or `HERDR_WEB_CHROMIUM` to override their paths; the defaults use the current user's omo install and
 `~/.cache/ms-playwright/chromium_headless_shell-1248/`. The test fails rather than skips when either is unavailable.
