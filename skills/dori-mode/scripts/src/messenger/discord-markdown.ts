@@ -8,28 +8,50 @@
 
 export const DISCORD_TEXT_MAX = 2000;
 
-const SHOWN_AS_WRITTEN = new RegExp(
-  [
-    // a backslash escapes the next character, so an escaped backtick opens no code and an escaped _ stays as it is
-    "\\\\[\\s\\S]",
-    "```[\\s\\S]*?```",
-    // a code span opens with one backtick or two and closes with the same run, over lines too
-    "``[\\s\\S]+?``",
-    "`[^`]+`",
-    // a masked link's address ends at its own parenthesis, so the next link's label is still text; the label's "]"
-    // stays text, so emphasis written in the label keeps its closing edge
-    "(?<=\\])\\((?:<[^<>\\n]*>|[^()\\s]*)\\)",
-    "<(?:https?:\\/\\/[^\\s<>]+|@[!&]?\\d+|#\\d+|a?:\\w+:\\d+|\\/[^<>:\\n]+:\\d+|t:-?\\d+(?::[tTdDfFR])?)>",
-    "https?:\\/\\/[^\\s<>]+",
-  ].join("|"),
-  "g",
-);
+// What Discord shows as written, read left to right the way its parser (simple-markdown) does, so a span starts only
+// where Discord's would (reviews 1-3 of #358): a backslash escapes the punctuation after it; a code span or block opens
+// with a run of backticks and closes on the next run of exactly that length; a run with no such close is text one
+// backtick at a time. Then a Discord token, a URL, and a masked link's address after its label's "]".
+const ESCAPE = /\\[^0-9A-Za-z\s]/y;
+const CODE = /(`+)[\s\S]*?[^`]\1(?!`)/y;
+const TOKEN = /<(?:https?:\/\/[^\s<>]+|@[!&]?\d+|#\d+|a?:\w+:\d+|\/[^<>:\n]+:\d+|t:-?\d+(?::[tTdDfFR])?)>/y;
+const BARE_URL = /https?:\/\/[^\s<>]+/y;
+const ADDRESS = /\((?:<[^<>\n]*>|[^()\s]*)\)/y;
 const HELD = "\uE000";
+
+const at = (re: RegExp, text: string, i: number): number => {
+  re.lastIndex = i;
+  return re.exec(text)?.[0].length ?? 0;
+};
+
+// the text with every character Discord shows as written held; an escaped character other than _ and ` keeps its
+// place, so it still bounds emphasis around it ("\[_word_]" is italic)
+const mask = (text: string): string => {
+  let out = "";
+  for (let i = 0; i < text.length; ) {
+    const escaped = at(ESCAPE, text, i);
+    if (escaped) {
+      const c = text[i + 1] ?? "";
+      out += HELD + (c === "_" || c === "`" ? HELD : c);
+      i += escaped;
+      continue;
+    }
+    const held = at(CODE, text, i) || at(TOKEN, text, i) || at(BARE_URL, text, i) || (text[i - 1] === "]" ? at(ADDRESS, text, i) : 0);
+    if (held) {
+      out += HELD.repeat(held);
+      i += held;
+      continue;
+    }
+    out += text[i];
+    i++;
+  }
+  return out;
+};
 const EMPHASIS = /(?<=^|\s|[([{"'“‘])(__?)(?![\s_])[^_\n]*?[^\s_\\]\1(?=$|\s|[)\]}"'”’!?,;:.](?![\p{L}\p{N}_]))/gu;
 
 export const escapeUnderscores = (text: string): string => {
   if (!text.includes("_")) return text;
-  const masked = text.replace(SHOWN_AS_WRITTEN, (m) => HELD.repeat(m.length));
+  const masked = mask(text);
   const kept = new Set<number>();
   for (const m of masked.matchAll(EMPHASIS)) {
     const mark = (m[1] ?? "").length;

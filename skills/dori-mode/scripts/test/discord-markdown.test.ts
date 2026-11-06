@@ -60,6 +60,11 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   expect(await sent("[__word__](https://example.com) [_x_](<https://example.com>)")).toBe("[__word__](https://example.com) [_x_](<https://example.com>)");
   expect(await sent("\\` then `a_b_c` and d_e")).toBe("\\` then `a_b_c` and d\\_e");
   expect(await sent("\\\\`a_b`")).toBe("\\\\`a_b`");
+  // review 3 of #358: an escaped bracket still bounds emphasis; a code span closes only on a run as long as its opener
+  expect(await sent("\\[_word_] and a_b")).toBe("\\[_word_] and a\\_b");
+  for (const t of ["` ``` ` then ``a_b_c``", "```a_b `` c_d```", "``a_b`c_d``"]) expect(await sent(t)).toBe(t);
+  // a run with no closing run is text one backtick at a time, as simple-markdown reads it: "`a_b`" after it is code
+  expect(await sent("``a_b` c_d")).toBe("``a_b` c\\_d");
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
