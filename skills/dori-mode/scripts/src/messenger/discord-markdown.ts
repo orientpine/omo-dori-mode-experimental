@@ -11,7 +11,11 @@ export const DISCORD_TEXT_MAX = 2000;
 const SHOWN_AS_WRITTEN = new RegExp(
   [
     "```[\\s\\S]*?```",
-    "`[^`\\n]*`",
+    // a code span opens with one backtick or two and closes with the same run, over lines too
+    "``[\\s\\S]+?``",
+    "`[^`]+`",
+    // a masked link's address ends at its own parenthesis, so the next link's label is still text
+    "\\]\\((?:<[^<>\\n]*>|[^()\\s]*)\\)",
     "<(?:https?:\\/\\/[^\\s<>]+|@[!&]?\\d+|#\\d+|a?:\\w+:\\d+|\\/[^<>:\\n]+:\\d+|t:-?\\d+(?::[tTdDfFR])?)>",
     "https?:\\/\\/[^\\s<>]+",
   ].join("|"),

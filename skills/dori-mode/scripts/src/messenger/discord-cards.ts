@@ -169,8 +169,20 @@ const pickLabel = (n: number, w: DiscordWords): string => `${w.pick.replace("{n}
 // The first option renders as the primary button, so put the recommended answer first.
 // Discord clips a button label to one line, so each option's full text sits in a section
 // text (type 9 + 10, wraps freely) with a short pick button beside it. The question, options and answer have their
-// underscores escaped as every post does (discord-markdown.ts), so a path in them is not drawn in italics.
-export const openCard = (q: Question, ownerId: string, w: DiscordWords): object[] => [
+// underscores escaped as every post does (discord-markdown.ts), so a path in them is not drawn in italics; a card whose
+// text fits Discord's 4000 characters a message only unescaped goes out unescaped (review 1 of #358).
+const CARD_TEXT_MAX = 4000;
+const cardText = (node: unknown): number =>
+  Array.isArray(node) ? node.reduce((n: number, c) => n + cardText(c), 0)
+  : node && typeof node === "object" ? Object.entries(node).reduce((n, [k, v]) => n + (k === "content" && typeof v === "string" ? v.length : cardText(v)), 0)
+  : 0;
+export const openCard = (q: Question, ownerId: string, w: DiscordWords): object[] => {
+  const escaped = buildOpenCard(q, ownerId, w, md);
+  if (cardText(escaped) <= CARD_TEXT_MAX) return escaped;
+  const plain = buildOpenCard(q, ownerId, w, (t) => t);
+  return cardText(plain) <= CARD_TEXT_MAX ? plain : escaped;
+};
+const buildOpenCard = (q: Question, ownerId: string, w: DiscordWords, md: (t: string) => string): object[] => [
   {
     type: 17,
     accent_color: OPEN_ACCENT,

@@ -52,6 +52,10 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   for (const t of kept) expect(await sent(t)).toBe(t);
   expect(await sent("[my_file_name](<https://example.com/a_b_c>) 와 [x_y_z](https://example.com/d_e_f)")).toBe("[my\\_file\\_name](<https://example.com/a_b_c>) 와 [x\\_y\\_z](https://example.com/d_e_f)");
   expect(await sent("`a_b` 다음 c_d_e 그리고 ```x_y_z```")).toBe("`a_b` 다음 c\\_d\\_e 그리고 ```x_y_z```");
+  // review 1 of #358: a double-backtick span and a span over lines are code too; two masked links side by side keep
+  // only their addresses, so the second label is escaped
+  for (const t of ["``a_b `x` c_d``", "`a_b\nc_d`"]) expect(await sent(t)).toBe(t);
+  expect(await sent("[one](https://example.com)[a_b_c](https://example.org/x_y) e_f")).toBe("[one](https://example.com)[a\\_b\\_c](https://example.org/x_y) e\\_f");
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
@@ -70,6 +74,24 @@ test("a question card shows a path in its question and options as written", asyn
     expect(texts).toContain(JSON.stringify("1\\_Project/2026\\_크레인 에 둘까?").slice(1, -1));
     expect(texts).toContain(JSON.stringify("a\\_b\\_c.txt 로").slice(1, -1));
     expect(texts).toContain("`x_y_z` 그대로");
+  } finally {
+    state.done();
+  }
+});
+
+test("a card that fits Discord's 4000 characters of text only unescaped goes out unescaped (review 1 of #358)", async () => {
+  const state = withState();
+  const seen: HttpRequest[] = [];
+  const http: Http = async (req) => {
+    seen.push(req);
+    return { status: 200, headers: {}, body: '{"id":"M1"}' };
+  };
+  try {
+    const dc = new Discord(http, fakeClock(0), "b");
+    const options = Array.from({ length: 8 }, () => "a_".repeat(200));
+    await new QuestionCards(dc, new QuestionStore(`${state.dir}/discord`), { channel: "C1", owner: "1", words: defaultDiscordWords }, () => 0).ask("q_x_y?", options);
+    const texts = JSON.stringify(seen.filter((r) => r.method === "POST").map((r) => JSON.parse(String(r.body)).components));
+    expect({ escaped: texts.includes("a\\\\_"), plain: texts.includes("a_".repeat(200)) }).toEqual({ escaped: false, plain: true });
   } finally {
     state.done();
   }
