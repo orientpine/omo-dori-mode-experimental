@@ -2,8 +2,8 @@ import { expect, spyOn, test } from "bun:test";
 
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
-import { QuestionCards, QuestionStore } from "../src/messenger/discord-cards.ts";
-import { discordText, escapeUnderscores, LINK_TARGET_WARN, linkTargets } from "../src/messenger/discord-markdown.ts";
+import { doneCard, type Question, QuestionCards, QuestionStore } from "../src/messenger/discord-cards.ts";
+import { discordText, escapeUnderscores, fitEscaped, LINK_TARGET_WARN, linkTargets } from "../src/messenger/discord-markdown.ts";
 import type { Http, HttpRequest } from "../src/messenger/http.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
@@ -222,6 +222,33 @@ test("a post whose escapes would move a link target goes out as written, with on
     warn.mockClear();
     expect(await sent("1_Project/2026_크레인 https://e.com/a_b")).toBe("1\\_Project/2026\\_크레인 https://e.com/a_b");
     expect(warn).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("a form feed is dropped as Discord's parser drops it, so an escape it would let move a link is not made", async () => {
+  const warn = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const t = "___http://x.y/\f_";
+    expect(await sent(t)).toBe(t);
+    expect(warn.mock.calls).toEqual([[LINK_TARGET_WARN]]);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("parts that keep their links alone but move one once put together go out as written: answered card and summary", () => {
+  const warn = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const q: Question = { id: "Q1", text: "a_", options: ["x"], channel: "C", thread: null, session: null, tmux: null, created: "2026-11-06T00:00:00Z", status: "answered", answer: "http://x.y/_", answerKind: "text", answeredAt: "2026-11-06T00:00:00Z" };
+    const card = doneCard(q, defaultDiscordWords) as { components: { content: string }[] }[];
+    const content = card[0]?.components[0]?.content ?? "";
+    expect(content.startsWith("[answered] **Q1** a_\n→ **http://x.y/_**")).toBe(true);
+    expect(linkTargets(content)).toEqual(["http://x.y/"]);
+    const summary = fitEscaped((md) => `Q1 ${md("a_")}\n→ ${md("http://x.y/_")} (11/6)`, 2000);
+    expect(summary).toBe("Q1 a_\n→ http://x.y/_ (11/6)");
+    expect(warn.mock.calls).toEqual([[LINK_TARGET_WARN], [LINK_TARGET_WARN]]);
   } finally {
     warn.mockRestore();
   }
