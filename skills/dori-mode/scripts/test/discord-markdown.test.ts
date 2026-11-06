@@ -89,6 +89,9 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   expect(await sent("prefix_ then `name_` a_b_c `tail`")).toBe("prefix\\_ then `name_` a\\_b\\_c `tail`");
   // review 9 of #358: underline written on purpose around a URL or a lone backtick stays, and so does the code after it
   for (const t of ["__https://example.com/docs__", "__Use ` here__ `a_b_c`"]) expect(await sent(t)).toBe(t);
+  // review 10 of #358: emphasis inside bold, strikethrough or a spoiler is emphasis written on purpose too
+  for (const t of ["**__important__**", "**__https://example.com/docs__**", "~~_old_~~ ||__x__|| *_y_*"]) expect(await sent(t)).toBe(t);
+  expect(await sent("**__a_b__** c_d")).toBe("**\\_\\_a\\_b\\_\\_** c\\_d");
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
@@ -163,7 +166,9 @@ test("an edit escapes the same way", async () => {
   await dc.edit("T1", "M1", "prefix_ then `name_` a_b_c `tail`");
   await dc.edit("T1", "M1", "__https://example.com/docs__");
   await dc.edit("T1", "M1", "__Use ` here__ `a_b_c`");
-  expect(posted()).toEqual([
+  await dc.edit("T1", "M1", "**__https://example.com/docs__**");
+  expect(posted().at(-1)).toBe("**__https://example.com/docs__**");
+  expect(posted().slice(0, -1)).toEqual([
     "고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`", "[label [v2] `](https://example.com) `a_b_c`", "**Use ` here** `a_b_c`",
     "prefix\\_ then `name_`", "📁 a\\_b\\_c.txt", "prefix\\_ then `name_` a\\_b\\_c `tail`", "__https://example.com/docs__", "__Use ` here__ `a_b_c`",
   ]);

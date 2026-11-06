@@ -86,7 +86,9 @@ const mask = (text: string): string => {
   parse(text.replace(/[\t\r\f]/g, " "), s);
   return s.marks.join("");
 };
-const EMPHASIS = /(?<=^|\s|[([{"'“‘])(__?)(?![\s_])[^_\n]*?[^\s_\\]\1(?=$|\s|[)\]}"'”’!?,;:.](?![\p{L}\p{N}_]))/gu;
+// a word edge for emphasis: a space, the text's ends, a bracket or quote, or the marks of bold, strikethrough and spoiler
+// around it ("**__x__**", review 10 of #358)
+const EMPHASIS = /(?<=^|\s|[([{"'“‘*~|])(__?)(?![\s_])[^_\n]*?[^\s_\\]\1(?=$|\s|[)\]}"'”’!?,;:.*~|](?![\p{L}\p{N}_]))/gu;
 
 // the places (UTF-16 offsets, as everywhere here) of the underscores of emphasis written on purpose in a masked text
 const emphasis = (masked: string): Set<number> => {
