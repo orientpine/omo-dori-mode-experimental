@@ -34,6 +34,14 @@ cannot share one file across accounts: the path is always
   directory, marked `.omo-shared-login`; a borrower that holds its own Claude
   refresh grant is never overwritten. A rejected Claude login is reported to
   the lead; its login is interactive, so the broker does not start it.
+- One Claude account that cannot be read or renewed (no credential file yet,
+  expired access) is skipped and alerted (`cli_unavailable:<provider>/<name>`,
+  `cliSkipped` in the sync report); every other account still travels. The
+  borrower's verdict state for a Claude slot (block, `blockedAt`,
+  `authVerdict`, `signInRequired`) is kept while the slot names the same
+  `dirId` and dropped when the source signs in again (new `dirId`).
+- `login anthropic-subscription --account NAME` keeps NAME on the very first
+  Claude account too (senpi itself names that one `default` without asking).
 - Each borrower receives the source's OAuth providers with every refresh token
   replaced by `omo-shared-login:managed-by-oriclaw`. A borrower can use the
   access token but can never rotate a grant. The borrower keeps its own

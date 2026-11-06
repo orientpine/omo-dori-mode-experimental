@@ -11,6 +11,10 @@ export const PLACEHOLDER = "omo-shared-login:managed-by-oriclaw";
 const SENTINEL_REFRESH = new Set(["claude-sdk-oauth-managed"]);
 const BLOCK_KEYS = ["blockedUntil", "blockReason", "modelBlocks", "authRecoveryGrant"];
 const AUTH_ONLY_KEYS = ["authRecoveryGrant"];
+// A Claude CLI slot's verdict state: senpi drops an auth_error block whose
+// authVerdict does not match its dirId and blockedAt (isForeignAuthBlock), so
+// these travel together, and only while the slot still names the same login.
+const CLI_STATE_KEYS = [...BLOCK_KEYS, "blockedAt", "authVerdict", "signInRequired"];
 
 function stripRefresh(value) {
 	if (typeof value !== "string" || value === "" || SENTINEL_REFRESH.has(value)) return value;
@@ -24,9 +28,12 @@ function borrowSlot(sourceSlot, borrowerSlot) {
 		delete slot.access;
 		delete slot.refresh;
 		delete slot.expires;
+		for (const key of CLI_STATE_KEYS) delete slot[key];
 		// CLI slots hold identity, not tokens. A missing access field cannot prove
-		// a new login, so leave auth recovery to senpi's CLI verdict.
-		for (const key of BLOCK_KEYS) {
+		// a new login, so leave auth recovery to senpi's CLI verdict. A new dirId
+		// is a new login: the borrower's state about the old one does not carry.
+		const sameLogin = borrowerSlot?.store === "claude-cli" && borrowerSlot.dirId === sourceSlot.dirId;
+		for (const key of sameLogin ? CLI_STATE_KEYS : ["modelBlocks"]) {
 			if (borrowerSlot?.[key] !== undefined) slot[key] = borrowerSlot[key];
 		}
 		if (sourceSlot.blockReason === "rate_limit" &&
@@ -105,6 +112,23 @@ export function holdsNoGrant(document) {
 		}
 	}
 	return true;
+}
+
+// The access-only copies of the source's Claude CLI slots. One missing or
+// expired login is reported and skipped; the other slots still travel.
+// readDocument(slot) returns the slot's parsed .credentials.json or throws.
+export function cliSnapshotsFrom(slots, readDocument, now) {
+	const snapshots = [];
+	const failures = [];
+	for (const slot of slots ?? []) {
+		if (slot?.store !== "claude-cli") continue;
+		try {
+			snapshots.push({ dirId: slot.dirId, credential: borrowCliCredential(readDocument(slot), now) });
+		} catch (error) {
+			failures.push({ name: slot.name, message: String(error?.message ?? error).split("\n")[0].slice(0, 160) });
+		}
+	}
+	return { snapshots, failures };
 }
 
 // Only these access-related fields travel. Never copy an entire CLI directory

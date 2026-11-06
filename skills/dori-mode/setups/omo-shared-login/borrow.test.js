@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { borrowCliCredential, borrowDocument, holdsNoGrant, PLACEHOLDER } from "./borrow.js";
+import { borrowCliCredential, borrowDocument, cliSnapshotsFrom, holdsNoGrant, PLACEHOLDER } from "./borrow.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+// The installed senpi's own check of a Claude CLI auth block, the same one borrowers run.
+const { isForeignAuthBlock } = await import(join(homedir(),
+	".bun/install/global/node_modules/@code-yeongyu/senpi/dist/core/extensions/builtin/anthropic-subscription/accounts.js"));
 
 const source = {
 	"anthropic-subscription": {
@@ -87,6 +93,46 @@ describe("borrowDocument", () => {
 		expect([slot.access, slot.refresh, slot.expires]).toEqual([undefined, undefined, undefined]);
 		expect([slot.store, slot.dirId]).toEqual(["claude-cli", "d1"]);
 		expect([slot.blockReason, slot.blockedUntil]).toEqual(["rate_limit", 70]);
+	});
+
+	const cliSource = (dirId) => ({ "anthropic-subscription": { type: "oauth", accounts: [{ name: "default", store: "claude-cli", dirId }] } });
+	const verdictBlocked = { name: "default", store: "claude-cli", dirId: "d1", blockReason: "auth_error", blockedUntil: 90, blockedAt: 40,
+		authVerdict: { dirId: "d1", at: 40 }, signInRequired: "login_expired", modelBlocks: { m: 1 } };
+
+	test("a claude-cli auth block keeps its verdict for the same login, so senpi still honours it", () => {
+		const borrower = { "anthropic-subscription": { type: "oauth", accounts: [verdictBlocked] } };
+		const [slot] = borrowDocument(cliSource("d1"), borrower).next["anthropic-subscription"].accounts;
+		expect(slot).toEqual(verdictBlocked);
+		expect(isForeignAuthBlock({ ...slot, signInRequired: undefined })).toBe(false);
+	});
+
+	test("a new login (new dirId) drops the borrower's state about the old one, keeping model blocks", () => {
+		const borrower = { "anthropic-subscription": { type: "oauth", accounts: [verdictBlocked] } };
+		const [slot] = borrowDocument(cliSource("d2"), borrower).next["anthropic-subscription"].accounts;
+		expect(slot).toEqual({ name: "default", store: "claude-cli", dirId: "d2", modelBlocks: { m: 1 } });
+	});
+});
+
+describe("cliSnapshotsFrom", () => {
+	test("a missing or expired Claude login is reported and skipped, the healthy one still travels", () => {
+		const documents = {
+			ok: { claudeAiOauth: { accessToken: "AT", refreshToken: "RT", expiresAt: 5000, scopes: ["user:inference"] } },
+			old: { claudeAiOauth: { accessToken: "AT2", expiresAt: 10, scopes: ["user:inference"] } },
+		};
+		const slots = [
+			{ name: "a", store: "claude-cli", dirId: "ok" },
+			{ name: "b", store: "claude-cli", dirId: "missing" },
+			{ name: "c", store: "claude-cli", dirId: "old" },
+			{ name: "env", access: "X" },
+		];
+		const read = (slot) => {
+			if (!documents[slot.dirId]) throw new Error("ENOENT: no such file");
+			return documents[slot.dirId];
+		};
+		const { snapshots, failures } = cliSnapshotsFrom(slots, read, 1000);
+		expect(snapshots.map((snapshot) => snapshot.dirId)).toEqual(["ok"]);
+		expect(snapshots[0].credential.claudeAiOauth.refreshToken).toBeUndefined();
+		expect(failures.map((failure) => failure.name)).toEqual(["b", "c"]);
 	});
 });
 

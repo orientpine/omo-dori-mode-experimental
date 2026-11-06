@@ -119,6 +119,7 @@ async function refreshAhead(lib: Awaited<ReturnType<typeof senpi>>, state: Json,
 	for (const slot of source["anthropic-subscription"]?.accounts ?? []) {
 		if (slot.store !== "claude-cli") continue;
 		const key = `anthropic-subscription/${slot.name}`;
+		try {
 		const directory = lib.cli.accountDirFor(dirname(SOURCE_AUTH), slot.dirId);
 		const path = join(directory, ".credentials.json");
 		const before = JSON.parse(readFileSync(path, "utf8")).claudeAiOauth;
@@ -137,6 +138,10 @@ async function refreshAhead(lib: Awaited<ReturnType<typeof senpi>>, state: Json,
 			const verdict = await lib.cliStatus.readClaudeCliAuthStatus(run);
 			failures.push({ key, rejected: verdict.state === "signed_out" || verdict.state === "rejected",
 				message: `CLI did not renew access (${verdict.state})` });
+		}
+		} catch (error: any) {
+			// One unreadable or unrunnable Claude account must not stop the others' sync.
+			failures.push({ key, rejected: false, message: (String(error?.message ?? error).split("\n")[0] ?? "").slice(0, 160) });
 		}
 	}
 	for (const [providerId, entry] of Object.entries(source)) {
@@ -179,19 +184,22 @@ async function refreshAhead(lib: Awaited<ReturnType<typeof senpi>>, state: Json,
 	return { refreshed, failures };
 }
 
-async function cliSnapshots(lib: Awaited<ReturnType<typeof senpi>>, source: Json) {
-	const { borrowCliCredential } = await import(join(import.meta.dir, "borrow.js"));
-	const snapshots = [];
-	for (const slot of source["anthropic-subscription"]?.accounts ?? []) {
-		if (slot.store !== "claude-cli") continue;
+async function cliSnapshots(lib: Awaited<ReturnType<typeof senpi>>, source: Json): Promise<{ snapshots: Json[]; failures: { name: string; message: string }[] }> {
+	const { cliSnapshotsFrom } = await import(join(import.meta.dir, "borrow.js"));
+	const slots = ((source["anthropic-subscription"]?.accounts ?? []) as Json[]).filter((slot) => slot.store === "claude-cli");
+	const access = new Map<string, string | undefined>();
+	for (const slot of slots) {
 		const directory = lib.cli.accountDirFor(dirname(SOURCE_AUTH), slot.dirId);
-		const access = await lib.cli.readClaudeCliAccessToken(directory, Date.now());
-		if (!access) throw new Error(`Claude CLI access unavailable: ${slot.name}`);
-		const credential = borrowCliCredential(JSON.parse(readFileSync(join(directory, ".credentials.json"), "utf8")), Date.now());
-		if (credential.claudeAiOauth.accessToken !== access) throw new Error(`Claude CLI access changed during read: ${slot.name}`);
-		snapshots.push({ dirId: slot.dirId, credential });
+		access.set(slot.name, await lib.cli.readClaudeCliAccessToken(directory, Date.now()).catch(() => undefined));
 	}
-	return snapshots;
+	return cliSnapshotsFrom(slots, (slot: Json) => {
+		const expected = access.get(slot.name);
+		if (!expected) throw new Error(`Claude CLI access unavailable: ${slot.name}`);
+		const directory = lib.cli.accountDirFor(dirname(SOURCE_AUTH), slot.dirId);
+		const document = JSON.parse(readFileSync(join(directory, ".credentials.json"), "utf8"));
+		if (document?.claudeAiOauth?.accessToken !== expected) throw new Error(`Claude CLI access changed during read: ${slot.name}`);
+		return document;
+	}, Date.now());
 }
 
 let remoteCodeCache: string | undefined;
@@ -297,7 +305,7 @@ async function sync(flags: Flags) {
 	const force = new Set(typeof flags["force-refresh"] === "string" ? flags["force-refresh"].split(",") : []);
 	const ahead = flags["no-refresh"] ? { refreshed: [], failures: [] } : await refreshAhead(lib, state, force);
 	const source = await readSource(lib);
-	const snapshots = await cliSnapshots(lib, source);
+	const { snapshots, failures: cliFailures } = await cliSnapshots(lib, source);
 	const pushes: Json = {};
 	const at = stamp();
 	for (const account of targets(flags)) {
@@ -308,6 +316,7 @@ async function sync(flags: Flags) {
 		at: new Date().toISOString(),
 		refreshed: ahead.refreshed,
 		refreshFailures: ahead.failures,
+		cliSkipped: cliFailures,
 		pushes: Object.fromEntries(
 			Object.entries(pushes).map(([account, result]) => [
 				account,
@@ -338,6 +347,11 @@ async function sync(flags: Flags) {
 				!failure.rejected && slot !== undefined && slot.expires - Date.now() < 30 * 60_000,
 				`짱돌 토큰 갱신이 계속 실패(${failure.message}), ${failure.key} 만료 ${kst(slot?.expires)}.`,
 			);
+		}
+		for (const slot of ((source["anthropic-subscription"]?.accounts ?? []) as Json[]).filter((candidate) => candidate.store === "claude-cli")) {
+			const skipped = cliFailures.find((failure) => failure.name === slot.name);
+			await alert(state, `cli_unavailable:anthropic-subscription/${slot.name}`, skipped !== undefined,
+				`짱돌 Claude 계정 anthropic-subscription/${slot.name}를 빌려줄 수 없음(${skipped?.message}). 나머지 계정은 반영함.`);
 		}
 		for (const key of Object.keys(state.alerts)) {
 			const [kind, rest] = [key.split(":")[0], key.slice(key.indexOf(":") + 1)];
@@ -398,7 +412,7 @@ async function status(flags: Flags) {
 	for (const account of targets(flags)) remote[account] = await runRemote(account, { action: "status", agentDir: agentDirFor(account, flags) });
 	const lines = [`source oriclaw ${SOURCE_AUTH}`];
 	for (const row of rows) lines.push(`  ${`${row.providerId}/${row.name}`.padEnd(38)} access ${row.access} 만료 ${kst(row.expires)}${row.blockReason ? ` [${row.blockReason}]` : ""}`);
-	let allBorrowed = rows.length > 0 && rows.some((row) => row.store === "claude-cli");
+	let allBorrowed = rows.length > 0;
 	for (const [account, result] of Object.entries(remote)) {
 		if (!result.ok) {
 			allBorrowed = false;
@@ -527,6 +541,7 @@ async function login(positional: string[], flags: Flags) {
 		if (providerId === "anthropic-subscription") {
 			const { createOAuthConfig } = await import(join(CLAUDE, "oauth-login.js"));
 			const store = lib.auth.AuthStorage.create(SOURCE_AUTH);
+			const firstLogin = ((await readSource(lib))[providerId]?.accounts ?? []).length === 0;
 			const config = createOAuthConfig({
 				readCurrent: async () => (await readSource(lib))[providerId],
 				claudeCli: { agentDir: () => dirname(SOURCE_AUTH), store: () => store, env: () => process.env },
@@ -539,6 +554,12 @@ async function login(positional: string[], flags: Flags) {
 					: waitForCode(id, prompt.signal ?? controller.signal),
 				onAuth: ({ url }: { url: string }) => say(`[LOGIN] omo-shared-login | ${providerId}${account ? `/${account}` : ""} 형에게 보낼 링크: ${url} -- ${pasteHint}`),
 			});
+			// senpi names the first account "default" without asking; keep the requested name.
+			if (firstLogin && account && account !== "default")
+				await store.modify(providerId, async (current: Json | undefined) => current && {
+					...current,
+					accounts: (current.accounts ?? []).map((slot: Json) => slot.name === "default" ? { ...slot, name: account } : slot),
+				});
 		} else {
 			const oauth = oauthFor(lib, providerId);
 			if (!oauth?.login) throw new Error(`no OAuth login for ${providerId}`);
