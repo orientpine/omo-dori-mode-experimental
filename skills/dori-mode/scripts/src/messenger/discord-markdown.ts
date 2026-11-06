@@ -16,6 +16,7 @@ const ESCAPE = /\\[^0-9A-Za-z\s]/y;
 const CODE = /(`+)[\s\S]*?[^`]\1(?!`)/y;
 const TOKEN = /<(?:https?:\/\/[^\s<>]+|@[!&]?\d+|#\d+|a?:\w+:\d+|\/[^<>:\n]+:\d+|t:-?\d+(?::[tTdDfFR])?)>/y;
 const BARE_URL = /https?:\/\/[^\s<>]+/y;
+const LINK = /\[((?:\\[\s\S]|[^[\]\\])*)\]\((?:<[^<>\n]*>|[^()\s]*)\)/y;
 const ADDRESS = /\((?:<[^<>\n]*>|[^()\s]*)\)/y;
 const HELD = "\uE000";
 
@@ -25,16 +26,27 @@ const at = (re: RegExp, text: string, i: number): number => {
 };
 
 // the text with every character Discord shows as written held; an escaped character other than _ and ` keeps its
-// place, so it still bounds emphasis around it ("\[_word_]" is italic)
+// place, so it still bounds emphasis around it ("\[_word_]" is italic); an escaped backslash is held like _ and `
 const mask = (text: string): string => {
   let out = "";
   for (let i = 0; i < text.length; ) {
     const escaped = at(ESCAPE, text, i);
     if (escaped) {
       const c = text[i + 1] ?? "";
-      out += HELD + (c === "_" || c === "`" ? HELD : c);
+      out += HELD + (c === "_" || c === "`" || c === "\\" ? HELD : c);
       i += escaped;
       continue;
+    }
+    // a masked link's label is read on its own, so a backtick left open in it pairs with nothing after the link
+    if (text[i] === "[") {
+      LINK.lastIndex = i;
+      const link = LINK.exec(text);
+      if (link) {
+        const label = link[1] ?? "";
+        out += `[${mask(label)}]${HELD.repeat(link[0].length - label.length - 2)}`;
+        i += link[0].length;
+        continue;
+      }
     }
     const held = at(CODE, text, i) || at(TOKEN, text, i) || at(BARE_URL, text, i) || (text[i - 1] === "]" ? at(ADDRESS, text, i) : 0);
     if (held) {

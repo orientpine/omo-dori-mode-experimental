@@ -65,6 +65,11 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   for (const t of ["` ``` ` then ``a_b_c``", "```a_b `` c_d```", "``a_b`c_d``"]) expect(await sent(t)).toBe(t);
   // a run with no closing run is text one backtick at a time, as simple-markdown reads it: "`a_b`" after it is code
   expect(await sent("``a_b` c_d")).toBe("``a_b` c\\_d");
+  // review 4 of #358: an escaped backslash ends emphasis as any text does; a link label is read on its own, so its
+  // unmatched backtick does not pair with code after the link
+  expect(await sent("__C:\\\\__ and a_b")).toBe("__C:\\\\__ and a\\_b");
+  expect(await sent("[label `](https://example.com) `a_b_c` d_e")).toBe("[label `](https://example.com) `a_b_c` d\\_e");
+  expect(await sent("[a_b `x_y`](<https://example.com/c_d>)")).toBe("[a\\_b `x_y`](<https://example.com/c_d>)");
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
@@ -131,7 +136,8 @@ test("a card option or answered card that fits its slot only unescaped keeps all
 test("an edit escapes the same way", async () => {
   const { dc, posted } = discord();
   await dc.edit("T1", "M1", "고침: 1_Project/2026_크레인 `a_b`");
-  expect(posted()).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`"]);
+  await dc.edit("T1", "M1", "[label `](https://example.com) `a_b_c`");
+  expect(posted()).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`"]);
 });
 
 test("a text that fits Discord's 2000 characters only unescaped goes out unescaped rather than refused", async () => {
