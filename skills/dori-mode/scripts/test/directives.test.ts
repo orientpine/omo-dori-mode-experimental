@@ -202,7 +202,7 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   await deps.registry.write({ ...clean, key: "old", thread: "none", brief: "/nope.md", openedAt: "2026-10-14T00:00:00.000Z" });
   const inbox = await write("inbox.jsonl", "");
   const quiet = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
-  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 41 directives, no gap"]);
+  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 42 directives, no gap"]);
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
   expect(sent(world)).toEqual([]);
   // a lane whose brief lacks a directive and has no thread, and a standing directive of the owner nobody put in the ledger
@@ -653,6 +653,20 @@ test("upstream-released-only is a lead record: no brief gets its text from the l
   const thread = textDirectives("원본 코드 적용", ledger, { all: true }).filter(({ e }) => e.id === "upstream-released-only").map(({ e }) => directiveLine(e));
   expect(thread).toHaveLength(1);
   for (const line of [hint, ...thread]) expect(line).not.toMatch(/없애|없앤/);
+});
+
+// the owner 2026-11-06: only the lead's and the lane's main model are set by hand, the rest follows omo's defaults; every
+// lane gets it, so a lead does not forbid or swap a lane's helper models, even when the brief never says "model"
+test("model-defaults reaches every lane's brief, whatever the brief is about and whatever the small model picks", () => {
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
+  const e = ledger.entries.find((x) => x.id === "model-defaults")!;
+  const task = "[목표] 탁구 녹화 화면의 글자를 고친다.";
+  for (const pick of [undefined, { model: "m", picked: [] }]) {
+    const plan = planDirectives(task, ledger, scopeContext(task, ledger, { repo: "r" }), {}, pick);
+    expect(plan.add.map(({ e }) => e.id)).toContain("model-defaults");
+  }
+  expect(directiveText(e).startsWith("[형 지침 model-defaults, 2026-11-06]\n")).toBe(true);
+  expect(hasDirective(`${fields}\n${directiveText(e)}\n`, e)).toBe(true);
 });
 
 test("no scope narrowed for briefs hits the eight-step template by itself: it would be every lane again", async () => {
