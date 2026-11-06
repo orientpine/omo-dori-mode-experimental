@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
 import type { ThreadStatus } from "./discord-thread.ts";
+import { escapeUnderscores as md } from "./discord-markdown.ts";
 import { guardText } from "./http.ts";
 import { ThreadStatusQueue } from "./thread-status-queue.ts";
 
@@ -167,16 +168,17 @@ const pickLabel = (n: number, w: DiscordWords): string => `${w.pick.replace("{n}
 
 // The first option renders as the primary button, so put the recommended answer first.
 // Discord clips a button label to one line, so each option's full text sits in a section
-// text (type 9 + 10, wraps freely) with a short pick button beside it.
+// text (type 9 + 10, wraps freely) with a short pick button beside it. The question, options and answer have their
+// underscores escaped as every post does (discord-markdown.ts), so a path in them is not drawn in italics.
 export const openCard = (q: Question, ownerId: string, w: DiscordWords): object[] => [
   {
     type: 17,
     accent_color: OPEN_ACCENT,
     components: [
-      { type: 10, content: `<@${ownerId}> **${q.id}** ${q.text}${where(q)}`.slice(0, 3000) },
+      { type: 10, content: `<@${ownerId}> **${q.id}** ${md(q.text)}${where(q)}`.slice(0, 3000) },
       ...q.options.map((option, i) => ({
         type: 9,
-        components: [{ type: 10, content: `**${i + 1}.** ${option}`.slice(0, 1000) }],
+        components: [{ type: 10, content: `**${i + 1}.** ${md(option)}`.slice(0, 1000) }],
         accessory: { type: 2, style: i === 0 ? 1 : 2, label: pickLabel(i + 1, w), custom_id: customId.option(q.id, i) },
       })),
       { type: 1, components: [{ type: 2, style: 2, label: w.other.slice(0, 80), custom_id: customId.other(q.id) }] },
@@ -188,7 +190,7 @@ export const doneCard = (q: Question, w: DiscordWords): object[] => [
   {
     type: 17,
     accent_color: DONE_ACCENT,
-    components: [{ type: 10, content: `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${q.text}${where(q)}\n→ **${q.answer ?? ""}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`.slice(0, 3000) }],
+    components: [{ type: 10, content: `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${md(q.text)}${where(q)}\n→ **${md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`.slice(0, 3000) }],
   },
 ];
 
@@ -352,7 +354,7 @@ export class QuestionCards {
   async afterAnswer(q: Question): Promise<void> {
     if (!q.thread) return;
     if (q.channel !== q.thread) {
-      await this.dc.call("POST", `/channels/${q.thread}/messages`, { content: `${q.id} ${q.text}\n→ ${q.answer ?? ""} (${stamp(q.answeredAt, this.settings.words)})`.slice(0, 2000), flags: SUPPRESS_NOTIFICATIONS, allowed_mentions: { parse: [] } });
+      await this.dc.call("POST", `/channels/${q.thread}/messages`, { content: `${q.id} ${md(q.text)}\n→ ${md(q.answer ?? "")} (${stamp(q.answeredAt, this.settings.words)})`.slice(0, 2000), flags: SUPPRESS_NOTIFICATIONS, allowed_mentions: { parse: [] } });
     }
     await this.mark(q.thread, "working");
   }

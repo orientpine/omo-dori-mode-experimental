@@ -76,6 +76,7 @@ import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
+import { discordText } from "./messenger/discord-markdown.ts";
 import { DiscordListener, eyesOff } from "./messenger/discord-listener.ts";
 import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS, withoutEmoji } from "./messenger/discord-thread.ts";
 import { duplicateLine, SEND_DUPLICATE_EXIT, type Sent, sendKey, sendOnce, sentLine } from "./send-dedupe.ts";
@@ -1810,8 +1811,9 @@ try {
       const place = platform === "discord" ? `discord:${thread ?? to}` : `${platform}:${to}${thread ? `/${thread}` : ""}`;
       const sentDir = join(config.stateDir, "sent");
       // Discord puts a --ping in front of the text unless the text already has it, so both inputs key as the one message
-      // that goes out (review 8 of #338)
-      const keyText = platform === "discord" && ping !== undefined && !text.includes(`<@${ping}>`) ? `<@${ping}> ${text}` : text;
+      // that goes out (review 8 of #338); a Discord text keys with its underscores escaped as it is posted (discord-markdown.ts)
+      const pinged = platform === "discord" && ping !== undefined && !text.includes(`<@${ping}>`) ? `<@${ping}> ${text}` : text;
+      const keyText = platform === "discord" ? discordText(pinged) : pinged;
       const dedupeKey = sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, keyText, ...filesKey(discordFiles)]);
       // an edit is never checked and does not move the place's last-post record (docs/follow-ups.md)
       const once = async (post: () => Promise<Sent>) => {
@@ -2168,7 +2170,7 @@ try {
       // keyed on the text as it is posted (postInThread removes emoji, review 10 of #338): for a text without emoji the
       // same key as `dori send discord --to <thread id>`, so the two commands do not post one text twice either
       const place = `discord:${discordThreadId(ref ?? "")}`;
-      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, withoutEmoji(body), ...filesKey(files)]), post, { again: Boolean(flags.values.again) });
+      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, discordText(withoutEmoji(body)), ...filesKey(files)]), post, { again: Boolean(flags.values.again) });
       if (verb === "done") {
         // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;
