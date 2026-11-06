@@ -172,7 +172,8 @@ test("launch posts the lane's first message in an empty work thread: title, goal
   const { dc, seen } = threadDiscord([]);
   expect(await postLaneStart(dc, THREAD, text)).toBe(`THREAD_START_POSTED ${THREAD} message=900`);
   expect(seen.map((q) => `${q.method} ${q.url.replace(/^.*\/api\/v10/, "")}`)).toEqual(["GET /channels/100000000000000001/messages?limit=1", "POST /channels/100000000000000001/messages"]);
-  expect(JSON.parse(String(seen[1]?.body ?? "{}")).content).toBe(text);
+  // the pane's underscores go out escaped, so Discord does not draw "new-lane" in italics (discord-markdown.ts)
+  expect(JSON.parse(String(seen[1]?.body ?? "{}")).content).toBe(text.replace("aoe_new-lane_", "aoe\\_new-lane\\_"));
 });
 
 // owner 2026-11-02 15:43 KST "이건 고쳐": a lane launched on the thread a closed lane had left ✅ and archived kept it that way

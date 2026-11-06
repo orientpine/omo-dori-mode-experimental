@@ -77,7 +77,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener, eyesOff } from "./messenger/discord-listener.ts";
-import { bareThreadName, discordThreadId, postInThread, postLaneStart, progressText, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS, withoutEmoji } from "./messenger/discord-thread.ts";
+import { bareThreadName, discordThreadId, postInThread, postLaneStart, prepareInThread, progressText, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS, withoutEmoji } from "./messenger/discord-thread.ts";
 import { duplicateLine, SEND_DUPLICATE_EXIT, type Sent, sendKey, sendOnce, sentLine } from "./send-dedupe.ts";
 import { mapThread, standThread, threads, unstandThread } from "./messenger/thread-map.ts";
 import { archiveDoneThreads } from "./messenger/thread-archive.ts";
@@ -1809,13 +1809,12 @@ try {
       // place's last post (src/send-dedupe.ts); a repeat exits SEND_DUPLICATE_EXIT, a post prints what the service holds
       const place = platform === "discord" ? `discord:${thread ?? to}` : `${platform}:${to}${thread ? `/${thread}` : ""}`;
       const sentDir = join(config.stateDir, "sent");
-      // Discord puts a --ping in front of the text unless the text already has it, so both inputs key as the one message
-      // that goes out (review 8 of #338)
-      const keyText = platform === "discord" && ping !== undefined && !text.includes(`<@${ping}>`) ? `<@${ping}> ${text}` : text;
-      const dedupeKey = sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, keyText, ...filesKey(discordFiles)]);
+      // a Discord text keys as it goes out: prepared once (Discord.prepare: the --ping in front unless the text has it,
+      // review 8 of #338; thread links named; underscores escaped, review 6 of #358) and posted as prepared
+      const dedupeKey = (keyText: string) => sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, keyText, ...filesKey(discordFiles)]);
       // an edit is never checked and does not move the place's last-post record (docs/follow-ups.md)
-      const once = async (post: () => Promise<Sent>) => {
-        const r = await sendOnce(sentDir, place, dedupeKey, post, { again: Boolean(flags.values.again) });
+      const once = async (post: () => Promise<Sent>, keyText = text) => {
+        const r = await sendOnce(sentDir, place, dedupeKey(keyText), post, { again: Boolean(flags.values.again) });
         console.log(r.duplicate ? duplicateLine(place, r) : sentLine("SENT", r));
         if (r.duplicate) process.exitCode = SEND_DUPLICATE_EXIT;
         return r;
@@ -1859,7 +1858,8 @@ try {
         await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
         if (edit) await dc.edit(to, edit, text);
         else {
-          const r = await once(() => dc.post(thread ?? to, text, !flags.values["no-typing"], ping, reply, discordFiles));
+          const prepared = await dc.prepare(text, ping);
+          const r = await once(() => dc.post(thread ?? to, prepared, !flags.values["no-typing"], ping, reply, discordFiles, true), prepared);
           if (!r.duplicate) await notePost(thread ?? to, r.id, withFileNames(body, discordFiles));
         }
       } else die(`unknown platform ${platform}`);
@@ -2165,16 +2165,18 @@ try {
       if (tooBig) die(tooBig, 2);
       const dc = discordClient();
       await ownerSpeech(body, `thread ${verb}`, () => ownerPlace(dc, discordThreadId(ref ?? "")));
-      // keyed on the text as it is posted (postInThread removes emoji, review 10 of #338): for a text without emoji the
-      // same key as `dori send discord --to <thread id>`, so the two commands do not post one text twice either
+      // keyed on the text as it is posted, prepared once (emoji removed, review 10 of #338; then Discord.prepare, review 6
+      // of #358) and posted as prepared: the same key as `dori send discord --to <thread id>` for the same text, so the
+      // two commands do not post one text twice either
       const place = `discord:${discordThreadId(ref ?? "")}`;
-      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, withoutEmoji(body), ...filesKey(files)]), post, { again: Boolean(flags.values.again) });
+      const prepared = await prepareInThread(dc, body);
+      const threadOnce = (post: () => Promise<Sent>) => sendOnce(join(config.stateDir, "sent"), place, sendKey(["discord", discordThreadId(ref ?? ""), undefined, undefined, prepared, ...filesKey(files)]), post, { again: Boolean(flags.values.again) });
       if (verb === "done") {
         // the text is posted either way; with users left the thread keeps its mark and stays open
         const thread = `discord:${discordThreadId(ref ?? "")}`;
         const holders = await holdersOf(thread);
         if (holders && !flags.values.force) {
-          const r = await threadOnce(() => postInThread(dc, ref ?? "", body, files));
+          const r = await threadOnce(() => postInThread(dc, ref ?? "", prepared, files, true));
           if (!r.duplicate) await notePost(discordThreadId(ref ?? ""), r.id, withFileNames(body, files));
           console.log(`${r.duplicate ? duplicateLine(place, r) : sentLine("POSTED", r)} THREAD_LEFT_OPEN ${thread}: ${holders}; not marked done (--force marks it done anyway)`);
           break;
@@ -2190,7 +2192,7 @@ try {
       // only the post is inside the repeat check, so it is recorded as soon as Discord made it; the status step comes after
       // (review 10 of #338: a slow status step left the post unrecorded past the claim's minute). A repeat is not posted,
       // but the status still goes through: a done after a reply with the same words still closes
-      const r = await threadOnce(() => postInThread(dc, ref ?? "", body, files));
+      const r = await threadOnce(() => postInThread(dc, ref ?? "", prepared, files, true));
       await mark(discordThreadId(ref ?? ""), VERB_STATUS[verb as ThreadVerb]);
       if (!r.duplicate) await notePost(discordThreadId(ref ?? ""), r.id, withFileNames(body, files));
       console.log(`${r.duplicate ? duplicateLine(place, r) : sentLine("POSTED", r)}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);

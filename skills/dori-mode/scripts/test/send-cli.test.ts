@@ -236,6 +236,52 @@ test("the same outgoing message from equivalent inputs (a --ping already in the 
   }
 });
 
+// a post escapes the underscores Discord pairs as italics (discord-markdown.ts), so "a_b" and "a\_b" are one message:
+// SENT reads the escaped content, and the repeat check keys it, in dori send and thread reply alike
+test("a text with underscores keys and prints as it goes out escaped: the same text already escaped is the repeat", async () => {
+  const state = withState();
+  const d = discordServer();
+  try {
+    const to = ["--to", "1561963113488842792"];
+    const first = await sendTo(state.dir, d.server.port, [...to, "--text", "1_Project/2026_크레인"]);
+    ageMarks(state.dir, 11);
+    const same = await sendTo(state.dir, d.server.port, [...to, "--text", "1\\_Project/2026\\_크레인"]);
+    const ref = "discord:300000000000000003";
+    const reply = await sendCli(state.dir, ["thread", "reply", ref, "a_b_c.txt"]);
+    const again = await sendCli(state.dir, ["send", "discord", "--to", "300000000000000003", "--no-typing", "--text", "a\\_b\\_c.txt"]);
+    expect({ first: first.out, posted: d.posts.map((p) => p.body.content), same: [same.code, same.out.split(": ")[0]], reply: reply.out, again: [again.code, again.out.split(": ")[0]] }).toEqual({
+      first: receipt("SENT", "1", "1\\_Project/2026\\_크레인"), posted: ["1\\_Project/2026\\_크레인"], same: [3, `SEND_DUPLICATE ${PLACE} 1`],
+      reply: receipt("POSTED", "900", "a\\_b\\_c.txt"), again: [3, "SEND_DUPLICATE discord:300000000000000003 900"],
+    });
+  } finally {
+    d.stop();
+    state.done();
+  }
+});
+
+// review 6 of #358: a text is prepared once (link names, escapes, the 2000-character fallback) and both keyed and posted
+// as prepared, so two inputs that post the same text are one message: "_x_" and "\_x\_" near the limit both post the
+// first as written, by dori send and by thread reply alike
+test("two texts that post the same prepared text are the repeat, though they differ as written", async () => {
+  const state = withState();
+  const d = discordServer();
+  try {
+    const p = "x".repeat(1986);
+    const a = `${p} _x_ a_b_c_d`;
+    const b = `${p} \\_x\\_ a_b_c_d`;
+    const to = ["--to", "300000000000000003"];
+    const first = await sendTo(state.dir, d.server.port, [...to, "--text", a]);
+    const second = await sendTo(state.dir, d.server.port, [...to, "--text", b]);
+    const thread = await sendCli(state.dir, ["thread", "reply", "discord:300000000000000003", b]);
+    expect({ first: word2(first.out), posted: d.posts.map((x) => x.body.content), second: [second.code, second.out.split(": ")[0]], thread: thread.out.split(": ")[0] }).toEqual({
+      first: "SENT 1", posted: [a], second: [3, "SEND_DUPLICATE discord:300000000000000003 1"], thread: "SEND_DUPLICATE discord:300000000000000003 1",
+    });
+  } finally {
+    d.stop();
+    state.done();
+  }
+});
+
 // review 10 of #338: thread reply posts its text without emoji, so its repeat check keys that text: "Finished 🎉" in a
 // thread and then "Finished" to the same thread is one message, within the 10 minutes and after them
 test("a thread reply with emoji and the same text without them, sent to that thread, is the repeat at any age", async () => {
