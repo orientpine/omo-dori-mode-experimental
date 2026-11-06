@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { borrowCliCredential, borrowDocument, cliSnapshotsFrom, holdsNoGrant, PLACEHOLDER } from "./borrow.js";
+import { borrowCliCredential, borrowDocument, cliExpiresAt, cliSnapshotsFrom, holdsNoGrant, PLACEHOLDER } from "./borrow.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -106,10 +106,39 @@ describe("borrowDocument", () => {
 		expect(isForeignAuthBlock({ ...slot, signInRequired: undefined })).toBe(false);
 	});
 
+	test("a source rate limit never overwrites the borrower's expired-login auth block for the same login", () => {
+		const source = { "anthropic-subscription": { type: "oauth", accounts: [
+			{ name: "default", store: "claude-cli", dirId: "d1", blockReason: "rate_limit", blockedUntil: 999, blockedAt: 500 },
+		] } };
+		const borrower = { "anthropic-subscription": { type: "oauth", accounts: [verdictBlocked] } };
+		const [slot] = borrowDocument(source, borrower).next["anthropic-subscription"].accounts;
+		expect(slot).toEqual(verdictBlocked);
+	});
+
+	test("a source rate limit still reaches a borrower slot without an auth block", () => {
+		const source = { "anthropic-subscription": { type: "oauth", accounts: [
+			{ name: "default", store: "claude-cli", dirId: "d1", blockReason: "rate_limit", blockedUntil: 999, blockedAt: 500 },
+		] } };
+		const borrower = { "anthropic-subscription": { type: "oauth", accounts: [{ name: "default", store: "claude-cli", dirId: "d1" }] } };
+		const [slot] = borrowDocument(source, borrower).next["anthropic-subscription"].accounts;
+		expect([slot.blockReason, slot.blockedUntil, slot.blockedAt]).toEqual(["rate_limit", 999, 500]);
+	});
+
 	test("a new login (new dirId) drops the borrower's state about the old one, keeping model blocks", () => {
 		const borrower = { "anthropic-subscription": { type: "oauth", accounts: [verdictBlocked] } };
 		const [slot] = borrowDocument(cliSource("d2"), borrower).next["anthropic-subscription"].accounts;
 		expect(slot).toEqual({ name: "default", store: "claude-cli", dirId: "d2", modelBlocks: { m: 1 } });
+	});
+});
+
+describe("cliExpiresAt", () => {
+	test("healthy, missing and malformed credential files each give a row, never a throw", () => {
+		const files = { ok: '{"claudeAiOauth":{"expiresAt":5000}}', bad: "{not json" };
+		const read = (slot) => {
+			if (!(slot.dirId in files)) throw new Error("ENOENT: no such file");
+			return JSON.parse(files[slot.dirId]);
+		};
+		expect(["ok", "missing", "bad"].map((dirId) => cliExpiresAt({ dirId }, read))).toEqual([5000, undefined, undefined]);
 	});
 });
 

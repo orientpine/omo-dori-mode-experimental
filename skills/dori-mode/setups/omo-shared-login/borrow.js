@@ -36,7 +36,9 @@ function borrowSlot(sourceSlot, borrowerSlot) {
 		for (const key of sameLogin ? CLI_STATE_KEYS : ["modelBlocks"]) {
 			if (borrowerSlot?.[key] !== undefined) slot[key] = borrowerSlot[key];
 		}
-		if (sourceSlot.blockReason === "rate_limit" &&
+		// An auth block is the borrower's way back to a working login (senpi only
+		// re-probes auth_error): a source rate limit never overwrites it.
+		if (sourceSlot.blockReason === "rate_limit" && slot.blockReason !== "auth_error" && slot.signInRequired === undefined &&
 			(sourceSlot.blockedUntil ?? 0) > (slot.blockedUntil ?? 0)) {
 			slot.blockReason = "rate_limit";
 			slot.blockedUntil = sourceSlot.blockedUntil;
@@ -129,6 +131,17 @@ export function cliSnapshotsFrom(slots, readDocument, now) {
 		}
 	}
 	return { snapshots, failures };
+}
+
+// The expiry `status` shows for a Claude slot, or undefined when its
+// credential file is missing or malformed (a migrated slot may have none yet).
+export function cliExpiresAt(slot, readDocument) {
+	try {
+		const expiresAt = readDocument(slot)?.claudeAiOauth?.expiresAt;
+		return typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 // Only these access-related fields travel. Never copy an entire CLI directory

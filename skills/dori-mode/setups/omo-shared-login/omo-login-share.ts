@@ -398,15 +398,18 @@ async function status(flags: Flags) {
 	const lib = await senpi();
 	const source = await readSource(lib);
 	const rows = sourceRows(source);
+	const { cliExpiresAt } = await import(join(import.meta.dir, "borrow.js"));
 	for (const row of rows) {
 		if (row.providerId !== "anthropic-subscription") continue;
 		const slot = source[row.providerId].accounts.find((candidate: Json) => candidate.name === row.name);
 		if (slot?.store !== "claude-cli") continue;
 		const directory = lib.cli.accountDirFor(dirname(SOURCE_AUTH), slot.dirId);
-		row.access = digest(await lib.cli.readClaudeCliAccessToken(directory, Date.now()));
+		row.access = digest(await lib.cli.readClaudeCliAccessToken(directory, Date.now()).catch(() => undefined));
 		row.store = slot.store;
 		row.dirId = slot.dirId;
-		row.expires = JSON.parse(readFileSync(join(directory, ".credentials.json"), "utf8")).claudeAiOauth?.expiresAt;
+		// A missing or malformed credential file shows this row as unavailable and the rest still print.
+		row.expires = cliExpiresAt(slot, () => JSON.parse(readFileSync(join(directory, ".credentials.json"), "utf8")));
+		if (row.expires === undefined) row.blockReason = row.blockReason ? `${row.blockReason}, no credential` : "no credential";
 	}
 	const remote: Json = {};
 	for (const account of targets(flags)) remote[account] = await runRemote(account, { action: "status", agentDir: agentDirFor(account, flags) });
