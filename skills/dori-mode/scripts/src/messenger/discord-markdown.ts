@@ -167,14 +167,43 @@ export const unescapeUnderscores = (text: string): string => {
   return out;
 };
 
+// The places a text links to, as Discord reads them in order: a URL's (bare or <...>), a mail link's and a masked link's
+// address.
+export const linkTargets = (text: string): string[] => {
+  const s: Where = { inline: true, frames: [{ base: 0, len: text.length }], src: text, marks: [...text.split("")] };
+  const out: string[] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) for (const n of node) walk(n);
+    else if (node && typeof node === "object") {
+      const { target, content } = node as { target?: unknown; content?: unknown };
+      if (typeof target === "string") out.push(target);
+      walk(content);
+    }
+  };
+  walk(parse(text.replace(/[\t\r\f]/g, " "), s));
+  return out;
+};
+
+export const LINK_TARGET_WARN = "DISCORD_LINK_TARGET_WARN underscores left as written: escaping them would change where a link goes";
+
 // A text that fits its limit only without the escapes goes out with none rather than refused (400) or cut. build makes
 // the whole text from its parts, escaping those it passes through md, so the limit is checked before any slicing. The
 // fallback is made from the escaped parts, so it is the same for every input that escapes alike: the repeat check keys
 // the escaped text, and two texts it calls one message post one text (review 5 of #358).
-export const fitEscaped = (build: (md: (part: string) => string) => string, max: number): string => {
-  const escaped = build(escapeUnderscores);
-  if (escaped.length <= max) return escaped;
-  const plain = build((part) => unescapeUnderscores(escapeUnderscores(part)));
+// A part whose escaped (or unescaped) form links anywhere else than the part as written goes out as written: a \_ next
+// to a URL can move where Discord ends it ("___http://x.y/_"), so a link would go elsewhere. That is
+// said once in a warning line, with no part of the text.
+export const fitEscaped = (build: (md: (part: string) => string) => string, max: number, warn: (line: string) => void = (line) => console.error(line)): string => {
+  let kept = false;
+  const keep = (part: string, out: string): string => {
+    if (out === part || JSON.stringify(linkTargets(out)) === JSON.stringify(linkTargets(part))) return out;
+    kept = true;
+    return part;
+  };
+  const escape = (part: string) => keep(part, escapeUnderscores(part));
+  const escaped = build(escape);
+  const plain = escaped.length <= max ? escaped : build((part) => keep(part, unescapeUnderscores(escape(part))));
+  if (kept) warn(LINK_TARGET_WARN);
   return plain.length <= max ? plain : escaped;
 };
 

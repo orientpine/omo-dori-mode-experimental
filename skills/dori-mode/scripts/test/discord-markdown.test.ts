@@ -1,9 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { QuestionCards, QuestionStore } from "../src/messenger/discord-cards.ts";
-import { discordText, escapeUnderscores } from "../src/messenger/discord-markdown.ts";
+import { discordText, escapeUnderscores, LINK_TARGET_WARN, linkTargets } from "../src/messenger/discord-markdown.ts";
 import type { Http, HttpRequest } from "../src/messenger/http.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
@@ -203,6 +203,40 @@ test("near 2000 characters, a text and the same text already escaped post the sa
   const posted = seen.filter((r) => r.method !== "GET").map((r) => (JSON.parse(String(r.body)) as { content: string }).content);
   const named = `${p} a_b_c [thread_a_b](<https://discord.com/channels/100000000000000001/200000000000000002>)`;
   expect(posted).toEqual([named, named, named]);
+});
+
+// inputs of the #358 follow-up fuzz where a \_ next to a URL moved where Discord ends it
+const moving = ["___http://x.y/_", "__/http://x.y/[x]( https://e.com/a_", "~~[x](/__https://e.com/ab_c__[x]("];
+
+test("a post whose escapes would move a link target goes out as written, with one warning line and no text in it", async () => {
+  expect(linkTargets("___http://x.y/_")).toEqual(["http://x.y/"]);
+  const warn = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const t of moving) {
+      warn.mockClear();
+      const out = await sent(t);
+      expect(out).toBe(t);
+      expect(linkTargets(out)).toEqual(linkTargets(t));
+      expect(warn.mock.calls).toEqual([[LINK_TARGET_WARN]]);
+    }
+    warn.mockClear();
+    expect(await sent("1_Project/2026_크레인 https://e.com/a_b")).toBe("1\\_Project/2026\\_크레인 https://e.com/a_b");
+    expect(warn).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("the 2000-character fallback never moves a link target either", () => {
+  const warn = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const t = "\\__ https://e.com/ab_c]https://e.com/a_b\\)https://e.com/a__";
+    const text = `${"a_".repeat(Math.floor((1999 - t.length) / 2))} ${t}`;
+    expect(escapeUnderscores(text).length).toBeGreaterThan(2000);
+    expect(linkTargets(discordText(text))).toEqual(["https://e.com/ab_c]https://e.com/a_b\\)https://e.com/a__"]);
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 test("the fallback keeps code, URLs and an escape of anything but an underscore as written", () => {
