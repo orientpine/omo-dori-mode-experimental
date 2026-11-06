@@ -81,6 +81,21 @@ window.__events = events;
     await touch("touchEnd");
     const selected = await events();
     const copied = await page.evaluate(() => window.__copied);
+    const longPress = async (x, y) => {
+      await touch("touchStart", x, y);
+      await page.evaluate(() => new Promise((resolve) => {
+        const wait = () => (document.documentElement.dataset.doriTouch === "select" ? resolve() : setTimeout(wait, 20));
+        wait();
+      }));
+      await touch("touchMove", x + 30, y);
+    };
+    await longPress(100, 300);
+    await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: 130, y: 300, id: 1 }, { x: 250, y: 500, id: 2 }] });
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    const zoomed = (await events()).map((e) => [e.type, e.buttons]);
+    await longPress(100, 300);
+    await send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+    const cancelled = (await events()).map((e) => [e.type, e.buttons]);
     await touch("touchStart", 200, 600);
     await touch("touchEnd");
     const tapped = (await events()).filter((e) => e.type !== "mousemove");
@@ -97,6 +112,8 @@ window.__events = events;
     expect(selected.map((e) => e.type)).toEqual(["mousedown", "mousemove", "mousemove", "mouseup"]);
     expect(selected.map((e) => [e.x, e.buttons])).toEqual([[100, 1], [140, 1], [180, 1], [180, 0]]);
     expect(copied).toBe("picked");
+    expect(zoomed).toEqual([["mousedown", 1], ["mousemove", 1], ["mouseup", 0]]);
+    expect(cancelled).toEqual([["mousedown", 1], ["mousemove", 1], ["mouseup", 0]]);
     expect(tapped).toEqual([]);
   } finally {
     try { await browser?.close(); } finally {

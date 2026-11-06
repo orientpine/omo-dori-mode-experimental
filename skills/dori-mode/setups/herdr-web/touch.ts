@@ -47,7 +47,13 @@ const script = `<div id="dori-pan" aria-hidden="true"><span></span></div>
   const wheel = (deltaY, point) => screen()?.dispatchEvent(new WheelEvent("wheel", { ...at(point), deltaY, deltaMode: 0 }));
   const lineHeight = () => Math.max(8, (screen()?.getBoundingClientRect().height ?? 0) / (window.term?.rows || 1));
   const setMode = (mode) => { if (mode) root.dataset.doriTouch = mode; else delete root.dataset.doriTouch; };
-  const cancel = () => { if (gesture) clearTimeout(gesture.timer); gesture = null; setMode(""); };
+  const clear = () => { if (gesture) clearTimeout(gesture.timer); gesture = null; setMode(""); };
+  // A selection that ends without a lift (a second finger, touchcancel) still releases the button it pressed, so herdr
+  // finishes the selection and xterm drops its document drag handlers.
+  const cancel = () => {
+    if (gesture?.mode === "select") mouse("mouseup", gesture.last, 0);
+    clear();
+  };
   document.addEventListener("touchstart", (event) => {
     if (!narrowTouch.matches || !container()?.contains(event.target)) return;
     if (event.touches.length !== 1) return cancel();
@@ -90,7 +96,7 @@ const script = `<div id="dori-pan" aria-hidden="true"><span></span></div>
   const finish = (event) => {
     if (!gesture) return;
     const { mode, last } = gesture;
-    cancel();
+    clear();
     if (mode === "wait") return;
     event.preventDefault();
     if (mode !== "select") return;
