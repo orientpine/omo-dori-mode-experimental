@@ -18,7 +18,8 @@ export const DISCORD_TEXT_MAX = 2000;
 const HELD = "\uE000";
 // the backslash of an escaped underscore outside what is held: held to every rule here, dropped by the fallback
 const ESCAPED_UNDERSCORE = "\uE001";
-const TOKEN = /^<(?:@[!&]?\d+|#\d+|a?:\w+:\d+|\/[^<>:\n]+:\d+|t:-?\d+(?::[tTdDfFR])?)>/;
+// an emoji name may hold \_ here: escapeUnderscores reads the text with every underscore escaped, where it is the same token
+const TOKEN = /^<(?:@[!&]?\d+|#\d+|a?:(?:\w|\\_)+:\d+|\/[^<>:\n]+:\d+|t:-?\d+(?::[tTdDfFR])?)>/;
 const SPOILER = /^\|\|([\s\S]+?)\|\|/;
 
 // where the parse is: the text it reads at each level of nesting starts at base and is len long; src is the rest of it
@@ -87,9 +88,8 @@ const mask = (text: string): string => {
 };
 const EMPHASIS = /(?<=^|\s|[([{"'“‘])(__?)(?![\s_])[^_\n]*?[^\s_\\]\1(?=$|\s|[)\]}"'”’!?,;:.](?![\p{L}\p{N}_]))/gu;
 
-export const escapeUnderscores = (text: string): string => {
-  if (!text.includes("_")) return text;
-  const masked = mask(text);
+// the places (UTF-16 offsets, as everywhere here) of the underscores of emphasis written on purpose in a masked text
+const emphasis = (masked: string): Set<number> => {
   const kept = new Set<number>();
   for (const m of masked.matchAll(EMPHASIS)) {
     const mark = (m[1] ?? "").length;
@@ -99,26 +99,55 @@ export const escapeUnderscores = (text: string): string => {
       kept.add(start + m[0].length - 1 - i);
     }
   }
-  // an escape changes what Discord parses ("_ then `name_" stops being italics, so its backtick opens code: review 7 of
-  // #358), so the text that goes out is parsed again and a backslash added where it would not escape its underscore
-  // there (in code or a URL) is left out, until every one added does; the set only shrinks, so this ends
-  let added = [...masked].flatMap((c, i) => (c === "_" && !kept.has(i) ? [i] : []));
-  for (;;) {
-    let out = "";
-    const at: number[] = [];
-    let next = 0;
-    for (let i = 0; i < text.length; i++) {
-      if (added[next] === i) {
-        at.push(out.length);
-        out += "\\";
-        next++;
-      }
-      out += text[i];
+  return kept;
+};
+
+// the text with a backslash before each place in at, and where each original character went
+const withSlashes = (text: string, at: ReadonlySet<number>): { out: string; pos: number[]; slash: Map<number, number> } => {
+  let out = "";
+  const pos: number[] = [];
+  const slash = new Map<number, number>();
+  for (let i = 0; i < text.length; i++) {
+    if (at.has(i)) {
+      slash.set(i, out.length);
+      out += "\\";
     }
+    pos.push(out.length);
+    out += text[i];
+  }
+  return { out, pos, slash };
+};
+
+// An escape changes what Discord parses: "_ then `name_" stops being italics, so its backtick opens code (review 7 of
+// #358), and an underscore that was in code can come out of it (review 8). So what is code, a URL or emphasis is read
+// on the text with every underscore escaped, where no underscore pairs as italics and the rest of the markdown decides
+// alone; that text is the same for a text and the same text already escaped, so escaping twice changes nothing. An
+// underscore is escaped unless that reading holds it (in code or a URL) or keeps it as emphasis written on purpose.
+// Last, the text that goes out is parsed once more and a backslash it does not read as escaping its underscore is left
+// out, until every one added is (the set only shrinks).
+export const escapeUnderscores = (text: string): string => {
+  if (!text.includes("_")) return text;
+  const open = new Set<number>();
+  for (let i = 0, run = 0; i < text.length; i++) {
+    if (text[i] === "_" && run % 2 === 0) open.add(i);
+    run = text[i] === "\\" ? run + 1 : 0;
+  }
+  const all = withSlashes(text, open);
+  const allMask = mask(all.out);
+  // the text read that way, at its own places: an underscore whose backslash is read as an escape there is free
+  let read = "";
+  for (let i = 0; i < text.length; i++) {
+    const s = all.slash.get(i);
+    read += s === undefined ? (allMask[all.pos[i] ?? -1] ?? HELD) : allMask[s] === ESCAPED_UNDERSCORE ? "_" : HELD;
+  }
+  const kept = emphasis(read);
+  const added = new Set([...open].filter((i) => read[i] === "_" && !kept.has(i)));
+  for (;;) {
+    const { out, slash } = withSlashes(text, added);
     const outMask = mask(out);
-    const stays = added.filter((_, k) => outMask[at[k] ?? -1] === ESCAPED_UNDERSCORE);
-    if (stays.length === added.length) return out;
-    added = stays;
+    const wrong = [...slash].filter(([, s]) => outMask[s] !== ESCAPED_UNDERSCORE);
+    if (!wrong.length) return out;
+    for (const [i] of wrong) added.delete(i);
   }
 };
 

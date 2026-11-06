@@ -83,6 +83,10 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   // there is not added
   expect(await sent("prefix_ then `name_`")).toBe("prefix\\_ then `name_`");
   expect(await sent("a_b _c `d_` e_f")).toBe("a\\_b \\_c `d_` e\\_f");
+  // review 8 of #358: an emoji before a path (two UTF-16 units) still has the path escaped; an underscore an escape
+  // brings out of what was code is escaped too
+  expect(await sent("📁 a_b_c.txt 🚀 1_Project/2026_크레인")).toBe("📁 a\\_b\\_c.txt 🚀 1\\_Project/2026\\_크레인");
+  expect(await sent("prefix_ then `name_` a_b_c `tail`")).toBe("prefix\\_ then `name_` a\\_b\\_c `tail`");
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
@@ -153,8 +157,10 @@ test("an edit escapes the same way", async () => {
   await dc.edit("T1", "M1", "[label [v2] `](https://example.com) `a_b_c`");
   await dc.edit("T1", "M1", "**Use ` here** `a_b_c`");
   await dc.edit("T1", "M1", "prefix_ then `name_`");
-  expect(posted().slice(-1)).toEqual(["prefix\\_ then `name_`"]);
-  expect(posted().slice(0, -1)).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`", "[label [v2] `](https://example.com) `a_b_c`", "**Use ` here** `a_b_c`"]);
+  await dc.edit("T1", "M1", "📁 a_b_c.txt");
+  await dc.edit("T1", "M1", "prefix_ then `name_` a_b_c `tail`");
+  expect(posted().slice(-3)).toEqual(["prefix\\_ then `name_`", "📁 a\\_b\\_c.txt", "prefix\\_ then `name_` a\\_b\\_c `tail`"]);
+  expect(posted().slice(0, -3)).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`", "[label [v2] `](https://example.com) `a_b_c`", "**Use ` here** `a_b_c`"]);
 });
 
 test("a text that fits Discord's 2000 characters only unescaped goes out unescaped rather than refused", async () => {
