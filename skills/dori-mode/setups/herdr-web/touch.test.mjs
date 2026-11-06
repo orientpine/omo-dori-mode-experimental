@@ -18,7 +18,7 @@ test("a phone's one-finger drags pan the wider terminal and scroll herdr; a long
 const events = [];
 const element = document.querySelector(".xterm");
 for (const type of ["mousedown", "mousemove", "mouseup", "wheel"]) element.addEventListener(type, (e) => {
-  if (!e.isTrusted) events.push({ type, x: Math.round(e.clientX), y: Math.round(e.clientY), buttons: e.buttons, deltaY: e.deltaY ?? 0 });
+  if (!e.isTrusted) events.push({ type, x: Math.round(e.clientX), y: Math.round(e.clientY), buttons: e.buttons, deltaY: e.deltaY ?? 0, shift: e.shiftKey });
 });
 window.term = { rows: 40, cols: 100, element, getSelection: () => "picked", focus() {}, paste() {} };
 window.__events = events;
@@ -110,7 +110,9 @@ window.__events = events;
     expect(panned.left).toBe(-200);
     expect(clamped.left).toBe(390 - 960);
     expect(selected.map((e) => e.type)).toEqual(["mousedown", "mousemove", "mousemove", "mouseup"]);
-    expect(selected.map((e) => [e.x, e.buttons])).toEqual([[100, 1], [140, 1], [180, 1], [180, 0]]);
+    // Moves and the release reach half a cell (960px / 100 cols / 2 = 4.8px, whole pixels in clientX) past the finger,
+    // so the covered letter is taken.
+    expect(selected.map((e) => [e.x, e.buttons, e.shift])).toEqual([[100, 1, true], [144, 1, true], [184, 1, true], [184, 0, true]]);
     expect(copied).toBe("picked");
     expect(zoomed).toEqual([["mousedown", 1], ["mousemove", 1], ["mouseup", 0]]);
     expect(cancelled).toEqual([["mousedown", 1], ["mousemove", 1], ["mouseup", 0]]);

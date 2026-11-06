@@ -2,8 +2,8 @@
 // it runs in, and ttyd 1.7.7's xterm.js has no OSC 52 handler, so nothing reached the browser's clipboard; Ctrl+V reached
 // the terminal as ^V. This page code writes OSC 52 text to the clipboard, pastes on Ctrl+V, Ctrl+Shift+V and Cmd+V, and
 // gives a phone two buttons: Copy shows the screen's text to select natively (and copies herdr's last selection or the
-// whole screen), Paste reads the clipboard into the terminal. A phone's long-press drag (touch.ts) reaches herdr as a
-// mouse drag, so its selection arrives here as OSC 52 too.
+// whole screen), Paste reads the clipboard into the terminal. A phone's long-press drag (touch.ts) is a Shift drag
+// that xterm selects itself, and touch.ts copies it.
 // Clipboard reads (OSC 52 "?") are never answered: a program in a pane must not read the browser's clipboard.
 const style = `<style>
 #dori-clip{position:fixed;right:8px;bottom:8px;z-index:20;display:flex;gap:6px}
