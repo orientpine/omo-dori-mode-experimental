@@ -34,6 +34,13 @@ cannot share one file across accounts: the path is always
   directory, marked `.omo-shared-login`; a borrower that holds its own Claude
   refresh grant is never overwritten. A rejected Claude login is reported to
   the lead; its login is interactive, so the broker does not start it.
+- Renewal is judged by a changed access token with a later expiry, not by the
+  CLI turn's exit code (a real inference limit can reject the turn after the
+  refresh), and `auth status` alone never counts as renewal.
+- A borrower's Claude credential file is written to a temp file and renamed
+  into place; a slot counts as usable only in a real 0700 directory with a real
+  0600 file. Symlinks and a borrower-owned refresh grant are refused.
+  `cli-store.test.js` runs `remote.js` against a throwaway HOME for these.
 - One Claude account that cannot be read or renewed (no credential file yet,
   expired access) is skipped and alerted (`cli_unavailable:<provider>/<name>`,
   `cliSkipped` in the sync report); every other account still travels. The

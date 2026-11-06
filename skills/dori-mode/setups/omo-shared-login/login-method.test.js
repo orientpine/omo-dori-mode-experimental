@@ -7,9 +7,23 @@ import { chooseLoginMethod } from "./login-method.js";
 const PIAI = join(homedir(), ".bun/install/global/node_modules/@earendil-works/pi-ai/dist");
 const STOP = new Error("stop before any network call");
 
-// Anthropic login is the Claude CLI's own interactive login now (pi-ai no longer
-// ships auth/oauth/anthropic.js); omo-login-share never drives it, so only ChatGPT is walked here.
+// Anthropic login is the Claude CLI's own login through senpi's oauth-login.js now (pi-ai no
+// longer ships auth/oauth/anthropic.js); `omo-login-share login` answers its method prompt.
 describe("chooseLoginMethod against the installed pi-ai login", () => {
+	test("anthropic CLI login selects copy code before spawning or making a directory", async () => {
+		const { createOAuthConfig } = await import(join(homedir(),
+			".bun/install/global/node_modules/@code-yeongyu/senpi/dist/core/extensions/builtin/anthropic-subscription/oauth-login.js"));
+		let selected;
+		const config = createOAuthConfig({ readCurrent: async () => undefined });
+		await expect(config.login({
+			onSelect: async (prompt) => {
+				selected = chooseLoginMethod("anthropic-subscription", prompt.options);
+				throw STOP;
+			},
+		})).rejects.toBe(STOP);
+		expect(selected).toBe("copy_code");
+	});
+
 	test("chatgpt login takes the legacy route, then browser login, each an offered id", async () => {
 		const providers = await import(join(PIAI, "providers/all.js"));
 		const oauth = providers.builtinProviders().find((provider) => provider.id === "chatgpt-subscription").auth.oauth;
