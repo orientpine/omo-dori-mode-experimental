@@ -167,15 +167,42 @@ export const unescapeUnderscores = (text: string): string => {
   return out;
 };
 
+// The places a text links to, as Discord reads them in order: a URL's (bare or <...>), a mail link's and a masked link's
+// address. The text goes to the parser as it is, so its own preprocessing applies (a form feed is dropped, review 1 of
+// #366); the places marked on the way are not used.
+export const linkTargets = (text: string): string[] => {
+  const s: Where = { inline: true, frames: [{ base: 0, len: text.length }], src: text, marks: [...text.split("")] };
+  const out: string[] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) for (const n of node) walk(n);
+    else if (node && typeof node === "object") {
+      const { target, content } = node as { target?: unknown; content?: unknown };
+      if (typeof target === "string") out.push(target);
+      walk(content);
+    }
+  };
+  walk(parse(text, s));
+  return out;
+};
+
+export const LINK_TARGET_WARN = "DISCORD_LINK_TARGET_WARN underscores left as written: escaping them would change where a link goes";
+
 // A text that fits its limit only without the escapes goes out with none rather than refused (400) or cut. build makes
 // the whole text from its parts, escaping those it passes through md, so the limit is checked before any slicing. The
 // fallback is made from the escaped parts, so it is the same for every input that escapes alike: the repeat check keys
 // the escaped text, and two texts it calls one message post one text (review 5 of #358).
-export const fitEscaped = (build: (md: (part: string) => string) => string, max: number): string => {
+// A text whose escaped form (or that fallback) links anywhere else than the text as written goes out as written: a \_
+// next to a URL can move where Discord ends it ("___http://x.y/_"), so a link would go elsewhere. The whole text is
+// compared, as parts that keep their links alone can move one once put together (review 1 of #366). That is said in a
+// warning line, with no part of the text.
+export const fitEscaped = (build: (md: (part: string) => string) => string, max: number, warn: (line: string) => void = (line) => console.error(line)): string => {
+  const written = build((part) => part);
   const escaped = build(escapeUnderscores);
-  if (escaped.length <= max) return escaped;
-  const plain = build((part) => unescapeUnderscores(escapeUnderscores(part)));
-  return plain.length <= max ? plain : escaped;
+  const plain = escaped.length <= max ? escaped : build((part) => unescapeUnderscores(escapeUnderscores(part)));
+  const out = plain.length <= max ? plain : escaped;
+  if (out === written || JSON.stringify(linkTargets(out)) === JSON.stringify(linkTargets(written))) return out;
+  warn(LINK_TARGET_WARN);
+  return written;
 };
 
 export const discordText = (text: string): string => fitEscaped((md) => md(text), DISCORD_TEXT_MAX);
