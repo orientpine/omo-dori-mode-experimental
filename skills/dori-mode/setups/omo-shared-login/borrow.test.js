@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { borrowCliCredential, borrowDocument, cliExpiresAt, cliSnapshotsFrom, holdsNoGrant, PLACEHOLDER } from "./borrow.js";
+import { borrowCliCredential, borrowDocument, cliExpiresAt, cliSnapshotsFrom, connectionCheck, holdsNoGrant, PLACEHOLDER } from "./borrow.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -128,6 +128,18 @@ describe("borrowDocument", () => {
 		const borrower = { "anthropic-subscription": { type: "oauth", accounts: [verdictBlocked] } };
 		const [slot] = borrowDocument(cliSource("d2"), borrower).next["anthropic-subscription"].accounts;
 		expect(slot).toEqual({ name: "default", store: "claude-cli", dirId: "d2", modelBlocks: { m: 1 } });
+	});
+});
+
+describe("connectionCheck", () => {
+	test("only a clean JSON result counts as ok; timeout, error result, bad output and exit codes fail", () => {
+		const at = 7;
+		expect(connectionCheck({ exitCode: 0, stdout: '{"type":"result","is_error":false,"result":"OK"}' }, "m", at)).toEqual({ model: "m", outcome: "ok", at });
+		expect(connectionCheck(undefined, "m", at).reason).toBe("timeout");
+		expect(connectionCheck({ exitCode: 0, stdout: '{"type":"result","is_error":true}' }, "m", at).reason).toBe("no_result");
+		expect(connectionCheck({ exitCode: 0, stdout: "OK" }, "m", at).reason).toBe("no_result");
+		expect(connectionCheck({ exitCode: 1, stdout: "" }, "m", at).reason).toBe("exit_1");
+		expect(connectionCheck({ exitCode: 0, stdout: '{"type":"result","is_error":false}' }, "m", at, "no_account").outcome).toBe("failed");
 	});
 });
 

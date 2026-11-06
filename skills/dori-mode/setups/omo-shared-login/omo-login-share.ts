@@ -184,6 +184,20 @@ async function refreshAhead(lib: Awaited<ReturnType<typeof senpi>>, state: Json,
 	return { refreshed, failures };
 }
 
+const CLI_ONE_TURN = ["-p", "--max-turns", "1", "--tools", "", "--strict-mcp-config", "--setting-sources", "",
+	"--no-session-persistence", "--output-format", "json", "--system-prompt", "Reply OK only.", "Reply OK."];
+
+async function cliConnectionTest(lib: Awaited<ReturnType<typeof senpi>>, input: Json) {
+	const { connectionCheck } = await import(join(import.meta.dir, "borrow.js"));
+	const now = input.now ?? Date.now;
+	const slot = (((await readSource(lib))["anthropic-subscription"]?.accounts ?? []) as Json[])
+		.find((candidate) => candidate.name === input.name && candidate.store === "claude-cli");
+	if (!slot) return connectionCheck(undefined, input.model, now(), "no_account");
+	const run = { executable: input.executable, configDir: lib.cli.accountDirFor(dirname(SOURCE_AUTH), slot.dirId), parentEnv: process.env };
+	const result = await lib.process.runClaudeCliToExit(run, [...CLI_ONE_TURN, "--model", input.model], 60_000, input.signal);
+	return connectionCheck(result, input.model, now());
+}
+
 async function cliSnapshots(lib: Awaited<ReturnType<typeof senpi>>, source: Json): Promise<{ snapshots: Json[]; failures: { name: string; message: string }[] }> {
 	const { cliSnapshotsFrom } = await import(join(import.meta.dir, "borrow.js"));
 	const slots = ((source["anthropic-subscription"]?.accounts ?? []) as Json[]).filter((slot) => slot.store === "claude-cli");
@@ -366,6 +380,9 @@ async function sync(flags: Flags) {
 			await alert(state, `push_failed:${account}`, !result.ok || result.holdsNoGrant === false, `${account}에 로그인 반영 실패: ${result.error ?? "refresh 값이 남아 있음"}.`);
 		}
 	}
+	const failed = ahead.failures.length > 0 || Object.values(report.pushes).some((push: Json) => !push.ok || !push.holdsNoGrant);
+	// alert-failed (the unit's OnFailure) raises sync_failed under the same throttle; a clean sync clears it.
+	if (!flags["no-alert"] && !failed) await alert(state, "sync_failed", false, "");
 	if (!flags["test-dir"]) state.lastSync = report;
 	saveState(state);
 	// Re-login allocates a fresh dirId. Keep the path watch on the current
@@ -380,7 +397,6 @@ async function sync(flags: Flags) {
 		}
 	}
 	if (!flags.quiet) console.log(JSON.stringify(report, null, 2));
-	const failed = ahead.failures.length > 0 || Object.values(report.pushes).some((push: Json) => !push.ok || !push.holdsNoGrant);
 	if (failed) process.exitCode = 1;
 }
 
@@ -547,7 +563,12 @@ async function login(positional: string[], flags: Flags) {
 			const firstLogin = ((await readSource(lib))[providerId]?.accounts ?? []).length === 0;
 			const config = createOAuthConfig({
 				readCurrent: async () => (await readSource(lib))[providerId],
-				claudeCli: { agentDir: () => dirname(SOURCE_AUTH), store: () => store, env: () => process.env },
+				claudeCli: {
+					agentDir: () => dirname(SOURCE_AUTH), store: () => store, env: () => process.env,
+					// senpi's own test goes through the global auth lane (its default agent dir), not
+					// SOURCE_AUTH: test the new login in its own CLI dir under SOURCE_AUTH instead.
+					connectionTest: (input: Json) => cliConnectionTest(lib, input),
+				},
 			});
 			await config.login({
 				signal: controller.signal,
@@ -629,7 +650,11 @@ async function main() {
 	if (command === "login") return login(positional, flags);
 	if (command === "code") return code(positional);
 	if (command === "alert-failed") {
-		await notifyLead("[ALERT] omo-shared-login | omo-login-share sync 실패. journalctl --user -u omo-login-share 확인 필요.");
+		// The timer fails every 3 minutes while one account stays broken: tell the lead once per ALERT_REPEAT_MS.
+		const state = loadState();
+		state.alerts ??= {};
+		await alert(state, "sync_failed", true, "omo-login-share sync 실패. journalctl --user -u omo-login-share 확인 필요.");
+		saveState(state);
 		return;
 	}
 	console.log(

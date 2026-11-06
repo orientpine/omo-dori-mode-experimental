@@ -133,6 +133,18 @@ export function cliSnapshotsFrom(slots, readDocument, now) {
 	return { snapshots, failures };
 }
 
+// The login connection test's verdict from one `claude -p --output-format json`
+// run ({ exitCode, stdout }, or undefined when it timed out or was cancelled), in
+// senpi's check shape. Only the kind is kept, never the reply or error text.
+export function connectionCheck(result, model, at, reason) {
+	if (reason) return { model, outcome: "failed", reason, at };
+	if (!result) return { model, outcome: "failed", reason: "timeout", at };
+	let reply;
+	try { reply = JSON.parse(result.stdout); } catch { /* not JSON: a failed run */ }
+	if (result.exitCode === 0 && reply?.type === "result" && reply.is_error === false) return { model, outcome: "ok", at };
+	return { model, outcome: "failed", reason: result.exitCode === 0 ? "no_result" : `exit_${result.exitCode}`, at };
+}
+
 // The expiry `status` shows for a Claude slot, or undefined when its
 // credential file is missing or malformed (a migrated slot may have none yet).
 export function cliExpiresAt(slot, readDocument) {
