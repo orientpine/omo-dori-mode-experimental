@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { borrowDocument, holdsNoGrant, PLACEHOLDER } from "./borrow.js";
+import { borrowCliCredential, borrowDocument, holdsNoGrant, PLACEHOLDER } from "./borrow.js";
 
 const source = {
 	"anthropic-subscription": {
@@ -74,5 +74,34 @@ describe("borrowDocument", () => {
 		const once = borrowDocument(source, {}).next;
 		const twice = borrowDocument(source, once).next;
 		expect(JSON.stringify(twice)).toBe(JSON.stringify(once));
+	});
+
+	test("a claude-cli slot travels as identity only and keeps the borrower's blocks", () => {
+		const cliSource = { "anthropic-subscription": { type: "oauth", accounts: [
+			{ name: "default", store: "claude-cli", dirId: "d1", access: "A", refresh: "R", expires: 9, blockReason: "auth_error", blockedUntil: 5 },
+		] } };
+		const borrower = { "anthropic-subscription": { type: "oauth", accounts: [
+			{ name: "default", store: "claude-cli", dirId: "d1", blockReason: "rate_limit", blockedUntil: 70 },
+		] } };
+		const [slot] = borrowDocument(cliSource, borrower).next["anthropic-subscription"].accounts;
+		expect([slot.access, slot.refresh, slot.expires]).toEqual([undefined, undefined, undefined]);
+		expect([slot.store, slot.dirId]).toEqual(["claude-cli", "d1"]);
+		expect([slot.blockReason, slot.blockedUntil]).toEqual(["rate_limit", 70]);
+	});
+});
+
+describe("borrowCliCredential", () => {
+	const now = 1000;
+	const oauth = { accessToken: "AT", refreshToken: "RT", expiresAt: 5000, scopes: ["user:inference"], subscriptionType: "max" };
+
+	test("copies the access fields and never the refresh grant", () => {
+		const { claudeAiOauth } = borrowCliCredential({ claudeAiOauth: oauth }, now);
+		expect(claudeAiOauth).toEqual({ accessToken: "AT", expiresAt: 5000, scopes: ["user:inference"], subscriptionType: "max" });
+	});
+
+	test("refuses expired, placeholder or inference-less access", () => {
+		for (const bad of [{ expiresAt: now }, { accessToken: PLACEHOLDER }, { scopes: ["user:profile"] }, { accessToken: "" }]) {
+			expect(() => borrowCliCredential({ claudeAiOauth: { ...oauth, ...bad } }, now)).toThrow("Claude CLI access");
+		}
 	});
 });

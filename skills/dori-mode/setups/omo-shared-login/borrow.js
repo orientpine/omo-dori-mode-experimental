@@ -20,6 +20,23 @@ function stripRefresh(value) {
 function borrowSlot(sourceSlot, borrowerSlot) {
 	const slot = { ...sourceSlot };
 	for (const key of BLOCK_KEYS) delete slot[key];
+	if (sourceSlot.store === "claude-cli") {
+		delete slot.access;
+		delete slot.refresh;
+		delete slot.expires;
+		// CLI slots hold identity, not tokens. A missing access field cannot prove
+		// a new login, so leave auth recovery to senpi's CLI verdict.
+		for (const key of BLOCK_KEYS) {
+			if (borrowerSlot?.[key] !== undefined) slot[key] = borrowerSlot[key];
+		}
+		if (sourceSlot.blockReason === "rate_limit" &&
+			(sourceSlot.blockedUntil ?? 0) > (slot.blockedUntil ?? 0)) {
+			slot.blockReason = "rate_limit";
+			slot.blockedUntil = sourceSlot.blockedUntil;
+			slot.blockedAt = sourceSlot.blockedAt;
+		}
+		return slot;
+	}
 	if (slot.source !== "env") slot.refresh = stripRefresh(slot.refresh);
 	if (!borrowerSlot) return slot;
 	const sameToken = borrowerSlot.access === sourceSlot.access;
@@ -88,4 +105,25 @@ export function holdsNoGrant(document) {
 		}
 	}
 	return true;
+}
+
+// Only these access-related fields travel. Never copy an entire CLI directory
+// or credential object: it also holds the owner's rotating refresh authority.
+export function borrowCliCredential(document, now) {
+	const oauth = document?.claudeAiOauth;
+	if (typeof oauth?.accessToken !== "string" || !oauth.accessToken ||
+		oauth.accessToken === PLACEHOLDER || SENTINEL_REFRESH.has(oauth.accessToken) ||
+		typeof oauth.expiresAt !== "number" || !Number.isFinite(oauth.expiresAt) || oauth.expiresAt <= now ||
+		!Array.isArray(oauth.scopes) || !oauth.scopes.includes("user:inference")) {
+		throw new Error("Claude CLI access is missing, malformed or expired");
+	}
+	return {
+		claudeAiOauth: {
+			accessToken: oauth.accessToken,
+			expiresAt: oauth.expiresAt,
+			scopes: oauth.scopes.filter((scope) => typeof scope === "string"),
+			...(typeof oauth.subscriptionType === "string" ? { subscriptionType: oauth.subscriptionType } : {}),
+			...(typeof oauth.rateLimitTier === "string" ? { rateLimitTier: oauth.rateLimitTier } : {}),
+		},
+	};
 }
