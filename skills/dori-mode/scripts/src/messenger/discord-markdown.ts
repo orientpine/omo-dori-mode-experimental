@@ -99,12 +99,27 @@ export const escapeUnderscores = (text: string): string => {
       kept.add(start + m[0].length - 1 - i);
     }
   }
-  let out = "";
-  for (let i = 0; i < text.length; i++) {
-    if (masked[i] === "_" && !kept.has(i)) out += "\\";
-    out += text[i];
+  // an escape changes what Discord parses ("_ then `name_" stops being italics, so its backtick opens code: review 7 of
+  // #358), so the text that goes out is parsed again and a backslash added where it would not escape its underscore
+  // there (in code or a URL) is left out, until every one added does; the set only shrinks, so this ends
+  let added = [...masked].flatMap((c, i) => (c === "_" && !kept.has(i) ? [i] : []));
+  for (;;) {
+    let out = "";
+    const at: number[] = [];
+    let next = 0;
+    for (let i = 0; i < text.length; i++) {
+      if (added[next] === i) {
+        at.push(out.length);
+        out += "\\";
+        next++;
+      }
+      out += text[i];
+    }
+    const outMask = mask(out);
+    const stays = added.filter((_, k) => outMask[at[k] ?? -1] === ESCAPED_UNDERSCORE);
+    if (stays.length === added.length) return out;
+    added = stays;
   }
-  return out;
 };
 
 // The text with no escaped underscore outside code, URLs and tokens: each \_ there loses its backslash, the writer's own
