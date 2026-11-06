@@ -22,6 +22,26 @@ cannot share one file across accounts: the path is always
   `refreshOAuthCredential`, which runs the exchange outside the lock and saves
   only if the slot's refresh token is still the same. senpi itself refreshes
   5 minutes before expiry, so the broker always gets there first.
+- Anthropic accounts live in the Claude CLI store now (`store: "claude-cli"`,
+  `<agentDir>/anthropic-subscription-claude/<dirId>/.credentials.json`); pi-ai
+  no longer ships `auth/oauth/anthropic.js` and the old import failed every
+  sync after the 2026-11-06 update. The Claude CLI owns that refresh: when a
+  slot is within 5 minutes of expiry, sync runs the source CLI once
+  (`claude -p ... "Reply OK."` on opus-5-5, one turn, no tools) so it renews
+  itself. Borrowers get the auth.json slot as identity only (store, dirId, no
+  tokens) plus `borrowCliCredential`'s access-only copy of `.credentials.json`
+  (access token, expiry, scopes; never the refresh grant) in their own CLI
+  directory, marked `.omo-shared-login`; a borrower that holds its own Claude
+  refresh grant is never overwritten. A rejected Claude login is reported to
+  the lead; its login is interactive, so the broker does not start it.
+- One Claude account that cannot be read or renewed (no credential file yet,
+  expired access) is skipped and alerted (`cli_unavailable:<provider>/<name>`,
+  `cliSkipped` in the sync report); every other account still travels. The
+  borrower's verdict state for a Claude slot (block, `blockedAt`,
+  `authVerdict`, `signInRequired`) is kept while the slot names the same
+  `dirId` and dropped when the source signs in again (new `dirId`).
+- `login anthropic-subscription --account NAME` keeps NAME on the very first
+  Claude account too (senpi itself names that one `default` without asking).
 - Each borrower receives the source's OAuth providers with every refresh token
   replaced by `omo-shared-login:managed-by-oriclaw`. A borrower can use the
   access token but can never rotate a grant. The borrower keeps its own
@@ -81,9 +101,11 @@ omo-login-share code '<what the owner pasted>'                         # Anthrop
   final page address) shown in the browser into the thread. The lead passes it
   on with `omo-login-share code`.
 - When a login asks for a method, `login-method.js` answers: copy code for
-  Anthropic (the code Anthropic shows), browser login for ChatGPT (the final page
-  address). pi-ai expects the option id back; `bun test` in this folder checks
-  that against the installed pi-ai without contacting either service.
+  Anthropic (the code Anthropic shows; the Claude CLI login through senpi's
+  `oauth-login.js`), and for ChatGPT the legacy account route, then browser
+  login (the final page address). pi-ai expects the option id back; `bun test`
+  in this folder checks the ChatGPT choice against the installed pi-ai without
+  contacting the service.
   `login-method.d.ts` only gives tsc its types (`bunx tsc --noEmit -p .` in
   `scripts/` checks this folder too); install.sh does not ship it.
 - A login that cannot finish (no link, wrong code, 30 minutes without a code)
@@ -109,4 +131,5 @@ to no login at all.
 copy of the agent dir with symlinks to everything but `auth.json`), so pushes
 and calls can be tried with `OMO_CODING_AGENT_DIR=/home/<account>/REL omo -p
 --no-session ...` while the lead sessions keep their own files.
-`bun test borrow.test.js` covers the document transform.
+`bun test borrow.test.js` covers the document transform and the access-only
+Claude CLI credential copy.

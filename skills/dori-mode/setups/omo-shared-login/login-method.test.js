@@ -7,35 +7,10 @@ import { chooseLoginMethod } from "./login-method.js";
 const PIAI = join(homedir(), ".bun/install/global/node_modules/@earendil-works/pi-ai/dist");
 const STOP = new Error("stop before any network call");
 
-function fakeInteraction(providerId) {
-	const seen = { selects: [], events: [], prompts: [] };
-	const interaction = {
-		signal: new AbortController().signal,
-		notify: (event) => seen.events.push(event),
-		prompt: async (prompt) => {
-			seen.prompts.push(prompt.type);
-			if (prompt.type === "select") {
-				seen.selects.push(prompt.options);
-				return chooseLoginMethod(providerId, prompt.options);
-			}
-			throw STOP;
-		},
-	};
-	return { interaction, seen };
-}
-
+// Anthropic login is the Claude CLI's own interactive login now (pi-ai no longer
+// ships auth/oauth/anthropic.js); omo-login-share never drives it, so only ChatGPT is walked here.
 describe("chooseLoginMethod against the installed pi-ai login", () => {
-	test("anthropic login takes copy code: the auth link, then a pasted code", async () => {
-		const { anthropicOAuth } = await import(join(PIAI, "auth/oauth/anthropic.js"));
-		const { interaction, seen } = fakeInteraction("anthropic-subscription");
-		await expect(anthropicOAuth.login(interaction)).rejects.toBe(STOP);
-		expect(seen.prompts).toEqual(["select", "manual_code"]);
-		const link = new URL(seen.events.find((event) => event.type === "auth_url").url);
-		expect(link.origin + link.pathname).toBe("https://claude.ai/oauth/authorize");
-		expect(link.searchParams.get("redirect_uri")).toBe("https://platform.claude.com/oauth/code/callback");
-	});
-
-	test("chatgpt login takes browser login, an offered id", async () => {
+	test("chatgpt login takes the legacy route, then browser login, each an offered id", async () => {
 		const providers = await import(join(PIAI, "providers/all.js"));
 		const oauth = providers.builtinProviders().find((provider) => provider.id === "chatgpt-subscription").auth.oauth;
 		const offered = [];
@@ -43,12 +18,15 @@ describe("chooseLoginMethod against the installed pi-ai login", () => {
 			signal: new AbortController().signal,
 			notify: () => {},
 			prompt: async (prompt) => {
+				if (prompt.type !== "select") throw STOP;
 				offered.push(prompt.options);
-				throw STOP;
+				if (offered.length > 1) throw STOP;
+				return chooseLoginMethod("chatgpt-subscription", prompt.options);
 			},
 		};
 		await expect(oauth.login(interaction)).rejects.toBe(STOP);
-		expect(chooseLoginMethod("chatgpt-subscription", offered[0])).toBe("browser");
+		expect(chooseLoginMethod("chatgpt-subscription", offered[0])).toBe("legacy");
+		expect(chooseLoginMethod("chatgpt-subscription", offered[1])).toBe("browser");
 	});
 
 	test("an unknown provider gets a headless option id, never an object", () => {

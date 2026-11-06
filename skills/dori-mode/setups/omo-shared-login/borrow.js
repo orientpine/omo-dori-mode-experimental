@@ -11,6 +11,10 @@ export const PLACEHOLDER = "omo-shared-login:managed-by-oriclaw";
 const SENTINEL_REFRESH = new Set(["claude-sdk-oauth-managed"]);
 const BLOCK_KEYS = ["blockedUntil", "blockReason", "modelBlocks", "authRecoveryGrant"];
 const AUTH_ONLY_KEYS = ["authRecoveryGrant"];
+// A Claude CLI slot's verdict state: senpi drops an auth_error block whose
+// authVerdict does not match its dirId and blockedAt (isForeignAuthBlock), so
+// these travel together, and only while the slot still names the same login.
+const CLI_STATE_KEYS = [...BLOCK_KEYS, "blockedAt", "authVerdict", "signInRequired"];
 
 function stripRefresh(value) {
 	if (typeof value !== "string" || value === "" || SENTINEL_REFRESH.has(value)) return value;
@@ -20,6 +24,28 @@ function stripRefresh(value) {
 function borrowSlot(sourceSlot, borrowerSlot) {
 	const slot = { ...sourceSlot };
 	for (const key of BLOCK_KEYS) delete slot[key];
+	if (sourceSlot.store === "claude-cli") {
+		delete slot.access;
+		delete slot.refresh;
+		delete slot.expires;
+		for (const key of CLI_STATE_KEYS) delete slot[key];
+		// CLI slots hold identity, not tokens. A missing access field cannot prove
+		// a new login, so leave auth recovery to senpi's CLI verdict. A new dirId
+		// is a new login: the borrower's state about the old one does not carry.
+		const sameLogin = borrowerSlot?.store === "claude-cli" && borrowerSlot.dirId === sourceSlot.dirId;
+		for (const key of sameLogin ? CLI_STATE_KEYS : ["modelBlocks"]) {
+			if (borrowerSlot?.[key] !== undefined) slot[key] = borrowerSlot[key];
+		}
+		// An auth block is the borrower's way back to a working login (senpi only
+		// re-probes auth_error): a source rate limit never overwrites it.
+		if (sourceSlot.blockReason === "rate_limit" && slot.blockReason !== "auth_error" && slot.signInRequired === undefined &&
+			(sourceSlot.blockedUntil ?? 0) > (slot.blockedUntil ?? 0)) {
+			slot.blockReason = "rate_limit";
+			slot.blockedUntil = sourceSlot.blockedUntil;
+			slot.blockedAt = sourceSlot.blockedAt;
+		}
+		return slot;
+	}
 	if (slot.source !== "env") slot.refresh = stripRefresh(slot.refresh);
 	if (!borrowerSlot) return slot;
 	const sameToken = borrowerSlot.access === sourceSlot.access;
@@ -88,4 +114,65 @@ export function holdsNoGrant(document) {
 		}
 	}
 	return true;
+}
+
+// The access-only copies of the source's Claude CLI slots. One missing or
+// expired login is reported and skipped; the other slots still travel.
+// readDocument(slot) returns the slot's parsed .credentials.json or throws.
+export function cliSnapshotsFrom(slots, readDocument, now) {
+	const snapshots = [];
+	const failures = [];
+	for (const slot of slots ?? []) {
+		if (slot?.store !== "claude-cli") continue;
+		try {
+			snapshots.push({ dirId: slot.dirId, credential: borrowCliCredential(readDocument(slot), now) });
+		} catch (error) {
+			failures.push({ name: slot.name, message: String(error?.message ?? error).split("\n")[0].slice(0, 160) });
+		}
+	}
+	return { snapshots, failures };
+}
+
+// The login connection test's verdict from one `claude -p --output-format json`
+// run ({ exitCode, stdout }, or undefined when it timed out or was cancelled), in
+// senpi's check shape. Only the kind is kept, never the reply or error text.
+export function connectionCheck(result, model, at, reason) {
+	if (reason) return { model, outcome: "failed", reason, at };
+	if (!result) return { model, outcome: "failed", reason: "timeout", at };
+	let reply;
+	try { reply = JSON.parse(result.stdout); } catch { /* not JSON: a failed run */ }
+	if (result.exitCode === 0 && reply?.type === "result" && reply.is_error === false) return { model, outcome: "ok", at };
+	return { model, outcome: "failed", reason: result.exitCode === 0 ? "no_result" : `exit_${result.exitCode}`, at };
+}
+
+// The expiry `status` shows for a Claude slot, or undefined when its
+// credential file is missing or malformed (a migrated slot may have none yet).
+export function cliExpiresAt(slot, readDocument) {
+	try {
+		const expiresAt = readDocument(slot)?.claudeAiOauth?.expiresAt;
+		return typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// Only these access-related fields travel. Never copy an entire CLI directory
+// or credential object: it also holds the owner's rotating refresh authority.
+export function borrowCliCredential(document, now) {
+	const oauth = document?.claudeAiOauth;
+	if (typeof oauth?.accessToken !== "string" || !oauth.accessToken ||
+		oauth.accessToken === PLACEHOLDER || SENTINEL_REFRESH.has(oauth.accessToken) ||
+		typeof oauth.expiresAt !== "number" || !Number.isFinite(oauth.expiresAt) || oauth.expiresAt <= now ||
+		!Array.isArray(oauth.scopes) || !oauth.scopes.includes("user:inference")) {
+		throw new Error("Claude CLI access is missing, malformed or expired");
+	}
+	return {
+		claudeAiOauth: {
+			accessToken: oauth.accessToken,
+			expiresAt: oauth.expiresAt,
+			scopes: oauth.scopes.filter((scope) => typeof scope === "string"),
+			...(typeof oauth.subscriptionType === "string" ? { subscriptionType: oauth.subscriptionType } : {}),
+			...(typeof oauth.rateLimitTier === "string" ? { rateLimitTier: oauth.rateLimitTier } : {}),
+		},
+	};
 }
