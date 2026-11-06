@@ -16,9 +16,13 @@ const ESCAPE = /\\[^0-9A-Za-z\s]/y;
 const CODE = /(`+)[\s\S]*?[^`]\1(?!`)/y;
 const TOKEN = /<(?:https?:\/\/[^\s<>]+|@[!&]?\d+|#\d+|a?:\w+:\d+|\/[^<>:\n]+:\d+|t:-?\d+(?::[tTdDfFR])?)>/y;
 const BARE_URL = /https?:\/\/[^\s<>]+/y;
-const LINK = /\[((?:\\[\s\S]|[^[\]\\])*)\]\((?:<[^<>\n]*>|[^()\s]*)\)/y;
+// a label holds what simple-markdown's LINK_INSIDE does: a bracketed [..], any other character, and a "]" with a later
+// "]" and no "[" before it (review 5 of #358), with an escaped character read first as everywhere else
+const LINK = /\[((?:\\[\s\S]|\[[^\]]*\]|[^[\]\\]|\](?=[^[]*\]))*)\]\((?:<[^<>\n]*>|[^()\s]*)\)/y;
 const ADDRESS = /\((?:<[^<>\n]*>|[^()\s]*)\)/y;
 const HELD = "\uE000";
+// the backslash of an escaped underscore outside what is held: held to every rule here, dropped by the fallback
+const ESCAPED_UNDERSCORE = "\uE001";
 
 const at = (re: RegExp, text: string, i: number): number => {
   re.lastIndex = i;
@@ -33,7 +37,7 @@ const mask = (text: string): string => {
     const escaped = at(ESCAPE, text, i);
     if (escaped) {
       const c = text[i + 1] ?? "";
-      out += HELD + (c === "_" || c === "`" || c === "\\" ? HELD : c);
+      out += (c === "_" ? ESCAPED_UNDERSCORE : HELD) + (c === "_" || c === "`" || c === "\\" ? HELD : c);
       i += escaped;
       continue;
     }
@@ -81,12 +85,24 @@ export const escapeUnderscores = (text: string): string => {
   return out;
 };
 
-// A text that fits its limit only without the escapes goes out as written rather than refused (400) or cut. build makes
-// the whole text from its parts, escaping those it passes through md, so the limit is checked before any slicing.
+// The text with no escaped underscore outside code, URLs and tokens: each \_ there loses its backslash, the writer's own
+// too, so a text and the same text already escaped come out alike.
+export const unescapeUnderscores = (text: string): string => {
+  if (!text.includes("\\_")) return text;
+  const masked = mask(text);
+  let out = "";
+  for (let i = 0; i < text.length; i++) if (masked[i] !== ESCAPED_UNDERSCORE) out += text[i];
+  return out;
+};
+
+// A text that fits its limit only without the escapes goes out with none rather than refused (400) or cut. build makes
+// the whole text from its parts, escaping those it passes through md, so the limit is checked before any slicing. The
+// fallback is made from the escaped parts, so it is the same for every input that escapes alike: the repeat check keys
+// the escaped text, and two texts it calls one message post one text (review 5 of #358).
 export const fitEscaped = (build: (md: (part: string) => string) => string, max: number): string => {
   const escaped = build(escapeUnderscores);
   if (escaped.length <= max) return escaped;
-  const plain = build((part) => part);
+  const plain = build((part) => unescapeUnderscores(escapeUnderscores(part)));
   return plain.length <= max ? plain : escaped;
 };
 

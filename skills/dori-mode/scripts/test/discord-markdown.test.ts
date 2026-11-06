@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { QuestionCards, QuestionStore } from "../src/messenger/discord-cards.ts";
+import { discordText, escapeUnderscores } from "../src/messenger/discord-markdown.ts";
 import type { Http, HttpRequest } from "../src/messenger/http.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
@@ -70,6 +71,9 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   expect(await sent("__C:\\\\__ and a_b")).toBe("__C:\\\\__ and a\\_b");
   expect(await sent("[label `](https://example.com) `a_b_c` d_e")).toBe("[label `](https://example.com) `a_b_c` d\\_e");
   expect(await sent("[a_b `x_y`](<https://example.com/c_d>)")).toBe("[a\\_b `x_y`](<https://example.com/c_d>)");
+  // review 5 of #358: a label holds brackets of its own as simple-markdown's LINK_INSIDE does, and is still read alone
+  expect(await sent("[label [v2] `](https://example.com) `a_b_c`")).toBe("[label [v2] `](https://example.com) `a_b_c`");
+  expect(await sent("[a] b_c](https://example.com/x_y) d_e]")).toBe("[a] b\\_c](https://example.com/x_y) d\\_e]");
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
@@ -137,7 +141,8 @@ test("an edit escapes the same way", async () => {
   const { dc, posted } = discord();
   await dc.edit("T1", "M1", "고침: 1_Project/2026_크레인 `a_b`");
   await dc.edit("T1", "M1", "[label `](https://example.com) `a_b_c`");
-  expect(posted()).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`"]);
+  await dc.edit("T1", "M1", "[label [v2] `](https://example.com) `a_b_c`");
+  expect(posted()).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`", "[label [v2] `](https://example.com) `a_b_c`"]);
 });
 
 test("a text that fits Discord's 2000 characters only unescaped goes out unescaped rather than refused", async () => {
@@ -146,4 +151,33 @@ test("a text that fits Discord's 2000 characters only unescaped goes out unescap
   expect(await sent(text)).toBe(text);
   const short = `${"x".repeat(1980)} a_b_c`;
   expect(await sent(short)).toBe(`${"x".repeat(1980)} a\\_b\\_c`);
+});
+
+// review 5 of #358: two texts that key alike (the key is the escaped text before its thread links are named) post the
+// same text: a post that fits only without escapes drops every \_ outside code, the writer's own too, so "a_b" and
+// "a\_b" go out as one message after naming as well, and SEND_DUPLICATE refuses no message that would differ
+test("near 2000 characters, a text and the same text already escaped post the same once a thread link is named", async () => {
+  const seen: HttpRequest[] = [];
+  const http: Http = async (req) => {
+    seen.push(req);
+    const body = req.method === "GET" ? '{"name":"thread_a_b","type":11,"guild_id":"100000000000000001"}' : '{"id":"M1"}';
+    return { status: 200, headers: {}, body };
+  };
+  const dc = new Discord(http, fakeClock(0), "b");
+  const p = "x".repeat(1908);
+  const a = `${p} a_b_c <#200000000000000002>`;
+  const b = `${p} a\\_b\\_c <#200000000000000002>`;
+  expect(escapeUnderscores(a)).toBe(escapeUnderscores(b));
+  await dc.send("T1", a);
+  await dc.send("T1", b);
+  await dc.edit("T1", "M1", b);
+  const posted = seen.filter((r) => r.method !== "GET").map((r) => (JSON.parse(String(r.body)) as { content: string }).content);
+  const named = `${p} a_b_c [thread_a_b](<https://discord.com/channels/100000000000000001/200000000000000002>)`;
+  expect(posted).toEqual([named, named, named]);
+});
+
+test("the fallback keeps code, URLs and an escape of anything but an underscore as written", () => {
+  const tail = " \\_a \\* `b\\_c` https://e.com/d\\_e f_g_h_i_j";
+  const p = "x".repeat(1999 - tail.length);
+  expect(discordText(p + tail)).toBe(`${p} _a \\* \`b\\_c\` https://e.com/d\\_e f_g_h_i_j`);
 });
