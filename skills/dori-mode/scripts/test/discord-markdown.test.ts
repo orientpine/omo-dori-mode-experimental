@@ -74,6 +74,10 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   // review 5 of #358: a label holds brackets of its own as simple-markdown's LINK_INSIDE does, and is still read alone
   expect(await sent("[label [v2] `](https://example.com) `a_b_c`")).toBe("[label [v2] `](https://example.com) `a_b_c`");
   expect(await sent("[a] b_c](https://example.com/x_y) d_e]")).toBe("[a] b\\_c](https://example.com/x_y) d\\_e]");
+  // review 6 of #358: bold, underline, italics, strikethrough and spoiler text is read on its own, as a link label is,
+  // so a backtick left open in it pairs with nothing after it
+  expect(await sent("**Use ` here** `a_b_c`")).toBe("**Use ` here** `a_b_c`");
+  expect(await sent("~~old ` x~~ `a_b` ||s ` y|| `c_d` *i ` z* `e_f`")).toBe("~~old ` x~~ `a_b` ||s ` y|| `c_d` *i ` z* `e_f`");
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
@@ -142,7 +146,8 @@ test("an edit escapes the same way", async () => {
   await dc.edit("T1", "M1", "고침: 1_Project/2026_크레인 `a_b`");
   await dc.edit("T1", "M1", "[label `](https://example.com) `a_b_c`");
   await dc.edit("T1", "M1", "[label [v2] `](https://example.com) `a_b_c`");
-  expect(posted()).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`", "[label [v2] `](https://example.com) `a_b_c`"]);
+  await dc.edit("T1", "M1", "**Use ` here** `a_b_c`");
+  expect(posted()).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`", "[label [v2] `](https://example.com) `a_b_c`", "**Use ` here** `a_b_c`"]);
 });
 
 test("a text that fits Discord's 2000 characters only unescaped goes out unescaped rather than refused", async () => {

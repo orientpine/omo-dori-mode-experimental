@@ -52,12 +52,20 @@ export class Discord {
     return (await this.post(channelId, content, typing, ping, reply, files)).id;
   }
 
-  // send, with the content Discord answered the new message holds (dori send prints it: send-dedupe.ts sentLine)
-  async post(channelId: string, content: string, typing = false, ping?: string, reply?: string, files: readonly DiscordFile[] = []): Promise<{ id: string; content?: string }> {
+  // The text a post sends: a --ping in front unless the text has it, thread links named, underscores escaped (or none
+  // when only that fits 2000 characters). dori send and thread reply prepare once, key their repeat check on the result
+  // and post it with prepared set, so what is keyed is what goes out (review 6 of #358)
+  async prepare(content: string, ping?: string): Promise<string> {
     guardText(content);
     if (ping !== undefined && (ping.length === 0 || /[^0-9]/.test(ping))) throw new MessengerError("--ping takes a digits-only user id", 400);
     if (ping !== undefined && !content.includes(`<@${ping}>`)) content = `<@${ping}> ${content}`;
-    content = discordText(await this.namedLinks(content));
+    return discordText(await this.namedLinks(content));
+  }
+
+  // send, with the content Discord answered the new message holds (dori send prints it: send-dedupe.ts sentLine);
+  // prepared: content is prepare's result for this ping and goes out as it is
+  async post(channelId: string, content: string, typing = false, ping?: string, reply?: string, files: readonly DiscordFile[] = [], prepared = false): Promise<{ id: string; content?: string }> {
+    content = prepared ? guardText(content) : await this.prepare(content, ping);
     if (typing) {
       await this.once().typing(channelId).catch((e: unknown) => {
         console.error(`DISCORD_TYPING_FAIL ${e instanceof Error ? e.message : String(e)}`);
