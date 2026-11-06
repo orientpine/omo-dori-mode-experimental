@@ -120,16 +120,20 @@ const withSlashes = (text: string, at: ReadonlySet<number>): { out: string; pos:
 
 // An escape changes what Discord parses: "_ then `name_" stops being italics, so its backtick opens code (review 7 of
 // #358), and an underscore that was in code can come out of it (review 8). So what is code, a URL or emphasis is read
-// on the text with every underscore escaped, where no underscore pairs as italics and the rest of the markdown decides
-// alone; that text is the same for a text and the same text already escaped, so escaping twice changes nothing. An
+// on the text with every underscore escaped but those of emphasis written on purpose, where no other underscore pairs as
+// italics and the rest of the markdown decides alone; that text is the same for a text and the same text already
+// escaped, so escaping twice changes nothing. An
 // underscore is escaped unless that reading holds it (in code or a URL) or keeps it as emphasis written on purpose.
 // Last, the text that goes out is parsed once more and a backslash it does not read as escaping its underscore is left
 // out, until every one added is (the set only shrinks).
 export const escapeUnderscores = (text: string): string => {
   if (!text.includes("_")) return text;
+  // emphasis written on purpose is read on the text as written, as Discord reads it (an underline around a URL or a lone
+  // backtick, review 9 of #358); its underscores stay as they are in the reading below too
+  const purpose = emphasis(mask(text));
   const open = new Set<number>();
   for (let i = 0, run = 0; i < text.length; i++) {
-    if (text[i] === "_" && run % 2 === 0) open.add(i);
+    if (text[i] === "_" && run % 2 === 0 && !purpose.has(i)) open.add(i);
     run = text[i] === "\\" ? run + 1 : 0;
   }
   const all = withSlashes(text, open);

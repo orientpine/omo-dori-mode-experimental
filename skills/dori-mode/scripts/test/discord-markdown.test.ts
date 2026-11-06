@@ -87,6 +87,8 @@ test("code, code blocks, URLs, masked link addresses and Discord tokens go out a
   // brings out of what was code is escaped too
   expect(await sent("📁 a_b_c.txt 🚀 1_Project/2026_크레인")).toBe("📁 a\\_b\\_c.txt 🚀 1\\_Project/2026\\_크레인");
   expect(await sent("prefix_ then `name_` a_b_c `tail`")).toBe("prefix\\_ then `name_` a\\_b\\_c `tail`");
+  // review 9 of #358: underline written on purpose around a URL or a lone backtick stays, and so does the code after it
+  for (const t of ["__https://example.com/docs__", "__Use ` here__ `a_b_c`"]) expect(await sent(t)).toBe(t);
   // an unclosed backtick is no code to Discord: its text is escaped
   expect(await sent("`a_b c_d")).toBe("`a\\_b c\\_d");
 });
@@ -159,8 +161,12 @@ test("an edit escapes the same way", async () => {
   await dc.edit("T1", "M1", "prefix_ then `name_`");
   await dc.edit("T1", "M1", "📁 a_b_c.txt");
   await dc.edit("T1", "M1", "prefix_ then `name_` a_b_c `tail`");
-  expect(posted().slice(-3)).toEqual(["prefix\\_ then `name_`", "📁 a\\_b\\_c.txt", "prefix\\_ then `name_` a\\_b\\_c `tail`"]);
-  expect(posted().slice(0, -3)).toEqual(["고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`", "[label [v2] `](https://example.com) `a_b_c`", "**Use ` here** `a_b_c`"]);
+  await dc.edit("T1", "M1", "__https://example.com/docs__");
+  await dc.edit("T1", "M1", "__Use ` here__ `a_b_c`");
+  expect(posted()).toEqual([
+    "고침: 1\\_Project/2026\\_크레인 `a_b`", "[label `](https://example.com) `a_b_c`", "[label [v2] `](https://example.com) `a_b_c`", "**Use ` here** `a_b_c`",
+    "prefix\\_ then `name_`", "📁 a\\_b\\_c.txt", "prefix\\_ then `name_` a\\_b\\_c `tail`", "__https://example.com/docs__", "__Use ` here__ `a_b_c`",
+  ]);
 });
 
 test("a text that fits Discord's 2000 characters only unescaped goes out unescaped rather than refused", async () => {
