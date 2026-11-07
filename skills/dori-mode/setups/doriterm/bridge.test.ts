@@ -113,7 +113,7 @@ exit 1
   expect(calls).toHaveLength(2);
   for (const c of calls) {
     expect(c.startsWith("-n -u okdori -H /bin/sh -c ")).toBe(true);
-    expect(c).toContain('bun "$HOME/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts"');
+    expect(c).toContain('"$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts"');
     expect(c.trim().endsWith("exec herdr client")).toBe(true);
   }
 });
@@ -126,7 +126,9 @@ async function attachWithFakes(files: Record<string, string> = {}) {
     mkdirSync(join(dir, path, ".."), { recursive: true });
     writeFileSync(join(dir, path), text);
   }
-  writeFileSync(join(dir, "bun"), `#!/bin/sh
+  // bun only under ~/.bun/bin, where the account's own bun lives; the units' PATH does not include it
+  mkdirSync(join(dir, ".bun", "bin"), { recursive: true });
+  writeFileSync(join(dir, ".bun", "bin", "bun"), `#!/bin/sh
 printf 'focus %s %s\\n' "$DORI_CONFIG" "$1" >> "$HOME/calls"
 `, { mode: 0o700 });
   writeFileSync(join(dir, "herdr"), `#!/bin/sh

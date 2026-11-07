@@ -11,7 +11,7 @@
 account=${1:-}
 env='export XDG_RUNTIME_DIR=/run/user/$(id -u) PATH=$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin; '
 attach='c=$HOME/.$(id -un)/config.json; [ -f "$c" ] || c=$HOME/.dori/config.json
-DORI_CONFIG=$c bun "$HOME/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts" || echo "doriterm: the lead tab was not focused; attaching anyway" >&2
+DORI_CONFIG=$c "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts" || echo "doriterm: the lead tab was not focused; attaching anyway" >&2
 exec herdr client'
 while :; do
   if [ -n "$account" ]; then
