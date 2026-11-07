@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 
@@ -238,7 +238,14 @@ test("the system programs a job starts through its venv links or its first word 
   const shell = spreadPlan(jobOf(["sh", "-c", "true"]), who);
   expect(shell.ok && [shell.needs, shell.which]).toEqual([["/usr/bin/python3.99"], ["sh"]]);
   // --env PATH is the box's PATH too: a tool in a --sync path is found there, one elsewhere is not
-  expect(spreadPlan(jobOf(["build"], { env: { PATH: `${join(work, "tools")}:/usr/bin` } }), who).ok).toBe(true);
+  const built = spreadPlan(jobOf(["build"], { env: { PATH: `${join(work, "tools")}:/usr/bin` } }), who);
+  expect(built.ok && [built.which, built.path]).toEqual([[], undefined]);
+  // a system program on --env PATH is looked up by the helper on that PATH, wherever it sits there
+  const pinned = spreadPlan(jobOf(["sh", "-c", "true"], { env: { PATH: "/usr/local/bin:/usr/bin:/bin" } }), who);
+  expect(pinned.ok && [pinned.needs, pinned.which, pinned.path]).toEqual([["/usr/bin/python3.99"], ["sh"], "/usr/local/bin:/usr/bin:/bin"]);
+  // the box's own tools are asked about too: a helper may not have installed them
+  const tool = spreadPlan(jobOf(["ffmpeg", "-version"]), who);
+  expect(tool.ok && tool.which).toEqual(["ffmpeg"]);
   expect(spreadPlan(jobOf(["mytool"], { env: { PATH: `${bin}:/usr/bin` } }), who)).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool on the job's --env PATH, which is not in a --sync path` });
   expect(spreadPlan(jobOf(["mytool"]), { ...who, path: `${bin}:/usr/bin:/bin` })).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool, which is in no --sync path and no system folder, so a helper has none` });
   expect(spreadPlan(jobOf(["../x"]), who)).toEqual({ ok: false, why: `the command ../x is ${join(state.dir, "x")}, which is not in a --sync path` });
@@ -263,6 +270,22 @@ test("a helper without a program the job starts says which one, is not asked aga
   expect(logs.some((l) => l.startsWith("HEAVY_SPREAD") || l.startsWith("HEAVY_DONE"))).toBe(false);
   const helperLog = readFileSync(join(state.dir, "helper", "state", "heavy", "heavy.log"), "utf8");
   expect(helperLog.match(/HEAVY_WORKER_REFUSED/g)?.length).toBe(1);
+}, 60_000);
+
+test("a job no helper can run waits here in its place as a local one, so a job behind it may still go to a helper", async () => {
+  // Given
+  holdSlot();
+  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] });
+  mkdirSync(join(work, ".venv", "bin"), { recursive: true });
+  symlinkSync("/usr/bin/python3.99", join(work, ".venv", "bin", "python"));
+  const queue = join(state.dir, "heavy", "queue");
+  const kinds: string[] = [];
+  let polls = 0;
+  const waiting = { ...ctx, deps: { ...ctx.deps, clock: { now: () => Date.now(), sleep: async () => { kinds.push(readdirSync(queue).map((n) => readFileSync(join(queue, n), "utf8")).join(",")); if (++polls > 2) throw new Error("stop"); } } } };
+  // When
+  await expect(spread(waiting, jobOf([".venv/bin/python", "-c", "print(1)"]))).rejects.toThrow("stop");
+  // Then: its ticket turned local after every helper refused
+  expect(kinds.at(-1)).toBe("local");
 }, 60_000);
 
 test("a command the helper's box cannot start ends with the exit code a shell gives (127 missing, 126 not runnable) and says why", async () => {
@@ -302,6 +325,9 @@ test("a helper whose box PATH has no program by the job's bare command name refu
   const p = Bun.spawnSync([...helperArgv(), "exec", "t", "cpu", "100", "which=no-such-program-dori"], { stdin: "ignore", stderr: "pipe" });
   // Then
   expect(p.stderr.toString()).toContain("WORKER_REFUSED no no-such-program-dori on this host's box PATH (the job's command)");
+  // the job's --env PATH is the PATH it is looked up on
+  const q = Bun.spawnSync([...helperArgv(), "exec", "t", "cpu", "100", "which=sh", `path=${join(state.dir, "empty")}`], { stdin: "ignore", stderr: "pipe" });
+  expect(q.stderr.toString()).toContain("WORKER_REFUSED no sh on this host's box PATH (the job's command)");
 });
 
 test("an argument's paths are found after = , and : but a URL's // is not a path", () => {

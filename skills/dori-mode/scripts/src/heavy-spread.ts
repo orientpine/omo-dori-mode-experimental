@@ -43,6 +43,7 @@ const BOX_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin";
 const BOX_PROGRAMS = new Set(["bun", "bunx", "ffmpeg", "ffprobe"]);
 const NEED_PATH = /^\/[\w.+@-][\w.+@/-]{0,254}$/;
 const NEEDS_MAX = 32;
+const BOX_PATH_OK = /^[\w.+@/:-]{1,2048}$/;
 const inProgramDirs = (p: string): boolean => PROGRAM_DIRS.some((d) => within(p, d));
 
 export const within = (p: string, root: string): boolean => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
@@ -59,7 +60,8 @@ export type SpreadJob = {
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
 // which the helper must have before it takes the job
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
-export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly playwright?: string } | { readonly ok: false; readonly why: string };
+// path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
+export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string } | { readonly ok: false; readonly why: string };
 
 // A bash -c script whose pipeline ends in tail, grep or head exits with that last command's code, so a failing test run
 // piped into tail looked like a pass (2026-11-02: 171 of 744 failed on the helper, HEAVY_DONE exit 0). The script that pipes
@@ -186,20 +188,24 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
     if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`);
     if (inProgramDirs(p)) needs.add(p);
   } else if (job.env.PATH !== undefined) {
-    // --env PATH is the box's PATH too, so the command is found there as here
+    // --env PATH is the box's PATH too: a command in a --sync path travels, one in a system folder is looked up by the
+    // helper on that same PATH (it may sit in another of its folders there)
     const at = Bun.which(first, { PATH: job.env.PATH, cwd: job.cwd });
     if (at && !covered(at)) return no(`the command ${first} is ${at} on the job's --env PATH, which is not in a --sync path`);
-    if (at && inProgramDirs(at)) needs.add(at);
-  } else if (!BOX_PROGRAMS.has(first)) {
+    if (at && !sync.some((s) => within(at, s))) which.add(first);
+  } else {
+    // the box's own bun and tools, or a system folder: the helper looks the name up on its box PATH
     const here = Bun.which(first, { PATH: who.path ?? process.env.PATH ?? "", cwd: job.cwd });
-    if (Bun.which(first, { PATH: BOX_SYSTEM_PATH })) which.add(first);
+    if (BOX_PROGRAMS.has(first) || Bun.which(first, { PATH: BOX_SYSTEM_PATH })) which.add(first);
     else if (here) return no(`the command ${first} is ${here}, which is in no --sync path and no system folder, so a helper has none`);
   }
+  const path = which.size && job.env.PATH !== undefined ? job.env.PATH : undefined;
+  if (path !== undefined && !BOX_PATH_OK.test(path)) return no(`the job's --env PATH ${JSON.stringify(path.slice(0, 80))} cannot be sent to a helper for its lookup`);
   const odd = [...needs].find((p) => !NEED_PATH.test(p) || p.split("/").includes(".."));
   if (odd !== undefined) return no(`the job starts ${JSON.stringify(odd)}, a path a helper cannot be asked about`);
   if (needs.size > NEEDS_MAX) return no(`the job starts ${needs.size} system programs, more than the ${NEEDS_MAX} a helper is asked about`);
   const playwright = job.kind === "browser" ? playwrightVersion(sync.filter((s) => existsSync(s))) : undefined;
-  return { ok: true, sync, needs: [...needs], which: [...which], ...(playwright ? { playwright } : {}) };
+  return { ok: true, sync, needs: [...needs], which: [...which], ...(path !== undefined ? { path } : {}), ...(playwright ? { playwright } : {}) };
 };
 
 // how busy this host is for a job of this kind, in percent (gpu: the GPU or the CPU, whichever is busier)
@@ -271,7 +277,7 @@ type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonl
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
-  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`)];
+  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : [])];
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const lines = linesOf(p.stderr);
   let verdict: RegExpExecArray | null = null;
@@ -361,7 +367,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
   const since = ctx.deps.clock.now();
   for (;;) {
     if (!run) {
-      const got = await acquire<Started>(ctx.deps, job.label, { since, elsewhere: (why) => helpers(100, why), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
+      const got = await acquire<Started>(ctx.deps, job.label, { since, elsewhere: (why) => helpers(100, why), nowhere: () => refused.size > 0 && refused.size === ctx.q.helpers.length, elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
       if ("slot" in got) return { slot: got.slot };
       run = got.elsewhere;
     }
@@ -481,14 +487,16 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   if (!/^\d{1,3}$/.test(belowS) || Number(belowS) > 100) return d.refuse(label, `"${belowS}" is not a busy percent`);
   const needOk = (o: string): boolean => o.startsWith("need=") && NEED_PATH.test(o.slice(5)) && !o.split("/").includes("..") && inProgramDirs(o.slice(5));
   const whichOk = (o: string): boolean => /^which=[\w.+@-]{1,64}$/.test(o) && !/^which=\.+$/.test(o);
-  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !needOk(o) && !whichOk(o));
+  const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
+  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o));
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   if (!ctx.q.exec) return d.refuse(label, "exec is off on this host (heavyQueue.exec)");
   if (!Bun.which("bwrap")) return d.refuse(label, "no bwrap on this host");
   // the box sees this host's system read-only, so a program missing here is missing in the box
   const missing = opts.filter((o) => o.startsWith("need=")).map((o) => o.slice(5)).find((p) => !existsSync(p));
   if (missing !== undefined) return d.refuse(label, `${missing} is not on this host (the job's command or a link in its --sync paths starts it)`);
-  const boxPath = [d.tools.bunDir, d.tools.toolsDir && join(d.tools.toolsDir, "bin"), BOX_SYSTEM_PATH].filter(Boolean).join(":");
+  // the PATH the box will have: the job's --env PATH, else its bun, its tools and the system folders
+  const boxPath = opts.find((o) => o.startsWith("path="))?.slice(5) ?? [d.tools.bunDir, d.tools.toolsDir && join(d.tools.toolsDir, "bin"), BOX_SYSTEM_PATH].filter(Boolean).join(":");
   const unnamed = opts.filter((o) => o.startsWith("which=")).map((o) => o.slice(6)).find((n) => !Bun.which(n, { PATH: boxPath }));
   if (unnamed !== undefined) return d.refuse(label, `no ${unnamed} on this host's box PATH (the job's command)`);
   const noScope = await canScope();
