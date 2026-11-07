@@ -9,8 +9,8 @@
 //    early arm, freshness types /compact at the lane's idle moment once its context reaches atK thousand tokens, instead of
 //    omo's own point (about 80 % of the window). omo's settings stay untouched: the threshold has no per-session setting,
 //    and a global one would move the lead too. dori compaction-trial prints the comparison table from the session logs.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import { QUESTION_MARK } from "./aoe.ts";
 import type { CompactionTrial, DoriConfig } from "./config.ts";
@@ -54,8 +54,23 @@ export const assignArm = (config: DoriConfig, key: string, tags: readonly string
   return arm === "excluded" ? undefined : arm;
 };
 
+// The log of session id for a lane in cwd: omo names the session dir after the cwd or, for a symlinked cwd, its real path
+// (as goal.ts laneGoal reads it), and a handover opens the next session under the real path.
+export const laneSessionFile = (sessionsDir: string, cwd: string, id: string): string | undefined => {
+  const at = resolve(cwd);
+  let real = at;
+  try {
+    real = realpathSync(at);
+  } catch {}
+  for (const dir of new Set([sessionDirFor(sessionsDir, at), sessionDirFor(sessionsDir, real)])) {
+    const file = sessionFile(dir, id);
+    if (file) return file;
+  }
+  return undefined;
+};
+
 const laneLog = (config: DoriConfig, lane: Lane): string | undefined =>
-  lane.session ? sessionFile(sessionDirFor(config.sessionsDir, lane.cwd ?? config.defaultCwd), lane.session) : undefined;
+  lane.session ? laneSessionFile(config.sessionsDir, lane.cwd ?? config.defaultCwd, lane.session) : undefined;
 
 export type KeepAct = { readonly kind: "reanchored" | "reanchor-failed" | "trial-compact" | "trial-compact-failed"; readonly lane: string; readonly detail: string };
 
@@ -154,12 +169,13 @@ export const sessionUsage = (text: string): SessionUsage => {
   return u;
 };
 
-export type ArmRow = { arm: TrialArm; lanes: number; closed: number; notDone: number; fixes: number; sessions: number } & SessionUsage;
+// missing: sessions the registry names whose log was not found (their usage is unknown, not zero)
+export type ArmRow = { arm: TrialArm; lanes: number; closed: number; notDone: number; fixes: number; sessions: number; missing: number } & SessionUsage;
 
 export const trialRows = (config: DoriConfig, lanes: readonly Lane[], read: (file: string) => string = (f) => readFileSync(f, "utf8")): ArmRow[] => {
   const arms = readArms(config.stateDir);
   return (["early", "control"] as const).map((arm) => {
-    const row: ArmRow = { arm, lanes: 0, closed: 0, notDone: 0, fixes: 0, sessions: 0, ...emptyUsage() };
+    const row: ArmRow = { arm, lanes: 0, closed: 0, notDone: 0, fixes: 0, sessions: 0, missing: 0, ...emptyUsage() };
     for (const rec of arms.filter((a) => a.arm === arm)) {
       const lane = lanes.find((l) => l.key === rec.key);
       if (!lane) continue;
@@ -167,10 +183,12 @@ export const trialRows = (config: DoriConfig, lanes: readonly Lane[], read: (fil
       if (lane.closedAt) row.closed++;
       row.notDone += (lane.history ?? []).filter((h) => h.status === "not-done").length;
       row.fixes += lane.fixes?.length ?? 0;
-      const dir = sessionDirFor(config.sessionsDir, lane.cwd ?? config.defaultCwd);
       for (const s of [...(lane.priorSessions ?? []), ...(lane.session ? [lane.session] : [])]) {
-        const file = sessionFile(dir, s);
-        if (!file) continue;
+        const file = laneSessionFile(config.sessionsDir, lane.cwd ?? config.defaultCwd, s);
+        if (!file) {
+          row.missing++;
+          continue;
+        }
         row.sessions++;
         const u = sessionUsage(read(file));
         for (const k of Object.keys(u) as (keyof SessionUsage)[]) row[k] += u[k];
@@ -184,10 +202,10 @@ const k = (n: number): string => (n >= 10_000_000 ? `${(n / 1_000_000).toFixed(1
 const per = (n: number, d: number, f: (x: number) => string): string => (d > 0 ? f(n / d) : "-");
 
 export const trialTable = (rows: readonly ArmRow[]): string[] => [
-  "| arm | lanes (closed) | context per call | calls >= 300k | tokens per lane | usage $ per lane | compactions (fallback) | re-reads per compaction | lead not-done | fix attempts |",
-  "|---|---|---|---|---|---|---|---|---|---|",
+  "| arm | lanes (closed) | sessions (log not found: usage unknown) | context per call | calls >= 300k | tokens per lane | usage $ per lane | compactions (fallback) | re-reads per compaction | lead not-done | fix attempts |",
+  "|---|---|---|---|---|---|---|---|---|---|---|",
   ...rows.map((r) =>
-    `| ${r.arm} | ${r.lanes} (${r.closed}) | ${per(r.ctxSum, r.calls, k)} | ${per(r.over300 * 100, r.calls, (x) => `${x.toFixed(0)}%`)} | ${per(r.tokens, r.lanes, k)} | ${per(r.cost, r.lanes, (x) => x.toFixed(2))} | ${r.compactions} (${r.fallbacks}) | ${per(r.rereads, r.compactions, (x) => x.toFixed(1))} | ${r.notDone} | ${r.fixes} |`),
+    `| ${r.arm} | ${r.lanes} (${r.closed}) | ${r.sessions} (${r.missing}) | ${per(r.ctxSum, r.calls, k)} | ${per(r.over300 * 100, r.calls, (x) => `${x.toFixed(0)}%`)} | ${per(r.tokens, r.lanes, k)} | ${per(r.cost, r.lanes, (x) => x.toFixed(2))} | ${r.compactions} (${r.fallbacks}) | ${per(r.rereads, r.compactions, (x) => x.toFixed(1))} | ${r.notDone} | ${r.fixes} |`),
 ];
 
 export const dailyFile = (stateDir: string): string => join(trialDir(stateDir), "daily.jsonl");

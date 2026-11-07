@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { assignArm, keepTick, readArms, sessionUsage } from "../src/compaction-keep.ts";
+import { assignArm, keepTick, laneSessionFile, readArms, sessionUsage, trialRows } from "../src/compaction-keep.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import type { DoriConfig } from "../src/config.ts";
 import type { Lane } from "../src/registry.ts";
@@ -93,6 +93,33 @@ test("a lane told not-done keeps both: freshness re-anchors it after a compactio
   appendFileSync(file, compaction("[Deterministic compaction recovery checkpoint]", "senpi.compaction.deterministic-fallback.v1"));
   expect((await freshnessTick(d, "/home/test")).map((a) => a.kind)).toContain("reanchored");
   expect(sent(world).some((t) => t.includes(`re-read the brief at ${brief}`))).toBe(true);
+  // and, in the early arm above atK, its /compact
+  appendFileSync(file, compaction(`kept ${brief}`) + turn(320));
+  await d.registry.patch("keep-lane", { trialArm: "early" });
+  const trialDeps = deps(T0, { compactionTrial: trial });
+  expect((await freshnessTick(trialDeps, "/home/test")).map((a) => a.kind)).toContain("trial-compact");
+  expect(sent(world).at(-1)).toBe("/compact");
+});
+
+test("a lane whose cwd is a symlink is read under the real path too, in the sweep and in the trial table; a session with no log is counted as unknown", () => {
+  const real = join(state.dir, "real-w");
+  const link = join(state.dir, "link-w");
+  mkdirSync(real, { recursive: true });
+  symlinkSync(real, link);
+  const sessions = join(state.dir, "sessions");
+  const at = (cwd: string, id: string, text: string) => {
+    const dir = sessionDirFor(sessions, cwd);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `2026-11-07T14-00-00-000Z_${id}.jsonl`), text);
+  };
+  at(link, "old", turn(400));
+  at(real, "new", turn(100) + turn(200));
+  expect(laneSessionFile(sessions, link, "new")).toContain("real-w");
+  const config = deps(T0, { compactionTrial: trial }).config;
+  mkdirSync(join(state.dir, "compaction-trial"), { recursive: true });
+  writeFileSync(join(state.dir, "compaction-trial", "arms.jsonl"), `${JSON.stringify({ at: "x", key: "keep-lane", arm: "early", tags: [] })}\n`);
+  const rows = trialRows(config, [lane("/b.md", { cwd: link, session: "new", priorSessions: ["old", "gone"] })]);
+  expect(rows[0]).toMatchObject({ arm: "early", lanes: 1, sessions: 2, missing: 1, calls: 3, over300: 1 });
 });
 
 test("the trial puts launched lanes in arms in turn and leaves excluded ones out, once per key", () => {
