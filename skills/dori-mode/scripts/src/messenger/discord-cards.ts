@@ -53,6 +53,9 @@ type State = { seq: number; questions: Question[] };
 export class QuestionError extends Error {}
 
 const CLAIM_WAIT_MS = 10_000;
+// a tap on a card whose post has not answered yet waits this long for dori ask's claim: Discord shows the card before its
+// POST answers, and an interaction must be answered within 3 seconds (review of #375)
+const TAP_POSTING_WAIT_MS = 2_000;
 const STORE_WAIT_MS = 5_000;
 const STORE_POLL_MS = 5;
 const CLAIM_POLL_MS = 50;
@@ -357,10 +360,16 @@ export class QuestionCards {
   // then read it again: the tap's answer is what Discord shows and the egress gate's receipt holds, so the log must not
   // take another (challenge of #370's plan 9). A claim held past CLAIM_WAIT_MS refuses the command; nothing changed.
   private async claimed(id: string): Promise<() => void> {
+    const release = await this.claimWithin(id, CLAIM_WAIT_MS);
+    if (!release) throw new QuestionError(`question ${id} is being answered now; try again`);
+    return release;
+  }
+
+  private async claimWithin(id: string, limit: number): Promise<(() => void) | null> {
     for (let waited = 0; ; waited += CLAIM_POLL_MS) {
       const release = this.store.claim(id, this.now());
       if (release) return release;
-      if (waited >= CLAIM_WAIT_MS) throw new QuestionError(`question ${id} is being answered now; try again`);
+      if (waited >= limit) return null;
       await new Promise((done) => setTimeout(done, CLAIM_POLL_MS));
     }
   }
@@ -516,10 +525,14 @@ export class QuestionCards {
     // The question's claim is the hold, so a dori resolve or reopen in another process waits for it too (review of #374).
     // Every callback that draws the card holds it, a repaint of an answered card included: a late one would otherwise
     // draw the old record over a card reopened meanwhile (review 3 of #374). Without the claim the tap is only acknowledged.
+    // A card with no message id yet is still being posted by dori ask, which holds the claim until the id is stored, yet
+    // Discord may show it first: that tap waits for the post, and past what a tap can wait the owner is asked to tap again
+    // (review of #375).
     const current = this.store.get(qid);
-    const release = current ? this.store.claim(qid, this.now()) : null;
+    const posting = !!current && !current.message;
+    const release = current ? (posting ? await this.claimWithin(qid, TAP_POSTING_WAIT_MS) : this.store.claim(qid, this.now())) : null;
     if (current && !release) {
-      await this.respond(i, { type: ACK_UPDATE });
+      await this.respond(i, posting ? { type: REPLY, data: { content: this.settings.words.cardPosting, flags: EPHEMERAL } } : { type: ACK_UPDATE });
       return { kind: "stale", qid };
     }
     try {

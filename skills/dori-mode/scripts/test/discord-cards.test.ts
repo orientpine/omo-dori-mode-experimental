@@ -376,18 +376,20 @@ test("two processes changing the question store at once both keep their writes: 
 // A fake Discord whose card posts and interaction callbacks wait until the test settles them.
 const heldDiscord = () => {
   const seen: string[] = [];
+  const bodies: string[] = [];
   const held: { what: string; settle: (r: HttpResponse) => void }[] = [];
   let arrived: () => void = () => {};
   const http: Http = (req) => {
     const what = `${req.method} ${req.url.replace("https://discord.com/api/v10", "")}`;
     seen.push(what);
+    bodies.push(String(req.body ?? ""));
     const hold = req.url.includes("/interactions/") || (req.method === "POST" && req.url.endsWith("/messages") && held.length === 0 && holdPosts.on);
     if (!hold) return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(req.method === "POST" ? { id: "900" } : { type: 11 }) });
     return new Promise((settle) => { held.push({ what, settle }); arrived(); });
   };
   const holdPosts = { on: false };
   const until = (n: number) => new Promise<void>((done) => { arrived = () => held.length >= n && done(); arrived(); });
-  return { http, seen, held, until, holdPosts };
+  return { http, seen, bodies, held, until, holdPosts };
 };
 
 test("a tap Discord took is recorded even while the store lock is busy for longer than a store write waits (challenge of #374's plan)", async () => {
@@ -425,6 +427,42 @@ test("dori ask holds the question's claim from its creation until its message id
   expect(await resolved).toBe("folded");
   expect(d.seen.filter((s) => s.startsWith("PATCH"))).toEqual([`PATCH /channels/${CHANNEL}/messages/900`]);
   expect(cli.store.logged("Q1")).toBe(true);
+});
+
+test("a tap on a card whose post has not answered yet waits for it and is recorded (review of #375)", async () => {
+  state = withState();
+  const d = heldDiscord();
+  const cards = new QuestionCards(new Discord(d.http, fakeClock(0), "bot"), new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  d.holdPosts.on = true;
+  const asked = cards.ask("Ship?", ["Yes", "No"]);
+  await d.until(1);
+  const tapped = cards.handle(tap("q:Q1:0"));
+  await new Promise((later) => setTimeout(later, 200));
+  d.held[0]?.settle({ status: 200, headers: {}, body: JSON.stringify({ id: "900" }) });
+  expect((await asked).message).toBe("900");
+  await d.until(2);
+  expect(JSON.parse(d.bodies[d.seen.indexOf(d.held[1]?.what ?? "")] ?? "{}").type).toBe(7);
+  d.held[1]?.settle({ status: 204, headers: {}, body: "" });
+  expect((await tapped).kind).toBe("answered");
+  expect(cards.store.get("Q1")).toMatchObject({ status: "answered", answer: "Yes", message: "900" });
+});
+
+test("a tap on a card still being posted past the tap's wait asks the owner to tap again and records nothing (review of #375)", async () => {
+  state = withState();
+  const d = heldDiscord();
+  const cards = new QuestionCards(new Discord(d.http, fakeClock(0), "bot"), new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  d.holdPosts.on = true;
+  const asked = cards.ask("Ship?", ["Yes", "No"]);
+  await d.until(1);
+  const tapped = cards.handle(tap("q:Q1:0"));
+  await d.until(2); // the tap's answer goes out while the post is still held: past the tap's wait
+  const reply = JSON.parse(d.bodies[d.seen.indexOf(d.held[1]?.what ?? "")] ?? "{}");
+  expect(reply).toEqual({ type: 4, data: { content: defaultDiscordWords.cardPosting, flags: 64 } });
+  d.held[1]?.settle({ status: 204, headers: {}, body: "" });
+  expect((await tapped).kind).toBe("stale");
+  d.held[0]?.settle({ status: 200, headers: {}, body: JSON.stringify({ id: "900" }) });
+  await asked;
+  expect(cards.store.get("Q1")?.status).toBe("open");
 });
 
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {

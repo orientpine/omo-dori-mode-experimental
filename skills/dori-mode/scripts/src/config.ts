@@ -155,6 +155,8 @@ export type DiscordWords = {
   readonly recommended: string;
   readonly answered: string;
   readonly ownerOnly: string;
+  // a tap on a card whose post Discord has not answered yet, past the wait a tap can afford
+  readonly cardPosting: string;
   readonly byButton: string;
   readonly byText: string;
   // a card folded by dori resolve: the owner answered in a message; repliedInText is the answer shown without --answer
@@ -197,6 +199,7 @@ export const defaultDiscordWords: DiscordWords = {
   recommended: "recommended",
   answered: "answered",
   ownerOnly: "Only the owner can answer this.",
+  cardPosting: "This card is still being posted; tap again.",
   byButton: "button",
   byText: "typed",
   byReply: "reply",
