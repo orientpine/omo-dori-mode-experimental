@@ -1,34 +1,35 @@
-From bb28f2174e0054a490fc138ba9fcd19354fae010 Mon Sep 17 00:00:00 2001
+From 34b09b822baf2a46bbe83329546ff29bacab139b Mon Sep 17 00:00:00 2001
 From: zzangdori <zzangdori@localhost>
 Date: Sat, 7 Nov 2026 12:54:21 +0000
 Subject: [PATCH] fix(web): keep a raw device key where WebKit cannot read a
  stored X25519 CryptoKey back (WebKit bug 312279)
 
 ---
- apps/web/src/connection/device-key.test.ts | 15 +++++++++++++++
+ apps/web/src/connection/device-key.test.ts | 16 ++++++++++++++++
  apps/web/src/connection/device-key.ts      |  4 +++-
- 2 files changed, 18 insertions(+), 1 deletion(-)
+ 2 files changed, 19 insertions(+), 1 deletion(-)
 
 diff --git a/apps/web/src/connection/device-key.test.ts b/apps/web/src/connection/device-key.test.ts
-index 2587415b..169d80e7 100644
+index 2587415b..226a1423 100644
 --- a/apps/web/src/connection/device-key.test.ts
 +++ b/apps/web/src/connection/device-key.test.ts
-@@ -37,6 +37,21 @@ describe("loadDeviceKey", () => {
+@@ -37,6 +37,22 @@ describe("loadDeviceKey", () => {
      expect((await loadDeviceKey(storage, null)).publicKey).toEqual(first.publicKey);
    });
  
 +  test("a store that reads a stored X25519 CryptoKey back as null (WebKit bug 312279) keeps one raw identity", async () => {
 +    const backing = memoryStore();
-+    const storage: KeyValueStore = {
++    // A fresh wrapper per page load, so the second load reads what the first one stored rather than its cached promise.
++    const webkitStore = (): KeyValueStore => ({
 +      get: async (key) => {
 +        const value = await backing.get(key);
 +        return Reflect.get(Object(value), "privateKey") instanceof CryptoKey ? null : value;
 +      },
 +      put: (key, value) => backing.put(key, value),
-+    };
-+    const key = await loadDeviceKey(storage, crypto.subtle);
++    });
++    const key = await loadDeviceKey(webkitStore(), crypto.subtle);
 +    expect(key.kind).toBe("raw");
-+    const reloaded = await loadDeviceKey(storage, crypto.subtle);
++    const reloaded = await loadDeviceKey(webkitStore(), crypto.subtle);
 +    expect(reloaded.publicKey).toEqual(key.publicKey);
 +  });
 +
