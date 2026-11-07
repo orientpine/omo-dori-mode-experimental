@@ -451,6 +451,84 @@ class RepeatedKey(ValueError):
     pass
 
 
+def strict_json(raw: bytes):
+    """JSON as one reading only: UTF-8, no repeated key, no NaN or Infinity; anything else is a ValueError."""
+    def constant(name):
+        raise ValueError(name)
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=unique_keys, parse_constant=constant)
+
+
+DISCORD_FILE_FIELD = re.compile(r"files\[[0-9]{1,2}\]")
+DISCORD_PART_HEADERS = {"content-disposition", "content-type"}
+
+
+def canonical_discord_body(headers: dict, body: bytes) -> tuple[dict, bytes]:
+    """The Discord write as the gate read it, rebuilt, so Discord never parses bytes the gate did not.
+
+    A body is JSON, read strictly and re-serialized, or multipart/form-data in the shape the Dori's clients send
+    (messenger/discord.ts, the node's owner_notice and submission_transport): one payload_json, no file name, typed
+    application/json or untyped, and files[n] each with a file name, every part carrying only Content-Disposition and
+    Content-Type. It goes out rebuilt with a fresh boundary. Anything else is refused before it is sent: parsers that
+    read one request differently let a payload past the reader that checks it (WAFFLED, arXiv 2503.10846; review 6 of
+    #370: a message/rfc822 part, a repeated key, a field Discord reads as JSON)."""
+    if not body:
+        return headers, body
+    refused = Refused("unsupported-body-encoding", 415)
+    content_type = headers.get("content-type", "application/json")
+    kind = content_type.split(";", 1)[0].strip().lower()
+    rest = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+    if kind == "application/json":
+        try:
+            parsed = strict_json(body)
+        except ValueError:
+            raise refused from None
+        return {**rest, "content-type": "application/json"}, json.dumps(
+            parsed, ensure_ascii=False, separators=(",", ":")).encode()
+    if kind != "multipart/form-data":
+        raise refused
+    message = email.parser.BytesParser(policy=email.policy.default).parsebytes(
+        b"Content-Type: " + content_type.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body)
+    if not message.is_multipart() or message.defects:
+        raise refused
+    payload, files = None, []
+    for part in message.iter_parts():
+        if ({key.lower() for key in part.keys()} - DISCORD_PART_HEADERS or part.is_multipart() or part.defects
+                or part.get_content_disposition() != "form-data"):
+            raise refused
+        name, filename = part.get_param("name", None, header="content-disposition"), part.get_filename()
+        declared = part.get("content-type")
+        data = part.get_payload(decode=True)
+        if not isinstance(name, str) or not isinstance(data, bytes):
+            raise refused
+        if name == "payload_json" and payload is None and filename is None:
+            if declared is not None and part.get_content_type() != "application/json":
+                raise refused
+            try:
+                payload = strict_json(data)
+            except ValueError:
+                raise refused from None
+        elif DISCORD_FILE_FIELD.fullmatch(name) and filename and not re.search(r'["\\\r\n\x00]', filename):
+            ctype = part.get_content_type() if declared is not None else "application/octet-stream"
+            if not re.fullmatch(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+", ctype):
+                raise refused
+            files.append((name, filename, ctype, data))
+        else:
+            raise refused
+    if payload is None and not files:
+        raise refused
+    boundary = "dori-gate-" + secrets.token_hex(16)
+    out = []
+    if payload is not None:
+        out.append(f'--{boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\n'
+                   f"Content-Type: application/json\r\n\r\n".encode()
+                   + json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
+    for name, filename, ctype, data in files:
+        out.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; '
+                   f'filename="{filename}"\r\nContent-Type: {ctype}\r\n\r\n'.encode() + data)
+    rebuilt = b"\r\n".join(out) + f"\r\n--{boundary}--\r\n".encode()
+    return {**rest, "content-type": f"multipart/form-data; boundary={boundary}"}, rebuilt
+
+
 def unique_keys(pairs: list) -> dict:
     """A JSON object whose keys are each written once: with a repeated key, readers differ on which one counts."""
     if len({key for key, _ in pairs}) != len(pairs):
@@ -903,6 +981,7 @@ class Gate:
         self.search_rest_until = 0.0
         self.taps = {}  # interaction id -> who tapped which button on which message, from the gate's own gateway session
         self.tap_waits = {}
+        self.tap_receipts = {}  # interaction id -> the receipt its callback leaves once Discord took the fold
         self.gateway_task = None
         for name in ("pending", "batches"):
             (self.state / name).mkdir(exist_ok=True, mode=0o700)
@@ -1120,36 +1199,29 @@ class Gate:
                 return True
         return False
 
-    async def owner_card_answer(self, data: dict, channel: str, message: str, authorization: str) -> re.Match | None:
+    async def owner_card_answer(self, data: dict, channel: str, message: str, authorization: str) -> dict | None:
         """The owner's tap on a question card (owner Q523, 2026-11-07 13:53 KST "응, 문지기도 버튼 답 받게 (추천)").
 
-        The message at those coordinates must be this gate bot's own (GET /users/@me with the proof token, not a
-        webhook), a components-v2 card that is one container holding one text, folded by an edit into an answered
-        card whose chosen answer is not empty and whose "by" word is a button word. Its 24 hours run from the card's
-        posting (the message id), not from an edit. Discord does not say who tapped,
-        so discord_policy lets a button answer onto a card only as the UPDATE_MESSAGE callback of a tap the gate's own
-        gateway session saw the owner make, with that option's text (owner_tap); every other write carrying one is
-        refused. Outbound writes still park on their card. Returns the card's answer (card_answers: the last "→" line
-        before the footer, so nothing the question holds), or None.
+        The proof is the gate's own receipt of that tap, never the card's text (review 6 of #370 and its challenge: text
+        the gate checks at the Discord port can still be read otherwise by Discord, and a card forged before a fix stays
+        forged). A receipt is written only when the gate's gateway session saw the owner press a pick button on this
+        bot's card, the callback folded it into exactly that option's text (owner_tap) and Discord took the callback.
+        The message read at those coordinates must still be this gate bot's own post (not a webhook). Its 24 hours run
+        from the card's posting (the message id), not from an edit. Outbound writes still park on their card. Returns
+        the latest receipt for the card ({channel, message, qid, answer, ...}), or None.
         """
         if not self.card_answers_on():
             return None
         author = data.get("author")
-        outer = data.get("components")
-        inner = outer[0].get("components") if isinstance(outer, list) and len(outer) == 1 and isinstance(outer[0], dict) \
-            and outer[0].get("type") == 17 else None
         if (str(data.get("id")) != message or str(data.get("channel_id")) != channel or data.get("webhook_id")
-                or not isinstance(author, dict) or author.get("bot") is not True
-                or not int(data.get("flags") or 0) & COMPONENTS_V2 or not data.get("edited_timestamp")
-                or not isinstance(inner, list) or len(inner) != 1 or not isinstance(inner[0], dict)
-                or inner[0].get("type") != 10):
+                or not isinstance(author, dict) or author.get("bot") is not True):
             return None
-        content = str(inner[0].get("content", ""))
-        splits = card_answers(content) if len(content) <= CARD_TEXT_MAX else []
-        answered = splits[0] if splits else None
-        if not answered or not answered["answer"].strip() or answered["by"].casefold() not in self.card_answer_words():
+        hours = self.config["owner_proof"].get("max_age_hours", 24)
+        receipts = [row for row in self.records("card-receipts.jsonl", since=f"{hours}h")
+                    if row.get("channel") == channel and row.get("message") == message and str(row.get("answer", "")).strip()]
+        if not receipts or str(author.get("id")) != await self.gate_bot(authorization):
             return None
-        return answered if str(author.get("id")) == await self.gate_bot(authorization) else None
+        return receipts[-1]
 
     async def gate_bot(self, authorization: str) -> str:
         key = ("me", hashlib.sha256(authorization.encode()).hexdigest())
@@ -1170,9 +1242,11 @@ class Gate:
         identity = str(event.get("id", ""))
         now = time.monotonic()
         self.taps = {k: v for k, v in self.taps.items() if now - v["at"] < TAP_KEEP_SECONDS}
+        self.tap_receipts = {k: v for k, v in self.tap_receipts.items() if k in self.taps}
         self.taps[identity] = dict(
             user=str(user.get("id", "")), kind=event.get("type"), component=data.get("component_type"),
             custom_id=str(data.get("custom_id", "")), message=str(message.get("id", "")),
+            channel=str(event.get("channel_id") or message.get("channel_id") or ""),
             author=str((message.get("author") or {}).get("id", "")),
             parts=[c for box in message.get("components") or [] if isinstance(box, dict) and box.get("type") == 17
                    for c in box.get("components") or [] if isinstance(c, dict)], at=now)
@@ -1183,8 +1257,9 @@ class Gate:
     async def owner_tap(self, interaction: str, texts: list) -> bool:
         """May this UPDATE_MESSAGE callback fold a card into a button answer? Only for the owner's own button press
         (a component interaction, button type; a modal submit is not a pick), as the gate's gateway session saw it, on
-        this bot's question card, with the answer the pressed option's text in the card as it was at the press (or
-        that card already reading exactly that answer, a repeated press)."""
+        this bot's question card, with the answer the pressed option's text in the card as it was at the press, exactly
+        as written there (or that card already reading exactly that answer, a repeated press). A first fold leaves its
+        receipt (channel, message, question, answer) in tap_receipts, written once Discord takes the callback."""
         if interaction not in self.taps:
             waiting = self.tap_waits.setdefault(interaction, asyncio.Event())
             with contextlib.suppress(TimeoutError):
@@ -1202,7 +1277,6 @@ class Gate:
         answers = [split for split in card_answers(marked[0]) if split["qid"] == picked[1]]
         if not answers:
             return False
-        unescape = lambda text: re.sub(r"\\(.)", r"\1", text, flags=re.S)  # noqa: E731
         try:
             authorization = "Bot " + Path(self.config["owner_proof"]["token_file"]).read_text().strip()
             if not tap["message"] or tap["author"] != await self.gate_bot(authorization):
@@ -1215,7 +1289,13 @@ class Gate:
                 texts_in = [c.get("content", "") for c in part.get("components") or [] if isinstance(c, dict)]
                 option = re.fullmatch(r"\*\*[0-9]+\.\*\* (?s:(.+))", texts_in[0]) if len(texts_in) == 1 else None
                 if part.get("type") == 9 and accessory.get("custom_id") == tap["custom_id"] and option:
-                    return any(unescape(option[1]) == unescape(split["answer"]) for split in answers)
+                    # As written on both sides: the fork folds a button answer into the option's own card text, so
+                    # no unescaping (which let a pressed a\_b pass an answer a_b, challenge of round 7).
+                    if not any(option[1] == split["answer"] for split in answers) or not tap.get("channel"):
+                        return False
+                    self.tap_receipts[interaction] = dict(channel=tap["channel"], message=tap["message"],
+                                                          qid=picked[1], answer=option[1], user=tap["user"])
+                    return True
         except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError):
             return False
         return False
@@ -3226,13 +3306,22 @@ class Gate:
                     return
                 status, response_headers, response = result
             else:
+                if method not in READS:
+                    headers, body = canonical_discord_body(headers, body)
                 await self.discord_policy(method, path, headers, body)
                 url = self.config.get("discord_api_base", "https://discord.com/api/v10") + quote(
                     path[len("/api/v10"):], safe="/:@!$&'()*+,;=-._~")
                 if query:
                     url += "?" + urlencode(query)
                 decided = await self.closed_decided_thread(method, path[len("/api/v10"):])
-                status = await self.stream_proxy(writer, method, url, headers, body)
+                callback = re.fullmatch(r"/api/v10/interactions/(\d+)/[^/]+/callback", path)
+                try:
+                    status = await self.stream_proxy(writer, method, url, headers, body)
+                finally:
+                    receipt = self.tap_receipts.pop(callback[1], None) if callback else None
+                if receipt and 200 <= status < 300:
+                    # Discord took the fold: the owner's tap, seen by the gate, is now proof (owner_card_answer).
+                    self.append("card-receipts.jsonl", {"ts": utc(), **receipt})
                 if decided and 200 <= status < 300:
                     await self.rearchive_thread(decided)
                 return

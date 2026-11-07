@@ -174,6 +174,39 @@ test("an option a card cannot show whole is refused before anything is stored or
   expect(store.get("Q1")?.answer).toBe(fits);
 });
 
+test("an option holding the answer arrow line is refused before anything is stored or posted (review 6 of #370)", async () => {
+  // The folded card's answer is the text after its last "\n→ **"; an option holding one would read as two answers.
+  const { cards, store, seen } = setup();
+  await expect(cards.ask("Ship?", ["Yes", "Keep\n→ **old**"])).rejects.toBeInstanceOf(QuestionError);
+  expect(seen).toHaveLength(0);
+  expect(store.all()).toHaveLength(0);
+});
+
+test("a button answer folds into the card as its option reads on the card, escaped or not (round 7 of #370)", async () => {
+  // The egress gate takes a tap only when the folded answer is the pressed option's text exactly as the card shows it.
+  const { cards, json } = setup();
+  const option = "a_".repeat(496); // fits the 1000-character section only unescaped
+  await cards.ask("Pick?", ["Keep", option]);
+  const section: string = optionTexts(json(0).components)[1] ?? "";
+  expect(section).toBe(`**2.** ${option}`);
+  await cards.handle(tap("q:Q1:1"));
+  const text: string = json(1).data.components[0].components[0].content;
+  expect(text.endsWith(`\n→ **${section.slice("**2.** ".length)}**\n-# button · 1/2, 03:04`)).toBe(true);
+});
+
+test("a tap whose callback Discord or the egress gate refuses leaves the question open and unlogged (round 7 of #370)", async () => {
+  state = withState();
+  const http: Http = async (req): Promise<HttpResponse> =>
+    req.url.includes("/interactions/") ? { status: 403, headers: {}, body: JSON.stringify({ error: "card-answer-forged" }) }
+    : { status: 200, headers: {}, body: JSON.stringify(req.method === "POST" ? { id: "900" } : { type: 11 }) };
+  const store = new QuestionStore(`${state.dir}/discord`);
+  const cards = new QuestionCards(new Discord(http, fakeClock(0), "bot"), store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  await cards.ask("Ship?", ["Yes", "No"]);
+  await expect(cards.handle(tap("q:Q1:0"))).rejects.toThrow();
+  expect(store.get("Q1")?.status).toBe("open");
+  expect(existsSync(store.answersFile)).toBe(false);
+});
+
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {
   const { cards, seen } = setup();
   await expect(cards.ask("Ship?", [])).rejects.toBeInstanceOf(QuestionError);
