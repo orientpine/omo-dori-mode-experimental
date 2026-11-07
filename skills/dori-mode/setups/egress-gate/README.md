@@ -46,6 +46,46 @@ channel or a bot's post is refused with `owner-message-required`, and with eithe
 counts. Everything else about a proof stays: the 24 hours, the write limit per message (when configured), the outbound cards. Card
 buttons and reactions are still the owner's account only. The id goes in the root-owned config and nowhere else.
 
+The owner's tap on a question card (`dori ask`) counts as his message too (owner 2026-11-07 13:53 KST Q523 "응,
+문지기도 버튼 답 받게 (추천)"): `X-Dori-Owner-Message: <card channel>/<card message>` passes when the gate holds its
+own receipt of the owner's tap on that card (`card-receipts.jsonl` in the state directory: channel, message, question
+id, the chosen option's text) and the message read at those coordinates is still this gate bot's own post (`GET
+/users/@me` with the proof token; not a webhook). The card's text proves nothing: Discord could read a write the gate
+checked differently, and a card forged before a fix stays forged, so only what the gate saw itself counts (review 6 of
+#370). A card with no receipt, a receipt for other coordinates or another channel, a channel outside the owner guild,
+or a card posted more than 24 hours ago (counted from the card's posting, the message id's time: a later edit moves
+`edited_timestamp`, never the id) is refused with `owner-message-required`, and the Dori asks again. On a card
+answer, the web window's first-fetch rule takes the URLs in the receipt's chosen answer only, never the question's.
+The 24 hours, the write limit per message and the outbound cards stay as for a typed message.
+
+The receipt comes from the gate's own Discord gateway session with the proof token (`owner_proof.gateway_url`, default
+`wss://gateway.discord.gg/?v=10&encoding=json`; Discord sends every session of a bot the same events), which records
+each `INTERACTION_CREATE`: who tapped, which button, on which message in which channel. Only an `UPDATE_MESSAGE`
+(type 7) interaction callback may fold a card into a button answer, and it passes only when that tap was the owner's
+account pressing a button (a component interaction of button type; a modal submit or a select is no pick), on a
+`q:<Q id>:<n>` pick button of this bot's question card, the question id is the card's and the folded answer is that
+option's text exactly as written in the card Discord attached to the press (no unescaping; a later edit of the card
+changes nothing). A card's text is read from its end: the last line is the footer and the answer the `→` line before
+it, so lines in the question that read like an answer change nothing. The receipt is written only once Discord took
+that callback (2xx). A repeated tap on a card that already reads exactly that answer passes and leaves no new receipt.
+The gate waits up to `owner_proof.tap_wait_seconds` (2.5) for its copy of the tap. With its gateway session down, taps
+fail (the owner sees Discord's interaction failure) and his typed messages keep working. `owner_proof.card_answers:
+false` turns card answers off (no session, no card proof). `GATE_GATEWAY_READY` / `GATE_GATEWAY_DOWN <error>` log the
+session.
+
+Every other Discord write carrying a button answer (`-# <button word> ·` beside `→`: a message, an edit, a webhook, a
+callback that posts) is refused `card-answer-forged`, since the node (cytoplasm's owner_origin) reads card text, not
+the gate's receipts. So that check sees what Discord gets, every Discord write with a body is read strictly and goes
+out as the gate rebuilt it: JSON (UTF-8, no repeated key, no NaN or Infinity) is re-serialized, and
+`multipart/form-data` is taken only in the shape the Dori's clients send (one `payload_json`, no file name, typed
+`application/json` or untyped, and `files[n]` each with a file name; each part carrying only `Content-Disposition` and
+`Content-Type`) and rebuilt with a fresh boundary (WAFFLED, arXiv 2503.10846: a reader that checks one parse and
+forwards the bytes is bypassed wherever parsers disagree). The parts are split at the boundary only: a file goes out
+as its bytes whatever its type (a `.eml` file is `message/rfc822`), and only `payload_json` is read. Any other body
+(form-encoded, other multipart fields, a structured or transfer-encoded `payload_json`, a second `payload_json`, a file
+part without a name, JSON that does not parse, a close delimiter before the end, a padded delimiter, a preamble, a
+folded or repeated part header) is refused before it is sent (`415 unsupported-body-encoding`).
+
 A dashboard order is the other proof (owner 2026-10-21 23:23 KST "문지기가 대시보드 지시도
 형 명령으로 인정"): `X-Dori-Owner-Order: <n>` (the dashboard order number, 1-999999999) when no
 `X-Dori-Owner-Message` is sent; an owner message always wins. With `owner_order` set, the gate
@@ -133,7 +173,8 @@ curl -sG -H "$O" --data-urlencode 'q=prompt injection defenses' "$W/search"
 ```
 
 - **Which URLs open.** Only a URL that is, character for character (fragment aside), one of:
-  (a) a URL written in the owner message of the proof (an order has none);
+  (a) a URL written in the owner message of the proof (an order has none); on the owner's card answer, a URL in the
+      answer he chose, never one in the bot-written question;
   (b) a search result or page link the window returned earlier in the same task, or a redirect target;
   (c) an `https` URL without `?` on a host in `web.public_sites`.
   Anything else is `403 url-without-source` with `"message": "출처 없는 주소. 검색으로 찾아"`.

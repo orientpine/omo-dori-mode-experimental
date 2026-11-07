@@ -173,6 +173,10 @@ const pickLabel = (n: number, w: DiscordWords): string => `${w.pick.replace("{n}
 // measured whole before it is cut to its limit, and a text (or a card's 4000 characters of text) that fits only
 // unescaped goes out unescaped, so escaping never cuts off text that fit before (reviews 1 and 2 of #358).
 const CARD_TEXT_MAX = 4000;
+// An option's section text ("**n.** <option>"); ask refuses an option it cannot show whole, before anything is stored or
+// posted, since the egress gate takes a tap's answer only when it equals the pressed option's text in the card.
+const OPTION_TEXT_MAX = 1000;
+const optionText = (md: (part: string) => string, option: string, i: number): string => `**${i + 1}.** ${md(option)}`;
 type Fit = (build: (md: (part: string) => string) => string, max: number) => string;
 const plainFit: Fit = (build, max) => build((part) => part).slice(0, max);
 const escapedFit: Fit = (build, max) => fitEscaped(build, max).slice(0, max);
@@ -194,7 +198,7 @@ const buildOpenCard = (q: Question, ownerId: string, w: DiscordWords, fit: Fit):
       { type: 10, content: fit((md) => `<@${ownerId}> **${q.id}** ${md(q.text)}${where(q)}`, 3000) },
       ...q.options.map((option, i) => ({
         type: 9,
-        components: [{ type: 10, content: fit((md) => `**${i + 1}.** ${md(option)}`, 1000) }],
+        components: [{ type: 10, content: fit((md) => optionText(md, option, i), OPTION_TEXT_MAX) }],
         accessory: { type: 2, style: i === 0 ? 1 : 2, label: pickLabel(i + 1, w), custom_id: customId.option(q.id, i) },
       })),
       { type: 1, components: [{ type: 2, style: 2, label: w.other.slice(0, 80), custom_id: customId.other(q.id) }] },
@@ -202,13 +206,33 @@ const buildOpenCard = (q: Question, ownerId: string, w: DiscordWords, fit: Fit):
   },
 ];
 
-export const doneCard = (q: Question, w: DiscordWords): object[] => [
-  {
-    type: 17,
-    accent_color: DONE_ACCENT,
-    components: [{ type: 10, content: escapedFit((md) => `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${md(q.text)}${where(q)}\n→ **${md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`, 3000) }],
-  },
-];
+// The answer and its "-# by · when" line always survive whole: a question too long to fit escaped or unescaped is cut
+// instead, since the egress gate reads a tapped card's last two lines as the owner's answer (reviews 1 and 2 of #370).
+// The whole text is tried first, so a card that fits only unescaped still goes out whole as before.
+const DONE_TEXT_MAX = 3000;
+// A button answer folds in as its option reads on the open card (escaped or not, as openCard drew that section), since
+// the egress gate takes a tap only when the folded answer is the pressed option's text exactly as written (round 7 of
+// #370); a typed or replied answer goes through md like the question.
+const shownOption = (q: Question, ownerId: string, w: DiscordWords): string | undefined => {
+  const i = q.answerKind === "button" ? q.options.indexOf(q.answer ?? "") : -1;
+  if (i < 0) return undefined;
+  const sections = (openCard(q, ownerId, w)[0] as { components: { type: number; components?: { content?: string }[] }[] }).components.filter((c) => c.type === 9);
+  const content = sections[i]?.components?.[0]?.content ?? "";
+  const prefix = `**${i + 1}.** `;
+  return content.startsWith(prefix) ? content.slice(prefix.length) : undefined;
+};
+const doneText = (q: Question, w: DiscordWords, cut: boolean, shown?: string) => (md: (part: string) => string): string => {
+  const head = `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** `;
+  const tail = `\n→ **${shown ?? md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`;
+  const question = `${md(q.text)}${where(q)}`;
+  const room = DONE_TEXT_MAX - head.length - tail.length;
+  return head + (!cut || question.length <= room ? question : `${question.slice(0, Math.max(0, room - 1))}…`) + tail;
+};
+export const doneCard = (q: Question, w: DiscordWords, ownerId = ""): object[] => {
+  const shown = ownerId ? shownOption(q, ownerId, w) : undefined;
+  const whole = fitEscaped(doneText(q, w, false, shown), DONE_TEXT_MAX);
+  return [{ type: 17, accent_color: DONE_ACCENT, components: [{ type: 10, content: whole.length <= DONE_TEXT_MAX ? whole : escapedFit(doneText(q, w, true, shown), DONE_TEXT_MAX) }] }];
+};
 
 export type Interaction = {
   readonly id: string;
@@ -247,6 +271,7 @@ export const openCardIds = (store: QuestionStore, thread: string): string[] => s
 
 export class QuestionCards {
   readonly statuses: ThreadStatusQueue;
+  private readonly folding = new Set<string>();
 
   constructor(
     private readonly dc: Discord,
@@ -263,7 +288,7 @@ export class QuestionCards {
   }
 
   card(q: Question): object[] {
-    return q.status === "open" ? openCard(q, this.settings.owner, this.settings.words) : doneCard(q, this.settings.words);
+    return q.status === "open" ? openCard(q, this.settings.owner, this.settings.words) : doneCard(q, this.settings.words, this.settings.owner);
   }
 
   // The card is already posted when the thread is renamed, so a failed rename is reported, not thrown:
@@ -278,6 +303,14 @@ export class QuestionCards {
     const clean = options.map((o) => guardText(o).trim()).filter(Boolean);
     if (!guardText(text).trim()) throw new QuestionError("a question needs text");
     if (!clean.length || clean.length > MAX_OPTIONS) throw new QuestionError(`a question needs 1 to ${MAX_OPTIONS} options, got ${clean.length}`);
+    // Escaping never cuts an option (a section that fits only unescaped goes out unescaped), so the text as written is
+    // the shortest the card can show (review 4 of #370).
+    const cut = clean.findIndex((o, i) => optionText((part) => part, o, i).length > OPTION_TEXT_MAX);
+    if (cut >= 0) throw new QuestionError(`option ${cut + 1} is longer than a card shows whole (${OPTION_TEXT_MAX} characters with its "**${cut + 1}.** ")`);
+    // A folded card's answer is the text after its last "\n→ **" (the egress gate reads it so); an option holding one
+    // would fold into a card that reads as another answer (review 6 of #370).
+    const arrow = clean.findIndex((o) => o.includes("\n→ **"));
+    if (arrow >= 0) throw new QuestionError(`option ${arrow + 1} holds a line starting "→ **", which a folded card reads as its answer`);
     const q = this.store.create(text.trim(), clean, meta.thread || this.settings.channel, meta, this.at());
     const reply = q.replyTo ? { message_reference: { message_id: q.replyTo, fail_if_not_exists: false } } : {};
     const posted = await this.dc.call<{ id: string }>("POST", `/channels/${q.channel}/messages`, { components: this.card(q), flags: IS_COMPONENTS_V2, allowed_mentions: { users: [this.settings.owner] }, ...reply });
@@ -359,10 +392,27 @@ export class QuestionCards {
     } else if (i.type === MODAL_SUBMIT && cid.startsWith("m:")) {
       [qid, value, kind] = [cid.slice(2), modalValue(i.data?.components).trim(), "text"];
     } else return { kind: "ignored" };
-    const answered = value ? this.store.answer(qid, value, kind, this.at()) : null;
-    const now = this.store.get(qid);
-    await this.respond(i, now ? { type: UPDATE_MESSAGE, data: { components: this.card(now) } } : { type: ACK_UPDATE });
-    return answered ? { kind: "answered", question: answered } : { kind: "stale", qid };
+    // The answer is recorded only once the callback was taken: the egress gate (or Discord) can refuse the fold, and a
+    // question answered here but still open on the card would be lost (round 7 of #370).
+    // Taps are handled at once, so the question is held while its fold is in flight: a second tap folding another
+    // answer would leave the card and the gate's tap receipt saying one answer and the store another (review 7 of #370).
+    // It is only acknowledged; a fold Discord refuses frees the question for the next tap.
+    const current = this.store.get(qid);
+    if (this.folding.has(qid)) {
+      await this.respond(i, { type: ACK_UPDATE });
+      return { kind: "stale", qid };
+    }
+    const at = this.at();
+    const folded: Question | null = value && current?.status === "open" ? { ...current, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
+    const shown = folded ?? current;
+    if (folded) this.folding.add(qid);
+    try {
+      await this.respond(i, shown ? { type: UPDATE_MESSAGE, data: { components: this.card(shown) } } : { type: ACK_UPDATE });
+      const answered = folded ? this.store.answer(qid, value, kind, at) : null;
+      return answered ? { kind: "answered", question: answered } : { kind: "stale", qid };
+    } finally {
+      if (folded) this.folding.delete(qid);
+    }
   }
 
   // A card inside its work thread already folded into the record there; a card in the channel leaves a

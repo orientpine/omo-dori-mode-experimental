@@ -8,6 +8,7 @@ import base64
 import codecs
 import contextlib
 import datetime as dt
+import email.message
 import email.parser
 import email.policy
 import hashlib
@@ -51,6 +52,85 @@ READS = {"GET", "HEAD"}
 OPEN_ORDER_STATUSES = ("받음", "넘김", "처리 중")
 # 보류 (on hold) is not finished, but the owner stopped it; the backlog does not start it either
 OPEN_TODO_STATUSES = ("열림", "진행")
+# The owner's tap on a question card (dori ask) as his message (owner 2026-11-07 13:53 KST Q523 "응, 문지기도 버튼 답
+# 받게 (추천)"): the fork folds a tapped card into one text, "✅ **Q<n>** <question>\n→ **<answer>**\n-# <by> · <when>",
+# where <by> is the fork's words.byButton ("button" by default, "버튼" on the Korean installs). A reply or a typed
+# answer carries another word and is not taken. The text is read from its end (card_answers): the question is the Dori's
+# words and may hold lines that read like an answer (review 5 of #370).
+CARD_HEAD = re.compile(r"(?:✅|\[[^\]\n]+\]) \*\*(?P<qid>Q[1-9][0-9]*)\*\* (?s:.+)")
+CARD_FOOT = re.compile(r"-# (?P<by>[^\n·]+?) · [^\n]+")
+CARD_ARROW = "\n→ **"
+# A card's text is at most 4000 characters (Discord); longer text is no card, and card_answers never sees it.
+CARD_TEXT_MAX = 4000
+CARD_ANSWER_WORDS = ("button", "버튼")
+COMPONENTS_V2 = 1 << 15
+DISCORD_EPOCH_MS = 1420070400000
+# Discord does not say on the card who tapped it, so the gate holds its own gateway session with the same bot token
+# (Discord sends every session of a bot the same events) and sees each INTERACTION_CREATE itself (review 1 of #370).
+GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS_CAP = 8 * 1024 * 1024
+TAP_KEEP_SECONDS = 900
+
+
+async def ws_open(url: str, timeout: float = 20):
+    """A client WebSocket (RFC 6455) on ws:// or wss://; the server's accept key is checked."""
+    parts = urlsplit(url)
+    secure = parts.scheme == "wss"
+    if parts.scheme not in {"ws", "wss"} or not parts.hostname:
+        raise ValueError("gateway url")
+    context = ssl.create_default_context() if secure else None
+    reader, writer = await asyncio.wait_for(asyncio.open_connection(
+        parts.hostname, parts.port or (443 if secure else 80), ssl=context,
+        server_hostname=parts.hostname if secure else None, limit=HEADER_CAP), timeout)
+    key = base64.b64encode(secrets.token_bytes(16)).decode()
+    target = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+    writer.write((f"GET {target} HTTP/1.1\r\nHost: {parts.hostname}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                  f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+    await writer.drain()
+    head = (await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout)).decode("latin-1")
+    lines = head.split("\r\n")
+    fields = {k.strip().lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:] if line)}
+    accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+    if lines[0].split(" ")[1:2] != ["101"] or fields.get("sec-websocket-accept") != accept:
+        writer.close()
+        raise ValueError("gateway upgrade refused")
+    return reader, writer
+
+
+def ws_frame(opcode: int, payload: bytes) -> bytes:
+    """One final, masked client frame."""
+    size = len(payload)
+    head = bytes([0x80 | opcode])
+    head += (bytes([0x80 | size]) if size < 126 else bytes([0x80 | 126]) + size.to_bytes(2, "big") if size < 65536
+             else bytes([0x80 | 127]) + size.to_bytes(8, "big"))
+    mask = secrets.token_bytes(4)
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
+async def ws_read(reader) -> tuple[int, bytes]:
+    """The next message: a control frame as it comes, data frames joined across continuations."""
+    opcode, parts = None, []
+    while True:
+        first, second = await reader.readexactly(2)
+        size = second & 0x7F
+        if size == 126:
+            size = int.from_bytes(await reader.readexactly(2), "big")
+        elif size == 127:
+            size = int.from_bytes(await reader.readexactly(8), "big")
+        mask = await reader.readexactly(4) if second & 0x80 else b""
+        if size > WS_CAP or sum(map(len, parts)) + size > WS_CAP:
+            raise ValueError("gateway frame too large")
+        payload = await reader.readexactly(size)
+        if mask:
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        kind = first & 0x0F
+        if kind >= 8:
+            return kind, payload
+        opcode = kind if kind else opcode
+        parts.append(payload)
+        if first & 0x80:
+            return opcode or 0, b"".join(parts)
 # Discord fetches every linked URL to build a preview, so a link in a bot message is a request to that host.
 URL = re.compile(r"https?://([^/\s<>\"'`\\)\]|?#]+)", re.I)
 DISCORD_URL_ALLOW = ["discord.com", "*.discord.com", "discordapp.com", "*.discordapp.com", "discord.gg",
@@ -349,23 +429,167 @@ def strings(value):
             yield from strings(item)
 
 
+def card_answers(text: str) -> list[dict]:
+    """Each way an answered card's text, "<mark> **Q<n>** <question>\n→ **<answer>**\n-# <by> · <when>", splits into
+    its question and its answer, the last "\n→ **" first (qid, answer, by); none when it is no answered card.
+
+    Read from the end: the footer is the last line and the answer ends just before it; the question may hold lines that
+    read like an answer or a footer (review 5 of #370). One find per arrow, each head checked once."""
+    body, newline, last = text.rpartition("\n")
+    footer = CARD_FOOT.fullmatch(last) if newline else None
+    if not footer or not body.endswith("**"):
+        return []
+    splits = []
+    at = len(body)
+    while (at := body.rfind(CARD_ARROW, 0, at)) >= 0:
+        head = CARD_HEAD.fullmatch(body[:at])
+        if head and at + len(CARD_ARROW) <= len(body) - 2:
+            splits.append({"qid": head["qid"], "answer": body[at + len(CARD_ARROW):-2], "by": footer["by"]})
+    return splits
+
+
+class RepeatedKey(ValueError):
+    pass
+
+
+def strict_json(raw: bytes):
+    """JSON as one reading only: UTF-8, no repeated key, no NaN or Infinity; anything else is a ValueError."""
+    def constant(name):
+        raise ValueError(name)
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=unique_keys, parse_constant=constant)
+
+
+DISCORD_FILE_FIELD = re.compile(r"files\[[0-9]{1,2}\]")
+DISCORD_PART_HEADERS = {"content-disposition", "content-type"}
+
+
+def canonical_discord_body(headers: dict, body: bytes) -> tuple[dict, bytes]:
+    """The Discord write as the gate read it, rebuilt, so Discord never parses bytes the gate did not.
+
+    A body is JSON, read strictly and re-serialized, or multipart/form-data in the shape the Dori's clients send
+    (messenger/discord.ts, the node's owner_notice and submission_transport): one payload_json, no file name, typed
+    application/json or untyped, and files[n] each with a file name, every part carrying only Content-Disposition and
+    Content-Type. It goes out rebuilt with a fresh boundary. Anything else is refused before it is sent: parsers that
+    read one request differently let a payload past the reader that checks it (WAFFLED, arXiv 2503.10846; review 6 of
+    #370: a message/rfc822 part, a repeated key, a field Discord reads as JSON).
+
+    The parts are split at the boundary only, never read as MIME structure: a file is its bytes whatever its type
+    (Bun types a .eml file message/rfc822, review 7 of #370), and a body a reader could split another way (a close
+    before the end, a padded delimiter, a preamble, a folded or repeated header) is refused."""
+    if not body:
+        return headers, body
+    refused = Refused("unsupported-body-encoding", 415)
+    content_type = headers.get("content-type", "application/json")
+    kind = content_type.split(";", 1)[0].strip().lower()
+    rest = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+    if kind == "application/json":
+        try:
+            parsed = strict_json(body)
+        except ValueError:
+            raise refused from None
+        return {**rest, "content-type": "application/json"}, json.dumps(
+            parsed, ensure_ascii=False, separators=(",", ":")).encode()
+    if kind != "multipart/form-data":
+        raise refused
+    envelope = email.message.EmailMessage()
+    envelope["content-type"] = content_type
+    boundary = envelope.get_boundary()
+    if not isinstance(boundary, str) or not re.fullmatch(r"[0-9A-Za-z'()+_,./:=?-]{1,70}", boundary):
+        raise refused
+    delimiter = b"--" + boundary.encode()
+    close = b"\r\n" + delimiter + b"--"
+    end = body.find(close)
+    if not body.startswith(delimiter + b"\r\n") or end < 0 or body[end + len(close):] not in (b"", b"\r\n"):
+        raise refused
+    payload, files = None, []
+    for chunk in body[len(delimiter) + 2:end].split(b"\r\n" + delimiter + b"\r\n"):
+        head, blank, data = chunk.partition(b"\r\n\r\n")
+        if (not blank or b"\r\n" + delimiter in chunk
+                or not all(re.fullmatch(rb"[A-Za-z-]+:[^\r\n]*", line) for line in head.split(b"\r\n"))):
+            raise refused
+        part = email.parser.BytesHeaderParser(policy=email.policy.default).parsebytes(head + b"\r\n\r\n")
+        keys = [key.lower() for key in part.keys()]
+        if (len(set(keys)) != len(keys) or set(keys) - DISCORD_PART_HEADERS or part.defects
+                or part.get_content_disposition() != "form-data"):
+            raise refused
+        name, filename = part.get_param("name", None, header="content-disposition"), part.get_filename()
+        declared = part.get("content-type")
+        if not isinstance(name, str):
+            raise refused
+        if name == "payload_json" and payload is None and filename is None:
+            if declared is not None and part.get_content_type() != "application/json":
+                raise refused
+            try:
+                payload = strict_json(data)
+            except ValueError:
+                raise refused from None
+        elif DISCORD_FILE_FIELD.fullmatch(name) and filename and not re.search(r'["\\\r\n\x00]', filename):
+            ctype = part.get_content_type() if declared is not None else "application/octet-stream"
+            if not re.fullmatch(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+", ctype):
+                raise refused
+            files.append((name, filename, ctype, data))
+        else:
+            raise refused
+    if payload is None and not files:
+        raise refused
+    boundary = "dori-gate-" + secrets.token_hex(16)
+    out = []
+    if payload is not None:
+        out.append(f'--{boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\n'
+                   f"Content-Type: application/json\r\n\r\n".encode()
+                   + json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
+    for name, filename, ctype, data in files:
+        out.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; '
+                   f'filename="{filename}"\r\nContent-Type: {ctype}\r\n\r\n'.encode() + data)
+    rebuilt = b"\r\n".join(out) + f"\r\n--{boundary}--\r\n".encode()
+    return {**rest, "content-type": f"multipart/form-data; boundary={boundary}"}, rebuilt
+
+
+def unique_keys(pairs: list) -> dict:
+    """A JSON object whose keys are each written once: with a repeated key, readers differ on which one counts."""
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise RepeatedKey("repeated key")
+    return dict(pairs)
+
+
 def message_texts(headers: dict, body: bytes) -> list[str]:
-    """Every text a Discord write carries: the JSON body, or the non-file parts of a multipart body."""
+    """Every text a Discord write carries: the JSON body, or the parts of a multipart/form-data body that are not
+    attached files (files[n]); payload_json is read even when it is sent with a file name.
+
+    Discord also takes form-encoded bodies, which carried a hand-made answered card past the check percent-encoded
+    (review 4 of #370). The Dori's clients write JSON or multipart only, so any other body encoding, JSON that does not
+    parse (in any of the UTF encodings json reads) or JSON with a repeated key is refused before it is sent. In a
+    multipart body every field is held to that: a repeated key anywhere, and a field that opens as JSON ({ or [, as
+    Discord reads components and the other structured fields) but does not parse (review 5 of #370)."""
     if not body:
         return []
     content_type = headers.get("content-type", "application/json")
-    raw = [body]
-    if content_type.lower().startswith("multipart/"):
+    kind = content_type.split(";", 1)[0].strip().lower()
+    if kind == "application/json":
+        raw = [(body, True)]
+    elif kind == "multipart/form-data":
         message = email.parser.BytesParser(policy=email.policy.default).parsebytes(
             b"Content-Type: " + content_type.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body)
-        raw = [part.get_payload(decode=True) or b"" for part in message.iter_parts() if not part.get_filename()]
+        if not message.is_multipart():
+            raise Refused("unsupported-body-encoding", 415)
+        raw = []
+        for part in message.iter_parts():
+            name = str(part.get_param("name", "", header="content-disposition"))
+            if part.get_filename() and re.fullmatch(r"files\[[0-9]+\]|file[0-9]*", name):
+                continue
+            payload = part.get_payload(decode=True) or b""
+            opens = payload.lstrip(b" \t\r\n\x00\xef\xbb\xbf\xfe\xff")[:1] in (b"{", b"[")
+            raw.append((payload, name == "payload_json" or opens))
+    else:
+        raise Refused("unsupported-body-encoding", 415)
     texts = []
-    for item in raw:
-        text = item.decode("utf-8", "replace")
+    for item, must_parse in raw:
         try:
-            texts.extend(strings(json.loads(text)))
-        except ValueError:
-            texts.append(text)
+            texts.extend(strings(json.loads(item, object_pairs_hook=unique_keys)))
+        except ValueError as error:
+            if must_parse or isinstance(error, RepeatedKey):
+                raise Refused("unsupported-body-encoding", 415) from None
+            texts.append(item.decode("utf-8", "replace"))
     return texts
 
 
@@ -771,6 +995,10 @@ class Gate:
         self.todo_facts = {}
         self.web_tasks = {}
         self.search_rest_until = 0.0
+        self.taps = {}  # interaction id -> who tapped which button on which message, from the gate's own gateway session
+        self.tap_waits = {}
+        self.tap_receipts = {}  # interaction id -> the receipt its callback leaves once Discord took the fold
+        self.gateway_task = None
         for name in ("pending", "batches"):
             (self.state / name).mkdir(exist_ok=True, mode=0o700)
             (self.state / name).chmod(0o700)
@@ -971,6 +1199,183 @@ class Gate:
         return bool(webhook) and channel == str(settings.get("owner_webhook_channel") or "") \
             and str(data.get("webhook_id") or "") == webhook and author == webhook
 
+    def card_answer_words(self) -> set:
+        return {str(w).casefold() for w in self.config["owner_proof"].get("card_answer_words", CARD_ANSWER_WORDS)}
+
+    def card_answer_text(self, text: str) -> bool:
+        """A text that reads as a tapped question card: any line "-# <a byButton word> ·" next to an answer arrow.
+        Looser than card_answers on purpose (spacing, case, extra lines), so nothing the proof takes slips past it.
+        A line parser, one pass over the text: the regex it replaced backtracked on a line of spaces (review 4 of #370)."""
+        if "→" not in text:
+            return False
+        words = self.card_answer_words()
+        for line in text.split("\n"):
+            line = line.lstrip(" \t")
+            if line.startswith("-#") and "·" in line and line[2:].split("·", 1)[0].strip().casefold() in words:
+                return True
+        return False
+
+    async def owner_card_answer(self, data: dict, channel: str, message: str, authorization: str) -> dict | None:
+        """The owner's tap on a question card (owner Q523, 2026-11-07 13:53 KST "응, 문지기도 버튼 답 받게 (추천)").
+
+        The proof is the gate's own receipt of that tap, never the card's text (review 6 of #370 and its challenge: text
+        the gate checks at the Discord port can still be read otherwise by Discord, and a card forged before a fix stays
+        forged). A receipt is written only when the gate's gateway session saw the owner press a pick button on this
+        bot's card, the callback folded it into exactly that option's text (owner_tap) and Discord took the callback.
+        The message read at those coordinates must still be this gate bot's own post (not a webhook). Its 24 hours run
+        from the card's posting (the message id), not from an edit. Outbound writes still park on their card. Returns
+        the latest receipt for the card ({channel, message, qid, answer, ...}), or None.
+        """
+        if not self.card_answers_on():
+            return None
+        author = data.get("author")
+        if (str(data.get("id")) != message or str(data.get("channel_id")) != channel or data.get("webhook_id")
+                or not isinstance(author, dict) or author.get("bot") is not True):
+            return None
+        hours = self.config["owner_proof"].get("max_age_hours", 24)
+        receipts = [row for row in self.records("card-receipts.jsonl", since=f"{hours}h")
+                    if row.get("channel") == channel and row.get("message") == message and str(row.get("answer", "")).strip()]
+        if not receipts or str(author.get("id")) != await self.gate_bot(authorization):
+            return None
+        return receipts[-1]
+
+    async def gate_bot(self, authorization: str) -> str:
+        key = ("me", hashlib.sha256(authorization.encode()).hexdigest())
+        me = self.cached(key)
+        if me is None:
+            me = self.remember(key, str((await self.discord_json("/users/@me", authorization))["id"]))
+        return me
+
+    def card_answers_on(self) -> bool:
+        return self.config["owner_proof"].get("card_answers", True) is not False and bool(self.card_answer_words())
+
+    def saw_interaction(self, event: dict) -> None:
+        """An INTERACTION_CREATE from the gate's own gateway session: who pressed which button, kept 15 minutes, with
+        the card as Discord attached it to the press (event message), so a later edit of the card changes nothing."""
+        user = (event.get("member") or {}).get("user") or event.get("user") or {}
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        identity = str(event.get("id", ""))
+        now = time.monotonic()
+        self.taps = {k: v for k, v in self.taps.items() if now - v["at"] < TAP_KEEP_SECONDS}
+        self.tap_receipts = {k: v for k, v in self.tap_receipts.items() if k in self.taps}
+        self.taps[identity] = dict(
+            user=str(user.get("id", "")), kind=event.get("type"), component=data.get("component_type"),
+            custom_id=str(data.get("custom_id", "")), message=str(message.get("id", "")),
+            channel=str(event.get("channel_id") or message.get("channel_id") or ""),
+            author=str((message.get("author") or {}).get("id", "")),
+            parts=[c for box in message.get("components") or [] if isinstance(box, dict) and box.get("type") == 17
+                   for c in box.get("components") or [] if isinstance(c, dict)], at=now)
+        waiting = self.tap_waits.pop(identity, None)
+        if waiting:
+            waiting.set()
+
+    async def owner_tap(self, interaction: str, texts: list) -> bool:
+        """May this UPDATE_MESSAGE callback fold a card into a button answer? Only for the owner's own button press
+        (a component interaction, button type; a modal submit is not a pick), as the gate's gateway session saw it, on
+        this bot's question card, with the answer the pressed option's text in the card as it was at the press, exactly
+        as written there (or that card already reading exactly that answer, a repeated press). A first fold leaves its
+        receipt (channel, message, question, answer) in tap_receipts, written once Discord takes the callback."""
+        if interaction not in self.taps:
+            waiting = self.tap_waits.setdefault(interaction, asyncio.Event())
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(waiting.wait(), self.config["owner_proof"].get("tap_wait_seconds", 2.5))
+            self.tap_waits.pop(interaction, None)
+        tap = self.taps.get(interaction)
+        picked = re.fullmatch(r"q:(Q[1-9][0-9]*):([0-9]+)", tap["custom_id"]) if tap else None
+        # The owner's press is checked before any card text is parsed: an unverified callback costs no matching.
+        if not picked or tap["user"] != str(self.config["owner_id"]) or tap["kind"] != 3 or tap["component"] != 2:
+            return False
+        marked = [text for text in texts if self.card_answer_text(text)]
+        if len(marked) != 1 or len(marked[0]) > CARD_TEXT_MAX:
+            return False
+        # Every way the text splits into question and answer; the pressed option decides which one is the answer.
+        answers = [split for split in card_answers(marked[0]) if split["qid"] == picked[1]]
+        if not answers:
+            return False
+        try:
+            authorization = "Bot " + Path(self.config["owner_proof"]["token_file"]).read_text().strip()
+            if not tap["message"] or tap["author"] != await self.gate_bot(authorization):
+                return False
+            parts = tap["parts"]
+            if [c.get("content") for c in parts] == marked:
+                return True
+            for part in parts:
+                accessory = part.get("accessory") or {}
+                texts_in = [c.get("content", "") for c in part.get("components") or [] if isinstance(c, dict)]
+                option = re.fullmatch(r"\*\*[0-9]+\.\*\* (?s:(.+))", texts_in[0]) if len(texts_in) == 1 else None
+                if part.get("type") == 9 and accessory.get("custom_id") == tap["custom_id"] and option:
+                    # As written on both sides: the fork folds a button answer into the option's own card text, so
+                    # no unescaping (which let a pressed a\_b pass an answer a_b, challenge of round 7).
+                    if not any(option[1] == split["answer"] for split in answers) or not tap.get("channel"):
+                        return False
+                    self.tap_receipts[interaction] = dict(channel=tap["channel"], message=tap["message"],
+                                                          qid=picked[1], answer=option[1], user=tap["user"])
+                    return True
+        except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+        return False
+
+    async def gateway_loop(self) -> None:
+        delay = 5
+        while True:
+            try:
+                await self.gateway_session()
+                delay = 5
+            except (OSError, ValueError, KeyError, TypeError, UnicodeError, asyncio.IncompleteReadError,
+                    asyncio.LimitOverrunError, TimeoutError, ssl.SSLError) as error:
+                print(f"GATE_GATEWAY_DOWN {type(error).__name__}", file=sys.stderr, flush=True)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 120)
+
+    async def gateway_session(self) -> None:
+        """One gateway session: identify with no intents (interactions come regardless), heartbeat, record taps.
+        Returns on a reconnect or invalid-session request; raises on a broken connection."""
+        token = Path(self.config["owner_proof"]["token_file"]).read_text().strip()
+        reader, writer = await ws_open(self.config["owner_proof"].get("gateway_url", GATEWAY_URL))
+        sequence = {"s": None}
+        heart = None
+        send = lambda op, d: writer.write(ws_frame(1, json.dumps({"op": op, "d": d}).encode()))  # noqa: E731
+
+        async def beat(interval: float) -> None:
+            while True:
+                await asyncio.sleep(interval)
+                send(1, sequence["s"])
+                await writer.drain()
+        try:
+            wait = 60.0
+            while True:
+                opcode, payload = await asyncio.wait_for(ws_read(reader), wait)
+                if opcode == 8:
+                    raise ConnectionResetError("gateway closed")
+                if opcode == 9:
+                    writer.write(ws_frame(10, payload))
+                if opcode != 1:
+                    continue
+                event = json.loads(payload)
+                sequence["s"] = event.get("s") if event.get("s") is not None else sequence["s"]
+                op, kind = event.get("op"), event.get("t")
+                if op == 10:
+                    interval = event["d"]["heartbeat_interval"] / 1000
+                    wait = interval * 2 + 30
+                    heart = asyncio.create_task(beat(interval))
+                    send(2, {"token": token, "intents": 0,
+                             "properties": {"os": "linux", "browser": "dori-gate", "device": "dori-gate"}})
+                elif op == 1:
+                    send(1, sequence["s"])
+                elif op in {7, 9}:
+                    return
+                elif op == 0 and kind == "READY":
+                    print("GATE_GATEWAY_READY", file=sys.stderr, flush=True)
+                elif op == 0 and kind == "INTERACTION_CREATE" and isinstance(event.get("d"), dict):
+                    self.saw_interaction(event["d"])
+                await writer.drain()
+        finally:
+            if heart:
+                heart.cancel()
+                await asyncio.gather(heart, return_exceptions=True)
+            writer.close()
+
     async def proof(self, headers: dict) -> str:
         if not headers.get("x-dori-owner-message") and headers.get("x-dori-owner-order"):
             return await self.order_proof(headers)
@@ -988,10 +1393,19 @@ class Gate:
             if not await self.channel_allowed(channel, authorization, dm=False):
                 raise Refused("owner-message-required")
             data = await self.discord_json(f"/channels/{channel}/messages/{message}", authorization)
-            stamp = dt.datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
+            if self.owner_wrote(data, channel):
+                stamp = data["timestamp"]
+            elif await self.owner_card_answer(data, channel, message, authorization):
+                # The card's 24 hours run from its posting (the message id's time), which no later edit can move;
+                # edited_timestamp would restart with any edit of the bot's own message (review 3 of #370).
+                stamp = dt.datetime.fromtimestamp(((int(message) >> 22) + DISCORD_EPOCH_MS) / 1000,
+                                                  dt.timezone.utc).isoformat()
+            else:
+                raise Refused("owner-message-required")
+            stamp = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
             age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
             maximum = self.config["owner_proof"].get("max_age_hours", 24) * 3600
-            if not self.owner_wrote(data, channel) or age < 0 or age > maximum:
+            if age < 0 or age > maximum:
                 raise Refused("owner-message-required")
         except (Refused, OSError, ValueError, KeyError, TypeError):
             raise Refused("owner-message-required") from None
@@ -2193,10 +2607,22 @@ class Gate:
             raise Refused("reaction-removal-not-allowed")
         if method not in READS:
             allowed = self.config.get("discord_url_allow", DISCORD_URL_ALLOW)
-            for text in message_texts(headers, body):
+            texts = message_texts(headers, body)
+            for text in texts:
                 for host in URL.findall(text):
                     if not url_host_allowed(host, allowed):
                         raise Refused("external-url-in-message")
+            # Owner Q523: a tapped question card is owner proof, so only the tap makes one. The fork answers the
+            # owner's tap with an UPDATE_MESSAGE (type 7) callback; any other write carrying a button answer is refused.
+            # The tap is the owner's only when the gate's own gateway session saw his account make it (owner_tap).
+            if any(self.card_answer_text(text) for text in texts):
+                callback = re.fullmatch(r"/interactions/(\d+)/[^/]+/callback", route)
+                update = None
+                with contextlib.suppress(ValueError, UnicodeError):
+                    update = json.loads(body or b"{}") if callback else None
+                if not (isinstance(update, dict) and update.get("type") == 7 and self.card_answers_on()
+                        and await self.owner_tap(callback[1], texts)):
+                    raise Refused("card-answer-forged")
         if method == "GET" and route in {"/gateway", "/gateway/bot", "/users/@me",
                                         "/applications/@me", "/oauth2/applications/@me"}:
             return
@@ -2513,7 +2939,8 @@ class Gate:
             task["seen"].add(link)
 
     async def owner_links(self, reference: str) -> set:
-        """URLs written in the owner message the proof already accepted (rule 가)."""
+        """URLs written in the owner message the proof already accepted (rule 가). On the owner's card answer, the URLs
+        in the answer he chose only, never in the bot-written question (review 3 of #370)."""
         cached = self.cached(("owner-links", reference))
         if cached is not None:
             return cached
@@ -2521,7 +2948,8 @@ class Gate:
         try:
             authorization = "Bot " + Path(self.config["owner_proof"]["token_file"]).read_text().strip()
             data = await self.discord_json(f"/channels/{channel}/messages/{message}", authorization)
-            links = web_owner_links(str(data.get("content") or ""))
+            answered = await self.owner_card_answer(data, channel, message, authorization)
+            links = web_owner_links(answered["answer"] if answered else str(data.get("content") or ""))
         except (Refused, OSError, ValueError, KeyError, TypeError):
             raise Refused("owner-message-required") from None
         return self.remember(("owner-links", reference), frozenset(links))
@@ -2894,13 +3322,22 @@ class Gate:
                     return
                 status, response_headers, response = result
             else:
+                if method not in READS:
+                    headers, body = canonical_discord_body(headers, body)
                 await self.discord_policy(method, path, headers, body)
                 url = self.config.get("discord_api_base", "https://discord.com/api/v10") + quote(
                     path[len("/api/v10"):], safe="/:@!$&'()*+,;=-._~")
                 if query:
                     url += "?" + urlencode(query)
                 decided = await self.closed_decided_thread(method, path[len("/api/v10"):])
-                status = await self.stream_proxy(writer, method, url, headers, body)
+                callback = re.fullmatch(r"/api/v10/interactions/(\d+)/[^/]+/callback", path)
+                try:
+                    status = await self.stream_proxy(writer, method, url, headers, body)
+                finally:
+                    receipt = self.tap_receipts.pop(callback[1], None) if callback else None
+                if receipt and 200 <= status < 300:
+                    # Discord took the fold: the owner's tap, seen by the gate, is now proof (owner_card_answer).
+                    self.append("card-receipts.jsonl", {"ts": utc(), **receipt})
                 if decided and 200 <= status < 300:
                     await self.rearchive_thread(decided)
                 return
@@ -2948,11 +3385,15 @@ class Gate:
         # A forwarding gate parks nothing: every card is the node gate's.
         if self.config.get("approval") and not self.forwarding():
             self.approval_task = asyncio.create_task(self.approval_loop())
+        # The Discord port lets a tapped card through only after this session saw the owner's tap (owner_tap).
+        if "discord" in self.servers and self.card_answers_on() and self.config["owner_proof"].get("gateway_url", GATEWAY_URL):
+            self.gateway_task = asyncio.create_task(self.gateway_loop())
 
     async def close(self):
-        if self.approval_task:
-            self.approval_task.cancel()
-            await asyncio.gather(self.approval_task, return_exceptions=True)
+        for task in (self.approval_task, self.gateway_task):
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         for server in self.servers.values():
             server.close()
         # Python 3.12 wait_closed() waits for open connections (a long CONNECT tunnel), so end them first.

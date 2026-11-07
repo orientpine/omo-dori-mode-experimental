@@ -2,6 +2,14 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
+## Node: a card answer is taken from the card's text, not from the egress gate's tap receipt (#370)
+
+The egress gate (#370) takes the owner's card answer as proof only from its own receipt of his tap (`card-receipts.jsonl`); the node (cytoplasm `owner_origin`, #232/#233) cannot read that file and still trusts the card's text, so its only guard is that the gate refuses every hand-made answered card at the Discord port and rebuilds every Discord write it forwards. A card forged before #370 was installed stops counting on the node 24 hours after it was posted. What would close it: the node reads the gate's receipt for the card (a read-only gate endpoint or a shared receipt file) instead of the card's text.
+
+## Lane tree: parallel `dori tree add` calls can get the same id (#370)
+
+Four `dori tree add --kind finding` calls started at once in the gate-card-answer lane printed F181, F182 and F183 twice; one finding was lost and had to be added again (F184). What would close it: take the next id under the tree file's lock (or an O_EXCL claim), with a test that adds in parallel and checks every text is kept.
+
 ## Lane handover: one record per lane, with a generation number (#320)
 
 A lane's waiting handover is spread over several per-lane files: the lock, the pending journal, the ready mark, the ready-resume claim, the safe-point file and the facts snapshots, plus the waiting request read from the last rollover row. Review rounds 7-12 of #320 found 2-5 new races per round, nearly all between two of those files. #320 therefore keeps crash repair as main had it: a dead journal is repaired by the next handover run of the lane, under the lane's lock, and `freshness` repairs nothing itself.

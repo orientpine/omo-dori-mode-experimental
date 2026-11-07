@@ -76,6 +76,26 @@ test("a long option is shown in full in its section text, not clipped into a but
   expect(store.get("Q1")?.answer).toBe(long);
 });
 
+test("a long question folds with its answer and footer whole: the question is cut, never the answer (egress gate card answer, review 1 of #370)", async () => {
+  const { cards, json } = setup();
+  const option = `Take the cleanup ${"y".repeat(290)}`;
+  await cards.ask(`Clean up? ${"x".repeat(2890)}`, ["Keep", option]);
+  await cards.handle(tap("q:Q1:1"));
+  const text: string = json(1).data.components[0].components[0].content;
+  expect(text.length).toBeLessThanOrEqual(3000);
+  expect(text.startsWith("[answered] **Q1** Clean up? x")).toBe(true);
+  expect(text.endsWith(`x…\n→ **${option}**\n-# button · 1/2, 03:04`)).toBe(true);
+});
+
+test("a question that fits only unescaped folds whole and unescaped, not cut (review 2 of #370)", async () => {
+  const { cards, json } = setup();
+  const question = `${"q_".repeat(1000)}TAIL`;
+  await cards.ask(question, ["Keep", "Drop"]);
+  await cards.handle(tap("q:Q1:1"));
+  const text: string = json(1).data.components[0].components[0].content;
+  expect(text).toBe(`[answered] **Q1** ${question}\n→ **Drop**\n-# button · 1/2, 03:04`);
+});
+
 test("pick-button wording comes from the discord words", async () => {
   const { dc, store, json } = setup();
   const words = { ...defaultDiscordWords, pick: "{n} 선택", recommended: "추천", other: "직접 입력" };
@@ -137,6 +157,96 @@ test("reopen puts the buttons back on the posted card; resolve forgets the quest
   expect(await cards.resolve("Q1")).toBe("folded");
   expect(store.all()).toEqual([]);
   await expect(cards.reopen("Q1")).rejects.toBeInstanceOf(QuestionError);
+});
+
+test("an option a card cannot show whole is refused before anything is stored or posted; one that just fits is shown whole and its tap answers with it (review 4 of #370)", async () => {
+  // The egress gate takes a tap's answer only when it equals the pressed option's text in the card, so a section cut to
+  // its 1000 characters would make the owner's real tap a forged answer after the question was already marked answered.
+  const { cards, store, seen, json } = setup();
+  const fits = `${"o_".repeat(496)}o`;
+  expect(`**2.** ${fits}`.length).toBe(1000);
+  await expect(cards.ask("Ship?", ["Yes", `${fits}x`])).rejects.toBeInstanceOf(QuestionError);
+  expect(seen).toHaveLength(0);
+  expect(store.all()).toHaveLength(0);
+  await cards.ask("Ship?", ["Yes", fits]);
+  expect(optionTexts(json(0).components)[1]).toBe(`**2.** ${fits}`);
+  await cards.handle(tap("q:Q1:1"));
+  expect(store.get("Q1")?.answer).toBe(fits);
+});
+
+test("an option holding the answer arrow line is refused before anything is stored or posted (review 6 of #370)", async () => {
+  // The folded card's answer is the text after its last "\n→ **"; an option holding one would read as two answers.
+  const { cards, store, seen } = setup();
+  await expect(cards.ask("Ship?", ["Yes", "Keep\n→ **old**"])).rejects.toBeInstanceOf(QuestionError);
+  expect(seen).toHaveLength(0);
+  expect(store.all()).toHaveLength(0);
+});
+
+test("a button answer folds into the card as its option reads on the card, escaped or not (round 7 of #370)", async () => {
+  // The egress gate takes a tap only when the folded answer is the pressed option's text exactly as the card shows it.
+  const { cards, json } = setup();
+  const option = "a_".repeat(496); // fits the 1000-character section only unescaped
+  await cards.ask("Pick?", ["Keep", option]);
+  const section: string = optionTexts(json(0).components)[1] ?? "";
+  expect(section).toBe(`**2.** ${option}`);
+  await cards.handle(tap("q:Q1:1"));
+  const text: string = json(1).data.components[0].components[0].content;
+  expect(text.endsWith(`\n→ **${section.slice("**2.** ".length)}**\n-# button · 1/2, 03:04`)).toBe(true);
+});
+
+test("a tap whose callback Discord or the egress gate refuses leaves the question open and unlogged (round 7 of #370)", async () => {
+  state = withState();
+  const http: Http = async (req): Promise<HttpResponse> =>
+    req.url.includes("/interactions/") ? { status: 403, headers: {}, body: JSON.stringify({ error: "card-answer-forged" }) }
+    : { status: 200, headers: {}, body: JSON.stringify(req.method === "POST" ? { id: "900" } : { type: 11 }) };
+  const store = new QuestionStore(`${state.dir}/discord`);
+  const cards = new QuestionCards(new Discord(http, fakeClock(0), "bot"), store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  await cards.ask("Ship?", ["Yes", "No"]);
+  await expect(cards.handle(tap("q:Q1:0"))).rejects.toThrow();
+  expect(store.get("Q1")?.status).toBe("open");
+  expect(existsSync(store.answersFile)).toBe(false);
+});
+
+test("a second tap while the first tap's callback is in flight folds nothing, and a refused fold frees the question (review 7 of #370)", async () => {
+  // The listener handles taps at once. Two folds in flight would let the card and the egress gate's tap receipt say B
+  // while the store keeps A; the second tap is only acknowledged, and a fold Discord refuses lets the next tap fold.
+  state = withState();
+  const callbacks: { body: { type: number; data?: { components: unknown } }; settle: (r: HttpResponse) => void }[] = [];
+  let arrived: () => void = () => {};
+  const http: Http = (req) =>
+    req.url.includes("/interactions/")
+      ? new Promise((settle) => { callbacks.push({ body: JSON.parse(String(req.body)), settle }); arrived(); })
+      : Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(req.method === "POST" ? { id: "900" } : { type: 11 }) });
+  const until = (n: number) => new Promise<void>((done) => { arrived = () => callbacks.length >= n && done(); arrived(); });
+  const store = new QuestionStore(`${state.dir}/discord`);
+  const cards = new QuestionCards(new Discord(http, fakeClock(0), "bot"), store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  const ok: HttpResponse = { status: 204, headers: {}, body: "" };
+  await cards.ask("Ship?", ["Yes", "No"]);
+
+  const first = cards.handle(tap("q:Q1:0"));
+  await until(1);
+  const second = cards.handle({ ...tap("q:Q1:1"), id: "i2" });
+  await until(2);
+  expect(callbacks.map((c) => c.body.type)).toEqual([7, 6]);
+  callbacks[1]?.settle(ok);
+  expect(await second).toEqual({ kind: "stale", qid: "Q1" });
+  callbacks[0]?.settle(ok);
+  expect((await first).kind).toBe("answered");
+  expect(store.get("Q1")).toMatchObject({ status: "answered", answer: "Yes" });
+  expect(readFileSync(store.answersFile, "utf8").trim().split("\n")).toHaveLength(1);
+
+  await cards.ask("Deploy?", ["Now", "Later"]);
+  const refused = cards.handle(tap("q:Q2:0"));
+  await until(3);
+  callbacks[2]?.settle({ status: 403, headers: {}, body: JSON.stringify({ error: "card-answer-forged" }) });
+  await expect(refused).rejects.toThrow();
+  expect(store.get("Q2")?.status).toBe("open");
+  const retry = cards.handle(tap("q:Q2:1"));
+  await until(4);
+  expect(callbacks[3]?.body.type).toBe(7);
+  callbacks[3]?.settle(ok);
+  expect((await retry).kind).toBe("answered");
+  expect(store.get("Q2")?.answer).toBe("Later");
 });
 
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {

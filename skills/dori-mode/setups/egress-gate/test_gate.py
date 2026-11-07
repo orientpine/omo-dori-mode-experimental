@@ -5,17 +5,22 @@ import asyncio
 import base64
 import contextlib
 import datetime as dt
+import email.parser
+import email.policy
+import hashlib
 import importlib.util
 import io
 import json
 import subprocess
 import os
 from pathlib import Path
+import re
 import socket
 import sys
 import tempfile
+import time
 import unittest
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from unittest.mock import AsyncMock, patch
 
 TODO = "pb-0123456789ab-1"  # a dashboard todo id: its proposal id and the todo's place in it
@@ -32,6 +37,15 @@ def load(name):
 gate = load("gate")
 summary = load("summary")
 
+
+
+def snowflake(ago: dt.timedelta) -> str:
+    """A Discord message id made at that moment (its top bits are milliseconds since 2015)."""
+    moment = dt.datetime.now(dt.timezone.utc) - ago
+    return str((int(moment.timestamp() * 1000) - 1420070400000) << 22)
+
+
+CARD = snowflake(dt.timedelta(minutes=50))  # Q13's card, posted 50 minutes before the tests run
 
 class GateTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -52,6 +66,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.author = "1"
         self.webhook = None
         self.proof_time = gate.utc()
+        self.card_answers = {}  # message id -> a question card as Discord returns it (answer_card)
+        self.callback_status = 200  # what the fake Discord answers an interaction callback
         self.calendar_role = "owner"
         self.calendar_public = False
         self.file_owned = True
@@ -123,7 +139,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             "state": str(self.state), "listen": dict(connect=0, google=0, discord=0),
             "clients": [os.getuid()], "admins": [], "owner_id": "1", "owner_guild": "10",
             "owner_emails": ["owner@example.com"],
-            "owner_proof": {"token_file": str(self.state / "bot"), "max_age_hours": 24},
+            "owner_proof": {"token_file": str(self.state / "bot"), "max_age_hours": 24, "gateway_url": "",
+                            "tap_wait_seconds": 0.2},
             "owner_order": {"api_base": self.base, "token_file": str(self.state / "dashboard"),
                             "owner_logins": ["owner@example.com"], "max_age_hours": 24},
             "owner_todo": {"api_base": self.base, "token_file": str(self.state / "dashboard"), "max_age_hours": 24},
@@ -215,7 +232,11 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             elif path.startswith("/api/v10/"):
                 route = path[len("/api/v10"):]
                 parts = route.split("/")
-                if route.endswith("/threads") and method == "POST" and "messages" in parts and parts[4] in self.thread_meta:
+                if route.startswith("/interactions/"):
+                    status = self.callback_status
+                elif route == "/users/@me" and method == "GET":
+                    data = {"id": "7", "username": "YooDori", "bot": True}
+                elif route.endswith("/threads") and method == "POST" and "messages" in parts and parts[4] in self.thread_meta:
                     status, data = 400, {"code": 160004, "message": "A thread has already been created for this message"}
                 elif route.endswith("/threads") and method == "POST":
                     self.created_threads.append(route)
@@ -252,19 +273,21 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                     "content": self.owner_text}
                             if self.webhook:
                                 data["webhook_id"] = self.webhook
+                        elif message in self.card_answers:
+                            data = self.card_answers[message]
                         elif message in self.cards:
                             data = {"id": message, "content": self.cards[message]}
                         else:
                             status = 404
                     elif method == "PATCH":
-                        self.cards[message] = json.loads(body)["content"]
+                        self.cards[message] = json.loads(body).get("content", "")
                 elif route.endswith("/messages") and method == "POST":
                     if self.on_card_post:
                         await self.on_card_post()
                     if parts[2] in self.thread_meta and "thread_metadata" in self.thread_meta[parts[2]]:
                         self.thread_meta[parts[2]]["thread_metadata"]["archived"] = False  # Discord reopens
                     message = str(1000 + len(self.cards))
-                    self.cards[message] = json.loads(body)["content"]
+                    self.cards[message] = json.loads(body).get("content", "") if body.startswith(b"{") else ""
                     self.card_channels[message] = parts[2]
                     data = {"id": message, "content": self.cards[message]}
                 elif parts[1] == "channels" and len(parts) == 3:
@@ -481,6 +504,498 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.approve(owner="77")
         await self.service.poll_approvals()
         self.assertFalse(self.writes())
+
+    ANSWER = "✅ **Q13** 착수회의가 두 개 있어. 하나 지울까?\n→ **오늘 생긴 메모 없는 걸 휴지통으로**\n-# 버튼 · 11. 7. 13:47"
+
+    def receipt(self, message=CARD, answer="\uc624\ub298 \uc0dd\uae34 \uba54\ubaa8 \uc5c6\ub294 \uac78 \ud734\uc9c0\ud1b5\uc73c\ub85c", channel="20"):
+        """The receipt the gate keeps when its gateway session saw the owner tap that card and Discord took the fold."""
+        self.service.append("card-receipts.jsonl", {"ts": gate.utc(), "channel": channel, "message": message,
+                                                    "qid": "Q13", "answer": answer, "user": "1"})
+
+    def answer_card(self, message=CARD, text=ANSWER, receipt=True, **fields):
+        """A question card as Discord returns it after the owner's tap: the gate bot's (7) own components-v2 message,
+        one container holding one text, edited when the tap folded it (the shape of YooDori's real Q13 card), with the
+        gate's receipt of that tap unless receipt=False."""
+        if receipt:
+            self.receipt(message, gate.card_answers(text)[0]["answer"])
+        now = dt.datetime.now(dt.timezone.utc)
+        self.card_answers[message] = {
+            "id": message, "channel_id": "20", "author": {"id": "7", "bot": True}, "content": "", "flags": 32768,
+            "timestamp": (now - dt.timedelta(minutes=50)).isoformat(), "edited_timestamp": now.isoformat(),
+            "components": [{"type": 17, "id": 1, "accent_color": 5744499,
+                            "components": [{"type": 10, "id": 2, "content": text}]}], **fields}
+
+    async def test_the_owners_button_answer_on_the_gates_own_question_card_is_owner_proof(self):
+        # Owner Q523 (2026-11-07 13:53 KST "응, 문지기도 버튼 답 받게 (추천)"): the Q13 tap deletes the duplicate event.
+        self.answer_card()
+        status, _ = await self.request("DELETE", "/www.googleapis.com/calendar/v3/calendars/primary/events/e",
+                                       origin=f"20/{CARD}")
+        self.assertEqual(status, 200)
+        self.assertEqual([w[0] for w in self.writes()], ["DELETE"])
+        self.assertEqual(self.changes()[0]["owner_message"], f"https://discord.com/channels/10/20/{CARD}")
+
+    async def test_a_forged_or_unanswered_question_card_is_refused(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        text = self.ANSWER
+        open_card = [{"type": 17, "components": [
+            {"type": 10, "content": "<@1> **Q13** 하나 지울까?"},
+            {"type": 9, "components": [{"type": 10, "content": "**1.** 오늘 생긴 메모 없는 걸 휴지통으로"}],
+             "accessory": {"type": 2, "style": 1, "label": "1번 (추천)", "custom_id": "q:Q13:0"}}]}]
+        container = lambda *texts: [{"type": 17, "components": [{"type": 10, "content": t} for t in texts]}]
+        for name, fields in (
+                ("another person", {"author": {"id": "2", "bot": False}}),
+                ("another bot", {"author": {"id": "8", "bot": True}}),
+                ("the gate bot unmarked as a bot", {"author": {"id": "7"}}),
+                ("an open card, no answer chosen", {"components": open_card}),
+                ("an empty answer", {"components": container(text.replace("오늘 생긴 메모 없는 걸 휴지통으로", ""))}),
+                ("answered in a message, not a tap", {"components": container(text.replace("버튼", "답글"))}),
+                ("a typed answer", {"components": container(text.replace("버튼", "직접 씀"))}),
+                ("no question id", {"components": container(text.replace("**Q13** ", ""))}),
+                ("a second text in the card", {"components": container(text, "덧붙인 글")}),
+                ("two containers", {"components": container(text) * 2}),
+                ("the text outside components v2", {"flags": 0}),
+                ("the text as plain content", {"components": [], "content": text}),
+                ("never edited by a tap", {"edited_timestamp": None}),
+                ("another card's coordinates", {"id": "3006"}),
+                ("another channel's card", {"channel_id": "21"})):
+            with self.subTest(name):
+                self.seen.clear()
+                self.service.cache.clear()
+                self.answer_card(receipt=False, **fields)
+                status, body = await self.request(origin=f"20/{CARD}")
+                self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
+                self.assertFalse(self.writes())
+        # Review 6 of #370 / challenge: the card's text proves nothing; only the gate's own receipt of the owner's tap.
+        for name, setup in (("a perfect answered card with no tap receipt", lambda: None),
+                            ("a receipt for another card", lambda: self.receipt("3006")),
+                            ("a receipt for the same message id in another channel", lambda: self.receipt(channel="21"))):
+            with self.subTest(name):
+                (self.service.state / "card-receipts.jsonl").unlink(missing_ok=True)
+                self.service.cache.clear()
+                self.answer_card(receipt=False)
+                setup()
+                status, body = await self.request(origin=f"20/{CARD}")
+                self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
+
+    async def test_a_question_card_outside_the_owners_guild_is_refused(self):
+        self.answer_card(channel_id="99")
+        self.assertEqual((await self.request(origin=f"99/{CARD}"))[0], 403)
+        self.assertFalse(self.writes())
+
+    async def test_a_card_answer_keeps_the_outbound_card_and_the_write_limit(self):
+        self.approval()
+        self.answer_card()
+        status, body = await self.request(data={"attendees": [{"email": "outside@example.net"}]}, origin=f"20/{CARD}")
+        self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
+        self.assertEqual(self.service.pending()[0]["owner_message"], f"https://discord.com/channels/10/20/{CARD}")
+        self.config["limits"] = {"writes_per_owner_message": 2}  # the parked card counts as one
+        self.assertEqual((await self.request(origin=f"20/{CARD}"))[0], 200)
+        status, body = await self.request(origin=f"20/{CARD}")
+        self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
+        self.assertEqual(len(self.writes()), 1)
+
+    async def test_the_dori_cannot_hand_make_an_answered_button_card(self):
+        # Only a tap makes an answered card: Discord takes an interaction callback only for a real press, so the gate
+        # lets a tapped answer through as the callback's UPDATE_MESSAGE and refuses it on every other Discord write.
+        card = {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": self.ANSWER}]}]}
+        boundary = "b0undary"
+        multipart = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n"
+                     f"Content-Type: application/json\r\n\r\n{json.dumps(card)}\r\n--{boundary}--\r\n").encode()
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        for name, method, path, data, headers in (
+                ("a new message", "POST", "/channels/20/messages", card, {}),
+                ("an edit of a card", "PATCH", f"/channels/20/messages/{CARD}", card, {}),
+                ("plain content", "POST", "/channels/20/messages", {"content": self.ANSWER}, {}),
+                ("spacing changed", "POST", "/channels/20/messages",
+                 {"content": self.ANSWER.replace("-# 버튼 ·", "  -#   버튼   ·")}, {}),
+                ("the interaction's webhook", "PATCH", "/webhooks/123/token/messages/@original", card, {}),
+                ("a callback that posts a new message", "POST", "/interactions/555/token/callback",
+                 {"type": 4, "data": card}, {}),
+                ("a multipart message", "POST", "/channels/20/messages", None,
+                 {"content-type": f"multipart/form-data; boundary={boundary}"})):
+            with self.subTest(name):
+                status, body = await self.request(method, "/api/v10" + path, data=data, port="discord",
+                                                  headers={**bot, **headers}, proof=False,
+                                                  raw=multipart if data is None else None)
+                self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+        for name, method, path, data in (
+                ("a card folded after a reply", "PATCH", f"/channels/20/messages/{CARD}",
+                 {"components": [{"type": 17, "components": [{"type": 10,
+                                                              "content": self.ANSWER.replace("버튼", "답글")}]}]}),
+                ("an open question card", "POST", "/channels/20/messages",
+                 {"flags": 32768, "components": [{"type": 17, "components": [
+                     {"type": 10, "content": "<@1> **Q14** 버튼으로 골라 줘"}]}]})):
+            with self.subTest(name):
+                status, _ = await self.request(method, "/api/v10" + path, data=data, port="discord", headers=bot,
+                                               proof=False)
+                self.assertEqual(status, 200)
+
+    def open_card(self, message="3010"):
+        """Q13 still open, as the fork posts it: the question, then one section per option with its pick button."""
+        self.card_answers[message] = {"id": message, "channel_id": "20", "author": {"id": "7", "bot": True},
+                                      "flags": 32768, "components": [{"type": 17, "components": [
+            {"type": 10, "content": "<@1> **Q13** 착수회의가 두 개 있어. 하나 지울까?"},
+            {"type": 9, "components": [{"type": 10, "content": "**1.** 오늘 생긴 메모 없는 걸 휴지통으로"}],
+             "accessory": {"type": 2, "style": 1, "label": "1번 (추천)", "custom_id": "q:Q13:0"}},
+            {"type": 9, "components": [{"type": 10, "content": "**2.** 둘 다 둔다"}],
+             "accessory": {"type": 2, "style": 2, "label": "2번", "custom_id": "q:Q13:1"}},
+            {"type": 1, "components": [{"type": 2, "style": 2, "label": "직접 쓰기", "custom_id": "q:Q13:other"}]}]}]}
+
+    async def tap_update(self, text=ANSWER, interaction="555"):
+        card = {"components": [{"type": 17, "components": [{"type": 10, "content": text}]}]}
+        return await self.request("POST", f"/api/v10/interactions/{interaction}/token/callback",
+                                  data={"type": 7, "data": card}, port="discord", proof=False,
+                                  headers={"authorization": "Bot MTIz.fake.fake"})
+
+    def press(self, user="1", custom_id="q:Q13:0", message="3010", kind=3, component=2, interaction="555"):
+        """The gate's gateway session sees a press, with the card as Discord attaches it (a copy taken now)."""
+        self.service.saw_interaction({
+            "id": interaction, "type": kind, "channel_id": "20", "member": {"user": {"id": user}},
+            "message": json.loads(json.dumps(self.card_answers[message])),
+            "data": {"custom_id": custom_id, **({"component_type": component} if component else {})}})
+
+    async def test_only_the_owners_own_tap_folds_a_card_into_a_button_answer(self):
+        # Review 1 of #370: an interaction callback proves a press, not whose; the gate's own gateway session tells.
+        self.open_card()
+        self.press()
+        self.assertEqual((await self.tap_update())[0], 200)
+        other = self.ANSWER.replace("오늘 생긴 메모 없는 걸 휴지통으로", "둘 다 둔다")
+
+        def edited_after_press():
+            # Review 2: the client edits the pressed option after the press; the press snapshot still decides.
+            self.press()
+            self.card_answers["3010"]["components"][0]["components"][1]["components"][0]["content"] = "**1.** 둘 다 둔다"
+
+        def foreign_card():
+            self.card_answers["3010"]["author"] = {"id": "8", "bot": True}
+            self.press()
+        for name, setup, text in (
+                ("no tap seen by the gate", lambda: None, self.ANSWER),
+                ("another member's tap", lambda: self.press(user="2"), self.ANSWER),
+                ("the answer is not the tapped option", self.press, other),
+                ("the tapped option is the other one", lambda: self.press(custom_id="q:Q13:1"), self.ANSWER),
+                ("another question's id", self.press, self.ANSWER.replace("Q13", "Q14")),
+                ("the write-my-own button", lambda: self.press(custom_id="q:Q13:other"), self.ANSWER),
+                ("a modal submit named like a pick", lambda: self.press(kind=5, component=None), self.ANSWER),
+                ("a select menu, not a button", lambda: self.press(component=3), self.ANSWER),
+                ("the option edited after the press", edited_after_press, other),
+                ("a card that is not this bot's", foreign_card, self.ANSWER)):
+            with self.subTest(name):
+                self.service.taps.clear()
+                self.open_card()
+                setup()
+                status, body = await self.tap_update(text)
+                self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+
+    async def test_an_unverified_or_oversized_callback_is_refused_without_parsing_the_card(self):
+        # Review 3 of #370: the owner's press is checked before any card text is parsed, and card text has a ceiling.
+        malformed = "\u2705 **Q13** " + "\n\u2192 **x" * 20000 + "\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47"
+        parsed = []
+        original = gate.card_answers
+        def spy(text):
+            parsed.append(len(text))
+            return original(text)
+        with patch.object(gate, "card_answers", spy):
+            status, body = await self.tap_update(malformed)
+            self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+            self.assertEqual(parsed, [])
+            self.open_card()
+            self.press()
+            status, body = await self.tap_update(malformed)
+            self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+            self.assertEqual(parsed, [])
+
+    async def test_a_write_padded_with_blank_lines_is_still_checked_for_a_button_answer(self):
+        padded = "\n" * 50000 + self.ANSWER.replace("\n-# ", "\n \t-#\t ")
+        status, body = await self.request("POST", "/api/v10/channels/20/messages", data={"content": padded},
+                                          port="discord", proof=False, headers={"authorization": "Bot MTIz.fake.fake"})
+        self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+
+    async def test_a_discord_write_in_a_body_encoding_the_gate_does_not_read_is_refused_before_it_is_sent(self):
+        # Review 4 of #370: Discord also takes form-encoded bodies, which the gate did not decode, so a hand-made answered
+        # card went through percent-encoded. Its clients write JSON or multipart only, so anything else is refused.
+        card = {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": self.ANSWER}]}]}
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        route = f"/api/v10/channels/20/messages/{CARD}"
+        # A repeated key: Python's json keeps only the last, a reader that keeps the first would post the card.
+        hidden = json.dumps(card)[:-1] + ', "components": []}'
+        # Review 5: a multipart field Discord reads as JSON (components) with a repeated key, the card \u-escaped.
+        field = lambda value: (b'--b\r\nContent-Disposition: form-data; name="components"\r\n\r\n' + value  # noqa: E731
+                               + b"\r\n--b--\r\n")
+        escaped = json.dumps(card["components"])  # ensure_ascii: the arrow and the footer only as \u escapes
+        for name, content_type, raw in (
+                ("the card under a repeated key", "application/json; charset=utf-8", hidden.encode()),
+                ("a repeated key in a multipart components field", "multipart/form-data; boundary=b",
+                 field(escaped.replace('{"type": 17', '{"type": 17, "type": 17', 1).encode())),
+                ("a multipart field that opens as JSON and is none", "multipart/form-data; boundary=b",
+                 field(escaped[:-1].encode())),
+                ("a repeated key in a multipart payload_json", "multipart/form-data; boundary=b",
+                 b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\n\r\n' + hidden.encode() + b"\r\n--b--\r\n"),
+                ("form-encoded payload_json", "application/x-www-form-urlencoded",
+                 urlencode({"payload_json": json.dumps(card)}).encode()),
+                ("form-encoded fields", "application/x-www-form-urlencoded",
+                 urlencode({"flags": "32768", "components": json.dumps(card["components"])}).encode()),
+                ("plain text", "text/plain", self.ANSWER.encode()),
+                ("multipart that is not form-data", "multipart/mixed; boundary=b",
+                 b"--b\r\nContent-Type: application/json\r\n\r\n" + json.dumps(card).encode() + b"\r\n--b--\r\n"),
+                ("a JSON type that is no JSON", "application/json", b"components=" + json.dumps(card).encode()),
+                # Review 6 and the lead's round 7: only the shapes our clients send, read strictly, then rebuilt.
+                ("payload_json sent with a file name", "multipart/form-data; boundary=b",
+                 b'--b\r\nContent-Disposition: form-data; name="payload_json"; filename="p.json"\r\n'
+                 b"Content-Type: application/json\r\n\r\n" + json.dumps(card).encode() + b"\r\n--b--\r\n"),
+                ("the card in a multipart components field", "multipart/form-data; boundary=b", field(escaped.encode())),
+                ("a field our clients never send", "multipart/form-data; boundary=b",
+                 b'--b\r\nContent-Disposition: form-data; name="content"\r\n\r\nhi\r\n--b--\r\n'),
+                ("a structured message/rfc822 part", "multipart/form-data; boundary=b",
+                 b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: message/rfc822\r\n\r\n'
+                 b"Content-Type: application/json\r\n\r\n" + json.dumps(card).encode() + b"\r\n--b--\r\n"),
+                ("a transfer-encoded part", "multipart/form-data; boundary=b",
+                 b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Transfer-Encoding: base64\r\n\r\n'
+                 + base64.b64encode(json.dumps(card).encode()) + b"\r\n--b--\r\n"),
+                ("two payload_json parts", "multipart/form-data; boundary=b",
+                 b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\n\r\n{}\r\n'
+                 b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\n\r\n' + json.dumps(card).encode()
+                 + b"\r\n--b--\r\n"),
+                ("a file part without a file name", "multipart/form-data; boundary=b",
+                 b'--b\r\nContent-Disposition: form-data; name="files[0]"\r\n\r\nx\r\n--b--\r\n'),
+                ("JSON in UTF-16", "application/json", json.dumps(card).encode("utf-16")),
+                ("NaN in JSON", "application/json", b'{"content": NaN}')):
+            with self.subTest(name):
+                self.seen.clear()
+                status, body = await self.request("PATCH", route, port="discord", proof=False, raw=raw,
+                                                  headers={**bot, "content-type": content_type})
+                self.assertEqual((status, json.loads(body)["error"]), (415, "unsupported-body-encoding"))
+                self.assertFalse([r for r in self.seen if r[1].startswith("/api/v10/channels/20/messages")])
+        status, _ = await self.request("POST", "/api/v10/channels/20/messages", port="discord", proof=False,
+                                       raw=json.dumps({"content": "hi"}).encode(),
+                                       headers={**bot, "content-type": "application/json; charset=utf-8"})
+        self.assertEqual(status, 200)
+
+    async def test_the_forks_and_the_nodes_uploads_pass_and_go_out_as_the_gate_read_them(self):
+        # The lead's round 7: every Discord write goes out as the gate rebuilt it from what it read, so Discord never
+        # parses bytes the gate did not. The senders' real shapes must still pass: the fork's Bun FormData
+        # (messenger/discord.ts, dori send --file: payload_json with no part type, files[n] with its blob type) and the
+        # node's hand-built multipart (owner_notice.py, submission_transport.py: payload_json typed application/json).
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        payload = {"content": "hi", "attachments": [{"id": 0, "filename": "a.txt"}]}
+        fork = ("------WebKitFormBoundaryf\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n\r\n"
+                f"{json.dumps(payload, separators=(',', ':'))}\r\n------WebKitFormBoundaryf\r\n"
+                "Content-Disposition: form-data; name=\"files[0]\"; filename=\"a.txt\"\r\n"
+                "Content-Type: text/plain;charset=utf-8\r\n\r\nhi\r\n------WebKitFormBoundaryf--\r\n").encode()
+        node = ("--n\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n"
+                f"{json.dumps(payload, ensure_ascii=False)}\r\n--n\r\nContent-Disposition: form-data; name=\"files[0]\"; "
+                "filename=\"a.txt\"\r\nContent-Type: application/octet-stream\r\n\r\nhi\r\n--n--\r\n").encode()
+        for name, content_type, raw, file_type in (
+                ("the fork's FormData", "multipart/form-data; boundary=----WebKitFormBoundaryf", fork,
+                 "text/plain"),
+                ("the node's multipart", "multipart/form-data; boundary=n", node, "application/octet-stream")):
+            with self.subTest(name):
+                self.seen.clear()
+                status, _ = await self.request("POST", "/api/v10/channels/20/messages", port="discord", proof=False,
+                                               raw=raw, headers={**bot, "content-type": content_type})
+                self.assertEqual(status, 200)
+                sent = [r for r in self.seen if r[:2] == ("POST", "/api/v10/channels/20/messages")][-1]
+                message = email.parser.BytesParser(policy=email.policy.default).parsebytes(
+                    b"Content-Type: " + sent[2]["content-type"].encode() + b"\r\n\r\n" + sent[3])
+                parts = list(message.iter_parts())
+                self.assertEqual([p.get_param("name", header="content-disposition") for p in parts],
+                                 ["payload_json", "files[0]"])
+                self.assertEqual(json.loads(parts[0].get_payload(decode=True)), payload)
+                self.assertEqual((parts[1].get_filename(), parts[1].get_content_type(),
+                                  parts[1].get_payload(decode=True)), ("a.txt", file_type, b"hi"))
+                self.assertNotIn(b"WebKitFormBoundaryf", sent[3])
+        self.seen.clear()
+        status, _ = await self.request("POST", "/api/v10/channels/20/messages", port="discord", proof=False,
+                                       raw=b'{ "content" : "\\u00e9 hi" }', headers=bot)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.seen[-1][3], '{"content":"\u00e9 hi"}'.encode())
+
+    async def test_an_attached_mail_or_multipart_file_goes_out_as_its_bytes(self):
+        # Review 7 of #370: Bun types a .eml file message/rfc822 (dori send discord --file mail.eml), which a MIME
+        # parser opens as a nested message. A file is the Discord attachment's bytes, never read for structure.
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        payload = {"content": "mail", "attachments": [{"id": 0, "filename": "mail.eml"}]}
+        for ctype, data in (("message/rfc822", b"From: a@example.com\r\nSubject: hi\r\nContent-Type: text/plain\r\n\r\nbody\r\n"),
+                            ("multipart/mixed; boundary=inner",
+                             b"--inner\r\nContent-Type: text/plain\r\n\r\nx\r\n--inner--\r\n")):
+            with self.subTest(ctype):
+                raw = ("------WebKitFormBoundaryf\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n\r\n"
+                       f"{json.dumps(payload)}\r\n------WebKitFormBoundaryf\r\nContent-Disposition: form-data; "
+                       f"name=\"files[0]\"; filename=\"mail.eml\"\r\nContent-Type: {ctype}\r\n\r\n").encode() + data + (
+                    b"\r\n------WebKitFormBoundaryf--\r\n")
+                self.seen.clear()
+                status, _ = await self.request("POST", "/api/v10/channels/20/messages", port="discord", proof=False,
+                                               raw=raw, headers={**bot, "content-type":
+                                                                 "multipart/form-data; boundary=----WebKitFormBoundaryf"})
+                self.assertEqual(status, 200)
+                sent = [r for r in self.seen if r[:2] == ("POST", "/api/v10/channels/20/messages")][-1]
+                boundary = sent[2]["content-type"].split("boundary=", 1)[1].encode()
+                file_part = sent[3].split(b"--" + boundary)[2]
+                self.assertEqual(file_part, b'\r\nContent-Disposition: form-data; name="files[0]"; filename="mail.eml"\r\n'
+                                 + f"Content-Type: {ctype.split(';')[0]}\r\n\r\n".encode() + data + b"\r\n")
+
+    async def test_a_multipart_body_read_one_way_only(self):
+        # A body whose parts a reader could split differently is refused: a closing delimiter before the end, a
+        # delimiter line with trailing padding, a preamble, a folded header or one header twice.
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        part = b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\n\r\n{"content":"hi"}\r\n'
+        for name, raw in (("an early close", part + b"--b--\r\n" + part + b"--b--\r\n"),
+                          ("a padded delimiter", part.replace(b"--b\r\n", b"--b \r\n") + b"--b--\r\n"),
+                          ("a preamble", b"hello\r\n" + part + b"--b--\r\n"),
+                          ("a folded header", part.replace(b'name="payload_json"', b'\r\n name="payload_json"') + b"--b--\r\n"),
+                          ("a header twice", part.replace(b"\r\n\r\n", b"\r\nContent-Type: application/json\r\n"
+                                                          b"Content-Type: application/json\r\n\r\n") + b"--b--\r\n"),
+                          ("no close", part)):
+            with self.subTest(name):
+                self.seen.clear()
+                status, _ = await self.request("POST", "/api/v10/channels/20/messages", port="discord", proof=False,
+                                               raw=raw, headers={**bot, "content-type": "multipart/form-data; boundary=b"})
+                self.assertEqual(status, 415)
+                self.assertFalse([r for r in self.seen if r[0] == "POST"])
+
+    async def test_a_tap_leaves_a_receipt_only_when_discord_took_the_fold_and_the_receipt_is_the_proof(self):
+        # Review 6 of #370 and its challenge: the gate's own record of the owner's tap is the proof, never the card text.
+        self.open_card(CARD)
+        self.press(message=CARD)
+        self.assertEqual((await self.tap_update())[0], 200)
+        rows = self.service.records("card-receipts.jsonl")
+        self.assertEqual([(r["channel"], r["message"], r["qid"], r["answer"]) for r in rows],
+                         [("20", CARD, "Q13", "\uc624\ub298 \uc0dd\uae34 \uba54\ubaa8 \uc5c6\ub294 \uac78 \ud734\uc9c0\ud1b5\uc73c\ub85c")])
+        status, _ = await self.request("DELETE", "/www.googleapis.com/calendar/v3/calendars/primary/events/e",
+                                       origin=f"20/{CARD}")
+        self.assertEqual(status, 200)
+        other = snowflake(dt.timedelta(minutes=40))
+        self.callback_status = 400  # Discord refused the fold (an expired interaction): no receipt, no proof
+        self.open_card(other)
+        self.press(message=other, interaction="557")
+        self.assertEqual((await self.tap_update(interaction="557"))[0], 400)
+        self.assertEqual([r["message"] for r in self.service.records("card-receipts.jsonl")], [CARD])
+        self.answer_card(other, receipt=False)
+        status, body = await self.request(origin=f"20/{other}")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
+
+    async def test_the_tapped_answer_must_be_the_pressed_option_as_written(self):
+        # The challenge of round 7: comparing with every backslash taken out let a pressed a\_b pass an answer a_b.
+        self.open_card()
+        self.card_answers["3010"]["components"][0]["components"][1]["components"][0]["content"] = (
+            "**1.** read `https://discord.com/a\\_b`")
+        foot = "\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47"
+        for answer, status in (("read `https://discord.com/a_b`", 403), ("read `https://discord.com/a\\_b`", 200)):
+            with self.subTest(answer):
+                self.service.taps.clear()
+                self.press()
+                self.assertEqual((await self.tap_update(f"\u2705 **Q13** \uc9c8\ubb38\n\u2192 **{answer}**{foot}"))[0], status)
+
+    def test_the_answer_mark_scan_stays_linear_on_crafted_whitespace(self):
+        # Review 4 of #370: the mark regex's overlapping whitespace runs backtracked quadratically on a line of spaces
+        # with no middle dot, before the tap check and the 4000-character ceiling. The scan is a line parser now.
+        crafted = ("\u2192\n-# " + " " * 50000, "\u2192\n-#" + "\t " * 25000 + "x", "\u2192\n" + "-# \u00a0" * 20000,
+                   "\u2192\n" + "  -# ·\n" * 20000)
+        for text in crafted:
+            started = time.perf_counter()
+            self.assertFalse(self.service.card_answer_text(text))
+            # The behavior under test is the time itself: the old regex took minutes on these.
+            self.assertLess(time.perf_counter() - started, 1.0)
+        for text in (self.ANSWER, self.ANSWER.replace("-# \ubc84\ud2bc \u00b7", " \t-#\t \ubc84\ud2bc\t \u00b7"),
+                     self.ANSWER.replace("\n-# ", "\r\n-#").replace("\ubc84\ud2bc \u00b7", "\ubc84\ud2bc\u00b7")):
+            self.assertTrue(self.service.card_answer_text(text), text)
+        for text in (self.ANSWER.replace("\u2192", "->"), self.ANSWER.replace("\ubc84\ud2bc", "\ub2f5\uae00"),
+                     self.ANSWER.replace("-# ", "# "), self.ANSWER.replace(" \u00b7", "")):
+            self.assertFalse(self.service.card_answer_text(text), text)
+
+    async def test_a_url_in_the_owners_card_answer_is_an_owner_link_and_one_in_the_question_is_not(self):
+        # Review 3 of #370: a card's text sits in its components, so the chosen answer is the owner's words.
+        self.page("example.net", "/page", "chosen", content_type="text/plain")
+        self.page("asked.example", "/q", "asked", content_type="text/plain")
+        # Review 5: the question may hold a line that reads like an answer; the answer is the card's last one.
+        self.answer_card(text="\u2705 **Q13** https://asked.example/q \uc77d\uc744\uae4c?\n\u2192 **https://asked.example/q**\n"
+                              "\u2192 **https://example.net/page \uc77d\uc5b4**\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47")
+        status, body = await self.web("/fetch?url=" + quote("https://example.net/page", safe=""), origin=f"20/{CARD}")
+        self.assertEqual(status, 200, body)
+        self.assertIn("chosen", body.decode())
+        status, body = await self.web("/fetch?url=" + quote("https://asked.example/q", safe=""), origin=f"20/{CARD}")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "url-without-source"))
+        self.assertEqual([seen[0] for seen in self.web_seen], ["example.net"])
+
+    async def test_a_question_holding_answer_like_lines_or_a_multiline_option_still_folds_on_the_owners_tap(self):
+        # Review 5 of #370: the answer was cut at the first "\n→ **", inside such a question, so the real tap was refused.
+        self.open_card()
+        self.card_answers["3010"]["components"][0]["components"][2]["components"][0]["content"] = "**2.** \uc904 \ud558\ub098\n\uc904 \ub458"
+        head = "\u2705 **Q13** \uc608:\n\u2192 **old**\n-# \ubc84\ud2bc \u00b7 1"
+        foot = "\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47"
+        first, second = "\uc624\ub298 \uc0dd\uae34 \uba54\ubaa8 \uc5c6\ub294 \uac78 \ud734\uc9c0\ud1b5\uc73c\ub85c", "\uc904 \ud558\ub098\n\uc904 \ub458"
+        for name, custom_id, text, status in (
+                ("answer-like lines in the question", "q:Q13:0", f"{head}\n\u2192 **{first}**{foot}", 200),
+                ("a two-line option", "q:Q13:1", f"\u2705 **Q13** \uc9c8\ubb38\n\u2192 **{second}**{foot}", 200),
+                ("the pressed option only inside the question", "q:Q13:0",
+                 f"\u2705 **Q13** x\n\u2192 **{first}**\n\u2192 **\ub458 \ub2e4 \ub454\ub2e4**{foot}", 403)):
+            with self.subTest(name):
+                self.service.taps.clear()
+                self.press(custom_id=custom_id)
+                self.assertEqual((await self.tap_update(text))[0], status)
+        self.answer_card(text=f"{head}\n\u2192 **{first}**{foot}")
+        status, _ = await self.request("DELETE", "/www.googleapis.com/calendar/v3/calendars/primary/events/e",
+                                       origin=f"20/{CARD}")
+        self.assertEqual(status, 200)
+
+    async def test_a_repeated_tap_on_an_already_folded_card_updates_it_unchanged(self):
+        self.answer_card("3010")
+        self.press(interaction="556")
+        self.assertEqual((await self.tap_update(interaction="556"))[0], 200)
+
+    async def test_a_card_answer_counts_24_hours_from_the_cards_posting_whatever_its_edits(self):
+        # Review 3 of #370: a later edit of the bot's own message moves edited_timestamp, never the id's time.
+        old = snowflake(dt.timedelta(hours=25))
+        self.answer_card(old)
+        status, body = await self.request(origin=f"20/{old}")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
+        self.assertFalse(self.writes())
+
+    async def test_card_answers_off_refuses_a_stored_card_answer_and_keeps_typed_messages(self):
+        self.answer_card()
+        self.config["owner_proof"]["card_answers"] = False
+        self.assertEqual((await self.request(origin=f"20/{CARD}"))[0], 403)
+        self.assertEqual((await self.request())[0], 200)
+
+    async def test_the_gateway_session_identifies_and_records_each_tap(self):
+        # A fake Discord gateway: HELLO, then READY and one INTERACTION_CREATE after the gate identifies.
+        identified = asyncio.get_running_loop().create_future()
+
+        def frame(event):
+            data = json.dumps(event).encode()
+            return bytes([0x81, 126]) + len(data).to_bytes(2, "big") + data if len(data) >= 126 else bytes([0x81, len(data)]) + data
+
+        async def gateway(reader, writer):
+            head = (await reader.readuntil(b"\r\n\r\n")).decode()
+            key = re.search(r"(?i)sec-websocket-key: (\S+)", head)[1]
+            accept = base64.b64encode(hashlib.sha1((key + gate.WS_GUID).encode()).digest()).decode()
+            writer.write(f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                         f"Sec-WebSocket-Accept: {accept}\r\n\r\n".encode() + frame({"op": 10, "d": {"heartbeat_interval": 41250}}))
+            opcode, payload = await gate.ws_read(reader)
+            identified.set_result(json.loads(payload))
+            writer.write(frame({"op": 0, "s": 1, "t": "READY", "d": {}}) + frame({"op": 0, "s": 2, "t": "INTERACTION_CREATE", "d": {
+                "id": "777", "type": 3, "channel_id": "20", "member": {"user": {"id": "1"}},
+                "message": {"id": "3010", "author": {"id": "7", "bot": True}}, "data": {"custom_id": "q:Q13:0", "component_type": 2}}}))
+            await writer.drain()
+            with contextlib.suppress(asyncio.IncompleteReadError, ConnectionError):
+                await reader.read()
+        server = await asyncio.start_server(gateway, "127.0.0.1", 0)
+        self.addCleanup(server.close)
+        config = json.loads(json.dumps(self.config))
+        config["owner_proof"]["gateway_url"] = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/?v=10&encoding=json"
+        config["listen"] = dict(connect=0, google=0, discord=0)
+        service = gate.Gate(config)
+        seen = asyncio.Event()
+        original = service.saw_interaction
+        service.saw_interaction = lambda event: (original(event), seen.set())
+        await service.start()
+        self.addAsyncCleanup(service.close)
+        hello = await asyncio.wait_for(identified, 5)
+        self.assertEqual((hello["op"], hello["d"]["token"], hello["d"]["intents"]), (2, "MTIz.fake.fake", 0))
+        await asyncio.wait_for(seen.wait(), 5)
+        self.assertEqual({k: v for k, v in service.taps["777"].items() if k != "at"},
+                         {"user": "1", "kind": 3, "component": 2, "custom_id": "q:Q13:0", "message": "3010",
+                          "channel": "20", "author": "7", "parts": []})
 
     async def test_calendar_notifications_are_disabled(self):
         status, _ = await self.request(path="/www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&sendNotifications=true")
