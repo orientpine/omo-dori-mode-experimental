@@ -71,7 +71,8 @@ phone, compares the ten groups of the fingerprint with the printed ones and taps
 credential: hand them over privately, never in a channel. `doriface-host devices list` shows the paired device.
 
 If a row is gone from the app (its terminal was closed there, or the hc core restarted), `doriterm-bridges.timer`
-starts it again within a minute (below); `bun bridge.ts` in this folder does it at once.
+starts it again within a minute (below); `systemctl --user start doriterm-bridges.service` does it at once, with this
+host's list (`bun bridge.ts` alone reads only the environment it is given, without the list: the one `zzangdori` row).
 
 ## Six Doris on one host
 

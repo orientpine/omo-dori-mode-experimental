@@ -1,6 +1,9 @@
 [Unit]
 Description=doriterm bridges: start any bridge row (DORITERM_BRIDGES) that ended or was closed, while doriface-host runs
 After=doriface-host.service
+# stopping the host also stops a refresh that is running, so it cannot start an hc core and sudo clients after the host's
+# ExecStopPost stopped them
+PartOf=doriface-host.service
 
 [Service]
 Type=oneshot
