@@ -254,6 +254,9 @@ export type AcquireOptions<T> = {
   // the job at the front of the line, refused here for load, full slots or headroom (not while a new job settles), or a
   // job behind only jobs that wait for this host alone (plain dori heavy): a started run on another host, or null
   readonly elsewhere?: (wait: string) => Promise<T | null>;
+  // true once no other host will take the job (every helper refused it): its ticket turns "local" in its place, so jobs
+  // behind it may still go to a helper, and elsewhere is not asked again
+  readonly nowhere?: () => boolean;
   // the job's own memory estimate in KB (dori heavy --mem)
   readonly memKb?: number;
   // ask elsewhere also while this host only waits for a just-taken job to show its load (dori heavy --kind: the other
@@ -266,9 +269,14 @@ export type AcquireOptions<T> = {
 export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOptions<T> = {}): Promise<Acquired<T>> => {
   mkdirSync(deps.dir, { recursive: true });
   const ticket = enqueue(deps, label, opts.since ?? deps.clock.now(), opts.elsewhere ? "any" : "local");
+  let local = !opts.elsewhere;
   try {
     let waiting = "";
     for (;;) {
+      if (!local && opts.nowhere?.()) {
+        writeFileSync(ticket, "local");
+        local = true;
+      }
       const names = line(deps);
       const ahead = names.slice(0, Math.max(0, names.indexOf(basename(ticket))));
       const t: Try | null = ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await withLock(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec));
@@ -281,7 +289,7 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
         deps.log?.(`HEAVY_WAIT ${label}: ${t.why}`);
         waiting = t.wait;
       }
-      if (t && opts.elsewhere && (localOnlyAhead || (t.wait !== "queue" && (t.wait !== "settle" || opts.elsewhereWhileSettling)))) {
+      if (t && opts.elsewhere && !local && (localOnlyAhead || (t.wait !== "queue" && (t.wait !== "settle" || opts.elsewhereWhileSettling)))) {
         const got = await opts.elsewhere(t.why);
         if (got !== null) return { elsewhere: got };
       }
