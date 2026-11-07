@@ -202,7 +202,7 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   await deps.registry.write({ ...clean, key: "old", thread: "none", brief: "/nope.md", openedAt: "2026-10-14T00:00:00.000Z" });
   const inbox = await write("inbox.jsonl", "");
   const quiet = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
-  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 42 directives, no gap"]);
+  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 44 directives, no gap"]);
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
   expect(sent(world)).toEqual([]);
   // a lane whose brief lacks a directive and has no thread, and a standing directive of the owner nobody put in the ledger
@@ -667,6 +667,45 @@ test("model-defaults reaches every lane's brief, whatever the brief is about and
   }
   expect(directiveText(e).startsWith("[형 지침 model-defaults, 2026-11-06]\n")).toBe(true);
   expect(hasDirective(`${fields}\n${directiveText(e)}\n`, e)).toBe(true);
+});
+
+// the owner 2026-11-07: every Dori uses Aside. His entry and the lead's one-line how (aside-web-how) both go into every
+// lane's brief, so no model pick, hint slot or coverage rule can leave the how out (lead decision)
+test("aside-web and its how reach every brief, whatever the brief says and whatever the small model picks", () => {
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
+  const owner = ledger.entries.find((x) => x.id === "aside-web")!;
+  const how = ledger.entries.find((x) => x.id === "aside-web-how")!;
+  expect([owner.scope.all, how.scope.all, owner.mode, how.mode]).toEqual([true, true, "inject", "inject"]);
+  expect(directiveText(owner)).toBe("[형 지침 aside-web, 2026-11-07]\n모든 도리는 Aside를 쓴다.");
+  const web = "[목표] 형이 로그인해 둔 사이트의 대시보드에서 숫자를 읽어 정리한다.";
+  const off = "[목표] 탁구 녹화 화면의 글자를 고친다.";
+  const withHis = `${web}\n\n${directiveText(owner)}\n`;
+  for (const brief of [web, off, withHis]) {
+    for (const pick of [undefined, { model: "m", picked: [{ id: "report-table", why: "x" }] }]) {
+      const ids = planDirectives(brief, ledger, scopeContext(brief, ledger, { repo: "r" }), {}, pick).add.map(({ e }) => e.id);
+      expect(ids).toContain("aside-web-how");
+      expect(ids.includes("aside-web")).toBe(brief !== withHis);
+    }
+  }
+  expect(how.rule).not.toContain("\n");
+  for (const part of ["aside exec", "aside repl", "aside mcp", "aside host list", "몰래 바꾸지", "승인 카드"]) expect(how.rule).toContain(part);
+  expect(textDirectives("Aside 쓰는 스레드", ledger, { all: true }).map(({ e }) => e.id)).toEqual(expect.arrayContaining(["aside-web", "aside-web-how"]));
+});
+
+// an every-lane entry is in a message's hints only when its own keywords are in the owner's text (lead decision 2026-11-07):
+// a lead answering a lookup without a lane still sees Aside, the how keeps its slot in a full row, and no other every-lane
+// entry (none has keywords) starts showing up in hints
+test("every-lane entries join an owner message's hints by their own keywords only: Aside and its how appear, the rest stay out", () => {
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
+  const line = (id: string) => directiveLine(ledger.entries.find((x) => x.id === id)!);
+  expect(messageLines("이 사이트에서 이거 찾아서 정리해 로그인 돼 있어", ledger)).toEqual(expect.arrayContaining([line("aside-web"), line("aside-web-how")]));
+  const full = messageLines("이 사이트 영상 전사해서 발표 자료로 정리해", ledger);
+  expect(full).toHaveLength(5);
+  expect(full).toContain(line("aside-web-how"));
+  const everyLane = new Set(ledger.entries.filter((e) => e.scope.all).map((e) => e.id));
+  for (const msg of ["이 PC에서 강화학습 돌려", "오늘 점심 뭐 먹지", "그리고 카드처리해 서류 준비하고 있어", "원본 main에 들어간 것만 이식"]) {
+    expect(textDirectives(msg, ledger).filter(({ e }) => everyLane.has(e.id))).toEqual([]);
+  }
 });
 
 test("no scope narrowed for briefs hits the eight-step template by itself: it would be every lane again", async () => {

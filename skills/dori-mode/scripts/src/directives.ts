@@ -430,6 +430,7 @@ export const appliesWhy = (e: Directive, ctx: ScopeContext): string | undefined 
   }
   return undefined;
 };
+const keywordWhy = (e: Directive, ctx: ScopeContext): string | undefined => appliesWhy({ ...e, scope: { keywords: e.scope.keywords ?? [] } }, ctx);
 
 // --- the small model that reads a brief at launch (owner Q482): every-lane entries, blocks and require entries stay fixed ---
 
@@ -531,8 +532,9 @@ export const textDirectives = (text: string, ledger: Ledger, opts: { readonly al
   const ctx = scopeContext(text, { ...ledger, minHits: 1 }, { repo: "" });
   const out: { e: Directive; why: string; rank: number }[] = [];
   for (const [i, e] of ledger.entries.entries()) {
-    if (e.mode === "require" || e.block || ((e.scope.all || e.scope.briefOnly) && !opts.all)) continue;
-    const why = e.scope.briefOnly ? "all lanes" : appliesWhy(e, ctx);
+    if (e.mode === "require" || e.block || (e.scope.briefOnly && !opts.all)) continue;
+    // an every-lane entry joins a message's hints only when its own keywords are in the text (every lane gets it anyway)
+    const why = e.scope.all && !opts.all ? keywordWhy(e, ctx) : e.scope.briefOnly ? "all lanes" : appliesWhy(e, ctx);
     if (!why) continue;
     const shown = e.mode === "inject" ? (pointerOf(e, ledger) ?? e) : e;
     if (out.some((x) => x.e.id === shown.id)) continue;
