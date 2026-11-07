@@ -53,6 +53,8 @@ type State = { seq: number; questions: Question[] };
 export class QuestionError extends Error {}
 
 const CLAIM_WAIT_MS = 10_000;
+const STORE_WAIT_MS = 5_000;
+const STORE_POLL_MS = 5;
 const CLAIM_POLL_MS = 50;
 
 export class QuestionStore {
@@ -78,6 +80,30 @@ export class QuestionStore {
     renameSync(tmp, this.file);
   }
 
+  // Every read-modify-write of questions.json holds the store lock (takeLock on questions.lock), so a write of one
+  // process never restores what another just wrote, a tapped answer included (review 4 of #374). It is held only for
+  // the file work, never across a network call: lock order is the question's claim first, the store lock inside it,
+  // and nothing takes a claim while holding the store lock, so the two cannot deadlock.
+  private locked<T>(work: () => T): T {
+    const lock = `${this.file.replace(/\.json$/, "")}.lock`;
+    for (let waited = 0; ; waited += STORE_POLL_MS) {
+      let release: (() => void) | undefined;
+      try {
+        release = takeLock(lock, Date.now(), "question store", "questions.json");
+      } catch (e) {
+        if (!(e instanceof CheckpointError)) throw e;
+        if (waited >= STORE_WAIT_MS) throw new QuestionError("the question store stayed locked; try again");
+        Bun.sleepSync(STORE_POLL_MS);
+        continue;
+      }
+      try {
+        return work();
+      } finally {
+        release();
+      }
+    }
+  }
+
   all(): Question[] {
     return this.load().questions;
   }
@@ -87,6 +113,10 @@ export class QuestionStore {
   }
 
   create(text: string, options: readonly string[], channel: string, meta: QuestionMeta, at: string): Question {
+    return this.locked(() => this.created(text, options, channel, meta, at));
+  }
+
+  private created(text: string, options: readonly string[], channel: string, meta: QuestionMeta, at: string): Question {
     const s = this.load();
     s.seq += 1;
     const q: Question = { id: `Q${s.seq}`, text, options: [...options], channel, thread: meta.thread ?? null, session: meta.session ?? null, tmux: meta.tmux ?? null, ...(meta.channelWhy ? { channelWhy: meta.channelWhy } : {}), ...(meta.replyTo ? { replyTo: meta.replyTo } : {}), created: at, status: "open" };
@@ -105,17 +135,19 @@ export class QuestionStore {
   }
 
   setMessage(id: string, message: string): void {
-    this.update(id, (q) => {
+    this.locked(() => this.update(id, (q) => {
       q.message = message;
-    });
+    }));
   }
 
   answer(id: string, value: string, kind: AnswerKind, at: string): Question | null {
-    const current = this.get(id);
-    if (!current || current.status !== "open") return null;
-    const q = this.update(id, (x) => Object.assign(x, { status: "answered", answer: value, answerKind: kind, answeredAt: at })) ?? null;
-    if (q) appendFileSync(this.answersFile, `${JSON.stringify(q)}\n`, { mode: 0o600 });
-    return q;
+    return this.locked(() => {
+      const current = this.get(id);
+      if (!current || current.status !== "open") return null;
+      const q = this.update(id, (x) => Object.assign(x, { status: "answered", answer: value, answerKind: kind, answeredAt: at })) ?? null;
+      if (q) appendFileSync(this.answersFile, `${JSON.stringify(q)}\n`, { mode: 0o600 });
+      return q;
+    });
   }
 
   // One writer per question across processes: the listener folds taps while dori resolve and dori reopen run as other
@@ -134,16 +166,20 @@ export class QuestionStore {
   }
 
   reopen(id: string): Question | undefined {
-    return this.update(id, (q) => {
+    return this.locked(() => this.update(id, (q) => {
       q.status = "open";
       delete q.answer;
       delete q.answerKind;
       delete q.answeredAt;
-    });
+    }));
   }
 
   // open cards asked from one session belong to another from now on (dori handover); returns the ids moved
   retarget(from: QuestionMeta, to: QuestionMeta): string[] {
+    return this.locked(() => this.retargeted(from, to));
+  }
+
+  private retargeted(from: QuestionMeta, to: QuestionMeta): string[] {
     const s = this.load();
     const moved: string[] = [];
     for (const q of s.questions) {
@@ -166,6 +202,10 @@ export class QuestionStore {
   }
 
   resolve(id: string): boolean {
+    return this.locked(() => this.forget(id));
+  }
+
+  private forget(id: string): boolean {
     const s = this.load();
     const before = s.questions.length;
     s.questions = s.questions.filter((q) => q.id !== id);

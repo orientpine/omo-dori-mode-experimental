@@ -357,6 +357,22 @@ test("dori resolve or reopen, another process on the same store, waits for a tap
   expect(store.get("Q5")?.status).toBe("open");
 });
 
+test("two processes changing the question store at once both keep their writes: every read-modify-write holds the store lock (review 4 of #374)", async () => {
+  // The listener and dori ask, resolve and reopen each read questions.json whole and write it back; without one lock
+  // a write of one process could restore a question another had just answered to open.
+  state = withState();
+  const dir = `${state.dir}/discord`;
+  const writer = (name: string) => Bun.spawn(["bun", "-e", `const { QuestionStore } = await import(${JSON.stringify(`${import.meta.dir}/../src/messenger/discord-cards.ts`)}); const store = new QuestionStore(${JSON.stringify(dir)}); for (let i = 0; i < 150; i++) { const q = store.create("${name} " + i, ["Yes"], "1", {}, "2026-01-02T03:04:00Z"); store.setMessage(q.id, "m" + i); store.answer(q.id, "Yes", "button", "2026-01-02T03:04:00Z"); }`], { stdout: "pipe", stderr: "pipe" });
+  const procs = [writer("a"), writer("b")];
+  const codes = await Promise.all(procs.map((p) => p.exited));
+  expect(codes).toEqual([0, 0]);
+  const questions = new QuestionStore(dir).all();
+  expect(questions).toHaveLength(300);
+  expect(new Set(questions.map((q) => q.id)).size).toBe(300);
+  expect(questions.filter((q) => q.status === "answered" && q.message)).toHaveLength(300);
+  expect(readFileSync(`${dir}/answers.jsonl`, "utf8").trim().split("\n")).toHaveLength(300);
+});
+
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {
   const { cards, seen } = setup();
   await expect(cards.ask("Ship?", [])).rejects.toBeInstanceOf(QuestionError);
