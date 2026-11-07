@@ -79,7 +79,11 @@ host's list (`bun bridge.ts` alone reads only the environment it is given, witho
 One paired phone reaches every Dori on the machine: one row per Dori, each a bridge terminal attached to that Dori's
 own herdr server. The host runs on one account (here oriclaw, the `zzangdori` row); the other Doris' rows attach as
 their own accounts with `sudo -n -u <account> -H` (`attach.sh <account>`), so the herdr servers, sockets and panes
-stay each account's and nothing runs on the other accounts beyond the herdr client while a row is open. It needs a
+stay each account's and nothing runs on the other accounts beyond the herdr client while a row is open. A new herdr
+client opens on the tab its server focused last (a lane, a stray shell), so before each attach `attach.sh` focuses the
+lead's tab the way herdr-web does for a new browser terminal: the account's own `herdr-web/terminal.ts` with its Dori
+config (`~/.<user>/config.json` for an instance account, else `~/.dori/config.json`). herdr's `tab focus` moves every
+client of that server, as a herdr-web attach already does; it happens when a row attaches, not each time it is opened. It needs a
 NOPASSWD sudo rule from the host account to each Dori account (the same rule `node-dori-do` uses). No other account
 gets a host, a relay connection or a listening port, so an egress-gated account (yoodori's dori-gate) is not widened:
 the client only talks to its account's herdr unix socket.
