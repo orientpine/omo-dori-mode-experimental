@@ -229,13 +229,17 @@ test("the system programs a job starts through its venv links or its first word 
   const bin = join(state.dir, "bin");
   mkdirSync(bin);
   writeFileSync(join(bin, "mytool"), "#!/bin/sh\n", { mode: 0o755 });
-  const sh = Bun.which("sh", { PATH: "/usr/local/bin:/usr/bin:/bin" })!;
+  mkdirSync(join(work, "tools"));
+  writeFileSync(join(work, "tools", "build"), "#!/bin/sh\n", { mode: 0o755 });
 
-  // When / Then
+  // When / Then: a path or link goes as that path; a bare name is looked up on the helper's own box PATH
   const venv = spreadPlan(jobOf([".venv/bin/python", "run.py"]), who);
-  expect(venv.ok && venv.needs).toEqual(["/usr/bin/python3.99"]);
+  expect(venv.ok && [venv.needs, venv.which]).toEqual([["/usr/bin/python3.99"], []]);
   const shell = spreadPlan(jobOf(["sh", "-c", "true"]), who);
-  expect(shell.ok && shell.needs).toEqual(["/usr/bin/python3.99", sh]);
+  expect(shell.ok && [shell.needs, shell.which]).toEqual([["/usr/bin/python3.99"], ["sh"]]);
+  // --env PATH is the box's PATH too: a tool in a --sync path is found there, one elsewhere is not
+  expect(spreadPlan(jobOf(["build"], { env: { PATH: `${join(work, "tools")}:/usr/bin` } }), who).ok).toBe(true);
+  expect(spreadPlan(jobOf(["mytool"], { env: { PATH: `${bin}:/usr/bin` } }), who)).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool on the job's --env PATH, which is not in a --sync path` });
   expect(spreadPlan(jobOf(["mytool"]), { ...who, path: `${bin}:/usr/bin:/bin` })).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool, which is in no --sync path and no system folder, so a helper has none` });
   expect(spreadPlan(jobOf(["../x"]), who)).toEqual({ ok: false, why: `the command ../x is ${join(state.dir, "x")}, which is not in a --sync path` });
   expect(spreadPlan(jobOf(["bun", "test"]), { ...who, path: bin }).ok).toBe(true);
@@ -279,9 +283,26 @@ test("a command the helper's box cannot start ends with the exit code a shell gi
   } finally {
     process.stderr.write = write;
   }
-  expect(err.join("")).toContain(`${join(work, "nope")}: No such file or directory`);
+  expect(err.join("")).toContain(`${join(work, "nope")}: not found`);
   expect(err.join("")).toContain(`${join(work, "plain.txt")}: Permission denied`);
 }, 60_000);
+
+test("a command that ran and printed a start failure line itself keeps its own exit code", async () => {
+  // Given
+  holdSlot();
+  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] });
+  // When
+  const r = await spread(ctx, jobOf(["sh", "-c", "echo 'bwrap: execvp missing: No such file or directory' >&2; exit 1"]));
+  // Then
+  expect(r).toEqual({ code: 1 });
+}, 60_000);
+
+test("a helper whose box PATH has no program by the job's bare command name refuses and names it", () => {
+  // When
+  const p = Bun.spawnSync([...helperArgv(), "exec", "t", "cpu", "100", "which=no-such-program-dori"], { stdin: "ignore", stderr: "pipe" });
+  // Then
+  expect(p.stderr.toString()).toContain("WORKER_REFUSED no no-such-program-dori on this host's box PATH (the job's command)");
+});
 
 test("an argument's paths are found after = , and : but a URL's // is not a path", () => {
   expect(pathsIn("--out=/tmp/a,/tmp/b")).toEqual(["/tmp/a", "/tmp/b"]);
