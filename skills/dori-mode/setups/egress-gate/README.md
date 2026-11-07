@@ -80,9 +80,11 @@ out as the gate rebuilt it: JSON (UTF-8, no repeated key, no NaN or Infinity) is
 `multipart/form-data` is taken only in the shape the Dori's clients send (one `payload_json`, no file name, typed
 `application/json` or untyped, and `files[n]` each with a file name; each part carrying only `Content-Disposition` and
 `Content-Type`) and rebuilt with a fresh boundary (WAFFLED, arXiv 2503.10846: a reader that checks one parse and
-forwards the bytes is bypassed wherever parsers disagree). Any other body (form-encoded, other multipart fields, a
-structured or transfer-encoded part, a second `payload_json`, a file part without a name, JSON that does not parse) is
-refused before it is sent (`415 unsupported-body-encoding`).
+forwards the bytes is bypassed wherever parsers disagree). The parts are split at the boundary only: a file goes out
+as its bytes whatever its type (a `.eml` file is `message/rfc822`), and only `payload_json` is read. Any other body
+(form-encoded, other multipart fields, a structured or transfer-encoded `payload_json`, a second `payload_json`, a file
+part without a name, JSON that does not parse, a close delimiter before the end, a padded delimiter, a preamble, a
+folded or repeated part header) is refused before it is sent (`415 unsupported-body-encoding`).
 
 A dashboard order is the other proof (owner 2026-10-21 23:23 KST "문지기가 대시보드 지시도
 형 명령으로 인정"): `X-Dori-Owner-Order: <n>` (the dashboard order number, 1-999999999) when no

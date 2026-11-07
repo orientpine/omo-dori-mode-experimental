@@ -810,6 +810,49 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.seen[-1][3], '{"content":"\u00e9 hi"}'.encode())
 
+    async def test_an_attached_mail_or_multipart_file_goes_out_as_its_bytes(self):
+        # Review 7 of #370: Bun types a .eml file message/rfc822 (dori send discord --file mail.eml), which a MIME
+        # parser opens as a nested message. A file is the Discord attachment's bytes, never read for structure.
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        payload = {"content": "mail", "attachments": [{"id": 0, "filename": "mail.eml"}]}
+        for ctype, data in (("message/rfc822", b"From: a@example.com\r\nSubject: hi\r\nContent-Type: text/plain\r\n\r\nbody\r\n"),
+                            ("multipart/mixed; boundary=inner",
+                             b"--inner\r\nContent-Type: text/plain\r\n\r\nx\r\n--inner--\r\n")):
+            with self.subTest(ctype):
+                raw = ("------WebKitFormBoundaryf\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n\r\n"
+                       f"{json.dumps(payload)}\r\n------WebKitFormBoundaryf\r\nContent-Disposition: form-data; "
+                       f"name=\"files[0]\"; filename=\"mail.eml\"\r\nContent-Type: {ctype}\r\n\r\n").encode() + data + (
+                    b"\r\n------WebKitFormBoundaryf--\r\n")
+                self.seen.clear()
+                status, _ = await self.request("POST", "/api/v10/channels/20/messages", port="discord", proof=False,
+                                               raw=raw, headers={**bot, "content-type":
+                                                                 "multipart/form-data; boundary=----WebKitFormBoundaryf"})
+                self.assertEqual(status, 200)
+                sent = [r for r in self.seen if r[:2] == ("POST", "/api/v10/channels/20/messages")][-1]
+                boundary = sent[2]["content-type"].split("boundary=", 1)[1].encode()
+                file_part = sent[3].split(b"--" + boundary)[2]
+                self.assertEqual(file_part, b'\r\nContent-Disposition: form-data; name="files[0]"; filename="mail.eml"\r\n'
+                                 + f"Content-Type: {ctype.split(';')[0]}\r\n\r\n".encode() + data + b"\r\n")
+
+    async def test_a_multipart_body_read_one_way_only(self):
+        # A body whose parts a reader could split differently is refused: a closing delimiter before the end, a
+        # delimiter line with trailing padding, a preamble, a folded header or one header twice.
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        part = b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\n\r\n{"content":"hi"}\r\n'
+        for name, raw in (("an early close", part + b"--b--\r\n" + part + b"--b--\r\n"),
+                          ("a padded delimiter", part.replace(b"--b\r\n", b"--b \r\n") + b"--b--\r\n"),
+                          ("a preamble", b"hello\r\n" + part + b"--b--\r\n"),
+                          ("a folded header", part.replace(b'name="payload_json"', b'\r\n name="payload_json"') + b"--b--\r\n"),
+                          ("a header twice", part.replace(b"\r\n\r\n", b"\r\nContent-Type: application/json\r\n"
+                                                          b"Content-Type: application/json\r\n\r\n") + b"--b--\r\n"),
+                          ("no close", part)):
+            with self.subTest(name):
+                self.seen.clear()
+                status, _ = await self.request("POST", "/api/v10/channels/20/messages", port="discord", proof=False,
+                                               raw=raw, headers={**bot, "content-type": "multipart/form-data; boundary=b"})
+                self.assertEqual(status, 415)
+                self.assertFalse([r for r in self.seen if r[0] == "POST"])
+
     async def test_a_tap_leaves_a_receipt_only_when_discord_took_the_fold_and_the_receipt_is_the_proof(self):
         # Review 6 of #370 and its challenge: the gate's own record of the owner's tap is the proof, never the card text.
         self.open_card(CARD)

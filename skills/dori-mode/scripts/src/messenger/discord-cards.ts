@@ -271,6 +271,7 @@ export const openCardIds = (store: QuestionStore, thread: string): string[] => s
 
 export class QuestionCards {
   readonly statuses: ThreadStatusQueue;
+  private readonly folding = new Set<string>();
 
   constructor(
     private readonly dc: Discord,
@@ -393,13 +394,25 @@ export class QuestionCards {
     } else return { kind: "ignored" };
     // The answer is recorded only once the callback was taken: the egress gate (or Discord) can refuse the fold, and a
     // question answered here but still open on the card would be lost (round 7 of #370).
+    // Taps are handled at once, so the question is held while its fold is in flight: a second tap folding another
+    // answer would leave the card and the gate's tap receipt saying one answer and the store another (review 7 of #370).
+    // It is only acknowledged; a fold Discord refuses frees the question for the next tap.
     const current = this.store.get(qid);
+    if (this.folding.has(qid)) {
+      await this.respond(i, { type: ACK_UPDATE });
+      return { kind: "stale", qid };
+    }
     const at = this.at();
     const folded: Question | null = value && current?.status === "open" ? { ...current, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
     const shown = folded ?? current;
-    await this.respond(i, shown ? { type: UPDATE_MESSAGE, data: { components: this.card(shown) } } : { type: ACK_UPDATE });
-    const answered = folded ? this.store.answer(qid, value, kind, at) : null;
-    return answered ? { kind: "answered", question: answered } : { kind: "stale", qid };
+    if (folded) this.folding.add(qid);
+    try {
+      await this.respond(i, shown ? { type: UPDATE_MESSAGE, data: { components: this.card(shown) } } : { type: ACK_UPDATE });
+      const answered = folded ? this.store.answer(qid, value, kind, at) : null;
+      return answered ? { kind: "answered", question: answered } : { kind: "stale", qid };
+    } finally {
+      if (folded) this.folding.delete(qid);
+    }
   }
 
   // A card inside its work thread already folded into the record there; a card in the channel leaves a

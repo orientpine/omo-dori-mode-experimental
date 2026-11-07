@@ -8,6 +8,7 @@ import base64
 import codecs
 import contextlib
 import datetime as dt
+import email.message
 import email.parser
 import email.policy
 import hashlib
@@ -470,7 +471,11 @@ def canonical_discord_body(headers: dict, body: bytes) -> tuple[dict, bytes]:
     application/json or untyped, and files[n] each with a file name, every part carrying only Content-Disposition and
     Content-Type. It goes out rebuilt with a fresh boundary. Anything else is refused before it is sent: parsers that
     read one request differently let a payload past the reader that checks it (WAFFLED, arXiv 2503.10846; review 6 of
-    #370: a message/rfc822 part, a repeated key, a field Discord reads as JSON)."""
+    #370: a message/rfc822 part, a repeated key, a field Discord reads as JSON).
+
+    The parts are split at the boundary only, never read as MIME structure: a file is its bytes whatever its type
+    (Bun types a .eml file message/rfc822, review 7 of #370), and a body a reader could split another way (a close
+    before the end, a padded delimiter, a preamble, a folded or repeated header) is refused."""
     if not body:
         return headers, body
     refused = Refused("unsupported-body-encoding", 415)
@@ -486,19 +491,30 @@ def canonical_discord_body(headers: dict, body: bytes) -> tuple[dict, bytes]:
             parsed, ensure_ascii=False, separators=(",", ":")).encode()
     if kind != "multipart/form-data":
         raise refused
-    message = email.parser.BytesParser(policy=email.policy.default).parsebytes(
-        b"Content-Type: " + content_type.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body)
-    if not message.is_multipart() or message.defects:
+    envelope = email.message.EmailMessage()
+    envelope["content-type"] = content_type
+    boundary = envelope.get_boundary()
+    if not isinstance(boundary, str) or not re.fullmatch(r"[0-9A-Za-z'()+_,./:=?-]{1,70}", boundary):
+        raise refused
+    delimiter = b"--" + boundary.encode()
+    close = b"\r\n" + delimiter + b"--"
+    end = body.find(close)
+    if not body.startswith(delimiter + b"\r\n") or end < 0 or body[end + len(close):] not in (b"", b"\r\n"):
         raise refused
     payload, files = None, []
-    for part in message.iter_parts():
-        if ({key.lower() for key in part.keys()} - DISCORD_PART_HEADERS or part.is_multipart() or part.defects
+    for chunk in body[len(delimiter) + 2:end].split(b"\r\n" + delimiter + b"\r\n"):
+        head, blank, data = chunk.partition(b"\r\n\r\n")
+        if (not blank or b"\r\n" + delimiter in chunk
+                or not all(re.fullmatch(rb"[A-Za-z-]+:[^\r\n]*", line) for line in head.split(b"\r\n"))):
+            raise refused
+        part = email.parser.BytesHeaderParser(policy=email.policy.default).parsebytes(head + b"\r\n\r\n")
+        keys = [key.lower() for key in part.keys()]
+        if (len(set(keys)) != len(keys) or set(keys) - DISCORD_PART_HEADERS or part.defects
                 or part.get_content_disposition() != "form-data"):
             raise refused
         name, filename = part.get_param("name", None, header="content-disposition"), part.get_filename()
         declared = part.get("content-type")
-        data = part.get_payload(decode=True)
-        if not isinstance(name, str) or not isinstance(data, bytes):
+        if not isinstance(name, str):
             raise refused
         if name == "payload_json" and payload is None and filename is None:
             if declared is not None and part.get_content_type() != "application/json":

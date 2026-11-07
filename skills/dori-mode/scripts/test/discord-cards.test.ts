@@ -207,6 +207,48 @@ test("a tap whose callback Discord or the egress gate refuses leaves the questio
   expect(existsSync(store.answersFile)).toBe(false);
 });
 
+test("a second tap while the first tap's callback is in flight folds nothing, and a refused fold frees the question (review 7 of #370)", async () => {
+  // The listener handles taps at once. Two folds in flight would let the card and the egress gate's tap receipt say B
+  // while the store keeps A; the second tap is only acknowledged, and a fold Discord refuses lets the next tap fold.
+  state = withState();
+  const callbacks: { body: { type: number; data?: { components: unknown } }; settle: (r: HttpResponse) => void }[] = [];
+  let arrived: () => void = () => {};
+  const http: Http = (req) =>
+    req.url.includes("/interactions/")
+      ? new Promise((settle) => { callbacks.push({ body: JSON.parse(String(req.body)), settle }); arrived(); })
+      : Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(req.method === "POST" ? { id: "900" } : { type: 11 }) });
+  const until = (n: number) => new Promise<void>((done) => { arrived = () => callbacks.length >= n && done(); arrived(); });
+  const store = new QuestionStore(`${state.dir}/discord`);
+  const cards = new QuestionCards(new Discord(http, fakeClock(0), "bot"), store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  const ok: HttpResponse = { status: 204, headers: {}, body: "" };
+  await cards.ask("Ship?", ["Yes", "No"]);
+
+  const first = cards.handle(tap("q:Q1:0"));
+  await until(1);
+  const second = cards.handle({ ...tap("q:Q1:1"), id: "i2" });
+  await until(2);
+  expect(callbacks.map((c) => c.body.type)).toEqual([7, 6]);
+  callbacks[1]?.settle(ok);
+  expect(await second).toEqual({ kind: "stale", qid: "Q1" });
+  callbacks[0]?.settle(ok);
+  expect((await first).kind).toBe("answered");
+  expect(store.get("Q1")).toMatchObject({ status: "answered", answer: "Yes" });
+  expect(readFileSync(store.answersFile, "utf8").trim().split("\n")).toHaveLength(1);
+
+  await cards.ask("Deploy?", ["Now", "Later"]);
+  const refused = cards.handle(tap("q:Q2:0"));
+  await until(3);
+  callbacks[2]?.settle({ status: 403, headers: {}, body: JSON.stringify({ error: "card-answer-forged" }) });
+  await expect(refused).rejects.toThrow();
+  expect(store.get("Q2")?.status).toBe("open");
+  const retry = cards.handle(tap("q:Q2:1"));
+  await until(4);
+  expect(callbacks[3]?.body.type).toBe(7);
+  callbacks[3]?.settle(ok);
+  expect((await retry).kind).toBe("answered");
+  expect(store.get("Q2")?.answer).toBe("Later");
+});
+
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {
   const { cards, seen } = setup();
   await expect(cards.ask("Ship?", [])).rejects.toBeInstanceOf(QuestionError);
