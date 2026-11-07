@@ -36,15 +36,41 @@ nothing and focuses no pane. hc runs its core as its own systemd user service (`
 bridge client with it. On this account hc exists only for the pilot. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
 the pane's identity to the client.
 
+## Web app (patched, for iPhones)
+
+On an iPhone every browser, Chrome included, is WebKit, and WebKit reads a stored X25519 `CryptoKey` back from
+IndexedDB as `null` ([WebKit bug 312279](https://bugs.webkit.org/show_bug.cgi?id=312279), open). The stock web app
+then makes a new device key on every page load, so a phone paired through app.doriterm.com is refused as an
+"unknown device" the next time the tab reloads ("The host does not know this device anymore. Pair it again.").
+app.doriterm.com cannot be changed from here, so this setup serves the same web app, built from a pinned upstream
+commit with `web/webkit-x25519.patch` (keep raw key bytes when the `CryptoKey` does not read back, as the app already
+does for a browser without X25519), on this machine's tailnet name:
+
+```sh
+sh ~/.dori/src/skills/dori-mode/setups/doriterm/web/build.sh   # clone, patch, test, build -> ~/.local/share/doriterm-web/current
+ln -s ~/.dori/src/skills/dori-mode/setups/doriterm/doriterm-web.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now doriterm-web.service   # 127.0.0.1:7780
+tailscale serve --bg --https=7780 http://127.0.0.1:7780                                # tailnet only
+```
+
+`web/serve.ts` sends the headers of the build's own `_headers` (the hosted app's CSP: scripts from this origin only,
+connections to this origin and the public relay). The phone opens `https://<machine>.<tailnet>.ts.net:7780`; storage
+is per origin, so a phone paired on app.doriterm.com pairs again here. When upstream or WebKit ships the fix, pair on
+app.doriterm.com again and turn this off (`systemctl --user disable --now doriterm-web.service`,
+`tailscale serve --https=7780 off`).
+
 ## Pair a phone
 
 ```sh
-doriface-host pair --web-origin https://app.doriterm.com --no-qr
+doriface-host pair --web-origin https://$(hostname).taila51692.ts.net:7780 --no-qr --wait-host 15
 ```
 
 It prints a one-time link (10 minutes), an 8-character code and the host fingerprint. The owner opens the link on the
 phone, compares the ten groups of the fingerprint with the printed ones and taps "They match". The link and code are a
 credential: hand them over privately, never in a channel. `doriface-host devices list` shows the paired device.
+
+If the `zzangdori` row is gone from the app (its terminal was closed there), `bun bridge.ts` in this folder starts it
+again; `systemctl --user restart doriface-host.service` does the same.
 
 ## Turn it off
 
@@ -70,4 +96,5 @@ The full review, with source line references, is the doriterm-review lane report
 ## Tests
 
 `bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
-`stop`) and `attach.sh` against a fake `herdr` whose server answers only on the third try. The unit's start and stop were also run under systemd against the real hc (see the PR).
+`stop`), `attach.sh` against a fake `herdr` whose server answers only on the third try, and `web/serve.ts` against a
+small build (headers per path, client routes, nothing outside the build). The unit's start and stop were also run under systemd against the real hc (see the PR).
