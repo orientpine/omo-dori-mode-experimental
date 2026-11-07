@@ -1,7 +1,8 @@
 # herdr web
 
 A Dori on herdr has no web dashboard of its own: herdr 0.9.5 has no web UI, aoe's web frontend reads aoe's session
-store rather than herdr's socket, and doriface needs herdr-core's `hc`. This directory gives the same kind of access a
+store rather than herdr's socket, and doriface needs herdr-core's `hc` (`../doriterm` bridges it to herdr with an hc
+terminal running a herdr client; a pilot on one account, owner card Q522). This directory gives the same kind of access a
 Dori had with `aoe serve`: a browser on the tailnet logs in with the same passphrase, sees the session list, opens a
 session and types into it.
 
