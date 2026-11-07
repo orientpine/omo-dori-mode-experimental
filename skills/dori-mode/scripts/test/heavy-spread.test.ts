@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import type { HeavyQueue } from "../src/config.ts";
 import type { HeavyCtx } from "../src/heavy-queue.ts";
-import { copyBack, heavySpread, pathsIn, spreadPlan, withPipefail, type SpreadJob } from "../src/heavy-spread.ts";
+import { copyBack, heavySpread, pathsIn, probeBox, spreadPlan, withPipefail, type SpreadJob } from "../src/heavy-spread.ts";
 import type { SlotDeps } from "../src/heavy-slot.ts";
 import { withState } from "./fakes.ts";
 
@@ -328,6 +328,17 @@ test("a helper whose box PATH has no program by the job's bare command name refu
   // the job's --env PATH is the PATH it is looked up on
   const q = Bun.spawnSync([...helperArgv(), "exec", "t", "cpu", "100", "which=sh", `path=${join(state.dir, "empty")}`], { stdin: "ignore", stderr: "pipe" });
   expect(q.stderr.toString()).toContain("WORKER_REFUSED no sh on this host's box PATH (the job's command)");
+  // a program only in a folder the box hides (/tmp, /home, /var/tmp, /run are empty there) is not there for the job
+  const hidden = join(state.dir, "hbin");
+  mkdirSync(hidden);
+  writeFileSync(join(hidden, "dori-hidden-tool"), "#!/bin/sh\n", { mode: 0o755 });
+  const h = Bun.spawnSync([...helperArgv(), "exec", "t", "cpu", "100", "which=dori-hidden-tool", `path=${hidden}:/usr/bin`], { stdin: "ignore", stderr: "pipe" });
+  expect(h.stderr.toString()).toContain("WORKER_REFUSED no dori-hidden-tool on this host's box PATH (the job's command)");
+  // nor through /proc/self/root, or a system path that links into a hidden folder
+  const viaProc = Bun.spawnSync([...helperArgv(), "exec", "t", "cpu", "100", "which=dori-hidden-tool", `path=/proc/self/root${hidden}:/usr/bin`], { stdin: "ignore", stderr: "pipe" });
+  expect(viaProc.stderr.toString()).toContain("WORKER_REFUSED no dori-hidden-tool on this host's box PATH (the job's command)");
+  expect(probeBox("cpu", {}, [], ["sh"], "/usr/bin:/bin")).toBeUndefined();
+  expect(probeBox("cpu", {}, [join(hidden, "dori-hidden-tool")], [])).toEqual({ missing: join(hidden, "dori-hidden-tool") });
 });
 
 test("an argument's paths are found after = , and : but a URL's // is not a path", () => {

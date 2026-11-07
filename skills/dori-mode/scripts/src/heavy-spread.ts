@@ -476,6 +476,19 @@ const ensurePlaywright = async (version: string, browsersDir: string, log: (l: s
   }
 };
 
+// The programs a job starts, looked for in a box made like the job's (sandboxArgv: same mounts, same PATH), so a program
+// the host has but the box hides (/home, /tmp, /run are empty there; a link may lead into them) counts as missing.
+// need: a path that must exist; names: commands looked up on the box's PATH. undefined: all there.
+const PROBE = 'for p in $PROBE_NEEDS; do [ -e "$p" ] || { printf "%s\\n" "$p"; exit 1; }; done; for n in "$@"; do command -v "$n" >/dev/null 2>&1 || { printf "%s\\n" "$n"; exit 1; }; done';
+export const probeBox = (kind: Kind, tools: BoxTools, needs: readonly string[], names: readonly string[], path?: string): { missing: string } | { failed: string } | undefined => {
+  const spec: ExecSpec = { argv: ["/bin/sh", "-c", PROBE, "dori-probe", ...names], cwd: "/", sync: [], env: { PROBE_NEEDS: needs.join(" "), ...(path !== undefined ? { PATH: path } : {}) } };
+  const p = Bun.spawnSync(sandboxArgv(kind, spec, () => "/", tools), { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20_000 });
+  const out = p.stdout.toString().trim();
+  if (p.exitCode === 0) return undefined;
+  if (p.exitCode === 1 && (needs.includes(out) || names.includes(out))) return { missing: out };
+  return { failed: `exit ${p.exitCode ?? p.signalCode}: ${p.stderr.toString().trim().slice(0, 200)}` };
+};
+
 const duBytes = (p: string): number => Number(Bun.spawnSync(["du", "-sb", p]).stdout.toString().split(/\s/)[0]) || 0;
 
 export type ExecDeps = { readonly refuse: (label: string, why: string) => number; readonly caller: string; readonly tools: BoxTools; readonly maxMin: number };
@@ -492,13 +505,14 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   if (!ctx.q.exec) return d.refuse(label, "exec is off on this host (heavyQueue.exec)");
   if (!Bun.which("bwrap")) return d.refuse(label, "no bwrap on this host");
-  // the box sees this host's system read-only, so a program missing here is missing in the box
-  const missing = opts.filter((o) => o.startsWith("need=")).map((o) => o.slice(5)).find((p) => !existsSync(p));
-  if (missing !== undefined) return d.refuse(label, `${missing} is not on this host (the job's command or a link in its --sync paths starts it)`);
-  // the PATH the box will have: the job's --env PATH, else its bun, its tools and the system folders
-  const boxPath = opts.find((o) => o.startsWith("path="))?.slice(5) ?? [d.tools.bunDir, d.tools.toolsDir && join(d.tools.toolsDir, "bin"), BOX_SYSTEM_PATH].filter(Boolean).join(":");
-  const unnamed = opts.filter((o) => o.startsWith("which=")).map((o) => o.slice(6)).find((n) => !Bun.which(n, { PATH: boxPath }));
-  if (unnamed !== undefined) return d.refuse(label, `no ${unnamed} on this host's box PATH (the job's command)`);
+  const needs = opts.filter((o) => o.startsWith("need=")).map((o) => o.slice(5));
+  const names = opts.filter((o) => o.startsWith("which=")).map((o) => o.slice(6));
+  if (needs.length || names.length) {
+    const path = opts.find((o) => o.startsWith("path="))?.slice(5);
+    const absent = probeBox(kind, d.tools, needs, names, path);
+    if (absent && "failed" in absent) return d.refuse(label, `the check for the programs the job starts failed: ${absent.failed}`);
+    if (absent) return d.refuse(label, needs.includes(absent.missing) ? `${absent.missing} is not on this host (the job's command or a link in its --sync paths starts it)` : `no ${absent.missing} on this host's box PATH (the job's command)`);
+  }
   const noScope = await canScope();
   if (noScope) return d.refuse(label, `no memory/CPU/time caps here: ${noScope}`);
   const playwright = opts.find((o) => o.startsWith("playwright="))?.slice("playwright=".length);
