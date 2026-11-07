@@ -16,8 +16,9 @@ import re
 import socket
 import sys
 import tempfile
+import time
 import unittest
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from unittest.mock import AsyncMock, patch
 
 TODO = "pb-0123456789ab-1"  # a dashboard todo id: its proposal id and the todo's place in it
@@ -686,6 +687,77 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         status, body = await self.request("POST", "/api/v10/channels/20/messages", data={"content": padded},
                                           port="discord", proof=False, headers={"authorization": "Bot MTIz.fake.fake"})
         self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+
+    async def test_a_discord_write_in_a_body_encoding_the_gate_does_not_read_is_refused_before_it_is_sent(self):
+        # Review 4 of #370: Discord also takes form-encoded bodies, which the gate did not decode, so a hand-made answered
+        # card went through percent-encoded. Its clients write JSON or multipart only, so anything else is refused.
+        card = {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": self.ANSWER}]}]}
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        route = f"/api/v10/channels/20/messages/{CARD}"
+        # A repeated key: Python's json keeps only the last, a reader that keeps the first would post the card.
+        hidden = json.dumps(card)[:-1] + ', "components": []}'
+        for name, content_type, raw in (
+                ("the card under a repeated key", "application/json; charset=utf-8", hidden.encode()),
+                ("a repeated key in a multipart payload_json", "multipart/form-data; boundary=b",
+                 b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\n\r\n' + hidden.encode() + b"\r\n--b--\r\n"),
+                ("form-encoded payload_json", "application/x-www-form-urlencoded",
+                 urlencode({"payload_json": json.dumps(card)}).encode()),
+                ("form-encoded fields", "application/x-www-form-urlencoded",
+                 urlencode({"flags": "32768", "components": json.dumps(card["components"])}).encode()),
+                ("plain text", "text/plain", self.ANSWER.encode()),
+                ("multipart that is not form-data", "multipart/mixed; boundary=b",
+                 b"--b\r\nContent-Type: application/json\r\n\r\n" + json.dumps(card).encode() + b"\r\n--b--\r\n"),
+                ("a JSON type that is no JSON", "application/json", b"components=" + json.dumps(card).encode())):
+            with self.subTest(name):
+                self.seen.clear()
+                status, body = await self.request("PATCH", route, port="discord", proof=False, raw=raw,
+                                                  headers={**bot, "content-type": content_type})
+                self.assertEqual((status, json.loads(body)["error"]), (415, "unsupported-body-encoding"))
+                self.assertFalse([r for r in self.seen if r[1].startswith("/api/v10/channels/20/messages")])
+        boundary = "b0undary"
+        as_file = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"; filename=\"p.json\"\r\n"
+                   f"Content-Type: application/json\r\n\r\n{json.dumps(card)}\r\n--{boundary}--\r\n").encode()
+        for name, content_type, raw in (
+                ("payload_json sent with a file name", f"multipart/form-data; boundary={boundary}", as_file),
+                ("JSON in UTF-16", "application/json", json.dumps(card).encode("utf-16"))):
+            with self.subTest(name):
+                status, body = await self.request("PATCH", route, port="discord", proof=False, raw=raw,
+                                                  headers={**bot, "content-type": content_type})
+                self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+        status, _ = await self.request("POST", "/api/v10/channels/20/messages", port="discord", proof=False,
+                                       raw=json.dumps({"content": "hi"}).encode(),
+                                       headers={**bot, "content-type": "application/json; charset=utf-8"})
+        self.assertEqual(status, 200)
+
+    def test_the_answer_mark_scan_stays_linear_on_crafted_whitespace(self):
+        # Review 4 of #370: the mark regex's overlapping whitespace runs backtracked quadratically on a line of spaces
+        # with no middle dot, before the tap check and the 4000-character ceiling. The scan is a line parser now.
+        crafted = ("\u2192\n-# " + " " * 50000, "\u2192\n-#" + "\t " * 25000 + "x", "\u2192\n" + "-# \u00a0" * 20000,
+                   "\u2192\n" + "  -# ·\n" * 20000)
+        for text in crafted:
+            started = time.perf_counter()
+            self.assertFalse(self.service.card_answer_text(text))
+            # The behavior under test is the time itself: the old regex took minutes on these.
+            self.assertLess(time.perf_counter() - started, 1.0)
+        for text in (self.ANSWER, self.ANSWER.replace("-# \ubc84\ud2bc \u00b7", " \t-#\t \ubc84\ud2bc\t \u00b7"),
+                     self.ANSWER.replace("\n-# ", "\r\n-#").replace("\ubc84\ud2bc \u00b7", "\ubc84\ud2bc\u00b7")):
+            self.assertTrue(self.service.card_answer_text(text), text)
+        for text in (self.ANSWER.replace("\u2192", "->"), self.ANSWER.replace("\ubc84\ud2bc", "\ub2f5\uae00"),
+                     self.ANSWER.replace("-# ", "# "), self.ANSWER.replace(" \u00b7", "")):
+            self.assertFalse(self.service.card_answer_text(text), text)
+
+    async def test_a_url_in_the_owners_card_answer_is_an_owner_link_and_one_in_the_question_is_not(self):
+        # Review 3 of #370: a card's text sits in its components, so the chosen answer is the owner's words.
+        self.page("example.net", "/page", "chosen", content_type="text/plain")
+        self.page("asked.example", "/q", "asked", content_type="text/plain")
+        self.answer_card(text="\u2705 **Q13** https://asked.example/q \uc77d\uc744\uae4c?\n"
+                              "\u2192 **https://example.net/page \uc77d\uc5b4**\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47")
+        status, body = await self.web("/fetch?url=" + quote("https://example.net/page", safe=""), origin=f"20/{CARD}")
+        self.assertEqual(status, 200, body)
+        self.assertIn("chosen", body.decode())
+        status, body = await self.web("/fetch?url=" + quote("https://asked.example/q", safe=""), origin=f"20/{CARD}")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "url-without-source"))
+        self.assertEqual([seen[0] for seen in self.web_seen], ["example.net"])
 
     async def test_a_repeated_tap_on_an_already_folded_card_updates_it_unchanged(self):
         self.answer_card("3010")

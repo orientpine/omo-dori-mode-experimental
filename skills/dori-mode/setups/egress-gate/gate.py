@@ -57,8 +57,6 @@ OPEN_TODO_STATUSES = ("열림", "진행")
 # answer carries another word and is not taken.
 CARD_ANSWER = re.compile(r"(?:✅|\[[^\]\n]+\]) \*\*(?P<qid>Q[1-9][0-9]*)\*\* (?s:.+?)\n→ \*\*(?P<answer>(?s:.+?))\*\*\n"
                          r"-# (?P<by>[^\n·]+?) · [^\n]+")
-# Line-bounded ([ \t], not \s, which spans lines) so a write full of blank lines cannot make it scan quadratically.
-CARD_ANSWER_MARK = re.compile(r"(?m)^[ \t]*-#[ \t]*(?P<by>[^\n·]*?)[ \t]*·")
 # A card's text is at most 4000 characters (Discord); longer text is no card, and CARD_ANSWER never sees it.
 CARD_TEXT_MAX = 4000
 CARD_ANSWER_WORDS = ("button", "버튼")
@@ -428,23 +426,47 @@ def strings(value):
             yield from strings(item)
 
 
+def unique_keys(pairs: list) -> dict:
+    """A JSON object whose keys are each written once: with a repeated key, readers differ on which one counts."""
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise ValueError("repeated key")
+    return dict(pairs)
+
+
 def message_texts(headers: dict, body: bytes) -> list[str]:
-    """Every text a Discord write carries: the JSON body, or the non-file parts of a multipart body."""
+    """Every text a Discord write carries: the JSON body, or the parts of a multipart/form-data body that are not
+    attached files (files[n]); payload_json is read even when it is sent with a file name.
+
+    Discord also takes form-encoded bodies, which carried a hand-made answered card past the check percent-encoded
+    (review 4 of #370). The Dori's clients write JSON or multipart only, so any other body encoding, JSON that does not
+    parse (in any of the UTF encodings json reads) or JSON with a repeated key is refused before it is sent."""
     if not body:
         return []
     content_type = headers.get("content-type", "application/json")
-    raw = [body]
-    if content_type.lower().startswith("multipart/"):
+    kind = content_type.split(";", 1)[0].strip().lower()
+    if kind == "application/json":
+        raw = [(body, True)]
+    elif kind == "multipart/form-data":
         message = email.parser.BytesParser(policy=email.policy.default).parsebytes(
             b"Content-Type: " + content_type.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body)
-        raw = [part.get_payload(decode=True) or b"" for part in message.iter_parts() if not part.get_filename()]
+        if not message.is_multipart():
+            raise Refused("unsupported-body-encoding", 415)
+        raw = []
+        for part in message.iter_parts():
+            name = str(part.get_param("name", "", header="content-disposition"))
+            if part.get_filename() and re.fullmatch(r"files\[[0-9]+\]|file[0-9]*", name):
+                continue
+            raw.append((part.get_payload(decode=True) or b"", name == "payload_json"))
+    else:
+        raise Refused("unsupported-body-encoding", 415)
     texts = []
-    for item in raw:
-        text = item.decode("utf-8", "replace")
+    for item, must_parse in raw:
         try:
-            texts.extend(strings(json.loads(text)))
+            texts.extend(strings(json.loads(item, object_pairs_hook=unique_keys)))
         except ValueError:
-            texts.append(text)
+            if must_parse:
+                raise Refused("unsupported-body-encoding", 415) from None
+            texts.append(item.decode("utf-8", "replace"))
     return texts
 
 
@@ -1058,11 +1080,18 @@ class Gate:
 
     def card_answer_text(self, text: str) -> bool:
         """A text that reads as a tapped question card: any line "-# <a byButton word> ·" next to an answer arrow.
-        Looser than CARD_ANSWER on purpose (spacing, case, extra lines), so nothing the proof takes slips past it."""
+        Looser than CARD_ANSWER on purpose (spacing, case, extra lines), so nothing the proof takes slips past it.
+        A line parser, one pass over the text: the regex it replaced backtracked on a line of spaces (review 4 of #370)."""
+        if "→" not in text:
+            return False
         words = self.card_answer_words()
-        return "→" in text and any(m["by"].strip().casefold() in words for m in CARD_ANSWER_MARK.finditer(text))
+        for line in text.split("\n"):
+            line = line.lstrip(" \t")
+            if line.startswith("-#") and "·" in line and line[2:].split("·", 1)[0].strip().casefold() in words:
+                return True
+        return False
 
-    async def owner_card_answer(self, data: dict, channel: str, message: str, authorization: str) -> bool:
+    async def owner_card_answer(self, data: dict, channel: str, message: str, authorization: str) -> re.Match | None:
         """The owner's tap on a question card (owner Q523, 2026-11-07 13:53 KST "응, 문지기도 버튼 답 받게 (추천)").
 
         The message at those coordinates must be this gate bot's own (GET /users/@me with the proof token, not a
@@ -1071,10 +1100,10 @@ class Gate:
         posting (the message id), not from an edit. Discord does not say who tapped,
         so discord_policy lets a button answer onto a card only as the UPDATE_MESSAGE callback of a tap the gate's own
         gateway session saw the owner make, with that option's text (owner_tap); every other write carrying one is
-        refused. Outbound writes still park on their card.
+        refused. Outbound writes still park on their card. Returns the card's answered text (CARD_ANSWER), or None.
         """
         if not self.card_answers_on():
-            return False
+            return None
         author = data.get("author")
         outer = data.get("components")
         inner = outer[0].get("components") if isinstance(outer, list) and len(outer) == 1 and isinstance(outer[0], dict) \
@@ -1084,12 +1113,12 @@ class Gate:
                 or not int(data.get("flags") or 0) & COMPONENTS_V2 or not data.get("edited_timestamp")
                 or not isinstance(inner, list) or len(inner) != 1 or not isinstance(inner[0], dict)
                 or inner[0].get("type") != 10):
-            return False
+            return None
         content = str(inner[0].get("content", ""))
         answered = CARD_ANSWER.fullmatch(content) if len(content) <= CARD_TEXT_MAX else None
         if not answered or not answered["answer"].strip() or answered["by"].casefold() not in self.card_answer_words():
-            return False
-        return str(author.get("id")) == await self.gate_bot(authorization)
+            return None
+        return answered if str(author.get("id")) == await self.gate_bot(authorization) else None
 
     async def gate_bot(self, authorization: str) -> str:
         key = ("me", hashlib.sha256(authorization.encode()).hexdigest())
@@ -2780,7 +2809,8 @@ class Gate:
             task["seen"].add(link)
 
     async def owner_links(self, reference: str) -> set:
-        """URLs written in the owner message the proof already accepted (rule 가)."""
+        """URLs written in the owner message the proof already accepted (rule 가). On the owner's card answer, the URLs
+        in the answer he chose only, never in the bot-written question (review 3 of #370)."""
         cached = self.cached(("owner-links", reference))
         if cached is not None:
             return cached
@@ -2788,7 +2818,8 @@ class Gate:
         try:
             authorization = "Bot " + Path(self.config["owner_proof"]["token_file"]).read_text().strip()
             data = await self.discord_json(f"/channels/{channel}/messages/{message}", authorization)
-            links = web_owner_links(str(data.get("content") or ""))
+            answered = await self.owner_card_answer(data, channel, message, authorization)
+            links = web_owner_links(answered["answer"] if answered else str(data.get("content") or ""))
         except (Refused, OSError, ValueError, KeyError, TypeError):
             raise Refused("owner-message-required") from None
         return self.remember(("owner-links", reference), frozenset(links))

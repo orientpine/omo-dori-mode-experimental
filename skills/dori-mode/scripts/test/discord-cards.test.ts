@@ -159,6 +159,21 @@ test("reopen puts the buttons back on the posted card; resolve forgets the quest
   await expect(cards.reopen("Q1")).rejects.toBeInstanceOf(QuestionError);
 });
 
+test("an option a card cannot show whole is refused before anything is stored or posted; one that just fits is shown whole and its tap answers with it (review 4 of #370)", async () => {
+  // The egress gate takes a tap's answer only when it equals the pressed option's text in the card, so a section cut to
+  // its 1000 characters would make the owner's real tap a forged answer after the question was already marked answered.
+  const { cards, store, seen, json } = setup();
+  const fits = `${"o_".repeat(496)}o`;
+  expect(`**2.** ${fits}`.length).toBe(1000);
+  await expect(cards.ask("Ship?", ["Yes", `${fits}x`])).rejects.toBeInstanceOf(QuestionError);
+  expect(seen).toHaveLength(0);
+  expect(store.all()).toHaveLength(0);
+  await cards.ask("Ship?", ["Yes", fits]);
+  expect(optionTexts(json(0).components)[1]).toBe(`**2.** ${fits}`);
+  await cards.handle(tap("q:Q1:1"));
+  expect(store.get("Q1")?.answer).toBe(fits);
+});
+
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {
   const { cards, seen } = setup();
   await expect(cards.ask("Ship?", [])).rejects.toBeInstanceOf(QuestionError);

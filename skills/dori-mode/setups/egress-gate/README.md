@@ -69,7 +69,11 @@ passes only when that tap was the owner's account pressing a button (a component
 modal submit or a select is no pick), on a `q:<Q id>:<n>` pick button of this bot's question card, the answer is that
 option's text in the card Discord attached to the press (a later edit of the card changes nothing) and the question id
 is the card's; a repeated tap on a card that already reads exactly
-that answer passes too. The gate waits up to `owner_proof.tap_wait_seconds` (2.5) for its copy of the tap. With its
+that answer passes too. The check reads every text of a Discord write: a JSON body (every repeated key refused, since
+readers differ on which one counts) or a `multipart/form-data` body's parts other than attached files (`files[n]`;
+`payload_json` is read even with a file name). Discord also takes form-encoded bodies, which the Dori's clients never
+send; any other body encoding, or JSON that does not parse, is refused before it is sent (`415
+unsupported-body-encoding`). The gate waits up to `owner_proof.tap_wait_seconds` (2.5) for its copy of the tap. With its
 gateway session down, taps fail (the owner sees Discord's interaction failure) and his typed messages keep working.
 `owner_proof.card_answers: false` turns card answers off (no session, no card proof); answered cards are still
 refused on every other write. `GATE_GATEWAY_READY` / `GATE_GATEWAY_DOWN <error>` log the session.
@@ -161,7 +165,8 @@ curl -sG -H "$O" --data-urlencode 'q=prompt injection defenses' "$W/search"
 ```
 
 - **Which URLs open.** Only a URL that is, character for character (fragment aside), one of:
-  (a) a URL written in the owner message of the proof (an order has none);
+  (a) a URL written in the owner message of the proof (an order has none); on the owner's card answer, a URL in the
+      answer he chose, never one in the bot-written question;
   (b) a search result or page link the window returned earlier in the same task, or a redirect target;
   (c) an `https` URL without `?` on a host in `web.public_sites`.
   Anything else is `403 url-without-source` with `"message": "출처 없는 주소. 검색으로 찾아"`.

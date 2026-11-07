@@ -173,6 +173,10 @@ const pickLabel = (n: number, w: DiscordWords): string => `${w.pick.replace("{n}
 // measured whole before it is cut to its limit, and a text (or a card's 4000 characters of text) that fits only
 // unescaped goes out unescaped, so escaping never cuts off text that fit before (reviews 1 and 2 of #358).
 const CARD_TEXT_MAX = 4000;
+// An option's section text ("**n.** <option>"); ask refuses an option it cannot show whole, before anything is stored or
+// posted, since the egress gate takes a tap's answer only when it equals the pressed option's text in the card.
+const OPTION_TEXT_MAX = 1000;
+const optionText = (md: (part: string) => string, option: string, i: number): string => `**${i + 1}.** ${md(option)}`;
 type Fit = (build: (md: (part: string) => string) => string, max: number) => string;
 const plainFit: Fit = (build, max) => build((part) => part).slice(0, max);
 const escapedFit: Fit = (build, max) => fitEscaped(build, max).slice(0, max);
@@ -194,7 +198,7 @@ const buildOpenCard = (q: Question, ownerId: string, w: DiscordWords, fit: Fit):
       { type: 10, content: fit((md) => `<@${ownerId}> **${q.id}** ${md(q.text)}${where(q)}`, 3000) },
       ...q.options.map((option, i) => ({
         type: 9,
-        components: [{ type: 10, content: fit((md) => `**${i + 1}.** ${md(option)}`, 1000) }],
+        components: [{ type: 10, content: fit((md) => optionText(md, option, i), OPTION_TEXT_MAX) }],
         accessory: { type: 2, style: i === 0 ? 1 : 2, label: pickLabel(i + 1, w), custom_id: customId.option(q.id, i) },
       })),
       { type: 1, components: [{ type: 2, style: 2, label: w.other.slice(0, 80), custom_id: customId.other(q.id) }] },
@@ -286,6 +290,10 @@ export class QuestionCards {
     const clean = options.map((o) => guardText(o).trim()).filter(Boolean);
     if (!guardText(text).trim()) throw new QuestionError("a question needs text");
     if (!clean.length || clean.length > MAX_OPTIONS) throw new QuestionError(`a question needs 1 to ${MAX_OPTIONS} options, got ${clean.length}`);
+    // Escaping never cuts an option (a section that fits only unescaped goes out unescaped), so the text as written is
+    // the shortest the card can show (review 4 of #370).
+    const cut = clean.findIndex((o, i) => optionText((part) => part, o, i).length > OPTION_TEXT_MAX);
+    if (cut >= 0) throw new QuestionError(`option ${cut + 1} is longer than a card shows whole (${OPTION_TEXT_MAX} characters with its "**${cut + 1}.** ")`);
     const q = this.store.create(text.trim(), clean, meta.thread || this.settings.channel, meta, this.at());
     const reply = q.replyTo ? { message_reference: { message_id: q.replyTo, fail_if_not_exists: false } } : {};
     const posted = await this.dc.call<{ id: string }>("POST", `/channels/${q.channel}/messages`, { components: this.card(q), flags: IS_COMPONENTS_V2, allowed_mentions: { users: [this.settings.owner] }, ...reply });
