@@ -53,9 +53,9 @@ For a private state backup from an account without `gh` login, use a write-enabl
 
 ## Goals follow requests
 
-<!-- From dori-superagent #119 (https://github.com/sisyphuslabs/dori-superagent/pull/119), the #118 ruling. -->
+<!-- From dori-superagent #119 (https://github.com/sisyphuslabs/dori-superagent/pull/119), the #118 ruling, and #120 (https://github.com/sisyphuslabs/dori-superagent/pull/120), the wake wording and the other monitors. -->
 
-Goals follow requests, not the session. When the owner asks for something, set one goal for that concern with a real `Done =` line, and drive it to done: answering directly, or opening and following a lane. Between requests you idle with no goal — done-protocol idling applies to the lead too: stay idle and start no new work — and the persistent inbound monitor of Setup step 5 is the wake for the next one (a new inbox row from `dori inbound discord`, an `INBOUND` line from `dori inbound telegram` or `slack`); nothing else needs to tick while nobody is talking. A standing "availability" goal is the anti-pattern: it can never reach Done, so the loop keeps turning for nothing.
+Goals follow requests, not the session. When the owner asks for something, set one goal for that concern with a real `Done =` line, and drive it to done: answering directly, or opening and following a lane. Between requests you idle with no goal — done-protocol idling applies to the lead too: stay idle and start no new work — and the inbound monitor's line is the wake for the next one, whatever your platform (the monitor of Setup step 5: a new inbox row from `dori inbound discord`, an `INBOUND` line from `dori inbound telegram` or `slack`). The other persistent monitors (`watch`, `freshness`, `dead-panes`, `guard`, a watch the owner asked for) can still wake you between requests; those wakes are expected — it is only the goal loop that should be quiet. A standing "availability" goal is the anti-pattern: it can never reach Done, so the loop keeps turning for nothing.
 
 ## Inbound
 
