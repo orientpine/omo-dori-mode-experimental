@@ -1,0 +1,18 @@
+[Unit]
+Description=doriterm bridges: start any bridge row (DORITERM_BRIDGES) that ended or was closed, while doriface-host runs
+After=doriface-host.service
+# stopping the host also stops a refresh that is running, so it cannot start an hc core and sudo clients after the host's
+# ExecStopPost stopped them
+PartOf=doriface-host.service
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/doriterm/bridges.env
+UnsetEnvironment=HERDR_PANE_ID HERDR_SOCKET HERDR_SOCKET_PATH HERDR_SESSION TMUX TMUX_PANE
+# with the host off, hc ls would start an hc core nobody serves; skip instead
+ExecCondition=/usr/bin/systemctl --user is-active --quiet doriface-host.service
+ExecStart=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts
+# bridge.ts only asks hc; the rows run under hc's own core unit, which is where sudo happens
+NoNewPrivileges=true
+UMask=0077

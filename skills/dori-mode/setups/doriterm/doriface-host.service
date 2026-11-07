@@ -5,6 +5,8 @@ After=network-online.target dori-herdr.service
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# this host's rows (DORITERM_BRIDGES="zzangdori okdori:okdori ..."); without the file, the one pilot row zzangdori
+EnvironmentFile=-%h/.config/doriterm/bridges.env
 # a unit started from a herdr pane must not hand the pane's identity to hc, whose terminals run the herdr client
 UnsetEnvironment=HERDR_PANE_ID HERDR_SOCKET HERDR_SOCKET_PATH HERDR_SESSION TMUX TMUX_PANE
 ExecStart=%h/.local/bin/doriface-host --state-dir %h/.local/state/doriface-host
