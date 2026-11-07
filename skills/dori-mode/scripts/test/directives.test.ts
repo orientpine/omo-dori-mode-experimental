@@ -669,29 +669,27 @@ test("model-defaults reaches every lane's brief, whatever the brief is about and
   expect(hasDirective(`${fields}\n${directiveText(e)}\n`, e)).toBe(true);
 });
 
-// the owner 2026-11-07: every Dori uses Aside. His entry is a lead record; briefs and hints get the lead's rule that opens
-// with his sentence and says how (exec/repl/mcp, the owner's remote device, what to do when it is down, writes and secrets),
-// so no brief has his sentence without the how, whatever the small model picks and whatever the brief already says
-test("aside-web reaches a brief only as aside-web-how: his sentence with the how, also when the brief already has his sentence", () => {
+// the owner 2026-11-07: every Dori uses Aside. His entry and the lead's one-line how (aside-web-how) both go into every
+// lane's brief, so no model pick, hint slot or coverage rule can leave the how out (lead decision)
+test("aside-web and its how reach every brief, whatever the brief says and whatever the small model picks", () => {
   const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
   const owner = ledger.entries.find((x) => x.id === "aside-web")!;
   const how = ledger.entries.find((x) => x.id === "aside-web-how")!;
-  expect(owner.mode).toBe("lead");
-  const task = "[목표] 형이 로그인해 둔 사이트의 대시보드에서 숫자를 읽어 정리한다.";
-  const withHis = `${task}\n\n[형 지침 aside-web, 2026-11-07]\n모든 도리는 Aside를 쓴다.\n`;
-  for (const brief of [task, withHis]) {
-    const ctx = scopeContext(brief, ledger, { repo: "r" });
-    for (const picked of [undefined, ["aside-web-how"]]) {
-      const pick = picked && { model: "m", picked: picked.map((id) => ({ id, why: "x" })), evaluated: ["aside-web-how"] };
-      expect(planDirectives(brief, ledger, ctx, {}, pick).add.map(({ e }) => e.id).filter((id) => id.startsWith("aside-web"))).toEqual(["aside-web-how"]);
-    }
-    expect(briefGaps({ key: "k" }, brief, ledger, "r", { "eight-steps": "x", "ui-steps": "y" }).map((g) => g.id)).toContain("aside-web-how");
-  }
-  expect(directiveText(how).startsWith("[리드 규칙 aside-web-how]\n형 지침 aside-web: 모든 도리는 Aside를 쓴다.")).toBe(true);
-  for (const part of ["aside exec", "aside repl", "aside mcp", "aside host list", "몰래 바꾸지 않고", "형 승인 카드", "비밀번호 로그인 안 함", "문지기"]) expect(directiveText(how)).toContain(part);
-  expect(messageLines("이 사이트에서 이거 찾아서 정리해 로그인 돼 있어", ledger).some((l) => l === directiveLine(how))).toBe(true);
+  expect([owner.scope.all, how.scope.all, owner.mode, how.mode]).toEqual([true, true, "inject", "inject"]);
+  expect(directiveText(owner)).toBe("[형 지침 aside-web, 2026-11-07]\n모든 도리는 Aside를 쓴다.");
+  const web = "[목표] 형이 로그인해 둔 사이트의 대시보드에서 숫자를 읽어 정리한다.";
   const off = "[목표] 탁구 녹화 화면의 글자를 고친다.";
-  expect(planDirectives(off, ledger, scopeContext(off, ledger, { repo: "r" })).add.map(({ e }) => e.id)).not.toContain("aside-web-how");
+  const withHis = `${web}\n\n${directiveText(owner)}\n`;
+  for (const brief of [web, off, withHis]) {
+    for (const pick of [undefined, { model: "m", picked: [{ id: "report-table", why: "x" }] }]) {
+      const ids = planDirectives(brief, ledger, scopeContext(brief, ledger, { repo: "r" }), {}, pick).add.map(({ e }) => e.id);
+      expect(ids).toContain("aside-web-how");
+      expect(ids.includes("aside-web")).toBe(brief !== withHis);
+    }
+  }
+  expect(how.rule).not.toContain("\n");
+  for (const part of ["aside exec", "aside repl", "aside mcp", "aside host list", "몰래 바꾸지", "승인 카드"]) expect(how.rule).toContain(part);
+  expect(textDirectives("Aside 쓰는 스레드", ledger, { all: true }).map(({ e }) => e.id)).toEqual(expect.arrayContaining(["aside-web", "aside-web-how"]));
 });
 
 test("no scope narrowed for briefs hits the eight-step template by itself: it would be every lane again", async () => {
