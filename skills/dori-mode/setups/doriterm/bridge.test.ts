@@ -6,7 +6,7 @@ import { join } from "node:path";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-async function bridgeWithFakeHc(terminals: object[], args: string[] = []) {
+async function bridgeWithFakeHc(terminals: object[], args: string[] = [], env: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "doriterm-bridge-"));
   dirs.push(dir);
   writeFileSync(join(dir, "ls.json"), JSON.stringify({ terminals }));
@@ -19,7 +19,7 @@ case "$1" in
 esac
 `, { mode: 0o700 });
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "bridge.ts"), ...args], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORITERM_BRIDGE_NAME: "zzangdori" },
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORITERM_BRIDGE_NAME: "zzangdori", DORITERM_BRIDGES: "", ...env },
     stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -59,8 +59,61 @@ test("stop stops the hc core, which systemd runs outside this unit", async () =>
   const r = await bridgeWithFakeHc([{ name: "zzangdori", state: "live" }], ["stop"]);
   // Then: one core stop and nothing else (no ls, which would start a core)
   expect(r.code).toBe(0);
-  expect(r.out).toBe("zzangdori: stopped");
+  expect(r.out).toBe("bridges: stopped");
   expect(r.calls).toEqual(["server stop"]);
+});
+
+test("one row per listed Dori, in order: a live one kept, an ended one replaced, a missing one started as its account", async () => {
+  // Given: this host's list, with zzangdori live and okdori ended
+  const r = await bridgeWithFakeHc(
+    [{ name: "zzangdori", state: "live" }, { name: "okdori", state: "finished" }],
+    [],
+    { DORITERM_BRIDGES: "zzangdori okdori:okdori yoodori:yoodori" },
+  );
+  // Then: one hc ls, nothing for zzangdori, okdori removed and started again, yoodori started; each other Dori's row
+  // attaches as that account
+  expect(r.err).toBe("");
+  expect(r.out.split("\n")).toEqual(["zzangdori: kept", "okdori: started", "yoodori: started"]);
+  expect(r.calls).toEqual([
+    "ls --all --json",
+    "rm okdori",
+    `run --bg --no-parent --name okdori -- /bin/sh ${join(import.meta.dir, "attach.sh")} okdori`,
+    `run --bg --no-parent --name yoodori -- /bin/sh ${join(import.meta.dir, "attach.sh")} yoodori`,
+  ]);
+});
+
+test("a malformed list starts nothing", async () => {
+  // Given: a name hc would refuse and a name listed twice
+  for (const spec of ["Okdori:okdori", "okdori:okdori okdori:moodori", "okdori:ok:dori"]) {
+    const r = await bridgeWithFakeHc([], [], { DORITERM_BRIDGES: spec });
+    // Then: it fails before asking hc anything
+    expect(r.code).not.toBe(0);
+    expect(r.calls).toEqual([]);
+  }
+});
+
+test("attach.sh with an account attaches to that account's herdr through sudo -n, never starting a server", async () => {
+  // Given: a fake sudo that records its argv and ends the loop on the second call
+  const dir = mkdtempSync(join(tmpdir(), "doriterm-attach-acct-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "sudo"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$HOME/calls"
+n=$(wc -l < "$HOME/calls")
+[ "$n" -ge 2 ] && kill -TERM "$PPID"
+exit 1
+`, { mode: 0o700 });
+  const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh"), "okdori"], {
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORITERM_RETRY_SECONDS: "0" },
+    stdout: "pipe", stderr: "pipe",
+  });
+  await child.exited;
+  // Then: retried, each time as okdori with its own HOME, and the command it runs is the attach-only client
+  const calls = (await Bun.file(join(dir, "calls")).text()).trim().split("\n");
+  expect(calls).toHaveLength(2);
+  for (const c of calls) {
+    expect(c.startsWith("-n -u okdori -H /bin/sh -c ")).toBe(true);
+    expect(c.endsWith("exec herdr client")).toBe(true);
+  }
 });
 
 test("attach.sh keeps trying herdr client until the server is up, and never starts one", async () => {

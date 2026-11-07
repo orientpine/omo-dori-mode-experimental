@@ -1,0 +1,10 @@
+[Unit]
+Description=doriterm bridges: bring back a closed or ended bridge row within a minute
+
+[Timer]
+OnActiveSec=60
+OnUnitInactiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

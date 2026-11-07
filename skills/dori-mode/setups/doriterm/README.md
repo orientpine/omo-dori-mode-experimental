@@ -8,8 +8,9 @@ server with `herdr client`, the attach-only form (plain `herdr` starts a server 
 1 instead). The Dori shows as one row in the app; opening it shows the herdr
 TUI reflowed to the phone's width.
 
-Owner decision: card Q522 (2026-11-07 13:27 KST) "짱돌 하나로 시범", a two-week pilot on one account (until 2026-11-21).
-`herdr-web` stays as it is.
+Owner decision: card Q522 (2026-11-07 13:27 KST) "짱돌 하나로 시범", a two-week pilot on one account (until 2026-11-21);
+widened the same day (2026-11-07 22:28 KST, "모든 도리들도 여기 붙여") to one row per Dori on the host, see "Six Doris"
+below. `herdr-web` stays as it is.
 
 ## Install (one account)
 
@@ -69,15 +70,47 @@ It prints a one-time link (10 minutes), an 8-character code and the host fingerp
 phone, compares the ten groups of the fingerprint with the printed ones and taps "They match". The link and code are a
 credential: hand them over privately, never in a channel. `doriface-host devices list` shows the paired device.
 
-If the `zzangdori` row is gone from the app (its terminal was closed there), `bun bridge.ts` in this folder starts it
-again; `systemctl --user restart doriface-host.service` does the same.
+If a row is gone from the app (its terminal was closed there, or the hc core restarted), `doriterm-bridges.timer`
+starts it again within a minute (below); `bun bridge.ts` in this folder does it at once.
+
+## Six Doris on one host
+
+One paired phone reaches every Dori on the machine: one row per Dori, each a bridge terminal attached to that Dori's
+own herdr server. The host runs on one account (here oriclaw, the `zzangdori` row); the other Doris' rows attach as
+their own accounts with `sudo -n -u <account> -H` (`attach.sh <account>`), so the herdr servers, sockets and panes
+stay each account's and nothing runs on the other accounts beyond the herdr client while a row is open. It needs a
+NOPASSWD sudo rule from the host account to each Dori account (the same rule `node-dori-do` uses). No other account
+gets a host, a relay connection or a listening port, so an egress-gated account (yoodori's dori-gate) is not widened:
+the client only talks to its account's herdr unix socket.
+
+This host's list is local, in `~/.config/doriterm/bridges.env` (`name[:account]`, names 1-32 of a-z 0-9 - _ as hc
+requires, in the order the rows are first made):
+
+```sh
+mkdir -p ~/.config/doriterm
+echo 'DORITERM_BRIDGES="zzangdori okdori:okdori moodori:moodori yoodori:yoodori gongdori:gongdori soodori:soodori"' > ~/.config/doriterm/bridges.env
+for f in doriterm-bridges.service doriterm-bridges.timer; do ln -sf ~/.dori/src/skills/dori-mode/setups/doriterm/$f ~/.config/systemd/user/; done
+systemctl --user daemon-reload && systemctl --user enable --now doriterm-bridges.timer
+systemctl --user restart doriface-host.service   # makes the new rows at once; the paired devices stay paired
+```
+
+Without the file the unit makes the one pilot row `zzangdori` as before. `doriface-host.service` makes the rows
+when it starts; `doriterm-bridges.timer` runs `bridge.ts` every minute while the host runs (`ExecCondition`: with the
+host off it starts no hc core), so a row closed in the app or lost to an hc core restart comes back. `attach.sh`
+re-attaches after a Dori's herdr server restarts. A Dori restarting its service or its lead does not touch its herdr
+server, so the row stays. With `loginctl enable-linger` on the host account the units come back after a reboot.
+
+A paired device now reaches every listed account's herdr, where it can type into the lead and lanes and open panes:
+the same reach the host account already has through sudo, now from the paired phone. Remove a Dori from the list and
+`hc kill <name>` to take its row away. A harmless check that a row's input reaches its herdr: `ctrl+b` shows
+herdr's `PREFIX` bar and `Esc` cancels it; neither reaches the pane (Esc outside the prefix bar does).
 
 ## Turn it off
 
 ```sh
 doriface-host devices list
 doriface-host devices revoke <id>           # the device is refused at once ("unknown device")
-systemctl --user disable --now doriface-host.service   # the relay connection and the bridge client end
+systemctl --user disable --now doriterm-bridges.timer doriface-host.service   # the relay connection and the bridge clients end
 ```
 
 Stopping the unit stops the hc core and its herdr client (`ExecStopPost`); the herdr server and every agent in it keep
@@ -96,5 +129,5 @@ The full review, with source line references, is the doriterm-review lane report
 ## Tests
 
 `bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
-`stop`), `attach.sh` against a fake `herdr` whose server answers only on the third try, and `web/serve.ts` against a
+`stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try, and `web/serve.ts` against a
 small build (headers per path, client routes, nothing outside the build). The unit's start and stop were also run under systemd against the real hc (see the PR).
