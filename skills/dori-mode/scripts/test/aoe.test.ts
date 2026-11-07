@@ -692,11 +692,12 @@ test("goal record: a narrow pane that cuts the goal footer to Pur... is STARTUP_
   const sessions = join(state.dir, "sessions");
   const session = sessionFiles(sessions, "/tmp/w");
   world.ps = "500 1 bash\n501 500 omo --model m";
-  world.screen = "❯ \n (😺 OmO Native by Q Kim) Pur...";
+  // herdr pane run gives the pane its own start screen; the narrow one replaces it before launch reads the pane
+  const narrow = "❯ \n (😺 OmO Native by Q Kim) Pur...";
   const launch = async (key: string, goal?: string): Promise<string> => {
     const base = depsFor(world, fakeClock(T0), state.dir, { sessionsDir: sessions, agentCommand: ["omo", "--model", "{model}", "{prompt}"] });
     let cmd = "";
-    const deps: FlowDeps = { ...base, clock: { ...base.clock, sleep: async (ms: number) => { if (ms === 20_000) session(/--session-id (\S+)/.exec(cmd)?.[1] ?? "", cmd, goal); } }, run: async (argv, o) => {
+    const deps: FlowDeps = { ...base, clock: { ...base.clock, sleep: async (ms: number) => { if (ms === 20_000) { world.screens["w:p9"] = narrow; session(/--session-id (\S+)/.exec(cmd)?.[1] ?? "", cmd, goal); } } }, run: async (argv, o) => {
       if (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create") return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w:p9" }, tab_id: "w:t9" } }), err: "" };
       if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "process-info") return { code: 0, out: JSON.stringify({ result: { process_info: { shell_pid: 500 } } }), err: "" };
       if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "run") cmd = argv[4] ?? "";
@@ -706,6 +707,7 @@ test("goal record: a narrow pane that cuts the goal footer to Pur... is STARTUP_
   };
   expect(await launch("narrow", "active")).toBe("STARTUP_OK narrow w:p9");
   expect(await launch("narrow-bare")).toStartWith("STARTUP_NO_GOAL narrow-bare w:p9: the agent runs but no goal in its session");
+  expect(await launch("narrow-bare2")).toEndWith("last lines: ❯ / (😺 OmO Native by Q Kim) Pur...");
 });
 
 test("exact session id: a herdr omo lane gets launch's own --session-id after the program and its goal is read from that session; an agentCommand with its own selector is run as it is", async () => {
