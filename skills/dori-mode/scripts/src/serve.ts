@@ -115,7 +115,7 @@ exit $LASTEXITCODE
 `);
   const registration = [
     "$ErrorActionPreference = 'Stop'",
-    `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ${data(`-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${entry}"`)}`,
+    `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ${data(`-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${entry}"`)}`,
     // a logon trigger for this user only: an all-users trigger needs an elevated caller
     "$trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)",
     // keep supervising on a laptop that runs on battery
