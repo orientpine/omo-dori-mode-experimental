@@ -770,6 +770,34 @@
       "mode": "inject"
     },
     {
+      "id": "aside-web-how",
+      "name": "Aside 쓰는 법: aside exec·repl·mcp, 원격 호스트, 안 될 때, 쓰기와 비밀",
+      "by": "lead",
+      "basis": "형 지침 aside-web은 브리프에 형 말('모든 도리는 Aside를 쓴다')만 들어가서, 그 말을 지키는 데 필요한 쓰는 법을 리드가 한 줄 규칙으로 세워 같이 모든 레인에 넣는다(scope all, 리드 결정). Aside 브라우저는 macOS와 Windows에서만 돌아 리눅스 도리는 형이 정한 기기의 Aside를 원격 호스트로 쓴다. 어느 기기인지는 형이 정한다.",
+      "words": "",
+      "trigger": "우리 모든 도리가 어사이드쓰게 해. 지금은 뭐쓰는지 확인하고 개선된지 확인해",
+      "rule": "웹 일은 Aside를 먼저 쓴다: 맡길 때 aside exec \"<일>\", 페이지를 직접 볼 때 aside repl, MCP 세션은 aside mcp; 원격 기기는 aside host list에서 형이 정한 것을 --host로; Aside가 안 되면 다른 브라우저로 몰래 바꾸지 말고 막힌 것을 보고; 쓰기는 지금 규칙 그대로(형 직접 명령, 바깥 사람에게 닿는 것은 승인 카드 뒤), 로그인 승인·비밀은 형만.",
+      "date": "2026-11-07",
+      "source": "리드 규칙 2026-11-07: 형 지침 aside-web(위 계기)을 브리프에서 지키게 하려고 세움, 레인 dori-aside",
+      "scope": {
+        "all": true,
+        "keywords": [
+          "로그인",
+          "사이트",
+          "웹",
+          "브라우저",
+          "페이지",
+          "접속",
+          "대시보드",
+          "어사이드",
+          "\\baside\\b",
+          "\\bbrowser\\b",
+          "\\bweb\\b"
+        ]
+      },
+      "mode": "inject"
+    },
+    {
       "id": "aside-web",
       "name": "모든 도리가 웹 일에 Aside를 쓴다",
       "by": "owner",
@@ -781,22 +809,20 @@
       "date": "2026-11-07",
       "source": "형 2026-11-07 12:49 KST(#zzangdori), 전달 짱돌 리드, 레인 dori-aside",
       "scope": {
-        "all": true
-      },
-      "mode": "inject"
-    },
-    {
-      "id": "aside-web-how",
-      "name": "Aside 쓰는 법: aside exec·repl·mcp, 원격 호스트, 안 될 때, 쓰기와 비밀",
-      "by": "lead",
-      "basis": "형 지침 aside-web은 브리프에 형 말('모든 도리는 Aside를 쓴다')만 들어가서, 그 말을 지키는 데 필요한 쓰는 법을 리드가 한 줄 규칙으로 세워 같이 모든 레인에 넣는다(scope all, 리드 결정). Aside 브라우저는 macOS와 Windows에서만 돌아 리눅스 도리는 형이 정한 기기의 Aside를 원격 호스트로 쓴다. 어느 기기인지는 형이 정한다.",
-      "words": "",
-      "trigger": "우리 모든 도리가 어사이드쓰게 해. 지금은 뭐쓰는지 확인하고 개선된지 확인해",
-      "rule": "웹 일은 Aside를 먼저 쓴다: 맡길 때 aside exec \"<일>\", 페이지를 직접 볼 때 aside repl, MCP 세션은 aside mcp; 원격 기기는 aside host list에서 형이 정한 것을 --host로; Aside가 안 되면 다른 브라우저로 몰래 바꾸지 말고 막힌 것을 보고; 쓰기는 지금 규칙 그대로(형 직접 명령, 바깥 사람에게 닿는 것은 승인 카드 뒤), 로그인 승인·비밀은 형만.",
-      "date": "2026-11-07",
-      "source": "리드 규칙 2026-11-07: 형 지침 aside-web(위 계기)을 브리프에서 지키게 하려고 세움, 레인 dori-aside",
-      "scope": {
-        "all": true
+        "all": true,
+        "keywords": [
+          "로그인",
+          "사이트",
+          "웹",
+          "브라우저",
+          "페이지",
+          "접속",
+          "대시보드",
+          "어사이드",
+          "\\baside\\b",
+          "\\bbrowser\\b",
+          "\\bweb\\b"
+        ]
       },
       "mode": "inject"
     }

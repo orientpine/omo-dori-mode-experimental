@@ -692,6 +692,22 @@ test("aside-web and its how reach every brief, whatever the brief says and whate
   expect(textDirectives("Aside 쓰는 스레드", ledger, { all: true }).map(({ e }) => e.id)).toEqual(expect.arrayContaining(["aside-web", "aside-web-how"]));
 });
 
+// an every-lane entry is in a message's hints only when its own keywords are in the owner's text (lead decision 2026-11-07):
+// a lead answering a lookup without a lane still sees Aside, the how keeps its slot in a full row, and no other every-lane
+// entry (none has keywords) starts showing up in hints
+test("every-lane entries join an owner message's hints by their own keywords only: Aside and its how appear, the rest stay out", () => {
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
+  const line = (id: string) => directiveLine(ledger.entries.find((x) => x.id === id)!);
+  expect(messageLines("이 사이트에서 이거 찾아서 정리해 로그인 돼 있어", ledger)).toEqual(expect.arrayContaining([line("aside-web"), line("aside-web-how")]));
+  const full = messageLines("이 사이트 영상 전사해서 발표 자료로 정리해", ledger);
+  expect(full).toHaveLength(5);
+  expect(full).toContain(line("aside-web-how"));
+  const everyLane = new Set(ledger.entries.filter((e) => e.scope.all).map((e) => e.id));
+  for (const msg of ["이 PC에서 강화학습 돌려", "오늘 점심 뭐 먹지", "그리고 카드처리해 서류 준비하고 있어", "원본 main에 들어간 것만 이식"]) {
+    expect(textDirectives(msg, ledger).filter(({ e }) => everyLane.has(e.id))).toEqual([]);
+  }
+});
+
 test("no scope narrowed for briefs hits the eight-step template by itself: it would be every lane again", async () => {
   const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
   const narrowed = ledger.entries.filter((e) => e.scope.briefOnly);
