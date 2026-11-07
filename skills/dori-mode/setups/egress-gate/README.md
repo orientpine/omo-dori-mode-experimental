@@ -46,6 +46,19 @@ channel or a bot's post is refused with `owner-message-required`, and with eithe
 counts. Everything else about a proof stays: the 24 hours, the write limit per message (when configured), the outbound cards. Card
 buttons and reactions are still the owner's account only. The id goes in the root-owned config and nowhere else.
 
+The owner's tap on a question card (`dori ask`) counts as his message too (owner 2026-11-07 13:53 KST Q523 "응,
+문지기도 버튼 답 받게 (추천)"): `X-Dori-Owner-Message: <card channel>/<card message>` passes when that message is
+this gate bot's own post (`GET /users/@me` with the proof token; not a webhook), a components-v2 card that is one
+container holding one text, edited by the tap into the answered form `✅ **Q<n>** <question>` / `→ **<answer>**` /
+`-# <by> · <when>` with a non-empty answer and `<by>` one of `owner_proof.card_answer_words` (default `button` and
+`버튼`, the fork's `words.byButton`). An open card (no answer), a card folded after a reply or a typed answer, another
+person's or another bot's post, other coordinates than the message read, a channel outside the owner guild, or a tap
+more than 24 hours old (counted from the edit) is refused with `owner-message-required`. Discord does not say who
+tapped: the fork answers only the owner's tap, and the Discord port refuses `card-answer-forged` for any write that
+carries a button answer (`-# <button word> ·` beside `→`: a message, an edit, a webhook or a callback that posts),
+except the tap's own `UPDATE_MESSAGE` (type 7) interaction callback, which Discord accepts only for a real press. The
+24 hours, the write limit per message and the outbound cards stay as for a typed message.
+
 A dashboard order is the other proof (owner 2026-10-21 23:23 KST "문지기가 대시보드 지시도
 형 명령으로 인정"): `X-Dori-Owner-Order: <n>` (the dashboard order number, 1-999999999) when no
 `X-Dori-Owner-Message` is sent; an owner message always wins. With `owner_order` set, the gate

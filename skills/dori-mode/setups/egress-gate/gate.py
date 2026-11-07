@@ -51,6 +51,15 @@ READS = {"GET", "HEAD"}
 OPEN_ORDER_STATUSES = ("받음", "넘김", "처리 중")
 # 보류 (on hold) is not finished, but the owner stopped it; the backlog does not start it either
 OPEN_TODO_STATUSES = ("열림", "진행")
+# The owner's tap on a question card (dori ask) as his message (owner 2026-11-07 13:53 KST Q523 "응, 문지기도 버튼 답
+# 받게 (추천)"): the fork folds a tapped card into one text, "✅ **Q<n>** <question>\n→ **<answer>**\n-# <by> · <when>",
+# where <by> is the fork's words.byButton ("button" by default, "버튼" on the Korean installs). A reply or a typed
+# answer carries another word and is not taken.
+CARD_ANSWER = re.compile(r"(?:✅|\[[^\]\n]+\]) \*\*Q[1-9][0-9]*\*\* (?s:.+?)\n→ \*\*(?P<answer>(?s:.+?))\*\*\n"
+                         r"-# (?P<by>[^\n·]+?) · [^\n]+")
+CARD_ANSWER_MARK = re.compile(r"(?m)^\s*-#\s*(?P<by>[^\n·]*?)\s*·")
+CARD_ANSWER_WORDS = ("button", "버튼")
+COMPONENTS_V2 = 1 << 15
 # Discord fetches every linked URL to build a preview, so a link in a bot message is a request to that host.
 URL = re.compile(r"https?://([^/\s<>\"'`\\)\]|?#]+)", re.I)
 DISCORD_URL_ALLOW = ["discord.com", "*.discord.com", "discordapp.com", "*.discordapp.com", "discord.gg",
@@ -971,6 +980,44 @@ class Gate:
         return bool(webhook) and channel == str(settings.get("owner_webhook_channel") or "") \
             and str(data.get("webhook_id") or "") == webhook and author == webhook
 
+    def card_answer_words(self) -> set:
+        return {str(w).casefold() for w in self.config["owner_proof"].get("card_answer_words", CARD_ANSWER_WORDS)}
+
+    def card_answer_text(self, text: str) -> bool:
+        """A text that reads as a tapped question card: any line "-# <a byButton word> ·" next to an answer arrow.
+        Looser than CARD_ANSWER on purpose (spacing, case, extra lines), so nothing the proof takes slips past it."""
+        words = self.card_answer_words()
+        return "→" in text and any(m["by"].strip().casefold() in words for m in CARD_ANSWER_MARK.finditer(text))
+
+    async def owner_card_answer(self, data: dict, channel: str, message: str, authorization: str) -> bool:
+        """The owner's tap on a question card (owner Q523, 2026-11-07 13:53 KST "응, 문지기도 버튼 답 받게 (추천)").
+
+        The message at those coordinates must be this gate bot's own (GET /users/@me with the proof token, not a
+        webhook), a components-v2 card that is one container holding one text, folded by an edit into an answered
+        card whose chosen answer is not empty and whose "by" word is a button word. Discord does not say who tapped:
+        the fork answers only the owner's tap (others get its ownerOnly line), and discord_policy refuses an answered
+        button card on every Discord write but the tap's own UPDATE_MESSAGE callback, which Discord takes only for a
+        real press. The age is counted from the tap (edited_timestamp); outbound writes still park on their card.
+        """
+        author = data.get("author")
+        outer = data.get("components")
+        inner = outer[0].get("components") if isinstance(outer, list) and len(outer) == 1 and isinstance(outer[0], dict) \
+            and outer[0].get("type") == 17 else None
+        if (str(data.get("id")) != message or str(data.get("channel_id")) != channel or data.get("webhook_id")
+                or not isinstance(author, dict) or author.get("bot") is not True
+                or not int(data.get("flags") or 0) & COMPONENTS_V2 or not data.get("edited_timestamp")
+                or not isinstance(inner, list) or len(inner) != 1 or not isinstance(inner[0], dict)
+                or inner[0].get("type") != 10):
+            return False
+        answered = CARD_ANSWER.fullmatch(str(inner[0].get("content", "")))
+        if not answered or not answered["answer"].strip() or answered["by"].casefold() not in self.card_answer_words():
+            return False
+        key = ("me", hashlib.sha256(authorization.encode()).hexdigest())
+        me = self.cached(key)
+        if me is None:
+            me = self.remember(key, str((await self.discord_json("/users/@me", authorization))["id"]))
+        return str(author.get("id")) == me
+
     async def proof(self, headers: dict) -> str:
         if not headers.get("x-dori-owner-message") and headers.get("x-dori-owner-order"):
             return await self.order_proof(headers)
@@ -988,10 +1035,16 @@ class Gate:
             if not await self.channel_allowed(channel, authorization, dm=False):
                 raise Refused("owner-message-required")
             data = await self.discord_json(f"/channels/{channel}/messages/{message}", authorization)
-            stamp = dt.datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
+            if self.owner_wrote(data, channel):
+                stamp = data["timestamp"]
+            elif await self.owner_card_answer(data, channel, message, authorization):
+                stamp = data["edited_timestamp"]  # the tap folded the card: the answer is as old as that edit
+            else:
+                raise Refused("owner-message-required")
+            stamp = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
             age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
             maximum = self.config["owner_proof"].get("max_age_hours", 24) * 3600
-            if not self.owner_wrote(data, channel) or age < 0 or age > maximum:
+            if age < 0 or age > maximum:
                 raise Refused("owner-message-required")
         except (Refused, OSError, ValueError, KeyError, TypeError):
             raise Refused("owner-message-required") from None
@@ -2193,10 +2246,20 @@ class Gate:
             raise Refused("reaction-removal-not-allowed")
         if method not in READS:
             allowed = self.config.get("discord_url_allow", DISCORD_URL_ALLOW)
-            for text in message_texts(headers, body):
+            texts = message_texts(headers, body)
+            for text in texts:
                 for host in URL.findall(text):
                     if not url_host_allowed(host, allowed):
                         raise Refused("external-url-in-message")
+            # Owner Q523: a tapped question card is owner proof, so only the tap makes one. The fork answers the
+            # owner's tap with an UPDATE_MESSAGE (type 7) callback; any other write carrying a button answer is refused.
+            tap = False
+            if re.fullmatch(r"/interactions/\d+/[^/]+/callback", route):
+                with contextlib.suppress(ValueError, UnicodeError):
+                    callback = json.loads(body or b"{}")
+                    tap = isinstance(callback, dict) and callback.get("type") == 7
+            if not tap and any(self.card_answer_text(text) for text in texts):
+                raise Refused("card-answer-forged")
         if method == "GET" and route in {"/gateway", "/gateway/bot", "/users/@me",
                                         "/applications/@me", "/oauth2/applications/@me"}:
             return

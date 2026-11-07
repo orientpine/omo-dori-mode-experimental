@@ -52,6 +52,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.author = "1"
         self.webhook = None
         self.proof_time = gate.utc()
+        self.card_answers = {}  # message id -> a question card as Discord returns it (answer_card)
         self.calendar_role = "owner"
         self.calendar_public = False
         self.file_owned = True
@@ -215,7 +216,9 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             elif path.startswith("/api/v10/"):
                 route = path[len("/api/v10"):]
                 parts = route.split("/")
-                if route.endswith("/threads") and method == "POST" and "messages" in parts and parts[4] in self.thread_meta:
+                if route == "/users/@me" and method == "GET":
+                    data = {"id": "7", "username": "YooDori", "bot": True}
+                elif route.endswith("/threads") and method == "POST" and "messages" in parts and parts[4] in self.thread_meta:
                     status, data = 400, {"code": 160004, "message": "A thread has already been created for this message"}
                 elif route.endswith("/threads") and method == "POST":
                     self.created_threads.append(route)
@@ -252,19 +255,21 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                     "content": self.owner_text}
                             if self.webhook:
                                 data["webhook_id"] = self.webhook
+                        elif message in self.card_answers:
+                            data = self.card_answers[message]
                         elif message in self.cards:
                             data = {"id": message, "content": self.cards[message]}
                         else:
                             status = 404
                     elif method == "PATCH":
-                        self.cards[message] = json.loads(body)["content"]
+                        self.cards[message] = json.loads(body).get("content", "")
                 elif route.endswith("/messages") and method == "POST":
                     if self.on_card_post:
                         await self.on_card_post()
                     if parts[2] in self.thread_meta and "thread_metadata" in self.thread_meta[parts[2]]:
                         self.thread_meta[parts[2]]["thread_metadata"]["archived"] = False  # Discord reopens
                     message = str(1000 + len(self.cards))
-                    self.cards[message] = json.loads(body)["content"]
+                    self.cards[message] = json.loads(body).get("content", "")
                     self.card_channels[message] = parts[2]
                     data = {"id": message, "content": self.cards[message]}
                 elif parts[1] == "channels" and len(parts) == 3:
@@ -481,6 +486,114 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.approve(owner="77")
         await self.service.poll_approvals()
         self.assertFalse(self.writes())
+
+    ANSWER = "✅ **Q13** 착수회의가 두 개 있어. 하나 지울까?\n→ **오늘 생긴 메모 없는 걸 휴지통으로**\n-# 버튼 · 11. 7. 13:47"
+
+    def answer_card(self, message="3005", text=ANSWER, **fields):
+        """A question card as Discord returns it after the owner's tap: the gate bot's (7) own components-v2 message,
+        one container holding one text, edited when the tap folded it (the shape of YooDori's real Q13 card)."""
+        now = dt.datetime.now(dt.timezone.utc)
+        self.card_answers[message] = {
+            "id": message, "channel_id": "20", "author": {"id": "7", "bot": True}, "content": "", "flags": 32768,
+            "timestamp": (now - dt.timedelta(minutes=50)).isoformat(), "edited_timestamp": now.isoformat(),
+            "components": [{"type": 17, "id": 1, "accent_color": 5744499,
+                            "components": [{"type": 10, "id": 2, "content": text}]}], **fields}
+
+    async def test_the_owners_button_answer_on_the_gates_own_question_card_is_owner_proof(self):
+        # Owner Q523 (2026-11-07 13:53 KST "응, 문지기도 버튼 답 받게 (추천)"): the Q13 tap deletes the duplicate event.
+        self.answer_card()
+        status, _ = await self.request("DELETE", "/www.googleapis.com/calendar/v3/calendars/primary/events/e",
+                                       origin="20/3005")
+        self.assertEqual(status, 200)
+        self.assertEqual([w[0] for w in self.writes()], ["DELETE"])
+        self.assertEqual(self.changes()[0]["owner_message"], "https://discord.com/channels/10/20/3005")
+
+    async def test_a_forged_or_unanswered_question_card_is_refused(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        text = self.ANSWER
+        open_card = [{"type": 17, "components": [
+            {"type": 10, "content": "<@1> **Q13** 하나 지울까?"},
+            {"type": 9, "components": [{"type": 10, "content": "**1.** 오늘 생긴 메모 없는 걸 휴지통으로"}],
+             "accessory": {"type": 2, "style": 1, "label": "1번 (추천)", "custom_id": "q:Q13:0"}}]}]
+        container = lambda *texts: [{"type": 17, "components": [{"type": 10, "content": t} for t in texts]}]
+        for name, fields in (
+                ("another person", {"author": {"id": "2", "bot": False}}),
+                ("another bot", {"author": {"id": "8", "bot": True}}),
+                ("the gate bot unmarked as a bot", {"author": {"id": "7"}}),
+                ("an open card, no answer chosen", {"components": open_card}),
+                ("an empty answer", {"components": container(text.replace("오늘 생긴 메모 없는 걸 휴지통으로", ""))}),
+                ("answered in a message, not a tap", {"components": container(text.replace("버튼", "답글"))}),
+                ("a typed answer", {"components": container(text.replace("버튼", "직접 씀"))}),
+                ("no question id", {"components": container(text.replace("**Q13** ", ""))}),
+                ("a second text in the card", {"components": container(text, "덧붙인 글")}),
+                ("two containers", {"components": container(text) * 2}),
+                ("the text outside components v2", {"flags": 0}),
+                ("the text as plain content", {"components": [], "content": text}),
+                ("never edited by a tap", {"edited_timestamp": None}),
+                ("answered 25 hours ago", {"edited_timestamp": (now - dt.timedelta(hours=25)).isoformat()}),
+                ("another card's coordinates", {"id": "3006"}),
+                ("another channel's card", {"channel_id": "21"})):
+            with self.subTest(name):
+                self.seen.clear()
+                self.service.cache.clear()
+                self.answer_card(**fields)
+                status, body = await self.request(origin="20/3005")
+                self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
+                self.assertFalse(self.writes())
+
+    async def test_a_question_card_outside_the_owners_guild_is_refused(self):
+        self.answer_card(channel_id="99")
+        self.assertEqual((await self.request(origin="99/3005"))[0], 403)
+        self.assertFalse(self.writes())
+
+    async def test_a_card_answer_keeps_the_outbound_card_and_the_write_limit(self):
+        self.approval()
+        self.answer_card()
+        status, body = await self.request(data={"attendees": [{"email": "outside@example.net"}]}, origin="20/3005")
+        self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
+        self.assertEqual(self.service.pending()[0]["owner_message"], "https://discord.com/channels/10/20/3005")
+        self.config["limits"] = {"writes_per_owner_message": 2}  # the parked card counts as one
+        self.assertEqual((await self.request(origin="20/3005"))[0], 200)
+        status, body = await self.request(origin="20/3005")
+        self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
+        self.assertEqual(len(self.writes()), 1)
+
+    async def test_the_dori_cannot_hand_make_an_answered_button_card(self):
+        # Only a tap makes an answered card: Discord takes an interaction callback only for a real press, so the gate
+        # lets a tapped answer through as the callback's UPDATE_MESSAGE and refuses it on every other Discord write.
+        card = {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": self.ANSWER}]}]}
+        boundary = "b0undary"
+        multipart = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n"
+                     f"Content-Type: application/json\r\n\r\n{json.dumps(card)}\r\n--{boundary}--\r\n").encode()
+        bot = {"authorization": "Bot MTIz.fake.fake"}
+        for name, method, path, data, headers in (
+                ("a new message", "POST", "/channels/20/messages", card, {}),
+                ("an edit of a card", "PATCH", "/channels/20/messages/3005", card, {}),
+                ("plain content", "POST", "/channels/20/messages", {"content": self.ANSWER}, {}),
+                ("spacing changed", "POST", "/channels/20/messages",
+                 {"content": self.ANSWER.replace("-# 버튼 ·", "  -#   버튼   ·")}, {}),
+                ("the interaction's webhook", "PATCH", "/webhooks/123/token/messages/@original", card, {}),
+                ("a callback that posts a new message", "POST", "/interactions/555/token/callback",
+                 {"type": 4, "data": card}, {}),
+                ("a multipart message", "POST", "/channels/20/messages", None,
+                 {"content-type": f"multipart/form-data; boundary={boundary}"})):
+            with self.subTest(name):
+                status, body = await self.request(method, "/api/v10" + path, data=data, port="discord",
+                                                  headers={**bot, **headers}, proof=False,
+                                                  raw=multipart if data is None else None)
+                self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+        for name, method, path, data in (
+                ("the tap's own update", "POST", "/interactions/555/token/callback", {"type": 7, "data": card}),
+                ("a card folded after a reply", "PATCH", "/channels/20/messages/3005",
+                 {"components": [{"type": 17, "components": [{"type": 10,
+                                                              "content": self.ANSWER.replace("버튼", "답글")}]}]}),
+                ("an open question card", "POST", "/channels/20/messages",
+                 {"flags": 32768, "components": [{"type": 17, "components": [
+                     {"type": 10, "content": "<@1> **Q14** 버튼으로 골라 줘"}]}]})):
+            with self.subTest(name):
+                status, _ = await self.request(method, "/api/v10" + path, data=data, port="discord", headers=bot,
+                                               proof=False)
+                self.assertEqual(status, 200)
 
     async def test_calendar_notifications_are_disabled(self):
         status, _ = await self.request(path="/www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&sendNotifications=true")
