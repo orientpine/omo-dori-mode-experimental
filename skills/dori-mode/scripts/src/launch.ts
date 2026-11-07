@@ -23,6 +23,7 @@ import { relatedLines, relatedThreads, type RelatedThread } from "./related-thre
 import { addedLine, checkedLedger, type DirectivePick, headingAt, type Ledger, mergePicks, missingLines, parsePick, PICK_RUNS, PICK_SYSTEM, pickCandidates, pickPrompt, planDirectives, repoName, type ScopeContext, scopeContext, uiHits, scopeText, waivedLines, withDirectives } from "./directives.ts";
 import { join } from "node:path";
 import type { BudgetLimits } from "./supervision.ts";
+import { assignArm } from "./compaction-keep.ts";
 import { Lessons } from "./lessons.ts";
 
 export type LaunchInput = {
@@ -313,6 +314,22 @@ export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr",
   "",
 ].join("\n");
 
+// What a compaction must keep of the lane's task, said in the lane's first message. omo's summary prompt quotes the user's
+// requests word for word and keeps them unchanged through later compactions (senpi's builtin compaction, prompts.js R1/R3
+// and its task intent), while the brief is only a file the lane read: 2 of 5 lane compactions in the week to 2026-11-07
+// kept the brief path and none its goal or Done line (owner Q530). One line, since the message is typed into a pane or
+// passed as one argument; backticks and $( are changed so dori type takes it.
+const ANCHOR_CAP = 1200;
+const anchorPart = (s: string): string => {
+  const flat = s.replace(/\s+/g, " ").trim().replace(/`/g, "'").replaceAll("$(", "$ (");
+  return flat.length > ANCHOR_CAP ? `${flat.slice(0, ANCHOR_CAP)}... (cut here, the rest is in the brief)` : flat;
+};
+export const briefAnchor = (lane: Pick<Lane, "brief" | "done" | "goal">, briefText: string): string => {
+  const target = briefText.split("\n").find((l) => /^\s*\[(목표|Goal)\]/.test(l));
+  const parts = [...(target ? [anchorPart(target)] : []), `Done = ${anchorPart(lane.done)}`, ...(lane.goal ? [`Owner's words: "${anchorPart(lane.goal)}"`] : [])];
+  return `Keep these word for word through every context compaction, and after a compaction re-read the brief at ${lane.brief} before your next step: ${parts.join(" | ")}`;
+};
+
 const intentFields = (input: LaunchInput): Partial<Lane> => ({ ...(input.goal?.trim() ? { goal: input.goal.trim() } : {}), ...(input.challengeBefore?.length ? { challengeBefore: input.challengeBefore } : {}), ...(input.useGpu ? { useGpu: true } : {}), ...(input.ui ? { ui: true } : {}) });
 
 const EMPTY_LEDGER: Ledger = { entries: [], kinds: {}, minHits: 3, labels: [], standing: "", reviewed: [], fillers: [], files: [] };
@@ -595,14 +612,15 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     ({ draft, text } = await renderBrief(deps, { ...input, thread: ref, pick: { ...(pick ? { pick } : {}), ...(pickFallback ? { pickFallback } : {}) } }));
   }
   await Bun.write(input.brief, text);
-  const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${resolve(input.brief)} in full. You are the ${input.key} lane; report as the brief's footer says.`;
+  const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${resolve(input.brief)} in full. You are the ${input.key} lane; report as the brief's footer says. ${briefAnchor({ ...draft, brief: resolve(input.brief) }, text)}`;
   // a model reply older than this is not an answer to this launch (a resumed session holds earlier ones)
   const launchedAt = deps.clock.now();
   const env = laneEnv(deps.config.launchEnv, input.useGpu);
   const opened = await (deps.config.backend === "aoe" ? openAoe(deps, input.key, cwd, model, prompt, env) : openHerdr(deps, input.key, cwd, model, prompt, env)).catch((e: unknown) => {
     throw e instanceof LaunchFailed && openedThread ? new LaunchFailed(e.message, openedThread) : e;
   });
-  const lane: Lane = { ...draft, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}) };
+  const arm = assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
+  const lane: Lane = { ...draft, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
   await deps.registry.write(lane);
   // registered first, so the queue counts this lane as working in the thread; a thread --thread new just opened is 🔄 already
   if (input.thread !== NEW_THREAD) {

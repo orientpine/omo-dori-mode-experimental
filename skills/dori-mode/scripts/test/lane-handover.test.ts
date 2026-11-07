@@ -2411,9 +2411,9 @@ test("the context after the last compaction is the first assistant turn after it
   appendFileSync(file, compaction + "\n");
   const pending = compactionScan(file);
   // Then
-  expect(first).toEqual({ count: 1, afterK: 198 });
-  expect(second).toEqual({ count: 2, afterK: 317 });
-  expect(pending).toEqual({ count: 3 });
+  expect(first).toEqual({ count: 1, afterK: 198, lastK: 201, summary: "" });
+  expect(second).toEqual({ count: 2, afterK: 317, lastK: 317, summary: "" });
+  expect(pending).toEqual({ count: 3, summary: "" });
   expect(sessionSignals(dir, "abcdefab-0000-0000-0000-000000000001", Date.parse("2026-10-11T12:00:00Z"))).toEqual({ compactions: 3, ageH: 2 });
   expect(crossed({ afterCompactK: 317 }, { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 300 })).toEqual(["context after compaction 317k >= 300k"]);
   expect(crossed({ afterCompactK: 299 }, { contextPct: 0, compactions: 0, ageH: 0, afterCompactK: 300 })).toEqual([]);
