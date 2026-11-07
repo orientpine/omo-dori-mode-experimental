@@ -271,7 +271,14 @@ export const openCardIds = (store: QuestionStore, thread: string): string[] => s
 
 export class QuestionCards {
   readonly statuses: ThreadStatusQueue;
-  private readonly folding = new Set<string>();
+  // One writer per question: a tap's fold in flight, settled when its callback is answered or refused.
+  private readonly folding = new Map<string, Promise<void>>();
+
+  // resolve and reopen leave a question to a tap whose fold is in flight, then read it again: the tap's answer is what
+  // Discord shows and the egress gate's receipt holds, so the log must not take another (challenge of #370's plan 9).
+  private async settled(id: string): Promise<void> {
+    for (let fold = this.folding.get(id); fold; fold = this.folding.get(id)) await fold;
+  }
 
   constructor(
     private readonly dc: Discord,
@@ -320,6 +327,7 @@ export class QuestionCards {
   }
 
   async reopen(id: string): Promise<Question> {
+    await this.settled(id);
     const known = this.store.get(id);
     if (!known?.message) throw new QuestionError(`no posted question ${id}`);
     const q = this.store.reopen(id) as Question;
@@ -333,6 +341,7 @@ export class QuestionCards {
   // try, then the answer is logged and the question forgotten. Its thread is re-checked: working once none of its
   // questions is open. A card already folded by a tap is not edited again; a question resolved before changes nothing.
   async resolve(id: string, answer?: string): Promise<Resolved | null> {
+    await this.settled(id);
     const q = this.store.get(id);
     if (!q) return this.store.logged(id) ? "already" : null;
     if (q.status !== "open") {
@@ -405,13 +414,17 @@ export class QuestionCards {
     const at = this.at();
     const folded: Question | null = value && current?.status === "open" ? { ...current, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
     const shown = folded ?? current;
-    if (folded) this.folding.add(qid);
+    let release = (): void => {};
+    if (folded) this.folding.set(qid, new Promise<void>((done) => { release = done; }));
     try {
       await this.respond(i, shown ? { type: UPDATE_MESSAGE, data: { components: this.card(shown) } } : { type: ACK_UPDATE });
       const answered = folded ? this.store.answer(qid, value, kind, at) : null;
       return answered ? { kind: "answered", question: answered } : { kind: "stale", qid };
     } finally {
-      if (folded) this.folding.delete(qid);
+      if (folded) {
+        this.folding.delete(qid);
+        release();
+      }
     }
   }
 

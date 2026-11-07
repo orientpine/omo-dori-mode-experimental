@@ -249,6 +249,50 @@ test("a second tap while the first tap's callback is in flight folds nothing, an
   expect(store.get("Q2")?.answer).toBe("Later");
 });
 
+test("a resolve or reopen while a tap's fold is in flight waits for it: one answer in the log, the tap's, as the card and the gate's receipt say", async () => {
+  // The challenge of #370's next plan: tap, resolve and reopen each wrote one question by their own path, so a resolve
+  // landing in the callback's window logged the typed answer while Discord and the egress gate's receipt kept the tap's.
+  state = withState();
+  const seen: string[] = [];
+  const callbacks: { body: { type: number }; settle: (r: HttpResponse) => void }[] = [];
+  let arrived: () => void = () => {};
+  const http: Http = (req) => {
+    seen.push(`${req.method} ${req.url.replace("https://discord.com/api/v10", "")}`);
+    return req.url.includes("/interactions/")
+      ? new Promise((settle) => { callbacks.push({ body: JSON.parse(String(req.body)), settle }); arrived(); })
+      : Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(req.method === "POST" ? { id: "900" } : { type: 11 }) });
+  };
+  const until = (n: number) => new Promise<void>((done) => { arrived = () => callbacks.length >= n && done(); arrived(); });
+  const store = new QuestionStore(`${state.dir}/discord`);
+  const cards = new QuestionCards(new Discord(http, fakeClock(0), "bot"), store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  const ok: HttpResponse = { status: 204, headers: {}, body: "" };
+  await cards.ask("Ship?", ["Yes", "No"]);
+
+  const tapped = cards.handle(tap("q:Q1:0"));
+  await until(1);
+  const resolved = cards.resolve("Q1", "No");
+  await Promise.resolve();
+  expect(seen.filter((s) => s.startsWith("PATCH"))).toEqual([]);
+  callbacks[0]?.settle(ok);
+  expect((await tapped).kind).toBe("answered");
+  expect(await resolved).toBe("kept");
+  const log = readFileSync(store.answersFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  expect(log.map((q) => [q.answer, q.answerKind])).toEqual([["Yes", "button"]]);
+  expect(seen.filter((s) => s.startsWith("PATCH"))).toEqual([]);
+
+  await cards.ask("Deploy?", ["Now", "Later"]);
+  const refused = cards.handle(tap("q:Q2:1"));
+  await until(2);
+  const reopened = cards.reopen("Q2");
+  const typed = cards.resolve("Q2", "Tomorrow");
+  callbacks[1]?.settle({ status: 403, headers: {}, body: JSON.stringify({ error: "card-answer-forged" }) });
+  await expect(refused).rejects.toThrow();
+  expect((await reopened).status).toBe("open");
+  expect(await typed).toBe("folded");
+  expect(store.logged("Q2")).toBeTruthy();
+  expect(readFileSync(store.answersFile, "utf8").trim().split("\n").map((l) => JSON.parse(l).answer)).toEqual(["Yes", "Tomorrow"]);
+});
+
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {
   const { cards, seen } = setup();
   await expect(cards.ask("Ship?", [])).rejects.toBeInstanceOf(QuestionError);
