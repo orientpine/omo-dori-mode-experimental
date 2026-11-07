@@ -200,10 +200,11 @@ export const trialRows = (config: DoriConfig, lanes: readonly Lane[], read: (fil
       row.fixes += lane.fixes?.length ?? 0;
       const ids = [...(lane.priorSessions ?? []), ...(lane.session ? [lane.session] : [])];
       const files = ids.map((s) => laneSessionFile(config.sessionsDir, lane.cwd ?? config.defaultCwd, s));
-      row.sessions += ids.length;
-      const lost = files.filter((f) => !f).length;
+      // a lane whose current session is not known (a handover that could not name it clears it) is incomplete as well
+      const lost = files.filter((f) => !f).length + (lane.session ? 0 : 1);
+      row.sessions += ids.length + (lane.session ? 0 : 1);
       row.missing += lost;
-      if (lost || !ids.length) continue;
+      if (lost) continue;
       row.complete++;
       for (const file of files as string[]) {
         const u = sessionUsage(read(file));

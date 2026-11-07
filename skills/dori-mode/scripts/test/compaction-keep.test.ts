@@ -122,13 +122,16 @@ test("a lane whose cwd is a symlink is read under the real path too, in the swee
     lane("/b.md", { cwd: link, session: "new", priorSessions: ["old"] }),
     lane("/b.md", { key: "part-lane", cwd: link, session: "new", priorSessions: ["gone"] }),
     lane("/b.md", { key: "lost-lane", cwd: link, session: "gone-too" }),
+    lane("/b.md", { key: "cleared-lane", cwd: link, session: undefined, priorSessions: ["old"] }),
   ];
+  writeFileSync(join(state.dir, "compaction-trial", "arms.jsonl"), `${JSON.stringify({ at: "x", key: "cleared-lane", arm: "control", tags: [] })}\n`, { flag: "a" });
   const rows = trialRows(config, lanes);
-  // a lane with a session not found adds nothing to the usage columns: they average the complete lanes only
+  // a lane with a session not found, or with no current session, adds nothing to the usage columns: they average the
+  // complete lanes only
   expect(rows[0]).toMatchObject({ arm: "early", lanes: 2, complete: 1, sessions: 4, missing: 1, calls: 3, over300: 1 });
-  expect(rows[1]).toMatchObject({ arm: "control", lanes: 1, complete: 0, missing: 1, calls: 0 });
+  expect(rows[1]).toMatchObject({ arm: "control", lanes: 2, complete: 0, missing: 2, calls: 0 });
   const control = trialTable(rows)[3] ?? "";
-  expect(control.split("|").map((c) => c.trim()).slice(3, 8)).toEqual(["0 (1)", "-", "-", "-", "-"]);
+  expect(control.split("|").map((c) => c.trim()).slice(3, 8)).toEqual(["0 (2)", "-", "-", "-", "-"]);
 });
 
 test("an adopted lane whose recorded cwd is not its session's directory is still found by its exact session id", async () => {
