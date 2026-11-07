@@ -62,8 +62,10 @@ Discord port refuses `card-answer-forged` for any write that carries a button an
 for a tap the gate saw itself. The gate keeps its own Discord gateway session with the proof token
 (`owner_proof.gateway_url`, default `wss://gateway.discord.gg/?v=10&encoding=json`; Discord sends every session of
 a bot the same events) and records each `INTERACTION_CREATE`: who tapped, which button, on which message. The callback
-passes only when that tap was the owner's account, on a `q:<Q id>:<n>` pick button of this bot's question card, the
-answer is that option's text and the question id is the card's; a repeated tap on a card that already reads exactly
+passes only when that tap was the owner's account pressing a button (a component interaction of button type; a
+modal submit or a select is no pick), on a `q:<Q id>:<n>` pick button of this bot's question card, the answer is that
+option's text in the card Discord attached to the press (a later edit of the card changes nothing) and the question id
+is the card's; a repeated tap on a card that already reads exactly
 that answer passes too. The gate waits up to `owner_proof.tap_wait_seconds` (2.5) for its copy of the tap. With its
 gateway session down, taps fail (the owner sees Discord's interaction failure) and his typed messages keep working.
 `owner_proof.card_answers: false` turns card answers off (no session, no card proof); answered cards are still

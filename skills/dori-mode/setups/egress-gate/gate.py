@@ -1068,6 +1068,8 @@ class Gate:
         gateway session saw the owner make, with that option's text (owner_tap); every other write carrying one is
         refused. The age is counted from the tap (edited_timestamp); outbound writes still park on their card.
         """
+        if not self.card_answers_on():
+            return False
         author = data.get("author")
         outer = data.get("components")
         inner = outer[0].get("components") if isinstance(outer, list) and len(outer) == 1 and isinstance(outer[0], dict) \
@@ -1094,22 +1096,29 @@ class Gate:
         return self.config["owner_proof"].get("card_answers", True) is not False and bool(self.card_answer_words())
 
     def saw_interaction(self, event: dict) -> None:
-        """An INTERACTION_CREATE from the gate's own gateway session: who tapped what, kept 15 minutes."""
+        """An INTERACTION_CREATE from the gate's own gateway session: who pressed which button, kept 15 minutes, with
+        the card as Discord attached it to the press (event message), so a later edit of the card changes nothing."""
         user = (event.get("member") or {}).get("user") or event.get("user") or {}
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
         identity = str(event.get("id", ""))
         now = time.monotonic()
         self.taps = {k: v for k, v in self.taps.items() if now - v["at"] < TAP_KEEP_SECONDS}
-        self.taps[identity] = dict(user=str(user.get("id", "")), message=str((event.get("message") or {}).get("id", "")),
-                                   channel=str(event.get("channel_id", "")),
-                                   custom_id=str((event.get("data") or {}).get("custom_id", "")), at=now)
+        self.taps[identity] = dict(
+            user=str(user.get("id", "")), kind=event.get("type"), component=data.get("component_type"),
+            custom_id=str(data.get("custom_id", "")), message=str(message.get("id", "")),
+            author=str((message.get("author") or {}).get("id", "")),
+            parts=[c for box in message.get("components") or [] if isinstance(box, dict) and box.get("type") == 17
+                   for c in box.get("components") or [] if isinstance(c, dict)], at=now)
         waiting = self.tap_waits.pop(identity, None)
         if waiting:
             waiting.set()
 
     async def owner_tap(self, interaction: str, texts: list) -> bool:
-        """May this UPDATE_MESSAGE callback fold a card into a button answer? Only for the owner's own tap, as the
-        gate's gateway session saw it, on this bot's question card, with the answer the tapped option's text
-        (or the card already reading exactly that answer, a repeated tap)."""
+        """May this UPDATE_MESSAGE callback fold a card into a button answer? Only for the owner's own button press
+        (a component interaction, button type; a modal submit is not a pick), as the gate's gateway session saw it, on
+        this bot's question card, with the answer the pressed option's text in the card as it was at the press (or
+        that card already reading exactly that answer, a repeated press)."""
         if interaction not in self.taps:
             waiting = self.tap_waits.setdefault(interaction, asyncio.Event())
             with contextlib.suppress(TimeoutError):
@@ -1118,18 +1127,15 @@ class Gate:
         tap = self.taps.get(interaction)
         picked = re.fullmatch(r"q:(Q[1-9][0-9]*):([0-9]+)", tap["custom_id"]) if tap else None
         answers = [CARD_ANSWER.fullmatch(text) for text in texts if self.card_answer_text(text)]
-        if (not picked or tap["user"] != str(self.config["owner_id"]) or len(answers) != 1 or not answers[0]
-                or answers[0]["qid"] != picked[1]):
+        if (not picked or tap["user"] != str(self.config["owner_id"]) or tap["kind"] != 3 or tap["component"] != 2
+                or len(answers) != 1 or not answers[0] or answers[0]["qid"] != picked[1]):
             return False
         unescape = lambda text: re.sub(r"\\(.)", r"\1", text, flags=re.S)  # noqa: E731
         try:
             authorization = "Bot " + Path(self.config["owner_proof"]["token_file"]).read_text().strip()
-            card = await self.discord_json(f"/channels/{tap['channel']}/messages/{tap['message']}", authorization)
-            if (str(card.get("id")) != tap["message"] or not isinstance(card.get("author"), dict)
-                    or str(card["author"].get("id")) != await self.gate_bot(authorization)):
+            if not tap["message"] or tap["author"] != await self.gate_bot(authorization):
                 return False
-            parts = [c for box in card.get("components") or [] if isinstance(box, dict) and box.get("type") == 17
-                     for c in box.get("components") or [] if isinstance(c, dict)]
+            parts = tap["parts"]
             if [c.get("content") for c in parts] == [answers[0].group(0)]:
                 return True
             for part in parts:

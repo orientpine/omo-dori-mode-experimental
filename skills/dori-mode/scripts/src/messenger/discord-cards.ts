@@ -202,22 +202,21 @@ const buildOpenCard = (q: Question, ownerId: string, w: DiscordWords, fit: Fit):
   },
 ];
 
-// The answer and its "-# by · when" line always survive whole: a long question is cut instead, since the egress gate
-// reads a tapped card's last two lines as the owner's answer (review 1 of #370).
+// The answer and its "-# by · when" line always survive whole: a question too long to fit escaped or unescaped is cut
+// instead, since the egress gate reads a tapped card's last two lines as the owner's answer (reviews 1 and 2 of #370).
+// The whole text is tried first, so a card that fits only unescaped still goes out whole as before.
 const DONE_TEXT_MAX = 3000;
-export const doneCard = (q: Question, w: DiscordWords): object[] => [
-  {
-    type: 17,
-    accent_color: DONE_ACCENT,
-    components: [{ type: 10, content: escapedFit((md) => {
-      const head = `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** `;
-      const tail = `\n→ **${md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`;
-      const question = `${md(q.text)}${where(q)}`;
-      const room = DONE_TEXT_MAX - head.length - tail.length;
-      return head + (question.length <= room ? question : `${question.slice(0, Math.max(0, room - 1))}…`) + tail;
-    }, DONE_TEXT_MAX) }],
-  },
-];
+const doneText = (q: Question, w: DiscordWords, cut: boolean) => (md: (part: string) => string): string => {
+  const head = `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** `;
+  const tail = `\n→ **${md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`;
+  const question = `${md(q.text)}${where(q)}`;
+  const room = DONE_TEXT_MAX - head.length - tail.length;
+  return head + (!cut || question.length <= room ? question : `${question.slice(0, Math.max(0, room - 1))}…`) + tail;
+};
+export const doneCard = (q: Question, w: DiscordWords): object[] => {
+  const whole = fitEscaped(doneText(q, w, false), DONE_TEXT_MAX);
+  return [{ type: 17, accent_color: DONE_ACCENT, components: [{ type: 10, content: whole.length <= DONE_TEXT_MAX ? whole : escapedFit(doneText(q, w, true), DONE_TEXT_MAX) }] }];
+};
 
 export type Interaction = {
   readonly id: string;

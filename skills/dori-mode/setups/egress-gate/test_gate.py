@@ -614,23 +614,39 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                   data={"type": 7, "data": card}, port="discord", proof=False,
                                   headers={"authorization": "Bot MTIz.fake.fake"})
 
+    def press(self, user="1", custom_id="q:Q13:0", message="3010", kind=3, component=2, interaction="555"):
+        """The gate's gateway session sees a press, with the card as Discord attaches it (a copy taken now)."""
+        self.service.saw_interaction({
+            "id": interaction, "type": kind, "channel_id": "20", "member": {"user": {"id": user}},
+            "message": json.loads(json.dumps(self.card_answers[message])),
+            "data": {"custom_id": custom_id, **({"component_type": component} if component else {})}})
+
     async def test_only_the_owners_own_tap_folds_a_card_into_a_button_answer(self):
         # Review 1 of #370: an interaction callback proves a press, not whose; the gate's own gateway session tells.
         self.open_card()
-        tap = lambda user="1", custom_id="q:Q13:0", message="3010": self.service.saw_interaction(  # noqa: E731
-            {"id": "555", "type": 3, "channel_id": "20", "member": {"user": {"id": user}},
-             "message": {"id": message}, "data": {"custom_id": custom_id}})
-        tap()
+        self.press()
         self.assertEqual((await self.tap_update())[0], 200)
+        other = self.ANSWER.replace("오늘 생긴 메모 없는 걸 휴지통으로", "둘 다 둔다")
+
+        def edited_after_press():
+            # Review 2: the client edits the pressed option after the press; the press snapshot still decides.
+            self.press()
+            self.card_answers["3010"]["components"][0]["components"][1]["components"][0]["content"] = "**1.** 둘 다 둔다"
+
+        def foreign_card():
+            self.card_answers["3010"]["author"] = {"id": "8", "bot": True}
+            self.press()
         for name, setup, text in (
                 ("no tap seen by the gate", lambda: None, self.ANSWER),
-                ("another member's tap", lambda: tap(user="2"), self.ANSWER),
-                ("the answer is not the tapped option", tap, self.ANSWER.replace("오늘 생긴 메모 없는 걸 휴지통으로", "둘 다 둔다")),
-                ("the tapped option is the other one", lambda: tap(custom_id="q:Q13:1"), self.ANSWER),
-                ("another question's id", tap, self.ANSWER.replace("Q13", "Q14")),
-                ("the write-my-own button", lambda: tap(custom_id="q:Q13:other"), self.ANSWER),
-                ("a card that is not this bot's", lambda: (tap(), self.card_answers["3010"].update(author={"id": "8", "bot": True})),
-                 self.ANSWER)):
+                ("another member's tap", lambda: self.press(user="2"), self.ANSWER),
+                ("the answer is not the tapped option", self.press, other),
+                ("the tapped option is the other one", lambda: self.press(custom_id="q:Q13:1"), self.ANSWER),
+                ("another question's id", self.press, self.ANSWER.replace("Q13", "Q14")),
+                ("the write-my-own button", lambda: self.press(custom_id="q:Q13:other"), self.ANSWER),
+                ("a modal submit named like a pick", lambda: self.press(kind=5, component=None), self.ANSWER),
+                ("a select menu, not a button", lambda: self.press(component=3), self.ANSWER),
+                ("the option edited after the press", edited_after_press, other),
+                ("a card that is not this bot's", foreign_card, self.ANSWER)):
             with self.subTest(name):
                 self.service.taps.clear()
                 self.open_card()
@@ -640,9 +656,14 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_repeated_tap_on_an_already_folded_card_updates_it_unchanged(self):
         self.answer_card("3010")
-        self.service.saw_interaction({"id": "556", "type": 3, "channel_id": "20", "member": {"user": {"id": "1"}},
-                                      "message": {"id": "3010"}, "data": {"custom_id": "q:Q13:0"}})
+        self.press(interaction="556")
         self.assertEqual((await self.tap_update(interaction="556"))[0], 200)
+
+    async def test_card_answers_off_refuses_a_stored_card_answer_and_keeps_typed_messages(self):
+        self.answer_card()
+        self.config["owner_proof"]["card_answers"] = False
+        self.assertEqual((await self.request(origin="20/3005"))[0], 403)
+        self.assertEqual((await self.request())[0], 200)
 
     async def test_the_gateway_session_identifies_and_records_each_tap(self):
         # A fake Discord gateway: HELLO, then READY and one INTERACTION_CREATE after the gate identifies.
@@ -661,8 +682,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             opcode, payload = await gate.ws_read(reader)
             identified.set_result(json.loads(payload))
             writer.write(frame({"op": 0, "s": 1, "t": "READY", "d": {}}) + frame({"op": 0, "s": 2, "t": "INTERACTION_CREATE", "d": {
-                "id": "777", "type": 3, "channel_id": "20", "member": {"user": {"id": "1"}}, "message": {"id": "3010"},
-                "data": {"custom_id": "q:Q13:0"}}}))
+                "id": "777", "type": 3, "channel_id": "20", "member": {"user": {"id": "1"}},
+                "message": {"id": "3010", "author": {"id": "7", "bot": True}}, "data": {"custom_id": "q:Q13:0", "component_type": 2}}}))
             await writer.drain()
             with contextlib.suppress(asyncio.IncompleteReadError, ConnectionError):
                 await reader.read()
@@ -681,7 +702,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((hello["op"], hello["d"]["token"], hello["d"]["intents"]), (2, "MTIz.fake.fake", 0))
         await asyncio.wait_for(seen.wait(), 5)
         self.assertEqual({k: v for k, v in service.taps["777"].items() if k != "at"},
-                         {"user": "1", "message": "3010", "channel": "20", "custom_id": "q:Q13:0"})
+                         {"user": "1", "kind": 3, "component": 2, "custom_id": "q:Q13:0", "message": "3010", "author": "7",
+                          "parts": []})
 
     async def test_calendar_notifications_are_disabled(self):
         status, _ = await self.request(path="/www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&sendNotifications=true")

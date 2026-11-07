@@ -87,6 +87,15 @@ test("a long question folds with its answer and footer whole: the question is cu
   expect(text.endsWith(`x…\n→ **${option}**\n-# button · 1/2, 03:04`)).toBe(true);
 });
 
+test("a question that fits only unescaped folds whole and unescaped, not cut (review 2 of #370)", async () => {
+  const { cards, json } = setup();
+  const question = `${"q_".repeat(1000)}TAIL`;
+  await cards.ask(question, ["Keep", "Drop"]);
+  await cards.handle(tap("q:Q1:1"));
+  const text: string = json(1).data.components[0].components[0].content;
+  expect(text).toBe(`[answered] **Q1** ${question}\n→ **Drop**\n-# button · 1/2, 03:04`);
+});
+
 test("pick-button wording comes from the discord words", async () => {
   const { dc, store, json } = setup();
   const words = { ...defaultDiscordWords, pick: "{n} 선택", recommended: "추천", other: "직접 입력" };
