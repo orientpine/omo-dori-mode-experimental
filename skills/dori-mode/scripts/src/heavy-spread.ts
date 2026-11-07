@@ -36,6 +36,14 @@ const NAME = /^[\w.-]{1,64}$/;
 const ENV_NAME = /^[A-Za-z_]\w{0,63}$/;
 // paths a command may name that are the same on every host (read-only in the box)
 const SYSTEM = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/proc", "/dev", "/sys"];
+// the system folders programs live in: a program the job starts from one of them must be on the helper too (need=)
+const PROGRAM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt"];
+// the box's PATH after its own bun and tools folders, and the programs those two folders give every helper
+const BOX_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin";
+const BOX_PROGRAMS = new Set(["bun", "bunx", "ffmpeg", "ffprobe"]);
+const NEED_PATH = /^\/[\w.+@-][\w.+@/-]{0,254}$/;
+const NEEDS_MAX = 32;
+const inProgramDirs = (p: string): boolean => PROGRAM_DIRS.some((d) => within(p, d));
 
 export const within = (p: string, root: string): boolean => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
 
@@ -48,7 +56,9 @@ export type SpreadJob = {
   readonly env: Readonly<Record<string, string>>;
   readonly needBytes?: number;
 };
-export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly playwright?: string } | { readonly ok: false; readonly why: string };
+// needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
+// which the helper must have before it takes the job
+export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly playwright?: string } | { readonly ok: false; readonly why: string };
 
 // A bash -c script whose pipeline ends in tail, grep or head exits with that last command's code, so a failing test run
 // piped into tail looked like a pass (2026-11-02: 171 of 744 failed on the helper, HEAVY_DONE exit 0). The script that pipes
@@ -128,7 +138,7 @@ const stayHere = (cwd: string, root: string): string | undefined => {
 
 // Whether the job can run on another host unchanged: every path it needs travels with --sync, and every --sync path is
 // this account's own (its home or /tmp, owned by it, no link on the way, no ..). Anything else runs here (HEAVY_LOCAL).
-export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string }): Plan => {
+export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }): Plan => {
   const no = (why: string): Plan => ({ ok: false, why });
   if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)");
   const roots: string[] = [];
@@ -157,12 +167,33 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   const stay = stayHere(job.cwd, top ?? sync.find((s) => within(job.cwd, s))!);
   if (stay) return no(stay);
   for (const arg of job.cmd) for (const p of pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`);
+  // A system program the job starts is checked on the helper before it takes the job: a venv's python links to the
+  // system python it was made with, and on a helper without that version the link dangles in the box, so the run printed
+  // nothing (2026-11-07: a check of two runs on a helper without the venv's python read two empty logs as the same).
+  const needs = new Set<string>();
   for (const s of sync) {
     if (!existsSync(s) || !statSync(s).isDirectory()) continue;
-    for (const [link, to] of linksIn(s)) if (existsSync(to) && !covered(to)) return no(`the link ${link} points to ${to}, which is not in a --sync path (add it with --sync)`);
+    for (const [link, to] of linksIn(s)) {
+      if (existsSync(to) && !covered(to)) return no(`the link ${link} points to ${to}, which is not in a --sync path (add it with --sync)`);
+      if (inProgramDirs(to)) needs.add(to);
+    }
   }
+  const first = job.cmd[0] ?? "";
+  if (first.includes("/")) {
+    const p = resolve(job.cwd, first);
+    if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`);
+    if (inProgramDirs(p)) needs.add(p);
+  } else if (!BOX_PROGRAMS.has(first)) {
+    const sys = Bun.which(first, { PATH: BOX_SYSTEM_PATH });
+    const here = sys ?? Bun.which(first, { PATH: who.path ?? process.env.PATH ?? "", cwd: job.cwd });
+    if (sys) needs.add(sys);
+    else if (here) return no(`the command ${first} is ${here}, which is in no --sync path and no system folder, so a helper has none`);
+  }
+  const odd = [...needs].find((p) => !NEED_PATH.test(p) || p.split("/").includes(".."));
+  if (odd !== undefined) return no(`the job starts ${JSON.stringify(odd)}, a path a helper cannot be asked about`);
+  if (needs.size > NEEDS_MAX) return no(`the job starts ${needs.size} system programs, more than the ${NEEDS_MAX} a helper is asked about`);
   const playwright = job.kind === "browser" ? playwrightVersion(sync.filter((s) => existsSync(s))) : undefined;
-  return { ok: true, sync, ...(playwright ? { playwright } : {}) };
+  return { ok: true, sync, needs: [...needs], ...(playwright ? { playwright } : {}) };
 };
 
 // how busy this host is for a job of this kind, in percent (gpu: the GPU or the CPU, whichever is busier)
@@ -234,7 +265,7 @@ type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonl
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
-  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : [])];
+  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`)];
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const lines = linesOf(p.stderr);
   let verdict: RegExpExecArray | null = null;
@@ -299,8 +330,11 @@ export type SpreadResult = { readonly slot: string } | { readonly code: number }
 export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<Plan, { ok: true }>): Promise<SpreadResult> => {
   const log = (line: string) => ctx.deps.log?.(line);
   const seen = new Map<string, string>();
+  // a helper that refused this job (exec off, no bwrap, a program the job starts missing there) is not asked again
+  const refused = new Map<string, string>();
   const helpers = async (below: number, why: string): Promise<Started | null> => {
     for (const h of ctx.q.helpers) {
+      if (refused.has(h.name)) continue;
       const t = await startExec(ctx, h, job, plan, below);
       if (t.kind === "started") {
         seen.delete(h.name);
@@ -309,6 +343,10 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
       }
       if (seen.get(h.name) !== `${t.kind} ${t.why}`) log(`HEAVY_HELPER_${t.kind.toUpperCase()} ${job.label} ${h.name}: ${t.why}`);
       seen.set(h.name, `${t.kind} ${t.why}`);
+      if (t.kind === "refused") {
+        refused.set(h.name, t.why);
+        if (refused.size === ctx.q.helpers.length) log(`HEAVY_LOCAL ${job.label}: no helper can run it (${[...refused].map(([n, w]) => `${n}: ${w}`).join("; ")}); it waits for this host`);
+      }
     }
     return null;
   };
@@ -432,10 +470,14 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   if (!NAME.test(label)) return d.refuse("-", `label "${label}" must be letters, digits, . _ -`);
   if (!isKind(kind)) return d.refuse(label, `kind "${kind}" is not cpu, browser or gpu`);
   if (!/^\d{1,3}$/.test(belowS) || Number(belowS) > 100) return d.refuse(label, `"${belowS}" is not a busy percent`);
-  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o));
+  const needOk = (o: string): boolean => o.startsWith("need=") && NEED_PATH.test(o.slice(5)) && !o.split("/").includes("..") && inProgramDirs(o.slice(5));
+  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !needOk(o));
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   if (!ctx.q.exec) return d.refuse(label, "exec is off on this host (heavyQueue.exec)");
   if (!Bun.which("bwrap")) return d.refuse(label, "no bwrap on this host");
+  // the box sees this host's system read-only, so a program missing here is missing in the box
+  const missing = opts.filter((o) => o.startsWith("need=")).map((o) => o.slice(5)).find((p) => !existsSync(p));
+  if (missing !== undefined) return d.refuse(label, `${missing} is not on this host (the job's command or a link in its --sync paths starts it)`);
   const noScope = await canScope();
   if (noScope) return d.refuse(label, `no memory/CPU/time caps here: ${noScope}`);
   const playwright = opts.find((o) => o.startsWith("playwright="))?.slice("playwright=".length);
@@ -488,18 +530,25 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     writeFileSync(start, "");
     const pumps: Promise<void>[] = [];
     const ncpu = Math.max(1, cpus().length);
-    const code = await spawnScoped(
+    // bwrap exits 1 when it cannot start the command; a shell, and dori heavy here, exit 127 (not found) or 126
+    let firstErr: string | undefined;
+    const boxCode = await spawnScoped(
       { label, cmd: sandboxArgv(kind, spec, (p) => join(root, p), d.tools), free: ctx.deps.headroom?.free ?? 10, ...(mem ? { needBytes: mem } : {}), ...(kind === "gpu" ? { gpuFreeKb: ctx.deps.headroom?.gpuFreeKb ?? 0 } : {}), props: [`CPUQuota=${ncpu * 90}%`, `RuntimeMaxSec=${d.maxMin * 60}`], log },
       { cwd: dir, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
       (_pid, proc) => {
         const pump = async (s: ReadableStream<Uint8Array> | undefined, tag: string) => {
           if (!s) return;
-          for await (const l of linesOf(s)) process.stderr.write(`${tag} ${l}\n`);
+          for await (const l of linesOf(s)) {
+            if (tag === "E") firstErr ??= l;
+            process.stderr.write(`${tag} ${l}\n`);
+          }
         };
         pumps.push(pump(proc.stdout as ReadableStream<Uint8Array> | undefined, "O"), pump(proc.stderr as ReadableStream<Uint8Array> | undefined, "E"));
       },
     );
     await Promise.all(pumps);
+    const notStarted = boxCode === 1 ? /^bwrap: execvp .*: (.+)$/.exec(firstErr ?? "")?.[1] : undefined;
+    const code = notStarted === undefined ? boxCode : notStarted === "No such file or directory" ? 127 : 126;
     // the files the run made or changed (regular files only), as tar on stdout
     const list = join(dir, "back.list");
     const found = Bun.spawnSync(["find", root, "-newer", start, "-type", "f", "-printf", "%P\\0"]);

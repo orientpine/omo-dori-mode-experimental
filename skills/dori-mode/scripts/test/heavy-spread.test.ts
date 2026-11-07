@@ -222,6 +222,67 @@ test("a job that names a path outside its --sync paths, or links out of them, st
   expect(spreadPlan(jobOf(["true"], { sync: ["/etc"] }), who).ok).toBe(false);
 });
 
+test("the system programs a job starts through its venv links or its first word go to the helper to check; a first word found only outside the system folders stays here", () => {
+  // Given: a venv whose python links to a system python, the 2026-11-07 shape (that venv's python missing on the helper)
+  mkdirSync(join(work, ".venv", "bin"), { recursive: true });
+  symlinkSync("/usr/bin/python3.99", join(work, ".venv", "bin", "python"));
+  const bin = join(state.dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "mytool"), "#!/bin/sh\n", { mode: 0o755 });
+  const sh = Bun.which("sh", { PATH: "/usr/local/bin:/usr/bin:/bin" })!;
+
+  // When / Then
+  const venv = spreadPlan(jobOf([".venv/bin/python", "run.py"]), who);
+  expect(venv.ok && venv.needs).toEqual(["/usr/bin/python3.99"]);
+  const shell = spreadPlan(jobOf(["sh", "-c", "true"]), who);
+  expect(shell.ok && shell.needs).toEqual(["/usr/bin/python3.99", sh]);
+  expect(spreadPlan(jobOf(["mytool"]), { ...who, path: `${bin}:/usr/bin:/bin` })).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool, which is in no --sync path and no system folder, so a helper has none` });
+  expect(spreadPlan(jobOf(["../x"]), who)).toEqual({ ok: false, why: `the command ../x is ${join(state.dir, "x")}, which is not in a --sync path` });
+  expect(spreadPlan(jobOf(["bun", "test"]), { ...who, path: bin }).ok).toBe(true);
+});
+
+test("a helper without a program the job starts says which one, is not asked again, and the job stays here", async () => {
+  // Given: this host's slot is taken, and the job's venv python links to a system python the helper does not have
+  holdSlot();
+  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] });
+  mkdirSync(join(work, ".venv", "bin"), { recursive: true });
+  symlinkSync("/usr/bin/python3.99", join(work, ".venv", "bin", "python"));
+  let polls = 0;
+  const waiting = { ...ctx, deps: { ...ctx.deps, clock: { now: () => Date.now(), sleep: async () => { if (++polls > 3) throw new Error("stop"); } } } };
+  // When
+  const r = spread(waiting, jobOf([".venv/bin/python", "-c", "print(1)"]));
+  // Then: no run there, the reason in the caller's log, one refusal on the helper
+  await expect(r).rejects.toThrow("stop");
+  const why = "/usr/bin/python3.99 is not on this host (the job's command or a link in its --sync paths starts it)";
+  expect(logs).toContain(`HEAVY_HELPER_REFUSED t second: ${why}`);
+  expect(logs).toContain(`HEAVY_LOCAL t: no helper can run it (second: ${why}); it waits for this host`);
+  expect(logs.some((l) => l.startsWith("HEAVY_SPREAD") || l.startsWith("HEAVY_DONE"))).toBe(false);
+  const helperLog = readFileSync(join(state.dir, "helper", "state", "heavy", "heavy.log"), "utf8");
+  expect(helperLog.match(/HEAVY_WORKER_REFUSED/g)?.length).toBe(1);
+}, 60_000);
+
+test("a command the helper's box cannot start ends with the exit code a shell gives (127 missing, 126 not runnable) and says why", async () => {
+  // Given
+  holdSlot();
+  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] });
+  writeFileSync(join(work, "plain.txt"), "not a program\n", { mode: 0o644 });
+  const err: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((c: string | Uint8Array) => (err.push(String(c)), true)) as typeof process.stderr.write;
+  try {
+    // When
+    const missing = await spread(ctx, jobOf([join(work, "nope")]));
+    const plain = await spread(ctx, jobOf([join(work, "plain.txt")]));
+    // Then
+    expect(missing).toEqual({ code: 127 });
+    expect(plain).toEqual({ code: 126 });
+  } finally {
+    process.stderr.write = write;
+  }
+  expect(err.join("")).toContain(`${join(work, "nope")}: No such file or directory`);
+  expect(err.join("")).toContain(`${join(work, "plain.txt")}: Permission denied`);
+}, 60_000);
+
 test("an argument's paths are found after = , and : but a URL's // is not a path", () => {
   expect(pathsIn("--out=/tmp/a,/tmp/b")).toEqual(["/tmp/a", "/tmp/b"]);
   expect(pathsIn("http://127.0.0.1:9660/x")).toEqual([]);
