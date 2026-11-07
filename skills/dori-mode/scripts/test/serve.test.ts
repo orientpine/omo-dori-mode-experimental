@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { fileLog, installTaskRefusal, keep, linesOf, type Running, serve, serveLoops, spawnLoop } from "../src/serve.ts";
+import { fileLog, installTaskRefusal, keep, linesOf, type Running, serve, serveLoops, spawnLoop, taskArgv } from "../src/serve.ts";
 import { commandArgv } from "../src/run.ts";
 import { fakeClock } from "./fakes.ts";
 
@@ -138,6 +138,18 @@ test("--install-task with --only or --log is refused, not registered without the
   expect(installTaskRefusal(["watch"], undefined)).toStartWith("SERVE_TASK_REFUSED");
   expect(installTaskRefusal([], "C:\\logs\\serve.log")).toStartWith("SERVE_TASK_REFUSED");
   expect(installTaskRefusal([], undefined)).toBeUndefined();
+});
+
+test("the logon task starts PowerShell with a hidden window", () => {
+  // Given an isolated state directory for the logon task.
+  const root = mkdtempSync(join(tmpdir(), "dori-task-hidden-"));
+  roots.push(root);
+  // When the production registration command is generated.
+  const registration = taskArgv("bun", "cli.ts", root).at(-1)!;
+  const action = registration.split("; ").find((part) => part.startsWith("$action = "))!;
+  const encoded = action.match(/FromBase64String\('([^']+)'\)/)![1]!;
+  // Then the action's decoded argument hides the long-running PowerShell window.
+  expect(Buffer.from(encoded, "base64").toString("utf8")).toContain("-WindowStyle Hidden");
 });
 
 test("on native Windows a hook naming dori runs this CLI with this Bun, the arguments as they are; elsewhere it runs as named", () => {
