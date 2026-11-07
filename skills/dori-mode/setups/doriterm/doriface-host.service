@@ -1,0 +1,20 @@
+[Unit]
+Description=doriterm host: this account's hc terminals to paired devices through the doriterm relay, end to end encrypted
+After=network-online.target dori-herdr.service
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# a unit started from a herdr pane must not hand the pane's identity to hc, whose terminals run the herdr client
+UnsetEnvironment=HERDR_PANE_ID HERDR_SOCKET HERDR_SOCKET_PATH HERDR_SESSION TMUX TMUX_PANE
+ExecStart=%h/.local/bin/doriface-host --state-dir %h/.local/state/doriface-host
+ExecStartPost=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts
+# hc's core is its own systemd user service (systemd-run), so stopping this unit would leave it and the bridge running
+ExecStopPost=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts stop
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=default.target
