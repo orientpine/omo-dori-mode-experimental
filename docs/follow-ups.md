@@ -14,6 +14,10 @@ What would close it: `ask` refuses, before anything is stored or posted, an opti
 
 What would close it: when the proof is a card answer, `owner_links` takes URLs from the chosen answer only (never the bot-written question), with a `/fetch` test through a card proof.
 
+## Lane tree: parallel `dori tree add` calls can get the same id (#370)
+
+Four `dori tree add --kind finding` calls started at once in the gate-card-answer lane printed F181, F182 and F183 twice; one finding was lost and had to be added again (F184). What would close it: take the next id under the tree file's lock (or an O_EXCL claim), with a test that adds in parallel and checks every text is kept.
+
 ## Lane handover: one record per lane, with a generation number (#320)
 
 A lane's waiting handover is spread over several per-lane files: the lock, the pending journal, the ready mark, the ready-resume claim, the safe-point file and the facts snapshots, plus the waiting request read from the last rollover row. Review rounds 7-12 of #320 found 2-5 new races per round, nearly all between two of those files. #320 therefore keeps crash repair as main had it: a dead journal is repaired by the next handover run of the lane, under the lane's lock, and `freshness` repairs nothing itself.

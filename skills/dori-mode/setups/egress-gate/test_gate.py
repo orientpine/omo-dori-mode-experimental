@@ -35,6 +35,15 @@ gate = load("gate")
 summary = load("summary")
 
 
+
+def snowflake(ago: dt.timedelta) -> str:
+    """A Discord message id made at that moment (its top bits are milliseconds since 2015)."""
+    moment = dt.datetime.now(dt.timezone.utc) - ago
+    return str((int(moment.timestamp() * 1000) - 1420070400000) << 22)
+
+
+CARD = snowflake(dt.timedelta(minutes=50))  # Q13's card, posted 50 minutes before the tests run
+
 class GateTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="dori-gate-test-")
@@ -492,7 +501,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
 
     ANSWER = "✅ **Q13** 착수회의가 두 개 있어. 하나 지울까?\n→ **오늘 생긴 메모 없는 걸 휴지통으로**\n-# 버튼 · 11. 7. 13:47"
 
-    def answer_card(self, message="3005", text=ANSWER, **fields):
+    def answer_card(self, message=CARD, text=ANSWER, **fields):
         """A question card as Discord returns it after the owner's tap: the gate bot's (7) own components-v2 message,
         one container holding one text, edited when the tap folded it (the shape of YooDori's real Q13 card)."""
         now = dt.datetime.now(dt.timezone.utc)
@@ -506,10 +515,10 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         # Owner Q523 (2026-11-07 13:53 KST "응, 문지기도 버튼 답 받게 (추천)"): the Q13 tap deletes the duplicate event.
         self.answer_card()
         status, _ = await self.request("DELETE", "/www.googleapis.com/calendar/v3/calendars/primary/events/e",
-                                       origin="20/3005")
+                                       origin=f"20/{CARD}")
         self.assertEqual(status, 200)
         self.assertEqual([w[0] for w in self.writes()], ["DELETE"])
-        self.assertEqual(self.changes()[0]["owner_message"], "https://discord.com/channels/10/20/3005")
+        self.assertEqual(self.changes()[0]["owner_message"], f"https://discord.com/channels/10/20/{CARD}")
 
     async def test_a_forged_or_unanswered_question_card_is_refused(self):
         now = dt.datetime.now(dt.timezone.utc)
@@ -533,31 +542,30 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 ("the text outside components v2", {"flags": 0}),
                 ("the text as plain content", {"components": [], "content": text}),
                 ("never edited by a tap", {"edited_timestamp": None}),
-                ("answered 25 hours ago", {"edited_timestamp": (now - dt.timedelta(hours=25)).isoformat()}),
                 ("another card's coordinates", {"id": "3006"}),
                 ("another channel's card", {"channel_id": "21"})):
             with self.subTest(name):
                 self.seen.clear()
                 self.service.cache.clear()
                 self.answer_card(**fields)
-                status, body = await self.request(origin="20/3005")
+                status, body = await self.request(origin=f"20/{CARD}")
                 self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
                 self.assertFalse(self.writes())
 
     async def test_a_question_card_outside_the_owners_guild_is_refused(self):
         self.answer_card(channel_id="99")
-        self.assertEqual((await self.request(origin="99/3005"))[0], 403)
+        self.assertEqual((await self.request(origin=f"99/{CARD}"))[0], 403)
         self.assertFalse(self.writes())
 
     async def test_a_card_answer_keeps_the_outbound_card_and_the_write_limit(self):
         self.approval()
         self.answer_card()
-        status, body = await self.request(data={"attendees": [{"email": "outside@example.net"}]}, origin="20/3005")
+        status, body = await self.request(data={"attendees": [{"email": "outside@example.net"}]}, origin=f"20/{CARD}")
         self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
-        self.assertEqual(self.service.pending()[0]["owner_message"], "https://discord.com/channels/10/20/3005")
+        self.assertEqual(self.service.pending()[0]["owner_message"], f"https://discord.com/channels/10/20/{CARD}")
         self.config["limits"] = {"writes_per_owner_message": 2}  # the parked card counts as one
-        self.assertEqual((await self.request(origin="20/3005"))[0], 200)
-        status, body = await self.request(origin="20/3005")
+        self.assertEqual((await self.request(origin=f"20/{CARD}"))[0], 200)
+        status, body = await self.request(origin=f"20/{CARD}")
         self.assertEqual((status, json.loads(body)["status"]), (202, "pending_approval"))
         self.assertEqual(len(self.writes()), 1)
 
@@ -571,7 +579,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         bot = {"authorization": "Bot MTIz.fake.fake"}
         for name, method, path, data, headers in (
                 ("a new message", "POST", "/channels/20/messages", card, {}),
-                ("an edit of a card", "PATCH", "/channels/20/messages/3005", card, {}),
+                ("an edit of a card", "PATCH", f"/channels/20/messages/{CARD}", card, {}),
                 ("plain content", "POST", "/channels/20/messages", {"content": self.ANSWER}, {}),
                 ("spacing changed", "POST", "/channels/20/messages",
                  {"content": self.ANSWER.replace("-# 버튼 ·", "  -#   버튼   ·")}, {}),
@@ -586,7 +594,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                                   raw=multipart if data is None else None)
                 self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
         for name, method, path, data in (
-                ("a card folded after a reply", "PATCH", "/channels/20/messages/3005",
+                ("a card folded after a reply", "PATCH", f"/channels/20/messages/{CARD}",
                  {"components": [{"type": 17, "components": [{"type": 10,
                                                               "content": self.ANSWER.replace("버튼", "답글")}]}]}),
                 ("an open question card", "POST", "/channels/20/messages",
@@ -684,10 +692,18 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.press(interaction="556")
         self.assertEqual((await self.tap_update(interaction="556"))[0], 200)
 
+    async def test_a_card_answer_counts_24_hours_from_the_cards_posting_whatever_its_edits(self):
+        # Review 3 of #370: a later edit of the bot's own message moves edited_timestamp, never the id's time.
+        old = snowflake(dt.timedelta(hours=25))
+        self.answer_card(old)
+        status, body = await self.request(origin=f"20/{old}")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-required"))
+        self.assertFalse(self.writes())
+
     async def test_card_answers_off_refuses_a_stored_card_answer_and_keeps_typed_messages(self):
         self.answer_card()
         self.config["owner_proof"]["card_answers"] = False
-        self.assertEqual((await self.request(origin="20/3005"))[0], 403)
+        self.assertEqual((await self.request(origin=f"20/{CARD}"))[0], 403)
         self.assertEqual((await self.request())[0], 200)
 
     async def test_the_gateway_session_identifies_and_records_each_tap(self):

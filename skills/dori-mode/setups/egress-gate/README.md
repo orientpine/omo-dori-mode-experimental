@@ -53,7 +53,10 @@ container holding one text, edited by the tap into the answered form `✅ **Q<n>
 `-# <by> · <when>` with a non-empty answer and `<by>` one of `owner_proof.card_answer_words` (default `button` and
 `버튼`, the fork's `words.byButton`). An open card (no answer), a card folded after a reply or a typed answer, another
 person's or another bot's post, other coordinates than the message read, a channel outside the owner guild, or a tap
-more than 24 hours old (counted from the edit) is refused with `owner-message-required`. The 24 hours, the write
+posted more than 24 hours ago (counted from the card's posting, the message id's time: a later edit of the bot's
+own message moves `edited_timestamp`, never the id, so no edit restarts the 24 hours) is refused with
+`owner-message-required`; an answer tapped more than a day after its card was posted is no proof, and the Dori asks
+again. The 24 hours, the write
 limit per message and the outbound cards stay as for a typed message.
 
 Discord does not say on the card who tapped it, so the gate makes sure only the owner's tap can fold one: the

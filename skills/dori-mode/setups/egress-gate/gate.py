@@ -63,6 +63,7 @@ CARD_ANSWER_MARK = re.compile(r"(?m)^[ \t]*-#[ \t]*(?P<by>[^\n·]*?)[ \t]*·")
 CARD_TEXT_MAX = 4000
 CARD_ANSWER_WORDS = ("button", "버튼")
 COMPONENTS_V2 = 1 << 15
+DISCORD_EPOCH_MS = 1420070400000
 # Discord does not say on the card who tapped it, so the gate holds its own gateway session with the same bot token
 # (Discord sends every session of a bot the same events) and sees each INTERACTION_CREATE itself (review 1 of #370).
 GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
@@ -1066,10 +1067,11 @@ class Gate:
 
         The message at those coordinates must be this gate bot's own (GET /users/@me with the proof token, not a
         webhook), a components-v2 card that is one container holding one text, folded by an edit into an answered
-        card whose chosen answer is not empty and whose "by" word is a button word. Discord does not say who tapped,
+        card whose chosen answer is not empty and whose "by" word is a button word. Its 24 hours run from the card's
+        posting (the message id), not from an edit. Discord does not say who tapped,
         so discord_policy lets a button answer onto a card only as the UPDATE_MESSAGE callback of a tap the gate's own
         gateway session saw the owner make, with that option's text (owner_tap); every other write carrying one is
-        refused. The age is counted from the tap (edited_timestamp); outbound writes still park on their card.
+        refused. Outbound writes still park on their card.
         """
         if not self.card_answers_on():
             return False
@@ -1235,7 +1237,10 @@ class Gate:
             if self.owner_wrote(data, channel):
                 stamp = data["timestamp"]
             elif await self.owner_card_answer(data, channel, message, authorization):
-                stamp = data["edited_timestamp"]  # the tap folded the card: the answer is as old as that edit
+                # The card's 24 hours run from its posting (the message id's time), which no later edit can move;
+                # edited_timestamp would restart with any edit of the bot's own message (review 3 of #370).
+                stamp = dt.datetime.fromtimestamp(((int(message) >> 22) + DISCORD_EPOCH_MS) / 1000,
+                                                  dt.timezone.utc).isoformat()
             else:
                 raise Refused("owner-message-required")
             stamp = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
