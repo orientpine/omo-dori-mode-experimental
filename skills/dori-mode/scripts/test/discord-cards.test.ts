@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
+import { takeLock } from "../src/checkpoints.ts";
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { type Interaction, QuestionCards, QuestionError, QuestionStore } from "../src/messenger/discord-cards.ts";
@@ -247,6 +248,129 @@ test("a second tap while the first tap's callback is in flight folds nothing, an
   callbacks[3]?.settle(ok);
   expect((await retry).kind).toBe("answered");
   expect(store.get("Q2")?.answer).toBe("Later");
+});
+
+test("dori resolve or reopen, another process on the same store, waits for a tap's fold in flight; a tap during their claim is only acknowledged (review of #374)", async () => {
+  // The challenge of #370's next plan: tap, resolve and reopen each wrote one question by their own path, so a resolve
+  // landing in the callback's window logged the typed answer while Discord and the egress gate's receipt kept the tap's.
+  // The listener folds taps; dori resolve and dori reopen are separate processes with their own QuestionCards on the
+  // same store directory, so the hold is a claim file there.
+  state = withState();
+  const seen: string[] = [];
+  const callbacks: { body: { type: number }; settle: (r: HttpResponse) => void }[] = [];
+  let arrived: () => void = () => {};
+  const http: Http = (req) => {
+    seen.push(`${req.method} ${req.url.replace("https://discord.com/api/v10", "")}`);
+    return req.url.includes("/interactions/")
+      ? new Promise((settle) => { callbacks.push({ body: JSON.parse(String(req.body)), settle }); arrived(); })
+      : Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(req.method === "POST" ? { id: "900" } : { type: 11 }) });
+  };
+  const until = (n: number) => new Promise<void>((done) => { arrived = () => callbacks.length >= n && done(); arrived(); });
+  const now = Date.parse("2026-01-02T03:04:00Z");
+  const instance = () => new QuestionCards(new Discord(http, fakeClock(0), "bot"), new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => now);
+  const listener = instance();
+  const cli = instance();
+  const store = listener.store;
+  const ok: HttpResponse = { status: 204, headers: {}, body: "" };
+  const logged = () => readFileSync(store.answersFile, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { answer: string; answerKind: string });
+  await listener.ask("Ship?", ["Yes", "No"]);
+
+  const tapped = listener.handle(tap("q:Q1:0"));
+  await until(1);
+  const resolved = cli.resolve("Q1", "No");
+  await Promise.resolve();
+  expect(seen.filter((s) => s.startsWith("PATCH"))).toEqual([]);
+  callbacks[0]?.settle(ok);
+  expect((await tapped).kind).toBe("answered");
+  expect(await resolved).toBe("kept");
+  expect(logged().map((q) => [q.answer, q.answerKind])).toEqual([["Yes", "button"]]);
+  expect(seen.filter((s) => s.startsWith("PATCH"))).toEqual([]);
+
+  await listener.ask("Deploy?", ["Now", "Later"]);
+  const refused = listener.handle(tap("q:Q2:1"));
+  await until(2);
+  const reopened = cli.reopen("Q2");
+  const typed = cli.resolve("Q2", "Tomorrow");
+  callbacks[1]?.settle({ status: 403, headers: {}, body: JSON.stringify({ error: "card-answer-forged" }) });
+  await expect(refused).rejects.toThrow();
+  expect((await reopened).status).toBe("open");
+  expect(await typed).toBe("folded");
+  expect(logged().map((q) => q.answer)).toEqual(["Yes", "Tomorrow"]);
+
+  // A claim another holder has (a resolve editing the card), however old its record: the tap is only acknowledged.
+  await listener.ask("Merge?", ["Yes", "No"]);
+  const lock = `${state.dir}/discord/claim-Q3.lock`;
+  const held = takeLock(lock, now - 60_000, "question", "Q3");
+  const tapped3 = listener.handle(tap("q:Q3:0"));
+  await until(3);
+  expect(callbacks[2]?.body.type).toBe(6);
+  callbacks[2]?.settle(ok);
+  expect(await tapped3).toEqual({ kind: "stale", qid: "Q3" });
+  expect(store.get("Q3")?.status).toBe("open");
+  held();
+  // A lock file nobody holds (its process ended) claims nothing.
+  writeFileSync(lock, JSON.stringify({ pid: 1, host: "x", at: "2026-01-01T00:00:00Z", nonce: "n" }));
+  expect(await cli.resolve("Q3", "Later")).toBe("folded");
+
+  // Another process holding the claim: dori resolve waits until it lets go, then folds.
+  await listener.ask("Tag?", ["Yes", "No"]);
+  const child = Bun.spawn(["bun", "-e", `const { takeLock } = await import(${JSON.stringify(`${import.meta.dir}/../src/checkpoints.ts`)}); const r = takeLock(${JSON.stringify(`${state.dir}/discord/claim-Q4.lock`)}, Date.now(), "question", "Q4"); console.log("HELD"); await Bun.stdin.text(); r();`], { stdin: "pipe", stdout: "pipe" });
+  const reader = child.stdout.getReader();
+  let said = "";
+  while (!said.includes("HELD")) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`holder ended: ${said}`);
+    said += new TextDecoder().decode(value);
+  }
+  expect(store.claim("Q4", now)).toBeNull();
+  const patches = seen.filter((s) => s.startsWith("PATCH")).length;
+  const waiting = cli.resolve("Q4", "Never");
+  await Promise.resolve();
+  expect(seen.filter((s) => s.startsWith("PATCH")).length).toBe(patches);
+  expect(store.get("Q4")?.status).toBe("open");
+  child.stdin.end();
+  await child.exited;
+  expect(await waiting).toBe("folded");
+  expect(logged().map((q) => q.answer)).toEqual(["Yes", "Tomorrow", "Later", "Never"]);
+
+  // A late tap on an answered card repaints its record; a reopen waits for that repaint, so the reopened card is the
+  // last drawing and the store says open as Discord does (review 3 of #374).
+  await listener.ask("Ship now?", ["Yes", "No"]);
+  const first = listener.handle(tap("q:Q5:0"));
+  await until(4);
+  callbacks[3]?.settle(ok);
+  expect((await first).kind).toBe("answered");
+  const repaint = listener.handle({ ...tap("q:Q5:1"), id: "i9" });
+  await until(5);
+  expect(callbacks[4]?.body.type).toBe(7);
+  const order: string[] = [];
+  const drawn = seen.filter((s) => s.startsWith("PATCH")).length;
+  const reopening = cli.reopen("Q5").then((q) => { order.push("reopened"); return q; });
+  await new Promise((drained) => setImmediate(drained)); // an unheld reopen finishes within these queued jobs
+  expect(order).toEqual([]);
+  expect(seen.filter((s) => s.startsWith("PATCH")).length).toBe(drawn);
+  order.push("repainted");
+  callbacks[4]?.settle(ok);
+  expect(await repaint).toEqual({ kind: "stale", qid: "Q5" });
+  expect((await reopening).status).toBe("open");
+  expect(order).toEqual(["repainted", "reopened"]);
+  expect(store.get("Q5")?.status).toBe("open");
+});
+
+test("two processes changing the question store at once both keep their writes: every read-modify-write holds the store lock (review 4 of #374)", async () => {
+  // The listener and dori ask, resolve and reopen each read questions.json whole and write it back; without one lock
+  // a write of one process could restore a question another had just answered to open.
+  state = withState();
+  const dir = `${state.dir}/discord`;
+  const writer = (name: string) => Bun.spawn(["bun", "-e", `const { QuestionStore } = await import(${JSON.stringify(`${import.meta.dir}/../src/messenger/discord-cards.ts`)}); const store = new QuestionStore(${JSON.stringify(dir)}); for (let i = 0; i < 150; i++) { const q = store.create("${name} " + i, ["Yes"], "1", {}, "2026-01-02T03:04:00Z"); store.setMessage(q.id, "m" + i); store.answer(q.id, "Yes", "button", "2026-01-02T03:04:00Z"); }`], { stdout: "pipe", stderr: "pipe" });
+  const procs = [writer("a"), writer("b")];
+  const codes = await Promise.all(procs.map((p) => p.exited));
+  expect(codes).toEqual([0, 0]);
+  const questions = new QuestionStore(dir).all();
+  expect(questions).toHaveLength(300);
+  expect(new Set(questions.map((q) => q.id)).size).toBe(300);
+  expect(questions.filter((q) => q.status === "answered" && q.message)).toHaveLength(300);
+  expect(readFileSync(`${dir}/answers.jsonl`, "utf8").trim().split("\n")).toHaveLength(300);
 });
 
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {

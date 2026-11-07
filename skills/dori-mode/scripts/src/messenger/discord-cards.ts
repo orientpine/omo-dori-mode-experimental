@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { CheckpointError, takeLock } from "../checkpoints.ts";
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
 import type { ThreadStatus } from "./discord-thread.ts";
@@ -51,6 +52,11 @@ type State = { seq: number; questions: Question[] };
 
 export class QuestionError extends Error {}
 
+const CLAIM_WAIT_MS = 10_000;
+const STORE_WAIT_MS = 5_000;
+const STORE_POLL_MS = 5;
+const CLAIM_POLL_MS = 50;
+
 export class QuestionStore {
   readonly file: string;
   readonly answersFile: string;
@@ -74,6 +80,30 @@ export class QuestionStore {
     renameSync(tmp, this.file);
   }
 
+  // Every read-modify-write of questions.json holds the store lock (takeLock on questions.lock), so a write of one
+  // process never restores what another just wrote, a tapped answer included (review 4 of #374). It is held only for
+  // the file work, never across a network call: lock order is the question's claim first, the store lock inside it,
+  // and nothing takes a claim while holding the store lock, so the two cannot deadlock.
+  private locked<T>(work: () => T): T {
+    const lock = `${this.file.replace(/\.json$/, "")}.lock`;
+    for (let waited = 0; ; waited += STORE_POLL_MS) {
+      let release: (() => void) | undefined;
+      try {
+        release = takeLock(lock, Date.now(), "question store", "questions.json");
+      } catch (e) {
+        if (!(e instanceof CheckpointError)) throw e;
+        if (waited >= STORE_WAIT_MS) throw new QuestionError("the question store stayed locked; try again");
+        Bun.sleepSync(STORE_POLL_MS);
+        continue;
+      }
+      try {
+        return work();
+      } finally {
+        release();
+      }
+    }
+  }
+
   all(): Question[] {
     return this.load().questions;
   }
@@ -83,6 +113,10 @@ export class QuestionStore {
   }
 
   create(text: string, options: readonly string[], channel: string, meta: QuestionMeta, at: string): Question {
+    return this.locked(() => this.created(text, options, channel, meta, at));
+  }
+
+  private created(text: string, options: readonly string[], channel: string, meta: QuestionMeta, at: string): Question {
     const s = this.load();
     s.seq += 1;
     const q: Question = { id: `Q${s.seq}`, text, options: [...options], channel, thread: meta.thread ?? null, session: meta.session ?? null, tmux: meta.tmux ?? null, ...(meta.channelWhy ? { channelWhy: meta.channelWhy } : {}), ...(meta.replyTo ? { replyTo: meta.replyTo } : {}), created: at, status: "open" };
@@ -101,30 +135,51 @@ export class QuestionStore {
   }
 
   setMessage(id: string, message: string): void {
-    this.update(id, (q) => {
+    this.locked(() => this.update(id, (q) => {
       q.message = message;
-    });
+    }));
   }
 
   answer(id: string, value: string, kind: AnswerKind, at: string): Question | null {
-    const current = this.get(id);
-    if (!current || current.status !== "open") return null;
-    const q = this.update(id, (x) => Object.assign(x, { status: "answered", answer: value, answerKind: kind, answeredAt: at })) ?? null;
-    if (q) appendFileSync(this.answersFile, `${JSON.stringify(q)}\n`, { mode: 0o600 });
-    return q;
+    return this.locked(() => {
+      const current = this.get(id);
+      if (!current || current.status !== "open") return null;
+      const q = this.update(id, (x) => Object.assign(x, { status: "answered", answer: value, answerKind: kind, answeredAt: at })) ?? null;
+      if (q) appendFileSync(this.answersFile, `${JSON.stringify(q)}\n`, { mode: 0o600 });
+      return q;
+    });
+  }
+
+  // One writer per question across processes: the listener folds taps while dori resolve and dori reopen run as other
+  // processes on the same store (review of #374). The claim is the kernel lock takeLock holds (flock on claim-<id>.lock):
+  // it never expires while its holder lives, however long a rate-limited call sleeps, and ends with the holder's process,
+  // so no one judges a claim stale and two takers cannot both win (review 2 of #374). null while another holds it. An id
+  // no question can have needs no claim.
+  claim(id: string, now: number): (() => void) | null {
+    if (!/^Q\d+$/.test(id)) return () => {};
+    try {
+      return takeLock(join(dirname(this.file), `claim-${id}.lock`), now, "question", id);
+    } catch (e) {
+      if (e instanceof CheckpointError) return null;
+      throw e;
+    }
   }
 
   reopen(id: string): Question | undefined {
-    return this.update(id, (q) => {
+    return this.locked(() => this.update(id, (q) => {
       q.status = "open";
       delete q.answer;
       delete q.answerKind;
       delete q.answeredAt;
-    });
+    }));
   }
 
   // open cards asked from one session belong to another from now on (dori handover); returns the ids moved
   retarget(from: QuestionMeta, to: QuestionMeta): string[] {
+    return this.locked(() => this.retargeted(from, to));
+  }
+
+  private retargeted(from: QuestionMeta, to: QuestionMeta): string[] {
     const s = this.load();
     const moved: string[] = [];
     for (const q of s.questions) {
@@ -147,6 +202,10 @@ export class QuestionStore {
   }
 
   resolve(id: string): boolean {
+    return this.locked(() => this.forget(id));
+  }
+
+  private forget(id: string): boolean {
     const s = this.load();
     const before = s.questions.length;
     s.questions = s.questions.filter((q) => q.id !== id);
@@ -271,7 +330,18 @@ export const openCardIds = (store: QuestionStore, thread: string): string[] => s
 
 export class QuestionCards {
   readonly statuses: ThreadStatusQueue;
-  private readonly folding = new Set<string>();
+
+  // resolve and reopen wait for the question's claim (a tap's fold in flight, in the listener's process or this one),
+  // then read it again: the tap's answer is what Discord shows and the egress gate's receipt holds, so the log must not
+  // take another (challenge of #370's plan 9). A claim held past CLAIM_WAIT_MS refuses the command; nothing changed.
+  private async claimed(id: string): Promise<() => void> {
+    for (let waited = 0; ; waited += CLAIM_POLL_MS) {
+      const release = this.store.claim(id, this.now());
+      if (release) return release;
+      if (waited >= CLAIM_WAIT_MS) throw new QuestionError(`question ${id} is being answered now; try again`);
+      await new Promise((done) => setTimeout(done, CLAIM_POLL_MS));
+    }
+  }
 
   constructor(
     private readonly dc: Discord,
@@ -320,12 +390,17 @@ export class QuestionCards {
   }
 
   async reopen(id: string): Promise<Question> {
-    const known = this.store.get(id);
-    if (!known?.message) throw new QuestionError(`no posted question ${id}`);
-    const q = this.store.reopen(id) as Question;
-    await this.dc.call("PATCH", `/channels/${q.channel}/messages/${q.message}`, { components: this.card(q) });
-    if (q.thread) await this.mark(q.thread, "waiting");
-    return q;
+    const release = await this.claimed(id);
+    try {
+      const known = this.store.get(id);
+      if (!known?.message) throw new QuestionError(`no posted question ${id}`);
+      const q = this.store.reopen(id) as Question;
+      await this.dc.call("PATCH", `/channels/${q.channel}/messages/${q.message}`, { components: this.card(q) });
+      if (q.thread) await this.mark(q.thread, "waiting");
+      return q;
+    } finally {
+      release();
+    }
   }
 
   // A card still open when it is resolved (the owner answered in a message) folds into the same record a tap leaves,
@@ -333,6 +408,15 @@ export class QuestionCards {
   // try, then the answer is logged and the question forgotten. Its thread is re-checked: working once none of its
   // questions is open. A card already folded by a tap is not edited again; a question resolved before changes nothing.
   async resolve(id: string, answer?: string): Promise<Resolved | null> {
+    const release = await this.claimed(id);
+    try {
+      return await this.resolveClaimed(id, answer);
+    } finally {
+      release();
+    }
+  }
+
+  private async resolveClaimed(id: string, answer?: string): Promise<Resolved | null> {
     const q = this.store.get(id);
     if (!q) return this.store.logged(id) ? "already" : null;
     if (q.status !== "open") {
@@ -397,21 +481,25 @@ export class QuestionCards {
     // Taps are handled at once, so the question is held while its fold is in flight: a second tap folding another
     // answer would leave the card and the gate's tap receipt saying one answer and the store another (review 7 of #370).
     // It is only acknowledged; a fold Discord refuses frees the question for the next tap.
+    // The question's claim is the hold, so a dori resolve or reopen in another process waits for it too (review of #374).
+    // Every callback that draws the card holds it, a repaint of an answered card included: a late one would otherwise
+    // draw the old record over a card reopened meanwhile (review 3 of #374). Without the claim the tap is only acknowledged.
     const current = this.store.get(qid);
-    if (this.folding.has(qid)) {
+    const release = current ? this.store.claim(qid, this.now()) : null;
+    if (current && !release) {
       await this.respond(i, { type: ACK_UPDATE });
       return { kind: "stale", qid };
     }
-    const at = this.at();
-    const folded: Question | null = value && current?.status === "open" ? { ...current, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
-    const shown = folded ?? current;
-    if (folded) this.folding.add(qid);
     try {
+      const fresh = release ? this.store.get(qid) : current;
+      const at = this.at();
+      const folded: Question | null = value && fresh?.status === "open" ? { ...fresh, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
+      const shown = folded ?? fresh;
       await this.respond(i, shown ? { type: UPDATE_MESSAGE, data: { components: this.card(shown) } } : { type: ACK_UPDATE });
       const answered = folded ? this.store.answer(qid, value, kind, at) : null;
       return answered ? { kind: "answered", question: answered } : { kind: "stale", qid };
     } finally {
-      if (folded) this.folding.delete(qid);
+      release?.();
     }
   }
 
