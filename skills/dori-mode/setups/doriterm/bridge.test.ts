@@ -35,7 +35,7 @@ test("starts the herdr client terminal when the account has none", async () => {
   expect(r.err).toBe("");
   expect(r.code).toBe(0);
   expect(r.out).toBe("zzangdori: started");
-  expect(r.calls).toEqual(["ls --all --json", "run --bg --no-parent --name zzangdori -- herdr client"]);
+  expect(r.calls).toEqual(["ls --all --json", `run --bg --no-parent --name zzangdori -- /bin/sh ${join(import.meta.dir, "attach.sh")}`]);
 });
 
 test("leaves a live bridge alone", async () => {
@@ -51,7 +51,7 @@ test("replaces a finished bridge after a core restart", async () => {
   const r = await bridgeWithFakeHc([{ name: "zzangdori", state: "finished" }]);
   // Then: removed, then started again under the same name
   expect(r.out).toBe("zzangdori: started");
-  expect(r.calls).toEqual(["ls --all --json", "rm zzangdori", "run --bg --no-parent --name zzangdori -- herdr client"]);
+  expect(r.calls).toEqual(["ls --all --json", "rm zzangdori", `run --bg --no-parent --name zzangdori -- /bin/sh ${join(import.meta.dir, "attach.sh")}`]);
 });
 
 test("stop stops the hc core, which systemd runs outside this unit", async () => {
@@ -61,4 +61,24 @@ test("stop stops the hc core, which systemd runs outside this unit", async () =>
   expect(r.code).toBe(0);
   expect(r.out).toBe("zzangdori: stopped");
   expect(r.calls).toEqual(["server stop"]);
+});
+
+test("attach.sh keeps trying herdr client until the server is up, and never starts one", async () => {
+  // Given: a fake herdr whose server answers only on the third attach (the third call ends the loop for the test)
+  const dir = mkdtempSync(join(tmpdir(), "doriterm-attach-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "herdr"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$HOME/calls"
+n=$(wc -l < "$HOME/calls")
+[ "$n" -ge 3 ] || exit 1
+kill -TERM "$PPID"
+`, { mode: 0o700 });
+  // When
+  const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORITERM_RETRY_SECONDS: "0" },
+    stdout: "pipe", stderr: "pipe",
+  });
+  await child.exited;
+  // Then: three attach attempts, all `herdr client`, none a plain `herdr` that would start a server
+  expect((await Bun.file(join(dir, "calls")).text()).trim().split("\n")).toEqual(["client", "client", "client"]);
 });

@@ -1,15 +1,16 @@
 // doriterm (doriface-host) shows herdr-core (hc) terminals only, not herdr 0.9.5 panes. The bridge is one hc terminal
-// running `herdr client`, which attaches to this account's running herdr server and, unlike plain `herdr`, never starts
-// one (with no server it exits 1). hc --keep would bring back a shell rather than the client after a core restart, so
-// this re-creates the terminal instead. It never types into herdr and never focuses a pane: attaching is all it does.
+// running attach.sh, which keeps `herdr client` attached to this account's running herdr server; unlike plain `herdr`
+// it never starts one. hc --keep would bring back a shell rather than the client after a core restart, so this
+// re-creates the terminal instead. It never types into herdr and never focuses a pane: attaching is all it does.
 // hc runs its core as its own systemd user service, outside doriface-host.service, so `stop` stops the core, which ends
 // the bridge (not a kept terminal) with it; with no core running it starts none. On this account hc exists only for
 // the pilot.
+import { join } from "node:path";
 import { run, type Runner } from "../../scripts/src/run.ts";
 
 type Terminal = { readonly name?: string; readonly state?: string };
 
-export const bridgeCommand = ["herdr", "client"] as const;
+export const bridgeCommand = ["/bin/sh", join(import.meta.dir, "attach.sh")] as const;
 
 export async function ensureBridge(runner: Runner, name: string, command: readonly string[]): Promise<"kept" | "started"> {
   const ls = await runner(["hc", "ls", "--all", "--json"]);

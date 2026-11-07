@@ -28,7 +28,9 @@ systemctl --user daemon-reload && systemctl --user enable --now doriface-host.se
 `doriface-host.service` runs the host with its keys in `~/.local/state/doriface-host` (0700, files 0600) and keeps one
 encrypted outbound connection to `relay-doriface.omo.dev:443`; it opens no listening port beyond loopback 7766. Its
 `ExecStartPost` runs `bridge.ts`, which starts the hc terminal `zzangdori` (`DORITERM_BRIDGE_NAME`) running
-`herdr client`, or leaves it if it is already live, or replaces it if it ended. The bridge only attaches: it types
+`attach.sh`, or leaves it if it is already live, or replaces it if it ended. `attach.sh` runs `herdr client` again
+every 5 seconds (`DORITERM_RETRY_SECONDS`) after it exits, so the bridge attaches once the herdr server is up (a boot
+where this unit starts first) and again after a herdr server restart. The bridge only attaches: it types
 nothing and focuses no pane. hc runs its core as its own systemd user service (`systemd-run`), outside this unit, so
 `ExecStopPost` runs `bridge.ts stop`, which stops the core (`hc server stop`; with no core it starts none) and the
 bridge client with it. On this account hc exists only for the pilot. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
@@ -67,5 +69,5 @@ The full review, with source line references, is the doriterm-review lane report
 
 ## Tests
 
-`bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc`: no bridge, a live one, an ended one,
-and `stop`. The unit's start and stop were also run under systemd against the real hc (see the PR).
+`bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
+`stop`) and `attach.sh` against a fake `herdr` whose server answers only on the third try. The unit's start and stop were also run under systemd against the real hc (see the PR).
