@@ -17,7 +17,7 @@ const ACCOUNT = /^[a-z_][a-z0-9_-]*$/;
 
 export function parseBridges(spec: string): Bridge[] {
   const bridges = spec.split(/\s+/).filter(Boolean).map((item) => {
-    const [name, account, extra] = item.split(":");
+    const [name = "", account, extra] = item.split(":");
     if (extra !== undefined || !NAME.test(name) || (account !== undefined && !ACCOUNT.test(account))) {
       throw new Error(`bad bridge ${JSON.stringify(item)}: want name[:account], name 1-32 of a-z 0-9 - _`);
     }
