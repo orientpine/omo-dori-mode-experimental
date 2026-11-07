@@ -53,6 +53,9 @@ type State = { seq: number; questions: Question[] };
 export class QuestionError extends Error {}
 
 const CLAIM_WAIT_MS = 10_000;
+// a tap on a card whose post has not answered yet waits this long for dori ask's claim: Discord shows the card before its
+// POST answers, and an interaction must be answered within 3 seconds (review of #375)
+const TAP_POSTING_WAIT_MS = 2_000;
 const STORE_WAIT_MS = 5_000;
 const STORE_POLL_MS = 5;
 const CLAIM_POLL_MS = 50;
@@ -85,22 +88,37 @@ export class QuestionStore {
   // the file work, never across a network call: lock order is the question's claim first, the store lock inside it,
   // and nothing takes a claim while holding the store lock, so the two cannot deadlock.
   private locked<T>(work: () => T): T {
-    const lock = `${this.file.replace(/\.json$/, "")}.lock`;
     for (let waited = 0; ; waited += STORE_POLL_MS) {
-      let release: (() => void) | undefined;
-      try {
-        release = takeLock(lock, Date.now(), "question store", "questions.json");
-      } catch (e) {
-        if (!(e instanceof CheckpointError)) throw e;
-        if (waited >= STORE_WAIT_MS) throw new QuestionError("the question store stayed locked; try again");
-        Bun.sleepSync(STORE_POLL_MS);
-        continue;
-      }
-      try {
-        return work();
-      } finally {
-        release();
-      }
+      const done = this.tryLocked(work);
+      if (done) return done.value;
+      if (waited >= STORE_WAIT_MS) throw new QuestionError("the question store stayed locked; try again");
+      Bun.sleepSync(STORE_POLL_MS);
+    }
+  }
+
+  // The store lock without a limit, waiting without blocking the process: for a tap Discord already took, whose answer
+  // must be recorded however long another writer holds the store (challenge of #374's plan). The lock is held only for
+  // file work and a dead holder's lock ends with its process, so the wait ends.
+  private async lockedPatiently<T>(work: () => T): Promise<T> {
+    for (;;) {
+      const done = this.tryLocked(work);
+      if (done) return done.value;
+      await new Promise((later) => setTimeout(later, STORE_POLL_MS));
+    }
+  }
+
+  private tryLocked<T>(work: () => T): { value: T } | null {
+    let release: () => void;
+    try {
+      release = takeLock(`${this.file.replace(/\.json$/, "")}.lock`, Date.now(), "question store", "questions.json");
+    } catch (e) {
+      if (e instanceof CheckpointError) return null;
+      throw e;
+    }
+    try {
+      return { value: work() };
+    } finally {
+      release();
     }
   }
 
@@ -141,13 +159,20 @@ export class QuestionStore {
   }
 
   answer(id: string, value: string, kind: AnswerKind, at: string): Question | null {
-    return this.locked(() => {
-      const current = this.get(id);
-      if (!current || current.status !== "open") return null;
-      const q = this.update(id, (x) => Object.assign(x, { status: "answered", answer: value, answerKind: kind, answeredAt: at })) ?? null;
-      if (q) appendFileSync(this.answersFile, `${JSON.stringify(q)}\n`, { mode: 0o600 });
-      return q;
-    });
+    return this.locked(() => this.answered(id, value, kind, at));
+  }
+
+  // a tap's answer once Discord took its fold: recorded, however long the store stays locked
+  answerPatiently(id: string, value: string, kind: AnswerKind, at: string): Promise<Question | null> {
+    return this.lockedPatiently(() => this.answered(id, value, kind, at));
+  }
+
+  private answered(id: string, value: string, kind: AnswerKind, at: string): Question | null {
+    const current = this.get(id);
+    if (!current || current.status !== "open") return null;
+    const q = this.update(id, (x) => Object.assign(x, { status: "answered", answer: value, answerKind: kind, answeredAt: at })) ?? null;
+    if (q) appendFileSync(this.answersFile, `${JSON.stringify(q)}\n`, { mode: 0o600 });
+    return q;
   }
 
   // One writer per question across processes: the listener folds taps while dori resolve and dori reopen run as other
@@ -335,10 +360,16 @@ export class QuestionCards {
   // then read it again: the tap's answer is what Discord shows and the egress gate's receipt holds, so the log must not
   // take another (challenge of #370's plan 9). A claim held past CLAIM_WAIT_MS refuses the command; nothing changed.
   private async claimed(id: string): Promise<() => void> {
+    const release = await this.claimWithin(id, CLAIM_WAIT_MS);
+    if (!release) throw new QuestionError(`question ${id} is being answered now; try again`);
+    return release;
+  }
+
+  private async claimWithin(id: string, limit: number): Promise<(() => void) | null> {
     for (let waited = 0; ; waited += CLAIM_POLL_MS) {
       const release = this.store.claim(id, this.now());
       if (release) return release;
-      if (waited >= CLAIM_WAIT_MS) throw new QuestionError(`question ${id} is being answered now; try again`);
+      if (waited >= limit) return null;
       await new Promise((done) => setTimeout(done, CLAIM_POLL_MS));
     }
   }
@@ -382,9 +413,19 @@ export class QuestionCards {
     const arrow = clean.findIndex((o) => o.includes("\n→ **"));
     if (arrow >= 0) throw new QuestionError(`option ${arrow + 1} holds a line starting "→ **", which a folded card reads as its answer`);
     const q = this.store.create(text.trim(), clean, meta.thread || this.settings.channel, meta, this.at());
-    const reply = q.replyTo ? { message_reference: { message_id: q.replyTo, fail_if_not_exists: false } } : {};
-    const posted = await this.dc.call<{ id: string }>("POST", `/channels/${q.channel}/messages`, { components: this.card(q), flags: IS_COMPONENTS_V2, allowed_mentions: { users: [this.settings.owner] }, ...reply });
-    this.store.setMessage(q.id, posted.id);
+    // The question's claim from its creation until its message id is stored: a resolve or reopen meanwhile waits for the
+    // posted card instead of forgetting a question whose card then goes out open (challenge of #374's plan). Should one
+    // take the claim first, the question is read again and a forgotten one is not posted.
+    const release = await this.claimed(q.id);
+    let posted: { id: string };
+    try {
+      if (!this.store.get(q.id)) throw new QuestionError(`${q.id} was resolved before its card was posted`);
+      const reply = q.replyTo ? { message_reference: { message_id: q.replyTo, fail_if_not_exists: false } } : {};
+      posted = await this.dc.call<{ id: string }>("POST", `/channels/${q.channel}/messages`, { components: this.card(q), flags: IS_COMPONENTS_V2, allowed_mentions: { users: [this.settings.owner] }, ...reply });
+      this.store.setMessage(q.id, posted.id);
+    } finally {
+      release();
+    }
     if (q.thread) await this.mark(q.thread, "waiting");
     return { ...q, message: posted.id };
   }
@@ -484,10 +525,14 @@ export class QuestionCards {
     // The question's claim is the hold, so a dori resolve or reopen in another process waits for it too (review of #374).
     // Every callback that draws the card holds it, a repaint of an answered card included: a late one would otherwise
     // draw the old record over a card reopened meanwhile (review 3 of #374). Without the claim the tap is only acknowledged.
+    // A card with no message id yet is still being posted by dori ask, which holds the claim until the id is stored, yet
+    // Discord may show it first: that tap waits for the post, and past what a tap can wait the owner is asked to tap again
+    // (review of #375).
     const current = this.store.get(qid);
-    const release = current ? this.store.claim(qid, this.now()) : null;
+    const posting = !!current && !current.message;
+    const release = current ? (posting ? await this.claimWithin(qid, TAP_POSTING_WAIT_MS) : this.store.claim(qid, this.now())) : null;
     if (current && !release) {
-      await this.respond(i, { type: ACK_UPDATE });
+      await this.respond(i, posting ? { type: REPLY, data: { content: this.settings.words.cardPosting, flags: EPHEMERAL } } : { type: ACK_UPDATE });
       return { kind: "stale", qid };
     }
     try {
@@ -496,7 +541,7 @@ export class QuestionCards {
       const folded: Question | null = value && fresh?.status === "open" ? { ...fresh, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
       const shown = folded ?? fresh;
       await this.respond(i, shown ? { type: UPDATE_MESSAGE, data: { components: this.card(shown) } } : { type: ACK_UPDATE });
-      const answered = folded ? this.store.answer(qid, value, kind, at) : null;
+      const answered = folded ? await this.store.answerPatiently(qid, value, kind, at) : null;
       return answered ? { kind: "answered", question: answered } : { kind: "stale", qid };
     } finally {
       release?.();
