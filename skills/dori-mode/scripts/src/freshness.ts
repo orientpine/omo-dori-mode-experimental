@@ -426,6 +426,17 @@ const superviseLane = async (deps: FlowDeps, lane: Lane): Promise<SweepAct[]> =>
   }
 };
 
+// the re-anchor and the early-compaction trial (compaction-keep.ts), for working and not-done lanes alike; a failure is
+// one watch-log line, never the end of the sweep
+const keepLane = async (deps: FlowDeps, key: string, fallback: Lane): Promise<SweepAct[]> => {
+  try {
+    return await keepTick(deps, (await deps.registry.read(key)) ?? fallback);
+  } catch (e) {
+    watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `COMPACTION_KEEP_WARN ${key}: ${String(e).slice(0, 200)}` });
+    return [];
+  }
+};
+
 const lastHeard = (lane: Lane): number => lane.lastReplyAt ?? Date.parse(lane.openedAt);
 
 const stuckAct = (lane: string, line: string): SweepAct => ({ kind: "stuck", lane, detail: line.replace(/^STUCK \S+ /, "") });
@@ -465,6 +476,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       const seen = reported && reported !== lane.lastReport ? { ...lane, lastReport: reported, lastReplyAt: now } : lane;
       if (seen !== lane) await deps.registry.patch(lane.key, { lastReport: seen.lastReport, lastReplyAt: now });
       acts.push(...(await superviseLane(deps, seen)));
+      acts.push(...(await keepLane(deps, lane.key, seen)));
       const resumed = await readyResume(deps, hooks, lane.key, lane.pane);
       acts.push(...resumed);
       // a lead's request still waiting holds the lane too: no automatic start beside it (review 320 round 13)
@@ -494,11 +506,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       if (r.verdict === "started" || r.verdict === "not-started") acts.push({ kind: r.verdict === "started" ? "research_started" : "research_not_started", lane: lane.key, detail: r.line.replace(/^RESEARCH_\w+ \S+ /, "") });
     }
     acts.push(...(await superviseLane(deps, current)));
-    try {
-      acts.push(...(await keepTick(deps, (await deps.registry.read(lane.key)) ?? current)));
-    } catch (e) {
-      watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `COMPACTION_KEEP_WARN ${lane.key}: ${String(e).slice(0, 200)}` });
-    }
+    acts.push(...(await keepLane(deps, lane.key, current)));
     const resumed = await readyResume(deps, hooks, lane.key, lane.pane);
     acts.push(...resumed);
     // the start just made holds the lane: no automatic start beside it in this sweep

@@ -20,7 +20,7 @@ import { readScreen, sendVerified } from "./panes.ts";
 import type { Lane } from "./registry.ts";
 import { compactionScan, sessionFile } from "./rollover.ts";
 import { sessionDirFor } from "./session-id.ts";
-import { turnRunning } from "./submit.ts";
+import { editorText, turnRunning } from "./submit.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type TrialArm = "early" | "control";
@@ -71,15 +71,19 @@ export const keepTick = async (deps: FlowDeps, lane: Lane): Promise<KeepAct[]> =
   if (!file || !lane.pane) return [];
   const scan = compactionScan(file);
   const acts: KeepAct[] = [];
-  // the first sweep that reads a lane only takes its count: compactions before it are not re-anchored now
+  // the first sweep that reads a lane only takes its count: compactions before it are not re-anchored now. The count moves
+  // on only once the lane was told (or the summary kept the brief), so a pane that took no text is tried on the next sweep;
+  // a draft in its input box waits, since typing would send the draft with the text
   if (lane.compactionsSeen === undefined || scan.count < lane.compactionsSeen) {
     await deps.registry.patch(lane.key, { compactionsSeen: scan.count });
   } else if (scan.count > lane.compactionsSeen) {
-    await deps.registry.patch(lane.key, { compactionsSeen: scan.count });
-    if (!(scan.summary ?? "").includes(lane.brief)) {
+    if ((scan.summary ?? "").includes(lane.brief)) {
+      await deps.registry.patch(lane.key, { compactionsSeen: scan.count });
+    } else if (!editorText(await readScreen(deps.run, deps.config.backend, lane.pane, 40))) {
       const text = reanchorText(lane, existsSync(lane.brief) ? readFileSync(lane.brief, "utf8") : "");
       const ok = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
-      const detail = `compaction ${scan.count} kept no brief path${ok ? "; the lane was told to re-read its brief" : `; the re-anchor did not reach pane ${lane.pane}`}`;
+      if (ok) await deps.registry.patch(lane.key, { compactionsSeen: scan.count });
+      const detail = `compaction ${scan.count} kept no brief path${ok ? "; the lane was told to re-read its brief" : `; the re-anchor did not reach pane ${lane.pane}, tried again next sweep`}`;
       watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `${ok ? "COMPACTION_REANCHOR" : "COMPACTION_REANCHOR_FAIL"} ${lane.key} ${detail}` });
       acts.push({ kind: ok ? "reanchored" : "reanchor-failed", lane: lane.key, detail });
     }
@@ -89,10 +93,10 @@ export const keepTick = async (deps: FlowDeps, lane: Lane): Promise<KeepAct[]> =
   if (lane.trialArm !== "early" || !trialActive(trial, now) || (scan.lastK ?? 0) < trial.atK) return acts;
   const last = lane.trialCompact;
   if (last && last.count === scan.count && now - last.at < RETRY_MS) return acts;
-  // only at the idle moment: /compact while a turn runs would be queued as a message, and omo's manual compaction
-  // stops the running turn
+  // only at the idle moment: /compact while a turn runs would be queued as a message, omo's manual compaction stops the
+  // running turn, and a draft in the input box would be sent with it
   const screen = await readScreen(deps.run, deps.config.backend, lane.pane, 40);
-  if (turnRunning(screen) || QUESTION_MARK.test(screen)) return acts;
+  if (turnRunning(screen) || QUESTION_MARK.test(screen) || editorText(screen)) return acts;
   const ok = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, "/compact");
   await deps.registry.patch(lane.key, { trialCompact: { count: scan.count, at: now } });
   const detail = `context ${scan.lastK}k >= ${trial.atK}k at an idle moment${ok ? "; /compact typed" : `; /compact did not reach pane ${lane.pane}`}`;
@@ -176,7 +180,7 @@ export const trialRows = (config: DoriConfig, lanes: readonly Lane[], read: (fil
   });
 };
 
-const k = (n: number): string => `${Math.round(n / 1000)}k`;
+const k = (n: number): string => (n >= 10_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
 const per = (n: number, d: number, f: (x: number) => string): string => (d > 0 ? f(n / d) : "-");
 
 export const trialTable = (rows: readonly ArmRow[]): string[] => [

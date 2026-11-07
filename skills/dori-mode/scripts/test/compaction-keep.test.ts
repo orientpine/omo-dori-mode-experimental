@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { assignArm, keepTick, readArms, sessionUsage } from "../src/compaction-keep.ts";
+import { freshnessTick } from "../src/freshness.ts";
 import type { DoriConfig } from "../src/config.ts";
 import type { Lane } from "../src/registry.ts";
 import { sessionDirFor } from "../src/session-id.ts";
@@ -59,6 +60,41 @@ test("a compaction whose summary lost the brief path re-anchors the lane once wi
   expect(sent(world)).toHaveLength(1);
 });
 
+test("a re-anchor that did not reach the pane is tried again on the next sweep, and a draft in the input box is never sent", async () => {
+  const brief = join(state.dir, "brief.md");
+  writeFileSync(brief, "[목표] x\n");
+  const file = log();
+  await deps(T0).registry.write(lane(brief, { compactionsSeen: 0 }));
+  const read = async () => (await deps(T0).registry.read("keep-lane"))!;
+  appendFileSync(file, compaction("[Deterministic compaction recovery checkpoint]", "senpi.compaction.deterministic-fallback.v1"));
+  // Given an agent that shows no input box: the text does not arrive
+  world.screens["w:p7"] = "omo has stopped\n$ ";
+  expect((await keepTick(deps(T0), await read())).map((a) => a.kind)).toEqual(["reanchor-failed"]);
+  expect((await read()).compactionsSeen).toBe(0);
+  // When the owner left a draft in the box, nothing is typed
+  world.screens["w:p7"] = "❯ half-typed note to the lane";
+  const before = sent(world).length;
+  expect(await keepTick(deps(T0), await read())).toEqual([]);
+  expect(sent(world)).toHaveLength(before);
+  // Then the next sweep with an empty box delivers it once
+  world.screens["w:p7"] = "❯ ";
+  expect((await keepTick(deps(T0), await read())).map((a) => a.kind)).toEqual(["reanchored"]);
+  expect((await read()).compactionsSeen).toBe(1);
+  expect(await keepTick(deps(T0), await read())).toEqual([]);
+});
+
+test("a lane told not-done keeps both: freshness re-anchors it after a compaction that lost its brief", async () => {
+  const brief = join(state.dir, "brief.md");
+  writeFileSync(brief, "[목표] x\n");
+  const file = log();
+  const d = deps(T0);
+  await d.registry.write(lane(brief, { status: "not-done", compactionsSeen: 0 }));
+  world.screens["w:p7"] = "❯ ";
+  appendFileSync(file, compaction("[Deterministic compaction recovery checkpoint]", "senpi.compaction.deterministic-fallback.v1"));
+  expect((await freshnessTick(d, "/home/test")).map((a) => a.kind)).toContain("reanchored");
+  expect(sent(world).some((t) => t.includes(`re-read the brief at ${brief}`))).toBe(true);
+});
+
 test("the trial puts launched lanes in arms in turn and leaves excluded ones out, once per key", () => {
   const config = deps(T0, { compactionTrial: trial }).config;
   expect(assignArm(config, "a", [], T0)).toBe("early");
@@ -83,6 +119,8 @@ test("an early-arm lane gets /compact at its idle moment once its context reache
   expect(await keepTick(d(T0), await read())).toEqual([]);
   appendFileSync(file, turn(310));
   world.screens["w:p7"] = `${RUNNING}\n❯ `;
+  expect(await keepTick(d(T0), await read())).toEqual([]);
+  world.screens["w:p7"] = "❯ a draft the owner is typing";
   expect(await keepTick(d(T0), await read())).toEqual([]);
   world.screens["w:p7"] = "❯ ";
   expect((await keepTick(d(T0 + 60_000), await read())).map((a) => a.kind)).toEqual(["trial-compact"]);
