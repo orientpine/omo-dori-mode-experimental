@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,11 +93,11 @@ test("a malformed list starts nothing", async () => {
 });
 
 test("attach.sh with an account attaches to that account's herdr through sudo -n, never starting a server", async () => {
-  // Given: a fake sudo that records its argv and ends the loop on the second call
+  // Given: a fake sudo that records its argv on one line and ends the loop on the second call
   const dir = mkdtempSync(join(tmpdir(), "doriterm-attach-acct-"));
   dirs.push(dir);
   writeFileSync(join(dir, "sudo"), `#!/bin/sh
-printf '%s\\n' "$*" >> "$HOME/calls"
+printf '%s' "$*" | tr '\\n' ' ' >> "$HOME/calls"; echo >> "$HOME/calls"
 n=$(wc -l < "$HOME/calls")
 [ "$n" -ge 2 ] && kill -TERM "$PPID"
 exit 1
@@ -107,31 +107,54 @@ exit 1
     stdout: "pipe", stderr: "pipe",
   });
   await child.exited;
-  // Then: retried, each time as okdori with its own HOME, and the command it runs is the attach-only client
+  // Then: retried, each time as okdori with its own HOME, focusing its lead with its own herdr-web terminal.ts and then
+  // running the attach-only client
   const calls = (await Bun.file(join(dir, "calls")).text()).trim().split("\n");
   expect(calls).toHaveLength(2);
   for (const c of calls) {
     expect(c.startsWith("-n -u okdori -H /bin/sh -c ")).toBe(true);
-    expect(c.endsWith("exec herdr client")).toBe(true);
+    expect(c).toContain('bun "$HOME/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts"');
+    expect(c.trim().endsWith("exec herdr client")).toBe(true);
   }
 });
 
-test("attach.sh keeps trying herdr client until the server is up, and never starts one", async () => {
-  // Given: a fake herdr whose server answers only on the third attach (the third call ends the loop for the test)
+async function attachWithFakes(files: Record<string, string> = {}) {
+  // a fake bun (records which config it focused the lead from) and a fake herdr whose server answers on the third attach
   const dir = mkdtempSync(join(tmpdir(), "doriterm-attach-"));
   dirs.push(dir);
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(dir, path, ".."), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
+  writeFileSync(join(dir, "bun"), `#!/bin/sh
+printf 'focus %s %s\\n' "$DORI_CONFIG" "$1" >> "$HOME/calls"
+`, { mode: 0o700 });
   writeFileSync(join(dir, "herdr"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$HOME/calls"
-n=$(wc -l < "$HOME/calls")
+n=$(grep -c '^client$' "$HOME/calls")
 [ "$n" -ge 3 ] || exit 1
 kill -TERM "$PPID"
 `, { mode: 0o700 });
-  // When
   const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
     env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORITERM_RETRY_SECONDS: "0" },
     stdout: "pipe", stderr: "pipe",
   });
   await child.exited;
-  // Then: three attach attempts, all `herdr client`, none a plain `herdr` that would start a server
-  expect((await Bun.file(join(dir, "calls")).text()).trim().split("\n")).toEqual(["client", "client", "client"]);
+  return { dir, calls: (await Bun.file(join(dir, "calls")).text()).trim().split("\n") };
+}
+
+test("attach.sh focuses the lead's tab, then keeps trying herdr client until the server is up, and never starts one", async () => {
+  // Given: no instance config, so the account's own ~/.dori/config.json
+  const { dir, calls } = await attachWithFakes();
+  const focus = `focus ${dir}/.dori/config.json ${dir}/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts`;
+  // Then: before every attach the lead is focused; all attaches are `herdr client`, none a plain `herdr`
+  expect(calls).toEqual([focus, "client", focus, "client", focus, "client"]);
+});
+
+test("attach.sh takes an instance account's ~/.<user>/config.json for the lead", async () => {
+  // Given: the account keeps its Dori config under ~/.<its user name>/ (okdori: ~/.okdori/config.json)
+  const user = (await Bun.$`id -un`.text()).trim();
+  const { dir, calls } = await attachWithFakes({ [`.${user}/config.json`]: "{}" });
+  // Then: that config, not ~/.dori/config.json
+  expect(calls[0]).toBe(`focus ${dir}/.${user}/config.json ${dir}/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts`);
 });
