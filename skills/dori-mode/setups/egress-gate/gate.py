@@ -57,7 +57,10 @@ OPEN_TODO_STATUSES = ("열림", "진행")
 # answer carries another word and is not taken.
 CARD_ANSWER = re.compile(r"(?:✅|\[[^\]\n]+\]) \*\*(?P<qid>Q[1-9][0-9]*)\*\* (?s:.+?)\n→ \*\*(?P<answer>(?s:.+?))\*\*\n"
                          r"-# (?P<by>[^\n·]+?) · [^\n]+")
-CARD_ANSWER_MARK = re.compile(r"(?m)^\s*-#\s*(?P<by>[^\n·]*?)\s*·")
+# Line-bounded ([ \t], not \s, which spans lines) so a write full of blank lines cannot make it scan quadratically.
+CARD_ANSWER_MARK = re.compile(r"(?m)^[ \t]*-#[ \t]*(?P<by>[^\n·]*?)[ \t]*·")
+# A card's text is at most 4000 characters (Discord); longer text is no card, and CARD_ANSWER never sees it.
+CARD_TEXT_MAX = 4000
 CARD_ANSWER_WORDS = ("button", "버튼")
 COMPONENTS_V2 = 1 << 15
 # Discord does not say on the card who tapped it, so the gate holds its own gateway session with the same bot token
@@ -1080,7 +1083,8 @@ class Gate:
                 or not isinstance(inner, list) or len(inner) != 1 or not isinstance(inner[0], dict)
                 or inner[0].get("type") != 10):
             return False
-        answered = CARD_ANSWER.fullmatch(str(inner[0].get("content", "")))
+        content = str(inner[0].get("content", ""))
+        answered = CARD_ANSWER.fullmatch(content) if len(content) <= CARD_TEXT_MAX else None
         if not answered or not answered["answer"].strip() or answered["by"].casefold() not in self.card_answer_words():
             return False
         return str(author.get("id")) == await self.gate_bot(authorization)
@@ -1126,9 +1130,12 @@ class Gate:
             self.tap_waits.pop(interaction, None)
         tap = self.taps.get(interaction)
         picked = re.fullmatch(r"q:(Q[1-9][0-9]*):([0-9]+)", tap["custom_id"]) if tap else None
-        answers = [CARD_ANSWER.fullmatch(text) for text in texts if self.card_answer_text(text)]
-        if (not picked or tap["user"] != str(self.config["owner_id"]) or tap["kind"] != 3 or tap["component"] != 2
-                or len(answers) != 1 or not answers[0] or answers[0]["qid"] != picked[1]):
+        # The owner's press is checked before any card text is parsed: an unverified callback costs no matching.
+        if not picked or tap["user"] != str(self.config["owner_id"]) or tap["kind"] != 3 or tap["component"] != 2:
+            return False
+        marked = [text for text in texts if self.card_answer_text(text)]
+        answers = [CARD_ANSWER.fullmatch(text) for text in marked if len(text) <= CARD_TEXT_MAX]
+        if len(marked) != 1 or len(answers) != 1 or not answers[0] or answers[0]["qid"] != picked[1]:
             return False
         unescape = lambda text: re.sub(r"\\(.)", r"\1", text, flags=re.S)  # noqa: E731
         try:

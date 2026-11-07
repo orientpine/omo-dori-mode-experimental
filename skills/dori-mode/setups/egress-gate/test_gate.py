@@ -654,6 +654,31 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 status, body = await self.tap_update(text)
                 self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
 
+    async def test_an_unverified_or_oversized_callback_is_refused_without_parsing_the_card(self):
+        # Review 3 of #370: the owner's press is checked before any card text is parsed, and card text has a ceiling.
+        malformed = "\u2705 **Q13** " + "\n\u2192 **x" * 20000 + "\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47"
+        parsed = []
+        original = gate.CARD_ANSWER
+        class Spy:
+            def fullmatch(self, text):
+                parsed.append(len(text))
+                return original.fullmatch(text)
+        with patch.object(gate, "CARD_ANSWER", Spy()):
+            status, body = await self.tap_update(malformed)
+            self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+            self.assertEqual(parsed, [])
+            self.open_card()
+            self.press()
+            status, body = await self.tap_update(malformed)
+            self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+            self.assertEqual(parsed, [])
+
+    async def test_a_write_padded_with_blank_lines_is_still_checked_for_a_button_answer(self):
+        padded = "\n" * 50000 + self.ANSWER.replace("\n-# ", "\n \t-#\t ")
+        status, body = await self.request("POST", "/api/v10/channels/20/messages", data={"content": padded},
+                                          port="discord", proof=False, headers={"authorization": "Bot MTIz.fake.fake"})
+        self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+
     async def test_a_repeated_tap_on_an_already_folded_card_updates_it_unchanged(self):
         self.answer_card("3010")
         self.press(interaction="556")

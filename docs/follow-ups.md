@@ -2,6 +2,18 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
+## Question cards: an option longer than the card shows cannot be answered through the egress gate (#370)
+
+`QuestionCards.ask` (scripts/src/messenger/discord-cards.ts) takes options of any length, but `openCard` cuts each numbered option section to 1000 characters. The egress gate (#370) lets a button answer onto a card only when the answer equals the pressed option's text in the card as Discord attached it to the press, so a longer option's genuine tap is refused (`card-answer-forged`), after the fork's local store already marked the question answered. Review 3 of #370 found it; the lead left it to the next PR.
+
+What would close it: `ask` refuses, before anything is stored or posted, an option whose section text (`**n.** <option>`, escaped as the card writes it) would not fit 1000 characters, with a boundary test that posts a 1000-character option and taps it through the gate's rule.
+
+## Egress gate: a URL in the owner's card answer is no owner-provided web source (#370)
+
+#370 takes the owner's question-card button answer as owner proof, but the web window's first-fetch rule (`owner_links`, gate.py) reads only the proof message's `content`, which is empty on a components-v2 card. So a URL inside the option the owner picked does not authorize its fetch unless another source rule allows it. Review 3 of #370 found it; the lead left it to the next PR.
+
+What would close it: when the proof is a card answer, `owner_links` takes URLs from the chosen answer only (never the bot-written question), with a `/fetch` test through a card proof.
+
 ## Lane handover: one record per lane, with a generation number (#320)
 
 A lane's waiting handover is spread over several per-lane files: the lock, the pending journal, the ready mark, the ready-resume claim, the safe-point file and the facts snapshots, plus the waiting request read from the last rollover row. Review rounds 7-12 of #320 found 2-5 new races per round, nearly all between two of those files. #320 therefore keeps crash repair as main had it: a dead journal is repaired by the next handover run of the lane, under the lane's lock, and `freshness` repairs nothing itself.
