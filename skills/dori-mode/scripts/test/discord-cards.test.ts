@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
+import { takeLock } from "../src/checkpoints.ts";
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
 import { type Interaction, QuestionCards, QuestionError, QuestionStore } from "../src/messenger/discord-cards.ts";
@@ -296,24 +297,41 @@ test("dori resolve or reopen, another process on the same store, waits for a tap
   expect(await typed).toBe("folded");
   expect(logged().map((q) => q.answer)).toEqual(["Yes", "Tomorrow"]);
 
-  // A claim another live process holds (a resolve editing the card): the tap is acknowledged and folds nothing.
+  // A claim another holder has (a resolve editing the card), however old its record: the tap is only acknowledged.
   await listener.ask("Merge?", ["Yes", "No"]);
-  writeFileSync(`${state.dir}/discord/claim-Q3.json`, JSON.stringify({ pid: process.pid, at: now }));
-  const held = listener.handle(tap("q:Q3:0"));
+  const lock = `${state.dir}/discord/claim-Q3.lock`;
+  const held = takeLock(lock, now - 60_000, "question", "Q3");
+  const tapped3 = listener.handle(tap("q:Q3:0"));
   await until(3);
   expect(callbacks[2]?.body.type).toBe(6);
   callbacks[2]?.settle(ok);
-  expect(await held).toEqual({ kind: "stale", qid: "Q3" });
+  expect(await tapped3).toEqual({ kind: "stale", qid: "Q3" });
   expect(store.get("Q3")?.status).toBe("open");
-  // A claim left by a process that is gone, or older than its limit, is taken over.
-  const gone = Bun.spawn(["true"]);
-  await gone.exited;
-  writeFileSync(`${state.dir}/discord/claim-Q3.json`, JSON.stringify({ pid: gone.pid, at: now }));
+  held();
+  // A lock file nobody holds (its process ended) claims nothing.
+  writeFileSync(lock, JSON.stringify({ pid: 1, host: "x", at: "2026-01-01T00:00:00Z", nonce: "n" }));
   expect(await cli.resolve("Q3", "Later")).toBe("folded");
+
+  // Another process holding the claim: dori resolve waits until it lets go, then folds.
   await listener.ask("Tag?", ["Yes", "No"]);
-  writeFileSync(`${state.dir}/discord/claim-Q4.json`, JSON.stringify({ pid: process.pid, at: now - 60_000 }));
-  expect(await cli.resolve("Q4", "Never")).toBe("folded");
-  expect(existsSync(`${state.dir}/discord/claim-Q4.json`)).toBe(false);
+  const child = Bun.spawn(["bun", "-e", `const { takeLock } = await import(${JSON.stringify(`${import.meta.dir}/../src/checkpoints.ts`)}); const r = takeLock(${JSON.stringify(`${state.dir}/discord/claim-Q4.lock`)}, Date.now(), "question", "Q4"); console.log("HELD"); await Bun.stdin.text(); r();`], { stdin: "pipe", stdout: "pipe" });
+  const reader = child.stdout.getReader();
+  let said = "";
+  while (!said.includes("HELD")) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`holder ended: ${said}`);
+    said += new TextDecoder().decode(value);
+  }
+  expect(store.claim("Q4", now)).toBeNull();
+  const patches = seen.filter((s) => s.startsWith("PATCH")).length;
+  const waiting = cli.resolve("Q4", "Never");
+  await Promise.resolve();
+  expect(seen.filter((s) => s.startsWith("PATCH")).length).toBe(patches);
+  expect(store.get("Q4")?.status).toBe("open");
+  child.stdin.end();
+  await child.exited;
+  expect(await waiting).toBe("folded");
+  expect(logged().map((q) => q.answer)).toEqual(["Yes", "Tomorrow", "Later", "Never"]);
 });
 
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {

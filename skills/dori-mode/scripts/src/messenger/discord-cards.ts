@@ -1,6 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { CheckpointError, takeLock } from "../checkpoints.ts";
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
 import type { ThreadStatus } from "./discord-thread.ts";
@@ -51,26 +52,8 @@ type State = { seq: number; questions: Question[] };
 
 export class QuestionError extends Error {}
 
-const CLAIM_STALE_MS = 30_000;
 const CLAIM_WAIT_MS = 10_000;
 const CLAIM_POLL_MS = 50;
-
-const staleClaim = (path: string, now: number): boolean => {
-  let held: { pid?: unknown; at?: unknown };
-  try {
-    held = JSON.parse(readFileSync(path, "utf8")) as typeof held;
-  } catch {
-    return !existsSync(path) || now - statSync(path).mtimeMs > CLAIM_STALE_MS;
-  }
-  if (typeof held.at !== "number" || now - held.at > CLAIM_STALE_MS) return true;
-  if (typeof held.pid !== "number") return true;
-  try {
-    process.kill(held.pid, 0);
-    return false;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "ESRCH";
-  }
-};
 
 export class QuestionStore {
   readonly file: string;
@@ -136,22 +119,18 @@ export class QuestionStore {
   }
 
   // One writer per question across processes: the listener folds taps while dori resolve and dori reopen run as other
-  // processes on the same store (review of #374). A claim file made with O_EXCL; null while another holds it. A claim
-  // whose process is gone, or older than CLAIM_STALE_MS, is taken over. An id no question can have needs no claim.
+  // processes on the same store (review of #374). The claim is the kernel lock takeLock holds (flock on claim-<id>.lock):
+  // it never expires while its holder lives, however long a rate-limited call sleeps, and ends with the holder's process,
+  // so no one judges a claim stale and two takers cannot both win (review 2 of #374). null while another holds it. An id
+  // no question can have needs no claim.
   claim(id: string, now: number): (() => void) | null {
     if (!/^Q\d+$/.test(id)) return () => {};
-    const path = join(dirname(this.file), `claim-${id}.json`);
-    for (let tries = 0; tries < 2; tries++) {
-      try {
-        writeFileSync(path, JSON.stringify({ pid: process.pid, at: now }), { flag: "wx", mode: 0o600 });
-        return () => rmSync(path, { force: true });
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-        if (!staleClaim(path, now)) return null;
-        rmSync(path, { force: true });
-      }
+    try {
+      return takeLock(join(dirname(this.file), `claim-${id}.lock`), now, "question", id);
+    } catch (e) {
+      if (e instanceof CheckpointError) return null;
+      throw e;
     }
-    return null;
   }
 
   reopen(id: string): Question | undefined {
