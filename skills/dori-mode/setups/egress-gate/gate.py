@@ -55,11 +55,77 @@ OPEN_TODO_STATUSES = ("열림", "진행")
 # 받게 (추천)"): the fork folds a tapped card into one text, "✅ **Q<n>** <question>\n→ **<answer>**\n-# <by> · <when>",
 # where <by> is the fork's words.byButton ("button" by default, "버튼" on the Korean installs). A reply or a typed
 # answer carries another word and is not taken.
-CARD_ANSWER = re.compile(r"(?:✅|\[[^\]\n]+\]) \*\*Q[1-9][0-9]*\*\* (?s:.+?)\n→ \*\*(?P<answer>(?s:.+?))\*\*\n"
+CARD_ANSWER = re.compile(r"(?:✅|\[[^\]\n]+\]) \*\*(?P<qid>Q[1-9][0-9]*)\*\* (?s:.+?)\n→ \*\*(?P<answer>(?s:.+?))\*\*\n"
                          r"-# (?P<by>[^\n·]+?) · [^\n]+")
 CARD_ANSWER_MARK = re.compile(r"(?m)^\s*-#\s*(?P<by>[^\n·]*?)\s*·")
 CARD_ANSWER_WORDS = ("button", "버튼")
 COMPONENTS_V2 = 1 << 15
+# Discord does not say on the card who tapped it, so the gate holds its own gateway session with the same bot token
+# (Discord sends every session of a bot the same events) and sees each INTERACTION_CREATE itself (review 1 of #370).
+GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS_CAP = 8 * 1024 * 1024
+TAP_KEEP_SECONDS = 900
+
+
+async def ws_open(url: str, timeout: float = 20):
+    """A client WebSocket (RFC 6455) on ws:// or wss://; the server's accept key is checked."""
+    parts = urlsplit(url)
+    secure = parts.scheme == "wss"
+    if parts.scheme not in {"ws", "wss"} or not parts.hostname:
+        raise ValueError("gateway url")
+    context = ssl.create_default_context() if secure else None
+    reader, writer = await asyncio.wait_for(asyncio.open_connection(
+        parts.hostname, parts.port or (443 if secure else 80), ssl=context,
+        server_hostname=parts.hostname if secure else None, limit=HEADER_CAP), timeout)
+    key = base64.b64encode(secrets.token_bytes(16)).decode()
+    target = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+    writer.write((f"GET {target} HTTP/1.1\r\nHost: {parts.hostname}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                  f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+    await writer.drain()
+    head = (await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout)).decode("latin-1")
+    lines = head.split("\r\n")
+    fields = {k.strip().lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:] if line)}
+    accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+    if lines[0].split(" ")[1:2] != ["101"] or fields.get("sec-websocket-accept") != accept:
+        writer.close()
+        raise ValueError("gateway upgrade refused")
+    return reader, writer
+
+
+def ws_frame(opcode: int, payload: bytes) -> bytes:
+    """One final, masked client frame."""
+    size = len(payload)
+    head = bytes([0x80 | opcode])
+    head += (bytes([0x80 | size]) if size < 126 else bytes([0x80 | 126]) + size.to_bytes(2, "big") if size < 65536
+             else bytes([0x80 | 127]) + size.to_bytes(8, "big"))
+    mask = secrets.token_bytes(4)
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
+async def ws_read(reader) -> tuple[int, bytes]:
+    """The next message: a control frame as it comes, data frames joined across continuations."""
+    opcode, parts = None, []
+    while True:
+        first, second = await reader.readexactly(2)
+        size = second & 0x7F
+        if size == 126:
+            size = int.from_bytes(await reader.readexactly(2), "big")
+        elif size == 127:
+            size = int.from_bytes(await reader.readexactly(8), "big")
+        mask = await reader.readexactly(4) if second & 0x80 else b""
+        if size > WS_CAP or sum(map(len, parts)) + size > WS_CAP:
+            raise ValueError("gateway frame too large")
+        payload = await reader.readexactly(size)
+        if mask:
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        kind = first & 0x0F
+        if kind >= 8:
+            return kind, payload
+        opcode = kind if kind else opcode
+        parts.append(payload)
+        if first & 0x80:
+            return opcode or 0, b"".join(parts)
 # Discord fetches every linked URL to build a preview, so a link in a bot message is a request to that host.
 URL = re.compile(r"https?://([^/\s<>\"'`\\)\]|?#]+)", re.I)
 DISCORD_URL_ALLOW = ["discord.com", "*.discord.com", "discordapp.com", "*.discordapp.com", "discord.gg",
@@ -780,6 +846,9 @@ class Gate:
         self.todo_facts = {}
         self.web_tasks = {}
         self.search_rest_until = 0.0
+        self.taps = {}  # interaction id -> who tapped which button on which message, from the gate's own gateway session
+        self.tap_waits = {}
+        self.gateway_task = None
         for name in ("pending", "batches"):
             (self.state / name).mkdir(exist_ok=True, mode=0o700)
             (self.state / name).chmod(0o700)
@@ -994,10 +1063,10 @@ class Gate:
 
         The message at those coordinates must be this gate bot's own (GET /users/@me with the proof token, not a
         webhook), a components-v2 card that is one container holding one text, folded by an edit into an answered
-        card whose chosen answer is not empty and whose "by" word is a button word. Discord does not say who tapped:
-        the fork answers only the owner's tap (others get its ownerOnly line), and discord_policy refuses an answered
-        button card on every Discord write but the tap's own UPDATE_MESSAGE callback, which Discord takes only for a
-        real press. The age is counted from the tap (edited_timestamp); outbound writes still park on their card.
+        card whose chosen answer is not empty and whose "by" word is a button word. Discord does not say who tapped,
+        so discord_policy lets a button answer onto a card only as the UPDATE_MESSAGE callback of a tap the gate's own
+        gateway session saw the owner make, with that option's text (owner_tap); every other write carrying one is
+        refused. The age is counted from the tap (edited_timestamp); outbound writes still park on their card.
         """
         author = data.get("author")
         outer = data.get("components")
@@ -1012,11 +1081,126 @@ class Gate:
         answered = CARD_ANSWER.fullmatch(str(inner[0].get("content", "")))
         if not answered or not answered["answer"].strip() or answered["by"].casefold() not in self.card_answer_words():
             return False
+        return str(author.get("id")) == await self.gate_bot(authorization)
+
+    async def gate_bot(self, authorization: str) -> str:
         key = ("me", hashlib.sha256(authorization.encode()).hexdigest())
         me = self.cached(key)
         if me is None:
             me = self.remember(key, str((await self.discord_json("/users/@me", authorization))["id"]))
-        return str(author.get("id")) == me
+        return me
+
+    def card_answers_on(self) -> bool:
+        return self.config["owner_proof"].get("card_answers", True) is not False and bool(self.card_answer_words())
+
+    def saw_interaction(self, event: dict) -> None:
+        """An INTERACTION_CREATE from the gate's own gateway session: who tapped what, kept 15 minutes."""
+        user = (event.get("member") or {}).get("user") or event.get("user") or {}
+        identity = str(event.get("id", ""))
+        now = time.monotonic()
+        self.taps = {k: v for k, v in self.taps.items() if now - v["at"] < TAP_KEEP_SECONDS}
+        self.taps[identity] = dict(user=str(user.get("id", "")), message=str((event.get("message") or {}).get("id", "")),
+                                   channel=str(event.get("channel_id", "")),
+                                   custom_id=str((event.get("data") or {}).get("custom_id", "")), at=now)
+        waiting = self.tap_waits.pop(identity, None)
+        if waiting:
+            waiting.set()
+
+    async def owner_tap(self, interaction: str, texts: list) -> bool:
+        """May this UPDATE_MESSAGE callback fold a card into a button answer? Only for the owner's own tap, as the
+        gate's gateway session saw it, on this bot's question card, with the answer the tapped option's text
+        (or the card already reading exactly that answer, a repeated tap)."""
+        if interaction not in self.taps:
+            waiting = self.tap_waits.setdefault(interaction, asyncio.Event())
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(waiting.wait(), self.config["owner_proof"].get("tap_wait_seconds", 2.5))
+            self.tap_waits.pop(interaction, None)
+        tap = self.taps.get(interaction)
+        picked = re.fullmatch(r"q:(Q[1-9][0-9]*):([0-9]+)", tap["custom_id"]) if tap else None
+        answers = [CARD_ANSWER.fullmatch(text) for text in texts if self.card_answer_text(text)]
+        if (not picked or tap["user"] != str(self.config["owner_id"]) or len(answers) != 1 or not answers[0]
+                or answers[0]["qid"] != picked[1]):
+            return False
+        unescape = lambda text: re.sub(r"\\(.)", r"\1", text, flags=re.S)  # noqa: E731
+        try:
+            authorization = "Bot " + Path(self.config["owner_proof"]["token_file"]).read_text().strip()
+            card = await self.discord_json(f"/channels/{tap['channel']}/messages/{tap['message']}", authorization)
+            if (str(card.get("id")) != tap["message"] or not isinstance(card.get("author"), dict)
+                    or str(card["author"].get("id")) != await self.gate_bot(authorization)):
+                return False
+            parts = [c for box in card.get("components") or [] if isinstance(box, dict) and box.get("type") == 17
+                     for c in box.get("components") or [] if isinstance(c, dict)]
+            if [c.get("content") for c in parts] == [answers[0].group(0)]:
+                return True
+            for part in parts:
+                accessory = part.get("accessory") or {}
+                texts_in = [c.get("content", "") for c in part.get("components") or [] if isinstance(c, dict)]
+                option = re.fullmatch(r"\*\*[0-9]+\.\*\* (?s:(.+))", texts_in[0]) if len(texts_in) == 1 else None
+                if part.get("type") == 9 and accessory.get("custom_id") == tap["custom_id"] and option:
+                    return unescape(option[1]) == unescape(answers[0]["answer"])
+        except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+        return False
+
+    async def gateway_loop(self) -> None:
+        delay = 5
+        while True:
+            try:
+                await self.gateway_session()
+                delay = 5
+            except (OSError, ValueError, KeyError, TypeError, UnicodeError, asyncio.IncompleteReadError,
+                    asyncio.LimitOverrunError, TimeoutError, ssl.SSLError) as error:
+                print(f"GATE_GATEWAY_DOWN {type(error).__name__}", file=sys.stderr, flush=True)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 120)
+
+    async def gateway_session(self) -> None:
+        """One gateway session: identify with no intents (interactions come regardless), heartbeat, record taps.
+        Returns on a reconnect or invalid-session request; raises on a broken connection."""
+        token = Path(self.config["owner_proof"]["token_file"]).read_text().strip()
+        reader, writer = await ws_open(self.config["owner_proof"].get("gateway_url", GATEWAY_URL))
+        sequence = {"s": None}
+        heart = None
+        send = lambda op, d: writer.write(ws_frame(1, json.dumps({"op": op, "d": d}).encode()))  # noqa: E731
+
+        async def beat(interval: float) -> None:
+            while True:
+                await asyncio.sleep(interval)
+                send(1, sequence["s"])
+                await writer.drain()
+        try:
+            wait = 60.0
+            while True:
+                opcode, payload = await asyncio.wait_for(ws_read(reader), wait)
+                if opcode == 8:
+                    raise ConnectionResetError("gateway closed")
+                if opcode == 9:
+                    writer.write(ws_frame(10, payload))
+                if opcode != 1:
+                    continue
+                event = json.loads(payload)
+                sequence["s"] = event.get("s") if event.get("s") is not None else sequence["s"]
+                op, kind = event.get("op"), event.get("t")
+                if op == 10:
+                    interval = event["d"]["heartbeat_interval"] / 1000
+                    wait = interval * 2 + 30
+                    heart = asyncio.create_task(beat(interval))
+                    send(2, {"token": token, "intents": 0,
+                             "properties": {"os": "linux", "browser": "dori-gate", "device": "dori-gate"}})
+                elif op == 1:
+                    send(1, sequence["s"])
+                elif op in {7, 9}:
+                    return
+                elif op == 0 and kind == "READY":
+                    print("GATE_GATEWAY_READY", file=sys.stderr, flush=True)
+                elif op == 0 and kind == "INTERACTION_CREATE" and isinstance(event.get("d"), dict):
+                    self.saw_interaction(event["d"])
+                await writer.drain()
+        finally:
+            if heart:
+                heart.cancel()
+                await asyncio.gather(heart, return_exceptions=True)
+            writer.close()
 
     async def proof(self, headers: dict) -> str:
         if not headers.get("x-dori-owner-message") and headers.get("x-dori-owner-order"):
@@ -2253,13 +2437,15 @@ class Gate:
                         raise Refused("external-url-in-message")
             # Owner Q523: a tapped question card is owner proof, so only the tap makes one. The fork answers the
             # owner's tap with an UPDATE_MESSAGE (type 7) callback; any other write carrying a button answer is refused.
-            tap = False
-            if re.fullmatch(r"/interactions/\d+/[^/]+/callback", route):
+            # The tap is the owner's only when the gate's own gateway session saw his account make it (owner_tap).
+            if any(self.card_answer_text(text) for text in texts):
+                callback = re.fullmatch(r"/interactions/(\d+)/[^/]+/callback", route)
+                update = None
                 with contextlib.suppress(ValueError, UnicodeError):
-                    callback = json.loads(body or b"{}")
-                    tap = isinstance(callback, dict) and callback.get("type") == 7
-            if not tap and any(self.card_answer_text(text) for text in texts):
-                raise Refused("card-answer-forged")
+                    update = json.loads(body or b"{}") if callback else None
+                if not (isinstance(update, dict) and update.get("type") == 7 and self.card_answers_on()
+                        and await self.owner_tap(callback[1], texts)):
+                    raise Refused("card-answer-forged")
         if method == "GET" and route in {"/gateway", "/gateway/bot", "/users/@me",
                                         "/applications/@me", "/oauth2/applications/@me"}:
             return
@@ -3011,11 +3197,15 @@ class Gate:
         # A forwarding gate parks nothing: every card is the node gate's.
         if self.config.get("approval") and not self.forwarding():
             self.approval_task = asyncio.create_task(self.approval_loop())
+        # The Discord port lets a tapped card through only after this session saw the owner's tap (owner_tap).
+        if "discord" in self.servers and self.card_answers_on() and self.config["owner_proof"].get("gateway_url", GATEWAY_URL):
+            self.gateway_task = asyncio.create_task(self.gateway_loop())
 
     async def close(self):
-        if self.approval_task:
-            self.approval_task.cancel()
-            await asyncio.gather(self.approval_task, return_exceptions=True)
+        for task in (self.approval_task, self.gateway_task):
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         for server in self.servers.values():
             server.close()
         # Python 3.12 wait_closed() waits for open connections (a long CONNECT tunnel), so end them first.

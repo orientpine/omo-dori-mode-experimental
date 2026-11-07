@@ -202,11 +202,20 @@ const buildOpenCard = (q: Question, ownerId: string, w: DiscordWords, fit: Fit):
   },
 ];
 
+// The answer and its "-# by · when" line always survive whole: a long question is cut instead, since the egress gate
+// reads a tapped card's last two lines as the owner's answer (review 1 of #370).
+const DONE_TEXT_MAX = 3000;
 export const doneCard = (q: Question, w: DiscordWords): object[] => [
   {
     type: 17,
     accent_color: DONE_ACCENT,
-    components: [{ type: 10, content: escapedFit((md) => `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** ${md(q.text)}${where(q)}\n→ **${md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`, 3000) }],
+    components: [{ type: 10, content: escapedFit((md) => {
+      const head = `${w.statusStyle === "emoji" ? "✅" : `[${w.answered}]`} **${q.id}** `;
+      const tail = `\n→ **${md(q.answer ?? "")}**\n-# ${q.answerKind === "text" ? w.byText : q.answerKind === "reply" ? w.byReply : w.byButton} · ${stamp(q.answeredAt, w)}`;
+      const question = `${md(q.text)}${where(q)}`;
+      const room = DONE_TEXT_MAX - head.length - tail.length;
+      return head + (question.length <= room ? question : `${question.slice(0, Math.max(0, room - 1))}…`) + tail;
+    }, DONE_TEXT_MAX) }],
   },
 ];
 

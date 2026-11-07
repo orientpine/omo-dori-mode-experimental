@@ -76,6 +76,17 @@ test("a long option is shown in full in its section text, not clipped into a but
   expect(store.get("Q1")?.answer).toBe(long);
 });
 
+test("a long question folds with its answer and footer whole: the question is cut, never the answer (egress gate card answer, review 1 of #370)", async () => {
+  const { cards, json } = setup();
+  const option = `Take the cleanup ${"y".repeat(290)}`;
+  await cards.ask(`Clean up? ${"x".repeat(2890)}`, ["Keep", option]);
+  await cards.handle(tap("q:Q1:1"));
+  const text: string = json(1).data.components[0].components[0].content;
+  expect(text.length).toBeLessThanOrEqual(3000);
+  expect(text.startsWith("[answered] **Q1** Clean up? x")).toBe(true);
+  expect(text.endsWith(`x…\n→ **${option}**\n-# button · 1/2, 03:04`)).toBe(true);
+});
+
 test("pick-button wording comes from the discord words", async () => {
   const { dc, store, json } = setup();
   const words = { ...defaultDiscordWords, pick: "{n} 선택", recommended: "추천", other: "직접 입력" };

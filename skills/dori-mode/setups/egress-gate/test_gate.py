@@ -5,12 +5,14 @@ import asyncio
 import base64
 import contextlib
 import datetime as dt
+import hashlib
 import importlib.util
 import io
 import json
 import subprocess
 import os
 from pathlib import Path
+import re
 import socket
 import sys
 import tempfile
@@ -124,7 +126,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
             "state": str(self.state), "listen": dict(connect=0, google=0, discord=0),
             "clients": [os.getuid()], "admins": [], "owner_id": "1", "owner_guild": "10",
             "owner_emails": ["owner@example.com"],
-            "owner_proof": {"token_file": str(self.state / "bot"), "max_age_hours": 24},
+            "owner_proof": {"token_file": str(self.state / "bot"), "max_age_hours": 24, "gateway_url": "",
+                            "tap_wait_seconds": 0.2},
             "owner_order": {"api_base": self.base, "token_file": str(self.state / "dashboard"),
                             "owner_logins": ["owner@example.com"], "max_age_hours": 24},
             "owner_todo": {"api_base": self.base, "token_file": str(self.state / "dashboard"), "max_age_hours": 24},
@@ -583,7 +586,6 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                                                   raw=multipart if data is None else None)
                 self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
         for name, method, path, data in (
-                ("the tap's own update", "POST", "/interactions/555/token/callback", {"type": 7, "data": card}),
                 ("a card folded after a reply", "PATCH", "/channels/20/messages/3005",
                  {"components": [{"type": 17, "components": [{"type": 10,
                                                               "content": self.ANSWER.replace("버튼", "답글")}]}]}),
@@ -594,6 +596,92 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 status, _ = await self.request(method, "/api/v10" + path, data=data, port="discord", headers=bot,
                                                proof=False)
                 self.assertEqual(status, 200)
+
+    def open_card(self, message="3010"):
+        """Q13 still open, as the fork posts it: the question, then one section per option with its pick button."""
+        self.card_answers[message] = {"id": message, "channel_id": "20", "author": {"id": "7", "bot": True},
+                                      "flags": 32768, "components": [{"type": 17, "components": [
+            {"type": 10, "content": "<@1> **Q13** 착수회의가 두 개 있어. 하나 지울까?"},
+            {"type": 9, "components": [{"type": 10, "content": "**1.** 오늘 생긴 메모 없는 걸 휴지통으로"}],
+             "accessory": {"type": 2, "style": 1, "label": "1번 (추천)", "custom_id": "q:Q13:0"}},
+            {"type": 9, "components": [{"type": 10, "content": "**2.** 둘 다 둔다"}],
+             "accessory": {"type": 2, "style": 2, "label": "2번", "custom_id": "q:Q13:1"}},
+            {"type": 1, "components": [{"type": 2, "style": 2, "label": "직접 쓰기", "custom_id": "q:Q13:other"}]}]}]}
+
+    async def tap_update(self, text=ANSWER, interaction="555"):
+        card = {"components": [{"type": 17, "components": [{"type": 10, "content": text}]}]}
+        return await self.request("POST", f"/api/v10/interactions/{interaction}/token/callback",
+                                  data={"type": 7, "data": card}, port="discord", proof=False,
+                                  headers={"authorization": "Bot MTIz.fake.fake"})
+
+    async def test_only_the_owners_own_tap_folds_a_card_into_a_button_answer(self):
+        # Review 1 of #370: an interaction callback proves a press, not whose; the gate's own gateway session tells.
+        self.open_card()
+        tap = lambda user="1", custom_id="q:Q13:0", message="3010": self.service.saw_interaction(  # noqa: E731
+            {"id": "555", "type": 3, "channel_id": "20", "member": {"user": {"id": user}},
+             "message": {"id": message}, "data": {"custom_id": custom_id}})
+        tap()
+        self.assertEqual((await self.tap_update())[0], 200)
+        for name, setup, text in (
+                ("no tap seen by the gate", lambda: None, self.ANSWER),
+                ("another member's tap", lambda: tap(user="2"), self.ANSWER),
+                ("the answer is not the tapped option", tap, self.ANSWER.replace("오늘 생긴 메모 없는 걸 휴지통으로", "둘 다 둔다")),
+                ("the tapped option is the other one", lambda: tap(custom_id="q:Q13:1"), self.ANSWER),
+                ("another question's id", tap, self.ANSWER.replace("Q13", "Q14")),
+                ("the write-my-own button", lambda: tap(custom_id="q:Q13:other"), self.ANSWER),
+                ("a card that is not this bot's", lambda: (tap(), self.card_answers["3010"].update(author={"id": "8", "bot": True})),
+                 self.ANSWER)):
+            with self.subTest(name):
+                self.service.taps.clear()
+                self.open_card()
+                setup()
+                status, body = await self.tap_update(text)
+                self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
+
+    async def test_a_repeated_tap_on_an_already_folded_card_updates_it_unchanged(self):
+        self.answer_card("3010")
+        self.service.saw_interaction({"id": "556", "type": 3, "channel_id": "20", "member": {"user": {"id": "1"}},
+                                      "message": {"id": "3010"}, "data": {"custom_id": "q:Q13:0"}})
+        self.assertEqual((await self.tap_update(interaction="556"))[0], 200)
+
+    async def test_the_gateway_session_identifies_and_records_each_tap(self):
+        # A fake Discord gateway: HELLO, then READY and one INTERACTION_CREATE after the gate identifies.
+        identified = asyncio.get_running_loop().create_future()
+
+        def frame(event):
+            data = json.dumps(event).encode()
+            return bytes([0x81, 126]) + len(data).to_bytes(2, "big") + data if len(data) >= 126 else bytes([0x81, len(data)]) + data
+
+        async def gateway(reader, writer):
+            head = (await reader.readuntil(b"\r\n\r\n")).decode()
+            key = re.search(r"(?i)sec-websocket-key: (\S+)", head)[1]
+            accept = base64.b64encode(hashlib.sha1((key + gate.WS_GUID).encode()).digest()).decode()
+            writer.write(f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                         f"Sec-WebSocket-Accept: {accept}\r\n\r\n".encode() + frame({"op": 10, "d": {"heartbeat_interval": 41250}}))
+            opcode, payload = await gate.ws_read(reader)
+            identified.set_result(json.loads(payload))
+            writer.write(frame({"op": 0, "s": 1, "t": "READY", "d": {}}) + frame({"op": 0, "s": 2, "t": "INTERACTION_CREATE", "d": {
+                "id": "777", "type": 3, "channel_id": "20", "member": {"user": {"id": "1"}}, "message": {"id": "3010"},
+                "data": {"custom_id": "q:Q13:0"}}}))
+            await writer.drain()
+            with contextlib.suppress(asyncio.IncompleteReadError, ConnectionError):
+                await reader.read()
+        server = await asyncio.start_server(gateway, "127.0.0.1", 0)
+        self.addCleanup(server.close)
+        config = json.loads(json.dumps(self.config))
+        config["owner_proof"]["gateway_url"] = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/?v=10&encoding=json"
+        config["listen"] = dict(connect=0, google=0, discord=0)
+        service = gate.Gate(config)
+        seen = asyncio.Event()
+        original = service.saw_interaction
+        service.saw_interaction = lambda event: (original(event), seen.set())
+        await service.start()
+        self.addAsyncCleanup(service.close)
+        hello = await asyncio.wait_for(identified, 5)
+        self.assertEqual((hello["op"], hello["d"]["token"], hello["d"]["intents"]), (2, "MTIz.fake.fake", 0))
+        await asyncio.wait_for(seen.wait(), 5)
+        self.assertEqual({k: v for k, v in service.taps["777"].items() if k != "at"},
+                         {"user": "1", "message": "3010", "channel": "20", "custom_id": "q:Q13:0"})
 
     async def test_calendar_notifications_are_disabled(self):
         status, _ = await self.request(path="/www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&sendNotifications=true")
