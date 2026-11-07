@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
@@ -50,6 +50,27 @@ export type Question = {
 type State = { seq: number; questions: Question[] };
 
 export class QuestionError extends Error {}
+
+const CLAIM_STALE_MS = 30_000;
+const CLAIM_WAIT_MS = 10_000;
+const CLAIM_POLL_MS = 50;
+
+const staleClaim = (path: string, now: number): boolean => {
+  let held: { pid?: unknown; at?: unknown };
+  try {
+    held = JSON.parse(readFileSync(path, "utf8")) as typeof held;
+  } catch {
+    return !existsSync(path) || now - statSync(path).mtimeMs > CLAIM_STALE_MS;
+  }
+  if (typeof held.at !== "number" || now - held.at > CLAIM_STALE_MS) return true;
+  if (typeof held.pid !== "number") return true;
+  try {
+    process.kill(held.pid, 0);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ESRCH";
+  }
+};
 
 export class QuestionStore {
   readonly file: string;
@@ -112,6 +133,25 @@ export class QuestionStore {
     const q = this.update(id, (x) => Object.assign(x, { status: "answered", answer: value, answerKind: kind, answeredAt: at })) ?? null;
     if (q) appendFileSync(this.answersFile, `${JSON.stringify(q)}\n`, { mode: 0o600 });
     return q;
+  }
+
+  // One writer per question across processes: the listener folds taps while dori resolve and dori reopen run as other
+  // processes on the same store (review of #374). A claim file made with O_EXCL; null while another holds it. A claim
+  // whose process is gone, or older than CLAIM_STALE_MS, is taken over. An id no question can have needs no claim.
+  claim(id: string, now: number): (() => void) | null {
+    if (!/^Q\d+$/.test(id)) return () => {};
+    const path = join(dirname(this.file), `claim-${id}.json`);
+    for (let tries = 0; tries < 2; tries++) {
+      try {
+        writeFileSync(path, JSON.stringify({ pid: process.pid, at: now }), { flag: "wx", mode: 0o600 });
+        return () => rmSync(path, { force: true });
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        if (!staleClaim(path, now)) return null;
+        rmSync(path, { force: true });
+      }
+    }
+    return null;
   }
 
   reopen(id: string): Question | undefined {
@@ -271,13 +311,17 @@ export const openCardIds = (store: QuestionStore, thread: string): string[] => s
 
 export class QuestionCards {
   readonly statuses: ThreadStatusQueue;
-  // One writer per question: a tap's fold in flight, settled when its callback is answered or refused.
-  private readonly folding = new Map<string, Promise<void>>();
 
-  // resolve and reopen leave a question to a tap whose fold is in flight, then read it again: the tap's answer is what
-  // Discord shows and the egress gate's receipt holds, so the log must not take another (challenge of #370's plan 9).
-  private async settled(id: string): Promise<void> {
-    for (let fold = this.folding.get(id); fold; fold = this.folding.get(id)) await fold;
+  // resolve and reopen wait for the question's claim (a tap's fold in flight, in the listener's process or this one),
+  // then read it again: the tap's answer is what Discord shows and the egress gate's receipt holds, so the log must not
+  // take another (challenge of #370's plan 9). A claim held past CLAIM_WAIT_MS refuses the command; nothing changed.
+  private async claimed(id: string): Promise<() => void> {
+    for (let waited = 0; ; waited += CLAIM_POLL_MS) {
+      const release = this.store.claim(id, this.now());
+      if (release) return release;
+      if (waited >= CLAIM_WAIT_MS) throw new QuestionError(`question ${id} is being answered now; try again`);
+      await new Promise((done) => setTimeout(done, CLAIM_POLL_MS));
+    }
   }
 
   constructor(
@@ -327,13 +371,17 @@ export class QuestionCards {
   }
 
   async reopen(id: string): Promise<Question> {
-    await this.settled(id);
-    const known = this.store.get(id);
-    if (!known?.message) throw new QuestionError(`no posted question ${id}`);
-    const q = this.store.reopen(id) as Question;
-    await this.dc.call("PATCH", `/channels/${q.channel}/messages/${q.message}`, { components: this.card(q) });
-    if (q.thread) await this.mark(q.thread, "waiting");
-    return q;
+    const release = await this.claimed(id);
+    try {
+      const known = this.store.get(id);
+      if (!known?.message) throw new QuestionError(`no posted question ${id}`);
+      const q = this.store.reopen(id) as Question;
+      await this.dc.call("PATCH", `/channels/${q.channel}/messages/${q.message}`, { components: this.card(q) });
+      if (q.thread) await this.mark(q.thread, "waiting");
+      return q;
+    } finally {
+      release();
+    }
   }
 
   // A card still open when it is resolved (the owner answered in a message) folds into the same record a tap leaves,
@@ -341,7 +389,15 @@ export class QuestionCards {
   // try, then the answer is logged and the question forgotten. Its thread is re-checked: working once none of its
   // questions is open. A card already folded by a tap is not edited again; a question resolved before changes nothing.
   async resolve(id: string, answer?: string): Promise<Resolved | null> {
-    await this.settled(id);
+    const release = await this.claimed(id);
+    try {
+      return await this.resolveClaimed(id, answer);
+    } finally {
+      release();
+    }
+  }
+
+  private async resolveClaimed(id: string, answer?: string): Promise<Resolved | null> {
     const q = this.store.get(id);
     if (!q) return this.store.logged(id) ? "already" : null;
     if (q.status !== "open") {
@@ -406,25 +462,23 @@ export class QuestionCards {
     // Taps are handled at once, so the question is held while its fold is in flight: a second tap folding another
     // answer would leave the card and the gate's tap receipt saying one answer and the store another (review 7 of #370).
     // It is only acknowledged; a fold Discord refuses frees the question for the next tap.
+    // The question's claim is the hold, so a dori resolve or reopen in another process waits for it too (review of #374).
     const current = this.store.get(qid);
-    if (this.folding.has(qid)) {
+    const release = value && current?.status === "open" ? this.store.claim(qid, this.now()) : null;
+    if (value && current?.status === "open" && !release) {
       await this.respond(i, { type: ACK_UPDATE });
       return { kind: "stale", qid };
     }
-    const at = this.at();
-    const folded: Question | null = value && current?.status === "open" ? { ...current, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
-    const shown = folded ?? current;
-    let release = (): void => {};
-    if (folded) this.folding.set(qid, new Promise<void>((done) => { release = done; }));
     try {
+      const fresh = release ? this.store.get(qid) : current;
+      const at = this.at();
+      const folded: Question | null = release && fresh?.status === "open" ? { ...fresh, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
+      const shown = folded ?? fresh;
       await this.respond(i, shown ? { type: UPDATE_MESSAGE, data: { components: this.card(shown) } } : { type: ACK_UPDATE });
       const answered = folded ? this.store.answer(qid, value, kind, at) : null;
       return answered ? { kind: "answered", question: answered } : { kind: "stale", qid };
     } finally {
-      if (folded) {
-        this.folding.delete(qid);
-        release();
-      }
+      release?.();
     }
   }
 

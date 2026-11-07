@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import { defaultDiscordWords } from "../src/config.ts";
 import { Discord } from "../src/messenger/discord.ts";
@@ -249,9 +249,11 @@ test("a second tap while the first tap's callback is in flight folds nothing, an
   expect(store.get("Q2")?.answer).toBe("Later");
 });
 
-test("a resolve or reopen while a tap's fold is in flight waits for it: one answer in the log, the tap's, as the card and the gate's receipt say", async () => {
+test("dori resolve or reopen, another process on the same store, waits for a tap's fold in flight; a tap during their claim is only acknowledged (review of #374)", async () => {
   // The challenge of #370's next plan: tap, resolve and reopen each wrote one question by their own path, so a resolve
   // landing in the callback's window logged the typed answer while Discord and the egress gate's receipt kept the tap's.
+  // The listener folds taps; dori resolve and dori reopen are separate processes with their own QuestionCards on the
+  // same store directory, so the hold is a claim file there.
   state = withState();
   const seen: string[] = [];
   const callbacks: { body: { type: number }; settle: (r: HttpResponse) => void }[] = [];
@@ -263,34 +265,55 @@ test("a resolve or reopen while a tap's fold is in flight waits for it: one answ
       : Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(req.method === "POST" ? { id: "900" } : { type: 11 }) });
   };
   const until = (n: number) => new Promise<void>((done) => { arrived = () => callbacks.length >= n && done(); arrived(); });
-  const store = new QuestionStore(`${state.dir}/discord`);
-  const cards = new QuestionCards(new Discord(http, fakeClock(0), "bot"), store, { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => Date.parse("2026-01-02T03:04:00Z"));
+  const now = Date.parse("2026-01-02T03:04:00Z");
+  const instance = () => new QuestionCards(new Discord(http, fakeClock(0), "bot"), new QuestionStore(`${state.dir}/discord`), { channel: CHANNEL, owner: OWNER, words: defaultDiscordWords }, () => now);
+  const listener = instance();
+  const cli = instance();
+  const store = listener.store;
   const ok: HttpResponse = { status: 204, headers: {}, body: "" };
-  await cards.ask("Ship?", ["Yes", "No"]);
+  const logged = () => readFileSync(store.answersFile, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { answer: string; answerKind: string });
+  await listener.ask("Ship?", ["Yes", "No"]);
 
-  const tapped = cards.handle(tap("q:Q1:0"));
+  const tapped = listener.handle(tap("q:Q1:0"));
   await until(1);
-  const resolved = cards.resolve("Q1", "No");
+  const resolved = cli.resolve("Q1", "No");
   await Promise.resolve();
   expect(seen.filter((s) => s.startsWith("PATCH"))).toEqual([]);
   callbacks[0]?.settle(ok);
   expect((await tapped).kind).toBe("answered");
   expect(await resolved).toBe("kept");
-  const log = readFileSync(store.answersFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  expect(log.map((q) => [q.answer, q.answerKind])).toEqual([["Yes", "button"]]);
+  expect(logged().map((q) => [q.answer, q.answerKind])).toEqual([["Yes", "button"]]);
   expect(seen.filter((s) => s.startsWith("PATCH"))).toEqual([]);
 
-  await cards.ask("Deploy?", ["Now", "Later"]);
-  const refused = cards.handle(tap("q:Q2:1"));
+  await listener.ask("Deploy?", ["Now", "Later"]);
+  const refused = listener.handle(tap("q:Q2:1"));
   await until(2);
-  const reopened = cards.reopen("Q2");
-  const typed = cards.resolve("Q2", "Tomorrow");
+  const reopened = cli.reopen("Q2");
+  const typed = cli.resolve("Q2", "Tomorrow");
   callbacks[1]?.settle({ status: 403, headers: {}, body: JSON.stringify({ error: "card-answer-forged" }) });
   await expect(refused).rejects.toThrow();
   expect((await reopened).status).toBe("open");
   expect(await typed).toBe("folded");
-  expect(store.logged("Q2")).toBeTruthy();
-  expect(readFileSync(store.answersFile, "utf8").trim().split("\n").map((l) => JSON.parse(l).answer)).toEqual(["Yes", "Tomorrow"]);
+  expect(logged().map((q) => q.answer)).toEqual(["Yes", "Tomorrow"]);
+
+  // A claim another live process holds (a resolve editing the card): the tap is acknowledged and folds nothing.
+  await listener.ask("Merge?", ["Yes", "No"]);
+  writeFileSync(`${state.dir}/discord/claim-Q3.json`, JSON.stringify({ pid: process.pid, at: now }));
+  const held = listener.handle(tap("q:Q3:0"));
+  await until(3);
+  expect(callbacks[2]?.body.type).toBe(6);
+  callbacks[2]?.settle(ok);
+  expect(await held).toEqual({ kind: "stale", qid: "Q3" });
+  expect(store.get("Q3")?.status).toBe("open");
+  // A claim left by a process that is gone, or older than its limit, is taken over.
+  const gone = Bun.spawn(["true"]);
+  await gone.exited;
+  writeFileSync(`${state.dir}/discord/claim-Q3.json`, JSON.stringify({ pid: gone.pid, at: now }));
+  expect(await cli.resolve("Q3", "Later")).toBe("folded");
+  await listener.ask("Tag?", ["Yes", "No"]);
+  writeFileSync(`${state.dir}/discord/claim-Q4.json`, JSON.stringify({ pid: process.pid, at: now - 60_000 }));
+  expect(await cli.resolve("Q4", "Never")).toBe("folded");
+  expect(existsSync(`${state.dir}/discord/claim-Q4.json`)).toBe(false);
 });
 
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {
