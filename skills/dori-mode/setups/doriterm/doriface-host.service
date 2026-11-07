@@ -9,6 +9,8 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 UnsetEnvironment=HERDR_PANE_ID HERDR_SOCKET HERDR_SOCKET_PATH HERDR_SESSION TMUX TMUX_PANE
 ExecStart=%h/.local/bin/doriface-host --state-dir %h/.local/state/doriface-host
 ExecStartPost=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts
+# hc's core is its own systemd user service (systemd-run), so stopping this unit would leave it and the bridge running
+ExecStopPost=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts stop
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
