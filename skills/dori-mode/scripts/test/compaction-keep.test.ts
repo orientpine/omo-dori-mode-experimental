@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { assignArm, keepTick, laneSessionFile, readArms, sessionUsage, trialRows } from "../src/compaction-keep.ts";
+import { assignArm, keepTick, laneSessionFile, readArms, sessionUsage, trialRows, trialTable } from "../src/compaction-keep.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import type { DoriConfig } from "../src/config.ts";
 import type { Lane } from "../src/registry.ts";
@@ -117,9 +117,29 @@ test("a lane whose cwd is a symlink is read under the real path too, in the swee
   expect(laneSessionFile(sessions, link, "new")).toContain("real-w");
   const config = deps(T0, { compactionTrial: trial }).config;
   mkdirSync(join(state.dir, "compaction-trial"), { recursive: true });
-  writeFileSync(join(state.dir, "compaction-trial", "arms.jsonl"), `${JSON.stringify({ at: "x", key: "keep-lane", arm: "early", tags: [] })}\n`);
-  const rows = trialRows(config, [lane("/b.md", { cwd: link, session: "new", priorSessions: ["old", "gone"] })]);
-  expect(rows[0]).toMatchObject({ arm: "early", lanes: 1, sessions: 2, missing: 1, calls: 3, over300: 1 });
+  writeFileSync(join(state.dir, "compaction-trial", "arms.jsonl"), ["keep-lane", "part-lane", "lost-lane"].map((key) => JSON.stringify({ at: "x", key, arm: key === "lost-lane" ? "control" : "early", tags: [] })).join("\n") + "\n");
+  const lanes = [
+    lane("/b.md", { cwd: link, session: "new", priorSessions: ["old"] }),
+    lane("/b.md", { key: "part-lane", cwd: link, session: "new", priorSessions: ["gone"] }),
+    lane("/b.md", { key: "lost-lane", cwd: link, session: "gone-too" }),
+  ];
+  const rows = trialRows(config, lanes);
+  // a lane with a session not found adds nothing to the usage columns: they average the complete lanes only
+  expect(rows[0]).toMatchObject({ arm: "early", lanes: 2, complete: 1, sessions: 4, missing: 1, calls: 3, over300: 1 });
+  expect(rows[1]).toMatchObject({ arm: "control", lanes: 1, complete: 0, missing: 1, calls: 0 });
+  const control = trialTable(rows)[3] ?? "";
+  expect(control.split("|").map((c) => c.trim()).slice(3, 8)).toEqual(["0 (1)", "-", "-", "-", "-"]);
+});
+
+test("an adopted lane whose recorded cwd is not its session's directory is still found by its exact session id", async () => {
+  const brief = join(state.dir, "brief.md");
+  writeFileSync(brief, "[목표] x\n");
+  const dir = sessionDirFor(join(state.dir, "sessions"), "/elsewhere/really");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "2026-11-07T14-00-00-000Z_sid.jsonl"), compaction("[Deterministic compaction recovery checkpoint]", "senpi.compaction.deterministic-fallback.v1"));
+  await deps(T0).registry.write(lane(brief, { cwd: "/w", compactionsSeen: 0 }));
+  world.screens["w:p7"] = "❯ ";
+  expect((await keepTick(deps(T0), (await deps(T0).registry.read("keep-lane"))!)).map((a) => a.kind)).toEqual(["reanchored"]);
 });
 
 test("the trial puts launched lanes in arms in turn and leaves excluded ones out, once per key", () => {
