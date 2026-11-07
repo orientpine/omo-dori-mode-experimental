@@ -71,7 +71,10 @@ option's text in the card Discord attached to the press (a later edit of the car
 is the card's; a repeated tap on a card that already reads exactly
 that answer passes too. The check reads every text of a Discord write: a JSON body (every repeated key refused, since
 readers differ on which one counts) or a `multipart/form-data` body's parts other than attached files (`files[n]`;
-`payload_json` is read even with a file name). Discord also takes form-encoded bodies, which the Dori's clients never
+`payload_json` is read even with a file name; in every part a repeated key is refused, and a part that opens as JSON,
+`{` or `[`, as Discord reads `components`, must parse). A card's text is read from its end: the last line is the
+footer and the answer is the `→` line just before it, so lines in the question that read like an answer change
+nothing; a tap passes when one such split's answer is the pressed option. Discord also takes form-encoded bodies, which the Dori's clients never
 send; any other body encoding, or JSON that does not parse, is refused before it is sent (`415
 unsupported-body-encoding`). The gate waits up to `owner_proof.tap_wait_seconds` (2.5) for its copy of the tap. With its
 gateway session down, taps fail (the owner sees Discord's interaction failure) and his typed messages keep working.

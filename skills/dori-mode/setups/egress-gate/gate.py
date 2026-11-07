@@ -54,10 +54,12 @@ OPEN_TODO_STATUSES = ("열림", "진행")
 # The owner's tap on a question card (dori ask) as his message (owner 2026-11-07 13:53 KST Q523 "응, 문지기도 버튼 답
 # 받게 (추천)"): the fork folds a tapped card into one text, "✅ **Q<n>** <question>\n→ **<answer>**\n-# <by> · <when>",
 # where <by> is the fork's words.byButton ("button" by default, "버튼" on the Korean installs). A reply or a typed
-# answer carries another word and is not taken.
-CARD_ANSWER = re.compile(r"(?:✅|\[[^\]\n]+\]) \*\*(?P<qid>Q[1-9][0-9]*)\*\* (?s:.+?)\n→ \*\*(?P<answer>(?s:.+?))\*\*\n"
-                         r"-# (?P<by>[^\n·]+?) · [^\n]+")
-# A card's text is at most 4000 characters (Discord); longer text is no card, and CARD_ANSWER never sees it.
+# answer carries another word and is not taken. The text is read from its end (card_answers): the question is the Dori's
+# words and may hold lines that read like an answer (review 5 of #370).
+CARD_HEAD = re.compile(r"(?:✅|\[[^\]\n]+\]) \*\*(?P<qid>Q[1-9][0-9]*)\*\* (?s:.+)")
+CARD_FOOT = re.compile(r"-# (?P<by>[^\n·]+?) · [^\n]+")
+CARD_ARROW = "\n→ **"
+# A card's text is at most 4000 characters (Discord); longer text is no card, and card_answers never sees it.
 CARD_TEXT_MAX = 4000
 CARD_ANSWER_WORDS = ("button", "버튼")
 COMPONENTS_V2 = 1 << 15
@@ -426,10 +428,33 @@ def strings(value):
             yield from strings(item)
 
 
+def card_answers(text: str) -> list[dict]:
+    """Each way an answered card's text, "<mark> **Q<n>** <question>\n→ **<answer>**\n-# <by> · <when>", splits into
+    its question and its answer, the last "\n→ **" first (qid, answer, by); none when it is no answered card.
+
+    Read from the end: the footer is the last line and the answer ends just before it; the question may hold lines that
+    read like an answer or a footer (review 5 of #370). One find per arrow, each head checked once."""
+    body, newline, last = text.rpartition("\n")
+    footer = CARD_FOOT.fullmatch(last) if newline else None
+    if not footer or not body.endswith("**"):
+        return []
+    splits = []
+    at = len(body)
+    while (at := body.rfind(CARD_ARROW, 0, at)) >= 0:
+        head = CARD_HEAD.fullmatch(body[:at])
+        if head and at + len(CARD_ARROW) <= len(body) - 2:
+            splits.append({"qid": head["qid"], "answer": body[at + len(CARD_ARROW):-2], "by": footer["by"]})
+    return splits
+
+
+class RepeatedKey(ValueError):
+    pass
+
+
 def unique_keys(pairs: list) -> dict:
     """A JSON object whose keys are each written once: with a repeated key, readers differ on which one counts."""
     if len({key for key, _ in pairs}) != len(pairs):
-        raise ValueError("repeated key")
+        raise RepeatedKey("repeated key")
     return dict(pairs)
 
 
@@ -439,7 +464,9 @@ def message_texts(headers: dict, body: bytes) -> list[str]:
 
     Discord also takes form-encoded bodies, which carried a hand-made answered card past the check percent-encoded
     (review 4 of #370). The Dori's clients write JSON or multipart only, so any other body encoding, JSON that does not
-    parse (in any of the UTF encodings json reads) or JSON with a repeated key is refused before it is sent."""
+    parse (in any of the UTF encodings json reads) or JSON with a repeated key is refused before it is sent. In a
+    multipart body every field is held to that: a repeated key anywhere, and a field that opens as JSON ({ or [, as
+    Discord reads components and the other structured fields) but does not parse (review 5 of #370)."""
     if not body:
         return []
     content_type = headers.get("content-type", "application/json")
@@ -456,15 +483,17 @@ def message_texts(headers: dict, body: bytes) -> list[str]:
             name = str(part.get_param("name", "", header="content-disposition"))
             if part.get_filename() and re.fullmatch(r"files\[[0-9]+\]|file[0-9]*", name):
                 continue
-            raw.append((part.get_payload(decode=True) or b"", name == "payload_json"))
+            payload = part.get_payload(decode=True) or b""
+            opens = payload.lstrip(b" \t\r\n\x00\xef\xbb\xbf\xfe\xff")[:1] in (b"{", b"[")
+            raw.append((payload, name == "payload_json" or opens))
     else:
         raise Refused("unsupported-body-encoding", 415)
     texts = []
     for item, must_parse in raw:
         try:
             texts.extend(strings(json.loads(item, object_pairs_hook=unique_keys)))
-        except ValueError:
-            if must_parse:
+        except ValueError as error:
+            if must_parse or isinstance(error, RepeatedKey):
                 raise Refused("unsupported-body-encoding", 415) from None
             texts.append(item.decode("utf-8", "replace"))
     return texts
@@ -1080,7 +1109,7 @@ class Gate:
 
     def card_answer_text(self, text: str) -> bool:
         """A text that reads as a tapped question card: any line "-# <a byButton word> ·" next to an answer arrow.
-        Looser than CARD_ANSWER on purpose (spacing, case, extra lines), so nothing the proof takes slips past it.
+        Looser than card_answers on purpose (spacing, case, extra lines), so nothing the proof takes slips past it.
         A line parser, one pass over the text: the regex it replaced backtracked on a line of spaces (review 4 of #370)."""
         if "→" not in text:
             return False
@@ -1100,7 +1129,8 @@ class Gate:
         posting (the message id), not from an edit. Discord does not say who tapped,
         so discord_policy lets a button answer onto a card only as the UPDATE_MESSAGE callback of a tap the gate's own
         gateway session saw the owner make, with that option's text (owner_tap); every other write carrying one is
-        refused. Outbound writes still park on their card. Returns the card's answered text (CARD_ANSWER), or None.
+        refused. Outbound writes still park on their card. Returns the card's answer (card_answers: the last "→" line
+        before the footer, so nothing the question holds), or None.
         """
         if not self.card_answers_on():
             return None
@@ -1115,7 +1145,8 @@ class Gate:
                 or inner[0].get("type") != 10):
             return None
         content = str(inner[0].get("content", ""))
-        answered = CARD_ANSWER.fullmatch(content) if len(content) <= CARD_TEXT_MAX else None
+        splits = card_answers(content) if len(content) <= CARD_TEXT_MAX else []
+        answered = splits[0] if splits else None
         if not answered or not answered["answer"].strip() or answered["by"].casefold() not in self.card_answer_words():
             return None
         return answered if str(author.get("id")) == await self.gate_bot(authorization) else None
@@ -1165,8 +1196,11 @@ class Gate:
         if not picked or tap["user"] != str(self.config["owner_id"]) or tap["kind"] != 3 or tap["component"] != 2:
             return False
         marked = [text for text in texts if self.card_answer_text(text)]
-        answers = [CARD_ANSWER.fullmatch(text) for text in marked if len(text) <= CARD_TEXT_MAX]
-        if len(marked) != 1 or len(answers) != 1 or not answers[0] or answers[0]["qid"] != picked[1]:
+        if len(marked) != 1 or len(marked[0]) > CARD_TEXT_MAX:
+            return False
+        # Every way the text splits into question and answer; the pressed option decides which one is the answer.
+        answers = [split for split in card_answers(marked[0]) if split["qid"] == picked[1]]
+        if not answers:
             return False
         unescape = lambda text: re.sub(r"\\(.)", r"\1", text, flags=re.S)  # noqa: E731
         try:
@@ -1174,14 +1208,14 @@ class Gate:
             if not tap["message"] or tap["author"] != await self.gate_bot(authorization):
                 return False
             parts = tap["parts"]
-            if [c.get("content") for c in parts] == [answers[0].group(0)]:
+            if [c.get("content") for c in parts] == marked:
                 return True
             for part in parts:
                 accessory = part.get("accessory") or {}
                 texts_in = [c.get("content", "") for c in part.get("components") or [] if isinstance(c, dict)]
                 option = re.fullmatch(r"\*\*[0-9]+\.\*\* (?s:(.+))", texts_in[0]) if len(texts_in) == 1 else None
                 if part.get("type") == 9 and accessory.get("custom_id") == tap["custom_id"] and option:
-                    return unescape(option[1]) == unescape(answers[0]["answer"])
+                    return any(unescape(option[1]) == unescape(split["answer"]) for split in answers)
         except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError):
             return False
         return False

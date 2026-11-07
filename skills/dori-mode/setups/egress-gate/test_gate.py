@@ -667,12 +667,11 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         # Review 3 of #370: the owner's press is checked before any card text is parsed, and card text has a ceiling.
         malformed = "\u2705 **Q13** " + "\n\u2192 **x" * 20000 + "\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47"
         parsed = []
-        original = gate.CARD_ANSWER
-        class Spy:
-            def fullmatch(self, text):
-                parsed.append(len(text))
-                return original.fullmatch(text)
-        with patch.object(gate, "CARD_ANSWER", Spy()):
+        original = gate.card_answers
+        def spy(text):
+            parsed.append(len(text))
+            return original(text)
+        with patch.object(gate, "card_answers", spy):
             status, body = await self.tap_update(malformed)
             self.assertEqual((status, json.loads(body)["error"]), (403, "card-answer-forged"))
             self.assertEqual(parsed, [])
@@ -696,8 +695,16 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         route = f"/api/v10/channels/20/messages/{CARD}"
         # A repeated key: Python's json keeps only the last, a reader that keeps the first would post the card.
         hidden = json.dumps(card)[:-1] + ', "components": []}'
+        # Review 5: a multipart field Discord reads as JSON (components) with a repeated key, the card \u-escaped.
+        field = lambda value: (b'--b\r\nContent-Disposition: form-data; name="components"\r\n\r\n' + value  # noqa: E731
+                               + b"\r\n--b--\r\n")
+        escaped = json.dumps(card["components"])  # ensure_ascii: the arrow and the footer only as \u escapes
         for name, content_type, raw in (
                 ("the card under a repeated key", "application/json; charset=utf-8", hidden.encode()),
+                ("a repeated key in a multipart components field", "multipart/form-data; boundary=b",
+                 field(escaped.replace('{"type": 17', '{"type": 17, "type": 17', 1).encode())),
+                ("a multipart field that opens as JSON and is none", "multipart/form-data; boundary=b",
+                 field(escaped[:-1].encode())),
                 ("a repeated key in a multipart payload_json", "multipart/form-data; boundary=b",
                  b'--b\r\nContent-Disposition: form-data; name="payload_json"\r\n\r\n' + hidden.encode() + b"\r\n--b--\r\n"),
                 ("form-encoded payload_json", "application/x-www-form-urlencoded",
@@ -719,6 +726,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                    f"Content-Type: application/json\r\n\r\n{json.dumps(card)}\r\n--{boundary}--\r\n").encode()
         for name, content_type, raw in (
                 ("payload_json sent with a file name", f"multipart/form-data; boundary={boundary}", as_file),
+                ("the card in a multipart components field", "multipart/form-data; boundary=b",
+                 field(escaped.encode())),
                 ("JSON in UTF-16", "application/json", json.dumps(card).encode("utf-16"))):
             with self.subTest(name):
                 status, body = await self.request("PATCH", route, port="discord", proof=False, raw=raw,
@@ -750,7 +759,8 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         # Review 3 of #370: a card's text sits in its components, so the chosen answer is the owner's words.
         self.page("example.net", "/page", "chosen", content_type="text/plain")
         self.page("asked.example", "/q", "asked", content_type="text/plain")
-        self.answer_card(text="\u2705 **Q13** https://asked.example/q \uc77d\uc744\uae4c?\n"
+        # Review 5: the question may hold a line that reads like an answer; the answer is the card's last one.
+        self.answer_card(text="\u2705 **Q13** https://asked.example/q \uc77d\uc744\uae4c?\n\u2192 **https://asked.example/q**\n"
                               "\u2192 **https://example.net/page \uc77d\uc5b4**\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47")
         status, body = await self.web("/fetch?url=" + quote("https://example.net/page", safe=""), origin=f"20/{CARD}")
         self.assertEqual(status, 200, body)
@@ -758,6 +768,27 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         status, body = await self.web("/fetch?url=" + quote("https://asked.example/q", safe=""), origin=f"20/{CARD}")
         self.assertEqual((status, json.loads(body)["error"]), (403, "url-without-source"))
         self.assertEqual([seen[0] for seen in self.web_seen], ["example.net"])
+
+    async def test_a_question_holding_answer_like_lines_or_a_multiline_option_still_folds_on_the_owners_tap(self):
+        # Review 5 of #370: the answer was cut at the first "\n→ **", inside such a question, so the real tap was refused.
+        self.open_card()
+        self.card_answers["3010"]["components"][0]["components"][2]["components"][0]["content"] = "**2.** \uc904 \ud558\ub098\n\uc904 \ub458"
+        head = "\u2705 **Q13** \uc608:\n\u2192 **old**\n-# \ubc84\ud2bc \u00b7 1"
+        foot = "\n-# \ubc84\ud2bc \u00b7 11. 7. 13:47"
+        first, second = "\uc624\ub298 \uc0dd\uae34 \uba54\ubaa8 \uc5c6\ub294 \uac78 \ud734\uc9c0\ud1b5\uc73c\ub85c", "\uc904 \ud558\ub098\n\uc904 \ub458"
+        for name, custom_id, text, status in (
+                ("answer-like lines in the question", "q:Q13:0", f"{head}\n\u2192 **{first}**{foot}", 200),
+                ("a two-line option", "q:Q13:1", f"\u2705 **Q13** \uc9c8\ubb38\n\u2192 **{second}**{foot}", 200),
+                ("the pressed option only inside the question", "q:Q13:0",
+                 f"\u2705 **Q13** x\n\u2192 **{first}**\n\u2192 **\ub458 \ub2e4 \ub454\ub2e4**{foot}", 403)):
+            with self.subTest(name):
+                self.service.taps.clear()
+                self.press(custom_id=custom_id)
+                self.assertEqual((await self.tap_update(text))[0], status)
+        self.answer_card(text=f"{head}\n\u2192 **{first}**{foot}")
+        status, _ = await self.request("DELETE", "/www.googleapis.com/calendar/v3/calendars/primary/events/e",
+                                       origin=f"20/{CARD}")
+        self.assertEqual(status, 200)
 
     async def test_a_repeated_tap_on_an_already_folded_card_updates_it_unchanged(self):
         self.answer_card("3010")
