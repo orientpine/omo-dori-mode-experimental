@@ -199,7 +199,8 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
     if (BOX_PROGRAMS.has(first) || Bun.which(first, { PATH: BOX_SYSTEM_PATH })) which.add(first);
     else if (here) return no(`the command ${first} is ${here}, which is in no --sync path and no system folder, so a helper has none`);
   }
-  const path = which.size && job.env.PATH !== undefined ? job.env.PATH : undefined;
+  // the helper looks the names up from /, the job from its own folder: relative and empty PATH entries go as that folder's
+  const path = which.size && job.env.PATH !== undefined ? job.env.PATH.split(":").map((d) => resolve(job.cwd, d)).join(":") : undefined;
   if (path !== undefined && !BOX_PATH_OK.test(path)) return no(`the job's --env PATH ${JSON.stringify(path.slice(0, 80))} cannot be sent to a helper for its lookup`);
   const odd = [...needs].find((p) => !NEED_PATH.test(p) || p.split("/").includes(".."));
   if (odd !== undefined) return no(`the job starts ${JSON.stringify(odd)}, a path a helper cannot be asked about`);
@@ -479,7 +480,8 @@ const ensurePlaywright = async (version: string, browsersDir: string, log: (l: s
 // The programs a job starts, looked for in a box made like the job's (sandboxArgv: same mounts, same PATH), so a program
 // the host has but the box hides (/home, /tmp, /run are empty there; a link may lead into them) counts as missing.
 // need: a path that must exist; names: commands looked up on the box's PATH. undefined: all there.
-const PROBE = 'for p in $PROBE_NEEDS; do [ -e "$p" ] || { printf "%s\\n" "$p"; exit 1; }; done; for n in "$@"; do command -v "$n" >/dev/null 2>&1 || { printf "%s\\n" "$n"; exit 1; }; done';
+// a name counts only as an executable file in a PATH folder, as exec finds it (command -v also takes shell builtins)
+const PROBE = 'for p in $PROBE_NEEDS; do [ -e "$p" ] || { printf "%s\\n" "$p"; exit 1; }; done; for n in "$@"; do f=; IFS=:; for d in $PATH; do if [ -n "$d" ] && [ -f "$d/$n" ] && [ -x "$d/$n" ]; then f=1; break; fi; done; unset IFS; [ -n "$f" ] || { printf "%s\\n" "$n"; exit 1; }; done';
 export const probeBox = (kind: Kind, tools: BoxTools, needs: readonly string[], names: readonly string[], path?: string): { missing: string } | { failed: string } | undefined => {
   const spec: ExecSpec = { argv: ["/bin/sh", "-c", PROBE, "dori-probe", ...names], cwd: "/", sync: [], env: { PROBE_NEEDS: needs.join(" "), ...(path !== undefined ? { PATH: path } : {}) } };
   const p = Bun.spawnSync(sandboxArgv(kind, spec, () => "/", tools), { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20_000 });

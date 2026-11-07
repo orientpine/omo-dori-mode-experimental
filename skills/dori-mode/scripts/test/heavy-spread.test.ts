@@ -244,6 +244,9 @@ test("the system programs a job starts through its venv links or its first word 
   const pinned = spreadPlan(jobOf(["sh", "-c", "true"], { env: { PATH: "/usr/local/bin:/usr/bin:/bin" } }), who);
   expect(pinned.ok && [pinned.needs, pinned.which, pinned.path]).toEqual([["/usr/bin/python3.99"], ["sh"], "/usr/local/bin:/usr/bin:/bin"]);
   // the box's own tools are asked about too: a helper may not have installed them
+  // relative and empty entries of --env PATH are the job's folder's, as the job will look them up
+  const relative = spreadPlan(jobOf(["sh", "-c", "true"], { env: { PATH: "usr/bin::/bin" } }), who);
+  expect(relative.ok && relative.path).toBe(`${join(work, "usr", "bin")}:${work}:/bin`);
   const tool = spreadPlan(jobOf(["ffmpeg", "-version"]), who);
   expect(tool.ok && tool.which).toEqual(["ffmpeg"]);
   expect(spreadPlan(jobOf(["mytool"], { env: { PATH: `${bin}:/usr/bin` } }), who)).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool on the job's --env PATH, which is not in a --sync path` });
@@ -338,6 +341,8 @@ test("a helper whose box PATH has no program by the job's bare command name refu
   const viaProc = Bun.spawnSync([...helperArgv(), "exec", "t", "cpu", "100", "which=dori-hidden-tool", `path=/proc/self/root${hidden}:/usr/bin`], { stdin: "ignore", stderr: "pipe" });
   expect(viaProc.stderr.toString()).toContain("WORKER_REFUSED no dori-hidden-tool on this host's box PATH (the job's command)");
   expect(probeBox("cpu", {}, [], ["sh"], "/usr/bin:/bin")).toBeUndefined();
+  // a shell builtin is no program exec can start
+  expect(probeBox("cpu", {}, [], ["printf"], join(state.dir, "empty"))).toEqual({ missing: "printf" });
   expect(probeBox("cpu", {}, [join(hidden, "dori-hidden-tool")], [])).toEqual({ missing: join(hidden, "dori-hidden-tool") });
 });
 
