@@ -202,7 +202,7 @@ test("directive-audit: gaps of the day go to the watch log and one summary to th
   await deps.registry.write({ ...clean, key: "old", thread: "none", brief: "/nope.md", openedAt: "2026-10-14T00:00:00.000Z" });
   const inbox = await write("inbox.jsonl", "");
   const quiet = await runDirectiveAudit(deps, { since: "2026-10-15T06:00:00.000Z", inbox, owner: "7" });
-  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 43 directives, no gap"]);
+  expect(quiet.lines).toEqual(["DIRECTIVE_AUDIT_OK since 2026-10-15T06:00:00.000Z: 1 lanes and the owner's messages read against 44 directives, no gap"]);
   expect(await Bun.file(deps.config.watchLog).exists()).toBe(false);
   expect(sent(world)).toEqual([]);
   // a lane whose brief lacks a directive and has no thread, and a standing directive of the owner nobody put in the ledger
@@ -667,6 +667,23 @@ test("model-defaults reaches every lane's brief, whatever the brief is about and
   }
   expect(directiveText(e).startsWith("[형 지침 model-defaults, 2026-11-06]\n")).toBe(true);
   expect(hasDirective(`${fields}\n${directiveText(e)}\n`, e)).toBe(true);
+});
+
+// the owner 2026-11-07: every Dori uses Aside; a brief gets only his words, so the lead's rule with how to use it
+// (exec/repl/mcp, the owner's remote device, what to do when it is down, writes and secrets) goes in with them
+test("aside-web brings its how: a web brief and an owner message about a logged-in site get his words and the lead's rule", () => {
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
+  const owner = ledger.entries.find((x) => x.id === "aside-web")!;
+  const how = ledger.entries.find((x) => x.id === "aside-web-how")!;
+  const task = "[목표] 형이 로그인해 둔 사이트의 대시보드에서 숫자를 읽어 정리한다.";
+  const plan = planDirectives(task, ledger, scopeContext(task, ledger, { repo: "r" }));
+  expect(plan.add.map(({ e }) => e.id)).toEqual(expect.arrayContaining(["aside-web", "aside-web-how"]));
+  expect(directiveText(owner)).toBe("[형 지침 aside-web, 2026-11-07]\n모든 도리는 Aside를 쓴다.");
+  for (const part of ["aside exec", "aside repl", "aside mcp", "aside host list", "몰래 바꾸지 않고", "형 승인 카드", "비밀번호 로그인 안 함", "문지기"]) expect(directiveText(how)).toContain(part);
+  const hint = messageLines("이 사이트에서 이거 찾아서 정리해 로그인 돼 있어", ledger);
+  expect(hint.some((l) => l.includes("aside-web-how") && l.includes("aside exec"))).toBe(true);
+  const off = "[목표] 탁구 녹화 화면의 글자를 고친다.";
+  expect(planDirectives(off, ledger, scopeContext(off, ledger, { repo: "r" })).add.map(({ e }) => e.id)).not.toContain("aside-web-how");
 });
 
 test("no scope narrowed for briefs hits the eight-step template by itself: it would be every lane again", async () => {
