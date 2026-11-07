@@ -442,16 +442,18 @@ export class QuestionCards {
     // answer would leave the card and the gate's tap receipt saying one answer and the store another (review 7 of #370).
     // It is only acknowledged; a fold Discord refuses frees the question for the next tap.
     // The question's claim is the hold, so a dori resolve or reopen in another process waits for it too (review of #374).
+    // Every callback that draws the card holds it, a repaint of an answered card included: a late one would otherwise
+    // draw the old record over a card reopened meanwhile (review 3 of #374). Without the claim the tap is only acknowledged.
     const current = this.store.get(qid);
-    const release = value && current?.status === "open" ? this.store.claim(qid, this.now()) : null;
-    if (value && current?.status === "open" && !release) {
+    const release = current ? this.store.claim(qid, this.now()) : null;
+    if (current && !release) {
       await this.respond(i, { type: ACK_UPDATE });
       return { kind: "stale", qid };
     }
     try {
       const fresh = release ? this.store.get(qid) : current;
       const at = this.at();
-      const folded: Question | null = release && fresh?.status === "open" ? { ...fresh, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
+      const folded: Question | null = value && fresh?.status === "open" ? { ...fresh, status: "answered", answer: value, answerKind: kind, answeredAt: at } : null;
       const shown = folded ?? fresh;
       await this.respond(i, shown ? { type: UPDATE_MESSAGE, data: { components: this.card(shown) } } : { type: ACK_UPDATE });
       const answered = folded ? this.store.answer(qid, value, kind, at) : null;

@@ -332,6 +332,29 @@ test("dori resolve or reopen, another process on the same store, waits for a tap
   await child.exited;
   expect(await waiting).toBe("folded");
   expect(logged().map((q) => q.answer)).toEqual(["Yes", "Tomorrow", "Later", "Never"]);
+
+  // A late tap on an answered card repaints its record; a reopen waits for that repaint, so the reopened card is the
+  // last drawing and the store says open as Discord does (review 3 of #374).
+  await listener.ask("Ship now?", ["Yes", "No"]);
+  const first = listener.handle(tap("q:Q5:0"));
+  await until(4);
+  callbacks[3]?.settle(ok);
+  expect((await first).kind).toBe("answered");
+  const repaint = listener.handle({ ...tap("q:Q5:1"), id: "i9" });
+  await until(5);
+  expect(callbacks[4]?.body.type).toBe(7);
+  const order: string[] = [];
+  const drawn = seen.filter((s) => s.startsWith("PATCH")).length;
+  const reopening = cli.reopen("Q5").then((q) => { order.push("reopened"); return q; });
+  await new Promise((drained) => setImmediate(drained)); // an unheld reopen finishes within these queued jobs
+  expect(order).toEqual([]);
+  expect(seen.filter((s) => s.startsWith("PATCH")).length).toBe(drawn);
+  order.push("repainted");
+  callbacks[4]?.settle(ok);
+  expect(await repaint).toEqual({ kind: "stale", qid: "Q5" });
+  expect((await reopening).status).toBe("open");
+  expect(order).toEqual(["repainted", "reopened"]);
+  expect(store.get("Q5")?.status).toBe("open");
 });
 
 test("a question with no options or with shell-substitution text is refused before anything is posted", async () => {
