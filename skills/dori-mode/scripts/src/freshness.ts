@@ -3,6 +3,7 @@ import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { researchCheck, stuckTop } from "./explore.ts";
 import { omoPane, omoSession, paneTranscript, readScreen, sendVerified } from "./panes.ts";
+import { dailyFile, dailySnapshot, type KeepAct, keepTick } from "./compaction-keep.ts";
 import { type Lane, type RolloverDue, statusOf } from "./registry.ts";
 import { fixTag, recordFix } from "./same-fix.ts";
 import { leadAlert } from "./autoturn.ts";
@@ -71,7 +72,7 @@ export const transcriptReport = (lines: readonly string[], key: string): string 
   return null;
 };
 
-export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "lead-told" | "lead-tell-failed" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary" | "lead_compaction_stuck" | "directive_audit" | "directive_links" | "lane_cap" | "stalled" | "usage_unknown" | "supervision_error" | "ready_resume"; readonly lane: string; readonly detail: string };
+export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "lead-told" | "lead-tell-failed" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary" | "lead_compaction_stuck" | "directive_audit" | "directive_links" | "lane_cap" | "stalled" | "usage_unknown" | "supervision_error" | "ready_resume" | KeepAct["kind"] | "trial_daily"; readonly lane: string; readonly detail: string };
 
 export type RolloverHooks = {
   // the length signals of the session in a pane: context use, compactions, age
@@ -493,6 +494,11 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       if (r.verdict === "started" || r.verdict === "not-started") acts.push({ kind: r.verdict === "started" ? "research_started" : "research_not_started", lane: lane.key, detail: r.line.replace(/^RESEARCH_\w+ \S+ /, "") });
     }
     acts.push(...(await superviseLane(deps, current)));
+    try {
+      acts.push(...(await keepTick(deps, (await deps.registry.read(lane.key)) ?? current)));
+    } catch (e) {
+      watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `COMPACTION_KEEP_WARN ${lane.key}: ${String(e).slice(0, 200)}` });
+    }
     const resumed = await readyResume(deps, hooks, lane.key, lane.pane);
     acts.push(...resumed);
     // the start just made holds the lane: no automatic start beside it in this sweep
@@ -531,6 +537,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       acts.push({ kind: "lead-told", lane: lane.key, detail: `${silentMin} min silent; nothing posted in its thread` });
     }
   }
+  if (dailySnapshot(deps.config, await deps.registry.list(), now)) acts.push({ kind: "trial_daily", lane: "lead", detail: `compaction trial day written to ${dailyFile(deps.config.stateDir)}` });
   const lead = deps.config.leadPane;
   if (lead) {
     const file = leadDueFile(deps.config.stateDir);

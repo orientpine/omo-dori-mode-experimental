@@ -142,6 +142,11 @@ export type Lane = {
   readonly receipt?: unknown;
   // the last LANE_DIED for this pane (lane-death.ts): reason for the lead, why for the log, told once the lead had it
   readonly died?: LaneDied;
+  // compaction-keep.ts: the compactions of the current session freshness has read (each new one is checked for the brief
+  // path), the lane's arm in the early-compaction trial, and the last /compact the trial typed (at the compaction count then)
+  readonly compactionsSeen?: number;
+  readonly trialArm?: "early" | "control";
+  readonly trialCompact?: { readonly count: number; readonly at: number };
 };
 
 export type LaneDied = { readonly pane: string; readonly at: string; readonly reason: string; readonly why: string; readonly told: boolean };

@@ -54,14 +54,14 @@ test("each running aoe session is one pane named by its tmux session; terminals 
 
 test("a launch opens an aoe session, waits for the prompt and types the lane prompt as one argv argument", async () => {
   const brief = join(state.dir, "brief.md");
-  await Bun.write(brief, "# brief\n");
-  const r = await launchLane(at(T0), { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  await Bun.write(brief, "# brief\n[목표] smoke lane을 `끝까지` 한다.\n");
+  const r = await launchLane(at(T0), { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w", goal: "형 원문" });
   expect(world.calls).toContainEqual(["aoe", "add", "/tmp/w", "-t", "smoke", "--tool", "omo", "-l", "--extra-args", "--model anthropic/claude-opus-5-5"]);
   const pane = `aoe_smoke_${NEW_AOE_ID.slice(0, 8)}`;
   expect(r.lane.pane).toBe(pane);
   expect(r.startup).toBe(`STARTUP_OK smoke ${pane}`);
   expect(sent(world)).toHaveLength(1);
-  expect(sent(world)[0]).toBe(`ulw set goal and work. Read and execute the lane brief at ${brief} in full. You are the smoke lane; report as the brief's footer says.`);
+  expect(sent(world)[0]).toBe(`ulw set goal and work. Read and execute the lane brief at ${brief} in full. You are the smoke lane; report as the brief's footer says. Keep these word for word through every context compaction, and after a compaction re-read the brief at ${brief} before your next step: [목표] smoke lane을 '끝까지' 한다. | Done = file /tmp/ok | Owner's words: "형 원문"`);
   expect(world.calls).toContainEqual(["tmux", "send-keys", "-t", `=${pane}:`, "Enter"]);
   expect(await Bun.file(brief).text()).toContain(`run ["dori","type","aoe_Dori_0a1b2c3d","--text","<report line>"]`);
   expect(await Bun.file(brief).text()).not.toContain("send-keys");

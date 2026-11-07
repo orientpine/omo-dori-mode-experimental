@@ -65,6 +65,7 @@ import { closeDueFrozen, closeFrozen, frozenLine, readFrozen, thawFrozen } from 
 import { canLaunch } from "./routing.ts";
 import { normFix, recordFix } from "./same-fix.ts";
 import { computeScorecard, dayWindow, formatScorecard, saveScorecard, ScorecardError } from "./scorecard.ts";
+import { trialActive, trialRows, trialTable } from "./compaction-keep.ts";
 import { fetchHttp, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
 import { clearEyes, Slack, slackRowIds, slackUnreact } from "./messenger/slack.ts";
 import type { UploadFile } from "./messenger/slack.ts";
@@ -486,6 +487,10 @@ const USAGE = `dori <command> [options]
                                        writes (ROLLOVER_PROPOSAL), logged to <stateDir>/rollover-log.jsonl; then run the
                                        handover with --approved-by "lead:<reason and signal>" (or "lead:<reason>,
                                        owner <message id>" when the owner asked for it: checked against the inbox)
+  compaction-trial [--json]           the early-compaction trial (config compactionTrial): each arm's lanes and their
+                                       context per call, calls >= 300k, tokens and usage per lane, compactions (fallback),
+                                       re-reads per compaction, lead not-done and fix attempts, from the session logs;
+                                       the daily rows freshness wrote are in <stateDir>/compaction-trial/daily.jsonl
   rollover-stats [--window H] [--stuck]
                                        proposals and rollovers from the log: signal values, approval time, each step's time
                                        and result, and the lane's watch-log quality signals H hours (24) before and after;
@@ -2323,6 +2328,17 @@ try {
       }
       appendRollover(config.stateDir, { kind: "proposal", who, at: new Date().toISOString(), key: l?.key ?? "lead", pane, signals, crossed: hit, ...(preview.note ? { note: preview.note } : {}), blockers });
       console.log(`ROLLOVER_PROPOSAL ${who} ${l?.key ?? "lead"}: ${text}; logged. Your decision: to go ahead, ${run} (the owner is told afterwards)`);
+      break;
+    }
+    case "compaction-trial": {
+      const t = config.compactionTrial;
+      const rows = trialRows(config, await deps.registry.list());
+      if (flags.values.json) {
+        console.log(JSON.stringify({ trial: t, rows }));
+        break;
+      }
+      console.log(`COMPACTION_TRIAL ${t.until ? `${t.from || "-"} .. ${t.until}, early arm at ${t.atK}k, exclude /${t.exclude}/` : "off (compactionTrial.until is empty)"}; ${trialActive(t, Date.now()) ? "running" : "not running"}`);
+      for (const line of trialTable(rows)) console.log(line);
       break;
     }
     case "rollover-stats": {

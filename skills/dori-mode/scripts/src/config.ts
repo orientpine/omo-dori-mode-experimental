@@ -494,7 +494,31 @@ export type DoriConfig = {
   readonly backlog: BacklogSettings;
   // lane caps, hung calls and the cost record (src/supervision.ts): caps off by default, a cap or a hung call is told to the lead
   readonly supervision: SupervisionSettings;
+  // the early-compaction trial (src/compaction-keep.ts, owner Q530): off while until is empty
+  readonly compactionTrial: CompactionTrial;
   readonly instances: readonly InstanceRef[];
+};
+
+// from/until: ISO times; the trial runs while from <= now < until (until empty: off). atK: the early arm's point, in
+// thousands of tokens of context. exclude: a regular expression over "<key> <tags>"; a matching lane joins no arm.
+export type CompactionTrial = { readonly from: string; readonly until: string; readonly atK: number; readonly exclude: string };
+
+export const compactionTrialProblem = (raw: unknown): string | undefined => {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return "compactionTrial: an object";
+  const t = raw as Record<string, unknown>;
+  for (const k of ["from", "until"] as const)
+    if (t[k] !== undefined && (typeof t[k] !== "string" || (t[k] !== "" && Number.isNaN(Date.parse(t[k] as string))))) return `compactionTrial.${k}: an ISO time or ""`;
+  if (t.atK !== undefined && !(typeof t.atK === "number" && t.atK > 0)) return "compactionTrial.atK: a positive number";
+  if (t.exclude !== undefined) {
+    if (typeof t.exclude !== "string") return "compactionTrial.exclude: a regular expression";
+    try {
+      new RegExp(t.exclude);
+    } catch {
+      return "compactionTrial.exclude: a regular expression";
+    }
+  }
+  return undefined;
 };
 
 // Another Dori on this host: its config file (whose defaultCwd marks its directory) and its dori.env (default: next to
@@ -605,6 +629,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   mergeGate: { repos: {}, identities: {}, testCommand: ["bun", "test"], testDir: "skills/dori-mode/scripts", testMinutes: 20 },
   backlog: { enabled: false, everyMin: 60, maxLanes: 2, maxStarts: 1, hostMaxLanes: 3, hostDir: "/tmp/dori-backlog", pairRepairPattern: "", intakeDone: "file {stateDir}/backlog/reports/{id}.md", writeNeedsOwnerLink: false, feedCommand: [], orderKinds: [], dayReportAt: "", timeZone: "UTC" },
   supervision: defaultSupervision(),
+  compactionTrial: { from: "", until: "", atK: 300, exclude: "" },
   instances: [],
 });
 
@@ -773,10 +798,12 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const migrated = migrateOldKeys((await file.exists()) ? ((await file.json()) as Raw) : {});
   for (const w of migrated.warnings) warn(`${w} (${path})`);
   const raw = migrated.raw as Partial<DoriConfig>;
-  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, mergeGate: { ...base.mergeGate, ...raw.mergeGate }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, intentCheck: { ...base.autoSignals.intentCheck, ...raw.autoSignals?.intentCheck } }, handover: { ...base.handover, ...raw.handover }, supervision: { ...base.supervision, ...raw.supervision }, related: { ...base.related, ...raw.related }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } }, heavyQueue: { ...base.heavyQueue, ...raw.heavyQueue }, backlog: { ...base.backlog, ...raw.backlog } };
+  const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, mergeGate: { ...base.mergeGate, ...raw.mergeGate }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, intentCheck: { ...base.autoSignals.intentCheck, ...raw.autoSignals?.intentCheck } }, handover: { ...base.handover, ...raw.handover }, supervision: { ...base.supervision, ...raw.supervision }, compactionTrial: { ...base.compactionTrial, ...raw.compactionTrial }, related: { ...base.related, ...raw.related }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } }, heavyQueue: { ...base.heavyQueue, ...raw.heavyQueue }, backlog: { ...base.backlog, ...raw.backlog } };
   if (merged.backlog.pairRepairPattern && merged.backlog.writeNeedsOwnerLink) warn(`CONFIG_BACKLOG_REPAIR_EXEMPT backlog.pairRepairPattern and backlog.writeNeedsOwnerLink are both on: #dori-pair repair requests start without an owner message link, because the owner's standing rule that faults of the Dori base go to the maintenance Dori is their approval (${path})`);
   const supervisionBad = supervisionProblem((raw as { supervision?: unknown }).supervision);
   if (supervisionBad) throw new ConfigError(`${path}: invalid ${supervisionBad}`);
+  const trialBad = compactionTrialProblem((raw as { compactionTrial?: unknown }).compactionTrial);
+  if (trialBad) throw new ConfigError(`${path}: invalid ${trialBad}`);
   const heavyProblem = heavyQueueProblem(merged.heavyQueue);
   if (heavyProblem) throw new ConfigError(`${path}: ${heavyProblem}`);
   if (!OWNER_SPEECHES.includes(merged.discord.ownerSpeech)) throw new ConfigError(`${path}: discord.ownerSpeech must be "" (follow discord.locale), "casual" or "polite", not ${JSON.stringify(merged.discord.ownerSpeech)}`);

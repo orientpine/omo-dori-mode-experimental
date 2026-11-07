@@ -511,7 +511,9 @@ const COMPACTION = '"type":"compaction"';
 // Session logs grow to tens of MB; a long-running sweep keeps where it stopped per file and reads only what was added.
 // afterK: the context of the first assistant turn after the last compaction (input + cache read + cache write, in thousands),
 // what the session really carries on; the compaction line's own tokenEstimate runs about three times higher (2026-10-16).
-type Scan = { offset: number; count: number; afterK?: number; waiting: boolean };
+// lastK: the context of the newest assistant turn; summary: the text of the last compaction (the re-anchor reads whether it
+// kept the lane's brief path, the early-compaction trial reads lastK).
+type Scan = { offset: number; count: number; afterK?: number; waiting: boolean; lastK?: number; summary?: string };
 const scanned = new Map<string, Scan>();
 
 const turnContextK = (line: string): number | undefined => {
@@ -549,10 +551,18 @@ export const sizePct = (s: Sizes): number | undefined => (s.oldK && s.checkedK !
 
 export const compactionsIn = (file: string): number => compactionScan(file).count;
 
-export const compactionScan = (file: string): { readonly count: number; readonly afterK?: number } => {
+const summaryOf = (line: string): string => {
+  try {
+    return String((JSON.parse(line) as { summary?: unknown }).summary ?? "");
+  } catch {
+    return "";
+  }
+};
+
+export const compactionScan = (file: string): { readonly count: number; readonly afterK?: number; readonly lastK?: number; readonly summary?: string } => {
   const size = statSync(file).size;
-  let { offset, count, afterK, waiting } = scanned.get(file) ?? { offset: 0, count: 0, waiting: false };
-  if (size < offset) ({ offset, count, afterK, waiting } = { offset: 0, count: 0, afterK: undefined, waiting: false });
+  let { offset, count, afterK, waiting, lastK, summary } = scanned.get(file) ?? { offset: 0, count: 0, waiting: false };
+  if (size < offset) ({ offset, count, afterK, waiting, lastK, summary } = { offset: 0, count: 0, afterK: undefined, waiting: false, lastK: undefined, summary: undefined });
   const fd = openSync(file, "r");
   try {
     const buf = Buffer.alloc(4 << 20);
@@ -570,9 +580,12 @@ export const compactionScan = (file: string): { readonly count: number; readonly
           count++;
           afterK = undefined;
           waiting = true;
-        } else if (waiting && line.includes('"usage"')) {
+          summary = summaryOf(line);
+          lastK = undefined;
+        } else if (line.includes('"usage"')) {
           const k = turnContextK(line);
-          if (k !== undefined) [afterK, waiting] = [k, false];
+          if (k !== undefined) lastK = k;
+          if (waiting && k !== undefined) [afterK, waiting] = [k, false];
         }
       }
     }
@@ -580,8 +593,19 @@ export const compactionScan = (file: string): { readonly count: number; readonly
   } finally {
     closeSync(fd);
   }
-  scanned.set(file, { offset, count, ...(afterK !== undefined ? { afterK } : {}), waiting });
-  return { count, ...(afterK !== undefined ? { afterK } : {}) };
+  scanned.set(file, { offset, count, ...(afterK !== undefined ? { afterK } : {}), waiting, ...(lastK !== undefined ? { lastK } : {}), ...(summary !== undefined ? { summary } : {}) });
+  return { count, ...(afterK !== undefined ? { afterK } : {}), ...(lastK !== undefined ? { lastK } : {}), ...(summary !== undefined ? { summary } : {}) };
+};
+
+// The log of an omo session id in a session directory, or undefined when there is none.
+export const sessionFile = (sessionDir: string, session: string): string | undefined => {
+  if (!session) return undefined;
+  try {
+    const name = readdirSync(sessionDir).find((n) => n.endsWith(`_${session}.jsonl`));
+    return name ? join(sessionDir, name) : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 const SESSION_FILE = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z_([0-9a-f-]{36})\.jsonl$/;
