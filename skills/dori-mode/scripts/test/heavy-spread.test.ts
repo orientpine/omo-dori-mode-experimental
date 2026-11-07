@@ -245,8 +245,8 @@ test("the system programs a job starts through its venv links or its first word 
   expect(pinned.ok && [pinned.needs, pinned.which, pinned.path]).toEqual([["/usr/bin/python3.99"], ["sh"], "/usr/local/bin:/usr/bin:/bin"]);
   // the box's own tools are asked about too: a helper may not have installed them
   // relative and empty entries of --env PATH are the job's folder's, as the job will look them up
-  const relative = spreadPlan(jobOf(["sh", "-c", "true"], { env: { PATH: "usr/bin::/bin" } }), who);
-  expect(relative.ok && relative.path).toBe(`${join(work, "usr", "bin")}:${work}:/bin`);
+  const relative = spreadPlan(jobOf(["sh", "-c", "true"], { env: { PATH: "usr/../bin::/usr/local/missing/../bin:/bin" } }), who);
+  expect(relative.ok && relative.path).toBe(`${work}/usr/../bin:${work}:/usr/local/missing/../bin:/bin`);
   const tool = spreadPlan(jobOf(["ffmpeg", "-version"]), who);
   expect(tool.ok && tool.which).toEqual(["ffmpeg"]);
   expect(spreadPlan(jobOf(["mytool"], { env: { PATH: `${bin}:/usr/bin` } }), who)).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool on the job's --env PATH, which is not in a --sync path` });

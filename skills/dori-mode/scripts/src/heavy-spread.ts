@@ -199,8 +199,9 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
     if (BOX_PROGRAMS.has(first) || Bun.which(first, { PATH: BOX_SYSTEM_PATH })) which.add(first);
     else if (here) return no(`the command ${first} is ${here}, which is in no --sync path and no system folder, so a helper has none`);
   }
-  // the helper looks the names up from /, the job from its own folder: relative and empty PATH entries go as that folder's
-  const path = which.size && job.env.PATH !== undefined ? job.env.PATH.split(":").map((d) => resolve(job.cwd, d)).join(":") : undefined;
+  // the helper looks the names up from /, the job from its own folder: relative and empty PATH entries go as that folder's,
+  // unnormalized (a/../b is not b when a is missing), and absolute ones as written
+  const path = which.size && job.env.PATH !== undefined ? job.env.PATH.split(":").map((d) => (d.startsWith("/") ? d : d === "" ? job.cwd : `${job.cwd}/${d}`)).join(":") : undefined;
   if (path !== undefined && !BOX_PATH_OK.test(path)) return no(`the job's --env PATH ${JSON.stringify(path.slice(0, 80))} cannot be sent to a helper for its lookup`);
   const odd = [...needs].find((p) => !NEED_PATH.test(p) || p.split("/").includes(".."));
   if (odd !== undefined) return no(`the job starts ${JSON.stringify(odd)}, a path a helper cannot be asked about`);
