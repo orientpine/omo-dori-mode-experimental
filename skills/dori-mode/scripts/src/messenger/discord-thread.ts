@@ -62,7 +62,7 @@ const closingOf = (rest: string): { readonly text: string; readonly mark: string
   return undefined;
 };
 
-const splitMarks = (name: string, words: DiscordWords): { readonly outcome?: string; readonly rest: string } => {
+const splitMarks = (name: string, words: DiscordWords): { readonly outcome?: string | undefined; readonly rest: string } => {
   const marks = new Set<string>(["working", "waiting", "done"].map((s) => `[${words[s as ThreadStatus]}]`));
   let outcome: string | undefined;
   let ended = false;

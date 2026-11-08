@@ -29,7 +29,7 @@ export type ListenerTimers = Timers & { readonly setTimeout: (cb: () => void, ms
 export type DiscordMessage = {
   readonly id: string;
   readonly channel_id: string;
-  readonly guild_id?: string;
+  readonly guild_id?: string | undefined;
   readonly content: string;
   readonly timestamp: string;
   readonly author: { readonly id: string; readonly bot?: boolean; readonly username?: string };
@@ -480,7 +480,7 @@ export class DiscordListener {
     const modal = /^m:(.+)$/.exec(cid);
     const q = this.d.cards.store.get(option?.[1] ?? modal?.[1] ?? "");
     const value = option ? q?.options[Number(option[2])] : modal ? modalValue(i.data?.components).trim() : undefined;
-    if ((i.member?.user.id ?? i.user?.id) !== this.d.owner || !q || !value) return this.d.log(`SHADOW_INTERACTION_SKIPPED ${i.id} ${cid}`);
+    if ((i.member?.user.id ?? i.user?.id) !== this.d.owner || !q || !value) { this.d.log(`SHADOW_INTERACTION_SKIPPED ${i.id} ${cid}`); return; }
     this.append({ ts: new Date(this.d.now()).toISOString(), id: i.id, kind: "answer", qid: q.id, answer: value, answer_kind: option ? "button" : "text", question: q.text, thread: q.thread, session: q.session, tmux: q.tmux });
     this.d.log(`SHADOW_ANSWER ${q.id} ${JSON.stringify(value)}`);
   }
@@ -548,14 +548,14 @@ export class DiscordListener {
   private dispatch(type: string | null, data: Record<string, unknown>): void {
     if (type === "READY") {
       this.backoff = 1_000;
-      this.self = String((data.user as { id?: string } | undefined)?.id ?? "");
+      this.self = String((data["user"] as { id?: string } | undefined)?.id ?? "");
       this.d.log(this.d.shadow ? "DISCORD_LISTENER_READY shadow" : "DISCORD_LISTENER_READY");
       this.track(this.backfill().then(() => {}), "backfill");
       this.rolesStale = true;
       this.track(this.readRoles(), "roles");
-    } else if (type === "GUILD_CREATE" && data.id === this.d.guild) {
-      for (const t of (data.threads as { id: string; parent_id: string }[] | undefined) ?? []) this.parents.set(t.id, t.parent_id);
-    } else if (type === "THREAD_CREATE" || type === "THREAD_UPDATE") this.parents.set(String(data.id), String(data.parent_id ?? ""));
+    } else if (type === "GUILD_CREATE" && data["id"] === this.d.guild) {
+      for (const t of (data["threads"] as { id: string; parent_id: string }[] | undefined) ?? []) this.parents.set(t.id, t.parent_id);
+    } else if (type === "THREAD_CREATE" || type === "THREAD_UPDATE") this.parents.set(String(data["id"]), String(data["parent_id"] ?? ""));
     else if (type === "MESSAGE_CREATE") this.track(this.onMessage(data as unknown as DiscordMessage), "message");
     else if (type === "INTERACTION_CREATE") this.track(this.onInteraction(data as unknown as Interaction), "interaction");
   }
@@ -578,7 +578,7 @@ export class DiscordListener {
           if (!acked) return ws.close(4000, "zombie");
           acked = false;
           ws.send(JSON.stringify({ op: 1, d: this.seq }));
-        }, Number(p.d?.heartbeat_interval));
+        }, Number(p.d?.["heartbeat_interval"]));
         ws.send(JSON.stringify({ op: 2, d: { token: this.d.token, intents: LISTENER_INTENTS, properties: { os: process.platform, browser: "dori", device: "dori" } } }));
       } else if (p.op === 11) acked = true;
       else if (p.op === 1) ws.send(JSON.stringify({ op: 1, d: this.seq }));

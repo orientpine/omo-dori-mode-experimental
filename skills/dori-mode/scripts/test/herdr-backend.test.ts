@@ -81,7 +81,7 @@ test("a session opened on a fresh herdr server, which has no workspace yet, gets
   const run: Runner = async (argv) => {
     calls.push([...argv]);
     if (argv[1] === "tab" && argv[2] === "create") return made ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p2", tab_id: "w1:t2" } } }), err: "" } : { code: 1, out: JSON.stringify({ error: { code: "workspace_not_found", message: "no active workspace" } }), err: "" };
-    if (argv[1] === "workspace" && argv[2] === "create") return (made = true), { code: 0, out: JSON.stringify({ result: { workspace: { workspace_id: "w1" } } }), err: "" };
+    if (argv[1] === "workspace" && argv[2] === "create") { made = true; return { code: 0, out: JSON.stringify({ result: { workspace: { workspace_id: "w1" } } }), err: "" }; }
     if (argv[2] === "read") return { code: 0, out: "$ ", err: "" };
     return fakeRunner(world)(argv);
   };
@@ -113,7 +113,7 @@ test("launch on a fresh herdr server (no workspace yet) opens the lane in a work
   let made = false;
   const r = await launchLane({ ...deps, readGoal: async () => ({ status: "active" }), run: async (argv, o) => {
     if (argv[1] === "tab" && argv[2] === "create") return made ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p2", tab_id: "w1:t2" } } }), err: "" } : { code: 1, out: JSON.stringify({ error: { code: "workspace_not_found" } }), err: "" };
-    if (argv[1] === "workspace" && argv[2] === "create") return (made = true), { code: 0, out: JSON.stringify({ result: { workspace: { workspace_id: "w1" } } }), err: "" };
+    if (argv[1] === "workspace" && argv[2] === "create") { made = true; return { code: 0, out: JSON.stringify({ result: { workspace: { workspace_id: "w1" } } }), err: "" }; }
     return base(argv, o);
   } }, { noThread: "QA", key: "fresh", title: "fresh", brief, done: "file /x", cwd: "/tmp" });
   expect(r.lane).toMatchObject({ pane: "w1:p2", tab: "w1:t2" });
@@ -132,10 +132,10 @@ test("a herdr launch of an agent that is no omo needs no node: it starts with th
   const brief = join(dir, "brief.md");
   await Bun.write(brief, "# brief\n");
   const deps = omo({ agentCommand: ["claude", "{prompt}"] });
-  const path = process.env.PATH;
-  const nvm = process.env.NVM_DIR;
-  process.env.PATH = "/nonexistent";
-  process.env.NVM_DIR = join(dir, "no-nvm");
+  const path = process.env["PATH"];
+  const nvm = process.env["NVM_DIR"];
+  process.env["PATH"] = "/nonexistent";
+  process.env["NVM_DIR"] = join(dir, "no-nvm");
   try {
     const base = deps.run;
     const run: Runner = async (argv, o) => (argv[1] === "tab" && argv[2] === "create" ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p3", tab_id: "w1:t3" } } }), err: "" } : base(argv, o));
@@ -143,9 +143,9 @@ test("a herdr launch of an agent that is no omo needs no node: it starts with th
     expect(r.startup).not.toContain("NO_NODE");
     expect(world.calls.find((c) => c[2] === "run")?.[4] ?? "").not.toContain("PATH=");
   } finally {
-    process.env.PATH = path;
-    if (nvm === undefined) delete process.env.NVM_DIR;
-    else process.env.NVM_DIR = nvm;
+    process.env["PATH"] = path;
+    if (nvm === undefined) delete process.env["NVM_DIR"];
+    else process.env["NVM_DIR"] = nvm;
   }
 });
 

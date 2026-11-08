@@ -12,7 +12,7 @@ import { compactionStuckOn, pendingFile, type ReadyMark, readyFile, safePointFil
 import { COMMITTED, crossed, dueReasons, limitsFor, readRollovers, type RolloverEntry, type RolloverRequest, type Signals, type Who } from "./rollover.ts";
 import { auditDue, type Committed, weeklyDue, writeMarker } from "./rollover-audit.ts";
 import { dailyAuditSince, linksDue } from "./directive-audit.ts";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { watchLog } from "./watch-log.ts";
 import { HUNG_MESSAGE, laneSessionUsage, Supervision } from "./supervision.ts";
@@ -93,7 +93,7 @@ export type RolloverHooks = {
   // puts the week's audit summary in the lead's inbox; the line says what it wrote
   readonly auditSummary?: (week: string) => string;
   // the daily directive audit (dori directive-audit from `since`), so it runs on every Dori with no timer of its own
-  readonly directiveAudit?: (since: string) => Promise<readonly string[]>;
+  readonly directiveAudit?: ((since: string) => Promise<readonly string[]>) | undefined;
   // pushes the owner's message links of the local ledger to the other Dori (directives.linkPeers)
   readonly directiveLinks?: () => Promise<readonly string[]>;
   // the lead's omo transcript, where each report a lane typed into the lead sits (read first, before the screens);

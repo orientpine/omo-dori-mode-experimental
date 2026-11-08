@@ -442,7 +442,7 @@ export type DoriConfig = {
   // the repo of a session in handover.cwd, else defaultCwd; "off": no check); dailyAudit false: the freshness loop does not
   // run the daily directive audit (another Dori audits this one, e.g. the SooDori timer soodori-daily-audit for ZzangDori);
   // pickModel: the small model dori launch asks which non-fixed entries a brief needs (empty: the scope rules decide)
-  readonly directives: { readonly common: string; readonly local: string; readonly links?: string; readonly linkPeers?: readonly string[]; readonly memory?: string; readonly dailyAudit?: boolean; readonly pickModel?: string };
+  readonly directives: { readonly common: string; readonly local: string; readonly links?: string; readonly linkPeers?: readonly string[]; readonly memory?: string; readonly dailyAudit?: boolean; readonly pickModel?: string | undefined };
   readonly sessionsDir: string;
   readonly nudgeAfterMin: number;
   // dori watch: an idle lane waiting on background work it started (BG_WAITING) is LANE_BLOCKED idle after this long
@@ -509,11 +509,11 @@ export const compactionTrialProblem = (raw: unknown): string | undefined => {
   const t = raw as Record<string, unknown>;
   for (const k of ["from", "until"] as const)
     if (t[k] !== undefined && (typeof t[k] !== "string" || (t[k] !== "" && Number.isNaN(Date.parse(t[k] as string))))) return `compactionTrial.${k}: an ISO time or ""`;
-  if (t.atK !== undefined && !(typeof t.atK === "number" && t.atK > 0)) return "compactionTrial.atK: a positive number";
-  if (t.exclude !== undefined) {
-    if (typeof t.exclude !== "string") return "compactionTrial.exclude: a regular expression";
+  if (t["atK"] !== undefined && !(typeof t["atK"] === "number" && t["atK"] > 0)) return "compactionTrial.atK: a positive number";
+  if (t["exclude"] !== undefined) {
+    if (typeof t["exclude"] !== "string") return "compactionTrial.exclude: a regular expression";
     try {
-      new RegExp(t.exclude);
+      new RegExp(t["exclude"]);
     } catch {
       return "compactionTrial.exclude: a regular expression";
     }
@@ -645,7 +645,7 @@ export const researchTextProblem = (text: string): string | undefined =>
       ? "explore.researchText must contain {question}, where the research question built from the lane's records goes"
       : undefined;
 
-export const envFilePath = (): string => process.env.DORI_ENV_FILE ?? join(homedir(), ".dori", "dori.env");
+export const envFilePath = (): string => process.env["DORI_ENV_FILE"] ?? join(homedir(), ".dori", "dori.env");
 
 // What one Dori's dori.env sets: bot tokens, channel, inbox, card store, lead, voice, Google, Kakao, usage. A process can
 // inherit another Dori's set: a tmux server started by a unit that loaded dori.env hands it to every pane it opens.
@@ -693,7 +693,7 @@ const realOr = (path: string): string => {
 // listed under `instances` in ~/.dori/config.json, reached through a symlink or not) takes that Dori's config and
 // dori.env. Returns the config path it chose.
 export const resolveInstance = async (cwd: string, env: Record<string, string | undefined> = process.env, home = homedir()): Promise<string | undefined> => {
-  if (env.DORI_CONFIG !== undefined || env.DORI_ENV_FILE !== undefined) return undefined;
+  if (env["DORI_CONFIG"] !== undefined || env["DORI_ENV_FILE"] !== undefined) return undefined;
   const main = Bun.file(join(home, ".dori", "config.json"));
   if (!(await main.exists())) return undefined;
   const here = realOr(cwd);
@@ -704,14 +704,14 @@ export const resolveInstance = async (cwd: string, env: Record<string, string | 
     if (!dir) continue;
     const root = realOr(expandHome(dir, home));
     if (here !== root && !here.startsWith(`${root}/`)) continue;
-    env.DORI_CONFIG = config;
-    env.DORI_ENV_FILE = expandHome(ref.envFile ?? join(dirname(config), "dori.env"), home);
+    env["DORI_CONFIG"] = config;
+    env["DORI_ENV_FILE"] = expandHome(ref.envFile ?? join(dirname(config), "dori.env"), home);
     return config;
   }
   return undefined;
 };
 
-export const configPath = (): string => process.env.DORI_CONFIG ?? join(homedir(), ".dori", "config.json");
+export const configPath = (): string => process.env["DORI_CONFIG"] ?? join(homedir(), ".dori", "config.json");
 
 export const expandHome = (path: string, home = homedir()): string => (path === "~" ? home : path.startsWith("~/") ? join(home, path.slice(2)) : path);
 
@@ -742,8 +742,8 @@ export const migrateOldKeys = (input: Raw): { readonly raw: Raw; readonly warnin
   const drop = (from: string, key: string, why: string): void => {
     if (take(from, key) !== undefined) warnings.push(`CONFIG_OLD_KEY ${from}.${key} is no longer read: ${why}; remove it from the config`);
   };
-  const hypothesesAt = Number(raw.stuck?.hypothesesAt ?? raw.explore?.hypothesesFrom ?? 2);
-  const userReviewers = "models" in (input.reviewers ?? {});
+  const hypothesesAt = Number(raw["stuck"]?.["hypothesesAt"] ?? raw["explore"]?.["hypothesesFrom"] ?? 2);
+  const userReviewers = "models" in (input["reviewers"] ?? {});
   move("sameFix", "after", "stuck", "fixatedAfter");
   drop("sameFix", "sendToLane", "the stuck ladder sends a lane research at rung 3 and a re-read only when the lead confirms it (stuck.rereadText)");
   drop("sameFix", "laneText", "stuck.rereadText is the text the lead confirms");
@@ -766,9 +766,9 @@ export const migrateOldKeys = (input: Raw): { readonly raw: Raw; readonly warnin
   move("explore", "challengeModels", "reviewers", "models");
   // the periodic owner check was removed on 2026-11-02 (owner card Q442): its shared reviewer settings live in reviewers,
   // what intent-check reads in autoSignals.intentCheck, and its schedule keys are no longer read
-  const oc = raw.autoSignals?.ownerCheck as Record<string, unknown> | undefined;
+  const oc = raw["autoSignals"]?.["ownerCheck"] as Record<string, unknown> | undefined;
   if (oc && typeof oc === "object") {
-    delete section("autoSignals").ownerCheck;
+    delete section("autoSignals")["ownerCheck"];
     const old = "autoSignals.ownerCheck";
     const to = (key: string, target: Record<string, unknown>, where: string): void => {
       if (!(key in oc)) return;
@@ -776,16 +776,18 @@ export const migrateOldKeys = (input: Raw): { readonly raw: Raw; readonly warnin
       if (!kept) target[key] = oc[key];
       warnings.push(`CONFIG_OLD_KEY ${old}.${key} -> ${where}.${key}${kept ? " (both set: the new key wins)" : ""}; rename it in the config`);
     };
-    const models = oc.models;
+    const models = oc["models"];
     if (Array.isArray(models)) {
       // both old lists set: one list holding both (challenge order first); only a reviewers.models the config sets itself wins
-      const moved = section("reviewers").models;
-      if (!userReviewers) section("reviewers").models = [...new Set([...(Array.isArray(moved) ? moved : []), ...models, ...(Array.isArray(moved) ? [] : defaultConfig().reviewers.models)])];
-      if (models[0] && !("first" in oc) && !("first" in section("reviewers"))) section("reviewers").first = models[0];
+      const moved = section("reviewers")["models"];
+      if (!userReviewers) section("reviewers")["models"] = [...new Set([...(Array.isArray(moved) ? moved : []), ...models, ...(Array.isArray(moved) ? [] : defaultConfig().reviewers.models)])];
+      if (models[0] && !("first" in oc) && !("first" in section("reviewers"))) section("reviewers")["first"] = models[0];
       warnings.push(`CONFIG_OLD_KEY ${old}.models -> reviewers.models (one list) and reviewers.first; rename it in the config`);
     }
     for (const key of ["first", "command", "minutes"]) to(key, section("reviewers"), "reviewers");
-    const intent = (section("autoSignals").intentCheck ??= {}) as Record<string, unknown>;
+    const autoSignals = section("autoSignals");
+    autoSignals["intentCheck"] ??= {};
+    const intent = autoSignals["intentCheck"] as Record<string, unknown>;
     for (const key of ["reports", "maxReports", "relays"]) to(key, intent, "autoSignals.intentCheck");
     for (const key of ["enabled", "minIntervalMin", "maxPerDay", "perTick"]) if (key in oc) warnings.push(`CONFIG_OLD_KEY ${old}.${key} is no longer read: the periodic check of lane reports was removed; remove it from the config`);
   }
@@ -816,8 +818,8 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   if (researchProblem) throw new ConfigError(`${path}: ${researchProblem}`);
   const env: unknown = merged.launchEnv;
   if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((v) => typeof v !== "string")) throw new ConfigError(`${path}: launchEnv must map variable names to strings, e.g. {"CUDA_VISIBLE_DEVICES": ""}`);
-  const stateDir = expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home);
-  const leadPane = process.env.DORI_LEAD_PANE ?? merged.leadPane;
+  const stateDir = expandHome(process.env["DORI_STATE_DIR"] ?? merged.stateDir, home);
+  const leadPane = process.env["DORI_LEAD_PANE"] ?? merged.leadPane;
   const repo = raw.update?.repo ? expandHome(raw.update.repo, home) : (await run(["git", "-C", import.meta.dir, "rev-parse", "--show-toplevel"])).out || base.update.repo;
   return {
     ...merged,

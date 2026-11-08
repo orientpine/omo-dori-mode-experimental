@@ -22,13 +22,13 @@ const slackFake = (w: Workspace) => {
     const body = (b: unknown): HttpResponse => ({ status: 200, headers: {}, body: JSON.stringify({ ok: true, ...(b as object) }) });
     if (method === "chat.postMessage") {
       const ts = `${w.nextTs++}.000100`;
-      const root = typeof p.thread_ts === "string" ? p.thread_ts : ts;
-      (w.replies[`${p.channel}:${root}`] ??= []).push({ ts, user: SELF, text: String(p.text) });
-      return body({ channel: p.channel, ts });
+      const root = typeof p["thread_ts"] === "string" ? p["thread_ts"] : ts;
+      const thread = w.replies[`${p["channel"]}:${root}`] ?? []; w.replies[`${p["channel"]}:${root}`] = thread; thread.push({ ts, user: SELF, text: String(p["text"]) });
+      return body({ channel: p["channel"], ts });
     }
     if (method === "conversations.replies") {
-      const all = w.replies[`${p.channel}:${p.ts}`] ?? [];
-      return body({ messages: all.filter((m) => Number(m.ts) > Number(p.oldest ?? 0)) });
+      const all = w.replies[`${p["channel"]}:${p["ts"]}`] ?? [];
+      return body({ messages: all.filter((m) => Number(m.ts) > Number(p["oldest"] ?? 0)) });
     }
     if (method === "subscriptions.thread.getView") return body({ threads: w.view });
     if (method === "client.counts") return body(w.counts);

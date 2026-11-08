@@ -18,7 +18,7 @@ import type { Runner } from "./run.ts";
 // repeats: written by older versions (the most attempts of one same fix), still shown by rollover-stats
 // compactionStuck: how often the engine's "compaction did not complete" error stands on the session's screen, set only
 // when that error is the last thing above its input box (lane-handover.ts compactionStuckOn): it can take no turn at all.
-export type Signals = { readonly contextPct?: number; readonly compactions?: number; readonly afterCompactK?: number; readonly ageH?: number; readonly stuck?: { readonly metric: string; readonly n: number; readonly rung: number }; readonly repeats?: number; readonly compactionStuck?: number };
+export type Signals = { readonly contextPct?: number | undefined; readonly compactions?: number; readonly afterCompactK?: number; readonly ageH?: number; readonly stuck?: { readonly metric: string; readonly n: number; readonly rung: number }; readonly repeats?: number; readonly compactionStuck?: number };
 
 export type Step = { readonly step: string; readonly ms: number; readonly ok: boolean };
 // one round of filling in what the new session's restatement left out: the items, how many old-log lines were quoted, the file
@@ -373,7 +373,7 @@ export const inboxMessages = (inbox: string, ids: readonly string[]): OwnerMessa
     }
     return out;
   };
-  return { ids, find: (id) => (rows ??= load()).get(id) };
+  return { ids, find: (id) => { rows ??= load(); return rows.get(id); } };
 };
 
 // why a cited owner's message does not hold: not set up, not in the inbox (a made-up id), someone else's, another channel
@@ -440,7 +440,7 @@ export const approvalProblem = (ref: string | undefined, card: (id: string) => Q
 // typed (owner Q475: 17 of 81 refused handovers were the approval's wording, each typed again within a minute): the
 // lane's top stuck rung, the threshold freshness saw crossed in this session (ROLLOVER_DUE), or the last rollover
 // proposal for this session. The lead still decides and gives the reason; nothing measured, nothing filled.
-export const measuredSignal = (o: { readonly pane: string; readonly stuck?: { readonly metric: string; readonly n: number; readonly rung: number }; readonly due?: { readonly pane: string; readonly crossed: readonly string[] }; readonly proposal?: Extract<RolloverEntry, { kind: "proposal" }> }): string | undefined => {
+export const measuredSignal = (o: { readonly pane: string; readonly stuck?: { readonly metric: string; readonly n: number; readonly rung: number } | undefined; readonly due?: { readonly pane: string; readonly crossed: readonly string[] } | undefined; readonly proposal?: Extract<RolloverEntry, { kind: "proposal" }> | undefined }): string | undefined => {
   if (o.stuck && o.stuck.rung >= 1) return `STUCK rung ${o.stuck.rung} on ${o.stuck.metric} (${o.stuck.n} failed attempts)`;
   if (o.due?.pane === o.pane && o.due.crossed.length) return o.due.crossed.join(", ");
   if (o.proposal?.pane === o.pane && o.proposal.crossed.length) return o.proposal.crossed.join(", ");
@@ -735,7 +735,7 @@ export const rolloverStats = (entries: readonly RolloverEntry[], watchLines: rea
 // those the lead relayed into the old conversation by message id or link. Only rows the inbox holds as written by him count,
 // so what the lead or a bot wrote never passes for his words. Newest max kept, oldest first.
 export type OwnerMessage = { readonly at: string; readonly id: string; readonly channel: string; readonly text: string; readonly link?: string };
-export const ownerMessagesFor = (o: { readonly inbox: string; readonly ownerIds: readonly string[]; readonly oldLog?: string; readonly thread?: string; readonly since: string; readonly guild?: string; readonly max?: number }): OwnerMessage[] => {
+export const ownerMessagesFor = (o: { readonly inbox: string; readonly ownerIds: readonly string[]; readonly oldLog?: string | undefined; readonly thread?: string | undefined; readonly since: string; readonly guild?: string | undefined; readonly max?: number }): OwnerMessage[] => {
   if (!o.ownerIds.length || !o.inbox || !existsSync(o.inbox)) return [];
   const cited = new Set<string>();
   if (o.oldLog && existsSync(o.oldLog)) {

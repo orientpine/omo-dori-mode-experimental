@@ -263,7 +263,7 @@ export type AcquireOptions<T> = {
   // PC should not sit idle for heavySettleSec); the GPU line (--job) keeps waiting here then
   readonly elsewhereWhileSettling?: boolean;
   // seconds this job needs before its load shows (kept in its slot for the next admission); default headroom.settleSec
-  readonly settleSec?: number;
+  readonly settleSec?: number | undefined;
 };
 
 export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOptions<T> = {}): Promise<Acquired<T>> => {

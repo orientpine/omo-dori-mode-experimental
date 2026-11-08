@@ -81,7 +81,7 @@ test("a gone session is told as tmux 세션 없음; a paused lane and a pane bac
   // a check soon after the first (a second watch) does not count as the confirming one
   expect(died(await watchTick(deps(T0 + 10 * S)))).toEqual([]);
   // a handover gave the swap lane a live pane before the second check
-  panes.aoe_swap_cccc3333 = "live";
+  panes["aoe_swap_cccc3333"] = "live";
   expect(died(await watchTick(deps(T0 + 30 * S)))).toEqual(["LANE_DIED gone aoe_gone_aaaa1111: tmux session gone", "LANE_DIED_TOLD gone lead:p1"]);
   expect(sent(w)).toEqual(["[DORI] 레인 gone 꺼짐(tmux 세션 없음) — 이어서 살릴지 정해"]);
 });

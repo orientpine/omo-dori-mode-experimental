@@ -15,7 +15,7 @@ export type Pane = {
   readonly pane_id: string;
   readonly workspace_id: string;
   readonly tab_id?: string;
-  readonly agent?: string;
+  readonly agent?: string | undefined;
   readonly agent_status?: string;
   readonly title?: string;
   readonly cwd?: string;
@@ -141,7 +141,7 @@ const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, t
       // upstream #66/#70: a pane whose agent ended leaves its shell, which would run the text as a command, and an agent
       // herdr reports blocked shows a confirmation the text would answer; neither gets anything
       type: async (text) => {
-        const got = (await herdrResult(run, ["pane", "get", pane]))?.pane as { agent?: string; agent_status?: string } | undefined;
+        const got = (await herdrResult(run, ["pane", "get", pane]))?.["pane"] as { agent?: string; agent_status?: string } | undefined;
         if (!got) return `PANE_GONE: there is no herdr pane ${pane}; nothing was typed`;
         if (!got.agent) return `PANE_DEAD: no agent runs in ${pane} (only its shell, which would run the text); nothing was typed`;
         if (got.agent_status === "blocked") return `PANE_BLOCKED: the agent in ${pane} waits on a confirmation the text would answer; nothing was typed`;
@@ -150,7 +150,7 @@ const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, t
         if (!ALIVE_STATUSES.has(got.agent_status ?? "")) return `the agent in ${pane} is in state ${got.agent_status ?? "none"}, not idle, working, blocked or done, so it may not be reading; nothing was typed`;
         const info = await herdrResult(run, ["pane", "process-info", "--pane", pane]);
         if (!info) return `herdr pane process-info could not be read for ${pane}, so a shell in front cannot be ruled out; nothing was typed`;
-        const shell = shellInFrontName(info.process_info);
+        const shell = shellInFrontName(info["process_info"]);
         if (shell === "") return `herdr pane process-info shows nothing readable in front of ${pane}, so a shell in front cannot be ruled out; nothing was typed`;
         if (shell !== undefined) return `the agent in ${pane} is not in front: a shell (${shell}) is, after the agent exited or was suspended with Ctrl+Z, or as its child, and it could run the text; nothing was typed`;
         return (await run(["herdr", "pane", "send-text", pane, text])).code === 0 ? undefined : "herdr send-text failed";

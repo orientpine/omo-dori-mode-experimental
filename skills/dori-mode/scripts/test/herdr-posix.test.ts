@@ -38,7 +38,7 @@ test("the agent line sets and removes the session's variables with env(1) and qu
 
 test("a herdr session's launchEnv is read from its agent's own environment", async () => {
   const run: Runner = async (argv) => (argv[2] === "process-info" ? { code: 0, out: JSON.stringify({ result: { process_info: { shell_pid: 1, foreground_processes: [{ pid: process.pid, cmdline: "omo" }] } } }), err: "" } : { code: 0, out: "", err: "" });
-  expect(await envMismatch(run, "w1:p1", { PATH: process.env.PATH })).toEqual([]);
+  expect(await envMismatch(run, "w1:p1", { PATH: process.env["PATH"] })).toEqual([]);
   expect(await envMismatch(run, "w1:p1", { HERDR_TEST_NOT_SET: "1" })).toEqual(["HERDR_TEST_NOT_SET=1(unset)"]);
 });
 

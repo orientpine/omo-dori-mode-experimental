@@ -239,6 +239,7 @@ cd skills/dori-mode/scripts
 bun install
 bun test           # 用假的 herdr、aoe、tmux、git、gh 和 Discord HTTP/网关验证行为
 bunx tsc --noEmit  # 类型检查
+bun run ci         # biome lint、严格类型检查、knip、250 行检查，然后运行测试
 ```
 
 测试覆盖两种后端、启动与报告传递、freshness、阻塞的 lane、完成流程及 Discord 卡片/状态。外部工具和 Discord HTTP/网关均使用替身，不会碰真实的 pane、仓库、GitHub 或 Discord 账号。

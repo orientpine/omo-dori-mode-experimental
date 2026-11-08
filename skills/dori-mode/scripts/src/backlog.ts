@@ -29,16 +29,16 @@ export type BacklogItem = {
   readonly cwd?: string;
   // a work thread ref, "new" (opened in this Dori's channel at start), or none with noThread's reason
   readonly thread?: string;
-  readonly noThread?: string;
-  readonly whyNew?: string;
+  readonly noThread?: string | undefined;
+  readonly whyNew?: string | undefined;
   readonly goal?: string;
   readonly tags?: readonly string[];
   // who put it on the list (owner, lead, or feed for a dashboard todo), for the list
   readonly by: string;
   // the feed draft this item follows up once the owner approved it (only these are dropped with their source)
-  readonly followUpOf?: string;
+  readonly followUpOf?: string | undefined;
   // the feed entry's own id, as the source gave it (two entries never share an item)
-  readonly source?: string;
+  readonly source?: string | undefined;
   // the lead says the work only reads; the owner's message link the work rests on (checked when it was added)
   readonly readOnly?: boolean;
   readonly ownerLink?: string;
@@ -48,12 +48,12 @@ export type BacklogItem = {
   // the entry is on hold on the source (not started while it is); when a feed item was dropped because the source finished
   // or removed the entry (it comes back if the entry is open again there)
   readonly paused?: boolean;
-  readonly closedOnSource?: string;
+  readonly closedOnSource?: string | undefined;
   // the inbox row it was taken from (an owner's order of backlog.orderKinds, a #dori-pair request); handed back to the lead
   // when it cannot start
-  readonly row?: string;
+  readonly row?: string | undefined;
   // the board todo an owner's order is about (its todo_id): at most one lane per todo runs at a time, feed or order
-  readonly todo?: string;
+  readonly todo?: string | undefined;
   // the owner's approval of the entry: his card (approved_at, auto_applied false) or his answer to a changed-content
   // question, bound to the content hash it was given for; another hash means no approval
   readonly approval?: { readonly at: string; readonly hash: string; readonly by: "card" | "decide" };
@@ -75,7 +75,7 @@ export type BacklogItem = {
   readonly held?: string;
   readonly startFailures?: number;
   readonly status: ItemStatus;
-  readonly pane?: string;
+  readonly pane?: string | undefined;
   readonly addedAt: string;
   readonly log: readonly ItemLog[];
 };
@@ -123,17 +123,17 @@ export type AddInput = {
   readonly title: string;
   readonly brief: string;
   readonly done: string;
-  readonly priority?: string;
-  readonly cwd?: string;
-  readonly thread?: string;
-  readonly noThread?: string;
-  readonly whyNew?: string;
-  readonly goal?: string;
+  readonly priority?: string | undefined;
+  readonly cwd?: string | undefined;
+  readonly thread?: string | undefined;
+  readonly noThread?: string | undefined;
+  readonly whyNew?: string | undefined;
+  readonly goal?: string | undefined;
   readonly tags?: readonly string[];
-  readonly ask?: string;
-  readonly by?: string;
+  readonly ask?: string | undefined;
+  readonly by?: string | undefined;
   readonly readOnly?: boolean;
-  readonly ownerLink?: string;
+  readonly ownerLink?: string | undefined;
   readonly followUpOf?: string;
   readonly source?: string;
   readonly feedSnapshot?: string;
@@ -150,7 +150,7 @@ export const OWNER_LINK_ASK = "형 원문 링크가 확인되지 않은 쓰기 �
  * Puts an item on the list, or replaces one that is not running (a held item's fix). Its brief is copied now.
  * ownerProblem: why the owner link does not hold (undefined when it was checked and holds, or no check is needed).
  */
-export const addItem = (stateDir: string, input: AddInput, ctx: { readonly registered: boolean; readonly at: string; readonly needOwnerLink?: boolean; readonly ownerProblem?: string }): { readonly item: BacklogItem; readonly replaced: boolean } => {
+export const addItem = (stateDir: string, input: AddInput, ctx: { readonly registered: boolean; readonly at: string; readonly needOwnerLink?: boolean; readonly ownerProblem?: string | undefined }): { readonly item: BacklogItem; readonly replaced: boolean } => {
   if (!LANE_KEY.test(input.id)) throw new BacklogError(`item id must match ${LANE_KEY} (it becomes the lane key)`);
   const priority = input.priority === undefined ? 5 : Number(input.priority);
   if (!Number.isInteger(priority) || priority < 1 || priority > 9) throw new BacklogError(`--priority must be 1 (first) to 9 (last), not ${input.priority}`);
@@ -482,7 +482,7 @@ export const feedIntake = async (d: { readonly stateDir: string; readonly settin
     }
     // the owner's card: approved_at with auto_applied false (a board that applies proposals itself sets it true; a missing
     // field is no card)
-    const card = Boolean(todo.approved_at) && todo.auto_applied === false;
+    const card = Boolean(todo["approved_at"]) && todo["auto_applied"] === false;
     const snapshot = feedContent(todo);
     const hash = hashOf(snapshot);
     const title = String(todo.title ?? ref).slice(0, 60);
@@ -757,7 +757,7 @@ export const orderIntake = (d: { readonly stateDir: string; readonly settings: B
 
 const zoned = (now: number, timeZone: string): { readonly day: string; readonly hm: string } => {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(now)).map((x) => [x.type, x.value]));
-  return { day: `${p.year}-${p.month}-${p.day}`, hm: `${p.hour}:${p.minute}` };
+  return { day: `${p["year"]}-${p["month"]}-${p["day"]}`, hm: `${p["hour"]}:${p["minute"]}` };
 };
 
 /** Once a day after backlog.dayReportAt: what the list did that day and what waits on the owner, for the lead to tell him. */

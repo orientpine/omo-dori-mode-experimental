@@ -4,7 +4,7 @@ import type { Clock } from "../run.ts";
 import { guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
 import { type ThreadLedger, tsAfter } from "./thread-ledger.ts";
 
-export type SlackAuth = { readonly token: string; readonly cookie?: string };
+export type SlackAuth = { readonly token: string; readonly cookie?: string | undefined };
 // text: what Slack answered the message holds (chat.postMessage's message.text), when it said
 export type Posted = { readonly channel: string; readonly ts: string; readonly text?: string };
 // read() gives the bytes only when that file's turn comes, so a send of several big files holds one at a time
@@ -37,18 +37,18 @@ export class Slack {
     const headers = form ? { ...this.headers(false), "Content-Type": "application/x-www-form-urlencoded" } : this.headers(true);
     const res = await withBackoff(this.http, this.clock, { method: "POST", url: `${this.base}/${method}`, headers, body: payload }, policy);
     const body = JSON.parse(res.body || "{}") as Record<string, unknown>;
-    if (res.status !== 200 || body.ok !== true) throw new MessengerError(`slack ${method}: ${String(body.error ?? res.status)}`, res.status, String(body.error ?? ""));
-    if (this.ledger && method === "chat.postMessage" && typeof body.ts === "string") {
-      const channel = String(body.channel ?? params.channel);
-      await this.ledger.record(channel, typeof params.thread_ts === "string" ? params.thread_ts : body.ts, body.ts);
+    if (res.status !== 200 || body["ok"] !== true) throw new MessengerError(`slack ${method}: ${String(body["error"] ?? res.status)}`, res.status, String(body["error"] ?? ""));
+    if (this.ledger && method === "chat.postMessage" && typeof body["ts"] === "string") {
+      const channel = String(body["channel"] ?? params["channel"]);
+      await this.ledger.record(channel, typeof params["thread_ts"] === "string" ? params["thread_ts"] : body["ts"], body["ts"]);
     }
     return body;
   }
 
   async post(channel: string, text: string, threadTs?: string): Promise<Posted> {
     const r = await this.call("chat.postMessage", { channel, text: guardText(text), ...(threadTs ? { thread_ts: threadTs } : {}) });
-    const said = (r.message as { text?: unknown } | undefined)?.text;
-    return { channel: String(r.channel), ts: String(r.ts), ...(typeof said === "string" ? { text: said } : {}) };
+    const said = (r["message"] as { text?: unknown } | undefined)?.text;
+    return { channel: String(r["channel"]), ts: String(r["ts"]), ...(typeof said === "string" ? { text: said } : {}) };
   }
 
   async edit(channel: string, ts: string, text: string): Promise<void> {
@@ -64,9 +64,9 @@ export class Slack {
     const done: { id: string; title: string }[] = [];
     for (const f of files) {
       const slot = await this.call("files.getUploadURLExternal", { filename: f.filename, length: f.length }, undefined, true);
-      const put = await withBackoff(this.http, this.clock, { method: "POST", url: String(slot.upload_url), body: await f.read() });
+      const put = await withBackoff(this.http, this.clock, { method: "POST", url: String(slot["upload_url"]), body: await f.read() });
       if (put.status !== 200) throw new MessengerError(`slack upload ${f.filename}: ${put.status}`, put.status);
-      done.push({ id: String(slot.file_id), title: f.title ?? f.filename });
+      done.push({ id: String(slot["file_id"]), title: f.title ?? f.filename });
     }
     await this.call("files.completeUploadExternal", { files: done, channel_id: channel, ...(threadTs ? { thread_ts: threadTs } : {}), ...(text ? { initial_comment: text } : {}) }, ONCE);
     return done.map((f) => f.id);
@@ -83,7 +83,7 @@ export type Unreact = (channel: string, ts: string, signal: AbortSignal) => Prom
 export const slackUnreact = (token: string, base = "https://slack.com/api"): Unreact => async (channel, ts, signal) => {
   const res = await fetch(`${base}/reactions.remove`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel, timestamp: ts, name: "eyes" }), signal });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (res.status !== 200 || body.ok !== true) throw new MessengerError(`slack reactions.remove: ${String(body.error ?? res.status)}`, res.status, String(body.error ?? ""));
+  if (res.status !== 200 || body["ok"] !== true) throw new MessengerError(`slack reactions.remove: ${String(body["error"] ?? res.status)}`, res.status, String(body["error"] ?? ""));
 };
 
 // One record shared by dori send slack and the watcher, append-only: every process only appends whole lines and reads

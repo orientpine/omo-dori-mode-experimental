@@ -59,14 +59,14 @@ export type FlowDeps = {
   readonly ownerInbox?: { readonly path: string; readonly ownerId: string; readonly ownerChannel: string };
   // posts one line as this Dori's bot in a channel or thread of the owner's and returns the message id (cli wires it when
   // DORI_DISCORD_TOKEN is set)
-  readonly postOwner?: (channel: string, text: string) => Promise<string>;
+  readonly postOwner?: ((channel: string, text: string) => Promise<string>) | undefined;
   // opens a work thread named for a lane in this Dori's own channel and returns its ref (dori launch --thread new; cli wires it
   // when DORI_DISCORD_TOKEN and DORI_DISCORD_CHANNEL are set)
   readonly openThread?: (title: string) => Promise<string>;
   // ids of channels that are not threads (this Dori's channel, the pair channel, watched channels): refused as --thread
   readonly channels?: readonly string[];
   // the omo goal of a pane's session (goal.ts sessionGoal reads its goal file when unset); tests set it
-  readonly readGoal?: (pane: string) => Promise<GoalRead>;
+  readonly readGoal?: ((pane: string) => Promise<GoalRead>) | undefined;
 };
 
 export class LaneStateError extends Error {}
@@ -101,7 +101,7 @@ const resultPost = (lane: Lane, now: number): ThreadPost | undefined => lane.thr
 
 // rolloverOutcome: a lane moved to a new session for being stuck (rung 4) says in one line what it did differently after
 // the move; resolved false when the move did not solve it (the lane is done another way)
-export type ClaimOptions = { readonly posted?: string; readonly postSummary?: boolean; readonly rolloverOutcome?: { readonly line: string; readonly resolved: boolean } };
+export type ClaimOptions = { readonly posted?: string | undefined; readonly postSummary?: boolean; readonly rolloverOutcome?: { readonly line: string; readonly resolved: boolean } };
 
 // The outcome of the lane's stuck rollover, kept in the rollover log next to it once the claim is recorded:
 // ROLLOVER_OUTCOME_MISSING when the lane owes one and gave none (nothing is recorded), else what the claim output adds.

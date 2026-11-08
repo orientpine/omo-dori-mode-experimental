@@ -49,7 +49,7 @@ export type Directive = {
   // what goes into a brief for an owner entry with words: the lead's rewrite of his words as a directive (imperative or
   // declarative, no question, no spoken filler), with every condition, target and strength of his words and nothing added.
   // words and original stay on record; dori directives check has a reviewer of another family compare prompt with original
-  readonly prompt?: string;
+  readonly prompt?: string | undefined;
   readonly trigger?: string;
   // why the entry is owner or lead: the context of his message, one line
   readonly basis?: string;
@@ -406,7 +406,7 @@ export type ScopeContext = {
 // The repo a lane works in: the name of its origin remote, else the directory's name.
 export const repoName = (remote: string, cwd: string): string => basename(remote.trim().replace(/\.git$/, "")) || basename(cwd);
 
-export const scopeContext = (brief: string, ledger: Ledger, opts: { readonly ui?: boolean; readonly repo: string }): ScopeContext => {
+export const scopeContext = (brief: string, ledger: Ledger, opts: { readonly ui?: boolean | undefined; readonly repo: string }): ScopeContext => {
   const text = scopeText(brief, ledger);
   const kinds: Record<string, string[]> = {};
   for (const [k, re] of Object.entries(ledger.kinds)) {
@@ -557,8 +557,6 @@ export const messageLines = (text: string, ledger: Ledger): string[] => {
 // One line per directive: its tag and the text a brief gets (his prompt, or the lead's rule), on one line.
 export const directiveLine = (e: Directive): string => squashLine(directiveText(e));
 const squashLine = (s: string): string => s.replace(/\s+/g, " ").trim();
-
-export type Waiver = { readonly id: string; readonly reason: string; readonly at: string };
 
 export type DirectivePlan = {
   // inject directives to add as text (the built-in blocks are placed by launch itself)

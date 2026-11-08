@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import { captureTmux, closeAoeSession, inputLine, isClosedLine, laneEnv, liveSessions, openAoeSession, sessionFor } from "./aoe.ts";
 import { strayTasks, taskRecords } from "./background.ts";
-import { type HandoverWatcher } from "./config.ts";
+import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
@@ -22,7 +22,7 @@ import { hasSessionSelector } from "./session-id.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
-import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, ROUND_TRIES, section, seedRestatement, wholeBullet, words } from "./restatement.ts";
+import { flat, missingHeadings, quoted, ROUND_TRIES } from "./restatement.ts";
 import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, type Signals, sessionSignals, setQuiet, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
 import { turnRunning } from "./submit.ts";
 import { watchLog } from "./watch-log.ts";
@@ -58,16 +58,16 @@ export type HandoverDeps = FlowDeps & Pick<FreezeDeps, "procs"> & {
 
 export type HandoverOptions = {
   // the approval: lead:<reason and signal>, the owner's answered card Qn, a message link or their words (rollover.ts approvalProblem); --dry-run needs none
-  readonly approvedBy?: string;
+  readonly approvedBy?: string | undefined;
   // the one-use grant freshness wrote for the run it started (DORI_HANDOVER_AUTO_GRANT): an auto: approval holds only with it
   readonly autoGrant?: string;
-  readonly title?: string;
-  readonly model?: string;
-  readonly note?: string;
+  readonly title?: string | undefined;
+  readonly model?: string | undefined;
+  readonly note?: string | undefined;
   readonly keepOld?: boolean;
   readonly dryRun?: boolean;
   readonly noMonitors?: boolean;
-  readonly verifyMin?: number;
+  readonly verifyMin?: number | undefined;
 };
 
 // A monitor command that starts work besides watching (see launchOf): why, the files its work writes, and the exact
@@ -101,12 +101,12 @@ export type HandoverFacts = {
   readonly todos: readonly string[];
   // the lead's open owner requests from dori worklog (upstream dori-superagent#96), one OPEN line each with its Next line
   readonly worklog?: WorklogFacts;
-  readonly goal?: string;
+  readonly goal?: string | undefined;
   readonly timers: readonly string[];
   readonly leadNote: string;
   readonly ownerWords: readonly OwnerWord[];
   // the old lead's conversation log, quoted by the supplements
-  readonly oldLog?: string;
+  readonly oldLog?: string | undefined;
   // the quotes in the old conversation's messages (the owner's with proof, else the lead's) that neither the summary nor the
   // owner's recent messages hold: the audit after the handover looks for the same ones (rollover.ts ownerQuotes)
   readonly quotes?: readonly Candidate[];
@@ -150,8 +150,6 @@ export const LEAD_SUMMARY_TEMPLATE = [
 ].join("\n");
 // The headings of the new lead's restatement, written before it is committed.
 export const LEAD_UNDERSTOOD_HEADINGS = ["Goal", "Owner's words", "Open lanes", "Open work", "Open cards", "Timers", "Promised follow-ups", "Decisions", "Next step", "Questions"] as const;
-// the headings the new lead writes itself; the handover fills the others in before it asks (restatement.ts seedRestatement)
-export const LEAD_OWN = ["Next step", "Questions"] as const;
 // the owner's messages the note carries: those of the last OWNER_HOURS, at most OWNER_MAX, newest last
 const OWNER_HOURS = 24;
 const OWNER_MAX = 8;
@@ -174,39 +172,8 @@ export const recentOwnerWords = (inbox: string, ids: readonly string[], now: num
   return out.slice(-OWNER_MAX);
 };
 
-const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const named = (text: string, name: string): boolean => new RegExp(`(^|[^\\w-])${escapeRe(name)}($|[^\\w-])`, "i").test(text);
-const timerUnit = (line: string): string => /(\S+\.timer)\b/.exec(line)?.[1] ?? line;
-const todoText = (todo: string): string => todo.replace(/^[^:]*:\s*/, "").replace(/\s*\((?:pending|in_progress)\)$/, "");
-
-// What the new lead's restatement left out, measured against the handover's own records (open lanes, open cards, timers,
-// todos, the old session's goal, the owner's recent messages in the inbox: all kept apart from any summary) and against
-// the old lead's summary (the owner's quoted words, decisions, promised follow-ups). An open lane, card or timer counts
-// only under its own heading.
-export const missingLeadFrom = (text: string, facts: HandoverFacts): Missing[] => {
-  if (!text.trim()) return [{ kind: "restatement", text: "the restatement file is missing or empty", under: "", source: "the handover" }];
-  const all = flat(text);
-  const out: Missing[] = missingHeadings(text, LEAD_UNDERSTOOD_HEADINGS).map((h) => ({ kind: "heading", text: `## ${h}`, under: h, source: "the restatement format" }));
-  const lanes = section(text, "Open lanes");
-  for (const l of facts.lanes) if (!named(lanes, l.key)) out.push({ kind: "open lane", text: l.key, under: "Open lanes", source: `the lane registry: ${statusOf(l)}, pane ${l.pane ?? "-"}, thread ${l.thread}, last report ${cell(l.lastReport ?? "-")}` });
-  const cards = section(text, "Open cards");
-  for (const q of facts.cards) if (!named(cards, q.id)) out.push({ kind: "open card", text: q.id, under: "Open cards", source: `the open question cards: "${cell(q.text)}" (options: ${q.options.join(" / ")}; thread ${q.thread ?? "-"}), waiting for the owner's answer` });
-  const timers = flat(section(text, "Timers"));
-  for (const t of facts.timers) if (!timers.includes(flat(timerUnit(t)))) out.push({ kind: "timer", text: timerUnit(t), under: "Timers", source: `systemctl --user list-timers: ${t}` });
-  const work = flat(section(text, "Open work"));
-  for (const t of facts.todos.map(todoText)) if (!(words(t).length >= 3 ? covered(work, t) : quoted(work, t))) out.push({ kind: "open work", text: t, under: "Open work", source: "the old session's todo list", byWords: true });
-  const goal = facts.goal?.replace(/\s*\((?:active|paused|blocked|[a-z_]+)\)$/, "").trim() ?? "";
-  if (goal && !quoted(all, goal)) out.push({ kind: "goal", text: goal, under: "Goal", source: "the old session's goal" });
-  for (const w of facts.ownerWords) if (flat(w.text).length >= 6 && !quoted(all, w.text)) out.push({ kind: "owner's words", text: w.text, under: "Owner's words", source: `the owner's message at ${w.at} (${w.where}), from the inbox` });
-  for (const q of quotesIn(section(facts.leadNote, "Owner's words and constraints"))) if (!quoted(all, q) && !out.some((m) => flat(m.text) === flat(q))) out.push({ kind: "owner's words", text: q, under: "Owner's words", source: "the old lead's summary, Owner's words and constraints" });
-  for (const d of bulletsIn(facts.leadNote, "Decisions and why")) if (!covered(all, d)) out.push({ kind: "decision", text: d, under: "Decisions", source: "the old lead's summary, Decisions and why", byWords: true, whole: wholeBullet(facts.leadNote, "Decisions and why", d) });
-  for (const d of bulletsIn(facts.leadNote, "Promised follow-ups")) if (!covered(all, d)) out.push({ kind: "promised follow-up", text: d, under: "Promised follow-ups", source: "the old lead's summary, Promised follow-ups", byWords: true, whole: wholeBullet(facts.leadNote, "Promised follow-ups", d) });
-  return out;
-};
-
 const POLL_MS = 5_000;
 export const PROBE = "HANDOVER_PROBE";
-export const UNDERSTAND = "HANDOVER_UNDERSTAND";
 
 // omo keeps each session's monitors in <session dir>/extensions/terminal/<session id>.json
 export const manifestPath = (sessionsDir: string, cwd: string, session: string): string => join(sessionDirFor(sessionsDir, cwd), "extensions", "terminal", `${session}.json`);
@@ -573,8 +540,8 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
   };
   const raw = existsSync(deps.configPath) ? (JSON.parse(readFileSync(deps.configPath, "utf8")) as Record<string, unknown> & { update?: Record<string, unknown> }) : {};
   if (existsSync(deps.configPath)) backup(deps.configPath);
-  raw.leadPane = to.pane;
-  if (raw.update?.alertPane === from.pane) raw.update.alertPane = to.pane;
+  raw["leadPane"] = to.pane;
+  if (raw.update?.["alertPane"] === from.pane) raw.update["alertPane"] = to.pane;
   writeFileSync(deps.configPath, `${JSON.stringify(raw, null, 2)}\n`);
   out.push(`HANDOVER_CONFIG leadPane ${from.pane} -> ${to.pane} in ${deps.configPath}`);
   out.push(...pointInstanceAlerts(deps, { from: from.pane, to: to.pane, stamp }));
@@ -638,7 +605,7 @@ const ackProblem = (stateDir: string, nonce: string, what: string, pane: string)
 
 type Checked = { readonly reasons: string[]; readonly session: string; readonly supplements?: readonly Supplement[] };
 
-const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, verifyMin: number, understood: string, emit: (line: string) => void): Promise<Checked> => {
+const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, verifyMin: number, _understood: string, emit: (line: string) => void): Promise<Checked> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
   let session = "";

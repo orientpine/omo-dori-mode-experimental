@@ -26,7 +26,7 @@ esac
 `, { mode: 0o700 });
   // When: run the same per-client wrapper ttyd invokes, using DORI_CONFIG.
   const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "terminal.sh")], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORI_CONFIG: join(dir, "config.json"), DORI_LEAD_PANE: undefined },
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORI_CONFIG: join(dir, "config.json"), DORI_LEAD_PANE: undefined },
     stdout: "pipe", stderr: "pipe",
   });
   const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);

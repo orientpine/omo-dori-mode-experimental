@@ -27,14 +27,14 @@ const positive = (value: string | undefined, fallback: number): number => {
   return n;
 };
 export const googleOptions = (env: Record<string, string | undefined>): GoogleOptions => {
-  const out = env.DORI_GOOGLE_EVENTS || join(env.DORI_STATE_DIR || join(homedir(), ".dori", "state"), "google-events.jsonl");
+  const out = env["DORI_GOOGLE_EVENTS"] || join(env["DORI_STATE_DIR"] || join(homedir(), ".dori", "state"), "google-events.jsonl");
   return {
-    account: env.DORI_GOOGLE_ACCOUNT || "",
+    account: env["DORI_GOOGLE_ACCOUNT"] || "",
     out,
-    state: env.DORI_GOOGLE_STATE || join(dirname(out), "google-watch.state.json"),
-    intervalMs: positive(env.DORI_GOOGLE_INTERVAL_MS, 120_000),
-    windowMin: positive(env.DORI_GOOGLE_WINDOW_MIN, 35),
-    timeZone: env.DORI_GOOGLE_TIME_ZONE || "UTC",
+    state: env["DORI_GOOGLE_STATE"] || join(dirname(out), "google-watch.state.json"),
+    intervalMs: positive(env["DORI_GOOGLE_INTERVAL_MS"], 120_000),
+    windowMin: positive(env["DORI_GOOGLE_WINDOW_MIN"], 35),
+    timeZone: env["DORI_GOOGLE_TIME_ZONE"] || "UTC",
   };
 };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
@@ -55,8 +55,8 @@ const localDay = (at: Date, timeZone: string): { day: string; ymd: string } => {
   return { day: WEEKDAYS[part("weekday")] ?? "", ymd: `${part("year")}${part("month")}${part("day")}` };
 };
 export const recurringStart = (e: Item, details: Doc, first: Date, now: Date, until: Date, timeZone: string): Date | null => {
-  if (String(details.start ?? "") !== String(e.start ?? "")) return null;
-  const rules = Array.isArray(details.recurrence) ? details.recurrence.map(String) : [];
+  if (String(details["start"] ?? "") !== String(e["start"] ?? "")) return null;
+  const rules = Array.isArray(details["recurrence"]) ? details["recurrence"].map(String) : [];
   const rule = rules.find((r) => r.startsWith("RRULE:"));
   if (!rule) return null;
   const p = Object.fromEntries(rule.slice(6).split(";").map((kv) => kv.split("=")));
@@ -80,27 +80,27 @@ export async function googleTick(options: GoogleOptions, state: GoogleState, run
     if (r.code !== 0) throw new Error(`zele ${args.slice(0, 2).join(" ")} failed: ${r.err.slice(0, 200)}`);
     return doc(Bun.YAML.parse(r.out));
   };
-  const items = (d: Doc): Item[] => Array.isArray(d.items) ? d.items.flatMap((value: unknown) => {
+  const items = (d: Doc): Item[] => Array.isArray(d["items"]) ? d["items"].flatMap((value: unknown) => {
     const item = doc(value);
-    return typeof item.id === "string" ? [{ ...item, id: item.id }] : [];
+    return typeof item["id"] === "string" ? [{ ...item, id: item["id"] }] : [];
   }) : [];
   for (const m of items(await zele(["mail", "list", "--filter", "is:unread", "--limit", "30"]))) {
     if (state.mail.includes(m.id)) continue;
     state.mail.push(m.id);
-    if (state.primed) emit({ kind: "mail", id: m.id, from: m.from, subject: m.subject, snippet: String(m.snippet ?? "").slice(0, 200) });
+    if (state.primed) emit({ kind: "mail", id: m.id, from: m["from"], subject: m["subject"], snippet: String(m["snippet"] ?? "").slice(0, 200) });
   }
   state.mail = state.mail.slice(-500);
   const until = new Date(now.getTime() + options.windowMin * 60_000);
   for (const e of items(await zele(["cal", "events", "--all", "--from", now.toISOString(), "--to", `+${options.windowMin}m`, "--limit", "20"]))) {
-    const first = parseStart(String(e.start ?? ""), now);
+    const first = parseStart(String(e["start"] ?? ""), now);
     if (!first) continue;
     const direct = first >= now && first <= until;
-    const at = direct ? first : recurringStart(e, await zele(["cal", "get", e.id, ...(e.calendar ? ["--calendar", String(e.calendar)] : [])]), first, now, until, options.timeZone);
+    const at = direct ? first : recurringStart(e, await zele(["cal", "get", e.id, ...(e["calendar"] ? ["--calendar", String(e["calendar"])] : [])]), first, now, until, options.timeZone);
     if (!at) continue;
     const key = `${e.id}|${at.toISOString()}`;
     if (state.cal.includes(key)) continue;
     state.cal.push(key);
-    emit({ kind: "calendar-soon", id: e.id, summary: e.summary, start: fmtUtc(at), start_iso: at.toISOString(), end: e.end, recurring: !direct });
+    emit({ kind: "calendar-soon", id: e.id, summary: e["summary"], start: fmtUtc(at), start_iso: at.toISOString(), end: e["end"], recurring: !direct });
   }
   state.cal = state.cal.slice(-500);
   state.primed = true;
@@ -111,9 +111,9 @@ if (import.meta.main) {
   const options = googleOptions(process.env);
   const raw = existsSync(options.state) ? doc(JSON.parse(readFileSync(options.state, "utf8"))) : {};
   const state: GoogleState = {
-    mail: Array.isArray(raw.mail) ? raw.mail.map(String) : [],
-    cal: Array.isArray(raw.cal) ? raw.cal.map(String) : [],
-    primed: raw.primed === true,
+    mail: Array.isArray(raw["mail"]) ? raw["mail"].map(String) : [],
+    cal: Array.isArray(raw["cal"]) ? raw["cal"].map(String) : [],
+    primed: raw["primed"] === true,
   };
   for (const file of [options.out, options.state]) mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const tick = async () => {

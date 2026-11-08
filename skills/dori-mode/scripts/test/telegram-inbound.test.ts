@@ -57,7 +57,7 @@ test("owner DMs pass, non-owner and bot messages drop, offset still advances", a
   expect(out[0]!.updateId).toBe(10);
   // Offset persisted past ALL updates, including the dropped ones — no replay, no loss.
   expect(store.load()).toBe(13);
-  expect(bodies[0]!.offset).toBe(0);
+  expect(bodies[0]!["offset"]).toBe(0);
 });
 
 test("configured topic passes, other topics and other groups drop", async () => {
@@ -122,11 +122,11 @@ test("restart resumes from the persisted offset", async () => {
   store.save(60); // what a previous run persisted
   const first = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(first.length).toBe(0);
-  expect(bodies[0]!.offset).toBe(60);
+  expect(bodies[0]!["offset"]).toBe(60);
   const second = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(second.length).toBe(1);
   expect(second[0]!.updateId).toBe(60);
-  expect(bodies[1]!.offset).toBe(60);
+  expect(bodies[1]!["offset"]).toBe(60);
   expect(store.load()).toBe(61);
 });
 
@@ -160,7 +160,7 @@ test("a crash mid-emit replays the unprinted message, not the printed one", asyn
   const out3 = await pollTelegramInbound(mk(http), store, { ownerId: OWNER }, (i) => seen3.push(i.text ?? ""));
   expect(seen3).toEqual(["second", "third"]);
   expect(out3.map((i) => i.updateId)).toEqual([71, 72]);
-  expect(bodies[2]!.offset).toBe(71);
+  expect(bodies[2]!["offset"]).toBe(71);
   expect(store.load()).toBe(73);
 });
 
@@ -246,7 +246,7 @@ test("edited messages arrive as their own edit kind with the edited text", async
   expect(out[0]!.kind).toBe("edit");
   expect(out[0]!.text).toBe("fixed typo");
   expect(store.load()).toBe(91);
-  expect(bodies[0]!.allowed_updates).toEqual(["message", "edited_message"]);
+  expect(bodies[0]!["allowed_updates"]).toEqual(["message", "edited_message"]);
   const second = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(second[0]!.kind).toBe("message");
 });

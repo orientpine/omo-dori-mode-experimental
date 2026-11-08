@@ -239,6 +239,7 @@ cd skills/dori-mode/scripts
 bun install
 bun test           # 偽の herdr、aoe、tmux、git、gh、Discord HTTP/ゲートウェイで動作を確認
 bunx tsc --noEmit  # 型チェック
+bun run ci         # biome lint、厳格な型チェック、knip、250 行チェック、続いてテスト
 ```
 
 両バックエンド、起動と報告の送信、freshness、停止したレーン、完了フロー、Discord カードと状態をテストします。外部ツールと Discord HTTP/ゲートウェイは偽物に置き換え、本物の pane、リポジトリ、GitHub、Discord アカウントには触れません。

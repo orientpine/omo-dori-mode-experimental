@@ -34,7 +34,7 @@ export type TreeNode = {
   readonly source: string;
 };
 export type Tree = { readonly area: string; readonly nodes: readonly TreeNode[] };
-export type TreeArea = { readonly cwd?: string; readonly tag?: string };
+export type TreeArea = { readonly cwd?: string; readonly tag?: string | undefined };
 
 export const NODE_KINDS: readonly NodeKind[] = ["hypothesis", "direction", "tried", "finding", "research"];
 const PREFIX: Record<NodeKind, string> = { hypothesis: "H", direction: "D", tried: "T", finding: "F", research: "R" };
@@ -66,7 +66,7 @@ export const saveTree = async (stateDir: string, a: TreeArea, tree: Tree): Promi
   renameSync(tmp, path);
 };
 
-export type NodeInput = { readonly kind: NodeKind; readonly text: string; readonly test?: string; readonly metric?: string; readonly lane?: string; readonly source: string; readonly status?: NodeStatus; readonly result?: string };
+export type NodeInput = { readonly kind: NodeKind; readonly text: string; readonly test?: string | undefined; readonly metric?: string | undefined; readonly lane?: string | undefined; readonly source: string; readonly status?: NodeStatus; readonly result?: string | undefined };
 
 // Adds a node, or returns the same node when one of that kind already says the same thing (a test it lacked is filled in).
 export const addNode = (tree: Tree, input: NodeInput, at: string): { readonly tree: Tree; readonly node: TreeNode; readonly added: boolean } => {
@@ -181,7 +181,7 @@ export const attemptTimes = (fixes: readonly FixAttempt[], metric: string): stri
   return times;
 };
 
-export type GateInput = { readonly hypotheses: readonly string[]; readonly tests: readonly string[]; readonly override?: string };
+export type GateInput = { readonly hypotheses: readonly string[]; readonly tests: readonly string[]; readonly override?: string | undefined };
 export type Gate = { readonly verdict: "ok" | "branch" | "override" | "required"; readonly attempt: number; readonly problem?: string };
 
 // Rung 2 as dori fix-attempt enforces it: from stuck.hypothesesAt failed attempts on one metric (the tagged count with this
@@ -548,8 +548,8 @@ const SHELL_VAR = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|n
 const SHELL_READ = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|nl|awk)\b[^\n;&|`]*?[\s"'][^\s"';&|`]*ulw-research\/SKILL\.md(?![\w.-])/;
 export const skillRead = (name: string | undefined, args: unknown): boolean => {
   const a = (args ?? {}) as Record<string, unknown>;
-  if (name?.toLowerCase() === "read") return [a.path, a.file_path, a.filePath].some((p) => typeof p === "string" && SKILL_PATH.test(p));
-  const code = [a.code, a.command, a.cmd].find((c): c is string => typeof c === "string");
+  if (name?.toLowerCase() === "read") return [a["path"], a["file_path"], a["filePath"]].some((p) => typeof p === "string" && SKILL_PATH.test(p));
+  const code = [a["code"], a["command"], a["cmd"]].find((c): c is string => typeof c === "string");
   if (!code) return false;
   return (SKILL_LITERAL.test(code) && (READ_API.test(code) || SHELL_VAR.test(code))) || SHELL_READ.test(code);
 };

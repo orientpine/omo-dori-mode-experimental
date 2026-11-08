@@ -194,11 +194,11 @@ test("a restore right after an update, before any commit, uses the new excludes"
 test("restore by a time in the owner's time zone takes the last commit before it", async () => {
   // Given: an evening commit (KST) and a broken one after it
   put("lanes/x.json", "evening\n");
-  process.env.GIT_COMMITTER_DATE = "2026-10-16T20:00:00+09:00";
+  process.env["GIT_COMMITTER_DATE"] = "2026-10-16T20:00:00+09:00";
   try {
     await commitDir(deps(), dir);
   } finally {
-    delete process.env.GIT_COMMITTER_DATE;
+    delete process.env["GIT_COMMITTER_DATE"];
   }
   put("lanes/x.json", "broken\n");
   await commitDir(deps(), dir);

@@ -126,7 +126,7 @@ export type ChallengeResult = { readonly reviews: readonly Review[]; readonly fa
 // all three sections; with all, goes on until each family in the list has written one. One that answers without the
 // sections gets one stricter retry; if that still lacks them both replies are saved as <time>-<model>-raw.md and the
 // next reviewer is asked.
-export const runChallenge = async (deps: FlowDeps, lane: Lane, planFile: string, opts: { readonly model?: string; readonly all?: boolean } = {}): Promise<ChallengeResult> => {
+export const runChallenge = async (deps: FlowDeps, lane: Lane, planFile: string, opts: { readonly model?: string | undefined; readonly all?: boolean } = {}): Promise<ChallengeResult> => {
   const file = Bun.file(planFile);
   if (!(await file.exists())) throw new ChallengeError(`plan not found: ${planFile}`);
   const plan = (await file.text()).trim();

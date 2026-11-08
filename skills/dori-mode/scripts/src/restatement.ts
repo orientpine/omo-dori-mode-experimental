@@ -9,14 +9,14 @@ import type { Supplement } from "./rollover.ts";
 // What a restatement left out: the item, the heading it goes under ("" for the whole file) and where the handover got it.
 // Items matched by words (a decision, a promise) are found in the old log by their longest words, the others by their text.
 // whole: the bullet as the summary wrote it, its "Why: ..." tail included (text is what the check looks for)
-export type Missing = { readonly kind: string; readonly text: string; readonly under: string; readonly source: string; readonly byWords?: boolean; readonly whole?: string };
+export type Missing = { readonly kind: string; readonly text: string; readonly under: string; readonly source: string; readonly byWords?: boolean; readonly whole?: string | undefined };
 
-const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-export const missingHeadings = (text: string, headings: readonly string[]): string[] => headings.filter((h) => !new RegExp(`^##\\s+${escape(h)}\\s*$`, "mi").test(text));
+export const missingHeadings = (text: string, headings: readonly string[]): string[] => headings.filter((h) => !new RegExp(`^##\\s+${escapeRegExp(h)}\\s*$`, "mi").test(text));
 
 export const section = (text: string, heading: string): string => {
-  const m = new RegExp(`^##\\s+${escape(heading)}\\s*$([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "mi").exec(text);
+  const m = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "mi").exec(text);
   return m?.[1]?.trim() ?? "";
 };
 
@@ -100,31 +100,6 @@ const renderSupplement = (who: string, round: number, rounds: number, items: rea
     ]),
   ].join("\n");
 
-// The restatement as the handover starts it, before the new session writes: under each heading the items its own check
-// asks for (from the handover's records and the old session's summary), word for word. A new session that restated from
-// scratch translated and shortened them: GongDori's e7-ledger-replay (2026-10-27) wrote its restatement in Korean over a
-// summary whose 31 decisions were English, and 35 decisions and owner quotes came back in two supplement rounds. The new
-// session keeps these lines, adds what it understood and writes the headings left to it (own: its next step, its questions).
-export const SEEDED = "(carried by the handover, word for word: keep these lines as they are, in their own language; add what you understood below them)";
-const LISTED = new Set(["open lane", "open card", "timer"]);
-const QUOTED = new Set(["owner's words", "owner goal", "goal"]);
-export const seedRestatement = (title: string, headings: readonly string[], own: readonly string[], check: (text: string) => Missing[]): string => {
-  const items = check(headings.map((h) => `## ${h}\n`).join("\n")).filter((m) => m.under && m.kind !== "heading");
-  // quotes stay quoted; the rest is a bullet, an open lane, card or timer with what the records say of it
-  const line = (m: Missing): string => (QUOTED.has(m.kind) ? `- "${m.text}"` : `- ${m.whole ?? m.text}${LISTED.has(m.kind) ? ` (${m.source})` : ""}`);
-  return [
-    `# ${title}`,
-    "",
-    ...headings.flatMap((h) => {
-      if (own.includes(h)) return [];
-      const here = items.filter((m) => m.under === h);
-      return [`## ${h}`, ...(here.length ? [SEEDED, ...here.map(line)] : ["(nothing in the handover's records; add yours)"]), ""];
-    }),
-    `(write ${own.map((h) => `## ${h}`).join(" and ")} yourself)`,
-    "",
-  ].join("\n");
-};
-
 export const fmtMissing = (items: readonly Missing[]): string => items.map((it) => `${it.kind}: ${it.text.replace(/\s+/g, " ").slice(0, 80)}`).join("; ");
 
 export type GapDeps = {
@@ -138,7 +113,7 @@ export type GapDeps = {
 
 // label names the round files (<stamp>.<label>-<round>.md; "supplement" by default) and extra is one more sentence for the
 // new session, said in the [LEAD] line and the file (the audit after the commit asks it to write standing items down); tries is how many polls one round waits (ROUND_TRIES)
-export type GapRun = { readonly who: string; readonly pane: string; readonly understood: string; readonly headings: readonly string[]; readonly rounds: number; readonly oldLog?: string; readonly check: (text: string) => Missing[]; readonly emit: (line: string) => void; readonly label?: string; readonly extra?: string; readonly tries?: number };
+export type GapRun = { readonly who: string; readonly pane: string; readonly understood: string; readonly headings: readonly string[]; readonly rounds: number; readonly oldLog?: string | undefined; readonly check: (text: string) => Missing[]; readonly emit: (line: string) => void; readonly label?: string; readonly extra?: string; readonly tries?: number };
 
 const POLL_MS = 5_000;
 // how long the new session gets to answer one supplement round (polls of POLL_MS)

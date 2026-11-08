@@ -159,14 +159,14 @@ export const postedIds = (text: string): string[] => [...text.matchAll(/\b(?:SEN
 const linkedIds = (text: string): string[] => [...text.matchAll(/discord(?:app)?\.com\/channels\/\d+\/\d+\/(\d+)/g)].map((m) => m[1] ?? "");
 
 // the inbox the listener writes (the same file handover probes): handover.inbox, DORI_DISCORD_INBOX, <stateDir>/discord
-const inboxPath = (config: FlowDeps["config"]): string => config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+const inboxPath = (config: FlowDeps["config"]): string => config.handover.inbox || process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
 
 // Whether the lane claimed done, from the registry: a report that names `dori claim-done` or quotes the footer is not a claim.
 export const doneClaimFact = (lane: Pick<Lane, "claim" | "status" | "closedAt">): string =>
   lane.claim ? `the lane claimed done at ${lane.claim.at} (status ${lane.status ?? "working"}): ${lane.claim.evidence.slice(0, 300)}` : `none: the lane has not run dori claim-done (status ${lane.closedAt ? "closed" : (lane.status ?? "working")})`;
 
 // the question cards dori ask wrote (message id, asking pane): DORI_DISCORD_STATE_DIR, else <stateDir>/discord
-const cardsPath = (config: FlowDeps["config"]): string => join(process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord"), "questions.json");
+const cardsPath = (config: FlowDeps["config"]): string => join(process.env["DORI_DISCORD_STATE_DIR"]?.trim() || join(config.stateDir, "discord"), "questions.json");
 
 // shared: the owner's messages in the lane's thread that are tied to no lane while other lanes share the thread (context
 // only: never an instruction to this lane)
@@ -255,7 +255,7 @@ export type Dropped = { readonly finding: OwnerFinding; readonly why: "UNGROUNDE
 // briefSource: the whole brief, which a CONTRADICTION may also quote (a fact or state the brief gives). checkedAt: when the
 // last check ran (a direction stated before it was read by it).
 // shared: the owner's messages in the thread not tied to this lane (a finding on one is dropped as SHARED, with its why).
-export const groundFindings = (findings: readonly OwnerFinding[], src: { readonly ownerSource: string; readonly briefSource?: string; readonly reports: readonly ReportLine[]; readonly direction?: Lane["direction"]; readonly checkedUpTo?: string; readonly checkedAt?: string; readonly shared?: readonly TiedDecision[] }): { readonly kept: OwnerFinding[]; readonly dropped: Dropped[] } => {
+export const groundFindings = (findings: readonly OwnerFinding[], src: { readonly ownerSource: string; readonly briefSource?: string; readonly reports: readonly ReportLine[]; readonly direction?: Lane["direction"]; readonly checkedUpTo?: string | undefined; readonly checkedAt?: string | undefined; readonly shared?: readonly TiedDecision[] }): { readonly kept: OwnerFinding[]; readonly dropped: Dropped[] } => {
   const kept: OwnerFinding[] = [];
   const dropped: Dropped[] = [];
   const said = src.direction?.text ? [src.direction.text, src.direction.next ?? ""].join("\n") : "";
@@ -320,7 +320,7 @@ export const runIntentCheck = async (deps: FlowDeps, lane: Lane, opts: { readonl
   const relays = ownerRelays(await readLeadRelays(laneFiles, since), cfg.relays);
   const inboxFile = Bun.file(opts.inbox ?? inboxPath(deps.config));
   const inbox = (await inboxFile.exists()) ? await inboxFile.text() : "";
-  const owner = opts.owner ?? process.env.DORI_DISCORD_OWNER?.trim() ?? "";
+  const owner = opts.owner ?? process.env["DORI_DISCORD_OWNER"]?.trim() ?? "";
   // the owner's messages in the thread since the lane opened; while other lanes share the thread, only those tied to this
   // lane are its decisions (and owner words), those tied to none are shown as context, those for another lane are left out
   const inThread = ownerDecisions(inbox, lane.thread, owner, lane.openedAt, Number.POSITIVE_INFINITY);

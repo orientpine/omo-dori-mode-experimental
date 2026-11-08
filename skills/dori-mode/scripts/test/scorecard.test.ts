@@ -16,7 +16,7 @@ afterEach(() => state.done());
 const OWNER = "100000000000000009";
 const usage = (cost: number, cacheRead = 0, context = 0) => ({ input: 1, output: 10, cacheRead: context, cacheWrite: 0, cost: { total: cost, cacheRead } });
 const assistant = (ts: string, cost: number, extra: Record<string, unknown> = {}, content: unknown[] = []) =>
-  JSON.stringify({ type: "message", timestamp: ts, message: { role: "assistant", usage: usage(cost, Number(extra.cacheRead ?? 0), Number(extra.context ?? 0)), content } });
+  JSON.stringify({ type: "message", timestamp: ts, message: { role: "assistant", usage: usage(cost, Number(extra["cacheRead"] ?? 0), Number(extra["context"] ?? 0)), content } });
 const send = (pane: string) => ({ type: "toolCall", arguments: { code: `await run(["tmux","send-keys","-t","=${pane}:","-l","--","[LEAD] try again"])` } });
 const event = (ts: string, id: string) => JSON.stringify({ type: "custom_message", timestamp: ts, content: `inbox row id=${id}` });
 const posted = (ts: string, text: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "toolResult", content: [{ type: "text", text }] } });

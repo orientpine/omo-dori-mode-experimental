@@ -9,7 +9,6 @@ import type { Lane } from "./registry.ts";
 import { sessionStart } from "./rollover.ts";
 import { iso, type Runner } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
-import { watchLog } from "./watch-log.ts";
 
 // Untagged repeat detection: the inferred half of the stuck ladder's count. The tagged half counts only fixes a lane tags
 // "(fix: metric / hypothesis)" or the lead records with dori fix-attempt, and lanes rarely tag. This reads what a lane leaves
@@ -63,7 +62,7 @@ const SEGMENT = /\n|(?<=[.!?。])\s+(?=[A-Z가-힣(*])|\s[—–-]\s|\s?→\s?/u
 // The metrics a text says failed: "교착 554 FAIL(≤2)" (the item that holds the verdict) and "FAIL 도랑 위 덤프 1·교착 58"
 // or "FAIL: 교착 136, 깊음 0" (the items after a bare FAIL that carry no verdict of their own).
 export const failedMetrics = (text: string, cfg: Pick<AutoSignals, "failPattern" | "passPattern" | "conditionWords">): string[] => {
-  const fail = re(cfg.failPattern);
+  re(cfg.failPattern); // a bad failPattern still throws here, as before; this scan matches passPattern only
   const pass = re(cfg.passPattern);
   const out = new Set<string>();
   for (const segment of text.split(SEGMENT)) {
@@ -233,7 +232,7 @@ const strings = (v: unknown, out: string[] = []): string[] => {
   return out;
 };
 
-const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // one report told twice (the lane's typing and the lead's copy, or a template still holding ${kst()}) is one report
 export const reportKey = (text: string): string => text.replace(/\$\{[^}]*\}|\{kst\(\)\}/g, "").replace(/\d{1,2}:\d\d(?::\d\d)? ?KST/g, "").replace(/^[^\p{L}\p{N}]*(?:진행|progress)[^\p{L}\p{N}]*/iu, "").replace(/\s+/g, " ").trim().slice(0, 200);
@@ -253,7 +252,7 @@ const reportStrings = (e: Entry): string[] => {
 // [REPORT] <key> lines in session files (the lane's own tool calls that typed them, and the lead's copy), oldest first.
 // Files not written since `since` are skipped.
 export const readReports = async (files: readonly string[], key: string, since = 0): Promise<ReportLine[]> => {
-  const grammar = new RegExp(`\\[REPORT\\] ${escape(key)} \\| (?:milestone|blocker|question|done) \\| (?!<)([^\\n"]{1,2000})`, "g");
+  const grammar = new RegExp(`\\[REPORT\\] ${escapeRegExp(key)} \\| (?:milestone|blocker|question|done) \\| (?!<)([^\\n"]{1,2000})`, "g");
   const seen = new Map<string, ReportLine>();
   for (const f of files) {
     if ((statSync(f, { throwIfNoEntry: false })?.mtimeMs ?? 0) < since) continue;
@@ -341,7 +340,7 @@ export const repoDirs = (lane: Pick<Lane, "worktrees" | "cwd">, extra: readonly 
 export type LaneScan = { readonly events: readonly LaneEvent[]; readonly reports: number; readonly commits: number; readonly tree: number };
 
 // Everything the lane left since `since`: its reports, the commits on its branches and its tree entries.
-export const laneEvents = async (deps: FlowDeps, lane: Lane, opts: { readonly since: string; readonly until?: string; readonly repos?: readonly string[]; readonly files?: readonly string[] }): Promise<LaneScan> => {
+export const laneEvents = async (deps: FlowDeps, lane: Lane, opts: { readonly since: string; readonly until?: string | undefined; readonly repos?: readonly string[]; readonly files?: readonly string[] }): Promise<LaneScan> => {
   const sinceMs = Date.parse(opts.since) || 0;
   const until = opts.until ?? "9999";
   const reports = (await readReports(opts.files ?? laneSessionFiles(deps.config, lane), lane.key, sinceMs)).filter((r) => r.at <= until);

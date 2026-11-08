@@ -187,21 +187,21 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
     const p = resolve(job.cwd, first);
     if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`);
     if (inProgramDirs(p)) needs.add(p);
-  } else if (job.env.PATH !== undefined) {
+  } else if (job.env["PATH"] !== undefined) {
     // --env PATH is the box's PATH too: a command in a --sync path travels, one in a system folder is looked up by the
     // helper on that same PATH (it may sit in another of its folders there)
-    const at = Bun.which(first, { PATH: job.env.PATH, cwd: job.cwd });
+    const at = Bun.which(first, { PATH: job.env["PATH"], cwd: job.cwd });
     if (at && !covered(at)) return no(`the command ${first} is ${at} on the job's --env PATH, which is not in a --sync path`);
     if (at && !sync.some((s) => within(at, s))) which.add(first);
   } else {
     // the box's own bun and tools, or a system folder: the helper looks the name up on its box PATH
-    const here = Bun.which(first, { PATH: who.path ?? process.env.PATH ?? "", cwd: job.cwd });
+    const here = Bun.which(first, { PATH: who.path ?? process.env["PATH"] ?? "", cwd: job.cwd });
     if (BOX_PROGRAMS.has(first) || Bun.which(first, { PATH: BOX_SYSTEM_PATH })) which.add(first);
     else if (here) return no(`the command ${first} is ${here}, which is in no --sync path and no system folder, so a helper has none`);
   }
   // the helper looks the names up from /, the job from its own folder: relative and empty PATH entries go as that folder's,
   // unnormalized (a/../b is not b when a is missing), and absolute ones as written
-  const path = which.size && job.env.PATH !== undefined ? job.env.PATH.split(":").map((d) => (d.startsWith("/") ? d : d === "" ? job.cwd : `${job.cwd}/${d}`)).join(":") : undefined;
+  const path = which.size && job.env["PATH"] !== undefined ? job.env["PATH"].split(":").map((d) => (d.startsWith("/") ? d : d === "" ? job.cwd : `${job.cwd}/${d}`)).join(":") : undefined;
   if (path !== undefined && !BOX_PATH_OK.test(path)) return no(`the job's --env PATH ${JSON.stringify(path.slice(0, 80))} cannot be sent to a helper for its lookup`);
   const odd = [...needs].find((p) => !NEED_PATH.test(p) || p.split("/").includes(".."));
   if (odd !== undefined) return no(`the job starts ${JSON.stringify(odd)}, a path a helper cannot be asked about`);
@@ -606,6 +606,6 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
 
 export const defaultTools = (): BoxTools => ({
   bunDir: dirname(process.execPath),
-  browsersDir: process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(), ".cache", "ms-playwright"),
+  browsersDir: process.env["PLAYWRIGHT_BROWSERS_PATH"] || join(homedir(), ".cache", "ms-playwright"),
   toolsDir: join(homedir(), ".local", "share", "dori-heavy", "tools"),
 });

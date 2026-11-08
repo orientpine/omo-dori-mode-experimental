@@ -28,7 +28,7 @@ test("Google watcher primes mail, emits new mail and calendar only once, and sco
   await googleTick(options, state, runner, now, (r) => rows.push(r));
   await googleTick(options, state, runner, now, (r) => rows.push(r));
   expect({
-    rows: rows.map((r) => [r.kind, r.id, r.start_iso ?? r.subject]),
+    rows: rows.map((r) => [r["kind"], r["id"], r["start_iso"] ?? r["subject"]]),
     state,
     accounts: calls.map((c) => c.slice(-2)),
     windows: calls.filter((c) => c[1] === "cal").map((c) => c[c.indexOf("--to") + 1]),

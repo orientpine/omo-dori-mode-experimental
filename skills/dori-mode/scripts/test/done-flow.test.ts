@@ -191,16 +191,16 @@ test("a dangling .git symlink holds the lane, and a GIT_DIR in the watcher's env
   expect((await run(["git", "-C", repo, "add", "a.txt"])).code).toBe(0);
   expect((await run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"])).code).toBe(0);
   writeFileSync(join(repo, "a.txt"), "two\n");
-  const saved = process.env.GIT_DIR;
-  process.env.GIT_DIR = join(state.dir, "nowhere");
+  const saved = process.env["GIT_DIR"];
+  process.env["GIT_DIR"] = join(state.dir, "nowhere");
   try {
     expect(await unpushedWork(realDeps, { ...lane, cwd: repo })).toEqual([`unpushed work in ${repo}`]);
     // the lane's own worktree, found by its name, is still found: the human's dirty checkout does not hold the lane
     expect((await run(["git", "-C", repo, "worktree", "add", "-q", "-b", "demo-lane", join(state.dir, "wt", "demo-lane")], { env: { GIT_DIR: undefined } })).code).toBe(0);
     expect(await unpushedWork(realDeps, { ...lane, cwd: repo })).toEqual([`unpushed work in ${join(state.dir, "wt", "demo-lane")}`]);
   } finally {
-    if (saved === undefined) delete process.env.GIT_DIR;
-    else process.env.GIT_DIR = saved;
+    if (saved === undefined) delete process.env["GIT_DIR"];
+    else process.env["GIT_DIR"] = saved;
   }
 });
 

@@ -17,7 +17,7 @@ const offsetMs = (timeZone: string, at: number): number => {
       .formatToParts(new Date(at))
       .map((p) => [p.type, p.value]),
   );
-  return Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second)) - Math.floor(at / 1000) * 1000;
+  return Date.UTC(Number(parts["year"]), Number(parts["month"]) - 1, Number(parts["day"]), Number(parts["hour"]), Number(parts["minute"]), Number(parts["second"])) - Math.floor(at / 1000) * 1000;
 };
 
 const localMidnight = (y: number, m: number, d: number, timeZone: string): number => {
@@ -115,7 +115,7 @@ const readText = async (path: string): Promise<string | null> => {
   return (await f.exists()) ? f.text() : null;
 };
 
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export const computeScorecard = async (src: ScorecardSources, window: DayWindow): Promise<ScorecardData> => {
   const inDay = (t: number) => t >= window.start && t < window.end;
@@ -154,7 +154,7 @@ export const computeScorecard = async (src: ScorecardSources, window: DayWindow)
   for (const f of leadFiles) lead.push(...parseLines(await Bun.file(f).text(), (l) => !/"timestamp":"(\d{4}-\d\d-\d\d)/.test(l) || ms(/"timestamp":"([^"]+)"/.exec(l)?.[1]) >= window.start - 3_600_000));
   lead.sort((a, b) => ms(a.timestamp) - ms(b.timestamp));
 
-  const sendPatterns = src.lanes.flatMap((l) => (l.pane ? [{ key: l.key, re: new RegExp(src.settings.leadSendPattern.replaceAll("{pane}", escape(l.pane)), "g") }] : []));
+  const sendPatterns = src.lanes.flatMap((l) => (l.pane ? [{ key: l.key, re: new RegExp(src.settings.leadSendPattern.replaceAll("{pane}", escapeRegExp(l.pane)), "g") }] : []));
   const sends = new Map<string, number>();
   let leadCost = 0;
   let cacheReadCost = 0;

@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 
 import { canonical } from "./auto-signals.ts";
 import { type AutoSignals, type DoriConfig, expandHome } from "./config.ts";
@@ -38,7 +38,7 @@ export const claimEvents = (lane: Lane): ClaimEvent[] => {
 // the key's first word is always a tag: rl-e7 is in rl
 export const tagsOf = (lane: Pick<Lane, "key" | "tags">): string[] => [...new Set([lane.key.split(/[-_.]/)[0] ?? lane.key, ...(lane.tags ?? [])])];
 
-export type AreaQuery = { readonly lane?: string; readonly cwd?: string; readonly tags?: readonly string[] };
+export type AreaQuery = { readonly lane?: string | undefined; readonly cwd?: string; readonly tags?: readonly string[] };
 
 export const inArea = (lane: Lane, q: AreaQuery, home = homedir()): boolean =>
   (q.lane !== undefined && lane.key === q.lane) ||
@@ -60,7 +60,7 @@ export type LogSources = {
 
 export type LaneLogs = { readonly mentions: readonly Mention[]; readonly sends: number; readonly nudges: number };
 
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const strings = (v: unknown, out: string[] = []): string[] => {
   if (typeof v === "string") out.push(v);
@@ -73,13 +73,13 @@ type Entry = { readonly type?: string; readonly timestamp?: string; readonly con
 
 // The lead's messages to a lane, as the lead's tool calls typed them: the text from [LEAD] up to the end of the string.
 const leadTexts = (code: string, pane: string): string[] =>
-  [...code.matchAll(new RegExp(`${escape(pane)}[^\\[]{0,80}(\\[LEAD\\][\\s\\S]{0,600})`, "g"))].map((m) => (m[1] ?? "").split(/["'`]\s*[,)\]]/)[0] ?? "");
+  [...code.matchAll(new RegExp(`${escapeRegExp(pane)}[^\\[]{0,80}(\\[LEAD\\][\\s\\S]{0,600})`, "g"))].map((m) => (m[1] ?? "").split(/["'`]\s*[,)\]]/)[0] ?? "");
 
 // Reads the logs once for many lanes. Session files not written to since `since` are skipped.
 export const readLaneLogs = async (lanes: readonly Lane[], src: LogSources, since = 0): Promise<Map<string, LaneLogs>> => {
   const acc = new Map(lanes.map((l) => [l.key, { mentions: new Map<string, Mention>(), sends: 0, nudges: 0 }]));
-  const reportRe = lanes.map((l) => ({ key: l.key, re: new RegExp(`\\[REPORT\\] ${escape(l.key)} \\| (?:milestone|blocker|question|done) \\| (?!<)([^\\n]+)`, "g") }));
-  const panes = lanes.flatMap((l) => (l.pane ? [{ key: l.key, pane: l.pane, send: new RegExp(src.sendPattern.replaceAll("{pane}", escape(l.pane)), "g") }] : []));
+  const reportRe = lanes.map((l) => ({ key: l.key, re: new RegExp(`\\[REPORT\\] ${escapeRegExp(l.key)} \\| (?:milestone|blocker|question|done) \\| (?!<)([^\\n]+)`, "g") }));
+  const panes = lanes.flatMap((l) => (l.pane ? [{ key: l.key, pane: l.pane, send: new RegExp(src.sendPattern.replaceAll("{pane}", escapeRegExp(l.pane)), "g") }] : []));
   let files: string[] = [];
   try {
     files = leadSessionFiles(src.leadSessions, src.stateDir);

@@ -3,14 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "dori": "./src/cli.ts" },
+  "bin": {
+    "dori": "./src/cli.ts"
+  },
   "scripts": {
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check": "biome check .",
+    "knip": "knip",
+    "lint:loc": "bun check-loc.ts",
+    "ci": "bun run check && bun run typecheck && bun run knip && bun run lint:loc && bun test"
   },
-  "engines": { "bun": ">=1.3.0" },
+  "engines": {
+    "bun": ">=1.4.2"
+  },
   "devDependencies": {
-    "@types/bun": "^1.3.0",
+    "@biomejs/biome": "^2.6.6",
+    "@types/bun": "^1.4.2",
+    "knip": "^6.44.2",
     "typescript": "^5.9.0"
   }
 }

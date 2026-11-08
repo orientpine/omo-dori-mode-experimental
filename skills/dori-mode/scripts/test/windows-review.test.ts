@@ -46,7 +46,7 @@ test.skipIf(process.platform !== "win32").each(["pwsh"])("review 1 revive execut
   const result = await reviveHerdr(runner, deps.clock, deps.config, "w1:p1", "", async () => true);
   // Then the agent really ran with the selected session, model and environment.
   expect(result).toBe(`REVIVE_OK w1:p1 session ${session}`);
-  expect(await Bun.file(capture).json()).toEqual({ argv: ["--session-id", session, "--model", "review/model"], path: process.env.PATH });
+  expect(await Bun.file(capture).json()).toEqual({ argv: ["--session-id", session, "--model", "review/model"], path: process.env["PATH"] });
 }, 30_000);
 
 test.skipIf(process.platform !== "win32")("review 1 records a native lead started without a session argument", async () => {

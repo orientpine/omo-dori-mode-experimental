@@ -56,11 +56,11 @@ const leadCli = async (live: boolean, override = "") => {
   writeFileSync(config, JSON.stringify({ leadPane: override ? "wrong-pane" : TMUX }));
   const envFile = join(state.dir, "dori.env");
   writeFileSync(envFile, "DORI_LEAD_AOE_ID=deadbeef-old\n");
-  const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DORI_CONFIG: config, DORI_ENV_FILE: envFile, DORI_STATE_DIR: state.dir, DORI_LEAD_TMUX: "", DORI_LEAD_AOE_ID: "" };
+  const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"]}`, DORI_CONFIG: config, DORI_ENV_FILE: envFile, DORI_STATE_DIR: state.dir, DORI_LEAD_TMUX: "", DORI_LEAD_AOE_ID: "" };
   // The env file must supply the stale id, not the host environment.
-  delete env.DORI_LEAD_AOE_ID;
-  if (override) env.DORI_LEAD_PANE = override;
-  else delete env.DORI_LEAD_PANE;
+  delete env["DORI_LEAD_AOE_ID"];
+  if (override) env["DORI_LEAD_PANE"] = override;
+  else delete env["DORI_LEAD_PANE"];
   const p = Bun.spawn(["bun", join(import.meta.dir, "../src/cli.ts"), "lead"], { env, stdout: "pipe", stderr: "pipe" });
   const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
   return { code, out: out.trim(), err: err.trim() };
@@ -83,7 +83,7 @@ test("the boot service executes the existing self-restart script in start mode",
   executable(script, `printf '%s\\n' "self-restart.sh $*" >> "${log}"`);
   const service = readFileSync(join(import.meta.dir, "../../setups/discord-aoe/systemd/dori-lead.service"), "utf8");
   const command = (/^ExecStart=(.*)$/m.exec(service)?.[1] ?? "").replaceAll("%h", state.dir);
-  const p = Bun.spawn(["bash", "-c", command], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DORI_LEAD_AOE_ID: "stale" }, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["bash", "-c", command], { env: { ...process.env, PATH: `${bin}:${process.env["PATH"]}`, DORI_LEAD_AOE_ID: "stale" }, stdout: "pipe", stderr: "pipe" });
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: ["self-restart.sh --start"] });
 });
 
@@ -177,7 +177,7 @@ test("tmux-server gives the server the unit's DORI_CONFIG, DORI_ENV_FILE and DOR
   const fake = join(state.dir, "tmux");
   const holder = Bun.spawn(["cat"], { stdin: "pipe", stdout: "ignore" });
   executable(fake, `case "$1" in\n  display-message) [ -n "$SERVER" ] && printf '%s\\n' "$SERVER" ;;\n  -D) printf '%s\\n' "tmux -D $(env | grep '^DORI_' | sort | tr '\\n' ' ')" >> "${log}" ;;\n  *) printf '%s\\n' "tmux $*" >> "${log}" ;;\nesac`);
-  const env = { PATH: process.env.PATH ?? "", TMUX_SERVER_BIN: fake, DORI_CONFIG: "/g/config.json", DORI_ENV_FILE: "/g/dori.env", DORI_STATE_DIR: "/g/state", DORI_DISCORD_TOKEN: "from-unit", DORI_LEAD_TMUX: "aoe_x" };
+  const env = { PATH: process.env["PATH"] ?? "", TMUX_SERVER_BIN: fake, DORI_CONFIG: "/g/config.json", DORI_ENV_FILE: "/g/dori.env", DORI_STATE_DIR: "/g/state", DORI_DISCORD_TOKEN: "from-unit", DORI_LEAD_TMUX: "aoe_x" };
   const server = (pid: string) => Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/tmux-server")], { env: { ...env, SERVER: pid }, stdout: "pipe", stderr: "pipe" });
   const started = server("");
   const startedOut = { code: await started.exited, out: await new Response(started.stdout).text() };
@@ -312,7 +312,7 @@ test("dori.sh starts and attaches the lead with aoe given no DORI_* variable", a
   executable(join(bin, "dori"), `printf '%s\\n' '${ID} ${TMUX}'`);
   executable(join(bin, "systemctl"), "exit 0");
   executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* dori-vars=$(env | grep -c '^DORI_')" >> "${log}"`);
-  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DORI_DISCORD_TOKEN: "inherited", DORI_CONFIG: "/c" }, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], { env: { ...process.env, PATH: `${bin}:${process.env["PATH"]}`, DORI_DISCORD_TOKEN: "inherited", DORI_CONFIG: "/c" }, stdout: "pipe", stderr: "pipe" });
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: [`aoe session start ${ID} dori-vars=0`, `aoe session attach ${ID} dori-vars=0`] });
 });
 

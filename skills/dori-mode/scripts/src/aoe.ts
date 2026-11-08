@@ -237,10 +237,10 @@ export const withPi = (path: string, tool: string): string => {
 // The PATH an agent session gets (sessionPath with withPi; see there), or NO_NODE when there is no node anywhere. Every
 // herdr opener puts it on the agent's command line: a herdr pane takes the server's environment, not this caller's.
 export const agentPath = (tool: string): string => {
-  const callerPath = process.env.PATH ?? "";
+  const callerPath = process.env["PATH"] ?? "";
   // Native Windows runs omo.exe, not the Unix node shebang; preserve its semicolon-separated PATH.
   if (process.platform === "win32") return callerPath;
-  const nvmDir = process.env.NVM_DIR || join(process.env.HOME ?? "", ".nvm");
+  const nvmDir = process.env["NVM_DIR"] || join(process.env["HOME"] ?? "", ".nvm");
   const node = sessionPath(callerPath, nvmDir);
   if (node === undefined) throw new AoeError(`NO_NODE no node on PATH (${callerPath}) or in ${nvmDir}: the session's senpi task model probe and omo hooks run #!/usr/bin/env node and would exit 127; install node with nvm or put it on the caller's PATH`);
   return withPi(node, tool);
@@ -264,7 +264,7 @@ export const herdrAgentArgv = (template: readonly string[], model: string, think
 
 export const openAoeSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly tool: string; readonly model: string; readonly thinking?: string; readonly env?: Readonly<Record<string, string | undefined>>; readonly backend?: "aoe" | "herdr"; readonly workspace?: string; readonly agentCommand?: readonly string[] }): Promise<string> => {
   const env = opts.env && Object.keys(opts.env).length ? opts.env : undefined;
-  const callerPath = process.env.PATH ?? "";
+  const callerPath = process.env["PATH"] ?? "";
   const path = agentPath(opts.tool);
   if (opts.backend === "herdr") {
     const argv = herdrAgentArgv(opts.agentCommand ?? [opts.tool, "--model", "{model}"], opts.model, opts.thinking);
@@ -304,8 +304,8 @@ export const isClosedLine = (line: string): boolean => / stopped and (trashed|cl
 // the session this process runs in: its herdr pane (herdr sets HERDR_PANE_ID in each pane; a $TMUX there is only inherited
 // from where the herdr server was started), else its tmux session
 export const currentTmuxSession = async (run: Runner): Promise<string> => {
-  if (process.env.HERDR_PANE_ID) return process.env.HERDR_PANE_ID;
-  if (!process.env.TMUX) return "";
+  if (process.env["HERDR_PANE_ID"]) return process.env["HERDR_PANE_ID"];
+  if (!process.env["TMUX"]) return "";
   const r = await run(["tmux", "display-message", "-p", "#S"]);
   return r.code === 0 ? r.out.trim() : "";
 };

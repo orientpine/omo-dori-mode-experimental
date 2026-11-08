@@ -1,3 +1,4 @@
+// Strict flag set from upstream https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/149 (tsconfig.base.json), inlined: the fork has no root package.
 {
   "compilerOptions": {
     "target": "ESNext",
@@ -7,18 +8,17 @@
     "noEmit": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": false,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": [
-      "bun"
-    ],
-    "lib": [
-      "ESNext"
-    ]
+    "types": ["bun"],
+    "lib": ["ESNext"]
   },
-  "include": [
-    "src",
-    "test",
-    "../setups/**/*.ts"
-  ]
+  "include": ["src", "test", "check-loc.ts", "../setups/**/*.ts"]
 }

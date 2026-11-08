@@ -8,7 +8,7 @@ import type { Lane } from "../../scripts/src/registry.ts";
 // Called each tick: handover and config edits must take effect without restarting the watcher.
 export const watchContext = async (load: () => Promise<DoriConfig>, lanes: readonly Lane[]) => {
   const config = await load();
-  const mapped = threads(process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord"));
+  const mapped = threads(process.env["DORI_DISCORD_STATE_DIR"]?.trim() || join(config.stateDir, "discord"));
   const skip = new Set([config.leadPane, ...config.ignorePanes].filter(Boolean));
   const thread = (session: string, tmux: string): string | null => {
     const lane = lanes.find((l) => l.pane === tmux);

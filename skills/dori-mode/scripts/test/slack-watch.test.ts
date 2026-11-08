@@ -62,11 +62,11 @@ const fakeSlack = () => {
         opens++;
         return reply({ url: `ws://localhost:${port}/ws` });
       }
-      if (method === "users.info") return reply({ user: { profile: { display_name: `name-${String(body.user)}` } } });
-      if (method === "chat.postMessage") return reply({ channel: body.channel, ts: "1700000100.000100" });
+      if (method === "users.info") return reply({ user: { profile: { display_name: `name-${String(body["user"])}` } } });
+      if (method === "chat.postMessage") return reply({ channel: body["channel"], ts: "1700000100.000100" });
       if (method === "reactions.add" && failing.reactStall) return new Promise<Response>(() => {});
       if (method === "reactions.add" && failing.reactHold) return new Promise<Response>((r) => held.add.push(() => r(reply({}))));
-      const unreact = failing.unreactBy[String(body.timestamp)] ?? failing.unreact;
+      const unreact = failing.unreactBy[String(body["timestamp"])] ?? failing.unreact;
       if (method === "reactions.remove" && unreact === "stall") return new Promise<Response>(() => {});
       if (method === "reactions.remove" && unreact === "hold") return new Promise<Response>((r) => held.remove.push(() => r(reply({}))));
       if (method === "reactions.remove" && unreact) return Response.json({ ok: false, error: unreact });
@@ -184,14 +184,14 @@ test("a mention seen twice and retried is one row; bot, own, edited and unaddres
   await slack.until("the own-thread SLACK_MSG", () => w.msgs().length === 2);
   // Then
   expect(slack.acks).toContain("env-retry");
-  expect(w.rows().map((r) => [r.id, r.addressed, r.reply_thread])).toEqual([
+  expect(w.rows().map((r) => [r["id"], r["addressed"], r["reply_thread"]])).toEqual([
     ["1700000000.000300", "mention", "1700000000.000300"],
     ["1700000000.000310", null, "1700000000.000310"],
     ["1700000000.000600", "own-thread", "1700000000.000500"],
   ]);
   expect(w.msgs()).toEqual(["SLACK_MSG C1 1700000000.000300 mention name-UGUEST: <@UBOT> 자료 있어?", "SLACK_MSG C1 1700000000.000500 own-thread name-UGUEST: 태그 없이 스레드 답"]);
   // eyes on the two addressed messages, once each, and on nothing else
-  expect(slack.calls.filter((c) => c.method === "reactions.add").map((c) => c.body.timestamp)).toEqual(["1700000000.000300", "1700000000.000600"]);
+  expect(slack.calls.filter((c) => c.method === "reactions.add").map((c) => c.body["timestamp"])).toEqual(["1700000000.000300", "1700000000.000600"]);
 });
 
 test("a channel message that calls the Dori by name (DORI_SLACK_MENTION) wakes the lead as name and gets eyes; other people's talk and bots' posts with the name do not", async () => {
@@ -205,13 +205,13 @@ test("a channel message that calls the Dori by name (DORI_SLACK_MENTION) wakes t
   slack.event({ type: "message", channel_type: "channel", channel: "C1", user: "UGUEST", text: "OkDori, 자료 있어?", ts: "1700000000.000830" });
   await slack.until("two name SLACK_MSG lines", () => w.msgs().length === 2);
   // Then
-  expect(w.rows().map((r) => [r.id, r.addressed, r.mentions_self])).toEqual([
+  expect(w.rows().map((r) => [r["id"], r["addressed"], r["mentions_self"]])).toEqual([
     ["1700000000.000800", "name", true],
     ["1700000000.000810", null, false],
     ["1700000000.000830", "name", true],
   ]);
   expect(w.msgs()).toEqual(["SLACK_MSG C1 1700000000.000800 name name-UOWNER (owner): 옥돌아 들리면 대답해봐", "SLACK_MSG C1 1700000000.000830 name name-UGUEST: OkDori, 자료 있어?"]);
-  expect(slack.calls.filter((c) => c.method === "reactions.add").map((c) => c.body.timestamp)).toEqual(["1700000000.000800", "1700000000.000830"]);
+  expect(slack.calls.filter((c) => c.method === "reactions.add").map((c) => c.body["timestamp"])).toEqual(["1700000000.000800", "1700000000.000830"]);
 });
 
 test("a reactions.add that never answers holds neither its message's SLACK_MSG nor the messages after it", async () => {
@@ -242,7 +242,7 @@ test("an app without reactions:write logs SLACK_REACT_SKIPPED once and stops ask
   slack.event({ type: "message", channel_type: "im", channel: "D1", user: "UOWNER", text: "two", ts: "1700000000.000710" });
   await slack.until("both SLACK_MSG lines", () => w.msgs().length === 2);
   // Then
-  expect(w.rows().map((r) => r.content)).toEqual(["one", "two"]);
+  expect(w.rows().map((r) => r["content"])).toEqual(["one", "two"]);
   expect(w.lines.filter((l) => l.startsWith("SLACK_REACT_SKIPPED"))).toEqual(["SLACK_REACT_SKIPPED slack reactions.add: missing_scope: the app has no reactions:write, so messages arrive without eyes until it is added and the app reinstalled"]);
   expect(slack.calls.filter((c) => c.method === "reactions.add").length).toBe(1);
   expect(w.lines.some((l) => l.startsWith("SLACK_REACT_FAIL"))).toBe(false);
@@ -253,7 +253,7 @@ const send = (w: { o: { threads: string } }, slack: ReturnType<typeof fakeSlack>
   const state = dirname(w.o.threads);
   return run(["env", `DORI_CONFIG=${join(state, "missing.json")}`, `DORI_STATE_DIR=${state}`, `DORI_ENV_FILE=${join(state, "missing.env")}`, `DORI_SLACK_TOKEN=${token}`, `DORI_SLACK_API=${slack.api}`, "bun", CLI, "send", "slack", ...args]);
 };
-const unreacted = (slack: ReturnType<typeof fakeSlack>) => slack.calls.filter((c) => c.method === "reactions.remove").map((c) => `${String(c.body.channel)} ${String(c.body.timestamp)} ${String(c.body.name)} ${c.auth === `Bearer ${BOT}` ? "bot" : c.auth}`);
+const unreacted = (slack: ReturnType<typeof fakeSlack>) => slack.calls.filter((c) => c.method === "reactions.remove").map((c) => `${String(c.body["channel"])} ${String(c.body["timestamp"])} ${String(c.body["name"])} ${c.auth === `Bearer ${BOT}` ? "bot" : c.auth}`);
 
 test("answering with dori send slack takes the watcher's eyes off the messages it answers, once, and off nothing else", async () => {
   // Given an unaddressed reply under the first mention (taken in first: rows wake no waiter, SLACK_MSG lines do), two

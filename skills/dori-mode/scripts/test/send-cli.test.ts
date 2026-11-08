@@ -141,7 +141,7 @@ const discordServer = (status = 200) => {
     // a slow Discord keeps two senders started together inside one another's send
     await Bun.sleep(300);
     // as Discord does: the created message comes back with the content it holds
-    return status === 200 ? Response.json({ id: String(posts.length), content: posts.at(-1)?.body.content }) : new Response("{}", { status });
+    return status === 200 ? Response.json({ id: String(posts.length), content: posts.at(-1)?.body["content"] }) : new Response("{}", { status });
   } });
   return { posts, server, stop: () => server.stop(true) };
 };
@@ -249,7 +249,7 @@ test("a text with underscores keys and prints as it goes out escaped: the same t
     const ref = "discord:300000000000000003";
     const reply = await sendCli(state.dir, ["thread", "reply", ref, "a_b_c.txt"]);
     const again = await sendCli(state.dir, ["send", "discord", "--to", "300000000000000003", "--no-typing", "--text", "a\\_b\\_c.txt"]);
-    expect({ first: first.out, posted: d.posts.map((p) => p.body.content), same: [same.code, same.out.split(": ")[0]], reply: reply.out, again: [again.code, again.out.split(": ")[0]] }).toEqual({
+    expect({ first: first.out, posted: d.posts.map((p) => p.body["content"]), same: [same.code, same.out.split(": ")[0]], reply: reply.out, again: [again.code, again.out.split(": ")[0]] }).toEqual({
       first: receipt("SENT", "1", "1\\_Project/2026\\_크레인"), posted: ["1\\_Project/2026\\_크레인"], same: [3, `SEND_DUPLICATE ${PLACE} 1`],
       reply: receipt("POSTED", "900", "a\\_b\\_c.txt"), again: [3, "SEND_DUPLICATE discord:300000000000000003 900"],
     });
@@ -273,7 +273,7 @@ test("two texts that post the same prepared text are the repeat, though they dif
     const first = await sendTo(state.dir, d.server.port, [...to, "--text", a]);
     const second = await sendTo(state.dir, d.server.port, [...to, "--text", b]);
     const thread = await sendCli(state.dir, ["thread", "reply", "discord:300000000000000003", b]);
-    expect({ first: word2(first.out), posted: d.posts.map((x) => x.body.content), second: [second.code, second.out.split(": ")[0]], thread: thread.out.split(": ")[0] }).toEqual({
+    expect({ first: word2(first.out), posted: d.posts.map((x) => x.body["content"]), second: [second.code, second.out.split(": ")[0]], thread: thread.out.split(": ")[0] }).toEqual({
       first: "SENT 1", posted: [a], second: [3, "SEND_DUPLICATE discord:300000000000000003 1"], thread: "SEND_DUPLICATE discord:300000000000000003 1",
     });
   } finally {
@@ -512,8 +512,8 @@ const fakeSlack = (complete = 200, during: { upload?: () => void } = {}) => {
       if (path === "/api/files.getUploadURLExternal" && !form) return Response.json({ ok: false, error: "invalid_arguments" });
       if (path === "/api/files.getUploadURLExternal") return Response.json({ ok: true, upload_url: `http://127.0.0.1:${port}/up/${++slots}`, file_id: `F${slots}` });
       if (path === "/api/files.completeUploadExternal") during.upload?.();
-      if (path === "/api/files.completeUploadExternal") return complete === 200 ? Response.json({ ok: true, files: body.files }) : new Response("unavailable", { status: complete });
-      if (path === "/api/chat.postMessage") return Response.json({ ok: true, channel: body.channel, ts: "1700000100.000100", message: { text: body.text } });
+      if (path === "/api/files.completeUploadExternal") return complete === 200 ? Response.json({ ok: true, files: body["files"] }) : new Response("unavailable", { status: complete });
+      if (path === "/api/chat.postMessage") return Response.json({ ok: true, channel: body["channel"], ts: "1700000100.000100", message: { text: body["text"] } });
       if (path === "/api/reactions.remove") return Response.json({ ok: true });
       return Response.json({ ok: false, error: "unknown_method" });
     },
@@ -676,7 +676,7 @@ test("thread reply --file posts the files in the thread with the text, or alone"
     writeFileSync(png, "png bytes");
     const r = await fileCli(state.dir, ["thread", "reply", "discord:300000000000000003", "그림 올렸어", "--file", png]);
     const bare = await fileCli(state.dir, ["thread", "reply", "discord:300000000000000003", "--file", png]);
-    const shape = (p: { path: string; body: Record<string, unknown>; files?: unknown[] } | undefined) => ({ path: p?.path, content: p?.body.content, attachments: p?.body.attachments, files: p?.files?.length });
+    const shape = (p: { path: string; body: Record<string, unknown>; files?: unknown[] } | undefined) => ({ path: p?.path, content: p?.body["content"], attachments: p?.body["attachments"], files: p?.files?.length });
     expect({ outs: [r.code, r.out, bare.code, bare.out], posts: bare.posts.map(shape) }).toEqual({
       outs: [0, receipt("POSTED", "900", "그림 올렸어"), 0, receipt("POSTED", "900", "")], posts: [
         { path: "/channels/300000000000000003/messages", content: "그림 올렸어", attachments: [{ id: 0, filename: "drawing.png" }], files: 1 },

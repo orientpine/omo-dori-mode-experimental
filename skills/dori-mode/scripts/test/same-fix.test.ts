@@ -73,7 +73,7 @@ test("--improved starts the count again: the mark goes down silently and the nex
   await recordFix(deps, "e7", fix("a"));
   expect((await recordFix(deps, "e7", fix("b"))).notes).toHaveLength(1);
   expect((await recordFix(deps, "e7", fix("c", { improved: true }))).notes).toEqual([]);
-  expect((await deps.registry.read("e7"))?.stuck?.m).toMatchObject({ rung: 1, n: 1 });
+  expect((await deps.registry.read("e7"))?.stuck?.["m"]).toMatchObject({ rung: 1, n: 1 });
   expect((await recordFix(deps, "e7", fix("d"))).notes[0]).toContain('"m" rung 2 (tagged 2');
 });
 
@@ -82,7 +82,7 @@ test("--improved starts the inferred half again too: three inferred cycles befor
   await deps.registry.write({ ...lane, inferred: { at: "t", counts: { m: 3 } } });
   await recordFix(deps, "e7", fix("c", { improved: true }));
   const after = await deps.registry.read("e7");
-  expect(after?.stuck?.m).toMatchObject({ n: 1, rung: 1 });
+  expect(after?.stuck?.["m"]).toMatchObject({ n: 1, rung: 1 });
   expect(after?.inferred?.baseline).toEqual({ m: 3 });
   // a new untagged cycle after it counts from there: 4 - 3 = 1, so the next tagged failure is the 2nd attempt
   await deps.registry.patch("e7", { inferred: { ...after?.inferred, at: "t", counts: { m: 4 } } });

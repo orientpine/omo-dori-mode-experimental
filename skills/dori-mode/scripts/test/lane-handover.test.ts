@@ -201,9 +201,6 @@ const ready = (deps: LaneHandoverDeps, chains: number[], at = "2026-10-11T16:30:
   mkdirSync(join(deps.config.stateDir, "handover", "lanes"), { recursive: true });
   writeFileSync(readyFile(deps.config.stateDir, "demo"), JSON.stringify({ key: "demo", pane, at, chains, note }));
 };
-// a message of the old conversation, appended to its log (the log starts with one line, so this is line 2)
-const oldSays = (text: string) => appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T10-00-00-000Z_old-sid.jsonl"), `\n${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text }] } })}`);
-
 let restorePath = () => {};
 beforeEach(() => {
   restorePath = launchReadyPath();

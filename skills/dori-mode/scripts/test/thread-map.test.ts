@@ -140,7 +140,7 @@ const openLane = (key: string, fields: Record<string, unknown> = {}) => {
 };
 // a lane dori close can close: no pane or tab to close, a Done signal that reads back live
 const closable = (key: string) => openLane(key, { done: "file /etc/hostname", pane: undefined, cwd: state.dir });
-const named = () => http().calls.filter((c) => c.method === "PATCH" && c.body.name).map((c) => c.body.name);
+const named = () => http().calls.filter((c) => c.method === "PATCH" && c.body["name"]).map((c) => c.body["name"]);
 const openCard = (id: string) => {
   mkdirSync(join(state.dir, "cards"), { recursive: true });
   writeFileSync(join(state.dir, "cards", "questions.json"), JSON.stringify({ seq: 1, questions: [{ id, text: "Ship?", options: ["Yes", "No"], status: "open", thread: ID, askedAt: "2026-10-12T00:00:00Z" }] }));
@@ -156,8 +156,8 @@ test("thread done leaves a thread that another open lane uses as it is, but the 
     left: { code: 0, out: expect.stringMatching(new RegExp(`^POSTED 900 len=15 sha=[0-9a-f]{8} first="lane-a finished" THREAD_LEFT_OPEN ${REF}: open lane lane-b uses it; not marked done \\(--force marks it done anyway\\)$`)), err: "" }, renames: 0, name: "🔄 fix login", archived: false,
   });
   // lane-b's own close runs hooks.threadDone with DORI_CLOSING_LANE=lane-b (--lane says the same): that marks it done
-  process.env.DORI_CLOSING_LANE = "lane-b";
-  const own = await cli("done", REF, "lane-b finished").finally(() => delete process.env.DORI_CLOSING_LANE);
+  process.env["DORI_CLOSING_LANE"] = "lane-b";
+  const own = await cli("done", REF, "lane-b finished").finally(() => delete process.env["DORI_CLOSING_LANE"]);
   expect({ own, archived: http().archived }).toEqual({ own: { code: 0, out: expect.stringMatching(/^POSTED 900 len=15 sha=[0-9a-f]{8} first="lane-b finished" THREAD_DONE$/), err: `THREAD_STATUS_APPLIED ${ID} done` }, archived: true });
 });
 
@@ -273,11 +273,11 @@ test("a forced thread done whose post fails leaves the thread standing, and the 
 test("a release whose rename fails still takes 📌 off at the next rename, and unstanding again asks again", async () => {
   await cli("open", "fix login", "--first", "Start");
   await cli("set", REF, "standing");
-  process.env.DORI_TEST_PATCH_FAIL = "1";
+  process.env["DORI_TEST_PATCH_FAIL"] = "1";
   try {
     await cli("set", REF, "unstanding");
   } finally {
-    delete process.env.DORI_TEST_PATCH_FAIL;
+    delete process.env["DORI_TEST_PATCH_FAIL"];
   }
   expect({ name: http().name, standing: map()[ID]?.standing }).toEqual({ name: "📌 fix login", standing: false });
   expect((await cli("set", REF, "unstanding")).out).toBe(`THREAD_UNSTANDING ${REF} applied`);
@@ -287,11 +287,11 @@ test("a release whose rename fails still takes 📌 off at the next rename, and 
 test("a forced done whose rename fails leaves the release, so the next done gives ✅ with no 📌", async () => {
   await cli("open", "fix login", "--first", "Start");
   await cli("set", REF, "standing");
-  process.env.DORI_TEST_PATCH_FAIL = "1";
+  process.env["DORI_TEST_PATCH_FAIL"] = "1";
   try {
     await cli("set", REF, "done", "--force");
   } finally {
-    delete process.env.DORI_TEST_PATCH_FAIL;
+    delete process.env["DORI_TEST_PATCH_FAIL"];
   }
   expect({ name: http().name, standing: map()[ID]?.standing }).toEqual({ name: "📌 fix login", standing: false });
   await cli("set", REF, "done");
@@ -380,7 +380,7 @@ test("dori close posts the summary in the thread before it sets the done mark an
   await cli("open", "fix login", "--first", "Start");
   closable("lane-a");
   const closed = await dori("close", "lane-a", "--summary", SUMMARY);
-  const after = http().calls.slice(2).map((c) => `${c.method} ${c.path}${c.body.name ? ` ${c.body.name}` : ""}${c.body.archived !== undefined ? ` archived=${c.body.archived}` : ""}${c.body.content ? ` ${c.body.content}` : ""}`);
+  const after = http().calls.slice(2).map((c) => `${c.method} ${c.path}${c.body["name"] ? ` ${c.body["name"]}` : ""}${c.body["archived"] !== undefined ? ` archived=${c.body["archived"]}` : ""}${c.body["content"] ? ` ${c.body["content"]}` : ""}`);
   expect({ code: closed.code, after }).toEqual({ code: 0, after: [`POST /channels/${ID}/typing`, `POST /channels/${ID}/messages ${SUMMARY}`, `GET /channels/${ID}`, `PATCH /channels/${ID} ✅ fix login`, `PATCH /channels/${ID} archived=true`] });
 });
 
@@ -429,8 +429,8 @@ test("the reply hook a closing lane runs does not count that lane as working (DO
   await cli("open", "fix login", "--first", "Start");
   openCard("Q1");
   openLane("lane-a");
-  process.env.DORI_CLOSING_LANE = "lane-a";
-  const own = await cli("reply", REF, "lane-a: done").finally(() => delete process.env.DORI_CLOSING_LANE);
+  process.env["DORI_CLOSING_LANE"] = "lane-a";
+  const own = await cli("reply", REF, "lane-a: done").finally(() => delete process.env["DORI_CLOSING_LANE"]);
   expect({ err: own.err, names: named() }).toEqual({ err: `THREAD_STATUS_APPLIED ${ID} waiting`, names: ["🔔 fix login"] });
 });
 

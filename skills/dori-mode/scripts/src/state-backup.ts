@@ -93,8 +93,8 @@ export const ownerMessages = (text: string, ownerIds: readonly string[], minChar
       const row: unknown = JSON.parse(line);
       if (!row || typeof row !== "object") return [];
       const r = row as Record<string, unknown>;
-      const content = typeof r.content === "string" ? r.content.trim() : typeof r.text === "string" ? r.text.trim() : "";
-      const owner = r.author_kind === "owner" || (ownerIds.length > 0 && ownerIds.includes(String(r.author_id ?? "")));
+      const content = typeof r["content"] === "string" ? r["content"].trim() : typeof r["text"] === "string" ? r["text"].trim() : "";
+      const owner = r["author_kind"] === "owner" || (ownerIds.length > 0 && ownerIds.includes(String(r["author_id"] ?? "")));
       return owner && content.length >= minChars ? [content] : [];
     } catch (e) {
       if (e instanceof SyntaxError) return [];

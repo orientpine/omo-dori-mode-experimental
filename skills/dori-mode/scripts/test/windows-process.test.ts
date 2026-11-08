@@ -69,7 +69,7 @@ test.skipIf(process.platform !== "win32")("Windows process discovery finds the c
 
 test.skipIf(process.platform !== "win32")("Windows launch preserves the caller's native PATH", () => {
   // Given the caller's semicolon-separated executable search path.
-  const path = process.env.PATH ?? "";
+  const path = process.env["PATH"] ?? "";
   // When preparing a native omo executable.
   const actual = agentPath("omo");
   // Then no Unix node or colon-separated PATH lookup is required.

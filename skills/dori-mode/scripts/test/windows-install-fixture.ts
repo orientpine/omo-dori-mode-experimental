@@ -6,7 +6,7 @@ import { powershellLiteral as quote } from "../src/powershell.ts";
 
 const cleanEnv = () => Object.fromEntries(Object.entries(Bun.env).filter(([name]) => !name.startsWith("DORI_")));
 export const command = async (argv: readonly string[], cwd?: string, stdin?: string) => {
-  const child = Bun.spawn([...argv], { cwd, env: cleanEnv(), stdout: "pipe", stderr: "pipe", stdin: stdin === undefined ? "ignore" : new Blob([stdin]) });
+  const child = Bun.spawn([...argv], { ...(cwd === undefined ? {} : { cwd }), env: cleanEnv(), stdout: "pipe", stderr: "pipe", stdin: stdin === undefined ? "ignore" : new Blob([stdin]) });
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   expect({ code, out, err }).toMatchObject({ code: 0 });
   return out;

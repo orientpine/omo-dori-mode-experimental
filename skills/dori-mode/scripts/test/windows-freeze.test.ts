@@ -158,12 +158,12 @@ test("a handover that must run detached is refused on native Windows with what t
 });
 
 test("the account home for task records does not depend on $HOME (native Windows sets USERPROFILE, not HOME)", () => {
-  const saved = process.env.HOME;
+  const saved = process.env["HOME"];
   try {
-    delete process.env.HOME;
+    delete process.env["HOME"];
     expect(accountHome()).toBe(userInfo().homedir);
   } finally {
-    if (saved !== undefined) process.env.HOME = saved;
+    if (saved !== undefined) process.env["HOME"] = saved;
   }
 });
 

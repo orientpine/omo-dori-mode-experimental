@@ -243,6 +243,7 @@ cd skills/dori-mode/scripts
 bun install
 bun test           # behaviour tests against fake herdr, aoe, tmux, git, gh and Discord HTTP/gateway
 bunx tsc --noEmit  # typecheck
+bun run ci         # biome lint, strict typecheck, knip, 250-line check, then the tests
 ```
 
 The tests cover both backends, launch/report delivery, freshness, blocked lanes, done flow and Discord cards/status. External tools and Discord HTTP/gateway are faked; no real pane, repo, GitHub or Discord account is touched.

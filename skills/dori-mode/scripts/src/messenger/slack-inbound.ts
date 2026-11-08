@@ -5,9 +5,9 @@ export type Inbound = {
   readonly source: "threads-view" | "own-thread" | "unread";
   readonly channel: string;
   readonly ts: string;
-  readonly threadTs?: string;
-  readonly user?: string;
-  readonly text?: string;
+  readonly threadTs?: string | undefined;
+  readonly user?: string | undefined;
+  readonly text?: string | undefined;
 };
 
 type Msg = { readonly ts?: string; readonly thread_ts?: string; readonly user?: string; readonly text?: string; readonly bot_id?: string; readonly channel?: string };

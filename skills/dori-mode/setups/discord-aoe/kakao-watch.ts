@@ -59,23 +59,23 @@ const positive = (value: string | undefined, fallback: number): number => {
   return n;
 };
 export const kakaoOptions = (env: Record<string, string | undefined>): KakaoOptions => {
-  const stateDir = env.DORI_STATE_DIR || join(homedir(), ".dori", "state");
-  const dir = env.DORI_KAKAO_STATE_DIR || stateDir;
+  const stateDir = env["DORI_STATE_DIR"] || join(homedir(), ".dori", "state");
+  const dir = env["DORI_KAKAO_STATE_DIR"] || stateDir;
   return {
-    self: env.DORI_KAKAO_SELF_ID || "",
-    owner: env.DORI_KAKAO_OWNER_ID || "",
-    mention: env.DORI_KAKAO_MENTION ? new RegExp(env.DORI_KAKAO_MENTION, "i") : null,
-    cli: env.DORI_KAKAO_CLI || "agent-messenger",
+    self: env["DORI_KAKAO_SELF_ID"] || "",
+    owner: env["DORI_KAKAO_OWNER_ID"] || "",
+    mention: env["DORI_KAKAO_MENTION"] ? new RegExp(env["DORI_KAKAO_MENTION"], "i") : null,
+    cli: env["DORI_KAKAO_CLI"] || "agent-messenger",
     lock: join(dir, "kakao.lock"),
     rooms: join(dir, "kakao-rooms.json"),
     cursors: join(dir, "kakao-cursors.json"),
     marked: join(dir, "kakao-markread.json"),
     gaveUp: join(dir, "kakao-markread-giveup.json"),
-    syncDir: env.AGENT_MESSENGER_CONFIG_DIR || join(homedir(), ".config", "agent-messenger"),
-    inbox: env.DORI_KAKAO_INBOX || env.DORI_DISCORD_INBOX || join(stateDir, "discord", "inbox.jsonl"),
-    pollMs: positive(env.DORI_KAKAO_POLL_MS, 8000),
-    sweepMs: positive(env.DORI_KAKAO_SWEEP_MS, 300_000),
-    discoverMs: positive(env.DORI_KAKAO_DISCOVER_MS, 20_000),
+    syncDir: env["AGENT_MESSENGER_CONFIG_DIR"] || join(homedir(), ".config", "agent-messenger"),
+    inbox: env["DORI_KAKAO_INBOX"] || env["DORI_DISCORD_INBOX"] || join(stateDir, "discord", "inbox.jsonl"),
+    pollMs: positive(env["DORI_KAKAO_POLL_MS"], 8000),
+    sweepMs: positive(env["DORI_KAKAO_SWEEP_MS"], 300_000),
+    discoverMs: positive(env["DORI_KAKAO_DISCOVER_MS"], 20_000),
   };
 };
 
@@ -141,10 +141,10 @@ export type OpenSession = <T>(fn: (session: KakaoSession) => Promise<T>) => Prom
 async function serverReadMark(session: KakaoSession, chatId: Long, self: string): Promise<{ mark: string | null; type: string | null }> {
   const room = await session.getChatInfo(chatId);
   if (room.statusCode !== 0) throw new Error(`CHATONROOM failed: statusCode=${room.statusCode}`);
-  const members = Array.isArray(room.body.a) ? room.body.a.map(String) : [];
-  const marks = Array.isArray(room.body.w) ? room.body.w.map(String) : [];
+  const members = Array.isArray(room.body["a"]) ? room.body["a"].map(String) : [];
+  const marks = Array.isArray(room.body["w"]) ? room.body["w"].map(String) : [];
   const at = members.indexOf(self);
-  return { mark: at >= 0 ? (marks[at] ?? null) : null, type: typeof room.body.t === "string" ? room.body.t : null };
+  return { mark: at >= 0 ? (marks[at] ?? null) : null, type: typeof room.body["t"] === "string" ? room.body["t"] : null };
 }
 
 // A 64-bit id as LOCO decodes it: a plain number when it fits, a BSON Long / { low, high } past 2^53. Zero means none.
@@ -164,8 +164,8 @@ const idString = (v: unknown): string | null => {
 async function openLinkId(session: KakaoSession, chatId: Long): Promise<string> {
   const info = await session.getChannelInfo(chatId);
   if (info.statusCode !== 0) throw new Error(`CHATINFO failed: statusCode=${info.statusCode}`);
-  const chat = info.body.chatInfo;
-  const li = idString(chat && typeof chat === "object" ? (chat as Record<string, unknown>).li : undefined);
+  const chat = info.body["chatInfo"];
+  const li = idString(chat && typeof chat === "object" ? (chat as Record<string, unknown>)["li"] : undefined);
   if (li === null) throw new Error(`CHATINFO gave no link id for open chat ${chatId}`);
   return li;
 }
@@ -185,14 +185,14 @@ export async function markReadConfirmed(open: OpenSession, long: (id: string) =>
     if (sync.statusCode !== 0) throw new Error(`SYNCMSG failed: statusCode=${sync.statusCode}`);
     // The server syncs nothing older than its floor: from a read mark below it SYNCMSG answers isOK false with the floor
     // as minLogId, and a NOTIREAD after that is acked and dropped. So such a sync is sent once more from the floor.
-    const floor = idString(sync.body.minLogId);
-    if (sync.body.isOK === false && floor !== null && BigInt(floor) > BigInt(cur)) {
+    const floor = idString(sync.body["minLogId"]);
+    if (sync.body["isOK"] === false && floor !== null && BigInt(floor) > BigInt(cur)) {
       const again = await session.syncMessages(long(chatId), 80, long(floor), long(logId));
       if (again.statusCode !== 0) throw new Error(`SYNCMSG failed: statusCode=${again.statusCode}`);
     }
     const mark = li === null ? await session.markRead(long(chatId), long(logId)) : await session.markRead(long(chatId), long(logId), long(li));
     if (mark.statusCode !== 0) throw new Error(`NOTIREAD failed: statusCode=${mark.statusCode}`);
-    return typeof mark.body.status === "number" ? mark.body.status : 0;
+    return typeof mark.body["status"] === "number" ? mark.body["status"] : 0;
   });
   return { status, watermark: (await open(readMark)).mark };
 }

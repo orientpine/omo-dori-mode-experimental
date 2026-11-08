@@ -105,7 +105,7 @@ test.skipIf(process.platform !== "win32")("review 7 a real pwsh child receives h
   const version = (await run(["pwsh", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"])).out.trim();
   const [major = 0, minor = 0] = version.split(".").map(Number);
   const env: Record<string, string | undefined> = { ...hostile, GONE: undefined };
-  if (!(major > 7 || (major === 7 && minor >= 5))) delete env.EMPTY;
+  if (!(major > 7 || (major === 7 && minor >= 5))) delete env["EMPTY"];
   const args = ["", 'a "b"', "한글 c", "it\u2019s", "$(Write-Output pwned)"];
   const names = [...Object.keys(env)];
   const probe = `console.log(JSON.stringify({ env: ${JSON.stringify(names)}.map((n) => process.env[n] ?? null), args: process.argv.slice(2) }))`;

@@ -24,12 +24,12 @@ export type SlackWatchOptions = {
 };
 
 export const slackWatchOptions = (env: Record<string, string | undefined>, stateDir: string): SlackWatchOptions => ({
-  appToken: env.DORI_SLACK_APP_TOKEN?.trim() ?? "",
-  botToken: env.DORI_SLACK_TOKEN?.trim() ?? "",
-  owner: (env.DORI_SLACK_OWNER_ID ?? "").split(",").map((x) => x.trim()).filter(Boolean),
-  mention: env.DORI_SLACK_MENTION?.trim() ? new RegExp(env.DORI_SLACK_MENTION.trim(), "i") : null,
-  api: env.DORI_SLACK_API?.trim() || "https://slack.com/api",
-  inbox: env.DORI_DISCORD_INBOX?.trim() || join(stateDir, "discord", "inbox.jsonl"),
+  appToken: env["DORI_SLACK_APP_TOKEN"]?.trim() ?? "",
+  botToken: env["DORI_SLACK_TOKEN"]?.trim() ?? "",
+  owner: (env["DORI_SLACK_OWNER_ID"] ?? "").split(",").map((x) => x.trim()).filter(Boolean),
+  mention: env["DORI_SLACK_MENTION"]?.trim() ? new RegExp(env["DORI_SLACK_MENTION"].trim(), "i") : null,
+  api: env["DORI_SLACK_API"]?.trim() || "https://slack.com/api",
+  inbox: env["DORI_DISCORD_INBOX"]?.trim() || join(stateDir, "discord", "inbox.jsonl"),
   threads: join(stateDir, "slack-threads.json"),
   uneyed: join(stateDir, "slack-uneyed.log"),
 });
@@ -94,7 +94,7 @@ export class SlackWatch {
     if (this.names.has(user)) return this.names.get(user) ?? null;
     let name: string | null = null;
     try {
-      const u = (await this.deps.call("users.info", { user })).user as { name?: string; real_name?: string; profile?: { display_name?: string; real_name?: string } } | undefined;
+      const u = (await this.deps.call("users.info", { user }))["user"] as { name?: string; real_name?: string; profile?: { display_name?: string; real_name?: string } } | undefined;
       name = u?.profile?.display_name || u?.profile?.real_name || u?.real_name || u?.name || null;
     } catch {
       // users:read not granted or the user is gone: the row keeps the id, and the lookup is not repeated
@@ -291,7 +291,7 @@ export const runSocket = async (deps: SocketDeps, stop: { stopped: boolean } = {
 const slackCall = (api: string, token: string) => async (method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> => {
   const res = await fetch(`${api}/${method}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(params) });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok || body.ok !== true) throw new Error(`slack ${method}: ${String(body.error ?? res.status)}`);
+  if (!res.ok || body["ok"] !== true) throw new Error(`slack ${method}: ${String(body["error"] ?? res.status)}`);
   return body;
 };
 
@@ -310,13 +310,13 @@ export const startWatch = async (o: SlackWatchOptions, log: (line: string) => vo
       await Bun.sleep(wait);
     }
   }
-  const self = { userId: String(me.user_id ?? ""), botId: String(me.bot_id ?? "") };
+  const self = { userId: String(me["user_id"] ?? ""), botId: String(me["bot_id"] ?? "") };
   mkdirSync(dirname(o.inbox), { recursive: true, mode: 0o700 });
   const watch = new SlackWatch(o, self, { call: bot, threads: readThreads(o.threads), append: (row) => appendFileSync(o.inbox, `${JSON.stringify(row)}\n`), log, now: Date.now, reactMs, answered: (channel, ts) => readUneyed(o.uneyed).answered.has(`${channel}:${ts}`), note: (fact, channel, ts, attempt) => noteUneyed(o.uneyed, fact, `${channel}:${ts}`, attempt) });
-  log(`SLACK_WATCH_START team ${String(me.team ?? "?")} bot ${String(me.user ?? self.userId)}`);
+  log(`SLACK_WATCH_START team ${String(me["team"] ?? "?")} bot ${String(me["user"] ?? self.userId)}`);
   await runSocket(
     {
-      connect: async () => String((await slackCall(o.api, o.appToken)("apps.connections.open", {})).url),
+      connect: async () => String((await slackCall(o.api, o.appToken)("apps.connections.open", {}))["url"]),
       open: (url, on) => {
         const ws = new WebSocket(url);
         ws.addEventListener("message", (e) => on.message(String(e.data)));
@@ -378,7 +378,7 @@ const setTokens = async (api: string): Promise<number> => {
     const me = await slackCall(api, botToken)("auth.test", {});
     await slackCall(api, appToken)("apps.connections.open", {});
     writeEnvValues(envFilePath(), { DORI_SLACK_TOKEN: botToken, DORI_SLACK_APP_TOKEN: appToken, ...(owner ? { DORI_SLACK_OWNER_ID: owner } : {}) });
-    console.log(`SLACK_TOKENS_SET team ${String(me.team ?? "?")} bot ${String(me.user ?? "?")}${owner ? " owner set" : ""} -> ${envFilePath()} (0600)`);
+    console.log(`SLACK_TOKENS_SET team ${String(me["team"] ?? "?")} bot ${String(me["user"] ?? "?")}${owner ? " owner set" : ""} -> ${envFilePath()} (0600)`);
     return 0;
   } catch (e) {
     console.log(`SLACK_TOKENS_REFUSED ${e instanceof Error ? e.message : String(e)}; nothing was written`);
@@ -399,7 +399,7 @@ if (import.meta.main) {
     process.exit(0);
   }
   if (why) {
-    const every = Number(process.env.DORI_SLACK_WAIT_MS) > 0 ? Number(process.env.DORI_SLACK_WAIT_MS) : 30_000;
+    const every = Number(process.env["DORI_SLACK_WAIT_MS"]) > 0 ? Number(process.env["DORI_SLACK_WAIT_MS"]) : 30_000;
     log(`SLACK_WATCH_WAIT ${why}; reading ${envFilePath()} every ${every / 1000}s`);
     while (why) {
       await Bun.sleep(every);

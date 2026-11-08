@@ -4,8 +4,8 @@ import { appendFileSync, writeFileSync } from "node:fs";
 
 import * as realRun from "../src/run.ts";
 
-const configFile = process.env.DORI_CONFIG ?? "";
-const stateDir = process.env.DORI_STATE_DIR ?? "";
+const configFile = process.env["DORI_CONFIG"] ?? "";
+const stateDir = process.env["DORI_STATE_DIR"] ?? "";
 const sessions = [
   { id: "11111111-old", title: "old", path: "/repo" },
   { id: "22222222-new", title: "new", path: "/repo" },

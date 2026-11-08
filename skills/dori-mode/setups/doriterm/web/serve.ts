@@ -54,8 +54,8 @@ export async function handler(dist: string): Promise<(req: Request) => Promise<R
 }
 
 if (import.meta.main) {
-  const dist = process.argv[2] ?? `${process.env.HOME}/.local/share/doriterm-web/current`;
-  const port = Number(process.env.DORITERM_WEB_PORT ?? 7780);
+  const dist = process.argv[2] ?? `${process.env["HOME"]}/.local/share/doriterm-web/current`;
+  const port = Number(process.env["DORITERM_WEB_PORT"] ?? 7780);
   Bun.serve({ hostname: "127.0.0.1", port, fetch: await handler(dist) });
   console.log(`doriterm web: ${dist} on http://127.0.0.1:${port}`);
 }

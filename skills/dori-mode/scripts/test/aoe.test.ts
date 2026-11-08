@@ -81,7 +81,7 @@ test("launchEnv: the launch names each variable in tmux update-environment once,
   expect(r.startup).toBe(`STARTUP_OK gg aoe_gg_${NEW_AOE_ID.slice(0, 8)}`);
   expect(world.updateEnv).toEqual(["DISPLAY", "SSH_AUTH_SOCK", "OTHER", "CUDA_VISIBLE_DEVICES"]);
   expect(world.aoeEnv).toEqual([GUARD]);
-  expect(world.sessionEnv[`aoe_gg_${NEW_AOE_ID.slice(0, 8)}`]?.CUDA_VISIBLE_DEVICES).toBe("");
+  expect(world.sessionEnv[`aoe_gg_${NEW_AOE_ID.slice(0, 8)}`]?.["CUDA_VISIBLE_DEVICES"]).toBe("");
   expect(r.lane.useGpu).toBeUndefined();
   // a second launch finds the name there and does not append it again
   await launchWith({ launchEnv: GUARD }, false, "hh");
@@ -159,22 +159,22 @@ test("sessionPath: a PATH whose node is real stays as it is; without node the nv
 });
 
 test("a launch from a PATH without node (a systemd unit's bare PATH) runs aoe add with nvm's node on PATH; with no node at all it is refused before aoe add", async () => {
-  const saved = { PATH: process.env.PATH, NVM_DIR: process.env.NVM_DIR };
+  const saved = { PATH: process.env["PATH"], NVM_DIR: process.env["NVM_DIR"] };
   const bare = `${join(state.dir, "bunbin")}:/nonexistent`;
   mkdirSync(join(state.dir, "bunbin"));
   try {
-    process.env.PATH = bare;
-    process.env.NVM_DIR = nvmWith(join(state.dir, "nvm"), ["v24.15.0"]);
+    process.env["PATH"] = bare;
+    process.env["NVM_DIR"] = nvmWith(join(state.dir, "nvm"), ["v24.15.0"]);
     const { r } = await launchWith({ launchEnv: GUARD });
     expect(r.startup).toStartWith("STARTUP_OK gg");
-    expect(world.aoeEnv).toEqual([{ ...GUARD, PATH: `${bare}:${process.env.NVM_DIR}/versions/node/v24.15.0/bin` }]);
-    process.env.NVM_DIR = join(state.dir, "no-nvm");
+    expect(world.aoeEnv).toEqual([{ ...GUARD, PATH: `${bare}:${process.env["NVM_DIR"]}/versions/node/v24.15.0/bin` }]);
+    process.env["NVM_DIR"] = join(state.dir, "no-nvm");
     await expect(launchWith({}, false, "hh")).rejects.toThrow(/NO_NODE .*#!\/usr\/bin\/env node/);
     expect(world.calls.filter((c) => c[0] === "aoe" && c[1] === "add")).toHaveLength(1);
   } finally {
-    process.env.PATH = saved.PATH;
-    if (saved.NVM_DIR === undefined) delete process.env.NVM_DIR;
-    else process.env.NVM_DIR = saved.NVM_DIR;
+    process.env["PATH"] = saved.PATH;
+    if (saved.NVM_DIR === undefined) delete process.env["NVM_DIR"];
+    else process.env["NVM_DIR"] = saved.NVM_DIR;
   }
 });
 
@@ -281,7 +281,7 @@ const goalLaunch = async (reads: readonly GoalRead[], during?: (read: number) =>
   await Bun.write(brief, "# brief\n");
   let read = 0;
   const still = fakeClock(T0);
-  const clock = late === undefined ? still : { now: () => still.at, sleep: async (ms: number) => void (still.at += ms + late) };
+  const clock = late === undefined ? still : { now: () => still.at, sleep: async (ms: number) => { still.at += ms + late; } };
   const deps: FlowDeps = { ...at(T0), clock, config: { ...at(T0).config, ...config }, readGoal: async () => { during?.(read); return reads[Math.min(read++, reads.length - 1)] as GoalRead; } };
   const r = await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd });
   return { startup: r.startup, read };
@@ -335,7 +335,7 @@ test("a first turn still running with no goal is STARTUP_PENDING_GOAL at once, a
 });
 
 test("an idle read, then a running turn (a gap between tool calls), is STARTUP_PENDING_GOAL, not a missing goal", async () => {
-  const r = await goalLaunch(["none"], (read) => void (world.screen = read === 0 ? IDLE : BUSY));
+  const r = await goalLaunch(["none"], (read) => { world.screen = read === 0 ? IDLE : BUSY; });
   expect(r.startup).toStartWith(`STARTUP_PENDING_GOAL smoke ${pendingPane}`);
   expect(r.read).toBe(2);
 });
@@ -1369,7 +1369,7 @@ const STATUS = " Claude·cbaekdong ▕████░░░░░░▏ 29% 7d �
 const scoped = async (key: string, screen: string, deps: FlowDeps = at(T0)) => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief: quotes rate limit, quota, usage limit, No API key\n");
-  const r = await launchLane(after20s(deps, () => void (world.screen = screen)), { noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  const r = await launchLane(after20s(deps, () => { world.screen = screen; }), { noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" });
   return r.startup;
 };
 

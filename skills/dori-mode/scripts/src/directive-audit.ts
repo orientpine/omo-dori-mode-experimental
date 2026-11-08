@@ -62,7 +62,7 @@ export type Excused = { readonly gap: Gap; readonly line: string };
 // A lane's gaps, and the ones that are not its gaps: a directive that entered the ledger after the lane opened (entered:
 // id -> ms, dori directive-audit; DIRECTIVE_LATE) and one the lead typed into the lane in a [LEAD] line after it opened
 // (DIRECTIVE_RELAYED). files: the session files to look for the lane's own among (default: laneSessionFiles).
-export const laneGapSplit = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>, opts: { readonly entered?: ReadonlyMap<string, number>; readonly files?: readonly string[] } = {}): Promise<{ readonly gaps: Gap[]; readonly excused: Excused[] }> => {
+export const laneGapSplit = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>, opts: { readonly entered?: ReadonlyMap<string, number>; readonly files?: readonly string[] | undefined } = {}): Promise<{ readonly gaps: Gap[]; readonly excused: Excused[] }> => {
   if (!ledger.entries.length) return { gaps: [], excused: [] };
   const brief = await readBrief(briefOf(lane, deps.config.defaultCwd));
   if (!brief) return { gaps: [{ lane: lane.key, id: "-", line: `DIRECTIVE_GAP ${lane.key} -: its brief ${lane.brief} is not there to check` }], excused: [] };
@@ -94,8 +94,6 @@ export const laneGapSplit = async (deps: Pick<FlowDeps, "run" | "config">, lane:
   }
   return { gaps, excused };
 };
-
-export const laneDirectiveGaps = async (deps: Pick<FlowDeps, "run" | "config">, lane: Lane, ledger: Ledger, blocks: Readonly<Record<DirectiveBlock, string>>, files?: readonly string[]): Promise<Gap[]> => (await laneGapSplit(deps, lane, ledger, blocks, { files })).gaps;
 
 // The first commit that added each id (an `"id": "<id>"` line) to a ledger file in its git repo, in ms. A file outside git,
 // or an id only in uncommitted changes, gives nothing.
@@ -402,7 +400,7 @@ export const runDirectiveAudit = async (deps: FlowDeps, opts: { readonly since: 
   }
   const notCounted = excused.length ? ` (${excused.length} not counted: entered the ledger after the lane opened, the lead relayed it in a [LEAD] line, or the model left out what a scope rule calls; listed with --dry-run)` : "";
   const excusedLines = opts.dryRun ? excused.map((x) => x.line) : [];
-  gaps.push(...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env.DORI_DISCORD_GUILD?.trim() ?? ""));
+  gaps.push(...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env["DORI_DISCORD_GUILD"]?.trim() ?? ""));
   if (opts.threads) gaps.push(...leadThreadGaps(opts.threads, await deps.registry.list(), opts.since));
   if (opts.memory && opts.memory !== "off") gaps.push(...duplicated(memoryFiles(opts.memory, memoryNotes), ledger));
   if (!opts.dryRun) writeStamp(deps, opts.since, true);
