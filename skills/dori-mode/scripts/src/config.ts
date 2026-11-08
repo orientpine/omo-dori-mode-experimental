@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tokenBotId } from "./messenger/discord.ts";
-import { run } from "./run.ts";
+import { FORK_RUNTIMES, type RuntimeChoice, run } from "./run.ts";
 import type { RelatedSettings } from "./related-thread.ts";
 import type { BackupSettings } from "./state-backup.ts";
 import type { StateGitSettings } from "./state-git.ts";
@@ -420,6 +420,7 @@ export type BacklogSettings = {
 
 export type DoriConfig = {
   readonly backend: Backend;
+  readonly runtime?: RuntimeChoice["kind"];
   readonly stateDir: string;
   readonly watchLog: string;
   readonly update: UpdateConfig;
@@ -802,6 +803,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const raw = migrated.raw as Partial<DoriConfig>;
   const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, mergeGate: { ...base.mergeGate, ...raw.mergeGate }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, intentCheck: { ...base.autoSignals.intentCheck, ...raw.autoSignals?.intentCheck } }, handover: { ...base.handover, ...raw.handover }, supervision: { ...base.supervision, ...raw.supervision }, compactionTrial: { ...base.compactionTrial, ...raw.compactionTrial }, related: { ...base.related, ...raw.related }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } }, heavyQueue: { ...base.heavyQueue, ...raw.heavyQueue }, backlog: { ...base.backlog, ...raw.backlog } };
   if (merged.backlog.pairRepairPattern && merged.backlog.writeNeedsOwnerLink) warn(`CONFIG_BACKLOG_REPAIR_EXEMPT backlog.pairRepairPattern and backlog.writeNeedsOwnerLink are both on: #dori-pair repair requests start without an owner message link, because the owner's standing rule that faults of the Dori base go to the maintenance Dori is their approval (${path})`);
+  if (raw.runtime !== undefined && !FORK_RUNTIMES.includes(raw.runtime)) throw new ConfigError(`${path}: runtime must be "herdr" (unset is herdr; hc is not wired in this fork yet, docs/follow-ups.md), not ${JSON.stringify(raw.runtime)}`);
   const supervisionBad = supervisionProblem((raw as { supervision?: unknown }).supervision);
   if (supervisionBad) throw new ConfigError(`${path}: invalid ${supervisionBad}`);
   const trialBad = compactionTrialProblem((raw as { compactionTrial?: unknown }).compactionTrial);

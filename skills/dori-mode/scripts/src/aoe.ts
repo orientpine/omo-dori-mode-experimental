@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 import { closeHerdrSession, herdrAgentPid, herdrLife, herdrRead, herdrSessions, herdrShellPid, isHerdrPane, openHerdrSession, procEnv } from "./herdr.ts";
 import type { Pane } from "./panes.ts";
-import type { Clock, Runner } from "./run.ts";
+import { type Clock, type Runner, runtimesOf } from "./run.ts";
 import { turnRunning } from "./submit.ts";
 
 // pane: the herdr pane id of a herdr session (herdr.ts); aoe sessions are matched by their tmux name
@@ -301,10 +301,10 @@ export const closeAoeSession = async (run: Runner, pane: string): Promise<string
 // whether closeAoeSession closed the session (aoe: stopped and trashed; herdr: stopped and closed)
 export const isClosedLine = (line: string): boolean => / stopped and (trashed|closed)$/.test(line);
 
-// the session this process runs in: its herdr pane (herdr sets HERDR_PANE_ID in each pane; a $TMUX there is only inherited
-// from where the herdr server was started), else its tmux session
+// the session this process runs in: its runtime's own (Runtimes.selfAny: an hc terminal, else the herdr pane of HERDR_PANE_ID;
+// a $TMUX there is only inherited from where the server was started), else its tmux session
 export const currentTmuxSession = async (run: Runner): Promise<string> => {
-  if (process.env["HERDR_PANE_ID"]) return process.env["HERDR_PANE_ID"];
+  const self = runtimesOf(run).selfAny(process.env); if (self) return self.id;
   if (!process.env["TMUX"]) return "";
   const r = await run(["tmux", "display-message", "-p", "#S"]);
   return r.code === 0 ? r.out.trim() : "";

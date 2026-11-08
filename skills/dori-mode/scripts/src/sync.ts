@@ -8,7 +8,7 @@ export type SyncRow = { readonly key: string; readonly thread: string; readonly 
 export type SyncResult = { readonly rows: SyncRow[]; readonly drift: string[]; readonly unregistered: SyncRow[] };
 
 export const syncRegistry = async (deps: FlowDeps, write: boolean): Promise<SyncResult> => {
-  const panes = await listPanes(deps.run, deps.config.backend);
+  const panes = await listPanes(deps.run, deps.config);
   const sessionDeps = { run: deps.run, sessionsDir: deps.config.sessionsDir, backend: deps.config.backend };
   const live = new Map(panes.map((p) => [p.pane_id, p]));
   const table = await procTable(deps.run);

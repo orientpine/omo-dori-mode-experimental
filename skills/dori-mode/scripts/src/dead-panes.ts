@@ -28,7 +28,7 @@ export const deadPaneTick = async (run: Runner, config: DoriConfig, seen: Set<st
   const watch = new Set(config.workspaces);
   // a frozen old lead shows a still screen on purpose
   const skip = new Set([config.leadPane, ...config.ignorePanes, ...pausedPanes, ...frozenPanes(config.stateDir)].filter(Boolean));
-  for (const pane of await listPanes(run, config.backend)) {
+  for (const pane of await listPanes(run, config)) {
     const id = pane.pane_id;
     if (skip.has(id) || (watch.size > 0 && !watch.has(pane.workspace_id))) continue;
     const screen = await readScreen(run, config.backend, id);

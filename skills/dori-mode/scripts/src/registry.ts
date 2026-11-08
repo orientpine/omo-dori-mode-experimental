@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 import type { DirectivePick } from "./directives.ts";
+import { parseRef, type SessionRef } from "./runtime/types.ts";
 import type { BudgetLimits } from "./supervision.ts";
 
 export const LANE_KEY = /^[a-z0-9][a-z0-9._-]{1,60}$/;
@@ -66,6 +67,9 @@ export type Lane = {
   readonly noThread?: string;
   // why the lane opened a new thread though related open threads were shown (dori launch --thread new --why-new "<reason>")
   readonly whyNew?: string;
+  // the lane's session on its runtime (upstream #154); pane and tab mirror its id and container, and a herdr pane written
+  // without it (older records, a handover that moved the pane) gains it on read and write (upgradeLane)
+  readonly sessionRef?: SessionRef | undefined;
   readonly pane?: string | undefined;
   readonly tab?: string | undefined;
   readonly session?: string | undefined;
@@ -155,6 +159,18 @@ export type AutoturnMark = { readonly since?: string; readonly resumes?: readonl
 // the last LANE_AUTOTURN_LONG: the user message its run counts from and the multiple of autoturnLongTurns it reported
 export type AutoturnLongMark = { readonly user: string; readonly at: number };
 
+// The pane is what every fork path writes, so a sessionRef that no longer names it is rebuilt from it: a herdr pane id
+// becomes a herdr ref (its tab the container), an aoe/tmux session name none (tmux is no session runtime).
+export const upgradeLane = (lane: Lane): Lane => {
+  const { sessionRef: kept, ...rest } = lane;
+  if (kept && kept.id === lane.pane && kept.container === lane.tab) return lane;
+  const ref = lane.pane ? parseRef(lane.pane) : undefined;
+  return ref ? { ...rest, sessionRef: { ...ref, ...(lane.tab ? { container: lane.tab } : {}) } } : rest;
+};
+
+// the lane's session, whichever way the record was written or built
+export const sessionOf = (lane: Lane): SessionRef | undefined => upgradeLane(lane).sessionRef;
+
 export const statusOf = (lane: Lane): LaneStatus => (lane.closedAt ? "closed" : (lane.status ?? "working"));
 
 export const withStatus = (lane: Lane, status: LaneStatus, note: string, at: string, patch: Partial<Lane> = {}): Lane => ({
@@ -170,8 +186,8 @@ export const withStatus = (lane: Lane, status: LaneStatus, note: string, at: str
 type Recorded = Lane & { readonly ownerCheck?: Lane["intentCheck"] };
 const loaded = (raw: Recorded): Lane => {
   const { ownerCheck: old, ...lane } = raw;
-  if (!old || lane.intentCheck) return lane;
-  return { ...lane, intentCheck: { at: old.at, lastReportAt: old.lastReportAt, model: old.model, kinds: old.kinds, ...(old.finding ? { finding: old.finding.replace(/^OWNER_CHECK /, "INTENT_CHECK ") } : {}), ...(old.rereadAt ? { rereadAt: old.rereadAt } : {}) } };
+  if (!old || lane.intentCheck) return upgradeLane(lane);
+  return upgradeLane({ ...lane, intentCheck: { at: old.at, lastReportAt: old.lastReportAt, model: old.model, kinds: old.kinds, ...(old.finding ? { finding: old.finding.replace(/^OWNER_CHECK /, "INTENT_CHECK ") } : {}), ...(old.rereadAt ? { rereadAt: old.rereadAt } : {}) } });
 };
 
 export class Registry {
@@ -198,6 +214,7 @@ export class Registry {
     const outgoing = before?.session && before.session !== lane.session ? [before.session] : [];
     const prior = [...new Set([...(before?.priorSessions ?? []), ...(lane.priorSessions ?? []), ...outgoing])].filter((s) => s !== lane.session);
     if (prior.length) lane = { ...lane, priorSessions: prior };
+    lane = upgradeLane(lane);
     const tmp = `${this.path(lane.key)}.${process.pid}.tmp`;
     await Bun.write(tmp, JSON.stringify(lane, null, 1));
     renameSync(tmp, this.path(lane.key));
@@ -219,6 +236,12 @@ export class Registry {
 
   async open(): Promise<Lane[]> {
     return (await this.list()).filter((l) => statusOf(l) !== "closed");
+  }
+
+  // the open lane in session ref (the caller's own, Runtimes.selfAny), on whichever runtime it lives
+  async bySession(ref: SessionRef | undefined): Promise<Lane | null> {
+    if (!ref) return null;
+    return (await this.open()).find((l) => { const own = sessionOf(l); return own?.runtime === ref.runtime && own.id === ref.id; }) ?? null;
   }
 
   async byPane(pane: string): Promise<Lane | null> {

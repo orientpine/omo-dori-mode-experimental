@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 
-import type { Clock, Runner } from "./run.ts";
+import { type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
+import { HerdrCli, reasonOf } from "./runtime/herdr/exec.ts";
+import type { SessionRef, SessionRuntime } from "./runtime/types.ts";
 import { commandExecutable, executableName } from "./executable.ts";
 import { powershellData } from "./powershell.ts";
 import { AGENT, type Proc, procTable, topAgent } from "./session-id.ts";
@@ -17,24 +19,29 @@ export const isHerdrPane = (pane: string): boolean => pane.includes(":");
 export type HerdrPane = { readonly pane_id: string; readonly tab_id?: string; readonly workspace_id?: string; readonly cwd?: string; readonly agent?: string };
 type HerdrTab = { readonly tab_id: string; readonly label?: string; readonly pane_count?: number };
 
+// Every herdr call goes through the session runtime (upstream #147-#154, scripts/src/runtime): what its interface has
+// (list, read, create, start, keys, close) through the herdr runtime, the rest (pane get, process-info as herdr prints it,
+// tab list and get, send-text, ctrl+u) through that runtime's own herdr CLI, with its --session (DORI_HERDR_SESSION).
+export const herdrRuntime = (run: Runner): SessionRuntime => runtimesOf(run).for({ runtime: "herdr", id: "" });
+export const herdrRef = (pane: string): SessionRef => ({ runtime: "herdr", id: pane });
+const herdrCli = (run: Runner): HerdrCli => new HerdrCli(execOf(run), process.env["DORI_HERDR_SESSION"]);
+
 // the result object of a herdr call, or undefined when it failed or printed no JSON
 export const herdrResult = async (run: Runner, argv: readonly string[]): Promise<Record<string, unknown> | undefined> => {
-  const r = await run(["herdr", ...argv]);
-  if (r.code !== 0) return undefined;
-  try {
-    return (JSON.parse(r.out) as { result?: Record<string, unknown> }).result;
-  } catch {
-    return undefined;
-  }
+  const r = await herdrCli(run).call(argv).catch(() => undefined);
+  return r && Object.keys(r).length ? r : undefined;
 };
+
+// whether a herdr call that prints no result (send-text, send-keys) went through
+export const herdrOk = (run: Runner, argv: readonly string[]): Promise<boolean> => herdrCli(run).call(argv).then(() => true, () => false);
 
 // Every pane of the server as a session row (aoe.ts AoeSession): id and pane are the pane id, title its tab's label, path
 // its cwd, profile its workspace. No server (or no herdr at all) is no session.
 export const herdrSessions = async (run: Runner): Promise<{ id: string; title: string; path: string; tool?: string; profile?: string; pane: string; tab?: string }[]> => {
-  const panes = ((await herdrResult(run, ["pane", "list"]))?.["panes"] ?? []) as HerdrPane[];
+  const panes = await herdrRuntime(run).list().catch(() => []);
   if (!panes.length) return [];
   const tabs = ((await herdrResult(run, ["tab", "list"]))?.["tabs"] ?? []) as HerdrTab[];
-  return panes.map((p) => ({ id: p.pane_id, title: tabs.find((t) => t.tab_id === p.tab_id)?.label ?? p.pane_id, path: p.cwd ?? "", ...(p.agent ? { tool: p.agent } : {}), ...(p.workspace_id ? { profile: p.workspace_id } : {}), pane: p.pane_id, ...(p.tab_id ? { tab: p.tab_id } : {}) }));
+  return panes.map(({ ref, cwd, agent }) => ({ id: ref.id, title: tabs.find((t) => t.tab_id === ref.container)?.label ?? ref.id, path: cwd ?? "", ...(agent ? { tool: agent } : {}), ...(ref.group ? { profile: ref.group } : {}), pane: ref.id, ...(ref.container ? { tab: ref.container } : {}) }));
 };
 
 type ProcessInfo = { readonly shell_pid?: number; readonly foreground_processes?: readonly { readonly pid?: number; readonly cmdline?: string }[] };
@@ -116,8 +123,12 @@ export const herdrLife = async (run: Runner, pane: string): Promise<{ readonly l
   return (await herdrAgentPid(run, pane)) ? { live: true } : { live: false, how: "dead", status: -1 };
 };
 
-export const herdrRead = async (run: Runner, pane: string, lines?: number): Promise<string> =>
-  (await run(["herdr", "pane", "read", pane, "--source", lines ? "recent" : "visible", ...(lines ? ["--lines", String(lines)] : [])])).out;
+// the last lines through the runtime's read, else the visible screen (no runtime call reads only that); "" when it fails
+export const herdrRead = async (run: Runner, pane: string, lines?: number): Promise<string> => {
+  if (lines) return herdrRuntime(run).read(herdrRef(pane), lines).catch(() => "");
+  const session = process.env["DORI_HERDR_SESSION"];
+  return (await execOf(run)("herdr", [...(session ? ["--session", session] : []), "pane", "read", pane, "--source", "visible"])).stdout;
+};
 
 export const shellQuote = (arg: string): string => (/^[\w./:@=+,-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
 
@@ -141,22 +152,27 @@ export const agentLine = (argv: readonly string[], env: Readonly<Record<string, 
 
 // A new tab labelled title in cwd (in workspace when given) whose root pane runs argv; the pane and tab ids.
 export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly argv: readonly string[]; readonly env?: Readonly<Record<string, string | undefined>>; readonly workspace?: string }): Promise<{ readonly pane: string; readonly tab?: string }> => {
-  const tabArgv = (workspace?: string) => ["herdr", "tab", "create", ...(workspace ? ["--workspace", workspace] : []), "--cwd", opts.cwd, "--label", opts.title, "--no-focus"];
-  let created = await run(tabArgv(opts.workspace));
-  // a fresh server has no workspace to put a tab in ("workspace_not_found", herdr 0.9.5 on Linux and Windows): make one
-  if (created.code !== 0 && !opts.workspace && /workspace_not_found/.test(created.out + created.err)) {
-    const ws = (await herdrResult(run, ["workspace", "create", "--label", "dori", "--cwd", opts.cwd, "--no-focus"]))?.["workspace"] as { workspace_id?: string } | undefined;
-    if (ws?.workspace_id) created = await run(tabArgv(ws.workspace_id));
+  // a new session opens on the chosen runtime (default): a refused choice (DORI_RUNTIME=hc) throws here, before any tab
+  const rt = runtimesOf(run).default;
+  // the runtime's create (a tab with the user's shell, upstream #148); the agent starts below through its start
+  const tabIn = (group?: string) => rt.create({ name: opts.title, cwd: opts.cwd, env: {}, role: "lane", container: "tab", ...(group ? { group } : {}) });
+  const failed = (e: unknown) => new Error(`herdr tab create failed: ${reasonOf(e)}`);
+  let ref: SessionRef;
+  try {
+    ref = await tabIn(opts.workspace);
+  } catch (e) {
+    // a fresh server has no workspace to put a tab in ("workspace_not_found", herdr 0.9.5 on Linux and Windows): make one
+    if (opts.workspace || !/workspace_not_found/.test(reasonOf(e))) throw failed(e);
+    const ws = await rt.createGroup("dori", opts.cwd).catch(() => undefined);
+    if (!ws) throw failed(e);
+    ref = await tabIn(ws).catch((again: unknown) => Promise.reject(failed(again)));
   }
-  if (created.code !== 0) throw new Error(`herdr tab create failed: ${created.err || created.out}`);
-  const made = (JSON.parse(created.out) as { result: { root_pane: { pane_id: string; tab_id?: string }; tab?: { tab_id?: string }; tab_id?: string } }).result;
-  const pane = made.root_pane.pane_id;
-  const tab = made.root_pane.tab_id ?? made.tab?.tab_id ?? made.tab_id;
+  const pane = ref.id;
+  const tab = ref.container;
   // a fresh shell may drop what is typed before its prompt is drawn
   for (let i = 0; i < 20 && !(await herdrRead(run, pane)).trim(); i++) await clock.sleep(250);
   await requireHerdrPwsh(run, pane, process.platform, Object.entries(opts.env ?? {}).flatMap(([k, v]) => (v === "" ? [k] : [])));
-  const ran = await run(["herdr", "pane", "run", pane, agentLine(opts.argv, opts.env)]);
-  if (ran.code !== 0) throw new Error(`herdr pane run failed in ${pane}: ${ran.err || ran.out}`);
+  await rt.start(ref, agentLine(opts.argv, opts.env)).catch((e: unknown) => Promise.reject(new Error(`herdr pane run failed in ${pane}: ${reasonOf(e)}`)));
   return { pane, ...(tab ? { tab } : {}) };
 };
 
@@ -166,8 +182,8 @@ export const closeHerdrSession = async (run: Runner, pane: string): Promise<stri
   if (!got) return `herdr pane ${pane} not found`;
   const tab = got.tab_id ? ((await herdrResult(run, ["tab", "get", got.tab_id]))?.["tab"] as HerdrTab | undefined) : undefined;
   const whole = tab?.tab_id && (tab.pane_count ?? 1) <= 1;
-  const r = await run(whole ? ["herdr", "tab", "close", tab.tab_id] : ["herdr", "pane", "close", pane]);
-  return r.code === 0 ? `herdr ${whole ? `tab ${tab.tab_id}` : "pane"} (${pane}) stopped and closed` : `herdr ${pane} not closed: ${(r.err || r.out).slice(0, 160)}`;
+  const closed = await herdrRuntime(run).close({ ...herdrRef(pane), ...(whole ? { container: tab.tab_id } : {}) }, whole ? "container" : "session").then(() => undefined, (e: unknown) => reasonOf(e));
+  return closed === undefined ? `herdr ${whole ? `tab ${tab.tab_id}` : "pane"} (${pane}) stopped and closed` : `herdr ${pane} not closed: ${closed.slice(0, 160)}`;
 };
 
 // the environment a process started with (/proc/<pid>/environ); empty when it cannot be read
