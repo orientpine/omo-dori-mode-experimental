@@ -7,8 +7,12 @@ import { join } from "node:path";
 for (const name of Object.keys(process.env)) {
   if (name.startsWith("DORI_")) delete process.env[name];
 }
-
 // A hold this host really has on (dori heavy hold-local, /tmp/dori-heavy-hold) must not reach a test: on 2026-11-08 one
 // live QA hold made seven heavy tests of another lane fail with WORKER_BUSY. Every config the suite loads, and every CLI
 // it starts with this environment, reads a hold directory of its own that does not exist, so no hold is on there.
 process.env["DORI_HEAVY_HOLD_DIR"] = join(tmpdir(), `dori-test-no-hold-${process.pid}-${Date.now()}`);
+
+// The runtime is detected (upstream #177: the hc terminal or herdr pane the suite runs in, then hc or herdr on PATH), so
+// the host's own would choose for every test and every CLI a test spawns: the suite runs on herdr, and a test of another
+// runtime or of the detection sets its own.
+process.env["DORI_RUNTIME"] = "herdr";
