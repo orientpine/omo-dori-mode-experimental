@@ -31,14 +31,14 @@ export const herdrResult = async (run: Runner, argv: readonly string[]): Promise
 // Every pane of the server as a session row (aoe.ts AoeSession): id and pane are the pane id, title its tab's label, path
 // its cwd, profile its workspace. No server (or no herdr at all) is no session.
 export const herdrSessions = async (run: Runner): Promise<{ id: string; title: string; path: string; tool?: string; profile?: string; pane: string; tab?: string }[]> => {
-  const panes = ((await herdrResult(run, ["pane", "list"]))?.panes ?? []) as HerdrPane[];
+  const panes = ((await herdrResult(run, ["pane", "list"]))?.["panes"] ?? []) as HerdrPane[];
   if (!panes.length) return [];
-  const tabs = ((await herdrResult(run, ["tab", "list"]))?.tabs ?? []) as HerdrTab[];
+  const tabs = ((await herdrResult(run, ["tab", "list"]))?.["tabs"] ?? []) as HerdrTab[];
   return panes.map((p) => ({ id: p.pane_id, title: tabs.find((t) => t.tab_id === p.tab_id)?.label ?? p.pane_id, path: p.cwd ?? "", ...(p.agent ? { tool: p.agent } : {}), ...(p.workspace_id ? { profile: p.workspace_id } : {}), pane: p.pane_id, ...(p.tab_id ? { tab: p.tab_id } : {}) }));
 };
 
 type ProcessInfo = { readonly shell_pid?: number; readonly foreground_processes?: readonly { readonly pid?: number; readonly cmdline?: string }[] };
-const processInfo = async (run: Runner, pane: string): Promise<ProcessInfo | undefined> => (await herdrResult(run, ["pane", "process-info", "--pane", pane]))?.process_info as ProcessInfo | undefined;
+const processInfo = async (run: Runner, pane: string): Promise<ProcessInfo | undefined> => (await herdrResult(run, ["pane", "process-info", "--pane", pane]))?.["process_info"] as ProcessInfo | undefined;
 
 export const herdrShellPid = async (run: Runner, pane: string): Promise<number> => Number((await processInfo(run, pane))?.shell_pid ?? 0);
 
@@ -145,7 +145,7 @@ export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readon
   let created = await run(tabArgv(opts.workspace));
   // a fresh server has no workspace to put a tab in ("workspace_not_found", herdr 0.9.5 on Linux and Windows): make one
   if (created.code !== 0 && !opts.workspace && /workspace_not_found/.test(created.out + created.err)) {
-    const ws = (await herdrResult(run, ["workspace", "create", "--label", "dori", "--cwd", opts.cwd, "--no-focus"]))?.workspace as { workspace_id?: string } | undefined;
+    const ws = (await herdrResult(run, ["workspace", "create", "--label", "dori", "--cwd", opts.cwd, "--no-focus"]))?.["workspace"] as { workspace_id?: string } | undefined;
     if (ws?.workspace_id) created = await run(tabArgv(ws.workspace_id));
   }
   if (created.code !== 0) throw new Error(`herdr tab create failed: ${created.err || created.out}`);
@@ -162,9 +162,9 @@ export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readon
 
 // Closes the pane's tab when the pane is all it holds, else the pane only; the line says which (closedLine).
 export const closeHerdrSession = async (run: Runner, pane: string): Promise<string> => {
-  const got = (await herdrResult(run, ["pane", "get", pane]))?.pane as HerdrPane | undefined;
+  const got = (await herdrResult(run, ["pane", "get", pane]))?.["pane"] as HerdrPane | undefined;
   if (!got) return `herdr pane ${pane} not found`;
-  const tab = got.tab_id ? ((await herdrResult(run, ["tab", "get", got.tab_id]))?.tab as HerdrTab | undefined) : undefined;
+  const tab = got.tab_id ? ((await herdrResult(run, ["tab", "get", got.tab_id]))?.["tab"] as HerdrTab | undefined) : undefined;
   const whole = tab?.tab_id && (tab.pane_count ?? 1) <= 1;
   const r = await run(whole ? ["herdr", "tab", "close", tab.tab_id] : ["herdr", "pane", "close", pane]);
   return r.code === 0 ? `herdr ${whole ? `tab ${tab.tab_id}` : "pane"} (${pane}) stopped and closed` : `herdr ${pane} not closed: ${(r.err || r.out).slice(0, 160)}`;

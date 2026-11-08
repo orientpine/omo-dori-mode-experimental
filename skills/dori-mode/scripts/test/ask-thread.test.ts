@@ -29,7 +29,7 @@ const askCli = async (dir: string, args: readonly string[], env: readonly string
     out: r.out,
     err: r.err,
     posted: calls.filter((c) => c.method === "POST" && c.path.endsWith("/messages")).map((c) => c.path.split("/")[2]),
-    reference: calls.find((c) => c.method === "POST" && c.path.endsWith("/messages"))?.body.message_reference,
+    reference: calls.find((c) => c.method === "POST" && c.path.endsWith("/messages"))?.body["message_reference"],
     questions: existsSync(cards) ? (JSON.parse(readFileSync(cards, "utf8")).questions as Record<string, unknown>[]) : [],
   };
 };
@@ -47,9 +47,9 @@ test("a lane with a work thread asks without --thread: the card goes into that t
       chmodSync(join(bin, "tmux"), 0o755);
       writeFileSync(join(state.dir, "aoe.json"), JSON.stringify({ backend: "aoe" }));
       const args = how === "tmux" ? ["--tmux", "aoe_fix_a_1"] : how === "session" ? ["--session", "sess-9"] : [];
-      const env = how === "pane" ? [`DORI_CONFIG=${join(state.dir, "aoe.json")}`, "TMUX=/tmp/fake,1,0", `PATH=${bin}:${process.env.PATH}`] : [];
+      const env = how === "pane" ? [`DORI_CONFIG=${join(state.dir, "aoe.json")}`, "TMUX=/tmp/fake,1,0", `PATH=${bin}:${process.env["PATH"]}`] : [];
       const r = await askCli(state.dir, args, env);
-      expect({ how, code: r.code, posted: r.posted, auto: r.out.includes(`ASK_THREAD_AUTO discord:${THREAD} lane fix-a`), thread: r.questions[0]?.thread, tmux: r.questions[0]?.tmux })
+      expect({ how, code: r.code, posted: r.posted, auto: r.out.includes(`ASK_THREAD_AUTO discord:${THREAD} lane fix-a`), thread: r.questions[0]?.["thread"], tmux: r.questions[0]?.["tmux"] })
         .toEqual({ how, code: 0, posted: [THREAD], auto: true, thread: THREAD, tmux: "aoe_fix_a_1" });
     } finally {
       state.done();
@@ -90,7 +90,7 @@ test("--channel with a reason posts in the channel and keeps the reason on the c
   const state = withState();
   try {
     const r = await askCli(state.dir, ["--channel", "the owner asked this short question in the channel"]);
-    expect({ code: r.code, posted: r.posted, line: r.out.includes("ASK_CHANNEL Q1: the owner asked this short question in the channel"), why: r.questions[0]?.channelWhy, thread: r.questions[0]?.thread })
+    expect({ code: r.code, posted: r.posted, line: r.out.includes("ASK_CHANNEL Q1: the owner asked this short question in the channel"), why: r.questions[0]?.["channelWhy"], thread: r.questions[0]?.["thread"] })
       .toEqual({ code: 0, posted: [CHANNEL], line: true, why: "the owner asked this short question in the channel", thread: null });
     for (const bad of [["--channel", " "], ["--channel"]]) {
       const s = withState();
@@ -115,10 +115,10 @@ test("--reply-to the owner's channel message answers it in the channel as a repl
       { ts: "2026-10-29T13:08:10Z", id: "777000000000000003", channel_id: CHANNEL, scope: "channel", author_id: "99", content: "not him" },
     ]);
     const asChannel = await askCli(state.dir, ["--reply-to", "https://discord.com/channels/1/500/777000000000000001"]);
-    expect({ code: asChannel.code, posted: asChannel.posted, reference: asChannel.reference, replyTo: asChannel.questions[0]?.replyTo, line: asChannel.out.includes("ASK_REPLY Q1 777000000000000001") })
+    expect({ code: asChannel.code, posted: asChannel.posted, reference: asChannel.reference, replyTo: asChannel.questions[0]?.["replyTo"], line: asChannel.out.includes("ASK_REPLY Q1 777000000000000001") })
       .toEqual({ code: 0, posted: [CHANNEL], reference: { message_id: "777000000000000001", fail_if_not_exists: false }, replyTo: "777000000000000001", line: true });
     const inThread = await askCli(state.dir, ["--reply-to", "777000000000000002"]);
-    expect({ code: inThread.code, posted: inThread.posted.at(-1), thread: inThread.questions.at(-1)?.thread, line: inThread.out.includes(`ASK_REPLY Q2 777000000000000002 in thread discord:${THREAD}`) }).toEqual({ code: 0, posted: THREAD, thread: THREAD, line: true });
+    expect({ code: inThread.code, posted: inThread.posted.at(-1), thread: inThread.questions.at(-1)?.["thread"], line: inThread.out.includes(`ASK_REPLY Q2 777000000000000002 in thread discord:${THREAD}`) }).toEqual({ code: 0, posted: THREAD, thread: THREAD, line: true });
     for (const id of ["777000000000000003", "777000000000000009", "not-an-id"]) {
       const s = withState();
       try {

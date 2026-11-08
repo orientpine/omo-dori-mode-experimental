@@ -63,7 +63,7 @@ if (import.meta.main) {
     await stopCore(run);
     console.log("bridges: stopped");
   } else {
-    const bridges = parseBridges(process.env.DORITERM_BRIDGES || process.env.DORITERM_BRIDGE_NAME || "zzangdori");
+    const bridges = parseBridges(process.env["DORITERM_BRIDGES"] || process.env["DORITERM_BRIDGE_NAME"] || "zzangdori");
     for (const line of await ensureBridges(run, bridges)) console.log(line);
   }
 }

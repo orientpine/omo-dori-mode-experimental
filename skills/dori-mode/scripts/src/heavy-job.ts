@@ -84,7 +84,7 @@ export type JobRun = { readonly label: string; readonly free: number; readonly l
 export const runJob = async (job: HeavyJob, dir: string, args: readonly string[], scope: JobRun = { label: "job", free: 10 }): Promise<JobResult> => {
   const values: Record<string, string> = { in: join(dir, "in"), out: join(dir, "out") };
   inputs(dir).forEach((n, i) => (values[`in${i}`] = join(dir, "in", n)));
-  const env = { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: process.env.HOME ?? "/", LANG: process.env.LANG ?? "C.UTF-8", TMPDIR: join(dir, "tmp"), ...job.env };
+  const env = { PATH: process.env["PATH"] ?? "/usr/local/bin:/usr/bin:/bin", HOME: process.env["HOME"] ?? "/", LANG: process.env["LANG"] ?? "C.UTF-8", TMPDIR: join(dir, "tmp"), ...job.env };
   let forget = () => {};
   const code = await spawnScoped({ ...scope, cmd: [...fill(job.argv, values), ...args] }, { cwd: dir, env, stdin: "ignore", stdout: Bun.file(join(dir, "stdout")), stderr: "inherit" }, (pid) => {
     const f = onStop(() => killTree(pid));

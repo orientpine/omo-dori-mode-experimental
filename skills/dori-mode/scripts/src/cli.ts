@@ -527,7 +527,7 @@ await resolveInstance(process.cwd());
 const foreignEnv = await loadEnvFile(envFilePath());
 if (foreignEnv.length) console.error(`DORI_ENV_FOREIGN dropped ${foreignEnv.length} inherited variables of another Dori (its bot token differs from ${envFilePath()}): ${foreignEnv.join(" ")}`);
 const config = await loadConfig().catch((e: unknown) => (e instanceof ConfigError ? die(`CONFIG_INVALID ${e.message}`, 2) : Promise.reject(e)));
-const discordToken = process.env.DORI_DISCORD_TOKEN?.trim();
+const discordToken = process.env["DORI_DISCORD_TOKEN"]?.trim();
 const deps: FlowDeps = {
   run,
   clock: realClock,
@@ -555,10 +555,10 @@ const deps: FlowDeps = {
         },
         postOwner: async (channel: string, text: string) => ownDiscord(discordToken).send(channel, text),
         postLeadAlert: leadAlertPoster((channel, text) => ownDiscord(discordToken).send(channel, text), {
-          pair: process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "",
-          owner: process.env.DORI_DISCORD_CHANNEL?.trim() ?? "",
+          pair: process.env["DORI_DISCORD_PAIR_CHANNEL"]?.trim() ?? "",
+          owner: process.env["DORI_DISCORD_CHANNEL"]?.trim() ?? "",
         }),
-        ...(process.env.DORI_DISCORD_CHANNEL?.trim()
+        ...(process.env["DORI_DISCORD_CHANNEL"]?.trim()
           ? {
               // dori launch --thread new: a working thread in this Dori's own channel, mapped like dori thread open
               openThread: async (title: string) => {
@@ -571,11 +571,11 @@ const deps: FlowDeps = {
       }
     : {}),
   ownerInbox: {
-    path: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
-    ownerId: process.env.DORI_DISCORD_OWNER?.trim() ?? "",
-    ownerChannel: process.env.DORI_DISCORD_CHANNEL?.trim() ?? "",
+    path: process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+    ownerId: process.env["DORI_DISCORD_OWNER"]?.trim() ?? "",
+    ownerChannel: process.env["DORI_DISCORD_CHANNEL"]?.trim() ?? "",
   },
-  channels: [process.env.DORI_DISCORD_CHANNEL, process.env.DORI_DISCORD_PAIR_CHANNEL, process.env.DORI_DISCORD_WATCH_CHANNELS].flatMap((v) => (v ?? "").split(/[\s,]+/)).filter(Boolean),
+  channels: [process.env["DORI_DISCORD_CHANNEL"], process.env["DORI_DISCORD_PAIR_CHANNEL"], process.env["DORI_DISCORD_WATCH_CHANNELS"]].flatMap((v) => (v ?? "").split(/[\s,]+/)).filter(Boolean),
 };
 const [command = "", ...rest] = process.argv.slice(2);
 
@@ -721,7 +721,7 @@ const realpathOr = (path: string): string => {
   }
 };
 // the owner's after-the-fact line of a rollover the lead decided: in the given Discord thread, else DORI_DISCORD_CHANNEL
-const reportOwner = discordToken && process.env.DORI_DISCORD_CHANNEL?.trim()
+const reportOwner = discordToken && process.env["DORI_DISCORD_CHANNEL"]?.trim()
   ? { reportOwner: async (thread: string | null, text: string): Promise<string> => discordClient().send(thread ?? env("DORI_DISCORD_CHANNEL"), text) }
   : {};
 const sessionOfPane = async (pane: string, cwd: string): Promise<string> => (await resolveSession(pane, cwd, await procTable(run), { run, sessionsDir: config.sessionsDir, backend: config.backend })).id;
@@ -754,8 +754,8 @@ const laneDepsFor = (print: (line: string) => void = (line) => console.log(line)
   realpath: realpathOr,
   nonce: () => crypto.randomUUID().slice(0, 8),
   print,
-  inbox: config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
-  ownerIds: [process.env.DORI_DISCORD_OWNER, process.env.DORI_KAKAO_OWNER_ID].map((id) => id?.trim() ?? "").filter(Boolean),
+  inbox: config.handover.inbox || process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+  ownerIds: [process.env["DORI_DISCORD_OWNER"], process.env["DORI_KAKAO_OWNER_ID"]].map((id) => id?.trim() ?? "").filter(Boolean),
   ...reportOwner,
 });
 const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
@@ -763,11 +763,11 @@ const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
   configPath: configPath(),
   envPath: envFilePath(),
   cardDir: cardDir(),
-  inbox: config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+  inbox: config.handover.inbox || process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
   home: accountHome(),
   sessionOf: sessionOfPane,
   routedPane: async () => (await loadConfig()).leadPane,
-  envLeadPane: process.env.DORI_LEAD_PANE?.trim() ?? "",
+  envLeadPane: process.env["DORI_LEAD_PANE"]?.trim() ?? "",
   alive: pidAlive,
   procs: () => procTable(run),
   signal: sendSignal,
@@ -779,7 +779,7 @@ const leadDepsFor = (print: (line: string) => void): HandoverDeps => ({
   restart: (unit) => restartService({ systemctl: run, clock: realClock, timeoutSec: config.update.readyTimeoutSec }, config.update.services.find((s) => s.unit === unit) ?? { unit, paths: [], log: "", ready: "" }),
   nonce: () => crypto.randomUUID().slice(0, 8),
   print,
-  ownerIds: [process.env.DORI_DISCORD_OWNER, process.env.DORI_KAKAO_OWNER_ID].map((id) => id?.trim() ?? "").filter(Boolean),
+  ownerIds: [process.env["DORI_DISCORD_OWNER"], process.env["DORI_KAKAO_OWNER_ID"]].map((id) => id?.trim() ?? "").filter(Boolean),
   ...reportOwner,
 });
 // dori commands that talk to the owner refuse from a session that a running handover is replacing (no double replies)
@@ -827,7 +827,7 @@ const watchMatch = (value: string | undefined): { watchMatch?: RegExp } => {
 // any pair Dori's bot (DORI_DISCORD_PAIR_BOT). An inherited token of another Dori fails here instead of posting as it.
 const discordBotProblem = (token: string): string | undefined => {
   const bot = tokenBotId(token);
-  const pairBots = idList(process.env.DORI_DISCORD_PAIR_BOT);
+  const pairBots = idList(process.env["DORI_DISCORD_PAIR_BOT"]);
   const where = `config ${configPath()}, env file ${envFilePath()}`;
   if (config.discord.botId && bot !== config.discord.botId)
     return `DISCORD_BOT_MISMATCH DORI_DISCORD_TOKEN is bot ${bot ?? "unknown"}, but this Dori is bot ${config.discord.botId} (discord.botId; ${where}). Nothing was sent. An inherited token of another Dori? Unset the DORI_DISCORD_* variables or fix the token.`;
@@ -839,10 +839,10 @@ const checkedDiscordToken = (token: string): string => {
   return why ? die(why, 2) : token;
 };
 // DORI_DISCORD_API: the REST base for a Dori whose only way out is an egress gate (setups/egress-gate); unset = Discord
-const discordApi = (): string => process.env.DORI_DISCORD_API?.trim() || "https://discord.com/api/v10";
+const discordApi = (): string => process.env["DORI_DISCORD_API"]?.trim() || "https://discord.com/api/v10";
 // the gateway socket follows HTTPS_PROXY when one is set, like fetch does
 const gatewaySocket = (): WebSocket => {
-  const proxy = process.env.HTTPS_PROXY?.trim() || process.env.https_proxy?.trim();
+  const proxy = process.env["HTTPS_PROXY"]?.trim() || process.env["https_proxy"]?.trim();
   return new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json", proxy ? { proxy } : undefined);
 };
 const ownDiscord = (token: string): Discord => {
@@ -854,8 +854,8 @@ const discordClient = () => new Discord(fetchHttp, realClock, checkedDiscordToke
 // A Discord place that is the owner's: DORI_DISCORD_CHANNEL, a thread in it, or a DM (a bot's DM is with the owner). The pair
 // channel is the Doris' own. A place that cannot be looked up counts as his.
 const ownerPlace = async (dc: Discord, id: string): Promise<boolean> => {
-  const channel = process.env.DORI_DISCORD_CHANNEL?.trim() ?? "";
-  if (id === (process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() || undefined)) return false;
+  const channel = process.env["DORI_DISCORD_CHANNEL"]?.trim() ?? "";
+  if (id === (process.env["DORI_DISCORD_PAIR_CHANNEL"]?.trim() || undefined)) return false;
   if (id === channel) return true;
   const c = await dc.call<{ type?: number; parent_id?: string | null }>("GET", `/channels/${id}`).catch(() => undefined);
   return !c || c.type === 1 || (channel !== "" && c.parent_id === channel);
@@ -867,7 +867,7 @@ const ownerSpeech = async (text: string, what: string, toOwner: () => Promise<bo
   if (problem && (await toOwner())) die(`SPEECH_REFUSED ${what}: ${problem}; nothing was sent`, 2);
 };
 // question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
-const cardDir = (): string => process.env.DORI_DISCORD_STATE_DIR?.trim() || join(config.stateDir, "discord");
+const cardDir = (): string => process.env["DORI_DISCORD_STATE_DIR"]?.trim() || join(config.stateDir, "discord");
 // The ledger an owner message and a lead's thread are read against: both layers, a bad local line left out (as the audit
 // reads it). No ledger configured is not "no directives": it throws, like a ledger that cannot be read.
 const hintLedger = (opts: { readonly strict?: boolean } = {}): Ledger => {
@@ -880,7 +880,7 @@ const hintLedger = (opts: { readonly strict?: boolean } = {}): Ledger => {
 const leadMemoryRepo = (): string => config.directives.memory || memoryRepoFor(config.handover.cwd || config.defaultCwd, homedir());
 // the owner's message a thread starts from, as the inbox has it (text or voice transcript); empty when it is not there
 const inboxText = (id: string): string => {
-  const file = process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+  const file = process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
   if (!existsSync(file)) return "";
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.includes(id)) continue;
@@ -894,7 +894,7 @@ const inboxText = (id: string): string => {
   return "";
 };
 // the inbox dori directive-audit reads the owner's messages from and leaves its notices for the lead in
-const auditInbox = (): string => config.handover.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+const auditInbox = (): string => config.handover.inbox || process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
 // why a Discord message link is not the owner's word (his account or his registered webhook), or undefined when it is
 const ownerLinkProblem = async (url: string, maxAgeMs?: number): Promise<string | undefined> => {
   const m = /^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/\d+\/(\d+)\/(\d+)$/.exec(url.trim());
@@ -902,8 +902,8 @@ const ownerLinkProblem = async (url: string, maxAgeMs?: number): Promise<string 
   if (!discordToken) return "DORI_DISCORD_TOKEN is not set, so the link cannot be read";
   const msg = await ownDiscord(discordToken).call<{ author?: { id?: string }; webhook_id?: string; timestamp?: string }>("GET", `/channels/${m[1]}/messages/${m[2]}`).catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
   if (typeof msg === "string") return `the message could not be read (${msg.slice(0, 120)})`;
-  const owner = process.env.DORI_DISCORD_OWNER?.trim() ?? "";
-  const hook = process.env.DORI_DISCORD_OWNER_WEBHOOK?.trim() ?? "";
+  const owner = process.env["DORI_DISCORD_OWNER"]?.trim() ?? "";
+  const hook = process.env["DORI_DISCORD_OWNER_WEBHOOK"]?.trim() ?? "";
   if (!(owner && msg.author?.id === owner) && !(hook && msg.webhook_id === hook)) return "the message is not the owner's";
   if (maxAgeMs !== undefined && Date.now() - Date.parse(msg.timestamp ?? "") > maxAgeMs) return `the owner's message is older than ${Math.round(maxAgeMs / 3_600_000)} hours`;
   return undefined;
@@ -944,7 +944,7 @@ const backlogDeps = (): TickDeps => ({
     // both took them)
     const inbox = inboxReader(config.stateDir, auditInbox());
     const orders = [
-      ...pairIntake({ stateDir: config.stateDir, settings: config.backlog, rows: inbox.rows, now: realClock.now, pairBots: idList(process.env.DORI_DISCORD_PAIR_BOT), guild: process.env.DORI_DISCORD_GUILD?.trim() ?? "" }),
+      ...pairIntake({ stateDir: config.stateDir, settings: config.backlog, rows: inbox.rows, now: realClock.now, pairBots: idList(process.env["DORI_DISCORD_PAIR_BOT"]), guild: process.env["DORI_DISCORD_GUILD"]?.trim() ?? "" }),
       ...orderIntake({ stateDir: config.stateDir, settings: config.backlog, rows: inbox.rows, now: realClock.now }),
     ];
     inbox.commit();
@@ -969,7 +969,7 @@ const backlogDeps = (): TickDeps => ({
 // working, or sent back to work by an objection (not-done); a lane that claimed done or is paused waits like the thread
 // The lane whose close runs a thread hook (DORI_CLOSING_LANE) is still open in the registry then, but no longer works there.
 const workingLanes = async (t: string): Promise<string[]> =>
-  (await deps.registry.open()).filter((l) => l.key !== process.env.DORI_CLOSING_LANE && l.thread === `discord:${t}` && (statusOf(l) === "working" || statusOf(l) === "not-done")).map((l) => l.key);
+  (await deps.registry.open()).filter((l) => l.key !== process.env["DORI_CLOSING_LANE"] && l.thread === `discord:${t}` && (statusOf(l) === "working" || statusOf(l) === "not-done")).map((l) => l.key);
 const threadStatuses = (dc: Discord, log: (line: string) => void = (line) => console.error(line)) => {
   const store = new QuestionStore(cardDir());
   return new ThreadStatusQueue({ dc, words: config.discord, file: join(cardDir(), "thread-status.json"), openCards: (t) => openCardIds(store, t), workingLanes, now: realClock.now, log });
@@ -1014,8 +1014,8 @@ try {
       if (key !== "off") die("usage: dori eyes off <message id | link>", 2);
       onlyOptions("eyes off", [], 2);
       const ref = flags.positionals[1] ?? die("usage: dori eyes off <message id | link>", 2);
-      const inbox = process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
-      console.log(await eyesOff(discordClient(), join(dirname(inbox), "eyes.json"), ref, process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "").catch((e: unknown) => die(`EYES_OFF_FAIL ${ref} ${e instanceof Error ? e.message : String(e)}`)));
+      const inbox = process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+      console.log(await eyesOff(discordClient(), join(dirname(inbox), "eyes.json"), ref, process.env["DORI_DISCORD_PAIR_CHANNEL"]?.trim() ?? "").catch((e: unknown) => die(`EYES_OFF_FAIL ${ref} ${e instanceof Error ? e.message : String(e)}`)));
       break;
     }
     case "type": {
@@ -1394,8 +1394,8 @@ try {
         sessionsDir: config.scorecard.sessions,
         lanes: await deps.registry.list(),
         settings: config.scorecard,
-        inbox: config.scorecard.inbox || process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
-        owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "",
+        inbox: config.scorecard.inbox || process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+        owner: process.env["DORI_DISCORD_OWNER"]?.trim() ?? "",
       }, window);
       const text = formatScorecard(data, config.scorecard.language, Date.now());
       console.log(text);
@@ -1471,7 +1471,7 @@ try {
           },
           auditSummary: (week: string) => sendAuditSummary(deps, laneDeps.inbox ?? join(config.stateDir, "discord", "inbox.jsonl"), week),
           // the daily directive audit on every Dori, and the owner's links pushed to the other Dori (directives.linkPeers)
-          directiveAudit: dailyAuditHook(config, async (since: string) => (await auditOrReport(deps, { since, inbox: auditInbox(), owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "", threads: threads(cardDir()), memory: leadMemoryRepo() })).lines),
+          directiveAudit: dailyAuditHook(config, async (since: string) => (await auditOrReport(deps, { since, inbox: auditInbox(), owner: process.env["DORI_DISCORD_OWNER"]?.trim() ?? "", threads: threads(cardDir()), memory: leadMemoryRepo() })).lines),
           directiveLinks: async () => (await pushLinks(deps)).lines,
         };
         for (const a of await freshnessTick(deps, accountHome(), hooks)) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
@@ -1483,8 +1483,8 @@ try {
             .then(() =>
               archiveDoneThreads({
                 dc: ownDiscord(discordToken),
-                guild: process.env.DORI_DISCORD_GUILD?.trim() ?? "",
-                channel: process.env.DORI_DISCORD_CHANNEL?.trim() ?? "",
+                guild: process.env["DORI_DISCORD_GUILD"]?.trim() ?? "",
+                channel: process.env["DORI_DISCORD_CHANNEL"]?.trim() ?? "",
                 words: config.discord,
                 afterMin: config.discord.autoArchiveMin,
                 now: realClock.now,
@@ -1609,15 +1609,15 @@ try {
       const load = async () => (await sampleHost(run, config.backend)).load1;
       const at = rest.indexOf("--caller");
       const words = at >= 0 ? [...rest.slice(0, at), ...rest.slice(at + 2)] : rest;
-      process.exitCode = await heavyWorker({ q: config.heavyQueue, deps: heavyDeps(load) }, process.env.SSH_ORIGINAL_COMMAND ?? words.join(" "), opt("caller"));
+      process.exitCode = await heavyWorker({ q: config.heavyQueue, deps: heavyDeps(load) }, process.env["SSH_ORIGINAL_COMMAND"] ?? words.join(" "), opt("caller"));
       break;
     }
     case "state-git": {
       const sg = config.stateGit;
       const sgDeps: StateGitDeps = { settings: sg, timeZone: sg.timeZone || config.scorecard.timeZone, now: () => Date.now(), print: (line) => console.log(line) };
-      const inbox = process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+      const inbox = process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
       const picked = many("dir").map((d) => resolve(d));
-      const dirs = picked.length ? picked : stateGitDirs({ configFile: configPath(), stateDir: config.stateDir, inbox, home: process.env.HOME ?? "", dirs: sg.dirs }).filter((d) => existsSync(d));
+      const dirs = picked.length ? picked : stateGitDirs({ configFile: configPath(), stateDir: config.stateDir, inbox, home: process.env["HOME"] ?? "", dirs: sg.dirs }).filter((d) => existsSync(d));
       const sub = key ?? "log";
       const show = (lines: readonly string[]): void => {
         for (const line of lines) console.log(line);
@@ -1638,8 +1638,8 @@ try {
         secrets: async () => {
           const gh = await run(["gh", "auth", "token"]);
           const ghToken = gh.code === 0 && gh.out.trim() ? [{ value: gh.out.trim(), from: "gh auth token" }] : [];
-          const ownerIds = [process.env.DORI_DISCORD_OWNER, process.env.DORI_KAKAO_OWNER_ID].map((v) => v?.trim() ?? "").filter(Boolean);
-          const messageFiles = [...bk.messageFiles, inbox, process.env.DORI_KAKAO_INBOX?.trim() ?? ""].filter(Boolean);
+          const ownerIds = [process.env["DORI_DISCORD_OWNER"], process.env["DORI_KAKAO_OWNER_ID"]].map((v) => v?.trim() ?? "").filter(Boolean);
+          const messageFiles = [...bk.messageFiles, inbox, process.env["DORI_KAKAO_INBOX"]?.trim() ?? ""].filter(Boolean);
           const secretFiles = bk.secretFiles.flatMap((f) => (existsSync(f) && statSync(f).isDirectory() ? envFilesIn(f) : [f]));
           return loadSecrets([...secretFiles, envFilePath(), ...backupDirs.flatMap(envFilesIn)], messageFiles, ownerIds, bk.ownerMinChars, ghToken);
         },
@@ -1842,12 +1842,12 @@ try {
         return r;
       };
       if (platform === "slack") {
-        const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env.DORI_SLACK_COOKIE }, process.env.DORI_SLACK_API?.trim() || undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
+        const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env["DORI_SLACK_COOKIE"] }, process.env["DORI_SLACK_API"]?.trim() || undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
         if (edit) await slack.edit(to, edit, text);
         else {
           let posted: { channel: string; ts: string } | undefined;
           // files are shared once per call and never by the repeat check: a failure exits non-zero and a person calls again.
-          const files = { inbox: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"), uneyed: join(config.stateDir, "slack-uneyed.log") };
+          const files = { inbox: process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl"), uneyed: join(config.stateDir, "slack-uneyed.log") };
           // completeUploadExternal names no message ts, so the share answers the rows there before its upload started and
           // none that came during it (OkDori answered the owner with a file share and the eyes stayed, 2026-11-03)
           let known: ReadonlySet<string> | undefined;
@@ -1862,8 +1862,8 @@ try {
               return { id: p.ts, content: p.text };
             });
           // only the watcher's bot puts eyes on; a member's token (xoxp-) must never take a reaction off
-          if (posted && process.env.DORI_SLACK_TOKEN?.startsWith("xoxb-")) {
-            for (const line of await clearEyes(slackUnreact(process.env.DORI_SLACK_TOKEN, process.env.DORI_SLACK_API?.trim() || undefined), files, posted, thread, 3000, known)) console.log(line);
+          if (posted && process.env["DORI_SLACK_TOKEN"]?.startsWith("xoxb-")) {
+            for (const line of await clearEyes(slackUnreact(process.env["DORI_SLACK_TOKEN"], process.env["DORI_SLACK_API"]?.trim() || undefined), files, posted, thread, 3000, known)) console.log(line);
           }
         }
       } else if (platform === "telegram") {
@@ -1889,7 +1889,7 @@ try {
     }
     case "presence": {
       if (key === "slack") {
-        const auth = { token: process.env.DORI_SLACK_TOKEN ?? die("DORI_SLACK_TOKEN is not set"), cookie: process.env.DORI_SLACK_COOKIE ?? die("DORI_SLACK_COOKIE is not set (user-token presence needs the d cookie)") };
+        const auth = { token: process.env["DORI_SLACK_TOKEN"] ?? die("DORI_SLACK_TOKEN is not set"), cookie: process.env["DORI_SLACK_COOKIE"] ?? die("DORI_SLACK_COOKIE is not set (user-token presence needs the d cookie)") };
         const p = slackPresence(new Slack(fetchHttp, realClock, auth), (url, headers) => {
           const options: Bun.WebSocketOptions = { headers: { ...headers } };
           const ws = new WebSocket(url, options);
@@ -1898,7 +1898,7 @@ try {
         console.log("PRESENCE_READY slack");
         await every(1, async () => console.log(`PRESENCE slack ${await p.hold()}`));
       } else if (key === "discord") {
-        const token = checkedDiscordToken(process.env.DORI_DISCORD_TOKEN ?? die("DORI_DISCORD_TOKEN is not set"));
+        const token = checkedDiscordToken(process.env["DORI_DISCORD_TOKEN"] ?? die("DORI_DISCORD_TOKEN is not set"));
         discordPresence(() => {
           const ws = gatewaySocket();
           let handler: (d: string) => void = () => {};
@@ -1914,8 +1914,8 @@ try {
       const minutes = loopMinutes();
       if (key === "discord") {
         // a shadow run writes only to its own inbox, never the live one (which dori.env may also name)
-        const shadowInbox = process.env.DORI_DISCORD_SHADOW_INBOX?.trim() ?? "";
-        const liveInbox = process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
+        const shadowInbox = process.env["DORI_DISCORD_SHADOW_INBOX"]?.trim() ?? "";
+        const liveInbox = process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl");
         if (shadowInbox && resolve(shadowInbox) === resolve(liveInbox)) die("DORI_DISCORD_SHADOW_INBOX must differ from the live inbox");
         const dc = discordClient();
         const statuses = threadStatuses(dc, (line) => console.log(line));
@@ -1937,12 +1937,12 @@ try {
           guild: env("DORI_DISCORD_GUILD"),
           channel: env("DORI_DISCORD_CHANNEL"),
           owner: env("DORI_DISCORD_OWNER"),
-          ownerWebhook: process.env.DORI_DISCORD_OWNER_WEBHOOK?.trim() ?? "",
-          pairChannel: process.env.DORI_DISCORD_PAIR_CHANNEL?.trim() ?? "",
-          pairBots: idList(process.env.DORI_DISCORD_PAIR_BOT),
-          watchChannels: idList(process.env.DORI_DISCORD_WATCH_CHANNELS),
-          watchBots: idList(process.env.DORI_DISCORD_WATCH_BOTS),
-          ...watchMatch(process.env.DORI_DISCORD_WATCH_MATCH),
+          ownerWebhook: process.env["DORI_DISCORD_OWNER_WEBHOOK"]?.trim() ?? "",
+          pairChannel: process.env["DORI_DISCORD_PAIR_CHANNEL"]?.trim() ?? "",
+          pairBots: idList(process.env["DORI_DISCORD_PAIR_BOT"]),
+          watchChannels: idList(process.env["DORI_DISCORD_WATCH_CHANNELS"]),
+          watchBots: idList(process.env["DORI_DISCORD_WATCH_BOTS"]),
+          ...watchMatch(process.env["DORI_DISCORD_WATCH_MATCH"]),
           shadow: !!shadowInbox,
           words: config.discord,
           inboxFile: shadowInbox || liveInbox,
@@ -1960,7 +1960,7 @@ try {
       // upstream dori-superagent #76 (https://github.com/sisyphuslabs/dori-superagent/pull/76): telegram inbound; #79
       // (https://github.com/sisyphuslabs/dori-superagent/pull/79): edits, media file ids, envInt and its inbound loop
       if (key === "telegram") {
-        const tg = new Telegram(fetchHttp, realClock, process.env.DORI_TELEGRAM_TOKEN ?? die("DORI_TELEGRAM_TOKEN is not set"));
+        const tg = new Telegram(fetchHttp, realClock, process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set"));
         const store = fileTgInboundStore(`${config.stateDir}/telegram-offset`);
         // review 1 of #350: a blank id is refused rather than read as 0, and so are ids Telegram never gives; #79's envInt
         // also refuses 1e3 and 0x10
@@ -1976,8 +1976,8 @@ try {
           return n;
         };
         const ownerId = num("DORI_TELEGRAM_OWNER_ID", "user");
-        const groupChatId = process.env.DORI_TELEGRAM_GROUP_ID === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
-        const topicId = process.env.DORI_TELEGRAM_TOPIC_ID === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID", "topic");
+        const groupChatId = process.env["DORI_TELEGRAM_GROUP_ID"] === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
+        const topicId = process.env["DORI_TELEGRAM_TOPIC_ID"] === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID", "topic");
         console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
         // Full text, JSON-escaped on one line: getUpdates cannot fetch a message twice. writeLineSync, not console.log,
         // which drops a failed write (a closed stdout): the whole line is out before the offset moves past its message.
@@ -1996,10 +1996,10 @@ try {
         break;
       }
       if (key !== "slack") die("inbound supports slack, discord and telegram");
-      const auth = { token: process.env.DORI_SLACK_TOKEN ?? die("DORI_SLACK_TOKEN is not set"), cookie: process.env.DORI_SLACK_COOKIE };
+      const auth = { token: process.env["DORI_SLACK_TOKEN"] ?? die("DORI_SLACK_TOKEN is not set"), cookie: process.env["DORI_SLACK_COOKIE"] };
       const ledger = new ThreadLedger(`${config.stateDir}/slack-threads.json`);
-      const slack = new Slack(fetchHttp, realClock, auth, process.env.DORI_SLACK_API?.trim() || undefined, ledger);
-      const me = String((await slack.call("auth.test", {})).user_id ?? die("auth.test returned no user_id"));
+      const slack = new Slack(fetchHttp, realClock, auth, process.env["DORI_SLACK_API"]?.trim() || undefined, ledger);
+      const me = String((await slack.call("auth.test", {}))["user_id"] ?? die("auth.test returned no user_id"));
       console.log("INBOUND_READY slack");
       await every(minutes, async () => {
         for (const i of await pollSlackInbound(slack, ledger, { selfUserId: me })) console.log(`INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify((i.text ?? "").slice(0, 200))}`);
@@ -2022,8 +2022,8 @@ try {
           here: await currentTmuxSession(run).catch(() => ""),
           lanes: await deps.registry.open(),
           threads: threads(cardDir()),
-          inbox: process.env.DORI_DISCORD_INBOX?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
-          owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "",
+          inbox: process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+          owner: process.env["DORI_DISCORD_OWNER"]?.trim() ?? "",
         });
       } catch (e) {
         if (e instanceof AskPlaceError) die(e.message, 2);
@@ -2134,7 +2134,7 @@ try {
       // another open lane or an open question card uses the thread, it is left as it is. The lane whose close runs this
       // (hooks.threadDone, which sets DORI_CLOSING_LANE, or --lane) is not another user. --force marks it done anyway.
       const holdersOf = async (thread: string): Promise<string> => {
-        const closing = opt("lane") ?? process.env.DORI_CLOSING_LANE ?? "";
+        const closing = opt("lane") ?? process.env["DORI_CLOSING_LANE"] ?? "";
         const sharing = (await deps.registry.open()).filter((l) => l.key !== closing && l.thread === thread).map((l) => l.key);
         const cards = deps.openCards?.(thread) ?? [];
         const standing = threads(cardDir())[discordThreadId(thread)]?.standing === true;
@@ -2272,7 +2272,7 @@ try {
         const kind = opt("kind")?.trim() || die("--kind is needed: owner's words, decision, lead instruction, todo, goal, monitor, tried fix or other");
         const text = opt("text")?.trim() || die("--text is needed: one line on what was not known (a summary, no secret values)");
         const by = k !== "lead" && here && here === (await deps.registry.read(k))?.pane ? "lane" : "lead";
-        console.log(reportGap(deps, k, kind, text, by, Boolean(flags.values.fixed)).line);
+        console.log(reportGap(deps, k, kind, text, by, Boolean(flags.values["fixed"])).line);
         break;
       }
       if (key === "audit-summary") {
@@ -2308,7 +2308,7 @@ try {
       }
       // closing the old lead ends every process in its tmux session, so a handover started there continues as a user unit
       // and since the old lead is frozen at the commit (--keep-old too), it must not run under the agent it stops
-      if (here && here === config.leadPane && !flags.values["dry-run"] && !process.env.DORI_HANDOVER_DETACHED) {
+      if (here && here === config.leadPane && !flags.values["dry-run"] && !process.env["DORI_HANDOVER_DETACHED"]) {
         const refused = windowsDetachRefusal();
         if (refused) die(refused);
         const unit = `dori-handover-${Date.now()}`;
@@ -2351,7 +2351,7 @@ try {
     case "compaction-trial": {
       const t = config.compactionTrial;
       const rows = trialRows(config, await deps.registry.list());
-      if (flags.values.json) {
+      if (flags.values["json"]) {
         console.log(JSON.stringify({ trial: t, rows }));
         break;
       }
@@ -2422,7 +2422,7 @@ try {
     }
     case "directive-audit": {
       const since = sinceIso(opt("since") ?? "24h", Date.now());
-      const r = await auditOrReport(deps, { since, inbox: auditInbox(), owner: process.env.DORI_DISCORD_OWNER?.trim() ?? "", threads: threads(cardDir()), memory: leadMemoryRepo(), dryRun: Boolean(flags.values["dry-run"]) });
+      const r = await auditOrReport(deps, { since, inbox: auditInbox(), owner: process.env["DORI_DISCORD_OWNER"]?.trim() ?? "", threads: threads(cardDir()), memory: leadMemoryRepo(), dryRun: Boolean(flags.values["dry-run"]) });
       for (const line of r.lines) console.log(line);
       if (r.failed) process.exit(1);
       break;

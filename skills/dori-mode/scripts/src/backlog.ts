@@ -482,7 +482,7 @@ export const feedIntake = async (d: { readonly stateDir: string; readonly settin
     }
     // the owner's card: approved_at with auto_applied false (a board that applies proposals itself sets it true; a missing
     // field is no card)
-    const card = Boolean(todo.approved_at) && todo.auto_applied === false;
+    const card = Boolean(todo["approved_at"]) && todo["auto_applied"] === false;
     const snapshot = feedContent(todo);
     const hash = hashOf(snapshot);
     const title = String(todo.title ?? ref).slice(0, 60);
@@ -757,7 +757,7 @@ export const orderIntake = (d: { readonly stateDir: string; readonly settings: B
 
 const zoned = (now: number, timeZone: string): { readonly day: string; readonly hm: string } => {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(now)).map((x) => [x.type, x.value]));
-  return { day: `${p.year}-${p.month}-${p.day}`, hm: `${p.hour}:${p.minute}` };
+  return { day: `${p["year"]}-${p["month"]}-${p["day"]}`, hm: `${p["hour"]}:${p["minute"]}` };
 };
 
 /** Once a day after backlog.dayReportAt: what the list did that day and what waits on the owner, for the lead to tell him. */

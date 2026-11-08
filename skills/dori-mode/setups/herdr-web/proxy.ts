@@ -129,15 +129,15 @@ export function startProxy(config: Config) {
 // The login passphrase: HERDR_WEB_PASSPHRASE from the web env file (an install that never ran aoe), else the account's
 // old aoe serve passphrase, so a Dori that moved from aoe keeps logging in with the same one.
 export const passphraseFrom = (env: Readonly<Record<string, string | undefined>>): string | undefined =>
-  env.HERDR_WEB_PASSPHRASE || env.AOE_SERVE_PASSPHRASE || undefined;
+  env["HERDR_WEB_PASSPHRASE"] || env["AOE_SERVE_PASSPHRASE"] || undefined;
 
 if (import.meta.main) {
-  const port = Number(process.env.HERDR_WEB_PORT);
-  const upstreamPort = Number(process.env.HERDR_TTYD_PORT);
+  const port = Number(process.env["HERDR_WEB_PORT"]);
+  const upstreamPort = Number(process.env["HERDR_TTYD_PORT"]);
   const passphrase = passphraseFrom(process.env);
-  const origin = process.env.HERDR_WEB_ORIGIN;
-  const statePort = Number(process.env.HERDR_STATE_PORT);
-  const stateSecret = process.env.HERDR_STATE_SECRET;
+  const origin = process.env["HERDR_WEB_ORIGIN"];
+  const statePort = Number(process.env["HERDR_STATE_PORT"]);
+  const stateSecret = process.env["HERDR_STATE_SECRET"];
   if (!Number.isInteger(port) || port < 1 || port > 65535 ||
       !Number.isInteger(upstreamPort) || upstreamPort < 1 || upstreamPort > 65535 ||
       !Number.isInteger(statePort) || statePort < 1 || statePort > 65535 ||

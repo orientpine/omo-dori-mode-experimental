@@ -52,7 +52,7 @@ const parseLesson = (value: unknown): Lesson => {
   const unknown = Object.keys(record).find((name) => !(FIELDS as readonly string[]).includes(name));
   if (unknown !== undefined) throw new LessonError(`unknown lesson field "${unknown}"`);
   // A repo lesson has a cwd and no scope; a global lesson has scope "global" and no cwd.
-  const global = record.scope === "global";
+  const global = record["scope"] === "global";
   if (global && "cwd" in record) throw new LessonError('a global lesson has no field "cwd"');
   const absent = global ? "cwd" : "scope";
   for (const name of FIELDS) {

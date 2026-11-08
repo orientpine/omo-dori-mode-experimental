@@ -13,11 +13,11 @@ import { duplicateLine, SEND_DUPLICATE_EXIT } from "../src/send-dedupe.ts";
 // unit's bare PATH, as dori watch runs a lane's Done command). A test that checks what aoe add got sets PATH to what the
 // launch would make, so the result does not hang on the PATH of the shell that runs it; the returned function restores it.
 export const launchReadyPath = (): (() => void) => {
-  const caller = process.env.PATH;
+  const caller = process.env["PATH"];
   const p = caller ?? "";
-  process.env.PATH = withPi(sessionPath(p, process.env.NVM_DIR || join(process.env.HOME ?? "", ".nvm")) ?? p, "omo");
+  process.env["PATH"] = withPi(sessionPath(p, process.env["NVM_DIR"] || join(process.env["HOME"] ?? "", ".nvm")) ?? p, "omo");
   return () => {
-    process.env.PATH = caller;
+    process.env["PATH"] = caller;
   };
 };
 

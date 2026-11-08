@@ -27,7 +27,7 @@ if (import.meta.main) {
   await resolveInstance(process.cwd());
   await loadEnvFile(envFilePath());
   const options = kakaoOptions(process.env);
-  const accountFile = process.env.DORI_KAKAO_ACCOUNT_FILE;
+  const accountFile = process.env["DORI_KAKAO_ACCOUNT_FILE"];
   if (!accountFile) {
     console.error("KAKAO_LOGIN_FAIL DORI_KAKAO_ACCOUNT_FILE is not set");
     process.exit(2);
@@ -43,7 +43,7 @@ if (import.meta.main) {
   const passwordFile = join(dir, "password");
   writeFileSync(passwordFile, account.password, { mode: 0o600 });
   try {
-    const p = Bun.spawn(loginArgv(options.lock, options.cli, login, passwordFile, process.env.DORI_KAKAO_DEVICE_TYPE || "tablet"), { stdio: ["inherit", "inherit", "inherit"] });
+    const p = Bun.spawn(loginArgv(options.lock, options.cli, login, passwordFile, process.env["DORI_KAKAO_DEVICE_TYPE"] || "tablet"), { stdio: ["inherit", "inherit", "inherit"] });
     const code = await p.exited;
     console.log(`KAKAO_LOGIN_EXIT ${code}`);
     process.exitCode = code;

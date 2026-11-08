@@ -19,7 +19,7 @@ case "$1" in
 esac
 `, { mode: 0o700 });
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "bridge.ts"), ...args], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORITERM_BRIDGE_NAME: "zzangdori", DORITERM_BRIDGES: "", ...env },
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_BRIDGE_NAME: "zzangdori", DORITERM_BRIDGES: "", ...env },
     stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -103,7 +103,7 @@ n=$(wc -l < "$HOME/calls")
 exit 1
 `, { mode: 0o700 });
   const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh"), "okdori"], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORITERM_RETRY_SECONDS: "0" },
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_RETRY_SECONDS: "0" },
     stdout: "pipe", stderr: "pipe",
   });
   await child.exited;
@@ -138,7 +138,7 @@ n=$(grep -c '^client$' "$HOME/calls")
 kill -TERM "$PPID"
 `, { mode: 0o700 });
   const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env.PATH}`, DORITERM_RETRY_SECONDS: "0" },
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_RETRY_SECONDS: "0" },
     stdout: "pipe", stderr: "pipe",
   });
   await child.exited;

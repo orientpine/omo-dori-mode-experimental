@@ -9,7 +9,7 @@ import { withState } from "./fakes.ts";
 
 const state = withState();
 afterEach(() => {
-  delete process.env.DORI_STATE_DIR;
+  delete process.env["DORI_STATE_DIR"];
 });
 
 test("the shipped example config loads, with ~ paths expanded and unset fields defaulted", async () => {
@@ -21,7 +21,7 @@ test("the shipped example config loads, with ~ paths expanded and unset fields d
 });
 
 test("a missing config file falls back to defaults and DORI_STATE_DIR wins over the file", async () => {
-  process.env.DORI_STATE_DIR = state.dir;
+  process.env["DORI_STATE_DIR"] = state.dir;
   const c = await loadConfig("/nonexistent/config.json", "/home/ana");
   expect(c.stateDir).toBe(state.dir);
   expect(c.agentCommand).toEqual(["omo", "--model", "{model}", "{prompt}"]);

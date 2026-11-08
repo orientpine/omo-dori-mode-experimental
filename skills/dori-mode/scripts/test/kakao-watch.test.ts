@@ -412,7 +412,7 @@ export class KakaoTalkClient {
   return cli;
 };
 const runScript = async (script: string, args: string[], env: Record<string, string>, cwd: string) => {
-  const p = Bun.spawn(["bun", join(SETUP, script), ...args], { cwd, env: { PATH: process.env.PATH ?? "", HOME: cwd, DORI_ENV_FILE: join(cwd, "none.env"), ...env }, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["bun", join(SETUP, script), ...args], { cwd, env: { PATH: process.env["PATH"] ?? "", HOME: cwd, DORI_ENV_FILE: join(cwd, "none.env"), ...env }, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   return { out, err, code };
 };

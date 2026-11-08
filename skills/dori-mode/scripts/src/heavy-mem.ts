@@ -85,7 +85,7 @@ export const scopeArgv = (unit: string, limitBytes: number, cmd: readonly string
 
 // systemd-run --user needs the user manager's bus, found through XDG_RUNTIME_DIR (a job env may not carry it)
 export const userBusEnv = (env: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> => {
-  const dir = env.XDG_RUNTIME_DIR || `/run/user/${userInfo().uid}`;
+  const dir = env["XDG_RUNTIME_DIR"] || `/run/user/${userInfo().uid}`;
   return existsSync(dir) ? { XDG_RUNTIME_DIR: dir } : {};
 };
 

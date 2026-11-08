@@ -20,7 +20,7 @@ export const COMMAND_TIMEOUT_MS = 120_000;
 // git quotes a non-ASCII path ("\352\270\260...") unless core.quotepath is off, so a command signal that greps git's
 // output for a Korean path never matches. Added after any GIT_CONFIG_* entries the environment already has.
 export const gitQuotepathOff = (env: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> => {
-  const n = Number(env.GIT_CONFIG_COUNT) || 0;
+  const n = Number(env["GIT_CONFIG_COUNT"]) || 0;
   return { GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "core.quotepath", [`GIT_CONFIG_VALUE_${n}`]: "off" };
 };
 

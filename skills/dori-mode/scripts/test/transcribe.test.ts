@@ -58,7 +58,7 @@ afterEach(() => rmSync(asr, { recursive: true, force: true }));
 // dori on PATH: gpu-room says what it did and leaves its arguments in <asr>/dori.log
 const fakeDori = (): Record<string, string> => {
   exe(join(asr, "fakebin/dori"), `#!/bin/sh\necho "$*" >> "${asr}/dori.log"\necho "HEAVY_GPU_ROOM $2: pushed 20480M of cache out" >&2\n`);
-  return { PATH: `${join(asr, "fakebin")}:${process.env.PATH}` };
+  return { PATH: `${join(asr, "fakebin")}:${process.env["PATH"]}` };
 };
 const readOr = (p: string): string => (existsSync(p) ? readFileSync(p, "utf8") : "");
 

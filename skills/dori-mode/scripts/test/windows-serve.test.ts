@@ -26,19 +26,19 @@ const taskFixture = () => {
     config: process.env.DORI_CONFIG, env: process.env.DORI_ENV_FILE, state: process.env.DORI_STATE_DIR,
     argv: process.argv.slice(2),
   }));`);
-  const previousConfig = process.env.DORI_CONFIG;
-  const previousEnv = process.env.DORI_ENV_FILE;
+  const previousConfig = process.env["DORI_CONFIG"];
+  const previousEnv = process.env["DORI_ENV_FILE"];
   let argv: string[];
   const name = `Dori-test-${crypto.randomUUID()}`;
   try {
-    process.env.DORI_CONFIG = config;
-    process.env.DORI_ENV_FILE = envFile;
+    process.env["DORI_CONFIG"] = config;
+    process.env["DORI_ENV_FILE"] = envFile;
     argv = taskArgv(process.execPath, cli, state, name);
   } finally {
-    if (previousConfig === undefined) delete process.env.DORI_CONFIG;
-    else process.env.DORI_CONFIG = previousConfig;
-    if (previousEnv === undefined) delete process.env.DORI_ENV_FILE;
-    else process.env.DORI_ENV_FILE = previousEnv;
+    if (previousConfig === undefined) delete process.env["DORI_CONFIG"];
+    else process.env["DORI_CONFIG"] = previousConfig;
+    if (previousEnv === undefined) delete process.env["DORI_ENV_FILE"];
+    else process.env["DORI_ENV_FILE"] = previousEnv;
   }
   let registered = false;
   return {
@@ -76,9 +76,9 @@ test("the task script and its registration carry paths and names only as data, n
   // Given instance paths holding quotes, curly quotes and shell metacharacters.
   const root = mkdtempSync(join(tmpdir(), "dori-task-data-"));
   const dir = join(root, "O'\u2019Connor & semi; $name");
-  const previous = process.env.DORI_CONFIG;
+  const previous = process.env["DORI_CONFIG"];
   try {
-    process.env.DORI_CONFIG = join(dir, "chosen.json");
+    process.env["DORI_CONFIG"] = join(dir, "chosen.json");
     // When the task script and its registration are generated.
     const argv = taskArgv("bun", join(dir, "cli.ts"), join(dir, "state"));
     const script = readFileSync(join(dir, "state", "serve-task.ps1"), "utf8");
@@ -89,8 +89,8 @@ test("the task script and its registration carry paths and names only as data, n
       expect(text).toContain("FromBase64String");
     }
   } finally {
-    if (previous === undefined) delete process.env.DORI_CONFIG;
-    else process.env.DORI_CONFIG = previous;
+    if (previous === undefined) delete process.env["DORI_CONFIG"];
+    else process.env["DORI_CONFIG"] = previous;
     rmSync(root, { recursive: true, force: true });
   }
 });

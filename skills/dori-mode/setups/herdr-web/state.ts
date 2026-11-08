@@ -28,7 +28,7 @@ export function cachedState(run: Runner, now: () => number = Date.now) {
           paneActivity(run, sessions.map((s) => s.pane)),
           herdrResult(run, ["tab", "list"]),
         ]);
-        const tabs = Array.isArray(result?.tabs) ? result.tabs : [];
+        const tabs = Array.isArray(result?.["tabs"]) ? result["tabs"] : [];
         return sessions.map((s): PaneState => {
           const state = activity.get(s.pane);
           return {

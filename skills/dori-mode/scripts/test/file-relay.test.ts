@@ -18,7 +18,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 const env = (extra: Record<string, string> = {}) => ({
-  PATH: process.env.PATH ?? "/usr/bin:/bin",
+  PATH: process.env["PATH"] ?? "/usr/bin:/bin",
   TMPDIR: join(root, "tmp"),
   DORI_FILE_RELAY_TEST_HOMES: homes,
   DORI_FILE_RELAY_STATE: join(root, "state"),

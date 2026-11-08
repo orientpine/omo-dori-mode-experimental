@@ -47,12 +47,12 @@ export const keepConfig = (raw: unknown, home: string = homedir()): KeepConfig =
   if (raw === undefined) return { on: false, reason: "no config file" };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("config must be a JSON object");
   const doc = raw as Record<string, unknown>;
-  if (doc.enabled !== true) return { on: false, reason: "enabled is not true" };
-  const creds = doc.credsCommand;
+  if (doc["enabled"] !== true) return { on: false, reason: "enabled is not true" };
+  const creds = doc["credsCommand"];
   if (!Array.isArray(creds) || !creds.length || !creds.every((a) => typeof a === "string")) throw new Error("credsCommand must be a non-empty argv array");
-  const days = doc.days ?? [1, 2, 3, 4, 5];
+  const days = doc["days"] ?? [1, 2, 3, 4, 5];
   if (!Array.isArray(days) || !days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) throw new Error("days must be weekday numbers 0-6");
-  const hours = doc.hours ?? [8, 20];
+  const hours = doc["hours"] ?? [8, 20];
   if (!Array.isArray(hours) || hours.length !== 2 || !hours.every((h) => Number.isInteger(h) && h >= 0 && h <= 24) || hours[0] >= hours[1]) throw new Error("hours must be [from, to) with 0 <= from < to <= 24");
   const timeZone = str(doc, "timeZone", "Asia/Seoul");
   new Intl.DateTimeFormat("en-US", { timeZone }); // throws on an unknown zone
@@ -324,7 +324,7 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
 }
 
 export const configPath = (env: Record<string, string | undefined>, home: string = homedir()): string =>
-  env.DORI_VPN_KEEP_CONFIG || join(home, ".dori", "vpn-keep.json");
+  env["DORI_VPN_KEEP_CONFIG"] || join(home, ".dori", "vpn-keep.json");
 
 export type KeepRunOptions = {
   readonly once: boolean;

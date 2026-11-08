@@ -879,7 +879,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     lane, from: { pane: lane.pane, aoeId: old.id, session, title: old.title, cwd: old.path }, cwd: real, model: splitModel(model).base, thinking, ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(shown.account ? { account: shown.account } : {}),
     monitors, todos: session ? openTodos(sessionDir, session) : [], goal: session ? openGoal(sessionDir, session) : undefined, chains, detached, ...(jobs.length ? { work: jobs } : {}), ...(ready ? { ready } : {}), laneNote, signals, ...(opts.approvedBy?.trim() ? { approvedBy: opts.approvedBy.trim() } : {}),
     agentPid: agent.pid, ...(logOf(sessionDir, session) ? { oldLog: logOf(sessionDir, session) } : {}),
-    ownerMessages: ownerMessagesFor({ inbox: deps.inbox ?? "", ownerIds: deps.ownerIds ?? [], oldLog: logOf(sessionDir, session), thread: lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : undefined, since, guild: process.env.DORI_DISCORD_GUILD?.trim() }),
+    ownerMessages: ownerMessagesFor({ inbox: deps.inbox ?? "", ownerIds: deps.ownerIds ?? [], oldLog: logOf(sessionDir, session), thread: lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : undefined, since, guild: process.env["DORI_DISCORD_GUILD"]?.trim() }),
     ...(leadWords.length ? { leadWords } : {}),
     ...(tasks.length ? { tasks: taskRuns(logText, tasks, deps.home) } : {}),
   };
@@ -1134,7 +1134,7 @@ const forwardLate = async (deps: LaneHandoverDeps, facts: LaneFacts, ctx: MoveCo
 const pointLane = async (deps: LaneHandoverDeps, key: string, from: string, to: string, why: string, emit: (line: string) => void): Promise<void> => {
   const fresh = await deps.registry.read(key);
   // a herdr lane's tab is the new pane's (dori close closes it); the old tab goes with the old session
-  const tab = isHerdrPane(to) ? ((await herdrResult(deps.run, ["pane", "get", to]))?.pane as { tab_id?: string } | undefined)?.tab_id : undefined;
+  const tab = isHerdrPane(to) ? ((await herdrResult(deps.run, ["pane", "get", to]))?.["pane"] as { tab_id?: string } | undefined)?.tab_id : undefined;
   if (fresh && fresh.pane !== to) await deps.registry.write({ ...fresh, pane: to, tab, history: [...(fresh.history ?? []), { at: iso(deps.clock), status: statusOf(fresh), note: why }] });
   const cards = new QuestionStore(deps.cardDir).retarget({ tmux: from }, { tmux: to });
   emit(`HANDOVER_LANE ${key} pane -> ${to}; cards ${cards.length ? cards.join(",") : "none"}`);

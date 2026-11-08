@@ -573,8 +573,8 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
   };
   const raw = existsSync(deps.configPath) ? (JSON.parse(readFileSync(deps.configPath, "utf8")) as Record<string, unknown> & { update?: Record<string, unknown> }) : {};
   if (existsSync(deps.configPath)) backup(deps.configPath);
-  raw.leadPane = to.pane;
-  if (raw.update?.alertPane === from.pane) raw.update.alertPane = to.pane;
+  raw["leadPane"] = to.pane;
+  if (raw.update?.["alertPane"] === from.pane) raw.update["alertPane"] = to.pane;
   writeFileSync(deps.configPath, `${JSON.stringify(raw, null, 2)}\n`);
   out.push(`HANDOVER_CONFIG leadPane ${from.pane} -> ${to.pane} in ${deps.configPath}`);
   out.push(...pointInstanceAlerts(deps, { from: from.pane, to: to.pane, stamp }));

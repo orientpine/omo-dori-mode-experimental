@@ -196,11 +196,11 @@ test("a voice note becomes text through the configured hook, and a failing or em
 });
 
 test("a hook sees variables dori loaded from dori.env after start-up (e.g. the speech-to-text install dir)", async () => {
-  process.env.DORI_TEST_FROM_ENV_FILE = "loaded-later";
+  process.env["DORI_TEST_FROM_ENV_FILE"] = "loaded-later";
   try {
     expect((await realRun(["sh", "-c", "printf %s \"$DORI_TEST_FROM_ENV_FILE\""])).out).toBe("loaded-later");
   } finally {
-    delete process.env.DORI_TEST_FROM_ENV_FILE;
+    delete process.env["DORI_TEST_FROM_ENV_FILE"];
   }
 });
 

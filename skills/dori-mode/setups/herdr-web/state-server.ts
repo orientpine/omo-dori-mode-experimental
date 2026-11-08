@@ -27,8 +27,8 @@ export function startStateServer(config: Config, runner: Runner = run) {
 }
 
 if (import.meta.main) {
-  const port = Number(process.env.HERDR_STATE_PORT);
-  const secret = process.env.HERDR_STATE_SECRET;
+  const port = Number(process.env["HERDR_STATE_PORT"]);
+  const secret = process.env["HERDR_STATE_SECRET"];
   if (!Number.isInteger(port) || port < 1 || port > 65535 || !secret) {
     throw new TypeError("Set valid HERDR_STATE_PORT and HERDR_STATE_SECRET");
   }

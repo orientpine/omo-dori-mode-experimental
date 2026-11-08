@@ -548,8 +548,8 @@ const SHELL_VAR = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|n
 const SHELL_READ = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|nl|awk)\b[^\n;&|`]*?[\s"'][^\s"';&|`]*ulw-research\/SKILL\.md(?![\w.-])/;
 export const skillRead = (name: string | undefined, args: unknown): boolean => {
   const a = (args ?? {}) as Record<string, unknown>;
-  if (name?.toLowerCase() === "read") return [a.path, a.file_path, a.filePath].some((p) => typeof p === "string" && SKILL_PATH.test(p));
-  const code = [a.code, a.command, a.cmd].find((c): c is string => typeof c === "string");
+  if (name?.toLowerCase() === "read") return [a["path"], a["file_path"], a["filePath"]].some((p) => typeof p === "string" && SKILL_PATH.test(p));
+  const code = [a["code"], a["command"], a["cmd"]].find((c): c is string => typeof c === "string");
   if (!code) return false;
   return (SKILL_LITERAL.test(code) && (READ_API.test(code) || SHELL_VAR.test(code))) || SHELL_READ.test(code);
 };

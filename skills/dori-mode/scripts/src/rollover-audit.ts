@@ -548,7 +548,7 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const localParts = (t: number, timeZone: string): { readonly date: string; readonly day: number; readonly minutes: number } => {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(t)).map((x) => [x.type, x.value]));
-  return { date: `${p.year}-${p.month}-${p.day}`, day: DAYS.indexOf(p.weekday ?? ""), minutes: Number(p.hour) * 60 + Number(p.minute) };
+  return { date: `${p["year"]}-${p["month"]}-${p["day"]}`, day: DAYS.indexOf(p["weekday"] ?? ""), minutes: Number(p["hour"]) * 60 + Number(p["minute"]) };
 };
 
 // The local date of the latest "Mon 08:30" (handover.auditSummaryAt) in timeZone at or before t: the week a summary belongs to.

@@ -105,7 +105,7 @@ test("keep.ts takes DORI_VPN_KEEP_CONFIG from dori.env (DORI_ENV_FILE) like the 
   const dir = mkdtempSync(join(tmpdir(), "vpn-keep-env-"));
   writeFileSync(join(dir, "dori.env"), `DORI_VPN_KEEP_CONFIG=${join(dir, "from-env-file.json")}\n`);
   const env: Record<string, string | undefined> = { ...process.env, DORI_ENV_FILE: join(dir, "dori.env") };
-  delete env.DORI_VPN_KEEP_CONFIG;
+  delete env["DORI_VPN_KEEP_CONFIG"];
   const p = Bun.spawn([process.execPath, KEEP, "--once"], { env: env as Record<string, string>, stdout: "pipe", stderr: "pipe" });
   const [out, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
   expect({ code, off: out.includes(`VPN_KEEP_OFF ${join(dir, "from-env-file.json")} (no config file)`) }).toEqual({ code: 0, off: true });
@@ -208,9 +208,9 @@ const fakePortal = (page: Page = {}) => {
     if (method === "Page.navigate") return { result: page.navError ? { errorText: page.navError } : { frameId: "top" } };
     if (method === "Page.getFrameTree") return { result: { frameTree: frame(stage === "login" ? "https://vpn.example.com/login.jsp" : stage === "cert" ? "https://vpn.example.com/flag3_cert.jsp" : "https://vpn.example.com/bookmark.jsp") } };
     if (method === "Page.createIsolatedWorld") return { result: { executionContextId: 7 } };
-    if (method === "Input.insertText") { typed.push(`${focused}=${params.text}`); value[focused] = page.holds?.[focused] ?? String(params.text).length; return { result: {} }; }
+    if (method === "Input.insertText") { typed.push(`${focused}=${params["text"]}`); value[focused] = page.holds?.[focused] ?? String(params["text"]).length; return { result: {} }; }
     if (method !== "Runtime.evaluate") return { result: {} };
-    const x = String(params.expression);
+    const x = String(params["expression"]);
     const name = /\[name=(\w+)\]/.exec(x)?.[1] ?? "";
     if (page.throwOn && x.includes(`[name=${page.throwOn}]`)) return { result: { result: { type: "object" }, exceptionDetails: { text: "Uncaught", exception: { description: "TypeError: e is null" } } } };
     const val = (v: unknown) => ({ result: { result: { type: typeof v, value: v } } });

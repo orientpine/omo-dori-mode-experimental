@@ -402,7 +402,7 @@ export const runDirectiveAudit = async (deps: FlowDeps, opts: { readonly since: 
   }
   const notCounted = excused.length ? ` (${excused.length} not counted: entered the ledger after the lane opened, the lead relayed it in a [LEAD] line, or the model left out what a scope rule calls; listed with --dry-run)` : "";
   const excusedLines = opts.dryRun ? excused.map((x) => x.line) : [];
-  gaps.push(...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env.DORI_DISCORD_GUILD?.trim() ?? ""));
+  gaps.push(...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env["DORI_DISCORD_GUILD"]?.trim() ?? ""));
   if (opts.threads) gaps.push(...leadThreadGaps(opts.threads, await deps.registry.list(), opts.since));
   if (opts.memory && opts.memory !== "off") gaps.push(...duplicated(memoryFiles(opts.memory, memoryNotes), ledger));
   if (!opts.dryRun) writeStamp(deps, opts.since, true);

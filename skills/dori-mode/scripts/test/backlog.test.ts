@@ -1086,7 +1086,7 @@ test("an order row is taken once by its id, whatever its time: one stamped like 
   expect(again).toEqual([]);
 });
 
-const MODEL_SEEDS = Number(process.env.BACKLOG_MODEL_SEEDS ?? 40);
+const MODEL_SEEDS = Number(process.env["BACKLOG_MODEL_SEEDS"] ?? 40);
 // a seeded PRNG (mulberry32), so a failing run names its seed and replays exactly
 const prng = (seed: number) => () => {
   seed = (seed + 0x6d2b79f5) | 0;

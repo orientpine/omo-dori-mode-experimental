@@ -60,9 +60,9 @@ export function usageHtml(ansi: string): { readonly html: string; readonly heigh
 }
 
 export async function usageSnapshot(out: string, env: Record<string, string | undefined>, runner: Runner = run, clock: Clock = realClock): Promise<void> {
-  const dir = env.DORI_USAGE_DIR;
+  const dir = env["DORI_USAGE_DIR"];
   if (!dir) throw new Error("DORI_USAGE_DIR must point to the omo-usage checkout");
-  const snapDir = env.DORI_USAGE_SNAP_DIR || join(homedir(), "snap", "firefox", "common", "omo-usage");
+  const snapDir = env["DORI_USAGE_SNAP_DIR"] || join(homedir(), "snap", "firefox", "common", "omo-usage");
   const session = `omousage-snap-${process.pid}`;
   const sh = async (argv: string[]): Promise<string> => {
     const r = await runner(argv);

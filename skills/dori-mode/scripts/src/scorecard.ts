@@ -17,7 +17,7 @@ const offsetMs = (timeZone: string, at: number): number => {
       .formatToParts(new Date(at))
       .map((p) => [p.type, p.value]),
   );
-  return Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second)) - Math.floor(at / 1000) * 1000;
+  return Date.UTC(Number(parts["year"]), Number(parts["month"]) - 1, Number(parts["day"]), Number(parts["hour"]), Number(parts["minute"]), Number(parts["second"])) - Math.floor(at / 1000) * 1000;
 };
 
 const localMidnight = (y: number, m: number, d: number, timeZone: string): number => {

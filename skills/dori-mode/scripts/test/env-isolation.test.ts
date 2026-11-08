@@ -37,7 +37,7 @@ const okSelectors = (home: string): Record<string, string> => ({ DORI_CONFIG: jo
 
 const sendFrom = async (home: string, env: Record<string, string>) => {
   const http = join(home, "http.json");
-  const r = await run(["env", "-i", `PATH=${process.env.PATH}`, `HOME=${home}`, `DORI_TEST_HTTP=${http}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
+  const r = await run(["env", "-i", `PATH=${process.env["PATH"]}`, `HOME=${home}`, `DORI_TEST_HTTP=${http}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
     "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "pair-channel", "--text", "hello", "--no-typing"], { cwd: join(home, "Documents/kakaodori") });
   const auth: string[] = existsSync(`${http}.auth`) ? (JSON.parse(readFileSync(`${http}.auth`, "utf8")) as string[]) : [];
   return { code: r.code, out: r.out, err: r.err, auth };

@@ -96,8 +96,8 @@ test("ports (in upstream main) and integration asks (open issues, PRs outside ma
   const r = await run([], { UPSTREAM_WATCH_THREAD: "discord:42" });
   expect(r.code).toBe(0);
   const rows = inbox();
-  expect(rows.filter((x) => x.kind === "upstream-change").every((x) => x.thread === "discord:42" && x.content!.includes("dori launch --thread discord:42"))).toBe(true);
-  expect(rows.filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([
+  expect(rows.filter((x) => x["kind"] === "upstream-change").every((x) => x["thread"] === "discord:42" && x["content"]!.includes("dori launch --thread discord:42"))).toBe(true);
+  expect(rows.filter((x) => x["kind"] === "upstream-change").map((x) => [x["item"], x["class"]])).toEqual([
     // upstream's first root harness on herdr, titled so: in main the files decide, and they are root-only
     ["pr:16", "4"],
     ["pr:23", "4"],
@@ -112,10 +112,10 @@ test("ports (in upstream main) and integration asks (open issues, PRs outside ma
   expect(classes).toMatchObject({ "pr:7": "1", "pr:25": "1", "issue:22": "1", [`commit:${ourRoot}`]: "1", [`commit:${"a".repeat(40)}`]: "1", "pr:17": "2", "issue:27": "2", "issue:31": "2", "pr:21": "2", "pr-proposed:46": "2", "pr-proposed:47": "1" });
   // not in upstream main: the merged-elsewhere PR is no pr:N item, so its later merge into main is a new one
   expect(seen()["pr:44"]).toBeUndefined();
-  const weekly = rows.filter((x) => x.kind === "upstream-weekly");
+  const weekly = rows.filter((x) => x["kind"] === "upstream-weekly");
   expect(weekly).toHaveLength(1);
-  expect(weekly[0]!.thread).toBe("discord:42");
-  expect(weekly[0]!.content).toContain("① 이미 있음 6건");
+  expect(weekly[0]!["thread"]).toBe("discord:42");
+  expect(weekly[0]!["content"]).toContain("① 이미 있음 6건");
   expect(r.out).toContain("inbox_lines=8 weekly=True");
 });
 
@@ -138,7 +138,7 @@ test("an item is recorded only after its inbox line is written, so a failed appe
   expect(existsSync(join(root, "state/seen.json")) ? Object.keys(seen()).filter((k) => ["pr:30", "pr:40", "pr-proposed:45", "issue:29"].includes(k)) : []).toEqual([]);
   rmSync(join(root, "inbox.jsonl"), { recursive: true });
   expect((await run()).code).toBe(0);
-  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item)).toContain("pr:30");
+  expect(inbox().filter((x) => x["kind"] === "upstream-change").map((x) => x["item"])).toContain("pr:30");
 });
 
 test("a failing gh records nothing and exits 3; the third failure in a row tells the lead once", async () => {
@@ -153,7 +153,7 @@ test("a failing gh records nothing and exits 3; the third failure in a row tells
     expect(r.err).toContain(`UPSTREAM-WATCH-FAIL GhError`);
   }
   expect(seen()).toEqual({});
-  expect(inbox().map((x) => x.kind)).toEqual(["upstream-watch-fail"]);
+  expect(inbox().map((x) => x["kind"])).toEqual(["upstream-watch-fail"]);
   expect((await run()).code).toBe(0);
 });
 
@@ -170,7 +170,7 @@ test("a PR closed without a merge and reopened later is an integration ask then;
   const before = inbox().length;
   await run();
   // #45 was open, then closed, then open again: asked once more; #46 the owner decided by hand: not again
-  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr-proposed:45", "3"]]);
+  expect(inbox().slice(before).filter((x) => x["kind"] === "upstream-change").map((x) => [x["item"], x["class"]])).toEqual([["pr-proposed:45", "3"]]);
   expect(seen()["pr-proposed:46"]!.class).toBe("decided");
 });
 
@@ -178,26 +178,26 @@ test("a PR closed without a merge and merged into another branch later is an int
   await run();
   expect(seen()["pr-proposed:46"]!.class).toBe("2");
   const prs = JSON.parse(readFileSync(join(gh, "prs.json"), "utf8")) as Record<string, unknown>[];
-  for (const p of prs) if (p.number === 46) Object.assign(p, { state: "MERGED", mergedAt: "2026-11-03T00:00:00Z", baseRefName: "next", mergeCommit: { oid: "4".repeat(39) + "6" } });
+  for (const p of prs) if (p["number"] === 46) Object.assign(p, { state: "MERGED", mergedAt: "2026-11-03T00:00:00Z", baseRefName: "next", mergeCommit: { oid: "4".repeat(39) + "6" } });
   json("prs.json", prs);
   const before = inbox().length;
   await run();
-  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr-proposed:46", "3"]]);
+  expect(inbox().slice(before).filter((x) => x["kind"] === "upstream-change").map((x) => [x["item"], x["class"]])).toEqual([["pr-proposed:46", "3"]]);
 });
 
 test("a record the old watcher wrote has no lifecycle: the upgraded watcher fills it in, so a closed issue opened again is read again", async () => {
   await run();
   const path = join(root, "state/seen.json");
   const old = JSON.parse(readFileSync(path, "utf8"));
-  for (const r of Object.values(old.items) as Record<string, unknown>[]) { delete r.open; delete r.status; }
+  for (const r of Object.values(old.items) as Record<string, unknown>[]) { delete r["open"]; delete r["status"]; }
   writeFileSync(path, JSON.stringify(old));
   expect((await run()).out).toContain("new=0 inbox_lines=0");
   const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
-  for (const i of issues) if (i.number === 33) i.state = "OPEN";
+  for (const i of issues) if (i["number"] === 33) i["state"] = "OPEN";
   json("issues.json", issues);
   const before = inbox().length;
   await run();
-  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["issue:33", "3"]]);
+  expect(inbox().slice(before).filter((x) => x["kind"] === "upstream-change").map((x) => [x["item"], x["class"]])).toEqual([["issue:33", "3"]]);
 });
 
 test("a closed issue the old watcher recorded and that opened again before the upgrade is asked once", async () => {
@@ -205,43 +205,43 @@ test("a closed issue the old watcher recorded and that opened again before the u
   mkdirSync(join(root, "state"));
   writeFileSync(join(root, "state/seen.json"), JSON.stringify({ items: { "issue:33": { class: "2", why: "코드 없이 닫힘", at: "2026-11-01T00:00:00.000Z" } }, minor: [], fails: 0 }));
   const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
-  for (const i of issues) if (i.number === 33) i.state = "OPEN";
+  for (const i of issues) if (i["number"] === 33) i["state"] = "OPEN";
   json("issues.json", issues);
   await run();
   await run();
-  expect(inbox().filter((x) => x.kind === "upstream-change" && x.item === "issue:33").map((x) => x.class)).toEqual(["3"]);
+  expect(inbox().filter((x) => x["kind"] === "upstream-change" && x["item"] === "issue:33").map((x) => x["class"])).toEqual(["3"]);
 });
 
 test("an open issue the old watcher already sent as class 4 is not asked again", async () => {
   mkdirSync(join(root, "state"));
   writeFileSync(join(root, "state/seen.json"), JSON.stringify({ items: { "issue:29": { class: "4", why: "열린 이슈, 우리 쪽 재현 먼저", at: "2026-11-01T00:00:00.000Z" } }, minor: [], fails: 0 }));
   await run();
-  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item)).not.toContain("issue:29");
+  expect(inbox().filter((x) => x["kind"] === "upstream-change").map((x) => x["item"])).not.toContain("issue:29");
 });
 
 test("an open issue first read as the herdr harness and retitled to our code is asked then", async () => {
   await run();
   expect(seen()["issue:31"]!.class).toBe("2");
   const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
-  for (const i of issues) if (i.number === 31) i.title = "dori send fails for agents started by dori launch";
+  for (const i of issues) if (i["number"] === 31) i["title"] = "dori send fails for agents started by dori launch";
   json("issues.json", issues);
   const before = inbox().length;
   await run();
   await run();
-  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["issue:31", "3"]]);
+  expect(inbox().slice(before).filter((x) => x["kind"] === "upstream-change").map((x) => [x["item"], x["class"]])).toEqual([["issue:31", "3"]]);
 });
 
 test("right after --seed, a closed PR or issue that opens or merges into another branch is asked; what was open at the seed is not", async () => {
   expect((await run(["--seed"])).code).toBe(0);
   const prs = JSON.parse(readFileSync(join(gh, "prs.json"), "utf8")) as Record<string, unknown>[];
-  for (const p of prs) if (p.number === 46) Object.assign(p, { state: "MERGED", mergedAt: "2026-11-03T00:00:00Z", baseRefName: "next", mergeCommit: { oid: "4".repeat(39) + "6" } });
+  for (const p of prs) if (p["number"] === 46) Object.assign(p, { state: "MERGED", mergedAt: "2026-11-03T00:00:00Z", baseRefName: "next", mergeCommit: { oid: "4".repeat(39) + "6" } });
   json("prs.json", prs);
   const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
-  for (const i of issues) if (i.number === 33) i.state = "OPEN";
+  for (const i of issues) if (i["number"] === 33) i["state"] = "OPEN";
   json("issues.json", issues);
   await run();
   await run();
-  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item).sort()).toEqual(["issue:33", "pr-proposed:46"]);
+  expect(inbox().filter((x) => x["kind"] === "upstream-change").map((x) => x["item"]).sort()).toEqual(["issue:33", "pr-proposed:46"]);
 });
 
 test("a PR merged outside main that the old watcher recorded as pr:N is classified again and asked once when it is class 3 now", async () => {
@@ -249,7 +249,7 @@ test("a PR merged outside main that the old watcher recorded as pr:N is classifi
   writeFileSync(join(root, "state/seen.json"), JSON.stringify({ items: { "pr:44": { class: "2", why: "herdr 하네스", at: "2026-11-01T00:00:00.000Z" } }, minor: [], fails: 0 }));
   await run();
   await run();
-  const items = inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item);
+  const items = inbox().filter((x) => x["kind"] === "upstream-change").map((x) => x["item"]);
   expect(items.filter((i) => i === "pr-proposed:44")).toHaveLength(1);
 });
 
@@ -257,11 +257,11 @@ test("an issue a merged PR closed and that opened again is asked", async () => {
   await run();
   expect(seen()["issue:27"]!.class).toBe("2");
   const issues = JSON.parse(readFileSync(join(gh, "issues.json"), "utf8")) as Record<string, unknown>[];
-  for (const i of issues) if (i.number === 27) Object.assign(i, { state: "OPEN", title: "anonymous usage counts come back after the fix" });
+  for (const i of issues) if (i["number"] === 27) Object.assign(i, { state: "OPEN", title: "anonymous usage counts come back after the fix" });
   json("issues.json", issues);
   const before = inbox().length;
   await run();
-  expect(inbox().slice(before).filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["issue:27", "3"]]);
+  expect(inbox().slice(before).filter((x) => x["kind"] === "upstream-change").map((x) => [x["item"], x["class"]])).toEqual([["issue:27", "3"]]);
 });
 
 test("an item the owner already decided is marked by hand and never reaches the inbox", async () => {
@@ -271,7 +271,7 @@ test("an item the owner already decided is marked by hand and never reaches the 
   expect((await run(["--mark", "pr:44", "--why", "seen before the upgrade"])).code).toBe(0);
   expect((await run(["--mark", "23"])).code).not.toBe(0);
   await run();
-  const items = inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item);
+  const items = inbox().filter((x) => x["kind"] === "upstream-change").map((x) => x["item"]);
   expect(items).toContain("pr:40");
   expect(items).not.toContain("pr:30");
   expect(items).not.toContain("pr-proposed:45");
@@ -334,7 +334,7 @@ esac
   chmodSync(join(bin, "gh"), 0o755);
   const r = await run([], { UPSTREAM_WATCH_GH_DIR: "", PATH: `${bin}:/usr/bin:/bin` });
   expect(r.code).toBe(0);
-  const items = inbox().filter((x) => x.kind === "upstream-change").map((x) => x.item ?? "");
+  const items = inbox().filter((x) => x["kind"] === "upstream-change").map((x) => x["item"] ?? "");
   // pr:22 and pr:47 are class 1: our checkout cites upstream issue #22 and pull #47, and GitHub numbers PRs and issues together.
   expect(items.filter((i) => i.startsWith("pr:"))).toHaveLength(148);
   expect(items).not.toContain("pr:22");
@@ -362,7 +362,7 @@ else:
   expect(first.code).toBe(3);
   expect(first.err).toContain("UPSTREAM-WATCH-FAIL Incomplete");
   expect(seen()).toEqual({});
-  expect(inbox().map((x) => [x.kind, x.thread])).toEqual([["upstream-watch-fail", "discord:42"]]);
+  expect(inbox().map((x) => [x["kind"], x["thread"]])).toEqual([["upstream-watch-fail", "discord:42"]]);
   for (let i = 0; i < 3; i++) expect((await cut()).code).toBe(3);
   expect(inbox()).toHaveLength(1);
 });
@@ -371,13 +371,13 @@ test("a PR at GitHub's 3000-file cap is still a port, for the lead to check by h
   json("files-30.json", Array.from({ length: 3000 }, (_, i) => ({ filename: `docs/f${i}.md`, patch: null })));
   const r = await run();
   expect(r.code).toBe(0);
-  const rows = inbox().filter((x) => x.kind === "upstream-change");
-  expect(rows.find((x) => x.item === "pr:30")).toMatchObject({ class: "4" });
-  expect(rows.find((x) => x.item === "pr:30")!.reason).toContain("PR #30 lists 3000 files");
+  const rows = inbox().filter((x) => x["kind"] === "upstream-change");
+  expect(rows.find((x) => x["item"] === "pr:30")).toMatchObject({ class: "4" });
+  expect(rows.find((x) => x["item"] === "pr:30")!["reason"]).toContain("PR #30 lists 3000 files");
   // its files are not known: the lead's check keeps both limits of a root-only change
-  expect(rows.find((x) => x.item === "pr:30")!.content).toContain("루트 하네스 파일은 들이지 않는다");
-  expect(rows.find((x) => x.item === "pr:30")!.content).toContain("원격 측정은 들이지 않는다");
-  expect(rows.map((x) => x.item)).toContain("pr:40");
+  expect(rows.find((x) => x["item"] === "pr:30")!["content"]).toContain("루트 하네스 파일은 들이지 않는다");
+  expect(rows.find((x) => x["item"] === "pr:30")!["content"]).toContain("원격 측정은 들이지 않는다");
+  expect(rows.map((x) => x["item"])).toContain("pr:40");
 });
 
 test("in upstream main, outbound code found in a patch and code without a patch are ports with a note for the lane, not owner decisions", async () => {
@@ -392,12 +392,12 @@ test("in upstream main, outbound code found in a patch and code without a patch 
   json("issues.json", []);
   writeFileSync(join(gh, "commits.jsonl"), "");
   expect((await run()).code).toBe(0);
-  const rows = inbox().filter((x) => x.kind === "upstream-change");
-  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:41", "4"], ["pr:42", "4"], ["pr:43", "4"]]);
-  expect(rows[0]!.reason).toContain("살필 것: 바깥으로 데이터를 보냄(skills/dori-mode/scripts/src/client.ts에 t.omo.dev)");
-  expect(rows[1]!.reason).toContain("살필 것: 내용을 못 읽음(patch 없음: skills/dori-mode/scripts/src/store.ts), 리드가 손으로 확인");
+  const rows = inbox().filter((x) => x["kind"] === "upstream-change");
+  expect(rows.map((x) => [x["item"], x["class"]])).toEqual([["pr:41", "4"], ["pr:42", "4"], ["pr:43", "4"]]);
+  expect(rows[0]!["reason"]).toContain("살필 것: 바깥으로 데이터를 보냄(skills/dori-mode/scripts/src/client.ts에 t.omo.dev)");
+  expect(rows[1]!["reason"]).toContain("살필 것: 내용을 못 읽음(patch 없음: skills/dori-mode/scripts/src/store.ts), 리드가 손으로 확인");
   // a removed root file has no patch to read and is no blind spot
-  expect(rows[2]!.reason).not.toContain("못 읽음");
+  expect(rows[2]!["reason"]).not.toContain("못 읽음");
 });
 
 test("in upstream main, a change only to the root harness is a same-defect review, never a port of its files; telemetry and docs are not ours (owner Q19)", async () => {
@@ -424,15 +424,15 @@ test("in upstream main, a change only to the root harness is a same-defect revie
   writeFileSync(join(gh, "commits.jsonl"), JSON.stringify({ sha: "d".repeat(40), commit: { message: "direct: fix the duty tick" }, html_url: `${UP}/commit/${"d".repeat(40)}` }));
   json(`commit-${"d".repeat(40)}.json`, [{ filename: "src/harness.ts", patch: "+x", status: "modified", changes: 1 }]);
   expect((await run()).code).toBe(0);
-  const rows = inbox().filter((x) => x.kind === "upstream-change");
-  expect(rows.map((x) => [x.item, x.class])).toEqual([["pr:60", "4"], ["pr:61", "4"], ["pr:62", "4"], ["pr:65", "4"], ["pr:66", "4"], ["pr:67", "4"], ["pr:68", "4"], ["pr:70", "4"], [`commit:${"d".repeat(40)}`, "4"]]);
-  for (const n of [62, 66, 67, 70]) expect(rows.find((x) => x.item === `pr:${n}`)!.reason).toContain("원격 측정(src/telemetry.ts)도 바뀜, 그 부분은 안 들임(형 Q19)");
-  expect(rows.filter((x) => x.item !== "pr:65").every((x) => x.content!.includes("원격 측정은 들이지 않는다"))).toBe(true);
-  const root = rows.filter((x) => x.item !== "pr:65");
-  expect(root.every((x) => x.reason!.startsWith("루트 하네스") && x.content!.includes("루트 하네스 파일은 들이지 않는다") && !x.content!.includes("이식 레인"))).toBe(true);
+  const rows = inbox().filter((x) => x["kind"] === "upstream-change");
+  expect(rows.map((x) => [x["item"], x["class"]])).toEqual([["pr:60", "4"], ["pr:61", "4"], ["pr:62", "4"], ["pr:65", "4"], ["pr:66", "4"], ["pr:67", "4"], ["pr:68", "4"], ["pr:70", "4"], [`commit:${"d".repeat(40)}`, "4"]]);
+  for (const n of [62, 66, 67, 70]) expect(rows.find((x) => x["item"] === `pr:${n}`)!["reason"]).toContain("원격 측정(src/telemetry.ts)도 바뀜, 그 부분은 안 들임(형 Q19)");
+  expect(rows.filter((x) => x["item"] !== "pr:65").every((x) => x["content"]!.includes("원격 측정은 들이지 않는다"))).toBe(true);
+  const root = rows.filter((x) => x["item"] !== "pr:65");
+  expect(root.every((x) => x["reason"]!.startsWith("루트 하네스") && x["content"]!.includes("루트 하네스 파일은 들이지 않는다") && !x["content"]!.includes("이식 레인"))).toBe(true);
   // skills/ changed too: a port of the skills/ part as before, and the root part is not brought in
-  expect(rows.find((x) => x.item === "pr:65")!.content).toContain("이식 레인");
-  expect(rows.find((x) => x.item === "pr:65")!.reason).toContain("루트 하네스 1파일도 바뀜");
+  expect(rows.find((x) => x["item"] === "pr:65")!["content"]).toContain("이식 레인");
+  expect(rows.find((x) => x["item"] === "pr:65")!["reason"]).toContain("루트 하네스 1파일도 바뀜");
   const items = seen() as Record<string, { class: string; why: string }>;
   expect(Object.fromEntries(["pr:63", "pr:64"].map((k) => [k, [items[k]!.class, items[k]!.why]]))).toEqual({
     "pr:63": ["2", "원격 측정은 안 들임(형 Q19)"],
@@ -462,11 +462,11 @@ test("a root-only main PR the old watcher put aside (class 2, or an old class-3 
     "pr:91": { class: "2", why: "herdr 하네스", at },
   }, minor: [], fails: 0 }));
   expect((await run()).code).toBe(0);
-  expect(inbox().filter((x) => x.kind === "upstream-change").map((x) => [x.item, x.class])).toEqual([["pr:34", "4"], ["pr:63", "4"], ["pr:84", "4"], ["pr:91", "4"]]);
-  expect(inbox().find((x) => x.item === "pr:91")!.content).toContain("이식 레인");
+  expect(inbox().filter((x) => x["kind"] === "upstream-change").map((x) => [x["item"], x["class"]])).toEqual([["pr:34", "4"], ["pr:63", "4"], ["pr:84", "4"], ["pr:91", "4"]]);
+  expect(inbox().find((x) => x["item"] === "pr:91")!["content"]).toContain("이식 레인");
   expect(seen()["pr:21"]!.class).toBe("decided");
   expect((await run()).out).toContain("inbox_lines=0");
-  expect(inbox().filter((x) => x.kind === "upstream-change")).toHaveLength(4);
+  expect(inbox().filter((x) => x["kind"] === "upstream-change")).toHaveLength(4);
 });
 
 test("a dependency added to a skills package.json is noted for the lane whatever its version spec; version and scripts lines are not", async () => {
@@ -490,11 +490,11 @@ test("a dependency added to a skills package.json is noted for the lane whatever
   json("issues.json", []);
   writeFileSync(join(gh, "commits.jsonl"), "");
   expect((await run()).code).toBe(0);
-  const rows = inbox().filter((x) => x.kind === "upstream-change");
-  expect(rows.every((x) => x.class === "4")).toBe(true);
-  expect(rows.filter((x) => x.reason!.includes("새 의존성")).map((x) => x.item)).toEqual(["pr:50", "pr:51", "pr:52", "pr:53", "pr:54", "pr:56", "pr:57"]);
-  expect(rows.find((x) => x.item === "pr:50")!.reason).toContain(`${pkg}에 left`);
-  expect(rows.find((x) => x.item === "pr:51")!.reason).toContain(`${pkg}에 b`);
-  expect(rows.find((x) => x.item === "pr:56")!.reason).toContain(`${pkg}에 helper, 블록을 패치로 못 가림`);
-  expect(rows.find((x) => x.item === "pr:57")!.reason).toContain(`${pkg}에 later, 블록을 패치로 못 가림`);
+  const rows = inbox().filter((x) => x["kind"] === "upstream-change");
+  expect(rows.every((x) => x["class"] === "4")).toBe(true);
+  expect(rows.filter((x) => x["reason"]!.includes("새 의존성")).map((x) => x["item"])).toEqual(["pr:50", "pr:51", "pr:52", "pr:53", "pr:54", "pr:56", "pr:57"]);
+  expect(rows.find((x) => x["item"] === "pr:50")!["reason"]).toContain(`${pkg}에 left`);
+  expect(rows.find((x) => x["item"] === "pr:51")!["reason"]).toContain(`${pkg}에 b`);
+  expect(rows.find((x) => x["item"] === "pr:56")!["reason"]).toContain(`${pkg}에 helper, 블록을 패치로 못 가림`);
+  expect(rows.find((x) => x["item"] === "pr:57")!["reason"]).toContain(`${pkg}에 later, 블록을 패치로 못 가림`);
 });
