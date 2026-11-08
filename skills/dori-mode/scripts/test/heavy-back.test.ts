@@ -76,6 +76,16 @@ test("a helper run sends back only what the job's --back picks", async () => {
   expect([readFileSync(join(work, "out", "v.mp4"), "utf8"), readFileSync(join(work, "run.log"), "utf8")]).toEqual(["mp4\n", "log\n"]);
   expect(existsSync(join(work, "build", "frames", "1.png"))).toBe(false);
   expect(logs.filter((l) => /^HEAVY_BACK t second: sent \d+ bytes, 2 file\(s\) 8 bytes back$/.test(l))).toHaveLength(1);
+  expect(logs.some((l) => l.startsWith("HEAVY_HELPER_OLD"))).toBe(false);
+}, 60_000);
+
+test("a helper whose dori predates --back is named out of date before the job starts there, so it does not send everything back", async () => {
+  const old = 'for a; do case "$a" in back) echo "WORKER_REFUSED unknown option \\"$a\\"" >&2; exit 3;; esac; done; echo "WORKER_BUSY x" >&2; exit 75';
+  const job: SpreadJob = { label: "t", kind: "cpu", cmd: ["true"], cwd: work, sync: [work], env: {}, back: ["out/**"] };
+  const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
+  if (!plan.ok) throw new Error(plan.why);
+  await expect(heavySpread(ctxWith(["sh", "-c", old, "old-helper"]), job, plan)).rejects.toThrow("stop");
+  expect(logs).toContain('HEAVY_HELPER_OLD t second: its dori is older than this one and does not know "back"; update it there (dori update --pull, or its dori-update-pull timer)');
 }, 60_000);
 
 test("--back takes globs a helper can read, and a bad one keeps the job here", () => {

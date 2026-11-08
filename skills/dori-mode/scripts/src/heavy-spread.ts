@@ -274,7 +274,7 @@ type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonl
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
-  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`)];
+  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : [])];
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const lines = linesOf(p.stderr);
   let verdict: RegExpExecArray | null = null;
@@ -502,7 +502,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const needOk = (o: string): boolean => o.startsWith("need=") && NEED_PATH.test(o.slice(5)) && !o.split("/").includes("..") && inProgramDirs(o.slice(5));
   const whichOk = (o: string): boolean => /^which=[\w.+@-]{1,64}$/.test(o) && !/^which=\.+$/.test(o);
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
-  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o));
+  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && o !== "back");
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   if (!ctx.q.exec) return d.refuse(label, "exec is off on this host (heavyQueue.exec)");
   if (!Bun.which("bwrap")) return d.refuse(label, "no bwrap on this host");
@@ -587,7 +587,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     const files = found.stdout.toString().split("\0").filter(Boolean).map((n) => ({ path: `/${n}`, bytes: statSync(join(root, n), { throwIfNoEntry: false })?.size ?? 0 }));
     const pick = backPick(files, { cwd: spec.cwd, max: BACK_MAX_BYTES, ...(spec.back ? { globs: spec.back } : {}) });
     const tooBig = pick.left.length > 0;
-    if (tooBig) console.error(`WORKER_BACK_TOO_BIG ${files.reduce((a, f) => a + f.bytes, 0)} bytes changed, over ${BACK_MAX_BYTES}; left on this host: ${pick.left.map((l) => `${l.dir} (${l.files} files, ${l.bytes} bytes)`).join(", ")}; the rest is sent back`);
+    if (tooBig) console.error(`WORKER_BACK_TOO_BIG ${files.reduce((a, f) => a + f.bytes, 0)} bytes changed, over ${BACK_MAX_BYTES}; not sent back, and deleted with the run's folder here: ${pick.left.map((l) => `${l.dir} (${l.files} files, ${l.bytes} bytes)`).join(", ")}; the rest is sent back`);
     writeFileSync(list, pick.keep.map((p) => `${p.slice(1)}\0`).join(""));
     const tar = Bun.spawn(["tar", "-C", root, "--null", "--no-recursion", "-T", list, "-cf", "-"], { stdin: "ignore", stdout: "inherit", stderr: "pipe" });
     const tcode = await tar.exited;

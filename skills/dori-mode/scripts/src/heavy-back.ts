@@ -3,8 +3,8 @@ import { dirname, isAbsolute, relative } from "node:path";
 
 // What a helper run sends back (heavy-spread.ts heavyExec): the regular files it made or changed under the --sync paths,
 // only those the job's --back globs pick when it gave any (relative to its working folder, or absolute), and at most
-// BACK_MAX_BYTES of them. Over that, the folders holding the most bytes stay on the helper, biggest first, until the rest
-// fits, so a result, its log and its checks come back beside a big intermediate folder (2026-11-08: a 1-minute rv make on
+// BACK_MAX_BYTES of them. Over that, the folders holding the most bytes are left out (and go with the run's folder),
+// biggest first, until the rest fits, so a result, its log and its checks come back beside a big intermediate folder (2026-11-08: a 1-minute rv make on
 // 4eae made 5.1 GB, 1839 frames in build/frames, and nothing came back, not its mp4, srt or CHECKS.md).
 export const BACK_MAX_BYTES = 4 * 1024 ** 3;
 const BACK_GLOB = /^[^\n\0]{1,256}$/;
