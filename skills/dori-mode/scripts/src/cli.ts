@@ -45,7 +45,7 @@ import { gpuRoom, neverFits, parseMem, readMeminfo, spawnScoped } from "./heavy-
 import { heavyJobCommand, HeavyJobError, heavyServe } from "./heavy-queue.ts";
 import { acquireSlot, pidAlive, releaseSlot, type SlotDeps } from "./heavy-slot.ts";
 import { heavyWorker } from "./heavy-worker.ts";
-import { heavySpread, isKind, spreadPlan, withPipefail, type SpreadJob } from "./heavy-spread.ts";
+import { heavySpread, isKind, spreadPlan, toolsHere, withPipefail, type SpreadJob } from "./heavy-spread.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals, hasSignals, oneLine, priorFixLines, tagsOf } from "./lane-signals.ts";
 import { adoptLane, asStartFailure, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, LaunchError, launchLedger, relatedGate, renderBrief, reopenLaneThread, setDone, setGpu, setThread, threadGate, ThreadMissingError, validateLaunch } from "./launch.ts";
@@ -1585,7 +1585,7 @@ try {
       try {
         // plain dori heavy is the GPU slot line, and --kind gpu a GPU job: both get free memory made first (heavy-mem.ts gpuRoom)
         const gpu = kind === undefined || kind === "gpu";
-        process.exitCode = await spawnScoped({ label: name, cmd: jobCmd, free: config.heavyHeadroomPct, ...(needBytes ? { needBytes } : {}), ...(deps.log ? { log: deps.log } : {}), ...(gpu ? { gpuFreeKb: config.heavyGpuFreeGb * 1024 ** 2 } : {}) }, { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
+        process.exitCode = await spawnScoped({ label: name, cmd: jobCmd, free: config.heavyHeadroomPct, ...(needBytes ? { needBytes } : {}), ...(deps.log ? { log: deps.log } : {}), ...(gpu ? { gpuFreeKb: config.heavyGpuFreeGb * 1024 ** 2 } : {}) }, { stdout: "inherit", stderr: "inherit", stdin: "inherit", ...toolsHere(name, many("tools"), deps.log) });
       } finally {
         releaseSlot(slot);
       }

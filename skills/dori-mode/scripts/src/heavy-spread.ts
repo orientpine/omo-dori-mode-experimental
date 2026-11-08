@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { cpus, homedir, tmpdir } from "node:os";
+import { cpus, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
 import type { HeavyHelper } from "./config.ts";
@@ -8,6 +8,7 @@ import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { playwrightVersion, toolBundles, toolNameOk, toolOptOk, toolSpec } from "./heavy-tools.ts";
+export { toolsHere } from "./heavy-tools.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH... -- <cmd>: a lane's own command (a browser test, a build) runs on
 // the less busy PC. When this host is more than SPREAD_MARGIN points busier than a helper, the helper runs it; else it
@@ -198,7 +199,7 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   if (odd !== undefined) return no(`the job starts ${JSON.stringify(odd)}, a path a helper cannot be asked about`);
   if (needs.size > NEEDS_MAX) return no(`the job starts ${needs.size} system programs, more than the ${NEEDS_MAX} a helper is asked about`);
   const playwright = job.kind === "browser" ? playwrightVersion(sync.filter((s) => existsSync(s))) : undefined;
-  const tools = [...new Set(job.tools ?? [])].map((t) => toolSpec(t, who.path ?? process.env["PATH"] ?? ""));
+  const tools = [...new Set(job.tools ?? [])].map((t) => toolSpec(t, { path: who.path ?? process.env["PATH"] ?? "", home: who.home }));
   return { ok: true, sync, needs: [...needs], which: [...which], ...(path !== undefined ? { path } : {}), ...(playwright ? { playwright } : {}), ...(tools.length ? { tools } : {}) };
 };
 
@@ -600,9 +601,3 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     forget();
   }
 };
-
-export const defaultTools = (): BoxTools => ({
-  bunDir: dirname(process.execPath),
-  browsersDir: process.env["PLAYWRIGHT_BROWSERS_PATH"] || join(homedir(), ".cache", "ms-playwright"),
-  toolsDir: join(homedir(), ".local", "share", "dori-heavy", "tools"),
-});

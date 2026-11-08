@@ -4,7 +4,8 @@ import { basename } from "node:path";
 import { newJobDir, onStop, packTo, RESULT_ENTRIES, requestProblem, runJob, stopWithCaller, sweepJobDirs, unpackFrom } from "./heavy-job.ts";
 import type { HeavyCtx } from "./heavy-queue.ts";
 import { admitOnce, pidAlive, releaseSlot } from "./heavy-slot.ts";
-import { defaultTools, heavyExec } from "./heavy-spread.ts";
+import { heavyExec } from "./heavy-spread.ts";
+import { defaultTools } from "./heavy-tools.ts";
 
 // dori heavy-worker: the forced command of the queue host's key on a helper. It reads the request from
 // SSH_ORIGINAL_COMMAND, never a shell: "run [--rl] <label> <job> [args]" runs one job named in this host's own heavyQueue.jobs
