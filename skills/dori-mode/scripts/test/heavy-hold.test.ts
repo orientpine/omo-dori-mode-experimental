@@ -139,7 +139,7 @@ const cli = (args: string[], helpers: unknown[] = []) => {
   const config = join(state.dir, "config.json");
   writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyMaxLoad: 1e9, heavyHoldDir: hold, heavyQueue: { helpers } }));
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_")));
-  return Bun.spawn(["setsid", process.execPath, CLI, "heavy", ...args], { env: { ...own, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") }, stdout: "pipe", stderr: "pipe" });
+  return Bun.spawn(["setsid", process.execPath, CLI, "heavy", ...args], { env: { ...own, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") }, cwd: state.dir, stdout: "pipe", stderr: "pipe" });
 };
 const done = async (p: ReturnType<typeof cli>) => ({ code: await p.exited, out: await new Response(p.stdout).text(), err: await new Response(p.stderr).text() });
 
