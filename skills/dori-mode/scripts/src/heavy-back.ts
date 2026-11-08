@@ -21,7 +21,8 @@ export type BackLeft = { readonly dir: string; readonly files: number; readonly 
 export type BackPick = { readonly keep: string[]; readonly left: BackLeft[]; readonly bytes: number };
 
 export const backPick = (files: readonly BackFile[], o: { readonly cwd: string; readonly max: number; readonly globs?: readonly string[] }): BackPick => {
-  const globs = (o.globs ?? []).map((g) => ({ abs: isAbsolute(g), glob: new Glob(g) }));
+  // a leading ./ is the working folder, which relative() never writes
+  const globs = (o.globs ?? []).map((g) => ({ abs: isAbsolute(g), glob: new Glob(g.replace(/^(?:\.\/+)+/, "")) }));
   const picked = globs.length ? files.filter((f) => globs.some((g) => g.glob.match(g.abs ? f.path : relative(o.cwd, f.path)))) : [...files];
   const byDir = new Map<string, BackLeft>();
   for (const f of picked) {

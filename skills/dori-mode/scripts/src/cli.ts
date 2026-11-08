@@ -1568,7 +1568,7 @@ try {
         const badEnv = many("env").find((e) => !/^[A-Za-z_]\w{0,63}$/.test(e));
         if (badEnv !== undefined) die(`dori heavy --env takes a variable name, not "${badEnv}"`);
         const env = Object.fromEntries(["LANG", "TZ", ...many("env")].flatMap((k) => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])));
-        const job: SpreadJob = { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(many("back").length ? { back: many("back") } : {}) };
+        const job: SpreadJob = { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}) };
         const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
         if (!plan.ok) deps.log?.(`HEAVY_LOCAL ${name}: ${plan.why}`);
         else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
