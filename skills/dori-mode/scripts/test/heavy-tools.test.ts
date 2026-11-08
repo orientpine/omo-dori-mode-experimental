@@ -89,6 +89,37 @@ test("a job naming a tool bundle sends the caller's version of it, and a program
   expect(planOf(rvJob({ tools: ["Rv/x"] }))).toEqual({ ok: false, why: '--tools "Rv/x" is not a tool bundle name (lower-case letters, digits, . _ -)' });
 });
 
+test("a job naming a bundle that stays here runs the caller's own install of it, which rv's install.sh does not put on PATH", async () => {
+  // Given: rv as install.sh leaves it, a folder with VERSION under ~/.local/share and nothing on PATH, beside the copy it
+  // keeps (<folder>.bak-<time>) and an old-* folder; and no helpers (2026-11-08: gongdori renders left here ended 127)
+  const home = join(state.dir, "home");
+  const install = (dir: string, v: string): void => {
+    mkdirSync(join(home, ".local", "share", dir), { recursive: true });
+    writeFileSync(join(home, ".local", "share", dir, "rv"), `#!/bin/sh\necho "caller rv ${v} $*"\n`);
+    chmodSync(join(home, ".local", "share", dir, "rv"), 0o755);
+    writeFileSync(join(home, ".local", "share", dir, "VERSION"), `${v}\n`);
+  };
+  install("rv/zz-video-tool", "0.2.1");
+  install("rv/zz-video-tool.bak-20261108T081648Z", "0.2.0");
+  install("rv/old-20261104", "0.1.0");
+  const config = join(state.dir, "config.json");
+  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyMaxLoad: 1e9 }));
+  const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_")));
+  const env = { ...own, HOME: home, PATH: "/usr/bin:/bin", DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") };
+  // When
+  const p = Bun.spawn([process.execPath, CLI, "heavy", "t", "--kind", "cpu", "--tools", "rv", "--sync", work, "--", "rv", "make", work], { cwd: work, env, stdout: "pipe", stderr: "pipe" });
+  const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  // Then: that install ran, and a helper would be asked for its version
+  expect([code, out]).toEqual([0, `caller rv 0.2.1 make ${work}\n`]);
+  expect(err).toContain(`HEAVY_TOOLS_HERE t: rv is ${join(home, ".local", "share", "rv", "zz-video-tool", "rv")} (0.2.1), first on the job's PATH here`);
+  const plan = spreadPlan(rvJob(), { uid: process.getuid?.() ?? -1, home, path: "/usr/bin:/bin" });
+  expect(plan.ok && plan.tools).toEqual(["rv@0.2.1"]);
+  // and two installs of it are not guessed between
+  install("rv-video-tool", "0.2.2");
+  const two = spreadPlan(rvJob(), { uid: process.getuid?.() ?? -1, home, path: "/usr/bin:/bin" });
+  expect(two.ok && two.tools).toEqual(["rv"]);
+}, 60_000);
+
 test("a helper with the bundle at the caller's version runs the job with the bundle's program, and its files come back", async () => {
   const job = rvJob();
   const plan = planOf(job);

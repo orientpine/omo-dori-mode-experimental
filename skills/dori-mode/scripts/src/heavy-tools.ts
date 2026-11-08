@@ -1,5 +1,8 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+import type { BoxTools } from "./heavy-spread.ts";
 
 // The tools a job needs on a helper that it does not carry in its --sync paths (heavy-spread.ts).
 //
@@ -29,12 +32,52 @@ const versionIn = (dir: string): string | undefined => {
   }
 };
 
-// the caller's side: name@version, the version from the VERSION file beside the program of that name on PATH here
-// (rv's install.sh writes one), or the bare name when there is none
-export const toolSpec = (name: string, path: string): string => {
-  const at = Bun.which(name, { PATH: path });
-  const version = at ? versionIn(dirname(realpathSync(at))) : undefined;
-  return version ? `${name}@${version}` : name;
+const runnable = (p: string): boolean => {
+  try {
+    accessSync(p, constants.X_OK);
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+
+// The caller's own program of a bundle: the one on PATH, else the one install of it under ~/.local/share, a folder
+// <name>-*/ or <name>/*/ holding the program and a VERSION file, as rv's install.sh leaves it without putting anything on
+// PATH; the copies it keeps beside (<folder>.bak-<time>) and old-* folders are not installs. Two installs and none on
+// PATH: why, never a guess (2026-11-08: gongdori's rv renders left here ended "rv: not found", exit 127).
+type CallerTool = { readonly at: string; readonly onPath: boolean; readonly version?: string } | { readonly why: string } | undefined;
+export const callerTool = (name: string, who: { readonly path: string; readonly home: string }): CallerTool => {
+  const on = Bun.which(name, { PATH: who.path });
+  const onVersion = on ? versionIn(dirname(realpathSync(on))) : undefined;
+  if (on) return { at: on, onPath: true, ...(onVersion ? { version: onVersion } : {}) };
+  const share = join(who.home, ".local", "share");
+  const sub = (d: string): string[] => (existsSync(d) && statSync(d).isDirectory() ? readdirSync(d).map((e) => join(d, e)) : []);
+  const dirs = [...sub(share).filter((d) => d.startsWith(join(share, `${name}-`))), ...sub(join(share, name))].filter((d) => !/\.bak-|^old-/.test(d.slice(d.lastIndexOf("/") + 1)));
+  const found = dirs.filter((d) => runnable(join(d, name)) && versionIn(d) !== undefined);
+  if (found.length > 1) return { why: `${name} is not on PATH and ${found.length} installs of it are in ${share} (${found.join(", ")}); put the one you use on PATH` };
+  return found[0] ? { at: join(found[0], name), onPath: false, version: versionIn(found[0])! } : undefined;
+};
+
+// the caller's side: name@version, the version of the caller's own program of that name (callerTool), or the bare name
+export const toolSpec = (name: string, who: { readonly path: string; readonly home: string }): string => {
+  const t = callerTool(name, who);
+  return t && "version" in t && t.version ? `${name}@${t.version}` : name;
+};
+
+// A job naming bundles that runs here runs the caller's own programs of them, the ones whose versions it would send a
+// helper: an install not on PATH goes first on the job's PATH (HEAVY_TOOLS_HERE), and two installs are named, not guessed.
+export const toolsHere = (label: string, names: readonly string[], log?: (l: string) => void): { env?: Record<string, string | undefined> } => {
+  const path = process.env["PATH"] ?? "";
+  const dirs: string[] = [];
+  for (const name of new Set(names)) {
+    const t = callerTool(name, { path, home: homedir() });
+    if (t && "why" in t) log?.(`HEAVY_TOOLS_UNCLEAR ${label}: ${t.why}`);
+    else if (t && !t.onPath) {
+      dirs.push(dirname(t.at));
+      log?.(`HEAVY_TOOLS_HERE ${label}: ${name} is ${t.at} (${t.version}), first on the job's PATH here`);
+    }
+  }
+  return dirs.length ? { env: { ...process.env, PATH: [...dirs, path].join(":") } } : {};
 };
 
 // the helper's side: the folder of each bundle the job asks for (its version's, else the current one), or why it has none
@@ -56,6 +99,12 @@ export const toolBundles = (opts: readonly string[], toolsDir: string | undefine
   }
   return { bundles };
 };
+
+export const defaultTools = (): BoxTools => ({
+  bunDir: dirname(process.execPath),
+  browsersDir: process.env["PLAYWRIGHT_BROWSERS_PATH"] || join(homedir(), ".cache", "ms-playwright"),
+  toolsDir: join(homedir(), ".local", "share", "dori-heavy", "tools"),
+});
 
 export const playwrightVersion = (roots: readonly string[]): string | undefined => {
   for (const r of roots) {
