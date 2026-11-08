@@ -54,6 +54,41 @@ export const alertReasons = (s: HostSample, t: GuardThresholds): string[] => {
   return r;
 };
 
+// A heavy program left on this host outside dori heavy (in no dori-heavy-* scope) takes the PC the lanes time their runs
+// on while a helper idles: owner 2026-11-08 "우리 학습용 spark 있는데 자율 굴착 시험왜 여기서 돌리고 있어?" (a gongdori replay test and
+// pytest on 0a83). The guard names it once, with its account, so that Dori moves it; it never stops it.
+export const OUTSIDE_MIN = 30;
+export const OUTSIDE_CPU_PCT = 100;
+export type HeavyProc = { readonly pid: number; readonly user: string; readonly minutes: number; readonly cpuPct: number; readonly cmd: string };
+
+// processes of login accounts at OUTSIDE_CPU_PCT or more of one core on average over OUTSIDE_MIN minutes or more, outside
+// every dori heavy scope (its children are in the scope's cgroup too)
+export const sampleOutside = async (run: Runner): Promise<HeavyProc[]> => {
+  const ps = await run(["ps", "-eo", "pid=,uid=,user:32=,etimes=,pcpu=,args="]);
+  if (ps.code !== 0) return [];
+  const out: HeavyProc[] = [];
+  for (const line of ps.out.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+([\d.]+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const [pid, uid, secs, cpu] = [Number(m[1]), Number(m[2]), Number(m[4]), Number(m[5])];
+    if (uid < 1000 || secs < OUTSIDE_MIN * 60 || cpu < OUTSIDE_CPU_PCT) continue;
+    const cg = await run(["cat", `/proc/${pid}/cgroup`]);
+    if (cg.code !== 0 || /dori-heavy-/.test(cg.out)) continue;
+    out.push({ pid, user: m[3]!, minutes: Math.floor(secs / 60), cpuPct: Math.round(cpu), cmd: m[6]!.trim() });
+  }
+  return out;
+};
+
+// one line per process the first time it is seen; seen keeps only the pids still found
+export const outsideLines = (procs: readonly HeavyProc[], seen: Set<number>): string[] => {
+  const now = new Set(procs.map((p) => p.pid));
+  for (const pid of seen) if (!now.has(pid)) seen.delete(pid);
+  return procs.filter((p) => !seen.has(p.pid)).map((p) => {
+    seen.add(p.pid);
+    return `HOST_GUARD HEAVY_OUTSIDE ${p.user} pid ${p.pid}: ${p.minutes} min at ${p.cpuPct}% CPU outside dori heavy (${p.cmd.slice(0, 120)}); training, simulation and GPU tests go through dori heavy <label> --kind gpu --sync <paths> -- <command> (a training spark takes them), other heavy work through --kind cpu or browser`;
+  });
+};
+
 export type GuardState = { alerting: boolean; computeReady?: boolean };
 
 export const guardTick = (s: HostSample, t: GuardThresholds, state: GuardState): string[] => {
