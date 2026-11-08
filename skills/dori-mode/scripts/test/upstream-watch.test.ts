@@ -342,7 +342,7 @@ esac
   expect(items).toContain(`commit:${"f".repeat(40)}`);
   expect(items.filter((i) => i.startsWith("commit:"))).toHaveLength(1);
   expect(seen()[`commit:${"9".repeat(40)}`]!.class).toBe("2");
-});
+}, 30_000); // load-proof: the watch runs the fake gh shell script for each list of 150 PRs and 120 commits it reads
 
 test("a list that reaches its limit records nothing and tells the lead on that run, once", async () => {
   const bin = join(root, "bin");

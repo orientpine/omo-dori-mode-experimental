@@ -371,7 +371,7 @@ test("two processes changing the question store at once both keep their writes: 
   expect(new Set(questions.map((q) => q.id)).size).toBe(300);
   expect(questions.filter((q) => q.status === "answered" && q.message)).toHaveLength(300);
   expect(readFileSync(`${dir}/answers.jsonl`, "utf8").trim().split("\n")).toHaveLength(300);
-});
+}, 30_000); // load-proof: two bun processes racing 900 locked writes; 1.8 s on a quiet host, over 5 s (7.4 s once) at load 40-67 on 20 cores
 
 // A fake Discord whose card posts and interaction callbacks wait until the test settles them.
 const heldDiscord = () => {

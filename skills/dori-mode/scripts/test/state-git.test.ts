@@ -1,10 +1,15 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { BACKUP_DEFAULTS } from "../src/state-backup.ts";
 import { checkRepo, commitDir, EXCLUDES, restoreDir, type StateGitDeps, stateGitDirs, tokenShape } from "../src/state-git.ts";
+
+// Load-proof: every test here runs git in a real repository, most of them many times.
+// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
+// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
+setDefaultTimeout(30_000);
 
 let dir: string;
 let lines: string[];
