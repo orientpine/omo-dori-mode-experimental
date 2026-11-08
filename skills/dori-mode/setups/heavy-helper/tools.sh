@@ -21,6 +21,12 @@
 #                                   packages <list>
 set -euo pipefail
 
+# every uv run --with in a tree, as uv takes it (--with p or --with=p, quoted or not, a comma list), its name only (a
+# version after it, or a version-only part of a list, is dropped), read as heavy-tools.ts reads a caller's tree
+rv_packages() {
+  { grep -rhoE -- "--with([[:space:]]+|=)['\"]?[A-Za-z0-9_.,<>=!~-]+" "$1" || true; } | sed -E "s/^--with([[:space:]]+|=)['\"]?//" | tr ',' '\n' | { grep -E '^[A-Za-z0-9]' || true; } | sed -E 's/^([A-Za-z0-9_.-]+).*/\1/' | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
 rv_bundle() {
   local tag=$1 dir=$2
   local repo=https://github.com/orientpine/rv-video-tool uv_version=${UV_VERSION:-0.13.7} uvt
@@ -83,9 +89,7 @@ EOF
   # rv's plain python3 is the one py/ is for, not another python3 earlier on a box's PATH
   ln -s /usr/bin/python3 "$new/bin/python3"
   local pkgs
-  # every uv run --with, as uv takes it (--with p or --with=p, quoted or not, a comma list, a version after the name),
-  # read as heavy-tools.ts reads a caller's tree
-  pkgs=$(grep -rhoE -- "--with([[:space:]]+|=)['\"]?[A-Za-z0-9_.,<>=!~-]+" "$new/rv-video-tool" | sed -E "s/^--with([[:space:]]+|=)['\"]?//" | tr ',' '\n' | sed -E 's/^([A-Za-z0-9_.-]+).*/\1/' | grep -v '^$' | LC_ALL=C sort -u | tr '\n' ' ')
+  pkgs=$(rv_packages "$new/rv-video-tool")
   [ -n "$pkgs" ] || { echo "TOOLS_FAIL no uv run --with package found in rv $tag" >&2; exit 3; }
   # what a job that sends its own rv tree may ask of this runtime (heavy-tools.ts toolBundles)
   # shellcheck disable=SC2086 # one line per package
@@ -123,6 +127,11 @@ EOF
   echo "TOOLS_OK rv $gen $label $tree playwright $pw packages $(echo $pkgs)"
 }
 
+if [ "${1:-}" = packages ]; then
+  rv_packages "${2:?usage: tools.sh packages <tree>}"
+  echo
+  exit 0
+fi
 if [ "${1:-}" = rv ]; then
   rv_bundle "${2:?usage: tools.sh rv <tag or commit> [tools dir]}" "${3:-$HOME/.local/share/dori-heavy/tools}"
   exit 0

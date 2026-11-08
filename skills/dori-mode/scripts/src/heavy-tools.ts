@@ -64,19 +64,15 @@ export const callerTool = (name: string, who: { readonly path: string; readonly 
 // the runtime packages a tool's tree asks for, as tools.sh reads them for a bundle's wheels: every uv run --with, as uv
 // takes it (--with p or --with=p, quoted or not, a comma list, a version after the name)
 const PKG = /--with(?:\s+|=)['"]?([A-Za-z0-9_.,<>=!~-]+)/g;
+// the --with specs of a tree that name a version (numpy>=1,<2): no bundle is matched by version, so such a tree stays here
+const pinnedIn = (tree: string): string[] => [...new Set(filesOf(tree).flatMap((f) => [...readFileSync(f, "latin1").matchAll(PKG)].map((m) => m[1]!).filter((x) => /[<>=!~]/.test(x))))];
 const pkgNames = (spec: string): string[] => spec.split(",").map((p) => /^\s*([A-Za-z0-9_.-]+)/.exec(p)?.[1] ?? "").filter(Boolean);
-const packagesIn = (tree: string): string[] => {
-  const out = new Set<string>();
-  const walk = (d: string): void => {
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      const p = join(d, e.name);
-      if (e.isDirectory() && ![".git", "__pycache__", "node_modules"].includes(e.name)) walk(p);
-      else if (e.isFile() && statSync(p).size < 1_000_000) for (const m of readFileSync(p, "latin1").matchAll(PKG)) for (const n of pkgNames(m[1]!)) out.add(n);
-    }
-  };
-  walk(tree);
-  return [...out].sort();
-};
+const filesOf = (tree: string): string[] => readdirSync(tree, { withFileTypes: true }).flatMap((e) => {
+  const p = join(tree, e.name);
+  if (e.isDirectory()) return [".git", "__pycache__", "node_modules"].includes(e.name) ? [] : filesOf(p);
+  return e.isFile() && statSync(p).size < 1_000_000 ? [p] : [];
+});
+const packagesIn = (tree: string): string[] => [...new Set(filesOf(tree).flatMap((f) => [...readFileSync(f, "latin1").matchAll(PKG)].flatMap((m) => pkgNames(m[1]!))))].sort();
 const inside = (p: string, root: string): boolean => p.startsWith(`${root}/`);
 export const treeEnvName = (name: string): string => `DORI_TOOL_TREE_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
 
@@ -96,6 +92,8 @@ export const toolPlan = (names: readonly string[], who: { readonly path: string;
     plan.specs.push(version ? `${name}@${version}` : name);
     const tree = t && "at" in t && version ? dirname(realpathSync(t.at)) : undefined;
     if (!tree || !(inside(tree, who.home) || inside(tree, "/tmp"))) continue;
+    const pinned = pinnedIn(tree);
+    if (pinned.length) return { why: `your ${name} tree (${tree}) asks for ${pinned.join(", ")} by version, which no bundle is matched by; it runs here` };
     plan.trees.push(tree);
     plan.opts.push(`tooltree=${name}`, `toolpkgs=${name}:${packagesIn(tree).join(",")}`);
     plan.env[treeEnvName(name)] = tree;

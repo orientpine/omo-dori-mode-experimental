@@ -127,14 +127,27 @@ test("a caller's tree that the current bundle cannot serve takes another install
   expect(readFileSync(join(work, "out", "ran"), "utf8")).toBe("runtime 0.2.1+gabc1234\ncaller rv\n");
 });
 
-test("a quoted or listed uv --with, with a version after it, still asks for its package", async () => {
+test("a quoted or listed uv --with still asks for its package", async () => {
   // Given: the caller's tree asks for torch as uv lets one write it, which the bundle here lacks
-  writeFileSync(join(home, ".local", "share", "rv", "own-video-tool", "lib", "ml.sh"), "uv run --with 'torch>=2' --with=scipy,sympy python ml.py\n");
+  writeFileSync(join(home, ".local", "share", "rv", "own-video-tool", "lib", "ml.sh"), "uv run --with 'torch' --with=scipy,sympy python ml.py\n");
   const j = job(["rv"]);
   // When
   await expect(heavySpread(ctxWith(helperWith("0.2.1", "edge-tts numpy pillow playwright")), j, planOf(j))).rejects.toThrow("stop");
   // Then
   expect(logs).toContain('HEAVY_HELPER_NOTOOLS t second: tool bundle "rv" here (0.2.1) lacks scipy sympy torch, which the job\'s rv asks for; install one with them there: setups/heavy-helper/tools.sh rv <tag or commit>');
+});
+
+test("a caller's tree that pins a package version keeps the job here, since a bundle's wheels are not matched by version", () => {
+  writeFileSync(join(home, ".local", "share", "rv", "own-video-tool", "lib", "pin.sh"), "uv run --with 'numpy>=1,<2' --with playwright==1.50.0 python x.py\n");
+  expect(spreadPlan(job(["rv"]), { uid: process.getuid?.() ?? -1, home, path: "/usr/bin:/bin" })).toEqual({ ok: false, why: `your rv tree (${join(home, ".local", "share", "rv", "own-video-tool")}) asks for numpy>=1,<2, playwright==1.50.0 by version, which no bundle is matched by; it runs here` });
+});
+
+test("tools.sh reads a tree's packages as uv takes them, without the versions", () => {
+  const tree = join(state.dir, "pk");
+  mkdirSync(tree);
+  writeFileSync(join(tree, "a.sh"), "uv run -q --with playwright --with pillow python a.py\nuv run --with 'numpy>=1,<2' --with=scipy,sympy x\n");
+  const p = Bun.spawnSync(["bash", join(import.meta.dir, "../../setups/heavy-helper/tools.sh"), "packages", tree], { stdout: "pipe", stderr: "pipe" });
+  expect([p.exitCode, p.stdout.toString()]).toEqual([0, "numpy pillow playwright scipy sympy\n"]);
 });
 
 test("a caller's tree with a link out of what travels keeps the job here, as a --sync folder would", () => {
