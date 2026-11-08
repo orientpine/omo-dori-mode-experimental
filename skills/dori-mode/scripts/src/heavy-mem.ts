@@ -144,19 +144,19 @@ export const gpuRoomPlan = (m: RoomInfo, wantKb: number, free: number, triggerKb
   return { make: true, wantKb, budgetKb, floorKb, why: `${fmtMem(m.freeKb * 1024)} free, ${fmtMem(wantKb * 1024)} wanted, up to ${fmtMem(budgetKb * 1024)} pushed out` };
 };
 
-// argv: want, budget, floor (kB). Prints one line: what it touched, why it stopped, MemFree and the free memory in blocks of
-// 2M or more (buddyinfo order >= 9) before and after.
+// argv: want, budget, floor (kB), the meminfo and buddyinfo files (a test gives fixed ones). Prints one line: what it
+// touched, why it stopped, MemFree and the free memory in blocks of 2M or more (buddyinfo order >= 9) before and after.
 const ROOM_PY = `import mmap, sys, time
-want, budget, floor = map(int, sys.argv[1:4])
+want, budget, floor = map(int, sys.argv[1:4]); meminfo, buddyinfo = sys.argv[4:6]
 def mi():
     d = {}
-    for l in open("/proc/meminfo"):
+    for l in open(meminfo):
         k, v = l.split(":", 1)
         d[k] = int(v.split()[0])
     return d
 def big():
     kb = 0
-    for l in open("/proc/buddyinfo"):
+    for l in open(buddyinfo):
         n = l.split()[4:]
         kb += sum(int(c) * 4 * 2 ** o for o, c in enumerate(n) if o >= 9)
     return kb
@@ -185,10 +185,10 @@ print(f"pushed {touched // 1024}M of cache out in {time.time() - t:.1f}s (stop: 
 
 // Runs the room maker in its own scope (MemoryMax a little over its budget, no swap, oom_score_adj 500 like a job) when one
 // can be made. Resolves with its line, or why it did not run; never throws, a job still starts after a failed attempt.
-export const makeGpuRoom = async (plan: Extract<RoomPlan, { make: true }>, label: string): Promise<{ readonly ok: boolean; readonly line: string }> => {
+export const makeGpuRoom = async (plan: Extract<RoomPlan, { make: true }>, label: string, proc = { meminfo: "/proc/meminfo", buddyinfo: "/proc/buddyinfo" }): Promise<{ readonly ok: boolean; readonly line: string }> => {
   // whole kB for the helper's int(): a --mem like 70.1G gives fractions; the budget rounds down, the floor up
   const wantKb = Math.ceil(plan.wantKb), budgetKb = Math.floor(plan.budgetKb);
-  const cmd = ["python3", "-I", "-c", ROOM_PY, String(wantKb), String(budgetKb), String(Math.ceil(plan.floorKb))];
+  const cmd = ["python3", "-I", "-c", ROOM_PY, String(wantKb), String(budgetKb), String(Math.ceil(plan.floorKb)), proc.meminfo, proc.buddyinfo];
   const no = await canScope();
   const argv = no ? cmd : scopeArgv(unitName(`gpu-room-${label}`, process.pid, ++scopes), (budgetKb + 256 * 1024) * 1024, cmd);
   try {
