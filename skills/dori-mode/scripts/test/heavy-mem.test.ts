@@ -100,16 +100,28 @@ test("before a GPU job page cache is pushed out only when free memory is short, 
 });
 
 test("the room maker touches memory up to its budget and lets it go, and touches none when that would cross the floor", async () => {
-  const m = parseRoomInfo(readFileSync("/proc/meminfo", "utf8"))!;
-  // real memory, a little: 300M more free than now is wanted, at most 512M may be touched; on a shared host another
-  // process may free 300M first, and then the helper rightly touches none (review of #241)
-  const r = await makeGpuRoom({ make: true, wantKb: m.freeKb + 300 * 1024, budgetKb: 512 * 1024, floorKb: 0, why: "" }, "test");
-  expect(r).toMatchObject({ ok: true, line: expect.stringMatching(/^pushed (0|256|512)M of cache out in [\d.]+s \(stop: (enough|budget)\): free \d+M -> \d+M, in 2M\+ blocks \d+M -> \d+M$/) });
-  const floor = await makeGpuRoom({ make: true, wantKb: m.freeKb + 1024 ** 2, budgetKb: 1024 ** 2, floorKb: m.availKb + 1024 ** 2, why: "" }, "test");
-  expect(floor).toMatchObject({ ok: true, line: expect.stringMatching(/^pushed 0M of cache out in [\d.]+s \(stop: floor\)/) });
+  // the stop checks read fixed files, not the host's memory that moment: on 0a83 (2026-11-09, 52G free) free memory rose
+  // past the wanted mark after the test read it, and the floor case stopped at enough. The helper still touches real
+  // memory (512M at most here), only what it reads to decide stays put, so every run ends the same way.
+  const proc = { meminfo: join(state.dir, "meminfo"), buddyinfo: join(state.dir, "buddyinfo") };
+  writeFileSync(proc.meminfo, "MemTotal:       127539392 kB\nMemFree:        41943040 kB\nMemAvailable:   62914560 kB\nSwapFree:        6291456 kB\n");
+  // 10 free blocks of order 9 (2M) and 20 of order 10 (4M): 100M in 2M+ blocks
+  writeFileSync(proc.buddyinfo, "Node 0, zone   Normal      1      1      1      1      1      1      1      1      1     10     20\n");
+  const m = parseRoomInfo(readFileSync(proc.meminfo, "utf8"))!;
+  const room = (wantKb: number, budgetKb: number, floorKb: number) => makeGpuRoom({ make: true, wantKb, budgetKb, floorKb, why: "" }, "test", proc);
+  const line = (pushed: number, stop: string) => expect.stringMatching(new RegExp(`^pushed ${pushed}M of cache out in [\\d.]+s \\(stop: ${stop}\\): free 40960M -> 40960M, in 2M\\+ blocks 100M -> 100M$`));
+  // 300M more free wanted, 512M may be touched: two 256M chunks reach it
+  expect(await room(m.freeKb + 300 * 1024, 512 * 1024, 0)).toEqual({ ok: true, line: line(512, "enough") });
+  // 2G more wanted, 512M may be touched: the budget stops it
+  expect(await room(m.freeKb + 2 * 1024 ** 2, 512 * 1024, 0)).toEqual({ ok: true, line: line(512, "budget") });
+  // available is already under the floor: nothing touched
+  expect(await room(m.freeKb + 1024 ** 2, 1024 ** 2, m.availKb + 1024 ** 2)).toEqual({ ok: true, line: line(0, "floor") });
   // a --mem of 70.1G makes fractional kB; the helper still runs (it stops at the floor here, touching nothing)
-  const fraction = await makeGpuRoom({ make: true, wantKb: m.freeKb + 73_505_996.8, budgetKb: 1024 ** 2 + 0.6, floorKb: m.availKb + 1024 ** 2 + 0.4, why: "" }, "test");
-  expect(fraction).toMatchObject({ ok: true, line: expect.stringMatching(/\(stop: floor\)/) });
+  expect(await room(m.freeKb + 73_505_996.8, 1024 ** 2 + 0.6, m.availKb + 1024 ** 2 + 0.4)).toEqual({ ok: true, line: line(0, "floor") });
+  // without files it reads the host's own /proc: it runs and says why it stopped, whatever that is today
+  const host = parseRoomInfo(readFileSync("/proc/meminfo", "utf8"))!;
+  const real = await makeGpuRoom({ make: true, wantKb: host.freeKb + 300 * 1024, budgetKb: 512 * 1024, floorKb: 0, why: "" }, "test");
+  expect(real).toMatchObject({ ok: true, line: expect.stringMatching(/^pushed (0|256|512)M of cache out in [\d.]+s \(stop: (enough|budget|swap)\): free \d+M -> \d+M, in 2M\+ blocks \d+M -> \d+M$/) });
 });
 
 test("dori gpu-room reads --want as a size and refuses one it cannot read", async () => {
