@@ -2,10 +2,6 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
-## Heavy tools: a version with a space before it is not seen in a caller's tree (#401)
-
-#401 keeps a `--tools` job here when the caller's tree asks for a package by version (`--with 'numpy>=1,<2'`, `--with playwright==1.50.0`), since no bundle is matched by wheel versions. A quoted requirement with a space before its comparator (`--with 'playwright ==1.50.0'`, valid requirement syntax) is read as plain `playwright`, so such a tree can go to a helper whose bundle has another playwright and fail there against its offline wheels (review 9 of #401, MEDIUM; left out on the lead's word to stop patching #401's edges). What would close it: read the whole quoted `--with` argument as one requirement (packaging's specifier grammar) and keep any requirement form the parser does not fully understand here, with a test for the space before a comparator. No rv tree uses a version in its `--with` lines today.
-
 ## Node: a card answer is taken from the card's text, not from the egress gate's tap receipt (#370)
 
 The egress gate (#370) takes the owner's card answer as proof only from its own receipt of his tap (`card-receipts.jsonl`); the node (cytoplasm `owner_origin`, #232/#233) cannot read that file and still trusts the card's text, so its only guard is that the gate refuses every hand-made answered card at the Discord port and rebuilds every Discord write it forwards. A card forged before #370 was installed stops counting on the node 24 hours after it was posted. What would close it: the node reads the gate's receipt for the card (a read-only gate endpoint or a shared receipt file) instead of the card's text.

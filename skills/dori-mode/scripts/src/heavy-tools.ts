@@ -65,7 +65,9 @@ export const callerTool = (name: string, who: { readonly path: string; readonly 
 // takes it (--with p or --with=p, quoted or not, a comma list, a version after the name)
 const PKG = /--with(?:\s+|=)['"]?([A-Za-z0-9_.,<>=!~-]+)/g;
 // the --with specs of a tree that name a version (numpy>=1,<2): no bundle is matched by version, so such a tree stays here
-const pinnedIn = (tree: string): string[] => [...new Set(filesOf(tree).flatMap((f) => [...readFileSync(f, "latin1").matchAll(PKG)].map((m) => m[1]!).filter((x) => /[<>=!~]/.test(x))))];
+// (a quoted argument counts whole, so a space before its comparator is a version too)
+const QUOTED = /--with(?:\s+|=)(['"])([^'"\n]*)\1/g;
+const pinnedIn = (tree: string): string[] => [...new Set(filesOf(tree).flatMap((f) => { const t = readFileSync(f, "latin1"); return [...[...t.matchAll(QUOTED)].map((m) => m[2]!), ...[...t.matchAll(PKG)].map((m) => m[1]!)].filter((x) => /[<>=!~]/.test(x)); }))].filter((x, _, all) => !all.some((y) => y !== x && y.startsWith(x)));
 const pkgNames = (spec: string): string[] => spec.split(",").map((p) => /^\s*([A-Za-z0-9_.-]+)/.exec(p)?.[1] ?? "").filter(Boolean);
 const filesOf = (tree: string): string[] => readdirSync(tree, { withFileTypes: true }).flatMap((e) => {
   const p = join(tree, e.name);

@@ -140,6 +140,9 @@ test("a quoted or listed uv --with still asks for its package", async () => {
 test("a caller's tree that pins a package version keeps the job here, since a bundle's wheels are not matched by version", () => {
   writeFileSync(join(home, ".local", "share", "rv", "own-video-tool", "lib", "pin.sh"), "uv run --with 'numpy>=1,<2' --with playwright==1.50.0 python x.py\n");
   expect(spreadPlan(job(["rv"]), { uid: process.getuid?.() ?? -1, home, path: "/usr/bin:/bin" })).toEqual({ ok: false, why: `your rv tree (${join(home, ".local", "share", "rv", "own-video-tool")}) asks for numpy>=1,<2, playwright==1.50.0 by version, which no bundle is matched by; it runs here` });
+  // a space before the comparator, inside quotes, is a version too
+  writeFileSync(join(home, ".local", "share", "rv", "own-video-tool", "lib", "pin.sh"), "uv run --with \"playwright ==1.50.0\" python x.py\n");
+  expect(spreadPlan(job(["rv"]), { uid: process.getuid?.() ?? -1, home, path: "/usr/bin:/bin" })).toEqual({ ok: false, why: `your rv tree (${join(home, ".local", "share", "rv", "own-video-tool")}) asks for playwright ==1.50.0 by version, which no bundle is matched by; it runs here` });
 });
 
 test("tools.sh reads a tree's packages as uv takes them, without the versions", () => {
