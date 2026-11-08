@@ -87,7 +87,7 @@ test("the tunnel keeps its PC: a config naming another PC or port stops the old 
   const quiet = async () => ({ code: 0, out: "", err: "" });
   const ensure = (over: Record<string, unknown>) => realDeps(options({ cdpPort: port, ...over }), quiet, clock, tunnel, spawn).ensureAgents();
   await ensure({ pcSsh: "a@pc-one" }); // nothing answers: start the tunnel
-  const old = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("{}") }); // the started tunnel answers
+  const old = Bun.serve({ ...(port === undefined ? {} : { port }), hostname: "127.0.0.1", fetch: () => new Response("{}") }); // the started tunnel answers
   try {
     await ensure({ pcSsh: "a@pc-one" });
     const before = { spawned: [...spawned], kills };
@@ -203,7 +203,7 @@ const fakePortal = (page: Page = {}) => {
   let focused = "";
   const value: Record<string, number> = {};
   const frame = (url: string) => ({ frame: { id: "top", url: "https://vpn.example.com/" }, childFrames: [{ frame: { id: "f", url } }] });
-  const send = async (method: string, params: Record<string, any> = {}): Promise<any> => {
+  const send = async (method: string, params: Record<string, unknown> = {}): Promise<unknown> => {
     if (page.protocolError === method) throw new Error(`${method}: protocol error`);
     if (method === "Page.navigate") return { result: page.navError ? { errorText: page.navError } : { frameId: "top" } };
     if (method === "Page.getFrameTree") return { result: { frameTree: frame(stage === "login" ? "https://vpn.example.com/login.jsp" : stage === "cert" ? "https://vpn.example.com/flag3_cert.jsp" : "https://vpn.example.com/bookmark.jsp") } };

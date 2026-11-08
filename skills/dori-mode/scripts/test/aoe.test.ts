@@ -281,7 +281,7 @@ const goalLaunch = async (reads: readonly GoalRead[], during?: (read: number) =>
   await Bun.write(brief, "# brief\n");
   let read = 0;
   const still = fakeClock(T0);
-  const clock = late === undefined ? still : { now: () => still.at, sleep: async (ms: number) => void (still.at += ms + late) };
+  const clock = late === undefined ? still : { now: () => still.at, sleep: async (ms: number) => { still.at += ms + late; } };
   const deps: FlowDeps = { ...at(T0), clock, config: { ...at(T0).config, ...config }, readGoal: async () => { during?.(read); return reads[Math.min(read++, reads.length - 1)] as GoalRead; } };
   const r = await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd });
   return { startup: r.startup, read };
@@ -335,7 +335,7 @@ test("a first turn still running with no goal is STARTUP_PENDING_GOAL at once, a
 });
 
 test("an idle read, then a running turn (a gap between tool calls), is STARTUP_PENDING_GOAL, not a missing goal", async () => {
-  const r = await goalLaunch(["none"], (read) => void (world.screen = read === 0 ? IDLE : BUSY));
+  const r = await goalLaunch(["none"], (read) => { world.screen = read === 0 ? IDLE : BUSY; });
   expect(r.startup).toStartWith(`STARTUP_PENDING_GOAL smoke ${pendingPane}`);
   expect(r.read).toBe(2);
 });
@@ -1369,7 +1369,7 @@ const STATUS = " Claude·cbaekdong ▕████░░░░░░▏ 29% 7d �
 const scoped = async (key: string, screen: string, deps: FlowDeps = at(T0)) => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief: quotes rate limit, quota, usage limit, No API key\n");
-  const r = await launchLane(after20s(deps, () => void (world.screen = screen)), { noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  const r = await launchLane(after20s(deps, () => { world.screen = screen; }), { noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" });
   return r.startup;
 };
 

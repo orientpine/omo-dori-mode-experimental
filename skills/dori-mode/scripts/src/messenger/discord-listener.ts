@@ -29,7 +29,7 @@ export type ListenerTimers = Timers & { readonly setTimeout: (cb: () => void, ms
 export type DiscordMessage = {
   readonly id: string;
   readonly channel_id: string;
-  readonly guild_id?: string;
+  readonly guild_id?: string | undefined;
   readonly content: string;
   readonly timestamp: string;
   readonly author: { readonly id: string; readonly bot?: boolean; readonly username?: string };
@@ -480,7 +480,7 @@ export class DiscordListener {
     const modal = /^m:(.+)$/.exec(cid);
     const q = this.d.cards.store.get(option?.[1] ?? modal?.[1] ?? "");
     const value = option ? q?.options[Number(option[2])] : modal ? modalValue(i.data?.components).trim() : undefined;
-    if ((i.member?.user.id ?? i.user?.id) !== this.d.owner || !q || !value) return this.d.log(`SHADOW_INTERACTION_SKIPPED ${i.id} ${cid}`);
+    if ((i.member?.user.id ?? i.user?.id) !== this.d.owner || !q || !value) { this.d.log(`SHADOW_INTERACTION_SKIPPED ${i.id} ${cid}`); return; }
     this.append({ ts: new Date(this.d.now()).toISOString(), id: i.id, kind: "answer", qid: q.id, answer: value, answer_kind: option ? "button" : "text", question: q.text, thread: q.thread, session: q.session, tmux: q.tmux });
     this.d.log(`SHADOW_ANSWER ${q.id} ${JSON.stringify(value)}`);
   }

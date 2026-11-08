@@ -135,7 +135,7 @@ test("a shell that does not stop in time is resumed and its job is not stopped (
   expect(slept).toBeLessThan(400);
 });
 
-const io = (rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { cooked?: boolean } = {}) => {
+const io = (_rows: Map<number, Row>, k: ReturnType<typeof kernel>, opts: { cooked?: boolean } = {}) => {
   const calls: string[][] = [];
   let cooked = opts.cooked ?? true;
   const r: ResumeIO = {

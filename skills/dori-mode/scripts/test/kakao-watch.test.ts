@@ -129,7 +129,7 @@ test("a mark reads the server's read mark, syncs from it and marks in a fresh se
     sessions.push(calls);
     return fn({
       syncMessages: async (c, n, cur, max) => (calls.push(`SYNCMSG ${c} ${n} ${cur} ${max}`), { statusCode: 0, body: {} }),
-      markRead: async (c, wm) => (calls.push(`NOTIREAD ${c} ${wm}`), applies && (server = String(wm)), { statusCode: 0, body: { status: 0 } }),
+      markRead: async (c, wm) => { calls.push(`NOTIREAD ${c} ${wm}`); if (applies) server = String(wm); return { statusCode: 0, body: { status: 0 } }; },
       getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { a: [1, 9], w: ["8", server] } }),
       getChannelInfo: async (c) => (calls.push(`CHATINFO ${c}`), { statusCode: 0, body: { chatInfo: { li: 0 } } }),
     });
@@ -159,7 +159,7 @@ test("a sync from a read mark below the server's floor (isOK false, minLogId) is
         synced = BigInt(String(cur)) >= 6n;
         return { statusCode: 0, body: synced ? { isOK: true } : { isOK: false, minLogId: { low: 6, high: 0 } } };
       },
-      markRead: async (c, wm) => (calls.push(`NOTIREAD ${c} ${wm}`), synced && (server = String(wm)), { statusCode: 0, body: { status: 0 } }),
+      markRead: async (c, wm) => { calls.push(`NOTIREAD ${c} ${wm}`); if (synced) server = String(wm); return { statusCode: 0, body: { status: 0 } }; },
       getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { a: [1, 9], w: ["8", server] } }),
       getChannelInfo: async (c) => (calls.push(`CHATINFO ${c}`), { statusCode: 0, body: {} }),
     });
@@ -195,7 +195,7 @@ test("a mark in an open chat sends the room's link id from CHATINFO with NOTIREA
     sessions.push(calls);
     return fn({
       syncMessages: async (c, n, cur, max) => (calls.push(`SYNCMSG ${c} ${n} ${cur} ${max}`), { statusCode: 0, body: {} }),
-      markRead: async (c, wm, link) => (calls.push(`NOTIREAD ${c} ${wm} li ${link}`), link !== undefined && (server = String(wm)), { statusCode: 0, body: { status: link === undefined ? -1 : 0 } }),
+      markRead: async (c, wm, link) => { calls.push(`NOTIREAD ${c} ${wm} li ${link}`); if (link !== undefined) server = String(wm); return { statusCode: 0, body: { status: link === undefined ? -1 : 0 } }; },
       getChatInfo: async (c) => (calls.push(`CHATONROOM ${c}`), { statusCode: 0, body: { t: "OM", a: [1, 9], w: ["8", server] } }),
       getChannelInfo: async (c) => (calls.push(`CHATINFO ${c}`), { statusCode: 0, body: { chatInfo: { chatId: 100, li } } }),
     });
@@ -311,8 +311,8 @@ test("a room the server confirmed sends nothing in later sweeps, even with an un
   let server = "4";
   const open: OpenSession = async (fn) =>
     fn({
-      syncMessages: async (c, n, cur, max) => (packets.push(`SYNCMSG ${c} ${cur} ${max}`), { statusCode: 0, body: {} }),
-      markRead: async (c, wm) => (packets.push(`NOTIREAD ${c} ${wm}`), (server = String(wm)), { statusCode: 0, body: { status: 0 } }),
+      syncMessages: async (c, _n, cur, max) => (packets.push(`SYNCMSG ${c} ${cur} ${max}`), { statusCode: 0, body: {} }),
+      markRead: async (c, wm) => { packets.push(`NOTIREAD ${c} ${wm}`); server = String(wm); return { statusCode: 0, body: { status: 0 } }; },
       getChatInfo: async (c) => (packets.push(`CHATONROOM ${c}`), { statusCode: 0, body: { a: [9], w: [server] } }),
       getChannelInfo: async (c) => (packets.push(`CHATINFO ${c}`), { statusCode: 0, body: {} }),
     });

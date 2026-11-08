@@ -1,8 +1,8 @@
 // Ported unchanged from https://github.com/sisyphuslabs/omo-dori-mode-experimental/blob/90f02c19fd86ce70cfd6a74f521c9acd24428cc3/skills/dori-mode/scripts/test/checkpoints.test.ts
-// (upstream PR #61 (4ea8bd1) with the PR #68 fix (90f02c1)). Keep the body byte-for-byte equal to upstream; fork wiring lives in cli.ts.
-import { describe, expect, spyOn, test } from "bun:test";
-import * as fs from "node:fs";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+// (upstream PR #61 (4ea8bd1) with the PR #68 fix (90f02c1)). Keep the body byte-for-byte equal to upstream; fork wiring lives in cli.ts. Strict tooling (upstream #149,
+// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/149): the unused imports spyOn, fs, statSync dropped.
+import { describe, expect, test } from "bun:test";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 

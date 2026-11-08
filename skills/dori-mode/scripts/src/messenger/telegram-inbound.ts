@@ -29,8 +29,8 @@ export type TgInbound = {
  */
 export type TgInboundOptions = {
   readonly ownerId: number;
-  readonly groupChatId?: number;
-  readonly topicId?: number;
+  readonly groupChatId?: number | undefined;
+  readonly topicId?: number | undefined;
 };
 
 /**

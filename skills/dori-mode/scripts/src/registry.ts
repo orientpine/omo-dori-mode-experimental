@@ -29,7 +29,7 @@ export type LaneStatus = "working" | "done-claimed" | "verified-done" | "not-don
 // names the lane's result already in that thread (its own post shortly before the claim, or --posted): then the close posts
 // nothing more, so the owner does not read the result twice (owner 2026-10-21 "지금 왜 두번씩 답변하는지")
 // idleAt: when dori watch first saw the lane's pane idle after the claim, cleared when a turn ran before IDLE_SETTLE_MS
-export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly summary?: string; readonly posted?: string; readonly idleAt?: number };
+export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly summary?: string; readonly posted?: string; readonly idleAt?: number | undefined };
 // a message the lane's own session posted in its work thread (dori send, dori thread reply|wait|done run in its pane)
 export type ThreadPost = { readonly id: string; readonly at: string; readonly text: string };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };
@@ -66,9 +66,9 @@ export type Lane = {
   readonly noThread?: string;
   // why the lane opened a new thread though related open threads were shown (dori launch --thread new --why-new "<reason>")
   readonly whyNew?: string;
-  readonly pane?: string;
-  readonly tab?: string;
-  readonly session?: string;
+  readonly pane?: string | undefined;
+  readonly tab?: string | undefined;
+  readonly session?: string | undefined;
   readonly sessionVia?: string;
   // the sessions this lane had before its current one, oldest first (a handover adds the outgoing one)
   readonly priorSessions?: readonly string[];
@@ -79,30 +79,30 @@ export type Lane = {
   readonly cwd?: string;
   readonly model?: string;
   // topic tags (dori launch --tag); the key's first word (rl in rl-e7) is always a tag too
-  readonly tags?: readonly string[];
+  readonly tags?: readonly string[] | undefined;
   readonly worktrees?: readonly string[];
   readonly status?: LaneStatus;
   readonly pausedFrom?: LaneStatus;
   // dori pause paused the omo goal of the lane's session (read back), so dori resume resumes it
-  readonly pausedGoal?: boolean;
-  readonly claim?: Claim;
+  readonly pausedGoal?: boolean | undefined;
+  readonly claim?: Claim | undefined;
   // dori launch left the lane's goal pending (STARTUP_PENDING_GOAL: its first turn was still on with no goal); dori watch
   // reads it on (pending-goal.ts): its goal clears the mark, three idle reads in a row (counted in idle) say LANE_NO_GOAL
-  readonly pendingGoal?: { readonly idle: number; readonly at?: number };
+  readonly pendingGoal?: { readonly idle: number; readonly at?: number } | undefined;
   // the newest posts its own session made in its work thread, oldest first (at most 5, text cut to 120 characters)
   readonly threadPosts?: readonly ThreadPost[];
   readonly objection?: Objection;
-  readonly history?: readonly HistoryEntry[];
+  readonly history?: readonly HistoryEntry[] | undefined;
   readonly openedAt: string;
   readonly closedAt?: string;
   readonly lastReplyAt?: number;
   readonly lastNudgeAt?: number;
   readonly lastAutoReplyAt?: number;
-  readonly lastReport?: string;
+  readonly lastReport?: string | undefined;
   readonly fixes?: readonly FixAttempt[];
   // the owner's goal in their own words (dori launch --goal), and the lane's latest stated direction (dori intent-check)
-  readonly goal?: string;
-  readonly direction?: { readonly at: string; readonly text: string; readonly next?: string };
+  readonly goal?: string | undefined;
+  readonly direction?: { readonly at: string; readonly text: string; readonly next?: string | undefined } | undefined;
   // big steps this lane must put through dori challenge first (dori launch --challenge-before)
   readonly challengeBefore?: readonly string[];
   // the lane's sessions start without config launchEnv (dori launch|adopt --use-gpu, dori set-gpu): launch, handover, restart
@@ -114,10 +114,10 @@ export type Lane = {
   readonly challenges?: readonly ChallengeRecord[];
   readonly explorations?: readonly ExplorationRecord[];
   readonly research?: ResearchSent;
-  readonly blocked?: string;
-  readonly idleSince?: number;
+  readonly blocked?: string | undefined;
+  readonly idleSince?: number | undefined;
   // the background jobs (kind:id) an idle lane waits on, as the last BG_WAITING line named them
-  readonly waitingOn?: string;
+  readonly waitingOn?: string | undefined;
   // the last omo auto-turn pause dori watch reported (since: its first engine-turn-limit entry) and when it lifted one
   readonly autoturn?: AutoturnMark;
   // the last ROLLOVER_DUE freshness gave for a measured threshold (context, compactions, age): one per pane, so a lane's new
@@ -133,15 +133,15 @@ export type Lane = {
   readonly stuck?: Readonly<Record<string, StuckMark>>;
   // the last dori intent-check: when, up to which report, by which reviewer, what it found (finding: the first finding, for
   // the re-read the lead may send)
-  readonly intentCheck?: { readonly at: string; readonly lastReportAt: string; readonly model: string; readonly kinds: readonly string[]; readonly finding?: string; readonly rereadAt?: string };
+  readonly intentCheck?: { readonly at: string; readonly lastReportAt: string; readonly model: string; readonly kinds: readonly string[]; readonly finding?: string | undefined; readonly rereadAt?: string } | undefined;
   // lane caps of this lane over the config's (dori launch --wall-minutes/--token-limit/--cost-limit, dori caps), extra files
   // whose change counts as activity (launch --activity-path), and the last supervision failure freshness printed (once)
   readonly budget?: BudgetLimits;
   readonly activityPaths?: readonly string[];
-  readonly supervisionError?: string;
+  readonly supervisionError?: string | undefined;
   readonly receipt?: unknown;
   // the last LANE_DIED for this pane (lane-death.ts): reason for the lead, why for the log, told once the lead had it
-  readonly died?: LaneDied;
+  readonly died?: LaneDied | undefined;
   // compaction-keep.ts: the compactions of the current session freshness has read (each new one is checked for the brief
   // path), the lane's arm in the early-compaction trial, and the last /compact the trial typed (at the compaction count then)
   readonly compactionsSeen?: number;

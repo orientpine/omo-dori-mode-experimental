@@ -28,6 +28,7 @@ export const WORKLOG_MARKER = "<!-- written by dori worklog from worklog.jsonl; 
 const ID = /^[0-9a-f]{8}$/;
 // C0 and C1 controls (C1 holds U+0085 NEL and the CSI \x9b), DEL, and the Unicode line and paragraph separators.
 const singleLine = (value: unknown, max: number): value is string =>
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the pattern deliberately matches control characters to reject or strip them
   typeof value === "string" && value.trim().length > 0 && value.length <= max && !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value);
 const isoTime = (value: unknown): value is string =>
   typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;

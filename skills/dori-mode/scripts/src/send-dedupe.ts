@@ -20,9 +20,9 @@ const KEEP_MS = 24 * 60 * 60_000;
 type Mark = { readonly at: number; readonly id?: string };
 type Last = { readonly at: number; readonly key: string; readonly id: string };
 // what a post returned: its id and the content the service answered it holds (undefined when the answer had none)
-export type Sent = { readonly id: string; readonly content?: string };
+export type Sent = { readonly id: string; readonly content?: string | undefined };
 // last: the place's last post had this content (any age); otherwise the same content went there within the window
-export type SendOnceResult = { readonly id: string; readonly duplicate: false; readonly content?: string } | { readonly id: string; readonly duplicate: true; readonly ageMs: number; readonly last: boolean };
+export type SendOnceResult = { readonly id: string; readonly duplicate: false; readonly content?: string | undefined } | { readonly id: string; readonly duplicate: true; readonly ageMs: number; readonly last: boolean };
 export type SendOnceOptions = { readonly again?: boolean; readonly windowMs?: number; readonly now?: () => number; readonly sleep?: (ms: number) => Promise<void> };
 
 const code = (e: unknown): string | undefined => (e as NodeJS.ErrnoException | undefined)?.code;

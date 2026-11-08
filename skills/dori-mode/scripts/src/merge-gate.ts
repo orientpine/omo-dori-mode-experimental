@@ -40,7 +40,7 @@ export type Receipt = {
   readonly kind: Kind;
   readonly at: string;
   readonly verdict?: "CLEAR" | "BLOCK";
-  readonly reviewer?: string;
+  readonly reviewer?: string | undefined;
   readonly file?: string;
   readonly command?: readonly string[];
   readonly code?: number;
@@ -274,7 +274,7 @@ const secs = (deps: Pick<FlowDeps, "clock">, since: number): number => Math.roun
 
 const tailOf = (r: Ran): string => `${r.out}\n${r.err}`.trim().slice(-1500);
 
-export type ReviewOptions = { readonly dir: string; readonly model?: string; readonly lane?: Lane | null; readonly noTest?: string };
+export type ReviewOptions = { readonly dir: string; readonly model?: string | undefined; readonly lane?: Lane | null; readonly noTest?: string };
 
 // dori review <pr>: the checkout at dir must be the PR's head, clean. A PR with checks or auto-merge is refused; the tests run there first
 // (a failing run writes its receipt and no review is asked for); then reviewers are tried in order until one prints a

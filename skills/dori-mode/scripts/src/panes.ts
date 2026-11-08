@@ -15,7 +15,7 @@ export type Pane = {
   readonly pane_id: string;
   readonly workspace_id: string;
   readonly tab_id?: string;
-  readonly agent?: string;
+  readonly agent?: string | undefined;
   readonly agent_status?: string;
   readonly title?: string;
   readonly cwd?: string;

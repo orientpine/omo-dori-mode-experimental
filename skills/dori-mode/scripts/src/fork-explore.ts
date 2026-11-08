@@ -55,7 +55,7 @@ export const branchPrompt = (lane: Lane, metric: string, b: Branch, total: numbe
   "EVIDENCE: <one line: the command you ran and the numbers it gave>",
 ].join("\n");
 
-export type ForkInput = { readonly metric: string; readonly branches: readonly Branch[]; readonly mode: Mode; readonly minutes: number; readonly model?: string };
+export type ForkInput = { readonly metric: string; readonly branches: readonly Branch[]; readonly mode: Mode; readonly minutes: number; readonly model?: string | undefined };
 
 const runBranch = async (deps: FlowDeps, lane: Lane, input: ForkInput, b: Branch, takeSlot: SlotTaker): Promise<BranchResult> => {
   const asked = deps.clock.now();

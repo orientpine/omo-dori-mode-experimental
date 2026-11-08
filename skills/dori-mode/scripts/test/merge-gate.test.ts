@@ -15,7 +15,7 @@ const PR = parsePr("acme/app#7");
 const DIR = "/wt/app";
 
 type FakeCommit = { sha: string; subject: string; email?: string; numstat?: string };
-type Gh = { commits?: FakeCommit[]; atHead?: string[]; head: string; checkout: string; state: string; dirtyAfterTests?: boolean; tested?: boolean; statusFails?: boolean; queued?: boolean; viewFailsAfterMerge?: boolean; deleteFails?: boolean; mergeRejects?: boolean; autoMerge?: boolean; diff?: string; prompt?: string; pushDuringReview?: string; noVerdict?: { code: number; out: string; times: number; err?: string }; checks: Record<string, string>[]; testsCode: number; verdict: string; mergedAt: string; calls: string[][] };
+type Gh = { commits?: FakeCommit[]; atHead?: string[]; head: string; checkout: string; state: string; dirtyAfterTests?: boolean; tested?: boolean; statusFails?: boolean; queued?: boolean; viewFailsAfterMerge?: boolean; deleteFails?: boolean; mergeRejects?: boolean; autoMerge?: boolean; diff?: string; prompt?: string | undefined; pushDuringReview?: string; noVerdict?: { code: number; out: string; times: number; err?: string }; checks: Record<string, string>[]; testsCode: number; verdict: string; mergedAt: string; calls: string[][] };
 
 const dirs: string[] = [];
 afterEach(() => {

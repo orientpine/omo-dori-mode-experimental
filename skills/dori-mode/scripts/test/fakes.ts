@@ -59,7 +59,7 @@ export type World = {
   agentStart: string;
   // herdr panes the fake server does not have (pane get fails), and those where no agent runs any more (a bare shell)
   herdrGone?: string[];
-  herdrDead?: string[];
+  herdrDead?: string[] | undefined;
   // what herdr pane process-info names in front of a pane (null: the lookup fails); default the agent, or -bash once dead
   herdrFront?: Record<string, readonly { name?: string; argv?: string[] }[] | null>;
   // herdr pane run starts the agent (it leaves herdrDead and draws its own screen) unless herdrNoStart

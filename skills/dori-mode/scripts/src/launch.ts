@@ -1,8 +1,8 @@
 // allow: SIZE_OK - existing launch state machine; native-name recognition is shared without adding another launch path.
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 
-import { agentPath, AoeError, BUSY_MARK, envMismatch, forwardEnv, inputLine, laneEnv, openAoeSession, paneLife, target, WAKE_MARKS } from "./aoe.ts";
+import { agentPath, AoeError, BUSY_MARK, envMismatch, forwardEnv, inputLine, laneEnv, openAoeSession, paneLife, WAKE_MARKS } from "./aoe.ts";
 import { turnRunning } from "./submit.ts";
 import { isHerdrPane, openHerdrSession } from "./herdr.ts";
 import { type Backend, fill } from "./config.ts";
@@ -34,21 +34,21 @@ export type LaunchInput = {
   readonly brief: string;
   readonly done: string;
   // the work thread: <adapter>:<id> of the thread the work continues in, or NEW_THREAD for one launch opens in this Dori's channel
-  readonly thread?: string;
+  readonly thread?: string | undefined;
   // lane caps over the config's (launch --wall-minutes N|none --token-limit N|none --cost-limit N|none) and extra activity files
   readonly budget?: BudgetLimits;
   readonly activityPaths?: readonly string[];
   // why the lane has no work thread (dori launch --no-thread "<reason>"): only a lane the owner did not ask for
-  readonly noThread?: string;
+  readonly noThread?: string | undefined;
   // why --thread new opens a new thread though related open threads were shown (dori launch --why-new "<reason>")
-  readonly whyNew?: string;
-  readonly model?: string;
-  readonly cwd?: string;
+  readonly whyNew?: string | undefined;
+  readonly model?: string | undefined;
+  readonly cwd?: string | undefined;
   readonly tags?: readonly string[];
   // launch without the LAUNCH_DONE_WEAK warning
   readonly doneWeakOk?: boolean;
   // the owner's goal in their own words, kept in the registry for dori intent-check
-  readonly goal?: string;
+  readonly goal?: string | undefined;
   // big steps the lane must put through dori challenge first
   readonly challengeBefore?: readonly string[];
   // the lane needs the GPU: its sessions start without config launchEnv
@@ -759,5 +759,3 @@ export const awaitPrompt = async (deps: FlowDeps, pane: string): Promise<string 
   }
   return "no ❯ prompt within 3 minutes";
 };
-
-export const quoteForPane = (arg: string): string => (/^[\w./:@=-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);

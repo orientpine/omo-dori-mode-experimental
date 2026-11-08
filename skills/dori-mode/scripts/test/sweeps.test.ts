@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
-import { defaultDiscordWords } from "../src/config.ts";
 import { deadPaneTick, newDeadPaneState } from "../src/dead-panes.ts";
 import { claimDone } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
@@ -47,7 +45,7 @@ test("a lead note that does not reach the lead pane is reported as not told, and
 
 test("a silent lane with no leadPane configured stays due, so the lead configured later still gets the note for the same silence", async () => {
   // Given a Dori whose leadPane is not set yet (review #339).
-  const noLead = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { leadPane: undefined });
+  const noLead = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { leadPane: "" });
   await noLead(T0).registry.write({ ...working, lastReport: "[REPORT] quiet-lane | milestone | tests green, PR open", lastNudgeAt: T0 + 16 * MIN });
   world.screens["w:p7"] = "working on it\n❯ ";
   // When a sweep finds it silent without a lead, and one after the lead is set, with no new report in between.

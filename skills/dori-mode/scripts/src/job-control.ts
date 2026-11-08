@@ -48,7 +48,7 @@ export const holdOf = (stat: StatOf, pid: number): Hold | undefined => {
 // kill(0) signals the caller's own process group, kill(-1) every process it may signal: a pid 0 in a QA frozen record
 // stopped handover-simplify's omo itself (w1:p2D, 2026-11-04 09:41Z, two hours T with no frozen record). No signal goes to
 // 0, 1 or -1, a non-integer, this process or its own process group (as pid or -pid); another group (-pgid) still may.
-export type SelfIds = { readonly pid: number; readonly pgrp?: number };
+export type SelfIds = { readonly pid: number; readonly pgrp?: number | undefined };
 const refusedTarget = (pid: number, self: SelfIds): string | undefined => {
   if (!Number.isInteger(pid)) return "not an integer pid";
   if (Math.abs(pid) <= 1) return pid === 0 ? "0 is the caller's own process group" : pid === 1 ? "1 is init" : "-1 is every process";

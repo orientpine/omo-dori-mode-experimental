@@ -170,7 +170,7 @@ export const writeMarker = (note: string, m: Marker): void => writeFileSync(mark
 
 // --- the old conversation ---
 
-export { type Candidate, type OwnerProof, ownerQuotes, userLines };
+export { type Candidate, ownerQuotes, userLines };
 
 
 // The [REPORT] lines the old session sent (typed through dori type, so they sit in its tool calls), oldest first, once each.

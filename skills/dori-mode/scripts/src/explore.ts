@@ -34,7 +34,7 @@ export type TreeNode = {
   readonly source: string;
 };
 export type Tree = { readonly area: string; readonly nodes: readonly TreeNode[] };
-export type TreeArea = { readonly cwd?: string; readonly tag?: string };
+export type TreeArea = { readonly cwd?: string; readonly tag?: string | undefined };
 
 export const NODE_KINDS: readonly NodeKind[] = ["hypothesis", "direction", "tried", "finding", "research"];
 const PREFIX: Record<NodeKind, string> = { hypothesis: "H", direction: "D", tried: "T", finding: "F", research: "R" };
@@ -66,7 +66,7 @@ export const saveTree = async (stateDir: string, a: TreeArea, tree: Tree): Promi
   renameSync(tmp, path);
 };
 
-export type NodeInput = { readonly kind: NodeKind; readonly text: string; readonly test?: string; readonly metric?: string; readonly lane?: string; readonly source: string; readonly status?: NodeStatus; readonly result?: string };
+export type NodeInput = { readonly kind: NodeKind; readonly text: string; readonly test?: string | undefined; readonly metric?: string | undefined; readonly lane?: string | undefined; readonly source: string; readonly status?: NodeStatus; readonly result?: string | undefined };
 
 // Adds a node, or returns the same node when one of that kind already says the same thing (a test it lacked is filled in).
 export const addNode = (tree: Tree, input: NodeInput, at: string): { readonly tree: Tree; readonly node: TreeNode; readonly added: boolean } => {
@@ -181,7 +181,7 @@ export const attemptTimes = (fixes: readonly FixAttempt[], metric: string): stri
   return times;
 };
 
-export type GateInput = { readonly hypotheses: readonly string[]; readonly tests: readonly string[]; readonly override?: string };
+export type GateInput = { readonly hypotheses: readonly string[]; readonly tests: readonly string[]; readonly override?: string | undefined };
 export type Gate = { readonly verdict: "ok" | "branch" | "override" | "required"; readonly attempt: number; readonly problem?: string };
 
 // Rung 2 as dori fix-attempt enforces it: from stuck.hypothesesAt failed attempts on one metric (the tagged count with this

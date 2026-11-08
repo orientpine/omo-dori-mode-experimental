@@ -9,9 +9,9 @@ export type Check = { readonly signal: string; readonly ok: boolean; readonly de
 export type Signal =
   | { readonly kind: "merged" | "closed"; readonly repo: string; readonly n: string }
   | { readonly kind: "published"; readonly pkg: string; readonly version: string }
-  | { readonly kind: "command"; readonly argv: readonly string[]; readonly stdout?: RegExp }
+  | { readonly kind: "command"; readonly argv: readonly string[]; readonly stdout?: RegExp | undefined }
   | { readonly kind: "file"; readonly path: string; readonly sha256?: string; readonly json?: { readonly path: readonly (string | number)[]; readonly value: unknown } }
-  | { readonly kind: "url"; readonly url: string; readonly status: number; readonly body?: RegExp };
+  | { readonly kind: "url"; readonly url: string; readonly status: number; readonly body?: RegExp | undefined };
 
 export type SignalIo = { readonly http?: Http; readonly cwd?: string; readonly home?: string };
 

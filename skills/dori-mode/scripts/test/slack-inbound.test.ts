@@ -23,7 +23,7 @@ const slackFake = (w: Workspace) => {
     if (method === "chat.postMessage") {
       const ts = `${w.nextTs++}.000100`;
       const root = typeof p["thread_ts"] === "string" ? p["thread_ts"] : ts;
-      (w.replies[`${p["channel"]}:${root}`] ??= []).push({ ts, user: SELF, text: String(p["text"]) });
+      const thread = w.replies[`${p["channel"]}:${root}`] ?? []; w.replies[`${p["channel"]}:${root}`] = thread; thread.push({ ts, user: SELF, text: String(p["text"]) });
       return body({ channel: p["channel"], ts });
     }
     if (method === "conversations.replies") {

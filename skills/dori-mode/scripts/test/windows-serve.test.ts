@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { powershellLiteral as quote } from "../src/powershell.ts";
-import { taskArgv, TASK_NAME } from "../src/serve.ts";
+import { taskArgv } from "../src/serve.ts";
 
 const execute = async (argv: readonly string[]) => {
   const env = Object.fromEntries(Object.entries(Bun.env).filter(([name]) => !name.startsWith("DORI_")));

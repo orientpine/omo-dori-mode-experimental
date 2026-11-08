@@ -31,7 +31,7 @@ import { ConfigError, configPath, envFilePath, fill, loadConfig, loadEnvFile, re
 import { checkRepo, commitDir, initRepo, logDir, restoreDir, type StateGitDeps, stateGitDirs } from "./state-git.ts";
 import { approve, backupTick, type BackupDeps, envFilesIn, guardDir, loadSecrets, msToNextSlot, previewDir, pushAll, pushCheck } from "./state-backup.ts";
 import { backupRemoteUrl, backupVisibility } from "./backup-visibility.ts";
-import { paneTranscriptHas, sendVerified, submitToPane } from "./panes.ts";
+import { paneTranscriptHas, sendVerified } from "./panes.ts";
 import { retryLaneTells } from "./lane-tells.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
@@ -78,7 +78,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence, tokenBotId } from "./messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
 import { DiscordListener, eyesOff } from "./messenger/discord-listener.ts";
-import { bareThreadName, discordThreadId, postInThread, postLaneStart, prepareInThread, progressText, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS, withoutEmoji } from "./messenger/discord-thread.ts";
+import { bareThreadName, discordThreadId, postInThread, postLaneStart, prepareInThread, progressText, threadName, ThreadRefError, type ThreadStatus, type ThreadVerb, VERB_STATUS } from "./messenger/discord-thread.ts";
 import { duplicateLine, SEND_DUPLICATE_EXIT, type Sent, sendKey, sendOnce, sentLine } from "./send-dedupe.ts";
 import { mapThread, standThread, threads, unstandThread } from "./messenger/thread-map.ts";
 import { archiveDoneThreads } from "./messenger/thread-archive.ts";

@@ -19,7 +19,7 @@ export type FrozenRecord = {
   // the agent first, then every process under it
   readonly pids: readonly number[];
   // when freshness closes it; absent: it stays until closed by hand (--keep-old, or handover.frozenCloseH 0)
-  readonly closeAt?: string;
+  readonly closeAt?: string | undefined;
   // work a monitor of the old session started (handover.ts monitorWork): it runs on, left unstopped, and the session closes
   // on the first freshness tick after every one of these pids ended, whatever closeAt says; closing it earlier ends them
   readonly keepFor?: readonly number[];
@@ -154,7 +154,7 @@ export const closeFrozen = async (deps: FreezeDeps, stateDir: string, rec: Froze
     if (rec.closeAt) writeFrozen(stateDir, { ...rec, closeAt: new Date(now).toISOString() });
   };
   const retry = rec.closeAt ? "the next freshness tick tries again" : `dori handover close-frozen ${rec.pane} tries again`;
-  let open;
+  let open: ReturnType<typeof sessionFor>;
   try {
     open = sessionFor(await liveSessions(deps.run), rec.pane);
   } catch (e) {

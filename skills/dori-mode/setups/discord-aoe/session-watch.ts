@@ -23,8 +23,6 @@ await loadEnvFile(envFilePath());
 const config = await loadConfig();
 const registry = new Registry(config.stateDir);
 const out = join(config.stateDir, "session-events.jsonl");
-
-type Listed = { id: string; title: string; path: string };
 type Seen = { busy: boolean; idleSince: number; notified: boolean; aoeState: string; body: string; milestone: string };
 const seen = new Map<string, Seen>();
 

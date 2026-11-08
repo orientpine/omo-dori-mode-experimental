@@ -4,7 +4,7 @@ import type { Clock } from "../run.ts";
 import { guardText, type Http, MessengerError, type RetryPolicy, withBackoff } from "./http.ts";
 import { type ThreadLedger, tsAfter } from "./thread-ledger.ts";
 
-export type SlackAuth = { readonly token: string; readonly cookie?: string };
+export type SlackAuth = { readonly token: string; readonly cookie?: string | undefined };
 // text: what Slack answered the message holds (chat.postMessage's message.text), when it said
 export type Posted = { readonly channel: string; readonly ts: string; readonly text?: string };
 // read() gives the bytes only when that file's turn comes, so a send of several big files holds one at a time

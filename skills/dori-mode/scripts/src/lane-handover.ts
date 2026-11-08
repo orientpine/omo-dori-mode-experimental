@@ -31,7 +31,7 @@ import { AGENT, descendants, ended, type Proc, sessionDirFor } from "./session-i
 import { commandExecutable } from "./executable.ts";
 import { appendRollover, type OwnerMessage, ownerMessagesFor, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, contextK, decidedBy, heldTyped, inboxMessages, LEAD_PREFIX, lastProposal, leadLines, limitsFor, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, type RolloverEntry, type RolloverRequest, type Said, sessionFixes, filledApproval, measuredSignal, type Signals, sessionSignals, setQuiet, type Sizes, sizePct, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
 import { stuckTop } from "./explore.ts";
-import { bulletsIn, covered, fillGaps, flat, type Missing, missingHeadings, quoted, quotesIn, section, seedRestatement, wholeBullet } from "./restatement.ts";
+import { bulletsIn, covered, flat, type Missing, missingHeadings, quoted, quotesIn, section, wholeBullet } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
 
 export type LaneHandoverDeps = FlowDeps & {
@@ -62,16 +62,16 @@ export type LaneHandoverDeps = FlowDeps & {
 
 export type LaneHandoverOptions = {
   // the approval: lead:<reason and signal>, the owner's answered card Qn, a message link or their words (rollover.ts approvalProblem); --dry-run needs none
-  readonly approvedBy?: string;
+  readonly approvedBy?: string | undefined;
   // the one-use grant freshness wrote for the run it started (DORI_HANDOVER_AUTO_GRANT): an auto: approval holds only with it
   readonly autoGrant?: string;
-  readonly note?: string;
-  readonly model?: string;
-  readonly thinking?: string;
+  readonly note?: string | undefined;
+  readonly model?: string | undefined;
+  readonly thinking?: string | undefined;
   readonly force?: boolean;
   readonly keepOld?: boolean;
   readonly dryRun?: boolean;
-  readonly verifyMin?: number;
+  readonly verifyMin?: number | undefined;
   // an automatic start (freshness passes --wait-idle): wait up to this many minutes for the lane's turn to end and move it
   // at that idle moment
   readonly waitIdleMin?: number;
@@ -99,12 +99,12 @@ export type LaneFacts = {
   readonly from: { readonly pane: string; readonly aoeId: string; readonly session: string; readonly title: string; readonly cwd: string };
   readonly cwd: string;
   readonly model: string;
-  readonly thinking?: string;
+  readonly thinking?: string | undefined;
   readonly contextPct?: number;
   readonly account?: string;
   readonly monitors: readonly MonitorSpec[];
   readonly todos: readonly string[];
-  readonly goal?: string;
+  readonly goal?: string | undefined;
   readonly chains: readonly Job[];
   readonly detached: readonly Job[];
   // work the old session's monitors started (pid: the monitor's process, pids: the work under it); absent: none
@@ -115,7 +115,7 @@ export type LaneFacts = {
   readonly signals: Signals;
   // the old agent's process (frozen during the switch) and the old conversation's log file
   readonly agentPid?: number;
-  readonly oldLog?: string;
+  readonly oldLog?: string | undefined;
   // the owner's own messages since the lane's last handover (rollover.ts ownerMessagesFor)
   readonly ownerMessages?: readonly OwnerMessage[];
   // the lead's own [LEAD] instructions in the old conversation since the lane's last handover, as they were typed
@@ -166,8 +166,6 @@ export const SUMMARY_TEMPLATE = [
 ].join("\n");
 // The headings the new session's restatement needs (written before it acks the probe).
 export const UNDERSTOOD_HEADINGS = ["Goal", "Owner's words", "Decisions", "Next step", "Ruled out", "Questions"] as const;
-// the headings the new session writes itself; the handover fills the others in before it asks (restatement.ts seedRestatement)
-export const LANE_OWN = ["Next step", "Questions"] as const;
 
 // What the new session's restatement left out, measured against what the handover holds: the fix ledger and the lane's
 // goal (independent of the summary), and the owner's quoted words and the decisions of the old session's summary.
@@ -239,7 +237,7 @@ export const splitModel = (model: string): { readonly base: string; readonly thi
 };
 
 const modelId = (model: string): string => splitModel(model).base.split("/").pop() ?? model;
-const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // omo's status line sits below the ❯ input line: "... 90K/1M (9.0%) ... claude-opus-5-5 • effort high" (or "claude-opus-5-5:high").
 export const statusLine = (screen: string, model: string): StatusLine => {
@@ -247,7 +245,7 @@ export const statusLine = (screen: string, model: string): StatusLine => {
   const at = lines.findLastIndex((l) => l === inputLine(screen));
   const tail = (at >= 0 ? lines.slice(at + 1) : lines.slice(-6)).join("\n");
   const id = modelId(model);
-  const named = new RegExp(`(?:^|[\\s(/])${escape(id)}(?::(\\w+))?(?=\\s|$)`, "m").exec(tail);
+  const named = new RegExp(`(?:^|[\\s(/])${escapeRegExp(id)}(?::(\\w+))?(?=\\s|$)`, "m").exec(tail);
   const effort = /\beffort (\w+)/.exec(tail);
   const pct = CONTEXT.exec(tail);
   const thinking = named?.[1] ?? effort?.[1];
@@ -340,7 +338,7 @@ const carried = (dir: string, key: string, alive: (pid: number) => boolean, know
   let files: string[] = [];
   try {
     // <key>-<stamp>.json, or <key>-<stamp>-<pid>.json for a run that wrote second in the same second (the newer one)
-    const name = new RegExp(`^${escape(key)}-(\\d{8}-\\d{6})(?:-(\\d+))?\\.json$`);
+    const name = new RegExp(`^${escapeRegExp(key)}-(\\d{8}-\\d{6})(?:-(\\d+))?\\.json$`);
     const order = (n: string): string => {
       const m = name.exec(n);
       return `${m?.[1] ?? ""}-${m?.[2] === undefined ? "0" : "1"}-${(m?.[2] ?? "").padStart(10, "0")}`;
@@ -932,7 +930,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
       steps.push({ step, ms: t - last, ok });
       last = t;
     };
-    const accounts: { to?: string } = {};
+    const accounts: { to?: string | undefined } = {};
     const supplements: Supplement[] = [];
     const sizes: Mutable<Sizes> = {};
     const r = await moveLane(deps, opts, facts, { note, at, title, emit, steps, mark, accounts, supplements, frozen, sizes });
@@ -1025,7 +1023,7 @@ export const keepSessions = async (deps: Pick<LaneHandoverDeps, "registry">, key
   });
 };
 
-const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, understood: string, emit: (line: string) => void): Promise<Check> => {
+const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, _understood: string, emit: (line: string) => void): Promise<Check> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
   let session = "";
@@ -1097,7 +1095,7 @@ const chainsEnded = async (deps: LaneHandoverDeps, key: string, chains: readonly
 
 // frozen: the old agent was already frozen at its idle moment (an automatic start)
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
-type MoveContext = { readonly note: string; readonly at: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string }; readonly supplements: Supplement[]; readonly frozen: boolean; readonly sizes: Mutable<Sizes> };
+type MoveContext = { readonly note: string; readonly at: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string | undefined }; readonly supplements: Supplement[]; readonly frozen: boolean; readonly sizes: Mutable<Sizes> };
 
 const tell = (deps: LaneHandoverDeps, pane: string, text: string) => sendVerified(deps.run, deps.clock, deps.config, pane, text).catch(() => false);
 

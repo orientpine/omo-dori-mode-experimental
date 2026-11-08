@@ -242,7 +242,7 @@ const timeout = <T>(p: Promise<T>, ms: number, what: string, clock: Clock): Prom
 
 // The ssh tunnel this keep started. A forward keeps the PC and port it started with, so a changed config stops it.
 export type TunnelProc = { readonly kill: () => void; readonly exited: Promise<number> };
-export type Tunnel = { proc?: TunnelProc; key?: string };
+export type Tunnel = { proc?: TunnelProc | undefined; key?: string | undefined };
 export type Spawn = (argv: readonly string[]) => TunnelProc;
 export const stopTunnel = async (t: Tunnel): Promise<void> => {
   const proc = t.proc;

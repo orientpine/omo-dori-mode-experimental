@@ -255,7 +255,7 @@ export type Dropped = { readonly finding: OwnerFinding; readonly why: "UNGROUNDE
 // briefSource: the whole brief, which a CONTRADICTION may also quote (a fact or state the brief gives). checkedAt: when the
 // last check ran (a direction stated before it was read by it).
 // shared: the owner's messages in the thread not tied to this lane (a finding on one is dropped as SHARED, with its why).
-export const groundFindings = (findings: readonly OwnerFinding[], src: { readonly ownerSource: string; readonly briefSource?: string; readonly reports: readonly ReportLine[]; readonly direction?: Lane["direction"]; readonly checkedUpTo?: string; readonly checkedAt?: string; readonly shared?: readonly TiedDecision[] }): { readonly kept: OwnerFinding[]; readonly dropped: Dropped[] } => {
+export const groundFindings = (findings: readonly OwnerFinding[], src: { readonly ownerSource: string; readonly briefSource?: string; readonly reports: readonly ReportLine[]; readonly direction?: Lane["direction"]; readonly checkedUpTo?: string | undefined; readonly checkedAt?: string | undefined; readonly shared?: readonly TiedDecision[] }): { readonly kept: OwnerFinding[]; readonly dropped: Dropped[] } => {
   const kept: OwnerFinding[] = [];
   const dropped: Dropped[] = [];
   const said = src.direction?.text ? [src.direction.text, src.direction.next ?? ""].join("\n") : "";

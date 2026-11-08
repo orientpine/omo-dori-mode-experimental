@@ -442,7 +442,7 @@ export type DoriConfig = {
   // the repo of a session in handover.cwd, else defaultCwd; "off": no check); dailyAudit false: the freshness loop does not
   // run the daily directive audit (another Dori audits this one, e.g. the SooDori timer soodori-daily-audit for ZzangDori);
   // pickModel: the small model dori launch asks which non-fixed entries a brief needs (empty: the scope rules decide)
-  readonly directives: { readonly common: string; readonly local: string; readonly links?: string; readonly linkPeers?: readonly string[]; readonly memory?: string; readonly dailyAudit?: boolean; readonly pickModel?: string };
+  readonly directives: { readonly common: string; readonly local: string; readonly links?: string; readonly linkPeers?: readonly string[]; readonly memory?: string; readonly dailyAudit?: boolean; readonly pickModel?: string | undefined };
   readonly sessionsDir: string;
   readonly nudgeAfterMin: number;
   // dori watch: an idle lane waiting on background work it started (BG_WAITING) is LANE_BLOCKED idle after this long
@@ -785,7 +785,9 @@ export const migrateOldKeys = (input: Raw): { readonly raw: Raw; readonly warnin
       warnings.push(`CONFIG_OLD_KEY ${old}.models -> reviewers.models (one list) and reviewers.first; rename it in the config`);
     }
     for (const key of ["first", "command", "minutes"]) to(key, section("reviewers"), "reviewers");
-    const intent = (section("autoSignals")["intentCheck"] ??= {}) as Record<string, unknown>;
+    const autoSignals = section("autoSignals");
+    autoSignals["intentCheck"] ??= {};
+    const intent = autoSignals["intentCheck"] as Record<string, unknown>;
     for (const key of ["reports", "maxReports", "relays"]) to(key, intent, "autoSignals.intentCheck");
     for (const key of ["enabled", "minIntervalMin", "maxPerDay", "perTick"]) if (key in oc) warnings.push(`CONFIG_OLD_KEY ${old}.${key} is no longer read: the periodic check of lane reports was removed; remove it from the config`);
   }

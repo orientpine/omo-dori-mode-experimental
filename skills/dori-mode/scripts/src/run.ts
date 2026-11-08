@@ -3,7 +3,7 @@ import { join } from "node:path";
 export type Ran = { readonly code: number; readonly out: string; readonly err: string };
 // env: variables set for this one command on top of the process environment; an undefined value removes the variable
 // preserveOutput: stdout as printed, not trimmed (git status -z starts with a status column that may be a space)
-export type RunOptions = { readonly cwd?: string; readonly timeoutMs?: number; readonly env?: Readonly<Record<string, string | undefined>>; readonly preserveOutput?: boolean };
+export type RunOptions = { readonly cwd?: string | undefined; readonly timeoutMs?: number; readonly env?: Readonly<Record<string, string | undefined>>; readonly preserveOutput?: boolean };
 export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran>;
 
 // aoe and tmux can start the tmux server, and every pane it opens later inherits the server's environment: a Dori's

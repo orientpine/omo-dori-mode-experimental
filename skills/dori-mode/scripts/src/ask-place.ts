@@ -17,12 +17,12 @@ export type AskPlace =
 export class AskPlaceError extends Error {}
 
 export type AskPlaceInput = {
-  readonly thread?: string;
+  readonly thread?: string | undefined;
   // undefined: not given; "": given without a reason (refused)
-  readonly channel?: string;
-  readonly replyTo?: string;
-  readonly tmux?: string;
-  readonly session?: string;
+  readonly channel?: string | undefined;
+  readonly replyTo?: string | undefined;
+  readonly tmux?: string | undefined;
+  readonly session?: string | undefined;
   // the tmux session (or herdr pane) the command runs in; "" outside one
   readonly here: string;
   readonly lanes: readonly Lane[];

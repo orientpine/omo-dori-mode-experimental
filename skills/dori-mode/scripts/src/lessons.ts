@@ -1,6 +1,7 @@
 // Ported unchanged from sisyphuslabs/dori-superagent PR #65 (https://github.com/sisyphuslabs/dori-superagent/pull/65),
 // merge commit 06c4600b77f6e81ed9bd5b706d736bec07cf27b1, and PR #97, global lessons (https://github.com/sisyphuslabs/dori-superagent/pull/97),
 // merge commit 023de2246b8e915141b46b74662b9d475f6effad. Keep the body byte-for-byte; fork wiring lives in cli.ts, launch.ts, done-flow.ts.
+// Strict tooling (upstream #149, https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/149): its biome-ignore line added, the body not reformatted.
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -27,6 +28,7 @@ export const isLessonOutcome = (value: unknown): value is LessonOutcome =>
   value === "pending" || value === "helped" || value === "no-effect" || value === "harmful" || value === "encoded";
 
 const singleLine = (value: unknown, max: number): value is string =>
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the pattern deliberately matches control characters to reject or strip them
   typeof value === "string" && value.trim().length > 0 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
 
 export const REPO_LESSON_CAP = 8;
