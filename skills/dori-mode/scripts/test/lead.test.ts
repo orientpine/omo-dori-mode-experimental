@@ -1,10 +1,15 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findLead, LeadError } from "../src/lead.ts";
 import type { Runner } from "../src/run.ts";
 import { fakeRunner, newWorld, withState } from "./fakes.ts";
+
+// Load-proof: the tests here start self-restart.sh, tmux-server and dori lead (bun src/cli.ts) as child processes.
+// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
+// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
+setDefaultTimeout(30_000);
 
 const ID = "12345678-abcd";
 const TMUX = "aoe_Dori_12345678";

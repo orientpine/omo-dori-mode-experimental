@@ -344,7 +344,7 @@ test("a helper whose box PATH has no program by the job's bare command name refu
   // a shell builtin is no program exec can start
   expect(probeBox("cpu", {}, [], ["printf"], join(state.dir, "empty"))).toEqual({ missing: "printf" });
   expect(probeBox("cpu", {}, [join(hidden, "dori-hidden-tool")], [])).toEqual({ missing: join(hidden, "dori-hidden-tool") });
-});
+}, 60_000); // load-proof: each probe runs sh in the job's sandbox as a child process, like its neighbours
 
 test("an argument's paths are found after = , and : but a URL's // is not a path", () => {
   expect(pathsIn("--out=/tmp/a,/tmp/b")).toEqual(["/tmp/a", "/tmp/b"]);

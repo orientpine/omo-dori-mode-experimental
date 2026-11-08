@@ -1,9 +1,14 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
 
 import { eightSteps, renderBrief, uiSteps, uiWarning } from "../src/launch.ts";
 import { run } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
+
+// Load-proof: the tests here start dori launch (bun src/cli.ts) as a child process.
+// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
+// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
+setDefaultTimeout(30_000);
 
 let state: ReturnType<typeof withState>;
 let world: World;

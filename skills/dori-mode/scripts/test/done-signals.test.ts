@@ -97,7 +97,7 @@ test("a QA-only lane's claim is re-checked at close time: the lane says done, bu
   const after = await deps.registry.read("local-setup");
   expect(after && statusOf(after)).toBe("not-done");
   expect(after?.objection?.reasons[0]).toContain("exit 1");
-});
+}, 30_000); // load-proof: real git runs here as child processes
 
 test("a Done line is weak only when every signal just checks files or text, including grep/test-only shell scripts", async () => {
   writeFileSync(join(state.dir, "grep-only.sh"), "#!/bin/bash\n# only looks\ntest -f out/report.md || exit 1\ngrep -q median out/report.md && [ $(wc -l < out/report.md) -gt 3 ]\n");

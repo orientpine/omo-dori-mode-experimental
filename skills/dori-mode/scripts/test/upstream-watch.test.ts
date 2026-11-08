@@ -1,7 +1,12 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// Load-proof: the tests here run the watch script in python3 with a fake gh shell script and real git.
+// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
+// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
+setDefaultTimeout(30_000);
 
 const SCRIPT = join(import.meta.dir, "../../setups/discord-aoe/upstream-watch.py");
 const UP = "https://github.com/sisyphuslabs/dori-superagent";
@@ -342,7 +347,7 @@ esac
   expect(items).toContain(`commit:${"f".repeat(40)}`);
   expect(items.filter((i) => i.startsWith("commit:"))).toHaveLength(1);
   expect(seen()[`commit:${"9".repeat(40)}`]!.class).toBe("2");
-}, 30_000); // load-proof: the watch runs the fake gh shell script for each list of 150 PRs and 120 commits it reads
+});
 
 test("a list that reaches its limit records nothing and tells the lead on that run, once", async () => {
   const bin = join(root, "bin");

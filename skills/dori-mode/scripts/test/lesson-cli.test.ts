@@ -1,6 +1,6 @@
 // Upstream tests for global lessons, from https://github.com/sisyphuslabs/dori-superagent/pull/97 (merge commit 023de224),
 // fitted to the fork: its CLI takes DORI_ENV_FILE, launch needs a thread decision, and launch writes each lesson's id.
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -8,6 +8,11 @@ import { Lessons } from "../src/lessons.ts";
 import { Registry } from "../src/registry.ts";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
+
+// Load-proof: the tests here start dori lesson (bun src/cli.ts) as a child process, several times.
+// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
+// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
+setDefaultTimeout(30_000);
 
 const cli = join(import.meta.dir, "../src/cli.ts");
 const T0 = Date.parse("2026-10-29T00:00:00Z");

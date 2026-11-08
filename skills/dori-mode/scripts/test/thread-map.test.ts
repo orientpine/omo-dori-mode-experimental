@@ -1,9 +1,14 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { dropThread, mapThread, threads } from "../src/messenger/thread-map.ts";
 import { withState } from "./fakes.ts";
+
+// Load-proof: most tests here start the dori CLI (bun src/cli.ts) as a child process, up to four times.
+// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
+// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
+setDefaultTimeout(30_000);
 
 const ID = "300000000000000003";
 const REF = `discord:${ID}`;
