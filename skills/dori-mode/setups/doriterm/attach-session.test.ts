@@ -29,9 +29,10 @@ kill -TERM $(ps -o ppid= -p $PPID)
   return (await Bun.file(join(dir, "calls")).text()).trim().split("\n");
 }
 
-test("attach.sh attaches in the named core the target Dori's dori.env sets, quoted or exported", async () => {
-  expect(await attachHc("TOKEN=x\nHC_SESSION=named\n", { HC_SESSION: "host" })).toEqual(["core=named hc attach t4"]);
-  expect(await attachHc("export HC_SESSION='named'\n", {})).toEqual(["core=named hc attach t4"]);
+test("attach.sh attaches in the named core the target Dori's dori.env sets, read as the scripts read it (first KEY=VALUE, quotes off, no export lines)", async () => {
+  expect(await attachHc("TOKEN=x\nHC_SESSION=named\nHC_SESSION=later\n", { HC_SESSION: "host" })).toEqual(["core=named hc attach t4"]);
+  expect(await attachHc("HC_SESSION='named'\n", {})).toEqual(["core=named hc attach t4"]);
+  expect(await attachHc("export HC_SESSION=named\n", { HC_SESSION: "host" })).toEqual(["core=default hc attach t4"]);
 });
 
 test("attach.sh attaches in the default core when the target's dori.env names none, whatever HC_SESSION the bridge host has", async () => {

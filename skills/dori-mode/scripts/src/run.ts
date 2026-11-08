@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { envFileEntries, envFilePath } from "./config-env.ts";
 
 import type { Exec } from "./runtime/exec.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
@@ -17,9 +19,25 @@ export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran
 // aoe and tmux can start the tmux server, and every pane it opens later inherits the server's environment: a Dori's
 // variables (token, inbox, lead) handed to them would make every session, another Dori's included, run as this one.
 // herdr's panes take the herdr server's environment too, so herdr gets the same, and so does hc: any hc call may start
-// the core, whose terminals inherit its environment (review 8 of #404); HC_SESSION, the core's own selector, stays.
-export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>): Record<string, string | undefined> =>
-  ["aoe", "tmux", "herdr", "hc"].includes(argv[0]?.split("/").pop() ?? "") ? Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_"))) : { ...env };
+// the core, whose terminals inherit its environment (review 8 of #404). An hc call also goes to this Dori's own core,
+// `core` (HC_SESSION from its dori.env, else the default core), never the caller's HC_SESSION: a stored hc:t<n> names a
+// terminal of one core only, so a unit or shell that selects another core would act on someone else's terminal (H188).
+const SERVERS = ["aoe", "tmux", "herdr", "hc"];
+export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>, core?: string): Record<string, string | undefined> => {
+  const tool = argv[0]?.split("/").pop() ?? "";
+  if (!SERVERS.includes(tool)) return { ...env };
+  const clean: Record<string, string | undefined> = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_") && (tool !== "hc" || name !== "HC_SESSION")));
+  return tool === "hc" && core ? { ...clean, HC_SESSION: core } : clean;
+};
+
+// the HC_SESSION a Dori's dori.env names, else none (the default core); read at each hc call
+export const doriCore = (path: string = envFilePath()): string | undefined => {
+  try {
+    return envFileEntries(readFileSync(path, "utf8")).get("HC_SESSION") || undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 // A hook such as ["dori", "thread", "reply", ...] names the dori command. On native Windows that command is dori.ps1,
 // which Bun.spawn cannot start, so the hook runs this CLI with this Bun directly (no shell, the arguments as they are).
@@ -31,7 +49,8 @@ export const run: Runner = async (argv, opts = {}) => {
   argv = commandArgv(argv);
   try {
     // env: process.env explicitly, or Bun hands the child its start-up environment without what loadEnvFile added from dori.env
-    const env = Object.fromEntries(Object.entries(childEnv(argv, opts.env ? { ...process.env, ...opts.env } : process.env)).filter(([, v]) => v !== undefined));
+    const core = argv[0]?.split("/").pop() === "hc" ? doriCore() : undefined;
+    const env = Object.fromEntries(Object.entries(childEnv(argv, opts.env ? { ...process.env, ...opts.env } : process.env, core)).filter(([, v]) => v !== undefined));
     p = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe", env, ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.stdin !== undefined ? { stdin: new Blob([opts.stdin]) } : {}), ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}) });
   } catch (e) {
     return { code: 127, out: "", err: e instanceof Error ? e.message : String(e) };

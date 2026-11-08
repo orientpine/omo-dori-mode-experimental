@@ -20,7 +20,7 @@ attach='c=$HOME/.$(id -un)/config.json; [ -f "$c" ] || c=$HOME/.dori/config.json
 leadof() { sed -n "s/.*\"leadPane\"[[:space:]]*:[[:space:]]*\"hc:\(t[1-9][0-9bcdfghjkmnpqrstvwxyz]*\)\".*/\1/p" "$c" 2>/dev/null | head -n 1; }
 lead=$(leadof)
 if [ -n "$lead" ]; then
-  core=$(sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}HC_SESSION=[\"'\'']\{0,1\}\([^\"'\'' ]*\).*/\2/p" "${c%/*}/dori.env" 2>/dev/null | tail -n 1)
+  core=$(sed -n "s/^[[:space:]]*HC_SESSION=[\"'\'']\{0,1\}\([^\"'\'' ]*\).*/\1/p" "${c%/*}/dori.env" 2>/dev/null | head -n 1)
   if [ -n "$core" ]; then export HC_SESSION="$core"; else unset HC_SESSION; fi
   exec 3<&0
   hc attach "$lead" <&3 & a=$!
