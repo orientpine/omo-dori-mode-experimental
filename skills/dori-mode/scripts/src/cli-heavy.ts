@@ -1,0 +1,109 @@
+import { homedir } from "node:os";
+import { resolve } from "node:path";
+import { gpuRoom, neverFits, parseMem, readMeminfo, spawnScoped } from "./heavy-mem.ts";
+import { heavyJobCommand, heavyServe } from "./heavy-queue.ts";
+import { acquireSlot, releaseSlot } from "./heavy-slot.ts";
+import { heavyWorker } from "./heavy-worker.ts";
+import { heavySpread, isKind, spreadPlan, toolsHere, withPipefail, type SpreadJob } from "./heavy-spread.ts";
+import { sampleHost } from "./host-guard.ts";
+import { run } from "./run.ts";
+import type { Command } from "./cli-context.ts";
+import { die } from "./cli-context.ts";
+import { makeHeavyDeps } from "./cli-deps-heavy.ts";
+
+const heavyCommand: Command = async (context) => {
+  const { rest, config, opt, flags, many } = context;
+  const { heavyDeps } = makeHeavyDeps(context);
+  const sep = rest.indexOf("--");
+  const label = rest[0];
+  const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
+  const load = async () => (await sampleHost(run, config)).load1;
+  const jobName = opt("job");
+  if (jobName !== undefined) {
+    const jobLabel = label && !label.startsWith("-") ? label : die("usage: dori heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]");
+    const out = opt("out");
+    process.exitCode = await heavyJobCommand({ q: config.heavyQueue, deps: heavyDeps(load) }, { req: { label: jobLabel, kind: jobName, rl: Boolean(flags.values.rl), args: cmd }, files: many("in").map((f) => resolve(f)), ...(out ? { out: resolve(out) } : {}) });
+    return;
+  }
+  const name = label && label !== "--" && !label.startsWith("-") && cmd.length ? label : die("usage: dori heavy <label> [--mem SIZE] [--kind cpu|browser|gpu --sync PATH ... [--env NAME ...]] -- <command ...>");
+  const memOpt = opt("mem");
+  const needBytes = memOpt === undefined ? undefined : (parseMem(memOpt) ?? die(`dori heavy --mem takes a size like 70G or 200M, not "${memOpt}"`));
+  const deps = heavyDeps(load);
+  // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-spread.ts withPipefail)
+  const jobCmd = withPipefail(cmd);
+  if (jobCmd !== cmd) deps.log?.(`HEAVY_PIPEFAIL ${name}: the bash -c script pipes, so it runs with set -o pipefail and a failing stage fails the job`);
+  const host = readMeminfo();
+  const never = needBytes && host ? neverFits(needBytes, host, config.heavyHeadroomPct) : undefined;
+  if (never) {
+    deps.log?.(`HEAVY_REFUSED ${name}: ${never}`);
+    process.exitCode = 2;
+    return;
+  }
+  // --kind: the command may run on the less busy host (heavy-spread.ts); what it cannot take along keeps it here
+  const kindOpt = opt("kind");
+  const kind = kindOpt === undefined ? undefined : isKind(kindOpt) ? kindOpt : die(`dori heavy --kind takes cpu, browser or gpu, not "${kindOpt}"`);
+  let spreadSlot: string | undefined;
+  if (kind !== undefined) {
+    const badEnv = many("env").find((e) => !/^[A-Za-z_]\w{0,63}$/.test(e));
+    if (badEnv !== undefined) die(`dori heavy --env takes a variable name, not "${badEnv}"`);
+    const env = Object.fromEntries(["LANG", "TZ", ...many("env")].flatMap((k) => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])));
+    const job: SpreadJob = { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}) };
+    const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
+    if (!plan.ok) deps.log?.(`HEAVY_LOCAL ${name}: ${plan.why}`);
+    else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
+    else {
+      const r = await heavySpread({ q: config.heavyQueue, deps }, job, plan);
+      if ("code" in r) {
+        process.exitCode = r.code;
+        return;
+      }
+      spreadSlot = r.slot;
+    }
+  }
+  const slot = spreadSlot ?? (await acquireSlot(deps, name, 15_000, needBytes ? needBytes / 1024 : undefined));
+  try {
+    // plain dori heavy is the GPU slot line, and --kind gpu a GPU job: both get free memory made first (heavy-mem.ts gpuRoom)
+    const gpu = kind === undefined || kind === "gpu";
+    process.exitCode = await spawnScoped({ label: name, cmd: jobCmd, free: config.heavyHeadroomPct, ...(needBytes ? { needBytes } : {}), ...(deps.log ? { log: deps.log } : {}), ...(gpu ? { gpuFreeKb: config.heavyGpuFreeGb * 1024 ** 2 } : {}) }, { stdout: "inherit", stderr: "inherit", stdin: "inherit", ...toolsHere(name, many("tools"), deps.log) });
+  } finally {
+    releaseSlot(slot);
+  }
+  return;
+};
+
+const gpuRoomCommand: Command = async (context) => {
+  const { opt, config, key } = context;
+  const { heavyDeps } = makeHeavyDeps(context);
+  // what dori heavy does before a GPU job, on its own: a script whose CUDA start failed calls it before its one retry
+  const wantOpt = opt("want");
+  const want = wantOpt === undefined ? config.heavyGpuFreeGb * 1024 ** 3 : (parseMem(wantOpt) ?? die(`dori gpu-room --want takes a size like 20G, not "${wantOpt}"`));
+  await gpuRoom(key && !key.startsWith("-") ? key : "gpu-room", want / 1024, config.heavyHeadroomPct, heavyDeps(async () => 0).log);
+  return;
+};
+
+const heavyServeCommand: Command = async (context) => {
+  const { rest, config, flags } = context;
+  const { heavyDeps } = makeHeavyDeps(context);
+  const sep = rest.indexOf("--");
+  const load = async () => (await sampleHost(run, config)).load1;
+  const [label = "", kind = ""] = flags.positionals;
+  process.exitCode = await heavyServe({ q: config.heavyQueue, deps: heavyDeps(load) }, { label, kind, rl: Boolean(flags.values.rl), args: sep >= 0 ? rest.slice(sep + 1) : [] });
+  return;
+};
+
+const heavyWorkerCommand: Command = async (context) => {
+  const { config, rest, opt } = context;
+  const { heavyDeps } = makeHeavyDeps(context);
+  const load = async () => (await sampleHost(run, config)).load1;
+  const at = rest.indexOf("--caller");
+  const words = at >= 0 ? [...rest.slice(0, at), ...rest.slice(at + 2)] : rest;
+  process.exitCode = await heavyWorker({ q: config.heavyQueue, deps: heavyDeps(load) }, process.env["SSH_ORIGINAL_COMMAND"] ?? words.join(" "), opt("caller"));
+  return;
+};
+
+export const heavyCommands: Readonly<Record<string, Command>> = {
+  "heavy": heavyCommand,
+  "gpu-room": gpuRoomCommand,
+  "heavy-serve": heavyServeCommand,
+  "heavy-worker": heavyWorkerCommand,
+};

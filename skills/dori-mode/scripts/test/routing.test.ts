@@ -26,3 +26,8 @@ test("an idle working lane on the same repo is preferred over opening a new one"
   expect(idleLaneFor(lanes, "/repo/a", idle)?.key).toBe("idle-same");
   expect(idleLaneFor(lanes, "/repo/c", idle)).toBeNull();
 });
+
+test("an unknown session count (-1) holds the launch", () => {
+  expect(canLaunch({ ...roomy, panes: -1 }, t)).toEqual({ ok: false, reasons: ["session count unknown"] });
+  expect(canLaunch({ ...roomy, panes: -1 }, { ...t, panesMax: 0 }).ok).toBe(true);
+});

@@ -9,6 +9,7 @@ export const canLaunch = (s: HostSample, t: GuardThresholds): LaunchVerdict => {
   // unknown memory (null) holds no launch, as before it read as 100%; null < 20 would be true in JS
   if (s.memFreePct !== null && s.memFreePct < t.memFreeMinPct) reasons.push(`${memFreeText(s.memFreePct)} < ${t.memFreeMinPct}%`);
   if (s.diskFreeGb < t.diskFreeMinGb) reasons.push(`disk free ${s.diskFreeGb.toFixed(0)} GB < ${t.diskFreeMinGb} GB`);
+  if (t.panesMax > 0 && s.panes < 0) reasons.push("session count unknown");
   if (t.panesMax > 0 && s.panes >= t.panesMax) reasons.push(`panes ${s.panes} >= ${t.panesMax}`);
   return { ok: reasons.length === 0, reasons };
 };

@@ -9,6 +9,10 @@
  * entry whose file is back under the cap (or gone) is refused (LOC_STALE), so the list can only get shorter until it
  * is empty.
  *
+ * Upstream #159 (https://github.com/sisyphuslabs/dori-superagent/pull/159) split its last oversize files and has no baseline
+ * any more. In the fork every file that came from upstream is under the cap as well; the baseline lists only the fork's own
+ * files, whose split is a follow-up (docs/follow-ups.md).
+ *
  * Prints `LOC_OK <n> files` and exits 0, or one `LOC_OVER` / `LOC_GREW` / `LOC_LOOSE` / `LOC_STALE` line per problem
  * and exits 1.
  */

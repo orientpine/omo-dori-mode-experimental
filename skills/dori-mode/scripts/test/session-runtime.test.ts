@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { type Lane, Registry, sessionOf } from "../src/registry.ts";
 import { type Runner, runtimeChoice, runtimesFor } from "../src/run.ts";
-import { closeSession } from "../src/sessions.ts";
+import { closeSession, listSessions } from "../src/sessions.ts";
 import { openHerdrSession } from "../src/herdr.ts";
 
 const scratch = (): string => mkdtempSync(join(tmpdir(), "dori-session-runtime-"));
@@ -114,4 +114,16 @@ describe("runtime choice keeps herdr the default (DORI_RUNTIME > config runtime 
       await expect(loaded).rejects.toThrow(`runtime must be "herdr" (unset is herdr; hc is not wired in this fork yet, docs/follow-ups.md), not "${runtime}"`);
     }
   });
+});
+
+test("a failed runtime choice still lists a stored herdr lane; with no lane the failure is thrown (upstream #159)", async () => {
+  const calls: string[][] = [];
+  const run: Runner = async (argv) => {
+    calls.push([...argv]);
+    return { code: 0, out: JSON.stringify({ result: { panes: [{ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" }] } }), err: "" };
+  };
+  const listed = await listSessions(runtimesFor({}, { DORI_RUNTIME: "tmux" }, run), { lanes: [{ sessionRef: { runtime: "herdr", id: "w:p1" } }] });
+  expect(listed.map((s) => `${s.ref.runtime}:${s.ref.id}`)).toEqual(["herdr:w:p1"]);
+  expect(calls.some((c) => c[0] === "hc")).toBe(false);
+  await expect(listSessions(runtimesFor({}, { DORI_RUNTIME: "tmux" }, run))).rejects.toThrow(/DORI_RUNTIME/);
 });

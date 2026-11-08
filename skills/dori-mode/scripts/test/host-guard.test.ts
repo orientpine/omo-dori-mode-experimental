@@ -44,5 +44,12 @@ test("memory nobody can read is unknown: no memory reason, and the guard says un
   expect(canLaunch(s, t).reasons.some((r) => r.startsWith("memory"))).toBe(false);
   expect(alertReasons(s, t).some((r) => r.startsWith("memory"))).toBe(false);
   const st = { alerting: true };
-  expect(guardTick({ ...s, diskFreeGb: 200 }, t, st)[0]).toContain("memory free unknown");
+  // panes: 0, a counted session list: an unknown count (-1, the fake lists nothing) is its own alert since upstream #159.
+  expect(guardTick({ ...s, diskFreeGb: 200, panes: 0 }, t, st)[0]).toContain("memory free unknown");
+});
+
+test("an unknown session count (-1) is an alert when a pane budget is set (upstream #159)", () => {
+  const s = { load1: 1, memFreePct: 50, diskFreeGb: 300, swapFreeGb: 2, panes: -1 };
+  expect(alertReasons(s, t)).toEqual(["session count unknown"]);
+  expect(alertReasons(s, { ...t, panesMax: 0 })).toEqual([]);
 });

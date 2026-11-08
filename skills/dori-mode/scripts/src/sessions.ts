@@ -7,8 +7,13 @@ import type { SessionInfo, SessionRef } from "./runtime/types.ts";
 // Every session of every runtime in use: the selected kind, each kind a registered lane lives on, and any kind built so
 // far. group keeps only the sessions of that group (a herdr workspace, an hc dori.group label).
 export const listSessions = async (rts: Runtimes, options: { readonly group?: string; readonly lanes?: readonly { readonly sessionRef?: SessionRef | undefined }[] } = {}): Promise<SessionInfo[]> => {
-  void rts.default;
   for (const lane of options.lanes ?? []) if (lane.sessionRef) rts.for(lane.sessionRef);
+  // The selected kind is read last (upstream #159): a failed choice still lists every stored lane, and fails only when nothing else is.
+  try {
+    void rts.default;
+  } catch (e) {
+    if (rts.kinds().length === 0) throw e;
+  }
   const out: SessionInfo[] = [];
   for (const kind of rts.kinds()) {
     const rt = rts.for({ runtime: kind, id: "" });
