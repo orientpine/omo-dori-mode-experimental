@@ -104,6 +104,26 @@ the same reach the host account already has through sudo, now from the paired ph
 `hc kill <name>` to take its row away. A harmless check that a row's input reaches its herdr: `ctrl+b` shows
 herdr's `PREFIX` bar and `Esc` cancels it; neither reaches the pane (Esc outside the prefix bar does).
 
+## Other machines: one mesh
+
+The owner's other machines join this host's doriterm mesh, so they show in the sidebar of the phone already paired here
+with no pairing of their own (upstream README, "A mesh of your machines"). Since 2026-11-08 (owner card Q535 "응, 셋 다
+붙이기" and "cha(linux)와 kimm(windows pc) doriterm에 붙여줘") the mesh of ori0a83 holds ori4eae (oriclaw), ori644d and
+ori4b69 (orisaac, the training sparks) and cha-system-product-name (cha). Each runs doriface-host v0.1.11 for its
+architecture (checked against `SHA256SUMS.txt`), `--install-hc`, a plain user unit without this setup's
+`ExecStartPost` (those machines run no herdr Dori, so there is no bridge row), and one hc terminal kept alive as a shell:
+
+```sh
+hc run --bg --no-parent --keep --name shell -- bash -l
+```
+
+To add a machine: on ori0a83 `doriface-host mesh pair --auto --no-qr` (a single-use offer for 10 minutes, admitted
+without asking), and on the machine `doriface-host mesh join --from-file <0600 file with the link> --yes --name <name>
+--wait-host 15`. The link is a credential like a pairing link: keep it in a 0600 file, never on a command line or in a
+channel, and shred it after the join. `doriface-host mesh status` on ori0a83 lists every member as `present`; never
+restart ori0a83's host to add one (the phone is paired to it). The Windows PC kimm-cha has no doriface-host build
+(v0.1.11 ships linux and mac only), so it joins from inside WSL2.
+
 ## Turn it off
 
 ```sh

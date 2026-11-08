@@ -1,11 +1,11 @@
 import type { ArgvTemplate } from "./config-types.ts";
+import { type HeavyHelper, helperProblem } from "./heavy-route.ts";
 
 // dori heavy --job: a named job one host may run for another. argv fills {in} (the input folder), {in0}, {in1}... (the
 // input files in the order given), {out} (a folder for result files); env is all the job gets besides PATH, HOME, LANG and
 // TMPDIR (inside the job's folder). rl: reinforcement learning, run only on hosts whose heavyQueue.rl is true (queue host or helper).
 export type HeavyJob = { readonly argv: ArgvTemplate; readonly env?: Readonly<Record<string, string>>; readonly rl?: boolean };
-// a second GPU host the queue host hands jobs to: ssh argv to its forced-command `dori heavy-worker`
-export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate };
+export type { HeavyHelper };
 export type HeavyQueue = {
   readonly jobs: Readonly<Record<string, HeavyJob>>;
   // on the queue host: helpers tried in order when a job at the front of the line cannot start here
@@ -33,7 +33,7 @@ export const heavyQueueProblem = (q: HeavyQueue): string | undefined => {
     if (!isArgv(job.argv)) return `heavyQueue.jobs.${name}.argv must be a non-empty list of strings`;
     if (!isStringMap(job.env)) return `heavyQueue.jobs.${name}.env must map variable names to strings`;
   }
-  for (const h of q.helpers) if (typeof h.name !== "string" || !/^[\w.-]{1,64}$/.test(h.name) || !isArgv(h.ssh)) return `heavyQueue.helpers: each needs a name (letters, digits, . _ -) and an ssh argv`;
+  for (const h of q.helpers) if (helperProblem(h)) return helperProblem(h);
   if (!Array.isArray(q.queue) || !q.queue.every((p) => typeof p === "string")) return "heavyQueue.queue must be a list of strings";
   if (q.queue.length && q.helpers.length) return "heavyQueue: a host is either the queue (helpers) or reaches it (queue), not both";
   if (typeof q.exec !== "boolean") return "heavyQueue.exec must be true or false";

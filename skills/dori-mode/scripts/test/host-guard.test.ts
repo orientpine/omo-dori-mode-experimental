@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { defaultConfig } from "../src/config.ts";
-import { alertReasons, guardTick, sampleHost } from "../src/host-guard.ts";
+import { alertReasons, guardTick, outsideLines, sampleHost, sampleOutside } from "../src/host-guard.ts";
 import { canLaunch } from "../src/routing.ts";
 import type { Runner } from "../src/run.ts";
 
@@ -31,6 +31,37 @@ test("memory just under the floor holds a launch though it would round up to the
     expect(canLaunch(s, t).reasons.some((r) => r.startsWith("memory"))).toBe(false);
     expect(alertReasons(s, t).some((r) => r.startsWith("memory"))).toBe(false);
   }
+});
+
+test("a long heavy process outside dori heavy is named once with its account; scoped, system and short ones are not", async () => {
+  // Given: ps rows (pid uid user seconds cpu% args) and each candidate's cgroup
+  const ps = [
+    "  101  1003 gongdori 2400 180.5 python -m pytest qa/e7_demo",
+    "  102  1003 gongdori 9000 300.0 python train.py",
+    "  103     0 root     9000 250.0 /usr/bin/dockerd",
+    "  104  1001 oriclaw   600 400.0 bun test",
+    "  105  1001 oriclaw  4000  20.0 bun omo",
+  ].join("\n");
+  const run = fake({
+    "ps -eo pid=,uid=,user:32=,etimes=,pcpu=,args=": { code: 0, out: ps },
+    "cat /proc/101/cgroup": { code: 0, out: "0::/user.slice/user-1003.slice/session-4.scope\n" },
+    "cat /proc/102/cgroup": { code: 0, out: "0::/user.slice/user-1003.slice/user@1003.service/app.slice/dori-heavy-train-77-1.scope\n" },
+  });
+  const seen = new Set<number>();
+  // When
+  const running = () => true;
+  const first = outsideLines(await sampleOutside(run), seen, running);
+  const again = outsideLines(await sampleOutside(run), seen, running);
+  // Then
+  expect(first).toHaveLength(1);
+  expect(first[0]).toStartWith("HOST_GUARD HEAVY_OUTSIDE gongdori pid 101: 40 min at 181% CPU outside dori heavy (python -m pytest qa/e7_demo); training, simulation and GPU tests go through dori heavy <label> --kind gpu");
+  expect(again).toEqual([]);
+  // a sample where it dipped under the threshold, then crossed back while still running: named no second time
+  expect(outsideLines([], seen, running)).toEqual([]);
+  expect(outsideLines(await sampleOutside(run), seen, running)).toEqual([]);
+  // its process ended: forgotten
+  expect(outsideLines([], seen, () => false)).toEqual([]);
+  expect(seen.size).toBe(0);
 });
 
 test("on macOS memory_pressure still gives the free percentage", async () => {

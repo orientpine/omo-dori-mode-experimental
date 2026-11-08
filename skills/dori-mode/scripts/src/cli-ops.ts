@@ -11,7 +11,7 @@ import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
 import { watchTick } from "./done-flow.ts";
-import { guardTick, sampleHost } from "./host-guard.ts";
+import { guardTick, outsideLines, sampleHost, sampleOutside } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals } from "./lane-signals.ts";
 import { statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
@@ -105,11 +105,11 @@ const deadPanesCommand: Command = async (context) => {
 
 const guardCommand: Command = async (context) => {
   const { loopMinutes, config } = context;
-  const state = { alerting: false };
+  const state = { alerting: false, outside: new Set<number>() };
   const minutes = loopMinutes();
   console.log("HOST_GUARD_READY");
   await every(minutes, async () => {
-    for (const line of guardTick(await sampleHost(run, config), config.guard, state)) console.log(line);
+    for (const line of [...guardTick(await sampleHost(run, config), config.guard, state), ...outsideLines(await sampleOutside(run), state.outside)]) console.log(line);
   });
   return;
 };
