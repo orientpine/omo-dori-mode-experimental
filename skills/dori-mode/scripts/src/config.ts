@@ -804,6 +804,10 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   if (supervisionBad) throw new ConfigError(`${path}: invalid ${supervisionBad}`);
   const trialBad = compactionTrialProblem((raw as { compactionTrial?: unknown }).compactionTrial);
   if (trialBad) throw new ConfigError(`${path}: invalid ${trialBad}`);
+  // dori state-git loop sleeps everyMin: Bun.sleep(NaN) and any Bun.sleep under 1 ms return at once, so it would commit back
+  // to back (the --loop check of upstream #131/#134, https://github.com/sisyphuslabs/dori-superagent/pull/134)
+  const everyMin: unknown = merged.stateGit.everyMin;
+  if (!(typeof everyMin === "number" && Number.isFinite(everyMin) && (everyMin === 0 || everyMin * 60_000 >= 1))) throw new ConfigError(`${path}: stateGit.everyMin must be a number of minutes: 0 turns it off, or 1 ms (0.0000167) or more, not ${JSON.stringify(everyMin)}`);
   const heavyProblem = heavyQueueProblem(merged.heavyQueue);
   if (heavyProblem) throw new ConfigError(`${path}: ${heavyProblem}`);
   if (!OWNER_SPEECHES.includes(merged.discord.ownerSpeech)) throw new ConfigError(`${path}: discord.ownerSpeech must be "" (follow discord.locale), "casual" or "polite", not ${JSON.stringify(merged.discord.ownerSpeech)}`);

@@ -66,6 +66,18 @@ test("a researchText that does not start with 'ulw research ' or lacks {question
   expect(cli.err).toContain("CONFIG_INVALID");
 });
 
+test("a stateGit.everyMin that is not a number of minutes, or is under 1 ms, is refused instead of committing back to back", async () => {
+  const path = join(state.dir, "every.json");
+  for (const everyMin of ["5m", -1, 1e-9, null]) {
+    writeFileSync(path, JSON.stringify({ stateGit: { everyMin } }));
+    await expect(loadConfig(path, "/home/ana")).rejects.toThrow("stateGit.everyMin must be a number of minutes: 0 turns it off, or 1 ms (0.0000167) or more");
+  }
+  for (const everyMin of [0, 10, 0.5]) {
+    writeFileSync(path, JSON.stringify({ stateGit: { everyMin } }));
+    expect((await loadConfig(path, "/home/ana")).stateGit.everyMin).toBe(everyMin);
+  }
+});
+
 test("launchEnv defaults to none, loads a name with an empty value, and a value that is not a string is refused", async () => {
   const path = join(state.dir, "env.json");
   expect((await loadConfig(join(state.dir, "missing.json"), "/home/ana")).launchEnv).toEqual({});
