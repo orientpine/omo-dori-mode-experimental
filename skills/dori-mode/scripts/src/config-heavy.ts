@@ -21,6 +21,8 @@ export type HeavyQueue = {
   readonly exec: boolean;
   // as a helper: such a run is stopped after this many minutes
   readonly execMaxMin: number;
+  // as a helper: the --kind kinds it takes; omitted, all of them (a host whose box cannot draw on its GPU takes ["cpu"])
+  readonly kinds?: readonly string[];
 };
 
 const isArgv = (v: unknown): boolean => Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string");
@@ -38,5 +40,6 @@ export const heavyQueueProblem = (q: HeavyQueue): string | undefined => {
   if (q.queue.length && q.helpers.length) return "heavyQueue: a host is either the queue (helpers) or reaches it (queue), not both";
   if (typeof q.exec !== "boolean") return "heavyQueue.exec must be true or false";
   if (!Number.isInteger(q.execMaxMin) || q.execMaxMin < 1) return "heavyQueue.execMaxMin must be a whole number of minutes, 1 or more";
+  if (q.kinds !== undefined && (!Array.isArray(q.kinds) || !q.kinds.every((k) => ["cpu", "browser", "gpu"].includes(k)))) return "heavyQueue.kinds must list kinds of cpu, browser, gpu";
   return undefined;
 };
