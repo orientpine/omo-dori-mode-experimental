@@ -101,6 +101,8 @@ export type DoriConfig = {
   // unified-memory GPU (GB10) the driver fails a CUDA context when cache has left almost nothing free (2026-11-02).
   readonly heavyGpuFreeGb: number;
   readonly heavyQueue: HeavyQueue;
+  // dori heavy hold-local: the directory every account on this host keeps its hold in (1777, sticky; heavy-hold.ts)
+  readonly heavyHoldDir: string;
   readonly deadPanePatterns: readonly string[];
   readonly guard: GuardThresholds;
   readonly hooks: Hooks;

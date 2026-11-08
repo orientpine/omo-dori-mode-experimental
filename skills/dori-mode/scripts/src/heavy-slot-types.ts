@@ -24,4 +24,6 @@ export type SlotDeps = {
   readonly headroom?: Headroom;
   // one line per job when it is taken (HEAVY_ADMIT) and when it starts or changes why it waits (HEAVY_WAIT)
   readonly log?: (line: string) => void;
+  // the live holds on this host's slots (dori heavy hold-local, heavy-hold.ts holdNote), or undefined: none, a job may take one
+  readonly hold?: () => string | undefined;
 };

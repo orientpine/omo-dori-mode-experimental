@@ -59,7 +59,7 @@ test("two jobs with one label in one process each get their own scope, while the
 
 test("dori heavy refuses at once a --mem that never fits on the host and a size it cannot read", async () => {
   const config = join(state.dir, "config.json");
-  await Bun.write(config, JSON.stringify({ stateDir: join(state.dir, "state") }));
+  await Bun.write(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyHoldDir: join(state.dir, "hold") }));
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_")));
   const run = async (...args: string[]) => {
     const p = Bun.spawn([process.execPath, CLI, "heavy", ...args], { env: { ...own, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") }, stdout: "pipe", stderr: "pipe" });
@@ -126,7 +126,7 @@ test("the room maker touches memory up to its budget and lets it go, and touches
 
 test("dori gpu-room reads --want as a size and refuses one it cannot read", async () => {
   const config = join(state.dir, "config.json");
-  await Bun.write(config, JSON.stringify({ stateDir: join(state.dir, "state") }));
+  await Bun.write(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyHoldDir: join(state.dir, "hold") }));
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_")));
   const run = async (...args: string[]) => {
     const p = Bun.spawn([process.execPath, CLI, "gpu-room", ...args], { env: { ...own, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") }, stdout: "pipe", stderr: "pipe" });

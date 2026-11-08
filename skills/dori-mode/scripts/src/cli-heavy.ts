@@ -1,6 +1,7 @@
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { resolve } from "node:path";
 import { heavyOuter, runHere } from "./heavy-here.ts";
+import { holdCommand } from "./heavy-hold.ts";
 import { gpuRoom, neverFits, parseMem, readMeminfo } from "./heavy-mem.ts";
 import { heavyJobCommand, heavyServe } from "./heavy-queue.ts";
 import { heavyWorker } from "./heavy-worker.ts";
@@ -18,6 +19,13 @@ const heavyCommand: Command = async (context) => {
   const label = rest[0];
   const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
   const load = async () => (await sampleHost(run, config)).load1;
+  // dori heavy hold-local [on --until ... --reason ... | off]: no job of any account takes this host's slots meanwhile
+  if (label === "hold-local" && sep < 0) {
+    const r = holdCommand(config.heavyHoldDir, userInfo().username, rest[1], opt("until"), many("reason").join(" "), Date.now());
+    for (const l of r.lines) heavyDeps(load).log?.(l);
+    process.exitCode = r.code;
+    return;
+  }
   const jobName = opt("job");
   if (jobName !== undefined) {
     const jobLabel = label && !label.startsWith("-") ? label : die("usage: dori heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]");

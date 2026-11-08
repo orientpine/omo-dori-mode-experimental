@@ -22,7 +22,7 @@ const helperArgv = (pathFirst?: string, kinds?: string[]): string[] => {
   const dir = join(state.dir, "helper");
   mkdirSync(dir, { recursive: true });
   const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs"), ...(kinds ? { kinds } : {}) } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs"), ...(kinds ? { kinds } : {}) } }));
   const own = Object.entries(process.env).map(([k, v]) => (k === "PATH" && pathFirst ? `PATH=${pathFirst}:${v}` : `${k}=${v}`));
   return ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
 };

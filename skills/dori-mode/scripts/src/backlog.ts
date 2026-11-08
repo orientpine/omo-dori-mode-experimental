@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import type { BacklogSettings } from "./config.ts";
 import { doneSyntaxErrors } from "./done-signals.ts";
 import { LANE_KEY, type Lane, NO_THREAD, statusOf, threadRefProblem } from "./registry.ts";
+import { sharedDirProblem } from "./shared-dir.ts";
 
 export type ItemStatus = "open" | "running" | "done" | "dropped";
 export type ItemLog = { readonly at: string; readonly what: string };
@@ -288,18 +289,6 @@ export const instanceOf = (stateDir: string): string => createHash("sha256").upd
 const mine = (h: HostSlots): string => `${h.user}.${h.instance}.`;
 const slotFile = (h: HostSlots, key: string): string => join(h.dir, `${mine(h)}${key}.json`);
 
-// why the shared directory is unsafe to write in (a link, not a directory, no sticky bit), or undefined; made when missing
-const hostDirProblem = (h: HostSlots): string | undefined => {
-  if (!existsSync(h.dir)) {
-    mkdirSync(h.dir, { recursive: true });
-    chmodSync(h.dir, 0o1777);
-  }
-  const st = lstatSync(h.dir);
-  if (st.isSymbolicLink() || !st.isDirectory()) return "is not a plain directory";
-  if (!(st.mode & 0o1000)) return "has no sticky bit (another account could remove or replace this Dori's files)";
-  return undefined;
-};
-
 const regularFile = (file: string): boolean => {
   try {
     return lstatSync(file).isFile();
@@ -346,7 +335,7 @@ const hostRefresh = (h: HostSlots, running: ReadonlySet<string>, now: number): v
 
 /** Takes a host slot for a start: counted and written under the host directory's lock, so the cap holds across Doris. */
 export const hostReserve = async (h: HostSlots, key: string, now: number): Promise<string | undefined> => {
-  const unsafe = hostDirProblem(h);
+  const unsafe = sharedDirProblem(h.dir);
   if (unsafe) return `the host directory ${h.dir} ${unsafe}; no backlog lane starts until it is fixed`;
   const held = await flockDir(h.dir, 30);
   if (!held) return `the host's backlog lock (${h.dir}) was not free in 30 s`;

@@ -51,7 +51,7 @@ const helperWith = (version: string, packages?: string, beside: readonly (readon
   symlinkSync(`rv-gens/${version}-a`, join(toolsDir(), `rv@${version}`));
   symlinkSync(`rv@${version}`, join(toolsDir(), "rv"));
   const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
   const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
   return ["env", "-i", ...own, `HOME=${join(dir, "home")}`, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
 };
