@@ -7,6 +7,7 @@ import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
+import { missingTool, playwrightVersion, toolNameOk, toolOptOk, toolSpec } from "./heavy-tools.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH... -- <cmd>: a lane's own command (a browser test, a build) runs on
 // the less busy PC. When this host is more than SPREAD_MARGIN points busier than a helper, the helper runs it; else it
@@ -56,12 +57,14 @@ export type SpreadJob = {
   readonly sync: readonly string[];
   readonly env: Readonly<Record<string, string>>;
   readonly needBytes?: number;
+  // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts)
+  readonly tools?: readonly string[];
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
 // which the helper must have before it takes the job
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
 // path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
-export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string } | { readonly ok: false; readonly why: string };
+export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[] } | { readonly ok: false; readonly why: string };
 
 // A bash -c script whose pipeline ends in tail, grep or head exits with that last command's code, so a failing test run
 // piped into tail looked like a pass (2026-11-02: 171 of 744 failed on the helper, HEAVY_DONE exit 0). The script that pipes
@@ -108,20 +111,6 @@ const linksIn = (root: string): [string, string][] => {
   return out;
 };
 
-const playwrightVersion = (roots: readonly string[]): string | undefined => {
-  for (const r of roots) {
-    for (const f of [join(r, "node_modules", "playwright-core", "package.json"), join(r, "playwright-core", "package.json")]) {
-      try {
-        const v = (JSON.parse(readFileSync(f, "utf8")) as { version?: unknown }).version;
-        if (typeof v === "string" && /^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(v)) return v;
-      } catch {
-        // not here
-      }
-    }
-  }
-  return undefined;
-};
-
 // the git checkout a folder is in, or undefined
 const gitTop = (dir: string): string | undefined => {
   const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
@@ -144,6 +133,8 @@ const stayHere = (cwd: string, root: string): string | undefined => {
 export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }): Plan => {
   const no = (why: string): Plan => ({ ok: false, why });
   if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)");
+  const badTool = job.tools?.find((t) => !toolNameOk(t));
+  if (badTool !== undefined) return no(`--tools ${JSON.stringify(badTool)} is not a tool bundle name (lower-case letters, digits, . _ -)`);
   const roots: string[] = [];
   for (const raw of job.sync) {
     if (!isAbsolute(raw) || raw.split("/").includes("..")) return no(`--sync ${raw} must be an absolute path without ..`);
@@ -194,9 +185,9 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
     if (at && !covered(at)) return no(`the command ${first} is ${at} on the job's --env PATH, which is not in a --sync path`);
     if (at && !sync.some((s) => within(at, s))) which.add(first);
   } else {
-    // the box's own bun and tools, or a system folder: the helper looks the name up on its box PATH
+    // the box's own bun and tools, a tool bundle the job names, or a system folder: the helper looks the name up on its box PATH
     const here = Bun.which(first, { PATH: who.path ?? process.env["PATH"] ?? "", cwd: job.cwd });
-    if (BOX_PROGRAMS.has(first) || Bun.which(first, { PATH: BOX_SYSTEM_PATH })) which.add(first);
+    if (BOX_PROGRAMS.has(first) || job.tools?.length || Bun.which(first, { PATH: BOX_SYSTEM_PATH })) which.add(first);
     else if (here) return no(`the command ${first} is ${here}, which is in no --sync path and no system folder, so a helper has none`);
   }
   // the helper looks the names up from /, the job from its own folder: relative and empty PATH entries go as that folder's,
@@ -207,7 +198,8 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   if (odd !== undefined) return no(`the job starts ${JSON.stringify(odd)}, a path a helper cannot be asked about`);
   if (needs.size > NEEDS_MAX) return no(`the job starts ${needs.size} system programs, more than the ${NEEDS_MAX} a helper is asked about`);
   const playwright = job.kind === "browser" ? playwrightVersion(sync.filter((s) => existsSync(s))) : undefined;
-  return { ok: true, sync, needs: [...needs], which: [...which], ...(path !== undefined ? { path } : {}), ...(playwright ? { playwright } : {}) };
+  const tools = [...new Set(job.tools ?? [])].map((t) => toolSpec(t, who.path ?? process.env["PATH"] ?? ""));
+  return { ok: true, sync, needs: [...needs], which: [...which], ...(path !== undefined ? { path } : {}), ...(playwright ? { playwright } : {}), ...(tools.length ? { tools } : {}) };
 };
 
 // how busy this host is for a job of this kind, in percent (gpu: the GPU or the CPU, whichever is busier)
@@ -275,11 +267,11 @@ const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[]): Pro
 };
 
 type Started = { readonly helper: string; readonly done: Promise<number | null> };
-type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old"; readonly why: string };
+type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
-  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : [])];
+  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`)];
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const lines = linesOf(p.stderr);
   let verdict: RegExpExecArray | null = null;
@@ -357,7 +349,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
       }
       if (seen.get(h.name) !== `${t.kind} ${t.why}`) log(`HEAVY_HELPER_${t.kind.toUpperCase()} ${job.label} ${h.name}: ${t.why}`);
       seen.set(h.name, `${t.kind} ${t.why}`);
-      if (t.kind === "refused" || t.kind === "old") {
+      if (t.kind === "refused" || t.kind === "old" || t.kind === "notools") {
         refused.set(h.name, t.why);
         if (refused.size === ctx.q.helpers.length) log(`HEAVY_LOCAL ${job.label}: no helper can run it (${[...refused].map(([n, w]) => `${n}: ${w}`).join("; ")}); it waits for this host`);
       }
@@ -504,10 +496,12 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const needOk = (o: string): boolean => o.startsWith("need=") && NEED_PATH.test(o.slice(5)) && !o.split("/").includes("..") && inProgramDirs(o.slice(5));
   const whichOk = (o: string): boolean => /^which=[\w.+@-]{1,64}$/.test(o) && !/^which=\.+$/.test(o);
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
-  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o));
+  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o));
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   if (!ctx.q.exec) return d.refuse(label, "exec is off on this host (heavyQueue.exec)");
   if (!Bun.which("bwrap")) return d.refuse(label, "no bwrap on this host");
+  const noTool = missingTool(opts, d.tools.toolsDir);
+  if (noTool) return d.refuse(label, noTool);
   const needs = opts.filter((o) => o.startsWith("need=")).map((o) => o.slice(5));
   const names = opts.filter((o) => o.startsWith("which=")).map((o) => o.slice(6));
   if (needs.length || names.length) {

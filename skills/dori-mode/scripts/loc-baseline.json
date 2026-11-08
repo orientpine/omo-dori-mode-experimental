@@ -14,7 +14,7 @@
   "src/handover.ts": 951,
   "src/heavy-mem.ts": 251,
   "src/heavy-slot.ts": 336,
-  "src/heavy-spread.ts": 611,
+  "src/heavy-spread.ts": 605,
   "src/intent-check.ts": 432,
   "src/lane-handover.ts": 1346,
   "src/lane-signals.ts": 349,
