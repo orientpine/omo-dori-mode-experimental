@@ -107,13 +107,13 @@ exit 1
     stdout: "pipe", stderr: "pipe",
   });
   await child.exited;
-  // Then: retried, each time as okdori with its own HOME, focusing its lead with its own herdr-web terminal.ts and then
+  // Then: retried, each time as okdori with its own HOME, focusing its lead with its own doriterm focus-lead.ts and then
   // running the attach-only client
   const calls = (await Bun.file(join(dir, "calls")).text()).trim().split("\n");
   expect(calls).toHaveLength(2);
   for (const c of calls) {
     expect(c.startsWith("-n -u okdori -H /bin/sh -c ")).toBe(true);
-    expect(c).toContain('"$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts"');
+    expect(c).toContain('"$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts"');
     expect(c.trim().endsWith("exec herdr client")).toBe(true);
   }
 });
@@ -148,7 +148,7 @@ kill -TERM "$PPID"
 test("attach.sh focuses the lead's tab, then keeps trying herdr client until the server is up, and never starts one", async () => {
   // Given: no instance config, so the account's own ~/.dori/config.json
   const { dir, calls } = await attachWithFakes();
-  const focus = `focus ${dir}/.dori/config.json ${dir}/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts`;
+  const focus = `focus ${dir}/.dori/config.json ${dir}/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts`;
   // Then: before every attach the lead is focused; all attaches are `herdr client`, none a plain `herdr`
   expect(calls).toEqual([focus, "client", focus, "client", focus, "client"]);
 });
@@ -158,5 +158,5 @@ test("attach.sh takes an instance account's ~/.<user>/config.json for the lead",
   const user = (await Bun.$`id -un`.text()).trim();
   const { dir, calls } = await attachWithFakes({ [`.${user}/config.json`]: "{}" });
   // Then: that config, not ~/.dori/config.json
-  expect(calls[0]).toBe(`focus ${dir}/.${user}/config.json ${dir}/.dori/src/skills/dori-mode/setups/herdr-web/terminal.ts`);
+  expect(calls[0]).toBe(`focus ${dir}/.${user}/config.json ${dir}/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts`);
 });

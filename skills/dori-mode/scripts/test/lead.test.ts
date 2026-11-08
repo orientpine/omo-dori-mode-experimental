@@ -257,9 +257,9 @@ test("self-restart starts the account's herdr unit: DORI_HERDR_UNIT, else dori-h
     env: await run("env", "qa-env-herdr.service dori-herdr.service", { DORI_HERDR_UNIT: "qa-env-herdr.service" }),
     envMissing: await run("env-missing", "dori-herdr.service", { DORI_HERDR_UNIT: "qa-missing.service" }),
     dori: await run("dori", "dori-herdr.service soodori-herdr.service"),
-    own: await run("own", "herdr-web@.service herdr-web-yoodori.service okdori-herdr.service"),
+    own: await run("own", "doriface-host.service doriterm-bridges.service okdori-herdr.service"),
     several: await run("several", "okdori-herdr.service moodori-herdr.service"),
-    none: await run("none", "herdr-web@.service"),
+    none: await run("none", "doriface-host.service"),
   }).toEqual({
     env: { code: 0, started: ["qa-env-herdr.service"], logged: [], revived: true },
     envMissing: { code: 0, started: [], logged: ["HERDR_UNIT_MISSING qa-missing.service (DORI_HERDR_UNIT)"], revived: true },
