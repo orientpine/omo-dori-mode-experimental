@@ -105,6 +105,18 @@ test("the machine of the programs in the --sync paths goes with the job, and a h
   expect(r).toHaveProperty("slot");
 }, 60_000);
 
+test("a label or option with shell characters never reaches a helper's shell: the job stays here", async () => {
+  // Given: a helper reached like plain ssh, whose shell reads the words it is sent (no forced command, as cha)
+  const marker = join(state.dir, "injected");
+  const ctx = ctxWith([{ name: "plain", ssh: ["sh", "-c", 'eval "$*"', "sh"], prefer: ["cpu"] }]);
+  // When
+  const r = await spread(ctx, { label: `t;touch ${marker};#`, cmd: ["true"] });
+  // Then
+  expect(await Bun.file(marker).exists()).toBe(false);
+  expect(logs.find((l) => l.startsWith("HEAVY_HELPER_REFUSED"))).toContain("would reach the helper's shell");
+  expect(r).toHaveProperty("slot");
+}, 60_000);
+
 test("a helper whose bwrap cannot make its box refuses the job before it takes it, instead of failing it", async () => {
   // Given: a helper whose bwrap fails as it did on the training sparks under AppArmor (2026-11-08), and a job that asks
   // the helper to look for no program (its command is a script in its own --sync path)

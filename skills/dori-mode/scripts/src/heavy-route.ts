@@ -1,6 +1,7 @@
 import { closeSync, existsSync, openSync, readSync } from "node:fs";
 
 import type { ArgvTemplate } from "./config.ts";
+import type { Plan, SpreadJob } from "./heavy-spread.ts";
 
 // a host the queue host hands jobs to: ssh argv to its `dori heavy-worker`; prefer: the --kind kinds it takes first
 export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate; readonly prefer?: readonly string[] };
@@ -62,6 +63,18 @@ export const syncedMachine = (sync: readonly string[]): string | undefined => {
 export const archOf = (sync: readonly string[]): { readonly arch?: string } => {
   const arch = syncedMachine(sync);
   return arch ? { arch } : {};
+};
+
+// the words after the helper's ssh argv: dori heavy-worker "exec <label> <kind> <below> [options]"
+export const execWords = (job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): string[] => ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : []), ...(plan.arch ? [`arch=${plan.arch}`] : [])];
+
+// ssh hands those words to the helper's login shell, which reads them before the worker checks them: a helper reached
+// without a forced command (cha, Tailscale SSH, 2026-11-08) would run a label like `t; touch x` outside its box. Only
+// words of these characters leave this host; a job with any other stays here.
+const SHELL_SAFE = /^[\w.,:=+@%/-]+$/;
+export const unsafeRemote = (job: SpreadJob, plan: Extract<Plan, { ok: true }>): { readonly kind: "refused"; readonly why: string } | undefined => {
+  const bad = execWords(job, plan, 0).find((w) => !SHELL_SAFE.test(w));
+  return bad === undefined ? undefined : { kind: "refused", why: `"${bad.slice(0, 80)}" would reach the helper's shell; only letters, digits and . , : = + @ % / - _ go to a helper, so it runs on this host` };
 };
 
 const KINDS = ["cpu", "browser", "gpu"];

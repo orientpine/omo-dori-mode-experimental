@@ -49,13 +49,18 @@ test("a long heavy process outside dori heavy is named once with its account; sc
   });
   const seen = new Set<number>();
   // When
-  const first = outsideLines(await sampleOutside(run), seen);
-  const again = outsideLines(await sampleOutside(run), seen);
+  const running = () => true;
+  const first = outsideLines(await sampleOutside(run), seen, running);
+  const again = outsideLines(await sampleOutside(run), seen, running);
   // Then
   expect(first).toHaveLength(1);
   expect(first[0]).toStartWith("HOST_GUARD HEAVY_OUTSIDE gongdori pid 101: 40 min at 181% CPU outside dori heavy (python -m pytest qa/e7_demo); training, simulation and GPU tests go through dori heavy <label> --kind gpu");
   expect(again).toEqual([]);
-  expect(outsideLines([], seen)).toEqual([]);
+  // a sample where it dipped under the threshold, then crossed back while still running: named no second time
+  expect(outsideLines([], seen, running)).toEqual([]);
+  expect(outsideLines(await sampleOutside(run), seen, running)).toEqual([]);
+  // its process ended: forgotten
+  expect(outsideLines([], seen, () => false)).toEqual([]);
   expect(seen.size).toBe(0);
 });
 

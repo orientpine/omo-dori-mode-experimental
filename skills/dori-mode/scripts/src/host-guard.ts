@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 import type { DoriConfig, GuardThresholds } from "./config.ts";
 import { parseMeminfo } from "./heavy-mem.ts";
 import { listPanes } from "./panes.ts";
@@ -79,10 +81,10 @@ export const sampleOutside = async (run: Runner): Promise<HeavyProc[]> => {
   return out;
 };
 
-// one line per process the first time it is seen; seen keeps only the pids still found
-export const outsideLines = (procs: readonly HeavyProc[], seen: Set<number>): string[] => {
-  const now = new Set(procs.map((p) => p.pid));
-  for (const pid of seen) if (!now.has(pid)) seen.delete(pid);
+// one line per process the first time it is seen; seen forgets a pid only when its process has ended, so one that dips
+// under the threshold (or a failed ps) and comes back is not named again
+export const outsideLines = (procs: readonly HeavyProc[], seen: Set<number>, alive = (pid: number): boolean => existsSync(`/proc/${pid}`)): string[] => {
+  for (const pid of seen) if (!alive(pid)) seen.delete(pid);
   return procs.filter((p) => !seen.has(p.pid)).map((p) => {
     seen.add(p.pid);
     return `HOST_GUARD HEAVY_OUTSIDE ${p.user} pid ${p.pid}: ${p.minutes} min at ${p.cpuPct}% CPU outside dori heavy (${p.cmd.slice(0, 120)}); training, simulation and GPU tests go through dori heavy <label> --kind gpu --sync <paths> -- <command> (a training spark takes them), other heavy work through --kind cpu or browser`;

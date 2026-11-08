@@ -7,7 +7,7 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
-import { archOf, archRefusal, preferredFor } from "./heavy-route.ts";
+import { archOf, archRefusal, execWords, preferredFor, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { playwrightVersion, toolBundles, toolNameOk, toolOptOk, toolSpec } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
@@ -275,7 +275,7 @@ type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonl
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
-  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : []), ...(plan.arch ? [`arch=${plan.arch}`] : [])];
+  const args = execWords(job, plan, below);
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const lines = linesOf(p.stderr);
   let verdict: RegExpExecArray | null = null;
@@ -345,7 +345,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
   const helpers = async (below: number, why: string, among: readonly HeavyHelper[] = ctx.q.helpers): Promise<Started | null> => {
     for (const h of among) {
       if (refused.has(h.name)) continue;
-      const t = await startExec(ctx, h, job, plan, below);
+      const t = unsafeRemote(job, plan) ?? (await startExec(ctx, h, job, plan, below));
       if (t.kind === "started") {
         seen.delete(h.name);
         log(`HEAVY_SPREAD ${job.label} ${h.name}: ${why}`);
