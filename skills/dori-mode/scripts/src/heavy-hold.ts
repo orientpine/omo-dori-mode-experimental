@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sharedDirProblem } from "./shared-dir.ts";
 
@@ -18,16 +18,6 @@ const MAX_MS = 24 * 3_600_000;
 const UNREADABLE = "(its file cannot be read)";
 // a hold file is a few hundred bytes (a 200-character reason and two times); one bigger is not a hold this code wrote
 const MAX_BYTES = 4096;
-const readHead = (file: string): string => {
-  const fd = openSync(file, "r");
-  try {
-    const buf = Buffer.alloc(MAX_BYTES);
-    return buf.toString("utf8", 0, readSync(fd, buf, 0, MAX_BYTES, 0));
-  } finally {
-    closeSync(fd);
-  }
-};
-
 // the account of a file's owner, so a hold names who set it whatever the file says
 const accountOf = (uid: number): string => {
   let passwd = "";
@@ -42,36 +32,54 @@ const accountOf = (uid: number): string => {
 
 const holdOf = (dir: string, name: string, now: number): Hold | undefined => {
   const file = join(dir, name);
-  let st: ReturnType<typeof lstatSync>;
-  try {
-    st = lstatSync(file);
-  } catch (e) {
+  const failed = (e: unknown): Hold | undefined => {
     if (e instanceof Error && "code" in e && e.code === "ENOENT") return undefined;
-    // a hold file whose metadata this account cannot read (a directory it may list but not search) holds while it cannot
+    // a link or a FIFO, socket or device put in its owner's place only drops that owner's own hold
+    if (e instanceof Error && "code" in e && e.code === "ELOOP") return undefined;
+    // a hold file this account cannot open or stat holds while it cannot
     const code = e instanceof Error && "code" in e ? String(e.code) : String(e);
     return { by: "?", reason: `${file} cannot be read here (${code}); the hold directory must be mode 1777`, until: now + 60_000 };
-  }
-  if (!st.isFile()) return undefined;
-  // its owner can set mtime to any time, never ctime (set by the kernel at each write, rename or touch of the file)
-  const cap = Math.min(st.mtimeMs, st.ctimeMs) + MAX_MS;
-  // an ended one is not read at all, and a live one only as far as a hold can be long: any account may write here
-  if (cap <= now) return undefined;
-  let parsed: { reason?: unknown; until?: unknown } = {};
+  };
+  // one descriptor for everything: no waiting for a FIFO's writer, no following a link, and what is read is what was
+  // stat'd (another account may swap its own entry between a stat of the path and an open of it)
+  let fd: number;
   try {
-    const v: unknown = st.size <= MAX_BYTES ? JSON.parse(readHead(file)) : undefined;
-    if (v !== null && typeof v === "object" && !Array.isArray(v)) parsed = v as typeof parsed;
-  } catch {
-    // another account's file under a strict umask, or one cut off while written: it holds, for the longest a hold may
+    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  } catch (e) {
+    return failed(e);
   }
-  const until = typeof parsed.until === "string" && !Number.isNaN(Date.parse(parsed.until)) ? Math.min(Date.parse(parsed.until), cap) : cap;
-  const reason = typeof parsed.reason === "string" && typeof parsed.until === "string" ? parsed.reason : UNREADABLE;
-  return until > now ? { by: accountOf(st.uid), reason, until } : undefined;
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return undefined;
+    // its owner can set mtime to any time, never ctime (set by the kernel at each write, rename or touch of the file)
+    const cap = Math.min(st.mtimeMs, st.ctimeMs) + MAX_MS;
+    // an ended one is not read at all, and a live one only as far as a hold can be long: any account may write here
+    if (cap <= now) return undefined;
+    let parsed: { reason?: unknown; until?: unknown } = {};
+    try {
+      const buf = Buffer.alloc(MAX_BYTES);
+      const v: unknown = st.size <= MAX_BYTES ? JSON.parse(buf.toString("utf8", 0, readSync(fd, buf, 0, MAX_BYTES, 0))) : undefined;
+      if (v !== null && typeof v === "object" && !Array.isArray(v)) parsed = v as typeof parsed;
+    } catch {
+      // a file cut off while written, or not JSON: it holds, for the longest a hold may
+    }
+    const until = typeof parsed.until === "string" && !Number.isNaN(Date.parse(parsed.until)) ? Math.min(Date.parse(parsed.until), cap) : cap;
+    const reason = typeof parsed.reason === "string" && typeof parsed.until === "string" ? parsed.reason : UNREADABLE;
+    return until > now ? { by: accountOf(st.uid), reason, until } : undefined;
+  } catch (e) {
+    return failed(e);
+  } finally {
+    closeSync(fd);
+  }
 };
 
 /** The live holds on this host, the one ending first first. */
 export const liveHolds = (dir: string, now: number): Hold[] => {
   let names: string[];
   try {
+    // nothing in a hold directory that is a link (to /dev, say) or not shared like it must be is opened at all
+    const st = lstatSync(dir);
+    if (st.isSymbolicLink() || !st.isDirectory() || (st.mode & 0o1777) !== 0o1777) return [{ by: "?", reason: `the hold directory ${dir} is not a plain directory of mode 1777; fix or remove it`, until: now + 60_000 }];
     names = readdirSync(dir).filter((n) => n.endsWith(".json"));
   } catch (e) {
     if (e instanceof Error && "code" in e && e.code === "ENOENT") return [];

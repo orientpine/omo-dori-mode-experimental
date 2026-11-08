@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 
@@ -83,7 +83,7 @@ test("a hold directory this account cannot read holds, and a hold is not set in 
   expect(holdOn(hold, ME, now + 60_000, "x", now)).toContain("1777");
   chmodSync(hold, 0o000);
   try {
-    expect(liveHolds(hold, now)).toMatchObject([{ by: "?", reason: expect.stringContaining("cannot be read here (EACCES)") }]);
+    expect(liveHolds(hold, now)).toMatchObject([{ by: "?", reason: expect.stringContaining("1777") }]);
   } finally {
     chmodSync(hold, 0o700);
   }
@@ -95,7 +95,7 @@ test("a hold file whose metadata this account cannot read holds", () => {
   // listable but not searchable: readdir works, lstat of each entry fails
   chmodSync(hold, 0o644);
   try {
-    expect(liveHolds(hold, now)).toMatchObject([{ by: "?", reason: expect.stringContaining("(EACCES)") }]);
+    expect(liveHolds(hold, now)).toMatchObject([{ by: "?", reason: expect.stringContaining("1777") }]);
   } finally {
     chmodSync(hold, 0o1777);
   }
@@ -106,6 +106,30 @@ test("a hold file too big to be one is not read whole: it holds as unreadable", 
   holdOn(hold, ME, now + 60_000, "x", now);
   writeFileSync(join(hold, `${ME}.json`), JSON.stringify({ reason: "y".repeat(1 << 20), until: new Date(now + 60_000).toISOString() }));
   expect(liveHolds(hold, now).map((h) => h.reason)).toEqual(["(its file cannot be read)"]);
+});
+
+test("a hold file swapped for a FIFO or a link is not waited on or followed", () => {
+  const now = Date.now();
+  holdOn(hold, ME, now + 60_000, "x", now);
+  const file = join(hold, `${ME}.json`);
+  rmSync(file);
+  expect(Bun.spawnSync(["mkfifo", file]).exitCode).toBe(0);
+  // opening a FIFO for reading waits for a writer unless it is opened non-blocking
+  expect(liveHolds(hold, now)).toEqual([]);
+  rmSync(file);
+  const far = join(state.dir, "far.json");
+  writeFileSync(far, JSON.stringify({ reason: "through a link", until: new Date(now + 60_000).toISOString() }));
+  symlinkSync(far, file);
+  expect(liveHolds(hold, now)).toEqual([]);
+});
+
+test("a hold directory that is a link or not mode 1777 holds, and nothing in it is opened", () => {
+  const now = Date.now();
+  const real = join(state.dir, "real");
+  mkdirSync(real);
+  writeFileSync(join(real, `${ME}.json`), JSON.stringify({ reason: "inside the link", until: new Date(now + 60_000).toISOString() }));
+  symlinkSync(real, hold);
+  expect(liveHolds(hold, now)).toMatchObject([{ by: "?", reason: expect.stringContaining("not a plain directory of mode 1777") }]);
 });
 
 test("--until takes minutes, hours, a clock time or an ISO time, up to a day ahead", () => {
