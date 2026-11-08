@@ -35,7 +35,9 @@ every 5 seconds (`DORITERM_RETRY_SECONDS`) after it exits, so the bridge attache
 where this unit starts first) and again after a herdr server restart. The bridge only attaches: it types
 nothing and focuses no pane. hc runs its core as its own systemd user service (`systemd-run`), outside this unit, so
 `ExecStopPost` runs `bridge.ts stop`, which stops the core (`hc server stop`; with no core it starts none) and the
-bridge client with it. On this account hc exists only for the pilot. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
+bridge client with it while hc holds only the bridges. Once the account's own Dori runs on hc (its config chooses hc or
+its `leadPane` is an hc terminal), that core also holds the lead and the lanes, so `stop` ends and removes only the
+bridge rows and leaves the core and every agent terminal running. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
 the pane's identity to the client.
 
 ## Web app
@@ -133,6 +135,7 @@ systemctl --user disable --now doriterm-bridges.timer doriface-host.service   # 
 ```
 
 Stopping the unit stops the hc core and its herdr client (`ExecStopPost`); the herdr server and every agent in it keep
+running. On an account whose Dori runs on hc it ends only the bridge rows, and the core with the lead and lanes keeps
 running.
 To retire the host identity as well, remove `~/.local/state/doriface-host` after stopping the unit. On the phone, clear
 the site data of app.doriterm.com to drop its device key.

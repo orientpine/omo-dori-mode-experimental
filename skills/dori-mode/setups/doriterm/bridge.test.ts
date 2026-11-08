@@ -6,20 +6,24 @@ import { join } from "node:path";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-async function bridgeWithFakeHc(terminals: object[], args: string[] = [], env: Record<string, string> = {}) {
+async function bridgeWithFakeHc(terminals: object[], args: string[] = [], env: Record<string, string> = {}, files: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "doriterm-bridge-"));
   dirs.push(dir);
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(dir, path, ".."), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
   writeFileSync(join(dir, "ls.json"), JSON.stringify({ terminals }));
   writeFileSync(join(dir, "hc"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$HOME/calls"
 case "$1" in
   ls) cat "$HOME/ls.json";;
-  rm|run|server) ;;
+  rm|run|server|kill) ;;
   *) exit 1;;
 esac
 `, { mode: 0o700 });
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "bridge.ts"), ...args], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_BRIDGE_NAME: "zzangdori", DORITERM_BRIDGES: "", ...env },
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_BRIDGE_NAME: "zzangdori", DORITERM_BRIDGES: "", DORI_CONFIG: "", DORI_RUNTIME: "", ...env },
     stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -61,6 +65,22 @@ test("stop stops the hc core, which systemd runs outside this unit", async () =>
   expect(r.code).toBe(0);
   expect(r.out).toBe("bridges: stopped");
   expect(r.calls).toEqual(["server stop"]);
+});
+
+test("stop on an account whose Dori runs on hc ends only the bridge rows, never the core its lead and lanes share (review 4 of #404)", async () => {
+  // Given: this account's Dori config names hc, and its core holds a bridge and the lead's terminal
+  const user = (await Bun.$`id -un`.text()).trim();
+  for (const [i, cfg] of [{ runtime: "hc", leadPane: "hc:t4" }, { runtime: "herdr", leadPane: "hc:t4" }].entries()) {
+    const r = await bridgeWithFakeHc(
+      [{ name: "zzangdori", state: "live" }, { name: "okdori", state: "finished" }, { name: "lead", state: "live" }],
+      ["stop"],
+      { DORITERM_BRIDGES: "zzangdori okdori:okdori", DORI_CONFIG: "" },
+      { [`.${user}/config.json`]: JSON.stringify(cfg) },
+    );
+    // Then: the live bridge is ended and both bridge rows removed; the lead's terminal and the core are left running
+    expect(`${i} ${r.code} ${r.out}`).toBe(`${i} 0 bridges: stopped`);
+    expect(r.calls).toEqual(["ls --all --json", "kill zzangdori", "rm zzangdori", "rm okdori"]);
+  }
 });
 
 test("one row per listed Dori, in order: a live one kept, an ended one replaced, a missing one started as its account", async () => {

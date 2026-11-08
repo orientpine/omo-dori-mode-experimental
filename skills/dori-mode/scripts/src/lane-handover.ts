@@ -22,7 +22,7 @@ import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, 
 import { awaitPrompt, briefAnchor } from "./launch.ts";
 import { resumeAgent, type StatOf } from "./job-control.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
-import { herdrResult, isHerdrPane } from "./herdr.ts";
+import { paneGroup, herdrResult, isHerdrPane } from "./herdr.ts";
 import { omoSession, sendVerified } from "./panes.ts";
 import { hasSessionSelector } from "./session-id.ts";
 import { type Lane, statusOf } from "./registry.ts";
@@ -1176,7 +1176,7 @@ const moveLane = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, facts
   let pane: string;
   try {
     // the new session opens in this Dori's backend, so a lane moves from aoe to herdr at its next handover
-    const workspace = config.backend === "herdr" ? config.laneWorkspace || (isHerdrPane(from.pane) ? sessionFor(await liveSessions(deps.run), from.pane)?.profile : undefined) : undefined;
+    const workspace = config.backend === "herdr" ? config.laneWorkspace || (isHerdrPane(from.pane) ? await paneGroup(deps.run, from.pane) : undefined) : undefined;
     pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", agentCommand: config.agentCommand, model: facts.model, ...(facts.thinking ? { thinking: facts.thinking } : {}), env: laneEnv(config.launchEnv, lane.useGpu), backend: config.backend, ...(workspace ? { workspace } : {}) });
     ctx.mark("open", true);
   } catch (e) {

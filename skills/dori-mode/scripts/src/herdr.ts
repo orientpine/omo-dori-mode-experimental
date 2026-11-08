@@ -7,6 +7,7 @@ import { commandExecutable, executableName } from "./executable.ts";
 import { powershellData } from "./powershell.ts";
 import { AGENT, type Proc, procTable, topAgent } from "./session-id.ts";
 import { hcAgentPid, hcClose, hcLife, hcOpen, hcRead, hcRef, hcSessions, hcShellPid, isHcPane } from "./hc-pane.ts";
+export { paneGroup } from "./hc-pane.ts";
 
 // herdr's side of the session primitives in aoe.ts (dori-mode on herdr, as upstream runs it; ported here for the move of
 // every Dori off aoe/tmux, owner card Q462 2026-11-03). tmux refuses a ":" in a session name and every herdr pane id holds

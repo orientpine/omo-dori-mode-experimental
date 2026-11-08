@@ -13,7 +13,7 @@ import { closeDueFrozen, closeFrozen, frozenLine, readFrozen, thawFrozen } from 
 import { trialActive, trialRows, trialTable } from "./compaction-keep.ts";
 import type { Command } from "./cli-context.ts";
 import { die } from "./cli-context.ts";
-import { makeHandoverDeps } from "./cli-deps-handover.ts";
+import { HANDOVER_ENV, makeHandoverDeps } from "./cli-deps-handover.ts";
 
 const handoverCommand: Command = async (context) => {
   const { key, opt, config, flags, lane, deps, rest, cliPath } = context;
@@ -108,7 +108,7 @@ const handoverCommand: Command = async (context) => {
     const unit = `dori-handover-${Date.now()}`;
     const log = join(config.stateDir, "handover", "run.log");
     mkdirSync(join(config.stateDir, "handover"), { recursive: true });
-    const pass = ["PATH", "DORI_CONFIG", "DORI_STATE_DIR", "DORI_ENV_FILE", "DORI_LEAD_PANE", "DORI_DISCORD_INBOX", "DORI_DISCORD_STATE_DIR"].filter((n) => process.env[n] !== undefined).map((n) => `--setenv=${n}`);
+    const pass = HANDOVER_ENV.filter((n) => process.env[n] !== undefined).map((n) => `--setenv=${n}`);
     const r = await run(["systemd-run", "--user", "--collect", `--unit=${unit}`, "--setenv=DORI_HANDOVER_DETACHED=1", ...pass, `--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`, process.execPath, cliPath, "handover", ...rest]);
     if (r.code !== 0) die(`HANDOVER_DETACH_FAIL ${r.err || r.out}`);
     console.log(`HANDOVER_DETACHED unit=${unit} log=${log}; progress also goes to ${config.watchLog}`);

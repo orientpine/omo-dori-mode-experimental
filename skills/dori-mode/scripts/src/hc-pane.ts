@@ -1,6 +1,7 @@
-import { QUESTION_MARK } from "./aoe.ts";
+import { liveSessions, QUESTION_MARK, sessionFor } from "./aoe.ts";
+import { hcCall, isKind } from "./runtime/hc/exec.ts";
 import { shellInFrontName } from "./herdr.ts";
-import { type Clock, type Runner, runtimesOf } from "./run.ts";
+import { type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
 import { formatRef, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import { AGENT, procTable, topAgent } from "./session-id.ts";
 
@@ -13,6 +14,21 @@ export const hcRef = (pane: string): SessionRef => ({ runtime: "hc", id: pane.sl
 const hc = (run: Runner): SessionRuntime => runtimesOf(run).for({ runtime: "hc", id: "" });
 
 export const hcChosen = (run: Runner): boolean => runtimesOf(run).choice?.kind === "hc";
+
+// The group a pane's session lives in: an hc terminal's dori.group label (hc ls prints no labels, hc 0.1.18), a herdr pane's
+// workspace. An hc terminal that is gone, or whose labels cannot be read, throws: a handover then opens nothing rather than
+// a replacement in the default group (review 3 of #404)
+export const paneGroup = async (run: Runner, pane: string): Promise<string | undefined> => {
+  if (!isHcPane(pane)) return sessionFor(await liveSessions(run), pane)?.profile;
+  try {
+    const labels = (await hcCall(execOf(run), ["get", hcRef(pane).id]))["labels"] as Record<string, unknown> | undefined;
+    const group = labels?.["dori.group"];
+    return typeof group === "string" && group !== "" ? group : undefined;
+  } catch (e) {
+    if (isKind(e, "not_found")) throw new Error(`there is no hc terminal ${pane} any more`);
+    throw new Error(`the hc group of ${pane} could not be read (${e instanceof Error ? e.message : String(e)})`);
+  }
+};
 
 // hc's read with no --lines prints the whole history; 120 rows covers the screen the omo marks are read from
 const SCREEN_ROWS = 120;
