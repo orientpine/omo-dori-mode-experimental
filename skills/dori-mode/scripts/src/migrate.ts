@@ -33,6 +33,32 @@ export const migratePlan = (lanes: readonly MigrateLane[], leadPane: string, cur
   return { moving, lines };
 };
 
+// Why a run cannot start, or undefined. As upstream, it names its scope: --lane K or --all, never both and never none. A
+// DORI_RUNTIME naming the other runtime is refused: it outranks the config's runtime the run writes, so this process and
+// every handover started with that environment would reopen sessions on the runtime being left.
+export const migrateRefusal = (to: RuntimeKind, env: Readonly<Record<string, string | undefined>>, scope: { readonly all: boolean; readonly lane?: string | undefined }): string | undefined => {
+  if (scope.all === !!scope.lane) return "give --lane K or --all";
+  const pinned = env["DORI_RUNTIME"]?.trim();
+  if (pinned && pinned !== to) return `DORI_RUNTIME=${pinned} overrides the config's runtime; unset it, or set it to ${to}, then run dori migrate again`;
+  return undefined;
+};
+
+export type LaneMove = (key: string) => Promise<{ readonly code: number; readonly retry?: boolean | undefined }>;
+
+// The lanes of the plan through their handovers, one at a time. The first that fails stops the run: the lanes before it
+// stay moved, the rest are not tried, and running again (or --to <from> to go back) picks up from there.
+export const moveLanes = async (moving: readonly MigrateLane[], from: RuntimeKind, to: RuntimeKind, move: LaneMove, log: (line: string) => void): Promise<number> => {
+  for (const lane of moving) {
+    log(`MIGRATE_LANE ${lane.key} ${lane.pane ?? ""} -> ${to}`);
+    const r = await move(lane.key);
+    if (r.code !== 0) {
+      log(`MIGRATE_STOPPED lane ${lane.key}: its handover exited ${r.code}${r.retry ? " (busy: run dori migrate again once it is ready)" : ""}; the lanes before it moved, the rest wait; dori migrate --to ${from} --all --approved-by REF goes back`);
+      return r.code;
+    }
+  }
+  return 0;
+};
+
 // The config file with its "runtime" set to `to`, the rest as it was; the copy it had before is kept beside it.
 export const writeRuntime = (path: string, to: RuntimeKind, stamp: string): string => {
   const before = readFileSync(path, "utf8");

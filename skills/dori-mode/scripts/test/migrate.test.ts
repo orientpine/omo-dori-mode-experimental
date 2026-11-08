@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import { migratePlan, writeRuntime } from "../src/migrate.ts";
+import { migratePlan, migrateRefusal, moveLanes, writeRuntime } from "../src/migrate.ts";
 
 // dori migrate (upstream #157's command, through the fork's own handovers): the plan it prints and runs, and the one
 // config key it writes.
@@ -51,6 +51,36 @@ test("writeRuntime backs the config up, sets only its runtime key, and the resul
   expect(readFileSync(backup, "utf8")).toBe(before);
   expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ stateDir: d, runtime: "hc", leadPane: "w1:p1" });
   expect((await loadConfig(path, d, () => {})).runtime).toBe("hc");
+});
+
+test("as upstream #157, a run names its scope (--lane K or --all), and a DORI_RUNTIME naming the other runtime is refused, since it would override the config the run writes", () => {
+  expect(migrateRefusal("hc", {}, { all: false })).toMatch(/give --lane K or --all/);
+  expect(migrateRefusal("hc", {}, { all: true, lane: "a" })).toMatch(/give --lane K or --all/);
+  expect(migrateRefusal("hc", {}, { all: true })).toBeUndefined();
+  expect(migrateRefusal("hc", {}, { all: false, lane: "a" })).toBeUndefined();
+  expect(migrateRefusal("hc", { DORI_RUNTIME: "hc" }, { all: true })).toBeUndefined();
+  expect(migrateRefusal("hc", { DORI_RUNTIME: "herdr" }, { all: true })).toMatch(/DORI_RUNTIME=herdr/);
+  expect(migrateRefusal("herdr", { DORI_RUNTIME: "hc" }, { all: false, lane: "a" })).toMatch(/DORI_RUNTIME=hc/);
+});
+
+test("the lanes move one at a time through their handovers; the first that fails stops the run, the ones before it stay moved and the rest are not tried", async () => {
+  const tried: string[] = [];
+  const lines: string[] = [];
+  const lanes = [{ key: "a", pane: "w1:p2" }, { key: "b", pane: "w1:p3" }, { key: "c", pane: "w1:p4" }];
+  const code = await moveLanes(lanes, "herdr", "hc", async (key) => {
+    tried.push(key);
+    return key === "b" ? { code: 2, retry: true } : { code: 0 };
+  }, (l) => void lines.push(l));
+  expect(code).toBe(2);
+  expect(tried).toEqual(["a", "b"]);
+  expect(lines[0]).toBe("MIGRATE_LANE a w1:p2 -> hc");
+  expect(lines.at(-1)).toMatch(/^MIGRATE_STOPPED lane b: its handover exited 2 \(busy: run dori migrate again once it is ready\).*dori migrate --to herdr/);
+  const all: string[] = [];
+  expect(await moveLanes(lanes, "herdr", "hc", async (key) => {
+    all.push(key);
+    return { code: 0 };
+  }, () => {})).toBe(0);
+  expect(all).toEqual(["a", "b", "c"]);
 });
 
 test("writeRuntime refuses a config it cannot read as JSON and writes nothing", () => {

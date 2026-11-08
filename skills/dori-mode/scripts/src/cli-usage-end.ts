@@ -76,7 +76,7 @@ export const USAGE_END = `                                       --text-file pos
                                        each week after handover.auditSummaryAt)
   handover --template                  print the headings of the old lead's summary (--note FILE)
   handover ack <id> [--state DIR]      the new lead answers a HANDOVER_PROBE, HANDOVER_UNDERSTAND or HANDOVER_SUPPLEMENT line with this
-  migrate --to hc|herdr --approved-by REF [--lane K] [--dry-run]
+  migrate --to hc|herdr --lane K|--all --approved-by REF [--dry-run]
                                        move this Dori to another session runtime (upstream #157): the config's runtime first (backup
                                        beside it), then each open lane through its own lane handover, one at a time; the lead last,
                                        through its own dori handover (MIGRATE_LEAD_NEXT names it). Run again to finish; --to herdr goes back
