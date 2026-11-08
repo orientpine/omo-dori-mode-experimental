@@ -64,3 +64,7 @@ What would close it: tell "never started" from the job's own exit on the helper 
 ## file-relay: a delivery-failure test has 2 s of work in a 5 s timeout (#374)
 
 `test/file-relay.test.ts` "a file that keeps failing to deliver, with .failed in the way, is logged as failed once and set aside once it can be" takes 2.0-2.1 s alone and timed out at 5 s inside a `dori review` run at load average 23 on 20 cores, so review 5 of #374 never reached the reviewer; a rerun passed. What would close it: drive its retries from a fake clock instead of real waits, or give it a timeout sized to its work.
+
+## strict tooling: biome's formatter is off (upstream #149)
+
+`skills/dori-mode/scripts/biome.jsonc` keeps `formatter.enabled: false` (lead 2026-11-08): `biome format` over scripts/ is a 3.8 MB diff (1.3 MB even at lineWidth 320) that dori review's reviewer cannot read in its time limit, and it collides with fork-only code. Turn it on directory by directory, one reviewable PR each, once format drift makes an upstream port conflict.

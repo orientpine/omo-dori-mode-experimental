@@ -6,11 +6,14 @@
 
 ```sh
 cd skills/dori-mode/scripts
-bun install          # dev dependencies only (types, tsc)
+bun install          # dev dependencies only (types, tsc, biome, knip)
 bun link             # puts `dori` on your PATH
 bun test             # behavior tests with fake herdr/git/gh; nothing real is touched
-bunx tsc --noEmit    # typecheck
+bunx tsc --noEmit    # typecheck (strict flag set)
+bun run ci           # biome lint, typecheck, knip, the 250-line check, then bun test
 ```
+
+The checks follow upstream #149 (https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/149) inside this package: `biome.jsonc` (lint; its formatter is off in the fork for now, since formatting all of scripts/ is a diff no review can read), the strict flags in `tsconfig.json` (`exactOptionalPropertyTypes`, `noPropertyAccessFromIndexSignature`, `noUnusedLocals`, ...), `knip.json` (unused files, exports and dependencies) and `check-loc.ts`: no file under `src/` or `test/` may pass 250 lines unless `loc-baseline.json` lists it at its exact line count (`LOC_OVER`, `LOC_GREW`, `LOC_LOOSE`, `LOC_STALE`), so a listed file can only shrink and leave the list. These are dev dependencies only: `dori update` runs git alone and the CLI needs none of them at run time.
 
 `bun test` (run from `scripts/`, where `bunfig.toml` preloads `test/preload.ts`) starts with every `DORI_*` variable removed, so it passes the same inside an aoe window, which carries its Dori's `DORI_CONFIG`, `DORI_ENV_FILE` and `DORI_STATE_DIR`, as in a bare shell; a test that needs one sets it itself. Bun gives a child spawned without `env` the environment the test run started with, so a test whose command stands in for another host passes the cleaned environment explicitly (`heavy-queue.test.ts`: `env -i`).
 

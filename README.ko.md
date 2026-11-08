@@ -240,6 +240,7 @@ cd skills/dori-mode/scripts
 bun install
 bun test           # 가짜 herdr, aoe, tmux, git, gh, Discord HTTP/게이트웨이로 동작 확인
 bunx tsc --noEmit  # 타입 검사
+bun run ci         # biome lint, 엄격한 타입 검사, knip, 250줄 검사, 그다음 테스트
 ```
 
 두 백엔드, 시작과 보고 전달, freshness, 멈춘 레인, 완료 흐름, 디스코드 카드와 상태를 테스트합니다. 외부 도구와 Discord HTTP/게이트웨이는 가짜로 대체하며 실제 pane, 저장소, GitHub, 디스코드 계정은 건드리지 않아요.
