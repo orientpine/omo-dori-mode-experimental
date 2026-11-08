@@ -4,7 +4,7 @@ import { captureTmux, listAoePanes, liveSessions, paneLife, QUESTION_MARK, sessi
 import { sessionFile } from "./background.ts";
 import type { Backend, DoriConfig } from "./config.ts";
 import { herdrOk, herdrRef, herdrResult, herdrRuntime, isHerdrPane, shellInFrontName } from "./herdr.ts";
-import { hcRead, hcType, isHcPane, listChosenSessions } from "./hc-pane.ts";
+import { hcRead, hcType, isHcPane, listKeptSessions } from "./hc-pane.ts";
 import { formatRef } from "./runtime/types.ts";
 import { replacementOf } from "./frozen.ts";
 import { type Clock, type Runner, runtimesOf } from "./run.ts";
@@ -25,12 +25,12 @@ export type Pane = {
 
 export class UnsafeTextError extends Error {}
 
-// The sessions of the configured runtime (sessions.ts listSessions, upstream #154) as the pane rows the sweeps read; an aoe
+// The sessions of the configured runtime and of the stored ones (as sessions.ts listSessions, upstream #154) as the pane rows the sweeps read; an aoe
 // Dori lists its tmux sessions.
 export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime"> & { readonly workspaces?: readonly string[] }): Promise<Pane[]> => {
   if (config.backend === "aoe") return listAoePanes(run);
   const rts = runtimesOf(run, config);
-  const sessions = await listChosenSessions(rts);
+  const sessions = await listKeptSessions(rts);
   // hc lists no dori.group label unasked: each configured workspace is listed by its label, so a workspace filter keeps
   // the hc terminals of that group (review 1 of #404)
   const hcGroup = new Map<string, string>();
