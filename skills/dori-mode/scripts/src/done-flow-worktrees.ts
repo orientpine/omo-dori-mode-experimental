@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import * as nodePath from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { BACKUP_REMOTE } from "./config.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
 import type { Lane } from "./registry.ts";
@@ -20,9 +21,10 @@ export const discoverWorktrees = async (lane: Lane, run: Runner, extraRoots: rea
   return [...found];
 };
 
-// `git rev-parse --local-env-vars` (git 2.43) and GIT_CEILING_DIRECTORIES, each unset for a child git
+// `git rev-parse --local-env-vars` (git 2.43), GIT_CEILING_DIRECTORIES and the pathspec switches (GIT_LITERAL_PATHSPECS
+// would read unpushedWork's magic pathspecs as file names), each unset for a child git
 const GIT_REPO_ENV_CLEARED: Readonly<Record<string, undefined>> = Object.fromEntries(
-  ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"].map((k) => [k, undefined]),
+  ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"].map((k) => [k, undefined]),
 );
 
 // owner/name of a GitHub URL in its https, ssh or scp-like form (git@github.com:owner/name.git), lower case
@@ -33,6 +35,14 @@ const isBackupRemote = async (git: Runner, wt: string, repo: string): Promise<bo
   if (!repo) return false;
   const url = await git(["git", "-C", wt, "config", "--get", `remote.${BACKUP_REMOTE}.url`]);
   return url.code === 0 && githubRepo(url.out) === repo.toLowerCase();
+};
+
+// the git status pathspec that leaves stateDir out of checkout top; none when stateDir is not inside it
+export const statePathspec = (top: string, stateDir: string, p: Pick<typeof nodePath, "relative" | "isAbsolute" | "sep"> = nodePath): string[] => {
+  const rel = p.relative(top, stateDir);
+  if (rel === ".." || rel.startsWith(`..${p.sep}`) || p.isAbsolute(rel)) return [];
+  // git's pathspecs take / on Windows too
+  return ["--", ":(top)", rel ? `:(top,literal,exclude)${rel.split(p.sep).join("/")}` : ":(top,exclude)*"];
 };
 
 export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
@@ -92,8 +102,7 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
           return resolve(p);
         }
       };
-      const rel = relative(real(top.out.trim()), real(deps.config.stateDir));
-      if (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel)) statePaths = ["--", ":(top)", rel ? `:(top,literal,exclude)${rel}` : ":(top,exclude)*"];
+      statePaths = statePathspec(real(top.out.trim()), real(deps.config.stateDir));
     }
   }
   for (const wt of checked) {

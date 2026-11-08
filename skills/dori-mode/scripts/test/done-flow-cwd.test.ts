@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { claimDone, unpushedWork, watchTick } from "../src/done-flow.ts";
+import { statePathspec } from "../src/done-flow-worktrees.ts";
 import { run } from "../src/run.ts";
 import type { Lane } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
@@ -210,12 +211,25 @@ test("in a cwd checkout holding this Dori's stateDir, dori's own state files are
   expect(await unpushedWork(realDeps, { ...lane, cwd })).toEqual([]);
   writeFileSync(join(home, "config.json"), '{"b":1}\n');
   expect(await unpushedWork(realDeps, { ...lane, cwd })).toEqual([`unpushed work in ${cwd}`]);
+  // the watcher's GIT_LITERAL_PATHSPECS would read the pathspecs as file names and hide that change
+  process.env["GIT_LITERAL_PATHSPECS"] = "1";
+  try {
+    expect(await unpushedWork(realDeps, { ...lane, cwd })).toEqual([`unpushed work in ${cwd}`]);
+  } finally {
+    delete process.env["GIT_LITERAL_PATHSPECS"];
+  }
   // a stateDir that is the checkout's top: all of it is dori's state
   expect(await unpushedWork({ ...realDeps, config: { ...realDeps.config, stateDir: home } }, { ...lane, cwd })).toEqual([]);
   await g("-C", home, "checkout", "-q", "--", "config.json");
   // a stateDir outside the checkout excludes nothing
   writeFileSync(join(cwd, "..", "state", "lanes", "b.json"), "{}\n");
   expect(await unpushedWork({ ...realDeps, config: { ...realDeps.config, stateDir: join(state.dir, "elsewhere") } }, { ...lane, cwd })).toEqual([`unpushed work in ${cwd}`]);
+});
+
+test("the stateDir pathspec uses git's / on Windows too, for a nested stateDir", () => {
+  expect(statePathspec("C:\\Users\\a\\.soodori", "C:\\Users\\a\\.soodori\\runtime\\state", win32)).toEqual(["--", ":(top)", ":(top,literal,exclude)runtime/state"]);
+  expect(statePathspec("C:\\Users\\a\\.soodori", "D:\\state", win32)).toEqual([]);
+  expect(statePathspec("/home/a/.soodori", "/home/a/.soodori/runtime/state", posix)).toEqual(["--", ":(top)", ":(top,literal,exclude)runtime/state"]);
 });
 
 // git says "not a git repository" for a .git file pointing nowhere or a bad HEAD too: a .git entry makes it unreadable
