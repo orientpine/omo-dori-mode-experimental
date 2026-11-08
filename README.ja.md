@@ -246,7 +246,7 @@ bun run ci         # biome lint、厳格な型チェック、knip、250 行チ�
 
 ## ライセンス
 
-MIT
+MIT(`LICENSE`)。上流 dori-superagent の #162 以降のコミットから取り込んだ部分は Sustainable Use License 1.0(`LICENSE-SUL`)で、その一覧は `NOTICE` にあります。
 
 ## Dori からの移行
 

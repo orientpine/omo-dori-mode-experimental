@@ -247,7 +247,7 @@ bun run ci         # biome lint, 엄격한 타입 검사, knip, 250줄 검사, �
 
 ## 라이선스
 
-MIT
+MIT(`LICENSE`). 원본 dori-superagent #162 이후 커밋에서 들인 부분은 Sustainable Use License 1.0(`LICENSE-SUL`)이고, 그 목록은 `NOTICE`에 있습니다.
 
 ## Dori에서 옮겨 오기
 

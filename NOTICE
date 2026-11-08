@@ -1,0 +1,20 @@
+NOTICE
+
+[한국어]
+이 포크는 원본 dori-superagent(https://github.com/sisyphuslabs/dori-superagent)에서 들인 부분을 담고 있습니다.
+원본은 2026-11-08 #162(https://github.com/sisyphuslabs/dori-superagent/pull/162, 커밋 ba96abf)로 라이선스를 MIT에서 Sustainable Use License 1.0(SUL-1.0)으로 바꿨고, 커밋마다 적용합니다.
+
+- 원본 ba96abf(#162) 이전 커밋에서 온 부분: MIT (LICENSE)
+- 원본 ba96abf(#162)부터의 커밋에서 들인 부분: SUL-1.0 (원문 전체: LICENSE-SUL). 아래 목록에 있는 커밋입니다.
+- 이 포크 고유의 코드: 지금 라이선스 그대로 (LICENSE)
+
+[English]
+This fork contains parts brought in from upstream dori-superagent (https://github.com/sisyphuslabs/dori-superagent).
+On 2026-11-08 upstream changed its license from MIT to the Sustainable Use License 1.0 (SUL-1.0) with #162 (https://github.com/sisyphuslabs/dori-superagent/pull/162, commit ba96abf), applied per commit.
+
+- Parts from upstream commits before ba96abf (#162): MIT (LICENSE)
+- Parts ported from upstream commits from ba96abf (#162) on: SUL-1.0 (full text: LICENSE-SUL); the commits are listed below
+- This fork's own code: its current license, unchanged (LICENSE)
+
+SUL-1.0 upstream commits ported into this fork / 이 포크에 들인 SUL-1.0 원본 커밋:
+(none yet / 아직 없음)
