@@ -92,7 +92,11 @@ systemctl --user restart doriface-host.service   # makes the new rows at once; t
 Without the file the unit makes the one pilot row `zzangdori` as before. `doriface-host.service` makes the rows
 when it starts; `doriterm-bridges.timer` runs `bridge.ts` every minute while the host runs (`ExecCondition`: with the
 host off it starts no hc core), so a row closed in the app or lost to an hc core restart comes back. `attach.sh`
-re-attaches after a Dori's herdr server restarts. A Dori restarting its service or its lead does not touch its herdr
+re-attaches after a Dori's herdr server restarts. A running row keeps the `attach.sh` it started with, and the timer leaves a live row
+alone, so a change to `attach.sh` or to the files it runs reaches the rows only on a restart: once every listed
+account's `~/.dori/src` has the change (each pulls it on its own `dori-update-pull` timer), run
+`systemctl --user restart doriface-host.service` on the host account; the paired devices stay paired. Until then an old
+row whose focus file was removed says "the lead tab was not focused" and still attaches. A Dori restarting its service or its lead does not touch its herdr
 server, so the row stays. With `loginctl enable-linger` on the host account the units come back after a reboot.
 
 A paired device now reaches every listed account's herdr, where it can type into the lead and lanes and open panes:
