@@ -28,6 +28,10 @@ const heavyCommand: Command = async (context) => {
     return;
   }
   const jobName = opt("job");
+  // --helpers-only: the caller wants it on a helper and never in this host's slot (zzangdori 2026-11-08); a --job goes to
+  // the GPU line of all hosts, this one too, so the two do not go together
+  const helpersOnly = Boolean(flags.values["helpers-only"]);
+  if (helpersOnly && jobName !== undefined) die("dori heavy --helpers-only goes with --kind cpu|browser|gpu --sync PATH ..., not --job: a --job runs in the GPU line of every host, this one too");
   if (jobName !== undefined) {
     const jobLabel = label && !label.startsWith("-") ? label : die("usage: dori heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]");
     const out = opt("out");
@@ -41,7 +45,8 @@ const heavyCommand: Command = async (context) => {
   // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-spread.ts withPipefail)
   const jobCmd = withPipefail(cmd);
   if (jobCmd !== cmd) deps.log?.(`HEAVY_PIPEFAIL ${name}: the bash -c script pipes, so it runs with set -o pipefail and a failing stage fails the job`);
-  const host = readMeminfo();
+  // a --helpers-only job never runs here: the helper that takes it checks its own memory (heavy-spread.ts heavyExec)
+  const host = helpersOnly ? undefined : readMeminfo();
   const never = needBytes && host ? neverFits(needBytes, host, config.heavyHeadroomPct) : undefined;
   if (never) {
     deps.log?.(`HEAVY_REFUSED ${name}: ${never}`);
@@ -51,8 +56,6 @@ const heavyCommand: Command = async (context) => {
   // --kind: the command may run on the less busy host (heavy-spread.ts); what it cannot take along keeps it here
   const kindOpt = opt("kind");
   const kind = kindOpt === undefined ? undefined : isKind(kindOpt) ? kindOpt : die(`dori heavy --kind takes cpu, browser or gpu, not "${kindOpt}"`);
-  // --helpers-only: the caller wants it on a helper and never in this host's slot (zzangdori 2026-11-08)
-  const helpersOnly = Boolean(flags.values["helpers-only"]);
   if (helpersOnly && kind === undefined) die("dori heavy --helpers-only goes with --kind cpu|browser|gpu --sync PATH ...: only those can run on a helper");
   const refuseHere = (why: string): void => {
     deps.log?.(`HEAVY_HELPERS_ONLY ${name}: ${why}; it does not run here`);

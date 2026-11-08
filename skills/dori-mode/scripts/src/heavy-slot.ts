@@ -69,9 +69,9 @@ export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: numbe
 // An admission whose slot is given back when a hold (dori heavy hold-local) is on once it is taken. A hold set while the
 // admission sampled load and headroom is read after the claim, and a hold set after the claim finds the job already
 // running: no job takes a slot that a hold written before its claim forbids.
-const admitUnheld = async (deps: SlotDeps, admit: () => Promise<Try>): Promise<Try | null> => {
+const admitUnheld = async (deps: SlotDeps, admit: () => Promise<Try>, holdExempt = false): Promise<Try | null> => {
   const t = await withLock(deps, admit);
-  if (!t || !("slot" in t)) return t;
+  if (!t || !("slot" in t) || holdExempt) return t;
   const held = deps.hold?.();
   if (!held) return t;
   releaseSlot(t.slot);
@@ -139,6 +139,9 @@ export type AcquireOptions<T> = {
   readonly settleSec?: number | undefined;
   // dori heavy --helpers-only: never this host's slot, only elsewhere, so no ticket in this host's line either
   readonly helpersOnly?: boolean;
+  // the owner's transcription (heavy-queue.ts): a hold does not stop it, nor do jobs ahead in this host's line while a
+  // hold is on (none of them may take a slot here then); without a hold it waits its turn
+  readonly holdExempt?: boolean;
 };
 
 // the line of a job that may not take this host's slot now, and what it does instead
@@ -157,11 +160,12 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
       if (onlyHere !== local && ticket) writeFileSync(ticket, onlyHere ? "local" : "any");
       local = onlyHere;
       const names = line(deps);
-      const ahead = ticket ? names.slice(0, Math.max(0, names.indexOf(basename(ticket)))) : [];
       // a hold on this host (dori heavy hold-local, heavy-hold.ts) is read before every try, so a job that waited here
       // when it came on does not take a slot that frees during it
-      const before = opts.helpersOnly ? "--helpers-only" : deps.hold?.();
-      const tried: Try | null = before ? { wait: "hold", why: before } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await admitUnheld(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec));
+      const holdNow = opts.helpersOnly ? undefined : deps.hold?.();
+      const ahead = ticket && !(opts.holdExempt && holdNow) ? names.slice(0, Math.max(0, names.indexOf(basename(ticket)))) : [];
+      const before = opts.helpersOnly ? "--helpers-only" : opts.holdExempt ? undefined : holdNow;
+      const tried: Try | null = before ? { wait: "hold", why: before } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await admitUnheld(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec), Boolean(opts.holdExempt));
       const held = tried && "wait" in tried && tried.wait === "hold" ? tried.why : undefined;
       const t: Try | null = held ? { wait: `hold ${local}`, why: held } : tried;
       const localOnlyAhead = ahead.length > 0 && ahead.every((n) => ticketKind(deps, n) === "local");
