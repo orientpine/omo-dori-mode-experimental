@@ -27,6 +27,7 @@ const bundle = (version: string, gen = "a", link = true): void => {
   const at = join(toolsDir(), "rv-gens", `${version}-${gen}`);
   mkdirSync(join(at, "bin"), { recursive: true });
   writeFileSync(join(at, "VERSION"), `${version}\n`);
+  writeFileSync(join(at, "PACKAGES"), "\n");
   writeFileSync(join(at, "bin", "rv"), `#!/bin/sh\necho "bundle rv $*"; mkdir -p out && echo frame > out/v.mp4 && echo ${gen === "a" ? version : `${version}/${gen}`} >> out/versions\n`);
   chmodSync(join(at, "bin", "rv"), 0o755);
   if (link) symlinkSync(`rv-gens/${version}-${gen}`, join(toolsDir(), `rv@${version}`));
@@ -130,13 +131,12 @@ test("a helper with the bundle at the caller's version runs the job with the bun
   expect(logs).toContain("HEAVY_DONE t second: exit 0");
 }, 60_000);
 
-test("a helper without the bundle, or with another version of it, is named as lacking it, and the job stays here", async () => {
+test("a helper without the bundle is named as lacking it, and the job stays here", async () => {
   const job = rvJob();
   const plan = planOf(job);
   if (!plan.ok) throw new Error(plan.why);
   for (const [have, why] of [
-    ["", 'no tool bundle "rv" on this host; install it there: setups/heavy-helper/tools.sh rv <tag>'],
-    ["0.2.0", 'tool bundle "rv" here is version 0.2.0, the job\'s is 0.2.1; install that one there: setups/heavy-helper/tools.sh rv v0.2.1'],
+    ["", 'no tool bundle "rv" on this host (bundles here: none); setups/heavy-helper/tools.sh makes the bundle rv: tools.sh rv <tag or commit>'],
   ] as const) {
     logs = [];
     state.done();
