@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { gpuRoom, neverFits, parseMem, readMeminfo, spawnScoped } from "./heavy-mem.ts";
+import { heavyOuter, runHere } from "./heavy-here.ts";
+import { gpuRoom, neverFits, parseMem, readMeminfo } from "./heavy-mem.ts";
 import { heavyJobCommand, heavyServe } from "./heavy-queue.ts";
-import { acquireSlot, releaseSlot } from "./heavy-slot.ts";
 import { heavyWorker } from "./heavy-worker.ts";
 import { heavySpread, isKind, spreadPlan, toolsHere, withPipefail, type SpreadJob } from "./heavy-spread.ts";
 import { sampleHost } from "./host-guard.ts";
@@ -43,7 +43,7 @@ const heavyCommand: Command = async (context) => {
   const kindOpt = opt("kind");
   const kind = kindOpt === undefined ? undefined : isKind(kindOpt) ? kindOpt : die(`dori heavy --kind takes cpu, browser or gpu, not "${kindOpt}"`);
   let spreadSlot: string | undefined;
-  if (kind !== undefined) {
+  if (kind !== undefined && !heavyOuter()) {
     const badEnv = many("env").find((e) => !/^[A-Za-z_]\w{0,63}$/.test(e));
     if (badEnv !== undefined) die(`dori heavy --env takes a variable name, not "${badEnv}"`);
     const env = Object.fromEntries(["LANG", "TZ", ...many("env")].flatMap((k) => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])));
@@ -60,14 +60,9 @@ const heavyCommand: Command = async (context) => {
       spreadSlot = r.slot;
     }
   }
-  const slot = spreadSlot ?? (await acquireSlot(deps, name, 15_000, needBytes ? needBytes / 1024 : undefined));
-  try {
-    // plain dori heavy is the GPU slot line, and --kind gpu a GPU job: both get free memory made first (heavy-mem.ts gpuRoom)
-    const gpu = kind === undefined || kind === "gpu";
-    process.exitCode = await spawnScoped({ label: name, cmd: jobCmd, free: config.heavyHeadroomPct, ...(needBytes ? { needBytes } : {}), ...(deps.log ? { log: deps.log } : {}), ...(gpu ? { gpuFreeKb: config.heavyGpuFreeGb * 1024 ** 2 } : {}) }, { stdout: "inherit", stderr: "inherit", stdin: "inherit", ...toolsHere(name, many("tools"), deps.log) });
-  } finally {
-    releaseSlot(slot);
-  }
+  // plain dori heavy is the GPU slot line, and --kind gpu a GPU job: both get free memory made first (heavy-mem.ts gpuRoom)
+  const gpu = kind === undefined || kind === "gpu";
+  process.exitCode = await runHere(deps, { label: name, cmd: jobCmd, free: config.heavyHeadroomPct, ...(needBytes ? { needBytes } : {}), ...(deps.log ? { log: deps.log } : {}), ...(gpu ? { gpuFreeKb: config.heavyGpuFreeGb * 1024 ** 2 } : {}) }, { slot: spreadSlot, ...toolsHere(name, many("tools"), deps.log) });
   return;
 };
 
