@@ -122,6 +122,9 @@ export const USAGE_MIDDLE = `  challenge <key> --plan FILE [--model M] [--all]
                                        a measuring window on this host: until off or --until (24 h at most), no new heavy
                                        job of any account takes a slot here; one that may go to a helper goes there, the
                                        rest wait (HEAVY_HOLD_LOCAL lines name who, why and until); running jobs go on
+  heavy <label> --helpers-only --kind cpu|browser|gpu --sync PATH ... -- <command ...>
+                                       the same, never on this host: it waits for a helper that admits it (it takes no
+                                       slot or ticket here), exit 2 with HEAVY_HELPERS_ONLY when none can take it
   heavy-serve <label> <name> [--rl] -- [arg ...]
                                        queue host side of a job sent by another host: inputs as tar on stdin, result tar
                                        on stdout

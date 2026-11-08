@@ -59,9 +59,9 @@ export type SpreadJob = {
   readonly sync: readonly string[];
   readonly env: Readonly<Record<string, string>>;
   readonly needBytes?: number;
-  // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), and globs of what comes back (--back, heavy-back.ts)
+  // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), globs of what comes back (--back, heavy-back.ts); helpersOnly: never this host's slot (--helpers-only)
   readonly tools?: readonly string[];
-  readonly back?: readonly string[];
+  readonly back?: readonly string[]; readonly helpersOnly?: boolean;
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
 // which the helper must have before it takes the job
@@ -354,7 +354,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
       seen.set(h.name, `${t.kind} ${t.why}`);
       if (t.kind === "refused" || t.kind === "old" || t.kind === "notools") {
         refused.set(h.name, t.kind, t.why);
-        if (refused.all(ctx.q.helpers.map((x) => x.name))) log(`HEAVY_LOCAL ${job.label}: no helper can run it (${refused.list()}); it waits for this host`);
+        if (refused.all(ctx.q.helpers.map((x) => x.name))) log(job.helpersOnly ? `HEAVY_HELPERS_ONLY ${job.label}: no helper can run it (${refused.list()}); it does not run on this host` : `HEAVY_LOCAL ${job.label}: no helper can run it (${refused.list()}); it waits for this host`);
       }
     }
     return null;
@@ -365,8 +365,8 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
   const since = ctx.deps.clock.now();
   for (;;) {
     if (!run) {
-      const got = await acquire<Started>(ctx.deps, job.label, { since, elsewhere: (why) => helpers(100, why), nowhere: () => refused.all(ctx.q.helpers.map((x) => x.name)), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
-      if ("slot" in got) return { slot: got.slot };
+      const got = await acquire<Started | "nowhere">(ctx.deps, job.label, { since, elsewhere: async (why) => (await helpers(100, why)) ?? (job.helpersOnly && refused.all(ctx.q.helpers.map((x) => x.name)) ? "nowhere" : null), ...(job.helpersOnly ? { helpersOnly: true } : { nowhere: () => refused.all(ctx.q.helpers.map((x) => x.name)) }), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
+      if ("slot" in got || got.elsewhere === "nowhere") return "slot" in got ? { slot: got.slot } : { code: 2 };
       run = got.elsewhere;
     }
     const code = await run.done;

@@ -1,17 +1,20 @@
 import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { userInfo } from "node:os";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 
 import { holdOff, holdOn, liveHolds, parseUntil } from "../src/heavy-hold.ts";
+import type { HeavyCtx } from "../src/heavy-queue.ts";
 import { acquire, admitOnce, type SlotDeps } from "../src/heavy-slot.ts";
+import { heavySpread, spreadPlan, type SpreadJob } from "../src/heavy-spread.ts";
 import { withState } from "./fakes.ts";
 
 setDefaultTimeout(30_000);
 
 // zzangdori 2026-11-08 (#dori-pair): while 0a83 measured and ran its regression, dori heavy put other Doris' jobs in 0a83's
 // slot whenever every helper was busy (gongdori rvp-make5, make7, make8, soodori's whole bun test for 105 s), and the window
-// broke five times. A hold on this host keeps every account's new heavy job out of its slots until it ends.
+// broke five times. A hold on this host keeps every account's new heavy job out of its slots until it ends; --helpers-only
+// keeps one job out of them always.
 const ME = userInfo().username;
 const CLI = join(import.meta.dir, "../src/cli.ts");
 const OTHER = 4243;
@@ -106,10 +109,35 @@ test("as a helper this host takes no job under a hold", async () => {
   expect(existsSync(join(slotDir(), "slot.1"))).toBe(false);
 });
 
+test("a --helpers-only job never takes this host's free slot and leaves no ticket in its line while it waits for a helper", async () => {
+  let asked = 0;
+  let tickets = -1;
+  const sleep = async () => {
+    tickets = existsSync(join(slotDir(), "queue")) ? readdirSync(join(slotDir(), "queue")).length : 0;
+  };
+  const got = await acquire(depsWith(() => undefined, sleep), "only", { helpersOnly: true, elsewhere: async () => (++asked < 2 ? null : "helper") });
+  expect(got).toEqual({ elsewhere: "helper" });
+  expect([asked, tickets, existsSync(join(slotDir(), "slot.1"))]).toEqual([2, 0, false]);
+});
+
+test("a --helpers-only job that every helper refused ends with exit 2 and a line, not on this host", async () => {
+  const helper = ["sh", "-c", "printf 'WORKER_REFUSED exec is off on this host (heavyQueue.exec)\\n' >&2; exit 3", "helper"];
+  const deps = depsWith(() => undefined, async () => { throw new Error("waited"); });
+  const ctx: HeavyCtx = { q: { jobs: {}, helpers: [{ name: "second", ssh: helper }], queue: [], rl: true, jobDir: join(state.dir, "jobs"), exec: false, execMaxMin: 240 }, deps };
+  const work = join(state.dir, "work");
+  mkdirSync(work, { recursive: true });
+  const job: SpreadJob = { label: "only", kind: "cpu", cmd: ["true"], cwd: work, sync: [work], env: {}, helpersOnly: true };
+  const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
+  if (!plan.ok) throw new Error(plan.why);
+  expect(await heavySpread(ctx, job, plan)).toEqual({ code: 2 });
+  expect(existsSync(join(slotDir(), "slot.1"))).toBe(false);
+  expect(lines.some((l) => l.startsWith("HEAVY_HELPERS_ONLY only: no helper can run it (second: exec is off"))).toBe(true);
+});
+
 // the CLI with a config of its own: a test never reads or writes the host's real hold directory
-const cli = (args: string[]) => {
+const cli = (args: string[], helpers: unknown[] = []) => {
   const config = join(state.dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyMaxLoad: 1e9, heavyHoldDir: hold, heavyQueue: {} }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyMaxLoad: 1e9, heavyHoldDir: hold, heavyQueue: { helpers } }));
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_")));
   return Bun.spawn(["setsid", process.execPath, CLI, "heavy", ...args], { env: { ...own, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") }, stdout: "pipe", stderr: "pipe" });
 };
@@ -136,4 +164,11 @@ test("a plain job under a hold says so and does not start", async () => {
   process.kill(-p.pid, "SIGKILL");
   expect(err).toContain(`by ${ME} until`);
   expect(await new Response(p.stdout).text()).toBe("");
+});
+
+test("--helpers-only goes with --kind, and with no helper it is refused with exit 2", async () => {
+  expect((await done(cli(["only", "--helpers-only", "--", "true"]))).code).not.toBe(0);
+  const r = await done(cli(["only", "--helpers-only", "--kind", "cpu", "--sync", state.dir, "--", "sh", "-c", "echo ran"]));
+  expect([r.code, r.out]).toEqual([2, ""]);
+  expect(r.err).toContain("HEAVY_HELPERS_ONLY only: no heavyQueue.helpers on this host; it does not run here");
 });

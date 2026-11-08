@@ -50,13 +50,22 @@ const heavyCommand: Command = async (context) => {
   // --kind: the command may run on the less busy host (heavy-spread.ts); what it cannot take along keeps it here
   const kindOpt = opt("kind");
   const kind = kindOpt === undefined ? undefined : isKind(kindOpt) ? kindOpt : die(`dori heavy --kind takes cpu, browser or gpu, not "${kindOpt}"`);
+  // --helpers-only: the caller wants it on a helper and never in this host's slot (zzangdori 2026-11-08)
+  const helpersOnly = Boolean(flags.values["helpers-only"]);
+  if (helpersOnly && kind === undefined) die("dori heavy --helpers-only goes with --kind cpu|browser|gpu --sync PATH ...: only those can run on a helper");
+  const refuseHere = (why: string): void => {
+    deps.log?.(`HEAVY_HELPERS_ONLY ${name}: ${why}; it does not run here`);
+    process.exitCode = 2;
+  };
   let spreadSlot: string | undefined;
   if (kind !== undefined && !heavyOuter()) {
     const badEnv = many("env").find((e) => !/^[A-Za-z_]\w{0,63}$/.test(e));
     if (badEnv !== undefined) die(`dori heavy --env takes a variable name, not "${badEnv}"`);
     const env = Object.fromEntries(["LANG", "TZ", ...many("env")].flatMap((k) => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])));
-    const job: SpreadJob = { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}) };
+    const job: SpreadJob = { ...(helpersOnly ? { helpersOnly } : {}), label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}) };
     const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
+    if (!plan.ok && helpersOnly) return refuseHere(plan.why);
+    if (!config.heavyQueue.helpers.length && helpersOnly) return refuseHere("no heavyQueue.helpers on this host");
     if (!plan.ok) deps.log?.(`HEAVY_LOCAL ${name}: ${plan.why}`);
     else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
     else {
