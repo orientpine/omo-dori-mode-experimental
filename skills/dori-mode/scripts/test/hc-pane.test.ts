@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureTmux, closeAoeSession, currentTmuxSession, isClosedLine, liveSessions, paneLife, sessionFor, tmuxPanePid } from "../src/aoe.ts";
 import { useConfiguredRuntime } from "../src/run.ts";
-import { paneGroup } from "../src/hc-pane.ts";
+import { hcType, paneGroup } from "../src/hc-pane.ts";
 import { closeFrozen, readFrozen, writeFrozen } from "../src/frozen.ts";
+import { sessionOf } from "../src/registry.ts";
 import { openHerdrSession } from "../src/herdr.ts";
 import { listPanes, submitToPane } from "../src/panes.ts";
 import type { Runner } from "../src/run.ts";
@@ -217,4 +218,20 @@ test("a frozen hc session whose terminal still runs after the close is kept and 
   } finally {
     useConfiguredRuntime(undefined);
   }
+});
+
+test("an hc address past t19 (t1b: hc counts in digits and consonants) is a pane the records keep, and an old question in history blocks nothing (review 7 of #404)", async () => {
+  expect(sessionOf({ key: "k", title: "t", thread: "none", brief: "/b", done: "file /x", openedAt: "2026-01-01T00:00:00Z", cwd: "/w", pane: "hc:t1b" } as never)?.id).toBe("t1b");
+  // Given: the agent is idle on screen, an answered Ask user question only in the history above it
+  const fake = new FakeHc({ t1b: terminal({ screen: "omo idle\n> ", history: "Ask user · pick one" }) });
+  expect(await hcType(runnerOf(fake), "hc:t1b", "PING")).toBeUndefined();
+  expect(fake.sent).toEqual([{ id: "t1b", text: "PING" }]);
+});
+
+test("an omo lead that hc reads as working while only its monitors are live still gets dori type's text (upstream issue #178)", async () => {
+  // Given: hc's word is working ("7 monitors live"), the screen is omo's idle input
+  const fake = new FakeHc({ t1: terminal({ status: { state: "working", app: "omo" }, screen: "omo idle\n> " }) });
+  // Then: the fork's dori type sends with no --if gate, so the text lands; nothing waits on hc's word turning idle
+  expect(await hcType(runnerOf(fake), "hc:t1", "[REPORT] x")).toBeUndefined();
+  expect(fake.calls.find((c) => c[0] === "send")?.includes("--if")).toBe(false);
 });

@@ -50,9 +50,10 @@ export const listChosenSessions = async (rts: ChosenRuntimes): Promise<SessionIn
   return sessions;
 };
 
-// hc's read with no --lines prints the whole history; 120 rows covers the screen the omo marks are read from
-const SCREEN_ROWS = 120;
-export const hcRead = (run: Runner, pane: string, lines?: number): Promise<string> => hc(run).read(hcRef(pane), lines ?? SCREEN_ROWS).catch(() => "");
+// hc's --lines is history above the screen (hc 0.1.18 api.rs): 0 reads the screen alone, which is what the omo marks and the
+// open-question check are read from, so an answered question in the history blocks nothing (review 7 of #404); a caller
+// that asks for lines gets that much history too
+export const hcRead = (run: Runner, pane: string, lines?: number): Promise<string> => hc(run).read(hcRef(pane), lines ?? 0).catch(() => "");
 
 const probeOf = (run: Runner, pane: string) => hc(run).probe(hcRef(pane)).catch(() => undefined);
 

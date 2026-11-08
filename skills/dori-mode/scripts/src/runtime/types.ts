@@ -81,8 +81,11 @@ export interface SessionRuntime {
 
 /** Id shape of a bare ref: only a herdr pane `w<ws>:p<pane>` may appear without its prefix. */
 const BARE_HERDR = /^w[0-9A-Za-z]+:p[0-9A-Za-z]+$/;
-/** Id shape after each prefix: a herdr pane, or an hc terminal address `t<n>`. */
-const ID_SHAPES: Readonly<Record<RuntimeKind, RegExp>> = { herdr: BARE_HERDR, hc: /^t[0-9]+$/ };
+/** An hc terminal address: t, a digit 1-9, then digits and consonants (t1..t9, t10..t19, t1b, ...; hc 0.1.18 terminals.rs
+ * address/id_shaped). The fork widened upstream's `t<digits>`, which drops a lane past t19 (review 7 of #404). */
+export const HC_ADDRESS = /^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$/;
+/** Id shape after each prefix: a herdr pane, or an hc terminal address. */
+const ID_SHAPES: Readonly<Record<RuntimeKind, RegExp>> = { herdr: BARE_HERDR, hc: HC_ADDRESS };
 const KINDS = Object.keys(ID_SHAPES) as RuntimeKind[];
 
 /** "herdr:w1:p3", "hc:t7", bare "w1:p3" (herdr). A bare "t7" is NOT a ref (it is a legal lane key); undefined otherwise. */

@@ -1,6 +1,6 @@
 // From upstream dori-superagent src/runtime/hc/sessions.ts (https://github.com/sisyphuslabs/dori-superagent/blob/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444/src/runtime/hc/sessions.ts; #147 #148 #150 #155, licences in NOTICE).
 import type { Exec } from "../exec.ts";
-import type { CreateSpec, SessionInfo, SessionRef } from "../types.ts";
+import { type CreateSpec, HC_ADDRESS, type SessionInfo, type SessionRef } from "../types.ts";
 import { hcCall, isKind } from "./exec.ts";
 import { statusWord } from "./probe.ts";
 
@@ -20,7 +20,8 @@ export function slugName(name: string): string | undefined {
     .replace(/[^a-z0-9._-]/g, "-")
     .replace(/^[._-]+/, "")
     .slice(0, NAME_MAX);
-  if (slug === "" || /^t[0-9]+$/.test(slug)) return undefined;
+  // hc refuses a name shaped like an address (review 7 of #404: t1b as well as t7)
+  if (slug === "" || HC_ADDRESS.test(slug)) return undefined;
   return slug;
 }
 

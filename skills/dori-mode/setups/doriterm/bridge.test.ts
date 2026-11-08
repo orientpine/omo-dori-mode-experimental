@@ -189,13 +189,14 @@ test("attach.sh focuses the lead's tab, then keeps trying herdr client until the
   expect(calls).toEqual([focus, "client", focus, "client", focus, "client"]);
 });
 
-test("attach.sh attaches to the lead's hc terminal with hc attach when the Dori runs on hc, never herdr client", async () => {
+test("attach.sh attaches to the lead's hc terminal with hc attach when the Dori runs on hc, never herdr client, t1b past t19 too (review 7 of #404)", async () => {
+  for (const id of ["t4", "t1b"]) {
   // Given: the account's config names its lead as the hc terminal hc:t4, and a fake hc that ends the loop on its attach
   const dir = mkdtempSync(join(tmpdir(), "doriterm-attach-hc-"));
   dirs.push(dir);
   const user = (await Bun.$`id -un`.text()).trim();
   mkdirSync(join(dir, `.${user}`), { recursive: true });
-  writeFileSync(join(dir, `.${user}`, "config.json"), JSON.stringify({ backend: "herdr", leadPane: "hc:t4" }, null, 2));
+  writeFileSync(join(dir, `.${user}`, "config.json"), JSON.stringify({ backend: "herdr", leadPane: `hc:${id}` }, null, 2));
   // hc attach runs under attach.sh's inner shell (it watches leadPane meanwhile), herdr client replaces it: end the loop above
   for (const name of ["hc", "herdr"]) writeFileSync(join(dir, name), `#!/bin/sh
 printf '${name} %s\\n' "$*" >> "$HOME/calls"
@@ -207,7 +208,8 @@ ${name === "hc" ? 'kill -TERM $(ps -o ppid= -p $PPID)' : 'kill -TERM "$PPID"'}
   });
   await child.exited;
   // Then: one hc attach to t4 and no herdr call at all
-  expect((await Bun.file(join(dir, "calls")).text()).trim().split("\n")).toEqual(["hc attach t4"]);
+  expect((await Bun.file(join(dir, "calls")).text()).trim().split("\n")).toEqual([`hc attach ${id}`]);
+  }
 });
 
 test("attach.sh leaves an hc attach whose leadPane changed while it stays attached, and attaches to the new lead (review 1 of #404)", async () => {
