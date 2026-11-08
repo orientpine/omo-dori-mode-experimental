@@ -7,7 +7,7 @@ import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
-import { missingTool, playwrightVersion, toolNameOk, toolOptOk, toolSpec } from "./heavy-tools.ts";
+import { playwrightVersion, toolBundles, toolNameOk, toolOptOk, toolSpec } from "./heavy-tools.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH... -- <cmd>: a lane's own command (a browser test, a build) runs on
 // the less busy PC. When this host is more than SPREAD_MARGIN points busier than a helper, the helper runs it; else it
@@ -391,14 +391,15 @@ export const specProblem = (x: unknown): string | ExecSpec => {
   return s as ExecSpec;
 };
 
-export type BoxTools = { readonly bunDir?: string; readonly browsersDir?: string; readonly toolsDir?: string };
+// bundles: the tool bundles a job asked for, by name, each the folder of the version picked at admission (heavy-tools.ts)
+export type BoxTools = { readonly bunDir?: string; readonly browsersDir?: string; readonly toolsDir?: string; readonly bundles?: Readonly<Record<string, string>> };
 export const BOX_TOOLS = "/run/dori-tools";
 
 // the bwrap argv for one run: from = where each --sync path's copy lives in the job folder
 export const sandboxArgv = (kind: Kind, spec: ExecSpec, from: (p: string) => string, tools: BoxTools): string[] => {
   const ro = (src: string | undefined, name: string): string[] => (src && existsSync(src) ? ["--ro-bind", src, `${BOX_TOOLS}/${name}`] : []);
   const env: Record<string, string> = {
-    PATH: `${BOX_TOOLS}/bun:${BOX_TOOLS}/tools/bin:/usr/local/bin:/usr/bin:/bin`,
+    PATH: `${Object.keys(tools.bundles ?? {}).map((n) => `${BOX_TOOLS}/bundles/${n}/bin:`).join("")}${BOX_TOOLS}/bun:${BOX_TOOLS}/tools/bin:/usr/local/bin:/usr/bin:/bin`,
     HOME: "/tmp/home",
     TMPDIR: "/tmp",
     LANG: "C.UTF-8",
@@ -420,6 +421,7 @@ export const sandboxArgv = (kind: Kind, spec: ExecSpec, from: (p: string) => str
     ...ro(tools.bunDir, "bun"),
     ...ro(tools.browsersDir, "ms-playwright"),
     ...ro(tools.toolsDir, "tools"),
+    ...Object.entries(tools.bundles ?? {}).flatMap(([n, src]) => ro(src, `bundles/${n}`)),
     "--dir", "/tmp/home",
     ...[...spec.sync].sort((a, b) => a.length - b.length).flatMap((p) => ["--bind", from(p), p]),
     // the empty /home, /var/tmp and /run are read-only too: the job writes only its own --sync copies and /tmp
@@ -500,13 +502,14 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   if (!ctx.q.exec) return d.refuse(label, "exec is off on this host (heavyQueue.exec)");
   if (!Bun.which("bwrap")) return d.refuse(label, "no bwrap on this host");
-  const noTool = missingTool(opts, d.tools.toolsDir);
-  if (noTool) return d.refuse(label, noTool);
+  const got = toolBundles(opts, d.tools.toolsDir);
+  if ("why" in got) return d.refuse(label, got.why);
+  const tools: BoxTools = { ...d.tools, bundles: got.bundles };
   const needs = opts.filter((o) => o.startsWith("need=")).map((o) => o.slice(5));
   const names = opts.filter((o) => o.startsWith("which=")).map((o) => o.slice(6));
   if (needs.length || names.length) {
     const path = opts.find((o) => o.startsWith("path="))?.slice(5);
-    const absent = probeBox(kind, d.tools, needs, names, path);
+    const absent = probeBox(kind, tools, needs, names, path);
     if (absent && "failed" in absent) return d.refuse(label, `the check for the programs the job starts failed: ${absent.failed}`);
     if (absent) return d.refuse(label, needs.includes(absent.missing) ? `${absent.missing} is not on this host (the job's command or a link in its --sync paths starts it)` : `no ${absent.missing} on this host's box PATH (the job's command)`);
   }
@@ -563,7 +566,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     const pumps: Promise<void>[] = [];
     const ncpu = Math.max(1, cpus().length);
     const code = await spawnScoped(
-      { label, cmd: sandboxArgv(kind, spec, (p) => join(root, p), d.tools), free: ctx.deps.headroom?.free ?? 10, ...(mem ? { needBytes: mem } : {}), ...(kind === "gpu" ? { gpuFreeKb: ctx.deps.headroom?.gpuFreeKb ?? 0 } : {}), props: [`CPUQuota=${ncpu * 90}%`, `RuntimeMaxSec=${d.maxMin * 60}`], log },
+      { label, cmd: sandboxArgv(kind, spec, (p) => join(root, p), tools), free: ctx.deps.headroom?.free ?? 10, ...(mem ? { needBytes: mem } : {}), ...(kind === "gpu" ? { gpuFreeKb: ctx.deps.headroom?.gpuFreeKb ?? 0 } : {}), props: [`CPUQuota=${ncpu * 90}%`, `RuntimeMaxSec=${d.maxMin * 60}`], log },
       { cwd: dir, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
       (_pid, proc) => {
         const pump = async (s: ReadableStream<Uint8Array> | undefined, tag: string) => {

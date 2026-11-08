@@ -4,12 +4,14 @@
 # on PATH. Playwright browsers for browser tests are not here: the helper installs the caller's playwright version on
 # demand into its own ~/.cache/ms-playwright. bun is the helper's own.
 #   tools.sh [tools dir]            a static ffmpeg and ffprobe in bin/        prints TOOLS_OK <dir> <ffmpeg version line>
-#   tools.sh rv <tag> [tools dir]   the tool bundle "rv", which a job asks for with dori heavy --tools rv: rv <tag> from
-#                                   the public repo (its own scripts/install.sh), a uv that installs only from the bundle's
-#                                   wheels (every package rv's `uv run --with` lines name, for the system python3), and
+#   tools.sh rv <tag> [tools dir]   the tool bundle "rv", which a job asks for with dori heavy --tools rv, in rv@<version>:
+#                                   rv <tag> from the public repo (its own scripts/install.sh), a uv that installs only
+#                                   from the bundle's wheels (every package rv's `uv run --with` lines name, for the
+#                                   system python3), the same packages in py/ for rv's plain python3 (PYTHONPATH), and
 #                                   the chromium of that playwright; bin/rv starts it. Run it again when the rv tag
-#                                   changes: it builds the new bundle beside the old one and swaps them when it works.
-#                                   prints TOOLS_OK rv <dir>/rv <version> RV_TREE <sha256> <files> playwright <version>
+#                                   changes: the new version gets its own folder, and rv (a link) moves to it only when
+#                                   every step worked; a folder is never changed under a job that runs from it.
+#                                   prints TOOLS_OK rv <dir>/rv@<version> <version> RV_TREE <sha256> <files> playwright <version>
 set -euo pipefail
 
 rv_bundle() {
@@ -51,8 +53,8 @@ EOF
 # rv of the dori heavy tool bundle "rv": the bundle's uv first on PATH, the bundle's chromium (HOME is empty in a box)
 b=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 if [ -z "${RV_CHROME:-}" ]; then for c in "$b"/ms-playwright/chromium-*/chrome-linux*/chrome; do [ -x "$c" ] && RV_CHROME=$c; done; fi
-PATH="$b/bin:$PATH" PLAYWRIGHT_BROWSERS_PATH="$b/ms-playwright"
-export PATH RV_CHROME PLAYWRIGHT_BROWSERS_PATH
+PATH="$b/bin:$PATH" PLAYWRIGHT_BROWSERS_PATH="$b/ms-playwright" PYTHONPATH="$b/py${PYTHONPATH:+:$PYTHONPATH}"
+export PATH RV_CHROME PLAYWRIGHT_BROWSERS_PATH PYTHONPATH
 exec "$b/rv-video-tool/rv" "$@"
 EOF
   chmod 755 "$new/bin/uv" "$new/bin/rv"
@@ -61,6 +63,10 @@ EOF
   [ -n "$pkgs" ] || { echo "TOOLS_FAIL no uv run --with package found in rv $tag" >&2; exit 3; }
   # shellcheck disable=SC2086 # one word per package
   UV_CACHE_DIR="$tmp/cache" "$new/uv/uv" run -q --no-project --python /usr/bin/python3 --with pip python -m pip download -q --only-binary=:all: -d "$new/wheels" $pkgs
+  # rv also starts plain python3 on scripts that import these (lib/xfade.py: PIL), which a helper may not have
+  # shellcheck disable=SC2086
+  UV_CACHE_DIR="$tmp/cache" "$new/uv/uv" pip install -q --python /usr/bin/python3 --no-index --find-links "$new/wheels" --target "$new/py" $pkgs
+  env -i PYTHONPATH="$new/py" /usr/bin/python3 -c "import sys, PIL, numpy; sys.exit(0 if PIL.__file__.startswith('$new/py/') else 1)" || { echo "TOOLS_FAIL plain python3 does not take PIL from $new/py" >&2; exit 3; }
   # the chromium of the playwright in the wheels, and an offline check of what rv's uv lines ask for
   local with=() p
   for p in $pkgs; do with+=(--with "$p"); done
@@ -68,12 +74,16 @@ EOF
   local pw
   pw=$(env -i PATH="$new/bin:/usr/bin:/bin" HOME="$tmp/home2" "$new/bin/uv" run -q --no-project "${with[@]}" python -c "import importlib.metadata as m; [__import__(n) for n in ('playwright', 'PIL', 'numpy')]; print(m.version('playwright'))")
   compgen -G "$new/ms-playwright/chromium-*/chrome-linux*/chrome" >/dev/null || { echo "TOOLS_FAIL no chromium in $new/ms-playwright" >&2; exit 3; }
-  rm -rf "$b.old"
-  if [ -e "$b" ]; then mv "$b" "$b.old"; fi
-  mv "$new" "$b"
-  rm -rf "$b.old"
+  # a job binds the folder of its version at admission: move a folder aside, never into or out of it while a job may run
+  local final=$dir/rv@$version stamp
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  if [ -e "$final" ]; then mv "$final" "$final.replaced-$stamp"; fi
+  mv "$new" "$final"
+  if [ -e "$b" ] && [ ! -L "$b" ]; then mv "$b" "$b.unversioned-$stamp"; fi
+  ln -sfn "rv@$version" "$dir/rv.link-$$"
+  mv -Tf "$dir/rv.link-$$" "$b"
   ln -sfn ../rv/bin/rv "$dir/bin/rv"
-  echo "TOOLS_OK rv $b $version $tree playwright $pw"
+  echo "TOOLS_OK rv $final $version $tree playwright $pw"
 }
 
 if [ "${1:-}" = rv ]; then

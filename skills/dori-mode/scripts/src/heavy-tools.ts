@@ -3,11 +3,14 @@ import { dirname, join } from "node:path";
 
 // The tools a job needs on a helper that it does not carry in its --sync paths (heavy-spread.ts).
 //
-// A tool bundle is a folder <tools dir>/<name> on a helper, made there by setups/heavy-helper/tools.sh <name> <tag>,
-// with a VERSION file; the box mounts the tools dir read-only with its bin on PATH, where the bundle links its
-// programs. A job asks for one by name (dori heavy --tools rv) and goes as tools=<name>@<the caller's version>; a helper
-// without that bundle, or with another version, refuses it with the line that says how to install it there, so the job
-// runs here instead of failing in the box (2026-11-08: rv renders sent to the 4eae helper found no rv, uv or chromium).
+// A tool bundle is a folder <tools dir>/<name>@<version> on a helper with a VERSION file, made there by
+// setups/heavy-helper/tools.sh <name> <tag> and never changed after (a new tag is a new folder), and <name> links to
+// the current one. A job asks for one by name (dori heavy --tools rv) and goes as tools=<name>@<the caller's version>;
+// the helper picks that version's folder when it has it, else the current one, at admission, and binds it read-only in
+// the box at /run/dori-tools/bundles/<name> with its bin first on PATH, so a bundle installed again during the run does
+// not change what the job runs. A helper without the bundle, or with another version only, refuses the job with the
+// line that says how to install it there, so the job runs here instead of failing in the box (2026-11-08: rv renders
+// sent to the 4eae helper found no rv, uv or chromium).
 
 const TOOL_NAME = /^[a-z][\w.-]{0,31}$/;
 const TOOL_VERSION = /^[\w.+-]{1,32}$/;
@@ -33,19 +36,23 @@ export const toolSpec = (name: string, path: string): string => {
   return version ? `${name}@${version}` : name;
 };
 
-// the helper's side: why it cannot give the job a bundle it asks for, or undefined
-export const missingTool = (opts: readonly string[], toolsDir: string | undefined): string | undefined => {
+// the helper's side: the folder of each bundle the job asks for (its version's, else the current one), or why it has none
+export const toolBundles = (opts: readonly string[], toolsDir: string | undefined): { readonly bundles: Readonly<Record<string, string>> } | { readonly why: string } => {
+  const bundles: Record<string, string> = {};
   for (const opt of opts) {
     const m = TOOL_OPT.exec(opt);
     if (!m) continue;
     const name = m[1]!;
     const want = m[2];
-    const at = toolsDir ? join(toolsDir, name) : undefined;
-    if (!at || !existsSync(at)) return `no tool bundle "${name}" on this host; install it there: setups/heavy-helper/tools.sh ${name} <tag>`;
+    const pinned = toolsDir && want ? join(toolsDir, `${name}@${want}`) : undefined;
+    const current = toolsDir ? join(toolsDir, name) : undefined;
+    const at = pinned && existsSync(pinned) ? pinned : current && existsSync(current) ? realpathSync(current) : undefined;
+    if (!at) return { why: `no tool bundle "${name}" on this host; install it there: setups/heavy-helper/tools.sh ${name} <tag>` };
     const have = versionIn(at) ?? "unknown";
-    if (want && have !== want) return `tool bundle "${name}" here is version ${have}, the job's is ${want}; install that one there: setups/heavy-helper/tools.sh ${name} v${want}`;
+    if (want && have !== want) return { why: `tool bundle "${name}" here is version ${have}, the job's is ${want}; install that one there: setups/heavy-helper/tools.sh ${name} v${want}` };
+    bundles[name] = at;
   }
-  return undefined;
+  return { bundles };
 };
 
 export const playwrightVersion = (roots: readonly string[]): string | undefined => {

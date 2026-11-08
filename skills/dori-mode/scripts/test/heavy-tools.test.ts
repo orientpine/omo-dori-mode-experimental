@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { Glob } from "bun";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { HeavyCtx } from "../src/heavy-queue.ts";
 import type { SlotDeps } from "../src/heavy-slot.ts";
@@ -18,17 +19,29 @@ let logs: string[];
 let work: string;
 let callerPath: string;
 
-// a helper account whose tools folder holds the bundle "rv" at this version (none: no bundle)
-const helperWith = (version?: string): string[] => {
+const toolsDir = (): string => join(state.dir, "helper", "home", ".local", "share", "dori-heavy", "tools");
+
+// a bundle as tools.sh leaves it: rv@<version> never changes, rv points at the current one
+const bundle = (version: string): void => {
+  const at = join(toolsDir(), `rv@${version}`);
+  mkdirSync(join(at, "bin"), { recursive: true });
+  writeFileSync(join(at, "VERSION"), `${version}\n`);
+  writeFileSync(join(at, "bin", "rv"), `#!/bin/sh\necho "bundle rv $*"; mkdir -p out && echo frame > out/v.mp4 && echo ${version} >> out/versions\n`);
+  chmodSync(join(at, "bin", "rv"), 0o755);
+};
+const makeCurrent = (version: string): void => {
+  rmSync(join(toolsDir(), "rv"), { force: true });
+  symlinkSync(`rv@${version}`, join(toolsDir(), "rv"));
+};
+
+// a helper account whose tools folder holds the bundle "rv" at these versions, the first current (none: no bundle)
+const helperWith = (...versions: string[]): string[] => {
   const dir = join(state.dir, "helper");
-  const tools = join(dir, "home", ".local", "share", "dori-heavy", "tools");
-  mkdirSync(join(tools, "bin"), { recursive: true });
-  if (version) {
-    mkdirSync(join(tools, "rv", "bin"), { recursive: true });
-    writeFileSync(join(tools, "rv", "VERSION"), `${version}\n`);
-    writeFileSync(join(tools, "rv", "bin", "rv"), '#!/bin/sh\necho "bundle rv $*"; mkdir -p out && echo frame > out/v.mp4\n');
-    chmodSync(join(tools, "rv", "bin", "rv"), 0o755);
-    symlinkSync("../rv/bin/rv", join(tools, "bin", "rv"));
+  mkdirSync(join(toolsDir(), "bin"), { recursive: true });
+  for (const v of versions) bundle(v);
+  if (versions[0]) {
+    makeCurrent(versions[0]);
+    symlinkSync("../rv/bin/rv", join(toolsDir(), "bin", "rv"));
   }
   const config = join(dir, "config.json");
   writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
@@ -89,7 +102,7 @@ test("a helper without the bundle, or with another version of it, is named as la
   const plan = planOf(job);
   if (!plan.ok) throw new Error(plan.why);
   for (const [have, why] of [
-    [undefined, 'no tool bundle "rv" on this host; install it there: setups/heavy-helper/tools.sh rv <tag>'],
+    ["", 'no tool bundle "rv" on this host; install it there: setups/heavy-helper/tools.sh rv <tag>'],
     ["0.2.0", 'tool bundle "rv" here is version 0.2.0, the job\'s is 0.2.1; install that one there: setups/heavy-helper/tools.sh rv v0.2.1'],
   ] as const) {
     logs = [];
@@ -97,11 +110,40 @@ test("a helper without the bundle, or with another version of it, is named as la
     state = withState();
     mkdirSync(join(state.dir, "heavy", "slot.1"), { recursive: true });
     writeFileSync(join(state.dir, "heavy", "slot.1", "owner"), `${HOLDER} other-job ${new Date().toISOString()}`);
-    await expect(heavySpread(ctxWith(helperWith(have)), job, plan)).rejects.toThrow("stop");
+    await expect(heavySpread(ctxWith(have ? helperWith(have) : helperWith()), job, plan)).rejects.toThrow("stop");
     expect(logs).toContain(`HEAVY_HELPER_NOTOOLS t second: ${why}`);
     expect(logs).toContain(`HEAVY_LOCAL t: no helper can run it (second: ${why}); it waits for this host`);
     expect(logs.some((l) => l.startsWith("HEAVY_SPREAD"))).toBe(false);
   }
+}, 60_000);
+
+test("a helper that keeps the caller's version beside a newer current one runs the job on the caller's version", async () => {
+  const job = rvJob();
+  const plan = planOf(job);
+  if (!plan.ok) throw new Error(plan.why);
+  expect(await heavySpread(ctxWith(helperWith("0.2.2", "0.2.1")), job, plan)).toEqual({ code: 0 });
+  expect(readFileSync(join(work, "out", "versions"), "utf8")).toBe("0.2.1\n");
+}, 60_000);
+
+test("a bundle installed again while a job runs does not change the version that job runs", async () => {
+  // Given: a job that runs rv, then waits for a go file in its own folder on the helper before running rv again
+  const job = rvJob({ cmd: ["sh", "-c", "rv && touch first-done && while [ ! -e go ]; do sleep 0.05; done && rv"] });
+  const plan = planOf(job);
+  if (!plan.ok) throw new Error(plan.why);
+  const ssh = helperWith("0.2.1");
+  bundle("0.2.2");
+  // When: after its first rv, 0.2.2 becomes the helper's current rv
+  const run = heavySpread(ctxWith(ssh), job, plan);
+  const glob = new Glob(`exec/*/in${work}/first-done`);
+  const jobs = join(state.dir, "helper", "state", "heavy");
+  let first: string | undefined;
+  for (const until = Date.now() + 30_000; !first && Date.now() < until; await new Promise((r) => setTimeout(r, 20))) first = existsSync(jobs) ? [...glob.scanSync({ cwd: jobs, onlyFiles: true })][0] : undefined;
+  if (!first) throw new Error("the job did not run its first rv");
+  makeCurrent("0.2.2");
+  writeFileSync(join(jobs, dirname(first), "go"), "");
+  // Then: both runs used the version the job was admitted with
+  expect(await run).toEqual({ code: 0 });
+  expect(readFileSync(join(work, "out", "versions"), "utf8")).toBe("0.2.1\n0.2.1\n");
 }, 60_000);
 
 test("a helper whose dori predates tool bundles is named out of date, not as lacking the bundle", async () => {
