@@ -1,8 +1,20 @@
 // End re-armed command monitors before freezing their old agent: a stopped watch still owns its locks and ports.
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import { tmuxPanePid } from "./aoe.ts";
 import { agentTree } from "./frozen.ts";
 import { type HandoverDeps, type HandoverFacts, manifestPath, readManifest, sameCommand } from "./handover.ts";
 import { descendants, ended } from "./session-id.ts";
+
+// Why a path watch has nothing left to wait for, so a handover neither re-arms nor checks it: omo refuses a watch whose
+// folder is gone ("Cannot watch file: parent directory does not exist"), and a create watch whose file is there has
+// fired (omo ends it, "watcher completed") or never will. zzangdori's rv-human-natural lane rolled back twice on
+// 2026-11-08 (17:04Z, 17:23Z) with "monitors not running" for one of each. A command watch is never judged here.
+export const endedWatch = (m: { readonly path?: string; readonly event?: string }, exists: (path: string) => boolean = existsSync): string | undefined =>
+  !m.path ? undefined
+    : !exists(dirname(m.path)) ? `its folder ${dirname(m.path)} is gone, so omo cannot watch it`
+    : (m.event ?? "create") === "create" && exists(m.path) ? `its file ${m.path} is there already`
+    : undefined;
 
 type Deps = Pick<HandoverDeps, "run" | "config" | "procs" | "signal" | "clock" | "home">;
 type Facts = Pick<HandoverFacts, "from" | "monitors">;

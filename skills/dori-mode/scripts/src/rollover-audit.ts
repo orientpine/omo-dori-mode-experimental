@@ -24,6 +24,7 @@ import { basename, dirname, join } from "node:path";
 import { ChallengeError, checkReviewers, reviewerOrder, reviewers } from "./challenge.ts";
 import { fill } from "./config.ts";
 import { laneDirectiveWords } from "./directive-audit.ts";
+import { endedWatch } from "./handover-monitors.ts";
 import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest, sameCommand } from "./handover.ts";
 import { type LaneFacts, type LaneHandoverDeps, missingFrom, UNDERSTOOD_HEADINGS } from "./lane-handover.ts";
 import { launchLedger } from "./launch.ts";
@@ -252,12 +253,11 @@ const anyGoal = (sessionDir: string, session: string): string | undefined =>
   openGoal(sessionDir, session) ?? readJson<{ goal?: { objective?: string } }>(join(sessionDir, "extensions", "goal", `${session}.json`))?.goal?.objective;
 
 const norm = (text: string, home: string): string => text.replace(/(^|[\s=:'"])~\//g, `$1${home}/`).replace(/\s+/g, " ").trim();
-// a monitor counts as carried when the new session armed the same watch at any time (an ended one-shot watch included).
-// One that starts work (LAUNCHES_WORK) is carried by the watch-only one the note asks for in its place (a path watch or a
-// command that starts nothing, with its description or filter, or its script's watch-only form): counting only its own
-// command sent e7-leap's correct watch-only re-arm back as "never armed" with the launching tool.monitor call as evidence
-// (audit 2026-10-24 04:15Z), the step that relaunches a finished chain.
+// carried: the new session armed the same watch at any time (an ended one-shot watch included), or it is a path watch with
+// nothing left to wait for (ENDED, endedWatch). LAUNCHES_WORK: by the watch-only one the note asks for (its description,
+// filter or watch-only form), never its own command (e7-leap's re-arm sent back as "never armed", 2026-10-24 04:15Z).
 const armed = (m: MonitorSpec, entries: ReturnType<typeof readManifest>, home: string): boolean => {
+  if (m.ended || endedWatch(m)) return true;
   const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
   if (m.command && launch) {
     return entries.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))

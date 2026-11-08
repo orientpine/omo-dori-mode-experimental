@@ -668,8 +668,8 @@ test("a monitor counts as re-armed only with the same command and filter, or the
   expect(check(events, [entry({ description: "events", command: "sleep 3600", filter: "^EV" })])).toEqual(['events (a monitor runs another command, from char 0: "tail -n 0 -F /x/events.l" wanted, "sleep 3600" armed; arm it with the command and filter of the note\'s Monitors line)']);
   expect(check(events, [entry({ description: "x", command: "tail -n 0 -F /x/events.log", filter: "^ANY" })])).toEqual(['events (a monitor runs its command with filter "^ANY", not "^EV"; arm it with the command and filter of the note\'s Monitors line)']);
   expect(check(events, [entry({ description: "x", command: "tail -n 0 -F /x/events.log", filter: "^EV" })])).toEqual([]);
-  expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "inbox", path: "/x/other" })])).toEqual(["inbox"]);
-  expect(check({ description: "inbox", path: "/x/inbox", persistent: true }, [entry({ description: "y", path: "/x/inbox" })])).toEqual([]);
+  expect(check({ description: "inbox", path: `${state.dir}/inbox`, persistent: true }, [entry({ description: "inbox", path: `${state.dir}/other` })])).toEqual(["inbox"]);
+  expect(check({ description: "inbox", path: `${state.dir}/inbox`, persistent: true }, [entry({ description: "y", path: `${state.dir}/inbox` })])).toEqual([]);
   expect(check({ description: "named", persistent: true }, [entry({ description: "named", command: "anything" })])).toEqual([]);
 });
 
