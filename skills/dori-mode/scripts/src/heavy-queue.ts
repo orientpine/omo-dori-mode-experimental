@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { HeavyHelper, HeavyQueue } from "./config.ts";
 import { newJobDir, onStop, packTo, readResult, RESULT_ENTRIES, runJob, stageInputs, stopWithCaller, TarError, unpackFrom, deliverOut, type JobRequest, type JobResult, requestProblem } from "./heavy-job.ts";
+import { heavyOuter, nestedLine } from "./heavy-here.ts";
 import { acquire, releaseSlot, type SlotDeps } from "./heavy-slot.ts";
 
 // One line of GPU jobs across hosts. The queue host keeps the line (its heavy slots and tickets): the job at the front
@@ -101,6 +102,11 @@ export const runQueued = async (ctx: HeavyCtx, req: JobRequest, dir: string): Pr
   const rl = req.rl || job.rl === true;
   if (rl && !ctx.q.rl) throw new HeavyJobError(`${req.kind} is an rl job and this host does not run rl jobs (heavyQueue.rl)`);
   const log = (line: string) => ctx.deps.log?.(line);
+  // inside a heavy job here: no slot or helper of its own (heavy-here.ts), its scope too
+  if (heavyOuter()) {
+    log(nestedLine(req.label));
+    return runJob(job, dir, req.args, { label: req.label, free: ctx.deps.headroom?.free ?? 10, ...(ctx.deps.log ? { log: ctx.deps.log } : {}) });
+  }
   const seen = new Map<string, string>();
   const helpers = async (why: string): Promise<Started | null> => {
     for (const h of ctx.q.helpers) {
@@ -159,7 +165,7 @@ export const heavyJobCommand = async (ctx: HeavyCtx, c: JobCommand): Promise<num
   const forget = onStop(() => rmSync(dir, { recursive: true, force: true }));
   try {
     stageInputs(dir, c.files);
-    let r = ctx.q.queue.length ? await viaQueue(ctx, c.req, dir) : await runQueued(ctx, c.req, dir);
+    let r = ctx.q.queue.length && !heavyOuter() ? await viaQueue(ctx, c.req, dir) : await runQueued(ctx, c.req, dir);
     let said = false;
     while (!r) {
       const rl = c.req.rl || ctx.q.jobs[c.req.kind]?.rl === true;

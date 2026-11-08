@@ -2,6 +2,10 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
+## Heavy tools: two installs of a tool are named only when the job runs here (#397)
+
+With two installs of rv under `~/.local/share` and none on PATH, `dori heavy --tools rv` sends `tools=rv` without a version, and `HEAVY_TOOLS_UNCLEAR` (which names both installs) is printed only when the job then runs here; a helper that takes the unversioned job runs its current bundle and nothing says the caller's rv was unclear (review of #397, LOW). What would close it: print `HEAVY_TOOLS_UNCLEAR` while planning, before the job is offered to a helper, with a test of two installs and an accepting helper.
+
 ## Node: a card answer is taken from the card's text, not from the egress gate's tap receipt (#370)
 
 The egress gate (#370) takes the owner's card answer as proof only from its own receipt of his tap (`card-receipts.jsonl`); the node (cytoplasm `owner_origin`, #232/#233) cannot read that file and still trusts the card's text, so its only guard is that the gate refuses every hand-made answered card at the Discord port and rebuilds every Discord write it forwards. A card forged before #370 was installed stops counting on the node 24 hours after it was posted. What would close it: the node reads the gate's receipt for the card (a read-only gate endpoint or a shared receipt file) instead of the card's text.
