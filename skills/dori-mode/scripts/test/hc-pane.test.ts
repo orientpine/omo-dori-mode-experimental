@@ -235,3 +235,13 @@ test("an omo lead that hc reads as working while only its monitors are live stil
   expect(await hcType(runnerOf(fake), "hc:t1", "[REPORT] x")).toBeUndefined();
   expect(fake.calls.find((c) => c[0] === "send")?.includes("--if")).toBe(false);
 });
+
+test("doubt is no verdict on hc: a failed hc get leaves the lane live, a failed screen read holds the text (plan-r8, challenge)", async () => {
+  const fake = new FakeHc({ t1: terminal({ status: { state: "working", app: "omo" }, screen: "Ask user · pick one" }) });
+  const base = runnerOf(fake);
+  const down = (verb: string): Runner => async (argv) => (argv[0] === "hc" && argv.includes(verb) ? { code: 5, out: "", err: JSON.stringify({ error: { kind: "unavailable", message: "core busy" } }) } : base(argv));
+  expect(await paneLife(down("get"), "hc:t1")).toEqual({ live: true });
+  expect(await hcType(base, "hc:t1", "x")).toStartWith("PANE_BLOCKED");
+  expect(await hcType(down("read"), "hc:t1", "x")).toContain("could not be read");
+  expect(fake.sent).toEqual([]);
+});

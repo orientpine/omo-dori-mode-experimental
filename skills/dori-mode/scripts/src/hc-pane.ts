@@ -58,10 +58,12 @@ export const hcRead = (run: Runner, pane: string, lines?: number): Promise<strin
 const probeOf = (run: Runner, pane: string) => hc(run).probe(hcRef(pane)).catch(() => undefined);
 
 // gone: hc has no such terminal (or it finished); dead: the terminal is there but its shell is in front, the agent gone
-// (hc keeps no exit status of a program the shell ran, so status is -1). A probe that fails is read as gone, as herdr's is.
+// (hc keeps no exit status of a program the shell ran, so status is -1). An hc get that fails (the core busy or down, not
+// not_found) is no verdict: live, so the dead-lane sweep and revive act on nothing they could not see (plan-r8).
 export const hcLife = async (run: Runner, pane: string): Promise<{ readonly live: true } | { readonly live: false; readonly how: "gone" } | { readonly live: false; readonly how: "dead"; readonly status: number }> => {
   const p = await probeOf(run, pane);
-  if (!p || p.status === "gone") return { live: false, how: "gone" };
+  if (!p) return { live: true };
+  if (p.status === "gone") return { live: false, how: "gone" };
   return p.shellInFront || p.status === "shell" ? { live: false, how: "dead", status: -1 } : { live: true };
 };
 
@@ -76,6 +78,8 @@ export const hcAgentPid = async (run: Runner, pane: string): Promise<number | un
   return p.rootPid ? topAgent(await procTable(run), p.rootPid)?.pid : undefined;
 };
 
+// a deliberate close of a session the caller decided to end: an unreadable first get goes on to the close, which reads hc
+// back after it (review 6), so doubt never reports a terminal closed
 export const hcClose = async (run: Runner, pane: string): Promise<string> => {
   if ((await probeOf(run, pane))?.status === "gone") return `hc terminal ${pane} not found`;
   const failed = await hc(run).close(hcRef(pane)).then(() => undefined, (e: unknown) => (e instanceof Error ? e.message : String(e)));
@@ -117,7 +121,10 @@ export const hcType = async (run: Runner, pane: string, text: string): Promise<s
     if (shell !== undefined) return `the agent in ${pane} is not in front: ${shell ? `a shell (${shell}) is` : "hc shows nothing readable in front"}, and it could run the text; nothing was typed`;
   }
   if (!life.live) return life.how === "gone" ? `PANE_GONE: there is no hc terminal ${pane} (it ended, or the name is wrong); nothing was typed` : `PANE_DEAD: no agent runs in ${pane} (only its shell, which would run the text); nothing was typed`;
-  if (QUESTION_MARK.test(await hcRead(run, pane))) return `PANE_BLOCKED: a question is open in ${pane} (Ask user); the text would answer it, so nothing was typed`;
+  // the open-question guard needs the screen: one that cannot be read cannot rule a question out (plan-r8, challenge)
+  const screen = await hc(run).read(hcRef(pane), 0).catch(() => undefined);
+  if (screen === undefined) return `the screen of ${pane} could not be read, so an open question cannot be ruled out; nothing was typed`;
+  if (QUESTION_MARK.test(screen)) return `PANE_BLOCKED: a question is open in ${pane} (Ask user); the text would answer it, so nothing was typed`;
   const out = await hc(run).deliver(hcRef(pane), text, { when: "any" });
   if (out.kind === "delivered") return undefined;
   if (out.kind === "no-agent") return `PANE_DEAD: hc says no agent reads ${pane}; nothing was typed`;
