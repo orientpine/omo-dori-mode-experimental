@@ -80,7 +80,7 @@ test("a job already waiting here when the hold comes on does not take the freed 
     if (sleeps > 5) throw new Error("never admitted");
   };
   // When
-  const got = await acquire<never>(depsWith(holdNow, sleep, (p) => p === process.pid), "plain", {});
+  const got = await acquire<never>(depsWith(holdNow, sleep, (p) => p === process.pid || p === OTHER), "plain", {});
   // Then
   expect(takenUnderHold).toBe(false);
   expect("slot" in got).toBe(true);
