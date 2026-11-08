@@ -81,6 +81,10 @@ Upstream issue #178 (an omo with live monitors reports `working` to hc for good,
 
 #404 wires a Dori whose sessions all run on hc, but doriterm's row for such a Dori says `doriterm: <account> runs its lead on hc (hc:t<n>); doriterm does not show an hc lead yet` and attaches nothing (`setups/doriterm/attach.sh`). Reviews 1 to 9 kept finding new edges where doriterm meets hc (an attach that may autostart a stopped core, herdr-core #12; the attach's core choice and its dori.env parse; the bridge host's core against a Dori's), so the lead cut it out of #404 (2026-11-08). Before any Dori moves to hc: attach to its lead in the core the Dori's dori.env names, read with the scripts' own parser (`envFileEntries`), never autostarting a core, with tests for whitespace and quoted names and for a host core that differs from the Dori's.
 
+## doriterm: a bridge name held by a Dori's hc terminal (review 10 of #404)
+
+doriterm's bridges live in the bridge host's hc core under fixed names (zzangdori, okdori, ...). A Dori on hc that shares that core can have a lane named like a bridge; `bridge.ts` now leaves such a terminal alone (it runs no attach.sh) with the line `<name>: the name is held by another terminal (t<n>), not a bridge; left alone`, and stops or removes a bridge by its address. That row then shows no bridge until the lane ends. Before any Dori that shares the bridge host's core moves to hc: give bridges names no lane can take (a prefix lanes never use) or a core of their own.
+
 ## dori.sh: the local launcher does not attach an hc lead (option B after review 9 of #404)
 
 `setups/discord-aoe/dori.sh` refuses a lead that is an hc terminal (`dori: the lead runs on hc (hc:t<n>); this launcher attaches herdr and aoe leads only`, exit 2) before it starts any service. Before any Dori moves to hc: attach through hc in that Dori's core, a stopped hc lead revived first, with `test-dori.sh` cases for both.

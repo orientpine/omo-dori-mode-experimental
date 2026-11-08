@@ -12,7 +12,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type Ran, run, type Runner } from "../../scripts/src/run.ts";
 
-type Terminal = { readonly name?: string; readonly state?: string };
+type Terminal = { readonly name?: string; readonly state?: string; readonly address?: string; readonly argv?: readonly string[] };
+
+// A bridge runs attach.sh; a name is held by whatever terminal has it now (hc resolves a name to its live holder), so a
+// Dori lane named like a bridge is never taken for one (review 10 of #404). hc lists argv; a row without one is a bridge.
+const foreign = (t: Terminal): boolean => t.argv !== undefined && !t.argv.some((a) => a.endsWith("/attach.sh"));
+const heldBy = (bridge: Bridge, t: Terminal): string => `${bridge.name}: the name is held by another terminal (${t.address ?? "?"}), not a bridge; left alone`;
 export type Bridge = { readonly name: string; readonly account?: string };
 
 const NAME = /^[a-z0-9_-]{1,32}$/; // hc's terminal name rule
@@ -44,9 +49,11 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
   const results: string[] = [];
   for (const bridge of bridges) {
     const found = terminals.find((t) => t.name === bridge.name);
+    if (found?.state === "live" && foreign(found)) { results.push(heldBy(bridge, found)); continue; }
     if (found?.state === "live") { results.push(`${bridge.name}: kept`); continue; }
-    if (found) {
-      const rm = await runner(["hc", "rm", bridge.name]);
+    // a finished foreign row keeps its record; its name is free for the bridge anyway
+    if (found && !foreign(found)) {
+      const rm = await runner(["hc", "rm", found.address ?? bridge.name]);
       if (rm.code !== 0) throw new Error(`hc rm ${bridge.name} failed: ${rm.err || rm.out}`);
     }
     const started = await runner(["hc", "run", "--bg", "--no-parent", "--name", bridge.name, "--", ...bridgeCommand(bridge)]);
@@ -76,16 +83,17 @@ export async function stopBridges(runner: Runner, bridges: readonly Bridge[], sl
   const failed: string[] = [];
   for (const bridge of bridges) {
     const found = terminals.find((t) => t.name === bridge.name);
-    if (!found) continue;
+    if (!found || foreign(found)) continue;
+    const target = found.address ?? bridge.name;
     if (found.state === "live") {
-      const k = await runner(["hc", "kill", bridge.name]);
+      const k = await runner(["hc", "kill", target]);
       if (k.code !== 0 && kindOf(k) !== "not_found") {
         failed.push(`hc kill ${bridge.name} failed: ${k.err || k.out}`);
         continue;
       }
     }
     for (let i = 1; ; i++) {
-      const r = await runner(["hc", "rm", bridge.name]);
+      const r = await runner(["hc", "rm", target]);
       if (r.code === 0 || kindOf(r) === "not_found") break;
       if (kindOf(r) !== "live" || i >= RM_TRIES) {
         failed.push(`hc rm ${bridge.name} failed: ${r.err || r.out}`);

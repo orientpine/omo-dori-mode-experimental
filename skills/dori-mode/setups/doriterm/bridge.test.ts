@@ -83,6 +83,18 @@ test("stop ends only the bridge rows and never the core, whatever the Dori's con
   }
 });
 
+test("a live terminal that holds a bridge's name but is no bridge (an hc lane named zzangdori) is left alone by start and stop (review 10 of #404)", async () => {
+  // Given: the name zzangdori held by a Dori lane, not by attach.sh
+  const lane = { name: "zzangdori", state: "live", address: "t3", argv: ["env", "A=1", "/bin/sh"] };
+  const started = await bridgeWithFakeHc([lane]);
+  // Then: start says so and runs nothing; stop on a running core kills and removes nothing
+  expect(started.out).toBe("zzangdori: the name is held by another terminal (t3), not a bridge; left alone");
+  expect(started.calls).toEqual(["ls --all --json"]);
+  const stopped = await bridgeWithFakeHc([lane], ["stop"], {}, { "run/herdr-core/default.sock": "" });
+  expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
+  expect(stopped.calls).toEqual(["ls --all --json"]);
+});
+
 test("stop waits for a bridge that takes a moment to exit, and one that never does still lets the others close (review 6 of #404)", async () => {
   const live = [{ name: "zzangdori", state: "live" }, { name: "okdori", state: "live" }];
   const files = { "run/herdr-core/default.sock": "" };

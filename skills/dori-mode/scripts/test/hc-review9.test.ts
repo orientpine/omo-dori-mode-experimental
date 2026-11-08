@@ -37,6 +37,8 @@ test("an hc call, which may start the core every later terminal inherits from, c
   expect(childEnv(["hc", "--json", "run"], env, "named")).toEqual({ PATH: "/bin", HC_SESSION: "named" });
   expect(childEnv(["/home/u/.local/bin/hc", "ls"], env, undefined)).toEqual({ PATH: "/bin" });
   expect(childEnv(["git", "status"], env, "named")).toEqual(env);
+  // hc takes HC_SOCKET over the session's socket (paths.rs): an inherited one would reach another core (review 10 of #404)
+  expect(childEnv(["hc", "send", "t4"], { ...env, HC_SOCKET: "/run/other.sock" }, "named")).toEqual({ PATH: "/bin", HC_SESSION: "named" });
 });
 
 // H188 (dori challenge of plan-r9): a stored hc:t<n> names a terminal of one core only, so every hc call of a Dori, from
@@ -71,6 +73,14 @@ test("a real hc call from a process whose HC_SESSION names another core runs in 
     expect((await run([join(d, "hc"), "ls"])).out).toBe("named");
     // a caller that names its core (doriterm's bridges run in the host's core, review 9 of #404) keeps it
     expect((await run([join(d, "hc"), "ls"], { env: { HC_SESSION: "bridges" } })).out).toBe("bridges");
+    process.env["HC_SOCKET"] = "/run/other.sock";
+    writeFileSync(join(d, "hcsock"), "#!/bin/sh\nif [ -n \"$HC_SOCKET\" ]; then printf socket; else printf none; fi\n");
+    chmodSync(join(d, "hcsock"), 0o755);
+    expect((await run([join(d, "hcsock")])).out).toBe("socket");
+    writeFileSync(join(d, "hc"), "#!/bin/sh\nif [ -n \"$HC_SOCKET\" ]; then printf socket; else printf none; fi\n");
+    expect((await run([join(d, "hc"), "ls"])).out).toBe("none");
+    delete process.env["HC_SOCKET"];
+    writeFileSync(join(d, "hc"), "#!/bin/sh\nif [ -n \"$HC_SESSION\" ]; then printf '%s' \"$HC_SESSION\"; else printf default; fi\n");
     expect((await run([join(d, "hc"), "ls"], { env: { HC_SESSION: undefined } })).out).toBe("default");
     writeFileSync(join(d, "dori.env"), "DORI_DISCORD_TOKEN=x\n");
     expect((await run([join(d, "hc"), "ls"])).out).toBe("default");

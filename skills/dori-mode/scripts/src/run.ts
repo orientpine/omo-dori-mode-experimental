@@ -23,10 +23,11 @@ export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran
 // `core` (HC_SESSION from its dori.env, else the default core), never the caller's HC_SESSION: a stored hc:t<n> names a
 // terminal of one core only, so a unit or shell that selects another core would act on someone else's terminal (H188).
 const SERVERS = ["aoe", "tmux", "herdr", "hc"];
-export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>, core?: string): Record<string, string | undefined> => {
+export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>, core?: string, named = false): Record<string, string | undefined> => {
   const tool = argv[0]?.split("/").pop() ?? "";
   if (!SERVERS.includes(tool)) return { ...env };
-  const clean: Record<string, string | undefined> = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_") && (tool !== "hc" || name !== "HC_SESSION")));
+  // HC_SOCKET outranks the session's socket in hc (paths.rs), so it goes with HC_SESSION (review 10 of #404)
+  const clean: Record<string, string | undefined> = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_") && (tool !== "hc" || (name !== "HC_SESSION" && (named || name !== "HC_SOCKET")))));
   return tool === "hc" && core ? { ...clean, HC_SESSION: core } : clean;
 };
 
@@ -52,7 +53,7 @@ export const run: Runner = async (argv, opts = {}) => {
     // a caller that names a core in opts.env keeps it (doriterm's bridges run in the host's own core, review 9 of #404)
     const named = opts.env !== undefined && Object.hasOwn(opts.env, "HC_SESSION");
     const core = argv[0]?.split("/").pop() !== "hc" ? undefined : named ? opts.env?.["HC_SESSION"] : doriCore();
-    const env = Object.fromEntries(Object.entries(childEnv(argv, opts.env ? { ...process.env, ...opts.env } : process.env, core)).filter(([, v]) => v !== undefined));
+    const env = Object.fromEntries(Object.entries(childEnv(argv, opts.env ? { ...process.env, ...opts.env } : process.env, core, named)).filter(([, v]) => v !== undefined));
     p = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe", env, ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.stdin !== undefined ? { stdin: new Blob([opts.stdin]) } : {}), ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}) });
   } catch (e) {
     return { code: 127, out: "", err: e instanceof Error ? e.message : String(e) };

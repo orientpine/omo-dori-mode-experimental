@@ -57,6 +57,9 @@ export function createArgv(spec: CreateSpec, shell: string, name: string | undef
     "--bg",
     "--no-parent",
     "--no-notify",
+    // fork (review 10 of #404): a core stop or a lost holder puts a shell back in the terminal instead of finishing it, so
+    // the dead-lane sweep sees the lane dead and dori revive starts its agent again in the same terminal; exit and kill stay final
+    "--keep",
     "--cwd",
     spec.cwd,
     ...labels.flatMap((l) => ["--label", l]),
