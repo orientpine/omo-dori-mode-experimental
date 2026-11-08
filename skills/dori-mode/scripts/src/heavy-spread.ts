@@ -9,7 +9,7 @@ import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { archOf, archRefusal, execWords, preferredFor, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
-import { playwrightVersion, toolBundles, toolNameOk, toolOptOk, toolSpec } from "./heavy-tools.ts";
+import { bundleEnv, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH... -- <cmd>: a lane's own command (a browser test, a build) runs on
@@ -67,7 +67,7 @@ export type SpreadJob = {
 // which the helper must have before it takes the job
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
 // path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
-export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly arch?: string } | { readonly ok: false; readonly why: string };
+export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string };
 
 // A bash -c script whose pipeline ends in tail, grep or head exits with that last command's code, so a failing test run
 // piped into tail looked like a pass (2026-11-02: 171 of 744 failed on the helper, HEAVY_DONE exit 0). The script that pipes
@@ -132,15 +132,15 @@ const stayHere = (cwd: string, root: string): string | undefined => {
 };
 
 // Whether the job can run on another host unchanged: every path it needs travels with --sync, and every --sync path is
-// this account's own (its home or /tmp, owned by it, no link on the way, no ..). Anything else runs here (HEAVY_LOCAL).
+// this account's own (home or /tmp, owned, no link on the way, no ..), --tools trees too. Else it runs here (HEAVY_LOCAL).
 export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }): Plan => {
   const no = (why: string): Plan => ({ ok: false, why });
   if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)");
   if (backGlobProblem(job.back)) return no(backGlobProblem(job.back)!);
-  const badTool = job.tools?.find((t) => !toolNameOk(t));
-  if (badTool !== undefined) return no(`--tools ${JSON.stringify(badTool)} is not a tool bundle name (lower-case letters, digits, . _ -)`);
+  const tp = toolPlan(job.tools ?? [], { path: who.path ?? process.env["PATH"] ?? "", home: who.home });
+  if ("why" in tp) return no(tp.why);
   const roots: string[] = [];
-  for (const raw of job.sync) {
+  for (const raw of [...job.sync, ...tp.trees]) {
     if (!isAbsolute(raw) || raw.split("/").includes("..")) return no(`--sync ${raw} must be an absolute path without ..`);
     const p = normalize(raw).replace(/(.)\/$/, "$1");
     if (!within(p, who.home) && !within(p, "/tmp") || p === who.home || p === "/tmp") return no(`--sync ${p} must be a folder or file inside your home or /tmp`);
@@ -202,8 +202,7 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   if (odd !== undefined) return no(`the job starts ${JSON.stringify(odd)}, a path a helper cannot be asked about`);
   if (needs.size > NEEDS_MAX) return no(`the job starts ${needs.size} system programs, more than the ${NEEDS_MAX} a helper is asked about`);
   const playwright = job.kind === "browser" ? playwrightVersion(sync.filter((s) => existsSync(s))) : undefined;
-  const tools = [...new Set(job.tools ?? [])].map((t) => toolSpec(t, { path: who.path ?? process.env["PATH"] ?? "", home: who.home }));
-  return { ok: true, sync, needs: [...needs], which: [...which], ...(path !== undefined ? { path } : {}), ...(playwright ? { playwright } : {}), ...(tools.length ? { tools } : {}), ...archOf(sync) };
+  return { ok: true, sync, needs: [...needs], which: [...which], ...(path !== undefined ? { path } : {}), ...(playwright ? { playwright } : {}), ...(tp.specs.length ? { tools: tp.specs } : {}), ...(tp.opts.length ? { toolOpts: tp.opts, toolEnv: tp.env } : {}), ...archOf(sync) };
 };
 
 // how busy this host is for a job of this kind, in percent (gpu: the GPU or the CPU, whichever is busier)
@@ -313,7 +312,7 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
   const untar = Bun.spawn(["tar", "-C", back, "--no-same-owner", "-xf", "-"], { stdin: p.stdout, stdout: "ignore", stderr: "pipe" });
   let sent = -1;
   try {
-    sent = await sendTar(p.stdin, job, plan.sync);
+    sent = await sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync);
   } catch (e) {
     ctx.deps.log?.(`HEAVY_SPREAD_SEND ${job.label} ${h.name}: ${String(e).slice(0, 200)}`);
     p.kill("SIGKILL");
@@ -405,12 +404,12 @@ export const BOX_TOOLS = "/run/dori-tools";
 export const sandboxArgv = (kind: Kind, spec: ExecSpec, from: (p: string) => string, tools: BoxTools): string[] => {
   const ro = (src: string | undefined, name: string): string[] => (src && existsSync(src) ? ["--ro-bind", src, `${BOX_TOOLS}/${name}`] : []);
   const env: Record<string, string> = {
-    PATH: `${Object.keys(tools.bundles ?? {}).map((n) => `${BOX_TOOLS}/bundles/${n}/bin:`).join("")}${BOX_TOOLS}/bun:${BOX_TOOLS}/tools/bin:/usr/local/bin:/usr/bin:/bin`,
-    HOME: "/tmp/home",
-    TMPDIR: "/tmp",
+    PATH: `${BOX_TOOLS}/bun:${BOX_TOOLS}/tools/bin:/usr/local/bin:/usr/bin:/bin`,
+    HOME: "/tmp/home", TMPDIR: "/tmp",
     LANG: "C.UTF-8",
     ...(tools.browsersDir && existsSync(tools.browsersDir) ? { PLAYWRIGHT_BROWSERS_PATH: `${BOX_TOOLS}/ms-playwright` } : {}),
     ...spec.env,
+    ...bundleEnv(tools.bundles ?? {}, BOX_TOOLS, spec.env, `${BOX_TOOLS}/bun:${BOX_TOOLS}/tools/bin:/usr/local/bin:/usr/bin:/bin`),
   };
   return [
     "bwrap",
