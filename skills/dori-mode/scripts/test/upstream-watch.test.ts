@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+setDefaultTimeout(30_000); // load-proof: the tests here run the watch script in python3 with a fake gh shell script and real git; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 const SCRIPT = join(import.meta.dir, "../../setups/discord-aoe/upstream-watch.py");
 const UP = "https://github.com/sisyphuslabs/dori-superagent";
 let root = "";

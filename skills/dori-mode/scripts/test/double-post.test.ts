@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
 
 import { defaultDiscordWords } from "../src/config.ts";
@@ -9,6 +9,8 @@ import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { type Lane, Registry, statusOf } from "../src/registry.ts";
 import { run } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
+
+setDefaultTimeout(30_000); // load-proof: the CLI tests here start dori send and dori thread (bun src/cli.ts) as child processes; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 // Owner 2026-10-21 07:19 KST "지금 왜 두번씩 답변하는지": a lane posted its result in the owner's thread itself (dori thread
 // reply / dori send, as its brief asked), then dori close posted the claim's summary there as well, 37 s and 86 s later

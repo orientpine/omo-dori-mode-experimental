@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
 
 import { eightSteps, renderBrief, uiSteps, uiWarning } from "../src/launch.ts";
 import { run } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
+
+setDefaultTimeout(30_000); // load-proof: the tests here start dori launch (bun src/cli.ts) as a child process; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 let state: ReturnType<typeof withState>;
 let world: World;

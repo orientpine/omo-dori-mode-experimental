@@ -1,8 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 import { run } from "../src/run.ts";
 import { parseWatchLine } from "../src/watch-log.ts";
+
+setDefaultTimeout(30_000); // load-proof: the tests here start the dori CLI (bun src/cli.ts) as a child process; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 test("writes exactly one STUCK line, rung 3 with the old SAME_FIX_3 name at its end, when the CLI records three identical fixes; an old config key still works with a warning", async () => {
   // Given

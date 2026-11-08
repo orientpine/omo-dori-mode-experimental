@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
 
 import { ChallengeError, challengeMissing, checkReviewers, familyOf, REVIEWER_SYSTEM, reviewers, runChallenge } from "../src/challenge.ts";
@@ -14,7 +14,7 @@ import type { FixAttempt, Lane } from "../src/registry.ts";
 import { type Ran, run, type Runner } from "../src/run.ts";
 import { recordFix } from "../src/same-fix.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, sent, withState, type World } from "./fakes.ts";
-
+setDefaultTimeout(30_000); // load-proof: the CLI tests here start the dori CLI (bun src/cli.ts) as a child process, up to four times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
 let state: ReturnType<typeof withState>;
 let world: World;

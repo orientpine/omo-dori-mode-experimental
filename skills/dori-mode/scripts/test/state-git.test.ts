@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { BACKUP_DEFAULTS } from "../src/state-backup.ts";
 import { checkRepo, commitDir, EXCLUDES, restoreDir, type StateGitDeps, stateGitDirs, tokenShape } from "../src/state-git.ts";
-
+setDefaultTimeout(30_000); // load-proof: every test here runs git in a real repository, most of them many times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 let dir: string;
 let lines: string[];
 const deps = (maxFileKb = 512): StateGitDeps => ({ settings: { dirs: [], everyMin: 10, maxFileKb, timeoutSec: 30, timeZone: "", backup: BACKUP_DEFAULTS }, timeZone: "Asia/Seoul", now: () => Date.now(), print: (l) => lines.push(l) });

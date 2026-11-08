@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { approve, BACKUP_DEFAULTS, type BackupDeps, backupStep, backupTick, branchFor, loadSecrets, pushAll, pushCheck, type Secrets } from "../src/state-backup.ts";
 import { commitDir } from "../src/state-git.ts";
+
+setDefaultTimeout(30_000); // load-proof: every test here runs git against a real repository and a bare remote, most of them many times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 let root: string;
 let dir: string;

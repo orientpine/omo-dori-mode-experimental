@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { canScope, gpuRoomPlan, makeGpuRoom, memVerdict, neverFits, parseMem, parseRoomInfo, spawnScoped } from "../src/heavy-mem.ts";
 import { linesOf } from "../src/heavy-queue.ts";
 import { withState } from "./fakes.ts";
+
+setDefaultTimeout(30_000); // load-proof: the tests here start systemd-run, systemctl and a memory-touching helper as child processes; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 let state: ReturnType<typeof withState>;
 beforeEach(() => (state = withState()));

@@ -1,10 +1,12 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Lane } from "../src/registry.ts";
 import { Registry } from "../src/registry.ts";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
+
+setDefaultTimeout(30_000); // load-proof: the tests here start dori ask (bun src/cli.ts) as a child process, up to three times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 // 2026-10-29 the owner (22:07 KST): "이러고 나서 카드는 밖에다 만들었는데 스레드 내에 카드 만드는게 강제가 아닌가?" - a Dori
 // working in his thread said it would ask with a card below and posted the card at the bottom of its channel, and the lead

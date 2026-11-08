@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+setDefaultTimeout(30_000); // load-proof: every test here runs dori-file-relay in python3 several times, and each scan walks /proc of every process of this user; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 const SCRIPT = join(import.meta.dir, "../../setups/discord-aoe/dori-file-relay");
 let root = "";

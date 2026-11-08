@@ -1,12 +1,12 @@
 // Upstream test from https://github.com/sisyphuslabs/dori-superagent/pull/96 (commit 067b70f).
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { run } from "../src/run.ts";
 import { publishWorklog, renderUntilStable, Worklog, WORKLOG_MARKER, WorklogError } from "../src/worklog.ts";
 import { withState } from "./fakes.ts";
-
+setDefaultTimeout(30_000); // load-proof: the CLI tests here start the dori CLI (bun src/cli.ts) as child processes, some at once; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 const cli = join(import.meta.dir, "../src/cli.ts");
 const T0 = Date.parse("2026-11-04T00:00:00Z");
 

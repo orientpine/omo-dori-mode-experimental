@@ -1,6 +1,6 @@
 // upstream dori-superagent #76 (https://github.com/sisyphuslabs/dori-superagent/pull/76, closes its issue #74): its test, with the
 // state dir removed after the file (upstream leaves an empty afterEach)
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -9,7 +9,7 @@ import type { TgInbound } from "../src/messenger/telegram-inbound.ts";
 import { Telegram } from "../src/messenger/telegram.ts";
 import { envInt, fileTgInboundStore, pollTelegramInbound, telegramInboundLoop, writeLineSync } from "../src/messenger/telegram-inbound.ts";
 import { fakeClock, withState } from "./fakes.ts";
-
+setDefaultTimeout(30_000); // load-proof: the CLI tests here start dori inbound telegram (bun src/cli.ts) as a child process; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 const OWNER = 5250;
 const OTHER = 6612;
 const GROUP = -1004;
