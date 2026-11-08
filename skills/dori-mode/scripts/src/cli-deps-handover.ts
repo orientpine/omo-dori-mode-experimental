@@ -30,8 +30,9 @@ export const makeSignal = () => {
 };
 
 // What a handover run outside the session (systemd-run) keeps of this one's environment: the runtime it opens on included
-// (DORI_RUNTIME, DORI_HERDR_SESSION; review 4 of #404), so the replacement opens where this Dori's sessions are
-export const HANDOVER_ENV = ["PATH", "DORI_CONFIG", "DORI_STATE_DIR", "DORI_ENV_FILE", "DORI_LEAD_PANE", "DORI_DISCORD_INBOX", "DORI_DISCORD_STATE_DIR", "DORI_RUNTIME", "DORI_HERDR_SESSION"] as const;
+// (DORI_RUNTIME, DORI_HERDR_SESSION; review 4 of #404) and hc's named core (HC_SESSION; review 6), so the replacement opens
+// where this Dori's sessions are; never this terminal's own HC_TERMINAL_ID
+export const HANDOVER_ENV = ["PATH", "DORI_CONFIG", "DORI_STATE_DIR", "DORI_ENV_FILE", "DORI_LEAD_PANE", "DORI_DISCORD_INBOX", "DORI_DISCORD_STATE_DIR", "DORI_RUNTIME", "DORI_HERDR_SESSION", "HC_SESSION"] as const;
 
 export const makeHandoverDeps = (cli: Pick<Cli, "discordToken" | "config" | "deps" | "sendSignal">) => {
   const { discordToken, config, deps, sendSignal } = cli;

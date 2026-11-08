@@ -18,7 +18,8 @@ async function bridgeWithFakeHc(terminals: object[], args: string[] = [], env: R
 printf '%s\\n' "$*" >> "$HOME/calls"
 case "$1" in
   ls) cat "$HOME/ls.json";;
-  rm|run|server|kill) ;;
+  rm) if [ "$2" = "\${RM_LIVE_NAME:-}" ] && [ "$(grep -c "^rm $2\$" "$HOME/calls")" -le "\${RM_LIVE_TIMES:-0}" ]; then echo '{"error":{"kind":"live","message":"still running"}}' >&2; exit 1; fi;;
+  run|server|kill) ;;
   *) exit 1;;
 esac
 `, { mode: 0o700 });
@@ -81,6 +82,22 @@ test("stop ends only the bridge rows and never the core, whatever the Dori's con
     expect(r.calls).toEqual(["ls --all --json", "kill zzangdori", "rm zzangdori", "rm okdori"]);
   }
 });
+
+test("stop waits for a bridge that takes a moment to exit, and one that never does still lets the others close (review 6 of #404)", async () => {
+  const live = [{ name: "zzangdori", state: "live" }, { name: "okdori", state: "live" }];
+  const files = { "run/herdr-core/default.sock": "" };
+  // Given: zzangdori's rm answers live once after its kill
+  const slow = await bridgeWithFakeHc(live, ["stop"], { DORITERM_BRIDGES: "zzangdori okdori:okdori", RM_LIVE_NAME: "zzangdori", RM_LIVE_TIMES: "1" }, files);
+  // Then: retried until removed, then okdori closed too
+  expect(`${slow.code} ${slow.out}`).toBe("0 bridges: stopped");
+  expect(slow.calls).toEqual(["ls --all --json", "kill zzangdori", "rm zzangdori", "rm zzangdori", "kill okdori", "rm okdori"]);
+  // Given: zzangdori never leaves
+  const stuck = await bridgeWithFakeHc(live, ["stop"], { DORITERM_BRIDGES: "zzangdori okdori:okdori", RM_LIVE_NAME: "zzangdori", RM_LIVE_TIMES: "99" }, files);
+  // Then: okdori is still closed, and the stop fails naming zzangdori
+  expect(stuck.code).not.toBe(0);
+  expect(stuck.err).toContain("zzangdori");
+  expect(stuck.calls.slice(-2)).toEqual(["kill okdori", "rm okdori"]);
+}, 15_000);
 
 test("one row per listed Dori, in order: a live one kept, an ended one replaced, a missing one started as its account", async () => {
   // Given: this host's list, with zzangdori live and okdori ended

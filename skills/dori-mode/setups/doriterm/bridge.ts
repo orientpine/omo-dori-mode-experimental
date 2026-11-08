@@ -10,7 +10,7 @@
 // (reviews 4 and 5 of #404).
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { run, type Runner } from "../../scripts/src/run.ts";
+import { type Ran, run, type Runner } from "../../scripts/src/run.ts";
 
 type Terminal = { readonly name?: string; readonly state?: string };
 export type Bridge = { readonly name: string; readonly account?: string };
@@ -63,19 +63,38 @@ export function coreRunning(env: Readonly<Record<string, string | undefined>> = 
   return existsSync(join(dir, "herdr-core", `${env["HC_SESSION"] || "default"}.sock`));
 }
 
-// ends each listed bridge that still runs and removes its row; every other terminal of the core is left alone
-export async function stopBridges(runner: Runner, bridges: readonly Bridge[]): Promise<void> {
+const kindOf = (r: Ran): string | undefined => /"kind"\s*:\s*"([a-z_]+)"/.exec(`${r.err}${r.out}`)?.[1];
+const RM_TRIES = 10;
+const RM_WAIT_MS = 300;
+
+// ends each listed bridge that still runs and removes its row, waiting for a program that takes a moment to exit (rm answers
+// live meanwhile); one that will not go is named after every other bridge was tried; every other terminal is left alone
+export async function stopBridges(runner: Runner, bridges: readonly Bridge[], sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<void> {
   const ls = await runner(["hc", "ls", "--all", "--json"]);
   if (ls.code !== 0) throw new Error(`hc ls failed: ${ls.err || ls.out}`);
   const terminals = (JSON.parse(ls.out) as { terminals?: Terminal[] }).terminals ?? [];
+  const failed: string[] = [];
   for (const bridge of bridges) {
     const found = terminals.find((t) => t.name === bridge.name);
     if (!found) continue;
-    for (const step of found.state === "live" ? ["kill", "rm"] : ["rm"]) {
-      const r = await runner(["hc", step, bridge.name]);
-      if (r.code !== 0) throw new Error(`hc ${step} ${bridge.name} failed: ${r.err || r.out}`);
+    if (found.state === "live") {
+      const k = await runner(["hc", "kill", bridge.name]);
+      if (k.code !== 0 && kindOf(k) !== "not_found") {
+        failed.push(`hc kill ${bridge.name} failed: ${k.err || k.out}`);
+        continue;
+      }
+    }
+    for (let i = 1; ; i++) {
+      const r = await runner(["hc", "rm", bridge.name]);
+      if (r.code === 0 || kindOf(r) === "not_found") break;
+      if (kindOf(r) !== "live" || i >= RM_TRIES) {
+        failed.push(`hc rm ${bridge.name} failed: ${r.err || r.out}`);
+        break;
+      }
+      await sleep(RM_WAIT_MS);
     }
   }
+  if (failed.length) throw new Error(failed.join("; "));
 }
 
 if (import.meta.main) {

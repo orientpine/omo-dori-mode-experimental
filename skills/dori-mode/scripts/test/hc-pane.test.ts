@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { captureTmux, closeAoeSession, currentTmuxSession, isClosedLine, liveSessions, paneLife, sessionFor, tmuxPanePid } from "../src/aoe.ts";
 import { useConfiguredRuntime } from "../src/run.ts";
 import { paneGroup } from "../src/hc-pane.ts";
+import { closeFrozen, readFrozen, writeFrozen } from "../src/frozen.ts";
 import { openHerdrSession } from "../src/herdr.ts";
 import { listPanes, submitToPane } from "../src/panes.ts";
 import type { Runner } from "../src/run.ts";
@@ -158,12 +159,16 @@ test("a lead handover started with DORI_RUNTIME=hc and no runtime in the config 
     writeFileSync(join(home, "systemd-run"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${home}/argv"\n`);
     chmodSync(join(home, "systemd-run"), 0o700);
     writeFileSync(join(home, "config.json"), JSON.stringify({ stateDir: join(home, "state"), leadPane: "hc:t9" }));
-    const env = { HOME: home, PATH: `${home}:${process.env["PATH"]}`, DORI_CONFIG: join(home, "config.json"), DORI_ENV_FILE: join(home, "dori.env"), DORI_STATE_DIR: join(home, "state"), DORI_RUNTIME: "hc", HC_TERMINAL_ID: "t9" };
+    const env = { HOME: home, PATH: `${home}:${process.env["PATH"]}`, DORI_CONFIG: join(home, "config.json"), DORI_ENV_FILE: join(home, "dori.env"), DORI_STATE_DIR: join(home, "state"), DORI_RUNTIME: "hc", HC_TERMINAL_ID: "t9", HC_SESSION: "named" };
     const child = Bun.spawn([process.execPath, join(import.meta.dir, "..", "src", "cli.ts"), "handover", "--approved-by", "test"], { env, stdout: "pipe", stderr: "pipe" });
     const [code, out] = await Promise.all([child.exited, new Response(child.stdout).text()]);
     // Then: it detached, and the unit gets DORI_RUNTIME, so the replacement lead opens on hc
     expect(`${code} ${out.split(" ")[0]}`).toBe("0 HANDOVER_DETACHED");
-    expect(readFileSync(join(home, "argv"), "utf8").split("\n")).toContain("--setenv=DORI_RUNTIME");
+    // and HC_SESSION, the named core its sessions live in (review 6 of #404), never this terminal's own HC_TERMINAL_ID
+    const argv = readFileSync(join(home, "argv"), "utf8").split("\n");
+    expect(argv).toContain("--setenv=DORI_RUNTIME");
+    expect(argv).toContain("--setenv=HC_SESSION");
+    expect(argv.some((a) => a.includes("HC_TERMINAL_ID"))).toBe(false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -188,6 +193,27 @@ test("an hc listing that fails on an hc Dori is no empty list, so frozen cleanup
     const base = runnerOf(new FakeHc({ t1: terminal() }));
     const lsDown: Runner = async (argv) => (argv[0] === "hc" && argv.includes("ls") ? { code: 5, out: "", err: JSON.stringify({ error: { kind: "unavailable", message: "core down" } }) } : base(argv));
     await expect(liveSessions(lsDown)).rejects.toThrow();
+  } finally {
+    useConfiguredRuntime(undefined);
+  }
+});
+
+test("a frozen hc session whose terminal still runs after the close is kept and stopped again, not removed (review 6 of #404)", async () => {
+  // Given: hc's kill does not end the program, so rm keeps answering live and hc's close gives up without throwing
+  delete process.env["DORI_RUNTIME"];
+  useConfiguredRuntime("hc");
+  try {
+    const fake = new FakeHc({ t1: terminal() });
+    const base = runnerOf(fake);
+    const run: Runner = async (argv) => (argv[0] === "hc" && argv.includes("kill") ? { code: 0, out: "{}", err: "" } : base(argv));
+    const rec = { pane: "hc:t1", aoeId: "hc:t1", at: "2026-11-08T00:00:00.000Z", agentPid: 11, pids: [11], closeAt: "2026-11-08T01:00:00.000Z", to: "hc:t2" };
+    writeFrozen(dir, rec);
+    const sigs: string[] = [];
+    const line = await closeFrozen({ run, procs: async () => [], signal: (pid, sig) => (sigs.push(`${sig} ${pid}`), true) }, dir, rec, Date.parse("2026-11-08T02:00:00Z"));
+    // Then: a close failure, the agent stopped again and the record kept for the next try
+    expect(line).toStartWith("HANDOVER_OLD_CLOSE_FAIL hc:t1");
+    expect(sigs).toEqual(["SIGCONT 11", "SIGSTOP 11"]);
+    expect(readFrozen(dir).map((r) => r.pane)).toEqual(["hc:t1"]);
   } finally {
     useConfiguredRuntime(undefined);
   }

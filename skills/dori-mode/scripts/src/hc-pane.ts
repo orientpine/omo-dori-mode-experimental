@@ -78,7 +78,10 @@ export const hcAgentPid = async (run: Runner, pane: string): Promise<number | un
 export const hcClose = async (run: Runner, pane: string): Promise<string> => {
   if ((await probeOf(run, pane))?.status === "gone") return `hc terminal ${pane} not found`;
   const failed = await hc(run).close(hcRef(pane)).then(() => undefined, (e: unknown) => (e instanceof Error ? e.message : String(e)));
-  return failed === undefined ? `hc terminal (${pane}) stopped and closed` : `hc ${pane} not closed: ${failed.slice(0, 160)}`;
+  if (failed !== undefined) return `hc ${pane} not closed: ${failed.slice(0, 160)}`;
+  // hc's close gives up quietly on a program still running after its kill: closed only once hc reads it gone (review 6 of #404)
+  const after = await probeOf(run, pane);
+  return after?.status === "gone" ? `hc terminal (${pane}) stopped and closed` : `hc ${pane} not closed: ${after ? "it still runs after the kill" : "its state could not be read after the kill"}`;
 };
 
 // The live terminals of this core as aoe.ts session rows (id and pane "hc:t<n>", title its name, path its cwd, profile
