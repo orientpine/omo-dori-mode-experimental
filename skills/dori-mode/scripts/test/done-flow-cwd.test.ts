@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { claimDone, unpushedWork, watchTick } from "../src/done-flow.ts";
+import { statePathspec } from "../src/done-flow-worktrees.ts";
 import { run } from "../src/run.ts";
 import type { Lane } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
@@ -190,6 +191,45 @@ test("a cwd checkout whose only remote is this Dori's stateGit backup has nowher
   expect(await unpushedWork(realDeps, { ...lane, cwd: docs })).toEqual([`unpushed work in ${docs}`]);
   await g("-C", docs, "push", "-q", "origin", "main");
   expect(await unpushedWork(realDeps, { ...lane, cwd: docs })).toEqual([]);
+});
+
+// a lane in ~/.soodori/qa works inside the state-git repo (~/.soodori): dori rewrites its state/*.json there all the time
+test("in a cwd checkout holding this Dori's stateDir, dori's own state files are no lane work; any other change still holds", async () => {
+  const g = async (...a: string[]) => expect((await run(["git", ...a])).code).toBe(0);
+  const home = join(state.dir, "dori-home");
+  const stateDir = join(home, "state");
+  const cwd = join(home, "qa");
+  mkdirSync(join(stateDir, "lanes"), { recursive: true });
+  mkdirSync(cwd, { recursive: true });
+  await g("init", "-q", "-b", "main", home);
+  for (const f of ["config.json", "state/herdr-sessions.json", "state/lanes/a.json"]) writeFileSync(join(home, f), "{}\n");
+  await g("-C", home, "add", ".");
+  await g("-C", home, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "state");
+  const realDeps = { ...at(T0), run, exists: existsSync, config: { ...at(T0).config, defaultCwd: state.dir, stateDir: join(cwd, "..", "state") } };
+  writeFileSync(join(stateDir, "herdr-sessions.json"), '{"a":1}\n');
+  rmSync(join(stateDir, "lanes", "a.json"));
+  expect(await unpushedWork(realDeps, { ...lane, cwd })).toEqual([]);
+  writeFileSync(join(home, "config.json"), '{"b":1}\n');
+  expect(await unpushedWork(realDeps, { ...lane, cwd })).toEqual([`unpushed work in ${cwd}`]);
+  // the watcher's GIT_LITERAL_PATHSPECS would read the pathspecs as file names and hide that change
+  process.env["GIT_LITERAL_PATHSPECS"] = "1";
+  try {
+    expect(await unpushedWork(realDeps, { ...lane, cwd })).toEqual([`unpushed work in ${cwd}`]);
+  } finally {
+    delete process.env["GIT_LITERAL_PATHSPECS"];
+  }
+  // a stateDir that is the checkout's top: all of it is dori's state
+  expect(await unpushedWork({ ...realDeps, config: { ...realDeps.config, stateDir: home } }, { ...lane, cwd })).toEqual([]);
+  await g("-C", home, "checkout", "-q", "--", "config.json");
+  // a stateDir outside the checkout excludes nothing
+  writeFileSync(join(cwd, "..", "state", "lanes", "b.json"), "{}\n");
+  expect(await unpushedWork({ ...realDeps, config: { ...realDeps.config, stateDir: join(state.dir, "elsewhere") } }, { ...lane, cwd })).toEqual([`unpushed work in ${cwd}`]);
+});
+
+test("the stateDir pathspec uses git's / on Windows too, for a nested stateDir", () => {
+  expect(statePathspec("C:\\Users\\a\\.soodori", "C:\\Users\\a\\.soodori\\runtime\\state", win32)).toEqual(["--", ":(top)", ":(top,literal,exclude)runtime/state"]);
+  expect(statePathspec("C:\\Users\\a\\.soodori", "D:\\state", win32)).toEqual([]);
+  expect(statePathspec("/home/a/.soodori", "/home/a/.soodori/runtime/state", posix)).toEqual(["--", ":(top)", ":(top,literal,exclude)runtime/state"]);
 });
 
 // git says "not a git repository" for a .git file pointing nowhere or a bad HEAD too: a .git entry makes it unreadable

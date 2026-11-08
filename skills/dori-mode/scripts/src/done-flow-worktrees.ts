@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
+import * as nodePath from "node:path";
 import { dirname, join, resolve } from "node:path";
 import { BACKUP_REMOTE } from "./config.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
@@ -20,9 +21,10 @@ export const discoverWorktrees = async (lane: Lane, run: Runner, extraRoots: rea
   return [...found];
 };
 
-// `git rev-parse --local-env-vars` (git 2.43) and GIT_CEILING_DIRECTORIES, each unset for a child git
+// `git rev-parse --local-env-vars` (git 2.43), GIT_CEILING_DIRECTORIES and the pathspec switches (GIT_LITERAL_PATHSPECS
+// would read unpushedWork's magic pathspecs as file names), each unset for a child git
 const GIT_REPO_ENV_CLEARED: Readonly<Record<string, undefined>> = Object.fromEntries(
-  ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"].map((k) => [k, undefined]),
+  ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"].map((k) => [k, undefined]),
 );
 
 // owner/name of a GitHub URL in its https, ssh or scp-like form (git@github.com:owner/name.git), lower case
@@ -33,6 +35,14 @@ const isBackupRemote = async (git: Runner, wt: string, repo: string): Promise<bo
   if (!repo) return false;
   const url = await git(["git", "-C", wt, "config", "--get", `remote.${BACKUP_REMOTE}.url`]);
   return url.code === 0 && githubRepo(url.out) === repo.toLowerCase();
+};
+
+// the git status pathspec that leaves stateDir out of checkout top; none when stateDir is not inside it
+export const statePathspec = (top: string, stateDir: string, p: Pick<typeof nodePath, "relative" | "isAbsolute" | "sep"> = nodePath): string[] => {
+  const rel = p.relative(top, stateDir);
+  if (rel === ".." || rel.startsWith(`..${p.sep}`) || p.isAbsolute(rel)) return [];
+  // git's pathspecs take / on Windows too
+  return ["--", ":(top)", rel ? `:(top,literal,exclude)${rel.split(p.sep).join("/")}` : ":(top,exclude)*"];
 };
 
 export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
@@ -76,14 +86,28 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
     }
   };
   let checked = own;
+  // a cwd checkout that holds this Dori's stateDir (a lane in ~/.soodori/qa works in the state-git repo ~/.soodori):
+  // dori rewrites its state files there all the time, so they are no lane work; every other path still counts
+  let statePaths: string[] = [];
   if (!own.length && exists(cwd)) {
     const probe = await git(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"]);
     if (probe.code === 0) checked = probe.out.trim() === "true" ? [cwd] : [];
     else if (underGit(cwd)) reasons.push(`unpushed work in ${cwd} (git state unreadable)`);
+    const top = checked.length ? await git(["git", "-C", cwd, "rev-parse", "--show-toplevel"]) : undefined;
+    if (top?.code === 0 && top.out.trim()) {
+      const real = (p: string): string => {
+        try {
+          return realpathSync(p);
+        } catch {
+          return resolve(p);
+        }
+      };
+      statePaths = statePathspec(real(top.out.trim()), real(deps.config.stateDir));
+    }
   }
   for (const wt of checked) {
     if (!exists(wt)) continue;
-    const dirty = await git(["git", "-C", wt, "status", "--porcelain", "--untracked-files=no"]);
+    const dirty = await git(["git", "-C", wt, "status", "--porcelain", "--untracked-files=no", ...(wt === cwd ? statePaths : [])]);
     // a cwd checkout with no remote at all (a Dori's own Documents repository) has nowhere to push its commits, so they
     // are not unpushed work; its uncommitted changes still are. Its history is still walked, so one git cannot read
     // stays unreadable. A lane's own worktree is checked as before.
