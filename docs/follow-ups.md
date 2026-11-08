@@ -113,6 +113,6 @@ heavy stale shows an upload (`HEAVY_SYNC`) and ends a run that gives no sign of 
 
 `dori heavy <label> --job` (heavy-queue.ts: the run on a GPU helper and heavy-serve through the queue host) reads its ssh's stdout and stderr to the end and waits for its exit, like the --kind path did before #410: a helper that never answers, or an ssh that exits and leaves a child holding a pipe, keeps the caller waiting. #410 bounds the --kind path with settle() (heavy-settle.ts); the --job path should go through it too, with the same tests (no answer within staleMin, a child holding stderr after the answer).
 
-## Handover note: an answered card is not carried as a decision (handover todos)
+## Handover note: an answered card is not carried as a decision (#416)
 
 ZzangDori's audit of 2026-11-02..08 had one lost decision the handover todos change leaves out (its scope was todos and the owner's words; the two lost monitors are #414's): the owner chose an option of a question card for a lane (publish, tag and notes), and the lane's handover note and reports still said it waited for his OK, so the order sat for 13 hours. The note lists only open cards. What would close it: the lane's note (and the lead's) lists the cards of that lane answered since its last handover, with the option chosen, and the audit checks them like the owner's words.

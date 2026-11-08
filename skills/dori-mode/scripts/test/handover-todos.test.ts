@@ -7,6 +7,7 @@ import { verify } from "../src/handover.ts";
 import { missingTodos, recentOwnerWords } from "../src/handover-todos.ts";
 import { verifyLane } from "../src/lane-handover.ts";
 import { sessionDirFor } from "../src/session-id.ts";
+import { RUNNING } from "./fakes.ts";
 
 // ZzangDori's lead handover 20261106-213407 (audit 2026-11-07): the owner wrote 64 messages in the 24 h before it and the
 // note kept the newest 8, and two of his orders that OkDori and YooDori relayed in the pair room with "형 원문 <link>" were
@@ -67,8 +68,8 @@ const newSession = (todos: string[]): string => {
   return sessionsDir;
 };
 const SCREEN = "❯ \n────\n Claude·x ▕██▏ 60%\n~/work • CH85.0% • $0.5 • 90K/1M (9.0%) (auto)    (anthropic-subscription@x) claude-opus-5-5 • effort high (shift+tab)\n(OmO) mem:x";
-const deps = (sessionsDir: string) =>
-  ({ sessionOf: async () => "new-sid", config: { sessionsDir, stateDir: dir }, alive: () => true, home: "/home/test", clock: { now: () => 0, sleep: async () => {} }, routedPane: async () => "another-pane", run: async (argv: string[]) => ({ code: argv[1] === "capture-pane" ? 0 : 1, out: argv[1] === "capture-pane" ? SCREEN : "", err: "" }) }) as never;
+const deps = (sessionsDir: string, screen = SCREEN) =>
+  ({ sessionOf: async () => "new-sid", config: { sessionsDir, stateDir: dir }, alive: () => true, home: "/home/test", clock: { now: () => 0, sleep: async () => {} }, routedPane: async () => "another-pane", run: async (argv: string[]) => ({ code: argv[1] === "capture-pane" ? 0 : 1, out: argv[1] === "capture-pane" ? screen : "", err: "" }) }) as never;
 
 test("the lead's handover check holds the move while an open todo of the old lead is not in the new lead's todo list", async () => {
   // Given: the old lead's open todo, and a new lead that wrote a list of its own
@@ -94,8 +95,9 @@ test("a lane's handover check holds the move while an open todo of the old sessi
   // Then
   expect(lost.reasons).toEqual(["todos not in the todo list of new-lane: Cleanup worktree RUN_TMP and QA resources"]);
   expect(lines).not.toContain("HANDOVER_TODOS_OK 2 in the todo list of new-lane");
-  // When: both are in its list
-  await verifyLane(deps(newSession(["Cleanup worktree RUN_TMP and QA resources", "Report per brief footer format"])), facts, "new-lane", 1, "", (l) => lines.push(l));
+  // When: both are in its list (and its first turn still runs, so the check stops before the probe)
+  const carried = await verifyLane(deps(newSession(["Cleanup worktree RUN_TMP and QA resources", "Report per brief footer format"]), `${SCREEN}\n${RUNNING}`), facts, "new-lane", 1, "", (l) => lines.push(l));
   // Then
   expect(lines).toContain("HANDOVER_TODOS_OK 2 in the todo list of new-lane");
+  expect(carried.reasons).toEqual(["the first turn of new-lane was still running after the verify time; the probe was not sent"]);
 });
