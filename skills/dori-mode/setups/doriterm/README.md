@@ -10,7 +10,8 @@ TUI reflowed to the phone's width.
 
 Owner decision: card Q522 (2026-11-07 13:27 KST) "짱돌 하나로 시범", a two-week pilot on one account (until 2026-11-21);
 widened the same day (2026-11-07 22:28 KST, "모든 도리들도 여기 붙여") to one row per Dori on the host, see "Six Doris"
-below. `herdr-web` stays as it is.
+below. The herdr-web browser terminal that came before it was removed on 2026-11-08 (owner Q22: "doriterm을 쓰면서 더이상
+안 쓰게 된 herdr 웹은 없애고"); doriterm is the one way to see the Doris from a phone or a browser.
 
 ## Install (one account)
 
@@ -70,9 +71,9 @@ own herdr server. The host runs on one account (here oriclaw, the `zzangdori` ro
 their own accounts with `sudo -n -u <account> -H` (`attach.sh <account>`), so the herdr servers, sockets and panes
 stay each account's and nothing runs on the other accounts beyond the herdr client while a row is open. A new herdr
 client opens on the tab its server focused last (a lane, a stray shell), so before each attach `attach.sh` focuses the
-lead's tab the way herdr-web does for a new browser terminal: the account's own `herdr-web/terminal.ts` with its Dori
-config (`~/.<user>/config.json` for an instance account, else `~/.dori/config.json`). herdr's `tab focus` moves every
-client of that server, as a herdr-web attach already does; it happens when a row attaches, not each time it is opened. It needs a
+lead's tab with the account's own `focus-lead.ts` (this directory) and its Dori config (`~/.<user>/config.json` for an
+instance account, else `~/.dori/config.json`). herdr's `tab focus` moves every client of that server; it happens when a
+row attaches, not each time it is opened. It needs a
 NOPASSWD sudo rule from the host account to each Dori account (the same rule `node-dori-do` uses). No other account
 gets a host, a relay connection or a listening port, so an egress-gated account (yoodori's dori-gate) is not widened:
 the client only talks to its account's herdr unix socket.
@@ -123,4 +124,4 @@ The full review, with source line references, is the doriterm-review lane report
 ## Tests
 
 `bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
-`stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try. The unit's start and stop were also run under systemd against the real hc (see the PR).
+`stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try, and `focus-lead.ts` against a fake herdr runner. The unit's start and stop were also run under systemd against the real hc (see the PR).
