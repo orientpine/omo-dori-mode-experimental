@@ -351,7 +351,7 @@ const USAGE = `dori <command> [options]
                                        elsewhere sent to the queue host (heavyQueue.queue), run here only while it cannot
                                        be reached. Prints the job's stdout, copies its result files to --out, exits with
                                        its code (HEAVY_HELPER / HEAVY_DONE / HEAVY_QUEUE_DOWN lines)
-  heavy <label> [--mem SIZE] --kind cpu|browser|gpu --sync PATH ... [--env NAME ...] [--tools NAME ...] -- <command ...>
+  heavy <label> [--mem SIZE] --kind cpu|browser|gpu --sync PATH ... [--env NAME ...] [--tools NAME ...] [--back GLOB ...] -- <command ...>
                                        run the lane's own command on the less busy PC: a heavyQueue.helpers host when this
                                        one is more than 15 points busier or refuses it, in a bwrap box with no network,
                                        the --sync folders copied there at the same paths and changed files copied back
@@ -611,7 +611,7 @@ const flags = parseArgs({
     static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
     remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
     rule: { type: "string" }, outcome: { type: "string" }, lesson: { type: "string", multiple: true }, global: { type: "boolean" },
-    job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" }, mem: { type: "string" }, want: { type: "string" }, sync: { type: "string", multiple: true }, env: { type: "string", multiple: true }, tools: { type: "string", multiple: true }, caller: { type: "string" },
+    job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" }, mem: { type: "string" }, want: { type: "string" }, sync: { type: "string", multiple: true }, env: { type: "string", multiple: true }, tools: { type: "string", multiple: true }, back: { type: "string", multiple: true }, caller: { type: "string" },
     reply: { type: "string" }, again: { type: "boolean" }, channel: { type: "string" }, "reply-to": { type: "string" }, posted: { type: "string" }, "post-summary": { type: "boolean" }, "rollover-outcome": { type: "string" }, "rollover-unresolved": { type: "boolean" }, stuck: { type: "boolean" },
     step: { type: "string" }, "remote-effect": { type: "string", multiple: true },
     "wall-minutes": { type: "string" }, "token-limit": { type: "string" }, "cost-limit": { type: "string" }, "activity-path": { type: "string", multiple: true },
@@ -1568,7 +1568,7 @@ try {
         const badEnv = many("env").find((e) => !/^[A-Za-z_]\w{0,63}$/.test(e));
         if (badEnv !== undefined) die(`dori heavy --env takes a variable name, not "${badEnv}"`);
         const env = Object.fromEntries(["LANG", "TZ", ...many("env")].flatMap((k) => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])));
-        const job: SpreadJob = { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}) };
+        const job: SpreadJob = { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(many("back").length ? { back: many("back") } : {}) };
         const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
         if (!plan.ok) deps.log?.(`HEAVY_LOCAL ${name}: ${plan.why}`);
         else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
