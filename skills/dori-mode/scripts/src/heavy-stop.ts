@@ -1,15 +1,31 @@
-import { readdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 
 import { dlopen, FFIType } from "bun:ffi";
 
 import { killTree } from "./heavy-job.ts";
 import { withLock } from "./heavy-slot-store.ts";
 import type { SlotDeps } from "./heavy-slot-types.ts";
-import { procId, WHO } from "./heavy-stale.ts";
 
-// A helper's side of `dori heavy-worker "stop <label> <run>"` (heavy-stale.ts): a caller that found its run here stale ends
-// what is left of it.
+// The helper's side of a run's life (heavy-stale.ts is the caller's): who started it, its heartbeat, its caller gone,
+// and `stop <label> [run]`.
+
+// the file in a helper run's job folder naming its caller and label, as `stop <label>` matches them
+const WHO = "who";
+// the mark stop leaves in a run's job folder, so the worker says WORKER_CANCELLED as it goes
+const CANCELLED = "cancelled";
+
+// A process as it was started: this boot's id and its start time in clock ticks (/proc/<pid>/stat field 22), so a pid
+// reused after the worker died, or after a reboot, is not taken for it. undefined when it is gone.
+export const procId = (pid: number): string | undefined => {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+    return `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()} ${start}`;
+  } catch {
+    return undefined;
+  }
+};
 
 // SIGKILL to the process behind pid only while it is still the one recorded (procId): through a pidfd (Linux 5.3+) opened
 // first and checked after, so a pid freed and reused between the check and the signal is never hit (as a plain kill by
@@ -21,18 +37,73 @@ const sys = (() => {
 })();
 const PIDFD_OPEN = 434n;
 const PIDFD_SEND_SIGNAL = 424n;
-const killIfStill = (pid: number, recorded: string): boolean => {
+const SIGTERM = 15n;
+const killIfStill = (pid: number, recorded: string, signal = 9n): boolean => {
   const fd = Number(sys().symbols.syscall(PIDFD_OPEN, BigInt(pid), 0n, 0n, 0n));
   if (fd < 0) return false;
   try {
     if (procId(pid) !== recorded) return false;
-    const children = Bun.spawnSync(["pgrep", "-P", String(pid)]).stdout.toString().split("\n").filter(Boolean).map(Number);
-    if (Number(sys().symbols.syscall(PIDFD_SEND_SIGNAL, BigInt(fd), 9n, 0n, 0n)) !== 0) return false;
+    // SIGKILL takes the worker's children too; after a SIGTERM the worker ends them itself
+    const children = signal === 9n ? Bun.spawnSync(["pgrep", "-P", String(pid)]).stdout.toString().split("\n").filter(Boolean).map(Number) : [];
+    if (Number(sys().symbols.syscall(PIDFD_SEND_SIGNAL, BigInt(fd), signal, 0n, 0n)) !== 0) return false;
     for (const c of children) killTree(c);
     return true;
   } finally {
     sys().symbols.close(fd);
   }
+};
+
+// what a run's job folder records for `stop`: its caller, label and the worker as started; its id is the folder's name
+export const markRun = (dir: string, caller: string, label: string): string => {
+  writeFileSync(join(dir, WHO), `${caller} ${label} ${procId(process.pid) ?? "-"}`);
+  return basename(dir);
+};
+
+// A caller that holds the connection (hold in job.json) keeps the helper's stdin open until it reads WORKER_EXIT: EOF
+// before that is the caller gone. On 2026-11-08 gongdori's rvp-make2 ran on cha two hours after its caller had gone:
+// cha's Tailscale SSH closes a lost session's I/O ("processes exit on their own") and keeps the session's process, so
+// the worker's parent never changed (stopWithCaller) and bwrap's --die-with-parent, which watches the worker, never
+// fired; the worker's stdin did reach EOF at once. gone() logs; the worker then stops as on SIGTERM (heavy-job.ts
+// stopNow: its folder deleted, its slot freed, its box gone with it). The function it returns ends the watch once the run
+// is over, so the worker exits without waiting for the caller to close.
+export const watchCaller = (gone: () => void): (() => void) => {
+  let ended = false;
+  const r = Bun.stdin.stream().getReader();
+  void (async () => {
+    while (!(await r.read()).done);
+    if (ended) return;
+    gone();
+    process.kill(process.pid, "SIGTERM");
+  })();
+  return () => {
+    ended = true;
+    void r.cancel();
+  };
+};
+
+// The caller's side of hold: the helper's stdin is closed once WORKER_EXIT came (the run is over there), so an ssh stand-in
+// that copies stdin through (cat) ends too; a run that broke off has its ssh gone with its stdin. Returns code.
+export const endedWith = (stdin: { end(): unknown }, code: number): number => {
+  void stdin.end();
+  return code;
+};
+
+// a run stop ended says so to its caller as it goes (heavy-job.ts onStop): WORKER_CANCELLED
+export const sayCancelled = (dir: string): void => {
+  if (existsSync(join(dir, CANCELLED))) console.error("WORKER_CANCELLED stopped there by dori heavy-stop");
+};
+
+
+// WORKER_ALIVE <phase> on stderr every aliveSec while the run lasts; set() names the phase
+export const heartbeat = (aliveSec: number) => {
+  let phase = "in";
+  const t = setInterval(() => console.error(`WORKER_ALIVE ${phase}`), aliveSec * 1000);
+  return {
+    set: (p: string): void => {
+      phase = p;
+    },
+    stop: (): void => clearInterval(t),
+  };
 };
 
 // a run's job folder deleted, read-only folders the job made in it included (made writable first when a plain delete fails)
@@ -69,7 +140,13 @@ export const stopRuns = async (execRoot: string, deps: SlotDeps, caller: string,
       removeRun(join(execRoot, d));
       continue;
     }
-    if (now !== undefined) killIfStill(pid, now);
+    // the recorded worker: SIGTERM first, so it tells its caller (sayCancelled) and cleans up; what is left after 3 s is
+    // killed. Both signals go through a pidfd after a fresh identity check (killIfStill), so a reused pid is never hit
+    if (now !== undefined) {
+      writeFileSync(join(execRoot, d, CANCELLED), "");
+      if (killIfStill(pid, now, SIGTERM)) for (let i = 0; i < 30 && procId(pid) === now; i++) Bun.sleepSync(100);
+      killIfStill(pid, now);
+    }
     await freeSlots(deps, pid);
     removeRun(join(execRoot, d));
     n++;

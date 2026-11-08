@@ -122,7 +122,8 @@ test("a helper that turns the job away and leaves a child holding its stderr doe
   // Given: a first helper that answers WORKER_BUSY, exits and leaves a child holding its stderr, and a second that takes
   // the job, reads the upload and ends it with exit 0
   const busy = ["sh", "-c", `${sleeper(596)} >&2 & echo "WORKER_BUSY full" >&2; exit 0`, "busy"];
-  const ok = silentHelper("ok", "WORKER_ADMIT slot.1 run=1-abc", 'cat > /dev/null; tar -cf - -T /dev/null; echo "WORKER_EXIT 0" >&2');
+  // the caller holds stdin open until WORKER_EXIT (hold), so the stand-in reads the upload to its tar end, not to EOF
+  const ok = silentHelper("ok", "WORKER_ADMIT slot.1 run=1-abc", 'd=$(mktemp -d); tar -xf - -C "$d"; rm -rf "$d"; tar -cf - -T /dev/null; echo "WORKER_EXIT 0" >&2');
   try {
     // When
     const p = caller("busy", busy, 5, undefined, [{ name: "ok", ssh: ok }]);
@@ -168,9 +169,10 @@ test("a stale verdict signals only a child that has not ended, never one already
 
 test("Ctrl-C on the caller ends the ssh and tars it started, as they share its terminal's process group", async () => {
   // Given: the real dori CLI as caller in a process group of its own (a terminal's foreground job), this host's only
-  // slot held, and a helper that takes the upload and then runs a long job without a heartbeat (so no stale verdict)
+  // slot held, and a helper that starts a long job without a heartbeat (so no stale verdict); the caller holds its stdin
+  // open (hold), and the small upload fits the pipe
   try {
-    const p = caller("long", silentHelper("long", "WORKER_ADMIT slot.1 run=1-abc", `cat > /dev/null; echo LONG_STARTED >&2; exec ${sleeper(588)}`), 5);
+    const p = caller("long", silentHelper("long", "WORKER_ADMIT slot.1 run=1-abc", `echo LONG_STARTED >&2; exec ${sleeper(588)}`), 5);
     const reader = p.stderr.getReader();
     let err = "";
     while (!err.includes("LONG_STARTED")) {

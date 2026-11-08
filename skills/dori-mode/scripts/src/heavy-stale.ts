@@ -1,8 +1,7 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
-
 import type { HeavyHelper } from "./heavy-route.ts";
 import { readerLines, settle } from "./heavy-settle.ts";
+// the helper's side of a run (heavy-stop.ts), for heavy-spread.ts beside the caller's
+export { endedWith, heartbeat, markRun, sayCancelled, watchCaller } from "./heavy-stop.ts";
 
 // Is a helper's run still alive (heavy-spread.ts)? On 2026-11-08 zzangdori's rvq-c3-final2 went to cha with a 2.1 GB --sync
 // and sat 73 minutes with no line on either side until its lane cut it by hand: the upload went at 0.2-0.6 MB/s over the
@@ -21,9 +20,24 @@ export const STALE_GRACE_MS = 5_000;
 // stale: the run ended for no sign of life; abandoned: what it started had not all ended STALE_GRACE_MS after that
 export type Stale = { readonly stale: string; readonly abandoned: boolean };
 
+// a run dori heavy-stop ended on its helper ends its caller so too, instead of going back to the line (SIGTERM's code)
+const CANCEL_EXIT = 143;
+
+// how a helper run ended: its exit code, null when it broke off (back to the line), stale, or cancelled there
+export type RunEnd = number | null | Stale | { readonly cancelled: string };
+
+// The caller's side of a run that ended stale or cancelled: the job's exit code, or again (the stale why) when
+// --stale-again sends it back to the line, and left when the stop of a stale run on its helper was let go (stopOnHelper)
+export const unfinished = async (h: HeavyHelper, label: string, end: Stale | { readonly cancelled: string }, again: boolean, log: (l: string) => void, run?: string, waitMs?: number): Promise<({ readonly code: number } | { readonly again: string }) & { readonly left: boolean }> => {
+  if ("cancelled" in end) {
+    log(`HEAVY_HELPER_CANCELLED ${label} ${h.name}: ${end.cancelled}; the job ends with exit ${CANCEL_EXIT}`);
+    return { code: CANCEL_EXIT, left: false };
+  }
+  log(`HEAVY_HELPER_STALE ${label} ${h.name}: ${end.stale}; ${again ? "the job goes back to the line" : `the job ends with exit ${STALE_EXIT} (dori heavy --stale-again sends it again)`}`);
+  const { left } = h.ssh.length ? await stopOnHelper(h, label, log, run, waitMs === undefined ? {} : { waitMs }) : { left: false };
+  return again ? { again: end.stale, left } : { code: STALE_EXIT, left };
+};
 const SYNC_LOG_MS = 5 * 60_000;
-// the file in a helper run's job folder naming its caller and label, as `stop <label>` matches them
-export const WHO = "who";
 
 // alive=<sec> on a WORKER_ADMIT line: the helper's heartbeat, or undefined for a helper that does not beat
 export const aliveOf = (admitted: string): number | undefined => {
@@ -108,15 +122,18 @@ export const staleWatch = (o: { readonly label: string; readonly helper: string;
   };
 };
 
-// After a stale run: ask the helper to stop what is left of it (`dori heavy-worker "stop <label> <run>"`), waitMs at most
-// for its answer, its stderr read included (a subprocess timeout ends with its direct child); true when left unended
-export const stopOnHelper = async (h: HeavyHelper, label: string, log: (l: string) => void, run: string | undefined, waitMs = 30_000): Promise<boolean> => {
+// After a stale run, or from dori heavy-stop: ask the helper to stop what is left of it (`dori heavy-worker "stop <label>
+// [run]"`): the one stale run, or with byLabel every run of that label (dori heavy-stop). waitMs at most for its answer, its
+// stderr read included (a subprocess timeout ends with its direct child): stopped, the runs it stopped (0 when it said
+// nothing), and left, true when the stop was let go unended so the caller exits without it
+export const stopOnHelper = async (h: HeavyHelper, label: string, log: (l: string) => void, run: string | undefined, o: { readonly byLabel?: boolean; readonly waitMs?: number } = {}): Promise<{ readonly stopped: number; readonly left: boolean }> => {
+  const waitMs = o.waitMs ?? 30_000;
   // a helper that named no run id is older than run ids; a stop by label alone could end another run of that label there
-  if (!run) {
+  if (!run && !o.byLabel) {
     log(`HEAVY_HELPER_STOP ${label} ${h.name}: not asked, it named no run id (its dori is older), and a stop by label could end another run of ${label} there`);
-    return false;
+    return { stopped: 0, left: false };
   }
-  const p = Bun.spawn([...h.ssh, "stop", label, run], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+  const p = Bun.spawn([...h.ssh, "stop", label, ...(run ? [run] : [])], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
   const reader = p.stderr.getReader();
   let said: string | undefined;
   const answer = (async () => {
@@ -129,37 +146,6 @@ export const stopOnHelper = async (h: HeavyHelper, label: string, log: (l: strin
   // its answer and its ssh's exit, waitMs at most together: a child of that ssh may hold stderr after the answer
   const ended = await settle([p], [reader], Promise.all([answer, p.exited]), waitMs);
   log(`HEAVY_HELPER_STOP ${label} ${h.name}: ${said ?? (ended ? `no answer (ssh exited ${p.exitCode ?? p.signalCode})` : `no answer within ${waitMs / 1000} s`)}${ended ? "" : "; dori heavy ends without waiting on the stop"}`);
-  return !ended;
+  return { stopped: Number(/^WORKER_STOPPED (\d+)$/.exec(said ?? "")?.[1] ?? 0), left: !ended };
 };
 
-// ---- the helper's side
-
-// A process as it was started: this boot's id and its start time in clock ticks (/proc/<pid>/stat field 22), so a pid
-// reused after the worker died, or after a reboot, is not taken for it. undefined when it is gone.
-export const procId = (pid: number): string | undefined => {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-    return `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()} ${start}`;
-  } catch {
-    return undefined;
-  }
-};
-
-// what a run's job folder records for `stop`: its caller, label and the worker as started; its id is the folder's name
-export const markRun = (dir: string, caller: string, label: string): string => {
-  writeFileSync(join(dir, WHO), `${caller} ${label} ${procId(process.pid) ?? "-"}`);
-  return basename(dir);
-};
-
-// WORKER_ALIVE <phase> on stderr every aliveSec while the run lasts; set() names the phase
-export const heartbeat = (aliveSec: number) => {
-  let phase = "in";
-  const t = setInterval(() => console.error(`WORKER_ALIVE ${phase}`), aliveSec * 1000);
-  return {
-    set: (p: string): void => {
-      phase = p;
-    },
-    stop: (): void => clearInterval(t),
-  };
-};
