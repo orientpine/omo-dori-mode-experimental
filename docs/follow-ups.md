@@ -88,6 +88,7 @@ doriterm's bridges live in the bridge host's hc core under fixed names (zzangdor
 ## dori.sh: the local launcher does not attach an hc lead (option B after review 9 of #404)
 
 `setups/discord-aoe/dori.sh` refuses a lead that is an hc terminal (`dori: the lead runs on hc (hc:t<n>); this launcher attaches herdr and aoe leads only`, exit 2) before it starts any service. Before any Dori moves to hc: attach through hc in that Dori's core, a stopped hc lead revived first, with `test-dori.sh` cases for both.
+Upstream #156 (`test/e2e-hc.test.ts`: one isolated hc core, a fixture agent that reports OSC 7501) is not ported: it drives upstream's own CLI (`dori up`, `dori start`, `DORI_HOME`, `DORI_AGENT_CMD`), which the fork does not have; the fork opens lanes through aoe and its lead through its own config. Its idea (an isolated core under its own `HC_SESSION` and XDG dirs, a fixture agent, the core's pid and socket proven gone at the end) is the shape of each hc PR's hand QA on a real core until a fork-shaped end-to-end test is written.
 
 ## 250-line rule: the fork's own files still over the cap (upstream #159)
 
