@@ -2,12 +2,7 @@ import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-// Load-proof: the tests here run the watch script in python3 with a fake gh shell script and real git.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
-
+setDefaultTimeout(30_000); // load-proof: the tests here run the watch script in python3 with a fake gh shell script and real git; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 const SCRIPT = join(import.meta.dir, "../../setups/discord-aoe/upstream-watch.py");
 const UP = "https://github.com/sisyphuslabs/dori-superagent";
 let root = "";

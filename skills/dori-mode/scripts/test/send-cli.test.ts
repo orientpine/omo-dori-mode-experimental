@@ -5,12 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, truncateSync, writeFi
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 import { DISCORD_FORM_SLACK, DISCORD_MESSAGE_MAX, type DiscordFile, discordMessageProblem } from "../src/messenger/upload-files.ts";
-
-// Load-proof: every test here starts the dori CLI (bun src/cli.ts) as a child process, up to five times.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
-
+setDefaultTimeout(30_000); // load-proof: every test here starts the dori CLI (bun src/cli.ts) as a child process, up to five times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 test("Discord CLI enables typing by default, skips it on request, and leaves edits alone", async () => {
   const state = withState();
   try {

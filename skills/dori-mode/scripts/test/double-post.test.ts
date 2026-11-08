@@ -10,10 +10,7 @@ import { type Lane, Registry, statusOf } from "../src/registry.ts";
 import { run } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
 
-// Load-proof: the CLI tests here start dori send and dori thread (bun src/cli.ts) as child processes.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
+setDefaultTimeout(30_000); // load-proof: the CLI tests here start dori send and dori thread (bun src/cli.ts) as child processes; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 // Owner 2026-10-21 07:19 KST "지금 왜 두번씩 답변하는지": a lane posted its result in the owner's thread itself (dori thread
 // reply / dori send, as its brief asked), then dori close posted the claim's summary there as well, 37 s and 86 s later

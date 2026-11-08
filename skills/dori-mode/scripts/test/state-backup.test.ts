@@ -6,10 +6,7 @@ import { dirname, join } from "node:path";
 import { approve, BACKUP_DEFAULTS, type BackupDeps, backupStep, backupTick, branchFor, loadSecrets, pushAll, pushCheck, type Secrets } from "../src/state-backup.ts";
 import { commitDir } from "../src/state-git.ts";
 
-// Load-proof: every test here runs git against a real repository and a bare remote, most of them many times.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
+setDefaultTimeout(30_000); // load-proof: every test here runs git against a real repository and a bare remote, most of them many times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 let root: string;
 let dir: string;

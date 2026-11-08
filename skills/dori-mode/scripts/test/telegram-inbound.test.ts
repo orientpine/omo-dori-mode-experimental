@@ -9,12 +9,7 @@ import type { TgInbound } from "../src/messenger/telegram-inbound.ts";
 import { Telegram } from "../src/messenger/telegram.ts";
 import { envInt, fileTgInboundStore, pollTelegramInbound, telegramInboundLoop, writeLineSync } from "../src/messenger/telegram-inbound.ts";
 import { fakeClock, withState } from "./fakes.ts";
-
-// Load-proof: the CLI tests here start dori inbound telegram (bun src/cli.ts) as a child process.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
-
+setDefaultTimeout(30_000); // load-proof: the CLI tests here start dori inbound telegram (bun src/cli.ts) as a child process; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 const OWNER = 5250;
 const OTHER = 6612;
 const GROUP = -1004;

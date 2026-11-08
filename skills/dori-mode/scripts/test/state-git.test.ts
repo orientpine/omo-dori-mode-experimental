@@ -5,12 +5,7 @@ import { dirname, join } from "node:path";
 
 import { BACKUP_DEFAULTS } from "../src/state-backup.ts";
 import { checkRepo, commitDir, EXCLUDES, restoreDir, type StateGitDeps, stateGitDirs, tokenShape } from "../src/state-git.ts";
-
-// Load-proof: every test here runs git in a real repository, most of them many times.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
-
+setDefaultTimeout(30_000); // load-proof: every test here runs git in a real repository, most of them many times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 let dir: string;
 let lines: string[];
 const deps = (maxFileKb = 512): StateGitDeps => ({ settings: { dirs: [], everyMin: 10, maxFileKb, timeoutSec: 30, timeZone: "", backup: BACKUP_DEFAULTS }, timeZone: "Asia/Seoul", now: () => Date.now(), print: (l) => lines.push(l) });

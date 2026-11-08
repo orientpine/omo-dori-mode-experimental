@@ -3,10 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Load-proof: every test here runs transcribe.sh in bash with fake whisper-cli, dori and diarizer children.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
+setDefaultTimeout(30_000); // load-proof: every test here runs transcribe.sh in bash with fake whisper-cli, dori and diarizer children; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 const SCRIPT = join(import.meta.dir, "../../setups/discord-aoe/transcribe.sh");
 let asr = "";

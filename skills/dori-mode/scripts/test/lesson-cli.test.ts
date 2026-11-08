@@ -9,10 +9,7 @@ import { Registry } from "../src/registry.ts";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 
-// Load-proof: the tests here start dori lesson (bun src/cli.ts) as a child process, several times.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
+setDefaultTimeout(30_000); // load-proof: the tests here start dori lesson (bun src/cli.ts) as a child process, several times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 const cli = join(import.meta.dir, "../src/cli.ts");
 const T0 = Date.parse("2026-10-29T00:00:00Z");

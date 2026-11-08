@@ -6,10 +6,7 @@ import { canScope, gpuRoomPlan, makeGpuRoom, memVerdict, neverFits, parseMem, pa
 import { linesOf } from "../src/heavy-queue.ts";
 import { withState } from "./fakes.ts";
 
-// Load-proof: the tests here start systemd-run, systemctl and a memory-touching helper as child processes.
-// A host at load 40-67 on 20 cores slows such child processes several times over (1-2 s tests took over 5 s),
-// so this file, not the whole suite, gets 30 s instead of bun's 5 s default.
-setDefaultTimeout(30_000);
+setDefaultTimeout(30_000); // load-proof: the tests here start systemd-run, systemctl and a memory-touching helper as child processes; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
 let state: ReturnType<typeof withState>;
 beforeEach(() => (state = withState()));
