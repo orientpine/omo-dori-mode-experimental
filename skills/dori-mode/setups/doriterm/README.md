@@ -16,8 +16,8 @@ below. `herdr-web` stays as it is.
 
 ```sh
 # the host binary, checked against the release's SHA256SUMS.txt
-curl -fsSLO https://github.com/sisyphuslabs/doriterm/releases/download/v0.1.5/doriface-host-linux-arm64
-curl -fsSLO https://github.com/sisyphuslabs/doriterm/releases/download/v0.1.5/SHA256SUMS.txt
+curl -fsSLO https://github.com/sisyphuslabs/doriterm/releases/download/v0.1.11/doriface-host-linux-arm64
+curl -fsSLO https://github.com/sisyphuslabs/doriterm/releases/download/v0.1.11/SHA256SUMS.txt
 sha256sum --check --ignore-missing SHA256SUMS.txt
 install -m 0755 doriface-host-linux-arm64 ~/.local/bin/doriface-host
 # herdr-core: ~/.local/bin/herdr-core plus an hc link; ~/.local/bin/herdr and the herdr server are not touched
@@ -37,33 +37,22 @@ nothing and focuses no pane. hc runs its core as its own systemd user service (`
 bridge client with it. On this account hc exists only for the pilot. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
 the pane's identity to the client.
 
-## Web app (patched, for iPhones)
+## Web app
 
-On an iPhone every browser, Chrome included, is WebKit, and WebKit reads a stored X25519 `CryptoKey` back from
-IndexedDB as `null` ([WebKit bug 312279](https://bugs.webkit.org/show_bug.cgi?id=312279), open). The stock web app
-then makes a new device key on every page load, so a phone paired through app.doriterm.com is refused as an
-"unknown device" the next time the tab reloads ("The host does not know this device anymore. Pair it again.").
-app.doriterm.com cannot be changed from here, so this setup serves the same web app, built from a pinned upstream
-commit with `web/webkit-x25519.patch` (keep raw key bytes when the `CryptoKey` does not read back, as the app already
-does for a browser without X25519), on this machine's tailnet name:
-
-```sh
-sh ~/.dori/src/skills/dori-mode/setups/doriterm/web/build.sh   # clone, patch, test, build -> ~/.local/share/doriterm-web/current
-ln -s ~/.dori/src/skills/dori-mode/setups/doriterm/doriterm-web.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now doriterm-web.service   # 127.0.0.1:7780
-tailscale serve --bg --https=7780 http://127.0.0.1:7780                                # tailnet only
-```
-
-`web/serve.ts` sends the headers of the build's own `_headers` (the hosted app's CSP: scripts from this origin only,
-connections to this origin and the public relay). The phone opens `https://<machine>.<tailnet>.ts.net:7780`; storage
-is per origin, so a phone paired on app.doriterm.com pairs again here. When upstream or WebKit ships the fix, pair on
-app.doriterm.com again and turn this off (`systemctl --user disable --now doriterm-web.service`,
-`tailscale serve --https=7780 off`).
+The phone opens the stock web app at https://app.doriterm.com. On an iPhone every browser, Chrome included, is
+WebKit, and WebKit reads a stored X25519 `CryptoKey` back from IndexedDB as `null`
+([WebKit bug 312279](https://bugs.webkit.org/show_bug.cgi?id=312279)), so before doriterm v0.1.10 the app made a new
+device key on every load and the host refused the phone as an "unknown device" (sisyphuslabs/doriterm#1329). Upstream
+fixed it in v0.1.10 (sisyphuslabs/doriterm#1333): the app checks once whether IndexedDB gives a `CryptoKey` back and,
+where it does not, keeps the device key as bytes. app.doriterm.com serves that fix. The patched copy this setup served
+on `https://<machine>.<tailnet>.ts.net:7780` until then (`web/`, `doriterm-web.service`, #379) is gone. A host that
+still runs it turns it off with `systemctl --user disable --now doriterm-web.service` and
+`tailscale serve --https=7780 off`, and its phone pairs again on app.doriterm.com, because storage is per origin.
 
 ## Pair a phone
 
 ```sh
-doriface-host pair --web-origin https://$(hostname).taila51692.ts.net:7780 --no-qr --wait-host 15
+doriface-host pair --web-origin https://app.doriterm.com --no-qr --wait-host 15
 ```
 
 It prints a one-time link (10 minutes), an 8-character code and the host fingerprint. The owner opens the link on the
@@ -134,5 +123,4 @@ The full review, with source line references, is the doriterm-review lane report
 ## Tests
 
 `bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
-`stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try, and `web/serve.ts` against a
-small build (headers per path, client routes, nothing outside the build). The unit's start and stop were also run under systemd against the real hc (see the PR).
+`stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try. The unit's start and stop were also run under systemd against the real hc (see the PR).
