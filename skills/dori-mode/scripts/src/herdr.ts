@@ -6,6 +6,7 @@ import type { SessionRef, SessionRuntime } from "./runtime/types.ts";
 import { commandExecutable, executableName } from "./executable.ts";
 import { powershellData } from "./powershell.ts";
 import { AGENT, type Proc, procTable, topAgent } from "./session-id.ts";
+import { hcAgentPid, hcClose, hcLife, hcOpen, hcRead, hcRef, hcSessions, hcShellPid, isHcPane } from "./hc-pane.ts";
 
 // herdr's side of the session primitives in aoe.ts (dori-mode on herdr, as upstream runs it; ported here for the move of
 // every Dori off aoe/tmux, owner card Q462 2026-11-03). tmux refuses a ":" in a session name and every herdr pane id holds
@@ -24,6 +25,9 @@ type HerdrTab = { readonly tab_id: string; readonly label?: string; readonly pan
 // tab list and get, send-text, ctrl+u) through that runtime's own herdr CLI, with its --session (DORI_HERDR_SESSION).
 export const herdrRuntime = (run: Runner): SessionRuntime => runtimesOf(run).for({ runtime: "herdr", id: "" });
 export const herdrRef = (pane: string): SessionRef => ({ runtime: "herdr", id: pane });
+// the runtime a stored pane belongs to (an hc terminal "hc:t<n>", else herdr) and its ref there
+export const paneRef = (pane: string): SessionRef => (isHcPane(pane) ? hcRef(pane) : herdrRef(pane));
+export const paneRuntime = (run: Runner, pane: string): SessionRuntime => runtimesOf(run).for(paneRef(pane));
 const herdrCli = (run: Runner): HerdrCli => new HerdrCli(execOf(run), process.env["DORI_HERDR_SESSION"]);
 
 // the result object of a herdr call, or undefined when it failed or printed no JSON
@@ -38,16 +42,16 @@ export const herdrOk = (run: Runner, argv: readonly string[]): Promise<boolean> 
 // Every pane of the server as a session row (aoe.ts AoeSession): id and pane are the pane id, title its tab's label, path
 // its cwd, profile its workspace. No server (or no herdr at all) is no session.
 export const herdrSessions = async (run: Runner): Promise<{ id: string; title: string; path: string; tool?: string; profile?: string; pane: string; tab?: string }[]> => {
-  const panes = await herdrRuntime(run).list().catch(() => []);
-  if (!panes.length) return [];
+  const [panes, hcRows] = await Promise.all([herdrRuntime(run).list().catch(() => []), hcSessions(run)]);
+  if (!panes.length) return hcRows;
   const tabs = ((await herdrResult(run, ["tab", "list"]))?.["tabs"] ?? []) as HerdrTab[];
-  return panes.map(({ ref, cwd, agent }) => ({ id: ref.id, title: tabs.find((t) => t.tab_id === ref.container)?.label ?? ref.id, path: cwd ?? "", ...(agent ? { tool: agent } : {}), ...(ref.group ? { profile: ref.group } : {}), pane: ref.id, ...(ref.container ? { tab: ref.container } : {}) }));
+  return [...hcRows, ...panes.map(({ ref, cwd, agent }) => ({ id: ref.id, title: tabs.find((t) => t.tab_id === ref.container)?.label ?? ref.id, path: cwd ?? "", ...(agent ? { tool: agent } : {}), ...(ref.group ? { profile: ref.group } : {}), pane: ref.id, ...(ref.container ? { tab: ref.container } : {}) }))];
 };
 
 type ProcessInfo = { readonly shell_pid?: number; readonly foreground_processes?: readonly { readonly pid?: number; readonly cmdline?: string }[] };
 const processInfo = async (run: Runner, pane: string): Promise<ProcessInfo | undefined> => (await herdrResult(run, ["pane", "process-info", "--pane", pane]))?.["process_info"] as ProcessInfo | undefined;
 
-export const herdrShellPid = async (run: Runner, pane: string): Promise<number> => Number((await processInfo(run, pane))?.shell_pid ?? 0);
+export const herdrShellPid = async (run: Runner, pane: string): Promise<number> => (isHcPane(pane) ? hcShellPid(run, pane) : Number((await processInfo(run, pane))?.shell_pid ?? 0));
 
 // upstream dori-superagent #69 (https://github.com/sisyphuslabs/dori-superagent/pull/69, its src/herdr.ts and
 // skills/dori-mode/scripts/src/panes.ts): its shell list. Upstream lets a shell running a command (sh -c, pwsh -Command)
@@ -106,6 +110,7 @@ export const requireHerdrPwsh = async (run: Runner, pane: string, platform: Node
 // the topmost agent process under its shell (a zombie is none). Its command line is not searched for "mcp": a herdr lane
 // carries its prompt there, so a lane keyed mcp-fix would read as an MCP server; an agent's MCP servers sit below it.
 export const herdrAgentPid = async (run: Runner, pane: string, table?: readonly Proc[]): Promise<number | undefined> => {
+  if (isHcPane(pane)) return hcAgentPid(run, pane);
   const info = await processInfo(run, pane);
   if (!info) return undefined;
   const fg = info.foreground_processes?.find((p) => p.pid && AGENT.test(p.cmdline ?? ""));
@@ -119,12 +124,14 @@ export const herdrAgentPid = async (run: Runner, pane: string, table?: readonly 
 // gone: herdr has no such pane (its shell exited, its tab closed, or no server runs); dead: the pane is there but no agent
 // runs in it any more (its shell stays after the agent exits; herdr keeps no exit status, so status is -1)
 export const herdrLife = async (run: Runner, pane: string): Promise<{ readonly live: true } | { readonly live: false; readonly how: "gone" } | { readonly live: false; readonly how: "dead"; readonly status: number }> => {
+  if (isHcPane(pane)) return hcLife(run, pane);
   if (!(await herdrResult(run, ["pane", "get", pane]))) return { live: false, how: "gone" };
   return (await herdrAgentPid(run, pane)) ? { live: true } : { live: false, how: "dead", status: -1 };
 };
 
 // the last lines through the runtime's read, else the visible screen (no runtime call reads only that); "" when it fails
 export const herdrRead = async (run: Runner, pane: string, lines?: number): Promise<string> => {
+  if (isHcPane(pane)) return hcRead(run, pane, lines);
   if (lines) return herdrRuntime(run).read(herdrRef(pane), lines).catch(() => "");
   const session = process.env["DORI_HERDR_SESSION"];
   return (await execOf(run)("herdr", [...(session ? ["--session", session] : []), "pane", "read", pane, "--source", "visible"])).stdout;
@@ -154,6 +161,7 @@ export const agentLine = (argv: readonly string[], env: Readonly<Record<string, 
 export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly argv: readonly string[]; readonly env?: Readonly<Record<string, string | undefined>>; readonly workspace?: string }): Promise<{ readonly pane: string; readonly tab?: string }> => {
   // a new session opens on the chosen runtime (default): a refused choice (DORI_RUNTIME=hc) throws here, before any tab
   const rt = runtimesOf(run).default;
+  if (rt.kind === "hc") return hcOpen(rt, run, clock, opts, agentLine(opts.argv, opts.env));
   // the runtime's create (a tab with the user's shell, upstream #148); the agent starts below through its start
   const tabIn = (group?: string) => rt.create({ name: opts.title, cwd: opts.cwd, env: {}, role: "lane", container: "tab", ...(group ? { group } : {}) });
   const failed = (e: unknown) => new Error(`herdr tab create failed: ${reasonOf(e)}`);
@@ -178,6 +186,7 @@ export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readon
 
 // Closes the pane's tab when the pane is all it holds, else the pane only; the line says which (closedLine).
 export const closeHerdrSession = async (run: Runner, pane: string): Promise<string> => {
+  if (isHcPane(pane)) return hcClose(run, pane);
   const got = (await herdrResult(run, ["pane", "get", pane]))?.["pane"] as HerdrPane | undefined;
   if (!got) return `herdr pane ${pane} not found`;
   const tab = got.tab_id ? ((await herdrResult(run, ["tab", "get", got.tab_id]))?.["tab"] as HerdrTab | undefined) : undefined;

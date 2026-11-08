@@ -153,6 +153,26 @@ test("attach.sh focuses the lead's tab, then keeps trying herdr client until the
   expect(calls).toEqual([focus, "client", focus, "client", focus, "client"]);
 });
 
+test("attach.sh attaches to the lead's hc terminal with hc attach when the Dori runs on hc, never herdr client", async () => {
+  // Given: the account's config names its lead as the hc terminal hc:t4, and a fake hc that ends the loop on its attach
+  const dir = mkdtempSync(join(tmpdir(), "doriterm-attach-hc-"));
+  dirs.push(dir);
+  const user = (await Bun.$`id -un`.text()).trim();
+  mkdirSync(join(dir, `.${user}`), { recursive: true });
+  writeFileSync(join(dir, `.${user}`, "config.json"), JSON.stringify({ backend: "herdr", leadPane: "hc:t4" }, null, 2));
+  for (const name of ["hc", "herdr"]) writeFileSync(join(dir, name), `#!/bin/sh
+printf '${name} %s\\n' "$*" >> "$HOME/calls"
+kill -TERM "$PPID"
+`, { mode: 0o700 });
+  const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_RETRY_SECONDS: "0" },
+    stdout: "pipe", stderr: "pipe",
+  });
+  await child.exited;
+  // Then: one hc attach to t4 and no herdr call at all
+  expect((await Bun.file(join(dir, "calls")).text()).trim().split("\n")).toEqual(["hc attach t4"]);
+});
+
 test("attach.sh takes an instance account's ~/.<user>/config.json for the lead", async () => {
   // Given: the account keeps its Dori config under ~/.<its user name>/ (okdori: ~/.okdori/config.json)
   const user = (await Bun.$`id -un`.text()).trim();

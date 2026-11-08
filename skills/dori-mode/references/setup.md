@@ -14,7 +14,9 @@ herdr integration install pi        # or the integration for the agent you run i
 herdr --skill                       # load its skill unless it is already in your context
 ```
 
-The scripts reach herdr through the session runtime (`scripts/src/runtime/`, upstream dori-superagent #147-#158), which also has an adapter for hc (herdr-core, one labelled terminal per lane, status from the agent's own OSC 7501 report). This fork drives herdr only: `"runtime": "hc"` in the config and `DORI_RUNTIME=hc` are refused (CONFIG_INVALID) until launch, handover, revive, the screen reads and the lane close go through the runtime too, and `dori migrate` (moving sessions between runtimes) is not ported (`docs/follow-ups.md`). Leave `runtime` unset.
+The scripts reach herdr and hc (herdr-core) through the session runtime (`scripts/src/runtime/`, upstream dori-superagent #147-#158). `"runtime": "hc"` in the config (or `DORI_RUNTIME=hc`) opens new lanes as labelled hc terminals, one per lane, with the agent's status from its own OSC 7501 report; a session the Dori stores is then the pane `hc:t<n>`, and launch, handover, revive, `dori type`, the screen reads, the lane close and doriterm's row answer it through hc. Unset is still herdr. `dori migrate` (moving sessions between runtimes) is not ported yet (`docs/follow-ups.md`).
+
+hc is installed the same way on every account: version 0.1.18 (the one doriterm's host runs), the build for the machine from `https://releases.herdr.dev/core/0.1.18/manifest.json`, checked against that manifest's `sha256`, copied to `~/.local/bin/herdr-core` with an `hc` link beside it. The release's `install.sh` is not used: it adds `?src=install` to the download for the release server's download count. An account that cannot download (yoodori) gets the same checked file from another account. Then put `notes = false` in `~/.config/herdr-core/config.toml`, so hc never types notes into an agent itself.
 
 ### Or: aoe on tmux
 

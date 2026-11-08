@@ -5,6 +5,8 @@ import { sessionFile } from "./background.ts";
 import type { Backend, DoriConfig } from "./config.ts";
 import { listSessions } from "./sessions.ts";
 import { herdrOk, herdrRef, herdrResult, herdrRuntime, isHerdrPane, shellInFrontName } from "./herdr.ts";
+import { hcRead, hcType, isHcPane } from "./hc-pane.ts";
+import { formatRef } from "./runtime/types.ts";
 import { replacementOf } from "./frozen.ts";
 import { type Clock, type Runner, runtimesOf } from "./run.ts";
 import { procTable, topAgent } from "./session-id.ts";
@@ -29,7 +31,8 @@ export class UnsafeTextError extends Error {}
 export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime">): Promise<Pane[]> => {
   if (config.backend === "aoe") return listAoePanes(run);
   return (await listSessions(runtimesOf(run, config))).map((s) => ({
-    pane_id: s.ref.id,
+    // an hc terminal is "hc:t<n>" wherever the fork stores or reads a pane (hc-pane.ts); a herdr pane id stands alone
+    pane_id: s.ref.runtime === "hc" ? formatRef(s.ref) : s.ref.id,
     workspace_id: s.ref.group ?? "",
     ...(s.ref.container ? { tab_id: s.ref.container } : {}),
     agent: s.agent,
@@ -144,6 +147,8 @@ export const omoPane = (config: Pick<DoriConfig, "backend" | "agentCommand">, pa
 const ALIVE_STATUSES: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done"]);
 
 const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, text: string): PaneKeys => {
+  // an hc terminal: hc send types the text and its Enter at once (hc-pane.ts hcType), so the Enter here is nothing
+  if (isHcPane(pane)) return { type: (t) => hcType(run, pane, t), enter: async () => {}, read: () => hcRead(run, pane), delivered: transcriptCheck(run, clock, config.sessionsDir, pane, text), runsOmoCommands: true };
   const herdr = isHerdrPane(pane);
   if (!omoPane(config, pane))
     return {
