@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:pa
 import type { HeavyHelper } from "./config.ts";
 import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
-import { linesOf, type HeavyCtx } from "./heavy-queue.ts";
+import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH... -- <cmd>: a lane's own command (a browser test, a build) runs on
@@ -275,7 +275,7 @@ const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[]): Pro
 };
 
 type Started = { readonly helper: string; readonly done: Promise<number | null> };
-type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused"; readonly why: string };
+type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
@@ -294,7 +294,7 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
     await p.stdin.end();
     const code = await p.exited;
     if (!verdict) return { kind: "down", why: last || `ssh exited ${code}` };
-    return { kind: verdict[1] === "BUSY" ? "busy" : "refused", why: verdict[2] ?? "" };
+    return helperVerdict(verdict[1] ?? "", verdict[2] ?? "");
   }
   const stop = onStop(() => p.kill("SIGKILL"));
   let exit: number | undefined;
@@ -357,7 +357,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
       }
       if (seen.get(h.name) !== `${t.kind} ${t.why}`) log(`HEAVY_HELPER_${t.kind.toUpperCase()} ${job.label} ${h.name}: ${t.why}`);
       seen.set(h.name, `${t.kind} ${t.why}`);
-      if (t.kind === "refused") {
+      if (t.kind === "refused" || t.kind === "old") {
         refused.set(h.name, t.why);
         if (refused.size === ctx.q.helpers.length) log(`HEAVY_LOCAL ${job.label}: no helper can run it (${[...refused].map(([n, w]) => `${n}: ${w}`).join("; ")}); it waits for this host`);
       }
