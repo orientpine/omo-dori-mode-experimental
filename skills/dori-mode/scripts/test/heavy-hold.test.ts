@@ -73,8 +73,7 @@ test("a hold whose owner dates its file into the future still ends a day after i
   writeFileSync(file, JSON.stringify({ reason: "forever", until: new Date(now + 365 * 24 * 3_600_000).toISOString() }));
   const future = (now + 365 * 24 * 3_600_000) / 1000;
   utimesSync(file, future, future);
-  const [h] = liveHolds(hold, now);
-  expect(h?.until).toBeLessThanOrEqual(Date.now() + 24 * 3_600_000);
+  expect(liveHolds(hold, now).map((h) => h.until)).toEqual([statSync(file).ctimeMs + 24 * 3_600_000]);
 });
 
 test("a hold directory this account cannot read holds, and a hold is not set in one other accounts cannot use", () => {
