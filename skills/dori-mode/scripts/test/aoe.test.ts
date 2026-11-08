@@ -47,7 +47,7 @@ afterEach(() => {
 });
 
 test("each running aoe session is one pane named by its tmux session; terminals and stopped sessions are not panes", async () => {
-  const panes = await listPanes(at(T0).run, "aoe");
+  const panes = await listPanes(at(T0).run, { backend: "aoe" });
   expect(panes.map((p) => p.pane_id)).toEqual([PANE, "aoe_Dori_0a1b2c3d"]);
   expect(panes[0]).toEqual({ pane_id: PANE, workspace_id: "main", agent: "omo", title: "fix-a", cwd: "/repo" });
 });

@@ -1,4 +1,4 @@
-import type { Backend, GuardThresholds } from "./config.ts";
+import type { DoriConfig, GuardThresholds } from "./config.ts";
 import { parseMeminfo } from "./heavy-mem.ts";
 import { listPanes } from "./panes.ts";
 import type { Runner } from "./run.ts";
@@ -31,7 +31,7 @@ const sampleMemFreePct = async (run: Runner): Promise<number | null> => {
 // unrounded in the sample so 19.9% stays under a 20% floor; shown rounded down so the line never claims the floor
 export const memFreeText = (pct: number | null): string => (pct === null ? "memory free unknown" : `memory free ${Math.floor(pct)}%`);
 
-export const sampleHost = async (run: Runner, backend: Backend, dataPath = "/"): Promise<HostSample> => {
+export const sampleHost = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime">, dataPath = "/"): Promise<HostSample> => {
   const load = await run(["sysctl", "-n", "vm.loadavg"]);
   const loadLinux = load.code === 0 ? null : await run(["cat", "/proc/loadavg"]);
   const load1 = num((load.code === 0 ? load.out.replace(/[{}]/g, "").trim() : loadLinux?.out ?? "").split(/\s+/)[0], 0);
@@ -40,7 +40,7 @@ export const sampleHost = async (run: Runner, backend: Backend, dataPath = "/"):
   const diskFreeGb = num(df.out.split("\n").at(-1)?.trim().split(/\s+/)[3], 0) / 1_048_576;
   const swap = await run(["sysctl", "-n", "vm.swapusage"]);
   const swapFreeGb = num(/free = ([\d.]+)M/.exec(swap.out)?.[1], 0) / 1024;
-  const panes = await listPanes(run, backend).then((p) => p.length, () => -1);
+  const panes = await listPanes(run, config).then((p) => p.length, () => -1);
   return { load1, memFreePct, diskFreeGb, swapFreeGb, panes };
 };
 

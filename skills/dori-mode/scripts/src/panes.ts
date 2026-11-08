@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import { captureTmux, listAoePanes, liveSessions, paneLife, QUESTION_MARK, sessionFor, target, tmuxPanePid, waitForPrompt } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { Backend, DoriConfig } from "./config.ts";
+import { listSessions } from "./sessions.ts";
 import { herdrResult, isHerdrPane, shellInFrontName } from "./herdr.ts";
 import { replacementOf } from "./frozen.ts";
-import type { Clock, Runner } from "./run.ts";
+import { type Clock, type Runner, runtimesOf } from "./run.ts";
 import { procTable, topAgent } from "./session-id.ts";
 import { isOmoExecutable } from "./executable.ts";
 import { type PaneKeys, submitText, type Submitted } from "./submit.ts";
@@ -23,11 +24,19 @@ export type Pane = {
 
 export class UnsafeTextError extends Error {}
 
-export const listPanes = async (run: Runner, backend: Backend): Promise<Pane[]> => {
-  if (backend === "aoe") return listAoePanes(run);
-  const r = await run(["herdr", "pane", "list"]);
-  if (r.code !== 0) throw new Error(`herdr pane list failed: ${r.err || r.out}`);
-  return (JSON.parse(r.out) as { result: { panes: Pane[] } }).result.panes;
+// The sessions of the configured runtime (sessions.ts listSessions, upstream #154) as the pane rows the sweeps read; an aoe
+// Dori lists its tmux sessions.
+export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime">): Promise<Pane[]> => {
+  if (config.backend === "aoe") return listAoePanes(run);
+  return (await listSessions(runtimesOf(run, config))).map((s) => ({
+    pane_id: s.ref.id,
+    workspace_id: s.ref.group ?? "",
+    ...(s.ref.container ? { tab_id: s.ref.container } : {}),
+    agent: s.agent,
+    ...(s.status && s.status !== "shell" ? { agent_status: s.status } : {}),
+    ...(s.title ? { title: s.title } : {}),
+    ...(s.cwd ? { cwd: s.cwd } : {}),
+  }));
 };
 
 // a tmux name is read through tmux and a herdr pane id through herdr, whatever the config says (captureTmux dispatches on

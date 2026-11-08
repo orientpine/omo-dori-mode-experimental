@@ -920,7 +920,7 @@ const backlogDeps = (): TickDeps => ({
   now: realClock.now,
   lanes: () => deps.registry.list(),
   busy: async () => {
-    const host = await sampleHost(run, config.backend);
+    const host = await sampleHost(run, config);
     return [...canLaunch(host, config.guard).reasons, ...(host.load1 > config.guard.loadOk ? [`load ${host.load1.toFixed(1)} > ${config.guard.loadOk}`] : [])];
   },
   launch: async (item, brief, key) => {
@@ -1258,7 +1258,7 @@ try {
       const minutes = Number(opt("minutes") ?? config.explore.branchMinutes);
       if (!(minutes > 0)) die("--minutes must be a positive number");
       const branches = branchesFrom(many("hypotheses"), many("test"), many("gpu").map(Number), Boolean(flags.values["gpu-all"]));
-      const load = async () => (await sampleHost(run, config.backend)).load1;
+      const load = async () => (await sampleHost(run, config)).load1;
       const takeSlot = async (label: string) => {
         const slot = await acquireSlot(heavyDeps(load), label);
         return () => releaseSlot(slot);
@@ -1530,7 +1530,7 @@ try {
       const minutes = loopMinutes();
       console.log("HOST_GUARD_READY");
       await every(minutes, async () => {
-        for (const line of guardTick(await sampleHost(run, config.backend), config.guard, state)) console.log(line);
+        for (const line of guardTick(await sampleHost(run, config), config.guard, state)) console.log(line);
       });
       break;
     }
@@ -1538,7 +1538,7 @@ try {
       const sep = rest.indexOf("--");
       const label = rest[0];
       const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
-      const load = async () => (await sampleHost(run, config.backend)).load1;
+      const load = async () => (await sampleHost(run, config)).load1;
       const jobName = opt("job");
       if (jobName !== undefined) {
         const jobLabel = label && !label.startsWith("-") ? label : die("usage: dori heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]");
@@ -1600,13 +1600,13 @@ try {
     }
     case "heavy-serve": {
       const sep = rest.indexOf("--");
-      const load = async () => (await sampleHost(run, config.backend)).load1;
+      const load = async () => (await sampleHost(run, config)).load1;
       const [label = "", kind = ""] = flags.positionals;
       process.exitCode = await heavyServe({ q: config.heavyQueue, deps: heavyDeps(load) }, { label, kind, rl: Boolean(flags.values.rl), args: sep >= 0 ? rest.slice(sep + 1) : [] });
       break;
     }
     case "heavy-worker": {
-      const load = async () => (await sampleHost(run, config.backend)).load1;
+      const load = async () => (await sampleHost(run, config)).load1;
       const at = rest.indexOf("--caller");
       const words = at >= 0 ? [...rest.slice(0, at), ...rest.slice(at + 2)] : rest;
       process.exitCode = await heavyWorker({ q: config.heavyQueue, deps: heavyDeps(load) }, process.env["SSH_ORIGINAL_COMMAND"] ?? words.join(" "), opt("caller"));
@@ -1785,7 +1785,7 @@ try {
       break;
     }
     case "can-launch": {
-      const v = canLaunch(await sampleHost(run, config.backend), config.guard);
+      const v = canLaunch(await sampleHost(run, config), config.guard);
       console.log(v.ok ? "CAN_LAUNCH" : `HOLD ${v.reasons.join(" | ")}`);
       process.exit(v.ok ? 0 : 4);
     }
