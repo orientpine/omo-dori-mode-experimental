@@ -5,9 +5,9 @@ import { join } from "node:path";
 
 import type { HeavyHelper, HeavyQueue } from "../src/config.ts";
 import type { HeavyCtx } from "../src/heavy-queue.ts";
-import { hostMachine, syncedMachine } from "../src/heavy-route.ts";
+import { gpuNodes, hostMachine, syncedMachine } from "../src/heavy-route.ts";
 import type { SlotDeps } from "../src/heavy-slot.ts";
-import { heavySpread, spreadPlan, type SpreadJob } from "../src/heavy-spread.ts";
+import { heavySpread, sandboxArgv, spreadPlan, type SpreadJob } from "../src/heavy-spread.ts";
 import { withState } from "./fakes.ts";
 
 // The caller and a helper as in heavy-spread.test.ts: the helper is the real CLI (`dori heavy-worker`) behind an argv that
@@ -18,11 +18,11 @@ let state: ReturnType<typeof withState>;
 let logs: string[];
 let work: string;
 
-const helperArgv = (pathFirst?: string): string[] => {
+const helperArgv = (pathFirst?: string, kinds?: string[]): string[] => {
   const dir = join(state.dir, "helper");
   mkdirSync(dir, { recursive: true });
   const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs"), ...(kinds ? { kinds } : {}) } }));
   const own = Object.entries(process.env).map(([k, v]) => (k === "PATH" && pathFirst ? `PATH=${pathFirst}:${v}` : `${k}=${v}`));
   return ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
 };
@@ -114,6 +114,27 @@ test("a label or option with shell characters never reaches a helper's shell: th
   // Then
   expect(await Bun.file(marker).exists()).toBe(false);
   expect(logs.find((l) => l.startsWith("HEAVY_HELPER_REFUSED"))).toContain("would reach the helper's shell");
+  expect(r).toHaveProperty("slot");
+}, 60_000);
+
+test("a browser job's box has this host's GPU device nodes, so its chrome can draw on the GPU; a cpu job's box has none", () => {
+  // Given: the box dori heavy makes for each kind, listing the GPU nodes it can see
+  const seen = (kind: "cpu" | "browser") => {
+    const argv = sandboxArgv(kind, { argv: ["sh", "-c", "ls -d /dev/dri /dev/dxg /dev/nvidia* 2>/dev/null; true"], cwd: "/", sync: [], env: {} }, (p) => p, {});
+    return Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" }).stdout.toString().split("\n").filter(Boolean).sort();
+  };
+  // When / Then: the browser box sees exactly the host's nodes (an RTX 3090 or a GB10 here), the cpu box none
+  expect(seen("browser")).toEqual([...gpuNodes()].sort());
+  expect(seen("cpu")).toEqual([]);
+});
+
+test("a helper that takes only cpu jobs (heavyQueue.kinds) refuses a browser job before it takes it; the job stays here", async () => {
+  // Given: a helper whose box cannot draw on its GPU (kimm-cha's WSL2 chrome, 2026-11-08), set to cpu only
+  const ctx = ctxWith([{ name: "cpuonly", ssh: helperArgv(undefined, ["cpu"]), prefer: ["browser"] }]);
+  // When
+  const r = await spread(ctx, { kind: "browser", cmd: ["true"] });
+  // Then
+  expect(logs).toContain("HEAVY_HELPER_REFUSED t cpuonly: this host takes only cpu jobs (heavyQueue.kinds)");
   expect(r).toHaveProperty("slot");
 }, 60_000);
 

@@ -1,7 +1,7 @@
-import { closeSync, existsSync, openSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync } from "node:fs";
 
 import type { ArgvTemplate } from "./config.ts";
-import type { Plan, SpreadJob } from "./heavy-spread.ts";
+import type { Kind, Plan, SpreadJob } from "./heavy-spread.ts";
 
 // a host the queue host hands jobs to: ssh argv to its `dori heavy-worker`; prefer: the --kind kinds it takes first
 export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate; readonly prefer?: readonly string[] };
@@ -76,6 +76,19 @@ export const unsafeRemote = (job: SpreadJob, plan: Extract<Plan, { ok: true }>):
   const bad = execWords(job, plan, 0).find((w) => !SHELL_SAFE.test(w));
   return bad === undefined ? undefined : { kind: "refused", why: `"${bad.slice(0, 80)}" would reach the helper's shell; only letters, digits and . , : = + @ % / - _ go to a helper, so it runs on this host` };
 };
+
+// this host's GPU device nodes: the DRM nodes, NVIDIA's, and WSL2's /dev/dxg
+export const gpuNodes = (): string[] => [...["/dev/dri", "/dev/dxg"].filter((n) => existsSync(n)), ...readdirSync("/dev").filter((n) => n.startsWith("nvidia")).map((n) => `/dev/${n}`)];
+
+// The /dev of a job's box (sandboxArgv): a gpu job gets this host's whole /dev; a browser job a new /dev with this host's GPU
+// nodes in it, so its headless chrome draws on the GPU, not in software (cha 2026-11-08: llvmpipe in the box, RTX 3090
+// outside, and an rv render 30+ minutes there against 23 on 0a83); a cpu job a new /dev.
+export const boxDev = (kind: Kind, nodes: readonly string[] = gpuNodes()): string[] =>
+  kind === "gpu" ? ["--dev-bind", "/dev", "/dev"] : ["--dev", "/dev", ...(kind === "browser" ? nodes.flatMap((n) => ["--dev-bind", n, n]) : [])];
+
+// the helper's refusal of a job of a kind it does not take (heavyQueue.kinds), or else of its machine (archRefusal)
+export const hostRefusal = (kinds: readonly string[] | undefined, kind: string, opts: readonly string[]): string | undefined =>
+  kinds && !kinds.includes(kind) ? `this host takes only ${kinds.join(", ")} jobs (heavyQueue.kinds)` : archRefusal(opts);
 
 const KINDS = ["cpu", "browser", "gpu"];
 const isArgv = (v: unknown): boolean => Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string");
