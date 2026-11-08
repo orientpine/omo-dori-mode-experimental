@@ -118,10 +118,11 @@ export const USAGE_MIDDLE = `  challenge <key> --plan FILE [--model M] [--all]
                                        one is more than 15 points busier or refuses it, in a bwrap box with no network,
                                        the --sync folders copied there at the same paths and changed files copied back
                                        (HEAVY_SPREAD / HEAVY_BACK / HEAVY_DONE); paths outside --sync run here (HEAVY_LOCAL)
-  heavy hold-local [on --until <30|2h|HH:MM|ISO> --reason "<why>" | off]
+  heavy hold-local [on --until <30|2h|HH:MM|ISO> --reason "<why>" [--except <account> ...] | off]
                                        a measuring window on this host: until off or --until (24 h at most), no new heavy
-                                       job of any account takes a slot here; one that may go to a helper goes there, the
-                                       rest wait (HEAVY_HOLD_LOCAL lines name who, why and until); running jobs go on
+                                       job of any account but --except ones takes a slot here; one that may go to a helper
+                                       goes there, the rest wait (HEAVY_HOLD_LOCAL lines name who, why and until); running
+                                       jobs go on, and --job transcribe runs here (HEAVY_HOLD_EXEMPT)
   heavy <label> --helpers-only --kind cpu|browser|gpu --sync PATH ... -- <command ...>
                                        the same, never on this host: it waits for a helper that admits it (it takes no
                                        slot or ticket here), exit 2 with HEAVY_HELPERS_ONLY when none can take it

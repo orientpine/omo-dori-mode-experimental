@@ -19,9 +19,10 @@ const heavyCommand: Command = async (context) => {
   const label = rest[0];
   const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
   const load = async () => (await sampleHost(run, config)).load1;
-  // dori heavy hold-local [on --until ... --reason ... | off]: no job of any account takes this host's slots meanwhile
+  // dori heavy hold-local [on --until ... --reason ... [--except ACCOUNT ...] | off]: no job of any account but those
+  // excepted takes this host's slots meanwhile
   if (label === "hold-local" && sep < 0) {
-    const r = holdCommand(config.heavyHoldDir, userInfo().username, rest[1], opt("until"), many("reason").join(" "), Date.now());
+    const r = holdCommand(config.heavyHoldDir, userInfo().username, rest[1], opt("until"), many("reason").join(" "), Date.now(), many("except"));
     for (const l of r.lines) heavyDeps(load).log?.(l);
     process.exitCode = r.code;
     return;

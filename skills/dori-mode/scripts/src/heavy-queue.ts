@@ -122,9 +122,14 @@ export const runQueued = async (ctx: HeavyCtx, req: JobRequest, dir: string): Pr
     }
     return null;
   };
+  // the owner's own transcription (hooks.transcribe = dori heavy voice --job transcribe) is short and he waits for it:
+  // it runs here under a hold (lead 2026-11-08: yoodori has no helper and its transcripts waited the whole window)
+  const exempt = req.kind === "transcribe" ? ctx.deps.hold?.() : undefined;
+  if (exempt) log(`HEAVY_HOLD_EXEMPT ${req.label}: the owner's transcription (--job transcribe) runs here under the hold ${exempt}`);
+  const deps: SlotDeps = req.kind === "transcribe" ? { ...ctx.deps, hold: () => undefined } : ctx.deps;
   const since = ctx.deps.clock.now();
   for (;;) {
-    const got = await acquire<Started>(ctx.deps, req.label, { since, elsewhere: helpers });
+    const got = await acquire<Started>(deps, req.label, { since, elsewhere: helpers });
     if ("slot" in got) {
       try {
         const r = await runJob(job, dir, req.args, { label: req.label, free: ctx.deps.headroom?.free ?? 10, gpuFreeKb: ctx.deps.headroom?.gpuFreeKb ?? 0, ...(ctx.deps.log ? { log: ctx.deps.log } : {}) });
