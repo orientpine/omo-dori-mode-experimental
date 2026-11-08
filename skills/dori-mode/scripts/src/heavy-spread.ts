@@ -7,6 +7,7 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
+import { archOf, archRefusal, preferredFor } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { playwrightVersion, toolBundles, toolNameOk, toolOptOk, toolSpec } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
@@ -66,7 +67,7 @@ export type SpreadJob = {
 // which the helper must have before it takes the job
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
 // path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
-export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[] } | { readonly ok: false; readonly why: string };
+export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly arch?: string } | { readonly ok: false; readonly why: string };
 
 // A bash -c script whose pipeline ends in tail, grep or head exits with that last command's code, so a failing test run
 // piped into tail looked like a pass (2026-11-02: 171 of 744 failed on the helper, HEAVY_DONE exit 0). The script that pipes
@@ -202,7 +203,7 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   if (needs.size > NEEDS_MAX) return no(`the job starts ${needs.size} system programs, more than the ${NEEDS_MAX} a helper is asked about`);
   const playwright = job.kind === "browser" ? playwrightVersion(sync.filter((s) => existsSync(s))) : undefined;
   const tools = [...new Set(job.tools ?? [])].map((t) => toolSpec(t, { path: who.path ?? process.env["PATH"] ?? "", home: who.home }));
-  return { ok: true, sync, needs: [...needs], which: [...which], ...(path !== undefined ? { path } : {}), ...(playwright ? { playwright } : {}), ...(tools.length ? { tools } : {}) };
+  return { ok: true, sync, needs: [...needs], which: [...which], ...(path !== undefined ? { path } : {}), ...(playwright ? { playwright } : {}), ...(tools.length ? { tools } : {}), ...archOf(sync) };
 };
 
 // how busy this host is for a job of this kind, in percent (gpu: the GPU or the CPU, whichever is busier)
@@ -274,7 +275,7 @@ type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonl
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
-  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : [])];
+  const args = ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : []), ...(plan.arch ? [`arch=${plan.arch}`] : [])];
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const lines = linesOf(p.stderr);
   let verdict: RegExpExecArray | null = null;
@@ -341,8 +342,8 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
   const seen = new Map<string, string>();
   // a helper that refused this job (exec off, no bwrap, a program the job starts missing there) is not asked again
   const refused = new Map<string, string>();
-  const helpers = async (below: number, why: string): Promise<Started | null> => {
-    for (const h of ctx.q.helpers) {
+  const helpers = async (below: number, why: string, among: readonly HeavyHelper[] = ctx.q.helpers): Promise<Started | null> => {
+    for (const h of among) {
       if (refused.has(h.name)) continue;
       const t = await startExec(ctx, h, job, plan, below);
       if (t.kind === "started") {
@@ -359,8 +360,9 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
     }
     return null;
   };
-  const busy = await busyOf(ctx, job.kind);
-  let run = busy > SPREAD_MARGIN ? await helpers(busy - SPREAD_MARGIN, `this host is ${busy}% busy (${job.kind}), the helper less than ${busy - SPREAD_MARGIN}%`) : null;
+  let run = await helpers(100, `${job.kind} jobs go to this helper first (heavyQueue.helpers prefer)`, preferredFor(ctx.q.helpers, job.kind));
+  const busy = run ? 0 : await busyOf(ctx, job.kind);
+  if (busy > SPREAD_MARGIN) run = await helpers(busy - SPREAD_MARGIN, `this host is ${busy}% busy (${job.kind}), the helper less than ${busy - SPREAD_MARGIN}%`);
   const since = ctx.deps.clock.now();
   for (;;) {
     if (!run) {
@@ -502,21 +504,19 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const needOk = (o: string): boolean => o.startsWith("need=") && NEED_PATH.test(o.slice(5)) && !o.split("/").includes("..") && inProgramDirs(o.slice(5));
   const whichOk = (o: string): boolean => /^which=[\w.+@-]{1,64}$/.test(o) && !/^which=\.+$/.test(o);
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
-  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && o !== "back");
+  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && o !== "back");
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
-  if (!ctx.q.exec) return d.refuse(label, "exec is off on this host (heavyQueue.exec)");
-  if (!Bun.which("bwrap")) return d.refuse(label, "no bwrap on this host");
+  const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : archRefusal(opts);
+  if (off) return d.refuse(label, off);
   const got = toolBundles(opts, d.tools.toolsDir);
   if ("why" in got) return d.refuse(label, got.why);
   const tools: BoxTools = { ...d.tools, bundles: got.bundles };
   const needs = opts.filter((o) => o.startsWith("need=")).map((o) => o.slice(5));
   const names = opts.filter((o) => o.startsWith("which=")).map((o) => o.slice(6));
-  if (needs.length || names.length) {
-    const path = opts.find((o) => o.startsWith("path="))?.slice(5);
-    const absent = probeBox(kind, tools, needs, names, path);
-    if (absent && "failed" in absent) return d.refuse(label, `the check for the programs the job starts failed: ${absent.failed}`);
-    if (absent) return d.refuse(label, needs.includes(absent.missing) ? `${absent.missing} is not on this host (the job's command or a link in its --sync paths starts it)` : `no ${absent.missing} on this host's box PATH (the job's command)`);
-  }
+  // the box is tried before every job: AppArmor kept bwrap from making it on the training sparks (2026-11-08)
+  const absent = probeBox(kind, tools, needs, names, opts.find((o) => o.startsWith("path="))?.slice(5));
+  if (absent && "failed" in absent) return d.refuse(label, needs.length || names.length ? `the check for the programs the job starts failed: ${absent.failed}` : `its box does not start on this host: ${absent.failed}`);
+  if (absent) return d.refuse(label, needs.includes(absent.missing) ? `${absent.missing} is not on this host (the job's command or a link in its --sync paths starts it)` : `no ${absent.missing} on this host's box PATH (the job's command)`);
   const noScope = await canScope();
   if (noScope) return d.refuse(label, `no memory/CPU/time caps here: ${noScope}`);
   const playwright = opts.find((o) => o.startsWith("playwright="))?.slice("playwright=".length);
