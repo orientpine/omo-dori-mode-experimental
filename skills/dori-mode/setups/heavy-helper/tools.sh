@@ -83,7 +83,9 @@ EOF
   # rv's plain python3 is the one py/ is for, not another python3 earlier on a box's PATH
   ln -s /usr/bin/python3 "$new/bin/python3"
   local pkgs
-  pkgs=$(grep -rhoE -- '--with [A-Za-z0-9_.-]+' "$new/rv-video-tool" | awk '{print $2}' | LC_ALL=C sort -u | tr '\n' ' ')
+  # every uv run --with, as uv takes it (--with p or --with=p, quoted or not, a comma list, a version after the name),
+  # read as heavy-tools.ts reads a caller's tree
+  pkgs=$(grep -rhoE -- "--with([[:space:]]+|=)['\"]?[A-Za-z0-9_.,<>=!~-]+" "$new/rv-video-tool" | sed -E "s/^--with([[:space:]]+|=)['\"]?//" | tr ',' '\n' | sed -E 's/^([A-Za-z0-9_.-]+).*/\1/' | grep -v '^$' | LC_ALL=C sort -u | tr '\n' ' ')
   [ -n "$pkgs" ] || { echo "TOOLS_FAIL no uv run --with package found in rv $tag" >&2; exit 3; }
   # what a job that sends its own rv tree may ask of this runtime (heavy-tools.ts toolBundles)
   # shellcheck disable=SC2086 # one line per package

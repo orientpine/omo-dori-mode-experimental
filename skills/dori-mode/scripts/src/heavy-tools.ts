@@ -61,15 +61,17 @@ export const callerTool = (name: string, who: { readonly path: string; readonly 
   return found[0] ? { at: join(found[0], name), onPath: false, version: versionIn(found[0])! } : undefined;
 };
 
-// the runtime packages a tool's tree asks for, as tools.sh reads them for a bundle's wheels: every uv run --with <package>
-const PKG = /--with ([A-Za-z0-9_.-]+)/g;
+// the runtime packages a tool's tree asks for, as tools.sh reads them for a bundle's wheels: every uv run --with, as uv
+// takes it (--with p or --with=p, quoted or not, a comma list, a version after the name)
+const PKG = /--with(?:\s+|=)['"]?([A-Za-z0-9_.,<>=!~-]+)/g;
+const pkgNames = (spec: string): string[] => spec.split(",").map((p) => /^\s*([A-Za-z0-9_.-]+)/.exec(p)?.[1] ?? "").filter(Boolean);
 const packagesIn = (tree: string): string[] => {
   const out = new Set<string>();
   const walk = (d: string): void => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name);
       if (e.isDirectory() && ![".git", "__pycache__", "node_modules"].includes(e.name)) walk(p);
-      else if (e.isFile() && statSync(p).size < 1_000_000) for (const m of readFileSync(p, "latin1").matchAll(PKG)) out.add(m[1]!);
+      else if (e.isFile() && statSync(p).size < 1_000_000) for (const m of readFileSync(p, "latin1").matchAll(PKG)) for (const n of pkgNames(m[1]!)) out.add(n);
     }
   };
   walk(tree);

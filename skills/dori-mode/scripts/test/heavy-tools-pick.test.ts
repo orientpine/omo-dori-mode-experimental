@@ -35,7 +35,7 @@ const helperWith = (version: string, packages?: string, beside: readonly (readon
     mkdirSync(join(gen, "bin"), { recursive: true });
     writeFileSync(join(gen, "VERSION"), `${v}\n`);
     writeFileSync(join(gen, "PACKAGES"), `${pk}\n`);
-    script(join(gen, "bin", "rv"), `mkdir -p out && echo runtime ${v} >> out/ran`);
+    script(join(gen, "bin", "rv"), `mkdir -p out && echo runtime ${v} >> out/ran\nexec "\${DORI_TOOL_TREE_RV}/rv" "$@"`);
     symlinkSync(`rv-gens/${v}-a`, join(toolsDir(), `rv@${v}`));
   }
   const at = join(toolsDir(), "rv-gens", `${version}-a`);
@@ -124,7 +124,17 @@ test("a caller's tree that the current bundle cannot serve takes another install
   // When
   expect(await heavySpread(ctxWith(helperWith("0.2.1", "edge-tts numpy pillow playwright", [["0.2.1+gabc1234", "edge-tts numpy pillow playwright torch"]])), j, planOf(j))).toEqual({ code: 0 });
   // Then
-  expect(readFileSync(join(work, "out", "ran"), "utf8")).toBe("runtime 0.2.1+gabc1234\n");
+  expect(readFileSync(join(work, "out", "ran"), "utf8")).toBe("runtime 0.2.1+gabc1234\ncaller rv\n");
+});
+
+test("a quoted or listed uv --with, with a version after it, still asks for its package", async () => {
+  // Given: the caller's tree asks for torch as uv lets one write it, which the bundle here lacks
+  writeFileSync(join(home, ".local", "share", "rv", "own-video-tool", "lib", "ml.sh"), "uv run --with 'torch>=2' --with=scipy,sympy python ml.py\n");
+  const j = job(["rv"]);
+  // When
+  await expect(heavySpread(ctxWith(helperWith("0.2.1", "edge-tts numpy pillow playwright")), j, planOf(j))).rejects.toThrow("stop");
+  // Then
+  expect(logs).toContain('HEAVY_HELPER_NOTOOLS t second: tool bundle "rv" here (0.2.1) lacks scipy sympy torch, which the job\'s rv asks for; install one with them there: setups/heavy-helper/tools.sh rv <tag or commit>');
 });
 
 test("a caller's tree with a link out of what travels keeps the job here, as a --sync folder would", () => {
