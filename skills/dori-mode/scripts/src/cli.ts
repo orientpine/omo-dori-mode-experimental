@@ -41,6 +41,7 @@ import { inboundCommands } from "./cli-inbound.ts";
 import { cardsCommands } from "./cli-cards.ts";
 import { threadCommands } from "./cli-thread.ts";
 import { handoverCommands } from "./cli-handover.ts";
+import { migrateCommands } from "./cli-migrate.ts";
 import { directivesCommands } from "./cli-directives.ts";
 import { journalCommands } from "./cli-journal.ts";
 
@@ -161,6 +162,7 @@ const commands: Readonly<Record<string, Command>> = {
   ...cardsCommands,
   ...threadCommands,
   ...handoverCommands,
+  ...migrateCommands,
   ...directivesCommands,
   ...journalCommands,
 };
