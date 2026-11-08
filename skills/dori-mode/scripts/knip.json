@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["test/**/*.test.ts", "test/*-cli-fake.ts", "test/fixtures/discord-send-preload.ts", "../setups/**/*.ts"],
+  "project": ["src/**/*.ts", "test/**/*.ts", "../setups/**/*.ts"],
+  "ignoreExportsUsedInFile": true
+}

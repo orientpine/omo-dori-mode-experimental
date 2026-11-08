@@ -1,0 +1,52 @@
+// From upstream https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/149 (biome.jsonc); vcs.root points at the repo root because this package has no .gitignore of its own.
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true,
+    "root": "../../.."
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": ["**", "!**/fixtures", "!**/vendor", "!**/*.md", "!docs/**/*.svg"]
+  },
+  "formatter": {
+    // off in the fork for now (lead 2026-11-08): formatting all of scripts/ is a 3.8 MB diff no reviewer can read, and it
+    // collides with fork-only code; split it by directory if format drift makes upstream ports conflict.
+    "enabled": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noFallthroughSwitchClause": "off" // tsc noFallthroughCasesInSwitch covers this with type knowledge (process.exit returns never)
+      },
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error"
+      },
+      "style": {
+        "useImportType": "error",
+        "noNonNullAssertion": "off" // `!` follows noUncheckedIndexedAccess guards the code has already checked
+      },
+      "complexity": {
+        "noForEach": "off", // the code base uses forEach for side-effect loops in a few places; for-of rewrites add churn and no safety
+        "useLiteralKeys": "off" // conflicts with tsc noPropertyAccessFromIndexSignature, which requires obj["key"] for index signatures
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  },
+  "assist": {
+    "enabled": false
+  }
+}
