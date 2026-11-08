@@ -47,7 +47,7 @@ const helperWith = (...versions: string[]): string[] => {
     symlinkSync("../rv/bin/rv", join(toolsDir(), "bin", "rv"));
   }
   const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
   const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
   return ["env", "-i", ...own, `HOME=${join(dir, "home")}`, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
 };
@@ -104,7 +104,7 @@ test("a job naming a bundle that stays here runs the caller's own install of it,
   install("rv/zz-video-tool.bak-20261108T081648Z", "0.2.0");
   install("rv/old-20261104", "0.1.0");
   const config = join(state.dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyMaxLoad: 1e9 }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyHoldDir: join(state.dir, "hold"), heavyMaxLoad: 1e9 }));
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_")));
   const env = { ...own, HOME: home, PATH: "/usr/bin:/bin", DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") };
   // When

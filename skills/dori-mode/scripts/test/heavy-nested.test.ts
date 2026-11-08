@@ -22,7 +22,7 @@ beforeEach(() => {
   const config = join(state.dir, "config.json");
   // named jobs: one that prints, one whose command starts a plain dori heavy itself
   const jobs = { say: { argv: ["sh", "-c", "echo job ran"] }, wrap: { argv: ["dori", "heavy", "inner", "--", "sh", "-c", "echo inner of a job ran"] } };
-  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyMaxLoad: 1e9, heavySlots: 1, heavyMaxSlots: 1, heavyQueue: { jobs, jobDir: join(state.dir, "jobs") } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyHoldDir: join(state.dir, "hold"), heavyMaxLoad: 1e9, heavySlots: 1, heavyMaxSlots: 1, heavyQueue: { jobs, jobDir: join(state.dir, "jobs") } }));
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_")));
   env = { ...own, PATH: `${bin}:/usr/bin:/bin`, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") };
 });

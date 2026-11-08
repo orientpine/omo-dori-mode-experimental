@@ -22,7 +22,7 @@ const helper = (): string[] => {
   const dir = join(state.dir, "helper");
   mkdirSync(join(dir, "home"), { recursive: true });
   const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
   const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
   return ["env", "-i", ...own, `HOME=${join(dir, "home")}`, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
 };
@@ -100,7 +100,7 @@ test("a helper run over the cap sends back the rest beside the folder it leaves 
 
 test("an empty --back is refused, not read as no --back", async () => {
   const config = join(state.dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyMaxLoad: 1e9 }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(state.dir, "state"), heavyHoldDir: join(state.dir, "hold"), heavyMaxLoad: 1e9 }));
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DORI_")));
   const p = Bun.spawn([process.execPath, CLI, "heavy", "t", "--kind", "cpu", "--sync", work, "--back", "", "--", "true"], { cwd: work, env: { ...own, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_STATE_DIR: join(state.dir, "state") }, stdout: "pipe", stderr: "pipe" });
   const [code, err] = await Promise.all([p.exited, new Response(p.stderr).text()]);

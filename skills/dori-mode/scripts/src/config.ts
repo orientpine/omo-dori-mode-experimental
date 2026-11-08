@@ -116,6 +116,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   if (!(typeof everyMin === "number" && Number.isFinite(everyMin) && (everyMin === 0 || everyMin * 60_000 >= 1))) throw new ConfigError(`${path}: stateGit.everyMin must be a number of minutes: 0 turns it off, or 1 ms (0.0000167) or more, not ${JSON.stringify(everyMin)}`);
   const heavyProblem = heavyQueueProblem(merged.heavyQueue);
   if (heavyProblem) throw new ConfigError(`${path}: ${heavyProblem}`);
+  if (typeof merged.heavyHoldDir !== "string" || !merged.heavyHoldDir.startsWith("/")) throw new ConfigError(`${path}: heavyHoldDir must be an absolute path every account on this host shares, not ${JSON.stringify(merged.heavyHoldDir)}`);
   if (!OWNER_SPEECHES.includes(merged.discord.ownerSpeech)) throw new ConfigError(`${path}: discord.ownerSpeech must be "" (follow discord.locale), "casual" or "polite", not ${JSON.stringify(merged.discord.ownerSpeech)}`);
   if (typeof merged.update.maintainer !== "boolean") throw new ConfigError(`${path}: update.maintainer must be true or false, not ${JSON.stringify(merged.update.maintainer)}`);
   const researchProblem = researchTextProblem(merged.explore.researchText);

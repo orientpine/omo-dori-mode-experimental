@@ -58,6 +58,8 @@ const line = (deps: SlotDeps): string[] => {
 // One admission try now, for a helper that serves another host's queue: a job waiting in this host's own line goes first.
 export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: number): Promise<Try | null> => {
   mkdirSync(deps.dir, { recursive: true });
+  const held = deps.hold?.();
+  if (held) return { wait: "hold", why: `this host's heavy slots are held ${held}` };
   const waiting = line(deps).length;
   if (waiting) return { wait: "queue", why: `${waiting} job(s) wait in this host's queue` };
   return withLock(deps, () => tryAdmit(deps, label, undefined, settleSec));
@@ -124,6 +126,10 @@ export type AcquireOptions<T> = {
   readonly settleSec?: number | undefined;
 };
 
+// the line of a job that may not take this host's slot now, and what it does instead
+const heldLine = (label: string, why: string, local: boolean): string =>
+  `HEAVY_HOLD_LOCAL ${label}: this host's heavy slots are held ${why}; ${local ? "it cannot run on a helper, so it waits here until the hold ends" : "it goes to the first helper that admits it"}`;
+
 export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOptions<T> = {}): Promise<Acquired<T>> => {
   mkdirSync(deps.dir, { recursive: true });
   const ticket = enqueue(deps, label, opts.since ?? deps.clock.now(), opts.elsewhere ? "any" : "local");
@@ -136,14 +142,17 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
       local = onlyHere;
       const names = line(deps);
       const ahead = names.slice(0, Math.max(0, names.indexOf(basename(ticket))));
-      const t: Try | null = ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await withLock(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec));
+      // a hold on this host (dori heavy hold-local, heavy-hold.ts) is read before every try, so a job that waited here
+      // when it came on does not take a slot that frees during it
+      const held = deps.hold?.();
+      const t: Try | null = held ? { wait: `hold ${local}`, why: held } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await withLock(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec));
       const localOnlyAhead = ahead.length > 0 && ahead.every((n) => ticketKind(deps, n) === "local");
       if (t && "slot" in t) {
         deps.log?.(`HEAVY_ADMIT ${label} ${basename(t.slot)}: ${t.why}`);
         return { slot: t.slot };
       }
       if (t && t.wait !== waiting) {
-        deps.log?.(`HEAVY_WAIT ${label}: ${t.why}`);
+        deps.log?.(held ? heldLine(label, held, local) : `HEAVY_WAIT ${label}: ${t.why}`);
         waiting = t.wait;
       }
       if (t && opts.elsewhere && !local && (localOnlyAhead || (t.wait !== "queue" && (t.wait !== "settle" || opts.elsewhereWhileSettling)))) {

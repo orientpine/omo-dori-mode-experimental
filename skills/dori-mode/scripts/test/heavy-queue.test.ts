@@ -26,7 +26,7 @@ const helperArgv = (rl?: boolean): string[] => {
   mkdirSync(dir, { recursive: true });
   const config = join(dir, "config.json");
   const jobs = { upper: upper("helper"), train, rlprobe: { ...upper("helper"), rl: true } };
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyMaxLoad: 1e9, heavyQueue: { jobs, jobDir: join(dir, "jobs"), ...(rl === undefined ? {} : { rl }) } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { jobs, jobDir: join(dir, "jobs"), ...(rl === undefined ? {} : { rl }) } }));
   // env -i with this process's environment (no DORI_*, test/preload.ts): src spawns the stand-in without env, and Bun
   // then hands it the environment bun test started with, which in an aoe window names that Dori's live state dir
   const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
