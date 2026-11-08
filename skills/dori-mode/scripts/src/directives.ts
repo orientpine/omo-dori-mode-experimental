@@ -358,7 +358,7 @@ export const headingAt = (text: string, heading: string): number => {
 
 // The sections dori launch writes after the lead's text (the repo's lessons, past signals, the tree, the footer): none of it
 // is the owner's or the lead's words, and a brief launched again gets them fresh, not a second copy of the old ones.
-export const GENERATED_SECTION = /\n## (?:Lessons for this repo|Past signals|Hypothesis tree|Lane footer) \(written by dori launch\)/;
+export const GENERATED_SECTION = /\n## (?:Lessons for every lane|Lessons for this repo|Past signals|Hypothesis tree|Lane footer) \(written by dori launch\)/;
 export const beforeGenerated = (brief: string): string => brief.split(GENERATED_SECTION)[0] ?? brief;
 
 // The lead's text of a brief: what dori launch appended (lessons, past signals, tree, footer) and the ledger block it put in are cut.

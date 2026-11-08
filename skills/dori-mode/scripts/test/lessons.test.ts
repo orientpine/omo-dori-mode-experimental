@@ -1,9 +1,10 @@
 // Ported unchanged from sisyphuslabs/dori-superagent PR #65 (https://github.com/sisyphuslabs/dori-superagent/pull/65),
-// merge commit 06c4600b77f6e81ed9bd5b706d736bec07cf27b1. Keep the body byte-for-byte; fork wiring lives in cli.ts, launch.ts, done-flow.ts.
+// merge commit 06c4600b77f6e81ed9bd5b706d736bec07cf27b1, and PR #97, global lessons (https://github.com/sisyphuslabs/dori-superagent/pull/97),
+// merge commit 023de2246b8e915141b46b74662b9d475f6effad. Keep the body byte-for-byte; fork wiring lives in cli.ts, launch.ts, done-flow.ts.
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 
-import { LessonError, Lessons } from "../src/lessons.ts";
+import { GLOBAL_LESSON_CAP, LessonError, Lessons, renderLessons, REPO_LESSON_CAP } from "../src/lessons.ts";
 import { withState } from "./fakes.ts";
 
 const T0 = Date.parse("2026-10-29T00:00:00Z");
@@ -138,5 +139,50 @@ test("a malformed or unknown field is rejected by name, and an immutable change 
     expect.stringContaining(`:2: lesson field "outcome"`),
     expect.stringContaining(`:3: unknown lesson field "extra"`),
     expect.stringContaining(`:4: lesson field "cwd" changed for ${added.id}`),
+  ]);
+});
+
+test("global and repo lessons have their own caps, so globals never push repo lessons out; retired ones drop out", () => {
+  // Given more global rules than their cap (one retired), then more repo lessons than theirs, all newer than the globals.
+  const globals = Array.from({ length: GLOBAL_LESSON_CAP + 1 }, (_, i) =>
+    lessons.add({ lane: "lead", scope: "global", rule: i ? `Global ${i}` : "Clean up heavy job data right away", evidence: `slack:D1/1.${i + 1}` }, T0 + i));
+  lessons.mark(lessons.add({ lane: "lead", scope: "global", rule: "Retired rule", evidence: "slack:D1/1.9" }, T0 + 9).id, "harmful");
+  const repo = Array.from({ length: REPO_LESSON_CAP + 2 }, (_, i) => lessons.add({ ...input, rule: `Rule ${i}` }, T0 + 10 + i));
+  // When selecting for this repo and for an unrelated one.
+  const here = lessons.forRepo("/repo").lessons;
+  const elsewhere = lessons.forRepo("/unrelated").lessons;
+  // Then each kind keeps its own newest (4 global, 8 repo), and only the globals reach the other repo.
+  const newestGlobals = globals.slice(-GLOBAL_LESSON_CAP).reverse().map((lesson) => lesson.id);
+  expect(here.map((lesson) => lesson.id)).toEqual([...newestGlobals, ...repo.slice(-REPO_LESSON_CAP).reverse().map((lesson) => lesson.id)]);
+  expect(elsewhere.map((lesson) => lesson.id)).toEqual(newestGlobals);
+  const global = globals[0];
+  if (!global) throw new Error("no global lesson added");
+  expect(global).toEqual({ id: global.id, at: new Date(T0).toISOString(), lane: "lead", scope: "global", rule: "Clean up heavy job data right away", evidence: "slack:D1/1.1", outcome: "pending" });
+  expect("cwd" in global).toBe(false);
+});
+
+test("the brief preamble puts global lessons under their own heading above the repo lessons", () => {
+  // Given one global and one repo lesson.
+  lessons.add(input, T0);
+  lessons.add({ lane: "lead", scope: "global", rule: "Never change the global Git identity", evidence: "slack:D1/2.1" }, T0 + 1);
+  // When rendered for the repo; then each kind has its section, global first.
+  expect(renderLessons(lessons.forRepo("/repo").lessons)).toBe(
+    "## Lessons for every lane\n- [pending; lead] Never change the global Git identity\n\n## Lessons for this repo\n- [pending; demo-lane] Subscribe before triggering\n\n",
+  );
+});
+
+test("a global lesson with a cwd, or a scope other than global, is a damaged line", () => {
+  // Given one valid global record and two bad copies.
+  const added = lessons.add({ lane: "lead", scope: "global", rule: "Read the thread first", evidence: "slack:D1/3.1" }, T0);
+  writeFileSync(lessons.path, `${readFileSync(lessons.path, "utf8")}${[
+    JSON.stringify({ ...added, id: crypto.randomUUID(), cwd: "/repo" }),
+    JSON.stringify({ ...added, id: crypto.randomUUID(), scope: "repo", cwd: "/repo" }),
+  ].join("\n")}\n`);
+  // When reading; then only the valid record loads and each other line is named.
+  const read = lessons.read();
+  expect(read.lessons).toEqual([added]);
+  expect(read.problems).toEqual([
+    expect.stringContaining(':2: a global lesson has no field "cwd"'),
+    expect.stringContaining(':3: lesson field "scope" must be "global" or absent'),
   ]);
 });
