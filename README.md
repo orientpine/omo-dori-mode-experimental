@@ -258,7 +258,7 @@ The workflow runs the native process/session, freeze/thaw and PowerShell-literal
 
 ## License
 
-MIT
+MIT (`LICENSE`). Parts ported from upstream dori-superagent commits from #162 on are under the Sustainable Use License 1.0 (`LICENSE-SUL`); `NOTICE` lists them.
 
 ## Migrate from Dori
 

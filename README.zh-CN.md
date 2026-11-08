@@ -246,7 +246,7 @@ bun run ci         # biome lint、严格类型检查、knip、250 行检查，�
 
 ## 许可证
 
-MIT
+MIT(`LICENSE`)。从上游 dori-superagent #162 及之后的提交移植的部分采用 Sustainable Use License 1.0(`LICENSE-SUL`),列表见 `NOTICE`。
 
 ## 从 Dori 迁移
 
