@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { sharedDirProblem } from "./shared-dir.ts";
 
@@ -40,7 +40,7 @@ const codeOf = (e: unknown): string => (e instanceof Error && "code" in e ? Stri
 const failClosed = (reason: string, now: number): Hold => ({ by: "?", reason, until: now + 60_000 });
 
 // afterLook: a test's hook between the look at an entry and its open, where another account may swap its own entry
-const holdOf = (base: string, shown: string, name: string, now: number, afterLook?: (file: string) => void): Hold | undefined => {
+const holdOf = (base: string, shown: string, name: string, now: number, afterLook?: (file: string) => void, again = true): Hold | undefined => {
   const file = join(base, name);
   let st: ReturnType<typeof lstatSync>;
   try {
@@ -65,7 +65,11 @@ const holdOf = (base: string, shown: string, name: string, now: number, afterLoo
   }
   try {
     const fst = fstatSync(fd);
-    if (!fst.isFile() || fst.ino !== st.ino || fst.dev !== st.dev) return undefined;
+    // a FIFO, socket or device swapped in only drops its owner's own hold
+    if (!fst.isFile()) return undefined;
+    // another regular file than the one looked at: holdOn renews a hold by renaming a new file over it, so look once
+    // more; an entry that keeps changing holds, as one that cannot be read
+    if (fst.ino !== st.ino || fst.dev !== st.dev) return again ? holdOf(base, shown, name, now, afterLook, false) : unreadable;
     const capNow = Math.min(cap, Math.min(fst.mtimeMs, fst.ctimeMs) + MAX_MS);
     if (capNow <= now) return undefined;
     let parsed: { reason?: unknown; until?: unknown } = {};
@@ -135,7 +139,8 @@ export const parseUntil = (s: string, now: number): { readonly at: number } | { 
 const fileOf = (dir: string, user: string): string => join(dir, `${user}.json`);
 
 /** Sets this account's hold (one per account, a new one replaces it); a problem, or undefined. */
-export const holdOn = (dir: string, user: string, until: number, reason: string, now: number): string | undefined => {
+// afterWrite: a test's hook between the write of the temporary file and its rename, where the directory's owner may swap it
+export const holdOn = (dir: string, user: string, until: number, reason: string, now: number, hooks: { readonly afterWrite?: (tmp: string) => void } = {}): string | undefined => {
   let unsafe: string | undefined;
   try {
     unsafe = sharedDirProblem(dir) ?? ((lstatSync(dir).mode & 0o1777) !== 0o1777 ? "is not mode 1777, so other accounts could not read or write their holds" : undefined);
@@ -145,9 +150,17 @@ export const holdOn = (dir: string, user: string, until: number, reason: string,
   if (unsafe) return `the hold directory ${dir} ${unsafe}`;
   const tmp = join(dir, `.${user}.${process.pid}.${now}.tmp`);
   try {
-    writeFileSync(tmp, JSON.stringify({ reason, until: new Date(until).toISOString(), at: new Date(now).toISOString() }), { flag: "wx" });
-    // readable by every account whatever this process's umask, so their jobs see it
-    chmodSync(tmp, 0o644);
+    // written and made readable through the descriptor it was made with: the directory's owner can swap the name, and
+    // a chmod through it would change whatever the name then leads to (another file of this account)
+    const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
+    try {
+      writeSync(fd, JSON.stringify({ reason, until: new Date(until).toISOString(), at: new Date(now).toISOString() }));
+      // readable by every account whatever this process's umask, so their jobs see it
+      fchmodSync(fd, 0o644);
+    } finally {
+      closeSync(fd);
+    }
+    hooks.afterWrite?.(tmp);
     renameSync(tmp, fileOf(dir, user));
     return undefined;
   } catch (e) {

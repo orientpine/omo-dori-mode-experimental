@@ -123,14 +123,32 @@ test("an entry its owner swaps between the look and the open is not waited on, f
   expect(made).toBe(0);
   holdOn(hold, ME, now + 60_000, "x", now);
   const far = JSON.stringify({ reason: "swapped in", until: new Date(now + 60_000).toISOString() });
-  // made before the old one goes, so it is another inode
-  expect(swap((file) => { writeFileSync(`${file}.new`, far); renameSync(`${file}.new`, file); })).toEqual([]);
   holdOn(hold, ME, now + 60_000, "x", now);
   const decoy = join(state.dir, "decoy");
   mkdirSync(decoy);
   writeFileSync(join(decoy, `${ME}.json`), far);
   const seen = liveHolds(hold, now, { afterDirLook: () => { renameSync(hold, join(state.dir, "moved")); symlinkSync(decoy, hold); } });
   expect(seen.map((x) => x.reason)).toEqual(["x"]);
+});
+
+test("a hold renewed between the look and the open is still seen, and an entry that keeps changing holds (review 4)", () => {
+  const now = Date.now();
+  holdOn(hold, ME, now + 60_000, "x", now);
+  let renewals = 0;
+  // holdOn's own renewal: a new file renamed over the old one (another inode, never a missing entry)
+  const renew = () => { renewals++; holdOn(hold, ME, now + 120_000, `renewed ${renewals}`, now + renewals); };
+  expect(liveHolds(hold, now, { afterLook: () => { if (renewals === 0) renew(); } }).map((x) => x.reason)).toEqual(["renewed 1"]);
+  expect(liveHolds(hold, now, { afterLook: renew })).toMatchObject([{ by: ME, reason: "(its file cannot be read)" }]);
+});
+
+test("setting a hold never changes the mode of what its temporary name is swapped for (review 4)", () => {
+  const now = Date.now();
+  const decoy = join(state.dir, "private");
+  writeFileSync(decoy, "secret");
+  chmodSync(decoy, 0o600);
+  // the directory's owner swaps the temporary file for a link to another file of the account setting the hold
+  holdOn(hold, ME, now + 60_000, "x", now, { afterWrite: (tmp) => { rmSync(tmp); symlinkSync(decoy, tmp); } });
+  expect(statSync(decoy).mode & 0o777).toBe(0o600);
 });
 
 test("a hold directory that is a link or not mode 1777 holds, and nothing in it is opened", () => {
