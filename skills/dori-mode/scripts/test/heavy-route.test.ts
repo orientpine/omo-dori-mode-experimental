@@ -88,6 +88,15 @@ test("the machine of the programs in the --sync paths goes with the job, and a h
   const foreign = foreignElf(join(other, "tool"));
   expect(syncedMachine([same])).toBe(hostMachine());
   expect(syncedMachine([join(work, "none")])).toBeUndefined();
+  // a bundle with programs of both machines is "mixed" whichever folder comes first, and stays here
+  expect(syncedMachine([same, other])).toBe("mixed");
+  expect(syncedMachine([other, same])).toBe("mixed");
+  // a library it cannot read is skipped, not thrown out of the plan
+  const locked = join(work, "locked");
+  mkdirSync(locked);
+  writeFileSync(join(locked, "lib.so"), "x");
+  chmodSync(join(locked, "lib.so"), 0);
+  expect(syncedMachine([locked, same])).toBe(hostMachine());
   const ctx = ctxWith([{ name: "second", ssh: helperArgv(), prefer: ["cpu"] }]);
   // When
   const r = await spread(ctx, { cwd: other, sync: [other], cmd: ["true"] });

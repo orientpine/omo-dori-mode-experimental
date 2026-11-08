@@ -14,28 +14,48 @@ export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate; r
 export const preferredFor = (helpers: readonly HeavyHelper[], kind: string): readonly HeavyHelper[] => helpers.filter((h) => h.prefer?.includes(kind));
 
 // uname -m of this host, as a helper compares it with a job's arch=
-export const hostMachine = (): string => ({ arm64: "aarch64", x64: "x86_64" })[process.arch as string] ?? process.arch;
+const NODE_MACHINES: Readonly<Record<string, string>> = { arm64: "aarch64", x64: "x86_64" };
+export const hostMachine = (): string => NODE_MACHINES[process.arch] ?? process.arch;
 const ELF_MACHINES: Readonly<Record<number, string>> = { 62: "x86_64", 183: "aarch64" };
 
-// The machine of the first ELF program or library in the --sync paths, or undefined when they hold none. A venv's compiled
-// modules and node_modules' native addons run only on a helper of that machine: cha-system-product-name (x86_64) became a
-// helper beside the aarch64 sparks on 2026-11-08, and a venv from 0a83 would fail there at its first import.
+// a job whose --sync paths hold programs of more than one machine: no helper takes it, it stays on the host that sent it
+const MIXED = "mixed";
+
+// the machine of a file's ELF header, or undefined for a file that is not ELF or cannot be read (gone, no permission)
+const elfMachine = (f: string, head: Buffer): string | undefined => {
+  let n = 0;
+  try {
+    const fd = openSync(f, "r");
+    try {
+      n = readSync(fd, head, 0, 20, 0);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+  if (n < 20 || head.readUInt32BE(0) !== 0x7f454c46) return undefined;
+  const m = head[5] === 2 ? head.readUInt16BE(18) : head.readUInt16LE(18);
+  return ELF_MACHINES[m] ?? `elf-${m}`;
+};
+
+// The machine of the ELF programs and libraries in the --sync paths, "mixed" when they are of more than one, or undefined
+// when they hold none. A venv's compiled modules and node_modules' native addons run only on a helper of that machine:
+// cha-system-product-name (x86_64) became a helper beside the aarch64 sparks on 2026-11-08, and a venv from 0a83 would
+// fail there at its first import.
 export const syncedMachine = (sync: readonly string[]): string | undefined => {
   const head = Buffer.alloc(20);
+  const machines = new Set<string>();
   for (const s of sync) {
     if (!existsSync(s)) continue;
     const found = Bun.spawnSync(["find", s, "-type", "f", "(", "-perm", "-u+x", "-o", "-name", "*.so", "-o", "-name", "*.so.*", "-o", "-name", "*.node", ")", "-print0"], { stdout: "pipe", stderr: "ignore" });
     for (const f of found.stdout.toString().split("\0")) {
-      if (!f) continue;
-      const fd = openSync(f, "r");
-      const n = readSync(fd, head, 0, 20, 0);
-      closeSync(fd);
-      if (n < 20 || head.readUInt32BE(0) !== 0x7f454c46) continue;
-      const m = head[5] === 2 ? head.readUInt16BE(18) : head.readUInt16LE(18);
-      return ELF_MACHINES[m] ?? `elf-${m}`;
+      const m = f ? elfMachine(f, head) : undefined;
+      if (m) machines.add(m);
+      if (machines.size > 1) return MIXED;
     }
   }
-  return undefined;
+  return [...machines][0];
 };
 
 // the plan's arch: the machine a helper must be for the --sync paths' programs, when they hold any
@@ -56,5 +76,6 @@ export const helperProblem = (h: HeavyHelper): string | undefined => {
 // the helper's refusal of a job whose arch= is not this host's machine, or undefined
 export const archRefusal = (opts: readonly string[]): string | undefined => {
   const arch = opts.find((o) => o.startsWith("arch="))?.slice(5);
+  if (arch === MIXED) return "the job's --sync paths hold programs or libraries of more than one machine, so it stays on the host that sent it";
   return arch && arch !== hostMachine() ? `this host is ${hostMachine()} and the job's --sync paths hold ${arch} programs or libraries, which do not run here` : undefined;
 };
