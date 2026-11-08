@@ -686,7 +686,16 @@ const budgetOpts = (): BudgetLimits => {
   }
   return out;
 };
-const loopMin = Number(opt("loop") ?? 0);
+// upstream dori-superagent #131 (https://github.com/sisyphuslabs/dori-superagent/pull/131): Bun.sleep(NaN) returns at
+// once, so a --loop such as "5m" would run a watch's ticks back to back; a bare or empty --loop would read as 0, so only a
+// missing flag means one pass. #130/#134 (https://github.com/sisyphuslabs/dori-superagent/pull/134) found Bun.sleep under
+// 1 ms returns at once too, so a positive --loop under 1 ms is refused as well. Called before a watch prints its ready line.
+const loopMinutes = (): number => {
+  if (flags.values.loop === undefined) return 0;
+  const value = opt("loop");
+  const minutes = Number(value);
+  return value && Number.isFinite(minutes) && (minutes === 0 || minutes * 60_000 >= 1) ? minutes : die("--loop must be a number of minutes: 0 for one pass, or 1 ms (0.0000167) or more");
+};
 const heavyDeps = (load: () => Promise<number>): SlotDeps => ({
   dir: `${config.stateDir}/heavy`,
   slots: config.heavySlots,
@@ -1409,7 +1418,8 @@ try {
       console.log(list.length ? formatSignals(areaLabel(q), list) : `SIGNALS no lane in ${areaLabel(q)}`);
       break;
     }
-    case "freshness":
+    case "freshness": {
+      const minutes = loopMinutes();
       console.log(autoReadyLine(config.handover));
       // a handover.watchers check that fails refuses every lead handover, the automatic one too: said once at start (the
       // lanes service starts again after each update), in the watch log and to the pair channel, not first at the refusal
@@ -1421,7 +1431,7 @@ try {
           for (const l of (await deps.postLeadAlert?.(line).catch((e: unknown) => [`LEAD_ALERT_WARN ${String(e).slice(0, 160)}`])) ?? []) console.log(l);
         }
       }
-      await every(loopMin, async () => {
+      await every(minutes, async () => {
         const laneDeps = laneDepsFor(() => {});
         const hooks = {
           signals: (pane: string, model: string) => paneSignals(laneDeps, pane, model),
@@ -1505,10 +1515,11 @@ try {
         }
       });
       break;
+    }
     case "dead-panes": {
       const seen = new Set<string>();
       const panes = newDeadPaneState();
-      await every(loopMin, async () => {
+      await every(loopMinutes(), async () => {
         const paused = (await deps.registry.open()).flatMap((l) => (statusOf(l) === "paused" && l.pane ? [l.pane] : []));
         for (const line of await deadPaneTick(run, config, seen, new Date().toISOString().slice(0, 13), paused, panes)) console.log(line);
       });
@@ -1516,8 +1527,9 @@ try {
     }
     case "guard": {
       const state = { alerting: false };
+      const minutes = loopMinutes();
       console.log("HOST_GUARD_READY");
-      await every(loopMin, async () => {
+      await every(minutes, async () => {
         for (const line of guardTick(await sampleHost(run, config.backend), config.guard, state)) console.log(line);
       });
       break;
@@ -1899,6 +1911,7 @@ try {
       break;
     }
     case "inbound": {
+      const minutes = loopMinutes();
       if (key === "discord") {
         // a shadow run writes only to its own inbox, never the live one (which dori.env may also name)
         const shadowInbox = process.env.DORI_DISCORD_SHADOW_INBOX?.trim() ?? "";
@@ -1972,7 +1985,7 @@ try {
           tg,
           store,
           { ownerId, groupChatId, topicId },
-          loopMin,
+          minutes,
           (i) =>
             void writeLineSync(
               `INBOUND ${i.kind === "edit" ? "edit:" : ""}${i.source} ${i.chat} ${i.thread ?? "-"} ${i.updateId} ${i.from} ${JSON.stringify(i.text ?? "")}` +
@@ -1988,7 +2001,7 @@ try {
       const slack = new Slack(fetchHttp, realClock, auth, process.env.DORI_SLACK_API?.trim() || undefined, ledger);
       const me = String((await slack.call("auth.test", {})).user_id ?? die("auth.test returned no user_id"));
       console.log("INBOUND_READY slack");
-      await every(loopMin, async () => {
+      await every(minutes, async () => {
         for (const i of await pollSlackInbound(slack, ledger, { selfUserId: me })) console.log(`INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify((i.text ?? "").slice(0, 200))}`);
       });
       break;
