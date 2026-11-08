@@ -25,13 +25,14 @@ import { ChallengeError, checkReviewers, reviewerOrder, reviewers } from "./chal
 import { runWithPrompt } from "./config.ts";
 import { laneDirectiveWords } from "./directive-audit.ts";
 import { endedWatch } from "./handover-monitors.ts";
+import { allTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest, sameCommand } from "./handover.ts";
 import { type LaneFacts, type LaneHandoverDeps, missingFrom, UNDERSTOOD_HEADINGS } from "./lane-handover.ts";
 import { launchLedger } from "./launch.ts";
 import { beforeGenerated } from "./directives.ts";
 import { sendVerified } from "./panes.ts";
 import { covered, fillGaps, flat, type Missing, quoted, section, words as wordsIn } from "./restatement.ts";
-import { type Candidate, inboxMessages, leadLines, type OwnerProof, ownerQuotes, QUOTE, readRollovers, type Said, userLines } from "./rollover.ts";
+import { type Candidate, inboxMessages, leadLines, type OwnerProof, ownerQuotes, QUOTE, readRollovers, type Said, sessionFile, userLines } from "./rollover.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { iso } from "./run.ts";
 import { sessionDirFor } from "./session-id.ts";
@@ -227,28 +228,6 @@ export const carriedFiles = (texts: readonly string[], home: string, cwd: string
   });
 };
 
-const sessionFile = (dir: string, session: string): string | undefined => {
-  try {
-    const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
-    return name ? join(dir, name) : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-// every todo of a session (done ones too: a todo the new session finished was carried)
-export const allTodos = (sessionDir: string, session: string): string[] => {
-  const file = sessionFile(sessionDir, session);
-  if (!file) return [];
-  const last = readText(file).split("\n").findLast((l) => l.includes('"senpi.todo-state"'));
-  try {
-    const data = last ? (JSON.parse(last) as { data?: { phases?: { name?: string; tasks?: { content?: string }[] }[] } }).data : undefined;
-    return (data?.phases ?? []).flatMap((p) => (p.tasks ?? []).map((t) => t.content ?? ""));
-  } catch {
-    return [];
-  }
-};
-
 const anyGoal = (sessionDir: string, session: string): string | undefined =>
   openGoal(sessionDir, session) ?? readJson<{ goal?: { objective?: string } }>(join(sessionDir, "extensions", "goal", `${session}.json`))?.goal?.objective;
 
@@ -439,7 +418,7 @@ export const auditHandover = async (deps: LaneHandoverDeps, c: Committed, opts: 
   // what the records hold: todos, goal, monitors (and, for a lane, the summary's decisions and the tried fixes)
   const newTodos = session ? allTodos(sessionDir, session) : [];
   const todoText = (): string => flat([...(session ? allTodos(sessionDir, session) : []), restated()].join("\n"));
-  const oldTodos = (laneFacts?.todos ?? leadFacts?.todos ?? []).map((t) => t.replace(/ \((in_progress|pending|blocked)\)$/, "").replace(/^[^:]{1,60}: /, ""));
+  const oldTodos = (laneFacts?.todos ?? leadFacts?.todos ?? []).map(todoTask);
   // without the new session's own log (it was replaced by a later handover, or cannot be found) its todos, goal and
   // monitors are not known: nothing is said about them rather than every old todo counted as lost
   if (session) for (const t of oldTodos) if (!covered(todoText(), t)) gaps.push({ kind: "todo", text: t, under: "Next step", source: `the old session's open todo; the new session has ${newTodos.length} todos`, byWords: true });

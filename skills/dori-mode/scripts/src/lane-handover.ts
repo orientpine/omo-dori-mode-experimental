@@ -18,6 +18,7 @@ import { turnRunning } from "./submit.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
 import { endOldMonitors } from "./handover-monitors.ts";
+import { missingTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
 import { awaitPrompt, briefAnchor } from "./launch.ts";
 import { resumeAgent, type StatOf } from "./job-control.ts";
@@ -29,7 +30,7 @@ import { type Lane, statusOf } from "./registry.ts";
 import { iso, type Runner } from "./run.ts";
 import { AGENT, descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
 import { commandExecutable } from "./executable.ts";
-import { appendRollover, type OwnerMessage, ownerMessagesFor, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, contextK, decidedBy, heldTyped, inboxMessages, LEAD_PREFIX, lastProposal, leadLines, limitsFor, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, type RolloverEntry, type RolloverRequest, type Said, sessionFixes, filledApproval, measuredSignal, type Signals, sessionSignals, setQuiet, type Sizes, sizePct, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
+import { appendRollover, type OwnerMessage, ownerMessagesFor, approvalProblem, autoReason, type Blocked, clearQuiet, COMMITTED, contextK, decidedBy, heldTyped, inboxMessages, LEAD_PREFIX, lastProposal, leadLines, limitsFor, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, type RolloverEntry, type RolloverRequest, type Said, sessionFile, sessionFixes, filledApproval, measuredSignal, type Signals, sessionSignals, setQuiet, type Sizes, sizePct, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
 import { stuckTop } from "./explore.ts";
 import { bulletsIn, covered, flat, type Missing, missingHeadings, quoted, quotesIn, section, wholeBullet } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
@@ -182,16 +183,6 @@ export const missingFrom = (text: string, facts: LaneFacts): Missing[] => {
   for (const q of quotesIn(section(facts.laneNote, "Owner's words and constraints"))) if (!quoted(all, q) && flat(q) !== flat(goal)) out.push({ kind: "owner's words", text: q, under: "Owner's words", source: "the old session's summary, Owner's words and constraints" });
   for (const d of bulletsIn(facts.laneNote, "Decisions and why")) if (!covered(all, d)) out.push({ kind: "decision", text: d, under: "Decisions", source: "the old session's summary, Decisions and why", byWords: true, whole: wholeBullet(facts.laneNote, "Decisions and why", d) });
   return out;
-};
-
-const logOf = (dir: string, session: string): string | undefined => {
-  if (!session) return undefined;
-  try {
-    const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
-    return name ? join(dir, name) : undefined;
-  } catch {
-    return undefined;
-  }
 };
 
 // Written once the new session exists and removed when the run ends either way: a run killed in between (crash, reboot,
@@ -444,11 +435,11 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   `You are the ${f.lane.key} lane, in a new session. The old one (${f.from.pane}, aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}) ran out of room; dori handover --lane points the lane's registry entry at you. The old conversation does not come with you: this note and your brief are all you know.`,
   "",
   "## Do this first",
-  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command (its work still runs under the old session or already ended); one marked ENDED is not armed. Take each command, filter and description from its line under Monitors, where they are JSON strings: put them into the tool call as they are (a JSON string is a valid JS string), not retyped and not from the conversation summary, where a copy can differ. Arm each one once, all in one call, and print only how many armed and the ones that failed: each monitor's full reply is context the new session carries to its end.",
+  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command (its work still runs under the old session or already ended); one marked ENDED is not armed. Take each command, filter and description from its line under Monitors, where they are JSON strings: put them into the tool call as they are (a JSON string is a valid JS string), not retyped and not from the conversation summary, where a copy can differ. Arm each one once, all in one call, and print only how many armed and the ones that failed: each monitor's full reply is context the new session carries to its end. Put every line under Todos into your todo list, word for word: the part before its first \": \" is the phase, the rest without the status in brackets is the task, with that status; the handover checks that your todo list holds each one.",
   `2. A [LEAD] line with ${PROBE} <id> is a check of this handover: read this whole note and your brief first, then run the dori handover ack command it gives (with its --state) and nothing else for that line. A [LEAD] HANDOVER_SUPPLEMENT <id> line comes from the audit after the commit: it names a file with what you were missing and the old log lines behind it; write those items into the file it names (create it if it is not there) and run the ack command it gives.`,
   `3. Read your brief ${f.lane.brief} in full. It still holds: same Done, same footer, and reports still go to the lead.`,
-  `4. Until a [LEAD] ${COMMITTED} line arrives, do nothing else: change no file, start no process besides the monitors of step 1, post nothing. Until then the handover can still roll back and close this session.`,
-  `5. After ${COMMITTED}: ${f.goal ? "register the goal under Goal again with your goal tool, same objective, and rebuild the todo list from Todos." : "rebuild the todo list from Todos."} Then continue the work from where Last reports and the lane's notes leave it. A [LEAD] HANDOVER_SUPPLEMENT line that comes later is the audit after the handover: do what it says and go on. When you find later that the old session knew something this note did not carry and it cost you (you had to ask, redo or guess), run dori handover gap ${f.lane.key} --kind "<owner's words|decision|lead instruction|todo|goal|monitor|tried fix|other>" --text "<one line, no secret values>" and tell the lead.`,
+  `4. Until a [LEAD] ${COMMITTED} line arrives, do nothing else: change no file, start no process besides the monitors of step 1, post nothing (your todo list of step 1 is no change). Until then the handover can still roll back and close this session.`,
+  `5. After ${COMMITTED}: ${f.goal ? "register the goal under Goal again with your goal tool, same objective, then continue" : "continue"} the work from where Last reports and the lane's notes leave it. A [LEAD] HANDOVER_SUPPLEMENT line that comes later is the audit after the handover: do what it says and go on. When you find later that the old session knew something this note did not carry and it cost you (you had to ask, redo or guess), run dori handover gap ${f.lane.key} --kind "<owner's words|decision|lead instruction|todo|goal|monitor|tried fix|other>" --text "<one line, no secret values>" and tell the lead.`,
   "",
   "## Lane",
   `- Key ${f.lane.key}: ${f.lane.title}. Work thread: ${f.lane.thread}.`,
@@ -804,7 +795,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const sessionDir = sessionDirFor(config.sessionsDir, base);
   // a detached eval cell computing in the kernel (or in the agent, for js) has no process of its own: its start without an
   // end in the session log, since this agent started; a ready mark covers the cells started before it
-  const oldLog = logOf(sessionDir, session);
+  const oldLog = sessionFile(sessionDir, session);
   const agentStart = await agentStartOf(deps.run, agent);
   const logText = oldLog ? readFileSync(oldLog, "utf8") : "";
   const background = logText ? pendingBackground(logText, Number.isNaN(agentStart) ? 0 : agentStart) : [];
@@ -876,8 +867,8 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const facts: LaneFacts = {
     lane, from: { pane: lane.pane, aoeId: old.id, session, title: old.title, cwd: old.path }, cwd: real, model: splitModel(model).base, thinking, ...(shown.contextPct !== undefined ? { contextPct: shown.contextPct } : {}), ...(shown.account ? { account: shown.account } : {}),
     monitors, todos: session ? openTodos(sessionDir, session) : [], goal: session ? openGoal(sessionDir, session) : undefined, chains, detached, ...(jobs.length ? { work: jobs } : {}), ...(ready ? { ready } : {}), laneNote, signals, ...(opts.approvedBy?.trim() ? { approvedBy: opts.approvedBy.trim() } : {}),
-    agentPid: agent.pid, ...(logOf(sessionDir, session) ? { oldLog: logOf(sessionDir, session) } : {}),
-    ownerMessages: ownerMessagesFor({ inbox: deps.inbox ?? "", ownerIds: deps.ownerIds ?? [], oldLog: logOf(sessionDir, session), thread: lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : undefined, since, guild: process.env["DORI_DISCORD_GUILD"]?.trim() }),
+    agentPid: agent.pid, ...(sessionFile(sessionDir, session) ? { oldLog: sessionFile(sessionDir, session) } : {}),
+    ownerMessages: ownerMessagesFor({ inbox: deps.inbox ?? "", ownerIds: deps.ownerIds ?? [], oldLog: sessionFile(sessionDir, session), thread: lane.thread.startsWith("discord:") ? lane.thread.slice("discord:".length) : undefined, since, guild: process.env["DORI_DISCORD_GUILD"]?.trim() }),
     ...(leadWords.length ? { leadWords } : {}),
     ...(tasks.length ? { tasks: taskRuns(logText, tasks, deps.home) } : {}),
   };
@@ -1023,29 +1014,35 @@ export const keepSessions = async (deps: Pick<LaneHandoverDeps, "registry">, key
   });
 };
 
-const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, _understood: string, emit: (line: string) => void): Promise<Check> => {
+export const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane: string, verifyMin: number, _understood: string, emit: (line: string) => void): Promise<Check> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
   let session = "";
   let shown: StatusLine = {};
   let missing = facts.monitors.map((m) => m.description || m.command || m.path || "?");
-  const settled = () => shown.model && (!facts.thinking || shown.thinking === facts.thinking) && !missing.length && (session || !facts.monitors.length);
+  // the note's todos are in its todo list before the commit, checked like its monitors (ZzangDori's directive-model-defaults
+  // lane, 2026-11-06 21:38Z: the new session wrote a plan of its own, and the audit after the commit found two todos lost)
+  let lost = facts.todos.map(todoTask);
+  const settled = () => shown.model && (!facts.thinking || shown.thinking === facts.thinking) && !missing.length && !lost.length && (session || (!facts.monitors.length && !facts.todos.length));
   for (; i < tries; i++) {
     shown = statusLine(await captureTmux(deps.run, pane), facts.model);
     session ||= await deps.sessionOf(pane, facts.cwd).catch(() => "");
     if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now());
+    if (session && facts.todos.length) lost = missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session);
     if (settled()) break;
     await deps.clock.sleep(POLL_MS);
   }
   const reasons = [
     ...(!shown.model ? [`the status line of ${pane} does not show ${modelId(facts.model)}`] : []),
     ...(shown.model && facts.thinking && shown.thinking !== facts.thinking ? [`${pane} runs at thinking ${shown.thinking ?? "unknown"}, not ${facts.thinking}`] : []),
-    ...(facts.monitors.length && !session ? [`the omo session of ${pane} was not found under ${facts.cwd}, so its monitors could not be checked`] : []),
+    ...((facts.monitors.length || facts.todos.length) && !session ? [`the omo session of ${pane} was not found under ${facts.cwd}, so its ${facts.monitors.length ? "monitors" : "todos"} could not be checked`] : []),
     ...(session && missing.length ? [`monitors not running in ${pane}: ${missing.join(", ")}`] : []),
+    ...(session && lost.length ? [`todos not in the todo list of ${pane}: ${lost.join(", ")}`] : []),
   ];
   if (reasons.length) return { reasons, session, ...(shown.account ? { account: shown.account } : {}) };
   emit(`HANDOVER_STATUS_OK ${pane} ${shown.model}${shown.thinking ? ` thinking ${shown.thinking}` : ""}`);
   if (facts.monitors.length) emit(`HANDOVER_MONITORS_OK ${facts.monitors.length} in ${pane} (session ${session})`);
+  if (facts.todos.length) emit(`HANDOVER_TODOS_OK ${facts.todos.length} in the todo list of ${pane}`);
   // No restatement before the commit (owner Q476, 2026-11-03: since the note carries the owner's words word for word, 19
   // handovers needed no supplement round, while the rewrite held the lane up to two minutes): the probe asks only for the
   // ack, which shows the new session reads its pane and runs dori; the audit after the commit still checks what it holds.
@@ -1273,7 +1270,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   if (facts.account && checked.account && facts.account !== checked.account) emit(`HANDOVER_ACCOUNT ${lane.key} ${facts.account} -> ${checked.account} (the account pool chose it for the new session)`);
   ctx.accounts.to = checked.account;
   // what the move bought, from the two session logs: the old session's last context, the new one's first and its context now
-  const newLog = logOf(sessionDirFor(config.sessionsDir, facts.cwd), checked.session);
+  const newLog = sessionFile(sessionDirFor(config.sessionsDir, facts.cwd), checked.session);
   const fresh = newLog ? contextK(newLog, iso(deps.clock)) : {};
   const oldK = facts.oldLog ? contextK(facts.oldLog).last : undefined;
   Object.assign(ctx.sizes, { ...(oldK !== undefined ? { oldK } : {}), ...(fresh.first !== undefined ? { firstK: fresh.first } : {}), ...(fresh.last !== undefined ? { checkedK: fresh.last } : {}), ...(newLog ? { newLog } : {}) });

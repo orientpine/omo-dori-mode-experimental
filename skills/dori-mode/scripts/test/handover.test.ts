@@ -22,7 +22,7 @@ const APPROVED = "https://discord.com/channels/1/2/3";
 const OWNER = "280680578314010625";
 const LANES_CMD = "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_";
 
-type Sim = { arm: { command: string; description: string; pid: number }[]; ackPane: string; ackReport: boolean; ackInbox: boolean; guardFor: Set<string>; restate: "full" | "omit-lane" | "silent" | "keep-seed"; supplement: "fix" | "ignore"; handled: Set<string> };
+type Sim = { arm: { command: string; description: string; pid: number }[]; ackPane: string; ackReport: boolean; ackInbox: boolean; guardFor: Set<string>; restate: "full" | "omit-lane" | "silent" | "keep-seed"; supplement: "fix" | "ignore"; handled: Set<string>; todos: string[] };
 
 // what the fake new lead understood: every open lane, todo, card and timer of the setup under its own heading
 const RESTATEMENT = (lanes = "- demo: working, half way") =>
@@ -112,7 +112,7 @@ const setup = async (): Promise<HandoverDeps> => {
 // The new session as the fake world sees it: once prompted it arms its monitors, and it acks the probes it receives.
 const simulate = () => {
   if (!w.calls.some((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").includes("handover note"))) return;
-  writeManifest("new-sid", sim.arm.map((m) => monitor(m.description, m.command, { runtime: { pid: m.pid } })));
+  writeManifest("new-sid", sim.arm.map((m) => monitor(m.description, m.command, { runtime: { pid: m.pid } }))); writeFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T16-36-00-000Z_new-sid.jsonl"), `${JSON.stringify({ type: "custom", customType: "senpi.todo-state", data: { phases: [{ name: "Work", tasks: sim.todos.map((content) => ({ content, status: "in_progress" })) }] } })}\n`);
   const at = "2026-10-11T16:40:00Z";
   if (sim.ackReport && w.calls.some((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").includes("HANDOVER_PROBE n1"))) ackHandover(state.dir, "n1", sim.ackPane, at);
   const inbox = join(state.dir, "inbox.jsonl");
@@ -156,7 +156,7 @@ const leadPaneInConfig = () => (JSON.parse(readFileSync(join(state.dir, "config.
 beforeEach(() => {
   state = withState();
   w = newWorld();
-  sim = { arm: [{ description: "inbox", command: INBOX_CMD, pid: 201 }, { description: "lanes", command: LANES_CMD.replace("~/", "/home/test/"), pid: 202 }, { description: "digest due", command: "until false; do sleep 60; done", pid: 203 }], ackPane: NEW, ackReport: true, ackInbox: true, guardFor: new Set([OLD, NEW]), restate: "full", supplement: "fix", handled: new Set() };
+  sim = { arm: [{ description: "inbox", command: INBOX_CMD, pid: 201 }, { description: "lanes", command: LANES_CMD.replace("~/", "/home/test/"), pid: 202 }, { description: "digest due", command: "until false; do sleep 60; done", pid: 203 }], ackPane: NEW, ackReport: true, ackInbox: true, guardFor: new Set([OLD, NEW]), restate: "full", supplement: "fix", handled: new Set(), todos: ["watch the E7 run"] };
   printed = [];
   restarted = [];
   live = new Set([101, 102, 201, 202, 203]);
