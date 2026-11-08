@@ -1,10 +1,105 @@
 #!/usr/bin/env bash
 # Tools a dori heavy helper offers to `dori heavy --kind ...` runs, in the helper account's own space (no sudo, no system
-# package): a static ffmpeg and ffprobe in ~/.local/share/dori-heavy/tools/bin, which the box mounts read-only at
-# /run/dori-tools/tools and puts on PATH. Playwright browsers are not here: the helper installs the caller's playwright
-# version on demand into its own ~/.cache/ms-playwright. bun is the helper's own.
-#   tools.sh [tools dir]     prints TOOLS_OK <dir> <ffmpeg version line>
+# package), under ~/.local/share/dori-heavy/tools, which the box mounts read-only at /run/dori-tools/tools with its bin
+# on PATH. Playwright browsers for browser tests are not here: the helper installs the caller's playwright version on
+# demand into its own ~/.cache/ms-playwright. bun is the helper's own.
+#   tools.sh [tools dir]            a static ffmpeg and ffprobe in bin/        prints TOOLS_OK <dir> <ffmpeg version line>
+#   tools.sh rv <tag> [tools dir]   the tool bundle "rv", which a job asks for with dori heavy --tools rv, in a new
+#                                   generation folder rv-gens/<version>-<time> that is never moved or changed after:
+#                                   rv <tag> from the public repo (its own scripts/install.sh), a uv that installs only
+#                                   from the bundle's wheels (every package rv's `uv run --with` lines name, for the
+#                                   system python3), the same packages in py/ for rv's plain python3 (PYTHONPATH), and
+#                                   the chromium of that playwright, and bin/python3, the python3 the packages are for;
+#                                   bin/rv starts it. Run it again when the rv tag changes (or to repair one): the links
+#                                   rv@<version> and rv (the current version) turn to the new generation only when every
+#                                   step worked; a job keeps the generation the helper picked when it admitted it.
+#                                   prints TOOLS_OK rv <generation> <version> RV_TREE <sha256> <files> playwright <version>
 set -euo pipefail
+
+rv_bundle() {
+  local tag=$1 dir=$2
+  local repo=https://github.com/orientpine/rv-video-tool uv_version=${UV_VERSION:-0.13.7} uvt
+  case $(uname -m) in
+    aarch64) uvt=uv-aarch64-unknown-linux-gnu ;;
+    x86_64) uvt=uv-x86_64-unknown-linux-gnu ;;
+    *) echo "TOOLS_FAIL no uv build for $(uname -m)" >&2; exit 2 ;;
+  esac
+  local b=$dir/rv
+  new=$dir/rv.new tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp" "$new"' EXIT
+  rm -rf "$new"
+  mkdir --parents "$new/bin" "$new/uv" "$new/wheels" "$dir/bin"
+  # uv, checked against its release's sha256
+  curl -fsSL --retry 3 -o "$tmp/$uvt.tar.gz" "https://github.com/astral-sh/uv/releases/download/$uv_version/$uvt.tar.gz"
+  curl -fsSL --retry 3 -o "$tmp/uv.sha256" "https://github.com/astral-sh/uv/releases/download/$uv_version/$uvt.tar.gz.sha256"
+  (cd "$tmp" && sha256sum -c uv.sha256 >/dev/null) || { echo "TOOLS_FAIL $uvt.tar.gz sha256 does not match" >&2; exit 3; }
+  tar -xzf "$tmp/$uvt.tar.gz" -C "$tmp"
+  install -m 755 "$tmp/$uvt/uv" "$new/uv/uv"
+  # rv: exactly the files of the tag, by the repo's own installer
+  curl -fsSL --retry 3 "https://raw.githubusercontent.com/orientpine/rv-video-tool/$tag/scripts/install.sh" | bash -s -- "$repo" "$tag" "$new/rv-video-tool" >&2
+  local version tree
+  version=$(head -1 "$new/rv-video-tool/VERSION")
+  [ "v$version" = "$tag" ] || { echo "TOOLS_FAIL rv $tag says it is version $version" >&2; exit 3; }
+  tree=$(bash "$new/rv-video-tool/scripts/verify.sh" "$new/rv-video-tool")
+  printf '%s\n' "$version" > "$new/VERSION"
+  # the box has no network: uv installs only from these wheels, for the python3 the box runs
+  cat > "$new/bin/uv" <<'EOF'
+#!/bin/sh
+# uv of the dori heavy tool bundle "rv": no network, packages only from the bundle's wheels, the system python3
+b=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+export UV_OFFLINE=1 UV_NO_INDEX=1 UV_FIND_LINKS="$b/wheels" UV_PYTHON_DOWNLOADS=never UV_PYTHON="${UV_PYTHON:-/usr/bin/python3}"
+exec "$b/uv/uv" "$@"
+EOF
+  cat > "$new/bin/rv" <<'EOF'
+#!/bin/sh
+# rv of the dori heavy tool bundle "rv": the bundle's uv first on PATH, the bundle's chromium (HOME is empty in a box)
+b=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+if [ -z "${RV_CHROME:-}" ]; then for c in "$b"/ms-playwright/chromium-*/chrome-linux*/chrome; do [ -x "$c" ] && RV_CHROME=$c; done; fi
+PATH="$b/bin:$PATH" PLAYWRIGHT_BROWSERS_PATH="$b/ms-playwright" PYTHONPATH="$b/py${PYTHONPATH:+:$PYTHONPATH}"
+export PATH RV_CHROME PLAYWRIGHT_BROWSERS_PATH PYTHONPATH
+exec "$b/rv-video-tool/rv" "$@"
+EOF
+  chmod 755 "$new/bin/uv" "$new/bin/rv"
+  # rv's plain python3 is the one py/ is for, not another python3 earlier on a box's PATH
+  ln -s /usr/bin/python3 "$new/bin/python3"
+  local pkgs
+  pkgs=$(grep -rhoE -- '--with [A-Za-z0-9_.-]+' "$new/rv-video-tool" | awk '{print $2}' | LC_ALL=C sort -u | tr '\n' ' ')
+  [ -n "$pkgs" ] || { echo "TOOLS_FAIL no uv run --with package found in rv $tag" >&2; exit 3; }
+  # shellcheck disable=SC2086 # one word per package
+  UV_CACHE_DIR="$tmp/cache" "$new/uv/uv" run -q --no-project --python /usr/bin/python3 --with pip python -m pip download -q --only-binary=:all: -d "$new/wheels" $pkgs
+  # rv also starts plain python3 on scripts that import these (lib/xfade.py: PIL), which a helper may not have
+  # shellcheck disable=SC2086
+  UV_CACHE_DIR="$tmp/cache" "$new/uv/uv" pip install -q --python /usr/bin/python3 --no-index --find-links "$new/wheels" --target "$new/py" $pkgs
+  mkdir "$tmp/other" && printf '#!/bin/sh\nexit 97\n' > "$tmp/other/python3" && chmod 755 "$tmp/other/python3"
+  env -i PATH="$new/bin:$tmp/other:/usr/bin:/bin" PYTHONPATH="$new/py" python3 -c "import sys, PIL, numpy; sys.exit(0 if PIL.__file__.startswith('$new/py/') else 1)" || { echo "TOOLS_FAIL plain python3 on the bundle's PATH does not take PIL from $new/py" >&2; exit 3; }
+  # the chromium of the playwright in the wheels, and an offline check of what rv's uv lines ask for
+  local with=() p
+  for p in $pkgs; do with+=(--with "$p"); done
+  env -i PATH="$new/bin:/usr/bin:/bin" HOME="$tmp/home" PLAYWRIGHT_BROWSERS_PATH="$new/ms-playwright" "$new/bin/uv" run -q --no-project --with playwright python -m playwright install chromium >&2
+  local pw
+  pw=$(env -i PATH="$new/bin:/usr/bin:/bin" HOME="$tmp/home2" "$new/bin/uv" run -q --no-project "${with[@]}" python -c "import importlib.metadata as m; [__import__(n) for n in ('playwright', 'PIL', 'numpy')]; print(m.version('playwright'))")
+  compgen -G "$new/ms-playwright/chromium-*/chrome-linux*/chrome" >/dev/null || { echo "TOOLS_FAIL no chromium in $new/ms-playwright" >&2; exit 3; }
+  # a job runs from the generation folder the helper resolved when it admitted it: only links move, atomically
+  local stamp gen
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  gen=$dir/rv-gens/$version-$stamp
+  mkdir --parents "$dir/rv-gens"
+  mv "$new" "$gen"
+  if [ -e "$dir/rv@$version" ] && [ ! -L "$dir/rv@$version" ]; then mv "$dir/rv@$version" "$dir/rv-gens/$version-unlinked-$stamp"; fi
+  if [ -e "$b" ] && [ ! -L "$b" ]; then mv "$b" "$dir/rv-gens/unversioned-$stamp"; fi
+  ln -sfn "rv-gens/$version-$stamp" "$dir/rv@$version.link-$$"
+  mv -Tf "$dir/rv@$version.link-$$" "$dir/rv@$version"
+  ln -sfn "rv@$version" "$dir/rv.link-$$"
+  mv -Tf "$dir/rv.link-$$" "$b"
+  ln -sfn ../rv/bin/rv "$dir/bin/rv"
+  echo "TOOLS_OK rv $gen $version $tree playwright $pw"
+}
+
+if [ "${1:-}" = rv ]; then
+  rv_bundle "${2:?usage: tools.sh rv <tag> [tools dir]}" "${3:-$HOME/.local/share/dori-heavy/tools}"
+  exit 0
+fi
+
 dir=${1:-$HOME/.local/share/dori-heavy/tools}
 case $(uname -m) in
   aarch64) arch=linuxarm64 ;;

@@ -21,10 +21,12 @@ type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonl
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 // A helper's BUSY or REFUSED line (heavy-spread.ts). A helper on dori before #372 refuses need=, which= and path= as
-// unknown options: that is its code out of date, not a program its box lacks (the 4eae helper, 2026-11-08), so say so.
-export const helperVerdict = (verdict: string, why: string): { readonly kind: "busy" | "refused" | "old"; readonly why: string } => {
-  const unknown = /^unknown option "((?:need|which|path)=[^"]*)"$/.exec(why)?.[1];
+// unknown options: that is its code out of date, not a program its box lacks (the 4eae helper, 2026-11-08), so say so;
+// so is one before tool bundles refusing tools=. A helper that lacks a bundle the job names says so (heavy-tools.ts).
+export const helperVerdict = (verdict: string, why: string): { readonly kind: "busy" | "refused" | "old" | "notools"; readonly why: string } => {
+  const unknown = /^unknown option "((?:need|which|path|tools)=[^"]*)"$/.exec(why)?.[1];
   if (verdict === "REFUSED" && unknown) return { kind: "old", why: `its dori is older than this one and does not know "${unknown}"; update it there (dori update --pull, or its dori-update-pull timer)` };
+  if (verdict === "REFUSED" && /^(?:no tool bundle|tool bundle) "/.test(why)) return { kind: "notools", why };
   return { kind: verdict === "BUSY" ? "busy" : "refused", why };
 };
 
