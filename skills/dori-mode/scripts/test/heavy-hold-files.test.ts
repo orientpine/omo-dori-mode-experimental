@@ -116,7 +116,11 @@ test("an entry its owner swaps between the look and the open is not waited on, f
   holdOn(hold, ME, now + 60_000, "x", now);
   const swap = (to: (file: string) => void) => liveHolds(hold, now, { afterLook: to });
   // a FIFO opened for reading waits for a writer unless opened non-blocking
-  expect(swap((file) => { rmSync(file); Bun.spawnSync(["mkfifo", file]); })).toEqual([]);
+  // mkfifo runs in a child, where /proc/self is not this process: it gets the directory's own path
+  const real = join(hold, `${ME}.json`);
+  let made = -1;
+  expect(swap(() => { rmSync(real); made = Bun.spawnSync(["mkfifo", real]).exitCode; })).toEqual([]);
+  expect(made).toBe(0);
   holdOn(hold, ME, now + 60_000, "x", now);
   const far = JSON.stringify({ reason: "swapped in", until: new Date(now + 60_000).toISOString() });
   // made before the old one goes, so it is another inode
