@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sharedDirProblem } from "./shared-dir.ts";
 
@@ -30,64 +30,81 @@ const accountOf = (uid: number): string => {
   return line?.split(":")[0] ?? `uid ${uid}`;
 };
 
-const holdOf = (dir: string, name: string, now: number): Hold | undefined => {
-  const file = join(dir, name);
-  const failed = (e: unknown): Hold | undefined => {
-    if (e instanceof Error && "code" in e && e.code === "ENOENT") return undefined;
-    // a link or a FIFO, socket or device put in its owner's place only drops that owner's own hold
-    if (e instanceof Error && "code" in e && e.code === "ELOOP") return undefined;
-    // a hold file this account cannot open or stat holds while it cannot
-    const code = e instanceof Error && "code" in e ? String(e.code) : String(e);
-    return { by: "?", reason: `${file} cannot be read here (${code}); the hold directory must be mode 1777`, until: now + 60_000 };
-  };
-  // one descriptor for everything: no waiting for a FIFO's writer, no following a link, and what is read is what was
-  // stat'd (another account may swap its own entry between a stat of the path and an open of it)
+// code of a filesystem error, for the fail-closed reasons
+const codeOf = (e: unknown): string => (e instanceof Error && "code" in e ? String(e.code) : String(e));
+const failClosed = (reason: string, now: number): Hold => ({ by: "?", reason, until: now + 60_000 });
+
+// afterLook: a test's hook between the look at an entry and its open, where another account may swap its own entry
+const holdOf = (base: string, shown: string, name: string, now: number, afterLook?: (file: string) => void): Hold | undefined => {
+  const file = join(base, name);
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(file);
+  } catch (e) {
+    return codeOf(e) === "ENOENT" ? undefined : failClosed(`${join(shown, name)} cannot be read here (${codeOf(e)}); the hold directory must be mode 1777`, now);
+  }
+  // a link, FIFO, socket or device in an account's place only drops that account's own hold
+  if (!st.isFile()) return undefined;
+  // its owner can set mtime to any time, never ctime (set by the kernel at each write, rename or touch of the file)
+  const cap = Math.min(st.mtimeMs, st.ctimeMs) + MAX_MS;
+  // an ended one is not opened at all, and a live one read only as far as a hold can be long: any account may write here
+  if (cap <= now) return undefined;
+  const unreadable: Hold = { by: accountOf(st.uid), reason: UNREADABLE, until: cap };
+  afterLook?.(file);
+  // one open, no waiting for a FIFO's writer and no link followed; what is read must be the file looked at
   let fd: number;
   try {
     fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   } catch (e) {
-    return failed(e);
+    return ["ENOENT", "ELOOP", "ENXIO"].includes(codeOf(e)) ? undefined : unreadable;
   }
   try {
-    const st = fstatSync(fd);
-    if (!st.isFile()) return undefined;
-    // its owner can set mtime to any time, never ctime (set by the kernel at each write, rename or touch of the file)
-    const cap = Math.min(st.mtimeMs, st.ctimeMs) + MAX_MS;
-    // an ended one is not read at all, and a live one only as far as a hold can be long: any account may write here
-    if (cap <= now) return undefined;
+    const fst = fstatSync(fd);
+    if (!fst.isFile() || fst.ino !== st.ino || fst.dev !== st.dev) return undefined;
+    const capNow = Math.min(cap, Math.min(fst.mtimeMs, fst.ctimeMs) + MAX_MS);
+    if (capNow <= now) return undefined;
     let parsed: { reason?: unknown; until?: unknown } = {};
     try {
       const buf = Buffer.alloc(MAX_BYTES);
-      const v: unknown = st.size <= MAX_BYTES ? JSON.parse(buf.toString("utf8", 0, readSync(fd, buf, 0, MAX_BYTES, 0))) : undefined;
+      const v: unknown = fst.size <= MAX_BYTES ? JSON.parse(buf.toString("utf8", 0, readSync(fd, buf, 0, MAX_BYTES, 0))) : undefined;
       if (v !== null && typeof v === "object" && !Array.isArray(v)) parsed = v as typeof parsed;
     } catch {
       // a file cut off while written, or not JSON: it holds, for the longest a hold may
     }
-    const until = typeof parsed.until === "string" && !Number.isNaN(Date.parse(parsed.until)) ? Math.min(Date.parse(parsed.until), cap) : cap;
+    const until = typeof parsed.until === "string" && !Number.isNaN(Date.parse(parsed.until)) ? Math.min(Date.parse(parsed.until), capNow) : capNow;
     const reason = typeof parsed.reason === "string" && typeof parsed.until === "string" ? parsed.reason : UNREADABLE;
-    return until > now ? { by: accountOf(st.uid), reason, until } : undefined;
-  } catch (e) {
-    return failed(e);
+    return until > now ? { by: accountOf(fst.uid), reason, until } : undefined;
+  } catch {
+    return unreadable;
   } finally {
     closeSync(fd);
   }
 };
 
-/** The live holds on this host, the one ending first first. */
-export const liveHolds = (dir: string, now: number): Hold[] => {
-  let names: string[];
+const NOT_PLAIN = "is not a plain directory of mode 1777; fix or remove it";
+
+/** The live holds on this host, the one ending first first. afterDirLook / afterLook: a test's hooks between a look and its use. */
+export const liveHolds = (dir: string, now: number, hooks: { readonly afterDirLook?: () => void; readonly afterLook?: (file: string) => void } = {}): Hold[] => {
+  // the directory is opened once (no link followed) and everything in it is reached through that descriptor, so one
+  // swapped after the check is never read; nothing in a directory that is a link or not shared as it must be is opened
+  let dfd: number;
   try {
-    // nothing in a hold directory that is a link (to /dev, say) or not shared like it must be is opened at all
-    const st = lstatSync(dir);
-    if (st.isSymbolicLink() || !st.isDirectory() || (st.mode & 0o1777) !== 0o1777) return [{ by: "?", reason: `the hold directory ${dir} is not a plain directory of mode 1777; fix or remove it`, until: now + 60_000 }];
-    names = readdirSync(dir).filter((n) => n.endsWith(".json"));
+    dfd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   } catch (e) {
-    if (e instanceof Error && "code" in e && e.code === "ENOENT") return [];
-    // a directory this account cannot read may hold another account's hold: it holds until it can be read
-    const code = e instanceof Error && "code" in e ? String(e.code) : String(e);
-    return [{ by: "?", reason: `the hold directory ${dir} cannot be read here (${code}); it must be mode 1777`, until: now + 60_000 }];
+    return codeOf(e) === "ENOENT" ? [] : [failClosed(`the hold directory ${dir} ${NOT_PLAIN} (${codeOf(e)})`, now)];
   }
-  return names.flatMap((n) => holdOf(dir, n, now) ?? []).sort((a, b) => a.until - b.until);
+  try {
+    const st = fstatSync(dfd);
+    if (!st.isDirectory() || (st.mode & 0o1777) !== 0o1777) return [failClosed(`the hold directory ${dir} ${NOT_PLAIN}`, now)];
+    hooks.afterDirLook?.();
+    const base = existsSync(`/proc/self/fd/${dfd}`) ? `/proc/self/fd/${dfd}` : dir;
+    return readdirSync(base).filter((n) => n.endsWith(".json")).flatMap((n) => holdOf(base, dir, n, now, hooks.afterLook) ?? []).sort((a, b) => a.until - b.until);
+  } catch (e) {
+    // a directory this account cannot list may hold another account's hold: it holds until it can be read
+    return [failClosed(`the hold directory ${dir} cannot be read here (${codeOf(e)}); it must be mode 1777`, now)];
+  } finally {
+    closeSync(dfd);
+  }
 };
 
 export const holdLine = (h: Hold, now: number): string => `by ${h.by} until ${new Date(h.until).toISOString()} (${Math.ceil((h.until - now) / 60_000)} min left): ${h.reason}`;
@@ -136,7 +153,7 @@ export const holdOn = (dir: string, user: string, until: number, reason: string,
 
 /** Ends this account's hold; another account's ends at its time or with its own off. */
 export const holdOff = (dir: string, user: string): boolean => {
-  const had = holdOf(dir, `${user}.json`, Date.now()) !== undefined;
+  const had = holdOf(dir, dir, `${user}.json`, Date.now()) !== undefined;
   rmSync(fileOf(dir, user), { force: true });
   return had;
 };
