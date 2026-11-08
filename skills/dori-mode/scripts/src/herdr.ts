@@ -162,6 +162,8 @@ export const agentLine = (argv: readonly string[], env: Readonly<Record<string, 
 export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly argv: readonly string[]; readonly env?: Readonly<Record<string, string | undefined>>; readonly workspace?: string }): Promise<{ readonly pane: string; readonly tab?: string }> => {
   // a new session opens on the chosen runtime (default): a refused choice (DORI_RUNTIME=hc) throws here, before any tab
   const rt = runtimesOf(run).default;
+  // hc's launch is a Unix env line in $SHELL, where the fork's native-Windows lanes run PowerShell (review 8 of #404)
+  if (rt.kind === "hc" && process.platform === "win32") throw new Error("hc lanes are not supported on native Windows; use herdr there");
   if (rt.kind === "hc") return hcOpen(rt, run, clock, opts, agentLine(opts.argv, opts.env));
   // the runtime's create (a tab with the user's shell, upstream #148); the agent starts below through its start
   const tabIn = (group?: string) => rt.create({ name: opts.title, cwd: opts.cwd, env: {}, role: "lane", container: "tab", ...(group ? { group } : {}) });

@@ -16,9 +16,10 @@ export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran
 
 // aoe and tmux can start the tmux server, and every pane it opens later inherits the server's environment: a Dori's
 // variables (token, inbox, lead) handed to them would make every session, another Dori's included, run as this one.
-// herdr's panes take the herdr server's environment too, so herdr gets the same.
+// herdr's panes take the herdr server's environment too, so herdr gets the same, and so does hc: any hc call may start
+// the core, whose terminals inherit its environment (review 8 of #404); HC_SESSION, the core's own selector, stays.
 export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>): Record<string, string | undefined> =>
-  ["aoe", "tmux", "herdr"].includes(argv[0]?.split("/").pop() ?? "") ? Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_"))) : { ...env };
+  ["aoe", "tmux", "herdr", "hc"].includes(argv[0]?.split("/").pop() ?? "") ? Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_"))) : { ...env };
 
 // A hook such as ["dori", "thread", "reply", ...] names the dori command. On native Windows that command is dori.ps1,
 // which Bun.spawn cannot start, so the hook runs this CLI with this Bun directly (no shell, the arguments as they are).
