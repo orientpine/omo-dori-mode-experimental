@@ -297,9 +297,14 @@ const USAGE = `dori <command> [options]
   lesson add <key> --rule TEXT --evidence PATH [--cwd DIR]
                                        keep a rule the lane learned about its repo (the lane's cwd); the next launch there
                                        puts it in the brief under "Lessons for this repo"
-  lesson list [--cwd DIR]              current lessons, newest first; a damaged journal line is a LESSON_WARNING
+  lesson add --global --rule TEXT --evidence REF
+                                       the lead's rule for every lane, whatever its repo (upstream dori-superagent#97): every
+                                       launch puts up to 4 in the brief under "Lessons for every lane"; refused with a lane
+                                       key, --cwd, or from an open lane's pane
+  lesson list [--cwd DIR]              current lessons (global ones included), newest first; a damaged journal line is a
+                                       LESSON_WARNING
   lesson mark <id> --outcome pending|helped|no-effect|harmful|encoded
-                                       only pending and helped ones reach new briefs
+                                       only pending and helped ones reach new briefs; a global one is the lead's to mark
   worklog add <title> --source REF     record an owner request when it arrives (upstream dori-superagent#96)
   worklog next|note <id> <text>        set the item's next step, or add a note (a decision, an owner)
   worklog close <id> --result TEXT     close the item with what came of it
@@ -605,7 +610,7 @@ const flags = parseArgs({
     answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
     static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
     remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
-    rule: { type: "string" }, outcome: { type: "string" }, lesson: { type: "string", multiple: true },
+    rule: { type: "string" }, outcome: { type: "string" }, lesson: { type: "string", multiple: true }, global: { type: "boolean" },
     job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" }, mem: { type: "string" }, want: { type: "string" }, sync: { type: "string", multiple: true }, env: { type: "string", multiple: true }, caller: { type: "string" },
     reply: { type: "string" }, again: { type: "boolean" }, channel: { type: "string" }, "reply-to": { type: "string" }, posted: { type: "string" }, "post-summary": { type: "boolean" }, "rollover-outcome": { type: "string" }, "rollover-unresolved": { type: "boolean" }, stuck: { type: "boolean" },
     step: { type: "string" }, "remote-effect": { type: "string", multiple: true },
@@ -2411,9 +2416,26 @@ try {
     }
     case "lesson": {
       const lessons = new Lessons(config.stateDir);
+      // The open lane that owns this pane, found the way claim-done finds its lane (upstream dori-superagent#97). This is a
+      // convenience check: it stops a lane from adding or reviving a global lesson by accident or on routine instruction.
+      // It is not a security boundary: it reads only $HERDR_PANE_ID or $TMUX (env -u gets past it), and a direct write to
+      // lessons.jsonl skips the CLI.
+      const paneLane = async () => {
+        const here = await currentTmuxSession(run).catch(() => "");
+        return here ? await deps.registry.byPane(here) : null;
+      };
       switch (key) {
         case "add": {
-          const laneKey = flags.positionals[1] ?? die("usage: dori lesson add <key> --rule TEXT --evidence PATH [--cwd DIR]");
+          if (flags.values.global) {
+            // A global lesson reaches every future brief, so it is the lead's: no lane key, no cwd, recorded as the lead's.
+            if (flags.positionals[1] !== undefined) die("a --global lesson is the lead's: give no lane key");
+            if (opt("cwd") !== undefined) die("a --global lesson has no --cwd");
+            const caller = await paneLane();
+            if (caller) die(`a --global lesson is the lead's; this pane is lane ${caller.key}`);
+            console.log(JSON.stringify(lessons.add({ lane: "lead", scope: "global", rule: need("rule"), evidence: evidence() }, realClock.now())));
+            break;
+          }
+          const laneKey = flags.positionals[1] ?? die("usage: dori lesson add <key> --rule TEXT --evidence PATH [--cwd DIR], or dori lesson add --global --rule TEXT --evidence REF");
           // a closed lane may still add what it learned, so the registry is read directly, not through lane()
           const target = (await deps.registry.read(laneKey)) ?? die(`no registered lane "${laneKey}"`);
           console.log(JSON.stringify(lessons.add({ lane: laneKey, cwd: opt("cwd") ?? target.cwd ?? config.defaultCwd, rule: need("rule"), evidence: evidence() }, realClock.now())));
@@ -2427,6 +2449,12 @@ try {
         }
         case "mark": {
           const id = flags.positionals[1] ?? die("usage: dori lesson mark <id> --outcome pending|helped|no-effect|harmful|encoded");
+          // Marking a global lesson helped or pending puts it back into every brief, so a lane cannot mark one; repo lessons
+          // stay markable from lanes.
+          if (lessons.read().lessons.find((lesson) => lesson.id === id)?.scope === "global") {
+            const caller = await paneLane();
+            if (caller) die(`a global lesson is the lead's to mark; this pane is lane ${caller.key}`);
+          }
           const outcome = need("outcome");
           if (isLessonOutcome(outcome)) console.log(JSON.stringify(lessons.mark(id, outcome)));
           else die("--outcome must be pending, helped, no-effect, harmful or encoded");

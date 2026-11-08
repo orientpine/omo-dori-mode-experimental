@@ -7,7 +7,7 @@ import { READ_ONLY_RULE } from "../src/backlog.ts";
 import { leadText } from "../src/directives.ts";
 import { briefForCheck } from "../src/intent-check.ts";
 import { renderBrief } from "../src/launch.ts";
-import { Lessons } from "../src/lessons.ts";
+import { GLOBAL_LESSON_CAP, Lessons } from "../src/lessons.ts";
 import type { Lane } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
@@ -159,4 +159,47 @@ test("a repo with no lessons gets no lessons section", async () => {
   await Bun.write(brief, "# Port it\n");
   const r = await renderBrief(depsFor(newWorld(), fakeClock(T0), state.dir), { key: "lesson-none", title: "none", brief, done: "merged acme/app#2", cwd: "/repo" });
   expect(r.text).not.toContain("## Lessons for this repo");
+});
+
+// Global lessons, upstream https://github.com/sisyphuslabs/dori-superagent/pull/97: the lead's rules reach every lane's brief.
+test("the lead's global lessons reach a brief in any repo, under their own heading above the repo's lessons", async () => {
+  const deps = depsFor(newWorld(), fakeClock(T0), state.dir);
+  const lessons = new Lessons(state.dir);
+  const repo = lessons.add({ ...lesson, lane: "earlier", cwd: "/repo" }, T0);
+  const global = lessons.add({ lane: "lead", scope: "global", rule: "Never change the global Git identity", evidence: "slack:D1/2.1" }, T0 + 1);
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "# Port it\n");
+  const here = (await renderBrief(deps, { key: "lesson-global", title: "g", brief, done: "merged acme/app#2", cwd: "/repo" })).text;
+  const elsewhere = (await renderBrief(deps, { key: "lesson-global2", title: "g", brief, done: "merged acme/app#2", cwd: "/elsewhere" })).text;
+  const g = here.indexOf("## Lessons for every lane (written by dori launch)");
+  expect(g).toBeGreaterThan(here.indexOf("# Port it"));
+  expect(g).toBeLessThan(here.indexOf("## Lessons for this repo (written by dori launch)"));
+  expect(here).toContain(`- [pending; lead; ${global.id}] Never change the global Git identity`);
+  expect(here).toContain(`- [pending; earlier; ${repo.id}] Subscribe before triggering`);
+  expect(here.slice(g, here.indexOf("## Lessons for this repo"))).not.toContain("Subscribe before triggering");
+  expect(elsewhere).toContain(`- [pending; lead; ${global.id}] Never change the global Git identity`);
+  expect(elsewhere).not.toContain("## Lessons for this repo");
+  // not the lead's or the owner's words for the directive audit and intent-check
+  expect(leadText(here)).not.toContain("global Git identity");
+  expect(briefForCheck(here)).not.toContain("global Git identity");
+});
+
+test("global lessons add at most their cap of lines to a brief, and a brief launched again carries them once", async () => {
+  const deps = depsFor(newWorld(), fakeClock(T0), state.dir);
+  const lessons = new Lessons(state.dir);
+  // more global rules than the cap, each as long as a rule may be
+  for (let i = 0; i <= GLOBAL_LESSON_CAP + 1; i++) lessons.add({ lane: "lead", scope: "global", rule: `G${i} ${"x".repeat(396)}`, evidence: "slack:D1/3.1" }, T0 + i);
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "# Port it\n");
+  const input = { key: "lesson-cap", title: "cap", brief, done: "merged acme/app#2", cwd: "/repo" };
+  const plain = (await renderBrief(depsFor(newWorld(), fakeClock(T0), join(state.dir, "empty")), input)).text;
+  const first = (await renderBrief(deps, input)).text;
+  const lines = first.split("\n").filter((l) => l.startsWith("- [pending; lead; "));
+  expect(lines.map((l) => l.replace(/^.*\] (G\d+) .*$/, "$1"))).toEqual(["G5", "G4", "G3", "G2"]);
+  // the heading, its one-line note, GLOBAL_LESSON_CAP rules of at most 400 characters with their prefix, and a blank line
+  expect(first.length - plain.length).toBeLessThanOrEqual(400 + GLOBAL_LESSON_CAP * (400 + 60) + 2);
+  await Bun.write(brief, first);
+  const again = (await renderBrief(deps, input)).text;
+  expect(again.split("## Lessons for every lane").length).toBe(2);
+  expect(again.split("- [pending; lead; ").length).toBe(GLOBAL_LESSON_CAP + 1);
 });
