@@ -14,6 +14,8 @@ herdr integration install pi        # or the integration for the agent you run i
 herdr --skill                       # load its skill unless it is already in your context
 ```
 
+The scripts reach herdr through the session runtime (`scripts/src/runtime/`, upstream dori-superagent #147-#158), which also has an adapter for hc (herdr-core, one labelled terminal per lane, status from the agent's own OSC 7501 report). This fork drives herdr only: `"runtime": "hc"` in the config and `DORI_RUNTIME=hc` are refused (CONFIG_INVALID) until launch, handover, revive, the screen reads and the lane close go through the runtime too, and `dori migrate` (moving sessions between runtimes) is not ported (`docs/follow-ups.md`). Leave `runtime` unset.
+
 ### Or: aoe on tmux
 
 If the owner already runs agents with aoe (agent-of-empires), lanes can be aoe sessions instead of herdr tabs. You need `aoe`, `tmux`, and the agent available to `aoe add --tool <name>`: a built-in agent (`aoe agents` lists them) or a custom agent in aoe's settings, as omo is. Run the Dori itself in an aoe session too, and in step 4 set:

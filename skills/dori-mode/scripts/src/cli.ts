@@ -201,8 +201,8 @@ const USAGE = `dori <command> [options]
                                        with flags, set its own (none: off). At a cap freshness tells the lead once (LANE_CAP);
                                        the lane is never stopped or told
   claim-done [<key>] --evidence TEXT [--summary TEXT] [--posted ID|LINK] [--post-summary] [--rollover-outcome TEXT [--rollover-unresolved]]
-                                       key defaults to the lane registered for this pane (the tmux session it runs in, else
-                                       $HERDR_PANE_ID); --summary: 2 to 5 plain lines for the owner's thread in his language.
+                                       key defaults to the lane registered for this pane (its own session: $HC_TERMINAL_ID,
+                                       else $HERDR_PANE_ID, else its tmux session); --summary: 2 to 5 plain lines for the owner's thread in his language.
                                        The result reaches the thread once: when this lane's session posted in its work thread
                                        (dori send, dori thread) in the last 30 minutes, or --posted names that message, it is
                                        the result (RESULT_ALREADY_POSTED) and the close posts no summary; --post-summary: that
@@ -2431,7 +2431,7 @@ try {
       const lessons = new Lessons(config.stateDir);
       // The open lane that owns this pane, found the way claim-done finds its lane (upstream dori-superagent#97). This is a
       // convenience check: it stops a lane from adding or reviving a global lesson by accident or on routine instruction.
-      // It is not a security boundary: it reads only $HERDR_PANE_ID or $TMUX (env -u gets past it), and a direct write to
+      // It is not a security boundary: it reads only $HC_TERMINAL_ID, $HERDR_PANE_ID or $TMUX (env -u gets past it), and a direct write to
       // lessons.jsonl skips the CLI.
       const paneLane = async () => {
         const here = await currentTmuxSession(run).catch(() => "");

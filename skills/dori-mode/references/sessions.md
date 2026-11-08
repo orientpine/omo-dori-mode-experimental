@@ -120,6 +120,7 @@ One JSON file per lane under `<stateDir>/lanes/`, written atomically (temp file 
 | Field | Meaning |
 |---|---|
 | `thread` | where its updates go, as `platform:thread` (or `none`) |
+| `sessionRef` | its session on the session runtime: the runtime (`herdr`) and the pane id, the tab as its container. A herdr record written without it (older records, a handover that moved the pane) gets it on read and on write from `pane` and `tab`; an aoe session has none |
 | `pane`, `tab` | its herdr location; with aoe, `pane` is the session's tmux name (`aoe_<title>_<first 8 of the id>`) and there is no tab |
 | `session` | the agent's own session id, so a closed job can be reopened later |
 | `status` | `working`, `done-claimed`, `verified-done`, `not-done`, `closed` |
