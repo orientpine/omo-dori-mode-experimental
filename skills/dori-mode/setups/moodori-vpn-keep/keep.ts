@@ -18,6 +18,7 @@ export type KeepOptions = {
   readonly motpFile: string; // JSON file {"secret": "<hex>"} of the MOTP (TOTP HMAC-SHA256, 6 digits, 30 s) key
   readonly secuwayTask: string;
   readonly edgeTask: string;
+  readonly edgeProfile: string; // the folder name of MooDori's Edge --user-data-dir, so only that Edge is restarted
   readonly edgePort: number; // Edge's remote debugging port on the PC
   readonly cdpPort: number; // the local end of the ssh tunnel to it
   readonly days: readonly number[]; // 0 = Sunday, in timeZone
@@ -65,6 +66,7 @@ export const keepConfig = (raw: unknown, home: string = homedir()): KeepConfig =
       motpFile: tilde(str(doc, "motpFile"), home),
       secuwayTask: str(doc, "secuwayTask", "moodori-secuway"),
       edgeTask: str(doc, "edgeTask", "moodori-edge"),
+      edgeProfile: str(doc, "edgeProfile", "moodori-edge"),
       edgePort: num(doc, "edgePort", 9222),
       cdpPort: num(doc, "cdpPort", 9224),
       days: days as number[],
@@ -119,6 +121,7 @@ export type KeepDeps = {
   readonly ensureAgents: () => Promise<void>;
   readonly login: () => Promise<string>; // "OK", "no login page", or why it failed
   readonly restartAgent: () => Promise<void>;
+  readonly restartEdge: () => Promise<void>;
   readonly wait: (ms: number) => Promise<void>;
   readonly log: (line: string) => void;
 };
@@ -151,6 +154,13 @@ export async function keepTick(o: KeepOptions, s: KeepState, d: KeepDeps, now: D
     d.log("AGENT_RESTART");
     await d.restartAgent();
     r = await attempt();
+    // An Edge that was open before the drop keeps its portal tab on the agent check page (activexloading) after the
+    // agent restart; only that Edge started again moves on to login.jsp. Once a round, so maxFails still bounds it.
+    if (r === "no login page") {
+      d.log("VPN_EDGE_RESTART");
+      await d.restartEdge();
+      r = await attempt();
+    }
   } else if (r !== "OK") r = await attempt();
   if (r === "OK" && !(await vpnBack(d))) r = `OK portal, VPN still down after ${(UP_CHECKS * UP_EVERY_MS) / 1000} s`;
   d.log(`RELOGIN ${r}`);
@@ -191,7 +201,7 @@ const clickIn = async (send: Send, contextId: number, what: string, find: string
 };
 
 // The Secuway portal: agent check page -> login.jsp (account) -> flag3_cert (MOTP) -> bookmark. "OK" only at the
-// bookmark page; "no login page" when the agent check page never moves on (the caller restarts the agent).
+// bookmark page; "no login page" when the agent check page never moves on (the caller restarts the agent, then Edge).
 export async function loginFlow(V: Cdp, vpnUrl: string, creds: () => Promise<[string, string]>, motp: () => string, clock: Clock): Promise<string> {
   const frames = async (): Promise<Frame[]> => {
     const all: Frame[] = [];
@@ -319,6 +329,9 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
     login,
     wait: (ms) => clock.sleep(ms),
     restartAgent: async () => { await ps(`Stop-Process -Name SecuwayUPort -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-ScheduledTask -TaskName '${o.secuwayTask}'; Start-Sleep 8`); },
+    // Stops only the msedge processes whose --user-data-dir ends in edgeProfile (the owner's own Edge stays), starts
+    // edgeTask again and waits up to 20 s for its debugging port.
+    restartEdge: async () => { await ps(`$d=[regex]::Escape('${o.edgeProfile}'); Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -match ('--user-data-dir="?[^"]*\\\\' + $d + '("|\\s|$)') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep 3; Start-ScheduledTask -TaskName '${o.edgeTask}'; for($i=0;$i -lt 20;$i++){Start-Sleep 1; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 2) | Out-Null; break}catch{}}`); },
     log: (line) => console.log(`${new Date(clock.now()).toISOString()} ${line}`),
   };
 }
