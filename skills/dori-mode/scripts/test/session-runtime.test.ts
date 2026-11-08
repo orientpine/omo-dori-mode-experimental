@@ -7,6 +7,7 @@ import { ConfigError, loadConfig } from "../src/config.ts";
 import { type Lane, Registry, sessionOf } from "../src/registry.ts";
 import { type Runner, runtimeChoice, runtimesFor } from "../src/run.ts";
 import { closeSession } from "../src/sessions.ts";
+import { openHerdrSession } from "../src/herdr.ts";
 
 const scratch = (): string => mkdtempSync(join(tmpdir(), "dori-session-runtime-"));
 const base = { title: "t", thread: "none", brief: "/b", done: "d", openedAt: "2026-11-08T00:00:00.000Z" };
@@ -62,6 +63,21 @@ test("a lane session closes through its runtime: its tab when it has one, else i
   expect(await closeSession(rts, { runtime: "herdr", id: "w1:p3", container: "w1:t3" })).toBe("tab w1:t3 closed");
   expect(await closeSession(rts, { runtime: "herdr", id: "w1:p4" })).toBe("pane w1:p4 not closed");
   expect(calls).toEqual([["herdr", "tab", "close", "w1:t3"], ["herdr", "pane", "close", "w1:p4"]]);
+});
+
+test("a refused runtime opens nothing: DORI_RUNTIME=hc makes no tab create or start for launch and handover (review 3 of #393)", async () => {
+  const calls: string[][] = [];
+  const run: Runner = async (argv) => {
+    calls.push([...argv]);
+    return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", tab_id: "w1:t9" } } }), err: "" };
+  };
+  process.env["DORI_RUNTIME"] = "hc";
+  try {
+    await expect(openHerdrSession(run, { now: () => 0, sleep: async () => {} }, { title: "x", cwd: "/tmp", argv: ["omo"] })).rejects.toThrow(/DORI_RUNTIME "hc" is not wired/);
+  } finally {
+    delete process.env["DORI_RUNTIME"];
+  }
+  expect(calls).toEqual([]);
 });
 
 describe("runtime choice keeps herdr the default (DORI_RUNTIME > config runtime > herdr)", () => {

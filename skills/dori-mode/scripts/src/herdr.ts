@@ -152,7 +152,8 @@ export const agentLine = (argv: readonly string[], env: Readonly<Record<string, 
 
 // A new tab labelled title in cwd (in workspace when given) whose root pane runs argv; the pane and tab ids.
 export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly argv: readonly string[]; readonly env?: Readonly<Record<string, string | undefined>>; readonly workspace?: string }): Promise<{ readonly pane: string; readonly tab?: string }> => {
-  const rt = herdrRuntime(run);
+  // a new session opens on the chosen runtime (default): a refused choice (DORI_RUNTIME=hc) throws here, before any tab
+  const rt = runtimesOf(run).default;
   // the runtime's create (a tab with the user's shell, upstream #148); the agent starts below through its start
   const tabIn = (group?: string) => rt.create({ name: opts.title, cwd: opts.cwd, env: {}, role: "lane", container: "tab", ...(group ? { group } : {}) });
   const failed = (e: unknown) => new Error(`herdr tab create failed: ${reasonOf(e)}`);
