@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 
+import { loadConfig } from "../src/config.ts";
 import { holdNote, holdOn, liveHolds } from "../src/heavy-hold.ts";
 import { newJobDir, stageInputs } from "../src/heavy-job.ts";
 import { runQueued, type HeavyCtx } from "../src/heavy-queue.ts";
@@ -74,6 +75,12 @@ test("a hold file whose except is not a list of account names holds every accoun
   expect(holdNote(hold, now, "yoodori")).toContain("measuring");
   writeFileSync(join(hold, `${ME}.json`), JSON.stringify({ reason: "measuring", until: new Date(now + 60_000).toISOString(), except: ["yoo dori/.."] }));
   expect(holdNote(hold, now, "yoo dori/..")).toContain("measuring");
+});
+
+test("the suite reads a hold directory of its own, never the host's (DORI_HEAVY_HOLD_DIR from test/preload.ts)", async () => {
+  const own = process.env["DORI_HEAVY_HOLD_DIR"] ?? "";
+  expect(own.startsWith("/") && own !== "/tmp/dori-heavy-hold" && !existsSync(own)).toBe(true);
+  expect((await loadConfig(join(state.dir, "none.json"), state.dir)).heavyHoldDir).toBe(own);
 });
 
 const cli = async (args: string[]) => {
