@@ -29,13 +29,14 @@ const holdOf = (dir: string, name: string, now: number): Hold | undefined => {
     return undefined;
   }
   if (!st.isFile()) return undefined;
-  const cap = st.mtimeMs + MAX_MS;
-  let parsed: { reason?: unknown; until?: unknown };
+  // its owner can set mtime to any time, never ctime (set by the kernel at each write, rename or touch of the file)
+  const cap = Math.min(st.mtimeMs, st.ctimeMs) + MAX_MS;
+  let parsed: { reason?: unknown; until?: unknown } = {};
   try {
-    parsed = JSON.parse(readFileSync(file, "utf8")) as typeof parsed;
+    const v: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) parsed = v as typeof parsed;
   } catch {
     // another account's file under a strict umask, or one cut off while written: it holds, for the longest a hold may
-    parsed = {};
   }
   const until = typeof parsed.until === "string" && !Number.isNaN(Date.parse(parsed.until)) ? Math.min(Date.parse(parsed.until), cap) : cap;
   const reason = typeof parsed.reason === "string" && typeof parsed.until === "string" ? parsed.reason : UNREADABLE;
@@ -47,8 +48,11 @@ export const liveHolds = (dir: string, now: number): Hold[] => {
   let names: string[];
   try {
     names = readdirSync(dir).filter((n) => n.endsWith(".json"));
-  } catch {
-    return [];
+  } catch (e) {
+    if (e instanceof Error && "code" in e && e.code === "ENOENT") return [];
+    // a directory this account cannot read may hold another account's hold: it holds until it can be read
+    const code = e instanceof Error && "code" in e ? String(e.code) : String(e);
+    return [{ by: "?", reason: `the hold directory ${dir} cannot be read here (${code}); it must be mode 1777`, until: now + 60_000 }];
   }
   return names.flatMap((n) => holdOf(dir, n, now) ?? []).sort((a, b) => a.until - b.until);
 };
@@ -77,7 +81,7 @@ const fileOf = (dir: string, user: string): string => join(dir, `${user}.json`);
 
 /** Sets this account's hold (one per account, a new one replaces it); a problem, or undefined. */
 export const holdOn = (dir: string, user: string, until: number, reason: string, now: number): string | undefined => {
-  const unsafe = sharedDirProblem(dir);
+  const unsafe = sharedDirProblem(dir) ?? ((lstatSync(dir).mode & 0o1777) !== 0o1777 ? "is not mode 1777, so other accounts could not read or write their holds" : undefined);
   if (unsafe) return `the hold directory ${dir} ${unsafe}`;
   const tmp = join(dir, `.${user}.${process.pid}.${now}.tmp`);
   try {

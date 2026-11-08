@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { basename, join } from "node:path";
 import { headroomVerdict, type UsageSample } from "./heavy-headroom.ts";
 import { memVerdict } from "./heavy-mem.ts";
-import { heldBy, type Holder, holders, slotMemKb, slotSettleSec, tryTake, withLock } from "./heavy-slot-store.ts";
+import { heldBy, type Holder, holders, releaseSlot, slotMemKb, slotSettleSec, tryTake, withLock } from "./heavy-slot-store.ts";
 
 import type { Headroom, SlotDeps } from "./heavy-slot-types.ts";
 
@@ -62,7 +62,20 @@ export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: numbe
   if (held) return { wait: "hold", why: `this host's heavy slots are held ${held}` };
   const waiting = line(deps).length;
   if (waiting) return { wait: "queue", why: `${waiting} job(s) wait in this host's queue` };
-  return withLock(deps, () => tryAdmit(deps, label, undefined, settleSec));
+  const t = await admitUnheld(deps, () => tryAdmit(deps, label, undefined, settleSec));
+  return t && "wait" in t && t.wait === "hold" ? { wait: "hold", why: `this host's heavy slots are held ${t.why}` } : t;
+};
+
+// An admission whose slot is given back when a hold (dori heavy hold-local) is on once it is taken. A hold set while the
+// admission sampled load and headroom is read after the claim, and a hold set after the claim finds the job already
+// running: no job takes a slot that a hold written before its claim forbids.
+const admitUnheld = async (deps: SlotDeps, admit: () => Promise<Try>): Promise<Try | null> => {
+  const t = await withLock(deps, admit);
+  if (!t || !("slot" in t)) return t;
+  const held = deps.hold?.();
+  if (!held) return t;
+  releaseSlot(t.slot);
+  return { wait: "hold", why: held };
 };
 
 // memKb: the job's own estimate (dori heavy --mem). With it even the first slot waits until the memory it needs, beside
@@ -144,8 +157,10 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
       const ahead = names.slice(0, Math.max(0, names.indexOf(basename(ticket))));
       // a hold on this host (dori heavy hold-local, heavy-hold.ts) is read before every try, so a job that waited here
       // when it came on does not take a slot that frees during it
-      const held = deps.hold?.();
-      const t: Try | null = held ? { wait: `hold ${local}`, why: held } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await withLock(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec));
+      const before = deps.hold?.();
+      const tried: Try | null = before ? { wait: "hold", why: before } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await admitUnheld(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec));
+      const held = tried && "wait" in tried && tried.wait === "hold" ? tried.why : undefined;
+      const t: Try | null = held ? { wait: `hold ${local}`, why: held } : tried;
       const localOnlyAhead = ahead.length > 0 && ahead.every((n) => ticketKind(deps, n) === "local");
       if (t && "slot" in t) {
         deps.log?.(`HEAVY_ADMIT ${label} ${basename(t.slot)}: ${t.why}`);
