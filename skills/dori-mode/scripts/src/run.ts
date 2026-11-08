@@ -54,13 +54,22 @@ export type RuntimeChoice = { readonly kind: RuntimeKind; readonly source: Runti
 const KINDS: Readonly<Record<RuntimeKind, true>> = { herdr: true, hc: true };
 const isKind = (value: string): value is RuntimeKind => Object.hasOwn(KINDS, value);
 
+// The kinds a Dori may open its sessions on. hc waits: the fork's own openers and readers (launch, handover, revive, the
+// screen reads and the close of a lane) still address a session by its pane id, where an hc id (t7) reads as a tmux name
+// (docs/follow-ups.md, review 1 of #393), so a Dori on hc would list its sessions there and drive them on herdr or tmux.
+export const FORK_RUNTIMES: readonly RuntimeKind[] = ["herdr"];
+const notWired = (kind: RuntimeKind, where: string): ConfigError =>
+  new ConfigError(`${where} "${kind}" is not wired in this fork yet (lanes would still be opened, read and closed on herdr or tmux; docs/follow-ups.md): leave it unset or "herdr"`);
+
 // DORI_RUNTIME > the config's runtime > herdr
 export const runtimeChoice = (config: { readonly runtime?: RuntimeKind | undefined }, env: Env): RuntimeChoice => {
   const fromEnv = env["DORI_RUNTIME"];
   if (fromEnv) {
     if (!isKind(fromEnv)) throw new ConfigError(`DORI_RUNTIME must be "herdr" or "hc", got ${JSON.stringify(fromEnv)}`);
+    if (!FORK_RUNTIMES.includes(fromEnv)) throw notWired(fromEnv, "DORI_RUNTIME");
     return { kind: fromEnv, source: "env" };
   }
+  if (config.runtime && !FORK_RUNTIMES.includes(config.runtime)) throw notWired(config.runtime, "runtime");
   return config.runtime ? { kind: config.runtime, source: "config" } : { kind: "herdr", source: "default" };
 };
 
