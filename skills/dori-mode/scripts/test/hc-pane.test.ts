@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { captureTmux, closeAoeSession, isClosedLine, liveSessions, paneLife, sessionFor, tmuxPanePid } from "../src/aoe.ts";
+import { captureTmux, closeAoeSession, currentTmuxSession, isClosedLine, liveSessions, paneLife, sessionFor, tmuxPanePid } from "../src/aoe.ts";
+import { useConfiguredRuntime } from "../src/run.ts";
 import { openHerdrSession } from "../src/herdr.ts";
 import { listPanes, submitToPane } from "../src/panes.ts";
 import type { Runner } from "../src/run.ts";
@@ -24,7 +25,8 @@ afterEach(() => {
   else process.env["DORI_RUNTIME"] = saved;
 });
 
-const runnerOf = (fake: FakeHc): Runner => async (argv) => {
+const runnerOf = (fake: FakeHc, ps = ""): Runner => async (argv) => {
+  if (argv[0] === "ps" && ps) return { code: 0, out: ps, err: "" };
   if (argv[0] === "hc") {
     const r = await fake.exec("hc", argv.slice(1));
     return { code: r.code, out: r.stdout.trim(), err: r.stderr.trim() };
@@ -95,4 +97,47 @@ test("a Dori on herdr never calls hc for its listing, so no hc core is started w
   const fake = new FakeHc({ t1: terminal() });
   await liveSessions(runnerOf(fake));
   expect(fake.calls).toEqual([]);
+});
+
+test("a shell in front that runs a command (bash -c reading stdin) gets nothing typed, whatever status hc kept (review 1 of #404)", async () => {
+  const fake = new FakeHc({ t1: terminal({ foreground: { name: "bash", argv: ["bash", "-c", "while read -r l; do eval \"$l\"; done"], pid: 50 } }) });
+  const deps = depsFor(newWorld(), fakeClock(0), dir, { backend: "herdr" });
+  expect((await submitToPane(runnerOf(fake), deps.clock, deps.config, "hc:t1", "[LEAD] hi")).status).toBe("NOT_SUBMITTED");
+  expect(fake.sent).toEqual([]);
+});
+
+test("a stopped agent under an hc terminal gets nothing typed even with a working screen kept (review 1 of #404)", async () => {
+  const fake = new FakeHc({ t1: terminal({ pid: 900, screen: `${RUNNING}\n─────\n❯ \n─────` }) });
+  const deps = depsFor(newWorld(), fakeClock(0), dir, { backend: "herdr" });
+  const ps = "900 1 900 Ss bash\n4242 900 900 T omo --session-id x";
+  expect(await submitToPane(runnerOf(fake, ps), deps.clock, deps.config, "hc:t1", "[LEAD] hi")).toMatchObject({ status: "NOT_SUBMITTED", reason: expect.stringContaining("stopped") });
+  expect(fake.sent).toEqual([]);
+});
+
+test("the caller inside an hc terminal is the pane hc:<id>, the shape its lane record keeps (review 1 of #404)", async () => {
+  const kept = process.env["HC_TERMINAL_ID"];
+  process.env["HC_TERMINAL_ID"] = "t7";
+  try {
+    expect(await currentTmuxSession(runnerOf(new FakeHc()))).toBe("hc:t7");
+  } finally {
+    if (kept === undefined) delete process.env["HC_TERMINAL_ID"];
+    else process.env["HC_TERMINAL_ID"] = kept;
+  }
+});
+
+test("the sweeps list hc terminals by the configured workspaces' dori.group, so a workspace filter keeps them (review 1 of #404)", async () => {
+  const fake = new FakeHc({ t1: terminal({ labels: { "dori.group": "lanes" } }), t2: terminal({ labels: { "dori.group": "other" } }) });
+  const rows = await listPanes(runnerOf(fake), { backend: "herdr", runtime: "hc", workspaces: ["lanes"] });
+  expect(rows.map((p) => [p.pane_id, p.workspace_id])).toEqual([["hc:t1", "lanes"], ["hc:t2", ""]]);
+});
+
+test("a config that names hc is what an entrypoint's openers and listings follow once it is handed over, with no DORI_RUNTIME (review 1 of #404)", async () => {
+  delete process.env["DORI_RUNTIME"];
+  useConfiguredRuntime("hc");
+  try {
+    const fake = new FakeHc({ t1: terminal() });
+    expect(sessionFor(await liveSessions(runnerOf(fake)), "hc:t1")).toBeDefined();
+  } finally {
+    useConfiguredRuntime(undefined);
+  }
 });

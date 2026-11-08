@@ -9,13 +9,24 @@
 # ~/.<user>/config.json (an instance account) or else ~/.dori/config.json. herdr's tab focus moves every attached client
 # of that server. If it fails the row still attaches.
 # A Dori on hc (its config's leadPane is an hc terminal, "hc:t<n>") has its lead in that account's own hc core, which
-# doriface-host does not list: the row then runs `hc attach` on the lead, read from the config again on every retry, so a
-# lead handover to a new terminal is followed.
+# doriface-host does not list: the row then runs `hc attach` on the lead and reads the config again every
+# DORITERM_LEAD_CHECK_SECONDS (5) while attached; once leadPane names another terminal (a lead handover keeps the old one
+# frozen, not closed) it leaves the old attach and attaches to the new lead.
 account=${1:-}
 env='export XDG_RUNTIME_DIR=/run/user/$(id -u) PATH=$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin; '
 attach='c=$HOME/.$(id -un)/config.json; [ -f "$c" ] || c=$HOME/.dori/config.json
-lead=$(sed -n "s/.*\"leadPane\"[[:space:]]*:[[:space:]]*\"hc:\(t[0-9][0-9]*\)\".*/\1/p" "$c" 2>/dev/null | head -n 1)
-[ -n "$lead" ] && exec hc attach "$lead"
+leadof() { sed -n "s/.*\"leadPane\"[[:space:]]*:[[:space:]]*\"hc:\(t[0-9][0-9]*\)\".*/\1/p" "$c" 2>/dev/null | head -n 1; }
+lead=$(leadof)
+if [ -n "$lead" ]; then
+  exec 3<&0
+  hc attach "$lead" <&3 & a=$!
+  while kill -0 "$a" 2>/dev/null; do
+    sleep "${DORITERM_LEAD_CHECK_SECONDS:-5}"
+    [ "$(leadof)" = "$lead" ] || { kill "$a" 2>/dev/null; break; }
+  done
+  wait "$a" 2>/dev/null
+  exit 0
+fi
 DORI_CONFIG=$c "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts" || echo "doriterm: the lead tab was not focused; attaching anyway" >&2
 exec herdr client'
 while :; do

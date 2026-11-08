@@ -304,7 +304,7 @@ export const isClosedLine = (line: string): boolean => / stopped and (trashed|cl
 // the session this process runs in: its runtime's own (Runtimes.selfAny: an hc terminal, else the herdr pane of HERDR_PANE_ID;
 // a $TMUX there is only inherited from where the server was started), else its tmux session
 export const currentTmuxSession = async (run: Runner): Promise<string> => {
-  const self = runtimesOf(run).selfAny(process.env); if (self) return self.id;
+  const self = runtimesOf(run).selfAny(process.env); if (self) return self.runtime === "hc" ? `hc:${self.id}` : self.id;
   if (!process.env["TMUX"]) return "";
   const r = await run(["tmux", "display-message", "-p", "#S"]);
   return r.code === 0 ? r.out.trim() : "";

@@ -28,12 +28,21 @@ export class UnsafeTextError extends Error {}
 
 // The sessions of the configured runtime (sessions.ts listSessions, upstream #154) as the pane rows the sweeps read; an aoe
 // Dori lists its tmux sessions.
-export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime">): Promise<Pane[]> => {
+export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime"> & { readonly workspaces?: readonly string[] }): Promise<Pane[]> => {
   if (config.backend === "aoe") return listAoePanes(run);
-  return (await listSessions(runtimesOf(run, config))).map((s) => ({
+  const rts = runtimesOf(run, config);
+  const sessions = await listSessions(rts);
+  // hc lists no dori.group label unasked: each configured workspace is listed by its label, so a workspace filter keeps
+  // the hc terminals of that group (review 1 of #404)
+  const hcGroup = new Map<string, string>();
+  if (config.workspaces?.length && sessions.some((s) => s.ref.runtime === "hc")) {
+    const hcRt = rts.for({ runtime: "hc", id: "" });
+    for (const group of config.workspaces) for (const s of await hcRt.list({ group }).catch(() => [])) hcGroup.set(s.ref.id, group);
+  }
+  return sessions.map((s) => ({
     // an hc terminal is "hc:t<n>" wherever the fork stores or reads a pane (hc-pane.ts); a herdr pane id stands alone
     pane_id: s.ref.runtime === "hc" ? formatRef(s.ref) : s.ref.id,
-    workspace_id: s.ref.group ?? "",
+    workspace_id: s.ref.group ?? (s.ref.runtime === "hc" ? hcGroup.get(s.ref.id) : undefined) ?? "",
     ...(s.ref.container ? { tab_id: s.ref.container } : {}),
     agent: s.agent,
     ...(s.status && s.status !== "shell" ? { agent_status: s.status } : {}),
@@ -146,9 +155,17 @@ export const omoPane = (config: Pick<DoriConfig, "backend" | "agentCommand">, pa
 // upstream #69: the states herdr reports for a pane whose agent is running (its others: unknown, or none over a shell)
 const ALIVE_STATUSES: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done"]);
 
+// a stopped agent, or one left a background job of its shell, reads nothing whatever its screen shows
+const heldAgent = async (run: Runner, pane: string): Promise<string | undefined> => {
+  const stopped = await stoppedAgent(run, pane);
+  if (stopped) return `the agent in the pane is stopped (pid ${stopped}, frozen): nothing would read the text, so it was not typed`;
+  const behind = await backgroundAgent(run, pane);
+  return behind ? `the agent in the pane is a background job of its shell (pid ${behind}): its shell, not omo, would read the text, so it was not typed` : undefined;
+};
+
 const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, text: string): PaneKeys => {
   // an hc terminal: hc send types the text and its Enter at once (hc-pane.ts hcType), so the Enter here is nothing
-  if (isHcPane(pane)) return { type: (t) => hcType(run, pane, t), enter: async () => {}, read: () => hcRead(run, pane), delivered: transcriptCheck(run, clock, config.sessionsDir, pane, text), runsOmoCommands: true };
+  if (isHcPane(pane)) return { type: async (t) => (await heldAgent(run, pane)) ?? hcType(run, pane, t), enter: async () => {}, read: () => hcRead(run, pane), delivered: transcriptCheck(run, clock, config.sessionsDir, pane, text), runsOmoCommands: true };
   const herdr = isHerdrPane(pane);
   if (!omoPane(config, pane))
     return {

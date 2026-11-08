@@ -1,4 +1,5 @@
 import { QUESTION_MARK } from "./aoe.ts";
+import { shellInFrontName } from "./herdr.ts";
 import { type Clock, type Runner, runtimesOf } from "./run.ts";
 import { formatRef, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import { AGENT, procTable, topAgent } from "./session-id.ts";
@@ -67,6 +68,13 @@ export const hcOpen = async (rt: SessionRuntime, run: Runner, clock: Clock, opts
 // a blocked agent or an open omo question. A string is why nothing was sent.
 export const hcType = async (run: Runner, pane: string, text: string): Promise<string | undefined> => {
   const life = await hcLife(run, pane);
+  if (life.live) {
+    // the fork's shell rule (herdr.ts shellInFrontName, reviews 1-3 of #347): any shell in front holds the text, a sh -c
+    // reading stdin included, where the runtime's own check lets a command-running shell through
+    const fg = (await probeOf(run, pane))?.foreground ?? [];
+    const shell = shellInFrontName({ foreground_processes: fg.map((f) => ({ name: f.name, argv: f.argv })) });
+    if (shell !== undefined) return `the agent in ${pane} is not in front: ${shell ? `a shell (${shell}) is` : "hc shows nothing readable in front"}, and it could run the text; nothing was typed`;
+  }
   if (!life.live) return life.how === "gone" ? `PANE_GONE: there is no hc terminal ${pane} (it ended, or the name is wrong); nothing was typed` : `PANE_DEAD: no agent runs in ${pane} (only its shell, which would run the text); nothing was typed`;
   if (QUESTION_MARK.test(await hcRead(run, pane))) return `PANE_BLOCKED: a question is open in ${pane} (Ask user); the text would answer it, so nothing was typed`;
   const out = await hc(run).deliver(hcRef(pane), text, { when: "any" });
