@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { BACKUP_REMOTE } from "./config.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
 import type { Lane } from "./registry.ts";
@@ -76,14 +76,29 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
     }
   };
   let checked = own;
+  // a cwd checkout that holds this Dori's stateDir (a lane in ~/.soodori/qa works in the state-git repo ~/.soodori):
+  // dori rewrites its state files there all the time, so they are no lane work; every other path still counts
+  let statePaths: string[] = [];
   if (!own.length && exists(cwd)) {
     const probe = await git(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"]);
     if (probe.code === 0) checked = probe.out.trim() === "true" ? [cwd] : [];
     else if (underGit(cwd)) reasons.push(`unpushed work in ${cwd} (git state unreadable)`);
+    const top = checked.length ? await git(["git", "-C", cwd, "rev-parse", "--show-toplevel"]) : undefined;
+    if (top?.code === 0 && top.out.trim()) {
+      const real = (p: string): string => {
+        try {
+          return realpathSync(p);
+        } catch {
+          return resolve(p);
+        }
+      };
+      const rel = relative(real(top.out.trim()), real(deps.config.stateDir));
+      if (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel)) statePaths = ["--", ":(top)", rel ? `:(top,literal,exclude)${rel}` : ":(top,exclude)*"];
+    }
   }
   for (const wt of checked) {
     if (!exists(wt)) continue;
-    const dirty = await git(["git", "-C", wt, "status", "--porcelain", "--untracked-files=no"]);
+    const dirty = await git(["git", "-C", wt, "status", "--porcelain", "--untracked-files=no", ...(wt === cwd ? statePaths : [])]);
     // a cwd checkout with no remote at all (a Dori's own Documents repository) has nowhere to push its commits, so they
     // are not unpushed work; its uncommitted changes still are. Its history is still walked, so one git cannot read
     // stays unreadable. A lane's own worktree is checked as before.

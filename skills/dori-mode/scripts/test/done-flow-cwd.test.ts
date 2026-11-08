@@ -192,6 +192,32 @@ test("a cwd checkout whose only remote is this Dori's stateGit backup has nowher
   expect(await unpushedWork(realDeps, { ...lane, cwd: docs })).toEqual([]);
 });
 
+// a lane in ~/.soodori/qa works inside the state-git repo (~/.soodori): dori rewrites its state/*.json there all the time
+test("in a cwd checkout holding this Dori's stateDir, dori's own state files are no lane work; any other change still holds", async () => {
+  const g = async (...a: string[]) => expect((await run(["git", ...a])).code).toBe(0);
+  const home = join(state.dir, "dori-home");
+  const stateDir = join(home, "state");
+  const cwd = join(home, "qa");
+  mkdirSync(join(stateDir, "lanes"), { recursive: true });
+  mkdirSync(cwd, { recursive: true });
+  await g("init", "-q", "-b", "main", home);
+  for (const f of ["config.json", "state/herdr-sessions.json", "state/lanes/a.json"]) writeFileSync(join(home, f), "{}\n");
+  await g("-C", home, "add", ".");
+  await g("-C", home, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "state");
+  const realDeps = { ...at(T0), run, exists: existsSync, config: { ...at(T0).config, defaultCwd: state.dir, stateDir: join(cwd, "..", "state") } };
+  writeFileSync(join(stateDir, "herdr-sessions.json"), '{"a":1}\n');
+  rmSync(join(stateDir, "lanes", "a.json"));
+  expect(await unpushedWork(realDeps, { ...lane, cwd })).toEqual([]);
+  writeFileSync(join(home, "config.json"), '{"b":1}\n');
+  expect(await unpushedWork(realDeps, { ...lane, cwd })).toEqual([`unpushed work in ${cwd}`]);
+  // a stateDir that is the checkout's top: all of it is dori's state
+  expect(await unpushedWork({ ...realDeps, config: { ...realDeps.config, stateDir: home } }, { ...lane, cwd })).toEqual([]);
+  await g("-C", home, "checkout", "-q", "--", "config.json");
+  // a stateDir outside the checkout excludes nothing
+  writeFileSync(join(cwd, "..", "state", "lanes", "b.json"), "{}\n");
+  expect(await unpushedWork({ ...realDeps, config: { ...realDeps.config, stateDir: join(state.dir, "elsewhere") } }, { ...lane, cwd })).toEqual([`unpushed work in ${cwd}`]);
+});
+
 // git says "not a git repository" for a .git file pointing nowhere or a bad HEAD too: a .git entry makes it unreadable
 test.each(["fatal: bad config line 1 in file .git/config", "fatal: not a git repository: /repo/.git/worktrees/gone"])("a cwd with a .git git cannot read holds the lane as unreadable git state (%s)", async (err) => {
   world.worktreeList = cwdOnly;
