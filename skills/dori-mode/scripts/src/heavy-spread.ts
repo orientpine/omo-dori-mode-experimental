@@ -7,7 +7,7 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
-import { archOf, archRefusal, execWords, preferredFor, unsafeRemote } from "./heavy-route.ts";
+import { archOf, archRefusal, execWords, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { bundleEnv, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
@@ -339,8 +339,8 @@ export type SpreadResult = { readonly slot: string } | { readonly code: number }
 export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<Plan, { ok: true }>): Promise<SpreadResult> => {
   const log = (line: string) => ctx.deps.log?.(line);
   const seen = new Map<string, string>();
-  // a helper that refused this job (exec off, no bwrap, a program the job starts missing there) is not asked again
-  const refused = new Map<string, string>();
+  // a helper that refused this job is not asked again, for good or a while (heavy-route.ts refusals)
+  const refused = refusals(() => ctx.deps.clock.now());
   const helpers = async (below: number, why: string, among: readonly HeavyHelper[] = ctx.q.helpers): Promise<Started | null> => {
     for (const h of among) {
       if (refused.has(h.name)) continue;
@@ -353,8 +353,8 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
       if (seen.get(h.name) !== `${t.kind} ${t.why}`) log(`HEAVY_HELPER_${t.kind.toUpperCase()} ${job.label} ${h.name}: ${t.why}`);
       seen.set(h.name, `${t.kind} ${t.why}`);
       if (t.kind === "refused" || t.kind === "old" || t.kind === "notools") {
-        refused.set(h.name, t.why);
-        if (refused.size === ctx.q.helpers.length) log(`HEAVY_LOCAL ${job.label}: no helper can run it (${[...refused].map(([n, w]) => `${n}: ${w}`).join("; ")}); it waits for this host`);
+        refused.set(h.name, t.kind, t.why);
+        if (refused.all(ctx.q.helpers.map((x) => x.name))) log(`HEAVY_LOCAL ${job.label}: no helper can run it (${refused.list()}); it waits for this host`);
       }
     }
     return null;
@@ -365,7 +365,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
   const since = ctx.deps.clock.now();
   for (;;) {
     if (!run) {
-      const got = await acquire<Started>(ctx.deps, job.label, { since, elsewhere: (why) => helpers(100, why), nowhere: () => refused.size > 0 && refused.size === ctx.q.helpers.length, elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
+      const got = await acquire<Started>(ctx.deps, job.label, { since, elsewhere: (why) => helpers(100, why), nowhere: () => refused.all(ctx.q.helpers.map((x) => x.name)), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
       if ("slot" in got) return { slot: got.slot };
       run = got.elsewhere;
     }

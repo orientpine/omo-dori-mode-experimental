@@ -92,3 +92,23 @@ export const archRefusal = (opts: readonly string[]): string | undefined => {
   if (arch === MIXED) return "the job's --sync paths hold programs or libraries of more than one machine, so it stays on the host that sent it";
   return arch && arch !== hostMachine() ? `this host is ${hostMachine()} and the job's --sync paths hold ${arch} programs or libraries, which do not run here` : undefined;
 };
+
+// The helpers that refused a waiting job (heavy-spread.ts heavySpread). A refusal for good (exec off, no bwrap, a program
+// missing there) holds for the job; one that an install or a pull can end (a missing tool bundle, a dori too old) holds
+// REASK_MS, then the helper is asked again (2026-11-08: still jobs refused by four helpers before their rv bundles were
+// installed kept waiting for 4eae alone).
+export const REASK_MS = 10 * 60_000;
+export const refusals = (now: () => number) => {
+  const m = new Map<string, { readonly why: string; readonly until: number }>();
+  const live = (name: string): boolean => {
+    const r = m.get(name);
+    if (r && now() >= r.until) m.delete(name);
+    return m.has(name);
+  };
+  return {
+    has: live,
+    set: (name: string, kind: string, why: string): void => void m.set(name, { why, until: kind === "refused" ? Infinity : now() + REASK_MS }),
+    all: (names: readonly string[]): boolean => names.length > 0 && names.every(live),
+    list: (): string => [...m].map(([n, r]) => `${n}: ${r.why}`).join("; "),
+  };
+};

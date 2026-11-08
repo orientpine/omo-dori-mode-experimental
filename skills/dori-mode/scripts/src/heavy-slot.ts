@@ -112,8 +112,8 @@ export type AcquireOptions<T> = {
   // the job at the front of the line, refused here for load, full slots or headroom (not while a new job settles), or a
   // job behind only jobs that wait for this host alone (plain dori heavy): a started run on another host, or null
   readonly elsewhere?: (wait: string) => Promise<T | null>;
-  // true once no other host will take the job (every helper refused it): its ticket turns "local" in its place, so jobs
-  // behind it may still go to a helper, and elsewhere is not asked again
+  // true while no other host will take the job (every helper refused it): its ticket is "local" in its place, so jobs
+  // behind it may still go to a helper, and elsewhere is not asked until it turns false again (a refusal that expired)
   readonly nowhere?: () => boolean;
   // the job's own memory estimate in KB (dori heavy --mem)
   readonly memKb?: number;
@@ -131,10 +131,9 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
   try {
     let waiting = "";
     for (;;) {
-      if (!local && opts.nowhere?.()) {
-        writeFileSync(ticket, "local");
-        local = true;
-      }
+      const onlyHere = !opts.elsewhere || Boolean(opts.nowhere?.());
+      if (onlyHere !== local) writeFileSync(ticket, onlyHere ? "local" : "any");
+      local = onlyHere;
       const names = line(deps);
       const ahead = names.slice(0, Math.max(0, names.indexOf(basename(ticket))));
       const t: Try | null = ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await withLock(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec));
