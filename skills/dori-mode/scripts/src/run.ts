@@ -91,11 +91,13 @@ export class ChosenRuntimes extends Runtimes {
 
 // Every runtime behind the scripts' Runner, so a test's fake runner answers the runtime's calls as it answered the herdr
 // calls before (the same argv, ["herdr", ...]); sleeps go through the clock.
+export const execOf = (runner: Runner): Exec => async (cmd, argv) => {
+  const r = await runner([cmd, ...argv]);
+  return { code: r.code, stdout: r.out, stderr: r.err };
+};
+
 export const runtimesFor = (config: { readonly runtime?: RuntimeKind | undefined }, env: Env, runner: Runner = run, clock: Clock = realClock): ChosenRuntimes => {
-  const exec: Exec = async (cmd, argv) => {
-    const r = await runner([cmd, ...argv]);
-    return { code: r.code, stdout: r.out, stderr: r.err };
-  };
+  const exec = execOf(runner);
   const make: Record<RuntimeKind, () => SessionRuntime> = {
     herdr: () => new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], { env, sleep: clock.sleep }),
     hc: () => new HcRuntime(exec, { env, sleep: clock.sleep }),

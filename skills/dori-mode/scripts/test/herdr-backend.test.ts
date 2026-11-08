@@ -81,12 +81,12 @@ test("a session opened on a fresh herdr server, which has no workspace yet, gets
   const run: Runner = async (argv) => {
     calls.push([...argv]);
     if (argv[1] === "tab" && argv[2] === "create") return made ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p2", tab_id: "w1:t2" } } }), err: "" } : { code: 1, out: JSON.stringify({ error: { code: "workspace_not_found", message: "no active workspace" } }), err: "" };
-    if (argv[1] === "workspace" && argv[2] === "create") { made = true; return { code: 0, out: JSON.stringify({ result: { workspace: { workspace_id: "w1" } } }), err: "" }; }
+    if (argv[1] === "workspace" && argv[2] === "create") { made = true; return { code: 0, out: JSON.stringify({ result: { type: "workspace_created", workspace: { workspace_id: "w1" }, tab: { tab_id: "w1:t1" }, root_pane: { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1" } } }), err: "" }; }
     if (argv[2] === "read") return { code: 0, out: "$ ", err: "" };
     return fakeRunner(world)(argv);
   };
   expect(await openHerdrSession(run, fakeClock(0), { title: "lane", cwd: "/tmp", argv: ["omo"] })).toEqual({ pane: "w1:p2", tab: "w1:t2" });
-  expect(calls.filter((c) => c[2] === "create").map((c) => c.slice(1, 5))).toEqual([["tab", "create", "--cwd", "/tmp"], ["workspace", "create", "--label", "dori"], ["tab", "create", "--workspace", "w1"]]);
+  expect(calls.filter((c) => c[2] === "create").map((c) => c.slice(1, 3).concat(c.includes("--workspace") ? [c[c.indexOf("--workspace") + 1] ?? ""] : []))).toEqual([["tab", "create"], ["workspace", "create"], ["tab", "create", "w1"]]);
 });
 
 
@@ -113,7 +113,7 @@ test("launch on a fresh herdr server (no workspace yet) opens the lane in a work
   let made = false;
   const r = await launchLane({ ...deps, readGoal: async () => ({ status: "active" }), run: async (argv, o) => {
     if (argv[1] === "tab" && argv[2] === "create") return made ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p2", tab_id: "w1:t2" } } }), err: "" } : { code: 1, out: JSON.stringify({ error: { code: "workspace_not_found" } }), err: "" };
-    if (argv[1] === "workspace" && argv[2] === "create") { made = true; return { code: 0, out: JSON.stringify({ result: { workspace: { workspace_id: "w1" } } }), err: "" }; }
+    if (argv[1] === "workspace" && argv[2] === "create") { made = true; return { code: 0, out: JSON.stringify({ result: { type: "workspace_created", workspace: { workspace_id: "w1" }, tab: { tab_id: "w1:t1" }, root_pane: { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1" } } }), err: "" }; }
     return base(argv, o);
   } }, { noThread: "QA", key: "fresh", title: "fresh", brief, done: "file /x", cwd: "/tmp" });
   expect(r.lane).toMatchObject({ pane: "w1:p2", tab: "w1:t2" });

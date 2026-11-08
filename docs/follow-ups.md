@@ -64,3 +64,7 @@ What would close it: tell "never started" from the job's own exit on the helper 
 ## strict tooling: biome's formatter is off (upstream #149)
 
 `skills/dori-mode/scripts/biome.jsonc` keeps `formatter.enabled: false` (lead 2026-11-08): `biome format` over scripts/ is a 3.8 MB diff (1.3 MB even at lineWidth 320) that dori review's reviewer cannot read in its time limit, and it collides with fork-only code. Turn it on directory by directory, one reviewable PR each, once format drift makes an upstream port conflict.
+
+## session runtime: "runtime": "hc" lists and closes on hc, but launch, handover and revive still open herdr tabs (upstream #154)
+
+The port of upstream #147-#155 (scripts/src/runtime) reaches every session through the runtime: listing (dead-panes, host-guard, sync), the lane record (`sessionRef`), the caller's own session (`selfAny`) and closing go to the ref's own runtime. The fork-only openers keep herdr: `dori launch`, lane and lead `handover` and `dori revive` call `openHerdrSession` / `reviveHerdr` (herdr tab, Windows pwsh check, the visible screen), so a Dori with `"runtime": "hc"` would still open its lanes on herdr. No Dori sets it (the default stays herdr, owner Q22 2026-11-08). What would close it: port upstream #157 (`dori migrate`, sessions handed over between runtimes) and open through `rts.default` there, with an hc end-to-end test (upstream #156).

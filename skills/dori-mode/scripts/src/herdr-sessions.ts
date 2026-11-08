@@ -3,7 +3,8 @@ import { join, resolve } from "node:path";
 
 import type { DoriConfig } from "./config.ts";
 import { agentPath, herdrAgentArgv } from "./aoe.ts";
-import { agentLine, herdrAgentPid, herdrSessions, herdrShellPid, HerdrShellError, requireHerdrPwsh } from "./herdr.ts";
+import { agentLine, herdrAgentPid, herdrRead, herdrRef, herdrRuntime, herdrSessions, herdrShellPid, HerdrShellError, requireHerdrPwsh } from "./herdr.ts";
+import { reasonOf } from "./runtime/herdr/exec.ts";
 import type { Clock, Runner } from "./run.ts";
 import { splitModel } from "./lane-handover.ts";
 import { argvSessionId, descendants, hasSessionSelector, type Proc, procTable, resolveSession, sessionDirFor, winArgv } from "./session-id.ts";
@@ -151,7 +152,7 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
   if (!(await herdrSessions(run)).some((s) => s.pane === pane)) return `REVIVE_FAIL ${pane}: herdr has no such pane (its tab was closed); open a new session instead`;
   for (let i = 0; i < 20 && !(await herdrShellPid(run, pane)); i++) await clock.sleep(1_000);
   const restored = await herdrAgentPid(run, pane);
-  const read = async () => (await run(["herdr", "pane", "read", pane, "--source", "visible"])).out;
+  const read = () => herdrRead(run, pane);
   if (!restored) {
     try {
       await requireHerdrPwsh(run, pane);
@@ -169,8 +170,8 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, rec.session);
     // the screen is cleared first, so a ❯ the ended agent left there is gone before the new one draws
     const clear = process.platform === "win32" ? "Clear-Host; " : "clear && ";
-    const ran = await run(["herdr", "pane", "run", pane, `${clear}${agentLine(argv, { PATH: agentPath(tool) })}`], { cwd: existsSync(rec.cwd) ? rec.cwd : undefined });
-    if (ran.code !== 0) return `REVIVE_FAIL ${pane}: herdr pane run failed: ${(ran.err || ran.out).slice(0, 160)}`;
+    const failed = await herdrRuntime(run).start(herdrRef(pane), `${clear}${agentLine(argv, { PATH: agentPath(tool) })}`).then(() => undefined, (e: unknown) => reasonOf(e));
+    if (failed !== undefined) return `REVIVE_FAIL ${pane}: herdr pane run failed: ${failed.slice(0, 160)}`;
   }
   const how = restored ? ` (herdr had started it again, pid ${restored})` : "";
   for (let i = 0; i < 90; i++) {

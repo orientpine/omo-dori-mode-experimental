@@ -4,7 +4,7 @@ import { captureTmux, listAoePanes, liveSessions, paneLife, QUESTION_MARK, sessi
 import { sessionFile } from "./background.ts";
 import type { Backend, DoriConfig } from "./config.ts";
 import { listSessions } from "./sessions.ts";
-import { herdrResult, isHerdrPane, shellInFrontName } from "./herdr.ts";
+import { herdrOk, herdrRef, herdrResult, herdrRuntime, isHerdrPane, shellInFrontName } from "./herdr.ts";
 import { replacementOf } from "./frozen.ts";
 import { type Clock, type Runner, runtimesOf } from "./run.ts";
 import { procTable, topAgent } from "./session-id.ts";
@@ -162,13 +162,14 @@ const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, t
         const shell = shellInFrontName(info["process_info"]);
         if (shell === "") return `herdr pane process-info shows nothing readable in front of ${pane}, so a shell in front cannot be ruled out; nothing was typed`;
         if (shell !== undefined) return `the agent in ${pane} is not in front: a shell (${shell}) is, after the agent exited or was suspended with Ctrl+Z, or as its child, and it could run the text; nothing was typed`;
-        return (await run(["herdr", "pane", "send-text", pane, text])).code === 0 ? undefined : "herdr send-text failed";
+        return (await herdrOk(run, ["pane", "send-text", pane, text])) ? undefined : "herdr send-text failed";
       },
-      enter: async () => { await run(["herdr", "pane", "send-keys", pane, "enter"]); },
+      enter: () => herdrRuntime(run).keys(herdrRef(pane), ["enter"]).catch(() => undefined),
       read: () => readScreen(run, config.backend, pane),
     };
-  const send = (part: string) => run(herdr ? ["herdr", "pane", "send-text", pane, part] : ["tmux", "send-keys", "-t", target(pane), "-l", "--", part]);
-  const key = (name: "enter" | "clear") => run(herdr ? ["herdr", "pane", "send-keys", pane, name === "enter" ? "enter" : "ctrl+u"] : ["tmux", "send-keys", "-t", target(pane), name === "enter" ? "Enter" : "C-u"]);
+  // a herdr pane through the session runtime (herdr.ts): Enter is its key, text and ctrl+u go through its herdr CLI
+  const send = async (part: string) => (herdr ? ((await herdrOk(run, ["pane", "send-text", pane, part])) ? { code: 0 } : { code: 1 }) : run(["tmux", "send-keys", "-t", target(pane), "-l", "--", part]));
+  const key = async (name: "enter" | "clear") => (herdr ? (name === "enter" ? herdrRuntime(run).keys(herdrRef(pane), ["enter"]).catch(() => undefined) : herdrOk(run, ["pane", "send-keys", pane, "ctrl+u"])) : run(["tmux", "send-keys", "-t", target(pane), name === "enter" ? "Enter" : "C-u"]));
   const where = herdr ? `herdr pane ${pane}` : `tmux session ${pane}`;
   return {
     type: async (text) => {

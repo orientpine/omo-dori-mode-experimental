@@ -26,7 +26,7 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | Field | Default | Used by |
 |---|---|---|
 | `backend` | `herdr` | every pane command; `aoe` runs lanes as aoe/tmux sessions (below) |
-| `runtime` | absent (herdr) | the session runtime new herdr-backend sessions open on (`scripts/src/runtime/`, upstream dori-superagent #147-#155): `herdr` or `hc`; `DORI_RUNTIME` wins over it, anything else is a config error. A lane's record keeps its runtime (`sessionRef`), so a stored session is always reached through its own runtime |
+| `runtime` | absent (herdr) | the session runtime new herdr-backend sessions open on (`scripts/src/runtime/`, upstream dori-superagent #147-#155): `herdr` or `hc`; `DORI_RUNTIME` wins over it, anything else is a config error. A lane's record keeps its runtime (`sessionRef`), so a stored session is always reached through its own runtime; `launch`, `handover` and `revive` still open herdr tabs (docs/follow-ups.md) |
 | `stateDir` | `~/.dori/state` | registry, heavy slots |
 | `watchLog` | `<stateDir>/lanes.log` | timestamped lines `<time> <source> <KIND> <key> <detail>`: `stuck STUCK`, `intent-check INTENT_CHECK` (and `INTENT_CHECK_UNGROUNDED` / `INTENT_CHECK_STALE` / `INTENT_CHECK_SHARED` for dropped findings), `fix-attempt HYPOTHESES_REQUIRED`, `launch LAUNCH_DONE_WEAK`, `handover ROLLOVER_OWNER_REPORT_MISSING` and `update` results; `~` is expanded. One parser reads them back (`watch-log.ts` `parseWatchLine`) for `scorecard`, `signals` and `rollover-stats` |
 | `update` | running CLI's git toplevel, no services | `update`, `notify-change`; fields below |
