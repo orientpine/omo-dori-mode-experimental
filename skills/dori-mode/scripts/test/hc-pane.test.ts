@@ -168,3 +168,27 @@ test("a lead handover started with DORI_RUNTIME=hc and no runtime in the config 
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("an hc Dori's pane listing needs no herdr, even after liveSessions built a herdr adapter (review 5 of #404)", async () => {
+  delete process.env["DORI_RUNTIME"];
+  useConfiguredRuntime("hc");
+  try {
+    const run = runnerOf(new FakeHc({ t1: terminal() }));
+    await liveSessions(run);
+    expect((await listPanes(run, { backend: "herdr", runtime: "hc" })).map((p) => p.pane_id)).toEqual(["hc:t1"]);
+  } finally {
+    useConfiguredRuntime(undefined);
+  }
+});
+
+test("an hc listing that fails on an hc Dori is no empty list, so frozen cleanup keeps its record (review 5 of #404)", async () => {
+  delete process.env["DORI_RUNTIME"];
+  useConfiguredRuntime("hc");
+  try {
+    const base = runnerOf(new FakeHc({ t1: terminal() }));
+    const lsDown: Runner = async (argv) => (argv[0] === "hc" && argv.includes("ls") ? { code: 5, out: "", err: JSON.stringify({ error: { kind: "unavailable", message: "core down" } }) } : base(argv));
+    await expect(liveSessions(lsDown)).rejects.toThrow();
+  } finally {
+    useConfiguredRuntime(undefined);
+  }
+});

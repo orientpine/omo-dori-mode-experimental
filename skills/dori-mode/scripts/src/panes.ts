@@ -3,9 +3,8 @@ import { readFileSync } from "node:fs";
 import { captureTmux, listAoePanes, liveSessions, paneLife, QUESTION_MARK, sessionFor, target, tmuxPanePid, waitForPrompt } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { Backend, DoriConfig } from "./config.ts";
-import { listSessions } from "./sessions.ts";
 import { herdrOk, herdrRef, herdrResult, herdrRuntime, isHerdrPane, shellInFrontName } from "./herdr.ts";
-import { hcRead, hcType, isHcPane } from "./hc-pane.ts";
+import { hcRead, hcType, isHcPane, listChosenSessions } from "./hc-pane.ts";
 import { formatRef } from "./runtime/types.ts";
 import { replacementOf } from "./frozen.ts";
 import { type Clock, type Runner, runtimesOf } from "./run.ts";
@@ -31,7 +30,7 @@ export class UnsafeTextError extends Error {}
 export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime"> & { readonly workspaces?: readonly string[] }): Promise<Pane[]> => {
   if (config.backend === "aoe") return listAoePanes(run);
   const rts = runtimesOf(run, config);
-  const sessions = await listSessions(rts);
+  const sessions = await listChosenSessions(rts);
   // hc lists no dori.group label unasked: each configured workspace is listed by its label, so a workspace filter keeps
   // the hc terminals of that group (review 1 of #404)
   const hcGroup = new Map<string, string>();

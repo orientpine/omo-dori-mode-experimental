@@ -34,10 +34,9 @@ encrypted outbound connection to `relay-doriface.omo.dev:443`; it opens no liste
 every 5 seconds (`DORITERM_RETRY_SECONDS`) after it exits, so the bridge attaches once the herdr server is up (a boot
 where this unit starts first) and again after a herdr server restart. The bridge only attaches: it types
 nothing and focuses no pane. hc runs its core as its own systemd user service (`systemd-run`), outside this unit, so
-`ExecStopPost` runs `bridge.ts stop`, which stops the core (`hc server stop`; with no core it starts none) and the
-bridge client with it while hc holds only the bridges. Once the account's own Dori runs on hc (its config chooses hc or
-its `leadPane` is an hc terminal), that core also holds the lead and the lanes, so `stop` ends and removes only the
-bridge rows and leaves the core and every agent terminal running. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
+`ExecStopPost` runs `bridge.ts stop`, which ends and removes only the bridge rows it lists and leaves the core running:
+once the account's own Dori runs on hc, however it chose hc, that core also holds its lead and lanes. With no core running
+(no `$XDG_RUNTIME_DIR/herdr-core/<HC_SESSION or default>.sock`) it asks hc nothing, so it starts none. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
 the pane's identity to the client.
 
 ## Web app
@@ -134,9 +133,8 @@ doriface-host devices revoke <id>           # the device is refused at once ("un
 systemctl --user disable --now doriterm-bridges.timer doriface-host.service   # the relay connection and the bridge clients end
 ```
 
-Stopping the unit stops the hc core and its herdr client (`ExecStopPost`); the herdr server and every agent in it keep
-running. On an account whose Dori runs on hc it ends only the bridge rows, and the core with the lead and lanes keeps
-running.
+Stopping the unit ends the bridge rows and their herdr client (`ExecStopPost`); the hc core, the herdr server and every
+agent in either keep running.
 To retire the host identity as well, remove `~/.local/state/doriface-host` after stopping the unit. On the phone, clear
 the site data of app.doriterm.com to drop its device key.
 

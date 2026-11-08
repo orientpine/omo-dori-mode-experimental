@@ -1,8 +1,8 @@
 import { liveSessions, QUESTION_MARK, sessionFor } from "./aoe.ts";
 import { hcCall, isKind } from "./runtime/hc/exec.ts";
 import { shellInFrontName } from "./herdr.ts";
-import { type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
-import { formatRef, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
+import { type ChosenRuntimes, type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
+import { formatRef, type SessionInfo, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import { AGENT, procTable, topAgent } from "./session-id.ts";
 
 // An hc (herdr-core) terminal in the fork's records: its pane is formatRef's "hc:t<n>", the one shape no herdr pane id
@@ -28,6 +28,26 @@ export const paneGroup = async (run: Runner, pane: string): Promise<string | und
     if (isKind(e, "not_found")) throw new Error(`there is no hc terminal ${pane} any more`);
     throw new Error(`the hc group of ${pane} could not be read (${e instanceof Error ? e.message : String(e)})`);
   }
+};
+
+// Every session of the runtimes in use, as sessions.ts listSessions (upstream #154) lists them: the chosen runtime must
+// answer; another the process built on the way (a herdr adapter liveSessions made on an hc Dori) is listed when it can
+// be, never failing the count (review 5 of #404)
+export const listChosenSessions = async (rts: ChosenRuntimes): Promise<SessionInfo[]> => {
+  try {
+    void rts.default;
+  } catch (e) {
+    if (rts.kinds().length === 0) throw e;
+  }
+  const sessions: SessionInfo[] = [];
+  for (const kind of rts.kinds()) {
+    try {
+      sessions.push(...(await rts.for({ runtime: kind, id: "" }).list()));
+    } catch (e) {
+      if (rts.choice?.kind === kind) throw e;
+    }
+  }
+  return sessions;
 };
 
 // hc's read with no --lines prints the whole history; 120 rows covers the screen the omo marks are read from
@@ -65,7 +85,8 @@ export const hcClose = async (run: Runner, pane: string): Promise<string> => {
 // its dori.group); none when hc is not the chosen runtime.
 export const hcSessions = async (run: Runner): Promise<{ id: string; title: string; path: string; tool?: string; profile?: string; pane: string }[]> => {
   if (!hcChosen(run)) return [];
-  const rows = await hc(run).list().catch(() => []);
+  // hc not answering is no empty list: a caller then keeps what it would drop as gone (a frozen record; review 5 of #404)
+  const rows = await hc(run).list();
   return rows.map(({ ref, name, cwd, agent }) => ({ id: formatRef(ref), title: name ?? ref.id, path: cwd ?? "", ...(agent ? { tool: agent } : {}), ...(ref.group ? { profile: ref.group } : {}), pane: formatRef(ref) }));
 };
 

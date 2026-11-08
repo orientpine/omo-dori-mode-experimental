@@ -23,7 +23,7 @@ case "$1" in
 esac
 `, { mode: 0o700 });
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "bridge.ts"), ...args], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_BRIDGE_NAME: "zzangdori", DORITERM_BRIDGES: "", DORI_CONFIG: "", DORI_RUNTIME: "", ...env },
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_BRIDGE_NAME: "zzangdori", DORITERM_BRIDGES: "", DORI_CONFIG: "", DORI_RUNTIME: "", DORI_LEAD_PANE: "", HC_SESSION: "", XDG_RUNTIME_DIR: join(dir, "run"), ...env },
     stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -58,27 +58,26 @@ test("replaces a finished bridge after a core restart", async () => {
   expect(r.calls).toEqual(["ls --all --json", "rm zzangdori", `run --bg --no-parent --name zzangdori -- /bin/sh ${join(import.meta.dir, "attach.sh")}`]);
 });
 
-test("stop stops the hc core, which systemd runs outside this unit", async () => {
-  // When: the unit's ExecStopPost runs
+test("stop with no hc core running asks hc nothing, so it starts none", async () => {
+  // When: the unit's ExecStopPost runs and this account's core has no socket
   const r = await bridgeWithFakeHc([{ name: "zzangdori", state: "live" }], ["stop"]);
-  // Then: one core stop and nothing else (no ls, which would start a core)
-  expect(r.code).toBe(0);
-  expect(r.out).toBe("bridges: stopped");
-  expect(r.calls).toEqual(["server stop"]);
+  // Then: no hc call at all (any hc call would start a core)
+  expect(`${r.code} ${r.out}`).toBe("0 bridges: stopped");
+  expect(r.calls).toEqual([]);
 });
 
-test("stop on an account whose Dori runs on hc ends only the bridge rows, never the core its lead and lanes share (review 4 of #404)", async () => {
-  // Given: this account's Dori config names hc, and its core holds a bridge and the lead's terminal
-  const user = (await Bun.$`id -un`.text()).trim();
-  for (const [i, cfg] of [{ runtime: "hc", leadPane: "hc:t4" }, { runtime: "herdr", leadPane: "hc:t4" }].entries()) {
+test("stop ends only the bridge rows and never the core, whatever the Dori's config or environment says (reviews 4 and 5 of #404)", async () => {
+  // Given: a running core (its socket) holding a live bridge, an ended one and the lead's terminal; no Dori config at all,
+  // then one naming herdr while the environment chose hc
+  for (const env of [{}, { DORI_RUNTIME: "hc", DORI_LEAD_PANE: "hc:t4" }]) {
     const r = await bridgeWithFakeHc(
       [{ name: "zzangdori", state: "live" }, { name: "okdori", state: "finished" }, { name: "lead", state: "live" }],
       ["stop"],
-      { DORITERM_BRIDGES: "zzangdori okdori:okdori", DORI_CONFIG: "" },
-      { [`.${user}/config.json`]: JSON.stringify(cfg) },
+      { DORITERM_BRIDGES: "zzangdori okdori:okdori", ...env },
+      { "run/herdr-core/default.sock": "", ".dori/config.json": JSON.stringify({ runtime: "herdr" }) },
     );
     // Then: the live bridge is ended and both bridge rows removed; the lead's terminal and the core are left running
-    expect(`${i} ${r.code} ${r.out}`).toBe(`${i} 0 bridges: stopped`);
+    expect(`${r.code} ${r.out}`).toBe("0 bridges: stopped");
     expect(r.calls).toEqual(["ls --all --json", "kill zzangdori", "rm zzangdori", "rm okdori"]);
   }
 });

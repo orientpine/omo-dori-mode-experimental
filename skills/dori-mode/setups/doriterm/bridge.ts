@@ -4,14 +4,13 @@
 // account = this account's), default the one pilot row DORITERM_BRIDGE_NAME or zzangdori. hc --keep would bring back a
 // shell rather than the client after a core restart, so this re-creates a row that ended or was closed instead; the
 // unit runs it when the host starts and the timer every minute. It never types into herdr and never focuses a pane:
-// attaching is all it does. hc runs its core as its own systemd user service, outside doriface-host.service, so `stop`
-// stops the core, which ends the bridges (not kept terminals) with it; with no core running it starts none. On an account
-// whose own Dori runs on hc (its config chooses hc or its lead is an hc terminal) that core also holds the lead and the
-// lanes, so `stop` ends and removes only the bridge rows and leaves the core running (review 4 of #404).
-import { existsSync, readFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+// attaching is all it does. hc runs its core as its own systemd user service, outside doriface-host.service, and that core
+// may also hold the account's own Dori (its lead and lanes, however the Dori chose hc), so `stop` ends and removes only
+// the bridge rows it owns and leaves the core running; with no core running it asks hc nothing, so it starts none
+// (reviews 4 and 5 of #404).
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { run, type Runner, runtimeChoice } from "../../scripts/src/run.ts";
+import { run, type Runner } from "../../scripts/src/run.ts";
 
 type Terminal = { readonly name?: string; readonly state?: string };
 export type Bridge = { readonly name: string; readonly account?: string };
@@ -57,24 +56,11 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
   return results;
 }
 
-export async function stopCore(runner: Runner): Promise<void> {
-  const stopped = await runner(["hc", "server", "stop"]);
-  if (stopped.code !== 0) throw new Error(`hc server stop failed: ${stopped.err || stopped.out}`);
-}
-
-// The account's Dori config, where attach.sh reads it: DORI_CONFIG, else ~/.<user>/config.json (an instance account), else
-// ~/.dori/config.json. hc is in use when the config chooses it or its lead is an hc terminal; an unreadable config is read
-// as in use, so a stop never ends an hc lead it could not rule out.
-export function doriOnHc(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
-  const own = join(homedir(), `.${userInfo().username}`, "config.json");
-  const path = env["DORI_CONFIG"] || (existsSync(own) ? own : join(homedir(), ".dori", "config.json"));
-  if (!existsSync(path)) return false;
-  try {
-    const config = JSON.parse(readFileSync(path, "utf8")) as { runtime?: "herdr" | "hc"; leadPane?: unknown };
-    return String(config.leadPane ?? "").startsWith("hc:") || runtimeChoice({ runtime: config.runtime }, env).kind === "hc";
-  } catch {
-    return true;
-  }
+// hc's core makes its socket at $XDG_RUNTIME_DIR/herdr-core/<session>.sock (HC_SESSION, else default) and removes it when
+// it stops; read without an hc call, since any hc call starts a core
+export function coreRunning(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  const dir = env["XDG_RUNTIME_DIR"] || `/run/user/${process.getuid?.() ?? 0}`;
+  return existsSync(join(dir, "herdr-core", `${env["HC_SESSION"] || "default"}.sock`));
 }
 
 // ends each listed bridge that still runs and removes its row; every other terminal of the core is left alone
@@ -95,8 +81,7 @@ export async function stopBridges(runner: Runner, bridges: readonly Bridge[]): P
 if (import.meta.main) {
   const bridges = () => parseBridges(process.env["DORITERM_BRIDGES"] || process.env["DORITERM_BRIDGE_NAME"] || "zzangdori");
   if (process.argv[2] === "stop") {
-    if (doriOnHc()) await stopBridges(run, bridges());
-    else await stopCore(run);
+    if (coreRunning()) await stopBridges(run, bridges());
     console.log("bridges: stopped");
   } else {
     for (const line of await ensureBridges(run, bridges())) console.log(line);
