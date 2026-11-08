@@ -84,3 +84,7 @@ The handover verify skips a path watch that has ended (its folder gone, or the f
 ## Handover note: a refused monitor call reads as armed
 
 omo's monitor tool answers a refused path watch ("Cannot watch file: parent directory does not exist") with ok true, so the rv-human-natural sessions of 2026-11-08 reported "armed 3/3" and "armed 2/2 []" for a watch that never ran. The note now marks such a watch `ENDED`, so it is not armed; a watch refused for another reason is still caught only by the verify.
+
+## dori heavy hold-local: a hold broker instead of the shared directory (#408)
+
+`dori heavy hold-local` keeps each account's hold in `heavyHoldDir` (`/tmp/dori-heavy-hold`, 1777). Readers treat every entry as hostile (one descriptor per entry, no FIFO wait, no link followed, 4 KiB, a day at most), but the trust model stays a shared writable directory: the account that made it can drop every hold or make it unreadable, which holds until fixed. Kubernetes cordon, Slurm DRAIN, PBS `pbsnodes -o` and LSF `badmin hclose` keep a hold in one authorized controller instead. A local broker (an abstract AF_UNIX socket checking SO_PEERCRED, or a root-provisioned directory with a fixed owner) would remove the shared directory; it is a new long-lived service on every host, so it waits for its own lane.

@@ -7,9 +7,14 @@ import { sharedDirProblem } from "./shared-dir.ts";
 // helper was busy, and the window broke five times. One file per account in heavyHoldDir, a directory every account writes
 // in (shared-dir.ts), since each account's heavy slots are its own: a job of any account reads them all before it takes a
 // slot here (heavy-slot.ts acquire), and goes to a helper or waits instead. Jobs already running go on.
-// Any account writes in that directory, so every read of it fails closed and bounded: what cannot be listed, stat'd,
-// read or parsed holds (for a minute at a time, or a day from its file's write at most), and nothing is read past 4 KiB
-// or past a file's day.
+// Trust (#408, the way Kubernetes cordon or Slurm DRAIN keep a hold in one authorized place, here a shared directory):
+// - every Dori account on this host may set and clear its own hold, and any hold stops every account's new local jobs;
+// - the account that made the directory owns it and could drop every hold by replacing it, or make it unreadable;
+// - an entry in another account's place is hostile input: no reader may hang on it, follow a link through it, read
+//   past 4 KiB of it, crash on it, or miss a valid hold because of it, and a file that cannot be opened or parsed holds
+//   at most a day from its write (its times come from a look before the open); an entry or a directory that cannot
+//   even be looked at holds until it can (only the directory's owner can cause that), with a line naming it.
+// A broker daemon that would remove the shared directory is a follow-up (docs/follow-ups.md).
 export type Hold = { readonly by: string; readonly reason: string; readonly until: number };
 
 // a hold ends a day after its file was written at the latest, whatever its until says: a forgotten or forged hold never
