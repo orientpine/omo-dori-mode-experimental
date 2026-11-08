@@ -21,13 +21,15 @@ let callerPath: string;
 
 const toolsDir = (): string => join(state.dir, "helper", "home", ".local", "share", "dori-heavy", "tools");
 
-// a bundle as tools.sh leaves it: rv@<version> never changes, rv points at the current one
-const bundle = (version: string): void => {
-  const at = join(toolsDir(), `rv@${version}`);
+// a bundle as tools.sh leaves it: an install is a generation folder never moved or changed, rv@<version> links to the
+// newest generation of that version, rv to the current version; a generation other than "a" says its name in its output
+const bundle = (version: string, gen = "a", link = true): void => {
+  const at = join(toolsDir(), "rv-gens", `${version}-${gen}`);
   mkdirSync(join(at, "bin"), { recursive: true });
   writeFileSync(join(at, "VERSION"), `${version}\n`);
-  writeFileSync(join(at, "bin", "rv"), `#!/bin/sh\necho "bundle rv $*"; mkdir -p out && echo frame > out/v.mp4 && echo ${version} >> out/versions\n`);
+  writeFileSync(join(at, "bin", "rv"), `#!/bin/sh\necho "bundle rv $*"; mkdir -p out && echo frame > out/v.mp4 && echo ${gen === "a" ? version : `${version}/${gen}`} >> out/versions\n`);
   chmodSync(join(at, "bin", "rv"), 0o755);
+  if (link) symlinkSync(`rv-gens/${version}-${gen}`, join(toolsDir(), `rv@${version}`));
 };
 const makeCurrent = (version: string): void => {
   rmSync(join(toolsDir(), "rv"), { force: true });
@@ -144,6 +146,24 @@ test("a bundle installed again while a job runs does not change the version that
   // Then: both runs used the version the job was admitted with
   expect(await run).toEqual({ code: 0 });
   expect(readFileSync(join(work, "out", "versions"), "utf8")).toBe("0.2.1\n0.2.1\n");
+}, 60_000);
+
+test("the same version installed again between the helper's admission and its box start does not change what the job runs", async () => {
+  // Given: generation b of 0.2.1 is ready, and the job's bytes reach the helper only after it admitted the job and
+  // rv@0.2.1 was turned to generation b, as tools.sh rv v0.2.1 run again does
+  const job = rvJob();
+  const plan = planOf(job);
+  if (!plan.ok) throw new Error(plan.why);
+  const helper = helperWith("0.2.1");
+  bundle("0.2.1", "b", false);
+  const log = join(state.dir, "helper", "state", "heavy", "heavy.log");
+  const t = toolsDir();
+  const gate = `(until grep -q HEAVY_WORKER_ADMIT ${log} 2>/dev/null; do sleep 0.02; done; ln -sfn rv-gens/0.2.1-b ${t}/rv@0.2.1.new && mv -Tf ${t}/rv@0.2.1.new ${t}/rv@0.2.1; cat) | "$@"`;
+  // When
+  const r = await heavySpread(ctxWith(["bash", "-c", gate, "gate", ...helper]), job, plan);
+  // Then: the job ran the generation the helper picked when it admitted it
+  expect(r).toEqual({ code: 0 });
+  expect(readFileSync(join(work, "out", "versions"), "utf8")).toBe("0.2.1\n");
 }, 60_000);
 
 test("a helper whose dori predates tool bundles is named out of date, not as lacking the bundle", async () => {

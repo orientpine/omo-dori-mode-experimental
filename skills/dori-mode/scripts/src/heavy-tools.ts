@@ -3,10 +3,11 @@ import { dirname, join } from "node:path";
 
 // The tools a job needs on a helper that it does not carry in its --sync paths (heavy-spread.ts).
 //
-// A tool bundle is a folder <tools dir>/<name>@<version> on a helper with a VERSION file, made there by
-// setups/heavy-helper/tools.sh <name> <tag> and never changed after (a new tag is a new folder), and <name> links to
-// the current one. A job asks for one by name (dori heavy --tools rv) and goes as tools=<name>@<the caller's version>;
-// the helper picks that version's folder when it has it, else the current one, at admission, and binds it read-only in
+// A tool bundle on a helper is made by setups/heavy-helper/tools.sh <name> <tag>: each install is a generation folder
+// with a VERSION file that is never moved or changed after, <tools dir>/<name>@<version> links to the newest
+// generation of that version and <name> to the current version. A job asks for one by name (dori heavy --tools rv) and
+// goes as tools=<name>@<the caller's version>; at admission the helper resolves that version's link (else the current
+// one) to its generation folder, which an install after admission cannot move or change, and binds it read-only in
 // the box at /run/dori-tools/bundles/<name> with its bin first on PATH, so a bundle installed again during the run does
 // not change what the job runs. A helper without the bundle, or with another version only, refuses the job with the
 // line that says how to install it there, so the job runs here instead of failing in the box (2026-11-08: rv renders
@@ -46,7 +47,8 @@ export const toolBundles = (opts: readonly string[], toolsDir: string | undefine
     const want = m[2];
     const pinned = toolsDir && want ? join(toolsDir, `${name}@${want}`) : undefined;
     const current = toolsDir ? join(toolsDir, name) : undefined;
-    const at = pinned && existsSync(pinned) ? pinned : current && existsSync(current) ? realpathSync(current) : undefined;
+    const link = pinned && existsSync(pinned) ? pinned : current && existsSync(current) ? current : undefined;
+    const at = link ? realpathSync(link) : undefined;
     if (!at) return { why: `no tool bundle "${name}" on this host; install it there: setups/heavy-helper/tools.sh ${name} <tag>` };
     const have = versionIn(at) ?? "unknown";
     if (want && have !== want) return { why: `tool bundle "${name}" here is version ${have}, the job's is ${want}; install that one there: setups/heavy-helper/tools.sh ${name} v${want}` };
