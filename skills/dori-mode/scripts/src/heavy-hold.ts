@@ -7,6 +7,9 @@ import { sharedDirProblem } from "./shared-dir.ts";
 // helper was busy, and the window broke five times. One file per account in heavyHoldDir, a directory every account writes
 // in (shared-dir.ts), since each account's heavy slots are its own: a job of any account reads them all before it takes a
 // slot here (heavy-slot.ts acquire), and goes to a helper or waits instead. Jobs already running go on.
+// Any account writes in that directory, so every read of it fails closed and bounded: what cannot be listed, stat'd,
+// read or parsed holds (for a minute at a time, or a day from its file's write at most), and nothing is read past 4 KiB
+// or past a file's day.
 export type Hold = { readonly by: string; readonly reason: string; readonly until: number };
 
 // a hold ends a day after its file was written at the latest, whatever its until says: a forgotten or forged hold never
@@ -27,7 +30,13 @@ const readHead = (file: string): string => {
 
 // the account of a file's owner, so a hold names who set it whatever the file says
 const accountOf = (uid: number): string => {
-  const line = readFileSync("/etc/passwd", "utf8").split("\n").find((l) => l.split(":")[2] === String(uid));
+  let passwd = "";
+  try {
+    passwd = readFileSync("/etc/passwd", "utf8");
+  } catch {
+    // a name only labels the hold; without one it still holds
+  }
+  const line = passwd.split("\n").find((l) => l.split(":")[2] === String(uid));
   return line?.split(":")[0] ?? `uid ${uid}`;
 };
 
@@ -97,7 +106,12 @@ const fileOf = (dir: string, user: string): string => join(dir, `${user}.json`);
 
 /** Sets this account's hold (one per account, a new one replaces it); a problem, or undefined. */
 export const holdOn = (dir: string, user: string, until: number, reason: string, now: number): string | undefined => {
-  const unsafe = sharedDirProblem(dir) ?? ((lstatSync(dir).mode & 0o1777) !== 0o1777 ? "is not mode 1777, so other accounts could not read or write their holds" : undefined);
+  let unsafe: string | undefined;
+  try {
+    unsafe = sharedDirProblem(dir) ?? ((lstatSync(dir).mode & 0o1777) !== 0o1777 ? "is not mode 1777, so other accounts could not read or write their holds" : undefined);
+  } catch (e) {
+    unsafe = `cannot be made or checked: ${String(e).slice(0, 200)}`;
+  }
   if (unsafe) return `the hold directory ${dir} ${unsafe}`;
   const tmp = join(dir, `.${user}.${process.pid}.${now}.tmp`);
   try {
