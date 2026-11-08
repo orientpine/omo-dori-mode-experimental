@@ -69,6 +69,9 @@ test("a real hc call from a process whose HC_SESSION names another core runs in 
     writeFileSync(join(d, "dori.env"), "HC_SESSION=named\n");
     process.env["DORI_ENV_FILE"] = join(d, "dori.env");
     expect((await run([join(d, "hc"), "ls"])).out).toBe("named");
+    // a caller that names its core (doriterm's bridges run in the host's core, review 9 of #404) keeps it
+    expect((await run([join(d, "hc"), "ls"], { env: { HC_SESSION: "bridges" } })).out).toBe("bridges");
+    expect((await run([join(d, "hc"), "ls"], { env: { HC_SESSION: undefined } })).out).toBe("default");
     writeFileSync(join(d, "dori.env"), "DORI_DISCORD_TOKEN=x\n");
     expect((await run([join(d, "hc"), "ls"])).out).toBe("default");
   } finally {

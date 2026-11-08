@@ -41,4 +41,9 @@ rm "$CHECK_LOG"
 LEAD_LINE="11111111-2222-4333-8444-555555555555 w1:p2" bash "$S/dori.sh"
 expected=$'systemctl --user start dori-inbound.service dori-google-watch.service\nherdr '
 [[ "$( <"$CHECK_LOG")" == "$expected" ]] || { printf 'live herdr lead was revived\n' >&2; exit 1; }
+rm "$CHECK_LOG"
+# an hc lead (option B, review 9 of #404): refused with a line naming it, before any service, herdr or aoe call
+if out=$(LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4" bash "$S/dori.sh" 2>&1); then printf 'hc lead launched\n' >&2; exit 1; fi
+[[ "$out" == *"lead runs on hc (hc:t4)"* ]] || { printf 'hc lead refusal line missing: %s\n' "$out" >&2; exit 1; }
+[[ ! -e "$CHECK_LOG" ]] || { printf 'hc lead touched services, herdr or aoe\n' >&2; cat "$CHECK_LOG" >&2; exit 1; }
 printf 'DORI_SHELL_CHECK_PASS\n'

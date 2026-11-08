@@ -49,7 +49,9 @@ export const run: Runner = async (argv, opts = {}) => {
   argv = commandArgv(argv);
   try {
     // env: process.env explicitly, or Bun hands the child its start-up environment without what loadEnvFile added from dori.env
-    const core = argv[0]?.split("/").pop() === "hc" ? doriCore() : undefined;
+    // a caller that names a core in opts.env keeps it (doriterm's bridges run in the host's own core, review 9 of #404)
+    const named = opts.env !== undefined && Object.hasOwn(opts.env, "HC_SESSION");
+    const core = argv[0]?.split("/").pop() !== "hc" ? undefined : named ? opts.env?.["HC_SESSION"] : doriCore();
     const env = Object.fromEntries(Object.entries(childEnv(argv, opts.env ? { ...process.env, ...opts.env } : process.env, core)).filter(([, v]) => v !== undefined));
     p = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe", env, ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.stdin !== undefined ? { stdin: new Blob([opts.stdin]) } : {}), ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}) });
   } catch (e) {

@@ -97,12 +97,16 @@ export async function stopBridges(runner: Runner, bridges: readonly Bridge[], sl
   if (failed.length) throw new Error(failed.join("; "));
 }
 
+// The bridges live in this host's own hc core (its HC_SESSION, else the default core), the one coreRunning checks and
+// doriface-host connects to, never the core a Dori's dori.env names for that Dori's sessions (review 9 of #404).
+export const bridgeRun: Runner = (argv, opts = {}) => run(argv, { ...opts, env: { HC_SESSION: process.env["HC_SESSION"], ...opts.env } });
+
 if (import.meta.main) {
   const bridges = () => parseBridges(process.env["DORITERM_BRIDGES"] || process.env["DORITERM_BRIDGE_NAME"] || "zzangdori");
   if (process.argv[2] === "stop") {
-    if (coreRunning()) await stopBridges(run, bridges());
+    if (coreRunning()) await stopBridges(bridgeRun, bridges());
     console.log("bridges: stopped");
   } else {
-    for (const line of await ensureBridges(run, bridges())) console.log(line);
+    for (const line of await ensureBridges(bridgeRun, bridges())) console.log(line);
   }
 }

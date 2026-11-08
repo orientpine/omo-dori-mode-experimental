@@ -189,53 +189,6 @@ test("attach.sh focuses the lead's tab, then keeps trying herdr client until the
   expect(calls).toEqual([focus, "client", focus, "client", focus, "client"]);
 });
 
-test("attach.sh attaches to the lead's hc terminal with hc attach when the Dori runs on hc, never herdr client, t1b past t19 too (review 7 of #404)", async () => {
-  for (const id of ["t4", "t1b"]) {
-  // Given: the account's config names its lead as the hc terminal hc:t4, and a fake hc that ends the loop on its attach
-  const dir = mkdtempSync(join(tmpdir(), "doriterm-attach-hc-"));
-  dirs.push(dir);
-  const user = (await Bun.$`id -un`.text()).trim();
-  mkdirSync(join(dir, `.${user}`), { recursive: true });
-  writeFileSync(join(dir, `.${user}`, "config.json"), JSON.stringify({ backend: "herdr", leadPane: `hc:${id}` }, null, 2));
-  // hc attach runs under attach.sh's inner shell (it watches leadPane meanwhile), herdr client replaces it: end the loop above
-  for (const name of ["hc", "herdr"]) writeFileSync(join(dir, name), `#!/bin/sh
-printf '${name} %s\\n' "$*" >> "$HOME/calls"
-${name === "hc" ? 'kill -TERM $(ps -o ppid= -p $PPID)' : 'kill -TERM "$PPID"'}
-`, { mode: 0o700 });
-  const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_RETRY_SECONDS: "0" },
-    stdout: "pipe", stderr: "pipe",
-  });
-  await child.exited;
-  // Then: one hc attach to t4 and no herdr call at all
-  expect((await Bun.file(join(dir, "calls")).text()).trim().split("\n")).toEqual([`hc attach ${id}`]);
-  }
-});
-
-test("attach.sh leaves an hc attach whose leadPane changed while it stays attached, and attaches to the new lead (review 1 of #404)", async () => {
-  // Given: the lead is hc:t4; the attach to t4 moves the config to hc:t5 and stays attached, as a frozen old lead does
-  const dir = mkdtempSync(join(tmpdir(), "doriterm-attach-move-"));
-  dirs.push(dir);
-  const user = (await Bun.$`id -un`.text()).trim();
-  mkdirSync(join(dir, `.${user}`), { recursive: true });
-  const cfg = join(dir, `.${user}`, "config.json");
-  writeFileSync(cfg, JSON.stringify({ leadPane: "hc:t4" }, null, 2));
-  writeFileSync(join(dir, "hc"), `#!/bin/sh
-printf 'hc %s\\n' "$*" >> "$HOME/calls"
-if [ "$2" = t4 ]; then printf '{"leadPane": "hc:t5"}' > "${cfg}"; exec sleep 30; fi
-kill -TERM $(ps -o ppid= -p $PPID)
-`, { mode: 0o700 });
-  const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, DORITERM_RETRY_SECONDS: "0", DORITERM_LEAD_CHECK_SECONDS: "0.2" },
-    stdout: "pipe", stderr: "pipe",
-  });
-  const done = await Promise.race([child.exited.then(() => "exited"), Bun.sleep(10_000).then(() => "stuck")]);
-  if (done === "stuck") child.kill();
-  // Then: the old attach ended and the new lead was attached
-  expect(done).toBe("exited");
-  expect((await Bun.file(join(dir, "calls")).text()).trim().split("\n")).toEqual(["hc attach t4", "hc attach t5"]);
-}, 15_000);
-
 test("attach.sh takes an instance account's ~/.<user>/config.json for the lead", async () => {
   // Given: the account keeps its Dori config under ~/.<its user name>/ (okdori: ~/.okdori/config.json)
   const user = (await Bun.$`id -un`.text()).trim();

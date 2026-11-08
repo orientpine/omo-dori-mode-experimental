@@ -7,6 +7,11 @@ if [[ -z "$AOE_ID" ]]; then
   printf 'dori lead returned no session id\n' >&2
   exit 1
 fi
+# an hc lead is not attached by this launcher yet (review 9 of #404, docs/follow-ups.md): say so before starting anything
+if [[ "${PANE:-}" == hc:* ]]; then
+  printf 'dori: the lead runs on hc (%s); this launcher attaches herdr and aoe leads only (docs/follow-ups.md)\n' "$PANE" >&2
+  exit 2
+fi
 systemctl --user start dori-inbound.service dori-google-watch.service
 # aoe without any DORI_*: if it starts the tmux server, every pane inherits that server's environment
 unset_dori=$(env | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/-u \1/p')
