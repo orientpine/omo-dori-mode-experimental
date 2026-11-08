@@ -76,3 +76,11 @@ The port of upstream #147-#155 (scripts/src/runtime) brings the runtime layer, t
 ## 250-line rule: the fork's own files still over the cap (upstream #159)
 
 Upstream #159 split its last files over 250 lines and removed its baseline; the port did the same for every file in `skills/dori-mode/scripts/src` and `test` that came from upstream. The fork's own files over the cap (47 at the port, among them `test/lane-handover.test.ts`, `src/lane-handover.ts`, `src/backlog.ts`, `src/handover.ts`) stay listed in `skills/dori-mode/scripts/loc-baseline.json`, so they can only shrink. Split them one area per PR (code moves only, every test title kept, CLI output byte-equal), lowering or removing each entry in the same PR, until the file is gone and `check-loc.ts` can drop the baseline as upstream did.
+
+## Handover verify: a one-shot command gate that exits in the new session still counts as missing
+
+The handover verify skips a path watch that has ended (its folder gone, or the file its create event waits for already there: zzangdori's rv-human-natural, 2026-11-08). A command monitor that ends in the new session, a one-shot gate (`until [ -f x ]; do sleep 5; done; echo READY`) whose condition came true while the handover checked, still reads as "armed, but its process ended" and rolls the move back: from the manifest alone it cannot be told from a remote tail whose ssh dropped (2026-10-20). Telling them apart needs the new session's own record of the watch's exit (its monitor event, exit 0 and the sentinel line).
+
+## Handover note: a refused monitor call reads as armed
+
+omo's monitor tool answers a refused path watch ("Cannot watch file: parent directory does not exist") with ok true, so the rv-human-natural sessions of 2026-11-08 reported "armed 3/3" and "armed 2/2 []" for a watch that never ran. The note now marks such a watch `ENDED`, so it is not armed; a watch refused for another reason is still caught only by the verify.

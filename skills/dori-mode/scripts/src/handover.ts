@@ -11,7 +11,7 @@ import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
-import { endOldMonitors } from "./handover-monitors.ts";
+import { endedWatch, endOldMonitors } from "./handover-monitors.ts";
 import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
 import { compactionStuckOn } from "./lane-handover.ts";
 import { awaitPrompt } from "./launch.ts";
@@ -73,7 +73,7 @@ export type HandoverOptions = {
 // A monitor command that starts work besides watching (see launchOf): why, the files its work writes, and the exact
 // watch-only command when its script has a mode for that.
 export type Launch = { readonly why: string; readonly writes: readonly string[]; readonly rearm?: string };
-export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string; readonly persistent: boolean; readonly launch?: Launch };
+export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string; readonly persistent: boolean; readonly launch?: Launch; readonly ended?: string };
 
 type ManifestEntry = {
   readonly description?: string;
@@ -251,14 +251,14 @@ export const launchOf = (command: string, home: string, read: (path: string) => 
   return { why, writes, ...(honours ? { rearm: `export ${RESTORED}=1; ${command}` } : {}) };
 };
 
-// Every watch the old session still runs, persistent or not: the new session must run each one. A command monitor whose
-// recorded process is gone has ended and is left out. One that starts work carries launch: the new session arms a
-// watch-only one in its place.
+// Every watch the old session still runs, persistent or not (a command whose recorded process is gone is left out); the new
+// session runs each one but a path watch marked ended (endedWatch), and one that starts work (launch) as a watch-only one.
 export const liveMonitors = (entries: readonly ManifestEntry[], now: number, alive: (pid: number) => boolean, home: string): MonitorSpec[] =>
   entries.filter((e) => running(e, now) && (!!e.path || e.runtime?.pid === undefined || alive(e.runtime.pid))).map((e) => {
     const s = spec(e);
+    const ended = endedWatch(e);
     const launch = s.command ? launchOf(s.command, home) : undefined;
-    return launch ? { ...s, launch } : s;
+    return { ...s, ...(launch ? { launch } : {}), ...(ended ? { ended } : {}) };
   });
 
 // The work a monitor that starts work (launch) still runs: the processes under its command besides the readers it follows
@@ -404,7 +404,7 @@ export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonl
   const live = entries.filter((e) => e.persistent && running(e, now) && (e.path || (e.runtime?.pid !== undefined && alive(e.runtime.pid))));
   const same = (a: string, b: string) => sameCommand(a, b, home);
   const out: string[] = [];
-  for (const m of wanted) {
+  for (const m of wanted.filter((w) => !w.ended && !endedWatch(w))) {
     const name = m.description || m.command || m.path || "?";
     const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
     if (m.command && launch) {
@@ -465,7 +465,7 @@ const cell = (text: string): string => text.replace(/\s*\|\s*/g, " / ").replace(
 const launchHow = (m: MonitorSpec, l: Launch): string =>
   ` LAUNCHES_WORK (${l.why}): do not arm this command again, it would start its work a second time. Arm in its place a persistent watch-only monitor with the same description${m.filter ? " and filter" : ""} that only reads what the work writes${l.writes.length ? ` (${l.writes.join(", ")})` : ""}, where it runs (the same ssh host, if any): tail -F, grep, an until-wait; nothing that starts, posts or changes anything.${l.rearm ? ` Its script has a watch-only mode: arm exactly command ${JSON.stringify(l.rearm)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}.` : ""}`;
 export const monitorLine = (m: MonitorSpec): string =>
-  `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}${m.launch ? launchHow(m, m.launch) : ""}`;
+  `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.ended ? ` ENDED (${m.ended}): do not arm it, it has nothing left to wait for; the handover does not check it. Look at the file (or the work that writes it) yourself once you may act.` : `${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}${m.launch ? launchHow(m, m.launch) : ""}`}`;
 const watcherLine = (w: HandoverWatcher): string => `- ${w.name}: check ${JSON.stringify(w.check)}${w.arm ? `; to start it: ${w.arm}` : "; runs outside omo, nothing to arm"}`;
 
 export const renderNote = (f: HandoverFacts, at: string): string => [
@@ -474,7 +474,7 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   `From ${f.from.pane} (aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}, cwd ${f.from.cwd}). You are the new lead session${f.cwd === f.from.cwd ? "" : `, opened in ${f.cwd}`}: dori handover points leadPane, the open lanes and the open question cards at you.`,
   "",
   "## Do this first",
-  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command. Take each command, filter and description from its line under Monitors, where they are JSON strings: put them into the tool call as they are (a JSON string is a valid JS string), not retyped and not from the conversation summary, where a copy can differ. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
+  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command; one marked ENDED is not armed. Take each command, filter and description from its line under Monitors, where they are JSON strings: put them into the tool call as they are (a JSON string is a valid JS string), not retyped and not from the conversation summary, where a copy can differ. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
   `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
   `3. A [LEAD] HANDOVER_SUPPLEMENT <id> line comes from the audit after the commit: it names a file with what you were missing and the old log lines behind it; write those items into the file it names (create it if it is not there), keep them in mind as the note's, and run the ack command it gives. No restatement is asked before the commit.`,
   `4. Until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing besides that file: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,
