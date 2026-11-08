@@ -32,8 +32,8 @@ const backlogCommand: Command = async (context) => {
       if (!config.backlog.enabled) console.log(state);
     } else if (sub === "drop") {
       const dropId = id ?? die("usage: dori backlog drop <id> [--reason R]");
-      await withBacklogLock(config.stateDir, 120, () => dropItem(config.stateDir, dropId, many("reason").join("; ") || "by the lead", at));
-      console.log(`BACKLOG_DROPPED ${id}`);
+      const dropped = await withBacklogLock(config.stateDir, 120, () => dropItem(config.stateDir, dropId, many("reason").join("; ") || "by the lead", at));
+      console.log(`BACKLOG_DROPPED ${id}${dropped.log[0]?.what.startsWith("dropped before intake") ? " before intake: the #dori-pair intake skips it when the post comes" : ""}`);
     } else if (sub === "decide") {
       const kst = `${new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 16).replace("T", " ")} KST`;
       const decideId = id ?? die("usage: dori backlog decide <id> --text \"<the owner's answer>\"");

@@ -17,13 +17,14 @@ const PENDING_MS = 60_000;
 const POLL_MS = 200;
 const KEEP_MS = 24 * 60 * 60_000;
 
-type Mark = { readonly at: number; readonly id?: string };
+// replyTo: the message the post answered (dori send discord --reply), read by repliedTo
+type Mark = { readonly at: number; readonly id?: string; readonly replyTo?: string };
 type Last = { readonly at: number; readonly key: string; readonly id: string };
 // what a post returned: its id and the content the service answered it holds (undefined when the answer had none)
 export type Sent = { readonly id: string; readonly content?: string | undefined };
 // last: the place's last post had this content (any age); otherwise the same content went there within the window
 export type SendOnceResult = { readonly id: string; readonly duplicate: false; readonly content?: string | undefined } | { readonly id: string; readonly duplicate: true; readonly ageMs: number; readonly last: boolean };
-export type SendOnceOptions = { readonly again?: boolean; readonly windowMs?: number; readonly now?: () => number; readonly sleep?: (ms: number) => Promise<void> };
+export type SendOnceOptions = { readonly again?: boolean; readonly windowMs?: number; readonly now?: () => number; readonly sleep?: (ms: number) => Promise<void>; readonly replyTo?: string | undefined };
 
 const code = (e: unknown): string | undefined => (e as NodeJS.ErrnoException | undefined)?.code;
 const ignoreMissing = (e: unknown): void => {
@@ -123,7 +124,7 @@ export const sendOnce = async (dir: string, place: string, key: string, send: ()
   prune(dir, now());
   const path = join(dir, `${key}.json`);
   const posted = (sent: Sent): SendOnceResult => {
-    writeMark(path, { at: now(), id: sent.id });
+    writeMark(path, { at: now(), id: sent.id, ...(opts.replyTo ? { replyTo: opts.replyTo } : {}) });
     writeLast(dir, place, { at: now(), key, id: sent.id });
     return { id: sent.id, duplicate: false, content: sent.content };
   };
@@ -170,6 +171,23 @@ export const sendOnce = async (dir: string, place: string, key: string, send: ()
     }
     await sleep(POLL_MS);
   }
+};
+
+// The id of a post of this Dori that replied to message, or undefined: the backlog does not start a #dori-pair request
+// the lead already answered (backlog-pair.ts). Post records are kept KEEP_MS; the backlog takes a post in within minutes.
+export const repliedTo = (dir: string, message: string): string | undefined => {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    ignoreMissing(e);
+    return undefined;
+  }
+  for (const name of names.filter((n) => !n.startsWith(LAST_PREFIX) && n.endsWith(".json"))) {
+    const mark = readMark(join(dir, name));
+    if (mark?.replyTo === message && mark.id !== undefined) return mark.id;
+  }
+  return undefined;
 };
 
 // a repeat is not posted; the CLI exits SEND_DUPLICATE_EXIT so a caller cannot read it as a new post
