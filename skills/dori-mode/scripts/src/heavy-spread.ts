@@ -7,7 +7,7 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
-import { archOf, boxDev, execWords, hostRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
+import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { bundleEnv, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
@@ -505,7 +505,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
   const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && o !== "back");
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
-  const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : hostRefusal(ctx.q.kinds, kind, opts);
+  const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : (hostRefusal(ctx.q.kinds, kind, opts) ?? memRefusal(opts, ctx.deps.headroom?.free ?? 10));
   if (off) return d.refuse(label, off);
   const got = toolBundles(opts, d.tools.toolsDir);
   if ("why" in got) return d.refuse(label, got.why);
@@ -528,7 +528,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
       return 75;
     }
   }
-  const t = await admitOnce(ctx.deps, label, settleFor(kind));
+  const t = await admitOnce(ctx.deps, label, settleFor(kind), mem && mem / 1024);
   if (!t || !("slot" in t)) {
     console.error(`WORKER_BUSY ${t?.why ?? "another job is being admitted"}`);
     return 75;

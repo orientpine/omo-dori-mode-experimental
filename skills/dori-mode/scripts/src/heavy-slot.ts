@@ -56,13 +56,14 @@ const line = (deps: SlotDeps): string[] => {
 };
 
 // One admission try now, for a helper that serves another host's queue: a job waiting in this host's own line goes first.
-export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: number): Promise<Try | null> => {
+// memKb: the job's own estimate (exec mem=), kept free beside the running jobs as for a job of this host (tryAdmit)
+export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: number, memKb?: number): Promise<Try | null> => {
   mkdirSync(deps.dir, { recursive: true });
   const held = deps.hold?.();
   if (held) return { wait: "hold", why: `this host's heavy slots are held ${held}` };
   const waiting = line(deps).length;
   if (waiting) return { wait: "queue", why: `${waiting} job(s) wait in this host's queue` };
-  const t = await admitUnheld(deps, () => tryAdmit(deps, label, undefined, settleSec));
+  const t = await admitUnheld(deps, () => tryAdmit(deps, label, memKb, settleSec));
   return t && "wait" in t && t.wait === "hold" ? { wait: "hold", why: `this host's heavy slots are held ${t.why}` } : t;
 };
 
