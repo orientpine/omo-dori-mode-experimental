@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sharedDirProblem } from "./shared-dir.ts";
 
@@ -13,6 +13,17 @@ export type Hold = { readonly by: string; readonly reason: string; readonly unti
 // keeps this host's slots for longer
 const MAX_MS = 24 * 3_600_000;
 const UNREADABLE = "(its file cannot be read)";
+// a hold file is a few hundred bytes (a 200-character reason and two times); one bigger is not a hold this code wrote
+const MAX_BYTES = 4096;
+const readHead = (file: string): string => {
+  const fd = openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(MAX_BYTES);
+    return buf.toString("utf8", 0, readSync(fd, buf, 0, MAX_BYTES, 0));
+  } finally {
+    closeSync(fd);
+  }
+};
 
 // the account of a file's owner, so a hold names who set it whatever the file says
 const accountOf = (uid: number): string => {
@@ -25,15 +36,20 @@ const holdOf = (dir: string, name: string, now: number): Hold | undefined => {
   let st: ReturnType<typeof lstatSync>;
   try {
     st = lstatSync(file);
-  } catch {
-    return undefined;
+  } catch (e) {
+    if (e instanceof Error && "code" in e && e.code === "ENOENT") return undefined;
+    // a hold file whose metadata this account cannot read (a directory it may list but not search) holds while it cannot
+    const code = e instanceof Error && "code" in e ? String(e.code) : String(e);
+    return { by: "?", reason: `${file} cannot be read here (${code}); the hold directory must be mode 1777`, until: now + 60_000 };
   }
   if (!st.isFile()) return undefined;
   // its owner can set mtime to any time, never ctime (set by the kernel at each write, rename or touch of the file)
   const cap = Math.min(st.mtimeMs, st.ctimeMs) + MAX_MS;
+  // an ended one is not read at all, and a live one only as far as a hold can be long: any account may write here
+  if (cap <= now) return undefined;
   let parsed: { reason?: unknown; until?: unknown } = {};
   try {
-    const v: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const v: unknown = st.size <= MAX_BYTES ? JSON.parse(readHead(file)) : undefined;
     if (v !== null && typeof v === "object" && !Array.isArray(v)) parsed = v as typeof parsed;
   } catch {
     // another account's file under a strict umask, or one cut off while written: it holds, for the longest a hold may

@@ -89,6 +89,25 @@ test("a hold directory this account cannot read holds, and a hold is not set in 
   }
 });
 
+test("a hold file whose metadata this account cannot read holds", () => {
+  const now = Date.now();
+  holdOn(hold, ME, now + 60_000, "x", now);
+  // listable but not searchable: readdir works, lstat of each entry fails
+  chmodSync(hold, 0o644);
+  try {
+    expect(liveHolds(hold, now)).toMatchObject([{ by: "?", reason: expect.stringContaining("(EACCES)") }]);
+  } finally {
+    chmodSync(hold, 0o1777);
+  }
+});
+
+test("a hold file too big to be one is not read whole: it holds as unreadable", () => {
+  const now = Date.now();
+  holdOn(hold, ME, now + 60_000, "x", now);
+  writeFileSync(join(hold, `${ME}.json`), JSON.stringify({ reason: "y".repeat(1 << 20), until: new Date(now + 60_000).toISOString() }));
+  expect(liveHolds(hold, now).map((h) => h.reason)).toEqual(["(its file cannot be read)"]);
+});
+
 test("--until takes minutes, hours, a clock time or an ISO time, up to a day ahead", () => {
   const now = Date.parse("2026-11-08T18:00:00Z");
   expect(parseUntil("30", now)).toEqual({ at: now + 30 * 60_000 });
