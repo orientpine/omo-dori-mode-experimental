@@ -105,6 +105,22 @@ test("a live terminal that holds a bridge's name but is no bridge (an hc lane na
   expect(stopped.calls).toEqual(["ls --all --json", "get --json t3"]);
 });
 
+test("an older finished terminal of another program under a bridge's name does not hide the live bridge listed after it (review 12 of #404)", async () => {
+  // Given: hc lists rows in terminal-id order, so the finished foreign t1 comes before the live bridge t2 that took its name
+  const rows = [
+    { name: "zzangdori", state: "finished", address: "t1", argv: ["/bin/sh", "-c", "exit 0"] },
+    { name: "zzangdori", state: "live", address: "t2", argv: ATTACH },
+  ];
+  // Then: start keeps the live bridge and starts no second one
+  const started = await bridgeWithFakeHc(rows);
+  expect(`${started.code} ${started.out}`).toBe("0 zzangdori: kept");
+  expect(started.calls.filter((c) => c.startsWith("run "))).toEqual([]);
+  // Then: stop ends and removes the live bridge t2 and leaves the foreign t1's record
+  const stopped = await bridgeWithFakeHc(rows, ["stop"], {}, { "run/herdr-core/default.sock": "" });
+  expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
+  expect(stopped.calls.filter((c) => /^(kill|rm) /.test(c))).toEqual(["kill t2", "rm t2"]);
+});
+
 test("a row whose full record cannot be read is taken for another terminal: start and stop leave it alone (review 11 of #404)", async () => {
   // Given: hc lists a live zzangdori, but hc get gives no record of it
   const row = { name: "zzangdori", state: "live", address: "t5" };

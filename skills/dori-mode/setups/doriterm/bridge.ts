@@ -59,13 +59,15 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
   const terminals = (JSON.parse(ls.out) as { terminals?: Terminal[] }).terminals ?? [];
   const results: string[] = [];
   for (const bridge of bridges) {
-    const found = terminals.find((t) => t.name === bridge.name);
-    const ours = found !== undefined && (await owned(runner, found, bridge.name));
-    if (found?.state === "live" && !ours) { results.push(heldBy(bridge, found)); continue; }
-    if (found?.state === "live") { results.push(`${bridge.name}: kept`); continue; }
-    // a finished foreign row keeps its record; its name is free for the bridge anyway
-    if (found && ours) {
-      const rm = await runner(["hc", "rm", found.address ?? bridge.name]);
+    // hc lists every record of a name, in terminal-id order: a finished record of another program may come before the live
+    // bridge that took its name, so the live holder decides (review 12 of #404)
+    const rows = terminals.filter((t) => t.name === bridge.name);
+    const live = rows.find((t) => t.state === "live");
+    if (live) { results.push((await owned(runner, live, bridge.name)) ? `${bridge.name}: kept` : heldBy(bridge, live)); continue; }
+    // a finished bridge's record is removed, a finished foreign one keeps its record; the name is free for the bridge anyway
+    for (const t of rows) {
+      if (!(await owned(runner, t, bridge.name))) continue;
+      const rm = await runner(["hc", "rm", t.address ?? bridge.name]);
       if (rm.code !== 0) throw new Error(`hc rm ${bridge.name} failed: ${rm.err || rm.out}`);
     }
     const started = await runner(["hc", "run", "--bg", "--no-parent", "--name", bridge.name, "--", ...bridgeCommand(bridge)]);
@@ -93,25 +95,27 @@ export async function stopBridges(runner: Runner, bridges: readonly Bridge[], sl
   if (ls.code !== 0) throw new Error(`hc ls failed: ${ls.err || ls.out}`);
   const terminals = (JSON.parse(ls.out) as { terminals?: Terminal[] }).terminals ?? [];
   const failed: string[] = [];
+  // every record of a bridge's name is looked at, since another program's older record may come first (review 12 of #404)
   for (const bridge of bridges) {
-    const found = terminals.find((t) => t.name === bridge.name);
-    if (!found || !(await owned(runner, found, bridge.name))) continue;
-    const target = found.address ?? bridge.name;
-    if (found.state === "live") {
-      const k = await runner(["hc", "kill", target]);
-      if (k.code !== 0 && kindOf(k) !== "not_found") {
-        failed.push(`hc kill ${bridge.name} failed: ${k.err || k.out}`);
-        continue;
+    for (const found of terminals.filter((t) => t.name === bridge.name)) {
+      if (!(await owned(runner, found, bridge.name))) continue;
+      const target = found.address ?? bridge.name;
+      if (found.state === "live") {
+        const k = await runner(["hc", "kill", target]);
+        if (k.code !== 0 && kindOf(k) !== "not_found") {
+          failed.push(`hc kill ${bridge.name} failed: ${k.err || k.out}`);
+          continue;
+        }
       }
-    }
-    for (let i = 1; ; i++) {
-      const r = await runner(["hc", "rm", target]);
-      if (r.code === 0 || kindOf(r) === "not_found") break;
-      if (kindOf(r) !== "live" || i >= RM_TRIES) {
-        failed.push(`hc rm ${bridge.name} failed: ${r.err || r.out}`);
-        break;
+      for (let i = 1; ; i++) {
+        const r = await runner(["hc", "rm", target]);
+        if (r.code === 0 || kindOf(r) === "not_found") break;
+        if (kindOf(r) !== "live" || i >= RM_TRIES) {
+          failed.push(`hc rm ${bridge.name} failed: ${r.err || r.out}`);
+          break;
+        }
+        await sleep(RM_WAIT_MS);
       }
-      await sleep(RM_WAIT_MS);
     }
   }
   if (failed.length) throw new Error(failed.join("; "));
