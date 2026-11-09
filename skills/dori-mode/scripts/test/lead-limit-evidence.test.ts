@@ -66,7 +66,7 @@ test("Q538 and other card answers leave waiting only when their session got them
   l.row(T0 - 20 * MIN, "q538", "", { kind: "answer", qid: "Q538", thread: "T-CARD", answer: "continue" });
   l.row(T0 - 19 * MIN, "q539", "", { kind: "answer", qid: "Q539", thread: "T-SECOND", answer: "second" });
   l.row(T0 - 18 * MIN, "q540", "", { kind: "answer", qid: "Q540", thread: "T-PENDING", answer: "pending" });
-  l.current(T0 - 15 * MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"qid":"Q538","answer":"continue"}</system-reminder>' });
+  l.current(T0 - 15 * MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: `<system-reminder>{"kind":"answer","qid":"Q538","id":"q538","ts":"${iso(T0 - 20 * MIN)}","answer":"continue"}</system-reminder>` });
   l.sendCall(T0 - 14 * MIN, { id: "send-q539", to: "T-SECOND", qid: "Q539" })("153000000000000001");
   const deps = { ...l.deps(T0), answeredCards: () => [card("Q538", T0 - 20 * MIN, "T-CARD"), card("Q539", T0 - 19 * MIN, "T-SECOND"), card("Q540", T0 - 18 * MIN, "T-PENDING")] };
   expect(await watchTick(deps)).toEqual([
@@ -106,6 +106,7 @@ test("a receipt counts only from the send's own tool result or detached cell", (
     { name: "another tool quoting the pending id", expected: false, entries: [directCall("c1", directCommand), directResult("read-log", "Previously observed: c1 SENT 153000000000000001")] },
     { name: "another detached cell quoting the pending id", expected: false, entries: [directCall("c1", directCommand), directDetached("read-log", "Previously observed: c1 SENT 153000000000000001")] },
     { name: "a log-search tool quoting the command and receipt", expected: false, entries: [directCall("c1", directCommand, "grep"), directResult("c1", "SENT 153000000000000001")] },
+    { name: "a bash log search executing grep", expected: false, entries: [directCall("c1", `grep -F '${directCommand}' logfile`, "bash"), directResult("c1", "SENT 153000000000000001")] },
     { name: "the send's own tool result", expected: true, entries: [directCall("c1", directCommand), directResult("c1", "SENT 153000000000000001")] },
     { name: "the send's own detached completion including a pipe in its cell id", expected: true, entries: [directCall("call_c1|fc_1", directCommand), directDetached("call_c1|fc_1", "SENT 153000000000000001")] },
   ];
@@ -117,6 +118,8 @@ test("one eval's second send cannot validate its failed first reply", () => {
   expect(directAnswered([directCall("c1", both), directResult("c1", "first command FAILED; second command SENT 153000000000000001")])).toBe(false);
   const threadDone = `${directCommand}; dori thread done discord:done-thread --text other`;
   expect(directAnswered([directCall("c1", threadDone), directResult("c1", "first command FAILED; thread done POSTED 153000000000000001")])).toBe(false);
+  const arrayDone = `${directCommand}; Bun.spawn(["dori", "thread", "done", "discord:done-thread", "done"])`;
+  expect(directAnswered([directCall("c1", arrayDone), directResult("c1", "first command FAILED; done POSTED 153000000000000001")])).toBe(false);
 });
 
 test("an argv-array Discord reply uses its matching receipt", () => {
@@ -196,8 +199,10 @@ test("a reopened card needs its own later answer delivery, not the previous answ
   world.screen = watching("5: Dori inbox");
   l.startCurrent();
   l.row(T0 - 20 * MIN, "old-answer", "", { kind: "answer", qid: "Q1", thread: "T-CARD", answer: "first" });
-  l.current(T0 - 19 * MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"qid":"Q1","id":"old-answer","ts":"2026-01-01T11:40:00.000Z"}</system-reminder>' });
+  l.current(T0 - 19 * MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"kind":"answer","qid":"Q1","id":"old-answer","ts":"2026-01-01T11:40:00.000Z"}</system-reminder>' });
   l.row(T0 - 15 * MIN, "new-answer", "", { kind: "answer", qid: "Q1", thread: "T-CARD", answer: "second" });
+  l.current(T0 - 14 * MIN, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Still waiting for Q1" }] } });
+  l.current(T0 - 13 * MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"kind":"answer","qid":"Q1","id":"old-answer","ts":"2026-01-01T11:40:00.000Z"}</system-reminder>' });
   const deps = { ...l.deps(T0), answeredCards: () => [card("Q1", T0 - 15 * MIN, "T-CARD")] };
   expect(await watchTick(deps)).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 15 * MIN)} (15 min); woke the lead (SUBMITTED)`]);
   l.current(T0 - MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"qid":"Q1","id":"new-answer","ts":"2026-01-01T11:55:00.000Z"}</system-reminder>' });

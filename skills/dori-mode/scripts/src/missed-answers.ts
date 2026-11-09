@@ -43,9 +43,15 @@ export const answerLine = (q: Question): string =>
 export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow): boolean => {
   if (!row) return new RegExp(`\\\\*"qid\\\\*"\\s*:\\s*\\\\*"${qid}\\\\*"`).test(transcript) || transcript.includes(`[DORI] ANSWER ${qid} (`);
   return transcript.split("\n").some((line) => {
-    if (!line.includes(qid)) return false; if (row.id && line.includes(row.id)) return true;
-    const times = [...line.matchAll(/"(?:ts|timestamp|answeredAt)":"([^"]+)"/g)].map((match) => Date.parse(match[1] ?? "")), redelivered = line.match(new RegExp(`\\[DORI\\] ANSWER ${qid} \\([^,]+, ([^)]+)\\)`))?.[1];
-    return times.some((at) => at >= row.at) || (redelivered !== undefined && Date.parse(redelivered) >= row.at);
+    if (!line.includes(qid)) return false;
+    const incoming = /\\*"kind\\*"\s*:\s*\\*"answer\\*"/.test(line);
+    if (incoming) {
+      if (row.id && line.includes(row.id)) return true;
+      const at = Date.parse(line.match(/\\*"(?:ts|answeredAt)\\*"\s*:\s*\\*"([^"\\]+)\\*"/)?.[1] ?? "");
+      return at >= row.at;
+    }
+    const redelivered = line.match(new RegExp(`\\[DORI\\] ANSWER ${qid} \\([^,]+, ([^)]+)\\)`))?.[1];
+    return redelivered !== undefined && Date.parse(redelivered) >= row.at;
   });
 };
 
@@ -59,10 +65,7 @@ const sessionName = (path: string): string | undefined => {
     let name: string | undefined;
     for (const line of buffer.toString("utf8", 0, bytes).split("\n")) {
       if (!line.includes('"type":"session_info"')) continue;
-      try {
-        const entry = JSON.parse(line) as { name?: string };
-        if (entry.name) name = entry.name;
-      } catch {}
+      try { const entry = JSON.parse(line) as { name?: string }; if (entry.name) name = entry.name; } catch {}
     }
     return name;
   } finally {
@@ -72,27 +75,20 @@ const sessionName = (path: string): string | undefined => {
 
 export const currentTranscript = (path: string, title: string): string => {
   if (!title) return readFileSync(path, "utf8");
-  const dir = dirname(path);
-  const name = readdirSync(dir).filter((n) => SESSION_FILE.test(n)).sort().reverse().find((n) => sessionName(join(dir, n)) === title);
-  return readFileSync(name ? join(dir, name) : path, "utf8");
-};
+  const dir = dirname(path), name = readdirSync(dir).filter((n) => SESSION_FILE.test(n)).sort().reverse().find((n) => sessionName(join(dir, n)) === title);
+  return readFileSync(name ? join(dir, name) : path, "utf8"); };
 
 export type AnswerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly qid?: string; readonly thread?: string };
 type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string> };
 type SendCall = SendSpec & { readonly id: string; readonly at: number; sent: boolean };
 
-const flagValue = (args: readonly unknown[], name: string): string | undefined => {
-  const at = args.indexOf(name);
-  const value = at < 0 ? undefined : args[at + 1];
-  return typeof value === "string" ? value : undefined;
-};
+const flagValue = (args: readonly unknown[], name: string): string | undefined => { const at = args.indexOf(name), value = at < 0 ? undefined : args[at + 1]; return typeof value === "string" ? value : undefined; };
 const qidsIn = (text: string): ReadonlySet<string> => new Set((text.match(/\bq\d+\b/gi) ?? []).map((q) => q.toUpperCase()));
 const specFromArgv = (argv: readonly unknown[]): SendSpec | undefined => {
   if (argv[0] !== "dori") return undefined;
   const to = argv[1] === "send" && argv[2] === "discord" ? flagValue(argv, "--thread") ?? flagValue(argv, "--to") : argv[1] === "thread" && argv[2] === "reply" && typeof argv[3] === "string" && argv[3].startsWith("discord:") ? flagValue(argv, "--thread") ?? argv[3].slice("discord:".length) : undefined;
   if (!to) return undefined; const reply = flagValue(argv, "--reply");
-  return { to, ...(reply ? { reply } : {}), qids: qidsIn(argv.filter((part) => typeof part === "string").join(" ")) };
-};
+  return { to, ...(reply ? { reply } : {}), qids: qidsIn(argv.filter((part) => typeof part === "string").join(" ")) }; };
 const specFromShell = (command: string): SendSpec | undefined => {
   const ends = [command.length, ...[...command.matchAll(/['";|&]/g)].map((match) => match.index ?? -1).filter((at) => at > 0)].sort((a, b) => b - a);
   const args = ends.map((end) => shellWords(command.slice(0, end))).find((words) => words) ?? shellWords(command);
@@ -121,14 +117,16 @@ const specsFromText = (text: string): SendSpec[] => {
   }
   const starts = [...text.matchAll(/\bdori send discord\b|\bdori thread reply discord:[\w-]+/g)].map((match) => match.index ?? -1).filter((at) => at >= 0);
   starts.forEach((at, i) => {
+    const before = text.slice(0, at), segment = before.split(/[;|&]/).at(-1) ?? "";
+    if (/\b(?:grep|rg|cat|head|tail|sed|awk|find|strings)\b/.test(segment)) return;
     const spec = specFromShell(text.slice(at, starts[i + 1] ?? text.length));
     if (spec) out.push(spec);
   });
   return out;
 };
 const sendSpecs = (value: unknown): SendSpec[] => {
-  if (typeof value === "string") return [...specsFromText(value), ...(/\bdori thread (?:done|wait)\b/.test(value) ? [{ to: "", qids: new Set<string>() }] : [])];
-  if (Array.isArray(value)) { const direct = specFromArgv(value); return direct ? [direct] : value.flatMap(sendSpecs); }
+  if (typeof value === "string") return [...specsFromText(value), ...(/\bdori thread (?:done|wait)\b/.test(value) || /["']dori["']\s*,\s*["']thread["']\s*,\s*["'](?:done|wait)["']/.test(value) ? [{ to: "", qids: new Set<string>() }] : [])];
+  if (Array.isArray(value)) { if (value[0] === "dori" && value[1] === "thread" && ["done", "wait"].includes(String(value[2]))) return [{ to: "", qids: new Set<string>() }]; const direct = specFromArgv(value); return direct ? [direct] : value.flatMap(sendSpecs); }
   if (value && typeof value === "object") return Object.values(value).flatMap(sendSpecs); return [];
 };
 
