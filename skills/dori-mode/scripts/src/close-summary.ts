@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { ChallengeError, checkReviewers } from "./challenge.ts";
-import { fill, type OwnerSpeech, ownerSpeechOf } from "./config.ts";
+import { type OwnerSpeech, ownerSpeechOf, runWithPrompt } from "./config.ts";
 import { literalNewlineProblem } from "./messenger/literal-newline.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Lane } from "./registry.ts";
@@ -137,7 +137,7 @@ export const ownerSummary = async (deps: FlowDeps, lane: Lane, given: string | u
       problems.push(`${c.listed}: ${c.note}`);
       continue;
     }
-    const r = await deps.run(fill(cfg.command, { model: c.call, prompt, system: SUMMARY_SYSTEM }), { timeoutMs: cfg.minutes * 60_000 });
+    const r = await runWithPrompt(deps.run, cfg.command, { model: c.call, prompt, system: SUMMARY_SYSTEM }, { timeoutMs: cfg.minutes * 60_000 });
     const text = r.code === 0 ? parseSummary(r.out) : undefined;
     const p = text === undefined ? (r.code !== 0 ? `exit ${r.code} ${r.err.split("\n").find((l) => l.trim())?.slice(0, 120) ?? ""}` : "no SUMMARY block") : plainSummaryProblem(text, locale, ownerSpeech);
     if (text !== undefined && !p) return { text, source: `model ${c.call}` };

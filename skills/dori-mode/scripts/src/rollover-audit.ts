@@ -22,7 +22,7 @@ import { closeFrozen, readFrozen } from "./frozen.ts";
 import { basename, dirname, join } from "node:path";
 
 import { ChallengeError, checkReviewers, reviewerOrder, reviewers } from "./challenge.ts";
-import { fill } from "./config.ts";
+import { runWithPrompt } from "./config.ts";
 import { laneDirectiveWords } from "./directive-audit.ts";
 import { endedWatch } from "./handover-monitors.ts";
 import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest, sameCommand } from "./handover.ts";
@@ -331,7 +331,7 @@ export const reviewerClassify = (deps: LaneHandoverDeps): Classify => async (ite
       failures.push(`${c.listed}: ${c.note}`);
       continue;
     }
-    const r = await deps.run(fill(cfg.command, { model: c.call, prompt, system: CLASSIFY_SYSTEM }), { timeoutMs: cfg.minutes * 60_000 });
+    const r = await runWithPrompt(deps.run, cfg.command, { model: c.call, prompt, system: CLASSIFY_SYSTEM }, { timeoutMs: cfg.minutes * 60_000 });
     cost.calls++;
     cost.chars += prompt.length + CLASSIFY_SYSTEM.length + r.out.length;
     const got = r.code === 0 ? parseVerdicts(r.out, items.length) : [];

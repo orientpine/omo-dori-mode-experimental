@@ -2,7 +2,7 @@ import { join } from "node:path";
 
 import { readLeadRelays, readReports, laneSessionFiles, type ReportLine } from "./auto-signals.ts";
 import { ChallengeError, checkReviewers, familyOf, reviewerOrder, reviewers } from "./challenge.ts";
-import { fill } from "./config.ts";
+import { fill, runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { stuckContext } from "./explore.ts";
 import { sendVerified } from "./panes.ts";
@@ -353,7 +353,7 @@ export const runIntentCheck = async (deps: FlowDeps, lane: Lane, opts: { readonl
       failures.push(`${c.listed}: ${c.note}`);
       continue;
     }
-    const r = await deps.run(fill(rev.command, { model: c.call, prompt, system: OWNER_SYSTEM }), { timeoutMs: rev.minutes * 60_000 });
+    const r = await runWithPrompt(deps.run, rev.command, { model: c.call, prompt, system: OWNER_SYSTEM }, { timeoutMs: rev.minutes * 60_000 });
     const answer = r.code === 0 ? parseOwnerReply(r.out, `${ownerSource}\n${brief}`, reportSource)?.map((f) => claimCheck(f, lane)) : undefined;
     if (!answer) {
       failures.push(`${c.call}: ${r.code !== 0 ? exitNote(r) : "no VERDICT line"}; ${keepReviewerOutput(deps.config.stateDir, `intent-check-${lane.key}`, r.out)}`);
