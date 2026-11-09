@@ -28,10 +28,12 @@ export async function* readerLines(reader: Reader): AsyncGenerator<string> {
 // done (the children's exits and the reads of their pipes) or the deadline (ms, or a promise), whichever comes first.
 // Then every reader is cancelled (what is not read by then is not wanted, and a descendant may still hold the pipe), and
 // when the deadline came first the children not ended are killed and let go (unref), so nothing of them keeps this
-// process alive. true when done came first. A deadline in ms is a timer cleared once settled.
+// process alive. true when done came first. A deadline in ms is a timer cleared once settled, that never keeps this
+// process alive itself
 export const settle = async (kids: readonly Bun.Subprocess[], readers: readonly Reader[], done: Promise<unknown>, deadline: number | Promise<unknown>): Promise<boolean> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = typeof deadline === "number" ? new Promise<void>((r) => (timer = setTimeout(r, deadline))) : deadline;
+  timer?.unref();
   const ended = await Promise.race([done.then(() => true, () => true), late.then(() => false)]);
   clearTimeout(timer);
   for (const r of readers) void r.cancel().catch(() => undefined);
@@ -64,4 +66,12 @@ export const firstAnswer = async (p: Bun.Subprocess<"pipe", "pipe", "pipe">, lin
 export const letGo = async (p: Bun.Subprocess<"pipe", "pipe", "pipe">, reader: Reader, grace: number): Promise<void> => {
   await p.stdin.end();
   await settle([p], [reader], p.exited, grace);
+};
+
+// after settle gave up on a stale run's children: HEAVY_STALE_LEFT names those not ended (stuck where
+// SIGKILL does not reach, as a read in uninterruptible disk I/O) or the pipes still held; true when something was left
+export const staleLeft = (kids: readonly Bun.Subprocess[], ended: boolean, log: (line: string) => void, who: string, graceMs: number): boolean => {
+  const left = kids.filter((x) => x.exitCode === null && x.signalCode === null);
+  if (!ended) log(`HEAVY_STALE_LEFT ${who}: ${graceMs / 1000} s after the stale verdict ${left.length ? `pid ${left.map((x) => x.pid).join(",")} not ended` : "its pipes are still held"}; dori heavy ends without waiting on them`);
+  return !ended;
 };

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { TarError } from "./heavy-job.ts";
 import type { SpreadJob } from "./heavy-spread.ts";
-import { killAlive } from "./heavy-settle.ts";
+import { killAlive, readerLines, settle } from "./heavy-settle.ts";
 
 // The caller's upload to a helper (heavy-spread.ts startExec).
 
@@ -34,4 +34,22 @@ export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+};
+
+// the bytes of the --sync paths, for HEAVY_SYNC: du -sbc, 30 s at most (a stalled file system answers nothing), else 0
+// (unknown); ended with the run (cut), never waited on before the run's stale watch exists
+export const syncBytes = async (paths: readonly string[], cut: Promise<unknown>, waitMs = 30_000): Promise<number> => {
+  const have = paths.filter((s) => existsSync(s));
+  if (!have.length) return 0;
+  const p = Bun.spawn(["du", "-sbc", ...have], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const reader = p.stdout.getReader();
+  let last = "";
+  const read = (async () => {
+    for await (const l of readerLines(reader)) last = l;
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = Promise.race([cut, new Promise<void>((r) => (timer = setTimeout(r, waitMs).unref()))]);
+  const ok = await settle([p], [reader], Promise.all([read, p.exited]), late);
+  clearTimeout(timer);
+  return ok ? Number(last.split(/\s/)[0]) || 0 : 0;
 };

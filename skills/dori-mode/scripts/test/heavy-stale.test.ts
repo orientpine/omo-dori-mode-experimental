@@ -118,6 +118,25 @@ test("a helper that connects and never answers the admission is down after stale
   }
 }, 30_000);
 
+test("--helpers-only --stale-again waits out the stale helper's pause and runs the job there again, not exit 2", async () => {
+  // Given: the only helper goes silent on its first run and runs the job on its second; the clock jumps past the
+  // 10-minute pause on a stale helper at the first wait after the job is back in the line
+  const calls = join(state.dir, "calls");
+  const ssh = ["sh", "-c", `if [ "$1" = stop ]; then echo "WORKER_STOPPED 1" >&2; exit 0; fi; echo x >> ${calls}; if [ "$(wc -l < ${calls})" -eq 1 ]; then echo "WORKER_ADMIT slot.1 alive=0.1 run=1-abc" >&2; cat > /dev/null; exec sleep 600; fi; echo "WORKER_ADMIT slot.1 run=2-abc" >&2; cat > /dev/null; tar -cf - -T /dev/null; echo "WORKER_EXIT 0" >&2`, "once"];
+  const ctx = ctxWith({ helpers: [{ name: "once", ssh }] });
+  let skew = 0;
+  let stale = false;
+  const log = ctx.deps.log!;
+  const sleep = ctx.deps.clock.sleep;
+  const jumping = { ...ctx, deps: { ...ctx.deps, clock: { now: () => Date.now() + skew, sleep: (ms: number) => { if (stale) skew = 11 * 60_000; return sleep(ms); } }, log: (l: string) => { log(l); if (l.startsWith("HEAVY_HELPER_STALE")) stale = true; } } };
+  // When
+  const r = await spread(jumping, ["true"], { helpersOnly: true, staleAgain: true });
+  // Then
+  expect(r).toEqual({ code: 0 });
+  expect(logs.filter((l) => /^HEAVY_(SPREAD|HELPER_STALE|DONE) /.test(l)).map((l) => l.split(":")[0])).toEqual(["HEAVY_SPREAD t once", "HEAVY_HELPER_STALE t once", "HEAVY_SPREAD t once", "HEAVY_DONE t once"]);
+  expect(logs.some((l) => l.includes("no helper can run it"))).toBe(false);
+}, 30_000);
+
 test("a helper that admits the job but takes no bytes of its upload is stale even without a heartbeat", async () => {
   // Given: 8 MB to send, more than the pipes hold, and a helper that never reads it
   writeFileSync(join(work, "big.bin"), Buffer.alloc(8e6, 1));

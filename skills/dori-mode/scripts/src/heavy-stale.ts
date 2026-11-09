@@ -24,13 +24,6 @@ export const STALE_GRACE_MS = 5_000;
 // stale: the run ended for no sign of life; abandoned: what it started had not all ended STALE_GRACE_MS after that
 export type Stale = { readonly stale: string; readonly abandoned: boolean };
 
-// after settle (heavy-settle.ts) gave up on a stale run's children: HEAVY_STALE_LEFT names those not ended (stuck where
-// SIGKILL does not reach, as a read in uninterruptible disk I/O) or the pipes still held; true when something was left
-export const staleLeft = (kids: readonly Bun.Subprocess[], ended: boolean, log: (line: string) => void, who: string): boolean => {
-  const left = kids.filter((x) => x.exitCode === null && x.signalCode === null);
-  if (!ended) log(`HEAVY_STALE_LEFT ${who}: ${STALE_GRACE_MS / 1000} s after the stale verdict ${left.length ? `pid ${left.map((x) => x.pid).join(",")} not ended` : "its pipes are still held"}; dori heavy ends without waiting on them`);
-  return !ended;
-};
 const SYNC_LOG_MS = 5 * 60_000;
 // the file in a helper run's job folder naming its caller and label, as `stop <label>` matches them
 const WHO = "who";
@@ -51,8 +44,15 @@ type Watch = { readonly sent: (bytes: number) => void; readonly heard: () => voi
 
 // The caller's watch on one helper run: sent() for bytes the helper took, heard() for a line from it, synced() once the
 // upload is over. stale resolves with why the run is stale; stop() ends the watch.
-export const staleWatch = (o: { readonly label: string; readonly helper: string; readonly total: number; readonly staleMs: number; readonly aliveSec?: number; readonly now: () => number; readonly log: (l: string) => void }): Watch => {
+export const staleWatch = (o: { readonly label: string; readonly helper: string; readonly total: (stopped: Promise<unknown>) => Promise<number>; readonly staleMs: number; readonly aliveSec?: number; readonly now: () => number; readonly log: (l: string) => void }): Watch => {
   const start = o.now();
+  // the upload's size comes when du answers (heavy-send.ts syncBytes), the first HEAVY_SYNC line with it or the first byte
+  let total = 0;
+  let stopped: () => void = () => {};
+  void o.total(new Promise<void>((r) => (stopped = r))).then((n) => {
+    total = n;
+    if (!first && !opened && syncing && shown()) open();
+  });
   let last = start;
   let logged = start;
   let sent = 0;
@@ -62,27 +62,32 @@ export const staleWatch = (o: { readonly label: string; readonly helper: string;
   const line = () => {
     const sec = Math.max(1, (o.now() - start) / 1000);
     const rate = sent / sec;
-    const left = rate > 0 && o.total > sent ? `, about ${Math.ceil((o.total - sent) / rate / 60)} min left` : "";
-    o.log(`HEAVY_SYNC ${o.label} ${mb(sent)}/${mb(o.total)} MB to ${o.helper}, ${(rate / 1e6).toFixed(2)} MB/s${left}`);
+    const left = rate > 0 && total > sent ? `, about ${Math.ceil((total - sent) / rate / 60)} min left` : "";
+    o.log(`HEAVY_SYNC ${o.label} ${mb(sent)}/${mb(total)} MB to ${o.helper}, ${(rate / 1e6).toFixed(2)} MB/s${left}`);
   };
   // a job of less than 1 MB goes in a moment: no HEAVY_SYNC lines for it
-  const shown = o.total >= 1e6;
+  const shown = (): boolean => total >= 1e6;
   let first = true;
+  let opened = false;
+  const open = (): void => {
+    opened = true;
+    line();
+  };
   // a heartbeat that comes less often than staleMin would make a live run look stale: three missed beats at the least
   const quietMs = Math.max(o.staleMs, 3 * (o.aliveSec ?? 0) * 1000);
   const tick = setInterval(() => {
     const now = o.now();
-    if (syncing && shown && now - logged >= SYNC_LOG_MS) {
+    if (syncing && shown() && now - logged >= SYNC_LOG_MS) {
       logged = now;
       line();
     }
     const min = ((now - last) / 60_000).toFixed(1);
-    if (syncing && now - last >= o.staleMs) fire(`it took no bytes for ${min} min (${mb(sent)}/${mb(o.total)} MB sent)`);
+    if (syncing && now - last >= o.staleMs) fire(`it took no bytes for ${min} min (${mb(sent)}/${mb(total)} MB sent)`);
     else if (!syncing && o.aliveSec !== undefined && now - last >= quietMs) fire(`no word from it for ${min} min after the upload (it beats every ${o.aliveSec} s)`);
   }, Math.max(50, Math.min(30_000, o.staleMs / 4)));
   return {
     sent: (n) => {
-      if (first && shown) line();
+      if (first && shown()) open();
       first = false;
       sent += n;
       if (syncing) last = o.now();
@@ -94,9 +99,12 @@ export const staleWatch = (o: { readonly label: string; readonly helper: string;
       if (!syncing) return;
       syncing = false;
       last = o.now();
-      if (shown) line();
+      if (shown()) line();
     },
-    stop: () => clearInterval(tick),
+    stop: () => {
+      clearInterval(tick);
+      stopped();
+    },
     stale,
   };
 };

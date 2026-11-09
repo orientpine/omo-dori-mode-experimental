@@ -9,9 +9,9 @@ import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
-import { sendTar } from "./heavy-send.ts";
-import { firstAnswer, killAlive, letGo, readerLines, settle } from "./heavy-settle.ts";
-import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleLeft, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
+import { sendTar, syncBytes } from "./heavy-send.ts";
+import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
+import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
 
@@ -269,7 +269,7 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
   }
   const stop = onStop(() => p.kill("SIGKILL"));
   const aliveSec = aliveOf(verdict?.[2] ?? "");
-  const watch = staleWatch({ label: job.label, helper: h.name, total: plan.sync.reduce((a, s) => a + (existsSync(s) ? duBytes(s) : 0), 0), staleMs, ...(aliveSec ? { aliveSec } : {}), now: () => ctx.deps.clock.now(), log: (l) => ctx.deps.log?.(l) });
+  const watch = staleWatch({ label: job.label, helper: h.name, total: (cut) => syncBytes(plan.sync, cut), staleMs, ...(aliveSec ? { aliveSec } : {}), now: () => ctx.deps.clock.now(), log: (l) => ctx.deps.log?.(l) });
   let stale: string | undefined;
   const kids: Bun.Subprocess[] = [p];
   void watch.stale.then((why) => {
@@ -313,7 +313,7 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
     stop();
     watch.stop();
     try {
-      if (stale !== undefined) return { stale, abandoned: staleLeft(kids, ended, (l) => ctx.deps.log?.(l), `${job.label} ${h.name}`) };
+      if (stale !== undefined) return { stale, abandoned: staleLeft(kids, ended, (l) => ctx.deps.log?.(l), `${job.label} ${h.name}`, STALE_GRACE_MS) };
       if (sent < 0 || code !== 0 || exit === undefined || ucode !== 0) return null;
       const n = copyBack(back, plan.sync);
       ctx.deps.log?.(`HEAVY_BACK ${job.label} ${h.name}: sent ${sent} bytes, ${n.files} file(s) ${n.bytes} bytes back${n.skipped ? `, ${n.skipped} skipped (outside --sync or through a link)` : ""}`);
@@ -360,7 +360,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
   const end = <R extends { readonly slot: string } | { readonly code: number }>(r: R): SpreadResult => (abandoned ? { ...r, abandoned } : r);
   for (;;) {
     if (!run) {
-      const got = await acquire<Started | "nowhere">(ctx.deps, job.label, { since, elsewhere: async (why) => (await helpers(100, why)) ?? (job.helpersOnly && refused.all(ctx.q.helpers.map((x) => x.name)) ? "nowhere" : null), ...(job.helpersOnly ? { helpersOnly: true } : { nowhere: () => refused.all(ctx.q.helpers.map((x) => x.name)) }), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
+      const got = await acquire<Started | "nowhere">(ctx.deps, job.label, { since, elsewhere: async (why) => (await helpers(100, why)) ?? (job.helpersOnly && refused.final(ctx.q.helpers.map((x) => x.name)) ? "nowhere" : null), ...(job.helpersOnly ? { helpersOnly: true } : { nowhere: () => refused.all(ctx.q.helpers.map((x) => x.name)) }), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
       if ("slot" in got || got.elsewhere === "nowhere") return "slot" in got ? end({ slot: got.slot }) : end({ code: 2 });
       run = got.elsewhere;
     }

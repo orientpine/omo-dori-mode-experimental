@@ -128,6 +128,23 @@ test("a helper that turns the job away and leaves a child holding its stderr doe
   }
 }, 30_000);
 
+test("a size check (du) that blocks on the --sync folders does not keep the run from its stale verdict", async () => {
+  // Given: a du first on PATH that never answers (a stalled file system), and a helper that admits the job and goes silent
+  const bin = join(state.dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "du"), "#!/bin/sh\nexec sleep 597\n", { mode: 0o755 });
+  try {
+    // When
+    const p = caller("mute", silentHelper("mute", "WORKER_ADMIT slot.1 alive=0.1 run=1-abc", "cat > /dev/null; exec sleep 600"), STALE_MIN, bin);
+    const [code, err] = await Promise.all([p.exited, new Response(p.stderr).text()]);
+    // Then
+    expect(code).toBe(124);
+    expect(err).toContain("HEAVY_HELPER_STALE t mute");
+  } finally {
+    Bun.spawnSync(["pkill", "-f", "^sleep 597"]);
+  }
+}, 30_000);
+
 test("a stale verdict signals only a child that has not ended, never one already done (its pid may be another's by then)", async () => {
   // Given: one child that ended (an upload tar long finished) and one still running
   const done = Bun.spawn(["true"]);
