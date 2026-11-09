@@ -17,13 +17,16 @@ type Terminal = { readonly name?: string; readonly state?: string; readonly addr
 // A bridge runs attach.sh; a name is held by whatever terminal has it now (hc resolves a name to its live holder), so a
 // Dori lane named like a bridge is never taken for one (review 10 of #404). hc 0.1.18's ls leaves argv out, so each row of
 // a bridge's name is read in full with hc get; only a record whose argv runs attach.sh is a bridge, and a record that cannot
-// be read is another terminal's (review 11 of #404).
-async function owned(runner: Runner, t: Terminal, name: string): Promise<boolean> {
-  const got = await runner(["hc", "get", "--json", t.address ?? name]);
+// be read is another terminal's (review 11 of #404). A bridge is the terminal whose argv is exactly the bridge's own command
+// (bridgeCommand: this checkout's attach.sh and that bridge's account): a file merely called attach.sh, another account's
+// attach or an attach.sh of another checkout is another terminal's (dori challenge on plan-r13 of #404).
+async function owned(runner: Runner, t: Terminal, bridge: Bridge): Promise<boolean> {
+  const got = await runner(["hc", "get", "--json", t.address ?? bridge.name]);
   if (got.code !== 0) return false;
   try {
     const argv = (JSON.parse(got.out) as Terminal).argv;
-    return Array.isArray(argv) && argv.some((a) => typeof a === "string" && a.endsWith("/attach.sh"));
+    const want = bridgeCommand(bridge);
+    return Array.isArray(argv) && argv.length === want.length && want.every((a, i) => argv[i] === a);
   } catch {
     return false;
   }
@@ -63,10 +66,10 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
     // bridge that took its name, so the live holder decides (review 12 of #404)
     const rows = terminals.filter((t) => t.name === bridge.name);
     const live = rows.find((t) => t.state === "live");
-    if (live) { results.push((await owned(runner, live, bridge.name)) ? `${bridge.name}: kept` : heldBy(bridge, live)); continue; }
+    if (live) { results.push((await owned(runner, live, bridge)) ? `${bridge.name}: kept` : heldBy(bridge, live)); continue; }
     // a finished bridge's record is removed, a finished foreign one keeps its record; the name is free for the bridge anyway
     for (const t of rows) {
-      if (!(await owned(runner, t, bridge.name))) continue;
+      if (!(await owned(runner, t, bridge))) continue;
       const rm = await runner(["hc", "rm", t.address ?? bridge.name]);
       if (rm.code !== 0) throw new Error(`hc rm ${bridge.name} failed: ${rm.err || rm.out}`);
     }
@@ -98,7 +101,7 @@ export async function stopBridges(runner: Runner, bridges: readonly Bridge[], sl
   // every record of a bridge's name is looked at, since another program's older record may come first (review 12 of #404)
   for (const bridge of bridges) {
     for (const found of terminals.filter((t) => t.name === bridge.name)) {
-      if (!(await owned(runner, found, bridge.name))) continue;
+      if (!(await owned(runner, found, bridge))) continue;
       const target = found.address ?? bridge.name;
       if (found.state === "live") {
         const k = await runner(["hc", "kill", target]);

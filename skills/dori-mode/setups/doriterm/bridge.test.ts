@@ -121,6 +121,26 @@ test("an older finished terminal of another program under a bridge's name does n
   expect(stopped.calls.filter((c) => /^(kill|rm) /.test(c))).toEqual(["kill t2", "rm t2"]);
 });
 
+test("only the exact bridge command is a bridge: an unrelated attach.sh or another account's attach is left alone (dori challenge on plan-r13 of #404)", async () => {
+  // Given: zzangdori held by an unrelated program that happens to run a file called attach.sh, okdori held by the attach of
+  // another account
+  const rows = [
+    { name: "zzangdori", state: "live", address: "t1", argv: ["/bin/sh", "/tmp/unrelated/attach.sh"] },
+    { name: "okdori", state: "live", address: "t2", argv: [...ATTACH, "moodori"] },
+  ];
+  const env = { DORITERM_BRIDGES: "zzangdori okdori:okdori" };
+  // Then: start names both as another terminal's and runs nothing; stop on a running core kills and removes nothing
+  const started = await bridgeWithFakeHc(rows, [], env);
+  expect(started.out.split("\n")).toEqual([
+    "zzangdori: the name is held by another terminal (t1), not a bridge; left alone",
+    "okdori: the name is held by another terminal (t2), not a bridge; left alone",
+  ]);
+  expect(started.calls.filter((c) => /^(run|kill|rm) /.test(c))).toEqual([]);
+  const stopped = await bridgeWithFakeHc(rows, ["stop"], env, { "run/herdr-core/default.sock": "" });
+  expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
+  expect(stopped.calls.filter((c) => /^(kill|rm) /.test(c))).toEqual([]);
+});
+
 test("a row whose full record cannot be read is taken for another terminal: start and stop leave it alone (review 11 of #404)", async () => {
   // Given: hc lists a live zzangdori, but hc get gives no record of it
   const row = { name: "zzangdori", state: "live", address: "t5" };
