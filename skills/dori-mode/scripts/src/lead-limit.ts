@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { liveSessions, sessionFor } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { unansweredRows, type AnswerRow } from "./missed-answers.ts";
+import { currentTranscript, unansweredRows, type AnswerRow } from "./missed-answers.ts";
 import { sendVerified } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
@@ -115,15 +115,15 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   const mark = readMark(deps, pane);
   if (!rows.length && !mark.noticeFor) return [];
   const [sessions, table] = await Promise.all([liveSessions(deps.run), procTable(deps.run)]);
-  const cwd = sessionFor(sessions, pane)?.path;
-  const file = cwd ? await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, table) : undefined;
+  const session = sessionFor(sessions, pane), file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table) : undefined;
   if (!file) return [];
-  const { replies, firstAt } = recentReplies(readFileSync(file.path, "utf8"));
+  const title = session?.title ?? "", transcript = currentTranscript(file.path, session?.title ?? "");
+  const { replies, firstAt } = recentReplies(transcript);
   const lastGood = replies.findLast((r) => !r.error)?.at ?? (Number.isNaN(firstAt) ? 0 : firstAt);
   const errors = replies.filter((r) => r.error && r.at > lastGood);
   const blocked = errors.length > 0;
   const until = blocked ? retryAt(errors.at(-1)?.error ?? "") : undefined;
-  const waiting = await unansweredRows({ rows: rows.filter((r) => r.at > lastGood), cards: deps.answeredCards?.() ?? [], lead: { pane, path: file.path, title: sessionFor(sessions, pane)?.title ?? "" }, sessions, table, deps });
+  const waiting = await unansweredRows({ rows, cards: deps.answeredCards?.() ?? [], lead: { pane, path: file.path, title, text: transcript }, sessions, table, deps });
   const out: string[] = [];
   let next: LimitMark = mark;
   const save = (m: LimitMark): void => {

@@ -46,14 +46,15 @@ const limitWorld = () => {
     ownerInbox: { path: inbox, ownerId: OWNER, ownerChannel: "C-OWNER" },
   });
   const row = (ms: number, id: string, content: string, extra: object = {}) => appendFileSync(inbox, `${JSON.stringify({ ts: iso(ms), id, channel_id: "T-THREAD", scope: "thread", author_id: OWNER, content, ...extra })}\n`);
-  const reply = (ms: number) => appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), type: "message", message: { role: "assistant", content: [], stopReason: "stop" } })}\n`);
+  const reply = (ms: number, errorMessage?: string) => appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), type: "message", message: { role: "assistant", content: [], ...(errorMessage ? { stopReason: "error", errorMessage } : { stopReason: "stop" }) } })}\n`);
+  const argv = (ms: number, entry: object) => appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), ...entry })}\n`);
   const current = (ms: number, entry: object) => appendFileSync(currentFile, `${JSON.stringify({ timestamp: iso(ms), ...entry })}\n`);
   const startCurrent = () => writeFileSync(currentFile, `${JSON.stringify({ type: "session", timestamp: iso(T0 - 90 * MIN), id: "11111111-1111-1111-1111-111111111111" })}\n${JSON.stringify({ type: "session_info", timestamp: iso(T0 - 89 * MIN), name: "Dori" })}\n`);
   const sendCall = (ms: number, call: { readonly id: string; readonly to: string; readonly reply?: string; readonly qid?: string }) => {
     current(ms, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: call.id, name: "eval", arguments: { code: `dori send discord --to ${call.to}${call.reply ? ` --reply ${call.reply}` : ""} --text '${call.qid ?? "answer"}'` } }] } });
     return (sentId: string) => current(ms + 1000, { type: "message", message: { role: "toolResult", toolCallId: call.id, content: [{ type: "text", text: `SENT ${sentId} len=20 sha=12345678 first="answer"` }] } });
   };
-  return { deps, row, reply, current, startCurrent, sendCall };
+  return { deps, row, reply, argv, current, startCurrent, sendCall };
 };
 
 test("Q538 and other card answers leave waiting only when their session got them or their own Discord thread got a qid reply", async () => {
@@ -117,4 +118,41 @@ test("one eval's second send cannot validate its failed first reply", () => {
 test("an argv-array Discord reply uses its matching receipt", () => {
   const argv = `const p = Bun.spawn(["dori", "send", "discord", "--to", "${directRow.channel}", "--reply", "${directRow.id}", "--text", "answer"], { env: process.env, stdin: "ignore", stdout: "pipe" }); console.log(await new Response(p.stdout).text()); await p.exited;`;
   expect(directAnswered([directCall("c1", argv), directResult("c1", "SENT 153000000000000001")])).toBe(true);
+});
+
+test("later narration and a failed send do not erase eligible owner rows", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.startCurrent();
+  l.row(T0 - 20 * MIN, "m-1", "first");
+  l.row(T0 - 19 * MIN, "m-2", "second");
+  const narration = { type: "message", message: { role: "assistant", content: [{ type: "text", text: "I replied" }] } };
+  l.argv(T0 - 10 * MIN, narration);
+  l.current(T0 - 10 * MIN, narration);
+  l.current(T0 - 9 * MIN, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "failed", name: "eval", arguments: { code: "dori send discord --to T-THREAD --reply m-1 --text answer" } }] } });
+  l.current(T0 - 8 * MIN, { type: "message", message: { role: "toolResult", toolCallId: "failed", isError: true, content: [{ type: "text", text: "FAILED" }] } });
+  expect(await watchTick(l.deps(T0))).toEqual([`LEAD_OWNER_WAITING ${PANE} 2 owner message(s), oldest ${iso(T0 - 20 * MIN)} (20 min); woke the lead (SUBMITTED)`]);
+});
+
+test("a stale argv limit error does not suppress the current session's owner wake", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.reply(T0 - 60 * MIN);
+  l.reply(T0 - 30 * MIN, "All Claude accounts are blocked. Soonest automatic retry: 2026-01-01T13:00:00Z");
+  l.startCurrent();
+  l.row(T0 - 20 * MIN, "m-1", "first");
+  l.current(T0 - 10 * MIN, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "working now" }] } });
+  expect(await watchTick(l.deps(T0))).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 20 * MIN)} (20 min); woke the lead (SUBMITTED)`]);
+});
+
+test("a current transcript limit error emits its notice instead of a stale healthy argv wake", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.reply(T0 - 60 * MIN);
+  l.startCurrent();
+  l.row(T0 - 20 * MIN, "m-1", "first");
+  l.current(T0 - 10 * MIN, { type: "message", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "All Claude accounts are blocked. Soonest automatic retry: 2026-01-01T13:00:00Z" } });
+  const out = await watchTick(l.deps(T0));
+  expect(out).toHaveLength(1);
+  expect(out[0]).toStartWith(`LEAD_LIMIT_NOTICE ${PANE} model failing since ${iso(T0 - 10 * MIN)}, retry 2026-01-01T13:00:00.000Z, 1 owner message(s) waiting; NOT_POSTED`);
 });

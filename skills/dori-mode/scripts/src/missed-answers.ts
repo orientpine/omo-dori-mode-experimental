@@ -169,7 +169,7 @@ export const discordAnswered = (transcript: string, row: AnswerRow): boolean =>
 type UnansweredInput<T extends AnswerRow> = {
   readonly rows: readonly T[];
   readonly cards: readonly Question[];
-  readonly lead: { readonly pane: string; readonly path: string; readonly title: string };
+  readonly lead: { readonly pane: string; readonly path: string; readonly title: string; readonly text?: string };
   readonly sessions: readonly AoeSession[];
   readonly table: readonly Proc[];
   readonly deps: FlowDeps;
@@ -186,7 +186,7 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
       const session = sessionFor(sessions, target);
       const cwd = session?.path;
       const file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table) : undefined;
-      transcripts.set(target, file ? currentTranscript(file.path, session?.title ?? "") : "");
+      transcripts.set(target, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file.path, session?.title ?? "") : "");
     }
     const transcript = transcripts.get(target) ?? "";
     if (row.qid && sawAnswer(transcript, row.qid)) continue;
