@@ -14,6 +14,9 @@ const rig = (lead: string): { dir: string; bin: string } => {
   mkdirSync(bin, { recursive: true });
   mkdirSync(join(dir, ".dori"));
   writeFileSync(join(dir, ".dori", "dori.env"), "HC_SESSION=agents\n");
+  writeFileSync(join(dir, ".dori", "config.json"), JSON.stringify({ runtime: "hc", leadPane: "hc:t7" }));
+  writeFileSync(join(dir, "wrong.env"), "HC_SESSION=foreign\n");
+  writeFileSync(join(dir, "wrong-config.json"), JSON.stringify({ runtime: "hc", leadPane: "hc:t999" }));
   mkdirSync(join(dir, ".bun", "bin"), { recursive: true });
   symlinkSync(process.execPath, join(dir, ".bun", "bin", "bun"));
   symlinkSync(join(import.meta.dir, "../../../.."), join(dir, ".dori", "src"));
@@ -27,7 +30,7 @@ const rig = (lead: string): { dir: string; bin: string } => {
 };
 
 const runLauncher = (dir: string, bin: string) => Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], {
-  env: { ...process.env, HOME: dir, PATH: `${bin}:${process.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_ENV_FILE: join(dir, ".dori", "dori.env"), HC_SESSION: "inherited-host", HC_SOCKET: "/tmp/inherited.sock" },
+  env: { ...process.env, HOME: dir, PATH: `${bin}:${process.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_ENV_FILE: join(dir, "wrong.env"), DORI_CONFIG: join(dir, "wrong-config.json"), HC_SESSION: "inherited-host", HC_SOCKET: "/tmp/inherited.sock" },
   stdout: "pipe", stderr: "pipe",
 });
 
@@ -36,6 +39,7 @@ test("dori.sh revives a stopped hc lead and attaches it in the Dori's named core
   const { dir, bin } = rig("session hc:t7 stopped");
   mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
   writeFileSync(join(dir, "run", "herdr-core", "agents.sock"), "");
+  writeFileSync(join(dir, "run", "herdr-core", "foreign.sock"), "");
   const child = runLauncher(dir, bin);
   // When
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -59,6 +63,34 @@ test("dori.sh never starts a missing hc core", async () => {
   expect(err).toContain("not starting one");
   expect(out).not.toContain("hc session=");
   expect(out).not.toContain("dori revive");
+});
+
+test("dori.sh checks the core before the real dori CLI can call hc", async () => {
+  // Given: the real dori CLI on PATH, an hc lead in the account config, and no core socket
+  const dir = mkdtempSync(join(tmpdir(), "dori-hc-real-cli-"));
+  dirs.push(dir);
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(dir, ".dori"));
+  mkdirSync(join(dir, ".bun", "bin"), { recursive: true });
+  symlinkSync(process.execPath, join(dir, ".bun", "bin", "bun"));
+  symlinkSync(join(import.meta.dir, "../../../.."), join(dir, ".dori", "src"));
+  writeFileSync(join(dir, ".dori", "config.json"), JSON.stringify({ runtime: "hc", leadPane: "hc:t7" }));
+  writeFileSync(join(dir, ".dori", "dori.env"), "HC_SESSION=agents\n");
+  writeFileSync(join(dir, "wrong.env"), "HC_SESSION=foreign\n");
+  writeFileSync(join(bin, "dori"), `#!/bin/sh\nexec "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/cli.ts" "$@"\n`, { mode: 0o700 });
+  writeFileSync(join(bin, "systemctl"), `#!/bin/sh\nprintf 'systemctl %s\\n' "$*"\n`, { mode: 0o700 });
+  writeFileSync(join(bin, "hc"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$HOME/hc-calls"\ncase "$2" in ls) printf '{"terminals":[]}' ;; get) printf '{"error":{"kind":"not_found","message":"no such terminal"}}' >&2; exit 3 ;; esac\n`, { mode: 0o700 });
+  const child = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], {
+    env: { ...process.env, HOME: dir, PATH: `${bin}:${process.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_STATE_DIR: join(dir, "state"), DORI_ENV_FILE: join(dir, "wrong.env") },
+    stdout: "pipe", stderr: "pipe",
+  });
+  // When
+  const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  // Then: the guard runs before lead resolution or revival, so the real CLI never gets to call hc
+  expect(code).not.toBe(0);
+  expect(err).toContain("not starting one");
+  expect(await Bun.file(join(dir, "hc-calls")).exists()).toBe(false);
 });
 
 test("the hc core name uses the dori.env parser: whitespace, quotes and the first value", () => {
