@@ -15,6 +15,11 @@ import { withState } from "./fakes.ts";
 // parent never changed and bwrap's --die-with-parent never fired; the worker's stdin did reach EOF).
 const CLI = join(import.meta.dir, "../src/cli.ts");
 const HOLDER = 4243;
+// this run's mark on the job these tests start and then look for by name, so two suites on one host never read the
+// other's job as their own leftover (as the heavy-stale tests did on 4eae, 2026-11-09)
+const RUN = process.pid;
+const sleeper = `sleep 293.${RUN}`;
+const sleeping = '(^| )sleep 293\\.' + RUN + '$';
 let state: ReturnType<typeof withState>;
 let work: string;
 let helper: string;
@@ -36,7 +41,7 @@ const startRun = async (job: Record<string, unknown>) => {
   const p = Bun.spawn(["env", "-i", ...own, `DORI_CONFIG=${join(helper, "config.json")}`, `DORI_ENV_FILE=${join(helper, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester", "exec", "t", "cpu", "100"], { stdin: "pipe", stdout: "ignore", stderr: "pipe" });
   const tmp = join(state.dir, "tar");
   mkdirSync(tmp, { recursive: true });
-  writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: ["sh", "-c", "sleep 293"], cwd: work, sync: [work], env: {}, ...job }));
+  writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: ["sh", "-c", sleeper], cwd: work, sync: [work], env: {}, ...job }));
   const tar = Bun.spawnSync(["tar", "-cf", "-", "-C", tmp, "job.json", "-C", "/", work.slice(1)]);
   p.stdin.write(tar.stdout);
   await p.stdin.flush();
@@ -59,7 +64,7 @@ test("a run whose caller holds its stdin ends when that stdin closes, and leaves
   expect(readFileSync(join(heavy, "heavy.log"), "utf8")).toContain("HEAVY_WORKER_ORPHAN t caller=tester");
   expect(readdirSync(join(heavy, "exec"))).toEqual([]);
   expect(readdirSync(heavy).filter((d) => d.startsWith("slot."))).toEqual([]);
-  expect(Bun.spawnSync(["pgrep", "-f", "sh -c sleep 293"]).exitCode).toBe(1);
+  expect(Bun.spawnSync(["pgrep", "-f", sleeping]).exitCode).toBe(1);
 }, 30_000);
 
 test("a run from a caller that does not hold its stdin is not ended by its stdin closing", async () => {
@@ -88,7 +93,7 @@ test("a run stopped on its helper (dori heavy-stop) ends its live caller too, in
     if (l.startsWith("HEAVY_SYNC t ") || l.startsWith("HEAVY_SPREAD t real")) stopped = new Promise((r) => setTimeout(r, 1_500)).then(() => Bun.spawn([...ssh, "stop", "t"]).exited);
   } };
   const ctx: HeavyCtx = { q: { jobs: {}, helpers: [{ name: "real", ssh }], queue: [], rl: true, jobDir: join(state.dir, "jobs"), exec: false, execMaxMin: 240, staleMin: 5 }, deps };
-  const job: SpreadJob = { label: "t", kind: "cpu", cmd: ["sh", "-c", "sleep 293"], cwd: work, sync: [work], env: {} };
+  const job: SpreadJob = { label: "t", kind: "cpu", cmd: ["sh", "-c", sleeper], cwd: work, sync: [work], env: {} };
   const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
   if (!plan.ok) throw new Error(plan.why);
   const r = await heavySpread(ctx, job, plan);
@@ -96,7 +101,7 @@ test("a run stopped on its helper (dori heavy-stop) ends its live caller too, in
   // Then
   expect(r).toEqual({ code: 143 });
   expect(logs.filter((l) => /^HEAVY_(SPREAD|HELPER_CANCELLED|HELPER_CUT|DONE) /.test(l)).map((l) => l.split(":")[0])).toEqual(["HEAVY_SPREAD t real", "HEAVY_HELPER_CANCELLED t real"]);
-  expect(Bun.spawnSync(["pgrep", "-f", "sh -c sleep 293"]).exitCode).toBe(1);
+  expect(Bun.spawnSync(["pgrep", "-f", sleeping]).exitCode).toBe(1);
 }, 30_000);
 
 test("sweep deletes the job folders of exec runs whose worker is gone", () => {
