@@ -76,11 +76,30 @@ const OPTIONS = { approvedBy: "https://discord.com/channels/1/2/3", title: "repl
 
 test("hc lead handover commits replacement routing in the same group and named core before freezing the old lead", async () => {
   // Given: an hc lead in a named core; the caller's core points elsewhere.
-  const { rig, deps, lines, signals } = setup();
-  // When: the replacement acknowledges the real handover's report and inbox probes.
+  const { rig, deps: baseDeps, lines, signals } = setup();
+  let routed = false;
+  let frozen = false;
+  const deps: HandoverDeps = {
+    ...baseDeps,
+    routedPane: async () => {
+      const pane = await baseDeps.routedPane();
+      if (pane === "hc:t2") routed = true;
+      return pane;
+    },
+    signal: (pid, sig) => {
+      const sent = baseDeps.signal(pid, sig);
+      if (pid === 4242 && sig === "SIGSTOP") frozen = true;
+      return sent;
+    },
+  };
+  // When: the replacement acknowledges the real handover's report and inbox probes. The exact commit/freeze events are
+  // recorded and asserted as soon as it returns: a close without a freeze cannot leave a pending wait behind.
   const result = await handover(deps, OPTIONS);
-  // Then: routing and forwarding target the replacement, while the old terminal stays frozen.
+  // Then: the move succeeded, and its exact routing/freeze events happened before it returned.
   expect(result).toMatchObject({ code: 0, to: "hc:t2" });
+  expect(routed).toBe(true);
+  expect(frozen).toBe(true);
+  // Then: routing and forwarding target the replacement, while the old terminal stays frozen.
   expect(await deps.routedPane()).toBe("hc:t2");
   expect(readFileSync(deps.envPath, "utf8")).toContain(`HC_SESSION=${CORE}\n`);
   expect(readFileSync(deps.envPath, "utf8")).toContain("DORI_LEAD_TMUX=hc:t2");
@@ -89,11 +108,12 @@ test("hc lead handover commits replacement routing in the same group and named c
   expect(signals).toEqual(["SIGSTOP 4242"]);
   expect(readFrozen(dir)).toMatchObject([{ pane: "hc:t1", to: "hc:t2", session: SESSION, pids: [4242] }]);
   expect(replacementOf(dir, "hc:t1", deps.clock.now())).toBe("hc:t2");
-  expect((await submitToPane(rig.run, deps.clock, deps.config, "hc:t1", "[REPORT] after commit")).status).toBe("SUBMITTED");
+  const submitted = await submitToPane(rig.run, deps.clock, deps.config, "hc:t1", "[REPORT] after commit");
+  expect(submitted).toMatchObject({ status: "SUBMITTED" });
   expect(rig.read().sent.at(-1)).toEqual({ id: "t2", text: "[REPORT] after commit" });
   expect(lines).toContain("HANDOVER_COMMITTED lead hc:t2");
   expect(readRollovers(dir).at(-1)).toMatchObject({ result: "done-frozen" });
-});
+}, { timeout: 0 });
 
 test("hc lead handover leaves the old lead routed and closes the replacement when its agent cannot start", async () => {
   // Given: hc creates the replacement's shell but rejects its initial agent command.

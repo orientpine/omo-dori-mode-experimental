@@ -39,7 +39,7 @@ export const flowRig = (dir: string) => {
     terminals: { t1: terminal({ labels: { "dori.group": "lead-group" }, screen: SCREEN, foreground: { name: "omo", argv: ["omo", "--session-id", SESSION], pid: 4242 } }) },
     calls: [], sent: [], kept: [], failStart: false,
   });
-  writeFileSync(join(dir, "hc"), `#!/bin/sh\nexec '${process.execPath}' '${import.meta.path}' "$@"\n`);
+  writeFileSync(join(dir, "hc"), `#!/bin/sh\nexec flock "$HC_FLOW_ROOT/hc.lock" '${process.execPath}' '${import.meta.path}' "$@"\n`);
   chmodSync(join(dir, "hc"), 0o700);
   const runner: Runner = async (argv, opts) => {
     if (argv[0] === "hc") return run(argv, opts);
