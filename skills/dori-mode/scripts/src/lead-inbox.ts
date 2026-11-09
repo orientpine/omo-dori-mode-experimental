@@ -1,17 +1,17 @@
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 import { liveSessions, sessionFor } from "./aoe.ts";
-import { pidAlive, sessionFile } from "./background.ts";
+import { pidAlive } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { handoverRunning } from "./freshness-handover.ts";
 import { frozenPanes } from "./frozen.ts";
 import { manifestPath, readManifest } from "./handover.ts";
-import { readHerdrSessions } from "./herdr-sessions.ts";
+import { readHerdrSessions, sessionLog } from "./herdr-sessions.ts";
 import { clock, ownerRows, tailOf } from "./lead-limit.ts";
 import { sawAnswer } from "./missed-answers.ts";
 import { sendVerified } from "./panes.ts";
-import { procTable, sessionDirFor } from "./session-id.ts";
+import { procTable, resolveSession } from "./session-id.ts";
 
 // The lead hears the inbox only through a monitor its own session runs, and nothing said when there was none. On 2026-11-09
 // YooDori's lead (leadPane set back by hand, not by dori handover) missed a #dori-pair request at 11:48Z; ZzangDori's lead
@@ -36,7 +36,7 @@ const REPEAT_MS = 30 * 60_000;
 
 type Kind = "owner" | "pair" | "pair-bot";
 type Row = { readonly id: string; readonly at: number; readonly kind: Kind; readonly text: string; readonly qid?: string };
-type Mark = { readonly pane: string; readonly session: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number };
+type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number };
 type Entry = ReturnType<typeof readManifest>[number] & { readonly deliveryPaused?: boolean };
 
 // the rows the lead must hear: the owner's (lead-limit.ts ownerRows) and every row of the pair channel
@@ -89,10 +89,21 @@ const ownerWokeIds = (deps: FlowDeps, pane: string): ReadonlySet<string> => {
 // a raw inbox row in a tool result is evidence because the lead read it.
 const deliveredIds = (transcript: string): ReadonlySet<string> => {
   const ids = new Set<string>();
+  const collect = (text: string): void => {
+    for (const m of text.matchAll(/"id"\s*:\s*"([\w-]+)"/g)) if (m[1]) ids.add(m[1]);
+  };
   for (const line of transcript.split("\n")) {
-    if (line.includes('"customType":"work-custody"')) continue;
-    if (!line.includes("senpi-monitor:notification") && !(line.includes('"channel_id"') && line.includes('"scope"'))) continue;
-    for (const m of line.matchAll(/(?:\\?")id(?:\\?")\s*:\s*(?:\\?")([\w-]+)(?:\\?")/g)) if (m[1]) ids.add(m[1]);
+    try {
+      const e = JSON.parse(line) as { type?: string; customType?: string; content?: unknown; message?: { role?: string; content?: unknown } };
+      if (e.customType === "work-custody") continue;
+      if (e.type === "custom_message" && e.customType === "senpi-monitor:notification" && typeof e.content === "string") collect(e.content);
+      if (e.type !== "message" || e.message?.role !== "toolResult") continue;
+      const parts = Array.isArray(e.message.content) ? e.message.content : [];
+      for (const part of parts) {
+        const text = typeof part === "object" && part !== null && "text" in part && typeof part.text === "string" ? part.text : "";
+        if (text.includes('"channel_id"') && text.includes('"scope"')) collect(text);
+      }
+    } catch {}
   }
   return ids;
 };
@@ -100,44 +111,34 @@ const deliveredIds = (transcript: string): ReadonlySet<string> => {
 const ENV_ID = /(?:^|\s)PI_SESSION_ID=([0-9a-f-]{36})(?:\s|$)/;
 const ENV_FILE = /(?:^|\s)PI_SESSION_FILE=(.+?\.jsonl)(?=\s|$)/;
 
-// /new and /resume keep the agent's pid and argv. Of the launch, child-environment and recorded sessions, omo is running
-// the one whose transcript it wrote last. This local selection keeps #424 independent of #419; resolveSession takes over
-// once that shared fix is on main.
+// /new and /resume keep the agent's pid and argv. Of the launch, child-environment, recorded and previous-tick sessions for
+// this same agent pid, omo is running the one whose transcript it wrote last. This local selection keeps #424 independent
+// of #419; resolveSession takes over once that shared fix is on main. sessionLog also covers --session-dir and external logs.
 const currentLeadSession = async (deps: FlowDeps, pane: string, cwd: string, table: Awaited<ReturnType<typeof procTable>>) => {
-  const base = await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, table);
-  if (!base) return undefined;
-  const baseId = /_([^_]+)\.jsonl$/.exec(base.path)?.[1];
-  const agent = table.find((p) => p.pid === base.pid);
-  if (!baseId || !agent) return base;
-  const named: { id: string; log?: string | undefined }[] = [{ id: baseId, log: base.path }];
-  for (const child of table.filter((p) => p.ppid === agent.pid).slice(0, 40)) {
+  const hit = await resolveSession(pane, cwd, table, { run: deps.run, sessionsDir: deps.config.sessionsDir, backend: "aoe" });
+  if (!hit.id || !hit.pid) return undefined;
+  const named: { id: string; log?: string | undefined }[] = [{ id: hit.id }];
+  for (const child of table.filter((p) => p.ppid === hit.pid).slice(0, 40)) {
     const line = (await deps.run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out.replace(/\r?\n$/, "");
     const env = line.startsWith(child.cmd) ? line.slice(child.cmd.length) : "";
     const id = ENV_ID.exec(env)?.[1];
     if (id) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
   }
+  const previous = readMark(deps);
+  if (previous?.pane === pane && previous.agentPid === hit.pid) named.push({ id: previous.session, log: previous.log });
   const kept = readHerdrSessions(deps.config.stateDir)[pane];
   if (kept?.session) named.push({ id: kept.session, log: kept.log });
-  const logFor = (id: string): string | undefined => {
-    const exact = named.findLast((n) => n.id === id && n.log?.endsWith(`_${id}.jsonl`))?.log;
-    if (exact) return exact;
-    try {
-      const name = readdirSync(sessionDirFor(deps.config.sessionsDir, cwd)).find((n) => n.endsWith(`_${id}.jsonl`));
-      return name ? join(sessionDirFor(deps.config.sessionsDir, cwd), name) : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const candidates = [...new Set(named.map((n) => n.id))].map((id) => {
-    const path = logFor(id);
+  const candidates = await Promise.all([...new Set(named.map((n) => n.id))].map(async (id) => {
+    const hint = named.findLast((n) => n.id === id && n.log)?.log;
+    const path = await sessionLog(deps.run, table, hit.pid!, id, deps.config.sessionsDir, cwd, hint);
     let at = Number.NEGATIVE_INFINITY;
     try {
       if (path) at = statSync(path).mtimeMs;
     } catch {}
     return { id, path, at };
-  });
+  }));
   const current = candidates.reduce((a, b) => (b.at > a.at ? b : a));
-  return current.path ? { path: current.path, pid: base.pid } : base;
+  return current.path ? { path: current.path, pid: hit.pid } : undefined;
 };
 const readMark = (deps: FlowDeps): Mark | undefined => {
   try {
@@ -163,13 +164,15 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
   const start = Date.parse(/"timestamp":"([^"]+)"/.exec(text)?.[1] ?? "");
   const told = ownerWokeIds(deps, pane);
   const delivered = deliveredIds(text);
-  const unheard = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId).filter((r) => now - r.at < DAY_MS && !(r.at < start) && !(r.kind === "owner" && told.has(r.id)) && !delivered.has(r.id) && !(r.qid && sawAnswer(text, r.qid)));
-  const problem = watchProblem(readManifest(manifestPath(sessionsDir, cwd, session)), inbox.path, now, alive);
+  const deliveredText = text.split("\n").filter((line) => !line.includes('"customType":"work-custody"')).join("\n");
+  const unheard = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId).filter((r) => now - r.at < DAY_MS && !(r.at < start) && !(r.kind === "owner" && told.has(r.id)) && !delivered.has(r.id) && !(r.qid && sawAnswer(deliveredText, r.qid)));
+  const besideLog = join(dirname(file.path), "extensions", "terminal", `${session}.json`);
+  const problem = watchProblem(readManifest(existsSync(besideLog) ? besideLog : manifestPath(sessionsDir, cwd, session)), inbox.path, now, alive);
 
   const old = readMark(deps);
-  const mark: Mark = old?.pane === pane && old.session === session ? old : { pane, session };
+  const mark: Mark = old?.pane === pane && old.session === session && (old.agentPid === undefined || old.agentPid === file.pid) ? { ...old, agentPid: file.pid, log: file.path } : { pane, session, agentPid: file.pid, log: file.path };
   const missingSince = problem ? (mark.missingSince ?? now) : undefined;
-  let next: Mark = { pane, session, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
+  let next: Mark = { pane, session, agentPid: file.pid, log: file.path, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
   const out: string[] = [];
   const oldest = unheard[0];
   const newest = unheard.at(-1);
@@ -193,7 +196,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
     if (ok) next = { ...next, key: incident.key, typedAt: now };
     out.push(`${incident.head}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane, typed again next tick"}`);
   } else if (!incident && !problem && !unheard.length && mark.key) {
-    next = { pane, session };
+    next = { pane, session, agentPid: file.pid, log: file.path };
     out.push(`LEAD_INBOX_OK ${pane} session ${session} hears its inbox again`);
   }
   if (JSON.stringify(next) !== JSON.stringify(old)) writeFileSync(markPath(deps), `${JSON.stringify(next)}\n`);

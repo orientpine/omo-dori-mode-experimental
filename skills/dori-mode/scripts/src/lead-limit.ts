@@ -159,7 +159,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
       const min = Math.floor((now - oldest.at) / 60_000);
       const text = `[DORI] LEAD_OWNER_WAITING: ${waiting.length} owner message(s) since ${clock(deps, oldest.at)} have had no reply from you for ${min} min${blocked ? " (your model calls failed meanwhile)" : ""}. The oldest: "${plain(oldest.text, 120)}". Read them in the inbox and answer the owner now.`;
       const ok = await sendVerified(deps.run, deps.clock, deps.config, pane, text);
-      if (ok) save({ ...next, wakeKey: key, wakeIds: waiting.map((r) => r.id), wokeAt: new Date(now).toISOString() });
+      if (ok) save({ ...next, wakeKey: key, wakeIds: [...new Set([...(next.wakeIds ?? []).filter((id) => rows.some((r) => r.id === id)), ...waiting.map((r) => r.id)])], wokeAt: new Date(now).toISOString() });
       out.push(`LEAD_OWNER_WAITING ${pane} ${waiting.length} owner message(s), oldest ${new Date(oldest.at).toISOString()} (${min} min)${blocked ? ", model failing" : ""}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane"}`);
     }
   }

@@ -146,7 +146,6 @@ test("/new in the same agent: the session whose transcript omo wrote last is che
   row(T0 + 14 * MIN, "p-new");
   appendFileSync(next, `${JSON.stringify({ type: "custom_message", customType: "senpi-monitor:notification", content: `Monitor event(inbox): ${JSON.stringify({ id: "p-new" })}` })}\n`);
   expect(await leadInboxTick({ ...base, run })).toEqual([]);
-  writeFileSync(join(state.dir, "herdr-sessions.json"), JSON.stringify({ [LEAD]: { session: NEW_SID, cwd: "/home/test/dori", log: next, at: iso(T0 + 15 * MIN) } }));
   world.ps = world.ps.replace("\n12 11 bun process-entry.js", "");
   expect(await leadInboxTick({ ...base, run })).toEqual([]);
 });
