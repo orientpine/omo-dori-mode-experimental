@@ -14,6 +14,14 @@ import { withState } from "./fakes.ts";
 // rvq-c3-final2 sat 73 minutes on cha with no line on either side).
 const CLI = join(import.meta.dir, "../src/cli.ts");
 const HOLDER = 4243;
+// this run's mark on the processes these tests start and then find, kill or freeze by name: two suites on one host (two
+// lanes' ci as one account) must never reach each other's (2026-11-09 on 4eae: one suite's pkill -STOP froze the other's
+// real worker and the other's own pkill, which held that suite's bun test in spawnSync; its pkill of a held sleep ended
+// the other's, so no HEAVY_STALE_LEFT)
+const RUN = process.pid;
+const sleeper = (n: number): string => `sleep ${n}.${RUN}`;
+const sleeping = (n: number): string => `^sleep ${n}\\.${RUN}$`;
+const CALLER = `tester-${RUN}`;
 // every config here names its own heavyHoldDir: a hold another account put on this host (heavy hold-local) must not
 // turn the real worker away (2026-11-08 22:58Z: a live hold-local QA on 0a83 failed 7 heavy tests with WORKER_BUSY).
 // What a stale run leaves behind for the real CLI: heavy-stale-cli.test.ts
@@ -53,7 +61,7 @@ const realHelper = (aliveSec: number): string[] => {
   const config = join(dir, "config.json");
   writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs"), aliveSec } }));
   const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
-  return ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
+  return ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", CALLER];
 };
 
 const spread = async (ctx: HeavyCtx, cmd: string[], extra: Partial<SpreadJob> = {}) => {
@@ -89,7 +97,7 @@ test("a stale run on a helper that named no run id is not stopped there by its l
 test("a stop whose ssh ends but leaves a child holding its stderr does not hold the stale run", async () => {
   // Given: a helper that goes silent after admission, and whose stop answers nothing, exits and leaves a child holding
   // its stderr (an ssh wrapper or ProxyCommand that leaves a descendant)
-  const ssh = ["sh", "-c", 'if [ "$1" = stop ]; then sleep 593 >&2 & exit 0; fi; echo "WORKER_ADMIT slot.1 alive=0.1 run=1-abc" >&2; cat > /dev/null; exec sleep 600', "deaf"];
+  const ssh = ["sh", "-c", `if [ "$1" = stop ]; then ${sleeper(593)} >&2 & exit 0; fi; echo "WORKER_ADMIT slot.1 alive=0.1 run=1-abc" >&2; cat > /dev/null; exec sleep 600`, "deaf"];
   try {
     // When
     const r = await spread(ctxWith({ helpers: [{ name: "deaf", ssh }] }), ["true"]);
@@ -97,14 +105,14 @@ test("a stop whose ssh ends but leaves a child holding its stderr does not hold 
     expect(r).toEqual({ code: 124, abandoned: true });
     expect(logs.find((l) => l.startsWith("HEAVY_HELPER_STOP t deaf"))).toContain("no answer within");
   } finally {
-    Bun.spawnSync(["pkill", "-f", "^sleep 593"]);
+    Bun.spawnSync(["pkill", "-f", sleeping(593)]);
   }
 }, 30_000);
 
 test("a helper that connects and never answers the admission is down after staleMin, and the job goes on", async () => {
   // Given: a helper whose ssh connects and then says nothing (no WORKER_ADMIT, BUSY or REFUSED), and this host's slot
   // freed once that helper is given up on
-  const ctx = ctxWith({ helpers: [{ name: "quiet", ssh: ["sh", "-c", "exec sleep 595", "quiet"] }] });
+  const ctx = ctxWith({ helpers: [{ name: "quiet", ssh: ["sh", "-c", `exec ${sleeper(595)}`, "quiet"] }] });
   const log = ctx.deps.log!;
   const freeing = { ...ctx, deps: { ...ctx.deps, log: (l: string) => { log(l); if (l.startsWith("HEAVY_HELPER_DOWN t quiet")) rmSync(join(state.dir, "heavy", "slot.1"), { recursive: true, force: true }); } } };
   try {
@@ -113,9 +121,9 @@ test("a helper that connects and never answers the admission is down after stale
     // Then: given up on after staleMin, its ssh ended, and the job takes this host's slot
     expect(r).toHaveProperty("slot");
     expect(logs.find((l) => l.startsWith("HEAVY_HELPER_DOWN t quiet"))).toContain("no answer to the admission within");
-    expect(Bun.spawnSync(["pgrep", "-f", "^sleep 595"]).exitCode).toBe(1);
+    expect(Bun.spawnSync(["pgrep", "-f", sleeping(595)]).exitCode).toBe(1);
   } finally {
-    Bun.spawnSync(["pkill", "-f", "^sleep 595"]);
+    Bun.spawnSync(["pkill", "-f", sleeping(595)]);
   }
 }, 30_000);
 
@@ -188,16 +196,16 @@ test("a real worker that stops beating is stale; stop kills it, deletes its fold
   // Given: the real worker, frozen (SIGSTOP) the moment it admits the job, as a wedged helper would be
   const ctx = ctxWith({ helpers: [{ name: "real", ssh: realHelper(0.2) }] });
   const log = ctx.deps.log!;
-  const frozen = { ...ctx, deps: { ...ctx.deps, log: (l: string) => { log(l); if (l.startsWith("HEAVY_SPREAD t real")) Bun.spawnSync(["pkill", "-STOP", "-f", "heavy-worker --caller tester exec t "]); } } };
+  const frozen = { ...ctx, deps: { ...ctx.deps, log: (l: string) => { log(l); if (l.startsWith("HEAVY_SPREAD t real")) Bun.spawnSync(["pkill", "-STOP", "-f", `heavy-worker --caller ${CALLER} exec t `]); } } };
   // When
-  const r = await spread(frozen, ["sh", "-c", "sleep 297"]);
+  const r = await spread(frozen, ["sh", "-c", sleeper(297)]);
   // Then: ended, and nothing of it is left on the helper
   expect(r).toEqual({ code: 124 });
   const heavy = join(state.dir, "helper", "state", "heavy");
   expect(logs).toContain("HEAVY_HELPER_STOP t real: WORKER_STOPPED 1");
   expect(readdirSync(join(heavy, "exec"))).toEqual([]);
   expect(readdirSync(heavy).filter((d) => d.startsWith("slot."))).toEqual([]);
-  expect(Bun.spawnSync(["pgrep", "-f", `sh -c sleep 297`]).exitCode).toBe(1);
+  expect(Bun.spawnSync(["pgrep", "-f", `^sh -c ${sleeping(297).slice(1)}`]).exitCode).toBe(1);
 }, 30_000);
 
 test("an upload whose size du could not tell still shows its progress, with no total and no time left", async () => {
