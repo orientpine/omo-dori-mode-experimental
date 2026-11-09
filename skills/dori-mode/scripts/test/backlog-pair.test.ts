@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { backlogTick, dropItem, type InboxRow, laneKeyOf, pairIntake, readItem, type TickDeps } from "../src/backlog.ts";
+import { backlogTick, dropItem, flockDir, type InboxRow, laneKeyOf, pairIntake, readItem, type TickDeps } from "../src/backlog.ts";
 import { pairHandled } from "../src/backlog-pair.ts";
 import type { BacklogSettings } from "../src/config.ts";
 import type { Lane } from "../src/registry.ts";
@@ -123,6 +123,33 @@ test("a reply or a lead's lane that comes while an earlier repair's start is awa
   // Then
   expect(launched).toEqual(["pair-1569000000000005001"]);
   expect(lines.filter((l) => l.startsWith("BACKLOG_ALREADY_HANDLED")).map((l) => l.split(" ").slice(1, 4).join(" "))).toEqual(["pair-1569000000000005002 reply 1569000000000005100", "pair-1569000000000005003 lane lead-c"]);
+});
+
+test("a reply or a lead's lane arriving while admission waits holds the repair and frees its reserved host slot", async () => {
+  // Given: A starts and takes the host lock; B is next, and while B's admission waits the lead replies to B and opens a lane for C
+  intake(posts("1569000000000006001", "1569000000000006002", "1569000000000006003"));
+  const base = deps();
+  let held: Awaited<ReturnType<typeof flockDir>>;
+  let admission!: () => void;
+  const waiting = new Promise<void>((r) => { admission = r; });
+  let calls = 0;
+  const launch: TickDeps["launch"] = async (item, brief, key) => {
+    const r = await base.launch(item, brief, key);
+    if (item.id === "pair-1569000000000006001") held = await flockDir(join(root, "host"), 0);
+    return r;
+  };
+  const tick = backlogTick({ ...base, launch, busy: async () => { if (++calls === 2) admission(); return []; } }, { force: true });
+  await waiting;
+  await reply("1569000000000006002", "1569000000000006100");
+  writeFileSync(join(root, "c.md"), "[목표] 수리 요청(#dori-pair 1569000000000006003): 리드가 띄움\n");
+  lanes.push(lane("lead-c", join(root, "c.md")));
+  await held?.release();
+  const lines = await tick;
+  // Then
+  expect(launched).toEqual(["pair-1569000000000006001"]);
+  expect(lines.join("\n")).toContain("BACKLOG_ALREADY_HANDLED pair-1569000000000006002 reply 1569000000000006100");
+  expect(lines.join("\n")).toContain("BACKLOG_ALREADY_HANDLED pair-1569000000000006003 lane lead-c");
+  expect(readdirSync(join(root, "host")).filter((f) => f.includes("pair-1569000000000006002"))).toEqual([]);
 });
 
 test("a repair request nobody answered starts as before, and a reply to another post or a post without a reply target does not hold it", async () => {

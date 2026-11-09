@@ -915,6 +915,7 @@ export const backlogTick = async (d: TickDeps, opts: { readonly force?: boolean 
         quiet.push(`BACKLOG_HOLD ${full}; ${waiting.length - tried} item(s) wait`);
         break;
       }
+      if (isPairItem(item) && dropHandled(item, await d.lanes())) { rmSync(slotFile(d.host, item.id), { force: true }); continue; }
       tried++;
       const copy = join(dir(d.stateDir), "launched", `${item.id}.md`);
       mkdirSync(dirname(copy), { recursive: true });
