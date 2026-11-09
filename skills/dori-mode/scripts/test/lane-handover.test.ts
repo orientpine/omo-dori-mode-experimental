@@ -38,7 +38,7 @@ const RESTATE = "## Goal\n레인에도 적용: ship it\n## Owner's words\nnone\n
 // writes restate over it from scratch (wrote: the files it already wrote once)
 // cancel: what the new session does with a HANDOVER_TASKS_CANCEL line: task_cancel each id (its record turns cancelled), or
 // only ack it
-type Sim = { cancel?: "cancel" | "ack-only"; keepSeed?: boolean; wrote?: string[]; fromNote?: boolean; arm: { description: string; command: string; filter?: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; supplement: "fix" | "ignore" | "silent"; handled: string[]; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean; endsAfterProbe?: number; busyFor?: number; probeWhileBusy?: boolean };
+type Sim = { cancel?: "cancel" | "ack-only"; keepSeed?: boolean; wrote?: string[]; fromNote?: boolean; arm: { description: string; command: string; filter?: string; pid: number }[]; thinking: string; ackPane: string; ack: boolean; restate?: string; supplement: "fix" | "ignore" | "silent"; handled: string[]; account: string; chainSurvives: boolean; grandchildSurvives?: boolean; doubleRun: boolean; restarted: boolean; endsAfterProbe?: number; busyFor?: number; probeWhileBusy?: boolean; todos?: string[] };
 
 let state: { dir: string; done: () => void };
 let w: World;
@@ -88,7 +88,7 @@ const simulate = () => {
   }
   if (live.has(301) && live.has(15)) sim.doubleRun = true;
   if (sim.fromNote) sim.arm = armFromNote();
-  writeManifest("new-sid", sim.arm.map((m) => monitor(m.description, m.command, m.pid, m.filter ? { filter: m.filter } : {})));
+  writeManifest("new-sid", sim.arm.map((m) => monitor(m.description, m.command, m.pid, m.filter ? { filter: m.filter } : {}))); appendFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-11T16-34-00-000Z_new-sid.jsonl"), `${JSON.stringify({ type: "custom", customType: "senpi.todo-state", data: { phases: [{ name: "Work", tasks: (sim.todos ?? ["train E7"]).map((content) => ({ content, status: "in_progress" })) }] } })}\n`);
   const probe = w.calls.find((c) => c[1] === "send-keys" && c.includes(`=${NEW}:`) && (c.at(-1) ?? "").includes("HANDOVER_PROBE n1"))?.at(-1);
   if (sim.ack && probe) {
     // the new session writes what it understood, then acks

@@ -1,7 +1,7 @@
 // dori handover: move the lead to a new agent session without losing work, monitors or notifications.
 // Order: write the note -> open the new session -> point leadPane, lanes and cards at it -> check that its monitors run and
 // that a [REPORT] and an inbox event reach it -> only then close the old session. A failed check moves everything back.
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
 import { endedWatch, endOldMonitors } from "./handover-monitors.ts";
+import { missingTodos, OWNER_HOURS, type OwnerWord, recentOwnerWords, todoTask } from "./handover-todos.ts";
 import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
 import { compactionStuckOn } from "./lane-handover.ts";
 import { awaitPrompt } from "./launch.ts";
@@ -23,7 +24,7 @@ import { type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
 import { flat, missingHeadings, quoted, ROUND_TRIES } from "./restatement.ts";
-import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, type Signals, sessionSignals, setQuiet, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
+import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFile, type Signals, sessionSignals, setQuiet, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
 import { turnRunning } from "./submit.ts";
 import { watchLog } from "./watch-log.ts";
 import { Worklog, worklogLines } from "./worklog.ts";
@@ -130,8 +131,6 @@ export const worklogFacts = (stateDir: string): WorklogFacts => {
   }
 };
 
-export type OwnerWord = { readonly at: string; readonly where: string; readonly text: string };
-
 // The summary the old lead writes before it is replaced (dori handover --note FILE; dori handover --template prints the
 // headings): what only its conversation knows.
 export const LEAD_SUMMARY_HEADINGS = ["Owner's words and constraints", "Decisions and why", "Promised follow-ups", "In progress", "Next step"] as const;
@@ -150,28 +149,6 @@ export const LEAD_SUMMARY_TEMPLATE = [
 ].join("\n");
 // The headings of the new lead's restatement, written before it is committed.
 export const LEAD_UNDERSTOOD_HEADINGS = ["Goal", "Owner's words", "Open lanes", "Open work", "Open cards", "Timers", "Promised follow-ups", "Decisions", "Next step", "Questions"] as const;
-// the owner's messages the note carries: those of the last OWNER_HOURS, at most OWNER_MAX, newest last
-const OWNER_HOURS = 24;
-const OWNER_MAX = 8;
-
-export const recentOwnerWords = (inbox: string, ids: readonly string[], now: number): OwnerWord[] => {
-  if (!ids.length || !existsSync(inbox)) return [];
-  const out: OwnerWord[] = [];
-  for (const line of readFileSync(inbox, "utf8").split("\n")) {
-    let row: { ts?: string; author_id?: string; content?: string; transcript?: unknown; scope?: string; channel_id?: string; room?: string; id?: string };
-    try {
-      row = JSON.parse(line) as typeof row;
-    } catch {
-      continue;
-    }
-    const text = (row.content?.trim() || (typeof row.transcript === "string" ? row.transcript.trim() : "")).replace(/\s+/g, " ");
-    const at = Date.parse(row.ts ?? "");
-    if (!text || !row.author_id || !ids.includes(row.author_id) || !(at <= now && now - at <= OWNER_HOURS * 3_600_000)) continue;
-    out.push({ at: row.ts ?? "", where: `${row.scope ?? "?"} ${row.room ?? row.channel_id ?? "-"}, message ${row.id ?? "-"}`, text });
-  }
-  return out.slice(-OWNER_MAX);
-};
-
 const POLL_MS = 5_000;
 export const PROBE = "HANDOVER_PROBE";
 
@@ -430,15 +407,6 @@ export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonl
   return out;
 };
 
-const sessionFile = (dir: string, session: string): string | undefined => {
-  try {
-    const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
-    return name ? join(dir, name) : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
 export const openTodos = (sessionDir: string, session: string): string[] => {
   const file = sessionFile(sessionDir, session);
   if (!file) return [];
@@ -474,10 +442,10 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   `From ${f.from.pane} (aoe ${f.from.aoeId}, omo session ${f.from.session || "unknown"}, cwd ${f.from.cwd}). You are the new lead session${f.cwd === f.from.cwd ? "" : `, opened in ${f.cwd}`}: dori handover points leadPane, the open lanes and the open question cards at you.`,
   "",
   "## Do this first",
-  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command; one marked ENDED is not armed. Take each command, filter and description from its line under Monitors, where they are JSON strings: put them into the tool call as they are (a JSON string is a valid JS string), not retyped and not from the conversation summary, where a copy can differ. Arm each one once. Start each watcher under Watchers that says how. The handover checks that the monitors run in this session and runs each watcher's check.",
+  "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command; one marked ENDED is not armed. Take each command, filter and description from its line under Monitors, where they are JSON strings: put them into the tool call as they are (a JSON string is a valid JS string), not retyped and not from the conversation summary, where a copy can differ. Arm each one once. Start each watcher under Watchers that says how. Put every line under Todos left in the old session into your todo list, word for word: the part before its first \": \" is the phase, the rest without the status in brackets is the task, with that status. The handover checks that the monitors run in this session and that your todo list holds each of those todos, and runs each watcher's check.",
   `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
   `3. A [LEAD] HANDOVER_SUPPLEMENT <id> line comes from the audit after the commit: it names a file with what you were missing and the old log lines behind it; write those items into the file it names (create it if it is not there), keep them in mind as the note's, and run the ack command it gives. No restatement is asked before the commit.`,
-  `4. Until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing besides that file: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,
+  `4. Until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing besides that file and your todo list: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,
   `5. After ${COMMITTED}, carry on: open lanes, owner questions, todos, open worklog items (each from its Next line, and keep it with dori worklog next|note|close), timers, promised follow-ups and the old lead's notes; answer the owner where his last messages left off. A [LEAD] HANDOVER_SUPPLEMENT line that comes later is the audit after the handover: do what it says and go on. When you or a lane find later that an old session knew something its handover did not carry and it cost something (asking again, redoing, guessing), run dori handover gap <lane key or lead> --kind "<owner's words|decision|lead instruction|todo|goal|monitor|tried fix|other>" --text "<one line, no secret values>".`,
   "",
   `## Monitors (${f.monitors.length})`,
@@ -605,24 +573,29 @@ const ackProblem = (stateDir: string, nonce: string, what: string, pane: string)
 
 type Checked = { readonly reasons: string[]; readonly session: string; readonly supplements?: readonly Supplement[] };
 
-const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, verifyMin: number, _understood: string, emit: (line: string) => void): Promise<Checked> => {
+export const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, verifyMin: number, _understood: string, emit: (line: string) => void): Promise<Checked> => {
   const tries = Math.max(1, Math.ceil((verifyMin * 60_000) / POLL_MS));
   let i = 0;
   let session = "";
-  if (facts.monitors.length || facts.watchers.length) {
+  // the note's todos go into the new session's todo list before the commit, checked like its monitors (ZzangDori's lead
+  // handover 20261106-213407: the new lead wrote a list of its own, and only the audit after the commit found two lost)
+  if (facts.monitors.length || facts.watchers.length || facts.todos.length) {
     let missing = facts.monitors.map((m) => m.description);
     let down: string[] = facts.watchers.map((w) => w.name);
+    let lost = facts.todos.map(todoTask);
     for (; i < tries; i++) {
       session ||= await deps.sessionOf(to.pane, facts.cwd).catch(() => "");
       if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now());
+      if (session && facts.todos.length) lost = missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session);
       down = await missingWatchers(deps, facts.watchers, { pane: to.pane, session });
-      if ((session || !facts.monitors.length) && !missing.length && !down.length) break;
+      if ((session || (!facts.monitors.length && !facts.todos.length)) && !missing.length && !down.length && !lost.length) break;
       await deps.clock.sleep(POLL_MS);
     }
-    if (facts.monitors.length && !session) return { reasons: [`the omo session of ${to.pane} was not found under ${facts.cwd}, so its monitors could not be checked`], session };
-    const reasons = [...(missing.length ? [`monitors not running in ${to.pane}: ${missing.join(", ")}`] : []), ...(down.length ? [`watchers not running for ${to.pane}: ${down.join(", ")}`] : [])];
+    if ((facts.monitors.length || facts.todos.length) && !session) return { reasons: [`the omo session of ${to.pane} was not found under ${facts.cwd}, so its ${facts.monitors.length ? "monitors" : "todos"} could not be checked`], session };
+    const reasons = [...(missing.length ? [`monitors not running in ${to.pane}: ${missing.join(", ")}`] : []), ...(lost.length ? [`todos not in the todo list of ${to.pane}: ${lost.join(", ")}`] : []), ...(down.length ? [`watchers not running for ${to.pane}: ${down.join(", ")}`] : [])];
     if (reasons.length) return { reasons, session };
     if (facts.monitors.length) emit(`HANDOVER_MONITORS_OK ${facts.monitors.length} in ${to.pane} (session ${session})`);
+    if (facts.todos.length) emit(`HANDOVER_TODOS_OK ${facts.todos.length} in the todo list of ${to.pane}`);
     if (facts.watchers.length) emit(`HANDOVER_WATCHERS_OK ${facts.watchers.map((w) => w.name).join(",")} for ${to.pane}`);
   }
   const routed = await deps.routedPane();
@@ -650,6 +623,9 @@ const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Target, veri
   // remote tail whose ssh dropped), and a new session is not told when a monitor ends
   const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now()) : [];
   if (stopped.length) return { reasons: [`monitors stopped in ${to.pane} after the first check: ${stopped.join(", ")}`], session };
+  // and the todos: a new lead can put them in and then write its list anew while it finishes its first turn (review of #416)
+  const dropped = facts.todos.length ? missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session) : [];
+  if (dropped.length) return { reasons: [`todos left the todo list of ${to.pane} after the first check: ${dropped.join(", ")}`], session };
   return { reasons: [], session };
 };
 
