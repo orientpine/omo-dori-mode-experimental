@@ -2,7 +2,9 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { type FeedTodo, feedIntake, inboxReader, instanceOf, orderIntake, pairIntake, type TickDeps } from "./backlog.ts";
+import { pairHandled } from "./backlog-pair.ts";
 import { poolFree } from "./lead-limit.ts";
+import { repliedTo } from "./send-dedupe.ts";
 import { sampleHost } from "./host-guard.ts";
 import { asStartFailure, laneStartText, launchLane } from "./launch.ts";
 import { realClock, run } from "./run.ts";
@@ -71,6 +73,7 @@ export const makeBacklogDeps = (cli: Pick<Cli, "config" | "deps" | "discordToken
       return [...orders, ...(await feedIntake({ stateDir: config.stateDir, settings: config.backlog, feed, now: realClock.now }))];
     },
     inbox: backlogInbox,
+    handled: (item, lanes) => pairHandled(item, lanes, (message) => repliedTo(join(config.stateDir, "sent"), message)),
   });
   return { backlogInbox, backlogDeps };
 };

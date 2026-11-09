@@ -66,7 +66,7 @@ const sendCommand: Command = async (context) => {
   const dedupeKey = (keyText: string) => sendKey([platform, platform === "discord" ? (thread ?? to) : `${to}/${thread ?? ""}`, reply, ping, keyText, ...filesKey(discordFiles)]);
   // an edit is never checked and does not move the place's last-post record (docs/follow-ups.md)
   const once = async (post: () => Promise<Sent>, keyText = text) => {
-    const r = await sendOnce(sentDir, place, dedupeKey(keyText), post, { again: Boolean(flags.values.again) });
+    const r = await sendOnce(sentDir, place, dedupeKey(keyText), post, { again: Boolean(flags.values.again), replyTo: reply });
     console.log(r.duplicate ? duplicateLine(place, r) : sentLine("SENT", r));
     if (r.duplicate) process.exitCode = SEND_DUPLICATE_EXIT;
     return r;
