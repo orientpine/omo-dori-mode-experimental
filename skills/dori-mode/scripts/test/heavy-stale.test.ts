@@ -205,7 +205,7 @@ test("a real worker that stops beating is stale; stop kills it, deletes its fold
   expect(logs).toContain("HEAVY_HELPER_STOP t real: WORKER_STOPPED 1");
   expect(readdirSync(join(heavy, "exec"))).toEqual([]);
   expect(readdirSync(heavy).filter((d) => d.startsWith("slot."))).toEqual([]);
-  expect(Bun.spawnSync(["pgrep", "-f", `^sh -c ${sleeping(297).slice(1)}`]).exitCode).toBe(1);
+  expect(Bun.spawnSync(["pgrep", "-f", `(^| )sleep 297\\.${RUN}$`]).exitCode).toBe(1);
 }, 30_000);
 
 test("an upload whose size du could not tell still shows its progress, with no total and no time left", async () => {
