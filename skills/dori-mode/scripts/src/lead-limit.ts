@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { liveSessions, sessionFor } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { unansweredRows, type AnswerRow } from "./missed-answers.ts";
 import { sendVerified } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
@@ -20,7 +21,7 @@ import { procTable } from "./session-id.ts";
 //   once per newest message, and once more after the retry time the error named has passed.
 
 export type LeadReply = { readonly at: number; readonly error?: string };
-export type OwnerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly scope?: string; readonly text: string };
+export type OwnerRow = AnswerRow & { readonly scope?: string; readonly text: string };
 type LimitMark = { readonly pane: string; readonly noticeFor?: string; readonly noticeChannel?: string; readonly wakeKey?: string; readonly wakeIds?: readonly string[]; readonly wokeAt?: string };
 
 const TAIL_BYTES = 2 * 1024 * 1024;
@@ -71,11 +72,11 @@ export const ownerRows = (inbox: string, ownerId: string): OwnerRow[] => {
   for (const line of inbox.split("\n")) {
     if (!line.startsWith("{")) continue;
     try {
-      const r = JSON.parse(line) as { ts?: string; id?: string; kind?: string; via?: string; author_id?: string; scope?: string; channel_id?: string; content?: string; transcript?: string; answer?: string };
+      const r = JSON.parse(line) as { ts?: string; id?: string; kind?: string; via?: string; author_id?: string; scope?: string; channel_id?: string; content?: string; transcript?: string; answer?: string; qid?: string; thread?: string };
       const owner = r.kind === "answer" || r.via === "owner-webhook" || (!!ownerId && r.author_id === ownerId && r.scope !== "pair-bot");
       const at = Date.parse(r.ts ?? "");
       if (!owner || Number.isNaN(at)) continue;
-      out.push({ id: r.id ?? r.ts ?? "", at, ...(r.channel_id ? { channel: r.channel_id } : {}), ...(r.scope ? { scope: r.scope } : {}), text: String(r.content || r.transcript || r.answer || "") });
+      out.push({ id: r.id ?? r.ts ?? "", at, ...(r.channel_id ? { channel: r.channel_id } : {}), ...(r.scope ? { scope: r.scope } : {}), ...(r.qid ? { qid: r.qid } : {}), ...(r.thread ? { thread: r.thread } : {}), text: String(r.content || r.transcript || r.answer || "") });
     } catch {}
   }
   return out;
@@ -122,7 +123,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   const errors = replies.filter((r) => r.error && r.at > lastGood);
   const blocked = errors.length > 0;
   const until = blocked ? retryAt(errors.at(-1)?.error ?? "") : undefined;
-  const waiting = rows.filter((r) => r.at > lastGood);
+  const waiting = await unansweredRows({ rows: rows.filter((r) => r.at > lastGood), cards: deps.answeredCards?.() ?? [], lead: { pane, path: file.path, title: sessionFor(sessions, pane)?.title ?? "" }, sessions, table, deps });
   const out: string[] = [];
   let next: LimitMark = mark;
   const save = (m: LimitMark): void => {

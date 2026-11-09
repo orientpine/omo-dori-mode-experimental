@@ -18,7 +18,7 @@ import { SUBMIT_TIMING } from "../src/submit.ts";
 import type { Lane } from "../src/registry.ts";
 import { argvSessionId, resolveSession } from "../src/session-id.ts";
 import { depsFor, fakeClock, launchReadyPath, NEW_AOE_ID, newWorld, RUNNING, sent, withState, type World } from "./fakes.ts";
-
+import "./lead-limit-evidence.test.ts";
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
 const MIN = 60_000;
 const LANE_ID = "abcdef1200112233";

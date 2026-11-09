@@ -1,13 +1,15 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { liveSessions, sessionFor } from "./aoe.ts";
+import type { AoeSession } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Question } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
 import { iso } from "./run.ts";
-import { procTable } from "./session-id.ts";
+import { procTable, SESSION_FILE } from "./session-id.ts";
+import type { Proc } from "./session-id.ts";
 
 // A card's answer reaches the session that asked only as one inbox row its monitor turns into an event. An event that
 // arrives while omo compacts the session's context is lost (2026-10-19: Q305 answered 20:37:23Z during the lead's
@@ -39,6 +41,161 @@ export const answerLine = (q: Question): string =>
 export const sawAnswer = (transcript: string, qid: string): boolean =>
   new RegExp(`\\\\*"qid\\\\*"\\s*:\\s*\\\\*"${qid}\\\\*"`).test(transcript) || transcript.includes(`[DORI] ANSWER ${qid} (`);
 
+// A herdr /clear starts a new transcript while the pane's argv still names the old one. Match the pane's current title
+// to the new session_info, never to a newer unrelated session in the same cwd; aoe transcripts without one use argv.
+const sessionName = (path: string): string | undefined => {
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(256 * 1024);
+    const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+    let name: string | undefined;
+    for (const line of buffer.toString("utf8", 0, bytes).split("\n")) {
+      if (!line.includes('"type":"session_info"')) continue;
+      try {
+        const entry = JSON.parse(line) as { name?: string };
+        if (entry.name) name = entry.name;
+      } catch {}
+    }
+    return name;
+  } finally {
+    closeSync(fd);
+  }
+};
+
+export const currentTranscript = (path: string, title: string): string => {
+  if (!title) return readFileSync(path, "utf8");
+  const dir = dirname(path);
+  const name = readdirSync(dir).filter((n) => SESSION_FILE.test(n)).sort().reverse().find((n) => sessionName(join(dir, n)) === title);
+  return readFileSync(name ? join(dir, name) : path, "utf8");
+};
+
+export type AnswerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly qid?: string; readonly thread?: string };
+type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string> };
+type SendCall = SendSpec & { readonly id: string; readonly at: number; sent: boolean };
+
+const flagValue = (args: readonly unknown[], name: string): string | undefined => {
+  const at = args.indexOf(name);
+  const value = at < 0 ? undefined : args[at + 1];
+  return typeof value === "string" ? value : undefined;
+};
+const qidsIn = (text: string): ReadonlySet<string> => new Set((text.match(/\bq\d+\b/gi) ?? []).map((q) => q.toUpperCase()));
+const specFromArgv = (argv: readonly unknown[]): SendSpec | undefined => {
+  if (argv[0] !== "dori") return undefined;
+  if (argv[1] === "send" && argv[2] === "discord") {
+    const to = flagValue(argv, "--to");
+    if (!to) return undefined;
+    const reply = flagValue(argv, "--reply");
+    return { to, ...(reply ? { reply } : {}), qids: qidsIn(argv.filter((part) => typeof part === "string").join(" ")) };
+  }
+  if (argv[1] === "thread" && argv[2] === "reply" && typeof argv[3] === "string" && argv[3].startsWith("discord:")) {
+    const reply = flagValue(argv, "--reply");
+    return { to: argv[3].slice("discord:".length), ...(reply ? { reply } : {}), qids: qidsIn(argv.filter((part) => typeof part === "string").join(" ")) };
+  }
+  return undefined;
+};
+const specFromShell = (command: string): SendSpec | undefined => {
+  const to = command.match(/--to\s+([\w-]+)/)?.[1] ?? command.match(/dori thread reply discord:([\w-]+)/)?.[1];
+  if (!to) return undefined;
+  const reply = command.match(/--reply\s+([\w-]+)/)?.[1];
+  return { to, ...(reply ? { reply } : {}), qids: qidsIn(command) };
+};
+const specsFromText = (text: string): SendSpec[] => {
+  const out: SendSpec[] = [];
+  for (const match of text.matchAll(/\[\s*"dori"\s*,\s*(?:"send"\s*,\s*"discord"|"thread"\s*,\s*"reply")[\s\S]*?\]/g)) {
+    try {
+      const parsed: unknown = JSON.parse(match[0]);
+      if (Array.isArray(parsed)) {
+        const spec = specFromArgv(parsed);
+        if (spec) out.push(spec);
+      }
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
+  }
+  const starts = [...text.matchAll(/\bdori send discord\b|\bdori thread reply discord:[\w-]+/g)].map((match) => match.index ?? -1).filter((at) => at >= 0);
+  starts.forEach((at, i) => {
+    const spec = specFromShell(text.slice(at, starts[i + 1] ?? text.length));
+    if (spec) out.push(spec);
+  });
+  return out;
+};
+const sendSpecs = (value: unknown): SendSpec[] => {
+  if (typeof value === "string") return specsFromText(value);
+  if (Array.isArray(value)) {
+    const direct = specFromArgv(value);
+    return direct ? [direct] : value.flatMap(sendSpecs);
+  }
+  if (value && typeof value === "object") return Object.values(value).flatMap(sendSpecs);
+  return [];
+};
+
+// Only an actual SENT/POSTED result of this session's own unambiguous tool call counts. A command alone, another Dori's
+// send, assistant narration, another tool's quoted log, or a second send in the same eval is not a receipt. Detached eval
+// results must name the originating cell id; one eval running multiple sends cannot prove which send succeeded.
+const sendCalls = (transcript: string): SendCall[] => {
+  const calls = new Map<string, SendCall>();
+  for (const line of transcript.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    let entry: { type?: string; timestamp?: string; customType?: string; content?: unknown; message?: { role?: string; toolCallId?: string; content?: { type?: string; id?: string; arguments?: unknown }[] } };
+    try {
+      entry = JSON.parse(line) as typeof entry;
+    } catch {
+      continue;
+    }
+    if (entry.type === "message" && entry.message?.role === "assistant") {
+      for (const part of entry.message.content ?? []) {
+        if (part.type !== "toolCall" || !part.id) continue;
+        const specs = sendSpecs(part.arguments ?? {});
+        const spec = specs.length === 1 ? specs[0] : undefined;
+        if (spec) calls.set(part.id, { id: part.id, at: Date.parse(entry.timestamp ?? ""), ...spec, sent: false });
+      }
+    } else if (entry.message?.role === "toolResult") {
+      if (!/\b(?:SENT|POSTED) \d{15,22}\b/.test(line)) continue;
+      const call = entry.message.toolCallId ? calls.get(entry.message.toolCallId) : undefined;
+      if (call) call.sent = true;
+    } else if (entry.type === "custom_message" && entry.customType === "senpi-codemode:notification" && typeof entry.content === "string") {
+      if (!/\b(?:SENT|POSTED) \d{15,22}\b/.test(entry.content)) continue;
+      const cell = entry.content.match(/Detached eval cell ([^\s]+) \(js\) completed\./)?.[1];
+      const call = cell ? calls.get(cell) : undefined;
+      if (call) call.sent = true;
+    }
+  }
+  return [...calls.values()];
+};
+
+export const discordAnswered = (transcript: string, row: AnswerRow): boolean =>
+  sendCalls(transcript).some((call) => call.sent && call.at >= row.at && (row.qid ? call.to === row.thread && call.qids.has(row.qid) : call.to === row.channel && call.reply === row.id));
+
+type UnansweredInput<T extends AnswerRow> = {
+  readonly rows: readonly T[];
+  readonly cards: readonly Question[];
+  readonly lead: { readonly pane: string; readonly path: string; readonly title: string };
+  readonly sessions: readonly AoeSession[];
+  readonly table: readonly Proc[];
+  readonly deps: FlowDeps;
+};
+
+export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput<T>): Promise<T[]> => {
+  const { rows, cards, lead, sessions, table, deps } = input;
+  const cardById = new Map(cards.map((q) => [q.id, q]));
+  const transcripts = new Map<string, string>();
+  const waiting: T[] = [];
+  for (const row of rows) {
+    const target = row.qid ? cardById.get(row.qid)?.tmux || lead.pane : lead.pane;
+    if (!transcripts.has(target)) {
+      const session = sessionFor(sessions, target);
+      const cwd = session?.path;
+      const file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table) : undefined;
+      transcripts.set(target, file ? currentTranscript(file.path, session?.title ?? "") : "");
+    }
+    const transcript = transcripts.get(target) ?? "";
+    if (row.qid && sawAnswer(transcript, row.qid)) continue;
+    if (discordAnswered(transcript, row)) continue;
+    waiting.push(row);
+  }
+  return waiting;
+};
+
 const sessionStart = (transcript: string): number => {
   const first = transcript.slice(0, transcript.indexOf("\n") >>> 0);
   try {
@@ -66,7 +223,7 @@ export const missedAnswersTick = async (deps: FlowDeps): Promise<string[]> => {
     if (!cwd) continue;
     if (!transcripts.has(pane)) {
       const file = await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, table);
-      transcripts.set(pane, file ? readFileSync(file.path, "utf8") : undefined);
+      transcripts.set(pane, file ? currentTranscript(file.path, sessionFor(sessions, pane)?.title ?? "") : undefined);
     }
     const text = transcripts.get(pane);
     // a session that started after the answer (a rollover) did not ask: the handover carries what it needs
