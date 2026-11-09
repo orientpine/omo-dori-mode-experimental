@@ -275,8 +275,9 @@ test("attach.sh focuses the lead's tab, then keeps trying herdr client until the
   // Given: no instance config, so the account's own ~/.dori/config.json
   const { dir, calls } = await attachWithFakes();
   const focus = `focus ${dir}/.dori/config.json ${dir}/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts`;
-  // Then: before every attach the lead is focused; all attaches are `herdr client`, none a plain `herdr`
-  expect(calls).toEqual([focus, "client", focus, "client", focus, "client"]);
+  const preflight = `focus ${dir}/.dori/config.json ${dir}/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts`;
+  // Then: each attach first checks whether an hc lead needs a core, then focuses the herdr lead and runs the client
+  expect(calls).toEqual([preflight, focus, "client", preflight, focus, "client", preflight, focus, "client"]);
 });
 
 test("attach.sh takes an instance account's ~/.<user>/config.json for the lead", async () => {
@@ -284,5 +285,6 @@ test("attach.sh takes an instance account's ~/.<user>/config.json for the lead",
   const user = (await Bun.$`id -un`.text()).trim();
   const { dir, calls } = await attachWithFakes({ [`.${user}/config.json`]: "{}" });
   // Then: that config, not ~/.dori/config.json
-  expect(calls[0]).toBe(`focus ${dir}/.${user}/config.json ${dir}/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts`);
+  expect(calls[0]).toBe(`focus ${dir}/.${user}/config.json ${dir}/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts`);
+  expect(calls[1]).toBe(`focus ${dir}/.${user}/config.json ${dir}/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts`);
 });

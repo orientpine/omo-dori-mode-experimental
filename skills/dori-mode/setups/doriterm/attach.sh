@@ -13,13 +13,16 @@
 account=${1:-}
 env='export XDG_RUNTIME_DIR=/run/user/$(id -u) PATH=$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin; '
 attach='c=$HOME/.$(id -un)/config.json; [ -f "$c" ] || c=$HOME/.dori/config.json
-leadof() { sed -n "s/.*\"leadPane\"[[:space:]]*:[[:space:]]*\"hc:\(t[1-9][0-9bcdfghjkmnpqrstvwxyz]*\)\".*/\1/p" "$c" 2>/dev/null | head -n 1; }
-lead=$(leadof)
-if [ -n "$lead" ]; then
-  echo "doriterm: $(id -un) lead hc:$lead; attaching read-only"
-  e=$HOME/.$(id -un)/dori.env
-  [ -f "$e" ] || e=$HOME/.dori/dori.env
-  core=$(DORI_CONFIG=$c DORI_ENV_FILE=$e "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts" "hc:$lead") || exit 1
+e=$HOME/.$(id -un)/dori.env
+[ -f "$e" ] || e=$HOME/.dori/dori.env
+unset DORI_LEAD_PANE DORI_LEAD_TMUX DORI_LEAD_AOE_ID
+resolved=$(DORI_CONFIG=$c DORI_ENV_FILE=$e "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts") || exit 1
+core=${resolved%% *}
+selected=${resolved#* }
+case $selected in
+  hc:*)
+  lead=${selected#hc:}
+  echo "doriterm: $(id -un) lead $selected; attaching read-only"
   if [ -n "$core" ]; then
     HC_SESSION=$core
     export HC_SESSION
@@ -28,7 +31,8 @@ if [ -n "$lead" ]; then
   fi
   unset HC_SOCKET
   exec hc attach --observe "$lead"
-fi
+  ;;
+esac
 DORI_CONFIG=$c "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts" || echo "doriterm: the lead tab was not focused; attaching anyway" >&2
 exec herdr client'
 while :; do

@@ -43,7 +43,12 @@ test("the bridges' hc calls go to the bridge host's core, not the core the host 
 
 test("attach.sh watches an hc lead read-only in the Dori's own core, never through herdr", async () => {
   const user = (await Bun.$`id -un`.text()).trim();
-  for (const [core, envText] of [["default", ""], ["agents", "HC_SESSION=agents\n"]]) {
+  for (const [core, envText, expectedLead] of [
+    ["default", "", "t4"],
+    ["agents", "HC_SESSION=agents\nDORI_LEAD_TMUX=hc:t7\n", "t7"],
+    ["agents", "HC_SESSION=agents\nDORI_LEAD_PANE=hc:t7\n", "t7"],
+    ["agents", "HC_SESSION=agents\nDORI_LEAD_TMUX=hc:t7\nDORI_LEAD_PANE=hc:t8\n", "t7"],
+  ]) {
     // Given: the config's lead is hc:t4, the account's dori.env chooses a named core (or none: the default core), and the
     // caller's HC_SESSION names another core
     const dir = scratch();
@@ -61,7 +66,7 @@ test("attach.sh watches an hc lead read-only in the Dori's own core, never throu
       stdout: "pipe", stderr: "pipe",
     });
     // When: the fake hc prints the attach; stop after that exact event, never after a delay
-    const expected = `hc session=${core} attach --observe t4`;
+    const expected = `hc session=${core} attach --observe ${expectedLead}`;
     const reader = child.stdout.getReader();
     let said = "";
     while (!said.includes(expected)) {
