@@ -4,7 +4,7 @@
 // from the lead's note (relayed by OkDori and YooDori in the pair room, and the note kept only the owner's newest 8).
 import { existsSync, readFileSync } from "node:fs";
 
-import { flat, quotesIn } from "./restatement.ts";
+import { flat } from "./restatement.ts";
 import { sessionFile } from "./rollover.ts";
 
 export type OwnerWord = { readonly at: string; readonly where: string; readonly text: string };
@@ -12,7 +12,8 @@ export type OwnerWord = { readonly at: string; readonly where: string; readonly 
 // the owner's messages a lead's note carries: all of the last OWNER_HOURS, newest last
 export const OWNER_HOURS = 24;
 // a Dori's post in the pair room handing over the owner's words: "형 원문 <link>" and his words in quotes (SKILL.md,
-// pair-route and pair-owner-relay); the original is in the other Dori's channel, so this inbox has only the relay
+// pair-route and pair-owner-relay); the original is in the other Dori's channel, so this inbox has only the relay, which
+// the note carries whole: a short quote ("배포 금지") or words outside the quotes can be the order (review of #416)
 const RELAY = /원문/;
 const LINK = /https:\/\/discord(?:app)?\.com\/channels\/\d+\/\d+\/\d+/;
 
@@ -32,7 +33,7 @@ export const recentOwnerWords = (inbox: string, ids: readonly string[], now: num
     if (ids.includes(row.author_id)) out.push({ at: row.ts ?? "", where: `${row.scope ?? "?"} ${row.room ?? row.channel_id ?? "-"}, message ${row.id ?? "-"}`, text });
     else if (row.scope === "pair-bot" && RELAY.test(text)) {
       const link = LINK.exec(text)?.[0];
-      out.push({ at: row.ts ?? "", where: `relayed in the pair room by ${row.author_id} (message ${row.id ?? "-"})${link ? `, the owner's original ${link}` : ""}`, text: quotesIn(text).join(" / ") || text.slice(0, 400) });
+      out.push({ at: row.ts ?? "", where: `relayed in the pair room by ${row.author_id} (message ${row.id ?? "-"})${link ? `, the owner's original ${link}` : ""}`, text });
     }
   }
   return out;

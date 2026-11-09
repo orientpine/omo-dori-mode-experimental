@@ -1066,6 +1066,8 @@ export const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane:
   // told when a monitor ends
   const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now()) : [];
   if (stopped.length) return { reasons: [`monitors stopped in ${pane} after the first check: ${stopped.join(", ")}`], session };
+  const dropped = facts.todos.length ? missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session) : [];
+  if (dropped.length) return { reasons: [`todos left the todo list of ${pane} after the first check: ${dropped.join(", ")}`], session };
   return { reasons: [], session, ...(shown.account ? { account: shown.account } : {}) };
 };
 

@@ -623,6 +623,9 @@ export const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Targe
   // remote tail whose ssh dropped), and a new session is not told when a monitor ends
   const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now()) : [];
   if (stopped.length) return { reasons: [`monitors stopped in ${to.pane} after the first check: ${stopped.join(", ")}`], session };
+  // and the todos: a new lead can put them in and then write its list anew while it finishes its first turn (review of #416)
+  const dropped = facts.todos.length ? missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session) : [];
+  if (dropped.length) return { reasons: [`todos left the todo list of ${to.pane} after the first check: ${dropped.join(", ")}`], session };
   return { reasons: [], session };
 };
 

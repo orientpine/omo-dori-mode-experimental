@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { verify } from "../src/handover.ts";
+import { ackHandover, verify } from "../src/handover.ts";
 import { missingTodos, recentOwnerWords } from "../src/handover-todos.ts";
 import { verifyLane } from "../src/lane-handover.ts";
 import { sessionDirFor } from "../src/session-id.ts";
-import { RUNNING } from "./fakes.ts";
+import { depsFor, newWorld, RUNNING, sent } from "./fakes.ts";
 
 // ZzangDori's lead handover 20261106-213407 (audit 2026-11-07): the owner wrote 64 messages in the 24 h before it and the
 // note kept the newest 8, and two of his orders that OkDori and YooDori relayed in the pair room with "형 원문 <link>" were
@@ -16,6 +16,8 @@ import { RUNNING } from "./fakes.ts";
 const OWNER = "280680578314010625";
 const OKDORI = "okdori-bot";
 const NOW = Date.parse("2026-11-06T21:34:00Z");
+// a short quote and words outside the quotes are his order too, and a relay runs past 400 characters (review of #416)
+const RELAY = `짱돌, 형 요청이야(형 원문 https://discord.com/channels/1/2/3 , 음성): "윈도우에서도 돌게 새로 만들라고 해" 그리고 "배포 금지".\n배경: ${"오픈방 사람이 리눅스에서만 된다고 막혔어. ".repeat(20)}끝까지 읽어야 하는 마지막 줄.`;
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "handover-todos-"));
@@ -28,15 +30,15 @@ test("the note carries every owner message of the last 24 h and the owner's word
   const own = Array.from({ length: 10 }, (_, i) => ({ ts: `2026-11-06T2${Math.floor(i / 6)}:${String((i % 6) * 9).padStart(2, "0")}:00Z`, id: `o${i}`, scope: "channel", channel_id: "c1", author_id: OWNER, content: `owner order ${i}` }));
   const rows = [
     { ts: "2026-11-05T20:00:00Z", id: "old", scope: "channel", channel_id: "c1", author_id: OWNER, content: "from before the window" },
-    { ts: "2026-11-06T08:24:34Z", id: "relay-1", scope: "pair-bot", channel_id: "pair", author_id: OKDORI, content: '짱돌, 형 요청이야(형 원문 https://discord.com/channels/1/2/3 , 음성): "윈도우에서도 돌게 새로 만들라고 해".\n배경: 오픈방 사람이 막혔어.' },
+    { ts: "2026-11-06T08:24:34Z", id: "relay-1", scope: "pair-bot", channel_id: "pair", author_id: OKDORI, content: RELAY },
     { ts: "2026-11-06T09:00:00Z", id: "p2", scope: "pair-bot", channel_id: "pair", author_id: OKDORI, content: "짱돌, 4eae 부하 내려갔어. 이제 ci 돌려도 돼." },
     ...own,
   ];
   writeFileSync(inbox, `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
   // When
   const words = recentOwnerWords(inbox, [OWNER], NOW);
-  // Then: all ten of his own, the relayed order with the Dori that relayed it and his original's link, no plain pair talk
-  expect(words.map((w) => w.text)).toEqual(["윈도우에서도 돌게 새로 만들라고 해", ...own.map((o) => o.content)]);
+  // Then: all ten of his own, the whole relay with the Dori that relayed it and his original's link, no plain pair talk
+  expect(words.map((w) => w.text)).toEqual([RELAY.replace(/\s+/g, " "), ...own.map((o) => o.content)]);
   expect(words[0]?.where).toBe(`relayed in the pair room by ${OKDORI} (message relay-1), the owner's original https://discord.com/channels/1/2/3`);
 });
 
@@ -100,4 +102,33 @@ test("a lane's handover check holds the move while an open todo of the old sessi
   // Then
   expect(lines).toContain("HANDOVER_TODOS_OK 2 in the todo list of new-lane");
   expect(carried.reasons).toEqual(["the first turn of new-lane was still running after the verify time; the probe was not sent"]);
+});
+
+// review of #416: a new session can put the note's todos into its list, pass the first check, and then write its list anew
+// while it finishes its first turn; the check just before the commit reads the list again
+test("a todo list written anew after the first check holds the move, for the lead and for a lane", async () => {
+  for (const who of ["lead", "lane"] as const) {
+    // Given: the new session holds the old todo at the first check; once it acked a probe, its list is one of its own
+    const w = newWorld();
+    const pane = `new-${who}`;
+    const inbox = join(dir, `inbox-${who}.jsonl`);
+    const sessionsDir = newSession(["짱돌 리드를 Opus high로 전환하기"]);
+    w.tmux = [pane];
+    w.screens[pane] = SCREEN;
+    const sleep = async () => {
+      const ids = [...[...sent(w), existsSync(inbox) ? readFileSync(inbox, "utf8") : ""].join("\n").matchAll(/HANDOVER_PROBE (n\d+)/g)].map((m) => m[1] ?? "");
+      for (const id of ids) ackHandover(dir, id, pane, "2026-11-06T21:40:00Z");
+      if (ids.length) newSession(["a plan of its own"]);
+    };
+    let n = 0;
+    const deps = { ...depsFor(w, { now: () => 0, sleep }, dir, { backend: "aoe", sessionsDir }), sessionOf: async () => "new-sid", alive: () => true, home: "/home/test", inbox, routedPane: async () => pane, nonce: () => `n${++n}` } as never;
+    const todos = ["전환: 짱돌 리드를 Opus high로 전환하기 (in_progress)"];
+    // When
+    const r =
+      who === "lead"
+        ? await verify(deps, { cwd: CWD, monitors: [], watchers: [], todos } as never, { pane, aoeId: "", session: "" }, 1, "", () => {})
+        : await verifyLane(deps, { cwd: CWD, model: "anthropic-subscription/claude-opus-5-5:high", thinking: "high", monitors: [], todos } as never, pane, 1, "", () => {});
+    // Then
+    expect([who, r.reasons]).toEqual([who, [`todos left the todo list of ${pane} after the first check: 짱돌 리드를 Opus high로 전환하기`]]);
+  }
 });
