@@ -92,19 +92,24 @@ const held = (states: Record<number, "S" | "T" | "bg">): ((pid: number) => JobSt
   if (!s) return undefined;
   return { pid, state: s === "T" ? "T" : "S", ppid: 100, pgrp: pid, session: 100, tpgid: s === "bg" ? 100 : pid };
 };
+const noSignal: SuspendIO["signal"] = () => {
+  throw new Error("this check sends no signal");
+};
 const shellOf = (pid: number): JobStat | undefined => (pid === 100 ? { pid: 100, state: "S", ppid: 1, pgrp: 100, session: 100, tpgid: 100 } : undefined);
 
-test("a lane whose omo stays stopped reads as stopped once, the lead's own too; nothing is typed or signalled, and running again ends it", async () => {
+test("a lane whose omo stays stopped reads as stopped once, the lead's own too; at a screen with no empty prompt nothing is typed or signalled, and running again ends it", async () => {
   // Given: the lane's agent 200 is stopped (T) and the lead's agent 300 is a background job of its shell
   const { w, deps } = world({ "aoe_hs_aaaa1111": "live" });
   await deps(T0).registry.write(laneOf("handover-simplify", "aoe_hs_aaaa1111"));
   const states: Record<number, "S" | "T" | "bg"> = { 200: "T", 300: "bg" };
-  const io: SuspendIO = { agentOf: async (pane) => (pane === "aoe_hs_aaaa1111" ? 200 : pane === "lead:p1" ? 300 : undefined), stat: (pid) => held(states)(pid) ?? shellOf(pid) };
+  const io: SuspendIO = { agentOf: async (pane) => (pane === "aoe_hs_aaaa1111" ? 200 : pane === "lead:p1" ? 300 : undefined), signal: noSignal, jobGroups: async () => [300], stat: (pid) => held(states)(pid) ?? shellOf(pid) };
   const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
   // When / Then: the first check only notes it, the second (30 s later) names both, the lead first
   expect(await tick(T0)).toEqual([]);
   expect(await tick(T0 + 30 * S)).toEqual([
     "LANE_SUSPENDED lead lead:p1: agent 300 background (state S, tty foreground group 100, its group 300); its screen is stale, so it reads as stopped, not busy",
+    "LEAD_RESUME_FAIL lead:p1 no empty shell prompt under its Stopped line, so nothing was typed; type fg in lead:p1 by hand",
+    "LEAD_RESUME_NOTICE lead:p1 NOT_POSTED no bot token",
     "LANE_SUSPENDED handover-simplify aoe_hs_aaaa1111: agent 200 stopped (state T, tty foreground group 200, its group 200); its screen is stale, so it reads as stopped, not busy",
   ]);
   // nothing goes to the lead's pane and no key or signal reaches any pane
@@ -130,7 +135,7 @@ test("an agent a handover froze on purpose is never taken for a suspended lane",
   writeFrozen(state.dir, { pane: "aoe_old_cccc3333", aoeId: "x", at: new Date(T0).toISOString(), agentPid: 201, pids: [201] });
   mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
   writeFileSync(join(state.dir, "handover", "lanes", "moving.lock"), JSON.stringify({ pid: 4242, at: new Date(T0).toISOString() }));
-  const io: SuspendIO = { agentOf: async (pane) => (pane === "aoe_mv_bbbb2222" ? 200 : pane === "aoe_old_cccc3333" ? 201 : undefined), stat: (pid) => held({ 200: "T", 201: "T" })(pid) ?? shellOf(pid) };
+  const io: SuspendIO = { agentOf: async (pane) => (pane === "aoe_mv_bbbb2222" ? 200 : pane === "aoe_old_cccc3333" ? 201 : undefined), signal: noSignal, stat: (pid) => held({ 200: "T", 201: "T" })(pid) ?? shellOf(pid) };
   const tick = (ms: number) => laneSuspendTick(deps(ms), io, (pid) => pid === 4242);
   expect(await tick(T0)).toEqual([]);
   expect(await tick(T0 + 30 * S)).toEqual([]);
@@ -149,6 +154,7 @@ test("a failed lookup or an unreadable process keeps the mark, a watch restart d
       if (lookup === "fails") throw new Error("herdr down");
       return pane === "w5:p7" ? agent : undefined;
     },
+    signal: noSignal,
     stat: (pid) => (lookup === "unreadable" ? undefined : held(states)(pid) ?? shellOf(pid)),
   };
   const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
@@ -176,7 +182,7 @@ test("an agent replaced between the two checks is confirmed afresh: the new one 
   const { deps } = world({});
   await deps(T0).registry.write(laneOf("swap", "w5:p8"));
   let agent = 200;
-  const io: SuspendIO = { agentOf: async (pane) => (pane === "w5:p8" ? agent : undefined), stat: (pid) => held({ 200: "T", 201: "T" })(pid) ?? shellOf(pid) };
+  const io: SuspendIO = { agentOf: async (pane) => (pane === "w5:p8" ? agent : undefined), signal: noSignal, stat: (pid) => held({ 200: "T", 201: "T" })(pid) ?? shellOf(pid) };
   const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
   expect(await tick(T0)).toEqual([]);
   agent = 201;

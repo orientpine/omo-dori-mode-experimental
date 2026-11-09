@@ -6,7 +6,8 @@ import { pidAlive } from "./background.ts";
 import { handoverRunning } from "./freshness.ts";
 import { frozenPanes } from "./frozen.ts";
 import { herdrAgentPid, isHerdrPane } from "./herdr.ts";
-import { type Hold, holdOf, readStat, type StatOf } from "./job-control.ts";
+import { type Hold, holdOf, readStat } from "./job-control.ts";
+import { leadResumeNoticeTick, leadResumeTick, leadSignal, type LeadResumeIO } from "./lead-resume.ts";
 import { procTable, topAgent } from "./session-id.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { submitToPane } from "./panes.ts";
@@ -50,13 +51,12 @@ export const laneDiedText = (key: string, reason: string): string => `[DORI] 레
 // - LANE_SUSPENDED <key> <pane>: agent <pid> stopped|background, once seen so on two checks CONFIRM_MS apart, so a lane
 //   left stopped reads as stopped in the watch log instead of busy; a pane a handover froze on purpose (a frozen record,
 //   or a handover of that lane or of the lead running) is left alone;
-// - this check only reads: it sends no signal and types nothing into any pane, the lead's included;
+// - for a lane this check only reads: it sends no signal and types nothing into its pane; the lead is brought back (lead-resume.ts);
 // - a mark per pane (<state>/suspended/<pane>.json, on disk so a restarted watch keeps it) names each incident once; it
 //   goes once that agent runs again (LANE_RUNNING_AGAIN). Another agent held in the pane is a new incident. A failed
 //   lookup or an unreadable process is no news: the mark stays.
-export type SuspendIO = {
+export type SuspendIO = LeadResumeIO & {
   readonly agentOf: (pane: string) => Promise<number | undefined>;
-  readonly stat: StatOf;
 };
 
 type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold };
@@ -64,6 +64,7 @@ type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: s
 export const suspendIO = (deps: FlowDeps): SuspendIO => ({
   agentOf: async (pane) => (isHerdrPane(pane) ? herdrAgentPid(deps.run, pane) : topAgent(await procTable(deps.run), await tmuxPanePid(deps.run, pane))?.pid),
   stat: readStat,
+  signal: leadSignal,
 });
 
 const markFile = (stateDir: string, pane: string): string => join(stateDir, "suspended", `${pane.replace(/[^\w.-]/g, "_")}.json`);
@@ -82,11 +83,12 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
   const out: string[] = [];
   const now = deps.clock.now();
   const { stateDir, leadPane: lead, ignorePanes } = deps.config;
-  const frozen = new Set(frozenPanes(stateDir));
   const lanes = (await deps.registry.open()).filter((l) => l.pane && l.pane !== lead && !ignorePanes.includes(l.pane) && statusOf(l) !== "paused");
   const targets = [...(lead ? [{ who: "lead" as const, key: "lead", pane: lead }] : []), ...lanes.map((l) => ({ who: "lane" as const, key: l.key, pane: l.pane as string }))];
   for (const t of targets) {
-    if (frozen.has(t.pane) || handoverRunning(stateDir, t.who, t.key, alive)) {
+    if (t.who === "lead") out.push(...(await leadResumeNoticeTick(deps, t.pane)));
+    const off = (): boolean => frozenPanes(stateDir).includes(t.pane) || handoverRunning(stateDir, t.who, t.key, alive);
+    if (off()) {
       seenHeld.delete(t.pane);
       continue;
     }
@@ -106,7 +108,10 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
       }
       continue;
     }
-    if (marked?.pid === pid) continue;
+    if (marked?.pid === pid) {
+      if (t.who === "lead") out.push(...(await leadResumeTick(deps, io, t.pane, pid, marked.at, off)));
+      continue;
+    }
     // another agent in the pane since the first check starts its own confirmation
     const first = seenHeld.get(t.pane);
     if (first?.pid !== pid) {
@@ -117,8 +122,10 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
     seenHeld.delete(t.pane);
     const s = io.stat(pid);
     mkdirSync(join(stateDir, "suspended"), { recursive: true });
-    writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at: new Date(now).toISOString(), hold } satisfies SuspendMark));
+    const at = new Date(now).toISOString();
+    writeFileSync(file, JSON.stringify({ pane: t.pane, pid, at, hold } satisfies SuspendMark));
     out.push(`LANE_SUSPENDED ${t.key} ${t.pane}: agent ${pid} ${hold} (state ${s?.state ?? "?"}, tty foreground group ${s?.tpgid ?? "?"}, its group ${s?.pgrp ?? "?"}); its screen is stale, so it reads as stopped, not busy`);
+    if (t.who === "lead") out.push(...(await leadResumeTick(deps, io, t.pane, pid, at, off)));
   }
   return out;
 };

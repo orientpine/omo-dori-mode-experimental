@@ -40,6 +40,9 @@ export type DiscordWords = {
   readonly leadBackText: string;
   // the owner's line when dori watch starts a lead that was down (lead-down.ts; {since}: when it went down, discord.timeZone)
   readonly leadDownText: string;
+  // the owner's line when dori watch brought a stopped lead back, or could not ({reason}) (lead-resume.ts)
+  readonly leadResumedText: string;
+  readonly leadResumeFailText: string;
   // minutes a done (✅) thread in DORI_DISCORD_CHANNEL stays quiet before freshness archives it (0: never; a thread an open
   // lane, an open card or a pending rename holds is left open)
   readonly autoArchiveMin: number;
@@ -86,6 +89,8 @@ export const defaultDiscordWords: DiscordWords = {
   leadLimitNoTimeText: "I can't answer right now: my model calls fail ({reason}). I'll read your messages once they work again.",
   leadBackText: "My model works again; reading your messages now.",
   leadDownText: "My session went down at {since}; I'm starting it again in the same conversation and will answer in a few minutes.",
+  leadResumedText: "My session had stopped; it runs again and I'm reading your messages now.",
+  leadResumeFailText: "My session has stopped and I could not start it again ({reason}). Your messages wait until it runs.",
   autoArchiveMin: 30,
   working: "working",
   waiting: "waiting",
