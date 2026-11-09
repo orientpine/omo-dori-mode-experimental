@@ -20,8 +20,10 @@ import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 // only the owner's rows and only asks for a reply, so a pair-bot row that never reached the lead went unseen.
 // Each dori watch tick reads, without a model, the session the lead's agent runs now:
 // - heard: an owner, pair or pair-bot row of the last 24 hours, newer than the session, whose own id is in a delivered
-//   monitor event or a raw inbox row in the session's transcript (a reply_to id or a queued work-custody record does not
-//   count); a card answer redelivered by missedAnswersTick counts through sawAnswer;
+//   monitor event or a raw inbox row in the session's transcript, or whose dori send --reply tool call has a real SENT
+//   receipt (a reply_to id by itself or a queued work-custody record does not count); heard ids persist in lead-inbox.json
+//   across compaction; a card answer redelivered by missedAnswersTick counts through sawAnswer. The first tick with a live
+//   monitor baselines the existing backlog so only rows that arrive afterwards can alert;
 // - watched: omo's monitor manifest of that session holds a command monitor on the inbox file whose process lives, not
 //   suspended, expired or with its delivery paused. /new and /resume select the transcript omo wrote last, not argv's.
 // LEAD_INBOX_UNHEARD when a row stayed unheard leadInboxMin, else LEAD_INBOX_UNWATCHED when the session had no live inbox
@@ -36,7 +38,7 @@ const REPEAT_MS = 30 * 60_000;
 
 type Kind = "owner" | "pair" | "pair-bot";
 type Row = { readonly id: string; readonly at: number; readonly kind: Kind; readonly text: string; readonly qid?: string };
-type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number };
+type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[] };
 type Entry = ReturnType<typeof readManifest>[number] & { readonly deliveryPaused?: boolean };
 
 // the rows the lead must hear: the owner's (lead-limit.ts ownerRows) and every row of the pair channel
@@ -85,23 +87,38 @@ const ownerWokeIds = (deps: FlowDeps, pane: string): ReadonlySet<string> => {
   }
 };
 
-// A monitor event carries the row's own id. A reply_to id, or an id the lead merely quoted, is not delivery evidence;
-// a raw inbox row in a tool result is evidence because the lead read it.
+// A monitor event carries the row's own id. A reply_to id by itself, or an id the lead merely quoted, is not delivery
+// evidence; a raw inbox row in a tool result is evidence because the lead read it. A dori send --reply tool call counts
+// only when its own tool result (or its eval completion) has a real SENT receipt; queued work-custody records are ignored.
 const deliveredIds = (transcript: string): ReadonlySet<string> => {
   const ids = new Set<string>();
+  const replyByCall = new Map<string, string>();
   const collect = (text: string): void => {
     for (const m of text.matchAll(/"id"\s*:\s*"([\w-]+)"/g)) if (m[1]) ids.add(m[1]);
   };
   for (const line of transcript.split("\n")) {
     try {
-      const e = JSON.parse(line) as { type?: string; customType?: string; content?: unknown; message?: { role?: string; content?: unknown } };
+      const e = JSON.parse(line) as { type?: string; customType?: string; content?: unknown; message?: { role?: string; toolCallId?: string; content?: unknown } };
       if (e.customType === "work-custody") continue;
       if (e.type === "custom_message" && e.customType === "senpi-monitor:notification" && typeof e.content === "string") collect(e.content);
+      const parts = Array.isArray(e.message?.content) ? e.message.content : [];
+      if (e.type === "message" && e.message?.role === "assistant") {
+        for (const part of parts) {
+          if (typeof part !== "object" || part === null || !("type" in part) || part.type !== "toolCall" || !("id" in part) || typeof part.id !== "string") continue;
+          const args = "arguments" in part ? JSON.stringify(part.arguments) : "input" in part ? JSON.stringify(part.input) : "";
+          if (!args.includes("dori send")) continue;
+          const target = /--reply\s+(\d{6,})/.exec(args)?.[1];
+          if (target) replyByCall.set(part.id, target);
+        }
+      }
       if (e.type !== "message" || e.message?.role !== "toolResult") continue;
-      const parts = Array.isArray(e.message.content) ? e.message.content : [];
       for (const part of parts) {
         const text = typeof part === "object" && part !== null && "text" in part && typeof part.text === "string" ? part.text : "";
         if (text.includes('"channel_id"') && text.includes('"scope"')) collect(text);
+        if (!/\bSENT \d{6,}\b/.test(text)) continue;
+        const cell = /\bEval cell ([\w-]+) \(js\) is completed\./.exec(text)?.[1];
+        const target = (e.message.toolCallId ? replyByCall.get(e.message.toolCallId) : undefined) ?? (cell ? replyByCall.get(cell) : undefined);
+        if (target) ids.add(target);
       }
     } catch {}
   }
@@ -171,16 +188,27 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
   const text = readFileSync(file.path, "utf8");
   const start = Date.parse(/"timestamp":"([^"]+)"/.exec(text)?.[1] ?? "");
   const told = ownerWokeIds(deps, pane);
+  const rows = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId);
   const delivered = deliveredIds(text);
   const deliveredText = text.split("\n").filter((line) => !line.includes('"customType":"work-custody"')).join("\n");
-  const unheard = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId).filter((r) => now - r.at < DAY_MS && !(r.at < start) && !(r.kind === "owner" && told.has(r.id)) && !delivered.has(r.id) && !(r.qid && sawAnswer(deliveredText, r.qid))).sort((a, b) => a.at - b.at);
+  const candidates = rows.filter((r) => now - r.at < DAY_MS && !(r.at < start)).sort((a, b) => a.at - b.at);
+  const candidateIds = new Set(candidates.map((r) => r.id));
   const besideLog = join(dirname(file.path), "extensions", "terminal", `${session}.json`);
   const problem = watchProblem(readManifest(existsSync(besideLog) ? besideLog : manifestPath(sessionsDir, cwd, session)), inbox.path, now, alive);
 
   const old = readMark(deps);
-  const mark: Mark = old?.pane === pane && old.session === session && (old.agentPid === undefined || old.agentPid === file.pid) ? { ...old, agentPid: file.pid, log: file.path } : { pane, session, agentPid: file.pid, log: file.path };
+  const sameSession = old?.pane === pane && old.session === session && (old.agentPid === undefined || old.agentPid === file.pid);
+  const mark: Mark = sameSession ? { ...old, agentPid: file.pid, log: file.path } : { pane, session, agentPid: file.pid, log: file.path };
+  const heard = new Set([...(sameSession ? (old?.heardIds ?? []) : [])].filter((id) => candidateIds.has(id)));
+  for (const row of candidates) {
+    if (delivered.has(row.id) || (row.kind === "owner" && told.has(row.id)) || (row.qid && sawAnswer(deliveredText, row.qid))) heard.add(row.id);
+  }
+  if (!problem && (!sameSession || old?.heardIds === undefined)) for (const row of candidates) heard.add(row.id);
+  const unheard = candidates.filter((row) => !heard.has(row.id));
+  const hasHeardState = !problem || (sameSession && old?.heardIds !== undefined);
+  const heardState = hasHeardState ? { heardIds: [...heard].sort() } : {};
   const missingSince = problem ? (mark.missingSince ?? now) : undefined;
-  let next: Mark = { pane, session, agentPid: file.pid, log: file.path, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
+  let next: Mark = { pane, session, agentPid: file.pid, log: file.path, ...heardState, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
   const out: string[] = [];
   const oldest = unheard[0];
   const newest = unheard.at(-1);
@@ -204,7 +232,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
     if (ok) next = { ...next, key: incident.key, typedAt: now };
     out.push(`${incident.head}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane, typed again next tick"}`);
   } else if (!incident && !problem && !unheard.length && mark.key) {
-    next = { pane, session, agentPid: file.pid, log: file.path };
+    next = { pane, session, agentPid: file.pid, log: file.path, ...heardState };
     out.push(`LEAD_INBOX_OK ${pane} session ${session} hears its inbox again`);
   }
   if (JSON.stringify(next) !== JSON.stringify(old)) writeFileSync(markPath(deps), `${JSON.stringify(next)}\n`);

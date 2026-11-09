@@ -37,6 +37,7 @@ beforeEach(() => {
   manifest = join(dir, "extensions", "terminal", `${SID}.json`);
   inbox = join(state.dir, "inbox.jsonl");
   writeFileSync(inbox, "");
+  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: SID, agentPid: 11, log: transcript, heardIds: [] }));
 });
 afterEach(() => state.done());
 

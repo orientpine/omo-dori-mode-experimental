@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { DoriConfig } from "../src/config.ts";
@@ -41,6 +41,7 @@ beforeEach(() => {
   manifest = join(dir, "extensions", "terminal", `${SID}.json`);
   inbox = join(state.dir, "inbox.jsonl");
   writeFileSync(inbox, "");
+  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: SID, agentPid: 11, log: transcript, heardIds: [] }));
 });
 afterEach(() => state.done());
 
@@ -53,8 +54,8 @@ const row = (ms: number, id: string, extra: object = {}) =>
 // what omo writes when a monitor delivers a row: the row's JSON inside the event text
 const heard = (id: string) =>
   appendFileSync(transcript, `${JSON.stringify({ type: "custom_message", customType: "senpi-monitor:notification", content: `<system-reminder>Monitor event(inbox): ${JSON.stringify({ id })}</system-reminder>` })}\n`);
-const queued = (id: string) =>
-  appendFileSync(transcript, `${JSON.stringify({ type: "custom", customType: "work-custody", data: { state: "queued", payload: { message: { customType: "senpi-monitor:notification", content: `Monitor event(inbox): ${JSON.stringify({ id })}` } } } })}\n`);
+const queued = (id: string, replyTo?: string) =>
+  appendFileSync(transcript, `${JSON.stringify({ type: "custom", customType: "work-custody", data: { state: "queued", payload: { message: { customType: "senpi-monitor:notification", content: `Monitor event(inbox): ${JSON.stringify({ id, ...(replyTo ? { reply_to: replyTo } : {}) })}` } } } })}\n`);
 const monitor = (patch: object = {}) => ({ monitorId: "mon_A", description: "받은편지", runtimeKind: "command", command: `tail -n 0 -F ${inbox}`, persistent: true, suspended: false, deliveryPaused: false, expiresAt: null, createdAt: T0 - 200 * MIN, runtime: { pid: process.pid }, ...patch });
 const monitors = (...m: object[]) => writeFileSync(manifest, JSON.stringify({ version: 1, sessionId: SID, monitors: m }));
 
@@ -82,6 +83,17 @@ test("a pair-bot or owner row the lead's session never got is typed into the lea
   expect(sent(world)).toHaveLength(1);
 });
 
+test("a live monitor's first tick baselines the existing 83-row backlog and alerts only for a new undelivered row", async () => {
+  rmSync(join(state.dir, "lead-inbox.json"), { force: true });
+  monitors(monitor());
+  for (let i = 0; i < 83; i++) row(T0 - (84 - i) * MIN, `p-backlog-${i}`);
+  expect(await leadInboxTick(deps(T0))).toEqual([]);
+  const baseline = JSON.parse(readFileSync(join(state.dir, "lead-inbox.json"), "utf8")) as { heardIds?: string[] };
+  expect(baseline.heardIds).toHaveLength(83);
+  row(T0 + MIN, "p-new");
+  expect((await leadInboxTick(deps(T0 + 11 * MIN)))[0]).toContain(`1 inbox row(s) (pair-bot 1) never reached session ${SID}, oldest p-new`);
+});
+
 test("no live inbox monitor in the lead's session (none, its process gone, delivery paused) is typed once after leadInboxMin and again after the repeat window", async () => {
   const cases: [string, object[]][] = [
     ["no monitor on inbox.jsonl", [monitor({ command: "tail -F /tmp/lanes.log", description: "lanes" })]],
@@ -103,6 +115,15 @@ test("no live inbox monitor in the lead's session (none, its process gone, deliv
   }
   monitors(monitor());
   expect(await leadInboxTick(deps(T0 + 41 * MIN))).toEqual([`LEAD_INBOX_OK ${LEAD} session ${SID} hears its inbox again`]);
+});
+
+test("a first tick without a live monitor keeps UNWATCHED and does not baseline the backlog", async () => {
+  rmSync(join(state.dir, "lead-inbox.json"), { force: true });
+  monitors();
+  expect(await leadInboxTick(deps(T0))).toEqual([]);
+  expect((await leadInboxTick(deps(T0 + 10 * MIN)))[0]).toContain("LEAD_INBOX_UNWATCHED");
+  const mark = JSON.parse(readFileSync(join(state.dir, "lead-inbox.json"), "utf8")) as { heardIds?: string[] };
+  expect(mark.heardIds).toBeUndefined();
 });
 
 test("a line that did not reach the lead is logged and typed again next tick; a new session starts its own grace; leadInboxMin 0 never checks", async () => {
@@ -148,6 +169,29 @@ test("/new in the same agent: the session whose transcript omo wrote last is che
   expect(await leadInboxTick({ ...base, run })).toEqual([]);
   world.ps = world.ps.replace("\n12 11 bun process-entry.js", "");
   expect(await leadInboxTick({ ...base, run })).toEqual([]);
+});
+
+test("heard ids survive transcript compaction", async () => {
+  monitors(monitor());
+  row(T0 - 20 * MIN, "p-compacted");
+  heard("p-compacted");
+  expect(await leadInboxTick(deps(T0))).toEqual([]);
+  writeFileSync(transcript, `${JSON.stringify({ type: "session", id: SID, timestamp: iso(T0 - 300 * MIN) })}\n`);
+  expect(await leadInboxTick(deps(T0 + 20 * MIN))).toEqual([]);
+});
+
+test("a SENT reply receipt marks its request heard but a queued reply_to does not", async () => {
+  monitors(monitor());
+  row(T0 - 20 * MIN, "1569430000000000001");
+  row(T0 - 18 * MIN, "1569430000000000003");
+  for (const [callId, target] of [["call-sent", "1569430000000000001"], ["call-queued", "1569430000000000003"]]) {
+    appendFileSync(transcript, `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: callId, name: "eval", arguments: { code: `await tool.bash({ command: "dori send discord --reply ${target} --text-file /tmp/reply.txt" })` } }] } })}\n`);
+  }
+  appendFileSync(transcript, `${JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "completion-watcher", content: [{ type: "text", text: "Eval cell call-sent (js) is completed.\nSENT 1569430000000000002 len=40 sha=1234abcd first=\"answered\"" }] } })}\n`);
+  const out = await leadInboxTick(deps(T0));
+  expect(out).toHaveLength(1);
+  expect(out[0]).toContain("1 inbox row(s) (pair-bot 1)");
+  expect(out[0]).toContain("oldest 1569430000000000003");
 });
 
 test("a delivered reply does not mark the request it names heard", async () => {
