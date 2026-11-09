@@ -82,6 +82,9 @@ export type DoriConfig = {
   // dori watch: minutes an owner message may wait with no working reply from the lead before one LEAD_OWNER_WAITING line
   // is typed into the lead pane (lead-limit.ts; 0: never typed, the owner's limit notice still goes out)
   readonly leadWakeMin: number;
+  // dori watch: minutes an owner, pair or pair-bot inbox row may stay unheard by the lead's session, or that session may run
+  // no live inbox monitor, before one LEAD_INBOX_UNHEARD / LEAD_INBOX_UNWATCHED line is typed into the lead (lead-inbox.ts; 0: never)
+  readonly leadInboxMin: number;
   // dori watch: minutes the lead's tmux session may be gone (or its pane dead) before dori watch starts it again in the same
   // conversation and tells the owner once (lead-down.ts; 0: never)
   readonly leadReviveMin: number;

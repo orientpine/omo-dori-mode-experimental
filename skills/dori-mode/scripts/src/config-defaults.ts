@@ -44,6 +44,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   autoturnResumeMax: 3,
   autoturnLongTurns: 300,
   leadWakeMin: 10,
+  leadInboxMin: 10,
   leadReviveMin: 2,
   postAfterMin: 20,
   closeAfterMin: 5,

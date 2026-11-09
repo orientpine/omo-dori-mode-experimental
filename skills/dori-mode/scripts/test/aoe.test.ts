@@ -1175,7 +1175,7 @@ const limitWorld = () => {
   const posts: string[][] = [];
   const deps = (ms: number, patch: Partial<DoriConfig> = {}) => ({
     ...w.deps(ms),
-    config: { ...w.deps(ms).config, ...patch },
+    config: { ...w.deps(ms).config, leadInboxMin: 0, ...patch },
     ownerInbox: { path: inbox, ownerId: OWNER, ownerChannel: "C-OWNER" },
     postOwner: async (channel: string, text: string) => (posts.push([channel, text]), `m${posts.length}`),
   });
