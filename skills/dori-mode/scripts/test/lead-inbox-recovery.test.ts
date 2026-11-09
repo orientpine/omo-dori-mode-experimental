@@ -88,3 +88,29 @@ test("a custom --session-dir still gets the inbox check and its own manifest", a
   expect((await leadInboxTick(deps(T0)))[0]).toContain(`never reached session ${NEW_SID}`);
   expect(sent(world)).toHaveLength(1);
 });
+
+test("a selector-resolved session stays checked after its identifying child exits", async () => {
+  const dir = join(state.dir, "sessions", "--home-test-dori--");
+  const next = join(dir, `2026-01-01T07-00-00-000Z_${NEW_SID}.jsonl`);
+  writeFileSync(next, `${JSON.stringify({ type: "session", id: NEW_SID, timestamp: iso(T0 - 300 * MIN) })}\n`);
+  writeFileSync(join(dir, "extensions", "terminal", `${NEW_SID}.json`), JSON.stringify({ monitors: [monitor()] }));
+  world.ps = `10 1 /bin/bash /tmp/aoe-pane-env\n11 10 /x/senpi/dist/bundle/cli.js --continue\n12 11 bun process-entry.js\n`;
+  const base = deps(T0);
+  const run: FlowDeps["run"] = async (argv, opts) => argv[0] === "ps" && argv[1] === "eww" ? { code: 0, out: `bun process-entry.js PI_SESSION_ID=${NEW_SID} PI_SESSION_FILE=${next}`, err: "" } : base.run(argv, opts);
+  expect(await leadInboxTick({ ...base, run })).toEqual([]);
+  world.ps = world.ps.replace("\n12 11 bun process-entry.js", "");
+  row(T0 + 5 * MIN, "p-selector");
+  expect((await leadInboxTick({ ...deps(T0 + 20 * MIN), run }))[0]).toContain(`never reached session ${NEW_SID}`);
+});
+
+test("macOS still finds an identified session's default-directory transcript with no child path", async () => {
+  monitors();
+  row(T0 - 20 * MIN, "p-darwin");
+  const own = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...own, value: "darwin" });
+  try {
+    expect((await leadInboxTick(deps(T0)))[0]).toContain(`never reached session ${SID}`);
+  } finally {
+    Object.defineProperty(process, "platform", own);
+  }
+});

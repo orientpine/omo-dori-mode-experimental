@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { liveSessions, sessionFor } from "./aoe.ts";
@@ -11,7 +11,7 @@ import { readHerdrSessions, sessionLog } from "./herdr-sessions.ts";
 import { clock, ownerRows, tailOf } from "./lead-limit.ts";
 import { sawAnswer } from "./missed-answers.ts";
 import { sendVerified } from "./panes.ts";
-import { procTable, resolveSession } from "./session-id.ts";
+import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // The lead hears the inbox only through a monitor its own session runs, and nothing said when there was none. On 2026-11-09
 // YooDori's lead (leadPane set back by hand, not by dori handover) missed a #dori-pair request at 11:48Z; ZzangDori's lead
@@ -116,8 +116,8 @@ const ENV_FILE = /(?:^|\s)PI_SESSION_FILE=(.+?\.jsonl)(?=\s|$)/;
 // of #419; resolveSession takes over once that shared fix is on main. sessionLog also covers --session-dir and external logs.
 const currentLeadSession = async (deps: FlowDeps, pane: string, cwd: string, table: Awaited<ReturnType<typeof procTable>>) => {
   const hit = await resolveSession(pane, cwd, table, { run: deps.run, sessionsDir: deps.config.sessionsDir, backend: "aoe" });
-  if (!hit.id || !hit.pid) return undefined;
-  const named: { id: string; log?: string | undefined }[] = [{ id: hit.id }];
+  if (!hit.pid) return undefined;
+  const named: { id: string; log?: string | undefined }[] = hit.id ? [{ id: hit.id }] : [];
   for (const child of table.filter((p) => p.ppid === hit.pid).slice(0, 40)) {
     const line = (await deps.run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out.replace(/\r?\n$/, "");
     const env = line.startsWith(child.cmd) ? line.slice(child.cmd.length) : "";
@@ -128,9 +128,17 @@ const currentLeadSession = async (deps: FlowDeps, pane: string, cwd: string, tab
   if (previous?.pane === pane && previous.agentPid === hit.pid) named.push({ id: previous.session, log: previous.log });
   const kept = readHerdrSessions(deps.config.stateDir)[pane];
   if (kept?.session) named.push({ id: kept.session, log: kept.log });
+  if (!named.length) return undefined;
   const candidates = await Promise.all([...new Set(named.map((n) => n.id))].map(async (id) => {
     const hint = named.findLast((n) => n.id === id && n.log)?.log;
-    const path = await sessionLog(deps.run, table, hit.pid!, id, deps.config.sessionsDir, cwd, hint);
+    let path = await sessionLog(deps.run, table, hit.pid!, id, deps.config.sessionsDir, cwd, hint);
+    if (!path) {
+      try {
+        const dir = sessionDirFor(deps.config.sessionsDir, cwd);
+        const name = readdirSync(dir).find((n) => n.endsWith(`_${id}.jsonl`));
+        path = name ? join(dir, name) : undefined;
+      } catch {}
+    }
     let at = Number.NEGATIVE_INFINITY;
     try {
       if (path) at = statSync(path).mtimeMs;
