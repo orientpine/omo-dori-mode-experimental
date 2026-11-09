@@ -137,17 +137,39 @@ export const shellPidOf = async (pane: string, deps: SessionDeps): Promise<numbe
   return tmuxPanePid(deps.run, pane);
 };
 
+// The session the agent runs now, as the newest of its own children carries it: omo hands each child it starts the session
+// it runs at that moment (PI_SESSION_ID), and it can move to another session inside the same process (/new, /resume) while
+// its arguments keep naming the one it started with (zzangdori lead w1:p37, 2026-11-09). Only its own children: a nested
+// agent's children carry that agent's session. Their start times are read only when they disagree. "" when none carries
+// one, and on Windows, whose children's environment is not read.
+const currentChildSession = async (table: readonly Proc[], agent: number, run: Runner): Promise<string> => {
+  if (process.platform === "win32") return "";
+  const carried: { readonly id: string; readonly pid: number }[] = [];
+  for (const child of table.filter((p) => p.ppid === agent).slice(0, 40)) {
+    const id = ENV_ID.exec((await run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out)?.[1];
+    if (id) carried.push({ id, pid: child.pid });
+  }
+  if (new Set(carried.map((c) => c.id)).size <= 1) return carried[0]?.id ?? "";
+  const started = await Promise.all(carried.map(async (c) => ({ ...c, at: Date.parse((await run(["ps", "-o", "lstart=", "-p", String(c.pid)])).out.trim()) })));
+  // an unreadable start time counts as the oldest; the same second goes to the later pid
+  const at = (t: number): number => (Number.isNaN(t) ? -Infinity : t);
+  return started.sort((a, b) => at(b.at) - at(a.at) || b.pid - a.pid)[0]?.id ?? "";
+};
+
 export const resolveSession = async (pane: string, cwd: string, table: readonly Proc[], deps: SessionDeps): Promise<SessionHit> => {
   const shellPid = await shellPidOf(pane, deps);
   const agent = topAgent(table, shellPid);
   if (!agent) return { id: "", via: "none" };
   const argv = process.platform === "win32" ? winArgv(agent.cmd) : agent.cmd.split(/\s+/);
   const fromFlag = argvSessionId(argv);
+  const current = await currentChildSession(table, agent.pid, deps.run);
+  if (current) return { id: current, via: current === fromFlag ? "argv" : "child-env", pid: agent.pid };
   if (fromFlag) return { id: fromFlag, via: "argv", pid: agent.pid };
   // a selector omo resolves itself (a partial --session uuid, --continue, --resume, --fork, --rebind) can open an older
   // session, whose file name is no start time: only a child's exact PI_SESSION_ID may name it, never a nearby new session
   const selected = hasSessionSelector(argv);
-  for (const child of process.platform === "win32" ? [] : descendants(table, agent.pid).slice(0, 40)) {
+  // its own children were read above and showed none; a deeper child's PI_SESSION_ID still names it
+  for (const child of process.platform === "win32" ? [] : descendants(table, agent.pid).filter((p) => p.ppid !== agent.pid).slice(0, 40)) {
     const env = await deps.run(["ps", "eww", "-o", "command=", "-p", String(child.pid)]);
     const hit = ENV_ID.exec(env.out);
     if (hit?.[1]) return { id: hit[1], via: "child-env", pid: agent.pid };
