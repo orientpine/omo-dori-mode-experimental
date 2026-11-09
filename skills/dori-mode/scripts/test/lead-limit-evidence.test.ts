@@ -117,7 +117,7 @@ test("one eval's second send cannot validate its failed first reply", () => {
 });
 
 test("an argv-array Discord reply uses its matching receipt", () => {
-  const argv = `const p = Bun.spawn(["dori", "send", "discord", "--to", "${directRow.channel}", "--thread", "T-THREAD", "--reply", "${directRow.id}", "--text", "answer"], { env: process.env, stdin: "ignore", stdout: "pipe" }); console.log(await new Response(p.stdout).text()); await p.exited;`;
+  const argv = `const p = Bun.spawn(["dori", "send", "discord", "--to", "${directRow.channel}", "--thread", "T-THREAD", "--reply", "${directRow.id}", "--text", "[done] Answer"], { env: process.env, stdin: "ignore", stdout: "pipe" }); console.log(await new Response(p.stdout).text()); await p.exited;`;
   expect(discordAnswered([directCall("c1", argv), directResult("c1", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), { ...directRow, channel: "T-THREAD" })).toBe(true);
 });
 
@@ -167,6 +167,10 @@ test("shell replies use the effective thread and quoted arguments", () => {
   expect(discordAnswered([directCall("channel", directCommand), directResult("channel", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(false);
   const card = `dori send discord --to "${directRow.channel}" --thread "T-CARD" --text "Q1"`;
   expect(discordAnswered([directCall("card", card), directResult("card", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), { ...directRow, qid: "Q1", thread: "T-CARD" })).toBe(true);
+  const optionText = `dori send discord --to T-THREAD --reply ${directRow.id} --text 'Use --thread OTHER and --reply OTHER for that'`;
+  expect(discordAnswered([directCall("option-text", optionText), directResult("option-text", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(true);
+  const trailing = `${directCommand}; printf 'unterminated`;
+  expect(discordAnswered([directCall("trailing", trailing), directResult("trailing", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), directRow)).toBe(true);
 });
 
 test("an answered row stays cleared after rollover while a genuinely unanswered row still wakes", async () => {
@@ -179,4 +183,7 @@ test("an answered row stays cleared after rollover while a genuinely unanswered 
   expect(await watchTick(l.deps(T0, { leadWakeMin: 0 }))).toEqual([]);
   l.rollover();
   expect(await watchTick(l.deps(T0 + MIN))).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (20 min); woke the lead (SUBMITTED)`]);
+  world.aoe.push({ id: "fedcba0987654321", title: "Dori", path: "/home/test/dori", tool: "omo", profile: "main" });
+  world.tmux.push("aoe_Dori_fedcba09");
+  expect(await watchTick(l.deps(T0 + 2 * MIN, { leadPane: "aoe_Dori_fedcba09" }))).toEqual([`LEAD_OWNER_WAITING aoe_Dori_fedcba09 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (21 min); woke the lead (SUBMITTED)`]);
 });

@@ -22,7 +22,7 @@ import { procTable } from "./session-id.ts";
 
 export type LeadReply = { readonly at: number; readonly error?: string };
 export type OwnerRow = AnswerRow & { readonly scope?: string; readonly text: string };
-type LimitMark = { readonly pane: string; readonly noticeFor?: string; readonly noticeChannel?: string; readonly wakeKey?: string; readonly wakeIds?: readonly string[]; readonly answeredIds?: readonly string[]; readonly wokeAt?: string };
+type LimitMark = { readonly pane: string; readonly noticeFor?: string; readonly noticeChannel?: string; readonly wakeKey?: string; readonly wakeIds?: readonly string[]; readonly wokeAt?: string };
 
 const TAIL_BYTES = 2 * 1024 * 1024;
 const INBOX_TAIL_BYTES = 512 * 1024;
@@ -123,19 +123,18 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   const errors = replies.filter((r) => r.error && r.at > lastGood);
   const blocked = errors.length > 0;
   const until = blocked ? retryAt(errors.at(-1)?.error ?? "") : undefined;
-  const { waiting, answeredIds } = await reconcileRows({ rows, answeredIds: mark.answeredIds ?? [], cards: deps.answeredCards?.() ?? [], lead: { pane, path: file.path, title, text: transcript }, sessions, table, deps });
-  const out: string[] = []; let next: LimitMark = { ...mark, answeredIds };
+  const { waiting } = await reconcileRows({ rows, cards: deps.answeredCards?.() ?? [], lead: { pane, path: file.path, title, text: transcript }, sessions, table, deps });
+  const out: string[] = []; let next: LimitMark = mark;
   const save = (m: LimitMark): void => {
     next = m;
     writeFileSync(markPath(deps), `${JSON.stringify(m)}\n`);
   };
-  if (answeredIds.join("\0") !== (mark.answeredIds ?? []).join("\0")) save(next);
   const words = deps.config.discord;
 
   // the limit lifted: the owner hears it where he heard of the limit
   if (mark.noticeFor && !blocked) {
     const posted = deps.postOwner && mark.noticeChannel ? await deps.postOwner(mark.noticeChannel, words.leadBackText).then((id) => `POSTED ${mark.noticeChannel} ${id}`, (e: unknown) => `NOT_POSTED ${String(e).slice(0, 160)}`) : "NOT_POSTED no notice went out";
-    save({ pane, ...(next.answeredIds ? { answeredIds: next.answeredIds } : {}), ...(mark.wakeKey ? { wakeKey: mark.wakeKey, wakeIds: mark.wakeIds, wokeAt: mark.wokeAt } : {}) });
+    save({ pane, ...(mark.wakeKey ? { wakeKey: mark.wakeKey, wakeIds: mark.wakeIds, wokeAt: mark.wokeAt } : {}) });
     out.push(`LEAD_LIMIT_CLEARED ${pane} since ${mark.noticeFor}; ${posted}`);
   }
 
