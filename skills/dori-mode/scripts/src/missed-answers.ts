@@ -38,9 +38,16 @@ const readMarks = (deps: FlowDeps): Marks => {
 export const answerLine = (q: Question): string =>
   `[DORI] ANSWER ${q.id} (${q.answerKind ?? "button"}, ${q.answeredAt}): ${q.answer ?? ""}\nquestion: ${q.text}\n(the inbox monitor's event for this answer never reached this session, e.g. it came during a context compaction; this is that answer)`;
 
-// The transcript holds the answer: its inbox row (raw or escaped inside an event or a tool result) or this sweep's line.
-export const sawAnswer = (transcript: string, qid: string): boolean =>
-  new RegExp(`\\\\*"qid\\\\*"\\s*:\\s*\\\\*"${qid}\\\\*"`).test(transcript) || transcript.includes(`[DORI] ANSWER ${qid} (`);
+// The transcript holds this answer: its inbox row (raw or escaped inside an event or a tool result) or this sweep's line.
+// A reopened qid needs the row's own id or a timestamp at/after that row, never an earlier answer with the same qid.
+export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow): boolean => {
+  if (!row) return new RegExp(`\\\\*"qid\\\\*"\\s*:\\s*\\\\*"${qid}\\\\*"`).test(transcript) || transcript.includes(`[DORI] ANSWER ${qid} (`);
+  return transcript.split("\n").some((line) => {
+    if (!line.includes(qid)) return false; if (row.id && line.includes(row.id)) return true;
+    const times = [...line.matchAll(/"(?:ts|timestamp|answeredAt)":"([^"]+)"/g)].map((match) => Date.parse(match[1] ?? "")), redelivered = line.match(new RegExp(`\\[DORI\\] ANSWER ${qid} \\([^,]+, ([^)]+)\\)`))?.[1];
+    return times.some((at) => at >= row.at) || (redelivered !== undefined && Date.parse(redelivered) >= row.at);
+  });
+};
 
 // A herdr /clear starts a new transcript while the pane's argv still names the old one. Match the pane's current title
 // to the new session_info, never to a newer unrelated session in the same cwd; aoe transcripts without one use argv.
@@ -97,8 +104,7 @@ const literalArrays = (text: string): string[] => {
   const out: string[] = [];
   for (const match of text.matchAll(/\[\s*"dori"\s*,\s*(?:"send"\s*,\s*"discord"|"thread"\s*,\s*"reply")/g)) {
     const start = match.index ?? -1; if (start < 0) continue;
-    let depth = 0;
-    for (const token of text.slice(start).matchAll(/"(?:\\.|[^"\\])*"|[\[\]]/g)) {
+    let depth = 0; for (const token of text.slice(start).matchAll(/"(?:\\.|[^"\\])*"|[\[\]]/g)) {
       if (token[0] === "[") depth++;
       else if (token[0] === "]" && --depth === 0) { out.push(text.slice(start, start + (token.index ?? 0) + 1)); break; }
     }
@@ -106,8 +112,7 @@ const literalArrays = (text: string): string[] => {
   return out;
 };
 const specsFromText = (text: string): SendSpec[] => {
-  const out: SendSpec[] = [];
-  for (const raw of literalArrays(text)) {
+  const out: SendSpec[] = []; for (const raw of literalArrays(text)) {
     try {
       const parsed: unknown = JSON.parse(raw); if (Array.isArray(parsed)) {
         const spec = specFromArgv(parsed); if (spec) out.push(spec);
@@ -122,10 +127,9 @@ const specsFromText = (text: string): SendSpec[] => {
   return out;
 };
 const sendSpecs = (value: unknown): SendSpec[] => {
-  if (typeof value === "string") return specsFromText(value);
+  if (typeof value === "string") return [...specsFromText(value), ...(/\bdori thread (?:done|wait)\b/.test(value) ? [{ to: "", qids: new Set<string>() }] : [])];
   if (Array.isArray(value)) { const direct = specFromArgv(value); return direct ? [direct] : value.flatMap(sendSpecs); }
-  if (value && typeof value === "object") return Object.values(value).flatMap(sendSpecs);
-  return [];
+  if (value && typeof value === "object") return Object.values(value).flatMap(sendSpecs); return [];
 };
 
 // Only an actual SENT/POSTED result of this session's own unambiguous tool call counts. A command alone, another Dori's
@@ -135,11 +139,11 @@ const sendCalls = (transcript: string): SendCall[] => {
   const calls = new Map<string, SendCall>();
   for (const line of transcript.split("\n")) {
     if (!line.startsWith("{")) continue;
-    let entry: { type?: string; timestamp?: string; customType?: string; content?: unknown; message?: { role?: string; toolCallId?: string; content?: { type?: string; id?: string; arguments?: unknown }[] } };
+    let entry: { type?: string; timestamp?: string; customType?: string; content?: unknown; message?: { role?: string; toolCallId?: string; content?: { type?: string; id?: string; name?: string; arguments?: unknown }[] } };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     if (entry.type === "message" && entry.message?.role === "assistant") {
       for (const part of entry.message.content ?? []) {
-        if (part.type !== "toolCall" || !part.id) continue;
+        if (part.type !== "toolCall" || !part.id || !["eval", "bash", "monitor"].includes(part.name ?? "")) continue;
         const specs = sendSpecs(part.arguments ?? {}), spec = specs.length === 1 ? specs[0] : undefined;
         if (spec) calls.set(part.id, { id: part.id, at: Date.parse(entry.timestamp ?? ""), ...spec, sent: false });
       }
@@ -182,7 +186,7 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
       transcripts.set(target, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file.path, session?.title ?? "") : "");
     }
     const transcript = transcripts.get(target) ?? "";
-    if (row.qid && sawAnswer(transcript, row.qid)) continue;
+    if (row.qid && sawAnswer(transcript, row.qid, row)) continue;
     if (discordAnswered(transcript, row)) continue;
     waiting.push(row);
   }
@@ -196,8 +200,7 @@ export const reconcileRows = async <T extends AnswerRow>(input: UnansweredInput<
   const waiting = await unansweredRows({ ...input, rows: candidates });
   const waitingIds = new Set(waiting.map((row) => row.id)), currentIds = new Set(input.rows.map((row) => row.id));
   const answeredIds = [...new Set([...previousIds.filter((id) => currentIds.has(id)), ...candidates.filter((row) => !waitingIds.has(row.id)).map((row) => row.id)])]; if (answeredIds.join("\0") !== previousIds.join("\0")) writeFileSync(path, `${JSON.stringify(answeredIds)}\n`);
-  return { waiting, answeredIds };
-};
+  return { waiting, answeredIds }; };
 
 const sessionStart = (transcript: string): number => {
   const first = transcript.slice(0, transcript.indexOf("\n") >>> 0);

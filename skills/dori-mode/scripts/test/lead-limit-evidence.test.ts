@@ -75,7 +75,7 @@ test("Q538 and other card answers leave waiting only when their session got them
     `LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 18 * MIN)} (18 min); woke the lead (SUBMITTED)`,
   ]);
   expect(sent(world).find((line) => line.includes("LEAD_OWNER_WAITING"))).toContain('The oldest: "pending"');
-  l.current(T0 - 13 * MIN, { type: "message", message: { role: "user", content: [{ type: "text", text: "[DORI] ANSWER Q540 (button, x): pending" }] } });
+  l.current(T0 - 13 * MIN, { type: "message", message: { role: "user", content: [{ type: "text", text: `[DORI] ANSWER Q540 (button, ${iso(T0 - 18 * MIN)}): pending` }] } });
   expect(await watchTick(l.deps(T0 + MIN))).toEqual([]);
 });
 
@@ -95,7 +95,7 @@ test("a visible Discord reply clears only its own owner message, never a differe
 });
 
 const directRow = { id: "1569339203593044020", channel: "1555211347338199112", at: Date.parse("2026-01-01T12:00:00Z") };
-const directCall = (id: string, code: string) => ({ type: "message", timestamp: "2026-01-01T12:00:00.000Z", message: { role: "assistant", content: [{ type: "toolCall", id, name: "eval", arguments: { code } }] } });
+const directCall = (id: string, code: string, name = "eval") => ({ type: "message", timestamp: "2026-01-01T12:00:00.000Z", message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: { code } }] } });
 const directResult = (id: string, text: string) => ({ type: "message", timestamp: "2026-01-01T12:00:01.000Z", message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text }] } });
 const directDetached = (id: string, text: string) => ({ type: "custom_message", timestamp: "2026-01-01T12:00:01.000Z", customType: "senpi-codemode:notification", content: `<system-reminder>Detached eval cell ${id} (js) completed. ${text}` });
 const directCommand = `dori send discord --to ${directRow.channel} --reply ${directRow.id} --text answer`;
@@ -105,6 +105,7 @@ test("a receipt counts only from the send's own tool result or detached cell", (
   const cases = [
     { name: "another tool quoting the pending id", expected: false, entries: [directCall("c1", directCommand), directResult("read-log", "Previously observed: c1 SENT 153000000000000001")] },
     { name: "another detached cell quoting the pending id", expected: false, entries: [directCall("c1", directCommand), directDetached("read-log", "Previously observed: c1 SENT 153000000000000001")] },
+    { name: "a log-search tool quoting the command and receipt", expected: false, entries: [directCall("c1", directCommand, "grep"), directResult("c1", "SENT 153000000000000001")] },
     { name: "the send's own tool result", expected: true, entries: [directCall("c1", directCommand), directResult("c1", "SENT 153000000000000001")] },
     { name: "the send's own detached completion including a pipe in its cell id", expected: true, entries: [directCall("call_c1|fc_1", directCommand), directDetached("call_c1|fc_1", "SENT 153000000000000001")] },
   ];
@@ -114,6 +115,8 @@ test("a receipt counts only from the send's own tool result or detached cell", (
 test("one eval's second send cannot validate its failed first reply", () => {
   const both = `${directCommand}; dori send discord --to 1557744292393386074 --reply 1569339203593044021 --text other`;
   expect(directAnswered([directCall("c1", both), directResult("c1", "first command FAILED; second command SENT 153000000000000001")])).toBe(false);
+  const threadDone = `${directCommand}; dori thread done discord:done-thread --text other`;
+  expect(directAnswered([directCall("c1", threadDone), directResult("c1", "first command FAILED; thread done POSTED 153000000000000001")])).toBe(false);
 });
 
 test("an argv-array Discord reply uses its matching receipt", () => {
@@ -186,4 +189,17 @@ test("an answered row stays cleared after rollover while a genuinely unanswered 
   world.aoe.push({ id: "fedcba0987654321", title: "Dori", path: "/home/test/dori", tool: "omo", profile: "main" });
   world.tmux.push("aoe_Dori_fedcba09");
   expect(await watchTick(l.deps(T0 + 2 * MIN, { leadPane: "aoe_Dori_fedcba09" }))).toEqual([`LEAD_OWNER_WAITING aoe_Dori_fedcba09 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (21 min); woke the lead (SUBMITTED)`]);
+});
+
+test("a reopened card needs its own later answer delivery, not the previous answer", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.startCurrent();
+  l.row(T0 - 20 * MIN, "old-answer", "", { kind: "answer", qid: "Q1", thread: "T-CARD", answer: "first" });
+  l.current(T0 - 19 * MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"qid":"Q1","id":"old-answer","ts":"2026-01-01T11:40:00.000Z"}</system-reminder>' });
+  l.row(T0 - 15 * MIN, "new-answer", "", { kind: "answer", qid: "Q1", thread: "T-CARD", answer: "second" });
+  const deps = { ...l.deps(T0), answeredCards: () => [card("Q1", T0 - 15 * MIN, "T-CARD")] };
+  expect(await watchTick(deps)).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 15 * MIN)} (15 min); woke the lead (SUBMITTED)`]);
+  l.current(T0 - MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"qid":"Q1","id":"new-answer","ts":"2026-01-01T11:55:00.000Z"}</system-reminder>' });
+  expect(await watchTick(l.deps(T0 + MIN, { leadWakeMin: 0 }))).toEqual([]);
 });
