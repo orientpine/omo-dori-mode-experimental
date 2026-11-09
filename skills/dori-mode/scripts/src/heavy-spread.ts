@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { cpus, tmpdir } from "node:os";
+import { cpus } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
 import type { HeavyHelper } from "./config.ts";
@@ -9,7 +9,10 @@ import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
-import { bundleEnv, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
+import { sendTar } from "./heavy-send.ts";
+import { firstAnswer, killAlive, letGo, readerLines, settle } from "./heavy-settle.ts";
+import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleLeft, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
+import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH... -- <cmd>: a lane's own command (a browser test, a build) runs on
@@ -62,6 +65,7 @@ export type SpreadJob = {
   // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), globs of what comes back (--back, heavy-back.ts); helpersOnly: never this host's slot (--helpers-only)
   readonly tools?: readonly string[];
   readonly back?: readonly string[]; readonly helpersOnly?: boolean;
+  readonly staleAgain?: boolean; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts)
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
 // which the helper must have before it takes the job
@@ -245,59 +249,41 @@ export const copyBack = (back: string, sync: readonly string[]): { files: number
   return n;
 };
 
-type Sink = { write(chunk: Uint8Array): number | Promise<number>; flush(): number | Promise<number>; end(): number | Promise<number> };
-
-// the job (job.json) and the --sync paths that exist, as one tar into the helper's stdin; the bytes sent
-const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[]): Promise<number> => {
-  const tmp = mkdtempSync(join(tmpdir(), "dori-spread-"));
-  try {
-    writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: job.cmd, cwd: job.cwd, sync, env: job.env, ...(job.back?.length ? { back: job.back } : {}) }));
-    const have = sync.filter((s) => existsSync(s)).map((s) => s.slice(1));
-    const tar = Bun.spawn(["tar", "-cf", "-", "-C", tmp, "job.json", ...(have.length ? ["-C", "/", ...have] : [])], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    let bytes = 0;
-    for await (const chunk of tar.stdout) {
-      bytes += chunk.byteLength;
-      sink.write(chunk);
-      await sink.flush();
-    }
-    await sink.end();
-    const code = await tar.exited;
-    if (code !== 0) throw new TarError(`tar -c exited ${code}: ${(await new Response(tar.stderr).text()).trim().slice(0, 200)}`);
-    return bytes;
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-};
-
-type Started = { readonly helper: string; readonly done: Promise<number | null> };
+type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<number | null | Stale> };
 type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
   const args = execWords(job, plan, below);
-  const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  const lines = linesOf(p.stderr);
-  let verdict: RegExpExecArray | null = null;
-  let last = "";
-  for (let n = await lines.next(); !n.done; n = await lines.next()) {
-    verdict = VERDICT.exec(n.value);
-    if (verdict) break;
-    last = n.value;
-    process.stderr.write(`${n.value}\n`);
-  }
+  const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // ssh, tar and untar stay in the caller's process group: a Ctrl-C on its terminal ends them with it
+  const reader = p.stderr.getReader();
+  const lines = readerLines(reader);
+  const staleMs = (ctx.q.staleMin ?? 20) * 60_000;
+  // the admission too has staleMin at most: an ssh that connects and never answers is down, not waited on
+  const { said: verdict, last, answered } = await firstAnswer(p, lines, VERDICT, staleMs);
   if (verdict?.[1] !== "ADMIT") {
-    await p.stdin.end();
-    const code = await p.exited;
-    if (!verdict) return { kind: "down", why: last || `ssh exited ${code}` };
+    await letGo(p, reader, answered ? STALE_GRACE_MS : 0);
+    if (!answered) return { kind: "down", why: `no answer to the admission within ${staleMs / 60_000} min (heavyQueue.staleMin)` };
+    if (!verdict) return { kind: "down", why: last || `ssh exited ${p.exitCode ?? p.signalCode}` };
     return helperVerdict(verdict[1] ?? "", verdict[2] ?? "");
   }
   const stop = onStop(() => p.kill("SIGKILL"));
+  const aliveSec = aliveOf(verdict?.[2] ?? "");
+  const watch = staleWatch({ label: job.label, helper: h.name, total: plan.sync.reduce((a, s) => a + (existsSync(s) ? duBytes(s) : 0), 0), staleMs, ...(aliveSec ? { aliveSec } : {}), now: () => ctx.deps.clock.now(), log: (l) => ctx.deps.log?.(l) });
+  let stale: string | undefined;
+  const kids: Bun.Subprocess[] = [p];
+  void watch.stale.then((why) => {
+    stale = why;
+    for (const x of kids) killAlive(x);
+  });
   let exit: number | undefined;
   let tooBig = false;
-  // O <line>: the command's stdout, E <line>: its stderr, WORKER_EXIT <code> at the end, anything else: the helper's lines
+  // O <line>: the command's stdout, E <line>: its stderr, WORKER_EXIT <code> at the end, WORKER_ALIVE a heartbeat, anything else: the helper's lines
   const forward = (async () => {
     for (let n = await lines.next(); !n.done; n = await lines.next()) {
       const l = n.value;
+      watch.heard();
+      if (l.startsWith("WORKER_ALIVE")) continue;
       if (l.startsWith("O ")) process.stdout.write(`${l.slice(2)}\n`);
       else if (l.startsWith("E ")) process.stderr.write(`${l.slice(2)}\n`);
       else if (/^WORKER_EXIT \d+$/.test(l)) exit = Number(l.slice(12));
@@ -310,18 +296,24 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
   mkdirSync(ctx.deps.dir, { recursive: true });
   const back = mkdtempSync(join(ctx.deps.dir, "back-"));
   const untar = Bun.spawn(["tar", "-C", back, "--no-same-owner", "-xf", "-"], { stdin: p.stdout, stdout: "ignore", stderr: "pipe" });
-  let sent = -1;
-  try {
-    sent = await sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync);
-  } catch (e) {
-    ctx.deps.log?.(`HEAVY_SPREAD_SEND ${job.label} ${h.name}: ${String(e).slice(0, 200)}`);
-    p.kill("SIGKILL");
-  }
-  const done = (async (): Promise<number | null> => {
-    const [code, ucode] = await Promise.all([p.exited, untar.exited]);
-    await forward;
-    stop();
+  kids.push(untar);
+  const done = (async (): Promise<number | null | Stale> => {
+    let sent = -1;
+    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids);
     try {
+      sent = await Promise.race([up, watch.stale.then(() => -1)]);
+      watch.synced();
+    } catch (e) {
+      if (stale === undefined) ctx.deps.log?.(`HEAVY_SPREAD_SEND ${job.label} ${h.name}: ${String(e).slice(0, 200)}`);
+      p.kill("SIGKILL");
+    }
+    // after a stale verdict every wait, the upload's too, gets STALE_GRACE_MS (a child in uninterruptible disk I/O, a held pipe)
+    const ended = await settle(kids, [reader], Promise.all([p.exited, untar.exited, forward, up.catch(() => undefined)]), watch.stale.then(() => Bun.sleep(STALE_GRACE_MS)));
+    const [code, ucode] = ended ? [p.exitCode, untar.exitCode] : [null, null];
+    stop();
+    watch.stop();
+    try {
+      if (stale !== undefined) return { stale, abandoned: staleLeft(kids, ended, (l) => ctx.deps.log?.(l), `${job.label} ${h.name}`) };
       if (sent < 0 || code !== 0 || exit === undefined || ucode !== 0) return null;
       const n = copyBack(back, plan.sync);
       ctx.deps.log?.(`HEAVY_BACK ${job.label} ${h.name}: sent ${sent} bytes, ${n.files} file(s) ${n.bytes} bytes back${n.skipped ? `, ${n.skipped} skipped (outside --sync or through a link)` : ""}`);
@@ -330,10 +322,11 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
       rmSync(back, { recursive: true, force: true });
     }
   })();
-  return { kind: "started", run: { helper: h.name, done } };
+  return { kind: "started", run: { helper: h.name, done, id: runOf(verdict?.[2] ?? "") } };
 };
 
-export type SpreadResult = { readonly slot: string } | { readonly code: number };
+// abandoned: a stale run left something not ended (HEAVY_STALE_LEFT): the caller exits without waiting on it
+export type SpreadResult = ({ readonly slot: string } | { readonly code: number }) & { readonly abandoned?: true };
 
 // The caller's side: a helper's exit code, or this host's heavy slot when the job is to run here after all.
 export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<Plan, { ok: true }>): Promise<SpreadResult> => {
@@ -363,16 +356,28 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
   const busy = run ? 0 : await busyOf(ctx, job.kind);
   if (busy > SPREAD_MARGIN) run = await helpers(busy - SPREAD_MARGIN, `this host is ${busy}% busy (${job.kind}), the helper less than ${busy - SPREAD_MARGIN}%`);
   const since = ctx.deps.clock.now();
+  let abandoned = false;
+  const end = <R extends { readonly slot: string } | { readonly code: number }>(r: R): SpreadResult => (abandoned ? { ...r, abandoned } : r);
   for (;;) {
     if (!run) {
       const got = await acquire<Started | "nowhere">(ctx.deps, job.label, { since, elsewhere: async (why) => (await helpers(100, why)) ?? (job.helpersOnly && refused.all(ctx.q.helpers.map((x) => x.name)) ? "nowhere" : null), ...(job.helpersOnly ? { helpersOnly: true } : { nowhere: () => refused.all(ctx.q.helpers.map((x) => x.name)) }), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
-      if ("slot" in got || got.elsewhere === "nowhere") return "slot" in got ? { slot: got.slot } : { code: 2 };
+      if ("slot" in got || got.elsewhere === "nowhere") return "slot" in got ? end({ slot: got.slot }) : end({ code: 2 });
       run = got.elsewhere;
     }
     const code = await run.done;
+    if (code !== null && typeof code === "object") {
+      abandoned ||= code.abandoned;
+      log(`HEAVY_HELPER_STALE ${job.label} ${run.helper}: ${code.stale}; ${job.staleAgain ? "the job goes back to the line" : `the job ends with exit ${STALE_EXIT} (dori heavy --stale-again sends it again)`}`);
+      const h = ctx.q.helpers.find((x) => x.name === run?.helper);
+      if (h && (await stopOnHelper(h, job.label, log, run.id, Math.min(30_000, (ctx.q.staleMin ?? 20) * 60_000)))) abandoned = true;
+      if (!job.staleAgain) return end({ code: STALE_EXIT });
+      refused.set(run.helper, "stale", code.stale);
+      run = null;
+      continue;
+    }
     if (code !== null) {
       log(`HEAVY_DONE ${job.label} ${run.helper}: exit ${code}`);
-      return { code };
+      return end({ code });
     }
     log(`HEAVY_HELPER_CUT ${job.label} ${run.helper}: the run broke off; nothing came back, the job goes back to the line`);
     run = null;
@@ -444,39 +449,6 @@ export const sandboxArgv = (kind: Kind, spec: ExecSpec, from: (p: string) => str
   ];
 };
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// the browsers of the caller's playwright version, installed once into this host's own cache (user space, no sudo)
-const ensurePlaywright = async (version: string, browsersDir: string, log: (l: string) => void): Promise<void> => {
-  const mark = join(browsersDir, `.dori-playwright-${version}`);
-  if (existsSync(mark)) return;
-  mkdirSync(browsersDir, { recursive: true });
-  const lock = join(browsersDir, ".dori-playwright-lock");
-  for (let waited = 0; ; waited += 2_000) {
-    try {
-      mkdirSync(lock);
-      break;
-    } catch {
-      if (existsSync(mark)) return;
-      if (waited > 20 * 60_000 || Date.now() - (statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? 0) > 20 * 60_000) rmSync(lock, { recursive: true, force: true });
-      await sleep(2_000);
-    }
-  }
-  try {
-    if (existsSync(mark)) return;
-    log(`HEAVY_PW_INSTALL playwright ${version} browsers into ${browsersDir}`);
-    const p = Bun.spawn([process.execPath, "x", `playwright@${version}`, "install", "chromium", "ffmpeg"], { env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsersDir, PLAYWRIGHT_SKIP_BROWSER_GC: "1" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    const pump = async (s: ReadableStream<Uint8Array>) => {
-      for await (const l of linesOf(s)) process.stderr.write(`W ${l}\n`);
-    };
-    const [code] = await Promise.all([p.exited, pump(p.stdout), pump(p.stderr)]);
-    if (code === 0) writeFileSync(mark, new Date().toISOString());
-    else log(`HEAVY_PW_FAIL playwright ${version}: install exited ${code}; the run goes on and its browser may be missing`);
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
-  }
-};
-
 // The programs a job starts, looked for in a box made like the job's (sandboxArgv: same mounts, same PATH), so a program
 // the host has but the box hides (/home, /tmp, /run are empty there; a link may lead into them) counts as missing.
 // need: a path that must exist; names: commands looked up on the box's PATH. undefined: all there.
@@ -535,13 +507,15 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   }
   const log = (l: string) => ctx.deps.log?.(l);
   log(`HEAVY_WORKER_ADMIT ${label} exec ${kind} ${basename(t.slot)} caller=${d.caller}: ${t.why}`);
-  console.error(`WORKER_ADMIT ${basename(t.slot)}`);
   stopWithCaller(true);
   const dir = newJobDir(join(ctx.deps.dir, "exec"));
+  const runId = markRun(dir, d.caller, label);
+  const beat = heartbeat(ctx.q.aliveSec ?? 60);
   const forget = onStop(() => {
     rmSync(dir, { recursive: true, force: true });
     releaseSlot(t.slot);
   });
+  console.error(`WORKER_ADMIT ${basename(t.slot)} alive=${ctx.q.aliveSec ?? 60} run=${runId}`);
   const root = join(dir, "in");
   let cmdName = "-";
   let inBytes = 0;
@@ -563,7 +537,9 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     }
     cmdName = basename(spec.argv[0]!);
     for (const p of spec.sync) if (!existsSync(join(root, p))) mkdirSync(join(root, p), { recursive: true });
+    beat.set("playwright");
     if (playwright && kind === "browser" && d.tools.browsersDir) await ensurePlaywright(playwright, d.tools.browsersDir, log);
+    beat.set("run");
     const start = join(dir, "start");
     writeFileSync(start, "");
     const pumps: Promise<void>[] = [];
@@ -580,6 +556,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
       },
     );
     await Promise.all(pumps);
+    beat.set("back");
     // the files the run made or changed (regular files only), as tar on stdout
     const list = join(dir, "back.list");
     const found = Bun.spawnSync(["find", root, "-newer", start, "-type", "f", "-printf", "%P\\0"]);
@@ -595,6 +572,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     log(`HEAVY_EXEC_DONE ${label} caller=${d.caller} cmd=${cmdName} in=${inBytes} back=${pick.bytes} exit=${code}`);
     return 0;
   } finally {
+    beat.stop();
     rmSync(dir, { recursive: true, force: true });
     releaseSlot(t.slot);
     forget();

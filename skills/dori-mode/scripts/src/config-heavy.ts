@@ -23,6 +23,10 @@ export type HeavyQueue = {
   readonly execMaxMin: number;
   // as a helper: the --kind kinds it takes; omitted, all of them (a host whose box cannot draw on its GPU takes ["cpu"])
   readonly kinds?: readonly string[];
+  // as the caller: a helper run with no bytes taken during its upload, or no line from a helper that beats after it, for
+  // this many minutes is stale (heavy-stale.ts); as a helper: its WORKER_ALIVE heartbeat, every this many seconds
+  readonly staleMin?: number;
+  readonly aliveSec?: number;
 };
 
 const isArgv = (v: unknown): boolean => Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string");
@@ -41,5 +45,7 @@ export const heavyQueueProblem = (q: HeavyQueue): string | undefined => {
   if (typeof q.exec !== "boolean") return "heavyQueue.exec must be true or false";
   if (!Number.isInteger(q.execMaxMin) || q.execMaxMin < 1) return "heavyQueue.execMaxMin must be a whole number of minutes, 1 or more";
   if (q.kinds !== undefined && (!Array.isArray(q.kinds) || !q.kinds.every((k) => ["cpu", "browser", "gpu"].includes(k)))) return "heavyQueue.kinds must list kinds of cpu, browser, gpu";
+  if (q.staleMin !== undefined && !(typeof q.staleMin === "number" && q.staleMin > 0)) return "heavyQueue.staleMin must be a number of minutes above 0";
+  if (q.aliveSec !== undefined && !(typeof q.aliveSec === "number" && q.aliveSec > 0)) return "heavyQueue.aliveSec must be a number of seconds above 0";
   return undefined;
 };

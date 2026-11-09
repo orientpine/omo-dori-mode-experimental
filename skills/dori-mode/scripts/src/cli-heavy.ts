@@ -62,11 +62,12 @@ const heavyCommand: Command = async (context) => {
     process.exitCode = 2;
   };
   let spreadSlot: string | undefined;
+  let abandoned = false;
   if (kind !== undefined && !heavyOuter()) {
     const badEnv = many("env").find((e) => !/^[A-Za-z_]\w{0,63}$/.test(e));
     if (badEnv !== undefined) die(`dori heavy --env takes a variable name, not "${badEnv}"`);
     const env = Object.fromEntries(["LANG", "TZ", ...many("env")].flatMap((k) => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])));
-    const job: SpreadJob = { ...(helpersOnly ? { helpersOnly } : {}), label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}) };
+    const job: SpreadJob = { ...(helpersOnly ? { helpersOnly } : {}), label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}), ...(flags.values["stale-again"] ? { staleAgain: true } : {}) };
     const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
     if (!plan.ok && helpersOnly) return refuseHere(plan.why);
     if (!config.heavyQueue.helpers.length && helpersOnly) return refuseHere("no heavyQueue.helpers on this host");
@@ -74,7 +75,10 @@ const heavyCommand: Command = async (context) => {
     else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
     else {
       const r = await heavySpread({ q: config.heavyQueue, deps }, job, plan);
+      // a stale run left a child or a pipe not ended (HEAVY_STALE_LEFT): it would keep this process alive, so exit
+      abandoned = r.abandoned === true;
       if ("code" in r) {
+        if (abandoned) process.exit(r.code);
         process.exitCode = r.code;
         return;
       }
@@ -84,6 +88,7 @@ const heavyCommand: Command = async (context) => {
   // plain dori heavy is the GPU slot line, and --kind gpu a GPU job: both get free memory made first (heavy-mem.ts gpuRoom)
   const gpu = kind === undefined || kind === "gpu";
   process.exitCode = await runHere(deps, { label: name, cmd: jobCmd, free: config.heavyHeadroomPct, ...(needBytes ? { needBytes } : {}), ...(deps.log ? { log: deps.log } : {}), ...(gpu ? { gpuFreeKb: config.heavyGpuFreeGb * 1024 ** 2 } : {}) }, { slot: spreadSlot, ...toolsHere(name, many("tools"), deps.log) });
+  if (abandoned) process.exit();
   return;
 };
 
