@@ -149,3 +149,11 @@ test("one SENT in an ambiguous multi-send eval marks neither request heard", asy
   expect(out[0]).toContain("2 inbox row(s) (pair-bot 2)");
   expect(out[0]).toContain("oldest 1569430000000000011");
 });
+
+test("a failed reply followed by a successful nonreply send stays unheard", async () => {
+  monitors(monitor());
+  row(T0 - 20 * MIN, "1569430000000000021");
+  appendFileSync(transcript, `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-mixed", name: "eval", arguments: { code: "await send(dori send discord --reply 1569430000000000021); await send(dori send discord --text ordinary);" } }] } })}\n`);
+  appendFileSync(transcript, `${JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "completion-watcher", content: [{ type: "text", text: "Eval cell call-mixed (js) is completed.\nSENT 1569430000000000022 len=40 sha=1234abcd first=\"ordinary send succeeded\"" }] } })}\n`);
+  expect((await leadInboxTick(deps(T0)))[0]).toContain("oldest 1569430000000000021");
+});

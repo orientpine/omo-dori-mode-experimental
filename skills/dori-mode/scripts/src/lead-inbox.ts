@@ -106,8 +106,13 @@ const deliveredIds = (transcript: string): ReadonlySet<string> => {
       if (e.type === "message" && e.message?.role === "assistant") {
         for (const part of parts) {
           if (typeof part !== "object" || part === null || !("type" in part) || part.type !== "toolCall" || !("id" in part) || typeof part.id !== "string") continue;
-          const args = "arguments" in part ? JSON.stringify(part.arguments) : "input" in part ? JSON.stringify(part.input) : "";
-          if (!args.includes("dori send")) continue;
+          const input = "arguments" in part ? part.arguments : "input" in part ? part.input : "";
+          const args = (typeof input === "object" && input !== null && "code" in input && typeof input.code === "string" ? input.code : JSON.stringify(input)) ?? "";
+          const sends = [...args.matchAll(/\bdori send\b/g)];
+          if (sends.length !== 1) {
+            replyByCall.delete(part.id);
+            continue;
+          }
           const targets = [...args.matchAll(/--reply\s+(\d{6,})/g)].map((m) => m[1] ?? "").filter(Boolean);
           const [target] = targets;
           if (targets.length === 1 && target) replyByCall.set(part.id, target);
