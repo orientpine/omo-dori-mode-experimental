@@ -50,11 +50,12 @@ const limitWorld = () => {
   const argv = (ms: number, entry: object) => appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), ...entry })}\n`);
   const current = (ms: number, entry: object) => appendFileSync(currentFile, `${JSON.stringify({ timestamp: iso(ms), ...entry })}\n`);
   const startCurrent = () => writeFileSync(currentFile, `${JSON.stringify({ type: "session", timestamp: iso(T0 - 90 * MIN), id: "11111111-1111-1111-1111-111111111111" })}\n${JSON.stringify({ type: "session_info", timestamp: iso(T0 - 89 * MIN), name: "Dori" })}\n`);
+  const rollover = () => writeFileSync(join(leadDir, "2026-01-01T11-00-00-000Z_22222222-2222-2222-2222-222222222222.jsonl"), `${JSON.stringify({ type: "session", timestamp: iso(T0 - 80 * MIN), id: "22222222-2222-2222-2222-222222222222" })}\n${JSON.stringify({ type: "session_info", timestamp: iso(T0 - 79 * MIN), name: "Dori" })}\n`);
   const sendCall = (ms: number, call: { readonly id: string; readonly to: string; readonly reply?: string; readonly qid?: string }) => {
     current(ms, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: call.id, name: "eval", arguments: { code: `dori send discord --to ${call.to}${call.reply ? ` --reply ${call.reply}` : ""} --text '${call.qid ?? "answer"}'` } }] } });
     return (sentId: string) => current(ms + 1000, { type: "message", message: { role: "toolResult", toolCallId: call.id, content: [{ type: "text", text: `SENT ${sentId} len=20 sha=12345678 first="answer"` }] } });
   };
-  return { deps, row, reply, argv, current, startCurrent, sendCall };
+  return { deps, row, reply, argv, current, startCurrent, rollover, sendCall };
 };
 
 test("Q538 and other card answers leave waiting only when their session got them or their own Discord thread got a qid reply", async () => {
@@ -116,8 +117,8 @@ test("one eval's second send cannot validate its failed first reply", () => {
 });
 
 test("an argv-array Discord reply uses its matching receipt", () => {
-  const argv = `const p = Bun.spawn(["dori", "send", "discord", "--to", "${directRow.channel}", "--reply", "${directRow.id}", "--text", "answer"], { env: process.env, stdin: "ignore", stdout: "pipe" }); console.log(await new Response(p.stdout).text()); await p.exited;`;
-  expect(directAnswered([directCall("c1", argv), directResult("c1", "SENT 153000000000000001")])).toBe(true);
+  const argv = `const p = Bun.spawn(["dori", "send", "discord", "--to", "${directRow.channel}", "--thread", "T-THREAD", "--reply", "${directRow.id}", "--text", "answer"], { env: process.env, stdin: "ignore", stdout: "pipe" }); console.log(await new Response(p.stdout).text()); await p.exited;`;
+  expect(discordAnswered([directCall("c1", argv), directResult("c1", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), { ...directRow, channel: "T-THREAD" })).toBe(true);
 });
 
 test("later narration and a failed send do not erase eligible owner rows", async () => {
@@ -155,4 +156,27 @@ test("a current transcript limit error emits its notice instead of a stale healt
   const out = await watchTick(l.deps(T0));
   expect(out).toHaveLength(1);
   expect(out[0]).toStartWith(`LEAD_LIMIT_NOTICE ${PANE} model failing since ${iso(T0 - 10 * MIN)}, retry 2026-01-01T13:00:00.000Z, 1 owner message(s) waiting; NOT_POSTED`);
+});
+
+test("shell replies use the effective thread and quoted arguments", () => {
+  const row = { ...directRow, channel: "T-THREAD" };
+  const double = `dori send discord --to "${directRow.channel}" --thread "T-THREAD" --reply "${directRow.id}" --text answer`;
+  const single = `dori send discord --to '${directRow.channel}' --thread 'T-THREAD' --reply '${directRow.id}' --text answer`;
+  expect(discordAnswered([directCall("double", double), directResult("double", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(true);
+  expect(discordAnswered([directCall("single", single), directResult("single", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(true);
+  expect(discordAnswered([directCall("channel", directCommand), directResult("channel", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(false);
+  const card = `dori send discord --to "${directRow.channel}" --thread "T-CARD" --text "Q1"`;
+  expect(discordAnswered([directCall("card", card), directResult("card", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), { ...directRow, qid: "Q1", thread: "T-CARD" })).toBe(true);
+});
+
+test("an answered row stays cleared after rollover while a genuinely unanswered row still wakes", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.startCurrent();
+  l.row(T0 - 20 * MIN, "m-1", "first");
+  l.row(T0 - 19 * MIN, "m-2", "second");
+  l.sendCall(T0 - 18 * MIN, { id: "send-m1", to: "T-THREAD", reply: "m-1" })("153000000000000002");
+  expect(await watchTick(l.deps(T0, { leadWakeMin: 0 }))).toEqual([]);
+  l.rollover();
+  expect(await watchTick(l.deps(T0 + MIN))).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (20 min); woke the lead (SUBMITTED)`]);
 });

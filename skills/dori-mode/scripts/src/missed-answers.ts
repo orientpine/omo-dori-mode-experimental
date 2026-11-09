@@ -82,21 +82,19 @@ const qidsIn = (text: string): ReadonlySet<string> => new Set((text.match(/\bq\d
 const specFromArgv = (argv: readonly unknown[]): SendSpec | undefined => {
   if (argv[0] !== "dori") return undefined;
   if (argv[1] === "send" && argv[2] === "discord") {
-    const to = flagValue(argv, "--to");
-    if (!to) return undefined;
-    const reply = flagValue(argv, "--reply");
+    const to = flagValue(argv, "--thread") ?? flagValue(argv, "--to");
+    if (!to) return undefined; const reply = flagValue(argv, "--reply");
     return { to, ...(reply ? { reply } : {}), qids: qidsIn(argv.filter((part) => typeof part === "string").join(" ")) };
   }
   if (argv[1] === "thread" && argv[2] === "reply" && typeof argv[3] === "string" && argv[3].startsWith("discord:")) {
-    const reply = flagValue(argv, "--reply");
-    return { to: argv[3].slice("discord:".length), ...(reply ? { reply } : {}), qids: qidsIn(argv.filter((part) => typeof part === "string").join(" ")) };
+    const reply = flagValue(argv, "--reply"); return { to: flagValue(argv, "--thread") ?? argv[3].slice("discord:".length), ...(reply ? { reply } : {}), qids: qidsIn(argv.filter((part) => typeof part === "string").join(" ")) };
   }
   return undefined;
 };
+const shellFlag = (command: string, name: string): string | undefined => { const match = command.match(new RegExp(`${name}\\s+(?:"([^"]+)"|'([^']+)'|([\\w-]+))`)); return match?.[1] ?? match?.[2] ?? match?.[3]; };
 const specFromShell = (command: string): SendSpec | undefined => {
-  const to = command.match(/--to\s+([\w-]+)/)?.[1] ?? command.match(/dori thread reply discord:([\w-]+)/)?.[1];
-  if (!to) return undefined;
-  const reply = command.match(/--reply\s+([\w-]+)/)?.[1];
+  const to = shellFlag(command, "--thread") ?? shellFlag(command, "--to") ?? command.match(/dori thread reply discord:([\w-]+)/)?.[1];
+  if (!to) return undefined; const reply = shellFlag(command, "--reply");
   return { to, ...(reply ? { reply } : {}), qids: qidsIn(command) };
 };
 const specsFromText = (text: string): SendSpec[] => {
@@ -194,6 +192,13 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
     waiting.push(row);
   }
   return waiting;
+};
+
+export const reconcileRows = async <T extends AnswerRow>(input: UnansweredInput<T> & { readonly answeredIds: readonly string[] }): Promise<{ readonly waiting: T[]; readonly answeredIds: readonly string[] }> => {
+  const previous = new Set(input.answeredIds), candidates = input.rows.filter((row) => !previous.has(row.id));
+  const waiting = await unansweredRows({ ...input, rows: candidates });
+  const waitingIds = new Set(waiting.map((row) => row.id)), currentIds = new Set(input.rows.map((row) => row.id));
+  const answeredIds = [...new Set([...input.answeredIds.filter((id) => currentIds.has(id)), ...candidates.filter((row) => !waitingIds.has(row.id)).map((row) => row.id)])]; return { waiting, answeredIds };
 };
 
 const sessionStart = (transcript: string): number => {
