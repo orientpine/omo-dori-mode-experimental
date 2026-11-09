@@ -58,6 +58,10 @@ test("a todo of the old session counts as carried only when the new session's to
   expect(missingTodos(old, dir, "new-sid")).toEqual([]);
   // and a session without a log holds none of them
   expect(missingTodos(old, sessionDir, "gone-sid")).toHaveLength(3);
+  // a phase longer than 60 characters is still the phase: its task alone is what the new session puts in its list
+  const phase = "Execution and verification of every criterion with its evidence captured";
+  log([{ content: "Run local tests", status: "pending" }]);
+  expect([phase.length > 60, missingTodos([`${phase}: Run local tests (pending)`], dir, "new-sid")]).toEqual([true, []]);
 });
 
 // the new session as the checks see it: its omo session id, and its todo list in its log under the session directory

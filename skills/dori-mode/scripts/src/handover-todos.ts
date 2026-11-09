@@ -39,8 +39,13 @@ export const recentOwnerWords = (inbox: string, ids: readonly string[], now: num
   return out;
 };
 
-// an open todo as a note lists it ("<phase>: <task> (<status>)"), without its phase and status
-export const todoTask = (t: string): string => t.replace(/ \((in_progress|pending|blocked)\)$/, "").replace(/^[^:]{1,60}: /, "");
+// an open todo as a note lists it ("<phase>: <task> (<status>)"), without its phase and status: the phase ends at the
+// first ": ", as the note tells the new session, whatever its length (review of #416)
+export const todoTask = (t: string): string => {
+  const task = t.replace(/ \((in_progress|pending|blocked)\)$/, "");
+  const at = task.indexOf(": ");
+  return at < 0 ? task : task.slice(at + 2);
+};
 
 // every todo of a session (done ones too: a todo the new session finished was carried)
 export const allTodos = (sessionDir: string, session: string): string[] => {
