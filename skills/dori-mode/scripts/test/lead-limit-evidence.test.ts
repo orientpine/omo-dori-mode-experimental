@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { watchTick } from "../src/done-flow.ts";
-import { discordAnswered } from "../src/missed-answers.ts";
+import { discordAnswered, sawAnswer } from "../src/missed-answers.ts";
 import type { FlowDeps } from "../src/done-flow.ts";
 import type { Question } from "../src/messenger/discord-cards.ts";
 import type { DoriConfig } from "../src/config.ts";
@@ -108,6 +108,8 @@ test("a receipt counts only from the send's own tool result or detached cell", (
     { name: "a log-search tool quoting the command and receipt", expected: false, entries: [directCall("c1", directCommand, "grep"), directResult("c1", "SENT 153000000000000001")] },
     { name: "a bash log search executing grep", expected: false, entries: [directCall("c1", `grep -F '${directCommand}' logfile`, "bash"), directResult("c1", "SENT 153000000000000001")] },
     { name: "an argv-array search pattern with a historical receipt", expected: false, entries: [directCall("c1", `grep -F -A1 '["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]' logfile`, "bash"), directResult("c1", "SENT 153000000000000001")] },
+    { name: "an array assigned before a log search", expected: false, entries: [directCall("c1", `const pattern = ["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]; grep(pattern)`, "eval"), directResult("c1", "SENT 153000000000000001")] },
+    { name: "a stringified array used as a search pattern", expected: false, entries: [directCall("c1", `const pattern = JSON.stringify(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]); grep(pattern)`, "eval"), directResult("c1", "SENT 153000000000000001")] },
     { name: "the send's own tool result", expected: true, entries: [directCall("c1", directCommand), directResult("c1", "SENT 153000000000000001")] },
     { name: "the send's own detached completion including a pipe in its cell id", expected: true, entries: [directCall("call_c1|fc_1", directCommand), directDetached("call_c1|fc_1", "SENT 153000000000000001")] },
   ];
@@ -121,6 +123,8 @@ test("one eval's second send cannot validate its failed first reply", () => {
   expect(directAnswered([directCall("c1", threadDone), directResult("c1", "first command FAILED; thread done POSTED 153000000000000001")])).toBe(false);
   const arrayDone = `${directCommand}; Bun.spawn(["dori", "thread", "done", "discord:done-thread", "done"])`;
   expect(directAnswered([directCall("c1", arrayDone), directResult("c1", "first command FAILED; done POSTED 153000000000000001")])).toBe(false);
+  const mixed = `Bun.spawn(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]); Bun.spawn(['dori','send','discord','--to','1557744292393386074','--reply','1569339203593044021'])`;
+  expect(directAnswered([directCall("c1", mixed), directResult("c1", "first command FAILED; second command SENT 153000000000000001")])).toBe(false);
 });
 
 test("an argv-array Discord reply uses its matching receipt", () => {
@@ -210,4 +214,10 @@ test("a reopened card needs its own later answer delivery, not the previous answ
   expect(await watchTick(deps)).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 15 * MIN)} (15 min); woke the lead (SUBMITTED)`]);
   l.current(T0 - MIN, { type: "message", message: { role: "user", content: [{ type: "text", text: `[DORI] ANSWER Q1 (button, ${iso(T0 - 15 * MIN)}): second` }] } });
   expect(await watchTick(l.deps(T0 + MIN, { leadWakeMin: 0 }))).toEqual([]);
+});
+
+test("embedded answer records honor braces and exact qid boundaries", () => {
+  const entry = { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"kind":"answer","qid":"Q1","id":"new-answer","question":"Use {until}?","answer":"{yes}","ts":"2026-01-01T11:55:00.000Z"}</system-reminder>' };
+  expect(sawAnswer(JSON.stringify(entry), "Q1", { ...directRow, qid: "Q1", id: "new-answer", at: Date.parse("2026-01-01T11:55:00.000Z") })).toBe(true);
+  expect(sawAnswer(JSON.stringify(entry), "Q11", { ...directRow, qid: "Q11", id: "new-answer", at: Date.parse("2026-01-01T11:55:00.000Z") })).toBe(false);
 });
