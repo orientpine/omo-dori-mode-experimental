@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# A scripted check with fakes on PATH; never talks to real systemd or aoe.
+# A scripted check with fakes on PATH; never talks to real systemd, aoe or an hc core.
 set -euo pipefail
 S=$(cd "$(dirname "$0")" && pwd)
+R=$(cd "$S/../../../.." && pwd)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 export CHECK_LOG="$T/log"
 export PATH="$T:$PATH"
+export HOME="$T/home"
+export XDG_RUNTIME_DIR="$T/run"
+mkdir -p "$HOME/.bun/bin" "$HOME/.dori"
+ln -s "$(command -v bun)" "$HOME/.bun/bin/bun"
+ln -s "$R" "$HOME/.dori/src"
+unset DORI_CONFIG DORI_ENV_FILE DORI_STATE_DIR DORI_LEAD_PANE HC_SESSION HC_SOCKET || true
 cat >"$T/dori" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == revive ]]; then printf 'dori %s\n' "$*" >>"$CHECK_LOG"; exit 0; fi
@@ -26,7 +33,11 @@ cat >"$T/herdr" <<'EOF'
 #!/usr/bin/env bash
 printf 'herdr %s\n' "$*" >>"$CHECK_LOG"
 EOF
-chmod +x "$T/dori" "$T/systemctl" "$T/aoe" "$T/herdr"
+cat >"$T/hc" <<'EOF'
+#!/usr/bin/env bash
+printf 'hc session=%s %s\n' "${HC_SESSION:-default}" "$*" >>"$CHECK_LOG"
+EOF
+chmod +x "$T/dori" "$T/systemctl" "$T/aoe" "$T/herdr" "$T/hc"
 bash "$S/dori.sh"
 expected=$'systemctl --user start dori-inbound.service dori-google-watch.service\naoe session start fresh-lead-id\naoe session attach fresh-lead-id'
 [[ "$( <"$CHECK_LOG")" == "$expected" ]] || { printf 'launcher command mismatch\n' >&2; exit 1; }
@@ -42,8 +53,25 @@ LEAD_LINE="11111111-2222-4333-8444-555555555555 w1:p2" bash "$S/dori.sh"
 expected=$'systemctl --user start dori-inbound.service dori-google-watch.service\nherdr '
 [[ "$( <"$CHECK_LOG")" == "$expected" ]] || { printf 'live herdr lead was revived\n' >&2; exit 1; }
 rm "$CHECK_LOG"
-# an hc lead (option B, review 9 of #404): refused with a line naming it, before any service, herdr or aoe call
-if out=$(LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4" bash "$S/dori.sh" 2>&1); then printf 'hc lead launched\n' >&2; exit 1; fi
-[[ "$out" == *"lead runs on hc (hc:t4)"* ]] || { printf 'hc lead refusal line missing: %s\n' "$out" >&2; exit 1; }
-[[ ! -e "$CHECK_LOG" ]] || { printf 'hc lead touched services, herdr or aoe\n' >&2; cat "$CHECK_LOG" >&2; exit 1; }
+# an hc lead: the account's own file beats the inherited one; a live lead attaches in its named core
+printf '{"runtime":"hc","leadPane":"hc:t4"}\n' >"$HOME/.dori/config.json"
+printf 'HC_SESSION=agents\n' >"$HOME/.dori/dori.env"
+printf 'HC_SESSION=foreign\n' >"$T/wrong.env"
+export DORI_ENV_FILE="$T/wrong.env"
+mkdir -p "$XDG_RUNTIME_DIR/herdr-core"
+: >"$XDG_RUNTIME_DIR/herdr-core/agents.sock"
+LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4" bash "$S/dori.sh"
+expected=$'systemctl --user start dori-inbound.service dori-google-watch.service\nhc session=agents attach t4'
+[[ "$( <"$CHECK_LOG")" == "$expected" ]] || { printf 'hc launcher command mismatch\n' >&2; cat "$CHECK_LOG" >&2; exit 1; }
+rm "$CHECK_LOG"
+# a stopped hc lead is revived before the same attach
+LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4 stopped" bash "$S/dori.sh"
+expected=$'systemctl --user start dori-inbound.service dori-google-watch.service\ndori revive hc:t4\nhc session=agents attach t4'
+[[ "$( <"$CHECK_LOG")" == "$expected" ]] || { printf 'stopped hc launcher command mismatch\n' >&2; cat "$CHECK_LOG" >&2; exit 1; }
+rm "$CHECK_LOG"
+# no core socket: the guard runs before dori lead, systemctl, revive or hc, so no core is started
+rm "$XDG_RUNTIME_DIR/herdr-core/agents.sock"
+if out=$(LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4" bash "$S/dori.sh" 2>&1); then printf 'missing hc core launched\n' >&2; exit 1; fi
+[[ "$out" == *"not starting one"* ]] || { printf 'missing-core refusal line missing: %s\n' "$out" >&2; exit 1; }
+[[ ! -e "$CHECK_LOG" ]] || { printf 'missing core touched lead resolution or services\n' >&2; cat "$CHECK_LOG" >&2; exit 1; }
 printf 'DORI_SHELL_CHECK_PASS\n'

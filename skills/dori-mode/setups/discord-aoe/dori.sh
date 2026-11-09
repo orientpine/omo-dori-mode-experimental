@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The account's own files win over an inherited instance. For an hc lead the helper checks its core before dori lead or
+# revive can call hc; a herdr or aoe lead needs no core check.
+account_config=$HOME/.$(id -un)/config.json
+if [[ -f "$account_config" ]]; then export DORI_CONFIG="$account_config"; else export DORI_CONFIG="$HOME/.dori/config.json"; fi
+account_env=$HOME/.$(id -un)/dori.env
+if [[ -f "$account_env" ]]; then export DORI_ENV_FILE="$account_env"; else export DORI_ENV_FILE="$HOME/.dori/dori.env"; fi
+bun_bin=$HOME/.bun/bin/bun
+[[ -x "$bun_bin" ]] || bun_bin=bun
+helper=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/src" && pwd)/hc-lead-core.ts
+core=$("$bun_bin" "$helper")
 # dori lead must be installed (the lead-resolution PR supplies it).
 lead=$(dori lead)
 read -r AOE_ID PANE STATE <<< "$lead"
@@ -13,8 +23,6 @@ unset_dori=$(env | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/-u \1/p')
 # an hc lead attaches through hc in the core its dori.env names, else the default core, not the caller's inherited core
 if [[ "${PANE:-}" == hc:* ]]; then
   if [[ "${STATE:-}" == stopped ]]; then dori revive "$PANE" || true; fi
-  env_file=${DORI_ENV_FILE:-$HOME/.dori/dori.env}
-  core=$(DORI_ENV_FILE="$env_file" "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts")
   if [[ -n "$core" ]]; then export HC_SESSION="$core"; else unset HC_SESSION; fi
   unset HC_SOCKET
   # shellcheck disable=SC2086
