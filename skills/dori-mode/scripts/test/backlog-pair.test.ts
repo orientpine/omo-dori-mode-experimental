@@ -106,6 +106,25 @@ test("an answered repair request is dropped while no lane may start (slots full,
   expect(launched).toEqual([]);
 });
 
+test("a reply or a lead's lane that comes while an earlier repair's start is awaited holds the next ones: each start checks again", async () => {
+  // Given: three requests; while the first one's launch is awaited, the lead replies to the second and opens a lane for the third
+  intake(posts("1569000000000005001", "1569000000000005002", "1569000000000005003"));
+  const base = deps();
+  const launch: TickDeps["launch"] = async (item, brief, key) => {
+    if (item.id === "pair-1569000000000005001") {
+      await reply("1569000000000005002", "1569000000000005100");
+      writeFileSync(join(root, "c.md"), "[목표] 수리 요청(#dori-pair 1569000000000005003): 리드가 띄움\n");
+      lanes.push(lane("lead-c", join(root, "c.md")));
+    }
+    return base.launch(item, brief, key);
+  };
+  // When
+  const lines = await backlogTick({ ...base, launch }, { force: true });
+  // Then
+  expect(launched).toEqual(["pair-1569000000000005001"]);
+  expect(lines.filter((l) => l.startsWith("BACKLOG_ALREADY_HANDLED")).map((l) => l.split(" ").slice(1, 4).join(" "))).toEqual(["pair-1569000000000005002 reply 1569000000000005100", "pair-1569000000000005003 lane lead-c"]);
+});
+
 test("a repair request nobody answered starts as before, and a reply to another post or a post without a reply target does not hold it", async () => {
   // Given
   await reply("1569000000000003999", "1569000000000004000");
