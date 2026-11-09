@@ -95,8 +95,19 @@ test("a live monitor's first tick baselines the existing 83-row backlog and aler
   expect((await leadInboxTick(deps(T0 + 11 * MIN)))[0]).toContain(`1 inbox row(s) (pair-bot 1) never reached session ${SID}, oldest p-new`);
 });
 
+test("an absolute shell script whose contents tail the inbox counts as a live monitor", async () => {
+  const script = join(state.dir, "inbox-watch.sh");
+  writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
+  monitors(monitor({ command: script }));
+  expect(await leadInboxTick(deps(T0))).toEqual([]);
+  expect(await leadInboxTick(deps(T0 + 10 * MIN))).toEqual([]);
+});
+
 test("no live inbox monitor in the lead's session (none, its process gone, delivery paused) is typed once after leadInboxMin and again after the repeat window", async () => {
+  const wrongScript = join(state.dir, "wrong-watch.sh");
+  writeFileSync(wrongScript, "#!/bin/sh\ntail -n 0 -F /tmp/lanes.log\n");
   const cases: [string, object[]][] = [
+    ["no monitor on inbox.jsonl", [monitor({ command: wrongScript })]],
     ["no monitor on inbox.jsonl", [monitor({ command: "tail -F /tmp/lanes.log", description: "lanes" })]],
     ["받은편지 armed but its process is gone", [monitor({ runtime: { pid: DEAD_PID } })]],
     ["받은편지 armed but its delivery is paused", [monitor({ deliveryPaused: true })]],

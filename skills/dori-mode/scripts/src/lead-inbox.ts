@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { liveSessions, sessionFor } from "./aoe.ts";
 import { pidAlive } from "./background.ts";
@@ -9,9 +9,12 @@ import { frozenPanes } from "./frozen.ts";
 import { manifestPath, readManifest } from "./handover.ts";
 import { readHerdrSessions, sessionLog } from "./herdr-sessions.ts";
 import { clock, ownerRows, tailOf } from "./lead-limit.ts";
+import { watchProblem } from "./lead-inbox-watch.ts";
 import { sawAnswer } from "./missed-answers.ts";
 import { sendVerified } from "./panes.ts";
 import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
+
+export { watchProblem } from "./lead-inbox-watch.ts";
 
 // The lead hears the inbox only through a monitor its own session runs, and nothing said when there was none. On 2026-11-09
 // YooDori's lead (leadPane set back by hand, not by dori handover) missed a #dori-pair request at 11:48Z; ZzangDori's lead
@@ -24,8 +27,9 @@ import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 //   receipt (a reply_to id by itself or a queued work-custody record does not count); heard ids persist in lead-inbox.json
 //   across compaction; a card answer redelivered by missedAnswersTick counts through sawAnswer. The first tick with a live
 //   monitor baselines the existing backlog so only rows that arrive afterwards can alert;
-// - watched: omo's monitor manifest of that session holds a command monitor on the inbox file whose process lives, not
-//   suspended, expired or with its delivery paused. /new and /resume select the transcript omo wrote last, not argv's.
+// - watched: omo's monitor manifest of that session holds a command monitor whose command or absolute shell script names
+//   the inbox file, whose process lives, not suspended, expired or with its delivery paused. /new and /resume select the
+//   transcript omo wrote last, not argv's.
 // LEAD_INBOX_UNHEARD when a row stayed unheard leadInboxMin, else LEAD_INBOX_UNWATCHED when the session had no live inbox
 // monitor for leadInboxMin: one line typed into the lead per incident (the oldest unheard row, or the start of the gap),
 // again after REPEAT_MS while it lasts; a line that did not reach the pane is logged and typed again next tick.
@@ -39,7 +43,6 @@ const REPEAT_MS = 30 * 60_000;
 type Kind = "owner" | "pair" | "pair-bot";
 type Row = { readonly id: string; readonly at: number; readonly kind: Kind; readonly text: string; readonly qid?: string };
 type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[]; readonly baselineDone?: boolean };
-type Entry = ReturnType<typeof readManifest>[number] & { readonly deliveryPaused?: boolean };
 
 // the rows the lead must hear: the owner's (lead-limit.ts ownerRows) and every row of the pair channel
 export const inboxRows = (inbox: string, ownerId: string): Row[] => {
@@ -56,19 +59,6 @@ export const inboxRows = (inbox: string, ownerId: string): Row[] => {
     } catch {}
   }
   return out;
-};
-
-// why the session hears no inbox row, or undefined while a monitor on the inbox file runs and delivers
-export const watchProblem = (entries: readonly Entry[], inbox: string, now: number, alive: (pid: number) => boolean): string | undefined => {
-  const name = basename(inbox);
-  const on = entries.filter((e) => e.command?.includes(name));
-  if (!on.length) return `no monitor on ${name}`;
-  const expired = (e: Entry): boolean => e.expiresAt != null && e.expiresAt <= now;
-  const gone = (e: Entry): boolean => e.runtime?.pid === undefined || !alive(e.runtime.pid);
-  if (on.some((e) => !e.suspended && !e.deliveryPaused && !expired(e) && !gone(e))) return undefined;
-  const e = on[0] as Entry;
-  const why = e.deliveryPaused ? "its delivery is paused" : e.suspended ? "it is suspended" : expired(e) ? "it expired" : "its process is gone";
-  return `${plain(e.description || "the inbox monitor", 80)} armed but ${why}`;
 };
 
 const plain = (s: string, n: number): string => s.replace(/\s+/g, " ").replace(/`/g, "'").replaceAll("$(", "$ (").trim().slice(0, n);
