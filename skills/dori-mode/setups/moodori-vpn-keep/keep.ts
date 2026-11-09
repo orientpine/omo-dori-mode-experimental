@@ -18,6 +18,7 @@ export type KeepOptions = {
   readonly motpFile: string; // JSON file {"secret": "<hex>"} of the MOTP (TOTP HMAC-SHA256, 6 digits, 30 s) key
   readonly secuwayTask: string;
   readonly edgeTask: string;
+  readonly edgeProfile: string; // the folder name of MooDori's Edge --user-data-dir, so only that Edge is restarted
   readonly edgePort: number; // Edge's remote debugging port on the PC
   readonly cdpPort: number; // the local end of the ssh tunnel to it
   readonly days: readonly number[]; // 0 = Sunday, in timeZone
@@ -65,6 +66,7 @@ export const keepConfig = (raw: unknown, home: string = homedir()): KeepConfig =
       motpFile: tilde(str(doc, "motpFile"), home),
       secuwayTask: str(doc, "secuwayTask", "moodori-secuway"),
       edgeTask: str(doc, "edgeTask", "moodori-edge"),
+      edgeProfile: str(doc, "edgeProfile", "moodori-edge"),
       edgePort: num(doc, "edgePort", 9222),
       cdpPort: num(doc, "cdpPort", 9224),
       days: days as number[],
@@ -119,6 +121,7 @@ export type KeepDeps = {
   readonly ensureAgents: () => Promise<void>;
   readonly login: () => Promise<string>; // "OK", "no login page", or why it failed
   readonly restartAgent: () => Promise<void>;
+  readonly restartEdge: () => Promise<void>;
   readonly wait: (ms: number) => Promise<void>;
   readonly log: (line: string) => void;
 };
@@ -151,6 +154,13 @@ export async function keepTick(o: KeepOptions, s: KeepState, d: KeepDeps, now: D
     d.log("AGENT_RESTART");
     await d.restartAgent();
     r = await attempt();
+    // An Edge that was open before the drop keeps its portal tab on the agent check page (activexloading) after the
+    // agent restart; only that Edge started again moves on to login.jsp. Once a round, so maxFails still bounds it.
+    if (r === "no login page") {
+      d.log("VPN_EDGE_RESTART");
+      await d.restartEdge();
+      r = await attempt();
+    }
   } else if (r !== "OK") r = await attempt();
   if (r === "OK" && !(await vpnBack(d))) r = `OK portal, VPN still down after ${(UP_CHECKS * UP_EVERY_MS) / 1000} s`;
   d.log(`RELOGIN ${r}`);
@@ -191,7 +201,7 @@ const clickIn = async (send: Send, contextId: number, what: string, find: string
 };
 
 // The Secuway portal: agent check page -> login.jsp (account) -> flag3_cert (MOTP) -> bookmark. "OK" only at the
-// bookmark page; "no login page" when the agent check page never moves on (the caller restarts the agent).
+// bookmark page; "no login page" when the agent check page never moves on (the caller restarts the agent, then Edge).
 export async function loginFlow(V: Cdp, vpnUrl: string, creds: () => Promise<[string, string]>, motp: () => string, clock: Clock): Promise<string> {
   const frames = async (): Promise<Frame[]> => {
     const all: Frame[] = [];
@@ -258,7 +268,7 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
     (await runner(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", o.pcSsh, "powershell", "-NoProfile", "-EncodedCommand", Buffer.from(cmd, "utf16le").toString("base64")], { timeoutMs: 90_000 })).out;
   const tunnelUp = () => fetch(`${base}/json/version`, { signal: AbortSignal.timeout(4000) }).then((r) => r.ok, () => false);
   const ensureAgents = async () => {
-    await ps(`if(-not (Get-Process SecuwayUPort -ErrorAction SilentlyContinue)){Start-ScheduledTask -TaskName '${o.secuwayTask}'; Start-Sleep 5}; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 4) | Out-Null}catch{Start-ScheduledTask -TaskName '${o.edgeTask}'; Start-Sleep 8}`);
+    await ps(`if(-not (Get-Process SecuwayUPort -ErrorAction SilentlyContinue)){Start-ScheduledTask -TaskName ${psQuote(o.secuwayTask)}; Start-Sleep 5}; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 4) | Out-Null}catch{Start-ScheduledTask -TaskName ${psQuote(o.edgeTask)}; Start-Sleep 8}`);
     const key = `${o.pcSsh} ${o.cdpPort}:127.0.0.1:${o.edgePort}`;
     if (tunnel.key !== undefined && tunnel.key !== key) await stopTunnel(tunnel);
     if (await tunnelUp()) return;
@@ -318,10 +328,33 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
     ensureAgents,
     login,
     wait: (ms) => clock.sleep(ms),
-    restartAgent: async () => { await ps(`Stop-Process -Name SecuwayUPort -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-ScheduledTask -TaskName '${o.secuwayTask}'; Start-Sleep 8`); },
+    restartAgent: async () => { await ps(`Stop-Process -Name SecuwayUPort -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-ScheduledTask -TaskName ${psQuote(o.secuwayTask)}; Start-Sleep 8`); },
+    // Lists the msedge processes, stops only those edgePids picks (pids, never a name), starts edgeTask again and
+    // waits up to 20 s for its debugging port.
+    restartEdge: async () => {
+      const pids = edgePids(await ps(EDGE_LIST_PS), o.edgeProfile);
+      await ps(`${pids.length ? `Stop-Process -Id ${pids.join(",")} -Force -ErrorAction SilentlyContinue; Start-Sleep 3; ` : ""}Start-ScheduledTask -TaskName ${psQuote(o.edgeTask)}; for($i=0;$i -lt 20;$i++){Start-Sleep 1; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 2) | Out-Null; break}catch{}}`);
+    },
     log: (line) => console.log(`${new Date(clock.now()).toISOString()} ${line}`),
   };
 }
+
+// A PowerShell single-quoted string: every quote PowerShell reads as one (straight and curly) is doubled.
+export const psQuote = (text: string): string => `'${text.replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`;
+
+// One line per msedge process: its pid, a tab, its command line.
+export const EDGE_LIST_PS = `Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | ForEach-Object { "$($_.ProcessId)\`t$($_.CommandLine)" }`;
+// The pids of the msedge processes whose --user-data-dir (quoted or not, the whole argument quoted too) has exactly
+// profile as its last folder, compared without case like Windows paths; the owner's own Edge and any other profile stay.
+export const edgePids = (list: string, profile: string): number[] =>
+  list.split(/\r?\n/).flatMap((line) => {
+    const tab = line.indexOf("\t");
+    const pid = line.slice(0, tab);
+    const m = /"--user-data-dir=([^"]*)"|--user-data-dir="([^"]*)"|--user-data-dir=(\S+)/.exec(line.slice(tab + 1));
+    const dir = (m?.[1] ?? m?.[2] ?? m?.[3] ?? "").replace(/[\\/]+$/, "");
+    const leaf = dir.split(/[\\/]/).at(-1) ?? "";
+    return tab > 0 && /^\d+$/.test(pid) && leaf && leaf.toLowerCase() === profile.toLowerCase() ? [Number(pid)] : [];
+  });
 
 export const configPath = (env: Record<string, string | undefined>, home: string = homedir()): string =>
   env["DORI_VPN_KEEP_CONFIG"] || join(home, ".dori", "vpn-keep.json");

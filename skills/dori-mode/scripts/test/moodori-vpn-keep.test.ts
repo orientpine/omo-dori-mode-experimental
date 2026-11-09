@@ -19,7 +19,7 @@ test("vpn keep is off without a config file or without enabled: true, and an ena
   expect(() => keepConfig({ enabled: true, vpnUrl: "https://vpn.example.com/" })).toThrow("credsCommand must be a non-empty argv array");
   expect(options()).toEqual({
     pcSsh: "user@pc.example", vpnUrl: "https://vpn.example.com/", credsCommand: ["printf", "id\\npw\\n"], motpFile: "/home/x/motp.json",
-    secuwayTask: "moodori-secuway", edgeTask: "moodori-edge", edgePort: 9222, cdpPort: 9224,
+    secuwayTask: "moodori-secuway", edgeTask: "moodori-edge", edgeProfile: "moodori-edge", edgePort: 9222, cdpPort: 9224,
     days: [1, 2, 3, 4, 5], hours: [8, 20], timeZone: "Asia/Seoul", intervalMs: 60000, maxFails: 3, restMs: 900000, pauseFile: "/tmp/moodori-vpn-keep.pause",
   });
 });
@@ -128,7 +128,7 @@ const deps = (state: VpnState | VpnState[], logins: string[], over: Partial<Keep
     wait: async () => { calls.push("wait"); },
     ensureAgents: async () => { calls.push("agents"); },
     login: async () => { const r = logins.shift() ?? "FAIL"; calls.push(`login:${r}`); if (r.startsWith("throw")) throw new Error(r); return r; },
-    restartAgent: async () => { calls.push("restart"); },
+    restartAgent: async () => { calls.push("restart"); }, restartEdge: async () => { calls.push("restartEdge"); },
     log: (line) => calls.push(`log:${line}`),
     ...over,
   };
