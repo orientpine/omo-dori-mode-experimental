@@ -130,11 +130,12 @@ One JSON file per lane under `<stateDir>/lanes/`, written atomically (temp file 
 
 How the session id is found for a pane, in order:
 
-1. the agent process's exact `--session-id <id>`, `--session <session file>` or `--session <whole uuid>` argument;
-2. `PI_SESSION_ID` in the environment of one of its child processes;
-3. the session file whose timestamp falls within three minutes after the agent process started, only when the agent's command line has no session selector: one omo resolves itself (a partial `--session` uuid, `--continue`, `--resume`, `--fork`, `--rebind`) can open an older session, and a sibling's new session nearby is not it, so the id stays unknown.
+1. the session the agent runs now, among the one its arguments name (2.) and the `PI_SESSION_ID` in the environment of each of its own child processes (omo hands each child the session it runs at that moment): for a herdr lead (`dori lead`, `dori watch`) also the session `herdr-sessions.json` recorded for this same agent process (pid and start time). When they differ, the one whose log omo wrote last (the child's `PI_SESSION_FILE`, the `--session` file, or that session's file in the agent's own `--session-dir`, else under `sessionsDir`, the arguments read with their real word boundaries so a spaced directory is one; where those boundaries are not known (macOS, a rewritten title) no path option is read from a whitespace split, so only the default folder and exactly known logs count), so a child started before a move, or the end of the child that showed it, does not send the record back; when no log tells, the arguments' one. Only what `ps eww` prints after the command the process table shows for the child (read whole with `-ww`, whatever `COLUMNS` says) is environment: a `PI_SESSION_ID=` among its arguments is none;
+2. the agent process's exact `--session-id <id>`, `--session <session file>` or `--session <whole uuid>` argument;
+3. `PI_SESSION_ID` in the environment of a deeper descendant;
+4. the session file whose timestamp falls within three minutes after the agent process started, only when the agent's command line has no session selector: one omo resolves itself (a partial `--session` uuid, `--continue`, `--resume`, `--fork`, `--rebind`) can open an older session, and a sibling's new session nearby is not it, so the id stays unknown.
 
-The id from step 1 is the session the agent was launched with. If someone switches sessions inside the agent, only steps 2 and 3 notice.
+The children go before the arguments because omo can move to another session inside the same process (`/new`, `/resume`), while its arguments keep naming the session it was launched with: `dori lead` and `herdr-sessions.json` then follow the conversation the lead runs now, and its model. Until the agent starts a child after such a move, nothing shows it, and the launch session is reported. Windows reads no child environment, so there step 2 comes first.
 
 When the owner writes in a closed lane's thread, reopen its recorded session in a new tab, set its monitors again, and keep replying there. A monitor whose command starts work (a chain, a job, a post) is set again as a watch-only one that tails what that work writes, never as the same command: that would start the work a second time.
 

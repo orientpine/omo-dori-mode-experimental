@@ -1,5 +1,5 @@
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import { tmuxPanePid } from "./aoe.ts";
 import type { Backend } from "./config.ts";
@@ -15,6 +15,8 @@ export type SessionHit = { readonly id: string; readonly via: "argv" | "child-en
 // backslashes, or omo.exe / omo-windows-x64.exe, quoted as Win32_Process shows a command line with spaces in its path)
 export const AGENT = { test: isAgentCommand } as const;
 const ENV_ID = /(?:^|\s)PI_SESSION_ID=([0-9a-f-]{36})(?:\s|$)/;
+// a child's PI_SESSION_FILE: the value runs up to its .jsonl, so a path with spaces stays whole
+export const ENV_FILE = /(?:^|\s)PI_SESSION_FILE=(.+?\.jsonl)(?=\s|$)/;
 export const SESSION_FILE = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z_([0-9a-f-]{36})\.jsonl$/;
 const START_WINDOW_MS = 180_000;
 
@@ -51,7 +53,8 @@ export const winProcs = (json: string): Proc[] => {
 export const procTable = async (run: Runner, platform: string = process.platform): Promise<Proc[]> => {
   if (platform === "win32") return winProcs((await run(WIN_PROCS)).out);
   const linux = platform === "linux";
-  return (await run(["ps", "-A", "-o", linux ? "pid=,ppid=,sid=,stat=,command=" : "pid=,ppid=,stat=,command="])).out.split("\n").flatMap((line) => {
+  // -ww: whole command lines, even when COLUMNS is set (procps cuts the command column to it otherwise)
+  return (await run(["ps", "-A", "-ww", "-o", linux ? "pid=,ppid=,sid=,stat=,command=" : "pid=,ppid=,stat=,command="])).out.split("\n").flatMap((line) => {
     // the sid column is optional in what is read: the state letters are never a number
     const m = /^\s*(\d+)\s+(\d+)\s+(?:(\d+)\s+)?(\S+)\s+(.*)$/.exec(line);
     return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), ...(m[3] ? { sid: Number(m[3]) } : {}), stat: m[4] ?? "", cmd: m[5] ?? "" }] : [];
@@ -130,11 +133,84 @@ export const argvSessionId = (argv: readonly string[]): string => {
 const SELECTORS = ["--session", "--session-id", "--continue", "-c", "--resume", "-r", "--fork", "--rebind", "--no-session"];
 export const hasSessionSelector = (argv: readonly string[]): boolean => argv.some((a) => SELECTORS.some((s) => a === s || a.startsWith(`${s}=`)));
 
-export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[] };
+// seen: the session recorded before for this same agent process (herdr-sessions.ts), when the caller keeps one
+export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[]; readonly seen?: (agent: Proc) => Promise<{ readonly id: string; readonly log?: string | undefined } | undefined> };
 
 export const shellPidOf = async (pane: string, deps: SessionDeps): Promise<number> => {
   // the pane id says its backend, whatever the config says (aoe.ts tmuxPanePid: herdr process-info for a herdr pane id)
   return tmuxPanePid(deps.run, pane);
+};
+
+// The environment of a process as ps eww prints it after its arguments: the command the table shows for it (ps -A, the
+// same arguments) is cut off first, so a PI_SESSION_ID= among its arguments is no environment. "" when the line does not
+// start with that command (the pid runs another one now), and on Windows, whose environment is not read.
+export const procEnv = async (run: Runner, p: Proc): Promise<string> => {
+  if (process.platform === "win32" || !p.cmd) return "";
+  const line = (await run(["ps", "eww", "-o", "command=", "-p", String(p.pid)])).out.replace(/\r?\n$/, "");
+  return line.startsWith(p.cmd) ? line.slice(p.cmd.length) : "";
+};
+
+export const flagValue = (argv: readonly string[], flag: string): string | undefined => {
+  const at = argv.findIndex((a) => a === flag || a.startsWith(`${flag}=`));
+  return at < 0 ? undefined : argv[at]?.startsWith(`${flag}=`) ? argv[at]?.slice(flag.length + 1) : argv[at + 1];
+};
+
+// The agent's own arguments with their word boundaries: a Windows command line split as Windows does (winArgv), Linux's
+// /proc cmdline when it is the same process the table shows; undefined when they cannot be told (never a whitespace
+// split), so on macOS, whose ps loses them, no log is looked for from them.
+export const agentArgv = async (run: Runner, pid: number, cmd: string): Promise<string[] | undefined> => {
+  if (process.platform === "win32") return winArgv(cmd);
+  if (process.platform !== "linux") return undefined;
+  const ran = await run(["cat", `/proc/${pid}/cmdline`]);
+  if (ran.code !== 0) return undefined;
+  const argv = ran.out.split("\0").filter((a, i, all) => a || i < all.length - 1);
+  // one word with spaces is a process that rewrote its title, not its arguments
+  return argv.length > 1 && argv.join(" ") === cmd.trim() ? argv : undefined;
+};
+
+// The log file of session id: --session <file> when the arguments name it, else that session's file in the agent's own
+// --session-dir (omo writes the logs right in it), else in sessionsDir's folder for cwd. undefined when none is there.
+const sessionLogFor = (argv: readonly string[], id: string, cwd: string, deps: SessionDeps): string | undefined => {
+  const file = flagValue(argv, "--session");
+  if (file?.endsWith(`_${id}.jsonl`)) return resolve(cwd, file);
+  const own = flagValue(argv, "--session-dir");
+  const dir = own ? resolve(cwd, own) : sessionDirFor(deps.sessionsDir, cwd);
+  const name = (deps.listDir ?? ((d: string) => { try { return readdirSync(d); } catch { return []; } }))(dir).find((n) => n.endsWith(`_${id}.jsonl`));
+  return name ? join(dir, name) : undefined;
+};
+
+// The session the agent runs now. omo hands each child it starts the session it runs at that moment (PI_SESSION_ID and
+// its log, PI_SESSION_FILE) and can move to another session inside the same process (/new, /resume), while its arguments
+// keep naming the one it started with (zzangdori lead w1:p37, 2026-11-09); a child started before a move still shows the
+// old session, and the child that showed the move can end. So of the sessions its arguments, its own children (a nested
+// agent's children carry that agent's session) and the record kept for this same agent (deps.seen) name, the one whose log
+// omo wrote last; when no log tells, the arguments' one, else the first child's. "" when none is named.
+const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: string, cwd: string, deps: SessionDeps): Promise<string> => {
+  const named: { readonly id: string; readonly log?: string | undefined }[] = [];
+  for (const child of table.filter((p) => p.ppid === agent.pid).slice(0, 40)) {
+    const env = await procEnv(deps.run, child);
+    const id = ENV_ID.exec(env)?.[1];
+    if (id) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
+  }
+  if (fromFlag) named.push({ id: fromFlag });
+  // the record counts on its own too: a selector-free agent whose children all ended still names it
+  const seen = deps.seen ? await deps.seen(agent) : undefined;
+  if (seen) named.push(seen);
+  const ids = [...new Set(named.map((n) => n.id))];
+  if (ids.length <= 1) return ids[0] ?? "";
+  const written = (log: string | undefined): number => {
+    try {
+      return log ? statSync(log).mtimeMs : -Infinity;
+    } catch {
+      return -Infinity;
+    }
+  };
+  // the real word boundaries matter here: a --session-dir with spaces is no two flags, and where they cannot be told
+  // (macOS, a rewritten title) no path option is read from a whitespace split: the default folder and exact logs only
+  const words = (await agentArgv(deps.run, agent.pid, agent.cmd)) ?? [];
+  const at = (id: string): number => Math.max(...named.filter((n) => n.id === id).map((n) => n.log ?? sessionLogFor(words, id, cwd, deps)).map(written));
+  const last = ids.map((id) => ({ id, at: at(id) })).reduce((a, b) => (b.at > a.at ? b : a));
+  return last.at > -Infinity ? last.id : fromFlag || (ids[0] ?? "");
 };
 
 export const resolveSession = async (pane: string, cwd: string, table: readonly Proc[], deps: SessionDeps): Promise<SessionHit> => {
@@ -143,13 +219,14 @@ export const resolveSession = async (pane: string, cwd: string, table: readonly 
   if (!agent) return { id: "", via: "none" };
   const argv = process.platform === "win32" ? winArgv(agent.cmd) : agent.cmd.split(/\s+/);
   const fromFlag = argvSessionId(argv);
-  if (fromFlag) return { id: fromFlag, via: "argv", pid: agent.pid };
+  const current = await currentSession(table, agent, fromFlag, cwd, deps);
+  if (current) return { id: current, via: current === fromFlag ? "argv" : "child-env", pid: agent.pid };
   // a selector omo resolves itself (a partial --session uuid, --continue, --resume, --fork, --rebind) can open an older
   // session, whose file name is no start time: only a child's exact PI_SESSION_ID may name it, never a nearby new session
   const selected = hasSessionSelector(argv);
-  for (const child of process.platform === "win32" ? [] : descendants(table, agent.pid).slice(0, 40)) {
-    const env = await deps.run(["ps", "eww", "-o", "command=", "-p", String(child.pid)]);
-    const hit = ENV_ID.exec(env.out);
+  // its own children were read above and showed none; a deeper child's PI_SESSION_ID still names it
+  for (const child of process.platform === "win32" ? [] : descendants(table, agent.pid).filter((p) => p.ppid !== agent.pid).slice(0, 40)) {
+    const hit = ENV_ID.exec(await procEnv(deps.run, child));
     if (hit?.[1]) return { id: hit[1], via: "child-env", pid: agent.pid };
   }
   if (selected) return { id: "", via: "none", pid: agent.pid };

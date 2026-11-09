@@ -7,13 +7,14 @@ import { agentLine, herdrAgentPid, herdrRead, herdrSessions, herdrShellPid, Herd
 import { reasonOf } from "./runtime/herdr/exec.ts";
 import type { Clock, Runner } from "./run.ts";
 import { splitModel } from "./lane-handover.ts";
-import { argvSessionId, descendants, hasSessionSelector, type Proc, procTable, resolveSession, sessionDirFor, winArgv } from "./session-id.ts";
+import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionSelector, type Proc, procEnv, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // A herdr server that stops ends every agent in its panes and gives back the same pane ids with fresh shells (herdr 0.9.5,
 // measured 2026-11-03), unlike an aoe session, which aoe starts again in its conversation. So the omo session a herdr lead
 // runs is kept here while it runs (dori lead, dori watch's lead check), and the lead is started again in that conversation
-// from it (reviveHerdr) when its agent is gone. log: the session's log file, when it was found (sessionLog).
-export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly log?: string; readonly at: string };
+// from it (reviveHerdr) when its agent is gone. log: the session's log file, when it was found (sessionLog). agent: the
+// agent process it was read from ("<pid> <start>"), so a later read of the same process still weighs this session.
+export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly log?: string; readonly agent?: string; readonly at: string };
 
 const file = (stateDir: string): string => join(stateDir, "herdr-sessions.json");
 
@@ -36,11 +37,6 @@ const modelOf = (cmd: string): string | undefined => {
   return at >= 0 ? words[at + 1] : words.find((w) => w.startsWith("--model="))?.slice("--model=".length);
 };
 
-const flagValue = (argv: readonly string[], flag: string): string | undefined => {
-  const at = argv.findIndex((a) => a === flag || a.startsWith(`${flag}=`));
-  return at < 0 ? undefined : argv[at]?.startsWith(`${flag}=`) ? argv[at]?.slice(flag.length + 1) : argv[at + 1];
-};
-
 // The log file of session id for an agent started with argv in cwd: its --session <file>, else the file in its own
 // --session-dir (omo writes the logs right in it, measured 2026-11-04), else in sessionsDir's folder for cwd. undefined
 // when none is there.
@@ -57,29 +53,13 @@ export const argvSessionLog = (argv: readonly string[], sessionsDir: string, cwd
   }
 };
 
-// a child's PI_SESSION_FILE in ps eww: the value runs up to its .jsonl, so a path with spaces stays whole
-const ENV_FILE = /(?:^|\s)PI_SESSION_FILE=(.+?\.jsonl)(?=\s|$)/;
-
-// The agent's own arguments with their word boundaries: a Windows command line split as Windows does (winArgv), Linux's
-// /proc cmdline when it is the same process the table shows; undefined when they cannot be told (never a whitespace split),
-// so on macOS, whose ps loses them, no log is looked for from them (KERN_PROCARGS2 would keep them: docs/follow-ups.md).
-const agentArgv = async (run: Runner, pid: number, cmd: string): Promise<string[] | undefined> => {
-  if (process.platform === "win32") return winArgv(cmd);
-  if (process.platform !== "linux") return undefined;
-  const ran = await run(["cat", `/proc/${pid}/cmdline`]);
-  if (ran.code !== 0) return undefined;
-  const argv = ran.out.split("\0").filter((a, i, all) => a || i < all.length - 1);
-  // one word with spaces is a process that rewrote its title, not its arguments
-  return argv.length > 1 && argv.join(" ") === cmd.trim() ? argv : undefined;
-};
-
 // The log file of session id that the agent at pid runs now: the exact path omo hands its children (PI_SESSION_FILE, read
 // as resolveSession reads their PI_SESSION_ID; Windows has no such read; only bash and eval children get it), else what
 // the agent's arguments name (argvSessionLog; a --session to another copy of the session goes over the one recorded),
 // else the log recorded before for this session (kept): on macOS only the first and the last, the paths known exactly.
 export const sessionLog = async (run: Runner, table: readonly Proc[], pid: number, id: string, sessionsDir: string, cwd: string, kept?: string): Promise<string | undefined> => {
   for (const child of process.platform === "win32" ? [] : descendants(table, pid).slice(0, 40)) {
-    const file = ENV_FILE.exec((await run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out)?.[1];
+    const file = ENV_FILE.exec(await procEnv(run, child))?.[1];
     if (file?.endsWith(`_${id}.jsonl`) && existsSync(file)) return file;
   }
   const argv = await agentArgv(run, pid, table.find((p) => p.pid === pid)?.cmd ?? "");
@@ -122,7 +102,15 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   if (!live || !config.sessionsDir) return kept?.session ?? "";
   const cwd = (await herdrSessions(run)).find((s) => s.pane === pane)?.path ?? kept?.cwd ?? "";
   const table = await procTable(run);
-  const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr" });
+  // the agent process as pid and start time, so a pid used again by another agent is not the same one
+  const identity = async (p: Proc): Promise<string> => `${p.pid} ${process.platform === "win32" ? p.startedAt ?? "" : (await run(["ps", "-o", "lstart=", "-p", String(p.pid)])).out.trim()}`;
+  let agent: string | undefined;
+  // the session recorded for this same agent process still counts when no child of it shows that session any more
+  const seen = async (p: Proc) => {
+    agent = await identity(p);
+    return kept?.agent === agent ? { id: kept.session, log: kept.log } : undefined;
+  };
+  const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr", seen });
   if (!hit.id) return kept?.session ?? "";
   // what the session runs now (its log), else the model recorded for this same session (a log that cannot be read does not
   // send it back to the launch one), else what its agent was started with
@@ -131,7 +119,9 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   const log = hit.pid ? await sessionLog(run, table, hit.pid, hit.id, config.sessionsDir, cwd, same?.log) : same?.log;
   const model = (log ? sessionModel(log) : undefined) ?? same?.model ?? modelOf(cmd);
   // recorded on every read, unchanged or not: its time is when it was last checked (lead-down reads again after 10 min)
-  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(log ? { log } : {}), at: new Date().toISOString() });
+  const p = table.find((q) => q.pid === hit.pid);
+  if (!agent && p) agent = await identity(p);
+  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(log ? { log } : {}), ...(agent ? { agent } : {}), at: new Date().toISOString() });
   return hit.id;
 };
 
