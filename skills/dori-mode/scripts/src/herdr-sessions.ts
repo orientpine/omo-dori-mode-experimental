@@ -162,6 +162,7 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
   if (!rec || !argvSessionId(["--session-id", rec.session])) return `REVIVE_FAIL ${pane}: no omo session recorded for this pane (${file(config.stateDir)})`;
   if (!(await herdrSessions(run)).some((s) => s.pane === pane)) return `REVIVE_FAIL ${pane}: herdr has no such pane (its tab was closed); open a new session instead`;
   for (let i = 0; i < 20 && !(await herdrShellPid(run, pane)); i++) await clock.sleep(1_000);
+  for (let i = 0; i < 20 && !(await herdrRead(run, pane)).trim(); i++) await clock.sleep(250);
   const restored = await herdrAgentPid(run, pane);
   const read = () => herdrRead(run, pane);
   const selectedHome = homeEnv(config);
@@ -182,7 +183,7 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
     const { base, thinking } = splitModel((log ? sessionModel(log) : undefined) || rec.model || config.defaultModel);
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, rec.session);
     // the screen is cleared first, so a ❯ the ended agent left there is gone before the new one draws
-    const clear = process.platform === "win32" ? "Clear-Host; " : "clear && ";
+    const clear = process.platform === "win32" ? "Clear-Host; " : "clear || true; ";
     const failed = await paneRuntime(run, pane).start(paneRef(pane), `${clear}${agentLine(argv, { ...selectedHome, PATH: agentPath(tool) })}`).then(() => undefined, (e: unknown) => reasonOf(e));
     if (failed !== undefined) return `REVIVE_FAIL ${pane}: herdr pane run failed: ${failed.slice(0, 160)}`;
   }
