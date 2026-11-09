@@ -5,6 +5,7 @@ import { fetchHttp } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
 import { envInt, fileTgInboundStore, telegramInboundLoop, writeLineSync } from "./messenger/telegram-inbound.ts";
+import { formatTelegramInbound } from "./messenger/telegram-line.ts";
 import { ThreadLedger } from "./messenger/thread-ledger.ts";
 import { Telegram } from "./messenger/telegram.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
@@ -65,7 +66,8 @@ const inboundCommand: Command = async (context) => {
     await new Promise(() => {});
   }
   // upstream dori-superagent #76 (https://github.com/sisyphuslabs/dori-superagent/pull/76): telegram inbound; #79
-  // (https://github.com/sisyphuslabs/dori-superagent/pull/79): edits, media file ids, envInt and its inbound loop
+  // (https://github.com/sisyphuslabs/dori-superagent/pull/79): edits, media file ids, envInt and its inbound loop; #110
+  // (https://github.com/sisyphuslabs/dori-superagent/pull/110): mid= on every line, in telegram-line.ts
   if (key === "telegram") {
     const tg = new Telegram(fetchHttp, realClock, process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set"));
     const store = fileTgInboundStore(`${config.stateDir}/telegram-offset`);
@@ -86,18 +88,13 @@ const inboundCommand: Command = async (context) => {
     const groupChatId = process.env["DORI_TELEGRAM_GROUP_ID"] === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
     const topicId = process.env["DORI_TELEGRAM_TOPIC_ID"] === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID", "topic");
     console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
-    // Full text, JSON-escaped on one line: getUpdates cannot fetch a message twice. writeLineSync, not console.log,
-    // which drops a failed write (a closed stdout): the whole line is out before the offset moves past its message.
+    // writeLineSync, not console.log, which drops a failed write (a closed stdout): the whole line is out before the offset moves past its message.
     await telegramInboundLoop(
       tg,
       store,
       { ownerId, groupChatId, topicId },
       minutes,
-      (i) =>
-        void writeLineSync(
-          `INBOUND ${i.kind === "edit" ? "edit:" : ""}${i.source} ${i.chat} ${i.thread ?? "-"} ${i.updateId} ${i.from} ${JSON.stringify(i.text ?? "")}` +
-            `${i.media === undefined ? "" : ` file=${i.media.kind}:${i.media.fileId}`}\n`,
-        ),
+      (i) => void writeLineSync(`${formatTelegramInbound(i)}\n`),
       (m) => console.log(`WARN ${m}`.slice(0, 300)),
     );
     return;

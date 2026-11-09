@@ -18,7 +18,9 @@ const cliIn = (dir: string) => {
   const config = join(dir, "config.json");
   writeFileSync(config, JSON.stringify({ stateDir: dir, defaultCwd: dir, hooks: {} }));
   return (env: string[], ...args: string[]) =>
-    run(["env", ...env, `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, cli, ...args], { timeoutMs: 40_000 });
+    // upstream dori-superagent #185 (https://github.com/sisyphuslabs/dori-superagent/pull/185, closes its issue #181): env adds to
+    // the inherited environment and the caller's own session reads HC_TERMINAL_ID first, so a run from an hc terminal saw that terminal
+    run(["env", "-u", "HC_TERMINAL_ID", ...env, `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, cli, ...args], { timeoutMs: 40_000 });
 };
 // No pane of a registered lane: the lead's own shell, or a test runner.
 const noPane = ["-u", "HERDR_PANE_ID", "-u", "TMUX"];
