@@ -11,8 +11,16 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type Ran, run, type Runner } from "../../scripts/src/run.ts";
+import { HC_ADDRESS } from "../../scripts/src/runtime/types.ts";
 
 type Terminal = { readonly name?: string; readonly state?: string; readonly address?: string; readonly argv?: readonly unknown[] };
+type Local = Terminal & { readonly address: string };
+
+// hc ls --all lists the mesh machines' terminals too, as <machine>/tN under their own unqualified names, and hc forwards a
+// kill or rm of such an address to that machine; a bridge is a terminal of this machine, so only a row whose address is a
+// local one (HC_ADDRESS) is ever looked at, and a row without an address is none (review 13 of #404)
+const localRows = (terminals: readonly Terminal[], bridge: Bridge): Local[] =>
+  terminals.filter((t): t is Local => t.name === bridge.name && t.address !== undefined && HC_ADDRESS.test(t.address));
 
 // A bridge runs attach.sh; a name is held by whatever terminal has it now (hc resolves a name to its live holder), so a
 // Dori lane named like a bridge is never taken for one (review 10 of #404). hc 0.1.18's ls leaves argv out, so each row of
@@ -20,8 +28,8 @@ type Terminal = { readonly name?: string; readonly state?: string; readonly addr
 // be read is another terminal's (review 11 of #404). A bridge is the terminal whose argv is exactly the bridge's own command
 // (bridgeCommand: this checkout's attach.sh and that bridge's account): a file merely called attach.sh, another account's
 // attach or an attach.sh of another checkout is another terminal's (dori challenge on plan-r13 of #404).
-async function owned(runner: Runner, t: Terminal, bridge: Bridge): Promise<boolean> {
-  const got = await runner(["hc", "get", "--json", t.address ?? bridge.name]);
+async function owned(runner: Runner, t: Local, bridge: Bridge): Promise<boolean> {
+  const got = await runner(["hc", "get", "--json", t.address]);
   if (got.code !== 0) return false;
   try {
     const argv = (JSON.parse(got.out) as Terminal).argv;
@@ -31,7 +39,7 @@ async function owned(runner: Runner, t: Terminal, bridge: Bridge): Promise<boole
     return false;
   }
 }
-const heldBy = (bridge: Bridge, t: Terminal): string => `${bridge.name}: the name is held by another terminal (${t.address ?? "?"}), not a bridge; left alone`;
+const heldBy = (bridge: Bridge, t: Local): string => `${bridge.name}: the name is held by another terminal (${t.address}), not a bridge; left alone`;
 export type Bridge = { readonly name: string; readonly account?: string };
 
 const NAME = /^[a-z0-9_-]{1,32}$/; // hc's terminal name rule
@@ -64,13 +72,13 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
   for (const bridge of bridges) {
     // hc lists every record of a name, in terminal-id order: a finished record of another program may come before the live
     // bridge that took its name, so the live holder decides (review 12 of #404)
-    const rows = terminals.filter((t) => t.name === bridge.name);
+    const rows = localRows(terminals, bridge);
     const live = rows.find((t) => t.state === "live");
     if (live) { results.push((await owned(runner, live, bridge)) ? `${bridge.name}: kept` : heldBy(bridge, live)); continue; }
     // a finished bridge's record is removed, a finished foreign one keeps its record; the name is free for the bridge anyway
     for (const t of rows) {
       if (!(await owned(runner, t, bridge))) continue;
-      const rm = await runner(["hc", "rm", t.address ?? bridge.name]);
+      const rm = await runner(["hc", "rm", t.address]);
       if (rm.code !== 0) throw new Error(`hc rm ${bridge.name} failed: ${rm.err || rm.out}`);
     }
     const started = await runner(["hc", "run", "--bg", "--no-parent", "--name", bridge.name, "--", ...bridgeCommand(bridge)]);
@@ -100,9 +108,9 @@ export async function stopBridges(runner: Runner, bridges: readonly Bridge[], sl
   const failed: string[] = [];
   // every record of a bridge's name is looked at, since another program's older record may come first (review 12 of #404)
   for (const bridge of bridges) {
-    for (const found of terminals.filter((t) => t.name === bridge.name)) {
+    for (const found of localRows(terminals, bridge)) {
       if (!(await owned(runner, found, bridge))) continue;
-      const target = found.address ?? bridge.name;
+      const target = found.address;
       if (found.state === "live") {
         const k = await runner(["hc", "kill", target]);
         if (k.code !== 0 && kindOf(k) !== "not_found") {
