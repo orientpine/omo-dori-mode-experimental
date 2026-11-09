@@ -1,7 +1,8 @@
-import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { linesOf } from "./heavy-queue.ts";
 import type { BoxTools } from "./heavy-spread.ts";
 
 // The tools a job needs on a helper that it does not carry in its --sync paths (heavy-spread.ts).
@@ -205,4 +206,37 @@ export const playwrightVersion = (roots: readonly string[]): string | undefined 
     }
   }
   return undefined;
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// the browsers of the caller's playwright version, installed once into this host's own cache (user space, no sudo)
+export const ensurePlaywright = async (version: string, browsersDir: string, log: (l: string) => void): Promise<void> => {
+  const mark = join(browsersDir, `.dori-playwright-${version}`);
+  if (existsSync(mark)) return;
+  mkdirSync(browsersDir, { recursive: true });
+  const lock = join(browsersDir, ".dori-playwright-lock");
+  for (let waited = 0; ; waited += 2_000) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch {
+      if (existsSync(mark)) return;
+      if (waited > 20 * 60_000 || Date.now() - (statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? 0) > 20 * 60_000) rmSync(lock, { recursive: true, force: true });
+      await sleep(2_000);
+    }
+  }
+  try {
+    if (existsSync(mark)) return;
+    log(`HEAVY_PW_INSTALL playwright ${version} browsers into ${browsersDir}`);
+    const p = Bun.spawn([process.execPath, "x", `playwright@${version}`, "install", "chromium", "ffmpeg"], { env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsersDir, PLAYWRIGHT_SKIP_BROWSER_GC: "1" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const pump = async (s: ReadableStream<Uint8Array>) => {
+      for await (const l of linesOf(s)) process.stderr.write(`W ${l}\n`);
+    };
+    const [code] = await Promise.all([p.exited, pump(p.stdout), pump(p.stderr)]);
+    if (code === 0) writeFileSync(mark, new Date().toISOString());
+    else log(`HEAVY_PW_FAIL playwright ${version}: install exited ${code}; the run goes on and its browser may be missing`);
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
 };

@@ -104,3 +104,11 @@ omo's monitor tool answers a refused path watch ("Cannot watch file: parent dire
 ## dori heavy hold-local: a hold broker instead of the shared directory (#408)
 
 `dori heavy hold-local` keeps each account's hold in `heavyHoldDir` (`/tmp/dori-heavy-hold`, 1777). Readers treat every entry as hostile (one descriptor per entry, no FIFO wait, no link followed, 4 KiB, a day at most), but the trust model stays a shared writable directory: the account that made it can drop every hold or make it unreadable, which holds until fixed. Kubernetes cordon, Slurm DRAIN, PBS `pbsnodes -o` and LSF `badmin hclose` keep a hold in one authorized controller instead. A local broker (an abstract AF_UNIX socket checking SO_PEERCRED, or a root-provisioned directory with a fixed owner) would remove the shared directory; it is a new long-lived service on every host, so it waits for its own lane.
+
+## Heavy: a big --sync to a slow helper (heavy stale)
+
+heavy stale shows an upload (`HEAVY_SYNC`) and ends a run that gives no sign of life (`HEAVY_HELPER_STALE`), but it still sends a 2.1 GB `--sync` to a helper that takes it at 0.4 MB/s: on 2026-11-08 cha and kimm-cha were reached from 0a83 over the internet (Tailscale direct, not DERP; scp of 50 MB 128.6 s up, 56.9 s down) while 4eae and the sparks sit on 0a83's own LAN. The lead's next fix: pick the helper with the upload time in mind (bytes over the measured rate of each helper), so a big job waits for a near helper or runs here instead of spending hours on the wire.
+
+## Heavy --job: its ssh's pipes are waited on without a deadline (#410)
+
+`dori heavy <label> --job` (heavy-queue.ts: the run on a GPU helper and heavy-serve through the queue host) reads its ssh's stdout and stderr to the end and waits for its exit, like the --kind path did before #410: a helper that never answers, or an ssh that exits and leaves a child holding a pipe, keeps the caller waiting. #410 bounds the --kind path with settle() (heavy-settle.ts); the --job path should go through it too, with the same tests (no answer within staleMin, a child holding stderr after the answer).

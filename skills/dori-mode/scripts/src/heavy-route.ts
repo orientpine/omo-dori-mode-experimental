@@ -120,7 +120,7 @@ export const archRefusal = (opts: readonly string[]): string | undefined => {
 // installed kept waiting for 4eae alone).
 export const REASK_MS = 10 * 60_000;
 export const refusals = (now: () => number) => {
-  const m = new Map<string, { readonly why: string; readonly until: number }>();
+  const m = new Map<string, { readonly kind: string; readonly why: string; readonly until: number }>();
   const live = (name: string): boolean => {
     const r = m.get(name);
     if (r && now() >= r.until) m.delete(name);
@@ -128,8 +128,10 @@ export const refusals = (now: () => number) => {
   };
   return {
     has: live,
-    set: (name: string, kind: string, why: string): void => void m.set(name, { why, until: kind === "refused" ? Infinity : now() + REASK_MS }),
+    set: (name: string, kind: string, why: string): void => void m.set(name, { kind, why, until: kind === "refused" ? Infinity : now() + REASK_MS }),
     all: (names: readonly string[]): boolean => names.length > 0 && names.every(live),
+    // every helper turned the job away, not only paused after a stale run of it (--stale-again waits that pause out)
+    final: (names: readonly string[]): boolean => names.length > 0 && names.every((n) => live(n) && m.get(n)?.kind !== "stale"),
     list: (): string => [...m].map(([n, r]) => `${n}: ${r.why}`).join("; "),
   };
 };
