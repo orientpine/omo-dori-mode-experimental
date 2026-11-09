@@ -166,3 +166,31 @@ test.if(process.platform === "linux")("a --session-dir with spaces has the launc
   const run: Runner = async (argv, o) => (argv[1] === "eww" && argv.at(-1) === "4002" ? { code: 0, out: `python3 -u prelude.py PI_SESSION_ID=${now} PI_SESSION_FILE=${nowLog}`, err: "" } : base.run(argv, o));
   expect(await findLead(run, base.config)).toBe(`${first} w1:p1`);
 });
+
+// where ps loses the arguments' word boundaries (macOS), a path option read from a whitespace split would point at the
+// wrong folder: only the default session folder and exactly known logs count there
+test.if(process.platform === "linux")("on macOS a spaced --session-dir is not read from a whitespace split, so it cannot send the lookup to a wrong folder", async () => {
+  const first = "11111111-2222-4333-8444-555555555555";
+  const now = "22222222-2222-4333-8444-555555555555";
+  const sessions = join(dir, "sessions");
+  const folder = sessionDirFor(sessions, dir);
+  mkdirSync(folder, { recursive: true });
+  const firstLog = join(folder, `2026-11-09T01-00-00-000Z_${first}.jsonl`);
+  const nowLog = join(folder, `2026-11-09T11-00-00-000Z_${now}.jsonl`);
+  writeFileSync(firstLog, "");
+  writeFileSync(nowLog, "");
+  utimesSync(firstLog, new Date("2026-11-09T11:50:00Z"), new Date("2026-11-09T11:50:00Z"));
+  utimesSync(nowLog, new Date("2026-11-09T11:00:00Z"), new Date("2026-11-09T11:00:00Z"));
+  world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
+  world.ps = `4000 1 -bash\n4001 4000 omo --session-id ${first} --session-dir "${join(dir, "custom sessions")}"\n4002 4001 python3 -u prelude.py`;
+  const base = omo({ leadPane: "w1:p1", sessionsDir: sessions });
+  const run: Runner = async (argv, o) => (argv[1] === "eww" && argv.at(-1) === "4002" ? { code: 0, out: `python3 -u prelude.py PI_SESSION_ID=${now} PI_SESSION_FILE=${nowLog}`, err: "" } : base.run(argv, o));
+  const own = Object.getOwnPropertyDescriptor(process, "platform");
+  if (!own) throw new Error("process.platform has no descriptor");
+  Object.defineProperty(process, "platform", { ...own, value: "darwin" });
+  try {
+    expect(await findLead(run, base.config)).toBe(`${first} w1:p1`);
+  } finally {
+    Object.defineProperty(process, "platform", own);
+  }
+});
