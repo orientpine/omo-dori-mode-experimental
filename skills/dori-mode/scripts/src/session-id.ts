@@ -150,12 +150,31 @@ export const procEnv = async (run: Runner, p: Proc): Promise<string> => {
   return line.startsWith(p.cmd) ? line.slice(p.cmd.length) : "";
 };
 
-// The log file of session id: --session <file> when the arguments name it, else that session's file in sessionsDir's
-// folder for cwd. undefined when neither is there.
+export const flagValue = (argv: readonly string[], flag: string): string | undefined => {
+  const at = argv.findIndex((a) => a === flag || a.startsWith(`${flag}=`));
+  return at < 0 ? undefined : argv[at]?.startsWith(`${flag}=`) ? argv[at]?.slice(flag.length + 1) : argv[at + 1];
+};
+
+// The agent's own arguments with their word boundaries: a Windows command line split as Windows does (winArgv), Linux's
+// /proc cmdline when it is the same process the table shows; undefined when they cannot be told (never a whitespace
+// split), so on macOS, whose ps loses them, no log is looked for from them.
+export const agentArgv = async (run: Runner, pid: number, cmd: string): Promise<string[] | undefined> => {
+  if (process.platform === "win32") return winArgv(cmd);
+  if (process.platform !== "linux") return undefined;
+  const ran = await run(["cat", `/proc/${pid}/cmdline`]);
+  if (ran.code !== 0) return undefined;
+  const argv = ran.out.split("\0").filter((a, i, all) => a || i < all.length - 1);
+  // one word with spaces is a process that rewrote its title, not its arguments
+  return argv.length > 1 && argv.join(" ") === cmd.trim() ? argv : undefined;
+};
+
+// The log file of session id: --session <file> when the arguments name it, else that session's file in the agent's own
+// --session-dir (omo writes the logs right in it), else in sessionsDir's folder for cwd. undefined when none is there.
 const sessionLogFor = (argv: readonly string[], id: string, cwd: string, deps: SessionDeps): string | undefined => {
-  const value = argv[argv.indexOf("--session") + 1] ?? "";
-  if (argv.includes("--session") && value.endsWith(`_${id}.jsonl`)) return resolve(cwd, value);
-  const dir = sessionDirFor(deps.sessionsDir, cwd);
+  const file = flagValue(argv, "--session");
+  if (file?.endsWith(`_${id}.jsonl`)) return resolve(cwd, file);
+  const own = flagValue(argv, "--session-dir");
+  const dir = own ? resolve(cwd, own) : sessionDirFor(deps.sessionsDir, cwd);
   const name = (deps.listDir ?? ((d: string) => { try { return readdirSync(d); } catch { return []; } }))(dir).find((n) => n.endsWith(`_${id}.jsonl`));
   return name ? join(dir, name) : undefined;
 };
@@ -174,7 +193,8 @@ const currentSession = async (table: readonly Proc[], agent: Proc, argv: readonl
     if (id) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
   }
   if (fromFlag) named.push({ id: fromFlag });
-  const seen = named.length && deps.seen ? await deps.seen(agent) : undefined;
+  // the record counts on its own too: a selector-free agent whose children all ended still names it
+  const seen = deps.seen ? await deps.seen(agent) : undefined;
   if (seen) named.push(seen);
   const ids = [...new Set(named.map((n) => n.id))];
   if (ids.length <= 1) return ids[0] ?? "";
@@ -185,7 +205,9 @@ const currentSession = async (table: readonly Proc[], agent: Proc, argv: readonl
       return -Infinity;
     }
   };
-  const at = (id: string): number => Math.max(...named.filter((n) => n.id === id).map((n) => n.log ?? sessionLogFor(argv, id, cwd, deps)).map(written));
+  // the real word boundaries matter here: a --session-dir with spaces is no two flags
+  const words = (await agentArgv(deps.run, agent.pid, agent.cmd)) ?? argv;
+  const at = (id: string): number => Math.max(...named.filter((n) => n.id === id).map((n) => n.log ?? sessionLogFor(words, id, cwd, deps)).map(written));
   const last = ids.map((id) => ({ id, at: at(id) })).reduce((a, b) => (b.at > a.at ? b : a));
   return last.at > -Infinity ? last.id : fromFlag || (ids[0] ?? "");
 };

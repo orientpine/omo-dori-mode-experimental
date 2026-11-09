@@ -7,7 +7,7 @@ import { agentLine, herdrAgentPid, herdrRead, herdrSessions, herdrShellPid, Herd
 import { reasonOf } from "./runtime/herdr/exec.ts";
 import type { Clock, Runner } from "./run.ts";
 import { splitModel } from "./lane-handover.ts";
-import { argvSessionId, descendants, ENV_FILE, hasSessionSelector, type Proc, procEnv, procTable, resolveSession, sessionDirFor, winArgv } from "./session-id.ts";
+import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionSelector, type Proc, procEnv, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // A herdr server that stops ends every agent in its panes and gives back the same pane ids with fresh shells (herdr 0.9.5,
 // measured 2026-11-03), unlike an aoe session, which aoe starts again in its conversation. So the omo session a herdr lead
@@ -37,11 +37,6 @@ const modelOf = (cmd: string): string | undefined => {
   return at >= 0 ? words[at + 1] : words.find((w) => w.startsWith("--model="))?.slice("--model=".length);
 };
 
-const flagValue = (argv: readonly string[], flag: string): string | undefined => {
-  const at = argv.findIndex((a) => a === flag || a.startsWith(`${flag}=`));
-  return at < 0 ? undefined : argv[at]?.startsWith(`${flag}=`) ? argv[at]?.slice(flag.length + 1) : argv[at + 1];
-};
-
 // The log file of session id for an agent started with argv in cwd: its --session <file>, else the file in its own
 // --session-dir (omo writes the logs right in it, measured 2026-11-04), else in sessionsDir's folder for cwd. undefined
 // when none is there.
@@ -56,19 +51,6 @@ export const argvSessionLog = (argv: readonly string[], sessionsDir: string, cwd
   } catch {
     return undefined;
   }
-};
-
-// The agent's own arguments with their word boundaries: a Windows command line split as Windows does (winArgv), Linux's
-// /proc cmdline when it is the same process the table shows; undefined when they cannot be told (never a whitespace split),
-// so on macOS, whose ps loses them, no log is looked for from them (KERN_PROCARGS2 would keep them: docs/follow-ups.md).
-const agentArgv = async (run: Runner, pid: number, cmd: string): Promise<string[] | undefined> => {
-  if (process.platform === "win32") return winArgv(cmd);
-  if (process.platform !== "linux") return undefined;
-  const ran = await run(["cat", `/proc/${pid}/cmdline`]);
-  if (ran.code !== 0) return undefined;
-  const argv = ran.out.split("\0").filter((a, i, all) => a || i < all.length - 1);
-  // one word with spaces is a process that rewrote its title, not its arguments
-  return argv.length > 1 && argv.join(" ") === cmd.trim() ? argv : undefined;
 };
 
 // The log file of session id that the agent at pid runs now: the exact path omo hands its children (PI_SESSION_FILE, read

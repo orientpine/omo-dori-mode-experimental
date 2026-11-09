@@ -116,3 +116,53 @@ test.if(process.platform === "linux")("the process table keeps whole command lin
     await child.exited;
   }
 });
+
+// an agent started with no session selector at all: once a child showed the session it moved to, the record kept for that
+// same agent still names it after every session-bearing child is gone, instead of the start-time file naming the old one
+test.if(process.platform === "linux")("a selector-free agent keeps the session recorded for it after the child that showed it ended", async () => {
+  const first = "11111111-2222-4333-8444-555555555555";
+  const now = "22222222-2222-4333-8444-555555555555";
+  const sessions = join(dir, "sessions");
+  const folder = sessionDirFor(sessions, dir);
+  mkdirSync(folder, { recursive: true });
+  const entry = (level: string) => `${JSON.stringify({ type: "thinking_level_change", thinkingLevel: level, provider: "p", modelId: "m" })}\n`;
+  const firstLog = join(folder, `2026-11-09T11-00-00-000Z_${first}.jsonl`);
+  const nowLog = join(folder, `2026-11-09T11-11-38-062Z_${now}.jsonl`);
+  writeFileSync(firstLog, entry("max"));
+  writeFileSync(nowLog, entry("medium"));
+  utimesSync(firstLog, new Date("2026-11-09T11:05:00Z"), new Date("2026-11-09T11:05:00Z"));
+  utimesSync(nowLog, new Date("2026-11-09T11:43:49Z"), new Date("2026-11-09T11:43:49Z"));
+  world.agentStart = "Mon Nov  9 11:00:00 2026";
+  world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
+  world.ps = `4000 1 -bash\n4001 4000 omo\n4002 4001 python3 -u prelude.py`;
+  const base = omo({ leadPane: "w1:p1", sessionsDir: sessions });
+  const run: Runner = async (argv, o) => (argv[1] === "eww" && argv.at(-1) === "4002" ? { code: 0, out: `python3 -u prelude.py PI_SESSION_ID=${now} PI_SESSION_FILE=${nowLog}`, err: "" } : base.run(argv, o));
+  expect(await findLead(run, base.config)).toBe(`${now} w1:p1`);
+  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ session: now, model: "p/m:medium" });
+  world.ps = "4000 1 -bash\n4001 4000 omo";
+  expect(await findLead(run, base.config)).toBe(`${now} w1:p1`);
+  expect(readHerdrSessions(dir)["w1:p1"]).toMatchObject({ session: now, model: "p/m:medium" });
+});
+
+// the launch session's log can live in the agent's own --session-dir, spaces included: it is found with the arguments'
+// real word boundaries, so after /resume its newer log beats the one a leftover child of the other session names
+test.if(process.platform === "linux")("a --session-dir with spaces has the launch session's log found, so its newer write beats the other session's", async () => {
+  const first = "11111111-2222-4333-8444-555555555555";
+  const now = "22222222-2222-4333-8444-555555555555";
+  const sessions = join(dir, "sessions");
+  const own = join(dir, "my sessions");
+  mkdirSync(sessionDirFor(sessions, dir), { recursive: true });
+  mkdirSync(own, { recursive: true });
+  const firstLog = join(own, `2026-11-09T01-00-00-000Z_${first}.jsonl`);
+  const nowLog = join(sessionDirFor(sessions, dir), `2026-11-09T11-00-00-000Z_${now}.jsonl`);
+  writeFileSync(firstLog, "");
+  writeFileSync(nowLog, "");
+  utimesSync(firstLog, new Date("2026-11-09T11:50:00Z"), new Date("2026-11-09T11:50:00Z"));
+  utimesSync(nowLog, new Date("2026-11-09T11:00:00Z"), new Date("2026-11-09T11:00:00Z"));
+  world.panes = [{ pane_id: "w1:p1", workspace_id: "w1", cwd: dir }];
+  world.ps = `4000 1 -bash\n4001 4000 omo --session-id ${first} --session-dir ${own}\n4002 4001 python3 -u prelude.py`;
+  world.cmdlines = { 4001: ["omo", "--session-id", first, "--session-dir", own] };
+  const base = omo({ leadPane: "w1:p1", sessionsDir: sessions });
+  const run: Runner = async (argv, o) => (argv[1] === "eww" && argv.at(-1) === "4002" ? { code: 0, out: `python3 -u prelude.py PI_SESSION_ID=${now} PI_SESSION_FILE=${nowLog}`, err: "" } : base.run(argv, o));
+  expect(await findLead(run, base.config)).toBe(`${first} w1:p1`);
+});
