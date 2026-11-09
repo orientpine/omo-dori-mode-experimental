@@ -10,7 +10,8 @@ unset DORI_LEAD_PANE DORI_LEAD_TMUX DORI_LEAD_AOE_ID
 bun_bin=$HOME/.bun/bin/bun
 [[ -x "$bun_bin" ]] || bun_bin=bun
 helper=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/src" && pwd)/hc-lead-core.ts
-core=$("$bun_bin" "$helper")
+resolved=$("$bun_bin" "$helper")
+core=${resolved%% *}
 # dori lead must be installed (the lead-resolution PR supplies it).
 lead=$(dori lead)
 read -r AOE_ID PANE STATE <<< "$lead"
