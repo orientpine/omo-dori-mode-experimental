@@ -7,7 +7,7 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
-import { archOf, boxDev, execWords, hostRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
+import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { bundleEnv, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
@@ -59,9 +59,9 @@ export type SpreadJob = {
   readonly sync: readonly string[];
   readonly env: Readonly<Record<string, string>>;
   readonly needBytes?: number;
-  // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), and globs of what comes back (--back, heavy-back.ts)
+  // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), globs of what comes back (--back, heavy-back.ts); helpersOnly: never this host's slot (--helpers-only)
   readonly tools?: readonly string[];
-  readonly back?: readonly string[];
+  readonly back?: readonly string[]; readonly helpersOnly?: boolean;
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
 // which the helper must have before it takes the job
@@ -354,7 +354,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
       seen.set(h.name, `${t.kind} ${t.why}`);
       if (t.kind === "refused" || t.kind === "old" || t.kind === "notools") {
         refused.set(h.name, t.kind, t.why);
-        if (refused.all(ctx.q.helpers.map((x) => x.name))) log(`HEAVY_LOCAL ${job.label}: no helper can run it (${refused.list()}); it waits for this host`);
+        if (refused.all(ctx.q.helpers.map((x) => x.name))) log(job.helpersOnly ? `HEAVY_HELPERS_ONLY ${job.label}: no helper can run it (${refused.list()}); it does not run on this host` : `HEAVY_LOCAL ${job.label}: no helper can run it (${refused.list()}); it waits for this host`);
       }
     }
     return null;
@@ -365,8 +365,8 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
   const since = ctx.deps.clock.now();
   for (;;) {
     if (!run) {
-      const got = await acquire<Started>(ctx.deps, job.label, { since, elsewhere: (why) => helpers(100, why), nowhere: () => refused.all(ctx.q.helpers.map((x) => x.name)), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
-      if ("slot" in got) return { slot: got.slot };
+      const got = await acquire<Started | "nowhere">(ctx.deps, job.label, { since, elsewhere: async (why) => (await helpers(100, why)) ?? (job.helpersOnly && refused.all(ctx.q.helpers.map((x) => x.name)) ? "nowhere" : null), ...(job.helpersOnly ? { helpersOnly: true } : { nowhere: () => refused.all(ctx.q.helpers.map((x) => x.name)) }), elsewhereWhileSettling: true, ...(settleFor(job.kind) ? { settleSec: settleFor(job.kind) } : {}), ...(job.needBytes ? { memKb: job.needBytes / 1024 } : {}) });
+      if ("slot" in got || got.elsewhere === "nowhere") return "slot" in got ? { slot: got.slot } : { code: 2 };
       run = got.elsewhere;
     }
     const code = await run.done;
@@ -505,7 +505,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
   const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && o !== "back");
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
-  const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : hostRefusal(ctx.q.kinds, kind, opts);
+  const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : (hostRefusal(ctx.q.kinds, kind, opts) ?? memRefusal(opts, ctx.deps.headroom?.free ?? 10));
   if (off) return d.refuse(label, off);
   const got = toolBundles(opts, d.tools.toolsDir);
   if ("why" in got) return d.refuse(label, got.why);
@@ -528,7 +528,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
       return 75;
     }
   }
-  const t = await admitOnce(ctx.deps, label, settleFor(kind));
+  const t = await admitOnce(ctx.deps, label, settleFor(kind), mem && mem / 1024);
   if (!t || !("slot" in t)) {
     console.error(`WORKER_BUSY ${t?.why ?? "another job is being admitted"}`);
     return 75;

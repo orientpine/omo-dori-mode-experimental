@@ -123,6 +123,7 @@ Not in `dori.env`; the wrapper, a unit or dori itself sets these for one run:
 | `DORI_DISCORD_SHADOW_INBOX` | a shadow listener | See [Switching an existing listener over](#switching-an-existing-listener-over) |
 | `DORI_CLOSING_LANE`, `DORI_HANDOVER_DETACHED` | dori, for its own child processes | Internal; never set them by hand |
 | `DORI_TOOL_TREE`, `DORI_TOOL_TREE_RV` | `dori heavy --tools`, in a helper's box | Internal: `DORI_TOOL_TREE_<NAME>` is the path of the caller's own tree of a tool bundle sent with the job; the rv bundle's `bin/rv` runs it |
+| `DORI_HEAVY_HOLD_DIR` | `bun test` (`test/preload.ts`) | Overrides `heavyHoldDir`: the suite points it at a directory that does not exist, so a host's real `dori heavy hold-local` never reaches a test; a Dori leaves it unset |
 | `DORI_HEAVY_JOB` | `dori heavy`, for the job's command and what it starts | Internal: the label of the heavy job a nested `dori heavy` runs in, which then takes no slot of its own (`HEAVY_NESTED`) |
 | `DORI_HANDOVER_AUTO_GRANT` | `dori freshness`, for the handover it starts | Internal: the token of a one-use grant under `<stateDir>/handover/auto-grants/`; an `auto:` approval holds only with it, so it cannot be set by hand |
 

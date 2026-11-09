@@ -19,14 +19,19 @@ const heavyCommand: Command = async (context) => {
   const label = rest[0];
   const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
   const load = async () => (await sampleHost(run, config)).load1;
-  // dori heavy hold-local [on --until ... --reason ... | off]: no job of any account takes this host's slots meanwhile
+  // dori heavy hold-local [on --until ... --reason ... [--except ACCOUNT ...] | off]: no job of any account but those
+  // excepted takes this host's slots meanwhile
   if (label === "hold-local" && sep < 0) {
-    const r = holdCommand(config.heavyHoldDir, userInfo().username, rest[1], opt("until"), many("reason").join(" "), Date.now());
+    const r = holdCommand(config.heavyHoldDir, userInfo().username, rest[1], opt("until"), many("reason").join(" "), Date.now(), many("except"));
     for (const l of r.lines) heavyDeps(load).log?.(l);
     process.exitCode = r.code;
     return;
   }
   const jobName = opt("job");
+  // --helpers-only: the caller wants it on a helper and never in this host's slot (zzangdori 2026-11-08); a --job goes to
+  // the GPU line of all hosts, this one too, so the two do not go together
+  const helpersOnly = Boolean(flags.values["helpers-only"]);
+  if (helpersOnly && jobName !== undefined) die("dori heavy --helpers-only goes with --kind cpu|browser|gpu --sync PATH ..., not --job: a --job runs in the GPU line of every host, this one too");
   if (jobName !== undefined) {
     const jobLabel = label && !label.startsWith("-") ? label : die("usage: dori heavy <label> --job <name> [--in FILE ...] [--out DIR] [--rl] [-- arg ...]");
     const out = opt("out");
@@ -40,7 +45,8 @@ const heavyCommand: Command = async (context) => {
   // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-spread.ts withPipefail)
   const jobCmd = withPipefail(cmd);
   if (jobCmd !== cmd) deps.log?.(`HEAVY_PIPEFAIL ${name}: the bash -c script pipes, so it runs with set -o pipefail and a failing stage fails the job`);
-  const host = readMeminfo();
+  // a --helpers-only job never runs here: the helper that takes it checks its own memory (heavy-spread.ts heavyExec)
+  const host = helpersOnly ? undefined : readMeminfo();
   const never = needBytes && host ? neverFits(needBytes, host, config.heavyHeadroomPct) : undefined;
   if (never) {
     deps.log?.(`HEAVY_REFUSED ${name}: ${never}`);
@@ -50,13 +56,20 @@ const heavyCommand: Command = async (context) => {
   // --kind: the command may run on the less busy host (heavy-spread.ts); what it cannot take along keeps it here
   const kindOpt = opt("kind");
   const kind = kindOpt === undefined ? undefined : isKind(kindOpt) ? kindOpt : die(`dori heavy --kind takes cpu, browser or gpu, not "${kindOpt}"`);
+  if (helpersOnly && kind === undefined) die("dori heavy --helpers-only goes with --kind cpu|browser|gpu --sync PATH ...: only those can run on a helper");
+  const refuseHere = (why: string): void => {
+    deps.log?.(`HEAVY_HELPERS_ONLY ${name}: ${why}; it does not run here`);
+    process.exitCode = 2;
+  };
   let spreadSlot: string | undefined;
   if (kind !== undefined && !heavyOuter()) {
     const badEnv = many("env").find((e) => !/^[A-Za-z_]\w{0,63}$/.test(e));
     if (badEnv !== undefined) die(`dori heavy --env takes a variable name, not "${badEnv}"`);
     const env = Object.fromEntries(["LANG", "TZ", ...many("env")].flatMap((k) => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])));
-    const job: SpreadJob = { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}) };
+    const job: SpreadJob = { ...(helpersOnly ? { helpersOnly } : {}), label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}) };
     const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
+    if (!plan.ok && helpersOnly) return refuseHere(plan.why);
+    if (!config.heavyQueue.helpers.length && helpersOnly) return refuseHere("no heavyQueue.helpers on this host");
     if (!plan.ok) deps.log?.(`HEAVY_LOCAL ${name}: ${plan.why}`);
     else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
     else {

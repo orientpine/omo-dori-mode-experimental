@@ -56,22 +56,23 @@ const line = (deps: SlotDeps): string[] => {
 };
 
 // One admission try now, for a helper that serves another host's queue: a job waiting in this host's own line goes first.
-export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: number): Promise<Try | null> => {
+// memKb: the job's own estimate (exec mem=), kept free beside the running jobs as for a job of this host (tryAdmit)
+export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: number, memKb?: number): Promise<Try | null> => {
   mkdirSync(deps.dir, { recursive: true });
   const held = deps.hold?.();
   if (held) return { wait: "hold", why: `this host's heavy slots are held ${held}` };
   const waiting = line(deps).length;
   if (waiting) return { wait: "queue", why: `${waiting} job(s) wait in this host's queue` };
-  const t = await admitUnheld(deps, () => tryAdmit(deps, label, undefined, settleSec));
+  const t = await admitUnheld(deps, () => tryAdmit(deps, label, memKb, settleSec));
   return t && "wait" in t && t.wait === "hold" ? { wait: "hold", why: `this host's heavy slots are held ${t.why}` } : t;
 };
 
 // An admission whose slot is given back when a hold (dori heavy hold-local) is on once it is taken. A hold set while the
 // admission sampled load and headroom is read after the claim, and a hold set after the claim finds the job already
 // running: no job takes a slot that a hold written before its claim forbids.
-const admitUnheld = async (deps: SlotDeps, admit: () => Promise<Try>): Promise<Try | null> => {
+const admitUnheld = async (deps: SlotDeps, admit: () => Promise<Try>, holdExempt = false): Promise<Try | null> => {
   const t = await withLock(deps, admit);
-  if (!t || !("slot" in t)) return t;
+  if (!t || !("slot" in t) || holdExempt) return t;
   const held = deps.hold?.();
   if (!held) return t;
   releaseSlot(t.slot);
@@ -137,28 +138,35 @@ export type AcquireOptions<T> = {
   readonly elsewhereWhileSettling?: boolean;
   // seconds this job needs before its load shows (kept in its slot for the next admission); default headroom.settleSec
   readonly settleSec?: number | undefined;
+  // dori heavy --helpers-only: never this host's slot, only elsewhere, so no ticket in this host's line either
+  readonly helpersOnly?: boolean;
+  // the owner's transcription (heavy-queue.ts): a hold does not stop it, nor do jobs ahead in this host's line while a
+  // hold is on (none of them may take a slot here then); without a hold it waits its turn
+  readonly holdExempt?: boolean;
 };
 
 // the line of a job that may not take this host's slot now, and what it does instead
-const heldLine = (label: string, why: string, local: boolean): string =>
-  `HEAVY_HOLD_LOCAL ${label}: this host's heavy slots are held ${why}; ${local ? "it cannot run on a helper, so it waits here until the hold ends" : "it goes to the first helper that admits it"}`;
+const heldLine = (label: string, why: string, local: boolean, helpersOnly: boolean): string =>
+  helpersOnly ? `HEAVY_HELPERS_ONLY ${label}: waits for a helper; it never runs on this host`
+  : `HEAVY_HOLD_LOCAL ${label}: this host's heavy slots are held ${why}; ${local ? "it cannot run on a helper, so it waits here until the hold ends" : "it goes to the first helper that admits it"}`;
 
 export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOptions<T> = {}): Promise<Acquired<T>> => {
   mkdirSync(deps.dir, { recursive: true });
-  const ticket = enqueue(deps, label, opts.since ?? deps.clock.now(), opts.elsewhere ? "any" : "local");
+  const ticket = opts.helpersOnly ? undefined : enqueue(deps, label, opts.since ?? deps.clock.now(), opts.elsewhere ? "any" : "local");
   let local = !opts.elsewhere;
   try {
     let waiting = "";
     for (;;) {
       const onlyHere = !opts.elsewhere || Boolean(opts.nowhere?.());
-      if (onlyHere !== local) writeFileSync(ticket, onlyHere ? "local" : "any");
+      if (onlyHere !== local && ticket) writeFileSync(ticket, onlyHere ? "local" : "any");
       local = onlyHere;
       const names = line(deps);
-      const ahead = names.slice(0, Math.max(0, names.indexOf(basename(ticket))));
       // a hold on this host (dori heavy hold-local, heavy-hold.ts) is read before every try, so a job that waited here
       // when it came on does not take a slot that frees during it
-      const before = deps.hold?.();
-      const tried: Try | null = before ? { wait: "hold", why: before } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await admitUnheld(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec));
+      const holdNow = opts.helpersOnly ? undefined : deps.hold?.();
+      const ahead = ticket && !(opts.holdExempt && holdNow) ? names.slice(0, Math.max(0, names.indexOf(basename(ticket)))) : [];
+      const before = opts.helpersOnly ? "--helpers-only" : opts.holdExempt ? undefined : holdNow;
+      const tried: Try | null = before ? { wait: "hold", why: before } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await admitUnheld(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec), Boolean(opts.holdExempt));
       const held = tried && "wait" in tried && tried.wait === "hold" ? tried.why : undefined;
       const t: Try | null = held ? { wait: `hold ${local}`, why: held } : tried;
       const localOnlyAhead = ahead.length > 0 && ahead.every((n) => ticketKind(deps, n) === "local");
@@ -167,7 +175,7 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
         return { slot: t.slot };
       }
       if (t && t.wait !== waiting) {
-        deps.log?.(held ? heldLine(label, held, local) : `HEAVY_WAIT ${label}: ${t.why}`);
+        deps.log?.(held ? heldLine(label, held, local, Boolean(opts.helpersOnly)) : `HEAVY_WAIT ${label}: ${t.why}`);
         waiting = t.wait;
       }
       if (t && opts.elsewhere && !local && (localOnlyAhead || (t.wait !== "queue" && (t.wait !== "settle" || opts.elsewhereWhileSettling)))) {
@@ -177,7 +185,7 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
       await deps.clock.sleep(opts.pollMs ?? 15_000);
     }
   } finally {
-    rmSync(ticket, { force: true });
+    if (ticket) rmSync(ticket, { force: true });
   }
 };
 

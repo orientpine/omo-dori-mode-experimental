@@ -1,7 +1,15 @@
 import { closeSync, existsSync, openSync, readdirSync, readSync } from "node:fs";
 
 import type { ArgvTemplate } from "./config.ts";
+import { type MemInfo, neverFits, readMeminfo } from "./heavy-mem.ts";
 import type { Kind, Plan, SpreadJob } from "./heavy-spread.ts";
+
+// a helper asked for a job with its own estimate (exec mem=, dori heavy --mem) that it can never fit refuses it, so the
+// caller asks the next one: a --helpers-only caller does not check the estimate against its own memory (review 2 of #413)
+export const memRefusal = (opts: readonly string[], free: number, m: MemInfo | undefined = readMeminfo()): string | undefined => {
+  const mem = Number(opts.find((o) => o.startsWith("mem="))?.slice(4)) || 0;
+  return mem && m ? neverFits(mem, m, free) : undefined;
+};
 
 // a host the queue host hands jobs to: ssh argv to its `dori heavy-worker`; prefer: the --kind kinds it takes first
 export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate; readonly prefer?: readonly string[] };

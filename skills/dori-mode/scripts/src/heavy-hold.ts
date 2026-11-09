@@ -15,7 +15,13 @@ import { sharedDirProblem } from "./shared-dir.ts";
 //   at most a day from its write (its times come from a look before the open); an entry or a directory that cannot
 //   even be looked at holds until it can (only the directory's owner can cause that), with a line naming it.
 // A broker daemon that would remove the shared directory is a follow-up (docs/follow-ups.md).
-export type Hold = { readonly by: string; readonly reason: string; readonly until: number };
+// except: accounts the one who set it lets through (dori heavy hold-local on --except, zzangdori 2026-11-08)
+export type Hold = { readonly by: string; readonly reason: string; readonly until: number; readonly except?: readonly string[] };
+
+// an account name in --except or a hold file; a file whose except is anything else holds every account
+const ACCOUNT = /^[a-z_][a-z0-9_.-]{0,31}$/;
+const MAX_EXCEPT = 16;
+const accountsOf = (v: unknown): string[] => (Array.isArray(v) && v.length <= MAX_EXCEPT && v.every((a) => typeof a === "string" && ACCOUNT.test(a)) ? (v as string[]) : []);
 
 // a hold ends a day after its file was written at the latest, whatever its until says: a forgotten or forged hold never
 // keeps this host's slots for longer
@@ -72,7 +78,7 @@ const holdOf = (base: string, shown: string, name: string, now: number, afterLoo
     if (fst.ino !== st.ino || fst.dev !== st.dev) return again ? holdOf(base, shown, name, now, afterLook, false) : unreadable;
     const capNow = Math.min(cap, Math.min(fst.mtimeMs, fst.ctimeMs) + MAX_MS);
     if (capNow <= now) return undefined;
-    let parsed: { reason?: unknown; until?: unknown } = {};
+    let parsed: { reason?: unknown; until?: unknown; except?: unknown } = {};
     try {
       const buf = Buffer.alloc(MAX_BYTES);
       const v: unknown = fst.size <= MAX_BYTES ? JSON.parse(buf.toString("utf8", 0, readSync(fd, buf, 0, MAX_BYTES, 0))) : undefined;
@@ -82,7 +88,8 @@ const holdOf = (base: string, shown: string, name: string, now: number, afterLoo
     }
     const until = typeof parsed.until === "string" && !Number.isNaN(Date.parse(parsed.until)) ? Math.min(Date.parse(parsed.until), capNow) : capNow;
     const reason = typeof parsed.reason === "string" && typeof parsed.until === "string" ? parsed.reason : UNREADABLE;
-    return until > now ? { by: accountOf(fst.uid), reason, until } : undefined;
+    const except = accountsOf(parsed.except);
+    return until > now ? { by: accountOf(fst.uid), reason, until, ...(except.length ? { except } : {}) } : undefined;
   } catch {
     return unreadable;
   } finally {
@@ -116,8 +123,10 @@ export const liveHolds = (dir: string, now: number, hooks: { readonly afterDirLo
   }
 };
 
-export const holdLine = (h: Hold, now: number): string => `by ${h.by} until ${new Date(h.until).toISOString()} (${Math.ceil((h.until - now) / 60_000)} min left): ${h.reason}`;
-export const holdNote = (dir: string, now: number): string | undefined => liveHolds(dir, now).map((h) => holdLine(h, now)).join("; ") || undefined;
+export const holdLine = (h: Hold, now: number): string => `by ${h.by} until ${new Date(h.until).toISOString()} (${Math.ceil((h.until - now) / 60_000)} min left)${h.except?.length ? `; except ${h.except.join(", ")}` : ""}: ${h.reason}`;
+/** The holds that keep this account's jobs out of this host's slots (not those that name it in except), or undefined. */
+export const holdNote = (dir: string, now: number, account: string): string | undefined =>
+  liveHolds(dir, now).filter((h) => !h.except?.includes(account)).map((h) => holdLine(h, now)).join("; ") || undefined;
 
 // --until: minutes (30, 30m), hours (2h), a clock time on this host's clock (03:10, the next one) or an ISO time
 export const parseUntil = (s: string, now: number): { readonly at: number } | { readonly why: string } => {
@@ -140,7 +149,7 @@ const fileOf = (dir: string, user: string): string => join(dir, `${user}.json`);
 
 /** Sets this account's hold (one per account, a new one replaces it); a problem, or undefined. */
 // afterWrite: a test's hook between the write of the temporary file and its rename, where the directory's owner may swap it
-export const holdOn = (dir: string, user: string, until: number, reason: string, now: number, hooks: { readonly afterWrite?: (tmp: string) => void } = {}): string | undefined => {
+export const holdOn = (dir: string, user: string, until: number, reason: string, now: number, hooks: { readonly afterWrite?: (tmp: string) => void; readonly except?: readonly string[] } = {}): string | undefined => {
   let unsafe: string | undefined;
   try {
     unsafe = sharedDirProblem(dir) ?? ((lstatSync(dir).mode & 0o1777) !== 0o1777 ? "is not mode 1777, so other accounts could not read or write their holds" : undefined);
@@ -154,7 +163,7 @@ export const holdOn = (dir: string, user: string, until: number, reason: string,
     // a chmod through it would change whatever the name then leads to (another file of this account)
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
     try {
-      writeSync(fd, JSON.stringify({ reason, until: new Date(until).toISOString(), at: new Date(now).toISOString() }));
+      writeSync(fd, JSON.stringify({ reason, until: new Date(until).toISOString(), at: new Date(now).toISOString(), ...(hooks.except?.length ? { except: hooks.except } : {}) }));
       // readable by every account whatever this process's umask, so their jobs see it
       fchmodSync(fd, 0o644);
     } finally {
@@ -176,10 +185,10 @@ export const holdOff = (dir: string, user: string): boolean => {
   return had;
 };
 
-export const HOLD_USAGE = 'usage: dori heavy hold-local [on --until <minutes|2h|HH:MM|ISO> --reason "<why>" | off]';
+export const HOLD_USAGE = 'usage: dori heavy hold-local [on --until <minutes|2h|HH:MM|ISO> --reason "<why>" [--except <account> ...] | off]';
 
 /** dori heavy hold-local [on|off]: its HEAVY_HOLD_LOCAL lines and exit code. */
-export const holdCommand = (dir: string, user: string, verb: string | undefined, until: string | undefined, reason: string, now: number): { readonly lines: string[]; readonly code: number } => {
+export const holdCommand = (dir: string, user: string, verb: string | undefined, until: string | undefined, reason: string, now: number, except: readonly string[] = []): { readonly lines: string[]; readonly code: number } => {
   const others = (): string[] => liveHolds(dir, now).map((h) => `HEAVY_HOLD_LOCAL on ${holdLine(h, now)}`);
   if (verb === undefined) {
     const on = others();
@@ -188,8 +197,9 @@ export const holdCommand = (dir: string, user: string, verb: string | undefined,
   if (verb === "off") return { lines: [holdOff(dir, user) ? `HEAVY_HOLD_LOCAL off by ${user}` : `HEAVY_HOLD_LOCAL off: ${user} held nothing`, ...others()], code: 0 };
   if (verb !== "on") return { lines: [HOLD_USAGE], code: 2 };
   const at = until === undefined ? { why: "--until is needed" } : parseUntil(until, now);
-  const why = "why" in at ? at.why : !reason || reason.length > 200 || /[\n\r]/.test(reason) ? "--reason is needed: one line, up to 200 characters" : holdOn(dir, user, at.at, reason, now);
+  const badExcept = except.length > MAX_EXCEPT ? `--except takes account names, at most ${MAX_EXCEPT}` : except.filter((a) => !ACCOUNT.test(a)).map((a) => `--except takes account names (a-z, digits, . _ -), not "${a}"`)[0];
+  const why = "why" in at ? at.why : !reason || reason.length > 200 || /[\n\r]/.test(reason) ? "--reason is needed: one line, up to 200 characters" : (badExcept ?? holdOn(dir, user, at.at, reason, now, { except }));
   if (why || !("at" in at)) return { lines: [`HEAVY_HOLD_LOCAL refused: ${why}`, HOLD_USAGE], code: 2 };
-  const mine = { by: user, reason, until: at.at };
+  const mine: Hold = { by: user, reason, until: at.at, ...(except.length ? { except } : {}) };
   return { lines: [`HEAVY_HOLD_LOCAL on ${holdLine(mine, now)}; new heavy jobs of every account on this host go to a helper or wait, running ones go on`, ...others().filter((l) => !l.includes(` by ${user} until `))], code: 0 };
 };
