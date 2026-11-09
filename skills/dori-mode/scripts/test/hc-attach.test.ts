@@ -30,7 +30,7 @@ const rig = (lead: string): { dir: string; bin: string } => {
 };
 
 const runLauncher = (dir: string, bin: string) => Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], {
-  env: { ...process.env, HOME: dir, PATH: `${bin}:${process.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_ENV_FILE: join(dir, "wrong.env"), DORI_CONFIG: join(dir, "wrong-config.json"), HC_SESSION: "inherited-host", HC_SOCKET: "/tmp/inherited.sock" },
+  env: { ...process.env, HOME: dir, PATH: `${bin}:${process.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_ENV_FILE: join(dir, "wrong.env"), DORI_CONFIG: join(dir, "wrong-config.json"), DORI_LEAD_PANE: "w1:p999", HC_SESSION: "inherited-host", HC_SOCKET: "/tmp/inherited.sock" },
   stdout: "pipe", stderr: "pipe",
 });
 
@@ -66,17 +66,18 @@ test("dori.sh never starts a missing hc core", async () => {
 });
 
 test("dori.sh checks the core before the real dori CLI can call hc", async () => {
-  // Given: the real dori CLI on PATH, an hc lead in the account config, and no core socket
-  const dir = mkdtempSync(join(tmpdir(), "dori-hc-real-cli-"));
-  dirs.push(dir);
+  for (const leadOverride of ["", "DORI_LEAD_TMUX=hc:t7\n", "DORI_LEAD_PANE=hc:t7\n"]) {
+    // Given: the real dori CLI on PATH, an hc lead selected by config or by the account's dori.env, and no core socket
+    const dir = mkdtempSync(join(tmpdir(), "dori-hc-real-cli-"));
+    dirs.push(dir);
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
   mkdirSync(join(dir, ".dori"));
   mkdirSync(join(dir, ".bun", "bin"), { recursive: true });
   symlinkSync(process.execPath, join(dir, ".bun", "bin", "bun"));
   symlinkSync(join(import.meta.dir, "../../../.."), join(dir, ".dori", "src"));
-  writeFileSync(join(dir, ".dori", "config.json"), JSON.stringify({ runtime: "hc", leadPane: "hc:t7" }));
-  writeFileSync(join(dir, ".dori", "dori.env"), "HC_SESSION=agents\n");
+  writeFileSync(join(dir, ".dori", "config.json"), JSON.stringify({ runtime: "hc", leadPane: leadOverride ? "w1:p2" : "hc:t7" }));
+  writeFileSync(join(dir, ".dori", "dori.env"), `HC_SESSION=agents\n${leadOverride}`);
   writeFileSync(join(dir, "wrong.env"), "HC_SESSION=foreign\n");
   writeFileSync(join(bin, "dori"), `#!/bin/sh\nexec "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/cli.ts" "$@"\n`, { mode: 0o700 });
   writeFileSync(join(bin, "systemctl"), `#!/bin/sh\nprintf 'systemctl %s\\n' "$*"\n`, { mode: 0o700 });
@@ -90,7 +91,8 @@ test("dori.sh checks the core before the real dori CLI can call hc", async () =>
   // Then: the guard runs before lead resolution or revival, so the real CLI never gets to call hc
   expect(code).not.toBe(0);
   expect(err).toContain("not starting one");
-  expect(await Bun.file(join(dir, "hc-calls")).exists()).toBe(false);
+    expect(await Bun.file(join(dir, "hc-calls")).exists()).toBe(false);
+  }
 });
 
 test("the hc core name uses the dori.env parser: whitespace, quotes and the first value", () => {
