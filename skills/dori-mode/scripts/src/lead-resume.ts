@@ -124,17 +124,19 @@ const typeFg = async (deps: FlowDeps, pane: string): Promise<boolean> => {
 
 type Tried = { readonly ok: boolean; readonly reason?: string; readonly typed?: boolean; readonly skipped?: boolean };
 
-// Direct children that lead their own process group are the shell's jobs. Bare fg is safe only when the lead is the sole
-// such job: with two stopped jobs bash's current job can be the other one.
+// Every live direct child's process group is a shell job, including a pipeline whose group leader already exited.
+// Bare fg is safe only when the lead is the sole such group: with two jobs bash's current job can be the other one.
 const shellJobGroups = async (deps: FlowDeps, shellPid: number): Promise<readonly number[] | undefined> => {
   const r = await deps.run(["ps", "-A", "-ww", "-o", "pid=,ppid=,pgid=,stat="]);
   if (r.code !== 0) return undefined;
-  return r.out.split("\n").flatMap((line) => {
+  const groups = new Set<number>();
+  for (const line of r.out.split("\n")) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)/.exec(line);
-    if (!m) return [];
-    const [pid, ppid, pgrp] = [Number(m[1]), Number(m[2]), Number(m[3])];
-    return ppid === shellPid && pid === pgrp && !m[4]?.startsWith("Z") ? [pgrp] : [];
-  });
+    if (!m) continue;
+    const [ppid, pgrp] = [Number(m[2]), Number(m[3])];
+    if (ppid === shellPid && pgrp !== shellPid && !m[4]?.startsWith("Z")) groups.add(pgrp);
+  }
+  return [...groups];
 };
 
 const tryResume = async (deps: FlowDeps, io: LeadResumeIO, pane: string, pid: number, fgTyped: number, off: () => boolean): Promise<Tried> => {
@@ -142,7 +144,11 @@ const tryResume = async (deps: FlowDeps, io: LeadResumeIO, pane: string, pid: nu
   const resumeIO = { run: deps.run, clock: deps.clock, signal: io.signal, stat: io.stat, ...(io.tty ? { tty: io.tty } : {}) };
   const line = await resumeAgent(resumeIO, pane, pid);
   if (line.startsWith("AGENT_GONE")) return { ok: false, reason: "its agent is gone" };
-  if (!line.startsWith("AGENT_RESUME_FAIL")) return holdOf(io.stat, pid) ? { ok: false, reason: `it still does not run (${line})` } : { ok: true };
+  const liveRunning = (): boolean => {
+    const s = io.stat(pid);
+    return !!s && s.state !== "T" && !holdOf(io.stat, pid);
+  };
+  if (!line.startsWith("AGENT_RESUME_FAIL")) return liveRunning() ? { ok: true } : { ok: false, reason: `no live running agent remains (${line})` };
   const agent = io.stat(pid);
   const shell = agent ? io.stat(agent.ppid) : undefined;
   if (!agent || !shell || shell.pid !== agent.session || shell.pgrp !== agent.tpgid || shell.state === "T") return { ok: false, reason: "another process holds its tty, so nothing was typed" };
@@ -158,8 +164,10 @@ const tryResume = async (deps: FlowDeps, io: LeadResumeIO, pane: string, pid: nu
     if (!s || s.pgrp === s.tpgid) break;
     await deps.clock.sleep(FG_CHECK_MS);
   }
+  if (off()) return { ok: false, skipped: true, typed: true };
   const after = await resumeAgent(resumeIO, pane, pid);
-  return holdOf(io.stat, pid) ? { ok: false, reason: `fg was typed and it still does not run (${after})`, typed: true } : { ok: true, typed: true };
+  if (after.startsWith("AGENT_GONE")) return { ok: false, reason: "its agent is gone after fg", typed: true };
+  return liveRunning() ? { ok: true, typed: true } : { ok: false, reason: `fg was typed and it still does not run (${after})`, typed: true };
 };
 
 const ownerChannel = (deps: FlowDeps): string => {

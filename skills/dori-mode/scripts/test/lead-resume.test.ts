@@ -7,60 +7,67 @@ import type { FlowDeps } from "../src/done-flow.ts";
 import { writeFrozen } from "../src/frozen.ts";
 import type { JobStat } from "../src/job-control.ts";
 import { laneSuspendTick, type SuspendIO } from "../src/lane-death.ts";
-import { atEmptyPrompt } from "../src/lead-resume.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
 import { FakeHc, terminal } from "./fake-hc.ts";
+import { AT_PROMPT, screenWith } from "./lead-resume-screen.ts";
 
 const T0 = Date.parse("2026-11-09T02:18:00Z");
 const S = 1_000;
 const AGENT = 200;
 const SHELL = 100;
-
-// what herdr showed for a real omo SIGSTOPped in a real pane (0.9.5, 2026-11-09): bash printed its job line and prompt
-// over omo's screen, and omo's last status line stays below the prompt
-const screenWith = (promptLine: string): string => ["────────", "❯", "[1]+  Stopped                 omo────────", promptLine, "(😺 OmO Native by Q Kim) done", ""].join("\n");
-const RESIDUE = "\u001b[0m\u001b[1m\u001b[38;5;2msoodori@ori0a83\u001b[0m:\u001b[0m\u001b[1m\u001b[38;5;4m/tmp\u001b[0m$ \u001b[0m\u001b[38;2;103;113;118mto)\u001b[0m        \u001b[0m\u001b[38;2;103;113;118m(anthropic-subscription) \u001b[0m\r";
-const AT_PROMPT = screenWith("soodori@ori0a83:/tmp$");
-
 let state: ReturnType<typeof withState>;
 beforeEach(() => (state = withState()));
 afterEach(() => state.done());
-
 // the lead's agent and its shell; "fg" typed in the pane gives the agent the tty and continues it, as bash does
-const lead = (pane: string, how: "foreground-stopped" | "background-stopped" | "background-running", screen = AT_PROMPT, opts: { fgTakes?: boolean; extraJob?: boolean; hc?: boolean } = {}) => {
+const lead = (pane: string, how: "foreground-stopped" | "background-stopped" | "background-running", screen = AT_PROMPT, opts: { fgTakes?: boolean; extraJob?: boolean; hc?: boolean; psJobs?: string; freezeOnFg?: boolean; goneOnFg?: boolean } = {}) => {
   const w: World = newWorld();
   w.screens[pane] = screen;
   const hcFake = opts.hc ? new FakeHc({ t1: terminal({ screen }) }) : undefined;
   const agent: { state: string; tpgid: number } = { state: how === "background-running" ? "S" : "T", tpgid: how === "foreground-stopped" ? AGENT : SHELL };
+  let gone = false;
   const signals: [number, string][] = [];
   const posts: [string, string][] = [];
   let postsFail = false;
   const stat = (pid: number): JobStat | undefined => {
-    if (pid === AGENT) return { pid, state: agent.state, ppid: SHELL, pgrp: AGENT, session: SHELL, tpgid: agent.tpgid };
+    if (pid === AGENT && !gone) return { pid, state: agent.state, ppid: SHELL, pgrp: AGENT, session: SHELL, tpgid: agent.tpgid };
     return pid === SHELL ? { pid, state: "S", ppid: 1, pgrp: SHELL, session: SHELL, tpgid: agent.tpgid } : undefined;
   };
   const io: SuspendIO = {
     agentOf: async (p) => (p === pane ? AGENT : undefined),
     stat,
-    jobGroups: async () => (opts.extraJob ? [AGENT, 300] : [AGENT]),
+    ...(opts.psJobs === undefined ? { jobGroups: async () => (opts.extraJob ? [AGENT, 300] : [AGENT]) } : {}),
     signal: (pid, sig) => {
       signals.push([pid, sig]);
       if (pid === -AGENT && sig === "SIGCONT") agent.state = "S";
       return true;
     },
   };
+  const onFg = (): void => {
+    if (opts.goneOnFg) {
+      gone = true;
+      return;
+    }
+    if (opts.freezeOnFg) {
+      mkdirSync(join(state.dir, "handover"), { recursive: true });
+      writeFileSync(join(state.dir, "handover", "lock"), JSON.stringify({ pid: 4242, at: new Date(T0).toISOString() }));
+      Object.assign(agent, { state: "T", tpgid: AGENT });
+      return;
+    }
+    if (opts.fgTakes !== false) Object.assign(agent, { state: "S", tpgid: AGENT });
+  };
   const deps = (ms: number): FlowDeps => {
     const base = depsFor(w, fakeClock(ms), state.dir, { backend: "herdr", leadPane: pane });
     return {
       ...base,
       run: async (argv, opts2) => {
+        if (opts.psJobs !== undefined && argv[0] === "ps") return { code: 0, out: opts.psJobs, err: "" };
         if (hcFake && argv[0] === "hc") {
           const result = await hcFake.exec("hc", argv.slice(1));
-          if (argv.includes("send") && argv.at(-1) === "fg" && opts.fgTakes !== false) Object.assign(agent, { state: "S", tpgid: AGENT });
+          if (argv.includes("send") && argv.at(-1) === "fg") onFg();
           return { code: result.code, out: result.stdout.trim(), err: result.stderr.trim() };
         }
         const result = await base.run(argv, opts2);
-        if (argv[0] === "herdr" && argv[2] === "send-text" && argv[4] === "fg\r" && opts.fgTakes !== false) Object.assign(agent, { state: "S", tpgid: AGENT });
+        if (argv[0] === "herdr" && argv[2] === "send-text" && argv[4] === "fg\r") onFg();
         return result;
       },
       ownerInbox: { path: join(state.dir, "no-inbox.jsonl"), ownerId: "owner", ownerChannel: "C-OWNER" },
@@ -79,12 +86,10 @@ const lead = (pane: string, how: "foreground-stopped" | "background-stopped" | "
   } };
 };
 
-const heads = (lines: string[]): string[] => lines.map((l) => l.split(":")[0] ?? "");
-
 test("a lead stopped as its tty's foreground group is continued with no key typed, and the owner hears it once", async () => {
   const { w, signals, posts, confirmed } = lead("w9:p1", "foreground-stopped");
   const lines = await confirmed();
-  expect(heads(lines)[0]).toBe("LANE_SUSPENDED lead w9");
+  expect(lines[0]?.startsWith("LANE_SUSPENDED lead w9")).toBe(true);
   expect(lines.slice(1)).toEqual([`LEAD_RESUMED w9:p1 ${AGENT}`, "LEAD_RESUME_NOTICE w9:p1 POSTED C-OWNER m1"]);
   expect(signals).toEqual([[-AGENT, "SIGCONT"]]);
   expect(sent(w)).toEqual([]);
@@ -218,26 +223,27 @@ test("a failed recovery notice is retried after the lead already runs again", as
   expect(posts).toHaveLength(1);
 });
 
-test("the prompt is empty only on the line right under the newest job line, in the whole-prompt shape", () => {
-  expect(atEmptyPrompt(AT_PROMPT)).toBe(true);
-  expect(atEmptyPrompt(screenWith("(venv) soodori@ori0a83:~/a$"))).toBe(true);
-  expect(atEmptyPrompt(screenWith("root@ori0a83:/tmp#"))).toBe(true);
-  // as herdr gives it with colours: bash left omo's status text after the prompt, in omo's colours
-  expect(atEmptyPrompt(screenWith(RESIDUE))).toBe(true);
-  // the same row with something typed over its start, in no colour
-  expect(atEmptyPrompt(screenWith(RESIDUE.replace("$ \u001b[0m\u001b[38;2;103;113;118mto)", "$ git\u001b[0m\u001b[38;2;103;113;118m)")))).toBe(false);
-  // typed input, a fragment of omo's status line bash has not cleared yet, mouse report bytes
-  expect(atEmptyPrompt(screenWith("soodori@ori0a83:/tmp$ git push"))).toBe(false);
-  expect(atEmptyPrompt(screenWith("soodori@ori0a83:/tmp$ to)     (anthropic-subscription)"))).toBe(false);
-  expect(atEmptyPrompt(screenWith("soodori@ori0a83:/tmp$ 65;57;24M"))).toBe(false);
-  // no job line: an ordinary screen, omo's own input box
-  expect(atEmptyPrompt("soodori@ori0a83:/tmp$\n")).toBe(false);
-  expect(atEmptyPrompt("────\n❯ \n────\n")).toBe(false);
-  // a later prompt holds the cursor, and may hold input this check cannot see
-  expect(atEmptyPrompt(`${AT_PROMPT}soodori@ori0a83:/tmp$ rm -rf x\n`)).toBe(false);
-  expect(atEmptyPrompt(`${AT_PROMPT}soodori@ori0a83:/tmp$\n`)).toBe(false);
-  // something ran after the stop
-  expect(atEmptyPrompt(["[1]+  Stopped   omo", "hello", "soodori@ori0a83:/tmp$", ""].join("\n"))).toBe(false);
-  // a command typed by someone that ends in the prompt's last character, on a prompt with no user@host
-  expect(atEmptyPrompt(screenWith("$ echo cost$"))).toBe(false);
+test("the production job enumeration sees a stopped pipeline member whose group leader exited", async () => {
+  const psJobs = "  100     1   100 S bash\n  200   100   200 T omo\n  301   100   300 T cat\n";
+  const { w, confirmed, agent } = lead("w9:p12", "background-stopped", AT_PROMPT, { psJobs });
+  const lines = await confirmed();
+  expect(lines.some((l) => l.startsWith("LEAD_RESUME_FAIL w9:p12 ") && l.includes("another job"))).toBe(true);
+  expect(sent(w)).toEqual([]);
+  expect(agent.tpgid).toBe(SHELL);
+});
+
+test("a handover that freezes the lead during fg waits is not continued by the second recovery call", async () => {
+  const { w, signals, confirmed } = lead("w9:p13", "background-stopped", AT_PROMPT, { freezeOnFg: true });
+  const lines = await confirmed((pid) => pid === 4242);
+  expect(lines.some((l) => l.startsWith("LEAD_RESUMED"))).toBe(false);
+  expect(signals).toEqual([]);
+  expect(sent(w)).toEqual(["fg\r"]);
+});
+
+test("an agent that disappears while being foregrounded is a failure, never a resumed notice", async () => {
+  const { posts, confirmed } = lead("w9:p14", "background-stopped", AT_PROMPT, { goneOnFg: true });
+  const lines = await confirmed();
+  expect(lines.some((l) => l.startsWith("LEAD_RESUME_FAIL w9:p14 ") && l.includes("gone"))).toBe(true);
+  expect(lines.some((l) => l.startsWith("LEAD_RESUMED"))).toBe(false);
+  expect(posts[0]?.[1]).toContain("could not start it again");
 });
