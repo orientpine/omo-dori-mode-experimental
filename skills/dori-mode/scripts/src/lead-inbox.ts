@@ -14,8 +14,6 @@ import { sawAnswer } from "./missed-answers.ts";
 import { sendVerified } from "./panes.ts";
 import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
-export { watchProblem } from "./lead-inbox-watch.ts";
-
 // The lead hears the inbox only through a monitor its own session runs, and nothing said when there was none. On 2026-11-09
 // YooDori's lead (leadPane set back by hand, not by dori handover) missed a #dori-pair request at 11:48Z; ZzangDori's lead
 // moved to a new conversation at 11:11Z and missed SooDori's posts at 11:35Z and 11:50Z; SooDori's lead lost its monitor
