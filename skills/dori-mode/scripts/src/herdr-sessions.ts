@@ -12,8 +12,9 @@ import { argvSessionId, descendants, ENV_FILE, hasSessionSelector, type Proc, pr
 // A herdr server that stops ends every agent in its panes and gives back the same pane ids with fresh shells (herdr 0.9.5,
 // measured 2026-11-03), unlike an aoe session, which aoe starts again in its conversation. So the omo session a herdr lead
 // runs is kept here while it runs (dori lead, dori watch's lead check), and the lead is started again in that conversation
-// from it (reviveHerdr) when its agent is gone. log: the session's log file, when it was found (sessionLog).
-export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly log?: string; readonly at: string };
+// from it (reviveHerdr) when its agent is gone. log: the session's log file, when it was found (sessionLog). agent: the
+// agent process it was read from ("<pid> <start>"), so a later read of the same process still weighs this session.
+export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly log?: string; readonly agent?: string; readonly at: string };
 
 const file = (stateDir: string): string => join(stateDir, "herdr-sessions.json");
 
@@ -119,7 +120,15 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   if (!live || !config.sessionsDir) return kept?.session ?? "";
   const cwd = (await herdrSessions(run)).find((s) => s.pane === pane)?.path ?? kept?.cwd ?? "";
   const table = await procTable(run);
-  const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr" });
+  // the agent process as pid and start time, so a pid used again by another agent is not the same one
+  const identity = async (p: Proc): Promise<string> => `${p.pid} ${process.platform === "win32" ? p.startedAt ?? "" : (await run(["ps", "-o", "lstart=", "-p", String(p.pid)])).out.trim()}`;
+  let agent: string | undefined;
+  // the session recorded for this same agent process still counts when no child of it shows that session any more
+  const seen = async (p: Proc) => {
+    agent = await identity(p);
+    return kept?.agent === agent ? { id: kept.session, log: kept.log } : undefined;
+  };
+  const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr", seen });
   if (!hit.id) return kept?.session ?? "";
   // what the session runs now (its log), else the model recorded for this same session (a log that cannot be read does not
   // send it back to the launch one), else what its agent was started with
@@ -128,7 +137,9 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   const log = hit.pid ? await sessionLog(run, table, hit.pid, hit.id, config.sessionsDir, cwd, same?.log) : same?.log;
   const model = (log ? sessionModel(log) : undefined) ?? same?.model ?? modelOf(cmd);
   // recorded on every read, unchanged or not: its time is when it was last checked (lead-down reads again after 10 min)
-  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(log ? { log } : {}), at: new Date().toISOString() });
+  const p = table.find((q) => q.pid === hit.pid);
+  if (!agent && p) agent = await identity(p);
+  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(log ? { log } : {}), ...(agent ? { agent } : {}), at: new Date().toISOString() });
   return hit.id;
 };
 
