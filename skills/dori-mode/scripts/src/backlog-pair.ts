@@ -35,10 +35,15 @@ const briefText = (path: string): string => {
   }
 };
 
+// the brief's goal line, where a lane says what it is for (the lead writes "[목표] 공돌 수리 요청(#dori-pair <id>): ...")
+const goalLine = (brief: string): string => /^\[목표\].*$/mu.exec(brief)?.[0] ?? "";
+
 /**
  * Why a repair item is already taken up, or undefined: this Dori's post replied to the request (replied gives that post's
- * id: dori send discord --reply records it), or a lane names the request's message id in its brief or --no-thread reason.
- * Backlog lanes (bl-, BACKLOG_KEY_PREFIX) are not counted: their brief quotes another Dori's post, which may name any id.
+ * id: dori send discord --reply records it), or a lane says the request is its own: "#dori-pair <id>" in its brief's
+ * [목표] line, or the id in its --no-thread reason. An id quoted anywhere else in a brief is material, not the lane's
+ * assignment (review 1 of #417). Backlog lanes (bl-, BACKLOG_KEY_PREFIX) are not counted: their brief quotes another
+ * Dori's post, which may name any id.
  */
 export const pairHandled = (item: BacklogItem, lanes: readonly Lane[], replied: (message: string) => string | undefined): string | undefined => {
   const request = item.row;
@@ -47,9 +52,10 @@ export const pairHandled = (item: BacklogItem, lanes: readonly Lane[], replied: 
   if (reply) return `reply ${reply} (this Dori's post answering ${request})`;
   // the whole id, not the digits inside a longer number
   const named = new RegExp(`(?<!\\d)${request}(?!\\d)`);
+  const marked = new RegExp(`#dori-pair ${request}(?!\\d)`);
   for (const lane of lanes.filter((l) => !l.key.startsWith("bl-"))) {
     if (named.test(lane.noThread ?? "")) return `lane ${lane.key} (its --no-thread reason names ${request})`;
-    if (named.test(briefText(lane.brief))) return `lane ${lane.key} (its brief names ${request})`;
+    if (marked.test(goalLine(briefText(lane.brief)))) return `lane ${lane.key} (its [목표] line names #dori-pair ${request})`;
   }
   return undefined;
 };

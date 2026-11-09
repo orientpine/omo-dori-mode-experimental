@@ -878,7 +878,15 @@ export const backlogTick = async (d: TickDeps, opts: { readonly force?: boolean 
       lines.push(`BACKLOG_ASK ${item.id} ${q.id}: content ${q.hash} in the lead's inbox; not started before dori backlog decide --question ${q.id} --hash ${q.hash}`);
     }
 
-    // 3. the next items start at once, by priority, within the limits
+    // 3. a repair request the lead already took up is dropped first, whatever the limits: an item that waits for room is not
+    // left to start once its reply record is gone (review 1 of #417)
+    for (const item of listItems(d.stateDir).filter((i) => i.status === "open" && isPairItem(i)).sort(byTurn)) {
+      const handled = d.handled?.(item, lanes);
+      if (!handled) continue;
+      save(d.stateDir, logged(item, at, `dropped: already handled, ${handled}`, { status: "dropped" }));
+      lines.push(`BACKLOG_ALREADY_HANDLED ${item.id} ${handled}`);
+    }
+    // the next items start at once, by priority, within the limits
     const waiting = listItems(d.stateDir).filter((i) => i.status === "open" && !i.ask && !i.approvalAsk && !i.held && !i.paused).sort(byTurn);
     const room = Math.max(0, Math.min(d.settings.maxLanes - runningIds.size, d.settings.maxStarts));
     let tried = 0;
@@ -888,12 +896,6 @@ export const backlogTick = async (d: TickDeps, opts: { readonly force?: boolean 
       if (tried >= room) break;
       const item = readItem(d.stateDir, queued.id);
       if (!item || item.status !== "open" || item.ask || item.approvalAsk || item.held || item.paused) continue;
-      const handled = isPairItem(item) ? d.handled?.(item, await d.lanes()) : undefined;
-      if (handled) {
-        save(d.stateDir, logged(item, at, `dropped: already handled, ${handled}`, { status: "dropped" }));
-        lines.push(`BACKLOG_ALREADY_HANDLED ${item.id} ${handled}`);
-        continue;
-      }
       // one lane per board todo at a time, whatever brought it (the feed, a follow-up, an owner's order): checked here, after
       // running items followed their lanes, so a lane that closed frees its todo
       const todo = todoOf(item);

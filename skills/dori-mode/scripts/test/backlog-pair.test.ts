@@ -70,22 +70,40 @@ test("a repair request this Dori already replied to is not started: BACKLOG_ALRE
   expect(again.join("\n")).not.toContain(REQUEST);
 });
 
-test("a repair request a lane of the lead names in its brief or --no-thread reason is not started; a backlog lane's brief does not count", async () => {
-  // Given: the lead's lane names 2001 in its brief, another names 2002 in its --no-thread reason; a bl- lane quotes 2003
-  const brief = join(root, "lead.md");
-  writeFileSync(brief, "ulw\n[목표] 무돌 수리 요청 https://discord.com/channels/G/P/1569000000000002001 을 고친다\n");
-  const quoted = join(root, "bl.md");
-  writeFileSync(quoted, "[요청 원문] 1569000000000002003 과 같은 고장\n");
-  lanes.push(lane("moodori-vpn-edge", brief), lane("rv-occlude-self", join(root, "missing.md"), "공돌 #dori-pair 수리 요청 1569000000000002002"), lane("bl-pair-1569000000000001999", quoted));
-  intake(posts("1569000000000002001", "1569000000000002002", "1569000000000002003", "15690000000000020011"));
-  // When
-  const lines = await backlogTick(deps(), { force: true });
-  // Then: 2003 and the longer id that only contains 2001's digits start as before
+test("a repair request a lane of the lead names as its own (#dori-pair <id> in the [목표] line, or the --no-thread reason) is not started; a quote elsewhere does not count", async () => {
+  // Given: the lead's lanes name 2001 as the brief's [목표] (as the lead writes it) and 2002 in the --no-thread reason;
+  // another lane quotes 2003 in its body and 2004 in its [목표] without the #dori-pair mark; a bl- lane names 2005
+  const brief = (name: string, text: string): string => {
+    writeFileSync(join(root, name), text);
+    return join(root, name);
+  };
+  lanes.push(
+    lane("moodori-vpn-edge", brief("lead.md", "[목표] 무돌 수리 요청(#dori-pair 1569000000000002001): keep.ts\n")),
+    lane("rv-occlude-self", join(root, "missing.md"), "공돌 #dori-pair 수리 요청 1569000000000002002"),
+    lane("other-fix", brief("other.md", "ulw\n[목표] 백로그 고장(pair-1569000000000002004)\n[자료] #dori-pair 1569000000000002003 과 같은 고장\n")),
+    lane("bl-pair-1569000000000001999", brief("bl.md", "[목표] 수리 요청(#dori-pair 1569000000000002005)\n")),
+  );
+  intake(posts("1569000000000002001", "1569000000000002002", "1569000000000002003", "1569000000000002004", "1569000000000002005", "15690000000000020011"));
+  // When: room for every start
+  const lines = await backlogTick({ ...deps(), settings: { ...SETTINGS, hostDir: join(root, "host"), maxLanes: 9, maxStarts: 9 }, host: { ...deps().host, max: 9 } }, { force: true });
+  // Then: the quoted, unmarked, backlog-lane and longer ids start as before
   expect(lines.filter((l) => l.startsWith("BACKLOG_ALREADY_HANDLED"))).toEqual([
-    "BACKLOG_ALREADY_HANDLED pair-1569000000000002001 lane moodori-vpn-edge (its brief names 1569000000000002001)",
+    "BACKLOG_ALREADY_HANDLED pair-1569000000000002001 lane moodori-vpn-edge (its [목표] line names #dori-pair 1569000000000002001)",
     "BACKLOG_ALREADY_HANDLED pair-1569000000000002002 lane rv-occlude-self (its --no-thread reason names 1569000000000002002)",
   ]);
-  expect(launched.sort()).toEqual(["pair-15690000000000020011", "pair-1569000000000002003"]);
+  expect(launched.sort()).toEqual(["pair-15690000000000020011", "pair-1569000000000002003", "pair-1569000000000002004", "pair-1569000000000002005"].sort());
+});
+
+test("an answered repair request is dropped while no lane may start (slots full, host busy), not left to start after its reply record is gone", async () => {
+  // Given: no room and a busy host; the lead replied to the request
+  await reply(REQUEST, "1569135589213610026");
+  intake(posts(REQUEST));
+  // When
+  const lines = await backlogTick({ ...deps(), busy: async () => ["load 30"], settings: { ...SETTINGS, hostDir: join(root, "host"), maxLanes: 0 } }, { force: true });
+  // Then
+  expect(lines).toContain(`BACKLOG_ALREADY_HANDLED pair-${REQUEST} reply 1569135589213610026 (this Dori's post answering ${REQUEST})`);
+  expect(readItem(state, `pair-${REQUEST}`)?.status).toBe("dropped");
+  expect(launched).toEqual([]);
 });
 
 test("a repair request nobody answered starts as before, and a reply to another post or a post without a reply target does not hold it", async () => {
