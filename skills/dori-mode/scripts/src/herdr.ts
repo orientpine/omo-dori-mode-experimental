@@ -138,6 +138,12 @@ export const herdrRead = async (run: Runner, pane: string, lines?: number): Prom
   return (await execOf(run)("herdr", [...(session ? ["--session", session] : []), "pane", "read", pane, "--source", "visible"])).stdout;
 };
 
+// the visible screen with its colours (SGR) kept
+export const herdrReadAnsi = async (run: Runner, pane: string): Promise<string> => {
+  const session = process.env["DORI_HERDR_SESSION"];
+  return (await execOf(run)("herdr", [...(session ? ["--session", session] : []), "pane", "read", pane, "--source", "visible", "--format", "ansi"])).stdout;
+};
+
 export const shellQuote = (arg: string): string => (/^[\w./:@=+,-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
 
 // The line a pane's shell runs to start the agent: env(1) sets and removes the session's variables (an undefined value
