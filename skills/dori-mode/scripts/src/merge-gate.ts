@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { checkReviewers, familyOf, reviewers } from "./challenge.ts";
-import { fill } from "./config.ts";
+import { runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { parseSignal, splitDone } from "./done-signals.ts";
 import type { Lane } from "./registry.ts";
@@ -353,7 +353,7 @@ export const reviewPr = async (deps: FlowDeps, pr: PrRef, opts: ReviewOptions): 
       continue;
     }
     const started = deps.clock.now();
-    const r = await deps.run(fill(deps.config.explore.challengeCommand, { model: c.call, prompt, system: REVIEW_SYSTEM }), { cwd: root, timeoutMs: deps.config.explore.challengeMinutes * 60_000 });
+    const r = await runWithPrompt(deps.run, deps.config.explore.challengeCommand, { model: c.call, prompt, system: REVIEW_SYSTEM }, { cwd: root, timeoutMs: deps.config.explore.challengeMinutes * 60_000 });
     const verdict = r.code === 0 ? verdictOf(r.out) : undefined;
     if (!verdict) {
       failures.push(`${c.call}: ${r.code !== 0 ? exitNote(r) : "no VERDICT line"}; ${keepReviewerOutput(deps.config.stateDir, `review-${stem(pr)}@${short(sha)}`, r.out)}`);

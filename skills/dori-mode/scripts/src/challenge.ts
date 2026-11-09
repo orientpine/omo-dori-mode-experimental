@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { type Explore, fill } from "./config.ts";
+import { type Explore, runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { formatTree, laneArea, loadTree } from "./explore.ts";
 import type { ChallengeRecord, Lane } from "./registry.ts";
@@ -152,7 +152,7 @@ export const runChallenge = async (deps: FlowDeps, lane: Lane, planFile: string,
   const prompt = challengePrompt(lane, plan, tree, root);
   const dir = join(deps.config.stateDir, "challenges", lane.key);
   mkdirSync(dir, { recursive: true });
-  const ask = (m: string, text: string): Promise<Ran> => deps.run(fill(cfg.challengeCommand, { model: m, prompt: text, system: REVIEWER_SYSTEM }), { cwd: root, timeoutMs: cfg.challengeMinutes * 60_000 });
+  const ask = (m: string, text: string): Promise<Ran> => runWithPrompt(deps.run, cfg.challengeCommand, { model: m, prompt: text, system: REVIEWER_SYSTEM }, { cwd: root, timeoutMs: cfg.challengeMinutes * 60_000 });
   const reviews: Review[] = [];
   const reviewed = new Set<string>();
   for (const m of calls) {

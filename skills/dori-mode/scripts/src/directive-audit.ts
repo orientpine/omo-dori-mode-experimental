@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 
 import { laneSessionFiles, readLeadRelays, type ReportLine } from "./auto-signals.ts";
 import { checkReviewers, ChallengeError, reviewers } from "./challenge.ts";
-import { fill } from "./config.ts";
+import { runWithPrompt } from "./config.ts";
 import { APPLIED_HEADING, appliesUnder, appliesWhy, briefGaps, checkedLedger, coveredBy, type Directive, type DirectiveBlock, DirectiveError, directiveText, duplicated, type Gap, GENERATED_SECTION, headingAt, type Ledger, leadGaps, LINK_SOURCE, loadLedger, pickCandidates, scopeContext, unledgered } from "./directives.ts";
 import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
@@ -259,7 +259,7 @@ export const checkMeaning = async (deps: Pick<FlowDeps, "run" | "config" | "cloc
   const one = async (e: Directive): Promise<string> => {
     const tried: string[] = [];
     for (const model of calls) {
-      const r = await deps.run(fill(oc.command, { model, prompt: meaningPrompt(e), system: MEANING_SYSTEM }), { timeoutMs: oc.minutes * 60_000 });
+      const r = await runWithPrompt(deps.run, oc.command, { model, prompt: meaningPrompt(e), system: MEANING_SYSTEM }, { timeoutMs: oc.minutes * 60_000 });
       const v = r.code === 0 ? parseMeaning(r.out) : undefined;
       if (!v) {
         tried.push(`${model}: ${r.code !== 0 ? `exit ${r.code}` : "no VERDICT line"}; ${keepReviewerOutput(deps.config.stateDir, `directives-meaning-${e.id}`, r.out)}`);

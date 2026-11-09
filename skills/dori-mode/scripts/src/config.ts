@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { FORK_RUNTIMES, run } from "./run.ts";
+import { isOmoExecutable } from "./executable.ts";
+import { FORK_RUNTIMES, type Ran, run, type Runner, type RunOptions } from "./run.ts";
 import { supervisionProblem } from "./supervision.ts";
 import type { ArgvTemplate, DoriConfig } from "./config-types.ts";
 import { defaultConfig } from "./config-defaults.ts";
@@ -147,3 +148,18 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
 
 export const fill = (template: ArgvTemplate, values: Readonly<Record<string, string>>): string[] =>
   template.map((part) => part.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole));
+
+// A prompt spawned as one argument stops the spawn with E2BIG before omo starts: Linux takes at most 128 KiB in one
+// argument (MAX_ARG_STRLEN), Windows 32,767 UTF-16 units in the whole command line. A plan with the lane area's
+// hypothesis tree (133,093 bytes in ~/.dori/src, 2026-11-09) failed every dori challenge reviewer that way. So an omo
+// template's "{prompt}" argument longer than PROMPT_ARG_BYTES is given as "-" and the prompt goes to omo's stdin, which
+// omo -p reads as the prompt (omo --help: "Wait for stdin to close and prepend it to the prompt"). A shorter prompt, a
+// prompt inside a longer argument, and another program's template keep the argument as it is.
+export const PROMPT_ARG_BYTES = 30_000;
+
+export const runWithPrompt = (run: Runner, template: ArgvTemplate, values: Readonly<Record<string, string>>, opts: RunOptions = {}): Promise<Ran> => {
+  const prompt = values["prompt"] ?? "";
+  const at = template.indexOf("{prompt}");
+  if (at < 0 || Buffer.byteLength(prompt) <= PROMPT_ARG_BYTES || !isOmoExecutable(template[0] ?? "")) return run(fill(template, values), opts);
+  return run(fill(template.with(at, "-"), values), { ...opts, stdin: prompt });
+};

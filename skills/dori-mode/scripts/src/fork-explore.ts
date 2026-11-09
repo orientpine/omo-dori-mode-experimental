@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { fill } from "./config.ts";
+import { runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { addNode, laneArea, setStatus, type Tree, updateTree } from "./explore.ts";
 import type { ExplorationRecord, Lane } from "./registry.ts";
@@ -64,8 +64,8 @@ const runBranch = async (deps: FlowDeps, lane: Lane, input: ForkInput, b: Branch
   try {
     const cwd = lane.cwd ?? deps.config.defaultCwd;
     const scratch = mkdtempSync(join(tmpdir(), `dori-fork-${lane.key}-${b.n}-`));
-    const argv = input.mode === "cmd" ? ["bash", "-lc", b.test] : fill(deps.config.explore.branchCommand, { model: input.model ?? lane.model ?? deps.config.defaultModel, prompt: branchPrompt(lane, input.metric, b, input.branches.length, input.minutes, scratch) });
-    const r = await deps.run(argv, { cwd, timeoutMs: input.minutes * 60_000 });
+    const opts = { cwd, timeoutMs: input.minutes * 60_000 };
+    const r = input.mode === "cmd" ? await deps.run(["bash", "-lc", b.test], opts) : await runWithPrompt(deps.run, deps.config.explore.branchCommand, { model: input.model ?? lane.model ?? deps.config.defaultModel, prompt: branchPrompt(lane, input.metric, b, input.branches.length, input.minutes, scratch) }, opts);
     const seconds = Math.round((deps.clock.now() - started) / 1000);
     const waitedSeconds = Math.round((started - asked) / 1000);
     if (r.code === 124) return { ...b, verdict: "timeout", metric: "-", evidence: `stopped after ${input.minutes} min`, seconds, waitedSeconds };

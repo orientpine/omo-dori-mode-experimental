@@ -10,7 +10,8 @@ import type { RuntimeKind, SessionRuntime } from "./runtime/types.ts";
 export type Ran = { readonly code: number; readonly out: string; readonly err: string };
 // env: variables set for this one command on top of the process environment; an undefined value removes the variable
 // preserveOutput: stdout as printed, not trimmed (git status -z starts with a status column that may be a space)
-export type RunOptions = { readonly cwd?: string | undefined; readonly timeoutMs?: number; readonly env?: Readonly<Record<string, string | undefined>>; readonly preserveOutput?: boolean };
+// stdin: text written to the command's stdin, which is then closed (unset: no stdin)
+export type RunOptions = { readonly cwd?: string | undefined; readonly timeoutMs?: number; readonly stdin?: string; readonly env?: Readonly<Record<string, string | undefined>>; readonly preserveOutput?: boolean };
 export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran>;
 
 // aoe and tmux can start the tmux server, and every pane it opens later inherits the server's environment: a Dori's
@@ -30,7 +31,7 @@ export const run: Runner = async (argv, opts = {}) => {
   try {
     // env: process.env explicitly, or Bun hands the child its start-up environment without what loadEnvFile added from dori.env
     const env = Object.fromEntries(Object.entries(childEnv(argv, opts.env ? { ...process.env, ...opts.env } : process.env)).filter(([, v]) => v !== undefined));
-    p = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe", env, ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}) });
+    p = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe", env, ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.stdin !== undefined ? { stdin: new Blob([opts.stdin]) } : {}), ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}) });
   } catch (e) {
     return { code: 127, out: "", err: e instanceof Error ? e.message : String(e) };
   }
