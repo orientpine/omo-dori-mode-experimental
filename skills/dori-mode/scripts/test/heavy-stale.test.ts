@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { HeavyQueue } from "../src/config.ts";
 import type { HeavyCtx } from "../src/heavy-queue.ts";
 import { heavySpread, spreadPlan, type SpreadJob } from "../src/heavy-spread.ts";
+import { staleWatch } from "../src/heavy-stale.ts";
 import type { SlotDeps } from "../src/heavy-slot.ts";
 import { withState } from "./fakes.ts";
 
@@ -198,3 +199,23 @@ test("a real worker that stops beating is stale; stop kills it, deletes its fold
   expect(readdirSync(heavy).filter((d) => d.startsWith("slot."))).toEqual([]);
   expect(Bun.spawnSync(["pgrep", "-f", `sh -c sleep 297`]).exitCode).toBe(1);
 }, 30_000);
+
+test("an upload whose size du could not tell still shows its progress, with no total and no time left", async () => {
+  // Given: a watch whose du gave up (syncBytes 0 after its 30 s)
+  const lines: string[] = [];
+  const w = staleWatch({ label: "t", helper: "h", total: async () => 0, staleMs: 60_000, now: () => Date.now(), log: (l) => lines.push(l) });
+  await Promise.resolve();
+  try {
+    // When: half a MB goes, then more than 1 MB in all, then the upload ends
+    w.sent(5e5);
+    const before = lines.length;
+    w.sent(7e5);
+    w.synced();
+    // Then
+    expect(before).toBe(0);
+    expect(lines[0]).toMatch(/^HEAVY_SYNC t 1\/\? MB to h, [\d.]+ MB\/s$/);
+    expect(lines.at(-1)).toMatch(/^HEAVY_SYNC t 1\/\? MB to h/);
+  } finally {
+    w.stop();
+  }
+});

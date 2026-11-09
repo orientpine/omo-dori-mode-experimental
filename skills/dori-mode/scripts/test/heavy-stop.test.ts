@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { procId, stopRuns } from "../src/heavy-stale.ts";
+import { procId } from "../src/heavy-stale.ts";
+import { stopRuns } from "../src/heavy-stop.ts";
+import type { SlotDeps } from "../src/heavy-slot.ts";
+import { pidAlive } from "../src/heavy-slot-store.ts";
 import { withState } from "./fakes.ts";
 
-// A helper's `stop <label> [run]` (heavy-stale.ts stopRuns): the stale run alone, never another caller's run or a
+// A helper's `stop <label> [run]` (heavy-stop.ts stopRuns): the stale run alone, never another caller's run or a
 // process that only reuses a dead worker's pid, and its worker killed before its folder goes.
 let state: ReturnType<typeof withState>;
 beforeEach(() => {
@@ -25,10 +28,12 @@ const holdSlot = (slots: string, n: number, pid: number) => {
   mkdirSync(join(slots, `slot.${n}`), { recursive: true });
   writeFileSync(join(slots, `slot.${n}`, "owner"), `${pid} t ${new Date().toISOString()}`);
 };
+// this host's slots for stop; wait: what a wait for admit.lock does (an admission ending), a real short sleep without it
+const slotDeps = (dir: string, wait?: () => Promise<void>): SlotDeps => ({ dir, slots: 2, maxLoad: 1e9, clock: { now: () => Date.now(), sleep: async (ms) => (wait ? wait() : Bun.sleep(ms)) }, pid: process.pid, load: async () => 0, alive: pidAlive });
 // alive and not a zombie (a killed child of this test stays one until reaped)
 const alive = (pid: number) => Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)]).stdout.toString().trim().replace(/^Z.*/, "") !== "";
 
-test("stop with a run id ends that run alone, not another run of the same caller and label", () => {
+test("stop with a run id ends that run alone, not another run of the same caller and label", async () => {
   // Given: two runs of label t by one caller (two lanes), each holding a slot
   const exec = join(state.dir, "exec");
   const slots = join(state.dir, "slots");
@@ -38,7 +43,7 @@ test("stop with a run id ends that run alone, not another run of the same caller
   holdSlot(slots, 2, b.p.pid);
   try {
     // When
-    const n = stopRuns(exec, slots, "tester", "t", a.run);
+    const n = await stopRuns(exec, slotDeps(slots), "tester", "t", a.run);
     // Then
     expect(n).toBe(1);
     expect(alive(a.p.pid)).toBe(false);
@@ -51,7 +56,7 @@ test("stop with a run id ends that run alone, not another run of the same caller
   }
 });
 
-test("stop ends the run even when its folder cannot all be deleted (a read-only folder the job made)", () => {
+test("stop ends the run even when its folder cannot all be deleted (a read-only folder the job made)", async () => {
   // Given: a live run whose folder holds a non-empty read-only folder, and the slot it holds
   const exec = join(state.dir, "exec");
   const slots = join(state.dir, "slots");
@@ -63,7 +68,7 @@ test("stop ends the run even when its folder cannot all be deleted (a read-only 
   holdSlot(slots, 1, a.p.pid);
   try {
     // When
-    const n = stopRuns(exec, slots, "tester", "t", a.run);
+    const n = await stopRuns(exec, slotDeps(slots), "tester", "t", a.run);
     // Then
     expect(n).toBe(1);
     expect(alive(a.p.pid)).toBe(false);
@@ -75,7 +80,7 @@ test("stop ends the run even when its folder cannot all be deleted (a read-only 
   }
 });
 
-test("stop leaves another caller's run, and a process that only reuses a dead worker's pid, alone", () => {
+test("stop leaves another caller's run, and a process that only reuses a dead worker's pid, alone", async () => {
   // Given: another caller's live run of the same label, and a left folder of this caller whose recorded worker is not
   // the process now holding that pid (the pid was reused), which holds a slot
   const exec = join(state.dir, "exec");
@@ -85,7 +90,7 @@ test("stop leaves another caller's run, and a process that only reuses a dead wo
   holdSlot(slots, 1, reused.p.pid);
   try {
     // When
-    const n = stopRuns(exec, slots, "tester", "t");
+    const n = await stopRuns(exec, slotDeps(slots), "tester", "t");
     // Then: nothing stopped; the left folder is gone, the process and its slot are not
     expect(n).toBe(0);
     expect(alive(other.p.pid)).toBe(true);
@@ -95,5 +100,33 @@ test("stop leaves another caller's run, and a process that only reuses a dead wo
   } finally {
     other.p.kill("SIGKILL");
     reused.p.kill("SIGKILL");
+  }
+});
+
+test("stop frees a dead worker's slot only under the admission lock, never a slot an admission took over meanwhile", async () => {
+  // Given: a run holding slot.1, and an admission holding admit.lock that finds the worker dead and takes slot.1 for a
+  // new job before it lets the lock go (review 8: the stop read the owner, the admission reclaimed, the stop deleted it)
+  const exec = join(state.dir, "exec");
+  const slots = join(state.dir, "slots");
+  const a = fakeRun(exec, "tester", "t");
+  holdSlot(slots, 1, a.p.pid);
+  mkdirSync(join(slots, "admit.lock"));
+  writeFileSync(join(slots, "admit.lock", "owner"), String(process.pid));
+  const next = `${process.pid} next ${new Date().toISOString()}`;
+  const admission = async () => {
+    rmSync(join(slots, "slot.1"), { recursive: true, force: true });
+    mkdirSync(join(slots, "slot.1"));
+    writeFileSync(join(slots, "slot.1", "owner"), next);
+    rmSync(join(slots, "admit.lock"), { recursive: true, force: true });
+  };
+  try {
+    // When: the stop runs while the lock is held; its first wait for the lock is when the admission ends
+    const n = await stopRuns(exec, slotDeps(slots, admission), "tester", "t", a.run);
+    // Then: the run is stopped and the new job's slot is left alone
+    expect(n).toBe(1);
+    expect(alive(a.p.pid)).toBe(false);
+    expect(readFileSync(join(slots, "slot.1", "owner"), "utf8")).toBe(next);
+  } finally {
+    a.p.kill("SIGKILL");
   }
 });

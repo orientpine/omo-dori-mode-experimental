@@ -1,9 +1,6 @@
-import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { dlopen, FFIType } from "bun:ffi";
-
-import { killTree } from "./heavy-job.ts";
 import type { HeavyHelper } from "./heavy-route.ts";
 import { readerLines, settle } from "./heavy-settle.ts";
 
@@ -26,7 +23,7 @@ export type Stale = { readonly stale: string; readonly abandoned: boolean };
 
 const SYNC_LOG_MS = 5 * 60_000;
 // the file in a helper run's job folder naming its caller and label, as `stop <label>` matches them
-const WHO = "who";
+export const WHO = "who";
 
 // alive=<sec> on a WORKER_ADMIT line: the helper's heartbeat, or undefined for a helper that does not beat
 export const aliveOf = (admitted: string): number | undefined => {
@@ -39,6 +36,7 @@ export const aliveOf = (admitted: string): number | undefined => {
 export const runOf = (admitted: string): string | undefined => /(?:^|\s)run=(\d{1,10}-[\w-]{1,32})(?:\s|$)/.exec(admitted)?.[1];
 
 const mb = (b: number): string => (b / 1e6).toFixed(0);
+// a total du could not tell in time (heavy-send.ts syncBytes 0) shows as ?
 
 type Watch = { readonly sent: (bytes: number) => void; readonly heard: () => void; readonly synced: () => void; readonly stop: () => void; readonly stale: Promise<string> };
 
@@ -59,14 +57,15 @@ export const staleWatch = (o: { readonly label: string; readonly helper: string;
   let syncing = true;
   let fire: (why: string) => void = () => {};
   const stale = new Promise<string>((r) => (fire = r));
+  const of = (): string => (total ? mb(total) : "?");
   const line = () => {
     const sec = Math.max(1, (o.now() - start) / 1000);
     const rate = sent / sec;
     const left = rate > 0 && total > sent ? `, about ${Math.ceil((total - sent) / rate / 60)} min left` : "";
-    o.log(`HEAVY_SYNC ${o.label} ${mb(sent)}/${mb(total)} MB to ${o.helper}, ${(rate / 1e6).toFixed(2)} MB/s${left}`);
+    o.log(`HEAVY_SYNC ${o.label} ${mb(sent)}/${of()} MB to ${o.helper}, ${(rate / 1e6).toFixed(2)} MB/s${left}`);
   };
-  // a job of less than 1 MB goes in a moment: no HEAVY_SYNC lines for it
-  const shown = (): boolean => total >= 1e6;
+  // a job of less than 1 MB goes in a moment: no HEAVY_SYNC lines for it; one of unknown size shows once 1 MB went
+  const shown = (): boolean => total >= 1e6 || sent >= 1e6;
   let first = true;
   let opened = false;
   const open = (): void => {
@@ -82,14 +81,14 @@ export const staleWatch = (o: { readonly label: string; readonly helper: string;
       line();
     }
     const min = ((now - last) / 60_000).toFixed(1);
-    if (syncing && now - last >= o.staleMs) fire(`it took no bytes for ${min} min (${mb(sent)}/${mb(total)} MB sent)`);
+    if (syncing && now - last >= o.staleMs) fire(`it took no bytes for ${min} min (${mb(sent)}/${of()} MB sent)`);
     else if (!syncing && o.aliveSec !== undefined && now - last >= quietMs) fire(`no word from it for ${min} min after the upload (it beats every ${o.aliveSec} s)`);
   }, Math.max(50, Math.min(30_000, o.staleMs / 4)));
   return {
     sent: (n) => {
-      if (first && shown()) open();
       first = false;
       sent += n;
+      if (!opened && shown()) open();
       if (syncing) last = o.now();
     },
     heard: () => {
@@ -147,30 +146,6 @@ export const procId = (pid: number): string | undefined => {
   }
 };
 
-// SIGKILL to the process behind pid only while it is still the one recorded (procId): through a pidfd (Linux 5.3+) opened
-// first and checked after, so a pid freed and reused between the check and the signal is never hit (as a plain kill by
-// pid could). false when it is not that process, or no pidfd could be opened. Its children go with it: a run's box is
-// bwrap --die-with-parent, and what else the worker started is killed by its tree after.
-const sys = (() => {
-  let lib: { symbols: { syscall: (...a: bigint[]) => bigint | number; close: (fd: number) => number } } | undefined;
-  return () => (lib ??= dlopen("libc.so.6", { syscall: { args: [FFIType.i64, FFIType.i64, FFIType.i64, FFIType.i64, FFIType.i64], returns: FFIType.i64 }, close: { args: [FFIType.i32], returns: FFIType.i32 } }) as never);
-})();
-const PIDFD_OPEN = 434n;
-const PIDFD_SEND_SIGNAL = 424n;
-const killIfStill = (pid: number, recorded: string): boolean => {
-  const fd = Number(sys().symbols.syscall(PIDFD_OPEN, BigInt(pid), 0n, 0n, 0n));
-  if (fd < 0) return false;
-  try {
-    if (procId(pid) !== recorded) return false;
-    const children = Bun.spawnSync(["pgrep", "-P", String(pid)]).stdout.toString().split("\n").filter(Boolean).map(Number);
-    if (Number(sys().symbols.syscall(PIDFD_SEND_SIGNAL, BigInt(fd), 9n, 0n, 0n)) !== 0) return false;
-    for (const c of children) killTree(c);
-    return true;
-  } finally {
-    sys().symbols.close(fd);
-  }
-};
-
 // what a run's job folder records for `stop`: its caller, label and the worker as started; its id is the folder's name
 export const markRun = (dir: string, caller: string, label: string): string => {
   writeFileSync(join(dir, WHO), `${caller} ${label} ${procId(process.pid) ?? "-"}`);
@@ -187,61 +162,4 @@ export const heartbeat = (aliveSec: number) => {
     },
     stop: (): void => clearInterval(t),
   };
-};
-
-// a run's job folder deleted, read-only folders the job made in it included (made writable first when a plain delete fails)
-const removeRun = (dir: string): void => {
-  try {
-    rmSync(dir, { recursive: true, force: true });
-  } catch {
-    Bun.spawnSync(["chmod", "-R", "u+w", dir]);
-    rmSync(dir, { recursive: true, force: true });
-  }
-};
-
-// `stop <label> [run]` from caller: the runs of that label this caller started here (job folders under execRoot whose who
-// file names both; with run, only that folder), their worker and what it started killed, their folders deleted, and the
-// slots their worker held freed. Another caller's run is left alone, and so is a process that only reuses a dead worker's
-// pid: a folder whose pid now belongs to another process is deleted, nothing is killed or freed for it. The number stopped.
-export const stopRuns = (execRoot: string, slotsDir: string, caller: string, label: string, run?: string): number => {
-  let n = 0;
-  const ls = (d: string): string[] => {
-    try {
-      return readdirSync(d);
-    } catch {
-      return [];
-    }
-  };
-  for (const d of ls(execRoot)) {
-    if (run !== undefined && d !== run) continue;
-    let who = "";
-    try {
-      who = readFileSync(join(execRoot, d, WHO), "utf8");
-    } catch {
-      continue;
-    }
-    const [whoCaller, whoLabel, ...started] = who.split(" ");
-    if (whoCaller !== caller || whoLabel !== label) continue;
-    const pid = Number(d.split("-")[0]);
-    // a worker gone (killed with its ssh) leaves its slots to free; a live process that is not the recorded worker keeps
-    // them and is left alone; the worker is killed before its folder goes, so a folder that cannot all be deleted keeps no run
-    const now = procId(pid);
-    if (now !== undefined && now !== started.join(" ")) {
-      removeRun(join(execRoot, d));
-      continue;
-    }
-    if (now !== undefined) killIfStill(pid, now);
-    for (const s of ls(slotsDir).filter((x) => /^slot\.\d+$/.test(x))) {
-      let owner = "";
-      try {
-        owner = readFileSync(join(slotsDir, s, "owner"), "utf8");
-      } catch {
-        continue;
-      }
-      if (owner.split(" ")[0] === String(pid)) rmSync(join(slotsDir, s), { recursive: true, force: true });
-    }
-    removeRun(join(execRoot, d));
-    n++;
-  }
-  return n;
 };
