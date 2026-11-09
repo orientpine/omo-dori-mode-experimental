@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { DoriConfig } from "../src/config.ts";
@@ -18,6 +18,8 @@ const OWNER = "100000000000000001";
 const iso = (ms: number) => new Date(ms).toISOString();
 const SCREEN = "❯ \n Claude │ pool\n(OmO) mem:repo just now ◉ watching 5: Dori inbox";
 const DEAD_PID = 2 ** 22 + 12345;
+const NEW_SID = "51ddcf24-44e5-4d2d-8eaf-1234567890ab";
+const newTranscript = () => join(state.dir, "sessions", "--home-test-dori--", `2026-01-01T12-13-00-000Z_${NEW_SID}.jsonl`);
 
 let state: ReturnType<typeof withState>;
 let world: World;
@@ -129,6 +131,56 @@ test("an owner row LEAD_OWNER_WAITING already typed into the lead is not typed a
   expect(await leadInboxTick(deps(T0))).toEqual([]);
   row(T0 - 15 * MIN, "p-1");
   expect((await leadInboxTick(deps(T0 + MIN)))[0]).toStartWith(`LEAD_INBOX_UNHEARD ${LEAD} 1 inbox row(s) (pair-bot 1)`);
+});
+
+test("/new in the same agent: the session whose transcript omo wrote last is checked, not the launch argv session", async () => {
+  const next = newTranscript();
+  writeFileSync(next, `${JSON.stringify({ type: "session", id: NEW_SID, timestamp: iso(T0 + 13 * MIN) })}\n`);
+  monitors(monitor());
+  writeFileSync(join(state.dir, "sessions", "--home-test-dori--", "extensions", "terminal", `${NEW_SID}.json`), JSON.stringify({ monitors: [monitor()] }));
+  utimesSync(transcript, new Date(T0), new Date(T0));
+  utimesSync(next, new Date(T0 + 14 * MIN), new Date(T0 + 14 * MIN));
+  world.ps = `10 1 /bin/bash /tmp/aoe-pane-env\n11 10 /x/senpi/dist/bundle/cli.js --session-id ${SID}\n12 11 bun process-entry.js\n`;
+  const base = deps(T0 + 30 * MIN);
+  const run: FlowDeps["run"] = async (argv, opts) => argv[0] === "ps" && argv[1] === "eww" ? { code: 0, out: `bun process-entry.js PI_SESSION_ID=${NEW_SID} PI_SESSION_FILE=${next}`, err: "" } : base.run(argv, opts);
+  row(T0 + 14 * MIN, "p-new");
+  appendFileSync(next, `${JSON.stringify({ type: "custom_message", customType: "senpi-monitor:notification", content: `Monitor event(inbox): ${JSON.stringify({ id: "p-new" })}` })}\n`);
+  expect(await leadInboxTick({ ...base, run })).toEqual([]);
+  writeFileSync(join(state.dir, "herdr-sessions.json"), JSON.stringify({ [LEAD]: { session: NEW_SID, cwd: "/home/test/dori", log: next, at: iso(T0 + 15 * MIN) } }));
+  world.ps = world.ps.replace("\n12 11 bun process-entry.js", "");
+  expect(await leadInboxTick({ ...base, run })).toEqual([]);
+});
+
+test("a delivered reply does not mark the request it names heard", async () => {
+  monitors(monitor());
+  row(T0 - 20 * MIN, "p-request");
+  row(T0 - 19 * MIN, "p-reply", { reply_to: "p-request" });
+  appendFileSync(transcript, `${JSON.stringify({ type: "custom_message", customType: "senpi-monitor:notification", content: `Monitor event(inbox): ${JSON.stringify({ id: "p-reply", reply_to: "p-request" })}` })}\n`);
+  expect((await leadInboxTick(deps(T0)))[0]).toContain("oldest p-request");
+});
+
+test("only owner row ids named by a successful wake are deduped, not every row before its timestamp", async () => {
+  monitors(monitor());
+  row(T0 - 30 * MIN, "o-covered", { scope: "thread", author_id: OWNER });
+  row(T0 - 20 * MIN, "o-backfilled", { scope: "thread", author_id: OWNER });
+  writeFileSync(join(state.dir, "lead-limit.json"), JSON.stringify({ pane: LEAD, wakeKey: "o-covered|", wakeIds: ["o-covered"], wokeAt: iso(T0 - 1 * MIN) }));
+  expect((await leadInboxTick(deps(T0)))[0]).toContain("oldest o-backfilled");
+  expect(sent(world)[0]).not.toContain("o-covered");
+});
+
+test("a card answer redelivered by missedAnswersTick is heard even without its interaction id", async () => {
+  monitors(monitor());
+  row(T0 - 20 * MIN, "interaction-1", { kind: "answer", qid: "Q1", answer: "yes", scope: undefined });
+  appendFileSync(transcript, `${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "[DORI] ANSWER Q1 (button, now): yes" }] } })}\n`);
+  expect(await leadInboxTick(deps(T0))).toEqual([]);
+});
+
+test("a monitor description with unsafe text cannot stop the wake", async () => {
+  monitors(monitor({ description: "inbox `bad` $(boom)", deliveryPaused: true }));
+  expect(await leadInboxTick(deps(T0))).toEqual([]);
+  expect((await leadInboxTick(deps(T0 + 10 * MIN)))[0]).toContain("woke the lead (SUBMITTED)");
+  expect(sent(world)[0]).not.toContain("`");
+  expect(sent(world)[0]).not.toContain("$(");
 });
 
 test("dori watch runs the check for the lead", async () => {

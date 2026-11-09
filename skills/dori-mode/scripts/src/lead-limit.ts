@@ -21,7 +21,7 @@ import { procTable } from "./session-id.ts";
 
 export type LeadReply = { readonly at: number; readonly error?: string };
 export type OwnerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly scope?: string; readonly text: string };
-type LimitMark = { readonly pane: string; readonly noticeFor?: string; readonly noticeChannel?: string; readonly wakeKey?: string; readonly wokeAt?: string };
+type LimitMark = { readonly pane: string; readonly noticeFor?: string; readonly noticeChannel?: string; readonly wakeKey?: string; readonly wakeIds?: readonly string[]; readonly wokeAt?: string };
 
 const TAIL_BYTES = 2 * 1024 * 1024;
 const INBOX_TAIL_BYTES = 512 * 1024;
@@ -134,7 +134,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   // the limit lifted: the owner hears it where he heard of the limit
   if (mark.noticeFor && !blocked) {
     const posted = deps.postOwner && mark.noticeChannel ? await deps.postOwner(mark.noticeChannel, words.leadBackText).then((id) => `POSTED ${mark.noticeChannel} ${id}`, (e: unknown) => `NOT_POSTED ${String(e).slice(0, 160)}`) : "NOT_POSTED no notice went out";
-    save({ pane, ...(mark.wakeKey ? { wakeKey: mark.wakeKey, wokeAt: mark.wokeAt } : {}) });
+    save({ pane, ...(mark.wakeKey ? { wakeKey: mark.wakeKey, wakeIds: mark.wakeIds, wokeAt: mark.wokeAt } : {}) });
     out.push(`LEAD_LIMIT_CLEARED ${pane} since ${mark.noticeFor}; ${posted}`);
   }
 
@@ -159,7 +159,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
       const min = Math.floor((now - oldest.at) / 60_000);
       const text = `[DORI] LEAD_OWNER_WAITING: ${waiting.length} owner message(s) since ${clock(deps, oldest.at)} have had no reply from you for ${min} min${blocked ? " (your model calls failed meanwhile)" : ""}. The oldest: "${plain(oldest.text, 120)}". Read them in the inbox and answer the owner now.`;
       const ok = await sendVerified(deps.run, deps.clock, deps.config, pane, text);
-      if (ok) save({ ...next, wakeKey: key, wokeAt: new Date(now).toISOString() });
+      if (ok) save({ ...next, wakeKey: key, wakeIds: waiting.map((r) => r.id), wokeAt: new Date(now).toISOString() });
       out.push(`LEAD_OWNER_WAITING ${pane} ${waiting.length} owner message(s), oldest ${new Date(oldest.at).toISOString()} (${min} min)${blocked ? ", model failing" : ""}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane"}`);
     }
   }
