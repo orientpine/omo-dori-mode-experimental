@@ -3,6 +3,7 @@ import { autoturnTick } from "./autoturn.ts";
 import { laneBackground } from "./background.ts";
 import { laneDeathTick, laneSuspendTick } from "./lane-death.ts";
 import { leadDownTick } from "./lead-down.ts";
+import { leadInboxTick } from "./lead-inbox.ts";
 import { leadLimitTick, limitResumeTick } from "./lead-limit.ts";
 import { missedAnswersTick } from "./missed-answers.ts";
 import { type Lane, statusOf, withStatus } from "./registry.ts";
@@ -80,6 +81,7 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
     out.push(...(await laneDeathTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lane death check: ${String(e).slice(0, 200)}`])));
     out.push(...(await laneSuspendTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lane suspend check: ${String(e).slice(0, 200)}`])));
     out.push(...(await leadLimitTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lead limit check: ${String(e).slice(0, 200)}`])));
+    out.push(...(await leadInboxTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lead inbox check: ${String(e).slice(0, 200)}`])));
     out.push(...(await limitResumeTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN limit resume check: ${String(e).slice(0, 200)}`])));
   }
   return out;
