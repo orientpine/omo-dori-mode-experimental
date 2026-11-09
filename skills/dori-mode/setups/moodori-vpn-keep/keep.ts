@@ -268,7 +268,7 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
     (await runner(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", o.pcSsh, "powershell", "-NoProfile", "-EncodedCommand", Buffer.from(cmd, "utf16le").toString("base64")], { timeoutMs: 90_000 })).out;
   const tunnelUp = () => fetch(`${base}/json/version`, { signal: AbortSignal.timeout(4000) }).then((r) => r.ok, () => false);
   const ensureAgents = async () => {
-    await ps(`if(-not (Get-Process SecuwayUPort -ErrorAction SilentlyContinue)){Start-ScheduledTask -TaskName '${o.secuwayTask}'; Start-Sleep 5}; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 4) | Out-Null}catch{Start-ScheduledTask -TaskName '${o.edgeTask}'; Start-Sleep 8}`);
+    await ps(`if(-not (Get-Process SecuwayUPort -ErrorAction SilentlyContinue)){Start-ScheduledTask -TaskName ${psQuote(o.secuwayTask)}; Start-Sleep 5}; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 4) | Out-Null}catch{Start-ScheduledTask -TaskName ${psQuote(o.edgeTask)}; Start-Sleep 8}`);
     const key = `${o.pcSsh} ${o.cdpPort}:127.0.0.1:${o.edgePort}`;
     if (tunnel.key !== undefined && tunnel.key !== key) await stopTunnel(tunnel);
     if (await tunnelUp()) return;
@@ -328,13 +328,33 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
     ensureAgents,
     login,
     wait: (ms) => clock.sleep(ms),
-    restartAgent: async () => { await ps(`Stop-Process -Name SecuwayUPort -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-ScheduledTask -TaskName '${o.secuwayTask}'; Start-Sleep 8`); },
-    // Stops only the msedge processes whose --user-data-dir ends in edgeProfile (the owner's own Edge stays), starts
-    // edgeTask again and waits up to 20 s for its debugging port.
-    restartEdge: async () => { await ps(`$d=[regex]::Escape('${o.edgeProfile}'); Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -match ('--user-data-dir="?[^"]*\\\\' + $d + '("|\\s|$)') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep 3; Start-ScheduledTask -TaskName '${o.edgeTask}'; for($i=0;$i -lt 20;$i++){Start-Sleep 1; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 2) | Out-Null; break}catch{}}`); },
+    restartAgent: async () => { await ps(`Stop-Process -Name SecuwayUPort -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-ScheduledTask -TaskName ${psQuote(o.secuwayTask)}; Start-Sleep 8`); },
+    // Lists the msedge processes, stops only those edgePids picks (pids, never a name), starts edgeTask again and
+    // waits up to 20 s for its debugging port.
+    restartEdge: async () => {
+      const pids = edgePids(await ps(EDGE_LIST_PS), o.edgeProfile);
+      await ps(`${pids.length ? `Stop-Process -Id ${pids.join(",")} -Force -ErrorAction SilentlyContinue; Start-Sleep 3; ` : ""}Start-ScheduledTask -TaskName ${psQuote(o.edgeTask)}; for($i=0;$i -lt 20;$i++){Start-Sleep 1; try{(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:${o.edgePort}/json/version -TimeoutSec 2) | Out-Null; break}catch{}}`);
+    },
     log: (line) => console.log(`${new Date(clock.now()).toISOString()} ${line}`),
   };
 }
+
+// A PowerShell single-quoted string: every quote PowerShell reads as one (straight and curly) is doubled.
+export const psQuote = (text: string): string => `'${text.replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`;
+
+// One line per msedge process: its pid, a tab, its command line.
+export const EDGE_LIST_PS = `Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | ForEach-Object { "$($_.ProcessId)\`t$($_.CommandLine)" }`;
+// The pids of the msedge processes whose --user-data-dir (quoted or not, the whole argument quoted too) has exactly
+// profile as its last folder, compared without case like Windows paths; the owner's own Edge and any other profile stay.
+export const edgePids = (list: string, profile: string): number[] =>
+  list.split(/\r?\n/).flatMap((line) => {
+    const tab = line.indexOf("\t");
+    const pid = line.slice(0, tab);
+    const m = /"--user-data-dir=([^"]*)"|--user-data-dir="([^"]*)"|--user-data-dir=(\S+)/.exec(line.slice(tab + 1));
+    const dir = (m?.[1] ?? m?.[2] ?? m?.[3] ?? "").replace(/[\\/]+$/, "");
+    const leaf = dir.split(/[\\/]/).at(-1) ?? "";
+    return tab > 0 && /^\d+$/.test(pid) && leaf && leaf.toLowerCase() === profile.toLowerCase() ? [Number(pid)] : [];
+  });
 
 export const configPath = (env: Record<string, string | undefined>, home: string = homedir()): string =>
   env["DORI_VPN_KEEP_CONFIG"] || join(home, ".dori", "vpn-keep.json");

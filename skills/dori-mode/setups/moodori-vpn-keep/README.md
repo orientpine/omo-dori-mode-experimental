@@ -24,7 +24,8 @@ Every minute inside the window (`days`, `hours`, `timeZone`):
    When the login page never appears (the agent check page hangs), it restarts the agent once and tries again; if the
    tab still stays on the agent check page (`activexloading`, "보안프로그램 설치 중": an Edge that was open before the
    drop does not move on after the agent restart), it restarts MooDori's Edge once and tries again: it stops only the
-   `msedge` processes whose `--user-data-dir` ends in `edgeProfile` (the owner's own Edge and its windows stay) and
+   `msedge` processes whose `--user-data-dir` has exactly `edgeProfile` as its last folder, by pid (the owner's own Edge,
+   its windows and other profiles stay) and
    starts `edgeTask` again. That is at most one agent restart and one Edge restart a round, so `maxFails` still bounds
    them. Any other failure is tried once more.
 4. The portal's bookmark page is not yet a recovery: within 30 s (every 5 s) the VPN state from step 1 must read up,
