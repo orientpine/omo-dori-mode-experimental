@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridgeRun } from "./bridge.ts";
 
-// Review 9 of #404 left an hc lead unshown; the follow-up PR attaches it read-only in the Dori's own core.
+// Review 9 of #404 left an hc lead unshown; the follow-up PR attaches it in the Dori's own core.
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -41,7 +41,7 @@ test("the bridges' hc calls go to the bridge host's core, not the core the host 
   }
 });
 
-test("attach.sh watches an hc lead read-only in the Dori's own core, never through herdr", async () => {
+test("attach.sh attaches an hc lead in the Dori's own core, so the owner can type into it as into a herdr lead, never through herdr", async () => {
   const user = (await Bun.$`id -un`.text()).trim();
   for (const [core, envText, expectedLead] of [
     ["default", "", "t4"],
@@ -66,7 +66,7 @@ test("attach.sh watches an hc lead read-only in the Dori's own core, never throu
       stdout: "pipe", stderr: "pipe",
     });
     // When: the fake hc prints the attach; stop after that exact event, never after a delay
-    const expected = `hc session=${core} attach --observe ${expectedLead}`;
+    const expected = `hc session=${core} attach ${expectedLead}\n`;
     const reader = child.stdout.getReader();
     let said = "";
     while (!said.includes(expected)) {
@@ -76,7 +76,7 @@ test("attach.sh watches an hc lead read-only in the Dori's own core, never throu
     }
     child.kill();
     await child.exited;
-    // Then: the lead is watched, not typed into or resized; no herdr client is started
+    // Then: the lead is attached for typing (no --observe), as a herdr row attaches its client; no herdr client is started
     expect(said).toContain(expected);
     expect(said).not.toContain("unexpected socket");
     expect(said).not.toContain("herdr ");

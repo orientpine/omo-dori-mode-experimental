@@ -8,7 +8,7 @@
 # the lead's tab with that account's own focus-lead.ts (next to this file), with the Dori's config at
 # ~/.<user>/config.json (an instance account) or else ~/.dori/config.json. herdr's tab focus moves every attached client
 # of that server. If it fails the row still attaches.
-# An hc lead is watched through hc attach --observe (never typed into or resized). Its core is the HC_SESSION in the
+# An hc lead is attached with hc attach, so the owner types into it from the row as into a herdr lead's client. Its core is the HC_SESSION in the
 # Dori's dori.env, else the default core, never the bridge host's inherited core.
 account=${1:-}
 env='export XDG_RUNTIME_DIR=/run/user/$(id -u) PATH=$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin; '
@@ -22,7 +22,7 @@ selected=${resolved#* }
 case $selected in
   hc:*)
   lead=${selected#hc:}
-  echo "doriterm: $(id -un) lead $selected; attaching read-only"
+  echo "doriterm: $(id -un) lead $selected; attaching"
   if [ -n "$core" ]; then
     HC_SESSION=$core
     export HC_SESSION
@@ -30,7 +30,7 @@ case $selected in
     unset HC_SESSION
   fi
   unset HC_SOCKET
-  exec hc attach --observe "$lead"
+  exec hc attach "$lead"
   ;;
 esac
 DORI_CONFIG=$c "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts" || echo "doriterm: the lead tab was not focused; attaching anyway" >&2

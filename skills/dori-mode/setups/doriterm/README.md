@@ -32,8 +32,8 @@ encrypted outbound connection to `relay-doriface.omo.dev:443`; it opens no liste
 `ExecStartPost` runs `bridge.ts`, which starts the hc terminal `zzangdori` (`DORITERM_BRIDGE_NAME`) running
 `attach.sh`, or leaves it if it is already live, or replaces it if it ended. For a herdr lead `attach.sh` runs `herdr client` again
 every 5 seconds (`DORITERM_RETRY_SECONDS`) after it exits, so the bridge attaches once the herdr server is up (a boot
-where this unit starts first) and again after a herdr server restart. For an hc lead it runs `hc attach --observe` in
-the core that Dori's `dori.env` names (else the default core), so the row watches the lead without typing or resizing;
+where this unit starts first) and again after a herdr server restart. For an hc lead it runs `hc attach` in
+the core that Dori's `dori.env` names (else the default core), so the owner types into the lead from the row as into a herdr lead's client;
 if that core has no socket yet, it does not start one and tries again after the same interval. The bridge only attaches: it types
 nothing and focuses no pane. hc runs its core as its own systemd user service (`systemd-run`), outside this unit, so
 `ExecStopPost` runs `bridge.ts stop`, which ends and removes only the bridge rows it lists (a row of a bridge's name
@@ -75,7 +75,7 @@ host's list (`bun bridge.ts` alone reads only the environment it is given, witho
 One paired phone reaches every Dori on the machine: one row per Dori, each a bridge terminal attached to that Dori's
 lead, on herdr or on hc. The host runs on one account (here oriclaw, the `zzangdori` row); the other Doris' rows attach as
 their own accounts with `sudo -n -u <account> -H` (`attach.sh <account>`), so the herdr servers, hc cores, sockets and panes
-stay each account's and nothing runs on the other accounts beyond the herdr client or read-only hc attach while a row is open. A new herdr
+stay each account's and nothing runs on the other accounts beyond the herdr client or hc attach while a row is open. A new herdr
 client opens on the tab its server focused last (a lane, a stray shell), so before each attach `attach.sh` focuses the
 lead's tab with the account's own `focus-lead.ts` (this directory) and its Dori config (`~/.<user>/config.json` for an
 instance account, else `~/.dori/config.json`). herdr's `tab focus` moves every client of that server; it happens when a
