@@ -11,7 +11,7 @@ import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refus
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
-import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
+import { aliveOf, endedWith, heartbeat, markRun, runOf, type RunEnd, sayCancelled, STALE_GRACE_MS, staleWatch, unfinished, watchCaller } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
 
@@ -249,7 +249,7 @@ export const copyBack = (back: string, sync: readonly string[]): { files: number
   return n;
 };
 
-type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<number | null | Stale> };
+type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<RunEnd> };
 type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
@@ -270,7 +270,7 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
   const stop = onStop(() => p.kill("SIGKILL"));
   const aliveSec = aliveOf(verdict?.[2] ?? "");
   const watch = staleWatch({ label: job.label, helper: h.name, total: (cut) => syncBytes(plan.sync, cut), staleMs, ...(aliveSec ? { aliveSec } : {}), now: () => ctx.deps.clock.now(), log: (l) => ctx.deps.log?.(l) });
-  let stale: string | undefined;
+  let stale: string | undefined, cancelled: string | undefined;
   const kids: Bun.Subprocess[] = [p];
   void watch.stale.then((why) => {
     stale = why;
@@ -286,7 +286,8 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
       if (l.startsWith("WORKER_ALIVE")) continue;
       if (l.startsWith("O ")) process.stdout.write(`${l.slice(2)}\n`);
       else if (l.startsWith("E ")) process.stderr.write(`${l.slice(2)}\n`);
-      else if (/^WORKER_EXIT \d+$/.test(l)) exit = Number(l.slice(12));
+      else if (/^WORKER_EXIT \d+$/.test(l)) exit = endedWith(p.stdin, Number(l.slice(12)));
+      else if (l.startsWith("WORKER_CANCELLED ")) cancelled = l.slice(17);
       else {
         if (l.startsWith("WORKER_BACK_TOO_BIG")) tooBig = true;
         process.stderr.write(`${l}\n`);
@@ -297,7 +298,7 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
   const back = mkdtempSync(join(ctx.deps.dir, "back-"));
   const untar = Bun.spawn(["tar", "-C", back, "--no-same-owner", "-xf", "-"], { stdin: p.stdout, stdout: "ignore", stderr: "pipe" });
   kids.push(untar);
-  const done = (async (): Promise<number | null | Stale> => {
+  const done = (async (): Promise<RunEnd> => {
     let sent = -1;
     const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids);
     try {
@@ -307,13 +308,12 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
       if (stale === undefined) ctx.deps.log?.(`HEAVY_SPREAD_SEND ${job.label} ${h.name}: ${String(e).slice(0, 200)}`);
       p.kill("SIGKILL");
     }
-    // after a stale verdict every wait, the upload's too, gets STALE_GRACE_MS (a child in uninterruptible disk I/O, a held pipe)
-    const ended = await settle(kids, [reader], Promise.all([p.exited, untar.exited, forward, up.catch(() => undefined)]), watch.stale.then(() => Bun.sleep(STALE_GRACE_MS)));
+    const ended = await settle(kids, [reader], Promise.all([p.exited, untar.exited, forward, up.catch(() => undefined)]), watch.stale.then(() => Bun.sleep(STALE_GRACE_MS))); // after a stale verdict every wait, the upload's too, gets STALE_GRACE_MS (a child in uninterruptible disk I/O, a held pipe)
     const [code, ucode] = ended ? [p.exitCode, untar.exitCode] : [null, null];
     stop();
     watch.stop();
     try {
-      if (stale !== undefined) return { stale, abandoned: staleLeft(kids, ended, (l) => ctx.deps.log?.(l), `${job.label} ${h.name}`, STALE_GRACE_MS) };
+      if (stale !== undefined || cancelled !== undefined) return stale !== undefined ? { stale, abandoned: staleLeft(kids, ended, (l) => ctx.deps.log?.(l), `${job.label} ${h.name}`, STALE_GRACE_MS) } : { cancelled: cancelled ?? "" };
       if (sent < 0 || code !== 0 || exit === undefined || ucode !== 0) return null;
       const n = copyBack(back, plan.sync);
       ctx.deps.log?.(`HEAVY_BACK ${job.label} ${h.name}: sent ${sent} bytes, ${n.files} file(s) ${n.bytes} bytes back${n.skipped ? `, ${n.skipped} skipped (outside --sync or through a link)` : ""}`);
@@ -366,12 +366,10 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
     }
     const code = await run.done;
     if (code !== null && typeof code === "object") {
-      abandoned ||= code.abandoned;
-      log(`HEAVY_HELPER_STALE ${job.label} ${run.helper}: ${code.stale}; ${job.staleAgain ? "the job goes back to the line" : `the job ends with exit ${STALE_EXIT} (dori heavy --stale-again sends it again)`}`);
-      const h = ctx.q.helpers.find((x) => x.name === run?.helper);
-      if (h && (await stopOnHelper(h, job.label, log, run.id, Math.min(30_000, (ctx.q.staleMin ?? 20) * 60_000)))) abandoned = true;
-      if (!job.staleAgain) return end({ code: STALE_EXIT });
-      refused.set(run.helper, "stale", code.stale);
+      const fin = await unfinished(ctx.q.helpers.find((x) => x.name === run?.helper) ?? { name: run.helper, ssh: [] }, job.label, code, job.staleAgain === true, log, run.id, Math.min(30_000, (ctx.q.staleMin ?? 20) * 60_000));
+      abandoned ||= fin.left || ("stale" in code && code.abandoned);
+      if ("code" in fin) return end({ code: fin.code });
+      refused.set(run.helper, "stale", fin.again);
       run = null;
       continue;
     }
@@ -387,7 +385,7 @@ export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<P
 
 // ---- the helper's side: dori heavy-worker "exec <label> <kind> <below> [playwright=<version>] [mem=<bytes>]"
 
-type ExecSpec = { readonly argv: string[]; readonly cwd: string; readonly sync: string[]; readonly env: Record<string, string>; readonly back?: string[] };
+type ExecSpec = { readonly argv: string[]; readonly cwd: string; readonly sync: string[]; readonly env: Record<string, string>; readonly back?: string[]; readonly hold?: boolean };
 
 export const specProblem = (x: unknown): string | ExecSpec => {
   const s = x as Partial<ExecSpec> | null;
@@ -512,6 +510,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const runId = markRun(dir, d.caller, label);
   const beat = heartbeat(ctx.q.aliveSec ?? 60);
   const forget = onStop(() => {
+    sayCancelled(dir);
     rmSync(dir, { recursive: true, force: true });
     releaseSlot(t.slot);
   });
@@ -536,6 +535,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
       return 3;
     }
     cmdName = basename(spec.argv[0]!);
+    const held = spec.hold === true ? watchCaller(() => log(`HEAVY_WORKER_ORPHAN ${label} caller=${d.caller}: the caller's connection closed before the run ended; the run is stopped here`)) : undefined;
     for (const p of spec.sync) if (!existsSync(join(root, p))) mkdirSync(join(root, p), { recursive: true });
     beat.set("playwright");
     if (playwright && kind === "browser" && d.tools.browsersDir) await ensurePlaywright(playwright, d.tools.browsersDir, log);
@@ -566,8 +566,8 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     if (tooBig) console.error(`WORKER_BACK_TOO_BIG ${files.reduce((a, f) => a + f.bytes, 0)} bytes changed, over ${BACK_MAX_BYTES}; not sent back, and deleted with the run's folder here: ${pick.left.map((l) => `${l.dir} (${l.files} files, ${l.bytes} bytes)`).join(", ")}; the rest is sent back`);
     writeFileSync(list, pick.keep.map((p) => `${p.slice(1)}\0`).join(""));
     const tar = Bun.spawn(["tar", "-C", root, "--null", "--no-recursion", "-T", list, "-cf", "-"], { stdin: "ignore", stdout: "inherit", stderr: "pipe" });
-    const tcode = await tar.exited;
-    if (tcode !== 0) throw new TarError(`tar -c exited ${tcode}: ${(await new Response(tar.stderr).text()).trim().slice(0, 200)}`);
+    if ((await tar.exited) !== 0) throw new TarError(`tar -c exited ${tar.exitCode}: ${(await new Response(tar.stderr).text()).trim().slice(0, 200)}`);
+    held?.();
     console.error(`WORKER_EXIT ${code}`);
     log(`HEAVY_EXEC_DONE ${label} caller=${d.caller} cmd=${cmdName} in=${inBytes} back=${pick.bytes} exit=${code}`);
     return 0;

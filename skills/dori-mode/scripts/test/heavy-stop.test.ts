@@ -2,10 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { procId } from "../src/heavy-stale.ts";
-import { stopRuns } from "../src/heavy-stop.ts";
 import type { SlotDeps } from "../src/heavy-slot.ts";
 import { pidAlive } from "../src/heavy-slot-store.ts";
+import { procId, stopRuns } from "../src/heavy-stop.ts";
 import { withState } from "./fakes.ts";
 
 // A helper's `stop <label> [run]` (heavy-stop.ts stopRuns): the stale run alone, never another caller's run or a

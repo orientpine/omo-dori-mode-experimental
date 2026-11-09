@@ -11,6 +11,7 @@ import { run } from "./run.ts";
 import type { Command } from "./cli-context.ts";
 import { die } from "./cli-context.ts";
 import { makeHeavyDeps } from "./cli-deps-heavy.ts";
+import { stopOnHelper } from "./heavy-stale.ts";
 
 const heavyCommand: Command = async (context) => {
   const { rest, config, opt, flags, many } = context;
@@ -122,9 +123,29 @@ const heavyWorkerCommand: Command = async (context) => {
   return;
 };
 
+// dori heavy-stop <label>: this account's run of that label stopped on every helper (its worker, its box, its folder and
+// slot there; heavy-stale.ts). A run whose caller died stays on a helper until its stdin closes or this (2026-11-08:
+// gongdori could not end its rvp-make2 on cha, whose key takes only the worker's own verbs).
+const heavyStopCommand: Command = async (context) => {
+  const { config, rest } = context;
+  const label = rest[0] && /^[\w.-]{1,64}$/.test(rest[0]) ? rest[0] : die("usage: dori heavy-stop <label>");
+  const log = makeHeavyDeps(context).heavyDeps(async () => 0).log ?? ((l: string) => console.error(l));
+  let n = 0;
+  let left = false;
+  for (const h of config.heavyQueue.helpers) {
+    const r = await stopOnHelper(h, label, log, undefined, { byLabel: true });
+    n += r.stopped;
+    left ||= r.left;
+  }
+  // a stop let go unended (a child of its ssh holding stderr) would keep this process alive
+  if (left) process.exit(n > 0 ? 0 : 1);
+  process.exitCode = n > 0 ? 0 : 1;
+};
+
 export const heavyCommands: Readonly<Record<string, Command>> = {
   "heavy": heavyCommand,
   "gpu-room": gpuRoomCommand,
   "heavy-serve": heavyServeCommand,
   "heavy-worker": heavyWorkerCommand,
+  "heavy-stop": heavyStopCommand,
 };

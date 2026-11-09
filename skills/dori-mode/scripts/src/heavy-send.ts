@@ -10,12 +10,12 @@ import { killAlive, readerLines, settle } from "./heavy-settle.ts";
 
 type Sink = { write(chunk: Uint8Array): number | Promise<number>; flush(): number | Promise<number>; end(): number | Promise<number> };
 
-// the job (job.json) and the --sync paths that exist, as one tar into the helper's stdin, its tar killed on cut (stale)
-// while it runs and put in kids; the bytes sent
+// the job (job.json) and the --sync paths that exist, as one tar into the helper's stdin, left open (hold, heavy-stale.ts
+// watchCaller), its tar killed on cut (stale) while it runs and put in kids; the bytes sent
 export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[], took: (bytes: number) => void, cut: Promise<unknown>, kids: Bun.Subprocess[]): Promise<number> => {
   const tmp = mkdtempSync(join(tmpdir(), "dori-spread-"));
   try {
-    writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: job.cmd, cwd: job.cwd, sync, env: job.env, ...(job.back?.length ? { back: job.back } : {}) }));
+    writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: job.cmd, cwd: job.cwd, sync, env: job.env, hold: true, ...(job.back?.length ? { back: job.back } : {}) }));
     const have = sync.filter((s) => existsSync(s)).map((s) => s.slice(1));
     const tar = Bun.spawn(["tar", "-cf", "-", "-C", tmp, "job.json", ...(have.length ? ["-C", "/", ...have] : [])], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     kids.push(tar);
@@ -27,7 +27,6 @@ export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[
       sink.write(chunk);
       await sink.flush();
     }
-    await sink.end();
     const code = await tar.exited;
     if (code !== 0) throw new TarError(`tar -c exited ${code}: ${(await new Response(tar.stderr).text()).trim().slice(0, 200)}`);
     return bytes;

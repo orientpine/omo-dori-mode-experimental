@@ -128,6 +128,8 @@ export const USAGE_MIDDLE = `  challenge <key> --plan FILE [--model M] [--all]
   heavy <label> --helpers-only --kind cpu|browser|gpu --sync PATH ... -- <command ...>
                                        the same, never on this host: it waits for a helper that admits it (it takes no
                                        slot or ticket here), exit 2 with HEAVY_HELPERS_ONLY when none can take it
+  heavy-stop <label>                   stop this account's run of that label on every heavyQueue.helpers host (its worker,
+                                       box, job folder and slot there; HEAVY_HELPER_STOP lines); exit 1 when none stopped
   heavy-serve <label> <name> [--rl] -- [arg ...]
                                        queue host side of a job sent by another host: inputs as tar on stdin, result tar
                                        on stdout

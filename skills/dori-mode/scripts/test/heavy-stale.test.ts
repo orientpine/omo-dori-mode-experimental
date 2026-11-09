@@ -131,7 +131,7 @@ test("--helpers-only --stale-again waits out the stale helper's pause and runs t
   // Given: the only helper goes silent on its first run and runs the job on its second; the clock jumps past the
   // 10-minute pause on a stale helper at the first wait after the job is back in the line
   const calls = join(state.dir, "calls");
-  const ssh = ["sh", "-c", `if [ "$1" = stop ]; then echo "WORKER_STOPPED 1" >&2; exit 0; fi; echo x >> ${calls}; if [ "$(wc -l < ${calls})" -eq 1 ]; then echo "WORKER_ADMIT slot.1 alive=0.1 run=1-abc" >&2; cat > /dev/null; exec sleep 600; fi; echo "WORKER_ADMIT slot.1 run=2-abc" >&2; cat > /dev/null; tar -cf - -T /dev/null; echo "WORKER_EXIT 0" >&2`, "once"];
+  const ssh = ["sh", "-c", `if [ "$1" = stop ]; then echo "WORKER_STOPPED 1" >&2; exit 0; fi; echo x >> ${calls}; if [ "$(wc -l < ${calls})" -eq 1 ]; then echo "WORKER_ADMIT slot.1 alive=0.1 run=1-abc" >&2; cat > /dev/null; exec sleep 600; fi; echo "WORKER_ADMIT slot.1 run=2-abc" >&2; d=$(mktemp -d); tar -xf - -C "$d"; rm -rf "$d"; tar -cf - -T /dev/null; echo "WORKER_EXIT 0" >&2`, "once"];
   const ctx = ctxWith({ helpers: [{ name: "once", ssh }] });
   let skew = 0;
   let stale = false;
@@ -161,7 +161,9 @@ test("a helper that admits the job but takes no bytes of its upload is stale eve
 test("a slow upload that keeps moving is not cut, and its progress is logged", async () => {
   // Given: 4 MB taken 64 KB per 0.1 s (about 6.4 s, over twice staleMin of 3 s), then the run ends with exit 0 and nothing back
   writeFileSync(join(work, "big.bin"), Buffer.alloc(4e6, 1));
-  const slow = 'while :; do n=$(dd bs=65536 count=1 2>/dev/null | wc -c); [ "$n" = 0 ] && break; sleep 0.1; done; tar -cf - -T /dev/null; echo "WORKER_EXIT 0" >&2';
+  // the caller holds stdin open after the upload (heavy-stale.ts watchCaller), so the helper reads up to the tar's end, not EOF
+  const fifo = join(state.dir, "slow.fifo");
+  const slow = `exec 3<&0; mkfifo ${fifo}; (while :; do dd bs=65536 count=1 2>/dev/null <&3 > ${fifo}.c; [ -s ${fifo}.c ] || break; cat ${fifo}.c; sleep 0.1; done) > ${fifo} & mkdir ${fifo}.x; tar -C ${fifo}.x -xf - < ${fifo}; kill $!; tar -cf - -T /dev/null; echo "WORKER_EXIT 0" >&2`;
   const ctx = ctxWith({ helpers: [{ name: "slow", ssh: silentHelper("slow", "WORKER_ADMIT slot.1", slow) }], staleMin: 0.05 });
   // When
   const r = await spread(ctx, ["true"]);

@@ -23,7 +23,8 @@ export const heavyWorker = async (ctx: HeavyCtx, command: string, caller?: strin
     return 3;
   };
   if (verb === "sweep") {
-    console.error(`WORKER_SWEPT ${sweepJobDirs(ctx.q.jobDir, pidAlive)}`);
+    // the folders of exec runs whose worker died without cleaning up go too (heavy-stale.ts)
+    console.error(`WORKER_SWEPT ${sweepJobDirs(ctx.q.jobDir, pidAlive) + sweepJobDirs(join(ctx.deps.dir, "exec"), pidAlive)}`);
     return 0;
   }
   // exec: another host's own command in a bwrap box (heavy-spread.ts); caller: the account whose key it is (the forced
