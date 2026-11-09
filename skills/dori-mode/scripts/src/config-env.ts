@@ -25,11 +25,7 @@ const tokenIdentity = (name: string, token: string): string => {
 export const loadEnvFile = async (path: string, env: Record<string, string | undefined> = process.env): Promise<string[]> => {
   const file = Bun.file(path);
   if (!(await file.exists())) return [];
-  const values = new Map<string, string>();
-  for (const line of (await file.text()).split("\n")) {
-    const [, name, value] = /^\s*([A-Z][A-Z0-9_]*)=(.*)$/.exec(line) ?? [];
-    if (name && value !== undefined && !values.has(name)) values.set(name, value.trim().replace(/^(["'])(.*)\1$/, "$2"));
-  }
+  const values = envFileEntries(await file.text());
   const foreign = [...values].some(([name, value]) => {
     const inherited = env[name];
     return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && tokenIdentity(name, inherited) !== tokenIdentity(name, value);
@@ -38,6 +34,16 @@ export const loadEnvFile = async (path: string, env: Record<string, string | und
   for (const name of dropped) delete env[name];
   for (const [name, value] of values) if (env[name] === undefined) env[name] = value;
   return dropped;
+};
+
+// A dori.env's KEY=VALUE lines: the first value of each name, its quotes taken off.
+export const envFileEntries = (text: string): Map<string, string> => {
+  const values = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const [, name, value] = /^\s*([A-Z][A-Z0-9_]*)=(.*)$/.exec(line) ?? [];
+    if (name && value !== undefined && !values.has(name)) values.set(name, value.trim().replace(/^(["'])(.*)\1$/, "$2"));
+  }
+  return values;
 };
 
 const realOr = (path: string): string => {

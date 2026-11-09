@@ -8,9 +8,19 @@
 # the lead's tab with that account's own focus-lead.ts (next to this file), with the Dori's config at
 # ~/.<user>/config.json (an instance account) or else ~/.dori/config.json. herdr's tab focus moves every attached client
 # of that server. If it fails the row still attaches.
+# doriterm does not show a Dori whose lead runs on hc yet (its config's leadPane is an hc terminal, "hc:t<n>"; review 9
+# of #404, docs/follow-ups.md): the row says so, attaches nothing and reads the config again every
+# DORITERM_LEAD_CHECK_SECONDS (5) until leadPane names a herdr lead.
 account=${1:-}
 env='export XDG_RUNTIME_DIR=/run/user/$(id -u) PATH=$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin; '
 attach='c=$HOME/.$(id -un)/config.json; [ -f "$c" ] || c=$HOME/.dori/config.json
+leadof() { sed -n "s/.*\"leadPane\"[[:space:]]*:[[:space:]]*\"hc:\(t[1-9][0-9bcdfghjkmnpqrstvwxyz]*\)\".*/\1/p" "$c" 2>/dev/null | head -n 1; }
+lead=$(leadof)
+if [ -n "$lead" ]; then
+  echo "doriterm: $(id -un) runs its lead on hc (hc:$lead); doriterm does not show an hc lead yet (docs/follow-ups.md)"
+  while [ "$(leadof)" = "$lead" ]; do sleep "${DORITERM_LEAD_CHECK_SECONDS:-5}"; done
+  exit 0
+fi
 DORI_CONFIG=$c "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts" || echo "doriterm: the lead tab was not focused; attaching anyway" >&2
 exec herdr client'
 while :; do

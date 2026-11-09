@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { envFileEntries, envFilePath } from "./config-env.ts";
 
 import type { Exec } from "./runtime/exec.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
@@ -16,9 +18,27 @@ export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran
 
 // aoe and tmux can start the tmux server, and every pane it opens later inherits the server's environment: a Dori's
 // variables (token, inbox, lead) handed to them would make every session, another Dori's included, run as this one.
-// herdr's panes take the herdr server's environment too, so herdr gets the same.
-export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>): Record<string, string | undefined> =>
-  ["aoe", "tmux", "herdr"].includes(argv[0]?.split("/").pop() ?? "") ? Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_"))) : { ...env };
+// herdr's panes take the herdr server's environment too, so herdr gets the same, and so does hc: any hc call may start
+// the core, whose terminals inherit its environment (review 8 of #404). An hc call also goes to this Dori's own core,
+// `core` (HC_SESSION from its dori.env, else the default core), never the caller's HC_SESSION: a stored hc:t<n> names a
+// terminal of one core only, so a unit or shell that selects another core would act on someone else's terminal (H188).
+const SERVERS = ["aoe", "tmux", "herdr", "hc"];
+export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>, core?: string, named = false): Record<string, string | undefined> => {
+  const tool = argv[0]?.split("/").pop() ?? "";
+  if (!SERVERS.includes(tool)) return { ...env };
+  // HC_SOCKET outranks the session's socket in hc (paths.rs), so it goes with HC_SESSION (review 10 of #404)
+  const clean: Record<string, string | undefined> = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_") && (tool !== "hc" || (name !== "HC_SESSION" && (named || name !== "HC_SOCKET")))));
+  return tool === "hc" && core ? { ...clean, HC_SESSION: core } : clean;
+};
+
+// the HC_SESSION a Dori's dori.env names, else none (the default core); read at each hc call
+export const doriCore = (path: string = envFilePath()): string | undefined => {
+  try {
+    return envFileEntries(readFileSync(path, "utf8")).get("HC_SESSION") || undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 // A hook such as ["dori", "thread", "reply", ...] names the dori command. On native Windows that command is dori.ps1,
 // which Bun.spawn cannot start, so the hook runs this CLI with this Bun directly (no shell, the arguments as they are).
@@ -30,7 +50,10 @@ export const run: Runner = async (argv, opts = {}) => {
   argv = commandArgv(argv);
   try {
     // env: process.env explicitly, or Bun hands the child its start-up environment without what loadEnvFile added from dori.env
-    const env = Object.fromEntries(Object.entries(childEnv(argv, opts.env ? { ...process.env, ...opts.env } : process.env)).filter(([, v]) => v !== undefined));
+    // a caller that names a core in opts.env keeps it (doriterm's bridges run in the host's own core, review 9 of #404)
+    const named = opts.env !== undefined && Object.hasOwn(opts.env, "HC_SESSION");
+    const core = argv[0]?.split("/").pop() !== "hc" ? undefined : named ? opts.env?.["HC_SESSION"] : doriCore();
+    const env = Object.fromEntries(Object.entries(childEnv(argv, opts.env ? { ...process.env, ...opts.env } : process.env, core, named)).filter(([, v]) => v !== undefined));
     p = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe", env, ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.stdin !== undefined ? { stdin: new Blob([opts.stdin]) } : {}), ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}) });
   } catch (e) {
     return { code: 127, out: "", err: e instanceof Error ? e.message : String(e) };
@@ -48,29 +71,19 @@ export const iso = (clock: Clock): string => new Date(clock.now()).toISOString()
 // runtimes per process, each stored session answered by its own kind, new sessions opened on the chosen one.
 type Env = Readonly<Record<string, string | undefined>>;
 // "default": nothing chose one, so herdr, where every Dori runs (owner Q22 2026-11-08: the default stays herdr). Upstream
-// detects instead (HC_TERMINAL_ID, HERDR_PANE_ID, the one binary on PATH) and refuses both or neither, which would stop a
-// timer that runs outside any pane.
+// detects instead (HC_TERMINAL_ID, HERDR_PANE_ID, the binaries on PATH).
 export type RuntimeChoice = { readonly kind: RuntimeKind; readonly source: RuntimeSource | "default" };
 
 const KINDS: Readonly<Record<RuntimeKind, true>> = { herdr: true, hc: true };
-const isKind = (value: string): value is RuntimeKind => Object.hasOwn(KINDS, value);
-
-// The kinds a Dori may open its sessions on. hc waits: the fork's own openers and readers (launch, handover, revive, the
-// screen reads and the close of a lane) still address a session by its pane id, where an hc id (t7) reads as a tmux name
-// (docs/follow-ups.md, review 1 of #393), so a Dori on hc would list its sessions there and drive them on herdr or tmux.
-export const FORK_RUNTIMES: readonly RuntimeKind[] = ["herdr"];
-const notWired = (kind: RuntimeKind, where: string): ConfigError =>
-  new ConfigError(`${where} "${kind}" is not wired in this fork yet (lanes would still be opened, read and closed on herdr or tmux; docs/follow-ups.md): leave it unset or "herdr"`);
+export const isRuntimeKind = (value: unknown): value is RuntimeKind => typeof value === "string" && Object.hasOwn(KINDS, value);
 
 // DORI_RUNTIME > the config's runtime > herdr
 export const runtimeChoice = (config: { readonly runtime?: RuntimeKind | undefined }, env: Env): RuntimeChoice => {
   const fromEnv = env["DORI_RUNTIME"];
   if (fromEnv) {
-    if (!isKind(fromEnv)) throw new ConfigError(`DORI_RUNTIME must be "herdr" or "hc", got ${JSON.stringify(fromEnv)}`);
-    if (!FORK_RUNTIMES.includes(fromEnv)) throw notWired(fromEnv, "DORI_RUNTIME");
+    if (!isRuntimeKind(fromEnv)) throw new ConfigError(`DORI_RUNTIME must be "herdr" or "hc", got ${JSON.stringify(fromEnv)}`);
     return { kind: fromEnv, source: "env" };
   }
-  if (config.runtime && !FORK_RUNTIMES.includes(config.runtime)) throw notWired(config.runtime, "runtime");
   return config.runtime ? { kind: config.runtime, source: "config" } : { kind: "herdr", source: "default" };
 };
 
@@ -117,8 +130,15 @@ export const runtimesFor = (config: { readonly runtime?: RuntimeKind | undefined
 
 const built = new WeakMap<Runner, Map<string, ChosenRuntimes>>();
 
+// The Dori's own config.runtime, set once by the CLI after it loaded the config: a caller with no config at hand (an
+// opener, a listing) then opens and lists on the runtime the config chose, not only on what DORI_RUNTIME says.
+let configured: RuntimeKind | undefined;
+export const useConfiguredRuntime = (kind: RuntimeKind | undefined): void => {
+  configured = kind;
+};
+
 // One registry per Runner and configured runtime, so a sweep's calls share the runtimes it built.
-export const runtimesOf = (runner: Runner, config: { readonly runtime?: RuntimeKind | undefined } = {}): ChosenRuntimes => {
+export const runtimesOf = (runner: Runner, config: { readonly runtime?: RuntimeKind | undefined } = { runtime: configured }): ChosenRuntimes => {
   const byKind = built.get(runner) ?? new Map<string, ChosenRuntimes>();
   built.set(runner, byKind);
   const key = config.runtime ?? "";

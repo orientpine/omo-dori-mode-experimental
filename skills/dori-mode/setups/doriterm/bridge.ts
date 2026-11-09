@@ -4,12 +4,42 @@
 // account = this account's), default the one pilot row DORITERM_BRIDGE_NAME or zzangdori. hc --keep would bring back a
 // shell rather than the client after a core restart, so this re-creates a row that ended or was closed instead; the
 // unit runs it when the host starts and the timer every minute. It never types into herdr and never focuses a pane:
-// attaching is all it does. hc runs its core as its own systemd user service, outside doriface-host.service, so `stop`
-// stops the core, which ends the bridges (not kept terminals) with it; with no core running it starts none.
+// attaching is all it does. hc runs its core as its own systemd user service, outside doriface-host.service, and that core
+// may also hold the account's own Dori (its lead and lanes, however the Dori chose hc), so `stop` ends and removes only
+// the bridge rows it owns and leaves the core running; with no core running it asks hc nothing, so it starts none
+// (reviews 4 and 5 of #404).
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { run, type Runner } from "../../scripts/src/run.ts";
+import { type Ran, run, type Runner } from "../../scripts/src/run.ts";
+import { HC_ADDRESS } from "../../scripts/src/runtime/types.ts";
 
-type Terminal = { readonly name?: string; readonly state?: string };
+type Terminal = { readonly name?: string; readonly state?: string; readonly address?: string; readonly argv?: readonly unknown[] };
+type Local = Terminal & { readonly address: string };
+
+// hc ls --all lists the mesh machines' terminals too, as <machine>/tN under their own unqualified names, and hc forwards a
+// kill or rm of such an address to that machine; a bridge is a terminal of this machine, so only a row whose address is a
+// local one (HC_ADDRESS) is ever looked at, and a row without an address is none (review 13 of #404)
+const localRows = (terminals: readonly Terminal[], bridge: Bridge): Local[] =>
+  terminals.filter((t): t is Local => t.name === bridge.name && t.address !== undefined && HC_ADDRESS.test(t.address));
+
+// A bridge runs attach.sh; a name is held by whatever terminal has it now (hc resolves a name to its live holder), so a
+// Dori lane named like a bridge is never taken for one (review 10 of #404). hc 0.1.18's ls leaves argv out, so each row of
+// a bridge's name is read in full with hc get; only a record whose argv runs attach.sh is a bridge, and a record that cannot
+// be read is another terminal's (review 11 of #404). A bridge is the terminal whose argv is exactly the bridge's own command
+// (bridgeCommand: this checkout's attach.sh and that bridge's account): a file merely called attach.sh, another account's
+// attach or an attach.sh of another checkout is another terminal's (dori challenge on plan-r13 of #404).
+async function owned(runner: Runner, t: Local, bridge: Bridge): Promise<boolean> {
+  const got = await runner(["hc", "get", "--json", t.address]);
+  if (got.code !== 0) return false;
+  try {
+    const argv = (JSON.parse(got.out) as Terminal).argv;
+    const want = bridgeCommand(bridge);
+    return Array.isArray(argv) && argv.length === want.length && want.every((a, i) => argv[i] === a);
+  } catch {
+    return false;
+  }
+}
+const heldBy = (bridge: Bridge, t: Local): string => `${bridge.name}: the name is held by another terminal (${t.address}), not a bridge; left alone`;
 export type Bridge = { readonly name: string; readonly account?: string };
 
 const NAME = /^[a-z0-9_-]{1,32}$/; // hc's terminal name rule
@@ -40,10 +70,15 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
   const terminals = (JSON.parse(ls.out) as { terminals?: Terminal[] }).terminals ?? [];
   const results: string[] = [];
   for (const bridge of bridges) {
-    const found = terminals.find((t) => t.name === bridge.name);
-    if (found?.state === "live") { results.push(`${bridge.name}: kept`); continue; }
-    if (found) {
-      const rm = await runner(["hc", "rm", bridge.name]);
+    // hc lists every record of a name, in terminal-id order: a finished record of another program may come before the live
+    // bridge that took its name, so the live holder decides (review 12 of #404)
+    const rows = localRows(terminals, bridge);
+    const live = rows.find((t) => t.state === "live");
+    if (live) { results.push((await owned(runner, live, bridge)) ? `${bridge.name}: kept` : heldBy(bridge, live)); continue; }
+    // a finished bridge's record is removed, a finished foreign one keeps its record; the name is free for the bridge anyway
+    for (const t of rows) {
+      if (!(await owned(runner, t, bridge))) continue;
+      const rm = await runner(["hc", "rm", t.address]);
       if (rm.code !== 0) throw new Error(`hc rm ${bridge.name} failed: ${rm.err || rm.out}`);
     }
     const started = await runner(["hc", "run", "--bg", "--no-parent", "--name", bridge.name, "--", ...bridgeCommand(bridge)]);
@@ -53,17 +88,60 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
   return results;
 }
 
-export async function stopCore(runner: Runner): Promise<void> {
-  const stopped = await runner(["hc", "server", "stop"]);
-  if (stopped.code !== 0) throw new Error(`hc server stop failed: ${stopped.err || stopped.out}`);
+// hc's core makes its socket at $XDG_RUNTIME_DIR/herdr-core/<session>.sock (HC_SESSION, else default) and removes it when
+// it stops; read without an hc call, since any hc call starts a core
+export function coreRunning(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  const dir = env["XDG_RUNTIME_DIR"] || `/run/user/${process.getuid?.() ?? 0}`;
+  return existsSync(join(dir, "herdr-core", `${env["HC_SESSION"] || "default"}.sock`));
 }
 
+const kindOf = (r: Ran): string | undefined => /"kind"\s*:\s*"([a-z_]+)"/.exec(`${r.err}${r.out}`)?.[1];
+const RM_TRIES = 10;
+const RM_WAIT_MS = 300;
+
+// ends each listed bridge that still runs and removes its row, waiting for a program that takes a moment to exit (rm answers
+// live meanwhile); one that will not go is named after every other bridge was tried; every other terminal is left alone
+export async function stopBridges(runner: Runner, bridges: readonly Bridge[], sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<void> {
+  const ls = await runner(["hc", "ls", "--all", "--json"]);
+  if (ls.code !== 0) throw new Error(`hc ls failed: ${ls.err || ls.out}`);
+  const terminals = (JSON.parse(ls.out) as { terminals?: Terminal[] }).terminals ?? [];
+  const failed: string[] = [];
+  // every record of a bridge's name is looked at, since another program's older record may come first (review 12 of #404)
+  for (const bridge of bridges) {
+    for (const found of localRows(terminals, bridge)) {
+      if (!(await owned(runner, found, bridge))) continue;
+      const target = found.address;
+      if (found.state === "live") {
+        const k = await runner(["hc", "kill", target]);
+        if (k.code !== 0 && kindOf(k) !== "not_found") {
+          failed.push(`hc kill ${bridge.name} failed: ${k.err || k.out}`);
+          continue;
+        }
+      }
+      for (let i = 1; ; i++) {
+        const r = await runner(["hc", "rm", target]);
+        if (r.code === 0 || kindOf(r) === "not_found") break;
+        if (kindOf(r) !== "live" || i >= RM_TRIES) {
+          failed.push(`hc rm ${bridge.name} failed: ${r.err || r.out}`);
+          break;
+        }
+        await sleep(RM_WAIT_MS);
+      }
+    }
+  }
+  if (failed.length) throw new Error(failed.join("; "));
+}
+
+// The bridges live in this host's own hc core (its HC_SESSION, else the default core), the one coreRunning checks and
+// doriface-host connects to, never the core a Dori's dori.env names for that Dori's sessions (review 9 of #404).
+export const bridgeRun: Runner = (argv, opts = {}) => run(argv, { ...opts, env: { HC_SESSION: process.env["HC_SESSION"], ...opts.env } });
+
 if (import.meta.main) {
+  const bridges = () => parseBridges(process.env["DORITERM_BRIDGES"] || process.env["DORITERM_BRIDGE_NAME"] || "zzangdori");
   if (process.argv[2] === "stop") {
-    await stopCore(run);
+    if (coreRunning()) await stopBridges(bridgeRun, bridges());
     console.log("bridges: stopped");
   } else {
-    const bridges = parseBridges(process.env["DORITERM_BRIDGES"] || process.env["DORITERM_BRIDGE_NAME"] || "zzangdori");
-    for (const line of await ensureBridges(run, bridges)) console.log(line);
+    for (const line of await ensureBridges(bridgeRun, bridges())) console.log(line);
   }
 }

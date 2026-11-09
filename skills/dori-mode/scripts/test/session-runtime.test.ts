@@ -65,15 +65,15 @@ test("a lane session closes through its runtime: its tab when it has one, else i
   expect(calls).toEqual([["herdr", "tab", "close", "w1:t3"], ["herdr", "pane", "close", "w1:p4"]]);
 });
 
-test("a refused runtime opens nothing: DORI_RUNTIME=hc makes no tab create or start for launch and handover (review 3 of #393)", async () => {
+test("a refused runtime opens nothing: a DORI_RUNTIME that names no runtime makes no tab create or start for launch and handover (review 3 of #393)", async () => {
   const calls: string[][] = [];
   const run: Runner = async (argv) => {
     calls.push([...argv]);
     return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", tab_id: "w1:t9" } } }), err: "" };
   };
-  process.env["DORI_RUNTIME"] = "hc";
+  process.env["DORI_RUNTIME"] = "tmux";
   try {
-    await expect(openHerdrSession(run, { now: () => 0, sleep: async () => {} }, { title: "x", cwd: "/tmp", argv: ["omo"] })).rejects.toThrow(/DORI_RUNTIME "hc" is not wired/);
+    await expect(openHerdrSession(run, { now: () => 0, sleep: async () => {} }, { title: "x", cwd: "/tmp", argv: ["omo"] })).rejects.toThrow(/DORI_RUNTIME must be "herdr" or "hc"/);
   } finally {
     delete process.env["DORI_RUNTIME"];
   }
@@ -91,10 +91,10 @@ describe("runtime choice keeps herdr the default (DORI_RUNTIME > config runtime 
     expect(runtimeChoice({ runtime: "hc" }, { DORI_RUNTIME: "herdr" })).toEqual({ kind: "herdr", source: "env" });
   });
 
-  test("hc is refused until the fork's openers and readers address a session by its runtime (review 1 of #393)", () => {
-    expect(() => runtimeChoice({}, { DORI_RUNTIME: "hc" })).toThrow(/DORI_RUNTIME "hc" is not wired in this fork yet/);
-    expect(() => runtimeChoice({ runtime: "hc" }, {})).toThrow(/runtime "hc" is not wired in this fork yet/);
-    expect(() => runtimesFor({ runtime: "hc" }, {}).default).toThrow(/not wired/);
+  test("hc is chosen by DORI_RUNTIME or the config's runtime now that the fork's paths address an hc terminal as hc:<id>", () => {
+    expect(runtimeChoice({}, { DORI_RUNTIME: "hc" })).toEqual({ kind: "hc", source: "env" });
+    expect(runtimeChoice({ runtime: "hc" }, {})).toEqual({ kind: "hc", source: "config" });
+    expect(runtimesFor({ runtime: "hc" }, {}).default.kind).toBe("hc");
   });
 
   test("a DORI_RUNTIME that names no runtime is refused where a session would open", () => {
@@ -107,12 +107,12 @@ describe("runtime choice keeps herdr the default (DORI_RUNTIME > config runtime 
   test("a config runtime that names no runtime is a config error", async () => {
     const dir = scratch();
     const path = join(dir, "config.json");
-    for (const runtime of ["tmux", "hc"]) {
-      writeFileSync(path, JSON.stringify({ runtime, stateDir: dir }));
-      const loaded = loadConfig(path, dir, () => {});
-      await expect(loaded).rejects.toThrow(ConfigError);
-      await expect(loaded).rejects.toThrow(`runtime must be "herdr" (unset is herdr; hc is not wired in this fork yet, docs/follow-ups.md), not "${runtime}"`);
-    }
+    writeFileSync(path, JSON.stringify({ runtime: "tmux", stateDir: dir }));
+    const loaded = loadConfig(path, dir, () => {});
+    await expect(loaded).rejects.toThrow(ConfigError);
+    await expect(loaded).rejects.toThrow(`runtime must be "herdr" or "hc" (unset is herdr), not "tmux"`);
+    writeFileSync(path, JSON.stringify({ runtime: "hc", stateDir: dir }));
+    expect((await loadConfig(path, dir, () => {})).runtime).toBe("hc");
   });
 });
 

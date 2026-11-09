@@ -16,7 +16,7 @@ import { ChallengeError } from "./challenge.ts";
 import { GateRefusal } from "./merge-gate.ts";
 import { ForkError } from "./fork-explore.ts";
 import { Registry } from "./registry.ts";
-import { realClock, run } from "./run.ts";
+import { realClock, run, useConfiguredRuntime } from "./run.ts";
 import { ScorecardError } from "./scorecard.ts";
 import { MessengerError, UnsafeMessageError } from "./messenger/http.ts";
 import { openCardIds, QuestionError, QuestionStore } from "./messenger/discord-cards.ts";
@@ -47,6 +47,7 @@ await resolveInstance(process.cwd());
 const foreignEnv = await loadEnvFile(envFilePath());
 if (foreignEnv.length) console.error(`DORI_ENV_FOREIGN dropped ${foreignEnv.length} inherited variables of another Dori (its bot token differs from ${envFilePath()}): ${foreignEnv.join(" ")}`);
 const config = await loadConfig().catch((e: unknown) => (e instanceof ConfigError ? die(`CONFIG_INVALID ${e.message}`, 2) : Promise.reject(e)));
+useConfiguredRuntime(config.runtime);
 const discordToken = process.env["DORI_DISCORD_TOKEN"]?.trim();
 const deps: FlowDeps = {
   run,

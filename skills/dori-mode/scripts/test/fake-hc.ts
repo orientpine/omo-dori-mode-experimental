@@ -15,6 +15,8 @@ export type FakeTerminal = {
   name?: string;
   labels: Record<string, string>;
   screen?: string;
+  /** Lines above the screen, read only when `--lines` asks for more than the screen (hc 0.1.18 api.rs). */
+  history?: string;
 };
 
 export type FakeKnobs = {
@@ -96,7 +98,7 @@ export class FakeHc {
       case "get":
         return ok({ address: id, ...t });
       case "read":
-        return ok({ text: t.screen ?? "", complete: true, how: "screen" });
+        return Number(args[args.indexOf("--lines") + 1] ?? 0) > 0 && t.history ? ok({ text: `${t.history}\n${t.screen ?? ""}`, complete: true, how: "history" }) : ok({ text: t.screen ?? "", complete: true, how: "screen" });
       case "send":
         return this.send(id, t, args);
       case "keys":

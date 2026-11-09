@@ -19,6 +19,7 @@ describe("create / start / createGroup", () => {
         "--bg",
         "--no-parent",
         "--no-notify",
+        "--keep",
         "--cwd",
         "/w",
         "--label",
@@ -49,6 +50,7 @@ describe("create / start / createGroup", () => {
       "--bg",
       "--no-parent",
       "--no-notify",
+      "--keep",
       "--cwd",
       "/r",
       "--label",
@@ -121,7 +123,8 @@ describe("slugName", () => {
     ["-_.lead", "lead"],
     ["t7", undefined],
     ["T12", undefined],
-    ["t7x", "t7x"],
+    // hc 0.1.18 refuses "t7x" as a name: shaped like an address (x is one of its digits); review 7 of #404
+    ["t7x", undefined],
     ["---", undefined],
   ] as const)("%p -> %p", (name, want) => {
     expect(slugName(name)).toBe(want);

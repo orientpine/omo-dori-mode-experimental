@@ -16,7 +16,7 @@ import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
 import { compactionStuckOn } from "./lane-handover.ts";
 import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
-import { isHerdrPane } from "./herdr.ts";
+import { paneGroup, isHerdrPane } from "./herdr.ts";
 import { omoSession, sendVerified } from "./panes.ts";
 import { hasSessionSelector } from "./session-id.ts";
 import { type Lane, statusOf } from "./registry.ts";
@@ -854,7 +854,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   try {
     // the lead is no lane: it never starts with launchEnv, even when the handover runs from a lane's environment
     // the new lead opens in this Dori's backend: a herdr Dori's next to the old herdr lead (its workspace), an aoe lead moves to herdr once the config says so
-    const workspace = config.backend === "herdr" && isHerdrPane(facts.from.pane) ? sessionFor(await liveSessions(deps.run), facts.from.pane)?.profile : undefined;
+    const workspace = config.backend === "herdr" && isHerdrPane(facts.from.pane) ? await paneGroup(deps.run, facts.from.pane) : undefined;
     pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", agentCommand: config.agentCommand, model, env: laneEnv(config.launchEnv, true), backend: config.backend, ...(workspace ? { workspace } : {}) });
     mark("open", true);
   } catch (e) {
