@@ -6,8 +6,8 @@ import { pidAlive } from "./background.ts";
 import { handoverRunning } from "./freshness.ts";
 import { frozenPanes } from "./frozen.ts";
 import { herdrAgentPid, isHerdrPane } from "./herdr.ts";
-import { type Hold, holdOf, readStat, type StatOf } from "./job-control.ts";
-import { leadResumeTick, leadSignal } from "./lead-resume.ts";
+import { type Hold, holdOf, readStat } from "./job-control.ts";
+import { leadResumeNoticeTick, leadResumeTick, leadSignal, type LeadResumeIO } from "./lead-resume.ts";
 import { procTable, topAgent } from "./session-id.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { submitToPane } from "./panes.ts";
@@ -55,10 +55,8 @@ export const laneDiedText = (key: string, reason: string): string => `[DORI] 레
 // - a mark per pane (<state>/suspended/<pane>.json, on disk so a restarted watch keeps it) names each incident once; it
 //   goes once that agent runs again (LANE_RUNNING_AGAIN). Another agent held in the pane is a new incident. A failed
 //   lookup or an unreadable process is no news: the mark stays.
-export type SuspendIO = {
+export type SuspendIO = LeadResumeIO & {
   readonly agentOf: (pane: string) => Promise<number | undefined>;
-  readonly stat: StatOf;
-  readonly signal: (pid: number, sig: "SIGSTOP" | "SIGCONT") => boolean;
 };
 
 type SuspendMark = { readonly pane: string; readonly pid: number; readonly at: string; readonly hold: Hold };
@@ -88,6 +86,7 @@ export const laneSuspendTick = async (deps: FlowDeps, io: SuspendIO = suspendIO(
   const lanes = (await deps.registry.open()).filter((l) => l.pane && l.pane !== lead && !ignorePanes.includes(l.pane) && statusOf(l) !== "paused");
   const targets = [...(lead ? [{ who: "lead" as const, key: "lead", pane: lead }] : []), ...lanes.map((l) => ({ who: "lane" as const, key: l.key, pane: l.pane as string }))];
   for (const t of targets) {
+    if (t.who === "lead") out.push(...(await leadResumeNoticeTick(deps, t.pane)));
     const off = (): boolean => frozenPanes(stateDir).includes(t.pane) || handoverRunning(stateDir, t.who, t.key, alive);
     if (off()) {
       seenHeld.delete(t.pane);

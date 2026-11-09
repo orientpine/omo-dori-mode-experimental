@@ -102,7 +102,7 @@ test("a lane whose omo stays stopped reads as stopped once, the lead's own too; 
   const { w, deps } = world({ "aoe_hs_aaaa1111": "live" });
   await deps(T0).registry.write(laneOf("handover-simplify", "aoe_hs_aaaa1111"));
   const states: Record<number, "S" | "T" | "bg"> = { 200: "T", 300: "bg" };
-  const io: SuspendIO = { agentOf: async (pane) => (pane === "aoe_hs_aaaa1111" ? 200 : pane === "lead:p1" ? 300 : undefined), signal: noSignal, stat: (pid) => held(states)(pid) ?? shellOf(pid) };
+  const io: SuspendIO = { agentOf: async (pane) => (pane === "aoe_hs_aaaa1111" ? 200 : pane === "lead:p1" ? 300 : undefined), signal: noSignal, jobGroups: async () => [300], stat: (pid) => held(states)(pid) ?? shellOf(pid) };
   const tick = (ms: number) => laneSuspendTick(deps(ms), io, () => false);
   // When / Then: the first check only notes it, the second (30 s later) names both, the lead first
   expect(await tick(T0)).toEqual([]);

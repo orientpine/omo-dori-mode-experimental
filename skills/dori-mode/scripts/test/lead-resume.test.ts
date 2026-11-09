@@ -9,6 +9,7 @@ import type { JobStat } from "../src/job-control.ts";
 import { laneSuspendTick, type SuspendIO } from "../src/lane-death.ts";
 import { atEmptyPrompt } from "../src/lead-resume.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
+import { FakeHc, terminal } from "./fake-hc.ts";
 
 const T0 = Date.parse("2026-11-09T02:18:00Z");
 const S = 1_000;
@@ -26,12 +27,14 @@ beforeEach(() => (state = withState()));
 afterEach(() => state.done());
 
 // the lead's agent and its shell; "fg" typed in the pane gives the agent the tty and continues it, as bash does
-const lead = (pane: string, how: "foreground-stopped" | "background-stopped" | "background-running", screen = AT_PROMPT, fgTakes = true) => {
+const lead = (pane: string, how: "foreground-stopped" | "background-stopped" | "background-running", screen = AT_PROMPT, opts: { fgTakes?: boolean; extraJob?: boolean; hc?: boolean } = {}) => {
   const w: World = newWorld();
   w.screens[pane] = screen;
+  const hcFake = opts.hc ? new FakeHc({ t1: terminal({ screen }) }) : undefined;
   const agent: { state: string; tpgid: number } = { state: how === "background-running" ? "S" : "T", tpgid: how === "foreground-stopped" ? AGENT : SHELL };
   const signals: [number, string][] = [];
   const posts: [string, string][] = [];
+  let postsFail = false;
   const stat = (pid: number): JobStat | undefined => {
     if (pid === AGENT) return { pid, state: agent.state, ppid: SHELL, pgrp: AGENT, session: SHELL, tpgid: agent.tpgid };
     return pid === SHELL ? { pid, state: "S", ppid: 1, pgrp: SHELL, session: SHELL, tpgid: agent.tpgid } : undefined;
@@ -39,6 +42,7 @@ const lead = (pane: string, how: "foreground-stopped" | "background-stopped" | "
   const io: SuspendIO = {
     agentOf: async (p) => (p === pane ? AGENT : undefined),
     stat,
+    jobGroups: async () => (opts.extraJob ? [AGENT, 300] : [AGENT]),
     signal: (pid, sig) => {
       signals.push([pid, sig]);
       if (pid === -AGENT && sig === "SIGCONT") agent.state = "S";
@@ -49,19 +53,30 @@ const lead = (pane: string, how: "foreground-stopped" | "background-stopped" | "
     const base = depsFor(w, fakeClock(ms), state.dir, { backend: "herdr", leadPane: pane });
     return {
       ...base,
-      run: async (argv, opts) => {
-        const result = await base.run(argv, opts);
-        if (argv[0] === "herdr" && argv[2] === "send-text" && argv[4] === "fg\r" && fgTakes) Object.assign(agent, { state: "S", tpgid: AGENT });
+      run: async (argv, opts2) => {
+        if (hcFake && argv[0] === "hc") {
+          const result = await hcFake.exec("hc", argv.slice(1));
+          if (argv.includes("send") && argv.at(-1) === "fg" && opts.fgTakes !== false) Object.assign(agent, { state: "S", tpgid: AGENT });
+          return { code: result.code, out: result.stdout.trim(), err: result.stderr.trim() };
+        }
+        const result = await base.run(argv, opts2);
+        if (argv[0] === "herdr" && argv[2] === "send-text" && argv[4] === "fg\r" && opts.fgTakes !== false) Object.assign(agent, { state: "S", tpgid: AGENT });
         return result;
       },
       ownerInbox: { path: join(state.dir, "no-inbox.jsonl"), ownerId: "owner", ownerChannel: "C-OWNER" },
-      postOwner: async (channel, text) => (posts.push([channel, text]), `m${posts.length}`),
+      postOwner: async (channel, text) => {
+        if (postsFail) throw new Error("discord unavailable");
+        posts.push([channel, text]);
+        return `m${posts.length}`;
+      },
     };
   };
   const tick = (ms: number, alive: (pid: number) => boolean = () => false) => laneSuspendTick(deps(ms), io, alive);
   // the two checks that confirm a hold
   const confirmed = async (alive?: (pid: number) => boolean) => (await tick(T0, alive), tick(T0 + 30 * S, alive));
-  return { w, agent, signals, posts, tick, confirmed };
+  return { w, agent, signals, posts, tick, confirmed, hcFake, failPosts: (fail: boolean) => {
+    postsFail = fail;
+  } };
 };
 
 const heads = (lines: string[]): string[] => lines.map((l) => l.split(":")[0] ?? "");
@@ -107,7 +122,7 @@ test("text on the prompt line types nothing, says why once, and fg follows when 
 });
 
 test("a typed fg that does not take is typed at most three times for one stop", async () => {
-  const { w, tick, confirmed } = lead("w9:p5", "background-stopped", AT_PROMPT, false);
+  const { w, tick, confirmed } = lead("w9:p5", "background-stopped", AT_PROMPT, { fgTakes: false });
   await confirmed();
   for (let i = 2; i <= 6; i++) await tick(T0 + i * 30 * S);
   expect(sent(w)).toEqual(["fg\r", "fg\r", "fg\r"]);
@@ -158,6 +173,49 @@ test("a lead that runs in the foreground is left alone", async () => {
   expect(await confirmed()).toEqual([]);
   expect(signals).toEqual([]);
   expect(sent(w)).toEqual([]);
+});
+
+test("another stopped job makes bare fg ambiguous, so no key reaches the shell", async () => {
+  const { w, tick, confirmed, agent } = lead("w9:p9", "background-stopped", AT_PROMPT, { extraJob: true });
+  const first = await confirmed();
+  expect(first.some((l) => l.startsWith("LEAD_RESUME_FAIL w9:p9 ") && l.includes("another job"))).toBe(true);
+  expect(sent(w)).toEqual([]);
+  expect(agent.tpgid).toBe(SHELL);
+  expect(await tick(T0 + 60 * S)).toEqual([]);
+  expect(sent(w)).toEqual([]);
+});
+
+test("an hc lead reads and foregrounds through hc, never through herdr", async () => {
+  const { w, hcFake, confirmed, agent } = lead("hc:t1", "background-stopped", AT_PROMPT, { hc: true });
+  expect(await confirmed()).toContain(`LEAD_RESUMED hc:t1 ${AGENT}`);
+  expect(hcFake?.sent).toEqual([{ id: "t1", text: "fg" }]);
+  expect(agent.tpgid).toBe(AGENT);
+  expect(w.calls.filter((c) => c[0] === "herdr" && c.some((a) => a.includes("hc:t1")))).toEqual([]);
+});
+
+test("a failed owner post is retried while the failure reason stays the same", async () => {
+  const { posts, tick, confirmed, failPosts } = lead("w9:p10", "background-stopped", screenWith("soodori@ori0a83:/tmp$ git push"));
+  failPosts(true);
+  expect((await confirmed()).some((l) => l.includes("NOT_POSTED"))).toBe(true);
+  expect(posts).toHaveLength(0);
+  failPosts(false);
+  const next = await tick(T0 + 60 * S);
+  expect(next).toContain("LEAD_RESUME_NOTICE w9:p10 POSTED C-OWNER m1");
+  expect(posts).toHaveLength(1);
+  expect(await tick(T0 + 90 * S)).toEqual([]);
+  expect(posts).toHaveLength(1);
+});
+
+test("a failed recovery notice is retried after the lead already runs again", async () => {
+  const { posts, tick, confirmed, failPosts } = lead("w9:p11", "foreground-stopped");
+  failPosts(true);
+  expect(await confirmed()).toContain(`LEAD_RESUMED w9:p11 ${AGENT}`);
+  expect(posts).toHaveLength(0);
+  failPosts(false);
+  const next = await tick(T0 + 60 * S);
+  expect(next).toContain("LANE_RUNNING_AGAIN lead w9:p11");
+  expect(next).toContain("LEAD_RESUME_NOTICE w9:p11 POSTED C-OWNER m1");
+  expect(posts).toHaveLength(1);
 });
 
 test("the prompt is empty only on the line right under the newest job line, in the whole-prompt shape", () => {
