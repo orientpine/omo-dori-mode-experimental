@@ -7,7 +7,7 @@ import { agentLine, herdrAgentPid, herdrRead, herdrSessions, herdrShellPid, Herd
 import { reasonOf } from "./runtime/herdr/exec.ts";
 import type { Clock, Runner } from "./run.ts";
 import { splitModel } from "./lane-handover.ts";
-import { argvSessionId, descendants, hasSessionSelector, type Proc, procTable, resolveSession, sessionDirFor, winArgv } from "./session-id.ts";
+import { argvSessionId, descendants, ENV_FILE, hasSessionSelector, type Proc, procEnv, procTable, resolveSession, sessionDirFor, winArgv } from "./session-id.ts";
 
 // A herdr server that stops ends every agent in its panes and gives back the same pane ids with fresh shells (herdr 0.9.5,
 // measured 2026-11-03), unlike an aoe session, which aoe starts again in its conversation. So the omo session a herdr lead
@@ -57,9 +57,6 @@ export const argvSessionLog = (argv: readonly string[], sessionsDir: string, cwd
   }
 };
 
-// a child's PI_SESSION_FILE in ps eww: the value runs up to its .jsonl, so a path with spaces stays whole
-const ENV_FILE = /(?:^|\s)PI_SESSION_FILE=(.+?\.jsonl)(?=\s|$)/;
-
 // The agent's own arguments with their word boundaries: a Windows command line split as Windows does (winArgv), Linux's
 // /proc cmdline when it is the same process the table shows; undefined when they cannot be told (never a whitespace split),
 // so on macOS, whose ps loses them, no log is looked for from them (KERN_PROCARGS2 would keep them: docs/follow-ups.md).
@@ -79,7 +76,7 @@ const agentArgv = async (run: Runner, pid: number, cmd: string): Promise<string[
 // else the log recorded before for this session (kept): on macOS only the first and the last, the paths known exactly.
 export const sessionLog = async (run: Runner, table: readonly Proc[], pid: number, id: string, sessionsDir: string, cwd: string, kept?: string): Promise<string | undefined> => {
   for (const child of process.platform === "win32" ? [] : descendants(table, pid).slice(0, 40)) {
-    const file = ENV_FILE.exec((await run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out)?.[1];
+    const file = ENV_FILE.exec(await procEnv(run, child))?.[1];
     if (file?.endsWith(`_${id}.jsonl`) && existsSync(file)) return file;
   }
   const argv = await agentArgv(run, pid, table.find((p) => p.pid === pid)?.cmd ?? "");
