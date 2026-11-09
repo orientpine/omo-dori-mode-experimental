@@ -57,7 +57,7 @@ test("attach.sh watches an hc lead read-only in the Dori's own core, never throu
     writeFileSync(join(dir, "hc"), `#!/bin/sh\nif [ -n "$HC_SOCKET" ]; then printf 'unexpected socket %s\\n' "$HC_SOCKET"; fi\nprintf 'hc session=%s %s\\n' "\${HC_SESSION:-default}" "$*"\n`, { mode: 0o700 });
     writeFileSync(join(dir, "herdr"), `#!/bin/sh\nprintf 'herdr %s\\n' "$*"\n`, { mode: 0o700 });
     const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
-      env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_ENV_FILE: join(dir, "wrong.env"), HC_SESSION: "inherited-host", HC_SOCKET: "/tmp/inherited.sock", DORITERM_RETRY_SECONDS: "0.2" },
+      env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_ENV_FILE: join(dir, "wrong.env"), DORI_LEAD_PANE: "w1:p999", HC_SESSION: "inherited-host", HC_SOCKET: "/tmp/inherited.sock", DORITERM_RETRY_SECONDS: "0.2" },
       stdout: "pipe", stderr: "pipe",
     });
     // When: the fake hc prints the attach; stop after that exact event, never after a delay
@@ -88,7 +88,7 @@ test("attach.sh never starts a missing hc core: without its socket hc is not cal
   bunAndSource(dir);
   writeFileSync(join(dir, "hc"), `#!/bin/sh\nprintf 'unexpected hc %s\\n' "$*"\n`, { mode: 0o700 });
   const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
-    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORITERM_RETRY_SECONDS: "0.2" },
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_LEAD_PANE: "w1:p999", DORITERM_RETRY_SECONDS: "0.2" },
     stdout: "pipe", stderr: "pipe",
   });
   // When: the helper reports the missing core; stop on that exact line

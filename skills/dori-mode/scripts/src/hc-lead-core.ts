@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { envFileEntries, envFilePath, configPath } from "./config-env.ts";
+import { envFileEntries, envFilePath, configPath, loadEnvFile } from "./config-env.ts";
 
 export const hcCore = (text: string): string => envFileEntries(text).get("HC_SESSION") ?? "";
 
@@ -10,13 +10,17 @@ export const hcCoreSocket = (core: string, env: Readonly<Record<string, string |
 if (import.meta.main) {
   const file = Bun.file(envFilePath());
   const core = hcCore((await file.exists()) ? await file.text() : "");
-  let lead = process.env["DORI_LEAD_PANE"] ?? "";
+  let lead = process.argv[2] ?? "";
   if (!lead) {
-    try {
-      const config = (await Bun.file(configPath()).json()) as { leadPane?: unknown };
-      lead = typeof config.leadPane === "string" ? config.leadPane : "";
-    } catch {
-      lead = "";
+    await loadEnvFile(envFilePath());
+    lead = process.env["DORI_LEAD_TMUX"]?.trim() || process.env["DORI_LEAD_PANE"]?.trim() || "";
+    if (!lead) {
+      try {
+        const config = (await Bun.file(configPath()).json()) as { leadPane?: unknown };
+        lead = typeof config.leadPane === "string" ? config.leadPane : "";
+      } catch {
+        lead = "";
+      }
     }
   }
   if (!lead.startsWith("hc:")) {

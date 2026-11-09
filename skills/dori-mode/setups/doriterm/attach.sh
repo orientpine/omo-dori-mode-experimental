@@ -19,7 +19,7 @@ if [ -n "$lead" ]; then
   echo "doriterm: $(id -un) lead hc:$lead; attaching read-only"
   e=$HOME/.$(id -un)/dori.env
   [ -f "$e" ] || e=$HOME/.dori/dori.env
-  core=$(DORI_CONFIG=$c DORI_ENV_FILE=$e "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts") || exit 1
+  core=$(DORI_CONFIG=$c DORI_ENV_FILE=$e "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts" "hc:$lead") || exit 1
   if [ -n "$core" ]; then
     HC_SESSION=$core
     export HC_SESSION

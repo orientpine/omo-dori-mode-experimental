@@ -6,6 +6,7 @@ account_config=$HOME/.$(id -un)/config.json
 if [[ -f "$account_config" ]]; then export DORI_CONFIG="$account_config"; else export DORI_CONFIG="$HOME/.dori/config.json"; fi
 account_env=$HOME/.$(id -un)/dori.env
 if [[ -f "$account_env" ]]; then export DORI_ENV_FILE="$account_env"; else export DORI_ENV_FILE="$HOME/.dori/dori.env"; fi
+unset DORI_LEAD_PANE DORI_LEAD_TMUX DORI_LEAD_AOE_ID
 bun_bin=$HOME/.bun/bin/bun
 [[ -x "$bun_bin" ]] || bun_bin=bun
 helper=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/src" && pwd)/hc-lead-core.ts
