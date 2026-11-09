@@ -104,7 +104,12 @@ export const hcOpen = async (rt: SessionRuntime, run: Runner, clock: Clock, opts
   const ref = await rt.create({ name: opts.title, cwd: opts.cwd, env: {}, role: "lane", container: "tab", ...(opts.workspace ? { group: opts.workspace } : {}) }).catch((e: unknown) => Promise.reject(new Error(`hc run failed: ${e instanceof Error ? e.message : String(e)}`)));
   const pane = formatRef(ref);
   for (let i = 0; i < 20 && !(await hcRead(run, pane)).trim(); i++) await clock.sleep(250);
-  await rt.start(ref, line).catch((e: unknown) => Promise.reject(new Error(`hc send failed in ${pane}: ${e instanceof Error ? e.message : String(e)}`)));
+  await rt.start(ref, line).catch(async (e: unknown) => {
+    // the terminal was made for this agent only: one whose agent never started is closed, not left behind as a shell
+    const why = `hc send failed in ${pane}: ${e instanceof Error ? e.message : String(e)}`;
+    await rt.close(ref).catch((c: unknown) => Promise.reject(new Error(`${why}; closing it failed too: ${c instanceof Error ? c.message : String(c)}`)));
+    throw new Error(why);
+  });
   return { pane };
 };
 
