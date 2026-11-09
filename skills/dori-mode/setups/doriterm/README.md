@@ -34,7 +34,8 @@ encrypted outbound connection to `relay-doriface.omo.dev:443`; it opens no liste
 every 5 seconds (`DORITERM_RETRY_SECONDS`) after it exits, so the bridge attaches once the herdr server is up (a boot
 where this unit starts first) and again after a herdr server restart. The bridge only attaches: it types
 nothing and focuses no pane. hc runs its core as its own systemd user service (`systemd-run`), outside this unit, so
-`ExecStopPost` runs `bridge.ts stop`, which ends and removes only the bridge rows it lists and leaves the core running:
+`ExecStopPost` runs `bridge.ts stop`, which ends and removes only the bridge rows it lists (a row of a bridge's name
+counts only when `hc get` shows it runs `attach.sh`; any other or unreadable row is left alone) and leaves the core running:
 once the account's own Dori runs on hc, however it chose hc, that core also holds its lead and lanes. With no core running
 (no `$XDG_RUNTIME_DIR/herdr-core/<HC_SESSION or default>.sock`) it asks hc nothing, so it starts none. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
 the pane's identity to the client.

@@ -12,11 +12,22 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type Ran, run, type Runner } from "../../scripts/src/run.ts";
 
-type Terminal = { readonly name?: string; readonly state?: string; readonly address?: string; readonly argv?: readonly string[] };
+type Terminal = { readonly name?: string; readonly state?: string; readonly address?: string; readonly argv?: readonly unknown[] };
 
 // A bridge runs attach.sh; a name is held by whatever terminal has it now (hc resolves a name to its live holder), so a
-// Dori lane named like a bridge is never taken for one (review 10 of #404). hc lists argv; a row without one is a bridge.
-const foreign = (t: Terminal): boolean => t.argv !== undefined && !t.argv.some((a) => a.endsWith("/attach.sh"));
+// Dori lane named like a bridge is never taken for one (review 10 of #404). hc 0.1.18's ls leaves argv out, so each row of
+// a bridge's name is read in full with hc get; only a record whose argv runs attach.sh is a bridge, and a record that cannot
+// be read is another terminal's (review 11 of #404).
+async function owned(runner: Runner, t: Terminal, name: string): Promise<boolean> {
+  const got = await runner(["hc", "get", "--json", t.address ?? name]);
+  if (got.code !== 0) return false;
+  try {
+    const argv = (JSON.parse(got.out) as Terminal).argv;
+    return Array.isArray(argv) && argv.some((a) => typeof a === "string" && a.endsWith("/attach.sh"));
+  } catch {
+    return false;
+  }
+}
 const heldBy = (bridge: Bridge, t: Terminal): string => `${bridge.name}: the name is held by another terminal (${t.address ?? "?"}), not a bridge; left alone`;
 export type Bridge = { readonly name: string; readonly account?: string };
 
@@ -49,10 +60,11 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
   const results: string[] = [];
   for (const bridge of bridges) {
     const found = terminals.find((t) => t.name === bridge.name);
-    if (found?.state === "live" && foreign(found)) { results.push(heldBy(bridge, found)); continue; }
+    const ours = found !== undefined && (await owned(runner, found, bridge.name));
+    if (found?.state === "live" && !ours) { results.push(heldBy(bridge, found)); continue; }
     if (found?.state === "live") { results.push(`${bridge.name}: kept`); continue; }
     // a finished foreign row keeps its record; its name is free for the bridge anyway
-    if (found && !foreign(found)) {
+    if (found && ours) {
       const rm = await runner(["hc", "rm", found.address ?? bridge.name]);
       if (rm.code !== 0) throw new Error(`hc rm ${bridge.name} failed: ${rm.err || rm.out}`);
     }
@@ -83,7 +95,7 @@ export async function stopBridges(runner: Runner, bridges: readonly Bridge[], sl
   const failed: string[] = [];
   for (const bridge of bridges) {
     const found = terminals.find((t) => t.name === bridge.name);
-    if (!found || foreign(found)) continue;
+    if (!found || !(await owned(runner, found, bridge.name))) continue;
     const target = found.address ?? bridge.name;
     if (found.state === "live") {
       const k = await runner(["hc", "kill", target]);
