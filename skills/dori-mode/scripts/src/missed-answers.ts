@@ -40,18 +40,19 @@ export const answerLine = (q: Question): string =>
 
 // The transcript holds this answer: its inbox row (raw or escaped inside an event or a tool result) or this sweep's line.
 // A reopened qid needs the row's own id or a timestamp at/after that row, never an earlier answer with the same qid.
-export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow): boolean => {
+const answerRecords = (value: unknown): { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }[] => {
+  if (typeof value === "string") return [...value.matchAll(/\{[^{}]*"kind"\s*:\s*"answer"[^{}]*\}/g)].flatMap((match) => { try { return [JSON.parse(match[0]) as { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }]; } catch { return []; } });
+  if (Array.isArray(value)) return value.flatMap(answerRecords);
+  if (value && typeof value === "object") { const record = value as { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }; return [...(record.kind === "answer" ? [record] : []), ...Object.values(record).flatMap(answerRecords)]; }
+  return [];
+};
+export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow, answeredAt?: string): boolean => {
   if (!row) return new RegExp(`\\\\*"qid\\\\*"\\s*:\\s*\\\\*"${qid}\\\\*"`).test(transcript) || transcript.includes(`[DORI] ANSWER ${qid} (`);
   return transcript.split("\n").some((line) => {
     if (!line.includes(qid)) return false;
-    const incoming = /\\*"kind\\*"\s*:\s*\\*"answer\\*"/.test(line);
-    if (incoming) {
-      if (row.id && line.includes(row.id)) return true;
-      const at = Date.parse(line.match(/\\*"(?:ts|answeredAt)\\*"\s*:\s*\\*"([^"\\]+)\\*"/)?.[1] ?? "");
-      return at >= row.at;
-    }
     const redelivered = line.match(new RegExp(`\\[DORI\\] ANSWER ${qid} \\([^,]+, ([^)]+)\\)`))?.[1];
-    return redelivered !== undefined && Date.parse(redelivered) >= row.at;
+    if (redelivered !== undefined) return answeredAt !== undefined && Date.parse(redelivered) === Date.parse(answeredAt);
+    try { const parsed: unknown = JSON.parse(line); return answerRecords(parsed).some((record) => record.qid === qid && ((row.id && record.id === row.id) || Date.parse(record.ts ?? record.answeredAt ?? "") >= row.at)); } catch { return false; }
   });
 };
 
@@ -94,12 +95,12 @@ const specFromShell = (command: string): SendSpec | undefined => {
   const args = ends.map((end) => shellWords(command.slice(0, end))).find((words) => words) ?? shellWords(command);
   if (!args) return undefined; const to = flagValue(args, "--thread") ?? flagValue(args, "--to") ?? command.match(/dori thread reply discord:([\w-]+)/)?.[1];
   if (!to) return undefined; const reply = flagValue(args, "--reply");
-  return { to, ...(reply ? { reply } : {}), qids: qidsIn(command) };
-};
+  return { to, ...(reply ? { reply } : {}), qids: qidsIn(command) }; };
 const literalArrays = (text: string): string[] => {
-  const out: string[] = [];
-  for (const match of text.matchAll(/\[\s*"dori"\s*,\s*(?:"send"\s*,\s*"discord"|"thread"\s*,\s*"reply")/g)) {
+  const out: string[] = []; for (const match of text.matchAll(/\[\s*"dori"\s*,\s*(?:"send"\s*,\s*"discord"|"thread"\s*,\s*"reply")/g)) {
     const start = match.index ?? -1; if (start < 0) continue;
+    const segment = text.slice(0, start).split(/[;|&]/).at(-1) ?? "";
+    if (/\b(?:grep|rg|cat|head|tail|sed|awk|find|strings)\b/.test(segment)) continue;
     let depth = 0; for (const token of text.slice(start).matchAll(/"(?:\\.|[^"\\])*"|[\[\]]/g)) {
       if (token[0] === "[") depth++;
       else if (token[0] === "]" && --depth === 0) { out.push(text.slice(start, start + (token.index ?? 0) + 1)); break; }
@@ -119,8 +120,7 @@ const specsFromText = (text: string): SendSpec[] => {
   starts.forEach((at, i) => {
     const before = text.slice(0, at), segment = before.split(/[;|&]/).at(-1) ?? "";
     if (/\b(?:grep|rg|cat|head|tail|sed|awk|find|strings)\b/.test(segment)) return;
-    const spec = specFromShell(text.slice(at, starts[i + 1] ?? text.length));
-    if (spec) out.push(spec);
+    const spec = specFromShell(text.slice(at, starts[i + 1] ?? text.length)); if (spec) out.push(spec);
   });
   return out;
 };
@@ -184,7 +184,7 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
       transcripts.set(target, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file.path, session?.title ?? "") : "");
     }
     const transcript = transcripts.get(target) ?? "";
-    if (row.qid && sawAnswer(transcript, row.qid, row)) continue;
+    if (row.qid && sawAnswer(transcript, row.qid, row, cardById.get(row.qid)?.answeredAt)) continue;
     if (discordAnswered(transcript, row)) continue;
     waiting.push(row);
   }
