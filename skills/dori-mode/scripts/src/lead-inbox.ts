@@ -38,7 +38,7 @@ const REPEAT_MS = 30 * 60_000;
 
 type Kind = "owner" | "pair" | "pair-bot";
 type Row = { readonly id: string; readonly at: number; readonly kind: Kind; readonly text: string; readonly qid?: string };
-type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[] };
+type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[]; readonly baselineDone?: boolean };
 type Entry = ReturnType<typeof readManifest>[number] & { readonly deliveryPaused?: boolean };
 
 // the rows the lead must hear: the owner's (lead-limit.ts ownerRows) and every row of the pair channel
@@ -89,7 +89,8 @@ const ownerWokeIds = (deps: FlowDeps, pane: string): ReadonlySet<string> => {
 
 // A monitor event carries the row's own id. A reply_to id by itself, or an id the lead merely quoted, is not delivery
 // evidence; a raw inbox row in a tool result is evidence because the lead read it. A dori send --reply tool call counts
-// only when its own tool result (or its eval completion) has a real SENT receipt; queued work-custody records are ignored.
+// only when its own tool result (or its eval completion) has a real SENT receipt; ambiguous multi-send calls and queued
+// work-custody records are ignored.
 const deliveredIds = (transcript: string): ReadonlySet<string> => {
   const ids = new Set<string>();
   const replyByCall = new Map<string, string>();
@@ -107,8 +108,10 @@ const deliveredIds = (transcript: string): ReadonlySet<string> => {
           if (typeof part !== "object" || part === null || !("type" in part) || part.type !== "toolCall" || !("id" in part) || typeof part.id !== "string") continue;
           const args = "arguments" in part ? JSON.stringify(part.arguments) : "input" in part ? JSON.stringify(part.input) : "";
           if (!args.includes("dori send")) continue;
-          const target = /--reply\s+(\d{6,})/.exec(args)?.[1];
-          if (target) replyByCall.set(part.id, target);
+          const targets = [...args.matchAll(/--reply\s+(\d{6,})/g)].map((m) => m[1] ?? "").filter(Boolean);
+          const [target] = targets;
+          if (targets.length === 1 && target) replyByCall.set(part.id, target);
+          else replyByCall.delete(part.id);
         }
       }
       if (e.type !== "message" || e.message?.role !== "toolResult") continue;
@@ -203,10 +206,11 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
   for (const row of candidates) {
     if (delivered.has(row.id) || (row.kind === "owner" && told.has(row.id)) || (row.qid && sawAnswer(deliveredText, row.qid))) heard.add(row.id);
   }
-  if (!problem && (!sameSession || old?.heardIds === undefined)) for (const row of candidates) heard.add(row.id);
+  const baseline = !problem && (!sameSession || old?.baselineDone !== true);
+  if (baseline) for (const row of candidates) heard.add(row.id);
   const unheard = candidates.filter((row) => !heard.has(row.id));
-  const hasHeardState = !problem || (sameSession && old?.heardIds !== undefined);
-  const heardState = hasHeardState ? { heardIds: [...heard].sort() } : {};
+  const baselineDone = !problem || (sameSession && old?.baselineDone === true);
+  const heardState = { heardIds: [...heard].sort(), ...(baselineDone ? { baselineDone: true } : {}) };
   const missingSince = problem ? (mark.missingSince ?? now) : undefined;
   let next: Mark = { pane, session, agentPid: file.pid, log: file.path, ...heardState, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
   const out: string[] = [];

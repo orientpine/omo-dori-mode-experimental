@@ -41,7 +41,7 @@ beforeEach(() => {
   manifest = join(dir, "extensions", "terminal", `${SID}.json`);
   inbox = join(state.dir, "inbox.jsonl");
   writeFileSync(inbox, "");
-  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: SID, agentPid: 11, log: transcript, heardIds: [] }));
+  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: SID, agentPid: 11, log: transcript, heardIds: [], baselineDone: true }));
 });
 afterEach(() => state.done());
 
@@ -88,8 +88,9 @@ test("a live monitor's first tick baselines the existing 83-row backlog and aler
   monitors(monitor());
   for (let i = 0; i < 83; i++) row(T0 - (84 - i) * MIN, `p-backlog-${i}`);
   expect(await leadInboxTick(deps(T0))).toEqual([]);
-  const baseline = JSON.parse(readFileSync(join(state.dir, "lead-inbox.json"), "utf8")) as { heardIds?: string[] };
+  const baseline = JSON.parse(readFileSync(join(state.dir, "lead-inbox.json"), "utf8")) as { heardIds?: string[]; baselineDone?: boolean };
   expect(baseline.heardIds).toHaveLength(83);
+  expect(baseline.baselineDone).toBe(true);
   row(T0 + MIN, "p-new");
   expect((await leadInboxTick(deps(T0 + 11 * MIN)))[0]).toContain(`1 inbox row(s) (pair-bot 1) never reached session ${SID}, oldest p-new`);
 });
@@ -122,8 +123,9 @@ test("a first tick without a live monitor keeps UNWATCHED and does not baseline 
   monitors();
   expect(await leadInboxTick(deps(T0))).toEqual([]);
   expect((await leadInboxTick(deps(T0 + 10 * MIN)))[0]).toContain("LEAD_INBOX_UNWATCHED");
-  const mark = JSON.parse(readFileSync(join(state.dir, "lead-inbox.json"), "utf8")) as { heardIds?: string[] };
-  expect(mark.heardIds).toBeUndefined();
+  const mark = JSON.parse(readFileSync(join(state.dir, "lead-inbox.json"), "utf8")) as { heardIds?: string[]; baselineDone?: boolean };
+  expect(mark.heardIds).toEqual([]);
+  expect(mark.baselineDone).toBeUndefined();
 });
 
 test("a line that did not reach the lead is logged and typed again next tick; a new session starts its own grace; leadInboxMin 0 never checks", async () => {

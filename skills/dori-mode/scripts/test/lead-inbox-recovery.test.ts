@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { DoriConfig } from "../src/config.ts";
@@ -37,7 +37,7 @@ beforeEach(() => {
   manifest = join(dir, "extensions", "terminal", `${SID}.json`);
   inbox = join(state.dir, "inbox.jsonl");
   writeFileSync(inbox, "");
-  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: SID, agentPid: 11, log: transcript, heardIds: [] }));
+  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: SID, agentPid: 11, log: transcript, heardIds: [], baselineDone: true }));
 });
 afterEach(() => state.done());
 
@@ -121,4 +121,31 @@ test("an overdue backfilled row appended after a fresh row still wakes the lead"
   row(T0 - MIN, "p-fresh");
   row(T0 - 20 * MIN, "p-backfilled");
   expect((await leadInboxTick(deps(T0)))[0]).toContain("oldest p-backfilled");
+});
+
+test("a row read while unwatched stays heard after compaction before the first baseline", async () => {
+  rmSync(join(state.dir, "lead-inbox.json"), { force: true });
+  monitors();
+  row(T0 - 20 * MIN, "p-unwatched-read");
+  const raw = JSON.stringify({ ts: iso(T0 - 20 * MIN), id: "p-unwatched-read", channel_id: "PAIR", scope: "pair-bot", content: "request p-unwatched-read" });
+  appendFileSync(transcript, `${JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: raw }] } })}\n`);
+  expect(await leadInboxTick(deps(T0))).toEqual([]);
+  writeFileSync(transcript, `${JSON.stringify({ type: "session", id: SID, timestamp: iso(T0 - 300 * MIN) })}\n`);
+  const out = await leadInboxTick(deps(T0 + 20 * MIN));
+  expect(out.some((line) => line.includes("LEAD_INBOX_UNHEARD"))).toBe(false);
+  const saved = JSON.parse(readFileSync(join(state.dir, "lead-inbox.json"), "utf8")) as { heardIds?: string[]; baselineDone?: boolean };
+  expect(saved.heardIds).toEqual(["p-unwatched-read"]);
+  expect(saved.baselineDone).toBeUndefined();
+});
+
+test("one SENT in an ambiguous multi-send eval marks neither request heard", async () => {
+  monitors(monitor());
+  row(T0 - 20 * MIN, "1569430000000000011");
+  row(T0 - 19 * MIN, "1569430000000000013");
+  appendFileSync(transcript, `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-multi", name: "eval", arguments: { code: "await send(dori send --reply 1569430000000000011); await send(dori send --reply 1569430000000000013);" } }] } })}\n`);
+  appendFileSync(transcript, `${JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "completion-watcher", content: [{ type: "text", text: "Eval cell call-multi (js) is completed.\nSENT 1569430000000000012 len=40 sha=1234abcd first=\"one succeeded, the other failed\"" }] } })}\n`);
+  const out = await leadInboxTick(deps(T0));
+  expect(out).toHaveLength(1);
+  expect(out[0]).toContain("2 inbox row(s) (pair-bot 2)");
+  expect(out[0]).toContain("oldest 1569430000000000011");
 });
