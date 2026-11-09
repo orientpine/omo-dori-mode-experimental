@@ -442,6 +442,8 @@ Run `bash "$S/dori.sh"` with `dori`, `systemctl`, and `aoe` on PATH.
 It resolves the lead via `dori lead` before starting units, so a missing lead fails without touching services.
 This launcher depends on the separate lead-resolution PR that adds `dori lead` with `<aoe-id> <tmux>` output;
 until that PR is installed, the launcher cannot run. It intentionally does not resolve the lead a second way.
+For an hc lead (`hc:t<n>`) it revives a stopped lead, then attaches with `hc attach <n>` in the core `dori.env` names;
+a missing core is not started (`scripts/src/hc-lead-core.ts`).
 Test it without services or real sessions using `bash "$S/test-dori.sh"`.
 
 `dori send discord` shows typing immediately before a new post by default; a failed typing call is logged
