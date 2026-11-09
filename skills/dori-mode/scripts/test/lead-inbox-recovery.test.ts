@@ -114,3 +114,10 @@ test("macOS still finds an identified session's default-directory transcript wit
     Object.defineProperty(process, "platform", own);
   }
 });
+
+test("an overdue backfilled row appended after a fresh row still wakes the lead", async () => {
+  monitors(monitor());
+  row(T0 - MIN, "p-fresh");
+  row(T0 - 20 * MIN, "p-backfilled");
+  expect((await leadInboxTick(deps(T0)))[0]).toContain("oldest p-backfilled");
+});

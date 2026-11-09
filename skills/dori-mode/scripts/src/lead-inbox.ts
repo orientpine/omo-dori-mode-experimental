@@ -173,7 +173,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
   const told = ownerWokeIds(deps, pane);
   const delivered = deliveredIds(text);
   const deliveredText = text.split("\n").filter((line) => !line.includes('"customType":"work-custody"')).join("\n");
-  const unheard = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId).filter((r) => now - r.at < DAY_MS && !(r.at < start) && !(r.kind === "owner" && told.has(r.id)) && !delivered.has(r.id) && !(r.qid && sawAnswer(deliveredText, r.qid)));
+  const unheard = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId).filter((r) => now - r.at < DAY_MS && !(r.at < start) && !(r.kind === "owner" && told.has(r.id)) && !delivered.has(r.id) && !(r.qid && sawAnswer(deliveredText, r.qid))).sort((a, b) => a.at - b.at);
   const besideLog = join(dirname(file.path), "extensions", "terminal", `${session}.json`);
   const problem = watchProblem(readManifest(existsSync(besideLog) ? besideLog : manifestPath(sessionsDir, cwd, session)), inbox.path, now, alive);
 
