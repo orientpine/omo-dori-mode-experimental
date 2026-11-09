@@ -19,9 +19,9 @@ export const aoeSessions = async (run: Runner): Promise<AoeSession[]> => {
 };
 
 // The live sessions of both backends: aoe's and the herdr server's panes, so a Dori whose lanes are split between them
-// during its move finds each. One that fails counts as none; both failing is aoe's error.
-export const liveSessions = async (run: Runner): Promise<AoeSession[]> => {
-  const [aoe, herdr] = await Promise.all([aoeSessions(run).then((s) => ({ s }), (e: unknown) => ({ e })), herdrSessions(run)]);
+// during its move finds each. A required herdr listing failure throws; an optional one counts as none, both failing is aoe's error.
+export const liveSessions = async (run: Runner, requiredHerdr = false): Promise<AoeSession[]> => {
+  const [aoe, herdr] = await Promise.all([aoeSessions(run).then((s) => ({ s }), (e: unknown) => ({ e })), herdrSessions(run, requiredHerdr)]);
   if ("e" in aoe && !herdr.length) throw aoe.e;
   return [...("s" in aoe ? aoe.s : []), ...herdr];
 };

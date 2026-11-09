@@ -11,8 +11,9 @@ import { join } from "node:path";
 
 import { aoeStates, captureTmux, liveSessions, paneLife, tmuxNameFor } from "../../scripts/src/aoe.ts";
 import { sessionFile as paneSessionFile } from "../../scripts/src/background.ts";
-import { loadConfig, loadEnvFile, envFilePath } from "../../scripts/src/config.ts";
+import { configPath, loadConfig, loadEnvFile, envFilePath } from "../../scripts/src/config.ts";
 import { Registry } from "../../scripts/src/registry.ts";
+import { useDoriState } from "../../scripts/src/hc-pane.ts";
 import { run, useConfiguredRuntime } from "../../scripts/src/run.ts";
 import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir, watchContext, type Said } from "./session-watch-lib.ts";
 
@@ -23,6 +24,7 @@ await loadEnvFile(envFilePath());
 const config = await loadConfig();
 // its listings follow the config's runtime, as the CLI's do (review 1 of #404)
 useConfiguredRuntime(config.runtime);
+useDoriState({ stateDir: config.stateDir, configPath: configPath() });
 const registry = new Registry(config.stateDir);
 const out = join(config.stateDir, "session-events.jsonl");
 type Seen = { busy: boolean; idleSince: number; notified: boolean; aoeState: string; body: string; milestone: string };

@@ -1,8 +1,11 @@
+import { readFileSync } from "node:fs";
 import { liveSessions, QUESTION_MARK, sessionFor } from "./aoe.ts";
+import { readFrozen } from "./frozen.ts";
+import { Registry } from "./registry.ts";
 import { hcCall, isKind } from "./runtime/hc/exec.ts";
 import { shellInFrontName } from "./herdr.ts";
 import { type ChosenRuntimes, type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
-import { formatRef, type SessionInfo, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
+import { formatRef, type RuntimeKind, type SessionInfo, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import { AGENT, procTable, topAgent } from "./session-id.ts";
 
 // An hc (herdr-core) terminal in the fork's records: its pane is formatRef's "hc:t<n>", the one shape no herdr pane id
@@ -14,6 +17,31 @@ export const hcRef = (pane: string): SessionRef => ({ runtime: "hc", id: pane.sl
 const hc = (run: Runner): SessionRuntime => runtimesOf(run).for({ runtime: "hc", id: "" });
 
 export const hcChosen = (run: Runner): boolean => runtimesOf(run).choice?.kind === "hc";
+
+// The Dori's state folder and config file, handed over once by an entrypoint. What its sessions live on is read from them
+// at each listing, as upstream reads registry.open() per call (dead-panes.ts, sync.ts): the open lanes, the lead the config
+// names now and the frozen records; a tmux name adds no runtime (reviews 2 and 3 of #404, challenges of plan-r3)
+type DoriState = { readonly stateDir: string; readonly configPath: string };
+let state: DoriState | undefined;
+export const useDoriState = (next: DoriState | undefined): void => {
+  state = next;
+};
+const kindOfPane = (pane: string): RuntimeKind | undefined => (isHcPane(pane) ? "hc" : pane.includes(":") ? "herdr" : undefined);
+// the lead as loadConfig takes it: DORI_LEAD_PANE over the file's leadPane (review 4 of #404)
+const leadNow = (path: string): string => {
+  const env = process.env["DORI_LEAD_PANE"];
+  if (env !== undefined) return env;
+  try {
+    return String((JSON.parse(readFileSync(path, "utf8")) as { leadPane?: unknown }).leadPane ?? "");
+  } catch {
+    return "";
+  }
+};
+export const storedRuntimes = async (): Promise<ReadonlySet<RuntimeKind>> => {
+  if (!state) return new Set();
+  const panes = [...(await new Registry(state.stateDir).open()).map((l) => l.pane ?? ""), leadNow(state.configPath), ...readFrozen(state.stateDir).map((r) => r.pane)];
+  return new Set(panes.flatMap((p) => kindOfPane(p) ?? []));
+};
 
 // The group a pane's session lives in: an hc terminal's dori.group label (hc ls prints no labels, hc 0.1.18), a herdr pane's
 // workspace. An hc terminal that is gone, or whose labels cannot be read, throws: a handover then opens nothing rather than
@@ -30,10 +58,13 @@ export const paneGroup = async (run: Runner, pane: string): Promise<string | und
   }
 };
 
-// Every session of the runtimes in use, as sessions.ts listSessions (upstream #154) lists them: the chosen runtime must
-// answer; another the process built on the way (a herdr adapter liveSessions made on an hc Dori) is listed when it can
-// be, never failing the count (review 5 of #404)
-export const listChosenSessions = async (rts: ChosenRuntimes): Promise<SessionInfo[]> => {
+// Every session of the runtimes in use, as sessions.ts listSessions (upstream #154) lists them, with the stored kinds added
+export const listKeptSessions = async (rts: ChosenRuntimes): Promise<SessionInfo[]> => {
+  // the chosen runtime and every one a stored session lives on must answer; another the process built on the way (a herdr
+  // adapter liveSessions made on an hc Dori) is listed when it can be, never failing the count (review 2 of #404)
+  const stored = await storedRuntimes();
+  for (const kind of stored) rts.for({ runtime: kind, id: "" });
+  const required = new Set<RuntimeKind>([...stored, ...(rts.choice ? [rts.choice.kind] : [])]);
   try {
     void rts.default;
   } catch (e) {
@@ -44,7 +75,7 @@ export const listChosenSessions = async (rts: ChosenRuntimes): Promise<SessionIn
     try {
       sessions.push(...(await rts.for({ runtime: kind, id: "" }).list()));
     } catch (e) {
-      if (rts.choice?.kind === kind) throw e;
+      if (required.has(kind)) throw e;
     }
   }
   return sessions;
@@ -92,8 +123,8 @@ export const hcClose = async (run: Runner, pane: string): Promise<string> => {
 // The live terminals of this core as aoe.ts session rows (id and pane "hc:t<n>", title its name, path its cwd, profile
 // its dori.group); none when hc is not the chosen runtime.
 export const hcSessions = async (run: Runner): Promise<{ id: string; title: string; path: string; tool?: string; profile?: string; pane: string }[]> => {
-  if (!hcChosen(run)) return [];
-  // hc not answering is no empty list: a caller then keeps what it would drop as gone (a frozen record; review 5 of #404)
+  if (!hcChosen(run) && !(await storedRuntimes()).has("hc")) return [];
+  // hc not answering is no empty list: a caller then keeps what it would drop as gone (a frozen record)
   const rows = await hc(run).list();
   return rows.map(({ ref, name, cwd, agent }) => ({ id: formatRef(ref), title: name ?? ref.id, path: cwd ?? "", ...(agent ? { tool: agent } : {}), ...(ref.group ? { profile: ref.group } : {}), pane: formatRef(ref) }));
 };

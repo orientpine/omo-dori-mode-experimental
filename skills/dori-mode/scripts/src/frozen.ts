@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 
 import { closeAoeSession, isClosedLine, liveSessions, sessionFor, tmuxPanePid } from "./aoe.ts";
+import { isHerdrPane } from "./herdr.ts";
 import type { Runner } from "./run.ts";
 import { descendants, ended, type Proc, topAgent } from "./session-id.ts";
 
@@ -156,7 +157,7 @@ export const closeFrozen = async (deps: FreezeDeps, stateDir: string, rec: Froze
   const retry = rec.closeAt ? "the next freshness tick tries again" : `dori handover close-frozen ${rec.pane} tries again`;
   let open: ReturnType<typeof sessionFor>;
   try {
-    open = sessionFor(await liveSessions(deps.run), rec.pane);
+    open = sessionFor(await liveSessions(deps.run, isHerdrPane(rec.pane) && !rec.pane.startsWith("hc:")), rec.pane);
   } catch (e) {
     due();
     return `HANDOVER_OLD_CLOSE_FAIL ${rec.pane}: the sessions could not be listed (${e instanceof Error ? e.message : String(e)}); still frozen, ${retry}`;
