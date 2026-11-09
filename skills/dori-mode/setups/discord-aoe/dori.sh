@@ -7,14 +7,19 @@ if [[ -z "$AOE_ID" ]]; then
   printf 'dori lead returned no session id\n' >&2
   exit 1
 fi
-# an hc lead is not attached by this launcher yet (review 9 of #404, docs/follow-ups.md): say so before starting anything
-if [[ "${PANE:-}" == hc:* ]]; then
-  printf 'dori: the lead runs on hc (%s); this launcher attaches herdr and aoe leads only (docs/follow-ups.md)\n' "$PANE" >&2
-  exit 2
-fi
 systemctl --user start dori-inbound.service dori-google-watch.service
 # aoe without any DORI_*: if it starts the tmux server, every pane inherits that server's environment
 unset_dori=$(env | sed -n 's/^\(DORI_[A-Za-z0-9_]*\)=.*/-u \1/p')
+# an hc lead attaches through hc in the core its dori.env names, else the default core, not the caller's inherited core
+if [[ "${PANE:-}" == hc:* ]]; then
+  if [[ "${STATE:-}" == stopped ]]; then dori revive "$PANE" || true; fi
+  env_file=${DORI_ENV_FILE:-$HOME/.dori/dori.env}
+  core=$(DORI_ENV_FILE="$env_file" "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts")
+  if [[ -n "$core" ]]; then export HC_SESSION="$core"; else unset HC_SESSION; fi
+  unset HC_SOCKET
+  # shellcheck disable=SC2086
+  exec env $unset_dori hc attach "${PANE#hc:}"
+fi
 # a herdr lead (dori lead prints "<omo session> <pane>[ stopped]"; only a herdr pane id holds ":"): a stopped one is started
 # again in its recorded session, then this attaches herdr's client to the server
 if [[ "${PANE:-}" == *:* ]]; then
