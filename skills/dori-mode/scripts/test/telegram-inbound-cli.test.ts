@@ -31,7 +31,7 @@ const inbound = async (vars: Record<string, string>, tail = "", batch: U[] = [{ 
 };
 
 test("dori inbound telegram prints the owner's message and then moves the offset past it", async () => {
-  expect(await inbound({})).toMatchObject({ code: 0, out: `INBOUND_READY telegram owner=${OWNER} group=- topic=-\nINBOUND dm ${OWNER} - 90 ${OWNER} "owner dm"`, calls: 1, offset: "91" });
+  expect(await inbound({})).toMatchObject({ code: 0, out: `INBOUND_READY telegram owner=${OWNER} group=- topic=-\nINBOUND dm ${OWNER} - 90 mid=1 ${OWNER} "owner dm"`, calls: 1, offset: "91" });
 });
 
 test("a line that cannot be written (stdout closed) keeps the offset before its message", async () => {
@@ -82,9 +82,9 @@ test("dori inbound telegram prints an edit as edit:dm and a media message with f
     code: 0,
     out: [
       `INBOUND_READY telegram owner=${OWNER} group=- topic=-`,
-      `INBOUND edit:dm ${OWNER} - 120 ${OWNER} "fixed typo"`,
-      `INBOUND dm ${OWNER} - 121 ${OWNER} "" file=voice:FID_VOICE`,
-      `INBOUND dm ${OWNER} - 122 ${OWNER} "look" file=photo:LARGE`,
+      `INBOUND edit:dm ${OWNER} - 120 mid=1 ${OWNER} "fixed typo"`,
+      `INBOUND dm ${OWNER} - 121 mid=57 ${OWNER} "" file=voice:FID_VOICE`,
+      `INBOUND dm ${OWNER} - 122 mid=58 ${OWNER} "look" file=photo:LARGE`,
     ].join("\n"),
     calls: 1,
     offset: "123",

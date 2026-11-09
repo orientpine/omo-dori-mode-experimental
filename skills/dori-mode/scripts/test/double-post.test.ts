@@ -160,7 +160,8 @@ test("dori thread reply and dori send record a post in the lane's own thread, an
   const reg = new Registry(dir);
   await reg.write({ ...lane, pane: "pane-7" });
   const http = join(dir, "http.json");
-  const cli = (args: readonly string[], pane = "pane-7") => run(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`, `HERDR_PANE_ID=${pane}`,
+  // the same leak as upstream #185 (https://github.com/sisyphuslabs/dori-superagent/pull/185): a run from an hc terminal must not read that terminal as the caller
+  const cli = (args: readonly string[], pane = "pane-7") => run(["env", "-u", "HC_TERMINAL_ID", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`, `HERDR_PANE_ID=${pane}`,
     "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]);
   const reply = await cli(["thread", "reply", `discord:${THREAD_ID}`, "결과 한 줄이야."]);
   expect(reply.out).toContain("POSTED 900");

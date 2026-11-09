@@ -18,13 +18,14 @@ test("edited messages arrive as their own edit kind with the edited text", async
     [{ update_id: 91, message: msg(OWNER, OWNER, "private", "fresh after edit") }],
   ]);
   const store = fileTgInboundStore(join(state.dir, "tg-off-9"));
-  const out = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
+  const { inbound: out } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1);
   expect(out[0]!.kind).toBe("edit");
   expect(out[0]!.text).toBe("fixed typo");
+  expect(out[0]!.messageId).toBe(1); // the message_id of the message being edited
   expect(store.load()).toBe(91);
   expect(bodies[0]!["allowed_updates"]).toEqual(["message", "edited_message"]);
-  const second = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
+  const { inbound: second } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(second[0]!.kind).toBe("message");
 });
 
@@ -33,7 +34,7 @@ test("a voice note identifies its media so transcribe can fetch it", async () =>
     [{ update_id: 100, message: { message_id: 55, from: { id: OWNER, is_bot: false, username: "owner" }, chat: { id: OWNER, type: "private" }, voice: { file_id: "FID_VOICE", duration: 9 } } }],
   ]);
   const store = fileTgInboundStore(join(state.dir, "tg-off-10"));
-  const out = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
+  const { inbound: out } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1);
   expect(out[0]!.kind).toBe("message");
   expect(out[0]!.text).toBeUndefined();
@@ -46,7 +47,7 @@ test("a photo with a caption carries both the text and the largest photo", async
     [{ update_id: 110, message: { message_id: 56, from: { id: OWNER, is_bot: false, username: "owner" }, chat: { id: OWNER, type: "private" }, photo: [{ file_id: "SMALL" }, { file_id: "LARGE" }], caption: "look at this" } }],
   ]);
   const store = fileTgInboundStore(join(state.dir, "tg-off-11"));
-  const out = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
+  const { inbound: out } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1);
   expect(out[0]!.text).toBe("look at this");
   expect(out[0]!.media).toEqual({ kind: "photo", fileId: "LARGE", messageId: 56 });
@@ -55,8 +56,8 @@ test("a photo with a caption carries both the text and the largest photo", async
 test("an unparseable offset warns once across several polls and restarts from 0", async () => {
   writeFileSync(join(state.dir, "telegram-offset"), "not-a-number");
   const warns: string[] = [];
-  const orig = console.error;
-  console.error = (s?: unknown) => {
+  const orig = console.log; // upstream #110: stdout like every other inbound WARN
+  console.log = (s?: unknown) => {
     warns.push(String(s));
   };
   try {
@@ -67,7 +68,7 @@ test("an unparseable offset warns once across several polls and restarts from 0"
     for (let i = 0; i < 3; i++) await pollTelegramInbound(tg, store, { ownerId: OWNER });
     expect(store.load()).toBe(0);
   } finally {
-    console.error = orig;
+    console.log = orig;
   }
   expect(warns).toHaveLength(1);
   expect(warns[0]).toContain("WARN");

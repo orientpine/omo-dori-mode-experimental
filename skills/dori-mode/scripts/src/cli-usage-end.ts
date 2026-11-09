@@ -23,7 +23,8 @@ export const USAGE_END = `                                       --text-file pos
   inbound telegram [--loop MIN]        print INBOUND lines: the owner's Telegram DMs and his messages in the configured
                                        group topic (DORI_TELEGRAM_TOKEN, DORI_TELEGRAM_OWNER_ID, optional
                                        DORI_TELEGRAM_GROUP_ID, DORI_TELEGRAM_TOPIC_ID), owner-gated getUpdates; his
-                                       edits as edit:dm / edit:topic, media with file=<kind>:<file_id>
+                                       edits as edit:dm / edit:topic, mid=<message_id> on every line, live-location
+                                       refreshes dropped, media with file=<kind>:<file_id>
   inbound discord                      long-running gateway listener: the owner's messages get an eyes reaction and an
                                        inbox row, voice is transcribed, question-card answers are recorded; with
                                        DORI_DISCORD_WATCH_CHANNELS + DORI_DISCORD_WATCH_BOTS a monitoring bot's problem
