@@ -21,7 +21,8 @@ const lane = (fields: Partial<Lane> = {}): Lane => ({ key: "fix-a", title: "fix-
 type Call = { method: string; path: string; body: Record<string, unknown> };
 const askCli = async (dir: string, args: readonly string[], env: readonly string[] = []) => {
   const file = join(dir, "http.json");
-  const r = await run(["env", "-u", "TMUX", "-u", "HERDR_PANE_ID", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+  // the same leak as upstream #185 (https://github.com/sisyphuslabs/dori-superagent/pull/185): a run from an hc terminal must not read that terminal as the caller
+  const r = await run(["env", "-u", "TMUX", "-u", "HERDR_PANE_ID", "-u", "HC_TERMINAL_ID", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
     `DORI_DISCORD_CHANNEL=${CHANNEL}`, `DORI_DISCORD_OWNER=${OWNER}`, `DORI_DISCORD_INBOX=${join(dir, "inbox.jsonl")}`, ...env,
     "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "ask", "--text", "Ship the fix today?", "--option", "Ship it", "--option", "Wait", ...args]);
   const calls = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).calls as Call[]) : [];
