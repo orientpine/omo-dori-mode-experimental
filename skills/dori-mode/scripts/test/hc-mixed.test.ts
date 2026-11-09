@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { liveSessions, sessionFor } from "../src/aoe.ts";
+import { closeFrozen, readFrozen, writeFrozen } from "../src/frozen.ts";
 import { type Runner, useConfiguredRuntime } from "../src/run.ts";
 import { useDoriState } from "../src/hc-pane.ts";
 import { Registry } from "../src/registry.ts";
@@ -123,6 +124,19 @@ describe("the runtimes the Dori's open sessions live on are read at each listing
     } finally {
       delete process.env["DORI_LEAD_PANE"];
     }
+  });
+
+  test("a frozen herdr lead is kept when the herdr listing fails on an hc Dori (review 1 of #421)", async () => {
+    // Given: an hc Dori with a frozen herdr lead and hc alive, but herdr cannot be listed
+    delete process.env["DORI_RUNTIME"];
+    useConfiguredRuntime("hc");
+    writeFrozen(dir, { pane: "w1:p1", aoeId: "old", at: new Date(0).toISOString(), agentPid: 4242, pids: [4242], session: "old-session" });
+    const deps = { run: runnerOf(new FakeHc({ t1: terminal() })), procs: async () => [], signal: () => true };
+    // When
+    const line = await closeFrozen(deps, dir, readFrozen(dir)[0]!, Date.parse("2026-11-09T00:00:00Z"));
+    // Then: a failed listing is no empty list, so the stopped lead's record is not removed
+    expect(line).toContain("HANDOVER_OLD_CLOSE_FAIL");
+    expect(readFrozen(dir)).toHaveLength(1);
   });
 
 });

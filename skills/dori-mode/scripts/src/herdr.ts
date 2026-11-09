@@ -42,8 +42,8 @@ export const herdrOk = (run: Runner, argv: readonly string[]): Promise<boolean> 
 
 // Every pane of the server as a session row (aoe.ts AoeSession): id and pane are the pane id, title its tab's label, path
 // its cwd, profile its workspace. No server (or no herdr at all) is no session.
-export const herdrSessions = async (run: Runner): Promise<{ id: string; title: string; path: string; tool?: string; profile?: string; pane: string; tab?: string }[]> => {
-  const [panes, hcRows] = await Promise.all([herdrRuntime(run).list().catch(() => []), hcSessions(run)]);
+export const herdrSessions = async (run: Runner, requiredHerdr = false): Promise<{ id: string; title: string; path: string; tool?: string; profile?: string; pane: string; tab?: string }[]> => {
+  const [panes, hcRows] = await Promise.all([herdrRuntime(run).list().catch((e: unknown) => { if (requiredHerdr) throw e; return []; }), hcSessions(run)]);
   if (!panes.length) return hcRows;
   const tabs = ((await herdrResult(run, ["tab", "list"]))?.["tabs"] ?? []) as HerdrTab[];
   return [...hcRows, ...panes.map(({ ref, cwd, agent }) => ({ id: ref.id, title: tabs.find((t) => t.tab_id === ref.container)?.label ?? ref.id, path: cwd ?? "", ...(agent ? { tool: agent } : {}), ...(ref.group ? { profile: ref.group } : {}), pane: ref.id, ...(ref.container ? { tab: ref.container } : {}) }))];
