@@ -141,7 +141,12 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
   if (!rec || !argvSessionId(["--session-id", rec.session])) return `REVIVE_FAIL ${pane}: no omo session recorded for this pane (${file(config.stateDir)})`;
   if (!(await herdrSessions(run)).some((s) => s.pane === pane)) return `REVIVE_FAIL ${pane}: herdr has no such pane (its tab was closed); open a new session instead`;
   for (let i = 0; i < 20 && !(await herdrShellPid(run, pane)); i++) await clock.sleep(1_000);
-  for (let i = 0; i < 20 && !(await herdrRead(run, pane)).trim(); i++) await clock.sleep(250);
+  let shellReadable = false;
+  for (let i = 0; i < 20; i++) {
+    if ((await herdrRead(run, pane)).trim()) { shellReadable = true; break; }
+    await clock.sleep(250);
+  }
+  if (!shellReadable) return `REVIVE_FAIL ${pane}: the restored shell stayed unreadable after 5 s; the agent was not started`;
   const restored = await herdrAgentPid(run, pane);
   const read = () => herdrRead(run, pane);
   if (!restored) {
