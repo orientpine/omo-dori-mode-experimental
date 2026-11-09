@@ -696,7 +696,7 @@ const withModel = <T extends { run: (...a: never[]) => unknown }>(deps: T, reply
   const asked: string[][] = [];
   const run = (cmd: string[], opts?: unknown) => {
     if (cmd[0] !== "omo") return (deps.run as (c: string[], o?: unknown) => unknown)(cmd, opts);
-    asked.push(cmd);
+    asked.push([...cmd, ...((opts as { stdin?: string } | undefined)?.stdin !== undefined ? [(opts as { stdin: string }).stdin] : [])]); // a long prompt reaches omo on stdin
     const r = "code" in reply ? reply : reply[asked.length - 1]!;
     return Promise.resolve({ ...r, err: "" });
   };
