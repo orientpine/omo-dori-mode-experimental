@@ -72,13 +72,14 @@ const scriptCalls = (command: string): string[] => {
       const script = words[i + 1];
       return script?.startsWith("/") && script.endsWith(".sh") ? [script] : [];
     }
-    if (/^-[A-Za-z]*[sn][A-Za-z]*$/.test(word) || word === "--help" || word === "--version") return [];
+    if (/^-[A-Za-z]*[snD][A-Za-z]*$/.test(word) || ["--help", "--version", "--dump-strings", "--dump-po-strings"].includes(word)) return [];
     if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word)) {
       let j = i + 1;
       for (; j < words.length; j++) {
         const w = words[j] ?? "";
         if (w === "--") { j++; break; }
-        if (w === "-n" || (/^-[A-Za-z]+$/.test(w) && w.includes("n"))) return [];
+        if (w === "-n" || (/^-[A-Za-z]+$/.test(w) && /[nD]/.test(w))) return [];
+        if (w === "--dump-strings" || w === "--dump-po-strings") return [];
         if (OPTION_VALUES.has(w) || /^[-+][A-Za-z]+[oO]$/.test(w)) {
           if (w.startsWith("-") && words[j + 1] === "noexec") return [];
           j++;
