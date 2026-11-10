@@ -58,4 +58,12 @@ Implementation: `Reports.observe` gains the #61 `resumeOnWorking` behavior, with
 
 Verification: **70 pass, 0 fail** across the new tests and every adjacent supervision suite, with strict typecheck exit 0. The cases cover ceiling blockers, one-time stalls, fresh-report recovery, checkpoint-driven running activity, the Working-only resume rule, and legacy-lane gating. Existing tests cover file activity and declared terminal intent. The final full CI completed with **2016 pass, 0 fail** and `LOC_OK 367 files`.
 
+## #72 finished lanes and safe journal errors
+
+Red reproduction after #61: **15 pass, 4 fail**. A journal-done lane was still shown as vanished and its watch was not cleaned up, and journal failures printed filesystem paths.
+
+Implementation: the shared `finished` predicate accepts `reportState === "done"` in addition to closed and verified-done, so VANISHED and monitor cleanup use the same rule. Journal errors now print `kind=invalid-journal`, the operating-system error code, or `kind=unreadable`; state-directory paths are not exposed.
+
+Verification: **19 pass, 0 fail** with strict typecheck and clean no-excuse/junk-test audits. The tests prove the finished rule in both boot paths and verify invalid-journal and EISDIR errors without a state path. The final full CI completed with **2018 pass, 0 fail** and `LOC_OK 367 files`.
+
 Later prerequisite results are recorded in the sections that follow.

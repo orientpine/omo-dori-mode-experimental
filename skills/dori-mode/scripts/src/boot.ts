@@ -4,7 +4,7 @@ import { listPanes, type Pane } from "./panes.ts";
 import type { Slack } from "./messenger/slack.ts";
 import { type BootLane, finished, monitorCleanup, readMonitorManifests } from "./boot-monitors.ts";
 import { type Lane, statusOf } from "./registry.ts";
-import type { Reports } from "./reports.ts";
+import { ReportError, type Reports } from "./reports.ts";
 
 export type PaneState = "live" | "vanished" | "unassigned";
 export type SlackCheck = () => Promise<{ readonly userId: string; readonly teamId: string } | null>;
@@ -70,7 +70,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       failed = true;
-      journals.push(`JOURNAL-ERROR ${lane.key}: ${error.message}`);
+      journals.push(`JOURNAL-ERROR ${lane.key}: kind=${error instanceof ReportError || error instanceof SyntaxError ? "invalid-journal" : "code" in error && typeof error.code === "string" ? error.code : "unreadable"}`);
       lanes.push(lane);
     }
   }

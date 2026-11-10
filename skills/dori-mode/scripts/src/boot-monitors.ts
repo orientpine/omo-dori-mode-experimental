@@ -33,7 +33,7 @@ export type Cleanup = {
   readonly stop: string;
 };
 
-export const finished = (lane: BootLane): boolean => ["closed", "verified-done"].includes(statusOf(lane));
+export const finished = (lane: BootLane): boolean => ["closed", "verified-done"].includes(statusOf(lane)) || lane.reportState === "done";
 
 const mentions = (text: string, value: string | undefined): boolean => {
   if (!value) return false;

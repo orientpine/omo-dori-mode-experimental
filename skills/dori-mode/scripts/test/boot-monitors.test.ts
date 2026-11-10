@@ -2,12 +2,20 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { monitorCleanup, readMonitorManifests } from "../src/boot-monitors.ts";
-import { lane, manifest } from "./boot-fixtures.ts";
+import { Reports } from "../src/reports.ts";
+import { lane, manifest, T0 } from "./boot-fixtures.ts";
 import { withState } from "./fakes.ts";
 
 let state: ReturnType<typeof withState>;
 beforeEach(() => { state = withState(); });
 afterEach(() => state.done());
+
+test("a lane whose journal says done qualifies for cleanup", () => {
+  const reports = new Reports(state.dir);
+  const key = "done-lane";
+  reports.report(key, "done", "finished", T0);
+  expect(monitorCleanup([{ ...lane(key), reportProtocol: "jsonl-v1", reportState: "done" }], [manifest([{ command: `dori watch ${key}`, monitorId: "mon_DONE" }])]).map((m) => m.monitorId)).toEqual(["mon_DONE"]);
+});
 
 test("persistent watches on closed or verified lanes become owner-scoped stop calls", async () => {
   const lanes = [lane("closed", "closed"), lane("verified", "verified-done"), lane("claimed", "done-claimed")];

@@ -79,6 +79,20 @@ test("a lanes path that cannot be listed is named and the rest of boot still run
   expect(result.exitCode).toBe(1);
 });
 
+test("a journal done lane counts as finished for vanished lanes and watch cleanup alike", async () => {
+  const world = newWorld();
+  const deps = depsFor(world);
+  await deps.registry.write(launched("old-api", "working", "w1:p8"));
+  deps.reports.report("old-api", "done", "merged", T0);
+  const terminal = join(deps.sessionsDir, "lead", "extensions", "terminal");
+  mkdirSync(terminal, { recursive: true });
+  writeFileSync(join(terminal, "owner.json"), JSON.stringify(manifest([{ command: "dori watch old-api", monitorId: "mon_OLD" }]).data));
+  const result = await bootCheck(deps);
+  expect(result.lines.some((l) => l.startsWith("VANISHED old-api"))).toBe(false);
+  expect(result.lines).toContain('STOP in the owner session only: kill_bash({"bash_id":"mon_OLD"})');
+  expect(result.exitCode).toBe(0);
+});
+
 test("a verified-done lane whose pane is gone is not flagged VANISHED", async () => {
   const world = newWorld();
   world.panes = [{ pane_id: "w2:p1", workspace_id: "w2" }];
