@@ -14,15 +14,15 @@ export const nativeCalls = (text: string, source: CommandSource): NativeCall[] =
   return out;
 };
 
-// Accept a multi-operation native cell only when all printed data is the posting operation's stdout or receipt-free
-// literals. Unknown consumers, aliases and inherited sibling output leave attribution unresolved.
+// A sole native operation can stream its own receipt. Explicit printed data still needs stdout provenance:
+// even one subprocess cannot claim output supplied by a file read, an unknown consumer or another operation.
 export const nativeReceipt = (text: string, source: CommandSource, owner: NativeCall): boolean => {
   const calls = nativeCalls(text, source);
   if (calls.some((call) => call.start !== owner.start && !call.buffered)) return false;
   const before = text.slice(0, owner.start), binding = /\b(?:const|let|var)\s+([$\w]+)\s*=\s*(?:await\s*)?$/.exec(before);
   const name = binding && source.code[binding.index] ? binding[1] : undefined, nameAt = name ? before.lastIndexOf(name) : -1;
   const ranges: { readonly start: number; readonly end: number }[] = [];
-  let witnessed = false;
+  let witnessed = calls.length === 1;
   for (const match of text.matchAll(/\bconsole\.(?:log|info|warn|error)\s*\(|(?<![\w$.])(?:print|display)\s*\(/g)) {
     if (!source.code[match.index]) continue;
     const open = match.index + match[0].length - 1, raw = balancedBlock(text, open);
@@ -30,7 +30,7 @@ export const nativeReceipt = (text: string, source: CommandSource, owner: Native
     const end = open + raw.length;
     let expression = text.slice(open + 1, end - 1).trim();
     if (owner.start > open && owner.end < end) expression = `${text.slice(open + 1, owner.start)}$SEND${text.slice(owner.end, end - 1)}`.trim();
-    else if (name) expression = expression.replace(new RegExp(`^${name.replace(/[$]/g, "\\$&")}(?=\\.)`), "$SEND");
+    else if (name) expression = expression.replace(new RegExp(`(?<![\\w$.])${name.replace(/[$]/g, "\\$&")}(?=\\.stdout\\b)`, "g"), "$SEND");
     const normalized = expression.replace(/\s+/g, "");
     if (/^(?:\$SEND\.stdout\.toString\(\)|(?:await)?newResponse\(\$SEND\.stdout\)\.text\(\)|newTextDecoder\(\)\.decode\(\$SEND\.stdout\))$/.test(normalized)) witnessed = true;
     else {
@@ -74,6 +74,11 @@ export const shellCommands = (text: string): { readonly words: readonly string[]
     while (start < end && (!code[start] || /\s/.test(text[start] ?? ""))) start++;
     if (start < end) {
       const raw = text.slice(start, end), words = commandWords(raw);
+      const args = words?.slice(1) ?? [], mode = /^(?:errexit|nounset|noglob|noclobber|pipefail)$/;
+      // Only nonprinting set modes and literal absolute cd targets are silent setup. set/set -o, xtrace and cd -
+      // can print; a cd error can quote its target, so a receipt-shaped target cannot establish silence either.
+      const setup = words?.[0] === "set" && args.length > 0 && args.every((word, i) => /^[+-][efuC]+$/.test(word) || /^[+-][efuC]*o$/.test(word) && mode.test(args[i + 1] ?? "") || mode.test(word) && /^[+-][efuC]*o$/.test(args[i - 1] ?? ""))
+        || words?.[0] === "cd" && args.length === 1 && args[0]?.startsWith("/") && !/[$`*?{}[\]]|\b(?:SENT|POSTED) \d{15,22}\b/.test(args[0]);
       let stdout = "captured", stderr = "captured";
       for (const match of raw.matchAll(/(?:^|\s)(\d*)(>&|>>?|&>)\s*/g)) {
         const op = match[2] ?? ">", at = start + match.index + match[0].lastIndexOf(op);
@@ -84,7 +89,7 @@ export const shellCommands = (text: string): { readonly words: readonly string[]
         else if (fd === "1") stdout = sink; else if (fd === "2") stderr = sink;
       }
       const pipe = text[end] === "|" && text[end + 1] !== "|" && text[end - 1] !== "|";
-      out.push({ words, output: stdout !== "silent" || stderr !== "silent", stdout: stdout === "captured" && !pipe });
+      out.push({ words, output: !setup && (stdout !== "silent" || stderr !== "silent"), stdout: stdout === "captured" && !pipe });
     }
     start = end + 1;
   }

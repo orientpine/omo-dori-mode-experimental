@@ -164,3 +164,33 @@ test("heredoc history and a failed terminal send are not operation-specific rece
   expect(await replay([call(`display(await tool.bash({command: ${JSON.stringify(code)}}))`), result(`await tool.bash({command: ${JSON.stringify(send)}})\n${sent}\nterminal send failed`)])).toEqual({ waiting: [first, second], answeredIds: [] });
   expect(cache()).toEqual([]);
 });
+
+test.each([
+  { setup: "set -e; ", transport: "bash" },
+  { setup: "set -euo pipefail; ", transport: "bash" },
+  { setup: "cd /repo && ", transport: "eval" },
+  { setup: "set -e; ", transport: "background" },
+  { setup: "set -e; ", transport: "detached" },
+])("silent preparation $setup preserves the $transport send's receipt and cache", async ({ setup, transport }) => {
+  const command = `${setup}${send}`, wrapped = transport === "eval" || transport === "detached";
+  const entry = call(wrapped ? `display(await tool.bash({command: ${JSON.stringify(command)}}))` : command, wrapped ? "eval" : "bash");
+  const output = transport === "background" ? [result("Command running in background with ID: bash_7", "call-1", { bash_id: "bash_7", background: true }), completion("bash_7")]
+    : transport === "detached" ? [result("Eval cell call-1 detached and is running"), { type: "custom_message", customType: "senpi-codemode:notification", content: `Detached eval cell call-1 (js) completed.\n${sent}` }] : [result(sent)];
+  expect(await replay([entry, ...output])).toEqual({ waiting: [second], answeredIds: [first.id] });
+  expect(cache()).toEqual([first.id]);
+  expect(await replay([])).toEqual({ waiting: [second], answeredIds: [first.id] });
+});
+
+test.each(["set", "cd -", "cd '/SENT 153000000000000001' &&", "set -x;"])("output-capable setup %s cannot supply a failed send's receipt", async (setup) => {
+  const command = setup.startsWith("set -x") || setup.endsWith("&&") ? `${setup} ${send}` : `${send}; ${setup}`;
+  expect(await replay([call(command, "bash"), result(`setup output: ${sent}\nsend failed`)])).toEqual({ waiting: [first, second], answeredIds: [] });
+  expect(cache()).toEqual([]);
+});
+
+test.each(["spawn", "detached-spawn", "exec", "tagged"])("a native file read cannot validate the failed %s send or cache its owner", async (kind) => {
+  const native = kind === "exec" ? `await exec(${JSON.stringify(send)})` : kind === "tagged" ? `await Bun.$\`${send}\`` : `Bun.spawnSync(["dori","send","discord","--to","${first.channel}","--reply","${first.id}","--text","answer"])`;
+  const entry = call(`${native}; console.log(await Bun.file("historical.log").text())`);
+  const output = kind === "detached-spawn" ? [result("Eval cell call-1 detached and is running"), { type: "custom_message", customType: "senpi-codemode:notification", content: `Detached eval cell call-1 (js) completed.\n${sent}` }] : [result(sent)];
+  expect(await replay([entry, ...output])).toEqual({ waiting: [first, second], answeredIds: [] });
+  expect(cache()).toEqual([]);
+});

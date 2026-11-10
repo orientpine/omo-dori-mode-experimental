@@ -20,18 +20,19 @@ const header = (text: string): { readonly session: string; readonly cwd: string 
 
 // Identity comes from the live resolver, same-agent observations, or a committed move to this exact pane/session.
 // A matching title, directory or filename alone never establishes a predecessor.
-export const predecessorTranscripts = (deps: FlowDeps, lead: { readonly pane: string; readonly path: string; readonly text?: string }): string[] => {
+export const predecessorTranscripts = (deps: FlowDeps, lead: { readonly pane: string; readonly path: string; readonly text?: string }, target?: string): string[] => {
   const current = header(lead.text ?? textAt(lead.path));
   if (!current) return [];
-  const pending: Session[] = [{ ...current, pane: lead.pane }], seen = new Set([current.session]), texts: string[] = [];
+  const pending: Session[] = [{ ...current, pane: lead.pane }], seen = new Set([`${lead.pane}\0${current.session}`]), texts: string[] = [];
   const records = readHerdrSessions(deps.config.stateDir), moves = committedHandovers(deps.config.stateDir);
   const add = (session: Session): void => {
-    if (seen.has(session.session)) return;
+    const key = `${session.pane}\0${session.session}`;
+    if (seen.has(key)) return;
     const path = session.log && existsSync(session.log) ? session.log : argvSessionLog([], deps.config.sessionsDir, session.cwd, session.session);
     if (!path) return;
     const text = textAt(path), identity = header(text);
     if (identity?.session !== session.session || identity.cwd !== session.cwd) return;
-    seen.add(session.session); texts.push(text); pending.push(session);
+    seen.add(key); if (!target || session.pane === target) texts.push(text); pending.push(session);
   };
   const resolved = header(textAt(lead.path));
   if (resolved?.cwd === current.cwd) add({ ...resolved, pane: lead.pane, log: lead.path });

@@ -48,14 +48,14 @@ const specsFromText = (text: string): (SendSpec | undefined)[] => {
     } catch (error) { if (!(error instanceof SyntaxError)) throw error; out.push(undefined); }
   }
   out.push(...shellSpecs(text, source.code));
-  const commands = executionCommands(text, source), alone = commands.filter((operation) => operation.tool === "bash").length === 1;
+  const commands = executionCommands(text, source), natives = nativeCalls(text, source), alone = commands.filter((operation) => operation.tool === "bash").length === 1;
   for (const { tool, command } of commands) {
     if (command === undefined) { out.push(undefined); continue; }
-    for (const spec of shellSpecs(command, shellSource(command), true)) out.push(spec && tool === "bash" && spec.aggregate !== false ? { ...spec, bash: { command, alone } } : spec);
+    for (const spec of shellSpecs(command, shellSource(command), true)) out.push(spec && tool === "bash" && spec.aggregate !== false ? { ...spec, bash: { command, alone } } : spec && tool === "exec" && natives.length === 1 && natives[0] ? { ...spec, native: natives[0] } : spec);
   }
-  const native = nativeCalls(text, source).length, tools = [...text.matchAll(/\btool\.\w+\s*\(/g)].filter((match) => source.code[match.index]).length;
+  const native = natives.length, tools = [...text.matchAll(/\btool\.\w+\s*\(/g)].filter((match) => source.code[match.index]).length;
   const aggregate = native + tools <= 1;
-  return out.map((spec) => spec ? { ...spec, aggregate: spec.aggregate !== false && (aggregate || out.length === 1 && !!spec.native && nativeReceipt(text, source, spec.native)), ...(spec.bash && native === 0 && commands.every((operation) => operation.tool === "bash") && tools === commands.length ? { bash: { ...spec.bash, peers: commands.flatMap(({ command }) => command !== undefined && command !== spec.bash?.command ? [command] : []) } } : {}) } : undefined); };
+  return out.map((spec) => spec ? { ...spec, aggregate: spec.aggregate !== false && (spec.native ? out.length === 1 && nativeReceipt(text, source, spec.native) : aggregate), ...(spec.bash && native === 0 && commands.every((operation) => operation.tool === "bash") && tools === commands.length ? { bash: { ...spec.bash, peers: commands.flatMap(({ command }) => command !== undefined && command !== spec.bash?.command ? [command] : []) } } : {}) } : undefined); };
 const shellSpecs = (text: string, positions: Uint8Array, strict = false): (SendSpec | undefined)[] => {
   if (!strict) return [...text.matchAll(/\bdori\b/g)].filter((match) => positions[match.index] && /(?:^|[;\n|&])\s*$/.test(text.slice(0, match.index))).flatMap((match) => specsFromShell(text.slice(match.index)));
   const commands = shellCommands(text);

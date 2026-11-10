@@ -104,7 +104,7 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
   const { rows, cards, lead, sessions, table, deps } = input, cardById = new Map(cards.map((q) => [q.id, q])), transcripts = new Map<string, string>(), waiting: T[] = [];
   const history = deps.answerHistory?.() ?? [];
   let archived: readonly Lane[] | undefined;
-  let predecessors: readonly string[] | undefined;
+  const predecessors = new Map<string, readonly string[]>();
   for (const row of rows) {
     // Inbox ts is written after QuestionStore.answer. Pick the last version at that instant, never today's live card.
     const version = row.qid ? history.filter((q) => q.id === row.qid && Date.parse(q.answeredAt ?? "") <= row.at).sort((a, b) => Date.parse(b.answeredAt ?? "") - Date.parse(a.answeredAt ?? ""))[0] : undefined;
@@ -127,9 +127,10 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
     }
     const transcript = transcripts.get(key) ?? "";
     if (row.qid && sawAnswer(transcript, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) continue; if (discordAnswered(transcript, row)) continue;
-    if (target === lead.pane) {
-      predecessors ??= predecessorTranscripts(deps, lead);
-      if (predecessors.some((text) => (row.qid && sawAnswer(text, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) || discordAnswered(text, row))) continue;
+    if (target === lead.pane || row.qid && !session) {
+      let texts = predecessors.get(target);
+      if (!texts) { texts = predecessorTranscripts(deps, lead, target === lead.pane ? undefined : target); predecessors.set(target, texts); }
+      if (texts.some((text) => (row.qid && sawAnswer(text, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) || discordAnswered(text, row))) continue;
     }
     waiting.push(row);
   }
