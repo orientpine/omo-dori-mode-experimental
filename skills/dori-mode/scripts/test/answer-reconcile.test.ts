@@ -73,3 +73,37 @@ test.each(["background", "auto-detached", "bash-auto-detached", "other-handle", 
   expect(cache()).toEqual(answeredIds);
   expect(await replay([])).toEqual({ waiting: good ? [second] : [first, second], answeredIds });
 });
+
+test.each(["search-with-args", "search-without-args", "native-send", "send-with-args"])("nested bash %s receipts belong to the execution that attempted the send", async (kind) => {
+  const search = "grep -F SENT historical.log", background = "Command running in background with ID: bash_7";
+  const attempt = kind === "native-send"
+    ? `Bun.spawn(["dori","send","discord","--to","${first.channel}","--reply","${first.id}","--text","answer"])`
+    : `await tool.bash({command: ${JSON.stringify(send)}})`;
+  const command = call(`${attempt}; await tool.bash({command: ${JSON.stringify(search)}})`);
+  const good = kind === "send-with-args";
+  const toolCalls = [
+    ...(kind === "native-send" ? [] : [{ name: "bash", args: { command: send }, resultPreview: good ? background : "send failed (exit code 1)" }]),
+    { name: "bash", args: kind === "search-without-args" ? {} : { command: search }, resultPreview: good ? "Command running in background with ID: bash_8" : background },
+  ];
+  const entries = [command, result("send attempted; background started", "call-1", { toolCalls }), completion("bash_7")];
+  expect(await replay(entries)).toEqual({ waiting: good ? [second] : [first, second], answeredIds: good ? [first.id] : [] });
+  expect(cache()).toEqual(good ? [first.id] : []);
+});
+
+test.each([
+  "dori thread done 'discord:OTHER' 'done'",
+  'dori thread wait "discord:OTHER" "wait"',
+  "dori thread reply --lane other 'discord:OTHER' 'reply'",
+  "dori thread --lane other done 'discord:OTHER' 'done'",
+  "dori send --to OTHER discord --text other",
+  'dori thread done "$thread" done',
+])("a failed reply plus %s retains both posting operations", async (other) => {
+  expect(await replay([call(`${send}; ${other}`, "bash"), result("first FAILED; other POSTED 153000000000000001")])).toEqual({ waiting: [first, second], answeredIds: [] });
+  expect(cache()).toEqual([]);
+});
+
+test("a quoted thread reply with reordered options clears only its own card", async () => {
+  const row = { id: "answer-card", qid: "Q1", thread: "CARD", at };
+  expect(await replay([call("dori thread reply --lane other 'discord:CARD' 'Q1 answer'", "bash"), result("POSTED 153000000000000001")], [first, row])).toEqual({ waiting: [first], answeredIds: [row.id] });
+  expect(cache()).toEqual([row.id]);
+});

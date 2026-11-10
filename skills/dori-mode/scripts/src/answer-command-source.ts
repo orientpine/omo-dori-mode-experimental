@@ -79,9 +79,9 @@ export const commandSource = (text: string): CommandSource => {
 };
 
 // Read only the command property of an actual execution wrapper. Other properties may contain dynamic JS values.
-export const executionCommands = (text: string, source: CommandSource): (string | undefined)[] => {
-  const out: (string | undefined)[] = [];
-  for (const match of text.matchAll(/\btool\.(?:bash|monitor)\s*\(\s*\{/g)) {
+export const executionCommands = (text: string, source: CommandSource): { readonly tool: "bash" | "monitor" | "exec"; readonly command: string | undefined }[] => {
+  const out: { readonly tool: "bash" | "monitor" | "exec"; readonly command: string | undefined }[] = [];
+  for (const match of text.matchAll(/\btool\.(bash|monitor)\s*\(\s*\{/g)) {
     if (!source.code[match.index]) continue;
     const open = match.index + match[0].lastIndexOf("{");
     let depth = 1;
@@ -90,7 +90,7 @@ export const executionCommands = (text: string, source: CommandSource): (string 
         const key = /^(?:command\b|"command"|'command')\s*:\s*/.exec(text.slice(at));
         if (key) {
           const start = at + key[0].length, value = source.strings.get(start);
-          out.push(value && /^\s*[,}]/.test(text.slice(value.end)) ? value.value : undefined);
+          out.push({ tool: match[1] === "bash" ? "bash" : "monitor", command: value && /^\s*[,}]/.test(text.slice(value.end)) ? value.value : undefined });
           break;
         }
       }
@@ -104,7 +104,7 @@ export const executionCommands = (text: string, source: CommandSource): (string 
     const start = match.index + match[0].length;
     if (text[start] === "[") continue;
     const value = source.strings.get(start);
-    out.push(value && (/^\s*[,)]/.test(text.slice(value.end)) || text[start] === "`") ? value.value : undefined);
+    out.push({ tool: "exec", command: value && (/^\s*[,)]/.test(text.slice(value.end)) || text[start] === "`") ? value.value : undefined });
   }
   return out;
 };

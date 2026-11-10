@@ -30,7 +30,7 @@ const HINT = /detached and is running|"bash_id"|in background with ID|auto-detac
 
 const MONITOR_START = /^Monitor started with ID: (mon_\w+)/;
 
-type ToolCall = { readonly name?: string; readonly resultPreview?: string; readonly args?: { readonly description?: string; readonly path?: string } };
+type ToolCall = { readonly name?: string; readonly resultPreview?: string; readonly args?: { readonly command?: string; readonly description?: string; readonly path?: string } };
 // a monitor notification: each monitor it carries, by the watch's id (bash_<n> for a command) and description; kind
 // "summary" is the end of its command
 type MonitorEvent = { readonly id?: string; readonly description?: string; readonly kinds?: readonly string[] };

@@ -6,10 +6,12 @@ import { balancedBlock, discordAnswered, type AnswerRow } from "./answer-sends.t
 export { discordAnswered, type AnswerRow } from "./answer-sends.ts";
 import type { AoeSession } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
+import { argvSessionLog, readHerdrSessions } from "./herdr-sessions.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Question } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
 import { iso } from "./run.ts";
+import { type Lane, statusOf } from "./registry.ts";
 import { procTable, SESSION_FILE } from "./session-id.ts";
 import type { Proc, SessionHit } from "./session-id.ts";
 
@@ -100,15 +102,28 @@ export const readAnswerHistory = (path: string): Question[] =>
 export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput<T>): Promise<T[]> => {
   const { rows, cards, lead, sessions, table, deps } = input, cardById = new Map(cards.map((q) => [q.id, q])), transcripts = new Map<string, string>(), waiting: T[] = [];
   const history = deps.answerHistory?.() ?? [];
+  let archived: readonly Lane[] | undefined;
   for (const row of rows) {
     // Inbox ts is written after QuestionStore.answer. Pick the last version at that instant, never today's live card.
     const version = row.qid ? history.filter((q) => q.id === row.qid && Date.parse(q.answeredAt ?? "") <= row.at).sort((a, b) => Date.parse(b.answeredAt ?? "") - Date.parse(a.answeredAt ?? ""))[0] : undefined;
     const target = row.qid ? version?.tmux || cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
-    if (!transcripts.has(target)) {
-      const session = sessionFor(sessions, target), cwd = session?.path;
-      const file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined; transcripts.set(target, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "");
+    const session = sessionFor(sessions, target), key = session || target === lead.pane ? target : `${target}\0${row.at}`;
+    if (!transcripts.has(key)) {
+      const cwd = session?.path;
+      let file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined;
+      if (!file && !session && target !== lead.pane) {
+        // Closing a lane keeps its session identity and log. Read that exact session, never a newer same-title log.
+        archived ??= await deps.registry.list();
+        const lane = archived.filter((l) => l.pane === target && statusOf(l) === "closed" && Date.parse(l.openedAt) <= row.at && row.at <= Date.parse(l.closedAt ?? "")).sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt))[0];
+        if (lane?.session && lane.cwd) {
+          const kept = readHerdrSessions(deps.config.stateDir)[target];
+          const path = kept?.session === lane.session && kept.cwd === lane.cwd && kept.log && existsSync(kept.log) ? kept.log : argvSessionLog([], deps.config.sessionsDir, lane.cwd, lane.session);
+          if (path) file = { path };
+        }
+      }
+      transcripts.set(key, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "");
     }
-    const transcript = transcripts.get(target) ?? "";
+    const transcript = transcripts.get(key) ?? "";
     if (row.qid && sawAnswer(transcript, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) continue; if (discordAnswered(transcript, row)) continue;
     waiting.push(row);
   }
