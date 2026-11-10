@@ -49,6 +49,14 @@ test("only a stale idle prompt stalls and repeated observations do not grow the 
   expect(readFileSync(reports.path(lane.key), "utf8").trim().split("\n")).toHaveLength(2);
 });
 
+test("supervision observation resumes only on Working, not Running", () => {
+  reports.report(lane.key, "milestone", "started", T0);
+  expect(reports.observe(lane.key, "compaction failed\n❯ ", T0 + MIN, 15 * MIN)?.state).toBe("stalled");
+  expect(reports.observe(lane.key, "Running 2m\n❯ ", T0 + 2 * MIN, 15 * MIN, false)?.state).toBe("stalled");
+  expect(reports.observe(lane.key, "Working 2m\n❯ ", T0 + 3 * MIN, 15 * MIN, false)?.state).toBe("stalled");
+  expect(reports.observe(lane.key, "Working 4m\n❯ ", T0 + 4 * MIN, 15 * MIN)?.state).toBe("running");
+});
+
 test.each(["blocker", "halted", "done"] as const)("pane activity cannot overwrite a declared %s state", (kind) => {
   reports.report(lane.key, kind, "paused", T0);
   const expected = reports.read(lane.key)?.state;

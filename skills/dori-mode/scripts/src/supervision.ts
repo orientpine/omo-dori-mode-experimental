@@ -1,13 +1,12 @@
-// Lane caps (wall minutes, tokens, cost), hung calls and the cost record, after dori-superagent #61
-// (https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/61, src/supervision.ts at 90f02c1, MIT), rewritten on
-// this fork's registry and freshness sweep. Upstream keeps a reports.jsonl journal per lane (#30, not ported): there a
-// ceiling appends a blocker report. Here a lane's newest report is lane.lastReport in the registry, and a ceiling or a hung
-// call is told to the lead (alert) once per change. Nothing stops, closes or types into the lane.
+// Lane caps (wall minutes, tokens, cost), hung calls and the cost record, after dori-superagent #61.
+// Launched jsonl-v1 lanes use the #30 report journal; adopted and legacy lanes keep this fork's registry/freshness path.
+// Every alert goes to the lead once per change. Nothing stops, closes or types into the lane.
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CheckpointError, Checkpoints, takeLock } from "./checkpoints.ts";
 import { fill } from "./config.ts";
 import { type Lane, statusOf } from "./registry.ts";
+import { Reports } from "./reports.ts";
 import { type BudgetName, defaultSupervision, HUNG_MESSAGE, laneLimits, type SupervisionDeps, type SupervisionResult, type SupervisionSettings, type Usage, type UsageSnapshot, workingTimer } from "./supervision-observe.ts";
 
 import { ACTIVITY_FILES, type Observation } from "./supervision-state.ts";
@@ -20,9 +19,9 @@ export class CostRecordBusy extends Error {
 }
 
 export class Supervision {
-  readonly checkpoints: Checkpoints;
+  readonly checkpoints: Checkpoints; readonly journals: Reports;
   constructor(readonly deps: SupervisionDeps, readonly settings: SupervisionSettings = defaultSupervision()) {
-    this.checkpoints = new Checkpoints(deps.stateDir);
+    this.checkpoints = new Checkpoints(deps.stateDir); this.journals = new Reports(deps.stateDir);
   }
 
   private dir(key: string): string {
@@ -133,7 +132,7 @@ export class Supervision {
         return [path, null];
       }
     });
-    return JSON.stringify({ report: lane.lastReport ?? null, checkpoint: this.checkpoints.read(lane.key).at(-1) ?? null, files, changes: changes.sort() });
+    return JSON.stringify({ report: lane.reportProtocol === "jsonl-v1" ? this.journals.read(lane.key)?.lastReport ?? null : lane.lastReport ?? null, checkpoint: this.checkpoints.read(lane.key).at(-1) ?? null, files, changes: changes.sort() });
   }
 
   // One look at a working lane: its ceilings, a hung call on its screen. Each alert reaches the lead once per change.
@@ -179,9 +178,17 @@ export class Supervision {
     const unavailable = (["tokens", "costUsd"] as const)
       .filter((name) => typeof limits[name] === "number" && (usage?.[name] ?? null) === null)
       .map((name) => `${name} ceiling cannot be checked: usage unavailable`);
+    const progress = lane.reportProtocol === "jsonl-v1" ? this.journals.read(lane.key) : null;
+    const terminal = progress?.state === "done" || progress?.state === "halted";
     // caps and a hung call are told apart, each once: a lane already told about its cap that then hangs is told that too
-    const alerts = [...capped, ...(hung ? [HUNG_MESSAGE] : []), ...unavailable];
+    const alerts = terminal ? [] : [...capped, ...(hung ? [HUNG_MESSAGE] : []), ...unavailable];
     const fresh = alerts.filter((message) => !previous?.alerts.includes(message));
+    if (lane.reportProtocol === "jsonl-v1") {
+      const blocker = capped.join("; ");
+      if (!terminal && capped.length && progress?.lastReport?.text !== blocker) this.journals.report(lane.key, "blocker", blocker, now);
+      else if (!terminal && hung && (!progress || progress.state === "running")) this.journals.append({ type: "activity", key: lane.key, at: new Date(now).toISOString(), state: "stalled", text: HUNG_MESSAGE });
+      else if (!alerts.length && progress?.state === "stalled" && activity !== previous?.activity) this.journals.append({ type: "activity", key: lane.key, at: new Date(now).toISOString(), state: "running", text: "Fresh report, checkpoint, or file activity observed" });
+    }
     // Deliver before saving, so only alerts that reached the lead count as sent; a failed one is sent again next sweep.
     const undelivered: string[] = [];
     for (const message of fresh) {
@@ -191,12 +198,12 @@ export class Supervision {
         undelivered.push(message);
       }
     }
-    const observation: Observation = { at: now, timer: timer?.seconds ?? null, timerKind: timer?.kind ?? null, activity, activeAt, alerts: alerts.filter((m) => !undelivered.includes(m)) };
+    const observation: Observation = { at: now, timer: timer?.seconds ?? null, timerKind: timer?.kind ?? null, activity: lane.reportProtocol === "jsonl-v1" ? await this.activity(lane) : activity, activeAt, alerts: alerts.filter((m) => !undelivered.includes(m)) };
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, JSON.stringify(observation), { mode: 0o600 });
     renameSync(temporary, path);
-    return { enabled: true, alerts: fresh, undelivered, capped, hung, usage, ...(reset ? { reset } : {}) };
+    return { enabled: true, state: lane.reportProtocol === "jsonl-v1" ? this.journals.read(lane.key)?.state ?? "running" : statusOf(lane), alerts: fresh, undelivered, capped, hung, usage, ...(reset ? { reset } : {}) };
   }
 
   // The lane's last usage reading at close. A close that already recorded its final reading (a retried or second close)

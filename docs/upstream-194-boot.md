@@ -50,4 +50,12 @@ Verification: all five files passed **24 pass, 0 fail**, including the spawned-C
 
 The first full CI run caught two legacy-session regressions (**2008 pass, 2 fail**): existing tests use `Registry.list()` to create `lanes/` before writing legacy records. The fix preserves that established `list()` behavior while keeping boot's `scan()` non-creating; no existing test was edited. The focused rerun passed **38 pass, 0 fail** with strict typecheck green. The final full CI after the fix completed with **2010 pass, 0 fail** and `LOC_OK 366 files`.
 
+## #61 journal-aware supervision
+
+Red reproduction after #37: **19 pass, 4 fail** in the journal-supervision and observation tests. Supervision produced no blocker or stalled journal event, and observation did not implement the #61 resume rule.
+
+Implementation: `Reports.observe` gains the #61 `resumeOnWorking` behavior, with `Running` deliberately excluded. For launched `jsonl-v1` lanes only, supervision includes durable reports in its activity signature, appends ceiling blockers and stalled/running activity, and recomputes its observation afterward so its own blocker is not mistaken for agent progress. Existing lead alerts, cost readings, checkpoint/file accounting, and adopted/legacy supervision behavior remain intact.
+
+Verification: **70 pass, 0 fail** across the new tests and every adjacent supervision suite, with strict typecheck exit 0. The cases cover ceiling blockers, one-time stalls, fresh-report recovery, checkpoint-driven running activity, the Working-only resume rule, and legacy-lane gating. Existing tests cover file activity and declared terminal intent. The final full CI completed with **2016 pass, 0 fail** and `LOC_OK 367 files`.
+
 Later prerequisite results are recorded in the sections that follow.
