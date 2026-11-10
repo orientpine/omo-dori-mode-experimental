@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 
+import { shellWords } from "./handover.ts";
 import type { readManifest } from "./handover.ts";
 
 type Entry = ReturnType<typeof readManifest>[number] & { readonly deliveryPaused?: boolean };
@@ -12,9 +13,10 @@ export const watchProblem = (entries: readonly Entry[], inbox: string, now: numb
   const name = basename(inbox);
   const on = entries.filter((e) => {
     if (e.command?.includes(name)) return true;
-    return [...(e.command ?? "").matchAll(/(?:^|[\s;&|(])(\/[^\s;&|'"()]*\.sh)\b/g)].some((m) => {
+    return (shellWords(e.command ?? "") ?? []).some((word) => {
+      if (!word.startsWith("/") || !word.endsWith(".sh")) return false;
       try {
-        return readFileSync(m[1] ?? "", "utf8").includes(name);
+        return readFileSync(word, "utf8").includes(name);
       } catch {
         return false;
       }
