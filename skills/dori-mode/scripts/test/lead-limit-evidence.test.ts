@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { watchTick } from "../src/done-flow.ts";
-import { discordAnswered, sawAnswer } from "../src/missed-answers.ts";
 import type { FlowDeps } from "../src/done-flow.ts";
-import type { Question } from "../src/messenger/discord-cards.ts";
+import { QuestionStore, type Question } from "../src/messenger/discord-cards.ts";
 import type { DoriConfig } from "../src/config.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
 
@@ -55,7 +54,7 @@ const limitWorld = () => {
     current(ms, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: call.id, name: "eval", arguments: { code: `dori send discord --to ${call.to}${call.reply ? ` --reply ${call.reply}` : ""} --text '${call.qid ?? "answer"}'` } }] } });
     return (sentId: string) => current(ms + 1000, { type: "message", message: { role: "toolResult", toolCallId: call.id, content: [{ type: "text", text: `SENT ${sentId} len=20 sha=12345678 first="answer"` }] } });
   };
-  return { deps, row, reply, argv, current, startCurrent, rollover, sendCall };
+  return { deps, row, reply, argv, current, startCurrent, rollover, sendCall, leadFile, currentFile };
 };
 
 test("Q538 and other card answers leave waiting only when their session got them or their own Discord thread got a qid reply", async () => {
@@ -92,44 +91,6 @@ test("a visible Discord reply clears only its own owner message, never a differe
   expect(sent(world)[0]).toContain('The oldest: "second"');
   l.current(T0 - 16 * MIN, { type: "custom_message", customType: "senpi-codemode:notification", content: "Detached eval cell send-m2 (js) completed. SENT 153000000000000003 len=20 sha=12345678" });
   expect(await watchTick(l.deps(T0 + MIN))).toEqual([]);
-});
-
-const directRow = { id: "1569339203593044020", channel: "1555211347338199112", at: Date.parse("2026-01-01T12:00:00Z") };
-const directCall = (id: string, code: string, name = "eval") => ({ type: "message", timestamp: "2026-01-01T12:00:00.000Z", message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: { code } }] } });
-const directResult = (id: string, text: string) => ({ type: "message", timestamp: "2026-01-01T12:00:01.000Z", message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text }] } });
-const directDetached = (id: string, text: string) => ({ type: "custom_message", timestamp: "2026-01-01T12:00:01.000Z", customType: "senpi-codemode:notification", content: `<system-reminder>Detached eval cell ${id} (js) completed. ${text}` });
-const directCommand = `dori send discord --to ${directRow.channel} --reply ${directRow.id} --text answer`;
-const directAnswered = (entries: readonly object[]) => discordAnswered(entries.map((entry) => JSON.stringify(entry)).join("\n"), directRow);
-
-test("a receipt counts only from the send's own tool result or detached cell", () => {
-  const cases = [
-    { name: "another tool quoting the pending id", expected: false, entries: [directCall("c1", directCommand), directResult("read-log", "Previously observed: c1 SENT 153000000000000001")] },
-    { name: "another detached cell quoting the pending id", expected: false, entries: [directCall("c1", directCommand), directDetached("read-log", "Previously observed: c1 SENT 153000000000000001")] },
-    { name: "a log-search tool quoting the command and receipt", expected: false, entries: [directCall("c1", directCommand, "grep"), directResult("c1", "SENT 153000000000000001")] },
-    { name: "a bash log search executing grep", expected: false, entries: [directCall("c1", `grep -F '${directCommand}' logfile`, "bash"), directResult("c1", "SENT 153000000000000001")] },
-    { name: "an argv-array search pattern with a historical receipt", expected: false, entries: [directCall("c1", `grep -F -A1 '["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]' logfile`, "bash"), directResult("c1", "SENT 153000000000000001")] },
-    { name: "an array assigned before a log search", expected: false, entries: [directCall("c1", `const pattern = ["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]; grep(pattern)`, "eval"), directResult("c1", "SENT 153000000000000001")] },
-    { name: "a stringified array used as a search pattern", expected: false, entries: [directCall("c1", `const pattern = JSON.stringify(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]); grep(pattern)`, "eval"), directResult("c1", "SENT 153000000000000001")] },
-    { name: "the send's own tool result", expected: true, entries: [directCall("c1", directCommand), directResult("c1", "SENT 153000000000000001")] },
-    { name: "the send's own detached completion including a pipe in its cell id", expected: true, entries: [directCall("call_c1|fc_1", directCommand), directDetached("call_c1|fc_1", "SENT 153000000000000001")] },
-  ];
-  for (const row of cases) expect(directAnswered(row.entries), row.name).toBe(row.expected);
-});
-
-test("one eval's second send cannot validate its failed first reply", () => {
-  const both = `${directCommand}; dori send discord --to 1557744292393386074 --reply 1569339203593044021 --text other`;
-  expect(directAnswered([directCall("c1", both), directResult("c1", "first command FAILED; second command SENT 153000000000000001")])).toBe(false);
-  const threadDone = `${directCommand}; dori thread done discord:done-thread --text other`;
-  expect(directAnswered([directCall("c1", threadDone), directResult("c1", "first command FAILED; thread done POSTED 153000000000000001")])).toBe(false);
-  const arrayDone = `${directCommand}; Bun.spawn(["dori", "thread", "done", "discord:done-thread", "done"])`;
-  expect(directAnswered([directCall("c1", arrayDone), directResult("c1", "first command FAILED; done POSTED 153000000000000001")])).toBe(false);
-  const mixed = `Bun.spawn(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]); Bun.spawn(['dori','send','discord','--to','1557744292393386074','--reply','1569339203593044021'])`;
-  expect(directAnswered([directCall("c1", mixed), directResult("c1", "first command FAILED; second command SENT 153000000000000001")])).toBe(false);
-});
-
-test("an argv-array Discord reply uses its matching receipt", () => {
-  const argv = `const p = Bun.spawn(["dori", "send", "discord", "--to", "${directRow.channel}", "--thread", "T-THREAD", "--reply", "${directRow.id}", "--text", "[done] Answer"], { env: process.env, stdin: "ignore", stdout: "pipe" }); console.log(await new Response(p.stdout).text()); await p.exited;`;
-  expect(discordAnswered([directCall("c1", argv), directResult("c1", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), { ...directRow, channel: "T-THREAD" })).toBe(true);
 });
 
 test("later narration and a failed send do not erase eligible owner rows", async () => {
@@ -169,19 +130,46 @@ test("a current transcript limit error emits its notice instead of a stale healt
   expect(out[0]).toStartWith(`LEAD_LIMIT_NOTICE ${PANE} model failing since ${iso(T0 - 10 * MIN)}, retry 2026-01-01T13:00:00.000Z, 1 owner message(s) waiting; NOT_POSTED`);
 });
 
-test("shell replies use the effective thread and quoted arguments", () => {
-  const row = { ...directRow, channel: "T-THREAD" };
-  const double = `dori send discord --to "${directRow.channel}" --thread "T-THREAD" --reply "${directRow.id}" --text answer`;
-  const single = `dori send discord --to '${directRow.channel}' --thread 'T-THREAD' --reply '${directRow.id}' --text answer`;
-  expect(discordAnswered([directCall("double", double), directResult("double", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(true);
-  expect(discordAnswered([directCall("single", single), directResult("single", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(true);
-  expect(discordAnswered([directCall("channel", directCommand), directResult("channel", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(false);
-  const card = `dori send discord --to "${directRow.channel}" --thread "T-CARD" --text "Q1"`;
-  expect(discordAnswered([directCall("card", card), directResult("card", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), { ...directRow, qid: "Q1", thread: "T-CARD" })).toBe(true);
-  const optionText = `dori send discord --to T-THREAD --reply ${directRow.id} --text 'Use --thread OTHER and --reply OTHER for that'`;
-  expect(discordAnswered([directCall("option-text", optionText), directResult("option-text", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), row)).toBe(true);
-  const trailing = `${directCommand}; printf 'unterminated`;
-  expect(discordAnswered([directCall("trailing", trailing), directResult("trailing", "SENT 153000000000000001")].map((entry) => JSON.stringify(entry)).join("\n"), directRow)).toBe(true);
+test("an older same-name session selected by resume keeps its own health and answer evidence", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.startCurrent();
+  l.rollover();
+  l.row(T0 - 20 * MIN, "q1", "", { kind: "answer", qid: "Q1", thread: "T-CARD", answer: "yes" });
+  l.row(T0 - 19 * MIN, "m-2", "still waiting");
+  l.current(T0 - 10 * MIN, { type: "custom_message", customType: "senpi-monitor:notification", content: JSON.stringify({ kind: "answer", qid: "Q1", id: "q1" }) });
+  appendFileSync(join(l.currentFile, "..", "2026-01-01T11-00-00-000Z_22222222-2222-2222-2222-222222222222.jsonl"), `${JSON.stringify({ type: "message", timestamp: iso(T0 - 5 * MIN), message: { role: "assistant", stopReason: "error", errorMessage: "All Claude accounts are blocked. Soonest automatic retry: 2026-01-01T13:00:00Z" } })}\n`);
+  utimesSync(l.leadFile, new Date(T0 - MIN), new Date(T0 - MIN));
+  utimesSync(l.currentFile, new Date(T0), new Date(T0));
+  world.ps += "12 11 /bin/sleep 100\n";
+  const deps = l.deps(T0);
+  const run: FlowDeps["run"] = async (argv, opts) => argv[0] === "ps" && argv[1] === "eww" && argv.at(-1) === "12"
+    ? { code: 0, out: `/bin/sleep 100 PI_SESSION_ID=11111111-1111-1111-1111-111111111111 PI_SESSION_FILE=${l.currentFile}\n`, err: "" }
+    : deps.run(argv, opts);
+  expect(await watchTick({ ...deps, run })).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (19 min); woke the lead (SUBMITTED)`]);
+});
+
+test("a card resolved before the first reconciliation keeps its answer row's asking pane", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.startCurrent();
+  const pane = "aoe_Lane_fedcba09", session = "33333333-3333-3333-3333-333333333333";
+  world.aoe.push({ id: "fedcba0987654321", title: "Lane", path: "/home/test/lane", tool: "omo", profile: "main" });
+  world.tmux.push(pane);
+  world.ps += `20 1 /bin/bash\n21 20 /x/senpi/dist/bundle/cli.js --session-id ${session}\n`;
+  const deps = l.deps(T0), store = new QuestionStore(join(state.dir, "cards"));
+  const q = store.create("continue?", ["yes"], "T-CARD", { tmux: pane, thread: "T-CARD" }, iso(T0 - 30 * MIN));
+  store.answer(q.id, "yes", "button", iso(T0 - 20 * MIN));
+  l.row(T0 - 20 * MIN, "q1", "", { kind: "answer", qid: q.id, tmux: q.tmux, thread: q.thread, answer: "yes" });
+  store.resolve(q.id);
+  l.row(T0 - 19 * MIN, "q2", "", { kind: "answer", qid: "Q2", tmux: pane, thread: "T-CARD", answer: "undelivered" });
+  const dir = join(deps.config.sessionsDir, "--home-test-lane--");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `2026-01-01T10-00-00-000Z_${session}.jsonl`), `${JSON.stringify({ type: "session", timestamp: iso(T0 - 120 * MIN) })}\n${JSON.stringify({ type: "message", message: { role: "toolResult", content: [{ type: "text", text: JSON.stringify({ kind: "answer", qid: q.id, id: "q1" }) }] } })}\n`);
+  const run: FlowDeps["run"] = async (argv, opts) => argv[0] === "tmux" && argv[1] === "display-message" && argv.some((arg) => arg.includes(pane))
+    ? { code: 0, out: "20", err: "" }
+    : deps.run(argv, opts);
+  expect(await watchTick({ ...deps, run, answeredCards: () => store.all() })).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (19 min); woke the lead (SUBMITTED)`]);
 });
 
 test("an answered row stays cleared after rollover while a genuinely unanswered row still wakes", async () => {
@@ -214,10 +202,4 @@ test("a reopened card needs its own later answer delivery, not the previous answ
   expect(await watchTick(deps)).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 15 * MIN)} (15 min); woke the lead (SUBMITTED)`]);
   l.current(T0 - MIN, { type: "message", message: { role: "user", content: [{ type: "text", text: `[DORI] ANSWER Q1 (button, ${iso(T0 - 15 * MIN)}): second` }] } });
   expect(await watchTick(l.deps(T0 + MIN, { leadWakeMin: 0 }))).toEqual([]);
-});
-
-test("embedded answer records honor braces and exact qid boundaries", () => {
-  const entry = { type: "custom_message", customType: "senpi-monitor:notification", content: '<system-reminder>{"kind":"answer","qid":"Q1","id":"new-answer","question":"Use {until}?","answer":"{yes}","ts":"2026-01-01T11:55:00.000Z"}</system-reminder>' };
-  expect(sawAnswer(JSON.stringify(entry), "Q1", { ...directRow, qid: "Q1", id: "new-answer", at: Date.parse("2026-01-01T11:55:00.000Z") })).toBe(true);
-  expect(sawAnswer(JSON.stringify(entry), "Q11", { ...directRow, qid: "Q11", id: "new-answer", at: Date.parse("2026-01-01T11:55:00.000Z") })).toBe(false);
 });

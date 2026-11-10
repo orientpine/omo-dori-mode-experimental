@@ -1348,10 +1348,10 @@ test("a card answered before its session started (a rollover) is not re-sent, an
   w.said(T0 - 20 * MIN, "new session after a rollover");
   const old = [card("Q7", T0 - 30 * MIN)];
   expect(await missedAnswersTick({ ...w.deps(T0), answeredCards: () => old })).toEqual([]);
-  expect(sawAnswer('{\\"qid\\":\\"Q7\\"}', "Q7")).toBe(true);
-  expect(sawAnswer('"qid": "Q7"', "Q7")).toBe(true);
+  expect(sawAnswer('{\\"qid\\":\\"Q7\\"}', "Q7")).toBe(false);
+  expect(sawAnswer('"qid": "Q7"', "Q7")).toBe(false);
   expect(sawAnswer('"qid":"Q70"', "Q7")).toBe(false);
-  expect(sawAnswer("[DORI] ANSWER Q7 (text, x): y", "Q7")).toBe(true);
+  expect(sawAnswer(JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "[DORI] ANSWER Q7 (text, x): y" }] } }), "Q7")).toBe(true);
   // the lead's session: its own transcript, under its cwd
   const deps = { ...w.deps(T0), answeredCards: () => [card("Q8", T0 - 10 * MIN, null)] };
   const leadDir = join(deps.config.sessionsDir, "--home-test-dori--");

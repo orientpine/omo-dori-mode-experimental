@@ -43,7 +43,7 @@ export const answerLine = (q: Question): string =>
 const embeddedObjects = (text: string): { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }[] => {
   const out: { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }[] = []; for (let i = 0; i < text.length; i++) {
     if (text[i] !== "{") continue; const raw = balancedBlock(text, i);
-    if (raw) { try { const parsed: unknown = Bun.JSON5.parse(raw); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) out.push(parsed); } catch {}
+    if (raw) { try { const parsed: unknown = Bun.JSON5.parse(raw); if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "kind" in parsed && parsed.kind === "answer") out.push({ ...parsed, kind: "answer" }); } catch {}
       if (out.at(-1)?.kind === "answer") i += raw.length - 1;
     }
   }
@@ -54,16 +54,16 @@ const answerRecords = (value: unknown): { kind?: string; qid?: string; id?: stri
   if (Array.isArray(value)) return value.flatMap(answerRecords); if (value && typeof value === "object") { const record = value as { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }; return [...(record.kind === "answer" ? [record] : []), ...Object.values(record).flatMap(answerRecords)]; }
   return []; };
 export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow, answeredAt?: string): boolean => {
-  if (!row) return new RegExp(`\\\\*"qid\\\\*"\\s*:\\s*\\\\*"${qid}\\\\*"`).test(transcript) || transcript.includes(`[DORI] ANSWER ${qid} (`);
   return transcript.split("\n").some((line) => {
-    if (!line.includes(qid)) return false;
-    const redelivered = line.match(new RegExp(`\\[DORI\\] ANSWER ${qid} \\([^,]+, ([^)]+)\\)`))?.[1];
-    if (redelivered !== undefined) return answeredAt !== undefined && Date.parse(redelivered) === Date.parse(answeredAt); try { const parsed: unknown = JSON.parse(line); return answerRecords(parsed).some((record) => record.qid === qid && ((row.id && record.id === row.id) || Date.parse(record.ts ?? record.answeredAt ?? "") >= row.at)); } catch { return false; }
-  });
-};
+    if (!line.includes(qid)) return false; try {
+      const entry = JSON.parse(line) as { type?: string; customType?: string; content?: unknown; message?: { role?: string; content?: unknown } }, content = entry.type === "message" && ["user", "toolResult"].includes(entry.message?.role ?? "") ? entry.message?.content : entry.type === "custom_message" && ["senpi-monitor:notification", "senpi-codemode:notification"].includes(entry.customType ?? "") ? entry.content : undefined;
+      if (content === undefined) return false; const redelivered = (typeof content === "string" ? content : JSON.stringify(content)).match(new RegExp(`\\[DORI\\] ANSWER ${qid} \\([^,]+, ([^)]+)\\)`))?.[1];
+      if (redelivered !== undefined) return !row || (answeredAt !== undefined && Date.parse(redelivered) === Date.parse(answeredAt)); return answerRecords(content).some((record) => record.kind === "answer" && record.qid === qid && (!row || (row.id && record.id === row.id) || Date.parse(record.ts ?? record.answeredAt ?? "") >= row.at));
+    } catch { return false; }
+  }); };
 
 // A herdr /clear starts a new transcript while the pane's argv still names the old one. Match the pane's current title
-// to the new session_info, never to a newer unrelated session in the same cwd; aoe transcripts without one use argv.
+// to session_info only as a fallback: /resume can select an older same-name agent-linked transcript.
 const sessionName = (path: string): string | undefined => {
   const fd = openSync(path, "r"); try {
     const buffer = Buffer.alloc(256 * 1024), bytes = readSync(fd, buffer, 0, buffer.length, 0); let name: string | undefined;
@@ -75,10 +75,10 @@ const sessionName = (path: string): string | undefined => {
 };
 
 export const currentTranscript = (path: string, title: string): string => {
-  if (!title) return readFileSync(path, "utf8"); const dir = dirname(path), name = readdirSync(dir).filter((n) => SESSION_FILE.test(n)).sort().reverse().find((n) => sessionName(join(dir, n)) === title);
+  if (!title || sessionName(path) === title) return readFileSync(path, "utf8"); const dir = dirname(path), name = readdirSync(dir).filter((n) => SESSION_FILE.test(n)).sort().reverse().find((n) => sessionName(join(dir, n)) === title);
   return readFileSync(name ? join(dir, name) : path, "utf8"); };
 
-export type AnswerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly qid?: string; readonly thread?: string };
+export type AnswerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly qid?: string; readonly thread?: string; readonly tmux?: string };
 type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string> };
 type SendCall = SendSpec & { readonly id: string; readonly at: number; sent: boolean };
 
@@ -124,7 +124,7 @@ const arrayCommandPrefix = (raw: string): string => {
 };
 const literalArrays = (text: string): string[] => {
   const out: string[] = []; for (const match of text.matchAll(/\[\s*["']dori["']\s*,\s*["'](?:send|thread)["']/g)) {
-    const start = match.index ?? -1; if (start < 0 || !codePosition(text, start) || !/(?:Bun\.spawn|Bun\.spawnSync|subprocess\.run|spawn|execFile|execa|exec)\s*\([^)]*$/.test(text.slice(0, start))) continue;
+    const start = match.index ?? -1; if (start < 0 || !codePosition(text, start) || !/(?:Bun\.spawn|Bun\.spawnSync|subprocess\.run|spawn|execFile|execa|exec)\s*\(\s*$/.test(text.slice(0, start))) continue;
     const raw = balancedBlock(text, start); if (raw) out.push(raw);
   }
   return out; };
@@ -161,7 +161,7 @@ const sendCalls = (transcript: string): SendCall[] => {
       if (!/\b(?:SENT|POSTED) \d{15,22}\b/.test(line)) continue; const call = entry.message.toolCallId ? calls.get(entry.message.toolCallId) : undefined;
       if (call) call.sent = true;
     } else if (entry.type === "custom_message" && entry.customType === "senpi-codemode:notification" && typeof entry.content === "string") {
-      if (!/\b(?:SENT|POSTED) \d{15,22}\b/.test(entry.content)) continue; const cell = entry.content.match(/Detached eval cell ([^\s]+) \(js\) completed\./)?.[1], call = cell ? calls.get(cell) : undefined; if (call) call.sent = true;
+      if (!/\b(?:SENT|POSTED) \d{15,22}\b/.test(entry.content)) continue; const cell = entry.content.match(/Detached eval cell ([^\s]+) \((?:js|py)\) completed\./)?.[1], call = cell ? calls.get(cell) : undefined; if (call) call.sent = true;
     }
   }
   return [...calls.values()];
@@ -182,7 +182,7 @@ type UnansweredInput<T extends AnswerRow> = {
 export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput<T>): Promise<T[]> => {
   const { rows, cards, lead, sessions, table, deps } = input, cardById = new Map(cards.map((q) => [q.id, q])), transcripts = new Map<string, string>(), waiting: T[] = [];
   for (const row of rows) {
-    const target = row.qid ? cardById.get(row.qid)?.tmux || lead.pane : lead.pane;
+    const target = row.qid ? cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
     if (!transcripts.has(target)) {
       const session = sessionFor(sessions, target), cwd = session?.path;
       const file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table) : undefined; transcripts.set(target, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file.path, session?.title ?? "") : "");

@@ -72,11 +72,11 @@ export const ownerRows = (inbox: string, ownerId: string): OwnerRow[] => {
   for (const line of inbox.split("\n")) {
     if (!line.startsWith("{")) continue;
     try {
-      const r = JSON.parse(line) as { ts?: string; id?: string; kind?: string; via?: string; author_id?: string; scope?: string; channel_id?: string; content?: string; transcript?: string; answer?: string; qid?: string; thread?: string };
+      const r = JSON.parse(line) as { ts?: string; id?: string; kind?: string; via?: string; author_id?: string; scope?: string; channel_id?: string; content?: string; transcript?: string; answer?: string; qid?: string; thread?: string; tmux?: string | null };
       const owner = r.kind === "answer" || r.via === "owner-webhook" || (!!ownerId && r.author_id === ownerId && r.scope !== "pair-bot");
       const at = Date.parse(r.ts ?? "");
       if (!owner || Number.isNaN(at)) continue;
-      out.push({ id: r.id ?? r.ts ?? "", at, ...(r.channel_id ? { channel: r.channel_id } : {}), ...(r.scope ? { scope: r.scope } : {}), ...(r.qid ? { qid: r.qid } : {}), ...(r.thread ? { thread: r.thread } : {}), text: String(r.content || r.transcript || r.answer || "") });
+      out.push({ id: r.id ?? r.ts ?? "", at, ...(r.channel_id ? { channel: r.channel_id } : {}), ...(r.scope ? { scope: r.scope } : {}), ...(r.qid ? { qid: r.qid } : {}), ...(r.thread ? { thread: r.thread } : {}), ...(r.tmux ? { tmux: r.tmux } : {}), text: String(r.content || r.transcript || r.answer || "") });
     } catch {}
   }
   return out;
