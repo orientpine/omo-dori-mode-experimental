@@ -19,7 +19,8 @@ test("bot token refusals warn for each skipped method and deliver an own-thread 
     if (METHODS.some((m) => m === method)) return ok({ ok: false, error: "not_allowed_token_type" });
     const params = new URLSearchParams(String(req.body));
     if (method === "conversations.replies") {
-      return ok({ messages: params.get("oldest") === "2.1" ? [] : [{ ts: "2.1", user: "U_OWNER", text: "go ahead" }] });
+      if (params.get("limit") === "1") return ok({ messages: [{ ts: "1.1", user: "U_DORI", text: "starting" }] });
+      return ok({ messages: params.get("oldest") === "1.1" ? [{ ts: "2.1", user: "U_OWNER", text: "go ahead" }] : [] });
     }
     return ok({ channel: "C1", ts: "1.1" });
   };
@@ -29,7 +30,10 @@ test("bot token refusals warn for each skipped method and deliver an own-thread 
     await slack.post("C1", "starting");
     const options = { selfUserId: "U_DORI", warn: (m: string) => warned.push(m) };
     expect(await pollSlackInbound(slack, ledger, options)).toEqual([
-      { source: "own-thread", channel: "C1", ts: "2.1", threadTs: "1.1", user: "U_OWNER", text: "go ahead" },
+      {
+        source: "own-thread", channel: "C1", ts: "2.1", threadTs: "1.1", user: "U_OWNER", text: "go ahead",
+        root: { channel: "C1", rootTs: "1.1", user: "U_DORI", text: "starting" }, recent: [],
+      },
     ]);
     expect(warned).toHaveLength(2);
     expect(warned[0]).toContain("subscriptions.thread.getView: not_allowed_token_type");
@@ -69,7 +73,12 @@ for (const method of METHODS) {
           return ok({ threads: [{ root_msg: { channel: "C2" }, unread_replies: [{ ts: "4.1", thread_ts: "3.1", user: "U_TEAM", text: "view" }] }] });
         }
         // Accept both encodings here to isolate late failures from the independent form contract below.
-        if (called === "conversations.replies") return ok({ messages: [{ ts: "2.1", user: "U_OWNER", text: "own" }] });
+        if (called === "conversations.replies") {
+          const params = new URLSearchParams(String(req.body));
+          const rootTs = params.get("ts");
+          if (params.get("limit") === "1") return ok({ messages: [{ ts: rootTs, user: "U_OWNER", text: `root ${rootTs}` }] });
+          return ok({ messages: params.get("channel") === "C2" ? [{ ts: "4.1", user: "U_TEAM", text: "view" }] : [{ ts: "2.1", user: "U_OWNER", text: "own" }] });
+        }
         return ok({});
       };
       try {

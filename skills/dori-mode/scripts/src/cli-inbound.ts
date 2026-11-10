@@ -111,7 +111,10 @@ const inboundCommand: Command = async (context) => {
     told.add(message);
   };
   await every(minutes, async () => {
-    for (const i of await pollSlackInbound(slack, ledger, { selfUserId: me, warn })) console.log(`INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify((i.text ?? "").slice(0, 200))}`);
+    for (const i of await pollSlackInbound(slack, ledger, { selfUserId: me, warn })) {
+      const context = i.root ? ` root=${JSON.stringify(i.root)} recent=${JSON.stringify(i.recent ?? [])}` : "";
+      console.log(`INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify(i.text ?? "")}${context}`);
+    }
   });
   return;
 };

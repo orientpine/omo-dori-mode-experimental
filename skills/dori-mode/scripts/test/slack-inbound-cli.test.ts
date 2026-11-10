@@ -5,9 +5,11 @@ import { withState } from "./fakes.ts";
 
 // #180: the actual command owns once-per-process warnings, which adapter tests cannot exercise.
 // Dropping warn wiring, moving its Set inside the tick, or aborting on a bot refusal breaks this real CLI witness.
-test("real Slack CLI delivers once and warns once per skipped method across two completed polls", async () => {
+test("real Slack CLI preserves long text and context while warning once across two polls", async () => {
   const state = withState();
+  const longText = `${"x".repeat(210)} complete tail`;
   const methods: string[] = [];
+  let rootReads = 0;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -23,7 +25,11 @@ test("real Slack CLI delivers once and warns once per skipped method across two 
             return Response.json({ ok: false, error: "invalid_arguments" });
           }
           const p = new URLSearchParams(await req.text());
-          return Response.json({ ok: true, messages: p.get("oldest") === "1.1" ? [{ ts: "2.1", user: "U_OWNER", text: "go ahead" }] : [] });
+          if (p.get("limit") === "1") {
+            rootReads++;
+            return Response.json({ ok: true, messages: [{ ts: "1.1", user: "U_OWNER", text: "root question" }] });
+          }
+          return Response.json({ ok: true, messages: p.get("oldest") === "1.1" ? [{ ts: "2.1", user: "U_OWNER", text: longText }] : [] });
         }
         default: return Response.json({ ok: false, error: "unexpected_method" });
       }
@@ -47,14 +53,17 @@ test("real Slack CLI delivers once and warns once per skipped method across two 
     expect({ code, err, signal: child.signalCode }).toEqual({ code: 0, err: "", signal: null });
     expect(out).toContain("TEST_TICKS 2");
     const lines = out.trim().split("\n");
-    expect(lines.filter((line) => line.startsWith("INBOUND "))).toEqual(['INBOUND own-thread C1 1.1 2.1 U_OWNER "go ahead"']);
+    expect(lines.filter((line) => line.startsWith("INBOUND "))).toEqual([
+      `INBOUND own-thread C1 1.1 2.1 U_OWNER ${JSON.stringify(longText)} root=${JSON.stringify({ channel: "C1", rootTs: "1.1", user: "U_OWNER", text: "root question" })} recent=[]`,
+    ]);
     const warnings = lines.filter((line) => line.startsWith("WARN "));
     expect(warnings).toHaveLength(2);
     for (const method of ["subscriptions.thread.getView", "client.counts"]) {
       expect(warnings.filter((line) => line.startsWith(`WARN slack ${method}: not_allowed_token_type`))).toHaveLength(1);
       expect(methods.filter((called) => called === method)).toHaveLength(2);
     }
-    expect(methods.filter((method) => method === "conversations.replies")).toHaveLength(2);
+    expect(methods.filter((method) => method === "conversations.replies")).toHaveLength(3);
+    expect(rootReads).toBe(1);
     expect(await new ThreadLedger(ledgerFile).list()).toEqual([{ channel: "C1", rootTs: "1.1", seenTs: "2.1" }]);
   } finally {
     if (child) {

@@ -1,6 +1,6 @@
 import { MessengerError } from "./http.ts";
 import type { Slack } from "./slack.ts";
-import { type LedgerThread, type ThreadLedger, tsAfter } from "./thread-ledger.ts";
+import { type LedgerThread, type ThreadLedger, type ThreadRoot, tsAfter } from "./thread-ledger.ts";
 
 export type Inbound = {
   readonly source: "threads-view" | "own-thread" | "unread";
@@ -9,11 +9,18 @@ export type Inbound = {
   readonly threadTs?: string | undefined;
   readonly user?: string | undefined;
   readonly text?: string | undefined;
+  readonly root?: ThreadRoot | undefined;
+  readonly recent?: readonly Recent[] | undefined;
 };
+
+type Recent = { readonly ts: string; readonly user?: string | undefined; readonly text: string };
 
 type Msg = { readonly ts?: string; readonly thread_ts?: string; readonly user?: string; readonly text?: string; readonly bot_id?: string; readonly channel?: string };
 type ThreadView = { readonly root_msg?: Msg & { readonly channel?: string }; readonly unread_replies?: readonly Msg[] };
 type Counted = { readonly id: string; readonly has_unreads?: boolean; readonly mention_count?: number };
+type RepliesPage = { readonly messages?: readonly Msg[]; readonly response_metadata?: { readonly next_cursor?: string } };
+
+const recentBefore = (messages: readonly Msg[], currentTs: string): readonly Recent[] => messages.flatMap((m) => m.ts && tsAfter(currentTs, m.ts) ? [{ ts: m.ts, user: m.user, text: (m.text ?? "").split(/\r?\n/, 1)[0] ?? "" }] : []).slice(-3);
 
 export type InboundOptions = {
   readonly selfUserId: string;
@@ -48,24 +55,45 @@ export const pollSlackInbound = async (slack: Slack, ledger: ThreadLedger, opts:
     }
   };
 
+  const history = async (channel: string, rootTs: string) => {
+    const root = await ledger.root(channel, rootTs, async () => {
+      const r = (await slack.call("conversations.replies", { channel, ts: rootTs, limit: 1 })) as RepliesPage;
+      const msg = r.messages?.find((m) => m.ts === rootTs);
+      if (!msg) throw new MessengerError(`slack conversations.replies: root ${channel}/${rootTs}: thread_not_found`, 200, "thread_not_found");
+      return { channel, rootTs, user: msg.user, text: (msg.text ?? "").slice(0, 1000) };
+    });
+    const messages: Msg[] = [];
+    let cursor: string | undefined;
+    do {
+      const r = (await slack.call("conversations.replies", { channel, ts: rootTs, oldest: rootTs, inclusive: false, limit: 50, ...(cursor ? { cursor } : {}) })) as RepliesPage;
+      messages.push(...(r.messages ?? []));
+      cursor = r.response_metadata?.next_cursor?.trim() || undefined;
+    } while (cursor);
+    return { root, messages };
+  };
+
   const view = (await userTokenOnly("subscriptions.thread.getView", { limit: opts.threadsViewLimit ?? 20 })) as { threads?: readonly ThreadView[] };
   for (const t of view.threads ?? []) {
     const channel = t.root_msg?.channel;
-    if (!channel) continue;
-    for (const m of t.unread_replies ?? []) {
-      if (!m.ts || !fromOthers(m)) continue;
-      add({ source: "threads-view", channel, ts: m.ts, threadTs: m.thread_ts, user: m.user, text: m.text });
-      if (m.thread_ts) updates.push({ channel, rootTs: m.thread_ts, seenTs: m.ts });
+    const unread = (t.unread_replies ?? []).filter((m) => m.ts && fromOthers(m));
+    const rootTs = t.root_msg?.ts ?? unread[0]?.thread_ts;
+    if (!channel || !rootTs || unread.length === 0) continue;
+    const { root, messages } = await history(channel, rootTs);
+    for (const m of unread) {
+      if (!m.ts) continue;
+      const threadTs = m.thread_ts ?? rootTs;
+      add({ source: "threads-view", channel, ts: m.ts, threadTs, user: m.user, text: m.text, root, recent: recentBefore(messages, m.ts) });
+      updates.push({ channel, rootTs: threadTs, seenTs: m.ts });
     }
   }
 
   for (const t of await ledger.list()) {
-    const r = (await slack.call("conversations.replies", { channel: t.channel, ts: t.rootTs, oldest: t.seenTs, inclusive: false, limit: 50 })) as { messages?: readonly Msg[] };
+    const { root, messages } = await history(t.channel, t.rootTs);
     let newest = t.seenTs;
-    for (const m of r.messages ?? []) {
+    for (const m of messages) {
       if (!m.ts || !tsAfter(m.ts, t.seenTs)) continue;
       if (tsAfter(m.ts, newest)) newest = m.ts;
-      if (fromOthers(m)) add({ source: "own-thread", channel: t.channel, ts: m.ts, threadTs: t.rootTs, user: m.user, text: m.text });
+      if (fromOthers(m)) add({ source: "own-thread", channel: t.channel, ts: m.ts, threadTs: t.rootTs, user: m.user, text: m.text, root, recent: recentBefore(messages, m.ts) });
     }
     if (newest !== t.seenTs) updates.push({ channel: t.channel, rootTs: t.rootTs, seenTs: newest });
   }

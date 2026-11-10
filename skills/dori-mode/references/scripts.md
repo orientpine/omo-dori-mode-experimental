@@ -547,12 +547,14 @@ Keeps the account shown as online until stopped.
 - Run one instance per account. Two writers flip each other's presence.
 
 ### `dori inbound slack [--loop MIN]`
-Prints `INBOUND <source> <channel> <thread> <ts> <user> <text>`. It reads from three places, each message once:
+Prints `INBOUND <source> <channel> <thread> <ts> <user> <text>[ root=<json> recent=<json>]`. It reads from three places, each message once:
 - `threads-view`: unread replies in threads the account follows (Slack's own Threads view);
 - `own-thread`: new replies in any thread the Dori posted in, tagged or not;
 - `unread`: DMs, group DMs and channels with unread mentions.
 
 The Dori's own messages and bot messages are skipped. Every message the Dori posts records its thread in `<stateDir>/slack-threads.json`, whichever helper sends it, so a guest's untagged reply under a root posted with a raw API call is still found.
+
+For `threads-view` and `own-thread`, `text` is the complete current message as a JSON string, without the former 200-character cut. `root` is a JSON object with `channel`, `rootTs`, `user` and `text` (the original root text, bounded to 1000 characters), including when the root is older than the ledger's `seenTs`. `recent` is a JSON array of up to three `{ts,user,text}` objects immediately before the current message, with `text` holding each author's first line. Every replies page is read with `response_metadata.next_cursor`, so this context comes from the end of a long thread. The root is looked up once per thread in an inbound process and cached; a failed root lookup fails the poll instead of producing empty context. `unread` rows have no `root` or `recent` fields. Ported from upstream [#195](https://github.com/sisyphuslabs/dori-superagent/issues/195).
 
 A bot token's `not_allowed_token_type` from `subscriptions.thread.getView` or `client.counts` skips only that view; own-thread replies still arrive. Each skipped method prints one `WARN` per process, even with `--loop`. Other errors fail the poll and leave watched replies unseen for the next pass; seen timestamps advance only after all Slack calls succeed. Ported from upstream [#182](https://github.com/sisyphuslabs/dori-superagent/pull/182), fixing #180.
 

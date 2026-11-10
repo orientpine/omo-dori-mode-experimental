@@ -4,9 +4,11 @@ import { dirname } from "node:path";
 export const tsAfter = (a: string, b: string): boolean => Number(a) > Number(b);
 
 export type LedgerThread = { readonly channel: string; readonly rootTs: string; readonly seenTs: string };
+export type ThreadRoot = { readonly channel: string; readonly rootTs: string; readonly user?: string | undefined; readonly text: string };
 
 export class ThreadLedger {
   private threads = new Map<string, LedgerThread>();
+  private roots = new Map<string, ThreadRoot>();
   private loaded = false;
 
   constructor(private readonly file: string) {}
@@ -27,6 +29,15 @@ export class ThreadLedger {
     const tmp = `${this.file}.${process.pid}.tmp`;
     await Bun.write(tmp, JSON.stringify([...this.threads.values()], null, 1));
     renameSync(tmp, this.file);
+  }
+
+  async root(channel: string, rootTs: string, read: () => Promise<ThreadRoot>): Promise<ThreadRoot> {
+    const k = this.key(channel, rootTs);
+    const cached = this.roots.get(k);
+    if (cached) return cached;
+    const root = await read();
+    this.roots.set(k, root);
+    return root;
   }
 
   async record(channel: string, rootTs: string, postedTs: string): Promise<void> {
