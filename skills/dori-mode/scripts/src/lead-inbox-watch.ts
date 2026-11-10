@@ -10,11 +10,34 @@ const plain = (s: string, n: number): string => s.replace(/\s+/g, " ").replace(/
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 const OPTION_VALUES = new Set(["-o", "+o", "-O", "+O", "--init-file", "--rcfile"]);
-const ENV_SETUP = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|\$\([^)]*\)|[^\s;])*(?:\s*;\s*|\s+)/;
 const stripEnvironment = (command: string): string => {
   let rest = command;
-  while (ENV_SETUP.test(rest)) rest = rest.replace(ENV_SETUP, "");
-  return rest;
+  for (;;) {
+    let i = 0;
+    const spaces = () => { while (/\s/.test(rest[i] ?? "")) i++; };
+    spaces();
+    if (rest.startsWith("export", i) && /\s/.test(rest[i + 6] ?? "")) { i += 6; spaces(); }
+    const name = /^[A-Za-z_]\w*=/.exec(rest.slice(i));
+    if (!name) return rest;
+    i += name[0].length;
+    let quote = "", depth = 0, escaped = false;
+    for (; i < rest.length; i++) {
+      const c = rest[i] ?? "", next = rest[i + 1] ?? "";
+      if (escaped) { escaped = false; continue; }
+      if (c === "\\") { escaped = true; continue; }
+      if (quote) { if (c === quote) quote = ""; continue; }
+      if (c === "'" || c === '"') { quote = c; continue; }
+      if (c === "$" && next === "(") { depth++; i++; continue; }
+      if (c === "(" && depth > 0) { depth++; continue; }
+      if (c === ")" && depth > 0) { depth--; continue; }
+      if (depth === 0 && (c === ";" || /\s/.test(c))) break;
+    }
+    if (quote || depth > 0) return rest;
+    spaces();
+    if (rest[i] === ";") i++;
+    spaces();
+    rest = rest.slice(i);
+  }
 };
 const scriptCalls = (command: string): string[] => {
   const words = shellWords(stripEnvironment(command)) ?? [];
