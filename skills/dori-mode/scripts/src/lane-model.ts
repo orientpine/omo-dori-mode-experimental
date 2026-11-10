@@ -20,6 +20,11 @@ export const laneModel = (config: Pick<DoriConfig, "stateDir" | "leadPane" | "de
   return { model: chosen || lead || lane.model || config.defaultModel, lead: !!lead };
 };
 
+// The level a lane's new session starts at: a --thinking, else the level of the lead it follows or of a --model, else the
+// one it runs at now (its status line), else its model's own.
+export const moveThinking = (model: string, lead: boolean, chosen: { readonly model?: string | undefined; readonly thinking?: string | undefined }, shown: string | undefined): string | undefined =>
+  chosen.thinking || (lead || chosen.model ? splitModel(model).thinking : undefined) || shown || splitModel(model).thinking;
+
 // What the registry records once a lane's new session runs base at thinking: that model, and the mark when it was chosen.
 export const keptModel = (lane: Pick<Lane, "modelPinned">, base: string, thinking: string | undefined, chosen?: string): Pick<Lane, "model" | "modelPinned"> =>
   ({ model: `${base}${thinking ? `:${thinking}` : ""}`, ...(chosen || lane.modelPinned ? { modelPinned: true } : {}) });
@@ -40,8 +45,10 @@ export const withThinking = (argv: readonly string[], model: string): string[] =
     const a = argv[i] ?? "";
     if (a === "--thinking") i++;
     else if (a.startsWith("--thinking=")) continue;
-    else if (a === "--model" && argv[i + 1] === model) (out.push(a, base, "--thinking", thinking), i++);
-    else if (a === `--model=${model}`) out.push(`--model=${base}`, "--thinking", thinking);
+    else if (a === "--model" && argv[i + 1] === model) {
+      out.push(a, base, "--thinking", thinking);
+      i++;
+    } else if (a === `--model=${model}`) out.push(`--model=${base}`, "--thinking", thinking);
     else out.push(a);
   }
   return out;

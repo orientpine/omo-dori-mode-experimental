@@ -62,7 +62,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     throw e instanceof LaunchFailed && openedThread ? new LaunchFailed(e.message, openedThread) : e;
   });
   const arm = assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
-  const lane: Lane = { ...draft, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
+  const lane: Lane = { ...draft, model, pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
   await deps.registry.write(lane);
   // registered first, so the queue counts this lane as working in the thread; a thread --thread new just opened is 🔄 already
   if (input.thread !== NEW_THREAD) {
@@ -80,7 +80,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   return { lane, startup: (await startupGoal(deps, input.key, opened.pane, cwd, opened.session ?? "", launchedAt, prompted)) ?? started };
 };
 export { validateLaunch } from "./launch-gates.ts";
-export { keptModel, laneModel, modelMove } from "./lane-model.ts";
+export { keptModel, laneModel, modelMove, moveThinking } from "./lane-model.ts";
 export { threadGate } from "./launch-gates.ts";
 export { relatedFor } from "./launch-gates.ts";
 export { relatedGate } from "./launch-gates.ts";

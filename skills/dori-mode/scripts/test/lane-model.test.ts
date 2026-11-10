@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordHerdrSession } from "../src/herdr-sessions.ts";
 import { keepSessions, type LaneHandoverDeps, recover } from "../src/lane-handover.ts";
-import { keptModel, laneModel, leadModel, modelMove, withThinking } from "../src/lane-model.ts";
+import { keptModel, laneModel, leadModel, modelMove, moveThinking, withThinking } from "../src/lane-model.ts";
 import { launchLane } from "../src/launch.ts";
 import type { Runner } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, type World } from "./fakes.ts";
@@ -66,6 +66,10 @@ test("launch without --model starts the lane on its lead's model of now and leav
   expect(follow.modelPinned).toBeUndefined();
   // an omo agent gets the level as its own --thinking, over the template's
   expect(world.calls.some((c) => c.join(" ").includes("--model kimi-coding/k3.1-pro --thinking max ") && !c.join(" ").includes("--thinking low"))).toBe(true);
+  // the lead moving on while the brief renders (its work thread opens between two renders): the lane runs and records one model
+  const moving = await launchLane({ ...deps, run, readGoal: async () => ({ status: "active" }), openThread: async () => (leadRuns("anthropic-subscription/claude-opus-5-5:medium"), "discord:9") }, { thread: "new", key: "moving", title: "moving", brief, done: "file /x", cwd: "/tmp" });
+  expect(moving.lane.model).toBe(LEAD);
+  leadRuns(LEAD);
   const own = (await launch("own", "anthropic-subscription/claude-opus-5-5:medium")).lane;
   expect(own).toMatchObject({ model: "anthropic-subscription/claude-opus-5-5:medium", modelPinned: true });
 });
@@ -90,4 +94,24 @@ test("a move interrupted after the registry took the new model goes back to the 
   await deps.registry.write({ ...lane, pane: "w1:p1" });
   await recover(deps, pending("w1:p3"), () => {});
   expect(await deps.registry.read("k")).toMatchObject({ pane: "w1:p3", model: "anthropic-subscription/claude-opus-5-5:medium" });
+});
+
+test("a handover's level: a --thinking, else the followed lead's or a --model's, over the level its screen shows", () => {
+  const opus = "anthropic-subscription/claude-opus-5-5:medium";
+  expect(moveThinking(opus, false, { model: opus }, "high")).toBe("medium");
+  expect(moveThinking(opus, false, { model: opus, thinking: "low" }, "high")).toBe("low");
+  expect(moveThinking(LEAD, true, {}, "high")).toBe("max");
+  expect(moveThinking(opus, false, {}, "high")).toBe("high");
+  expect(keptModel({}, "anthropic-subscription/claude-opus-5-5", moveThinking(opus, false, { model: opus }, "high"), opus)).toEqual({ model: opus, modelPinned: true });
+});
+
+test("an interrupted move of a lane that had no model gives the kept old pane no model", async () => {
+  const deps = { ...omo(), cardDir: join(dir, "discord"), signal: () => true, sessionOf: async () => "" } as unknown as LaneHandoverDeps;
+  const lane = { key: "a", title: "a", thread: "none", brief: "/b", done: "file /x", openedAt: "2026-01-01T00:00:00Z" } as const;
+  const models = JSON.parse(JSON.stringify(modelMove({}, "kimi-coding/k3.1-pro", "max")));
+  await deps.registry.write({ ...lane, model: LEAD, pane: "w1:p2" });
+  await recover(deps, { key: "a", pid: 1, at: "2026-01-01T00:00:00Z", from: "w1:p1", to: "w1:p2", note: "/n", models }, () => {});
+  const back = await deps.registry.read("a");
+  expect(back?.pane).toBe("w1:p1");
+  expect(back?.model).toBeUndefined();
 });

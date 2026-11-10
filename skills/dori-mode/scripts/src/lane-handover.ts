@@ -20,7 +20,7 @@ import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
 import { endOldMonitors } from "./handover-monitors.ts";
 import { missingTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
-import { awaitPrompt, briefAnchor, keptModel, laneModel, modelMove } from "./launch.ts";
+import { awaitPrompt, briefAnchor, keptModel, laneModel, modelMove, moveThinking } from "./launch.ts";
 import { resumeAgent, type StatOf } from "./job-control.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { paneGroup, herdrResult, isHerdrPane } from "./herdr.ts";
@@ -785,8 +785,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const { model, lead } = laneModel(config, lane, opts.model);
   const screen = await captureTmux(deps.run, lane.pane);
   const shown = statusLine(screen, model);
-  // the lead's level for a lane that follows it (lane-model.ts), else the level it runs at now (its status line), else its own
-  const thinking = opts.thinking || (lead ? splitModel(model).thinking : undefined) || shown.thinking || splitModel(model).thinking;
+  const thinking = moveThinking(model, lead, opts, shown.thinking);
   if (!shown.model) emit(`HANDOVER_MODEL_UNSEEN ${key}: the status line of ${lane.pane} does not name ${modelId(model)}; the new session gets ${model} anyway`);
   const mark = readReady(config.stateDir, key);
   const ready = mark && mark.pane === lane.pane && now - Date.parse(mark.at) <= config.handover.readyMin * 60_000 ? mark : undefined;
@@ -1132,7 +1131,8 @@ const pointLane = async (deps: LaneHandoverDeps, key: string, from: string, to: 
   const fresh = await deps.registry.read(key);
   // a herdr lane's tab is the new pane's (dori close closes it); the old tab goes with the old session
   const tab = isHerdrPane(to) ? ((await herdrResult(deps.run, ["pane", "get", to]))?.["pane"] as { tab_id?: string } | undefined)?.tab_id : undefined;
-  if (fresh && fresh.pane !== to) await deps.registry.write({ ...fresh, ...model, pane: to, tab, history: [...(fresh.history ?? []), { at: iso(deps.clock), status: statusOf(fresh), note: why }] });
+  // a lane that had no model before the move gets none back
+  if (fresh && fresh.pane !== to) await deps.registry.write({ ...(model && !model.model ? (({ model: _had, ...kept }) => kept)(fresh) : fresh), ...model, pane: to, tab, history: [...(fresh.history ?? []), { at: iso(deps.clock), status: statusOf(fresh), note: why }] });
   const cards = new QuestionStore(deps.cardDir).retarget({ tmux: from }, { tmux: to });
   emit(`HANDOVER_LANE ${key} pane -> ${to}; cards ${cards.length ? cards.join(",") : "none"}`);
 };
