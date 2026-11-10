@@ -109,7 +109,9 @@ test("an assignment before a direct script or interpreter is skipped", () => {
   expect(watchProblem([monitor(`HOST=$(hostname $(printf nested)) bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`SEP='\\' bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`SEP='\\' bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
-  expect(watchProblem([monitor(`bash -c -e ${script}`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
-  expect(watchProblem([monitor(`bash -c -o pipefail ${script}`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
+  expect(watchProblem([monitor(`LABEL=$'owner\\'s' bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`LABEL=$'owner\\'s' bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`bash -c -e 'bash ${script}'`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`bash -c -o pipefail 'bash ${script}'`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`bash -c 'exec ${script}' -e`)], inbox, 0, () => true)).toBeUndefined();
 });

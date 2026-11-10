@@ -25,12 +25,15 @@ const stripEnvironment = (command: string): string => {
       const c = rest[i] ?? "", next = rest[i + 1] ?? "";
       if (escaped) { escaped = false; continue; }
       if (quote) {
-        if (c === quote) { quote = ""; continue; }
-        if (c === "\\" && quote === '"') { escaped = true; continue; }
+        const end = quote === "double" ? '"' : "'";
+        if (c === end) { quote = ""; continue; }
+        if (c === "\\" && quote !== "single") { escaped = true; continue; }
         continue;
       }
       if (c === "\\") { escaped = true; continue; }
-      if (c === "'" || c === '"') { quote = c; continue; }
+      if (c === "$" && next === "'") { quote = "ansi"; i++; continue; }
+      if (c === "'") { quote = "single"; continue; }
+      if (c === '"') { quote = "double"; continue; }
       if (c === "$" && next === "(") { depth++; i++; continue; }
       if (c === "(" && depth > 0) { depth++; continue; }
       if (c === ")" && depth > 0) { depth--; continue; }
@@ -58,7 +61,16 @@ const scriptCalls = (command: string): string[] => {
     }
     if (/^-[a-z]*[sn][a-z]*$/.test(word) || word === "--help" || word === "--version") return [];
     if (/^-[a-z]*c[a-z]*$/.test(word)) {
-      const nested = words[i + 1];
+      let j = i + 1;
+      for (; j < words.length; j++) {
+        const w = words[j] ?? "";
+        if (w === "--") { j++; break; }
+        if (w === "noexec") return [];
+        if (OPTION_VALUES.has(w) || /^[-+][A-Za-z]+[oO]$/.test(w)) { j++; continue; }
+        if (w.startsWith("-") || w.startsWith("+")) continue;
+        break;
+      }
+      const nested = words[j];
       return nested ? scriptCalls(nested) : [];
     }
     if (/^[-+][A-Za-z]+[oO]$/.test(word)) {
