@@ -113,6 +113,10 @@ test("an assignment before a direct script or interpreter is skipped", () => {
   expect(watchProblem([monitor(`LABEL=$'owner\\'s' bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`LABEL="$(printf "%s %s" owner pair)" bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`LABEL="$(printf "%s %s" owner pair)" bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`HOST="$(printf %s $(hostname -s))" bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`HOST="$(printf %s $(hostname -s))" bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`bash -c +o noexec 'exec ${script}'`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`bash -c -en 'exec ${script}'; tail -F /tmp/lanes.log`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
   expect(watchProblem([monitor(`bash -c -n 'bash ${script}'; tail -F /tmp/lanes.log`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
   expect(watchProblem([monitor(`bash -c -o noexec 'exec ${script}'; tail -F /tmp/lanes.log`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
   expect(watchProblem([monitor(`bash -c -e 'bash ${script}'`)], inbox, 0, () => true)).toBeUndefined();
