@@ -1,4 +1,6 @@
+import { fileURLToPath } from "node:url";
 import type { Backend } from "./config.ts";
+import { shellQuote } from "./herdr.ts";
 import { hasThread, type Lane } from "./registry.ts";
 import { type Ledger, uiHits, scopeText } from "./directives.ts";
 import { join } from "node:path";
@@ -76,11 +78,15 @@ export const uiWarning = (input: LaunchInput, brief: string, ledger: Pick<Ledger
     : `LAUNCH_UI_HINT ${input.key}: the brief reads like UI work (${words}) but has no --ui, so the owner's seven UI steps (references/ui-work.md) are not in it. Launched as is; for UI work, launch with --ui.`;
 };
 
+export const cliCommand = (path: string = fileURLToPath(new URL("./cli.ts", import.meta.url))): string => `bun ${shellQuote(path)}`;
+const CLI = cliCommand();
+
 export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr", gated: readonly string[] = []): string => [
   "",
   "## Lane footer (written by dori launch)",
   `- Key: ${lane.key}. Work thread: ${lane.thread}.`,
   `- Done = ${lane.done}. The lane closes only when every signal reads back live.`,
+  `- Persist each milestone, blocker, question, halt and completion with ${CLI} report ${lane.key} --kind milestone|blocker|question|halted|done --text "what, with evidence links"; it appends reports.jsonl and prints the human [REPORT] line to send to the lead as below.`,
   `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <one plain line: what is done, and what the owner has to do if anything>; the evidence (ids, paths, hashes, numbers, links) goes on the lines below that first line, never in it, and a (fix: ...) tag stays on the first line. Type it into ${backend === "aoe" ? "tmux session" : "pane"} ${leadPane || "(lead pane)"} with dori type, as an argv array, never a shell string: run ["dori","type","${leadPane || "(lead pane)"}","--text","<report line>"]. It prints SUBMITTED once the lead took it; NOT_SUBMITTED <reason> (exit 1) means it did not arrive: send it once more. Keep backticks and $( out of the text (dori type refuses them).`,
   `- A report that is a fix attempt for a failing check or metric carries (fix: <metric> / <hypothesis>). The lead's stuck ladder counts failed attempts on one metric, tagged or not: from the 2nd, competing hypotheses before the next patch; at the 3rd, ulw research and a dori challenge of your next plan (sent to you, in this session); after that, or with one hypothesis tried 3 times, the lead may move you to a new session. A blocker, an impossible or an ambiguous task is a fine report (| blocker |), better than another retry.`,
   `- Stuck after a fix that did not move the metric: before the next patch, write at least 3 competing hypotheses with one cheap discriminating test each, run the tests, and record what they showed (dori tree add|falsify|support --lane ${lane.key}). The lead's dori fix-attempt refuses a second attempt on one metric without them.`,

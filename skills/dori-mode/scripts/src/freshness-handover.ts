@@ -8,7 +8,7 @@ import { readRollovers, type RolloverRequest, type Signals, type Who } from "./r
 import type { Committed } from "./rollover-audit.ts";
 import { watchLog } from "./watch-log.ts";
 
-export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "lead-told" | "lead-tell-failed" | "no-report" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary" | "lead_compaction_stuck" | "directive_audit" | "directive_links" | "lane_cap" | "stalled" | "usage_unknown" | "supervision_error" | "ready_resume" | KeepAct["kind"] | "trial_daily"; readonly lane: string; readonly detail: string };
+export type SweepAct = { readonly kind: "nudged" | "nudge-failed" | "lead-told" | "lead-tell-failed" | "no-report" | "journal-error" | "stuck" | "research_started" | "research_not_started" | "rollover_due" | "rollover_auto" | "rollover_audit" | "audit_summary" | "lead_compaction_stuck" | "directive_audit" | "directive_links" | "lane_cap" | "stalled" | "usage_unknown" | "supervision_error" | "ready_resume" | KeepAct["kind"] | "trial_daily"; readonly lane: string; readonly detail: string };
 
 export type RolloverHooks = {
   // the length signals of the session in a pane: context use, compactions, age

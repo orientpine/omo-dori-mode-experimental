@@ -17,6 +17,7 @@ import { ChallengeError } from "./challenge.ts";
 import { GateRefusal } from "./merge-gate.ts";
 import { ForkError } from "./fork-explore.ts";
 import { Registry } from "./registry.ts";
+import { ReportError } from "./reports.ts";
 import { useDoriState } from "./hc-pane.ts";
 import { realClock, run, useConfiguredRuntime } from "./run.ts";
 import { ScorecardError } from "./scorecard.ts";
@@ -196,6 +197,6 @@ try {
     process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof GateRefusal || e instanceof ForkError || e instanceof DirectiveError || e instanceof HeavyJobError || e instanceof CheckpointError || e instanceof LessonError || e instanceof WorklogError) die(e.message);
+  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof GateRefusal || e instanceof ForkError || e instanceof DirectiveError || e instanceof HeavyJobError || e instanceof CheckpointError || e instanceof LessonError || e instanceof WorklogError || e instanceof ReportError) die(e.message);
   throw e;
 }

@@ -103,7 +103,7 @@ export type Lane = {
   readonly lastReplyAt?: number;
   readonly lastNudgeAt?: number;
   readonly lastAutoReplyAt?: number;
-  readonly lastReport?: string | undefined;
+  readonly lastReport?: string | undefined; readonly reportProtocol?: "jsonl-v1"; readonly lastJournalError?: string | undefined;
   readonly fixes?: readonly FixAttempt[];
   // the owner's goal in their own words (dori launch --goal), and the lane's latest stated direction (dori intent-check)
   readonly goal?: string | undefined;

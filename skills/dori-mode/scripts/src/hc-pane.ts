@@ -131,10 +131,11 @@ export const hcSessions = async (run: Runner): Promise<{ id: string; title: stri
 
 // A new labelled terminal in cwd running the user's shell (group: the dori.group label, "dori" unless laneWorkspace
 // names one), with line typed into it once its shell has drawn; the pane "hc:t<n>".
-export const hcOpen = async (rt: SessionRuntime, run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly workspace?: string }, line: string): Promise<{ readonly pane: string }> => {
+export const hcOpen = async (rt: SessionRuntime, run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly workspace?: string; readonly beforeStart?: (opened: { readonly pane: string }) => Promise<void> }, line: string): Promise<{ readonly pane: string }> => {
   const ref = await rt.create({ name: opts.title, cwd: opts.cwd, env: {}, role: "lane", container: "tab", ...(opts.workspace ? { group: opts.workspace } : {}) }).catch((e: unknown) => Promise.reject(new Error(`hc run failed: ${e instanceof Error ? e.message : String(e)}`)));
   const pane = formatRef(ref);
   for (let i = 0; i < 20 && !(await hcRead(run, pane)).trim(); i++) await clock.sleep(250);
+  await opts.beforeStart?.({ pane });
   await rt.start(ref, line).catch(async (e: unknown) => {
     // the terminal was made for this agent only: one whose agent never started is closed, not left behind as a shell
     const why = `hc send failed in ${pane}: ${e instanceof Error ? e.message : String(e)}`;

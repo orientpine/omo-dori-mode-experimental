@@ -19,6 +19,7 @@ import type { DoriConfig } from "./config.ts";
 import { keepTick } from "./compaction-keep.ts";
 import { HUNG_MESSAGE, laneSessionUsage, Supervision } from "./supervision.ts";
 import { lastReportLine, transcriptReport } from "./freshness-reports.ts";
+import { type Progress, ReportError, reportLine, Reports } from "./reports.ts";
 
 export type { SweepAct, RolloverHooks } from "./freshness-handover.ts";
 export { pidAlive, handoverRunning, resumeArgs } from "./freshness-handover.ts";
@@ -109,15 +110,39 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     });
     return transcriptReport(leadLines, lane.key) ?? lastReportLine(leadScreen, lane.key) ?? lastReportLine(await readScreen(deps.run, deps.config.backend, lane.pane ?? "", 200), lane.key);
   };
+  const reports = new Reports(deps.config.stateDir);
+  const readProgress = async (lane: Lane): Promise<{ readonly previous: Progress | null; readonly progress: Progress | null; readonly report: string | null; readonly error: ReportError | null }> => {
+    if (lane.reportProtocol !== "jsonl-v1") return { previous: null, progress: null, report: await lastReport(lane), error: null };
+    try {
+      const previous = reports.read(lane.key);
+      const progress = previous ? reports.observe(lane.key, await readScreen(deps.run, deps.config.backend, lane.pane ?? ""), now, deps.config.nudgeAfterMin * 60_000) : null;
+      return { previous, progress, report: progress?.lastReport ? reportLine(progress.lastReport) : null, error: null };
+    } catch (error) {
+      if (!(error instanceof ReportError)) throw error;
+      return { previous: null, progress: null, report: null, error };
+    }
+  };
   for (const lane of await deps.registry.open()) {
     if (!lane.pane) continue;
+    const state = await readProgress(lane);
+    if (state.error) {
+      if (lane.lastJournalError !== state.error.message) {
+        acts.push({ kind: "journal-error", lane: lane.key, detail: state.error.message });
+        await deps.registry.patch(lane.key, { lastJournalError: state.error.message });
+      }
+      continue;
+    }
+    const { previous, progress, report } = state;
+    if (progress?.state === "stalled" && previous?.state !== "stalled") acts.push({ kind: "stalled", lane: lane.key, detail: progress.lastEvent.text });
     // a lane told "not done" keeps working: it is moved to a new session like a working one (cyto-p2-timers carried 306k
     // after its 13th compaction on 10-19 and was never started); its reports, nudges and posts stay as they were
     if (statusOf(lane) === "not-done") {
       // its newest report still counts as progress for the hung check (its nudges and posts stay off)
-      const reported = await lastReport(lane);
-      const seen = reported && reported !== lane.lastReport ? { ...lane, lastReport: reported, lastReplyAt: now } : lane;
-      if (seen !== lane) await deps.registry.patch(lane.key, { lastReport: seen.lastReport, lastReplyAt: now });
+      const reported = report;
+      const seen = reported && reported !== lane.lastReport
+        ? { ...lane, lastReport: reported, ...(lane.reportProtocol === "jsonl-v1" ? {} : { lastReplyAt: now }) }
+        : lane;
+      if (seen !== lane) await deps.registry.patch(lane.key, { lastReport: seen.lastReport, ...(lane.reportProtocol === "jsonl-v1" ? {} : { lastReplyAt: now }) });
       acts.push(...(await superviseLane(deps, seen)));
       acts.push(...(await keepLane(deps, lane.key, seen)));
       const resumed = await readyResume(deps, hooks, lane.key, lane.pane);
@@ -128,11 +153,11 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       continue;
     }
     if (statusOf(lane) !== "working") continue;
-    const report = await lastReport(lane);
+    if (progress?.state === "stalled") continue;
     let current = lane;
     if (report && report !== lane.lastReport) {
-      current = { ...current, lastReport: report, lastReplyAt: now };
-      await deps.registry.patch(lane.key, { lastReport: report, lastReplyAt: now });
+      current = lane.reportProtocol === "jsonl-v1" ? { ...current, lastReport: report } : { ...current, lastReport: report, lastReplyAt: now };
+      await deps.registry.patch(lane.key, lane.reportProtocol === "jsonl-v1" ? { lastReport: report } : { lastReport: report, lastReplyAt: now });
       // the stuck ladder, from a tagged attempt and from the untagged count (reports, commits, tree): one STUCK line per rung
       const tag = fixTag(report);
       if (tag) for (const n of (await recordFix(deps, lane.key, { at: new Date(now).toISOString(), ...tag, via: "report" })).notes) acts.push(stuckAct(lane.key, n));
@@ -155,9 +180,11 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     // the start just made holds the lane: no automatic start beside it in this sweep
     // a lead's request still waiting holds the lane too: no automatic start beside it (review 320 round 13)
     if (!resumed.some((a) => a.detail.startsWith("started")) && !waitingRequest(readRollovers(deps.config.stateDir), lane.key, lane.pane)) acts.push(...(await rolloverDue(deps, hooks, "lane", lane.key, lane.pane, lane.model ?? deps.config.defaultModel, current.rolloverDue, stuckTop(current), (due) => deps.registry.patch(lane.key, { rolloverDue: due }))));
-    const heard = lastHeard(current);
+    const heard = lane.reportProtocol === "jsonl-v1" ? Math.max(lastHeard(lane), progress?.lastReport ? Date.parse(progress.lastReport.at) : 0) : lastHeard(current);
     const silentMin = Math.round((now - heard) / 60_000);
-    if (silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
+    const threadQuietMin = lane.reportProtocol === "jsonl-v1" ? Math.round((now - Math.max(lastHeard(lane), lane.lastAutoReplyAt ?? 0)) / 60_000) : silentMin;
+    const running = !progress || progress.state === "running";
+    if (running && silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
       const delivered = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`);
       current = { ...current, lastNudgeAt: now };
       await deps.registry.patch(lane.key, { lastNudgeAt: now });
@@ -166,11 +193,12 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     // nothing goes to the owner's thread on its own: a line counted from the lane's last report, blind to what the lead
     // wrote since, told him nothing (owner, 2026-11-04: "시간도 안맞고 말이야 도움도 안돼"); the lead is told, once per silence
     // (lastAutoReplyAt), with or without hooks.threadReply
-    if (silentMin >= deps.config.postAfterMin && lane.thread !== "none" && (current.lastAutoReplyAt ?? 0) < heard) {
+    const due = lane.reportProtocol === "jsonl-v1" ? (current.lastAutoReplyAt ?? 0) <= heard : (current.lastAutoReplyAt ?? 0) < heard;
+    if (threadQuietMin >= deps.config.postAfterMin && lane.thread !== "none" && due) {
       // a report seen before still stands once it left the screens; only a lane never heard from is NO-REPORT
-      const known = report ?? current.lastReport;
+      const known = lane.reportProtocol === "jsonl-v1" ? report : report ?? current.lastReport;
       if (!known) {
-        acts.push({ kind: "no-report", lane: lane.key, detail: "pane has no [REPORT] line" });
+        acts.push({ kind: "no-report", lane: lane.key, detail: lane.reportProtocol === "jsonl-v1" ? "report journal has no report" : "pane has no [REPORT] line" });
         continue;
       }
       const pane = deps.config.leadPane;

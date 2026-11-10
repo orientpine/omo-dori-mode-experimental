@@ -165,7 +165,18 @@ export const agentLine = (argv: readonly string[], env: Readonly<Record<string, 
 };
 
 // A new tab labelled title in cwd (in workspace when given) whose root pane runs argv; the pane and tab ids.
-export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly argv: readonly string[]; readonly env?: Readonly<Record<string, string | undefined>>; readonly workspace?: string }): Promise<{ readonly pane: string; readonly tab?: string }> => {
+export const openHerdrSession = async (
+  run: Runner,
+  clock: Clock,
+  opts: {
+    readonly title: string;
+    readonly cwd: string;
+    readonly argv: readonly string[];
+    readonly env?: Readonly<Record<string, string | undefined>>;
+    readonly workspace?: string;
+    readonly beforeStart?: (opened: { readonly pane: string; readonly tab?: string }) => Promise<void>;
+  },
+): Promise<{ readonly pane: string; readonly tab?: string }> => {
   // a new session opens on the chosen runtime (default): a refused choice (DORI_RUNTIME=hc) throws here, before any tab
   const rt = runtimesOf(run).default;
   // hc's launch is a Unix env line in $SHELL, where the fork's native-Windows lanes run PowerShell (review 8 of #404)
@@ -189,6 +200,7 @@ export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readon
   // a fresh shell may drop what is typed before its prompt is drawn
   for (let i = 0; i < 20 && !(await herdrRead(run, pane)).trim(); i++) await clock.sleep(250);
   await requireHerdrPwsh(run, pane, process.platform, Object.entries(opts.env ?? {}).flatMap(([k, v]) => (v === "" ? [k] : [])));
+  await opts.beforeStart?.({ pane, ...(tab ? { tab } : {}) });
   await rt.start(ref, agentLine(opts.argv, opts.env)).catch((e: unknown) => Promise.reject(new Error(`herdr pane run failed in ${pane}: ${reasonOf(e)}`)));
   return { pane, ...(tab ? { tab } : {}) };
 };

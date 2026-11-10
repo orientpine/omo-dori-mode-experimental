@@ -1,6 +1,7 @@
 import { currentTmuxSession } from "./aoe.ts";
 import { isLessonOutcome, Lessons } from "./lessons.ts";
 import { Worklog } from "./worklog.ts";
+import { isReportKind, reportLine, Reports } from "./reports.ts";
 import { realClock, run } from "./run.ts";
 import type { Command } from "./cli-context.ts";
 import { die } from "./cli-context.ts";
@@ -58,6 +59,14 @@ const lessonCommand: Command = async (context) => {
   return;
 };
 
+const reportCommand: Command = async (context) => {
+  const { config, key, need, lane } = context;
+  const target = await lane(key ?? die("report needs a lane key"));
+  const kind = need("kind");
+  if (isReportKind(kind)) console.log(reportLine(new Reports(config.stateDir).report(target.key, kind, need("text"), realClock.now())));
+  else die("--kind must be milestone, blocker, question, halted or done");
+};
+
 const worklogCommand: Command = async (context) => {
   const { config, flags, key, need } = context;
   const worklog = new Worklog(config.stateDir);
@@ -90,6 +99,7 @@ const worklogCommand: Command = async (context) => {
 };
 
 export const journalCommands: Readonly<Record<string, Command>> = {
+  "report": reportCommand,
   "lesson": lessonCommand,
   "worklog": worklogCommand,
 };

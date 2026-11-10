@@ -107,6 +107,8 @@ const USAGE_START = `dori <command> [options]
                                        (NAME=VALUE for a lane, --unset=NAME for a --use-gpu lane or any other session;
                                        nothing without launchEnv); used by setups/discord-aoe/self-restart.sh
   sync   [--write]                     registry vs live panes; read-only unless --write; a SIGNALS line per open lane with a record
+  report <key> --kind milestone|blocker|question|halted|done --text TEXT
+                                       append a durable reports.jsonl progress report and print its [REPORT] line
   checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]...
                                        record a finished step in <stateDir>/lane-state/<key>/checkpoints.jsonl (locked);
                                        the same step again with the same data is a no-op, with other data it is refused;
