@@ -44,15 +44,18 @@ export const answerLine = (q: Question): string =>
 const embeddedObjects = (text: string): { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }[] => {
   const out: { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }[] = []; for (let i = 0; i < text.length; i++) {
     if (text[i] !== "{") continue; const raw = balancedBlock(text, i);
-    if (raw) { try { const parsed: unknown = Bun.JSON5.parse(raw); if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "kind" in parsed && parsed.kind === "answer") out.push({ ...parsed, kind: "answer" }); } catch {}
-      if (out.at(-1)?.kind === "answer") i += raw.length - 1;
+    if (raw) { try { const parsed: unknown = Bun.JSON5.parse(raw); out.push(...answerRecords(parsed)); i += raw.length - 1; }
+      catch (error) { if (!(error instanceof SyntaxError)) throw error; }
     }
   }
   return out;
 };
 const answerRecords = (value: unknown): { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }[] => {
-  if (typeof value === "string") return embeddedObjects(value);
-  if (Array.isArray(value)) return value.flatMap(answerRecords); if (value && typeof value === "object") { const record = value as { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }; return [...(record.kind === "answer" ? [record] : []), ...Object.values(record).flatMap(answerRecords)]; }
+  if (typeof value === "string") {
+    try { const parsed: unknown = JSON.parse(value); return answerRecords(parsed); }
+    catch (error) { if (!(error instanceof SyntaxError)) throw error; return embeddedObjects(value); }
+  }
+  if (Array.isArray(value)) return value.flatMap(answerRecords); if (value && typeof value === "object") { const record = value as { kind?: string; qid?: string; id?: string; ts?: string; answeredAt?: string }; return record.kind === "answer" ? [record] : Object.values(record).flatMap(answerRecords); }
   return []; };
 export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow, answeredAt?: string): boolean => {
   return transcript.split("\n").some((line) => {

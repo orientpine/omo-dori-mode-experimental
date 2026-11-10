@@ -43,10 +43,11 @@ const EVAL_STOPPED = /^Eval cell (\S+) \(\w+\) is cancelled/;
 
 // the jobs one tool result started: its own detached cell, the bash sessions and tasks it (or its cell's tool calls) put
 // in the background
-const startsOf = (tool: string, callId: string, text: string, d: Details | undefined): [BackgroundJob["kind"], string][] => {
+export const backgroundStarts = (tool: string, callId: string, text: string, d: Details | undefined): [BackgroundJob["kind"], string][] => {
   const out: [BackgroundJob["kind"], string][] = [];
   if (tool === "eval" && callId && text.startsWith(`Eval cell ${callId} detached and is running`)) out.push(["eval", callId]);
-  if (tool === "bash" && d?.background && d.bash_id) out.push(["bash", d.bash_id]);
+  const directBash = tool === "bash" ? (d?.background ? d.bash_id : undefined) ?? BASH_START.exec(text)?.[1] : undefined;
+  if (directBash) out.push(["bash", directBash]);
   if (tool === "task" && d?.run_in_background) for (const t of d.items ?? [d]) if (t.task_id && t.status === "running") out.push(["task", t.task_id]);
   for (const c of d?.toolCalls ?? []) {
     const bash = c.name === "bash" ? BASH_START.exec(c.resultPreview ?? "")?.[1] : undefined;
@@ -99,7 +100,7 @@ export const pendingBackground = (transcript: string, since = 0, until = Number.
     if (stopped) open.delete(stopped);
     if (tool === "task_cancel") for (const m of text.matchAll(/\b(st_[0-9a-z]+)\b/g)) if (m[1]) open.delete(m[1]);
     if (tool === undefined || at < since) continue;
-    for (const [kind, id] of startsOf(tool, e.message?.toolCallId ?? "", text, e.message?.details)) if (!open.has(id)) open.set(id, { kind, id, at });
+    for (const [kind, id] of backgroundStarts(tool, e.message?.toolCallId ?? "", text, e.message?.details)) if (!open.has(id)) open.set(id, { kind, id, at });
     for (const c of e.message?.details?.toolCalls ?? []) {
       const mon = c.name === "monitor" ? MONITOR_START.exec(c.resultPreview ?? "")?.[1] : undefined;
       if (mon) monitors.set(mon, { description: c.args?.description ?? "", path: Boolean(c.args?.path) });

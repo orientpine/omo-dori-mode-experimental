@@ -1,6 +1,39 @@
 type Literal = { readonly end: number; readonly value?: string };
 type CommandSource = { readonly code: Uint8Array; readonly strings: ReadonlyMap<number, Literal> };
 
+// Shell quotes, comments and heredoc bodies are data, not JavaScript execution wrappers.
+export const shellSource = (text: string): Uint8Array => {
+  const positions = new Uint8Array(text.length), documents: { readonly delimiter: string; readonly tabs: boolean }[] = [];
+  let quote = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] ?? "";
+    if (quote) { if (c === "\\" && quote === '"') i++; else if (c === quote) quote = ""; continue; }
+    if (c === "\\") { i++; continue; }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === "#" && (i === 0 || /[\s;|&()]/.test(text[i - 1] ?? ""))) {
+      while (i < text.length && text[i] !== "\n") i++;
+      if (i === text.length) break;
+    }
+    const document = text[i] === "<" && text[i + 2] !== "<" ? /^<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([\w-]+))/.exec(text.slice(i)) : null;
+    if (document) {
+      documents.push({ delimiter: document[2] ?? document[3] ?? document[4] ?? "", tabs: document[1] === "-" });
+      i += document[0].length - 1; continue;
+    }
+    positions[i] = 1;
+    if (text[i] !== "\n" || !documents.length) continue;
+    let cursor = i + 1;
+    for (const doc of documents) {
+      while (cursor < text.length) {
+        const next = text.indexOf("\n", cursor), end = next < 0 ? text.length : next, line = text.slice(cursor, end);
+        cursor = next < 0 ? text.length : next + 1;
+        if ((doc.tabs ? line.replace(/^\t+/, "") : line) === doc.delimiter) break;
+      }
+    }
+    documents.length = 0; i = cursor - 1;
+  }
+  return positions;
+};
+
 // Keep template text out of executable positions, but scan ${...} as code, including nested templates and objects.
 export const commandSource = (text: string): CommandSource => {
   const positions = new Uint8Array(text.length), strings = new Map<number, Literal>();
