@@ -17,6 +17,8 @@ test("a receipt counts only from the send's own tool result or detached cell", (
     { name: "another detached cell quoting the pending id", expected: false, entries: [directCall("c1", directCommand), directDetached("read-log", "Previously observed: c1 SENT 153000000000000001")] },
     { name: "a log-search tool quoting the command and receipt", expected: false, entries: [directCall("c1", directCommand, "grep"), directResult("c1", "SENT 153000000000000001")] },
     { name: "a bash log search executing grep", expected: false, entries: [directCall("c1", `grep -F '${directCommand}' logfile`, "bash"), directResult("c1", "SENT 153000000000000001")] },
+    { name: "an assigned shell pattern followed by grep", expected: false, entries: [directCall("c1", `pattern='${directCommand}'\ngrep -F -A1 "$pattern" logfile`, "bash"), directResult("c1", "SENT 153000000000000001")] },
+    { name: "a quoted command in narration", expected: false, entries: [directCall("c1", `console.log("${directCommand}")`), directResult("c1", "SENT 153000000000000001")] },
     { name: "an argv-array search pattern with a historical receipt", expected: false, entries: [directCall("c1", `grep -F -A1 '["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]' logfile`, "bash"), directResult("c1", "SENT 153000000000000001")] },
     { name: "an array assigned before a log search", expected: false, entries: [directCall("c1", `const pattern = ["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]; grep(pattern)`, "eval"), directResult("c1", "SENT 153000000000000001")] },
     { name: "a stringified array used as a search pattern", expected: false, entries: [directCall("c1", `const pattern = JSON.stringify(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]); grep(pattern)`, "eval"), directResult("c1", "SENT 153000000000000001")] },
@@ -39,6 +41,14 @@ test("one eval's second send cannot validate its failed first reply", () => {
   expect(directAnswered([directCall("c1", arrayDone), directResult("c1", "first command FAILED; done POSTED 153000000000000001")])).toBe(false);
   const mixed = `Bun.spawn(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]); Bun.spawn(['dori','send','discord','--to','1557744292393386074','--reply','1569339203593044021'])`;
   expect(directAnswered([directCall("c1", mixed), directResult("c1", "first command FAILED; second command SENT 153000000000000001")])).toBe(false);
+});
+
+test("mixed dynamic and literal posting operations remain ambiguous before argument extraction", () => {
+  const literal = `Bun.spawn(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}","--text","answer"])`;
+  const dynamic = `Bun.spawn(["dori","send","discord","--to",otherChannel,"--reply",otherId,"--text",otherText])`;
+  for (const code of [`${dynamic}; ${literal}`, `${literal}; ${dynamic}`]) {
+    expect(directAnswered([directCall("mixed", code), directResult("mixed", "dynamic command SENT 153000000000000001; literal command FAILED")])).toBe(false);
+  }
 });
 
 test("an argv-array Discord reply uses its matching receipt", () => {

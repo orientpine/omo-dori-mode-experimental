@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { watchTick } from "../src/done-flow.ts";
 import type { FlowDeps } from "../src/done-flow.ts";
+import { readAnswerHistory } from "../src/missed-answers.ts";
 import { QuestionStore, type Question } from "../src/messenger/discord-cards.ts";
 import type { DoriConfig } from "../src/config.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World } from "./fakes.ts";
@@ -130,7 +131,7 @@ test("a current transcript limit error emits its notice instead of a stale healt
   expect(out[0]).toStartWith(`LEAD_LIMIT_NOTICE ${PANE} model failing since ${iso(T0 - 10 * MIN)}, retry 2026-01-01T13:00:00.000Z, 1 owner message(s) waiting; NOT_POSTED`);
 });
 
-test("an older same-name session selected by resume keeps its own health and answer evidence", async () => {
+test.each([SESSION_ID, "11111111-1111-1111-1111-111111111111"])("an older same-name session selected by resume keeps its own health and answer evidence (argv %s)", async (argvSession) => {
   const l = limitWorld();
   world.screen = watching("5: Dori inbox");
   l.startCurrent();
@@ -142,11 +143,23 @@ test("an older same-name session selected by resume keeps its own health and ans
   utimesSync(l.leadFile, new Date(T0 - MIN), new Date(T0 - MIN));
   utimesSync(l.currentFile, new Date(T0), new Date(T0));
   world.ps += "12 11 /bin/sleep 100\n";
+  world.ps = world.ps.replace(SESSION_ID, argvSession);
   const deps = l.deps(T0);
   const run: FlowDeps["run"] = async (argv, opts) => argv[0] === "ps" && argv[1] === "eww" && argv.at(-1) === "12"
     ? { code: 0, out: `/bin/sleep 100 PI_SESSION_ID=11111111-1111-1111-1111-111111111111 PI_SESSION_FILE=${l.currentFile}\n`, err: "" }
     : deps.run(argv, opts);
   expect(await watchTick({ ...deps, run })).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (19 min); woke the lead (SUBMITTED)`]);
+});
+
+test("a same-name clear without a live child ignores the stale argv session's retry", async () => {
+  const l = limitWorld();
+  world.screen = watching("5: Dori inbox");
+  l.argv(T0 - 100 * MIN, { type: "session_info", name: "Dori" });
+  l.reply(T0 - 30 * MIN, "All Claude accounts are blocked. Soonest automatic retry: 2026-01-01T13:00:00Z");
+  l.startCurrent();
+  l.row(T0 - 20 * MIN, "m-1", "first");
+  l.current(T0 - 10 * MIN, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "working now" }] } });
+  expect(await watchTick(l.deps(T0))).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 20 * MIN)} (20 min); woke the lead (SUBMITTED)`]);
 });
 
 test("a card resolved before the first reconciliation keeps its answer row's asking pane", async () => {
@@ -170,6 +183,26 @@ test("a card resolved before the first reconciliation keeps its answer row's ask
     ? { code: 0, out: "20", err: "" }
     : deps.run(argv, opts);
   expect(await watchTick({ ...deps, run, answeredCards: () => store.all() })).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (19 min); woke the lead (SUBMITTED)`]);
+});
+
+test("redelivery followed by resolution preserves the immutable answer version in reconciliation and cache", async () => {
+  const l = limitWorld(), store = new QuestionStore(join(state.dir, "cards"));
+  world.screen = watching("5: Dori inbox");
+  l.startCurrent();
+  const q = store.create("continue?", ["yes"], "T-CARD", { tmux: PANE, thread: "T-CARD" }, iso(T0 - 30 * MIN));
+  store.answer(q.id, "yes", "button", iso(T0 - 20 * MIN));
+  l.row(T0 - 20 * MIN + 300, "old-version", "", { kind: "answer", qid: q.id, tmux: PANE, thread: q.thread, answer: "yes" });
+  l.current(T0 - 19 * MIN, { type: "message", message: { role: "user", content: [{ type: "text", text: `[DORI] ANSWER ${q.id} (button, ${iso(T0 - 20 * MIN)}): yes` }] } });
+  store.reopen(q.id);
+  store.answer(q.id, "yes", "button", iso(T0 - 15 * MIN));
+  l.row(T0 - 15 * MIN + 400, "new-version", "", { kind: "answer", qid: q.id, tmux: PANE, thread: q.thread, answer: "yes" });
+  store.resolve(q.id);
+  const deps = {
+    ...l.deps(T0), answeredCards: () => store.all(),
+    answerHistory: () => readAnswerHistory(store.answersFile),
+  };
+  expect(await watchTick(deps)).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 15 * MIN + 400)} (14 min); woke the lead (SUBMITTED)`]);
+  expect(JSON.parse(readFileSync(join(state.dir, "lead-answered.json"), "utf8"))).toEqual(["old-version"]);
 });
 
 test("an answered row stays cleared after rollover while a genuinely unanswered row still wakes", async () => {

@@ -117,7 +117,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   const [sessions, table] = await Promise.all([liveSessions(deps.run), procTable(deps.run)]);
   const session = sessionFor(sessions, pane), file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table) : undefined;
   if (!file) return [];
-  const title = session?.title ?? "", transcript = currentTranscript(file.path, session?.title ?? "");
+  const title = session?.title ?? "", transcript = currentTranscript(file, session?.title ?? "");
   const { replies, firstAt } = recentReplies(transcript);
   const lastGood = replies.findLast((r) => !r.error)?.at ?? (Number.isNaN(firstAt) ? 0 : firstAt);
   const errors = replies.filter((r) => r.error && r.at > lastGood);

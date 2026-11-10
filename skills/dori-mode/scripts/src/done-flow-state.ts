@@ -27,6 +27,8 @@ export type FlowDeps = {
   readonly openCards?: (ref: string) => readonly string[];
   // the question cards the owner answered (cli reads the card store); the watch re-types an answer its session missed
   readonly answeredCards?: () => readonly Question[];
+  // immutable versions from answers.jsonl, including cards since reopened or resolved
+  readonly answerHistory?: () => readonly Question[];
   // asks the thread status queue for a status on a discord:<id> work thread; the queue keeps it working while a lane there
   // still works. Resolves with the queue's outcome (cli wires it when DORI_DISCORD_TOKEN is set)
   readonly requestThreadStatus?: (ref: string, status: "working" | "waiting") => Promise<string>;

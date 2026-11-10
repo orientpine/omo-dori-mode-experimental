@@ -5,6 +5,7 @@ import { CheckpointError } from "./checkpoints.ts";
 import { LessonError } from "./lessons.ts";
 import { WorklogError } from "./worklog.ts";
 import { leadAlertPoster } from "./autoturn.ts";
+import { readAnswerHistory } from "./missed-answers.ts";
 import { LeadError } from "./lead.ts";
 import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile, resolveInstance } from "./config.ts";
 import { type FlowDeps, LaneStateError } from "./done-flow.ts";
@@ -59,6 +60,7 @@ const deps: FlowDeps = {
   // a close leaves a thread with an open question card as it is (cards are kept per Discord thread id)
   openCards: (ref: string) => (ref.startsWith("discord:") ? openCardIds(new QuestionStore(cardDir()), discordThreadId(ref)) : []),
   answeredCards: () => new QuestionStore(cardDir()).all().filter((q) => q.status === "answered"),
+  answerHistory: () => readAnswerHistory(new QuestionStore(cardDir()).answersFile),
   ...(discordToken
     ? {
         markThreadDone: async (ref: string) => {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { liveMonitors, manifestPath, type MonitorSpec, readManifest } from "./handover.ts";
 import type { Runner } from "./run.ts";
-import { type Proc, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
+import { type Proc, procTable, resolveSession, sessionDirFor, type SessionHit } from "./session-id.ts";
 
 // Background work an omo session started and is still waiting on, read from its session transcript: a detached eval
 // cell, a background (or auto-detached) bash session, a background task child, a monitor a cell armed (tool.monitor, ended
@@ -186,7 +186,7 @@ export const strayTasks = (home: string, session: string, alive: (pid: number) =
 // cannot be read. Jobs started before the agent process started died with the earlier process; jobs started before
 // notBefore (a server or watcher left running for hours) are not what the lane waits on.
 // The transcript file of the session a pane's omo runs, and that agent's pid, or undefined when either cannot be read.
-export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[]): Promise<{ readonly path: string; readonly pid: number } | undefined> => {
+export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[]): Promise<{ readonly path: string; readonly pid: number; readonly via: SessionHit["via"] } | undefined> => {
   const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend: "aoe" });
   if (!hit.id || !hit.pid) return undefined;
   const dir = sessionDirFor(sessionsDir, cwd);
@@ -196,7 +196,7 @@ export const sessionFile = async (run: Runner, sessionsDir: string, pane: string
   } catch {
     return undefined;
   }
-  return name ? { path: join(dir, name), pid: hit.pid } : undefined;
+  return name ? { path: join(dir, name), pid: hit.pid, via: hit.via } : undefined;
 };
 
 // A persistent monitor omo restored after a same-session restart has its start record before the new agent, so the start
