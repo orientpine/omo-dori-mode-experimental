@@ -107,3 +107,30 @@ test("a quoted thread reply with reordered options clears only its own card", as
   expect(await replay([call("dori thread reply --lane other 'discord:CARD' 'Q1 answer'", "bash"), result("POSTED 153000000000000001")], [first, row])).toEqual({ waiting: [first], answeredIds: [row.id] });
   expect(cache()).toEqual([row.id]);
 });
+
+test.each(["prepared", "historical-search", "unresolved", "other-cell"])("detached send after %s preserves operation-specific receipt ownership", async (kind) => {
+  const prep = kind === "historical-search" ? "grep -F SENT historical.log" : "pwd";
+  const code = `await tool.bash({command: ${JSON.stringify(prep)}}); display(await tool.bash({command: ${JSON.stringify(send)}}))`;
+  const details = kind === "unresolved" ? {} : { toolCalls: [{ name: "bash", args: { command: prep }, resultPreview: kind === "historical-search" ? sent : "/repo" }] };
+  const start = result("Eval cell call-1 detached and is running", "call-1", details);
+  const completed = { type: "custom_message", customType: "senpi-codemode:notification", content: `<system-reminder>Detached eval cell ${kind === "other-cell" ? "other" : "call-1"} (js) completed.\n${sent}\nKernel state updated</system-reminder>` };
+  const good = kind === "prepared";
+  expect(await replay([call(code), start, completed])).toEqual({ waiting: good ? [second] : [first, second], answeredIds: good ? [first.id] : [] });
+  expect(cache()).toEqual(good ? [first.id] : []);
+});
+
+test.each(["tool-search", "native-search"])("failed native send cannot borrow foreground %s output or its detached completion", async (kind) => {
+  const native = `Bun.spawnSync(["dori","send","discord","--to","${first.channel}","--reply","${first.id}","--text","answer"])`;
+  const search = kind === "tool-search" ? 'display(await tool.bash({command: "grep -F SENT historical.log"}))' : 'console.log(Bun.spawnSync(["grep","-F","SENT","historical.log"]).stdout.toString())';
+  const details = kind === "tool-search" ? { toolCalls: [{ name: "bash", args: { command: "grep -F SENT historical.log" }, resultPreview: sent }] } : {};
+  const entries = [call(`${native}; ${search}`), result(`send FAILED; search returned ${sent}`, "call-1", details)];
+  const detached = { type: "custom_message", customType: "senpi-codemode:notification", content: `Detached eval cell call-1 (js) completed.\n${sent}` };
+  expect(await replay([...entries, detached])).toEqual({ waiting: [first, second], answeredIds: [] });
+  expect(cache()).toEqual([]);
+});
+
+test("a native send's own output without sibling executions still clears its row", async () => {
+  const code = `console.log(Bun.spawnSync(["dori","send","discord","--to","${first.channel}","--reply","${first.id}","--text","answer"]).stdout.toString())`;
+  expect(await replay([call(code), result(sent)])).toEqual({ waiting: [second], answeredIds: [first.id] });
+  expect(cache()).toEqual([first.id]);
+});

@@ -4,8 +4,8 @@ import { commandSource, executionCommands, shellSource } from "./answer-command-
 import { backgroundStarts } from "./background.ts";
 
 export type AnswerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly qid?: string; readonly thread?: string; readonly tmux?: string };
-type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string>; readonly bash?: { readonly command: string; readonly alone: boolean } };
-type SendCall = SendSpec & { readonly id: string; readonly tool: string; readonly at: number; sent: boolean };
+type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string>; readonly aggregate?: boolean; readonly bash?: { readonly command: string; readonly alone: boolean; readonly peers?: readonly string[] } };
+type SendCall = SendSpec & { readonly id: string; readonly tool: string; readonly at: number; sent: boolean; detachedReceipt: boolean };
 
 const qidsIn = (text: string): ReadonlySet<string> => new Set((text.match(/\bq\d+\b/gi) ?? []).map((q) => q.toUpperCase()));
 const specsFromArgv = (argv: readonly unknown[]): (SendSpec | undefined)[] => {
@@ -69,7 +69,9 @@ const specsFromText = (text: string): (SendSpec | undefined)[] => {
     if (command === undefined) { out.push(undefined); continue; }
     for (const spec of shellSpecs(command, shellSource(command))) out.push(spec && tool === "bash" ? { ...spec, bash: { command, alone } } : spec);
   }
-  return out; };
+  const native = [...text.matchAll(/(?<![\w$.])(?:exec|execSync|spawn|execFile|execa|subprocess\.run)\s*\(|\bBun\.spawn(?:Sync)?\s*\(|(?:\bBun\.\$|\$)\s*(?=`)/g)].filter((match) => source.code[match.index]).length;
+  const aggregate = native + commands.filter((operation) => operation.tool !== "exec").length <= 1;
+  return out.map((spec) => spec ? { ...spec, aggregate, ...(spec.bash && native === 0 && commands.every((operation) => operation.tool === "bash") ? { bash: { ...spec.bash, peers: commands.flatMap(({ command }) => command !== undefined && command !== spec.bash?.command ? [command] : []) } } : {}) } : undefined); };
 const shellSpecs = (text: string, positions: Uint8Array): (SendSpec | undefined)[] =>
   [...text.matchAll(/\bdori\b/g)].filter((match) => positions[match.index] && /(?:^|[;\n|&])\s*$/.test(text.slice(0, match.index))).flatMap((match) => specsFromShell(text.slice(match.index)));
 const sendSpecs = (value: unknown, shell: boolean): (SendSpec | undefined)[] => {
@@ -89,7 +91,7 @@ const sendCalls = (transcript: string): SendCall[] => {
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     if (entry.type === "message" && entry.message?.role === "assistant") {
       for (const part of Array.isArray(entry.message.content) ? entry.message.content : []) {
-        if (part.type !== "toolCall" || !part.id || !["eval", "bash", "monitor"].includes(part.name ?? "")) continue; const specs = sendSpecs(part.arguments ?? {}, part.name !== "eval"), spec = specs.length === 1 ? specs[0] : undefined; if (spec) calls.set(part.id, { id: part.id, tool: part.name ?? "", at: Date.parse(entry.timestamp ?? ""), ...spec, sent: false });
+        if (part.type !== "toolCall" || !part.id || !["eval", "bash", "monitor"].includes(part.name ?? "")) continue; const specs = sendSpecs(part.arguments ?? {}, part.name !== "eval"), spec = specs.length === 1 ? specs[0] : undefined; if (spec) calls.set(part.id, { id: part.id, tool: part.name ?? "", at: Date.parse(entry.timestamp ?? ""), ...spec, sent: false, detachedReceipt: spec.aggregate !== false });
       }
     } else if (entry.message?.role === "toolResult") {
       const call = entry.message.toolCallId ? calls.get(entry.message.toolCallId) : undefined;
@@ -99,13 +101,19 @@ const sendCalls = (transcript: string): SendCall[] => {
       // A sole posting operation is not necessarily the bash operation that started this handle.
       // Without args, only one source bash and one returned bash can establish the same one-to-one attribution.
       const attempts = bash ? (nested ?? []).filter((operation) => operation.name === "bash" && (operation.args?.command !== undefined ? operation.args.command === bash.command : bash.alone && nested?.filter((part) => part.name === "bash").length === 1)) : [];
+      // The detach result can prove that every other execution already finished without a receipt.
+      // Then only the posting operation can add a receipt in this cell's later completion.
+      if (bash?.peers && !/\b(?:SENT|POSTED) \d{15,22}\b/.test(text) && bash.peers.every((command) => nested?.some((operation) => {
+        const preview = operation.resultPreview;
+        return operation.name === "bash" && operation.args?.command === command && preview !== undefined && !preview.endsWith("…") && !/\b(?:SENT|POSTED) \d{15,22}\b/.test(preview) && !backgroundStarts("bash", call.id, preview, undefined).length;
+      }))) call.detachedReceipt = true;
       const jobs = call.tool === "bash" ? backgroundStarts(call.tool, call.id, text, entry.message.details) : attempts.flatMap((operation) => backgroundStarts("bash", call.id, operation.resultPreview ?? "", undefined));
       const started = [...new Set(jobs.filter(([kind]) => kind === "bash").map(([, id]) => id))];
       if (started.length === 1 && started[0]) handles.set(started[0], call);
-      const receipt = bash && nested ? attempts.map((operation) => operation.resultPreview ?? "").join("\n") : bash && !bash.alone ? "" : text;
+      const receipt = bash && nested ? attempts.map((operation) => operation.resultPreview ?? "").join("\n") : call.aggregate === false ? "" : text;
       if (/\b(?:SENT|POSTED) \d{15,22}\b/.test(receipt)) call.sent = true;
     } else if (entry.type === "custom_message" && entry.customType === "senpi-codemode:notification" && typeof entry.content === "string") {
-      if (!/\b(?:SENT|POSTED) \d{15,22}\b/.test(entry.content)) continue; const cell = entry.content.match(/Detached eval cell ([^\s]+) \((?:js|py)\) completed\./)?.[1], call = cell ? calls.get(cell) : undefined; if (call && (!call.bash || call.bash.alone)) call.sent = true;
+      if (!/\b(?:SENT|POSTED) \d{15,22}\b/.test(entry.content)) continue; const cell = entry.content.match(/Detached eval cell ([^\s]+) \((?:js|py)\) completed\./)?.[1], call = cell ? calls.get(cell) : undefined; if (call?.detachedReceipt) call.sent = true;
     } else if (entry.type === "custom_message" && entry.customType === "senpi-monitor:notification" && typeof entry.content === "string") {
       const handle = entry.content.match(/^(?:<system-reminder>\s*)?Background terminal session (bash_\w+) finished\b/)?.[1], call = handle ? handles.get(handle) : undefined;
       if (call && /\b(?:SENT|POSTED) \d{15,22}\b/.test(entry.content)) call.sent = true;
