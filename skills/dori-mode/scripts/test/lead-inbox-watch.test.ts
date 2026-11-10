@@ -75,3 +75,17 @@ test("the noexec option does not count as executing the script", () => {
   writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
   expect(watchProblem([monitor(`bash -o noexec ${script}`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
 });
+
+test("grouped shell options with an o operand still select the script", () => {
+  const inbox = join(state.dir, "inbox.jsonl");
+  const script = join(state.dir, "watch.sh");
+  writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
+  expect(watchProblem([monitor(`bash -euo pipefail ${script}`)], inbox, 0, () => true)).toBeUndefined();
+});
+
+test("a monitor restored with leading environment setup is still inspected", () => {
+  const inbox = join(state.dir, "inbox.jsonl");
+  const script = join(state.dir, "watch.sh");
+  writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
+  expect(watchProblem([monitor(`export SENPI_MONITOR_RESTORED=1; bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
+});

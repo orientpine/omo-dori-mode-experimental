@@ -10,8 +10,14 @@ const plain = (s: string, n: number): string => s.replace(/\s+/g, " ").replace(/
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 const OPTION_VALUES = new Set(["-o", "+o", "-O", "+O", "--init-file", "--rcfile"]);
+const ENV_SETUP = /^\s*export\s+[A-Za-z_][A-Za-z0-9_]*=\S+\s*;\s*/;
+const stripEnvironment = (command: string): string => {
+  let rest = command;
+  while (ENV_SETUP.test(rest)) rest = rest.replace(ENV_SETUP, "");
+  return rest;
+};
 const scriptCalls = (command: string): string[] => {
-  const words = shellWords(command) ?? [];
+  const words = shellWords(stripEnvironment(command)) ?? [];
   const offset = (words[0] ?? "").split("/").at(-1) === "exec" ? 1 : 0;
   const first = words[offset] ?? "";
   const shell = first.split("/").at(-1);
@@ -28,7 +34,10 @@ const scriptCalls = (command: string): string[] => {
       const nested = words[i + 1];
       return nested ? scriptCalls(nested) : [];
     }
-    if (OPTION_VALUES.has(word)) {
+    if (/^[-+][A-Za-z]+[oO]$/.test(word)) {
+      if (words[i + 1] === "noexec") return [];
+      i++;
+    } else if (OPTION_VALUES.has(word)) {
       if (word === "-o" && words[i + 1] === "noexec") return [];
       i++;
     } else if (!word.startsWith("-") && !word.startsWith("+")) {
