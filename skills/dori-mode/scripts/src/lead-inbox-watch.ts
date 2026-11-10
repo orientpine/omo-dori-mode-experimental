@@ -20,10 +20,18 @@ const stripEnvironment = (command: string): string => {
     const name = /^[A-Za-z_]\w*=/.exec(rest.slice(i));
     if (!name) return rest;
     i += name[0].length;
-    let quote = "", depth = 0, escaped = false;
+    let quote = "", depth = 0, escaped = false, outerQuote = "";
     for (; i < rest.length; i++) {
       const c = rest[i] ?? "", next = rest[i + 1] ?? "";
       if (escaped) { escaped = false; continue; }
+      if (c === "\\" && quote !== "single") { escaped = true; continue; }
+      if (c === "$" && next === "(" && quote !== "single") {
+        outerQuote = quote;
+        depth++;
+        quote = "";
+        i++;
+        continue;
+      }
       if (quote) {
         const end = quote === "double" ? '"' : "'";
         if (c === end) { quote = ""; continue; }
@@ -36,7 +44,7 @@ const stripEnvironment = (command: string): string => {
       if (c === '"') { quote = "double"; continue; }
       if (c === "$" && next === "(") { depth++; i++; continue; }
       if (c === "(" && depth > 0) { depth++; continue; }
-      if (c === ")" && depth > 0) { depth--; continue; }
+      if (c === ")" && depth > 0) { depth--; if (depth === 0) quote = outerQuote; continue; }
       if (depth === 0 && (c === ";" || /\s/.test(c))) break;
     }
     if (quote || depth > 0) return rest;
@@ -65,8 +73,12 @@ const scriptCalls = (command: string): string[] => {
       for (; j < words.length; j++) {
         const w = words[j] ?? "";
         if (w === "--") { j++; break; }
-        if (w === "noexec") return [];
-        if (OPTION_VALUES.has(w) || /^[-+][A-Za-z]+[oO]$/.test(w)) { j++; continue; }
+        if (w === "-n" || w === "noexec") return [];
+        if (OPTION_VALUES.has(w) || /^[-+][A-Za-z]+[oO]$/.test(w)) {
+          if (words[j + 1] === "noexec") return [];
+          j++;
+          continue;
+        }
         if (w.startsWith("-") || w.startsWith("+")) continue;
         break;
       }
