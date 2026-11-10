@@ -9,18 +9,33 @@ type Entry = ReturnType<typeof readManifest>[number] & { readonly deliveryPaused
 const plain = (s: string, n: number): string => s.replace(/\s+/g, " ").replace(/`/g, "'").replaceAll("$(", "$ (").trim().slice(0, n);
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+const OPTION_VALUES = new Set(["-o", "+o", "-O", "+O", "--init-file", "--rcfile"]);
 const scriptCalls = (command: string): string[] => {
   const words = shellWords(command) ?? [];
-  const first = words[0] ?? "";
+  const offset = (words[0] ?? "").split("/").at(-1) === "exec" ? 1 : 0;
+  const first = words[offset] ?? "";
   const shell = first.split("/").at(-1);
-  const direct = shell === "exec" ? words[1] : first;
-  if (direct?.startsWith("/") && direct.endsWith(".sh")) return [direct];
+  if (first.startsWith("/") && first.endsWith(".sh")) return [first];
   if (!SHELLS.has(shell ?? "")) return [];
-  const option = words[1] ?? "";
-  const nested = words[2];
-  if (/^-[a-z]*c[a-z]*$/.test(option)) return nested ? scriptCalls(nested) : [];
-  const script = words[1];
-  return script?.startsWith("/") && script.endsWith(".sh") ? [script] : [];
+  for (let i = offset + 1; i < words.length; i++) {
+    const word = words[i] ?? "";
+    if (word === "--") {
+      const script = words[i + 1];
+      return script?.startsWith("/") && script.endsWith(".sh") ? [script] : [];
+    }
+    if (/^-[a-z]*[sn][a-z]*$/.test(word) || word === "--help" || word === "--version") return [];
+    if (/^-[a-z]*c[a-z]*$/.test(word)) {
+      const nested = words[i + 1];
+      return nested ? scriptCalls(nested) : [];
+    }
+    if (OPTION_VALUES.has(word)) {
+      if (word === "-o" && words[i + 1] === "noexec") return [];
+      i++;
+    } else if (!word.startsWith("-") && !word.startsWith("+")) {
+      return word.startsWith("/") && word.endsWith(".sh") ? [word] : [];
+    }
+  }
+  return [];
 };
 
 // why the session hears no inbox row, or undefined while a monitor on the inbox file runs and delivers

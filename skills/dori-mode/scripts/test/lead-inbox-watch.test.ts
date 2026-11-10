@@ -40,3 +40,38 @@ test("tailing a script file does not count as running its inbox watcher", () => 
   writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
   expect(watchProblem([monitor(`tail -n 0 -F ${script}`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
 });
+
+test("exec before the interpreter still selects the script operand", () => {
+  const inbox = join(state.dir, "inbox.jsonl");
+  const script = join(state.dir, "watch.sh");
+  writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
+  expect(watchProblem([monitor(`exec bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
+});
+
+test("shell options before the script operand are skipped", () => {
+  const inbox = join(state.dir, "inbox.jsonl");
+  const script = join(state.dir, "watch.sh");
+  writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
+  expect(watchProblem([monitor(`bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
+});
+
+test("shell stdin mode does not treat its positional script argument as executed", () => {
+  const inbox = join(state.dir, "inbox.jsonl");
+  const script = join(state.dir, "watch.sh");
+  writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
+  expect(watchProblem([monitor(`bash -s ${script}`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
+});
+
+test("an init-file option operand is not mistaken for the executed script", () => {
+  const inbox = join(state.dir, "inbox.jsonl");
+  const script = join(state.dir, "watch.sh");
+  writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
+  expect(watchProblem([monitor(`bash --init-file ${script}`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
+});
+
+test("the noexec option does not count as executing the script", () => {
+  const inbox = join(state.dir, "inbox.jsonl");
+  const script = join(state.dir, "watch.sh");
+  writeFileSync(script, `#!/bin/sh\ntail -n 0 -F ${inbox}\n`);
+  expect(watchProblem([monitor(`bash -o noexec ${script}`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
+});
