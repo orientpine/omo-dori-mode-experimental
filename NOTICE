@@ -17,6 +17,7 @@ On 2026-11-08 upstream changed its license from MIT to the Sustainable Use Licen
 - This fork's own code: its current license, unchanged (LICENSE)
 
 SUL-1.0 upstream commits ported into this fork / 이 포크에 들인 SUL-1.0 원본 커밋:
+- https://github.com/sisyphuslabs/dori-superagent/commit/fd3c8bb56e240ca2194cb691551033ac6937a405 (#182, bot-token Slack inbound and form-only API encoding, adapted: skills/dori-mode/scripts/src/messenger/slack-inbound.ts, slack.ts, scripts/src/cli-inbound.ts, scripts/test/slack-inbound.test.ts, slack-inbound-bot-token.test.ts, slack-inbound-cli.test.ts, slack-inbound-cli-fake.ts, messenger.test.ts, and skills/dori-mode/references/scripts.md)
 - https://github.com/sisyphuslabs/dori-superagent/commit/2d664bba75327f908bd239ef0e83d35e42dcffba (#150, herdr-core (hc) adapter: skills/dori-mode/scripts/src/runtime/hc)
 - https://github.com/sisyphuslabs/dori-superagent/commit/c81e29a8db9035fd34316a3e1acc7ca43a29162c (#155, runtime choice and registry: skills/dori-mode/scripts/src/runtime/select.ts, registry.ts)
 - https://github.com/sisyphuslabs/dori-superagent/commit/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444 (#154, scripts run on the configured session runtime: skills/dori-mode/scripts/src/sessions.ts, run.ts, registry.ts, and the fork's callers)

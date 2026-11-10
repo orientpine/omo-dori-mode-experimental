@@ -105,8 +105,13 @@ const inboundCommand: Command = async (context) => {
   const slack = new Slack(fetchHttp, realClock, auth, process.env["DORI_SLACK_API"]?.trim() || undefined, ledger);
   const me = String((await slack.call("auth.test", {}))["user_id"] ?? die("auth.test returned no user_id"));
   console.log("INBOUND_READY slack");
+  const told = new Set<string>();
+  const warn = (message: string) => {
+    if (!told.has(message)) console.log(`WARN ${message}`.slice(0, 300));
+    told.add(message);
+  };
   await every(minutes, async () => {
-    for (const i of await pollSlackInbound(slack, ledger, { selfUserId: me })) console.log(`INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify((i.text ?? "").slice(0, 200))}`);
+    for (const i of await pollSlackInbound(slack, ledger, { selfUserId: me, warn })) console.log(`INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify((i.text ?? "").slice(0, 200))}`);
   });
   return;
 };
