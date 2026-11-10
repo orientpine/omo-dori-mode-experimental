@@ -32,7 +32,7 @@ test.each(["'EOF'", "EOF", "-'EOF'", "bare"])("printed heredoc %s text is not a 
 });
 
 test("shell comments and wrapped shell heredocs exclude JS-looking data while later real sends still count", async () => {
-  const data = `cat <<'EOF'\nawait tool.bash({command: ${JSON.stringify(send)}})\n${sent}\nEOF`;
+  const data = `cat > /dev/null 2>&1 <<'EOF'\nawait tool.bash({command: ${JSON.stringify(send)}})\n${sent}\nEOF`;
   const real = `dori send discord --to ${second.channel} --reply ${second.id} --text answer # --reply ${first.id} --to ${first.channel}`;
   const code = `await tool.bash({command: ${JSON.stringify(`# await tool.bash({command: "${send}"})\n${data}\n${real}`)}})`;
   expect(await replay([call(code), result(sent)])).toEqual({ waiting: [first], answeredIds: [second.id] });
@@ -133,4 +133,34 @@ test("a native send's own output without sibling executions still clears its row
   const code = `console.log(Bun.spawnSync(["dori","send","discord","--to","${first.channel}","--reply","${first.id}","--text","answer"]).stdout.toString())`;
   expect(await replay([call(code), result(sent)])).toEqual({ waiting: [second], answeredIds: [first.id] });
   expect(cache()).toEqual([first.id]);
+});
+
+test.each(["direct", "bound", "checked", "detached"])("native preparation preserves the send's %s stdout receipt and cache", async (kind) => {
+  const post = `Bun.spawnSync(["dori","send","discord","--to","${first.channel}","--reply","${first.id}","--text","answer"])`;
+  const code = `const directory = Bun.spawnSync(["pwd"]); ${kind === "direct" ? `console.log(${post}.stdout.toString())` : `const reply = ${post}; ${kind === "checked" ? "if (reply.exitCode === 0) " : ""}console.log(reply.stdout.toString())`}`;
+  const output = kind === "detached"
+    ? [result("Eval cell call-1 detached and is running"), { type: "custom_message", customType: "senpi-codemode:notification", content: `Detached eval cell call-1 (js) completed.\n${sent}` }]
+    : [result(sent)];
+  expect(await replay([call(code), ...output])).toEqual({ waiting: [second], answeredIds: [first.id] });
+  expect(cache()).toEqual([first.id]);
+});
+
+test.each(["grep", "read"])("a failed native send cannot borrow printed tool.%s results", async (tool) => {
+  const code = `Bun.spawnSync(["dori","send","discord","--to","${first.channel}","--reply","${first.id}","--text","answer"]); display(await tool.${tool}(${tool === "grep" ? '{pattern:"SENT",path:"historical.log"}' : '{path:"historical.log"}'}))`;
+  expect(await replay([call(code), result(sent)])).toEqual({ waiting: [first, second], answeredIds: [] });
+  expect(cache()).toEqual([]);
+});
+
+test.each([";", "\n", "||", "|"])("compound bash cannot borrow a following search receipt across %s", async (separator) => {
+  const command = `${send}${separator} grep -F SENT historical.log`;
+  for (const entry of [call(command, "bash"), call(`display(await tool.bash({command: ${JSON.stringify(command)}}))`)]) {
+    expect(await replay([entry, result(`send failed; search output:\n${sent}`)])).toEqual({ waiting: [first, second], answeredIds: [] });
+    expect(cache()).toEqual([]);
+  }
+});
+
+test("heredoc history and a failed terminal send are not operation-specific receipt evidence", async () => {
+  const code = `cat <<'EOF'\nawait tool.bash({command: ${JSON.stringify(send)}})\n${sent}\nEOF\ndori send discord --to ${second.channel} --reply ${second.id} --text answer`;
+  expect(await replay([call(`display(await tool.bash({command: ${JSON.stringify(code)}}))`), result(`await tool.bash({command: ${JSON.stringify(send)}})\n${sent}\nterminal send failed`)])).toEqual({ waiting: [first, second], answeredIds: [] });
+  expect(cache()).toEqual([]);
 });

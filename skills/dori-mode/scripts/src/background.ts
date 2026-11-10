@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { liveMonitors, manifestPath, type MonitorSpec, readManifest } from "./handover.ts";
 import type { Runner } from "./run.ts";
 import { type Proc, procTable, resolveSession, sessionDirFor, type SessionHit } from "./session-id.ts";
-import { readHerdrSessions } from "./herdr-sessions.ts";
+import { argvSessionLog, readHerdrSessions, recordHerdrSession } from "./herdr-sessions.ts";
 
 // Background work an omo session started and is still waiting on, read from its session transcript: a detached eval
 // cell, a background (or auto-detached) bash session, a background task child, a monitor a cell armed (tool.monitor, ended
@@ -190,14 +190,21 @@ export const strayTasks = (home: string, session: string, alive: (pid: number) =
 // The transcript file of the session a pane's omo runs, and that agent's pid, or undefined when either cannot be read.
 export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[], stateDir?: string): Promise<{ readonly path: string; readonly pid: number; readonly via: SessionHit["via"] } | undefined> => {
   const kept = stateDir ? readHerdrSessions(stateDir)[pane] : undefined;
-  let recorded: { readonly id: string; readonly log?: string | undefined } | undefined;
+  let recorded: { readonly id: string; readonly log?: string | undefined } | undefined, identity: string | undefined;
   const seen = async (agent: Proc) => {
-    if (!kept) return undefined;
+    if (!kept && !stateDir) return undefined;
     const start = process.platform === "win32" ? agent.startedAt ?? "" : (await run(["ps", "-o", "lstart=", "-p", String(agent.pid)])).out.trim();
-    recorded = kept.agent === `${agent.pid} ${start}` ? { id: kept.session, log: kept.log } : undefined;
+    identity = start ? `${agent.pid} ${start}` : undefined;
+    recorded = identity && kept?.agent === identity ? { id: kept.session, log: kept.log } : undefined;
     return recorded;
   };
-  const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend: "aoe", seen });
+  const observed: NonNullable<Parameters<typeof resolveSession>[3]["observed"]> = (id, sessions) => {
+    if (!stateDir || !identity || !id) return;
+    const log = sessions.find((entry) => entry.id === id && entry.log)?.log ?? argvSessionLog([], sessionsDir, cwd, id);
+    if (log && existsSync(log)) recorded = { id, log };
+    recordHerdrSession(stateDir, pane, { session: id, cwd, ...(log ? { log } : {}), agent: identity, at: new Date().toISOString(), previous: sessions.filter((entry) => entry.id !== id).map((entry) => ({ session: entry.id, cwd, ...(entry.log ? { log: entry.log } : {}) })) });
+  };
+  const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend: "aoe", seen, ...(stateDir ? { observed } : {}) });
   if (!hit.id || !hit.pid) return undefined;
   if (recorded?.id === hit.id && recorded.log && existsSync(recorded.log)) return { path: recorded.log, pid: hit.pid, via: hit.via };
   const dir = sessionDirFor(sessionsDir, cwd);

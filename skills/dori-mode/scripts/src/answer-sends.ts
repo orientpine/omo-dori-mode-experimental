@@ -1,10 +1,11 @@
 import { parseArgs } from "node:util";
-import { shellWords } from "./handover.ts";
-import { commandSource, executionCommands, shellSource } from "./answer-command-source.ts";
+import { balancedBlock, commandSource, executionCommands, shellSource } from "./answer-command-source.ts";
+export { balancedBlock } from "./answer-command-source.ts";
+import { commandWords, nativeCalls, nativeReceipt, type NativeCall, shellCommands } from "./answer-output.ts";
 import { backgroundStarts } from "./background.ts";
 
 export type AnswerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly qid?: string; readonly thread?: string; readonly tmux?: string };
-type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string>; readonly aggregate?: boolean; readonly bash?: { readonly command: string; readonly alone: boolean; readonly peers?: readonly string[] } };
+type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string>; readonly aggregate?: boolean; readonly native?: NativeCall; readonly bash?: { readonly command: string; readonly alone: boolean; readonly peers?: readonly string[] } };
 type SendCall = SendSpec & { readonly id: string; readonly tool: string; readonly at: number; sent: boolean; detachedReceipt: boolean };
 
 const qidsIn = (text: string): ReadonlySet<string> => new Set((text.match(/\bq\d+\b/gi) ?? []).map((q) => q.toUpperCase()));
@@ -27,55 +28,45 @@ const specsFromArgv = (argv: readonly unknown[]): (SendSpec | undefined)[] => {
   const reply = argv[1] === "send" ? option("reply") : undefined, text = argv[1] === "send" ? option("text") : flags.positionals[2];
   return [{ to, ...(reply ? { reply } : {}), qids: qidsIn(text ?? "") }]; };
 const specsFromShell = (command: string): (SendSpec | undefined)[] => {
-  let quote = "", end = command.length;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i] ?? "";
-    if (quote) { if (c === "\\" && quote === '"') i++; else if (c === quote) quote = ""; continue; }
-    if (c === "\\") { i++; continue; }
-    if (c === '"' || c === "'") { quote = c; continue; }
-    if (c === "#" && (i === 0 || /[\s;|&()]/.test(command[i - 1] ?? ""))) { end = i; break; }
-    if (";|&\n".includes(c)) { end = i; break; }
-  }
-  const args = shellWords(command.slice(0, end));
+  const args = commandWords(command);
   if (!args) return [undefined];
   const operator = args.findIndex((word) => word.startsWith("\0"));
   return specsFromArgv(operator < 0 ? args : args.slice(0, operator)); };
-export const balancedBlock = (text: string, start: number): string | undefined => {
-  let depth = 0, quote = ""; for (let i = start; i < text.length; i++) {
-    const c = text[i] ?? "";
-    if (quote) { if (c === "\\") i++; else if (c === quote) quote = ""; continue; }
-    if (c === '"' || c === "'") { quote = c; continue; }
-    if (c === text[start]) depth++;
-    else if (c === (text[start] === "[" ? "]" : "}")) { depth--; if (depth === 0) return text.slice(start, i + 1); }
-  }
-  return undefined;
-};
-const literalArrays = (text: string, source: ReturnType<typeof commandSource>): string[] => {
-  const out: string[] = []; for (const match of text.matchAll(/\[\s*["']dori["']\s*,\s*["'](?:send|thread)["']/g)) {
-    const start = match.index ?? -1; if (start < 0 || !source.code[start] || !/(?:Bun\.spawn|Bun\.spawnSync|subprocess\.run|spawn|execFile|execa|exec)\s*\(\s*$/.test(text.slice(0, start))) continue;
-    const raw = balancedBlock(text, start); if (raw) out.push(raw);
+const literalArrays = (text: string, source: ReturnType<typeof commandSource>): { readonly raw: string; readonly native: NativeCall | undefined }[] => {
+  const out: { readonly raw: string; readonly native: NativeCall | undefined }[] = [], calls = nativeCalls(text, source);
+  for (const match of text.matchAll(/\[\s*["']dori["']\s*,\s*["'](?:send|thread)["']/g)) {
+    const start = match.index, prefix = /(?:Bun\.spawn|Bun\.spawnSync|subprocess\.run|spawn|execFile|execa|exec)\s*\(\s*$/.exec(text.slice(0, start));
+    if (!source.code[start] || !prefix) continue;
+    const raw = balancedBlock(text, start); if (raw) out.push({ raw, native: calls.find((call) => call.start === prefix.index) });
   }
   return out; };
 // An unresolved posting operation still occupies a slot: one receipt cannot identify the successful operation.
 const specsFromText = (text: string): (SendSpec | undefined)[] => {
-  const source = commandSource(text), out: (SendSpec | undefined)[] = []; for (const raw of literalArrays(text, source)) {
+  const source = commandSource(text), out: (SendSpec | undefined)[] = []; for (const { raw, native } of literalArrays(text, source)) {
     try {
-      const parsed: unknown = Bun.JSON5.parse(raw); out.push(...(Array.isArray(parsed) ? specsFromArgv(parsed) : [undefined]));
+      const parsed: unknown = Bun.JSON5.parse(raw); out.push(...(Array.isArray(parsed) ? specsFromArgv(parsed).map((spec) => spec ? { ...spec, ...(native ? { native } : {}) } : undefined) : [undefined]));
     } catch (error) { if (!(error instanceof SyntaxError)) throw error; out.push(undefined); }
   }
   out.push(...shellSpecs(text, source.code));
   const commands = executionCommands(text, source), alone = commands.filter((operation) => operation.tool === "bash").length === 1;
   for (const { tool, command } of commands) {
     if (command === undefined) { out.push(undefined); continue; }
-    for (const spec of shellSpecs(command, shellSource(command))) out.push(spec && tool === "bash" ? { ...spec, bash: { command, alone } } : spec);
+    for (const spec of shellSpecs(command, shellSource(command), true)) out.push(spec && tool === "bash" && spec.aggregate !== false ? { ...spec, bash: { command, alone } } : spec);
   }
-  const native = [...text.matchAll(/(?<![\w$.])(?:exec|execSync|spawn|execFile|execa|subprocess\.run)\s*\(|\bBun\.spawn(?:Sync)?\s*\(|(?:\bBun\.\$|\$)\s*(?=`)/g)].filter((match) => source.code[match.index]).length;
-  const aggregate = native + commands.filter((operation) => operation.tool !== "exec").length <= 1;
-  return out.map((spec) => spec ? { ...spec, aggregate, ...(spec.bash && native === 0 && commands.every((operation) => operation.tool === "bash") ? { bash: { ...spec.bash, peers: commands.flatMap(({ command }) => command !== undefined && command !== spec.bash?.command ? [command] : []) } } : {}) } : undefined); };
-const shellSpecs = (text: string, positions: Uint8Array): (SendSpec | undefined)[] =>
-  [...text.matchAll(/\bdori\b/g)].filter((match) => positions[match.index] && /(?:^|[;\n|&])\s*$/.test(text.slice(0, match.index))).flatMap((match) => specsFromShell(text.slice(match.index)));
+  const native = nativeCalls(text, source).length, tools = [...text.matchAll(/\btool\.\w+\s*\(/g)].filter((match) => source.code[match.index]).length;
+  const aggregate = native + tools <= 1;
+  return out.map((spec) => spec ? { ...spec, aggregate: spec.aggregate !== false && (aggregate || out.length === 1 && !!spec.native && nativeReceipt(text, source, spec.native)), ...(spec.bash && native === 0 && commands.every((operation) => operation.tool === "bash") && tools === commands.length ? { bash: { ...spec.bash, peers: commands.flatMap(({ command }) => command !== undefined && command !== spec.bash?.command ? [command] : []) } } : {}) } : undefined); };
+const shellSpecs = (text: string, positions: Uint8Array, strict = false): (SendSpec | undefined)[] => {
+  if (!strict) return [...text.matchAll(/\bdori\b/g)].filter((match) => positions[match.index] && /(?:^|[;\n|&])\s*$/.test(text.slice(0, match.index))).flatMap((match) => specsFromShell(text.slice(match.index)));
+  const commands = shellCommands(text);
+  return commands.flatMap((command) => {
+    if (!command.words) return [undefined];
+    const operator = command.words.findIndex((word) => word.startsWith("\0"));
+    return specsFromArgv(operator < 0 ? command.words : command.words.slice(0, operator)).map((spec) => spec ? { ...spec, aggregate: command.stdout && !commands.some((other) => other !== command && other.output) } : undefined);
+  });
+};
 const sendSpecs = (value: unknown, shell: boolean): (SendSpec | undefined)[] => {
-  if (typeof value === "string") return shell ? shellSpecs(value, shellSource(value)) : specsFromText(value);
+  if (typeof value === "string") return shell ? shellSpecs(value, shellSource(value), true) : specsFromText(value);
   if (Array.isArray(value)) { if (value[0] === "dori") return specsFromArgv(value); return typeof value[0] === "string" ? [] : value.flatMap((part) => sendSpecs(part, shell)); }
   if (value && typeof value === "object") return Object.entries(value).flatMap(([key, part]) => ["command", "code", "argv", "args"].includes(key) ? sendSpecs(part, key === "command" || shell) : []); return [];
 };
@@ -107,7 +98,7 @@ const sendCalls = (transcript: string): SendCall[] => {
         const preview = operation.resultPreview;
         return operation.name === "bash" && operation.args?.command === command && preview !== undefined && !preview.endsWith("…") && !/\b(?:SENT|POSTED) \d{15,22}\b/.test(preview) && !backgroundStarts("bash", call.id, preview, undefined).length;
       }))) call.detachedReceipt = true;
-      const jobs = call.tool === "bash" ? backgroundStarts(call.tool, call.id, text, entry.message.details) : attempts.flatMap((operation) => backgroundStarts("bash", call.id, operation.resultPreview ?? "", undefined));
+      const jobs = call.tool === "bash" ? call.aggregate === false ? [] : backgroundStarts(call.tool, call.id, text, entry.message.details) : attempts.flatMap((operation) => backgroundStarts("bash", call.id, operation.resultPreview ?? "", undefined));
       const started = [...new Set(jobs.filter(([kind]) => kind === "bash").map(([, id]) => id))];
       if (started.length === 1 && started[0]) handles.set(started[0], call);
       const receipt = bash && nested ? attempts.map((operation) => operation.resultPreview ?? "").join("\n") : call.aggregate === false ? "" : text;

@@ -134,7 +134,7 @@ const SELECTORS = ["--session", "--session-id", "--continue", "-c", "--resume", 
 export const hasSessionSelector = (argv: readonly string[]): boolean => argv.some((a) => SELECTORS.some((s) => a === s || a.startsWith(`${s}=`)));
 
 // seen: the session recorded before for this same agent process (herdr-sessions.ts), when the caller keeps one
-export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[]; readonly seen?: (agent: Proc) => Promise<{ readonly id: string; readonly log?: string | undefined } | undefined> };
+export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[]; readonly seen?: (agent: Proc) => Promise<{ readonly id: string; readonly log?: string | undefined } | undefined>; readonly observed?: (id: string, sessions: readonly { readonly id: string; readonly log?: string | undefined }[]) => void };
 
 export const shellPidOf = async (pane: string, deps: SessionDeps): Promise<number> => {
   // the pane id says its backend, whatever the config says (aoe.ts tmuxPanePid: herdr process-info for a herdr pane id)
@@ -196,9 +196,9 @@ const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: str
   // the record counts on its own too: a selector-free agent whose children all ended still names it
   const seen = deps.seen ? await deps.seen(agent) : undefined;
   if (seen) named.push({ ...seen, current: true });
-  const result = (id: string): Pick<SessionHit, "id" | "via"> => ({ id, via: named.some((n) => n.id === id && n.current) ? "child-env" : id ? "argv" : "none" });
+  const result = (id: string, sessions: readonly { readonly id: string; readonly log?: string | undefined }[] = named): Pick<SessionHit, "id" | "via"> => { deps.observed?.(id, sessions); return { id, via: named.some((n) => n.id === id && n.current) ? "child-env" : id ? "argv" : "none" }; };
   const ids = [...new Set(named.map((n) => n.id))];
-  if (ids.length <= 1) return result(ids[0] ?? "");
+  if (!ids.length || (ids.length === 1 && !deps.observed)) return result(ids[0] ?? "");
   const written = (log: string | undefined): number => {
     try {
       return log ? statSync(log).mtimeMs : -Infinity;
@@ -209,9 +209,9 @@ const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: str
   // the real word boundaries matter here: a --session-dir with spaces is no two flags, and where they cannot be told
   // (macOS, a rewritten title) no path option is read from a whitespace split: the default folder and exact logs only
   const words = (await agentArgv(deps.run, agent.pid, agent.cmd)) ?? [];
-  const at = (id: string): number => Math.max(...named.filter((n) => n.id === id).map((n) => n.log ?? sessionLogFor(words, id, cwd, deps)).map(written));
-  const last = ids.map((id) => ({ id, at: at(id) })).reduce((a, b) => (b.at > a.at ? b : a));
-  return result(last.at > -Infinity ? last.id : fromFlag || (ids[0] ?? ""));
+  const identities = ids.map((id) => ({ id, log: named.filter((n) => n.id === id).map((n) => n.log ?? sessionLogFor(words, id, cwd, deps)).reduce<string | undefined>((a, b) => written(b) > written(a) ? b : a, undefined) }));
+  const last = identities.map((entry) => ({ id: entry.id, at: written(entry.log) })).reduce((a, b) => (b.at > a.at ? b : a));
+  return result(last.at > -Infinity ? last.id : fromFlag || (ids[0] ?? ""), identities);
 };
 
 export const resolveSession = async (pane: string, cwd: string, table: readonly Proc[], deps: SessionDeps): Promise<SessionHit> => {

@@ -1,5 +1,18 @@
 type Literal = { readonly end: number; readonly value?: string };
-type CommandSource = { readonly code: Uint8Array; readonly strings: ReadonlyMap<number, Literal> };
+export type CommandSource = { readonly code: Uint8Array; readonly strings: ReadonlyMap<number, Literal> };
+
+export const balancedBlock = (text: string, start: number): string | undefined => {
+  const close = text[start] === "[" ? "]" : text[start] === "(" ? ")" : "}";
+  let depth = 0, quote = "";
+  for (let i = start; i < text.length; i++) {
+    const c = text[i] ?? "";
+    if (quote) { if (c === "\\") i++; else if (c === quote) quote = ""; continue; }
+    if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+    if (c === text[start]) depth++;
+    else if (c === close) { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  return undefined;
+};
 
 // Shell quotes, comments and heredoc bodies are data, not JavaScript execution wrappers.
 export const shellSource = (text: string): Uint8Array => {
@@ -9,7 +22,7 @@ export const shellSource = (text: string): Uint8Array => {
     const c = text[i] ?? "";
     if (quote) { if (c === "\\" && quote === '"') i++; else if (c === quote) quote = ""; continue; }
     if (c === "\\") { i++; continue; }
-    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '"' || c === "'") { positions[i] = 1; quote = c; continue; }
     if (c === "#" && (i === 0 || /[\s;|&()]/.test(text[i - 1] ?? ""))) {
       while (i < text.length && text[i] !== "\n") i++;
       if (i === text.length) break;
