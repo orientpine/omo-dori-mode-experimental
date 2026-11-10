@@ -24,8 +24,12 @@ const stripEnvironment = (command: string): string => {
     for (; i < rest.length; i++) {
       const c = rest[i] ?? "", next = rest[i + 1] ?? "";
       if (escaped) { escaped = false; continue; }
+      if (quote) {
+        if (c === quote) { quote = ""; continue; }
+        if (c === "\\" && quote === '"') { escaped = true; continue; }
+        continue;
+      }
       if (c === "\\") { escaped = true; continue; }
-      if (quote) { if (c === quote) quote = ""; continue; }
       if (c === "'" || c === '"') { quote = c; continue; }
       if (c === "$" && next === "(") { depth++; i++; continue; }
       if (c === "(" && depth > 0) { depth++; continue; }
