@@ -31,6 +31,8 @@ const holdSlot = (slots: string, n: number, pid: number) => {
 const slotDeps = (dir: string, wait?: () => Promise<void>): SlotDeps => ({ dir, slots: 2, maxLoad: 1e9, clock: { now: () => Date.now(), sleep: async (ms) => (wait ? wait() : Bun.sleep(ms)) }, pid: process.pid, load: async () => 0, alive: pidAlive });
 // alive and not a zombie (a killed child of this test stays one until reaped)
 const alive = (pid: number) => Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)]).stdout.toString().trim().replace(/^Z.*/, "") !== "";
+// the slots/run folders, without the cancelled tombstone dir a stop leaves so a caller can learn the run was stopped
+const runs = (dir: string) => readdirSync(dir).filter((d) => d !== "cancelled");
 
 test("stop with a run id ends that run alone, not another run of the same caller and label", async () => {
   // Given: two runs of label t by one caller (two lanes), each holding a slot
@@ -48,7 +50,7 @@ test("stop with a run id ends that run alone, not another run of the same caller
     expect(alive(a.p.pid)).toBe(false);
     expect(alive(b.p.pid)).toBe(true);
     expect(readdirSync(exec)).toEqual([b.run]);
-    expect(readdirSync(slots)).toEqual(["slot.2"]);
+    expect(runs(slots)).toEqual(["slot.2"]);
   } finally {
     a.p.kill("SIGKILL");
     b.p.kill("SIGKILL");
@@ -71,7 +73,7 @@ test("stop ends the run even when its folder cannot all be deleted (a read-only 
     // Then
     expect(n).toBe(1);
     expect(alive(a.p.pid)).toBe(false);
-    expect(readdirSync(slots)).toEqual([]);
+    expect(runs(slots)).toEqual([]);
     expect(readdirSync(exec)).toEqual([]);
   } finally {
     Bun.spawnSync(["chmod", "-R", "u+w", exec]);

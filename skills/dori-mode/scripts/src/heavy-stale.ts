@@ -122,6 +122,11 @@ export const staleWatch = (o: { readonly label: string; readonly helper: string;
   };
 };
 
+// The run broke off without a word. A frozen worker that dori heavy-stop killed could not say WORKER_CANCELLED, so ask the
+// helper whether this run was stopped there before calling it a dropped connection: cancelled, or null to go back to the line.
+export const brokeOff = async (h: HeavyHelper, label: string, admitted: string): Promise<{ readonly cancelled: string } | null> =>
+  (await cancelledOnHelper(h, label, runOf(admitted))) ? { cancelled: "stopped there by dori heavy-stop" } : null;
+
 // After a stale run, or from dori heavy-stop: ask the helper to stop what is left of it (`dori heavy-worker "stop <label>
 // [run]"`): the one stale run, or with byLabel every run of that label (dori heavy-stop). waitMs at most for its answer, its
 // stderr read included (a subprocess timeout ends with its direct child): stopped, the runs it stopped (0 when it said
@@ -147,5 +152,24 @@ export const stopOnHelper = async (h: HeavyHelper, label: string, log: (l: strin
   const ended = await settle([p], [reader], Promise.all([answer, p.exited]), waitMs);
   log(`HEAVY_HELPER_STOP ${label} ${h.name}: ${said ?? (ended ? `no answer (ssh exited ${p.exitCode ?? p.signalCode})` : `no answer within ${waitMs / 1000} s`)}${ended ? "" : "; dori heavy ends without waiting on the stop"}`);
   return { stopped: Number(/^WORKER_STOPPED (\d+)$/.exec(said ?? "")?.[1] ?? 0), left: !ended };
+};
+
+// Did the helper stop this run (dori heavy-stop), asked over a fresh ssh after the run's own connection died without a
+// word? A frozen worker is SIGKILLed before it can say WORKER_CANCELLED, so the run id's cancellation record is the only
+// way to tell a manual stop from a dropped connection. waitMs at most for the answer.
+export const cancelledOnHelper = async (h: HeavyHelper, label: string, run: string | undefined, waitMs = 10_000): Promise<boolean> => {
+  if (!run) return false;
+  const p = Bun.spawn([...h.ssh, "cancelled", label, run], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+  const reader = p.stderr.getReader();
+  let yes = false;
+  const answer = (async () => {
+    for await (const l of readerLines(reader)) {
+      if (!/^WORKER_CANCELLED_RECORD\b/.test(l)) continue;
+      yes = l.endsWith(" yes");
+      return;
+    }
+  })();
+  await settle([p], [reader], Promise.all([answer, p.exited]), waitMs);
+  return yes;
 };
 

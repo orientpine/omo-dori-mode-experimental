@@ -11,7 +11,7 @@ import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refus
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
-import { aliveOf, endedWith, heartbeat, markRun, runOf, type RunEnd, sayCancelled, STALE_GRACE_MS, staleWatch, unfinished, watchCaller } from "./heavy-stale.ts";
+import { aliveOf, brokeOff, endedWith, heartbeat, markRun, runOf, type RunEnd, sayCancelled, STALE_GRACE_MS, staleWatch, unfinished, watchCaller } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
 
@@ -287,7 +287,7 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
       if (l.startsWith("O ")) process.stdout.write(`${l.slice(2)}\n`);
       else if (l.startsWith("E ")) process.stderr.write(`${l.slice(2)}\n`);
       else if (/^WORKER_EXIT \d+$/.test(l)) exit = endedWith(p.stdin, Number(l.slice(12)));
-      else if (l.startsWith("WORKER_CANCELLED ")) cancelled = l.slice(17);
+      else if (l.startsWith("WORKER_CANCELLED ")) { cancelled = l.slice(17); for (const x of kids) killAlive(x); } // terminal at once, never resent
       else {
         if (l.startsWith("WORKER_BACK_TOO_BIG")) tooBig = true;
         process.stderr.write(`${l}\n`);
@@ -313,8 +313,8 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
     stop();
     watch.stop();
     try {
-      if (stale !== undefined || cancelled !== undefined) return stale !== undefined ? { stale, abandoned: staleLeft(kids, ended, (l) => ctx.deps.log?.(l), `${job.label} ${h.name}`, STALE_GRACE_MS) } : { cancelled: cancelled ?? "" };
-      if (sent < 0 || code !== 0 || exit === undefined || ucode !== 0) return null;
+      if (cancelled !== undefined || stale !== undefined) return cancelled !== undefined ? { cancelled } : { stale: stale!, abandoned: staleLeft(kids, ended, (l) => ctx.deps.log?.(l), `${job.label} ${h.name}`, STALE_GRACE_MS) };
+      if (sent < 0 || code !== 0 || exit === undefined || ucode !== 0) return brokeOff(h, job.label, verdict?.[2] ?? "");
       const n = copyBack(back, plan.sync);
       ctx.deps.log?.(`HEAVY_BACK ${job.label} ${h.name}: sent ${sent} bytes, ${n.files} file(s) ${n.bytes} bytes back${n.skipped ? `, ${n.skipped} skipped (outside --sync or through a link)` : ""}`);
       return tooBig && exit === 0 ? BACK_TOO_BIG_EXIT : exit;

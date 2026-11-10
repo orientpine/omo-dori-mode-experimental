@@ -5,7 +5,7 @@ import { newJobDir, onStop, packTo, RESULT_ENTRIES, requestProblem, runJob, stop
 import type { HeavyCtx } from "./heavy-queue.ts";
 import { admitOnce, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { heavyExec } from "./heavy-spread.ts";
-import { stopRuns } from "./heavy-stop.ts";
+import { stopRuns, wasCancelled } from "./heavy-stop.ts";
 import { defaultTools } from "./heavy-tools.ts";
 
 // dori heavy-worker: the forced command of the queue host's key on a helper. It reads the request from
@@ -30,6 +30,12 @@ export const heavyWorker = async (ctx: HeavyCtx, command: string, caller?: strin
   // exec: another host's own command in a bwrap box (heavy-spread.ts); caller: the account whose key it is (the forced
   // command's --caller), for the log
   // stop <label>: a caller that found its run stale ends what is left of it here (heavy-stop.ts)
+  if (verb === "cancelled") {
+    const [label = "", run = ""] = rest;
+    if (!/^[\w.-]{1,64}$/.test(label) || !/^\d{1,10}-[\w-]{1,32}$/.test(run) || !caller || !/^[\w.-]{1,64}$/.test(caller)) return refuse(label || "-", "cancelled needs a label, a run id and the caller's --caller");
+    console.error(wasCancelled(join(ctx.deps.dir, "exec"), caller, label, run) ? "WORKER_CANCELLED_RECORD yes" : "WORKER_CANCELLED_RECORD no");
+    return 0;
+  }
   if (verb === "stop") {
     const [label = "", run] = rest;
     if (!/^[\w.-]{1,64}$/.test(label) || (run !== undefined && !/^\d{1,10}-[\w-]{1,32}$/.test(run)) || !caller || !/^[\w.-]{1,64}$/.test(caller)) return refuse(label || "-", "stop needs a label, an optional run id and the caller's --caller");

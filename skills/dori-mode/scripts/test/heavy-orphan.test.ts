@@ -117,3 +117,55 @@ test("sweep deletes the job folders of exec runs whose worker is gone", () => {
   expect(readdirSync(exec)).toEqual([`${process.pid}-live`]);
   expect(existsSync(join(exec, "999999999-dead"))).toBe(false);
 });
+
+
+// the real worker's argv as a caller's ssh would start it, sharing this file's helper config
+const workerSsh = () => {
+  const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
+  return ["env", "-i", ...own, `DORI_CONFIG=${join(helper, "config.json")}`, `DORI_ENV_FILE=${join(helper, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
+};
+
+// a caller that waits on a real run of cmd on the helper, stopping it there by hand once it is going
+const spreadStopping = async (cmd: string[], freeze: boolean) => {
+  mkdirSync(join(state.dir, "heavy", "slot.1"), { recursive: true });
+  writeFileSync(join(state.dir, "heavy", "slot.1", "owner"), `${HOLDER} other-job ${new Date().toISOString()}`);
+  const ssh = workerSsh();
+  const logs: string[] = [];
+  let stopped: Promise<unknown> = Promise.resolve();
+  const usage = async () => ({ host: { gpu: null, gpuMem: null, cpu: 0, mem: 10 }, unified: false, jobs: [], memTotalKb: 1e8 });
+  const deps: SlotDeps = { dir: join(state.dir, "heavy"), slots: 1, maxLoad: 80, clock: { now: () => Date.now(), sleep: () => new Promise((r) => setImmediate(r)) }, pid: process.pid, load: async () => 10, alive: (p) => p === HOLDER || p === process.pid, headroom: { maxSlots: 1, free: 10, settleSec: 0, usage }, log: (l) => {
+    logs.push(l);
+    if (l.startsWith("HEAVY_SPREAD t real")) stopped = new Promise((r) => setTimeout(r, 1_500)).then(async () => {
+      if (freeze) Bun.spawnSync(["pkill", "-STOP", "-f", "heavy-worker --caller tester exec t "]);
+      await Bun.spawn([...ssh, "stop", "t"]).exited;
+    });
+  } };
+  const ctx: HeavyCtx = { q: { jobs: {}, helpers: [{ name: "real", ssh }], queue: [], rl: true, jobDir: join(state.dir, "jobs"), exec: false, execMaxMin: 240, staleMin: 5 }, deps };
+  const job: SpreadJob = { label: "t", kind: "cpu", cmd, cwd: work, sync: [work], env: {} };
+  const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
+  if (!plan.ok) throw new Error(plan.why);
+  const r = await heavySpread(ctx, job, plan);
+  await stopped;
+  return { r, logs };
+};
+
+test("a manual stop of a frozen worker still ends its caller as cancelled, not resent", async () => {
+  // Given: the worker frozen (SIGSTOP) so it cannot answer SIGTERM or say WORKER_CANCELLED, then stopped by hand
+  const { r, logs } = await spreadStopping(["sh", "-c", sleeper], true);
+  try {
+    // Then: the caller learns it was cancelled (exit 143), never HELPER_CUT back to the line
+    expect(r).toEqual({ code: 143 });
+    expect(logs.some((l) => l.startsWith("HEAVY_HELPER_CUT"))).toBe(false);
+    expect(logs.some((l) => l.startsWith("HEAVY_HELPER_CANCELLED"))).toBe(true);
+  } finally {
+    Bun.spawnSync(["pkill", "-KILL", "-f", "heavy-worker --caller tester exec t "]);
+  }
+}, 30_000);
+
+test("a stop kills children the worker started outside its box (preparation), not only the boxed job", async () => {
+  // Given: a run whose command is a long sleep started by the worker, stopped on the helper
+  const { r } = await spreadStopping(["sh", "-c", sleeper], false);
+  // Then: cancelled, and no such process is left anywhere on the host
+  expect(r).toEqual({ code: 143 });
+  expect(Bun.spawnSync(["pgrep", "-f", sleeping]).exitCode).toBe(1);
+}, 30_000);

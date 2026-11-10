@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import { dlopen, FFIType } from "bun:ffi";
@@ -120,6 +120,18 @@ const removeRun = (dir: string): void => {
 // file names both; with run, only that folder), their worker and what it started killed, their folders deleted, and the
 // slots their worker held freed. Another caller's run is left alone, and so is a process that only reuses a dead worker's
 // pid: a folder whose pid now belongs to another process is deleted, nothing is killed or freed for it. The number stopped.
+// was this run stopped here (its <run>.cancelled record), so a caller whose worker died without a word can tell a manual
+// stop from a dropped connection? Only the caller that started it may ask.
+export const wasCancelled = (execRoot: string, caller: string, label: string, run: string): boolean => {
+  try {
+    const who = readFileSync(join(execRoot, run, WHO), "utf8").split(" ");
+    if (who[0] !== caller || who[1] !== label) return false;
+  } catch {
+    // the folder is gone; the record is enough
+  }
+  return existsSync(join(execRoot, "..", "cancelled", run));
+};
+
 export const stopRuns = async (execRoot: string, deps: SlotDeps, caller: string, label: string, run?: string): Promise<number> => {
   let n = 0;
   for (const d of ls(execRoot)) {
@@ -141,11 +153,19 @@ export const stopRuns = async (execRoot: string, deps: SlotDeps, caller: string,
       continue;
     }
     // the recorded worker: SIGTERM first, so it tells its caller (sayCancelled) and cleans up; what is left after 3 s is
-    // killed. Both signals go through a pidfd after a fresh identity check (killIfStill), so a reused pid is never hit
+    // killed. Both signals go through a pidfd after a fresh identity check (killIfStill), so a reused pid is never hit.
+    // Its descendants are collected before the signal: a worker that exits on SIGTERM leaves no parent for pgrep -P, and
+    // children it started outside the box (GPU-room, playwright) would otherwise escape the later SIGKILL.
     if (now !== undefined) {
       writeFileSync(join(execRoot, d, CANCELLED), "");
+      // a durable cancellation record outside the run folders, so a caller whose worker was killed can still learn this
+      // run was stopped here (the run folder itself is deleted)
+      mkdirSync(join(deps.dir, "cancelled"), { recursive: true });
+      writeFileSync(join(deps.dir, "cancelled", d), "");
+      const children = Bun.spawnSync(["pgrep", "-P", String(pid)]).stdout.toString().split("\n").filter(Boolean).map(Number);
       if (killIfStill(pid, now, SIGTERM)) for (let i = 0; i < 30 && procId(pid) === now; i++) Bun.sleepSync(100);
       killIfStill(pid, now);
+      for (const c of children) killTree(c);
     }
     await freeSlots(deps, pid);
     removeRun(join(execRoot, d));
