@@ -16,6 +16,7 @@ import { areaLabel, type AreaQuery, areaSignals, formatSignals } from "./lane-si
 import { statusOf } from "./registry.ts";
 import { bootCheck, slackAuthCheck } from "./boot.ts";
 import { Reports } from "./reports.ts";
+import { Worklog } from "./worklog.ts";
 import { Slack } from "./messenger/slack.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { realClock, run } from "./run.ts";
@@ -59,6 +60,7 @@ const bootCommand: Command = async (context) => {
   const result = await bootCheck({
     ...deps,
     reports: new Reports(deps.config.stateDir),
+    worklog: new Worklog(deps.config.stateDir),
     slack: slackAuthCheck(slack),
     monitorDirs: sessionDirs.flatMap((dir) => (dir ? [join(dir, "extensions", "terminal")] : [])),
   });

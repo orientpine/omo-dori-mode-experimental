@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Manifest, Monitor } from "../src/boot-monitors.ts";
 import type { Lane, LaneStatus } from "../src/registry.ts";
 import { Reports } from "../src/reports.ts";
+import { Worklog } from "../src/worklog.ts";
 import { depsFor, fakeClock, newWorld, type World } from "./fakes.ts";
 
 export const T0 = Date.parse("2026-01-01T12:00:00Z");
@@ -35,7 +36,7 @@ export const manifest = (monitors: Monitor[]): Manifest => ({
 export const bootDeps = (world: World, stateDir: string, slack: () => Promise<{ userId: string; teamId: string } | null> = async () => null) => {
   const sessionsDir = join(stateDir, "sessions");
   const deps = depsFor(world, fakeClock(T0), stateDir, { sessionsDir, leadPane: "w2:p1" });
-  return { ...deps, reports: new Reports(stateDir), slack, sessionsDir };
+  return { ...deps, reports: new Reports(stateDir), worklog: new Worklog(stateDir), slack, sessionsDir };
 };
 
 export const snapshot = (dir: string) =>

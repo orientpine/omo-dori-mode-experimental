@@ -107,7 +107,7 @@ const USAGE_START = `dori <command> [options]
                                        (NAME=VALUE for a lane, --unset=NAME for a --use-gpu lane or any other session;
                                        nothing without launchEnv); used by setups/discord-aoe/self-restart.sh
   sync   [--write]                     registry vs live panes; read-only unless --write; a SIGNALS line per open lane with a record
-  boot                                 read-only check after a restart: Slack auth, vanished panes, journals and stale watches
+  boot                                 read-only check after a restart: Slack auth, vanished panes, journals, worklog and stale watches
   report <key> --kind milestone|blocker|question|halted|done --text TEXT
                                        append a durable reports.jsonl progress report and print its [REPORT] line
   checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]...

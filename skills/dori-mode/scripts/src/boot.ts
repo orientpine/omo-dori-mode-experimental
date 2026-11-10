@@ -5,11 +5,13 @@ import type { Slack } from "./messenger/slack.ts";
 import { type BootLane, finished, monitorCleanup, readMonitorManifests } from "./boot-monitors.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { ReportError, type Reports } from "./reports.ts";
+import { type Worklog, worklogLines } from "./worklog.ts";
 
 export type PaneState = "live" | "vanished" | "unassigned";
 export type SlackCheck = () => Promise<{ readonly userId: string; readonly teamId: string } | null>;
 export type BootDeps = Pick<FlowDeps, "run" | "registry" | "config" | "clock"> & {
   readonly reports: Reports;
+  readonly worklog: Worklog;
   readonly slack: SlackCheck;
   readonly monitorDirs?: readonly string[];
   readonly slackDeadlineMs?: number;
@@ -92,6 +94,20 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     if (result.unregistered.length) lines.push(`UNREGISTERED ${result.unregistered.join(" ")}`);
   }
   lines.push(...journals);
+  try {
+    const read = deps.worklog.read();
+    for (const problem of read.problems) {
+      failed = true;
+      lines.push(`WORKLOG damaged ${problem}`);
+    }
+    const [, ...open] = worklogLines(read.items);
+    lines.push(`WORKLOG open=${open.length}`, ...open);
+    for (const warning of read.warnings) lines.push(`WORKLOG warning ${warning}`);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    failed = true;
+    lines.push(`WORKLOG unreadable ${error.message}`);
+  }
   const { manifests, errors } = readMonitorManifests(deps.config.sessionsDir, deps.monitorDirs);
   for (const path of errors) {
     failed = true;

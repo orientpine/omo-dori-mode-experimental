@@ -66,4 +66,14 @@ Implementation: the shared `finished` predicate accepts `reportState === "done"`
 
 Verification: **19 pass, 0 fail** with strict typecheck and clean no-excuse/junk-test audits. The tests prove the finished rule in both boot paths and verify invalid-journal and EISDIR errors without a state path. The final full CI completed with **2018 pass, 0 fail** and `LOC_OK 367 files`.
 
+## #96 boot worklog output
+
+Current-main audit: worklog storage, rendering, CLI, handover output, and their tests already existed, so no storage or renderer was ported again. The only gap was boot output.
+
+Red reproduction after #72: **0 pass, 5 fail** in `boot-worklog.test.ts`; boot printed no open-item count, damage state, or unreadable-worklog failure.
+
+Implementation: `BootDeps` includes the existing `Worklog`, and boot prints `WORKLOG open=N` plus `OPEN` lines after journals and before monitor cleanup. Damaged records fail boot; torn writes, duplicate closes, and post-close warnings retain their existing semantics. The real CLI constructs the same dependency, and SKILL.md/scripts.md document the behavior.
+
+Verification: **44 pass, 0 fail** across all boot files and the existing worklog suites, with clean no-excuse/junk-test audits. Cases cover open items and next steps, closed-item omission, garbage and unreadable input, torn writes, duplicate closes, and read-only state snapshots. The final full CI completed with **2023 pass, 0 fail** and `LOC_OK 368 files`.
+
 Later prerequisite results are recorded in the sections that follow.
