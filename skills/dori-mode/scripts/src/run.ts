@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { envFileEntries, envFilePath } from "./config-env.ts";
 
 import type { Exec } from "./runtime/exec.ts";
@@ -70,21 +70,36 @@ export const iso = (clock: Clock): string => new Date(clock.now()).toISOString()
 // The session runtime of upstream #154 (https://github.com/sisyphuslabs/dori-superagent/pull/154, its run.ts): one registry of
 // runtimes per process, each stored session answered by its own kind, new sessions opened on the chosen one.
 type Env = Readonly<Record<string, string | undefined>>;
-// "default": nothing chose one, so herdr, where every Dori runs (owner Q22 2026-11-08: the default stays herdr). Upstream
-// detects instead (HC_TERMINAL_ID, HERDR_PANE_ID, the binaries on PATH).
+// "default": nothing chose one and neither binary is on PATH, so herdr (an aoe Dori runs neither), where upstream refuses.
 export type RuntimeChoice = { readonly kind: RuntimeKind; readonly source: RuntimeSource | "default" };
 
 const KINDS: Readonly<Record<RuntimeKind, true>> = { herdr: true, hc: true };
 export const isRuntimeKind = (value: unknown): value is RuntimeKind => typeof value === "string" && Object.hasOwn(KINDS, value);
 
-// DORI_RUNTIME > the config's runtime > herdr
-export const runtimeChoice = (config: { readonly runtime?: RuntimeKind | undefined }, env: Env): RuntimeChoice => {
+const executable = (path: string): boolean => {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// upstream #177 (https://github.com/sisyphuslabs/dori-superagent/pull/177, c275b55, its run.ts and runtime/select.ts):
+// DORI_RUNTIME > the config's runtime > inside an hc terminal > inside a herdr pane > hc on PATH > herdr on PATH > herdr
+export const runtimeChoice = (config: { readonly runtime?: RuntimeKind | undefined }, env: Env, exists: (path: string) => boolean = executable): RuntimeChoice => {
   const fromEnv = env["DORI_RUNTIME"];
   if (fromEnv) {
     if (!isRuntimeKind(fromEnv)) throw new ConfigError(`DORI_RUNTIME must be "herdr" or "hc", got ${JSON.stringify(fromEnv)}`);
     return { kind: fromEnv, source: "env" };
   }
-  return config.runtime ? { kind: config.runtime, source: "config" } : { kind: "herdr", source: "default" };
+  if (config.runtime) return { kind: config.runtime, source: "config" };
+  if (env["HC_TERMINAL_ID"]) return { kind: "hc", source: "detect:HC_TERMINAL_ID" };
+  if (env["HERDR_PANE_ID"]) return { kind: "herdr", source: "detect:HERDR_PANE_ID" };
+  const dirs = (env["PATH"] ?? "").split(delimiter).filter((dir) => dir !== "");
+  for (const kind of ["hc", "herdr"] as const) if (dirs.some((dir) => exists(join(dir, kind)))) return { kind, source: "detect:path" };
+  return { kind: "herdr", source: "default" };
 };
 
 // A choice that failed (a bad DORI_RUNTIME) is thrown only where a new session would open or every kind is listed

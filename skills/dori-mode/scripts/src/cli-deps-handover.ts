@@ -10,7 +10,7 @@ import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
 import { configPath, envFilePath, loadConfig } from "./config.ts";
 import { pidAlive } from "./heavy-slot.ts";
-import { realClock, run } from "./run.ts";
+import { realClock, run, runtimeChoice } from "./run.ts";
 import type { Cli } from "./cli-context.ts";
 import { die } from "./cli-context.ts";
 import { makeDiscordDeps } from "./cli-deps-discord.ts";
@@ -102,6 +102,12 @@ export const makeHandoverDeps = (cli: Pick<Cli, "discordToken" | "config" | "dep
     const why = quietReason(config.stateDir, here, Date.now());
     if (why) die(why, 4);
   };
-  const passEnv = (): string[] => ["HOME", ...HANDOVER_ENV].filter((n) => process.env[n] !== undefined).map((n) => `--setenv=${n}`);
+  const passEnv = (): string[] => {
+    // a detached run must open where the caller resolved, even when DORI_RUNTIME itself was unset (upstream #177's
+    // detection would otherwise choose hc on PATH again; review 1 of #430)
+    const resolved = runtimeChoice(config, process.env).kind;
+    const pass = ["HOME", ...HANDOVER_ENV.filter((n) => n !== "DORI_RUNTIME")].filter((n) => process.env[n] !== undefined).map((n) => `--setenv=${n}`);
+    return [...pass, `--setenv=DORI_RUNTIME=${resolved}`];
+  };
   return { realpathOr, reportOwner, sessionOfPane, sendSignal, freezeDeps, laneDepsFor, leadDepsFor, quietGuard, passEnv };
 };

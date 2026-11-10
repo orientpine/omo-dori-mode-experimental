@@ -1,4 +1,4 @@
-// From upstream dori-superagent test/runtime-select.test.ts (https://github.com/sisyphuslabs/dori-superagent/blob/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444/test/runtime-select.test.ts).
+// From upstream dori-superagent test/runtime-select.test.ts (https://github.com/sisyphuslabs/dori-superagent/blob/c275b557287114dbe33f8485c15bebf48c6dc13a/test/runtime-select.test.ts).
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -68,6 +68,14 @@ describe("readRuntimeChoice precedence", () => {
     ["only herdr on PATH", { PATH: pathWith("herdr") }, undefined, "herdr", "detect:path"],
     ["only hc on PATH", { PATH: pathWith("hc") }, '{"other":true}', "hc", "detect:path"],
     [
+      "both on PATH, herdr's directory first: hc is the default",
+      { PATH: pathWith("herdr", "hc") },
+      undefined,
+      "hc",
+      "detect:path",
+    ],
+    ["both on PATH, hc's directory first: still hc", { PATH: pathWith("hc", "herdr") }, "{}", "hc", "detect:path"],
+    [
       "empty variables count as unset",
       { DORI_RUNTIME: "", HC_TERMINAL_ID: "", HERDR_PANE_ID: "", PATH: pathWith("hc") },
       undefined,
@@ -81,23 +89,20 @@ describe("readRuntimeChoice precedence", () => {
 });
 
 describe("readRuntimeChoice refusals", () => {
-  test("both binaries and nothing set: RuntimeChoiceError whose message names the config path", () => {
+  test("neither binary and nothing set: RuntimeChoiceError whose message names the config path and the fix", () => {
     const configPath = config("{}");
     let caught: unknown;
     try {
-      readRuntimeChoice({ env: { PATH: pathWith("herdr", "hc") }, configPath });
+      readRuntimeChoice({ env: { PATH: pathWith() }, configPath });
     } catch (e) {
       caught = e;
     }
     expect(caught).toBeInstanceOf(RuntimeChoiceError);
     const message = (caught as Error).message;
+    expect(message).toContain("neither herdr nor hc is on PATH");
     expect(message).toContain(configPath);
     expect(message).toContain('"runtime": "herdr" or "hc"');
     expect(message).toContain("DORI_RUNTIME");
-  });
-
-  test("neither binary and nothing set: RuntimeChoiceError", () => {
-    expect(() => readRuntimeChoice({ env: { PATH: pathWith() }, configPath: NO_CONFIG })).toThrow(RuntimeChoiceError);
     expect(() => readRuntimeChoice({ env: {}, configPath: NO_CONFIG })).toThrow(RuntimeChoiceError);
   });
 

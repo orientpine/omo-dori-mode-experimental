@@ -91,12 +91,14 @@ test("a lane opened while hc is the runtime is an hc terminal, listed and found 
 });
 
 test("the sweeps' pane rows name an hc terminal hc:<id>, so the dead-pane sweep reads it through hc", async () => {
+  // the config names hc here; the suite's DORI_RUNTIME=herdr (test/preload.ts) would win over it
+  delete process.env["DORI_RUNTIME"];
   const fake = new FakeHc({ t1: terminal() });
   expect((await listPanes(runnerOf(fake), { backend: "herdr", runtime: "hc" })).map((p) => p.pane_id)).toEqual(["hc:t1"]);
 });
 
 test("a Dori on herdr never calls hc for its listing, so no hc core is started where none is used", async () => {
-  delete process.env["DORI_RUNTIME"];
+  process.env["DORI_RUNTIME"] = "herdr";
   const fake = new FakeHc({ t1: terminal() });
   await liveSessions(runnerOf(fake));
   expect(fake.calls).toEqual([]);
@@ -129,6 +131,7 @@ test("the caller inside an hc terminal is the pane hc:<id>, the shape its lane r
 });
 
 test("the sweeps list hc terminals by the configured workspaces' dori.group, so a workspace filter keeps them (review 1 of #404)", async () => {
+  delete process.env["DORI_RUNTIME"];
   const fake = new FakeHc({ t1: terminal({ labels: { "dori.group": "lanes" } }), t2: terminal({ labels: { "dori.group": "other" } }) });
   const rows = await listPanes(runnerOf(fake), { backend: "herdr", runtime: "hc", workspaces: ["lanes"] });
   expect(rows.map((p) => [p.pane_id, p.workspace_id])).toEqual([["hc:t1", "lanes"], ["hc:t2", ""]]);
@@ -167,7 +170,7 @@ test("a lead handover started with DORI_RUNTIME=hc and no runtime in the config 
     expect(`${code} ${out.split(" ")[0]}`).toBe("0 HANDOVER_DETACHED");
     // and HC_SESSION, the named core its sessions live in (review 6 of #404), never this terminal's own HC_TERMINAL_ID
     const argv = readFileSync(join(home, "argv"), "utf8").split("\n");
-    expect(argv).toContain("--setenv=DORI_RUNTIME");
+    expect(argv).toContain("--setenv=DORI_RUNTIME=hc");
     expect(argv).toContain("--setenv=HC_SESSION");
     expect(argv.some((a) => a.includes("HC_TERMINAL_ID"))).toBe(false);
   } finally {

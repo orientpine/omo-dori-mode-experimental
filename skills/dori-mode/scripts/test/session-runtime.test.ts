@@ -71,24 +71,37 @@ test("a refused runtime opens nothing: a DORI_RUNTIME that names no runtime make
     calls.push([...argv]);
     return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", tab_id: "w1:t9" } } }), err: "" };
   };
+  const previousRuntime = process.env["DORI_RUNTIME"];
   process.env["DORI_RUNTIME"] = "tmux";
   try {
     await expect(openHerdrSession(run, { now: () => 0, sleep: async () => {} }, { title: "x", cwd: "/tmp", argv: ["omo"] })).rejects.toThrow(/DORI_RUNTIME must be "herdr" or "hc"/);
   } finally {
-    delete process.env["DORI_RUNTIME"];
+    // the suite preload pins herdr on an hc-equipped host; restore it rather than letting later suites select hc
+    if (previousRuntime === undefined) delete process.env["DORI_RUNTIME"];
+    else process.env["DORI_RUNTIME"] = previousRuntime;
   }
   expect(calls).toEqual([]);
 });
 
-describe("runtime choice keeps herdr the default (DORI_RUNTIME > config runtime > herdr)", () => {
-  test("nothing set: herdr, whatever is on PATH", () => {
-    expect(runtimeChoice({}, { PATH: "" })).toEqual({ kind: "herdr", source: "default" });
-    expect(runtimeChoice({}, { HC_TERMINAL_ID: "t1" })).toEqual({ kind: "herdr", source: "default" });
+describe("runtime choice follows upstream #177: DORI_RUNTIME > config runtime > HC_TERMINAL_ID > HERDR_PANE_ID > hc on PATH > herdr on PATH > herdr", () => {
+  const on = (...names: string[]) => (path: string): boolean => names.some((n) => path === `/bin/${n}`);
+  test("nothing chooses and neither binary is installed: herdr, where upstream refuses (an aoe Dori runs neither)", () => {
+    expect(runtimeChoice({}, { PATH: "" }, on())).toEqual({ kind: "herdr", source: "default" });
   });
 
-  test("the config's runtime, then DORI_RUNTIME over it", () => {
-    expect(runtimeChoice({ runtime: "herdr" }, {})).toEqual({ kind: "herdr", source: "config" });
-    expect(runtimeChoice({ runtime: "hc" }, { DORI_RUNTIME: "herdr" })).toEqual({ kind: "herdr", source: "env" });
+  test("inside an hc terminal hc, inside a herdr pane herdr", () => {
+    expect(runtimeChoice({}, { HC_TERMINAL_ID: "t1", PATH: "/bin" }, on("herdr"))).toEqual({ kind: "hc", source: "detect:HC_TERMINAL_ID" });
+    expect(runtimeChoice({}, { HERDR_PANE_ID: "w1:p1", PATH: "/bin" }, on("hc"))).toEqual({ kind: "herdr", source: "detect:HERDR_PANE_ID" });
+  });
+
+  test("on PATH: hc when it is installed, else herdr", () => {
+    expect(runtimeChoice({}, { PATH: "/bin" }, on("herdr", "hc"))).toEqual({ kind: "hc", source: "detect:path" });
+    expect(runtimeChoice({}, { PATH: "/bin" }, on("herdr"))).toEqual({ kind: "herdr", source: "detect:path" });
+  });
+
+  test("the config's runtime holds a Dori on herdr whatever is installed or wraps it, and DORI_RUNTIME is over it", () => {
+    expect(runtimeChoice({ runtime: "herdr" }, { HC_TERMINAL_ID: "t1", PATH: "/bin" }, on("hc"))).toEqual({ kind: "herdr", source: "config" });
+    expect(runtimeChoice({ runtime: "hc" }, { DORI_RUNTIME: "herdr" }, on("hc"))).toEqual({ kind: "herdr", source: "env" });
   });
 
   test("hc is chosen by DORI_RUNTIME or the config's runtime now that the fork's paths address an hc terminal as hc:<id>", () => {
@@ -110,7 +123,7 @@ describe("runtime choice keeps herdr the default (DORI_RUNTIME > config runtime 
     writeFileSync(path, JSON.stringify({ runtime: "tmux", stateDir: dir }));
     const loaded = loadConfig(path, dir, () => {});
     await expect(loaded).rejects.toThrow(ConfigError);
-    await expect(loaded).rejects.toThrow(`runtime must be "herdr" or "hc" (unset is herdr), not "tmux"`);
+    await expect(loaded).rejects.toThrow(`runtime must be "herdr" or "hc" (unset: detected), not "tmux"`);
     writeFileSync(path, JSON.stringify({ runtime: "hc", stateDir: dir }));
     expect((await loadConfig(path, dir, () => {})).runtime).toBe("hc");
   });
