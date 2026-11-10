@@ -98,4 +98,6 @@ test("an assignment before a direct script or interpreter is skipped", () => {
   expect(watchProblem([monitor(`SENPI_MONITOR_RESTORED=1 bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`SENPI_MONITOR_RESTORED=1 exec bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`export SENPI_MONITOR_RESTORED=1;bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`LABEL='owner;pair' bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`LABEL="owner;pair" ${script}`)], inbox, 0, () => true)).toBeUndefined();
 });
