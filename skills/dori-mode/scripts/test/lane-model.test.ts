@@ -2,14 +2,14 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordHerdrSession, reviveHerdr } from "../src/herdr-sessions.ts";
-import { keepSessions } from "../src/lane-handover.ts";
-import { keptModel, laneModel, leadModel } from "../src/lane-model.ts";
+import { recordHerdrSession } from "../src/herdr-sessions.ts";
+import { keepSessions, type LaneHandoverDeps, recover } from "../src/lane-handover.ts";
+import { keptModel, laneModel, leadModel, modelMove, withThinking } from "../src/lane-model.ts";
 import { launchLane } from "../src/launch.ts";
 import type { Runner } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, type World } from "./fakes.ts";
 
-// A lane runs its lead's model (owner 2026-11-10): launch, handover and revive read the lead's of now from herdr-sessions.json.
+// A lane runs its lead's model (owner 2026-11-10): launch and handover read the lead's of now from herdr-sessions.json.
 let world: World;
 let dir: string;
 beforeEach(() => {
@@ -56,7 +56,7 @@ test("after a move the registry names the model and level the new session runs, 
 test("launch without --model starts the lane on its lead's model of now and leaves it unpinned; --model pins its own", async () => {
   const brief = join(dir, "brief.md");
   await Bun.write(brief, "# brief\n");
-  const deps = omo({ agentCommand: ["claude", "--model", "{model}", "{prompt}"] });
+  const deps = omo({ agentCommand: ["omo", "--thinking", "low", "--model", "{model}", "{prompt}"] });
   leadRuns(LEAD);
   let n = 1;
   const run: Runner = async (argv, o) => (argv[1] === "tab" && argv[2] === "create" ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: `w1:p${++n}`, tab_id: `w1:t${n}` } } }), err: "" } : deps.run(argv, o));
@@ -64,20 +64,30 @@ test("launch without --model starts the lane on its lead's model of now and leav
   const follow = (await launch("follow")).lane;
   expect(follow.model).toBe(LEAD);
   expect(follow.modelPinned).toBeUndefined();
-  expect(world.calls.some((c) => c.join(" ").includes(`--model ${LEAD}`))).toBe(true);
+  // an omo agent gets the level as its own --thinking, over the template's
+  expect(world.calls.some((c) => c.join(" ").includes("--model kimi-coding/k3.1-pro --thinking max ") && !c.join(" ").includes("--thinking low"))).toBe(true);
   const own = (await launch("own", "anthropic-subscription/claude-opus-5-5:medium")).lane;
   expect(own).toMatchObject({ model: "anthropic-subscription/claude-opus-5-5:medium", modelPinned: true });
 });
 
-test("a revive given a model (a lane that follows its lead) starts with that model and level, not the one its session ran", async () => {
-  const deps = omo();
-  const id = "11111111-2222-4333-8444-555555555555";
-  recordHerdrSession(dir, "w1:p5", { session: id, cwd: dir, model: "m/x", at: new Date(0).toISOString() });
-  world.herdrDead = ["w1:p5"];
-  world.panes = [{ pane_id: "w1:p5", workspace_id: "w1", cwd: dir }];
-  expect(await reviveHerdr(deps.run, deps.clock, deps.config, "w1:p5", "", async () => true, "k/lead:max")).toBe(`REVIVE_OK w1:p5 session ${id}`);
-  const ran = world.calls.find((c) => c[2] === "run")?.[4] ?? "";
-  // on Windows the agent line carries its words as base64 data
-  const words = process.platform === "win32" ? [...ran.matchAll(/FromBase64String\('([^']*)'\)/g)].map((m) => Buffer.from(m[1] ?? "", "base64").toString("utf8")).join(" ") : ran;
-  expect(words).toEndWith(`omo --session-id ${id} --model k/lead --thinking max`);
+test("an omo agent gets the model's level as its own --thinking, over one of the template; a model with no level leaves the argv as it is", () => {
+  expect(withThinking(["omo", "--session-id", "s", "--model", LEAD, "do it"], LEAD)).toEqual(["omo", "--session-id", "s", "--model", "kimi-coding/k3.1-pro", "--thinking", "max", "do it"]);
+  expect(withThinking(["omo", "--thinking", "low", `--model=${LEAD}`, "--thinking=high", "p"], LEAD)).toEqual(["omo", "--model=kimi-coding/k3.1-pro", "--thinking", "max", "p"]);
+  expect(withThinking(["omo", "--thinking", "low", "--model", "p/m", "x"], "p/m")).toEqual(["omo", "--thinking", "low", "--model", "p/m", "x"]);
+});
+
+test("a move interrupted after the registry took the new model goes back to the old model with the old pane, or keeps the new one with the new pane", async () => {
+  const deps = { ...omo(), cardDir: join(dir, "discord"), signal: () => true, sessionOf: async () => "" } as unknown as LaneHandoverDeps;
+  const lane = { key: "k", title: "k", thread: "none", brief: "/b", done: "file /x", openedAt: "2026-01-01T00:00:00Z", model: LEAD } as const;
+  const pending = (to: string) => ({ key: "k", pid: 1, at: "2026-01-01T00:00:00Z", from: "w1:p1", to, note: "/n", models: modelMove(lane, "anthropic-subscription/claude-opus-5-5", "medium") });
+  const moved = { ...lane, model: "anthropic-subscription/claude-opus-5-5:medium" };
+  // both alive: the old pane stays the lane, with its own model
+  await deps.registry.write({ ...moved, pane: "w1:p2" });
+  await recover(deps, pending("w1:p2"), () => {});
+  expect(await deps.registry.read("k")).toMatchObject({ pane: "w1:p1", model: LEAD, modelPinned: false });
+  // the old one gone: the new pane stays, with the model it runs
+  world.herdrDead = ["w1:p1"];
+  await deps.registry.write({ ...lane, pane: "w1:p1" });
+  await recover(deps, pending("w1:p3"), () => {});
+  expect(await deps.registry.read("k")).toMatchObject({ pane: "w1:p3", model: "anthropic-subscription/claude-opus-5-5:medium" });
 });

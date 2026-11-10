@@ -20,7 +20,7 @@ import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
 import { endOldMonitors } from "./handover-monitors.ts";
 import { missingTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
-import { awaitPrompt, briefAnchor, keptModel, laneModel } from "./launch.ts";
+import { awaitPrompt, briefAnchor, keptModel, laneModel, modelMove } from "./launch.ts";
 import { resumeAgent, type StatOf } from "./job-control.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { paneGroup, herdrResult, isHerdrPane } from "./herdr.ts";
@@ -188,7 +188,7 @@ export const missingFrom = (text: string, facts: LaneFacts): Missing[] => {
 // Written once the new session exists and removed when the run ends either way: a run killed in between (crash, reboot,
 // SIGKILL) leaves it behind, and the next dori handover --lane for that lane repairs the state from it first.
 // fromSession and cwd: the outgoing session and where the new one opens, so a recovery records the lane's sessions too
-export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[]; readonly agentPid?: number; readonly fromSession?: string; readonly cwd?: string };
+export type Pending = { readonly key: string; readonly pid: number; readonly at: string; readonly from: string; readonly to: string; readonly note: string; readonly chains?: readonly Job[]; readonly agentPid?: number; readonly fromSession?: string; readonly cwd?: string; readonly models?: ReturnType<typeof modelMove> };
 
 const POLL_MS = 5_000;
 const THINKING = /^(.*):(off|minimal|low|medium|high|xhigh|max)$/;
@@ -1128,11 +1128,11 @@ const forwardLate = async (deps: LaneHandoverDeps, facts: LaneFacts, ctx: MoveCo
 };
 
 // The registry entry and the open question cards of the lane follow its pane.
-const pointLane = async (deps: LaneHandoverDeps, key: string, from: string, to: string, why: string, emit: (line: string) => void): Promise<void> => {
+const pointLane = async (deps: LaneHandoverDeps, key: string, from: string, to: string, why: string, emit: (line: string) => void, model?: Pick<Lane, "model" | "modelPinned">): Promise<void> => {
   const fresh = await deps.registry.read(key);
   // a herdr lane's tab is the new pane's (dori close closes it); the old tab goes with the old session
   const tab = isHerdrPane(to) ? ((await herdrResult(deps.run, ["pane", "get", to]))?.["pane"] as { tab_id?: string } | undefined)?.tab_id : undefined;
-  if (fresh && fresh.pane !== to) await deps.registry.write({ ...fresh, pane: to, tab, history: [...(fresh.history ?? []), { at: iso(deps.clock), status: statusOf(fresh), note: why }] });
+  if (fresh && fresh.pane !== to) await deps.registry.write({ ...fresh, ...model, pane: to, tab, history: [...(fresh.history ?? []), { at: iso(deps.clock), status: statusOf(fresh), note: why }] });
   const cards = new QuestionStore(deps.cardDir).retarget({ tmux: from }, { tmux: to });
   emit(`HANDOVER_LANE ${key} pane -> ${to}; cards ${cards.length ? cards.join(",") : "none"}`);
 };
@@ -1151,7 +1151,7 @@ export const recover = async (deps: LaneHandoverDeps, p: Pending, emit: (line: s
   const newAlive = await agentAlive(deps.run, sessions, p.to);
   if (oldAlive) {
     if (p.agentPid) for (const line of await thawAgent(deps, p.key, p.from, p.agentPid)) emit(line);
-    await pointLane(deps, p.key, p.to, p.from, `pane back to ${p.from}: interrupted handover repaired`, emit);
+    await pointLane(deps, p.key, p.to, p.from, `pane back to ${p.from}: interrupted handover repaired`, emit, p.models?.was);
     const closed = newAlive ? await closeAoeSession(deps.run, p.to) : `${p.to} already gone`;
     await tell(deps, p.from, `[LEAD] The handover of ${p.key} was stopped before it finished. You stay the ${p.key} lane: carry on where you were.`);
     emit(`HANDOVER_RECOVERED ${p.key} back on ${p.from}; new session: ${closed}`);
@@ -1159,7 +1159,7 @@ export const recover = async (deps: LaneHandoverDeps, p: Pending, emit: (line: s
     await pointLane(deps, p.key, p.from, p.to, `pane kept on ${p.to}: interrupted handover repaired, the old session is gone`, emit);
     await tell(deps, p.to, `[LEAD] ${COMMITTED}: the handover was interrupted after the old session ${p.from} closed; you are the ${p.key} lane now. ${deps.config.launchKeywords}: go on with step 5 of the note ${p.note}.`);
     emit(`HANDOVER_RECOVERED ${p.key} kept on ${p.to}: the old session ${p.from} is gone`);
-    await keepSessions(deps, p.key, p.fromSession ?? "", p.cwd ? await deps.sessionOf(p.to, p.cwd).catch(() => "") : "");
+    await keepSessions(deps, p.key, p.fromSession ?? "", p.cwd ? await deps.sessionOf(p.to, p.cwd).catch(() => "") : "", p.models?.to);
     if (p.chains?.length) await chainsEnded(deps, p.key, p.chains, p.to, emit);
   } else {
     emit(`HANDOVER_RECOVERED ${p.key}: neither ${p.from} nor ${p.to} is alive (a reboot?); the registry is left as it is, dori sync and dead-panes show the lane`);
@@ -1184,7 +1184,7 @@ const moveLane = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, facts
     emit(`HANDOVER_FAIL ${lane.key}: could not open the new session: ${e instanceof Error ? e.message : String(e)}; nothing moved, ${from.pane} stays the lane`);
     return { code: 3, note };
   }
-  const pending: Pending = { key: lane.key, pid: process.pid, at: iso(deps.clock), from: from.pane, to: pane, note, chains: facts.chains, ...(facts.agentPid ? { agentPid: facts.agentPid } : {}), ...(from.session ? { fromSession: from.session } : {}), cwd: facts.cwd };
+  const pending: Pending = { key: lane.key, pid: process.pid, at: iso(deps.clock), from: from.pane, to: pane, note, chains: facts.chains, ...(facts.agentPid ? { agentPid: facts.agentPid } : {}), ...(from.session ? { fromSession: from.session } : {}), cwd: facts.cwd, models: modelMove(lane, facts.model, facts.thinking, opts.model) };
   writeFileSync(pendingFile(config.stateDir, lane.key), JSON.stringify(pending, null, 1));
   // the old pane stays quiet when it is still open after a finished move (--keep-old, or the close failed); the mark expires
   let keepQuiet = false;

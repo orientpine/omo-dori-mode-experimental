@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import { paneLife } from "./aoe.ts";
 import { isHerdrPane } from "./herdr.ts";
 import { reviveHerdr } from "./herdr-sessions.ts";
-import { leadModel } from "./lane-model.ts";
 import { fileLog, installTaskRefusal, serve, serveLoops, spawnLoop, TASK_NAME, taskArgv } from "./serve.ts";
 import { findLead } from "./lead.ts";
 import { configPath } from "./config.ts";
@@ -150,7 +149,7 @@ const serveCommand: Command = async (context) => {
 };
 
 const reviveCommand: Command = async (context) => {
-  const { key, config, opt, deps } = context;
+  const { key, config, opt } = context;
   const pane = key ?? die("usage: dori revive <herdr pane> [--text TEXT]");
   if (!isHerdrPane(pane)) die("revive takes a herdr pane id (an aoe session restarts with self-restart.sh)");
   // dori never ends a live herdr agent: only a pane whose agent is gone is started again
@@ -158,12 +157,7 @@ const reviveCommand: Command = async (context) => {
     console.log(`REVIVE_ALREADY_RUNNING ${pane}`);
     return;
   }
-  // a lane's pane whose model was not chosen for it comes back on the lead's model of now (herdr-sessions.ts leadModel)
-  const lane = await deps.registry.byPane(pane);
-  const model = lane && !lane.modelPinned && statusOf(lane) !== "closed" ? leadModel(config) : undefined;
-  const line = await reviveHerdr(run, realClock, config, pane, opt("text") ?? "", (p, t) => sendVerified(run, realClock, config, p, t), model);
-  // an agent herdr had already started again runs the model it ran before: the registry is left as it is
-  if (lane && model && line.startsWith("REVIVE_OK") && !line.includes("herdr had started it again")) await deps.registry.patch(lane.key, { model });
+  const line = await reviveHerdr(run, realClock, config, pane, opt("text") ?? "", (p, t) => sendVerified(run, realClock, config, p, t));
   console.log(line);
   if (!line.startsWith("REVIVE_OK")) process.exitCode = 1;
   return;

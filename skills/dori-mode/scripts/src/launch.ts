@@ -80,7 +80,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   return { lane, startup: (await startupGoal(deps, input.key, opened.pane, cwd, opened.session ?? "", launchedAt, prompted)) ?? started };
 };
 export { validateLaunch } from "./launch-gates.ts";
-export { keptModel, laneModel } from "./lane-model.ts";
+export { keptModel, laneModel, modelMove } from "./lane-model.ts";
 export { threadGate } from "./launch-gates.ts";
 export { relatedFor } from "./launch-gates.ts";
 export { relatedGate } from "./launch-gates.ts";
