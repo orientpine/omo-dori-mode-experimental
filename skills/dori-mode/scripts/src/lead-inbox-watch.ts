@@ -10,7 +10,7 @@ const plain = (s: string, n: number): string => s.replace(/\s+/g, " ").replace(/
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 const OPTION_VALUES = new Set(["-o", "+o", "-O", "+O", "--init-file", "--rcfile"]);
-const ENV_SETUP = /^\s*export\s+[A-Za-z_][A-Za-z0-9_]*=\S+\s*;\s*/;
+const ENV_SETUP = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=\S+(?:\s*;\s*|\s+)/;
 const stripEnvironment = (command: string): string => {
   let rest = command;
   while (ENV_SETUP.test(rest)) rest = rest.replace(ENV_SETUP, "");
