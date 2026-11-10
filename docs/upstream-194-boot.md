@@ -96,4 +96,20 @@ Current-main evidence: fork PR #402 already applied the split discipline, `check
 
 Verification: `worklog.test.ts`, `worklog-records.test.ts`, and `session-runtime.test.ts` completed with **27 pass, 0 fail**, and `bun run lint:loc` printed `LOC_OK 369 files`. **Verdict: DONE, evidence only.**
 
-Later prerequisite results are recorded in the sections that follow.
+## #194 drift and workspace checks
+
+The refreshed upstream diff remained unchanged at head `e8d62d60b958dd12c90c36dcc3f5533c58302859`; the exact commit was fetched for source and NOTICE.
+
+Red reproduction after all prerequisites: **46 pass, 8 fail** across the six new boot-check cases and the updated boot/journal expectations.
+
+Implementation: `boot-checks.ts` adds `workspaceCheck` and `driftCheck`. Workspace mismatches print `CONFIG_WARN` and fail boot only on herdr. Open, non-closed lanes missing from the session list are probed through the existing runtime; confirmed-gone lanes are counted in `DRIFT n=...`, while probe failures are named separately and fail boot without being counted. Boot calls the checks after reconciliation and before journals. Existing runtime, worklog, and monitor code is reused.
+
+Verification: **54 pass, 0 fail** across all boot and session-runtime files, with strict typecheck exit 0. The six cases cover laneWorkspace omission, live-agent mismatch, covering/empty filters, herdr drift with closed/live exclusions, hc drift with no workspace warning, and probe failure. The updated boot test allows only `pane list`/`pane get`, and the journal cases keep a silent lane on a live pane.
+
+All four mutation checks failed on their intended assertions: laneWorkspace warning removal (4 pass / 2 fail), live-agent coverage removal (5 pass / 1 fail), drift never counted (4 pass / 2 fail), and hc incorrectly treated as having workspaces (5 pass / 1 fail). The restored source is byte-identical and the six cases pass again.
+
+The final full CI completed with **2032 pass, 0 fail** and `LOC_OK 371 files`.
+
+Real-CLI QA in `/home/soodori/.soodori/qa/port-upstream-194` passed all eight scenarios: herdr drift/config mismatch, live-agent mismatch, covering filter, empty filter, hc drift without workspace warnings, herdr probe failure, empty-state read-only boot, and report CLI persistence. The artifacts include command lines, stdout/stderr, exit codes, runtime argv logs, state hashes, and the report journal. Only list/get probes occurred and every boot state hash stayed unchanged.
+
+Documentation and NOTICE name the new output, non-zero exit, and upstream head.

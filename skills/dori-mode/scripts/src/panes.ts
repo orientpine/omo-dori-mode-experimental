@@ -152,7 +152,7 @@ export const omoSession = (config: Pick<DoriConfig, "backend" | "agentCommand">)
 export const omoPane = (config: Pick<DoriConfig, "backend" | "agentCommand">, pane: string): boolean => !isHerdrPane(pane) || omoSession(config);
 
 // upstream #69: the states herdr reports for a pane whose agent is running (its others: unknown, or none over a shell)
-const ALIVE_STATUSES: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done"]);
+export const ALIVE_STATUSES: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done"]);
 
 // a stopped agent, or one left a background job of its shell, reads nothing whatever its screen shows
 const heldAgent = async (run: Runner, pane: string): Promise<string | undefined> => {

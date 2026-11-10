@@ -4,6 +4,7 @@ import type { SessionInfo } from "./runtime/types.ts";
 import { type ChosenRuntimes, runtimesOf } from "./run.ts";
 import { listSessions } from "./sessions.ts";
 import { reconcilePanes } from "./reconcile.ts";
+import { driftCheck, workspaceCheck } from "./boot-checks.ts";
 import type { Slack } from "./messenger/slack.ts";
 import { type BootLane, finished, monitorCleanup, readMonitorManifests } from "./boot-monitors.ts";
 import { type Lane, statusOf } from "./registry.ts";
@@ -68,7 +69,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       failed = true;
-      journals.push(`JOURNAL-ERROR ${lane.key}: kind=${error instanceof ReportError || error instanceof SyntaxError ? "invalid-journal" : "code" in error && typeof error.code === "string" ? error.code : "unreadable"}`);
+      journals.push(`JOURNAL-ERROR ${lane.key} kind=${error instanceof ReportError || error instanceof SyntaxError ? "invalid-journal" : "code" in error && typeof error.code === "string" ? error.code : "unreadable"}`);
       lanes.push(lane);
     }
   }
@@ -88,7 +89,13 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     lines.push(`PANES lead=${lead || "unconfigured"} leadState=${panes.some((p) => p.ref.id === lead) ? "live" : "missing"} registeredLive=${result.lanes.filter((l) => l.paneState === "live" && l.status !== "closed").length} vanished=${vanished.length} unregistered=${result.unregistered.length}`);
     for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${lane.pane} status=${lane.status}; registry and worktrees preserved; no relaunch`);
     if (result.unregistered.length) lines.push(`UNREGISTERED ${result.unregistered.join(" ")}`);
+    const drift = await driftCheck(rts, registered, panes);
+    lines.push(...drift.lines);
+    if (drift.failed) failed = true;
   }
+  const warnings = workspaceCheck(deps.config, rts.choice?.kind, panes);
+  if (warnings.length) failed = true;
+  lines.push(...warnings);
   lines.push(...journals);
   try {
     const read = deps.worklog.read();

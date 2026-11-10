@@ -34,6 +34,7 @@ test("an unavailable runtime prints its fix and fails boot before any other chec
 test("boot reports vanished panes, journals and stale watches, and writes nothing", async () => {
   // Given a lane whose pane vanished, a live lane, a closed lane with a watch, and a halted journal.
   const world = newWorld();
+  world.herdrGone = ["w1:p8"];
   world.panes = [{ pane_id: "w2:p1", workspace_id: "w2" }, { pane_id: "w2:p2", workspace_id: "w2" }];
   const deps = depsFor(world, async () => ({ userId: "U_FIXTURE", teamId: "T_FIXTURE" }));
   for (const l of [launched("api-release", "working", "w1:p8"), lane("live", "working", "w2:p2"), lane("closed", "closed")]) await deps.registry.write(l);
@@ -44,7 +45,8 @@ test("boot reports vanished panes, journals and stale watches, and writes nothin
   const before = snapshot(state.dir);
   // When boot runs; then every finding is printed, the exit is clean, and no file changed.
   const result = await bootCheck(deps);
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode).toBe(1);
+  expect(result.lines).toContain("DRIFT n=1 api-release");
   expect(result.lines).toContain("SLACK authenticated user=U_FIXTURE team=T_FIXTURE (auth.test only; inbox delivery unverified)");
   expect(result.lines).toContain("VANISHED api-release pane=w1:p8 status=working; registry and worktrees preserved; no relaunch");
   expect(result.lines).toContain("UNREGISTERED w2:p1");
@@ -52,7 +54,7 @@ test("boot reports vanished panes, journals and stale watches, and writes nothin
   expect(result.lines).toContain('STOP in the owner session only: kill_bash({"bash_id":"mon_REALFIXTURE"})');
   expect(result.lines.some((l) => l.startsWith("VANISHED closed"))).toBe(false);
   expect(snapshot(state.dir)).toEqual(before);
-  expect(world.calls.every((c) => c[0] === "herdr" && c[1] === "pane" && c[2] === "list")).toBe(true);
+  expect(world.calls.every((c) => c[0] === "herdr" && c[1] === "pane" && ["list", "get"].includes(c[2] ?? ""))).toBe(true);
 });
 
 test("boot on a state dir with no lanes directory leaves it byte-identical", async () => {

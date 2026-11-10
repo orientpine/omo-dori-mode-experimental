@@ -18,7 +18,7 @@ export { paneGroup } from "./hc-pane.ts";
 // https://github.com/sisyphuslabs/dori-superagent/issues/62).
 export const isHerdrPane = (pane: string): boolean => pane.includes(":");
 
-export type HerdrPane = { readonly pane_id: string; readonly tab_id?: string; readonly workspace_id?: string; readonly cwd?: string; readonly agent?: string };
+export type HerdrPane = { readonly pane_id: string; readonly tab_id?: string; readonly workspace_id?: string; readonly cwd?: string; readonly agent?: string; readonly agent_status?: string };
 type HerdrTab = { readonly tab_id: string; readonly label?: string; readonly pane_count?: number };
 
 // Every herdr call goes through the session runtime (upstream #147-#154, scripts/src/runtime): what its interface has
