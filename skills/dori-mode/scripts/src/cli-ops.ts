@@ -152,6 +152,7 @@ const reviveCommand: Command = async (context) => {
   const { key, config, opt } = context;
   const pane = key ?? die("usage: dori revive <herdr pane> [--text TEXT]");
   if (!isHerdrPane(pane)) die("revive takes a herdr pane id (an aoe session restarts with self-restart.sh)");
+  // the lead's pane only (dori lead records it in herdr-sessions.json); a lane restarts with dori handover --lane, on its lead's model
   // dori never ends a live herdr agent: only a pane whose agent is gone is started again
   if ((await paneLife(run, pane)).live) {
     console.log(`REVIVE_ALREADY_RUNNING ${pane}`);

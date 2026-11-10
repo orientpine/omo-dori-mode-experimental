@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { launchProvider } from "./lane-model.ts";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { type FeedTodo, feedIntake, inboxReader, instanceOf, orderIntake, pairIntake, type TickDeps } from "./backlog.ts";
@@ -45,7 +46,7 @@ export const makeBacklogDeps = (cli: Pick<Cli, "config" | "deps" | "discordToken
       return { pane: r.lane.pane ?? "?", startup: r.startup };
     },
     limited: () => {
-      const provider = config.defaultModel.split("/")[0];
+      const provider = launchProvider(config);
       return poolFree(config.sessionsDir, provider, Date.now()) ? undefined : `usage limit: no ${provider} account is free in omo's credential pool`;
     },
     host: { dir: config.backlog.hostDir, user: userInfo().username, instance: instanceOf(config.stateDir), max: config.backlog.hostMaxLanes },

@@ -53,3 +53,7 @@ export const withThinking = (argv: readonly string[], model: string): string[] =
   }
   return out;
 };
+
+// The provider a lane started with no --model runs on (the lead's of now, else defaultModel): the one whose quota the
+// backlog checks before it starts a lane.
+export const launchProvider = (config: Pick<DoriConfig, "stateDir" | "leadPane" | "defaultModel">): string => (leadModel(config) ?? config.defaultModel).split("/")[0] ?? "";

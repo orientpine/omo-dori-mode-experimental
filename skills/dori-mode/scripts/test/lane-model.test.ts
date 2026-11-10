@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordHerdrSession } from "../src/herdr-sessions.ts";
 import { keepSessions, type LaneHandoverDeps, recover } from "../src/lane-handover.ts";
-import { keptModel, laneModel, leadModel, modelMove, moveThinking, withThinking } from "../src/lane-model.ts";
+import { keptModel, laneModel, launchProvider, leadModel, modelMove, moveThinking, withThinking } from "../src/lane-model.ts";
 import { launchLane } from "../src/launch.ts";
 import type { Runner } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, type World } from "./fakes.ts";
@@ -114,4 +114,12 @@ test("an interrupted move of a lane that had no model gives the kept old pane no
   const back = await deps.registry.read("a");
   expect(back?.pane).toBe("w1:p1");
   expect(back?.model).toBeUndefined();
+});
+
+test("the backlog checks the quota of the provider its lanes start on: the lead's, else defaultModel's", () => {
+  const config = omo().config;
+  leadRuns("anthropic-subscription/claude-opus-5-5:medium");
+  expect(launchProvider({ ...config, defaultModel: LEAD })).toBe("anthropic-subscription");
+  rmSync(join(config.stateDir, "herdr-sessions.json"), { force: true });
+  expect(launchProvider({ ...config, defaultModel: LEAD })).toBe("kimi-coding");
 });
