@@ -779,7 +779,7 @@
       "prompt": "각 리드 하위의 레인들은 리드와 동일한 모델을 쓴다.",
       "rule": "레인의 주모델과 thinking 등급은 그 도리 리드가 지금 쓰는 것(state/herdr-sessions.json의 리드 pane 항목 model)을 따른다: dori launch를 --model 없이 하면 리드의 지금 모델로 뜨고, dori handover --lane(손·자동 교대)과 dori revive도 그때의 리드 모델로 새 세션을 연다. 리드가 /model로 바뀌면 다음 시작·교대부터 따라간다. dori launch --model·handover --lane --model로 레인 모델을 따로 정한 레인(modelPinned)만 그 모델을 지킨다. 일시정지 레인은 모델만 맞추고 재개하지 않는다.",
       "date": "2026-11-10",
-      "source": "형 2026-11-10 22:01 KST(#zzangdori) https://discord.com/channels/1528936606264856737/1555211347338199112/1569698557764837469, 전달 짱돌 리드, 레인 lane-model-follow-lead",
+      "source": "형 2026-11-10 22:01 KST(#zzangdori), 전달 짱돌 리드, 레인 lane-model-follow-lead",
       "scope": {
         "all": true
       },
