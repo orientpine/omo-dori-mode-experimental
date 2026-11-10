@@ -11,6 +11,8 @@ import { leadReplies } from "./lead-limit.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { join } from "node:path";
 import { LaunchFailed } from "./launch-types.ts";
+import { splitModel } from "./lane-handover.ts";
+import { withThinking } from "./lane-model.ts";
 import { startupFailure } from "./launch-screen.ts";
 
 // whether the newest model reply in the lane's own session (the exact id from its command line, under the cwd or its real
@@ -84,7 +86,9 @@ export const withSessionId = (argv: readonly string[], id: string): string[] =>
 // env: launchEnv for the lane (laneEnv), set on the agent's command line, since a herdr pane takes the server's environment
 export const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string, env: Readonly<Record<string, string | undefined>> = {}): Promise<Opened> => {
   // the template is checked, not the filled argv: the prompt is one argument and never a selector
-  const argv = fill(withSessionId(deps.config.agentCommand, crypto.randomUUID()), { model, prompt });
+  // an omo agent gets the model's level as its own --thinking (lane-model.ts withThinking)
+  const filled = fill(withSessionId(deps.config.agentCommand, crypto.randomUUID()), { model, prompt });
+  const argv = isOmoExecutable(filled[0] ?? "") ? withThinking(filled, model) : filled;
   // the shared opener (herdr.ts): a tab labelled with the key, a workspace first on a fresh server, the agent run there
   let opened: { readonly pane: string; readonly tab?: string };
   try {
@@ -103,7 +107,8 @@ export const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model:
 export const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string, env: Readonly<Record<string, string | undefined>>): Promise<Opened> => {
   let pane: string;
   try {
-    pane = await openAoeSession(deps.run, deps.clock, { title: key, cwd, tool: deps.config.agentCommand[0] ?? "omo", model, env });
+    const { base, thinking } = splitModel(model);
+    pane = await openAoeSession(deps.run, deps.clock, { title: key, cwd, tool: deps.config.agentCommand[0] ?? "omo", model: base, ...(thinking ? { thinking } : {}), env });
   } catch (e) {
     if (e instanceof AoeError) throw new LaunchFailed(e.message);
     throw e;
