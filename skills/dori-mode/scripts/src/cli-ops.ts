@@ -14,6 +14,10 @@ import { watchTick } from "./done-flow.ts";
 import { guardTick, outsideLines, sampleHost, sampleOutside } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals } from "./lane-signals.ts";
 import { statusOf } from "./registry.ts";
+import { bootCheck, slackAuthCheck } from "./boot.ts";
+import { Reports } from "./reports.ts";
+import { Slack } from "./messenger/slack.ts";
+import { fetchHttp } from "./messenger/http.ts";
 import { realClock, run } from "./run.ts";
 import { canLaunch } from "./routing.ts";
 import { computeScorecard, dayWindow, formatScorecard, saveScorecard } from "./scorecard.ts";
@@ -44,6 +48,22 @@ const eyesCommand: Command = async (context) => {
 const updateCommand: Command = async (context) => {
   const { config, flags } = context;
   process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
+  return;
+};
+
+const bootCommand: Command = async (context) => {
+  const { deps } = context;
+  const token = process.env["DORI_SLACK_TOKEN"];
+  const slack = token ? new Slack(fetchHttp, realClock, { token, cookie: process.env["DORI_SLACK_COOKIE"] }, process.env["DORI_SLACK_API"]?.trim() || undefined) : null;
+  const sessionDirs = [process.env["PI_SESSION_DIR"], process.env["PI_SESSION_FILE"] && dirname(process.env["PI_SESSION_FILE"])];
+  const result = await bootCheck({
+    ...deps,
+    reports: new Reports(deps.config.stateDir),
+    slack: slackAuthCheck(slack),
+    monitorDirs: sessionDirs.flatMap((dir) => (dir ? [join(dir, "extensions", "terminal")] : [])),
+  });
+  for (const line of result.lines) console.log(line);
+  process.exitCode = result.exitCode;
   return;
 };
 
@@ -170,6 +190,7 @@ const transcribeCommand: Command = async (context) => {
 };
 
 export const opsCommands: Readonly<Record<string, Command>> = {
+  "boot": bootCommand,
   "notify-change": notifyChangeCommand,
   "eyes": eyesCommand,
   "update": updateCommand,

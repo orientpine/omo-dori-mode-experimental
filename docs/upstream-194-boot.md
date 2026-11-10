@@ -40,4 +40,14 @@ Verification after implementation:
 
 Full gate: `bun run ci` completed with **1986 pass, 0 fail**. Biome, strict typecheck, and knip succeeded, and the LOC gate printed `LOC_OK 357 files`. The heavy runner recorded that this repository's suite must run locally and completed it in its own scope.
 
+## #37 read-only boot
+
+Red reproduction after #30 and before boot production files: **0 pass, 5 fail** across `boot.test.ts`, `boot-monitors.test.ts`, `boot-slack.test.ts`, `boot-journals.test.ts`, and `boot-metadata.test.ts`, because the boot modules and command did not exist.
+
+Implementation: non-creating full and partial registry reads, boot orchestration, journal reporting, pane reconciliation, monitor-manifest discovery and cleanup instructions, bounded Slack auth, real CLI dispatch, and command documentation. The approved split layout keeps `boot.ts` and `boot-monitors.ts` under the current LOC rule; `registry-scan.ts` owns directory reads without changing the registry's public API.
+
+Verification: all five files passed **24 pass, 0 fail**, including the spawned-CLI `PI_SESSION_DIR`/`PI_SESSION_FILE` metadata case and read-only state snapshots. Later #72, #96, and #154 assertions are intentionally added only in their own stages.
+
+The first full CI run caught two legacy-session regressions (**2008 pass, 2 fail**): existing tests use `Registry.list()` to create `lanes/` before writing legacy records. The fix preserves that established `list()` behavior while keeping boot's `scan()` non-creating; no existing test was edited. The focused rerun passed **38 pass, 0 fail** with strict typecheck green. The final full CI after the fix completed with **2010 pass, 0 fail** and `LOC_OK 366 files`.
+
 Later prerequisite results are recorded in the sections that follow.
