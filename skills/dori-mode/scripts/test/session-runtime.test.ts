@@ -71,11 +71,14 @@ test("a refused runtime opens nothing: a DORI_RUNTIME that names no runtime make
     calls.push([...argv]);
     return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p9", tab_id: "w1:t9" } } }), err: "" };
   };
+  const previousRuntime = process.env["DORI_RUNTIME"];
   process.env["DORI_RUNTIME"] = "tmux";
   try {
     await expect(openHerdrSession(run, { now: () => 0, sleep: async () => {} }, { title: "x", cwd: "/tmp", argv: ["omo"] })).rejects.toThrow(/DORI_RUNTIME must be "herdr" or "hc"/);
   } finally {
-    delete process.env["DORI_RUNTIME"];
+    // the suite preload pins herdr on an hc-equipped host; restore it rather than letting later suites select hc
+    if (previousRuntime === undefined) delete process.env["DORI_RUNTIME"];
+    else process.env["DORI_RUNTIME"] = previousRuntime;
   }
   expect(calls).toEqual([]);
 });
