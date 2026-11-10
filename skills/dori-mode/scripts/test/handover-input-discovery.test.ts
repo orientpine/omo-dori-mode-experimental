@@ -201,3 +201,38 @@ test("a relative input in an unknown directory is not judged from the caller's f
   expect(launch.detached).toBe(true);
 });
 
+// #414 review 13: an unresolved relative script a shell runs returned no launch at all, so the same command could be
+// re-armed and start its work twice. It stays work and detached when its directory cannot be resolved.
+test("an unresolved script a shell runs is work, never a watch-only command", () => {
+  for (const command of ["bash ./start.sh", "bash ./start.sh; cd /tmp/other", "./start.sh"]) {
+    const seen: string[] = [];
+    const read = (path: string) => { seen.push(path); return "nohup setsid /tmp/job.sh &\n"; };
+    const launch = launchOf(command, HOME, read);
+    if (!launch) throw new Error(`not work: ${command}`);
+    expect([command, launch.detached]).toEqual([command, true]);
+    expect(seen).toEqual([]);
+  }
+  // a resolved absolute script still uses its contents, and a read-only mention is not work
+  const absolute = launchOf("bash /tmp/start.sh", HOME, () => "nohup setsid /tmp/job.sh &\n");
+  if (!absolute) throw new Error("not work absolute");
+  expect(absolute.detached).toBe(true);
+  expect(launchOf("cat ./start.sh", HOME, () => undefined)).toBeUndefined();
+});
+
+// #414 review 13: only absolute cd targets were tracked, so cd /tmp/work && cd sub read the parent's ci.sh instead of
+// the child's. Relative directory changes compose from the last absolute directory.
+test("a relative cd composes with the last absolute directory", () => {
+  const command = "cd /tmp/work && cd sub && bash -s < ci.sh";
+  const seen: string[] = [];
+  const read = (path: string) => { seen.push(path); return path === "/tmp/work/sub/ci.sh" ? "sleep 30\nnohup setsid /tmp/job.sh &\n" : "sleep 30\nbun run ci\n"; };
+  const launch = launchOf(command, HOME, read);
+  if (!launch) throw new Error(`not work: ${command}`);
+  expect(launch.detached).toBe(true);
+  expect(seen).toEqual(["/tmp/work/sub/ci.sh"]);
+  const plain = launchOf(command, HOME, (path) => (path === "/tmp/work/sub/ci.sh" ? "sleep 30\nbun run ci\n" : "nohup setsid /tmp/job.sh &\n"));
+  if (!plain) throw new Error(`not work: ${command}`);
+  expect(plain.detached).toBe(false);
+  // a relative cd with no absolute base is unresolved, not a path in the caller's directory
+  expect(launchOf("cd sub && bash -s < ci.sh", HOME, () => "bun run ci\n")?.detached).toBe(true);
+});
+
