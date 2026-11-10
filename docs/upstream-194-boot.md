@@ -86,4 +86,14 @@ Implementation: boot prints `RUNTIME <kind> (from <source>)` first and exits imm
 
 Verification: **48 pass, 0 fail** across all boot files and the existing session-runtime suite, with strict typecheck and clean no-excuse/junk-test audits. A direct probe confirmed the runtime identities. The final fixtures use valid herdr refs, exact watch-token panes, and an explicitly unassigned adopted lane. The final full CI completed with **2026 pass, 0 fail** and `LOC_OK 369 files`.
 
+## #149 strict tooling audit (no port)
+
+Current-main evidence: fork PR #388 already ported the strict TypeScript flags, Biome lint, knip, and LOC checks. `package.json` runs them through `ci`, and every prerequisite run above exercised them. The formatter remains deliberately excluded by the earlier owner decision; no mass formatting or tooling rewrite was made. **Verdict: DONE, evidence only.**
+
+## #159 split and worklog-rendering audit (no duplicate port)
+
+Current-main evidence: fork PR #402 already applied the split discipline, `check-loc.ts` enforces it, `worklog.ts` already owns rendering, and the session runtime/listing behavior is tested. New boot code used the approved `boot.ts`/`boot-monitors.ts` and split-test layout from the start, so no later structural rewrite was needed and no duplicate `worklog-render.ts` was created.
+
+Verification: `worklog.test.ts`, `worklog-records.test.ts`, and `session-runtime.test.ts` completed with **27 pass, 0 fail**, and `bun run lint:loc` printed `LOC_OK 369 files`. **Verdict: DONE, evidence only.**
+
 Later prerequisite results are recorded in the sections that follow.
