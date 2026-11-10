@@ -42,7 +42,7 @@ const limitWorld = () => {
   world.ps = `10 1 /bin/bash /tmp/aoe-pane-env\n11 10 /x/senpi/dist/bundle/cli.js --session-id ${SESSION_ID}\n`;
   const deps = (ms: number, patch: Partial<DoriConfig> = {}) => ({
     ...at(ms),
-    config: { ...at(ms).config, ...patch, sessionsDir },
+    config: { ...at(ms).config, leadInboxMin: 0, ...patch, sessionsDir },
     ownerInbox: { path: inbox, ownerId: OWNER, ownerChannel: "C-OWNER" },
   });
   const row = (ms: number, id: string, content: string, extra: object = {}) => appendFileSync(inbox, `${JSON.stringify({ ts: iso(ms), id, channel_id: "T-THREAD", scope: "thread", author_id: OWNER, content, ...extra })}\n`);
