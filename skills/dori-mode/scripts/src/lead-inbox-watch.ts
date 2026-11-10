@@ -64,6 +64,7 @@ const scriptCalls = (command: string): string[] => {
   const offset = (words[0] ?? "").split("/").at(-1) === "exec" ? 1 : 0;
   const first = words[offset] ?? "";
   const shell = first.split("/").at(-1);
+  const dNoExec = shell !== "zsh";
   if (first.startsWith("/") && first.endsWith(".sh")) return [first];
   if (!SHELLS.has(shell ?? "")) return [];
   for (let i = offset + 1; i < words.length; i++) {
@@ -72,13 +73,13 @@ const scriptCalls = (command: string): string[] => {
       const script = words[i + 1];
       return script?.startsWith("/") && script.endsWith(".sh") ? [script] : [];
     }
-    if (/^-[A-Za-z]*[snD][A-Za-z]*$/.test(word) || ["--help", "--version", "--dump-strings", "--dump-po-strings"].includes(word)) return [];
+    if (/^-[A-Za-z]*[sn][A-Za-z]*$/.test(word) || (dNoExec && /^-[A-Za-z]*D[A-Za-z]*$/.test(word)) || ["--help", "--version", "--dump-strings", "--dump-po-strings"].includes(word)) return [];
     if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word)) {
       let j = i + 1;
       for (; j < words.length; j++) {
         const w = words[j] ?? "";
         if (w === "--") { j++; break; }
-        if (w === "-n" || (/^-[A-Za-z]+$/.test(w) && /[nD]/.test(w))) return [];
+        if (w === "-n" || (/^-[A-Za-z]+$/.test(w) && (w.includes("n") || (dNoExec && w.includes("D"))))) return [];
         if (w === "--dump-strings" || w === "--dump-po-strings") return [];
         if (OPTION_VALUES.has(w) || /^[-+][A-Za-z]+[oO]$/.test(w)) {
           if (w.startsWith("-") && words[j + 1] === "noexec") return [];
