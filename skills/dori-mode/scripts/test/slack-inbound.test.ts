@@ -18,7 +18,11 @@ const slackFake = (w: Workspace) => {
   const http: Http = async (req: HttpRequest): Promise<HttpResponse> => {
     const method = req.url.split("/").pop() ?? "";
     calls.push(method);
-    const p = JSON.parse(String(req.body ?? "{}")) as Record<string, unknown>;
+    const form = req.headers?.["Content-Type"]?.startsWith("application/x-www-form-urlencoded");
+    if ((method === "conversations.replies" || method === "files.getUploadURLExternal") && !form) {
+      return { status: 200, headers: {}, body: JSON.stringify({ ok: false, error: "invalid_arguments" }) };
+    }
+    const p: Record<string, unknown> = form ? Object.fromEntries(new URLSearchParams(String(req.body))) : JSON.parse(String(req.body ?? "{}"));
     const body = (b: unknown): HttpResponse => ({ status: 200, headers: {}, body: JSON.stringify({ ok: true, ...(b as object) }) });
     if (method === "chat.postMessage") {
       const ts = `${w.nextTs++}.000100`;

@@ -13,6 +13,9 @@ export type UploadFile = { readonly filename: string; readonly length: number; r
 // one request, no retry: for a call that may have taken effect even when it answered 5xx
 const ONCE: RetryPolicy = { attempts: 1, baseMs: 0, maxMs: 0 };
 
+// Upstream #182 / #180: these Web API methods reject JSON bodies even with valid arguments.
+const FORM_METHODS: ReadonlySet<string> = new Set(["conversations.replies", "files.getUploadURLExternal"]);
+
 export class Slack {
   constructor(
     private readonly http: Http,
@@ -30,11 +33,10 @@ export class Slack {
     };
   }
 
-  // form: the method reads form fields only (files.getUploadURLExternal answers a JSON body invalid_arguments, live
-  // 2026-11-03), so the params go out url-encoded
-  async call(method: string, params: Record<string, unknown>, policy?: RetryPolicy, form = false): Promise<Record<string, unknown>> {
-    const payload = form ? new URLSearchParams(Object.entries(params).map(([k, v]): [string, string] => [k, String(v)])).toString() : JSON.stringify(params);
-    const headers = form ? { ...this.headers(false), "Content-Type": "application/x-www-form-urlencoded" } : this.headers(true);
+  // Explicit form remains available for callers; known form-only methods select it automatically.
+  async call(method: string, params: Record<string, unknown>, policy?: RetryPolicy, form = FORM_METHODS.has(method)): Promise<Record<string, unknown>> {
+    const payload = form ? new URLSearchParams(Object.entries(params).flatMap(([k, v]): [string, string][] => v === undefined || v === null ? [] : [[k, String(v)]])).toString() : JSON.stringify(params);
+    const headers = form ? { ...this.headers(false), "Content-Type": "application/x-www-form-urlencoded; charset=utf-8" } : this.headers(true);
     const res = await withBackoff(this.http, this.clock, { method: "POST", url: `${this.base}/${method}`, headers, body: payload }, policy);
     const body = JSON.parse(res.body || "{}") as Record<string, unknown>;
     if (res.status !== 200 || body["ok"] !== true) throw new MessengerError(`slack ${method}: ${String(body["error"] ?? res.status)}`, res.status, String(body["error"] ?? ""));
