@@ -170,7 +170,7 @@ test("a lead handover started with DORI_RUNTIME=hc and no runtime in the config 
     expect(`${code} ${out.split(" ")[0]}`).toBe("0 HANDOVER_DETACHED");
     // and HC_SESSION, the named core its sessions live in (review 6 of #404), never this terminal's own HC_TERMINAL_ID
     const argv = readFileSync(join(home, "argv"), "utf8").split("\n");
-    expect(argv).toContain("--setenv=DORI_RUNTIME");
+    expect(argv).toContain("--setenv=DORI_RUNTIME=hc");
     expect(argv).toContain("--setenv=HC_SESSION");
     expect(argv.some((a) => a.includes("HC_TERMINAL_ID"))).toBe(false);
   } finally {

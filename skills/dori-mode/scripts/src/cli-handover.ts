@@ -13,11 +13,11 @@ import { closeDueFrozen, closeFrozen, frozenLine, readFrozen, thawFrozen } from 
 import { trialActive, trialRows, trialTable } from "./compaction-keep.ts";
 import type { Command } from "./cli-context.ts";
 import { die } from "./cli-context.ts";
-import { HANDOVER_ENV, makeHandoverDeps } from "./cli-deps-handover.ts";
+import { makeHandoverDeps } from "./cli-deps-handover.ts";
 
 const handoverCommand: Command = async (context) => {
   const { key, opt, config, flags, lane, deps, rest, cliPath } = context;
-  const { freezeDeps, sendSignal, laneDepsFor, leadDepsFor } = makeHandoverDeps(context);
+  const { freezeDeps, sendSignal, laneDepsFor, leadDepsFor, passEnv } = makeHandoverDeps(context);
   const here = await currentTmuxSession(run);
   // the one-use grant of a run freshness started (auto hook); kept from the sessions and processes this run starts
   const autoGrant = process.env[AUTO_GRANT_ENV];
@@ -108,7 +108,7 @@ const handoverCommand: Command = async (context) => {
     const unit = `dori-handover-${Date.now()}`;
     const log = join(config.stateDir, "handover", "run.log");
     mkdirSync(join(config.stateDir, "handover"), { recursive: true });
-    const pass = HANDOVER_ENV.filter((n) => process.env[n] !== undefined).map((n) => `--setenv=${n}`);
+    const pass = passEnv();
     const r = await run(["systemd-run", "--user", "--collect", `--unit=${unit}`, "--setenv=DORI_HANDOVER_DETACHED=1", ...pass, `--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`, process.execPath, cliPath, "handover", ...rest]);
     if (r.code !== 0) die(`HANDOVER_DETACH_FAIL ${r.err || r.out}`);
     console.log(`HANDOVER_DETACHED unit=${unit} log=${log}; progress also goes to ${config.watchLog}`);
