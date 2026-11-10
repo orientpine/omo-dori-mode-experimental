@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { monitorCleanup, readMonitorManifests } from "../src/boot-monitors.ts";
+import { reconcilePanes } from "../src/reconcile.ts";
 import { Reports } from "../src/reports.ts";
 import { lane, manifest, T0 } from "./boot-fixtures.ts";
 import { withState } from "./fakes.ts";
@@ -9,6 +10,18 @@ import { withState } from "./fakes.ts";
 let state: ReturnType<typeof withState>;
 beforeEach(() => { state = withState(); });
 afterEach(() => state.done());
+
+test("reconcilePanes matches registered lanes to live sessions without changing their records", () => {
+  const lanes = [lane("vanished"), lane("live", "working", "w2:p2"), lane("adopted", "working", "")];
+  const before = JSON.stringify(lanes);
+  const result = reconcilePanes(lanes, [
+    { ref: { runtime: "herdr", id: "w2:p1", group: "w2" } },
+    { ref: { runtime: "herdr", id: "w2:p2", group: "w2" } },
+  ]);
+  expect(result.lanes.map((l) => l.paneState)).toEqual(["vanished", "live", "unassigned"]);
+  expect(result.unregistered).toEqual(["w2:p1"]);
+  expect(JSON.stringify(lanes)).toBe(before);
+});
 
 test("a lane whose journal says done qualifies for cleanup", () => {
   const reports = new Reports(state.dir);
@@ -18,7 +31,7 @@ test("a lane whose journal says done qualifies for cleanup", () => {
 });
 
 test("persistent watches on closed or verified lanes become owner-scoped stop calls", async () => {
-  const lanes = [lane("closed", "closed"), lane("verified", "verified-done"), lane("claimed", "done-claimed")];
+  const lanes = [lane("closed", "closed", "w1:closed"), lane("verified", "verified-done", "w1:verified"), lane("claimed", "done-claimed", "w1:claimed")];
   const input = manifest([
     { command: "dori watch closed", monitorId: "mon_CLOSED" },
     { command: "herdr pane read w1:verified", monitorId: "mon_VERIFIED" },
@@ -60,7 +73,7 @@ test("an active lane named after a colon or before a period or colon still keeps
 });
 
 test("a common-word key ties a watch to its lane only as a command or target token, never in prose or a path", () => {
-  const lanes = [lane("docs", "closed")];
+  const lanes = [lane("docs", "closed", "w1:docs")];
   const result = monitorCleanup(lanes, [
     manifest([
       { description: "CI for the docs site on main", command: "gh run watch 4242", monitorId: "mon_PROSE" },

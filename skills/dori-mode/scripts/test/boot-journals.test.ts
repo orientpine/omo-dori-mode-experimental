@@ -43,7 +43,7 @@ test("a launched lane with no journal at all reads NO-REPORT, never nothing", as
 
 test("an adopted lane's journal is not read, so a done record there cannot offer its watch for cleanup", async () => {
   const world = newWorld();
-  world.panes = [{ pane_id: "w1:adopted", workspace_id: "w1" }];
+  world.panes = [{ pane_id: "w1:p9", workspace_id: "w1" }];
   const deps = bootDeps(world, state.dir);
   await deps.registry.write(lane("adopted"));
   deps.reports.report("adopted", "done", "finished", T0);

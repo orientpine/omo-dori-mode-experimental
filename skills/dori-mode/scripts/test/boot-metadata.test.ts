@@ -82,7 +82,7 @@ test("dori boot reads the current session's terminal metadata from PI_SESSION_DI
   expect(out).toContain(`CLEANUP closed match=closed:command:key ownerSession=owner metadata=${join(current, "a.json")}`);
   expect(out).toContain(`CLEANUP closed match=closed:command:key ownerSession=owner metadata=${join(fileDir, "b.json")}`);
   expect(out).toContain("SLACK skipped (DORI_SLACK_TOKEN not set)");
-  expect(out).toContain("PANES unavailable (herdr pane list failed)");
+  expect(out).toContain("PANES unavailable (session list failed)");
   expect(code).toBe(1);
 });
 

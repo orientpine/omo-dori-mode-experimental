@@ -19,7 +19,7 @@ import { Reports } from "./reports.ts";
 import { Worklog } from "./worklog.ts";
 import { Slack } from "./messenger/slack.ts";
 import { fetchHttp } from "./messenger/http.ts";
-import { realClock, run } from "./run.ts";
+import { realClock, run, runtimesOf } from "./run.ts";
 import { canLaunch } from "./routing.ts";
 import { computeScorecard, dayWindow, formatScorecard, saveScorecard } from "./scorecard.ts";
 import { eyesOff } from "./messenger/discord-listener.ts";
@@ -61,6 +61,7 @@ const bootCommand: Command = async (context) => {
     ...deps,
     reports: new Reports(deps.config.stateDir),
     worklog: new Worklog(deps.config.stateDir),
+    rts: runtimesOf(deps.run, { runtime: deps.config.runtime }),
     slack: slackAuthCheck(slack),
     monitorDirs: sessionDirs.flatMap((dir) => (dir ? [join(dir, "extensions", "terminal")] : [])),
   });

@@ -76,4 +76,14 @@ Implementation: `BootDeps` includes the existing `Worklog`, and boot prints `WOR
 
 Verification: **44 pass, 0 fail** across all boot files and the existing worklog suites, with clean no-excuse/junk-test audits. Cases cover open items and next steps, closed-item omission, garbage and unreadable input, torn writes, duplicate closes, and read-only state snapshots. The final full CI completed with **2023 pass, 0 fail** and `LOC_OK 368 files`.
 
+## #154 session-runtime boot wiring
+
+Current-main audit: fork PR #393 and `session-runtime.test.ts` already cover runtime choice, stored refs, listing, and probes. No runtime or sync code was ported again. The only gaps were boot's runtime wiring and `reconcile.ts`.
+
+Red reproduction after #96: **37 pass, 5 fail** across runtime-first output, unavailable-runtime failure, reconciliation, failed-list handling, and the real CLI message.
+
+Implementation: boot prints `RUNTIME <kind> (from <source>)` first and exits immediately with a fix when the runtime is unavailable. It uses the existing `ChosenRuntimes`/`listSessions`, and the new `reconcile.ts` compares `sessionRef` identities through the existing `sessionOf`/`formatRef`. No runtime implementation changed.
+
+Verification: **48 pass, 0 fail** across all boot files and the existing session-runtime suite, with strict typecheck and clean no-excuse/junk-test audits. A direct probe confirmed the runtime identities. The final fixtures use valid herdr refs, exact watch-token panes, and an explicitly unassigned adopted lane. The final full CI completed with **2026 pass, 0 fail** and `LOC_OK 369 files`.
+
 Later prerequisite results are recorded in the sections that follow.
