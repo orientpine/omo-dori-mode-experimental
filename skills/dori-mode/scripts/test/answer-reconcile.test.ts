@@ -194,3 +194,39 @@ test.each(["spawn", "detached-spawn", "exec", "tagged"])("a native file read can
   expect(await replay([entry, ...output])).toEqual({ waiting: [first, second], answeredIds: [] });
   expect(cache()).toEqual([]);
 });
+
+test.each(["spawn-trim", "execSync-direct", "execSync-bound", "shell-text", "shell-bound", "exec-stdout", "async-trim", "decoder-trim", "trim-chain"])("safe %s stdout formatting preserves reconciliation and cache", async (kind) => {
+  const argv = JSON.stringify(["dori", "send", "discord", "--to", first.channel, "--reply", first.id, "--text", "answer"]);
+  const code = kind === "execSync-direct" ? `console.log(execSync(${JSON.stringify(send)}).toString().trim())`
+    : kind === "execSync-bound" ? `const p = execSync(${JSON.stringify(send)}); console.log(p.toString())`
+    : kind === "shell-text" ? `console.log((await Bun.$\`${send}\`.text()).trim())`
+    : kind === "shell-bound" ? `const p = await Bun.$\`${send}\`; console.log(p.text().trim())`
+    : kind === "exec-stdout" ? `const p = await exec(${JSON.stringify(send)}); console.log(p.stdout.trim())`
+    : kind === "async-trim" ? `const p = Bun.spawn(${argv}, {env:process.env,stdin:"ignore",stdout:"pipe"}); console.log((await new Response(p.stdout).text()).trim()); await p.exited;`
+    : kind === "decoder-trim" ? `const p = Bun.spawnSync(${argv}); console.log(new TextDecoder("utf-8").decode(p.stdout).trimEnd())`
+    : kind === "trim-chain" ? `console.log(Bun.spawnSync(${argv}).stdout.toString().trimStart().trimEnd())`
+    : `const p = Bun.spawnSync(${argv}); console.log(p.stdout.toString("utf8").trim())`;
+  expect(await replay([call(code), result(sent)])).toEqual({ waiting: [second], answeredIds: [first.id] });
+  expect(cache()).toEqual([first.id]);
+});
+
+test("formatting an unrelated result binding cannot become the send's stdout", async () => {
+  const code = `const $SEND = ${JSON.stringify({ stdout: sent })}; const p = Bun.spawnSync(["dori","send","discord","--to","${first.channel}","--reply","${first.id}","--text","answer"]); console.log($SEND.stdout.trim())`;
+  expect(await replay([call(code), result(sent)])).toEqual({ waiting: [first, second], answeredIds: [] });
+  expect(cache()).toEqual([]);
+});
+
+test.each(["foreground", "detached", "failed-metadata", "prepared-failure", "own-receipt", "own-background"])("wrapped send plus file output keeps %s evidence operation-specific", async (kind) => {
+  const prepared = kind === "prepared-failure", good = kind === "own-receipt" || kind === "own-background";
+  const code = `${prepared ? 'await tool.bash({command:"pwd"}); ' : ""}await tool.bash({command:${JSON.stringify(send)}}); console.log(await Bun.file("historical.log").text())`;
+  const details = kind === "foreground" || kind === "detached" ? {} : { toolCalls: [...(prepared ? [{ name: "bash", args: { command: "pwd" }, resultPreview: "/repo" }] : []), { name: "bash", args: { command: send }, resultPreview: kind === "own-receipt" ? sent : kind === "own-background" ? "Command running in background with ID: bash_7" : "send failed (exit code 1)" }] };
+  const entries: object[] = [call(code), result(kind === "foreground" || good ? sent : "Eval cell call-1 detached and is running", "call-1", details)];
+  if (kind !== "foreground") entries.push({ type: "custom_message", customType: "senpi-codemode:notification", content: `Detached eval cell call-1 (js) completed.\n${sent}` });
+  if (kind === "own-background") {
+    expect(await replay(entries)).toEqual({ waiting: [first, second], answeredIds: [] });
+    expect(cache()).toEqual([]);
+    entries.push(completion("bash_7"));
+  }
+  expect(await replay(entries)).toEqual({ waiting: good ? [second] : [first, second], answeredIds: good ? [first.id] : [] });
+  expect(cache()).toEqual(good ? [first.id] : []);
+});

@@ -7,7 +7,7 @@ export { discordAnswered, type AnswerRow } from "./answer-sends.ts";
 import type { AoeSession } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import { argvSessionLog, readHerdrSessions } from "./herdr-sessions.ts";
-import { predecessorTranscripts } from "./answer-predecessors.ts";
+import { lanePredecessorTranscripts, predecessorTranscripts } from "./answer-predecessors.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Question } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
@@ -128,8 +128,15 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
     const transcript = transcripts.get(key) ?? "";
     if (row.qid && sawAnswer(transcript, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) continue; if (discordAnswered(transcript, row)) continue;
     if (target === lead.pane || row.qid && !session) {
-      let texts = predecessors.get(target);
-      if (!texts) { texts = predecessorTranscripts(deps, lead, target === lead.pane ? undefined : target); predecessors.set(target, texts); }
+      let texts = predecessors.get(key);
+      if (!texts) {
+        texts = predecessorTranscripts(deps, lead, target === lead.pane ? undefined : target);
+        if (row.qid && target !== lead.pane) {
+          archived ??= await deps.registry.list();
+          texts = [...texts, ...lanePredecessorTranscripts(deps, archived, { pane: target, at: row.at, ...(version?.session ? { session: version.session } : {}) })];
+        }
+        predecessors.set(key, texts);
+      }
       if (texts.some((text) => (row.qid && sawAnswer(text, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) || discordAnswered(text, row))) continue;
     }
     waiting.push(row);

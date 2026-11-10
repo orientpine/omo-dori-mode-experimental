@@ -1,7 +1,8 @@
-import { balancedBlock, type CommandSource, shellSource } from "./answer-command-source.ts";
+import { balancedBlock, commandSource, type CommandSource, shellSource } from "./answer-command-source.ts";
 import { shellWords } from "./handover.ts";
 
-export type NativeCall = { readonly start: number; readonly end: number; readonly buffered: boolean };
+export type OutputCall = { readonly start: number; readonly end: number; readonly shape: "process" | "stdout" | "shell" | "tool" };
+export type NativeCall = OutputCall & { readonly buffered: boolean };
 export const nativeCalls = (text: string, source: CommandSource): NativeCall[] => {
   const out: NativeCall[] = [];
   for (const match of text.matchAll(/(?<![\w$.])(?:exec|execSync|spawn|execFile|execa|subprocess\.run)\s*\(|\bBun\.spawn(?:Sync)?\s*\(|(?:\bBun\.\$|\$)\s*(?=`)/g)) {
@@ -9,33 +10,48 @@ export const nativeCalls = (text: string, source: CommandSource): NativeCall[] =
     const open = match.index + match[0].length - 1, block = text[open] === "(" ? balancedBlock(text, open) : undefined;
     const args = block?.slice(1, -1).trim() ?? "", argv = args[0] === "[" ? balancedBlock(args, 0) : undefined;
     // spawnSync's default stdout and stderr are pipes. Its discarded result adds no cell output.
-    out.push({ start: match.index, end: block ? open + block.length : source.strings.get(open + 1)?.end ?? open + 1, buffered: match[0].startsWith("Bun.spawnSync") && argv !== undefined && args.slice(argv.length).trim() === "" });
+    const shape = /^execSync\s*\(/.test(match[0]) ? "stdout" : /^(?:Bun\.\$|\$)/.test(match[0]) ? "shell" : "process";
+    out.push({ start: match.index, end: block ? open + block.length : source.strings.get(open + 1)?.end ?? open + 1, shape, buffered: match[0].startsWith("Bun.spawnSync") && argv !== undefined && args.slice(argv.length).trim() === "" });
   }
   return out;
 };
 
 // A sole native operation can stream its own receipt. Explicit printed data still needs stdout provenance:
 // even one subprocess cannot claim output supplied by a file read, an unknown consumer or another operation.
-export const nativeReceipt = (text: string, source: CommandSource, owner: NativeCall): boolean => {
+export const outputReceipt = (text: string, source: CommandSource, owner: OutputCall): boolean => {
   const calls = nativeCalls(text, source);
   if (calls.some((call) => call.start !== owner.start && !call.buffered)) return false;
   const before = text.slice(0, owner.start), binding = /\b(?:const|let|var)\s+([$\w]+)\s*=\s*(?:await\s*)?$/.exec(before);
   const name = binding && source.code[binding.index] ? binding[1] : undefined, nameAt = name ? before.lastIndexOf(name) : -1;
   const ranges: { readonly start: number; readonly end: number }[] = [];
-  let witnessed = calls.length === 1;
+  let witnessed = owner.shape === "tool" || calls.length === 1;
   for (const match of text.matchAll(/\bconsole\.(?:log|info|warn|error)\s*\(|(?<![\w$.])(?:print|display)\s*\(/g)) {
     if (!source.code[match.index]) continue;
     const open = match.index + match[0].length - 1, raw = balancedBlock(text, open);
     if (!raw) return false;
     const end = open + raw.length;
     let expression = text.slice(open + 1, end - 1).trim();
-    if (owner.start > open && owner.end < end) expression = `${text.slice(open + 1, owner.start)}$SEND${text.slice(owner.end, end - 1)}`.trim();
-    else if (name) expression = expression.replace(new RegExp(`(?<![\\w$.])${name.replace(/[$]/g, "\\$&")}(?=\\.stdout\\b)`, "g"), "$SEND");
-    const normalized = expression.replace(/\s+/g, "");
-    if (/^(?:\$SEND\.stdout\.toString\(\)|(?:await)?newResponse\(\$SEND\.stdout\)\.text\(\)|newTextDecoder\(\)\.decode\(\$SEND\.stdout\))$/.test(normalized)) witnessed = true;
+    let attributed = false;
+    if (owner.start > open && owner.end < end) { expression = `${text.slice(open + 1, owner.start)}$SEND${text.slice(owner.end, end - 1)}`.trim(); attributed = true; }
+    else if (name) {
+      const syntax = commandSource(expression);
+      expression = expression.replace(new RegExp(`(?<![\\w$.])${name.replace(/[$]/g, "\\$&")}(?![\\w$])`, "g"), (word, at: number) => { if (!syntax.code[at]) return word; attributed = true; return "$SEND"; });
+    }
+    const syntax = commandSource(expression);
+    let value = expression.replace(/\s+/g, (space, at: number) => syntax.code[at] ? "" : space);
+    // These operations only remove boundary whitespace or unwrap a value. They cannot insert another source's receipt.
+    for (;;) {
+      const formatted = value.replace(/\.(?:trim|trimStart|trimEnd|strip|lstrip|rstrip)\(\)$/, "");
+      if (formatted !== value) { value = formatted; continue; }
+      if (value.startsWith("(") && balancedBlock(value, 0) === value) { value = value.slice(1, -1); continue; }
+      if (value.startsWith("await")) { value = value.slice(5); continue; }
+      break;
+    }
+    const root = { process: "\\$SEND\\.stdout", stdout: "\\$SEND", shell: "\\$SEND\\.stdout", tool: "\\$SEND\\.text" }[owner.shape], encoding = '(?:["\\\']utf-?8["\\\'])?';
+    if (attributed && (new RegExp(`^(?:${root}(?:\\.(?:toString|decode)\\(${encoding}\\))?|newResponse\\(${root}\\)\\.text\\(\\)|newTextDecoder\\(${encoding}\\)\\.decode\\(${root}\\))$`).test(value) || owner.shape === "shell" && value === "$SEND.text()" || owner.shape === "tool" && value === "$SEND")) witnessed = true;
     else {
-      const at = open + 1 + (text.slice(open + 1, end - 1).length - text.slice(open + 1, end - 1).trimStart().length), literal = source.strings.get(at);
-      if (literal?.value === undefined || text.slice(literal.end, end - 1).trim() || /\b(?:SENT|POSTED) \d{15,22}\b/.test(literal.value)) return false;
+      const literal = commandSource(value).strings.get(0);
+      if (literal?.value === undefined || literal.end !== value.length || /\b(?:SENT|POSTED) \d{15,22}\b/.test(literal.value)) return false;
     }
     ranges.push({ start: match.index, end });
   }

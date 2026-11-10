@@ -1,11 +1,11 @@
 import { parseArgs } from "node:util";
 import { balancedBlock, commandSource, executionCommands, shellSource } from "./answer-command-source.ts";
 export { balancedBlock } from "./answer-command-source.ts";
-import { commandWords, nativeCalls, nativeReceipt, type NativeCall, shellCommands } from "./answer-output.ts";
+import { commandWords, nativeCalls, outputReceipt, type NativeCall, shellCommands } from "./answer-output.ts";
 import { backgroundStarts } from "./background.ts";
 
 export type AnswerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly qid?: string; readonly thread?: string; readonly tmux?: string };
-type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string>; readonly aggregate?: boolean; readonly native?: NativeCall; readonly bash?: { readonly command: string; readonly alone: boolean; readonly peers?: readonly string[] } };
+type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string>; readonly aggregate?: boolean; readonly output?: boolean; readonly native?: NativeCall; readonly bash?: { readonly command: string; readonly alone: boolean; readonly peers?: readonly string[] } };
 type SendCall = SendSpec & { readonly id: string; readonly tool: string; readonly at: number; sent: boolean; detachedReceipt: boolean };
 
 const qidsIn = (text: string): ReadonlySet<string> => new Set((text.match(/\bq\d+\b/gi) ?? []).map((q) => q.toUpperCase()));
@@ -49,13 +49,14 @@ const specsFromText = (text: string): (SendSpec | undefined)[] => {
   }
   out.push(...shellSpecs(text, source.code));
   const commands = executionCommands(text, source), natives = nativeCalls(text, source), alone = commands.filter((operation) => operation.tool === "bash").length === 1;
-  for (const { tool, command } of commands) {
+  for (const { tool, command, start, end } of commands) {
     if (command === undefined) { out.push(undefined); continue; }
-    for (const spec of shellSpecs(command, shellSource(command), true)) out.push(spec && tool === "bash" && spec.aggregate !== false ? { ...spec, bash: { command, alone } } : spec && tool === "exec" && natives.length === 1 && natives[0] ? { ...spec, native: natives[0] } : spec);
+    const output = tool === "exec" || outputReceipt(text, source, { start, end, shape: "tool" });
+    for (const spec of shellSpecs(command, shellSource(command), true)) out.push(spec ? { ...spec, output, ...(tool === "bash" && spec.aggregate !== false ? { bash: { command, alone } } : {}), ...(tool === "exec" && natives.length === 1 && natives[0] ? { native: natives[0] } : {}) } : undefined);
   }
   const native = natives.length, tools = [...text.matchAll(/\btool\.\w+\s*\(/g)].filter((match) => source.code[match.index]).length;
   const aggregate = native + tools <= 1;
-  return out.map((spec) => spec ? { ...spec, aggregate: spec.aggregate !== false && (spec.native ? out.length === 1 && nativeReceipt(text, source, spec.native) : aggregate), ...(spec.bash && native === 0 && commands.every((operation) => operation.tool === "bash") && tools === commands.length ? { bash: { ...spec.bash, peers: commands.flatMap(({ command }) => command !== undefined && command !== spec.bash?.command ? [command] : []) } } : {}) } : undefined); };
+  return out.map((spec) => spec ? { ...spec, aggregate: spec.aggregate !== false && spec.output !== false && (spec.native ? out.length === 1 && outputReceipt(text, source, spec.native) : aggregate), ...(spec.bash && native === 0 && commands.every((operation) => operation.tool === "bash") && tools === commands.length ? { bash: { ...spec.bash, peers: commands.flatMap(({ command }) => command !== undefined && command !== spec.bash?.command ? [command] : []) } } : {}) } : undefined); };
 const shellSpecs = (text: string, positions: Uint8Array, strict = false): (SendSpec | undefined)[] => {
   if (!strict) return [...text.matchAll(/\bdori\b/g)].filter((match) => positions[match.index] && /(?:^|[;\n|&])\s*$/.test(text.slice(0, match.index))).flatMap((match) => specsFromShell(text.slice(match.index)));
   const commands = shellCommands(text);
@@ -94,7 +95,7 @@ const sendCalls = (transcript: string): SendCall[] => {
       const attempts = bash ? (nested ?? []).filter((operation) => operation.name === "bash" && (operation.args?.command !== undefined ? operation.args.command === bash.command : bash.alone && nested?.filter((part) => part.name === "bash").length === 1)) : [];
       // The detach result can prove that every other execution already finished without a receipt.
       // Then only the posting operation can add a receipt in this cell's later completion.
-      if (bash?.peers && !/\b(?:SENT|POSTED) \d{15,22}\b/.test(text) && bash.peers.every((command) => nested?.some((operation) => {
+      if (call.output !== false && bash?.peers && !/\b(?:SENT|POSTED) \d{15,22}\b/.test(text) && bash.peers.every((command) => nested?.some((operation) => {
         const preview = operation.resultPreview;
         return operation.name === "bash" && operation.args?.command === command && preview !== undefined && !preview.endsWith("…") && !/\b(?:SENT|POSTED) \d{15,22}\b/.test(preview) && !backgroundStarts("bash", call.id, preview, undefined).length;
       }))) call.detachedReceipt = true;
