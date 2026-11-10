@@ -115,7 +115,16 @@ test("an assignment before a direct script or interpreter is skipped", () => {
   expect(watchProblem([monitor(`LABEL="$(printf "%s %s" owner pair)" bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`HOST="$(printf %s $(hostname -s))" bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`HOST="$(printf %s $(hostname -s))" bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`INTERVAL="$((30 + 30))" bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`INTERVAL="$((30 + 30))" bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`LABEL="$( (printf %s nested) )" bash ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`LABEL="$( (printf %s nested) )" bash -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
   expect(watchProblem([monitor(`bash -c +o noexec 'exec ${script}'`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`bash +o noexec ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`bash +o noexec -e ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`bash +eo noexec ${script}`)], inbox, 0, () => true)).toBeUndefined();
+  expect(watchProblem([monitor(`bash -En ${script}; tail -F /tmp/lanes.log`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
+  expect(watchProblem([monitor(`bash -c -En 'exec ${script}'; tail -F /tmp/lanes.log`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
   expect(watchProblem([monitor(`bash -c -en 'exec ${script}'; tail -F /tmp/lanes.log`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
   expect(watchProblem([monitor(`bash -c -n 'bash ${script}'; tail -F /tmp/lanes.log`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");
   expect(watchProblem([monitor(`bash -c -o noexec 'exec ${script}'; tail -F /tmp/lanes.log`)], inbox, 0, () => true)).toBe("no monitor on inbox.jsonl");

@@ -21,14 +21,14 @@ const stripEnvironment = (command: string): string => {
     if (!name) return rest;
     i += name[0].length;
     let quote = "", depth = 0, escaped = false;
-    const quoteStack: string[] = [];
+    const quoteDepths: { depth: number; quote: string }[] = [];
     for (; i < rest.length; i++) {
       const c = rest[i] ?? "", next = rest[i + 1] ?? "";
       if (escaped) { escaped = false; continue; }
       if (c === "\\" && quote !== "single") { escaped = true; continue; }
       if (c === "$" && next === "(" && quote !== "single") {
-        quoteStack.push(quote);
         depth++;
+        quoteDepths.push({ depth, quote });
         quote = "";
         i++;
         continue;
@@ -43,9 +43,13 @@ const stripEnvironment = (command: string): string => {
       if (c === "$" && next === "'") { quote = "ansi"; i++; continue; }
       if (c === "'") { quote = "single"; continue; }
       if (c === '"') { quote = "double"; continue; }
-      if (c === "$" && next === "(") { depth++; i++; continue; }
       if (c === "(" && depth > 0) { depth++; continue; }
-      if (c === ")" && depth > 0) { depth--; quote = quoteStack.pop() ?? ""; continue; }
+      if (c === ")" && depth > 0) {
+        const saved = quoteDepths.at(-1);
+        if (saved?.depth === depth) { quote = saved.quote; quoteDepths.pop(); }
+        depth--;
+        continue;
+      }
       if (depth === 0 && (c === ";" || /\s/.test(c))) break;
     }
     if (quote || depth > 0) return rest;
@@ -68,13 +72,13 @@ const scriptCalls = (command: string): string[] => {
       const script = words[i + 1];
       return script?.startsWith("/") && script.endsWith(".sh") ? [script] : [];
     }
-    if (/^-[a-z]*[sn][a-z]*$/.test(word) || word === "--help" || word === "--version") return [];
-    if (/^-[a-z]*c[a-z]*$/.test(word)) {
+    if (/^-[A-Za-z]*[sn][A-Za-z]*$/.test(word) || word === "--help" || word === "--version") return [];
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word)) {
       let j = i + 1;
       for (; j < words.length; j++) {
         const w = words[j] ?? "";
         if (w === "--") { j++; break; }
-        if (w === "-n" || (/^-[a-z]+$/.test(w) && w.includes("n"))) return [];
+        if (w === "-n" || (/^-[A-Za-z]+$/.test(w) && w.includes("n"))) return [];
         if (OPTION_VALUES.has(w) || /^[-+][A-Za-z]+[oO]$/.test(w)) {
           if (w.startsWith("-") && words[j + 1] === "noexec") return [];
           j++;
@@ -87,7 +91,7 @@ const scriptCalls = (command: string): string[] => {
       return nested ? scriptCalls(nested) : [];
     }
     if (/^[-+][A-Za-z]+[oO]$/.test(word)) {
-      if (words[i + 1] === "noexec") return [];
+      if (word.startsWith("-") && words[i + 1] === "noexec") return [];
       i++;
     } else if (OPTION_VALUES.has(word)) {
       if (word === "-o" && words[i + 1] === "noexec") return [];
