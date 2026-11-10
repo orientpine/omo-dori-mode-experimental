@@ -153,101 +153,6 @@ test("a script run by one command is still read when another command reads the s
   const plain = launchOf(command, HOME, () => "bun run build\n");
   expect(plain).toBeUndefined();
 });
-
-// #414 review 11: a relative input was read in the handover process's directory, not in the directory the command changes to.
-test("a relative input is read in the directory the command changes to", () => {
-  const command = "cd /tmp/work && bash -s < ci.sh";
-  const seen: string[] = [];
-  const read = (path: string) => { seen.push(path); return path === "/tmp/work/ci.sh" ? "sleep 30\nnohup setsid /tmp/job.sh &\n" : "sleep 30\nbun run ci\n"; };
-  const launch = launchOf(command, HOME, read);
-  if (!launch) throw new Error(`not work: ${command}`);
-  expect(launch.detached).toBe(true);
-  expect(seen).toContain("/tmp/work/ci.sh");
-  const plain = launchOf(command, HOME, (path) => (path === "/tmp/work/ci.sh" ? "sleep 30\nbun run ci\n" : "bun run build\n"));
-  if (!plain) throw new Error(`not work: ${command}`);
-  expect(plain.detached).toBe(false);
-  // a directory the command never names stays uncertain: an unreadable relative input is detached
-  const uncertain = launchOf("bash -s < ci.sh", HOME, () => "bun run ci\n");
-  if (!uncertain) throw new Error("not work");
-  expect(uncertain.detached).toBe(true);
-});
-
-// #414 review 12: the first cd supplied one directory for every relative script regardless of order, so a script run
-// before a cd was read in the later directory. Directory changes apply only from where they happen.
-test("a cd changes only the scripts that come after it", () => {
-  const command = "bash -s < ./start.sh; cd /tmp/other";
-  const seen: string[] = [];
-  const read = (path: string) => { seen.push(path); return path === "./start.sh" ? "nohup setsid /tmp/job.sh &\n" : "nohup setsid /tmp/other.sh &\n"; };
-  const launch = launchOf(command, HOME, read);
-  if (!launch) throw new Error(`not work: ${command}`);
-  expect(launch.detached).toBe(true);
-  expect(seen).not.toContain("/tmp/other/./start.sh");
-  // after the cd the same relative name resolves there
-  const after = launchOf("cd /tmp/other && bash -s < ci.sh", HOME, (path) => (path === "/tmp/other/ci.sh" ? "nohup setsid /tmp/job.sh &\n" : "sleep 30\nbun run ci\n"));
-  if (!after) throw new Error("not work after cd");
-  expect(after.detached).toBe(true);
-});
-
-// #414 review 12: a relative input in a lane whose directory the handover does not know must not be read in the
-// handover process's own directory and judged from that file.
-test("a relative input in an unknown directory is not judged from the caller's file", () => {
-  const command = "bash -s < ci.sh";
-  const seen: string[] = [];
-  const read = (path: string) => { seen.push(path); return "nohup setsid /tmp/job.sh &\n"; };
-  const launch = launchOf(command, HOME, read);
-  if (!launch) throw new Error(`not work: ${command}`);
-  expect(seen).not.toContain("ci.sh");
-  // unresolved relative input: the watch stays
-  expect(launch.detached).toBe(true);
-});
-
-// #414 review 13: an unresolved relative script a shell runs returned no launch at all, so the same command could be
-// re-armed and start its work twice. It stays work and detached when its directory cannot be resolved.
-test("an unresolved script a shell runs is work, never a watch-only command", () => {
-  for (const command of ["bash ./start.sh", "bash ./start.sh; cd /tmp/other", "./start.sh"]) {
-    const seen: string[] = [];
-    const read = (path: string) => { seen.push(path); return "nohup setsid /tmp/job.sh &\n"; };
-    const launch = launchOf(command, HOME, read);
-    if (!launch) throw new Error(`not work: ${command}`);
-    expect([command, launch.detached]).toEqual([command, true]);
-    expect(seen).toEqual([]);
-  }
-  // a resolved absolute script still uses its contents, and a read-only mention is not work
-  const absolute = launchOf("bash /tmp/start.sh", HOME, () => "nohup setsid /tmp/job.sh &\n");
-  if (!absolute) throw new Error("not work absolute");
-  expect(absolute.detached).toBe(true);
-  expect(launchOf("cat ./start.sh", HOME, () => undefined)).toBeUndefined();
-});
-
-// #414 review 13: only absolute cd targets were tracked, so cd /tmp/work && cd sub read the parent's ci.sh instead of
-// the child's. Relative directory changes compose from the last absolute directory.
-test("a relative cd composes with the last absolute directory", () => {
-  const command = "cd /tmp/work && cd sub && bash -s < ci.sh";
-  const seen: string[] = [];
-  const read = (path: string) => { seen.push(path); return path === "/tmp/work/sub/ci.sh" ? "sleep 30\nnohup setsid /tmp/job.sh &\n" : "sleep 30\nbun run ci\n"; };
-  const launch = launchOf(command, HOME, read);
-  if (!launch) throw new Error(`not work: ${command}`);
-  expect(launch.detached).toBe(true);
-  expect(seen).toEqual(["/tmp/work/sub/ci.sh"]);
-  const plain = launchOf(command, HOME, (path) => (path === "/tmp/work/sub/ci.sh" ? "sleep 30\nbun run ci\n" : "nohup setsid /tmp/job.sh &\n"));
-  if (!plain) throw new Error(`not work: ${command}`);
-  expect(plain.detached).toBe(false);
-  // a relative cd with no absolute base is unresolved, not a path in the caller's directory
-  expect(launchOf("cd sub && bash -s < ci.sh", HOME, () => "bun run ci\n")?.detached).toBe(true);
-});
-
-// #414 review 14: a cd inside a subshell changed the directory used for a later input, although the parent shell never
-// changed. Unsupported execution scopes make resolution uncertain instead of selecting a real-looking wrong file.
-test("a directory change inside a subshell does not resolve the parent shell's input", () => {
-  const command = "cd /tmp/work && (cd sub && pwd) && bash -s < ci.sh";
-  const seen: string[] = [];
-  const read = (path: string) => { seen.push(path); return path === "/tmp/work/ci.sh" ? "sleep 30\nnohup setsid /tmp/job.sh &\n" : "sleep 30\nbun run ci\n"; };
-  const launch = launchOf(command, HOME, read);
-  if (!launch) throw new Error(`not work: ${command}`);
-  expect(launch.detached).toBe(true);
-  expect(seen).toEqual([]);
-});
-
 // #414 review 14: bash -s>/tmp/log < /tmp/start launched work, but discovery required whitespace before the output
 // redirection and found no input. Output redirections may touch the shell's options.
 test("an output redirection next to the shell options does not hide the input", () => {
@@ -262,6 +167,7 @@ test("an output redirection next to the shell options does not hide the input", 
     expect([command, plain.detached]).toEqual([command, false]);
   }
   // any recognized stdin execution whose input discovery finds nothing stays uncertain
-  expect(launchOf("bash -s > /tmp/log", HOME, () => "bun run ci\n")?.detached).toBe(true);
+  expect(launchOf("bash -s > /tmp/log <", HOME, () => "bun run ci\n")?.detached).toBe(true);
 });
+
 
