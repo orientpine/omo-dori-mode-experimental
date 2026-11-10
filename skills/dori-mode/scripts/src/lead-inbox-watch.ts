@@ -10,20 +10,15 @@ const plain = (s: string, n: number): string => s.replace(/\s+/g, " ").replace(/
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 const OPTION_VALUES = new Set(["-o", "+o", "-O", "+O", "--init-file", "--rcfile"]);
+const ENV_SETUP = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;]|\$\([^)]*\))+(?:\s*;\s*|\s+)/;
+const stripEnvironment = (command: string): string => {
+  let rest = command;
+  while (ENV_SETUP.test(rest)) rest = rest.replace(ENV_SETUP, "");
+  return rest;
+};
 const scriptCalls = (command: string): string[] => {
-  const words = shellWords(command) ?? [];
-  let start = 0;
-  for (;;) {
-    const word = words[start] ?? "";
-    if (word === "export") { start++; continue; }
-    if (/^[A-Za-z_]\w*=/.test(word)) {
-      start++;
-      if (words[start]?.startsWith("\u0000")) start++;
-      continue;
-    }
-    break;
-  }
-  const offset = start + ((words[start] ?? "").split("/").at(-1) === "exec" ? 1 : 0);
+  const words = shellWords(stripEnvironment(command)) ?? [];
+  const offset = (words[0] ?? "").split("/").at(-1) === "exec" ? 1 : 0;
   const first = words[offset] ?? "";
   const shell = first.split("/").at(-1);
   if (first.startsWith("/") && first.endsWith(".sh")) return [first];
