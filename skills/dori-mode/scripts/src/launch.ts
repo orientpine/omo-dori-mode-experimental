@@ -12,6 +12,7 @@ import { aoeStartup } from "./launch-screen.ts";
 import { briefAnchor } from "./launch-footer.ts";
 import { reopenLaneThread } from "./launch-state.ts";
 import { renderBrief } from "./launch-render.ts";
+import { leadModel } from "./lane-model.ts";
 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
@@ -23,7 +24,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     if (e instanceof ThreadMissingError) watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: e.message });
     throw e;
   }
-  const model = input.model ?? deps.config.defaultModel;
+  // no --model: the lead's model of now, so a lane runs what its lead runs (herdr-sessions.ts leadModel)
+  const model = input.model ?? leadModel(deps.config) ?? deps.config.defaultModel;
   const cwd = input.cwd ?? deps.config.defaultCwd;
   const weak = await doneWeakWarning(input, cwd);
   if (weak) {
@@ -78,6 +80,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   return { lane, startup: (await startupGoal(deps, input.key, opened.pane, cwd, opened.session ?? "", launchedAt, prompted)) ?? started };
 };
 export { validateLaunch } from "./launch-gates.ts";
+export { keptModel, laneModel } from "./lane-model.ts";
 export { threadGate } from "./launch-gates.ts";
 export { relatedFor } from "./launch-gates.ts";
 export { relatedGate } from "./launch-gates.ts";

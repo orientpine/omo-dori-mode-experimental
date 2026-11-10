@@ -136,7 +136,8 @@ const omoInputBox = (screen: string): boolean => {
 // A server that just started spawns its restored panes a second or two later (pane_not_found until then), and herdr 0.9.5
 // itself starts an omo it recognised (as pi) again with --session <its file> (measured 2026-11-03): the pane is waited
 // for, and an agent already running there only gets the prompt.
-export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriConfig, "stateDir" | "sessionsDir" | "agentCommand" | "defaultModel">, pane: string, prompt: string, type: (pane: string, text: string) => Promise<boolean>): Promise<string> => {
+// model: the model to start it with instead of the one it ran (a lane that follows its lead's, cli-ops revive).
+export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriConfig, "stateDir" | "sessionsDir" | "agentCommand" | "defaultModel">, pane: string, prompt: string, type: (pane: string, text: string) => Promise<boolean>, model?: string): Promise<string> => {
   const rec = readHerdrSessions(config.stateDir)[pane];
   if (!rec || !argvSessionId(["--session-id", rec.session])) return `REVIVE_FAIL ${pane}: no omo session recorded for this pane (${file(config.stateDir)})`;
   if (!(await herdrSessions(run)).some((s) => s.pane === pane)) return `REVIVE_FAIL ${pane}: herdr has no such pane (its tab was closed); open a new session instead`;
@@ -156,7 +157,7 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
     if (hasSessionSelector(config.agentCommand.slice(1))) return `REVIVE_FAIL ${pane}: agentCommand picks its session itself (${config.agentCommand.join(" ")}); revive needs one without a session selector`;
     const tool = config.agentCommand[0] ?? "omo";
     const log = rec.log && existsSync(rec.log) ? rec.log : argvSessionLog(config.agentCommand, config.sessionsDir, rec.cwd, rec.session);
-    const { base, thinking } = splitModel((log ? sessionModel(log) : undefined) || rec.model || config.defaultModel);
+    const { base, thinking } = splitModel(model || (log ? sessionModel(log) : undefined) || rec.model || config.defaultModel);
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, rec.session);
     // the screen is cleared first, so a ❯ the ended agent left there is gone before the new one draws
     const clear = process.platform === "win32" ? "Clear-Host; " : "clear && ";

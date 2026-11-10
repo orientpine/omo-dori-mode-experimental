@@ -770,6 +770,23 @@
       "mode": "inject"
     },
     {
+      "id": "lane-model-follow-lead",
+      "name": "레인은 그 리드와 같은 모델을 쓴다",
+      "by": "owner",
+      "basis": "형이 #zzangdori에서 리드 아래 레인들이 리드와 같은 모델을 쓰도록 하라고 한 말 → 한 레인이 아니라 모든 리드 아래 레인의 모델을 정한 일반 지시라 형 지침, 범위는 여섯 도리 모두. 레인 주모델에 대해서는 이 말이 model-defaults(2026-11-06, 레인 주모델 opus-5-5 medium)보다 나중이라 이것을 따른다: 레인 주모델과 등급은 그 도리 리드의 지금 것; model-defaults의 나머지(레인 안 보조 범주·subagent는 omo 기본 설정)는 그대로. '지금 한 번이 아니라 리드 모델이 바뀌어도 따라가게'와 dori launch --model로 정한 레인은 그대로 둔다는 것은 리드 풀이라 rule에만 둔다.",
+      "words": "각 리드 하위의 레인들이 리드와 동일한 모델을 쓰도록 해줘",
+      "original": "각 리드 하위의 레인들이 리드와 동일한 모델을 쓰도록 해줘",
+      "prompt": "각 리드 하위의 레인들은 리드와 동일한 모델을 쓴다.",
+      "rule": "레인의 주모델과 thinking 등급은 그 도리 리드가 지금 쓰는 것(state/herdr-sessions.json의 리드 pane 항목 model)을 따른다: dori launch를 --model 없이 하면 리드의 지금 모델로 뜨고, dori handover --lane(손·자동 교대)과 dori revive도 그때의 리드 모델로 새 세션을 연다. 리드가 /model로 바뀌면 다음 시작·교대부터 따라간다. dori launch --model·handover --lane --model로 레인 모델을 따로 정한 레인(modelPinned)만 그 모델을 지킨다. 일시정지 레인은 모델만 맞추고 재개하지 않는다.",
+      "date": "2026-11-10",
+      "source": "형 2026-11-10 22:01 KST(#zzangdori) https://discord.com/channels/1528936606264856737/1555211347338199112/1569698557764837469, 전달 짱돌 리드, 레인 lane-model-follow-lead",
+      "scope": {
+        "all": true
+      },
+      "mode": "lead",
+      "check": "none"
+    },
+    {
       "id": "video-tool-goal",
       "name": "영상 도구는 늘 개선해 좋은 영상을 적절한 시간 안에 뽑는다",
       "by": "owner",

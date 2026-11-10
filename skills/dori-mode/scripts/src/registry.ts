@@ -82,6 +82,7 @@ export type Lane = {
   readonly doneChanges?: readonly DoneChange[];
   readonly cwd?: string;
   readonly model?: string;
+  readonly modelPinned?: boolean;
   // topic tags (dori launch --tag); the key's first word (rl in rl-e7) is always a tag too
   readonly tags?: readonly string[] | undefined;
   readonly worktrees?: readonly string[];
@@ -154,7 +155,6 @@ export type Lane = {
 };
 
 export type LaneDied = { readonly pane: string; readonly at: string; readonly reason: string; readonly why: string; readonly told: boolean };
-
 export type AutoturnMark = { readonly since?: string; readonly resumes?: readonly string[]; readonly long?: AutoturnLongMark };
 // the last LANE_AUTOTURN_LONG: the user message its run counts from and the multiple of autoturnLongTurns it reported
 export type AutoturnLongMark = { readonly user: string; readonly at: number };

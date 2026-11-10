@@ -20,7 +20,7 @@ import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
 import { endOldMonitors } from "./handover-monitors.ts";
 import { missingTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
-import { awaitPrompt, briefAnchor } from "./launch.ts";
+import { awaitPrompt, briefAnchor, keptModel, laneModel } from "./launch.ts";
 import { resumeAgent, type StatOf } from "./job-control.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { paneGroup, herdrResult, isHerdrPane } from "./herdr.ts";
@@ -782,11 +782,11 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   // own launcher shell and eval kernel stopped counting as chains)
   // nor is another session's process an earlier note took for one (a herdr server the lane started, its panes' agents)
   const detached = [...marked, ...carried(dir, key, deps.alive, new Set([...marked.map((d) => d.pid), ...chains.flatMap((c) => c.pids ?? [c.pid]), ...monitorPids, ...tree, ...foreignPids(table, tree)]))];
-  const model = opts.model || lane.model || config.defaultModel;
+  const { model, lead } = laneModel(config, lane, opts.model);
   const screen = await captureTmux(deps.run, lane.pane);
   const shown = statusLine(screen, model);
-  // the level the lane runs at now (its status line), else the one it was launched with
-  const thinking = opts.thinking || shown.thinking || splitModel(model).thinking;
+  // the lead's level for a lane that follows it (lane-model.ts), else the level it runs at now (its status line), else its own
+  const thinking = opts.thinking || (lead ? splitModel(model).thinking : undefined) || shown.thinking || splitModel(model).thinking;
   if (!shown.model) emit(`HANDOVER_MODEL_UNSEEN ${key}: the status line of ${lane.pane} does not name ${modelId(model)}; the new session gets ${model} anyway`);
   const mark = readReady(config.stateDir, key);
   const ready = mark && mark.pane === lane.pane && now - Date.parse(mark.at) <= config.handover.readyMin * 60_000 ? mark : undefined;
@@ -1005,10 +1005,10 @@ type Check = { readonly reasons: string[]; readonly session: string; readonly ac
 // registry's: an adopted lane has none recorded until dori sync --write), which Registry.write keeps in priorSessions.
 // A new session that could not be found yet leaves the lane with no current session, so its usage reads unknown (never
 // the old transcript twice) until dori sync --write finds it.
-export const keepSessions = async (deps: Pick<LaneHandoverDeps, "registry">, key: string, found: string, next: string): Promise<void> => {
+export const keepSessions = async (deps: Pick<LaneHandoverDeps, "registry">, key: string, found: string, next: string, model?: Pick<Lane, "model" | "modelPinned">): Promise<void> => {
   const now = await deps.registry.read(key);
   const outgoing = found || now?.session;
-  await deps.registry.patch(key, {
+  await deps.registry.patch(key, { ...model,
     ...(next ? { session: next, sessionVia: "handover" } : { session: undefined, sessionVia: "handover-unresolved" }),
     ...(outgoing && outgoing !== next ? { priorSessions: [...(now?.priorSessions ?? []).filter((s) => s !== outgoing), outgoing] } : {}),
   });
@@ -1258,7 +1258,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
     emit(`HANDOVER_OLD_GONE ${lane.key}: ${from.pane} ended during the checks (${checked.reasons.join("; ")}); the lane stays on ${pane}`);
     await tell(deps, pane, `[LEAD] ${COMMITTED}: the old session ended during the checks, so you are the ${lane.key} lane now although a check failed (${checked.reasons.join("; ")}); tell the lead what you see. ${config.launchKeywords}: go on with step 5 of the note.`);
     record("kept-new-old-gone", checked.reasons);
-    await keepSessions(deps, lane.key, facts.from.session, checked.session || (await deps.sessionOf(pane, facts.cwd).catch(() => "")));
+    await keepSessions(deps, lane.key, facts.from.session, checked.session || (await deps.sessionOf(pane, facts.cwd).catch(() => "")), keptModel(lane, facts.model, facts.thinking, opts.model));
     await forwardLate(deps, facts, ctx, pane);
     await endStrayTasks(deps, { who: lane.key, session: from.session, pane, note, emit });
     if (facts.chains.length) await chainsEnded(deps, lane.key, facts.chains, pane, emit);
@@ -1277,7 +1277,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   const oldK = facts.oldLog ? contextK(facts.oldLog).last : undefined;
   Object.assign(ctx.sizes, { ...(oldK !== undefined ? { oldK } : {}), ...(fresh.first !== undefined ? { firstK: fresh.first } : {}), ...(fresh.last !== undefined ? { checkedK: fresh.last } : {}), ...(newLog ? { newLog } : {}) });
   emit(`HANDOVER_SIZE ${lane.key} old ${oldK ?? "?"}k -> new first ${fresh.first ?? "?"}k, checked ${fresh.last ?? "?"}k (${sizePct(ctx.sizes) ?? "?"}% of the old)`);
-  await keepSessions(deps, lane.key, facts.from.session, checked.session);
+  await keepSessions(deps, lane.key, facts.from.session, checked.session, keptModel(lane, facts.model, facts.thinking, opts.model));
   rmSync(readyFile(config.stateDir, lane.key), { force: true });
   if (opts.keepOld) {
     await thaw();
