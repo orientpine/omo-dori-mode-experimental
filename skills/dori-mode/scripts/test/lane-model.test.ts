@@ -67,7 +67,10 @@ test("launch without --model starts the lane on its lead's model of now and leav
   // an omo agent gets the level as its own --thinking, over the template's
   expect(world.calls.some((c) => c.join(" ").includes("--model kimi-coding/k3.1-pro --thinking max ") && !c.join(" ").includes("--thinking low"))).toBe(true);
   // the lead moving on while the brief renders (its work thread opens between two renders): the lane runs and records one model
-  const moving = await launchLane({ ...deps, run, readGoal: async () => ({ status: "active" }), openThread: async () => (leadRuns("anthropic-subscription/claude-opus-5-5:medium"), "discord:9") }, { thread: "new", key: "moving", title: "moving", brief, done: "file /x", cwd: "/tmp" });
+  const moving = await launchLane({ ...deps, run, readGoal: async () => ({ status: "active" }), openThread: async () => {
+      leadRuns("anthropic-subscription/claude-opus-5-5:medium");
+      return "discord:9";
+    } }, { thread: "new", key: "moving", title: "moving", brief, done: "file /x", cwd: "/tmp" });
   expect(moving.lane.model).toBe(LEAD);
   leadRuns(LEAD);
   const own = (await launch("own", "anthropic-subscription/claude-opus-5-5:medium")).lane;
