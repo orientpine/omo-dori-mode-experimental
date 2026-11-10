@@ -681,10 +681,10 @@ test("a monitor command that starts work is told from one that only watches; a s
   const script = 'if [ -n "${SENPI_MONITOR_RESTORED:-}" ]; then exec tail -F /x/chain.out; fi\nnohup setsid bash chain.sh > /x/chain.out 2>&1 &\n';
   const read = (p: string) => (p === "/home/test/w/watch.sh" ? script : undefined);
   // When / Then
-  expect(launchOf(E7, "/home/test")).toEqual({ why: "nohup", writes: ["logs/chain.out"] });
+  expect(launchOf(E7, "/home/test")).toEqual({ why: "nohup", writes: ["logs/chain.out"], detached: true });
   expect(launchOf("python train.py > /x/run.log 2>&1 &", "/home/test")?.why).toBe("a background job writing a file");
   expect(launchOf("until [ -f /x/done ]; do sleep 5; done && dori send discord pair done", "/home/test")?.why).toBe("dori send");
-  expect(launchOf("bash ~/w/watch.sh 2>&1 | tee -a /x/w.log", "/home/test", read)).toEqual({ why: "nohup", writes: ["/x/w.log"], rearm: "export SENPI_MONITOR_RESTORED=1; bash ~/w/watch.sh 2>&1 | tee -a /x/w.log" });
+  expect(launchOf("bash ~/w/watch.sh 2>&1 | tee -a /x/w.log", "/home/test", read)).toEqual({ why: "nohup", writes: ["/x/w.log"], detached: true, rearm: "export SENPI_MONITOR_RESTORED=1; bash ~/w/watch.sh 2>&1 | tee -a /x/w.log" });
   for (const watch of [
     "export SENPI_MONITOR_RESTORED=1; bash ~/w/watch.sh 2>&1 | tee -a /x/w.log",
     "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_",

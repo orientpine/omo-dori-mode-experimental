@@ -11,7 +11,7 @@ import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
-import { endedWatch, endOldMonitors } from "./handover-monitors.ts";
+import { endedWatch, endOldMonitors, procStart, sameWatch } from "./handover-monitors.ts";
 import { missingTodos, OWNER_HOURS, type OwnerWord, recentOwnerWords, todoTask } from "./handover-todos.ts";
 import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
 import { compactionStuckOn } from "./lane-handover.ts";
@@ -73,8 +73,8 @@ export type HandoverOptions = {
 
 // A monitor command that starts work besides watching (see launchOf): why, the files its work writes, and the exact
 // watch-only command when its script has a mode for that.
-export type Launch = { readonly why: string; readonly writes: readonly string[]; readonly rearm?: string };
-export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string; readonly persistent: boolean; readonly launch?: Launch; readonly ended?: string };
+export type Launch = { readonly why: string; readonly writes: readonly string[]; readonly rearm?: string; readonly detached?: boolean };
+export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string; readonly persistent: boolean; readonly launch?: Launch; readonly ended?: string; readonly pid?: number };
 
 type ManifestEntry = {
   readonly description?: string;
@@ -86,7 +86,7 @@ type ManifestEntry = {
   readonly suspended?: boolean;
   // omo writes null for a monitor that is not persistent: it has no expiry
   readonly expiresAt?: number | null;
-  readonly runtime?: { readonly pid?: number };
+  readonly runtime?: { readonly pid?: number; readonly startedAtMs?: number };
 };
 
 type Target = { readonly pane: string; readonly aoeId: string; readonly session: string };
@@ -170,22 +170,22 @@ const spec = (e: ManifestEntry): MonitorSpec => ({
   ...(e.filter ? { filter: e.filter } : {}),
   ...(e.path ? { path: e.path } : {}),
   ...(e.event ? { event: e.event } : {}),
-  persistent: !!e.persistent,
+  persistent: !!e.persistent, ...(e.runtime?.pid !== undefined ? { pid: e.runtime.pid } : {}),
 });
 
 const running = (e: ManifestEntry, now: number): boolean => !e.suspended && (e.expiresAt == null || e.expiresAt > now) && !!(e.command || e.path);
 
 // What a monitor command starts besides watching: a job (nohup, setsid, a lone &, systemd-run, dori heavy, tmux, screen,
-// docker, sbatch) or a change (a dori command that posts or moves, kill, rm, mv, git push/commit). Armed again in a new
+// docker, sbatch, a script fed to a shell: bash -s < ci.sh, here or over ssh, port-hc-runtime's 4eae ci 2026-11-08 22:35Z) or a change (a dori command that posts or moves, kill, rm, mv, git push/commit). Armed again in a new
 // session such a command starts its work again: GongDori's E7 chain watch (2026-10-20) ran "if pgrep ...; else nohup setsid
 // bash bs_chain_mn.sh 400 > logs/bs_chain.out 2>&1 &; fi; tail -F logs/bs_chain.out", and once the chain had ended a
 // re-arm started the 400-iteration chain again. A & counts only after output sent to a file ("job > log 2>&1 &"): a
 // backgrounded check inside a watch (the lead's "( sleep 60; tail ... || echo X ) &") starts nothing; kill -0 is no work.
+// DETACHED: work these start can outlive the processes the note records (workEnded), in the command or a script it reads.
+const DETACHED: readonly RegExp[] = [/\bnohup\b/, /\bsetsid\b/, /\bsystemd-run\b/, /\bdisown\b/, /(?<![0-9&>])>>?\s*(?!\/dev\/null\b)[^\s;&|()<>]+(?:\s+\d?>&\d)*\s*&(?=\s|$|[;)'"])/, /\btmux\s+(?:new|send-keys|kill)/, /\bscreen\s+-d/, /\bdocker\s+(?:run|start|exec)\b/, /\bsbatch\b/];
 const STARTS: readonly RegExp[] = [
-  /\bnohup\b/, /\bsetsid\b/, /\bsystemd-run\b/, /\bdisown\b/,
-  /(?<![0-9&>])>>?\s*(?!\/dev\/null\b)[^\s;&|()<>]+(?:\s+\d?>&\d)*\s*&(?=\s|$|[;)'"])/,
-  /\bdori\s+(?:heavy|launch|send|type|close|claim-done|handover|ask|thread\s+(?:reply|done))\b/,
-  /\btmux\s+(?:new|send-keys|kill)/, /\bscreen\s+-d/, /\bdocker\s+(?:run|start|exec)\b/, /\bsbatch\b/,
+  ...DETACHED.slice(0, 4), /(?<![\w.-])(?:ba|z|da|k)?sh\s+(?:-[\w-]+\s+)*-[a-z]*s[a-z]*\b(?:[^<;&|]|>&\d)*<(?!\()/, /(?<![\w.-])(?:ba|z|da|k)?sh(?:\s+-(?![\w-]*c)[\w-]+)*(?:\s+\d?>>?&?\S+)*\s*['"]?\s*0?<(?!\()/, ...DETACHED.slice(4, 5),
+  /\bdori\s+(?:heavy|launch|send|type|close|claim-done|handover|ask|review|merge|thread\s+(?:reply|done))\b/, ...DETACHED.slice(5),
   /\b(?:pkill|killall|kill)\b(?!\s+-0\b)/, /\bgit\s+(?:push|commit|reset|checkout)\b/, /(?:^|[\s;&|(])(?:rm|mv)\s/,
 ];
 const RESTORED = "SENPI_MONITOR_RESTORED";
@@ -201,12 +201,12 @@ const readText = (path: string): string | undefined => {
 const startsWork = (text: string): string | undefined => {
   for (const re of STARTS) {
     const m = re.exec(text);
-    if (m) return m[0].trim().endsWith("&") ? "a background job writing a file" : m[0].replace(/^[\s;&|(]+/, "").trim();
+    if (m) return m[0].trim().endsWith("&") ? "a background job writing a file" : m[0].endsWith("<") ? "a script run by a shell from its input (bash -s < file)" : m[0].replace(/^[\s;&|(]+/, "").trim();
   }
   return undefined;
 };
 
-// A command that only watches gives undefined. A local script it runs (bash x.sh, ./x.sh, an absolute path) is read too:
+// A command that only watches gives undefined. A local script it runs (bash x.sh, ./x.sh, an absolute path) is read too; a shell's input is the last redirection, quoted or not, and only that file is read, so an unreadable one may detach a job after the snapshot. A relative input is read in the directory the command changes to.
 // a script that honours SENPI_MONITOR_RESTORED (omo sets it when it restores a monitor) watches only when that is set.
 // The account's home for task and session records: homedir(), not $HOME, which native Windows does not set (USERPROFILE).
 export const accountHome = (): string => homedir();
@@ -219,13 +219,13 @@ export const windowsDetachRefusal = (platform: string = process.platform): strin
     : undefined;
 
 export const launchOf = (command: string, home: string, read: (path: string) => string | undefined = readText): Launch | undefined => {
-  const scripts = [...command.matchAll(/(?:^|[\s;&|(])((?:~\/|\$HOME\/|\/)[^\s;&|'"()]*\.sh)\b/g)].map((m) => read((m[1] ?? "").replace(/^(?:~|\$HOME)\//, `${home}/`)) ?? "");
+  const named = [...command.matchAll(/(?:^|[\s;&|(<'"])((?:~\/|\$HOME\/|\/)?[^\s;&|'"()<>]*\.sh)\b/g)].filter((m) => !/0?<\s*['"]?[^\s;&|'"()<>]*$/.test(command.slice(0, m.index))).map((m) => [m[1] ?? "", m.index ?? 0] as const), inputs = [...command.matchAll(/(?<![\w.-])(?:ba|z|da|k)?sh(?:\s+-(?![\w-]*c)[\w-]+)*(?:\s+\d?>>?&?\s*\S+|\s+(?!\d?>>?&?)(?:'[^']*'|"[^"]*"|[^\s;&|'"()<>]+)|\s*['"]?\s*0?<\s*['"]?(?:'[^']*'|"[^"]*"|[^\s;&|'"()<>]+))*\s*['"]?\s*0?<\s*(?:'([^']*)'|"([^"]*)"|((?:~\/|\$HOME\/|\/)?[^\s;&|'"()<>]+))/g)].map((m) => [m[1] ?? m[2] ?? m[3] ?? "", m.index ?? 0] as const), dirAt = (at: number) => [...command.slice(0, at).matchAll(/\bcd\s+((?:~\/|\$HOME\/|\/)[^\s;&|'"()<>]*)/g)].pop()?.[1] ?? "", texts = [...named, ...inputs].map(([p, at]) => { const d = dirAt(at), rel = !p.startsWith("/") && !p.startsWith("~/") && !p.startsWith("$HOME/"); return rel && d === "" ? undefined : read(((rel ? d + "/" : "") + p).replace(/^(?:~|\$HOME)\//, `${home}/`)); }), scripts = texts.map((t) => t ?? "");
   const honours = scripts.some((s) => s.includes(RESTORED));
   if (honours && new RegExp(`\\b${RESTORED}=1\\b`).test(command)) return undefined;
   const why = startsWork(command) ?? scripts.map(startsWork).find(Boolean);
   if (!why) return undefined;
   const writes = [...new Set([...command.matchAll(/(?:(?<![0-9&>])>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|'"()>]+)/g)].map((m) => m[1] ?? "").filter((f) => f && f !== "/dev/null"))];
-  return { why, writes, ...(honours ? { rearm: `export ${RESTORED}=1; ${command}` } : {}) };
+  return { why, writes, detached: texts.includes(undefined) || [command, ...scripts].some((t) => DETACHED.some((re) => re.test(t)) || /[^&>]&(?=\s|$|[;)'"])/.test(t)), ...(honours ? { rearm: `export ${RESTORED}=1; ${command}` } : {}) };
 };
 
 // Every watch the old session still runs, persistent or not (a command whose recorded process is gone is left out); the new
@@ -242,14 +242,14 @@ export const liveMonitors = (entries: readonly ManifestEntry[], now: number, ali
 // the work with (tail, grep). They are in the old session's process tree, so closing that session ends them (GongDori's
 // e7-leap chain s21 -> s31 under "dori heavy ... > log 2>&1 & tail --pid" died at its lane handover on 2026-10-24 04:05Z).
 // pid: the monitor's own process; pids: the work under it.
-export type MonitorWork = { readonly pid: number; readonly cmd: string; readonly pids: readonly number[] };
+export type MonitorWork = { readonly pid: number; readonly start?: string | undefined; readonly cmd: string; readonly pids: readonly number[]; readonly starts?: readonly (string | undefined)[] };
 const READER = /^(?:\S*\/)?(?:tail|grep)\s/;
 export const monitorWork = (entries: readonly ManifestEntry[], table: readonly Proc[], now: number, alive: (pid: number) => boolean, home: string): MonitorWork[] =>
   entries.flatMap((e) => {
     const pid = e.runtime?.pid;
     if (pid === undefined || !e.command || !running(e, now) || !alive(pid) || !launchOf(e.command, home)) return [];
     const pids = descendants(table, pid).filter((p) => !ended(p) && !READER.test(p.cmd)).map((p) => p.pid);
-    return pids.length ? [{ pid, cmd: e.description || e.command, pids }] : [];
+    return pids.length ? [{ pid, start: procStart(pid), cmd: e.description || e.command, pids, starts: pids.map((p) => procStart(p)) }] : [];
   });
 
 const fillTarget = (argv: readonly string[], target: { readonly pane: string; readonly session: string }): string[] =>
@@ -376,17 +376,17 @@ const notRunning = (e: ManifestEntry, alive: (pid: number) => boolean, now: numb
 // A monitor counts as re-armed when the new session runs a persistent watch with the same command (or path, or
 // description), whose process is alive. One that starts work (launchOf) counts as re-armed by a watch-only one instead:
 // a path watch, or a command that starts nothing, with the same description or filter (or its exact watch-only form);
-// the same command armed again does not count, since that started the work a second time.
-export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonly ManifestEntry[], alive: (pid: number) => boolean, home: string, now: number): string[] => {
+// the same command armed again does not count, since that started the work a second time. One whose work ended is not missing (done: workEnded, lane handovers).
+export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonly ManifestEntry[], alive: (pid: number) => boolean, home: string, now: number, done: (m: MonitorSpec) => boolean = () => false): string[] => {
   const live = entries.filter((e) => e.persistent && running(e, now) && (e.path || (e.runtime?.pid !== undefined && alive(e.runtime.pid))));
   const same = (a: string, b: string) => sameCommand(a, b, home);
   const out: string[] = [];
-  for (const m of wanted.filter((w) => !w.ended && !endedWatch(w))) {
+  for (const m of wanted.filter((w) => !w.ended && !endedWatch(w) && !done(w))) {
     const name = m.description || m.command || m.path || "?";
     const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
     if (m.command && launch) {
       const watchOnly = live.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))
-        && ((!!m.description && e.description === m.description) || (!!m.filter && e.filter === m.filter) || (!!launch.rearm && !!e.command && same(launch.rearm, e.command))));
+        && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter) || (!!launch.rearm && !!e.command && same(launch.rearm, e.command))));
       const command = m.command;
       if (!watchOnly) out.push(live.some((e) => !!e.command && same(command, e.command)) ? `${name} (armed again with the command that starts work; arm a watch-only one instead)` : `${name} (starts work: arm a watch-only one with the same description)`);
       continue;
