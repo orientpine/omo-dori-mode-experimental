@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { liveSessions, sessionFor } from "./aoe.ts";
@@ -63,8 +63,8 @@ export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow, answ
     } catch { return false; }
   }); };
 
-// Child environment identifies /resume's current session, even an older same-name one. Launch argv alone can be stale
-// after /clear, including when the title stayed the same; only then fall back to the newest matching title.
+// Child environments survive /clear. Compare their resolved log with current-title logs by write time; an older
+// same-name /resume wins when its log was written last, including after its identifying child ended (same-agent record).
 const sessionName = (path: string): string | undefined => {
   const fd = openSync(path, "r"); try {
     const buffer = Buffer.alloc(256 * 1024), bytes = readSync(fd, buffer, 0, buffer.length, 0); let name: string | undefined;
@@ -76,8 +76,10 @@ const sessionName = (path: string): string | undefined => {
 };
 
 export const currentTranscript = (file: { readonly path: string; readonly via?: SessionHit["via"] }, title: string): string => {
-  if (!title || file.via === "child-env") return readFileSync(file.path, "utf8"); const dir = dirname(file.path), name = readdirSync(dir).filter((n) => SESSION_FILE.test(n)).sort().reverse().find((n) => sessionName(join(dir, n)) === title);
-  return readFileSync(name ? join(dir, name) : file.path, "utf8"); };
+  if (!title) return readFileSync(file.path, "utf8");
+  const dir = dirname(file.path), matches = readdirSync(dir).filter((n) => SESSION_FILE.test(n)).sort().reverse().map((n) => join(dir, n)).filter((path) => sessionName(path) === title).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  const newest = matches[0], resolved = file.via === "child-env" && sessionName(file.path) === title;
+  return readFileSync(newest && (!resolved || statSync(newest).mtimeMs > statSync(file.path).mtimeMs) ? newest : file.path, "utf8"); };
 
 
 type UnansweredInput<T extends AnswerRow> = {
@@ -101,7 +103,7 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
     const target = row.qid ? version?.tmux || cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
     if (!transcripts.has(target)) {
       const session = sessionFor(sessions, target), cwd = session?.path;
-      const file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table) : undefined; transcripts.set(target, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "");
+      const file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined; transcripts.set(target, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "");
     }
     const transcript = transcripts.get(target) ?? "";
     if (row.qid && sawAnswer(transcript, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) continue; if (discordAnswered(transcript, row)) continue;
@@ -144,7 +146,7 @@ export const missedAnswersTick = async (deps: FlowDeps): Promise<string[]> => {
     const cwd = sessionFor(sessions, pane)?.path;
     if (!cwd) continue;
     if (!transcripts.has(pane)) {
-      const file = await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, table);
+      const file = await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, table, deps.config.stateDir);
       transcripts.set(pane, file ? currentTranscript(file, sessionFor(sessions, pane)?.title ?? "") : undefined);
     }
     const text = transcripts.get(pane);

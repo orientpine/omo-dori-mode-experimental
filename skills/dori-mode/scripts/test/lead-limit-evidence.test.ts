@@ -142,6 +142,7 @@ test.each([SESSION_ID, "11111111-1111-1111-1111-111111111111"])("an older same-n
   appendFileSync(join(l.currentFile, "..", "2026-01-01T11-00-00-000Z_22222222-2222-2222-2222-222222222222.jsonl"), `${JSON.stringify({ type: "message", timestamp: iso(T0 - 5 * MIN), message: { role: "assistant", stopReason: "error", errorMessage: "All Claude accounts are blocked. Soonest automatic retry: 2026-01-01T13:00:00Z" } })}\n`);
   utimesSync(l.leadFile, new Date(T0 - MIN), new Date(T0 - MIN));
   utimesSync(l.currentFile, new Date(T0), new Date(T0));
+  utimesSync(join(l.currentFile, "..", "2026-01-01T11-00-00-000Z_22222222-2222-2222-2222-222222222222.jsonl"), new Date(T0 - 2 * MIN), new Date(T0 - 2 * MIN));
   world.ps += "12 11 /bin/sleep 100\n";
   world.ps = world.ps.replace(SESSION_ID, argvSession);
   const deps = l.deps(T0);
@@ -151,15 +152,20 @@ test.each([SESSION_ID, "11111111-1111-1111-1111-111111111111"])("an older same-n
   expect(await watchTick({ ...deps, run })).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 19 * MIN)} (19 min); woke the lead (SUBMITTED)`]);
 });
 
-test("a same-name clear without a live child ignores the stale argv session's retry", async () => {
+test.each([{ child: false, title: "Dori" }, { child: true, title: "Dori" }, { child: true, title: "Old Dori" }])("clear ignores a stale argv session's retry with surviving child $child and old title $title", async ({ child, title }) => {
   const l = limitWorld();
   world.screen = watching("5: Dori inbox");
-  l.argv(T0 - 100 * MIN, { type: "session_info", name: "Dori" });
+  l.argv(T0 - 100 * MIN, { type: "session_info", name: title });
   l.reply(T0 - 30 * MIN, "All Claude accounts are blocked. Soonest automatic retry: 2026-01-01T13:00:00Z");
   l.startCurrent();
   l.row(T0 - 20 * MIN, "m-1", "first");
   l.current(T0 - 10 * MIN, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "working now" }] } });
-  expect(await watchTick(l.deps(T0))).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 20 * MIN)} (20 min); woke the lead (SUBMITTED)`]);
+  utimesSync(l.leadFile, new Date(T0 - 30 * MIN), new Date(T0 - 30 * MIN));
+  utimesSync(l.currentFile, new Date(T0 - 10 * MIN), new Date(T0 - 10 * MIN));
+  if (child) world.ps += "12 11 /bin/sleep 100\n";
+  const deps = l.deps(T0), run: FlowDeps["run"] = async (argv, opts) => argv[0] === "ps" && argv[1] === "eww" && argv.at(-1) === "12"
+    ? { code: 0, out: `/bin/sleep 100 PI_SESSION_ID=${SESSION_ID} PI_SESSION_FILE=${l.leadFile}\n`, err: "" } : deps.run(argv, opts);
+  expect(await watchTick({ ...deps, run })).toEqual([`LEAD_OWNER_WAITING ${PANE} 1 owner message(s), oldest ${iso(T0 - 20 * MIN)} (20 min); woke the lead (SUBMITTED)`]);
 });
 
 test("a card resolved before the first reconciliation keeps its answer row's asking pane", async () => {

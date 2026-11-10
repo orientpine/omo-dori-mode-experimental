@@ -115,7 +115,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   const mark = readMark(deps, pane);
   if (!rows.length && !mark.noticeFor) return [];
   const [sessions, table] = await Promise.all([liveSessions(deps.run), procTable(deps.run)]);
-  const session = sessionFor(sessions, pane), file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table) : undefined;
+  const session = sessionFor(sessions, pane), file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table, deps.config.stateDir) : undefined;
   if (!file) return [];
   const title = session?.title ?? "", transcript = currentTranscript(file, session?.title ?? "");
   const { replies, firstAt } = recentReplies(transcript);

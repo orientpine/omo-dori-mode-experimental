@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
-import { discordAnswered, sawAnswer } from "../src/missed-answers.ts";
+import { discordAnswered, reconcileRows, sawAnswer } from "../src/missed-answers.ts";
+import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
+import { sessionFile } from "../src/background.ts";
+import { recordHerdrSession } from "../src/herdr-sessions.ts";
+import { sessionDirFor } from "../src/session-id.ts";
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -25,6 +31,12 @@ test("a receipt counts only from the send's own tool result or detached cell", (
     { name: "a nested array inside spawned grep arguments", expected: false, entries: [directCall("c1", `Bun.spawn(["grep", "-F", "-A1", JSON.stringify(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"]), logfile])`), directResult("c1", "SENT 153000000000000001")] },
     { name: "a search array passed as a later spawn argument", expected: false, entries: [directCall("c1", `spawn("grep", ["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"])`), directResult("c1", "SENT 153000000000000001")] },
     { name: "the send's own tool result", expected: true, entries: [directCall("c1", directCommand), directResult("c1", "SENT 153000000000000001")] },
+    { name: "an executed monitor command after other properties", expected: true, entries: [directCall("c1", `await tool.monitor({description: "send", command: ${JSON.stringify(directCommand)}, timeout_ms: ttl})`), directResult("c1", "SENT 153000000000000001")] },
+    { name: "an executed tagged shell template", expected: true, entries: [directCall("c1", `await Bun.$\`${directCommand}\``), directResult("c1", "SENT 153000000000000001")] },
+    { name: "an executed native shell string", expected: true, entries: [directCall("c1", `await exec(${JSON.stringify(directCommand)})`), directResult("c1", "SENT 153000000000000001")] },
+    { name: "a regexp search method is not an execution wrapper", expected: false, entries: [directCall("c1", `pattern.exec(${JSON.stringify(directCommand)})`), directResult("c1", "SENT 153000000000000001")] },
+    { name: "a wrapper executing a search instead of its description", expected: false, entries: [directCall("c1", `await tool.bash({description: ${JSON.stringify(directCommand)}, command: "grep -F pattern logfile"})`), directResult("c1", "SENT 153000000000000001")] },
+    { name: "an executed wrapper without its matching receipt", expected: false, entries: [directCall("c1", `await tool.bash({command: ${JSON.stringify(directCommand)}})`), directResult("other", "SENT 153000000000000001")] },
     { name: "the send's own detached completion including a pipe in its cell id", expected: true, entries: [directCall("call_c1|fc_1", directCommand), directDetached("call_c1|fc_1", "SENT 153000000000000001")] },
     { name: "the Python send's own detached completion", expected: true, entries: [directCall("py-send", `subprocess.run(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}","--text","answer"])`), directDetached("py-send", "SENT 153000000000000001", "py")] },
     { name: "another Python cell's completion quoting the send id", expected: false, entries: [directCall("py-send", directCommand), directDetached("py-other", "py-send SENT 153000000000000001", "py")] },
@@ -46,9 +58,59 @@ test("one eval's second send cannot validate its failed first reply", () => {
 test("mixed dynamic and literal posting operations remain ambiguous before argument extraction", () => {
   const literal = `Bun.spawn(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}","--text","answer"])`;
   const dynamic = `Bun.spawn(["dori","send","discord","--to",otherChannel,"--reply",otherId,"--text",otherText])`;
-  for (const code of [`${dynamic}; ${literal}`, `${literal}; ${dynamic}`]) {
+  for (const code of [`${dynamic}; ${literal}`, `${literal}; ${dynamic}`, `await tool.bash({command: otherCommand}); ${literal}`]) {
     expect(directAnswered([directCall("mixed", code), directResult("mixed", "dynamic command SENT 153000000000000001; literal command FAILED")])).toBe(false);
   }
+});
+
+test("executable wrapped eval commands clear only their own answered rows and cache", async () => {
+  const state = withState(), deps = depsFor(newWorld(), fakeClock(directRow.at), state.dir);
+  const entries = [directCall("wrapped", `await tool.bash({command: ${JSON.stringify(directCommand)}})`), directResult("wrapped", "SENT 153000000000000001")];
+  const path = join(state.dir, "lead.jsonl"), text = entries.map((e) => JSON.stringify(e)).join("\n");
+  writeFileSync(path, text);
+  try {
+    const pending = { ...directRow, id: "still-waiting" };
+    expect(await reconcileRows({ rows: [directRow, pending], cards: [], lead: { pane: "lead", path, title: "", text }, sessions: [], table: [], deps })).toEqual({ waiting: [pending], answeredIds: [directRow.id] });
+  } finally { state.done(); }
+});
+
+test("template text is not executable but interpolation retains executable wrappers and arrays", () => {
+  const argv = `Bun.spawn(["dori","send","discord","--to","${directRow.channel}","--reply","${directRow.id}"])`;
+  const cases = [
+    { code: `const pattern = \`${argv}\`; grep(pattern)`, expected: false },
+    { code: `const pattern = \`prefix \${"text"} ${argv}\`; grep(pattern)`, expected: false },
+    { code: `const pattern = \`prefix \${\`nested ${argv}\`}\`; grep(pattern)`, expected: false },
+    { code: `const output = \`sent \${await ${argv}}\``, expected: true },
+    { code: `const output = \`sent \${await tool.bash({command: ${JSON.stringify(directCommand)}})}\``, expected: true },
+  ];
+  for (const c of cases) expect(directAnswered([directCall("template", c.code), directResult("template", "historical SENT 153000000000000001")]), c.code).toBe(c.expected);
+});
+
+test("following shell commands cannot supply a posting command's reply options or qids", () => {
+  for (const separator of [";", "\n", "&&", "|"]) {
+    const code = `dori send discord --to ${directRow.channel} --text status${separator} printf '%s\\n' --reply ${directRow.id}`;
+    expect(directAnswered([directCall("boundary", code), directResult("boundary", "SENT 153000000000000001")]), separator).toBe(false);
+    const thread = `dori send discord --to T-CARD --text status${separator} printf '%s\\n' Q1`;
+    expect(discordAnswered([directCall("qid", thread), directResult("qid", "SENT 153000000000000001")].map((e) => JSON.stringify(e)).join("\n"), { ...directRow, qid: "Q1", thread: "T-CARD" }), separator).toBe(false);
+  }
+});
+
+test.each([11, 99])("only records for the same agent %s can outlive the child that identified a resumed session", async (recordedPid) => {
+  const state = withState(), world = newWorld(), old = "11111111-1111-1111-1111-111111111111", current = "22222222-2222-2222-2222-222222222222";
+  const cwd = "/home/test/dori", pane = "aoe_Dori_0a1b2c3d", sessions = join(state.dir, "sessions"), folder = sessionDirFor(sessions, cwd);
+  mkdirSync(folder, { recursive: true });
+  const oldFile = join(folder, `2026-01-01T10-00-00-000Z_${old}.jsonl`), currentFile = join(folder, `2026-01-01T11-00-00-000Z_${current}.jsonl`);
+  writeFileSync(oldFile, ""); writeFileSync(currentFile, "");
+  utimesSync(oldFile, new Date(directRow.at - 1000), new Date(directRow.at - 1000));
+  utimesSync(currentFile, new Date(directRow.at), new Date(directRow.at));
+  world.agentStart = new Date(directRow.at - 60_000).toUTCString();
+  world.ps = `10 1 /bin/bash\n11 10 /x/senpi/dist/bundle/cli.js --session-id ${old}\n12 11 /bin/sleep 100\n`;
+  recordHerdrSession(state.dir, pane, { session: current, cwd, log: currentFile, agent: `${recordedPid} ${world.agentStart}`, at: iso(directRow.at) });
+  const deps = depsFor(world, fakeClock(directRow.at), state.dir);
+  const run: typeof deps.run = async (argv, opts) => argv[0] === "ps" && argv[1] === "eww" && argv.at(-1) === "12"
+    ? { code: 0, out: `/bin/sleep 100 PI_SESSION_ID=${old} PI_SESSION_FILE=${oldFile}`, err: "" } : deps.run(argv, opts);
+  try { expect((await sessionFile(run, sessions, pane, cwd, undefined, state.dir))?.path).toBe(recordedPid === 11 ? currentFile : oldFile); }
+  finally { state.done(); }
 });
 
 test("an argv-array Discord reply uses its matching receipt", () => {
