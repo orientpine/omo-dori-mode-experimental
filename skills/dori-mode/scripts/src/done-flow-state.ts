@@ -55,6 +55,9 @@ export type FlowDeps = {
   readonly channels?: readonly string[];
   // the omo goal of a pane's session (goal.ts sessionGoal reads its goal file when unset); tests set it
   readonly readGoal?: ((pane: string) => Promise<GoalRead>) | undefined;
+  // the lead pane the config names now (cli: DORI_LEAD_PANE, else config.json leadPane, read again on each watch pass);
+  // "" when unreadable keeps config.leadPane
+  readonly leadPaneNow?: () => string;
 };
 
 export class LaneStateError extends Error {}

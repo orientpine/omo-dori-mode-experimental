@@ -28,7 +28,7 @@ export const useDoriState = (next: DoriState | undefined): void => {
 };
 const kindOfPane = (pane: string): RuntimeKind | undefined => (isHcPane(pane) ? "hc" : pane.includes(":") ? "herdr" : undefined);
 // the lead as loadConfig takes it: DORI_LEAD_PANE over the file's leadPane (review 4 of #404)
-const leadNow = (path: string): string => {
+export const leadNow = (path: string): string => {
   const env = process.env["DORI_LEAD_PANE"];
   if (env !== undefined) return env;
   try {
