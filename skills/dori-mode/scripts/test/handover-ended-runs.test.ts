@@ -40,17 +40,18 @@ test("a monitor whose work runs detached, or whose work the note did not record,
 });
 
 test("two monitors with one description are judged by their own process, not by the first record with that name", () => {
+  // foreground monitors (#414 review 44): a fed script would keep its watch before any process is matched
   const monitor = (pid: number) => {
-    const command = `bash -s < /tmp/ci-${pid}.sh`;
-    const launch = launchOf(command, HOME, () => "bun run ci\n");
-    if (!launch) throw new Error("not work");
+    const command = `sleep 30 > /tmp/ci-${pid}.out`;
+    const launch = launchOf(command, HOME, () => undefined);
+    if (!launch || launch.detached) throw new Error("not foreground work");
     return { description: "ci on 4eae", command, persistent: true, pid, launch };
   };
   const first = { pid: 100, start: "s100", cmd: "ci on 4eae", pids: [101], starts: ["s101"] };
   const second = { pid: 200, start: "s200", cmd: "ci on 4eae", pids: [201], starts: ["s201"] };
   const done = workEnded([first, second], () => true, (pid) => ({ 100: "s999", 101: "s999", 200: "s200", 201: "s201" } as Record<number, string>)[pid]);
   // the first monitor's processes ended, the second's still run: only the first is not asked for
-  expect(done(monitor(100) as never)).toBe(false);
+  expect(done(monitor(100) as never)).toBe(true);
   expect(done(monitor(200) as never)).toBe(false);
 });
 

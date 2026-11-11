@@ -80,3 +80,12 @@ test("test and [ are foreground only in plain predicate shapes, and printf not a
     expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, false]);
   }
 });
+
+// #414 review 44: a standalone assignment can change what later words run (PATH, IFS, BASH_ENV, PAGER...); only a lowercase
+// name bash does not read itself leaves a work monitor foreground
+test("a standalone assignment keeps the watch unless its name is a plain lowercase one", () => {
+  for (const command of ["sleep 30; PATH=/tmp/tools:$PATH; cat /tmp/x > /tmp/o.log", "IFS=/; cat /tmp/x > /tmp/o.log", "BASH_ENV=/tmp/e; cat /tmp/x > /tmp/o.log", "GH_PAGER=/tmp/p; gh pr view 1 > /tmp/o.log", "histchars=x; cat /tmp/x > /tmp/o.log"]) {
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
+  }
+  expect(launchOf("f=/tmp/x; n=1; until [ -s \"$f\" ]; do sleep 2; done; echo DONE > /tmp/o.log", HOME, () => undefined)?.detached).toBe(false);
+});
