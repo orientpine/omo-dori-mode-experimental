@@ -145,7 +145,7 @@ test("a script a shell runs by a bare name that cannot be read is work and keeps
 test("a shell's script operand comes from its words: options with operands, -c strings, wrappers, a shell by its path", () => {
   const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
   for (const command of ["bash -o pipefail -c 'tail -F /tmp/ci.log'", "bash -O extglob -c 'tail -F /tmp/ci.log'", "bash --rcfile /etc/x -c 'tail -F /tmp/ci.log'"]) {
-    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, false]);
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
     // a shell given a string is work (#414 after review 21): the same command armed again does not count
     expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
   }
@@ -168,7 +168,7 @@ test("a script a remote shell runs is never judged by a local file, and combined
   }
   const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
   for (const command of ["bash -euo pipefail -c 'tail -F /tmp/ci.log'", "bash -eO extglob -c 'tail -F /tmp/ci.log'", "bash +o history -c 'tail -F /tmp/ci.log'"]) {
-    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, false]);
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
     expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
   }
 });

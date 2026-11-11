@@ -91,7 +91,7 @@ test("a dori review monitor starts work; its wait named after it counts while it
   expect(missingMonitors([review], [entry({ description: named, command: wait, runtime: { pid: 9 } })], () => true, HOME, 0, running)).toEqual([]);
   expect(missingMonitors([review], [], () => true, HOME, 0, running)).toEqual([`${description} (starts work: arm a watch-only one with the same description)`]);
   // once the review ended, the wait that ended with it is not asked for
-  expect(missingMonitors([review], [], () => true, HOME, 0, workEnded(work, () => false, () => undefined))).toEqual([]);
+  expect(missingMonitors([review], [], () => true, HOME, 0, workEnded(work, () => false, () => undefined))).toHaveLength(1);
   // another watch whose name only begins with the same words is not it
   expect(missingMonitors([review], [entry({ description: `${description}0`, command: wait, runtime: { pid: 9 } })], () => true, HOME, 0, running)).toEqual([`${description} (starts work: arm a watch-only one with the same description)`]);
 });

@@ -157,3 +157,18 @@ export const watchOnly = (command: string): boolean => {
   const aliases = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(direct)).map(([n]) => n));
   return r.cmds.some((c) => c.words.length > 0) && cmdsOk(r.cmds, stateFile(aliases), (w) => !w.subs.length && hashes.has(/^\$([a-z_]\w*)$/.exec(w.text)?.[1] ?? "\0"));
 };
+
+// #414 review 41: a work monitor ends with its watch (detached false) only when every command word in it, at every depth,
+// is a listed foreground tool or shell word; a path, a script, an unknown program or a shell fed a script keeps the watch.
+const FOREGROUND = new Set([...PROGRAMS.keys(), "gh", "git", "kill", "tee", "export", "exit", "set", "systemctl"]);
+export const foregroundOnly = (command: string): boolean => {
+  const ok = (cmds: readonly Simple[]): boolean =>
+    cmds.every((c) => {
+      let k = 0;
+      for (let x = c.words[k]; x && ((!x.quoted && !x.expand && (CONTROL.has(x.text) || CLOSE.has(x.text))) || ASSIGN.test(x.text)); x = c.words[k]) k++;
+      const w = c.words[k];
+      return (!w || (!w.quoted && !w.expand && !w.glob && FOREGROUND.has(w.text))) && [...c.words, ...c.outs, ...c.ins].every((x) => x.subs.every(ok));
+    });
+  const r = lex(command, 0, false);
+  return !!r && ok(r.cmds);
+};
