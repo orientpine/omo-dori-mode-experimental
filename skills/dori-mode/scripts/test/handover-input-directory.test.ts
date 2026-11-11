@@ -139,3 +139,20 @@ test("a script a shell runs by a bare name that cannot be read is work and keeps
   expect(launchOf("ssh h bash -s -- rv v0.2.1 < /tmp/tools.sh", HOME, (path) => (path === "/tmp/tools.sh" ? "bun run ci\n" : undefined))?.detached).toBe(false);
   expect(launchOf("bash -lc 'tail -F /tmp/ci.log'", HOME, () => undefined)).toBeUndefined();
 });
+
+// #414 review 17: the operand after a shell was found by a regex, so bash -o pipefail -c took pipefail for a script (a
+// watch read as work) and /bin/bash start.sh was no shell at all (work read as a watch). Shell words decide it now.
+test("a shell's script operand comes from its words: options with operands, -c strings, wrappers, a shell by its path", () => {
+  const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
+  for (const command of ["bash -o pipefail -c 'tail -F /tmp/ci.log'", "bash -O extglob -c 'tail -F /tmp/ci.log'", "bash --rcfile /etc/x -c 'tail -F /tmp/ci.log'"]) {
+    expect([command, launchOf(command, HOME, () => undefined)]).toEqual([command, undefined]);
+    // the same watch armed again in the new session counts
+    expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual([]);
+  }
+  for (const command of ["/bin/bash start.sh", "/usr/bin/env bash start.sh", "bash -O extglob start.sh", "sudo -u oriclaw bash start.sh", "bash -c 'bash start.sh'"]) {
+    const launch = launchOf(command, HOME, () => undefined);
+    if (!launch) throw new Error(`not work: ${command}`);
+    expect([command, launch.detached]).toEqual([command, true]);
+    expect(missingMonitors([{ description: "w", command, persistent: true, launch }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
+  }
+});
