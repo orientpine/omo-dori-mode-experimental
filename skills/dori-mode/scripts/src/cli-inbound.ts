@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { messageLines } from "./directives.ts";
+import { messageLines } from "./directive-hints.ts";
 import { realClock } from "./run.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";

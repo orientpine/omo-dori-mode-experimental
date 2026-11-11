@@ -1,4 +1,5 @@
-import { directiveLine, HINT_LIMIT, ledgerProblems, ledgerTable, loadLedger, promptTable, textDirectives } from "./directives.ts";
+import { hintDirectives } from "./directive-hints.ts";
+import { directiveLine, ledgerProblems, ledgerTable, loadLedger, promptTable } from "./directives.ts";
 import { applyDirectives, auditOrReport, checkMeaning, linkRows, pushLinks, sinceIso } from "./directive-audit.ts";
 import { threads } from "./messenger/thread-map.ts";
 import type { Command } from "./cli-context.ts";
@@ -48,7 +49,7 @@ const directivesCommand: Command = async (context) => {
   if (key === "hint") {
     const text = flags.positionals.slice(1).join(" ").trim() || die("usage: dori directives hint <text>");
     const hl = hintLedger();
-    const found = textDirectives(text, hl).slice(0, HINT_LIMIT);
+    const found = hintDirectives(text, hl);
     for (const line of hl.skipped ?? []) console.log(line);
     for (const { e, why } of found) console.log(`DIRECTIVE_HINT ${e.id} (${why}): ${directiveLine(e)}`);
     if (!found.length) console.log("DIRECTIVE_HINT_NONE: no directive's keyword, kind of work or UI words in the text");

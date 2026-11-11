@@ -517,10 +517,6 @@ export const requireMissing = (brief: string, e: Directive): string[] => (e.requ
 
 // --- the owner's message and a thread the lead opens: the work the lead does without a lane brief ---
 
-// How many directives an owner message carries in the inbox row (dori inbound discord): the lead reads them in every
-// monitor event, so only the ones his message is about, never more than this.
-export const HINT_LIMIT = 5;
-
 // The directives a text (an owner message, a thread's title and first message) is about, as a brief of that text would
 // get them, except that one hit of a kind's words counts (a message is short; a brief needs minHits). all: the entries for
 // every lane too (a thread the lead opens gets what a lane's brief gets); without it only those its words call: a keyword,
@@ -543,15 +539,6 @@ export const textDirectives = (text: string, ledger: Ledger, opts: { readonly al
     out.push({ e: shown, why: shown === e ? why : `${why}, for ${e.id}`, rank: rank * 10_000 + i });
   }
   return out.sort((a, b) => a.rank - b.rank).map(({ e, why }) => ({ e, why }));
-};
-
-// What an owner message's inbox row carries (dori inbound discord): the lines of the directives it calls, at most
-// HINT_LIMIT, and when the tolerant load left local lines out (or the whole local layer), one last line saying so, so the
-// lead knows the host's own directives may be missing (dori thread open refuses on it instead).
-export const messageLines = (text: string, ledger: Ledger): string[] => {
-  const lines = textDirectives(text, ledger).slice(0, HINT_LIMIT).map(({ e }) => directiveLine(e));
-  const skipped = ledger.skipped ?? [];
-  return skipped.length ? [...lines, `[장부 경고] 이 도리 로컬 장부에서 ${skipped.length}줄을 못 읽어 뺐다: ${skipped[0]?.slice(0, 200)}. dori directives check로 고친다.`] : lines;
 };
 
 // One line per directive: its tag and the text a brief gets (his prompt, or the lead's rule), on one line.
