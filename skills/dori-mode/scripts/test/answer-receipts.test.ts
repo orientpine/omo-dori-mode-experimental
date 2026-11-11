@@ -50,3 +50,16 @@ test.each(["done", "wait"])("standalone thread %s extracts its own destination a
     expect(await replay([call(code, form === "shell" ? "bash" : "eval"), result(receipt)], [row, other, first]), form).toEqual({ waiting: [other, first], answeredIds: [row.id], cached: [row.id] });
   }
 });
+
+test.each(["truncated", "no-args", "other-tool", "other-command", "source-peers", "source-native", "historical-print", "refused", "preview-only"])("wrapped %s preview uses full receipt content only with sole execution provenance", async (kind) => {
+  const command = `dori send discord --to ${first.channel} --reply ${first.id} --text answer`, receipt = sentLine("SENT", { id, content: "answer ".repeat(10) });
+  const preview = receipt.slice(0, -8) + String.fromCodePoint(0x2026);
+  const post = `display(await tool.bash({command:${JSON.stringify(command)}}))`;
+  const code = kind === "source-peers" ? `display(await tool.bash({command:"grep -F SENT history"})); ${post}`
+    : kind === "source-native" ? `console.log(Bun.spawnSync(["grep","-F","SENT","history"]).stdout.toString()); ${post}`
+    : kind === "historical-print" ? `await tool.bash({command:${JSON.stringify(command)}}); console.log(await Bun.file("history").text())` : post;
+  const own = { name: "bash", ...(kind === "no-args" ? {} : { args: { command: kind === "other-command" ? "pwd" : command } }), resultPreview: kind === "preview-only" ? receipt : preview };
+  const output = kind === "refused" ? `UNKNOWN_OPTION send: unexpected "SENT ${id}"; nothing was sent` : kind === "preview-only" ? "wrapped output not printed" : receipt;
+  const details = { toolCalls: [own, ...(kind === "other-tool" ? [{ name: "read", resultPreview: receipt }] : [])] }, good = ["truncated", "no-args", "preview-only"].includes(kind);
+  expect(await replay([call(code, "eval"), result(output, details)], [first, pending])).toEqual({ waiting: good ? [pending] : [first, pending], answeredIds: good ? [first.id] : [], cached: good ? [first.id] : [] });
+});

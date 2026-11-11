@@ -1,9 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 
+import { sessionFor, type AoeSession } from "./aoe.ts";
+import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { argvSessionLog, readHerdrSessions } from "./herdr-sessions.ts";
 import { committedHandovers } from "./rollover-audit.ts";
 import { type Lane, statusOf } from "./registry.ts";
+import type { Proc } from "./session-id.ts";
 
 type Session = { readonly session: string; readonly cwd: string; readonly pane: string; readonly log?: string };
 const textAt = (path: string): string => {
@@ -63,7 +66,7 @@ export const predecessorTranscripts = (deps: FlowDeps, lead: { readonly pane: st
 
 // A lane's current pane can be gone too. Its registry identity and priorSessions bind the committed move to that
 // lane; the facts bind the asking pane to an exact old session/log. A recorded card session can identify it directly.
-export const lanePredecessorTranscripts = (deps: FlowDeps, lanes: readonly Lane[], asking: { readonly pane: string; readonly at: number; readonly session?: string }): string[] => {
+export const lanePredecessorTranscripts = async (deps: FlowDeps, lanes: readonly Lane[], asking: { readonly pane: string; readonly at: number; readonly session?: string }, runtime: { readonly sessions: readonly AoeSession[]; readonly table: readonly Proc[] }): Promise<string[]> => {
   const texts = new Set<string>(), moves = committedHandovers(deps.config.stateDir), records = readHerdrSessions(deps.config.stateDir);
   for (const lane of lanes) {
     if (!lane.pane || !lane.cwd || !(Date.parse(lane.openedAt) <= asking.at) || statusOf(lane) === "closed" && !(asking.at <= Date.parse(lane.closedAt ?? ""))) continue;
@@ -73,9 +76,17 @@ export const lanePredecessorTranscripts = (deps: FlowDeps, lanes: readonly Lane[
       const text = sessionText(deps, { pane: asking.pane, session: asking.session, cwd: lane.cwd, ...(log ? { log } : {}) });
       if (text) texts.add(text);
     }
-    const kept = records[lane.pane], log = kept && kept.session === lane.session && kept.cwd === lane.cwd ? kept.log : undefined;
-    const current = lane.session ? sessionText(deps, { pane: lane.pane, session: lane.session, cwd: lane.cwd, ...(log ? { log } : {}) }) : "";
-    const pending: { readonly pane: string; readonly chain: readonly string[] }[] = [{ pane: lane.pane, chain: current ? [current] : [] }], seen = new Set<string>();
+    const live = sessionFor(runtime.sessions, lane.pane);
+    const file = live ? await sessionFile(deps.run, deps.config.sessionsDir, lane.pane, live.path, runtime.table, deps.config.stateDir) : undefined;
+    const kept = readHerdrSessions(deps.config.stateDir)[lane.pane];
+    const owner = kept?.cwd === lane.cwd ? kept.session === lane.session ? kept : kept.previous?.find((prior) => prior.session === lane.session && prior.cwd === lane.cwd) : undefined;
+    const current = lane.session ? sessionText(deps, { pane: lane.pane, session: lane.session, cwd: lane.cwd, ...(owner?.log ? { log: owner.log } : {}) }) : "";
+    let chain = current ? [current] : [];
+    if (file && current) {
+      const text = textAt(file.path), identity = header(text);
+      if (identity?.cwd === lane.cwd && kept?.session === identity.session && (identity.session === lane.session || owner !== undefined)) chain = [text, ...predecessorTranscripts(deps, { pane: lane.pane, path: file.path, text }, lane.pane)];
+    }
+    const pending: { readonly pane: string; readonly chain: readonly string[] }[] = [{ pane: lane.pane, chain }], seen = new Set<string>();
     for (let tip = pending.pop(); tip; tip = pending.pop()) {
       if (seen.has(tip.pane)) continue;
       seen.add(tip.pane);

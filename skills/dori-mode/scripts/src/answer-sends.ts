@@ -131,7 +131,7 @@ const sendCalls = (transcript: string): SendCall[] => {
       const started = [...new Set(jobs.filter(([kind]) => kind === "bash").map(([, id]) => id))];
       if (started.length === 1 && started[0]) handles.set(started[0], call);
       const receipt = bash && nested ? attempts.map((operation) => operation.resultPreview ?? "").join("\n") : call.aggregate === false ? "" : text;
-      if (hasReceipt(receipt)) call.sent = true;
+      if (hasReceipt(receipt) || bash && call.aggregate !== false && nested?.length === 1 && attempts.length === 1 && hasReceipt(text)) call.sent = true;
     } else if (entry.type === "custom_message" && entry.customType === "senpi-codemode:notification" && typeof entry.content === "string") {
       const header = entry.content.match(/^(?:<system-reminder>\s*)?Detached eval cell ([^\s]+) \((?:js|py)\) completed\.[ \t]*/), call = header?.[1] ? calls.get(header[1]) : undefined;
       if (call?.detachedReceipt && header && hasReceipt(entry.content.slice(header[0].length))) call.sent = true;
