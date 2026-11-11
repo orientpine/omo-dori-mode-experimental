@@ -5,14 +5,14 @@ import { omoSession, readScreen } from "./panes.ts";
 import type { Lane } from "./registry.ts";
 import { watchLog } from "./watch-log.ts";
 import { assignArm } from "./compaction-keep.ts";
-import { type LaunchInput, LaunchFailed, NEW_THREAD, ThreadMissingError, DirectiveMissingError } from "./launch-types.ts";
+import { type LaunchInput, LaunchError, LaunchFailed, NEW_THREAD, ThreadMissingError, DirectiveMissingError } from "./launch-types.ts";
 import { failureOf, startupGoal, openHerdr, openAoe } from "./launch-startup.ts";
 import { validateLaunch, threadGate, relatedGate, doneWeakWarning } from "./launch-gates.ts";
 import { aoeStartup } from "./launch-screen.ts";
 import { briefAnchor } from "./launch-footer.ts";
 import { reopenLaneThread } from "./launch-state.ts";
 import { renderBrief } from "./launch-render.ts";
-import { leadModel } from "./lane-model.ts";
+import { resolveLeadModel } from "./lane-model.ts";
 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
@@ -24,8 +24,12 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     if (e instanceof ThreadMissingError) watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: e.message });
     throw e;
   }
-  // no --model: the lead's model of now, so a lane runs what its lead runs (herdr-sessions.ts leadModel)
-  const model = input.model ?? leadModel(deps.config) ?? deps.config.defaultModel;
+  // no --model: the lead's model as the backlog's quota check chose it, else resolved now; never a default-model lane on herdr
+  const leadPane = deps.config.leadPane || "<unset>";
+  const model = input.model ?? input.leadModel ?? await resolveLeadModel(deps.run, deps.config).catch((e: unknown) => {
+    throw new LaunchError(`LAUNCH_LEAD_MODEL_MISSING ${leadPane}: could not read the current lead session model (${e instanceof Error ? e.message : String(e)}); defaultModel is not used`);
+  });
+  if (!model) throw new LaunchError(`LAUNCH_LEAD_MODEL_MISSING ${leadPane}: no model in the current lead session transcript or herdr-sessions record; defaultModel is not used, so pass --model or restore the lead record`);
   const cwd = input.cwd ?? deps.config.defaultCwd;
   const weak = await doneWeakWarning(input, cwd);
   if (weak) {

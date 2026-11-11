@@ -2,9 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordHerdrSession } from "../src/herdr-sessions.ts";
+import { readHerdrSessions, recordHerdrSession } from "../src/herdr-sessions.ts";
 import { keepSessions, type LaneHandoverDeps, recover } from "../src/lane-handover.ts";
-import { keptModel, laneModel, launchProvider, leadModel, modelMove, moveThinking, withThinking } from "../src/lane-model.ts";
+import { keptModel, laneModel, leadModel, modelMove, moveThinking, resolveLeadModel, withThinking } from "../src/lane-model.ts";
 import { launchLane } from "../src/launch.ts";
 import type { Runner } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, type World } from "./fakes.ts";
@@ -19,6 +19,7 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const LEAD = "kimi-coding/k3.1-pro:max";
+const OPUS = "anthropic-subscription/claude-opus-5-5:medium";
 const omo = (patch = {}) => depsFor(world, fakeClock(0), dir, { backend: "herdr", leadPane: "w1:p37", ...patch });
 const leadRuns = (model: string) => recordHerdrSession(dir, "w1:p37", { session: "lead-sid", cwd: dir, model, at: new Date(0).toISOString() });
 
@@ -28,6 +29,18 @@ test("the lead's model is the one recorded for its pane, and none while nothing 
   leadRuns(LEAD);
   expect(leadModel(config)).toBe(LEAD);
   expect(leadModel({ ...config, leadPane: "w9:p9" })).toBeUndefined();
+});
+
+test("a model-less rewrite keeps the current pane's last model and leaves the old lead's record alone", () => {
+  recordHerdrSession(dir, "w2:p2", { session: "previous-current", cwd: dir, model: LEAD, at: new Date(0).toISOString() });
+  recordHerdrSession(dir, "w1:pA", { session: "old-lead", cwd: dir, model: OPUS, at: new Date(0).toISOString() });
+  recordHerdrSession(dir, "w2:p2", { session: "new-current", cwd: dir, at: new Date(1).toISOString() });
+  const all = readHerdrSessions(dir);
+  expect(all["w2:p2"]?.model).toBe(LEAD);
+  expect(all["w1:pA"]?.model).toBe(OPUS);
+  recordHerdrSession(dir, "w2:p2", { session: "newer-current", cwd: dir, model: "x/startup", modelFrom: "argv", at: new Date(2).toISOString() });
+  expect(readHerdrSessions(dir)["w2:p2"]).toMatchObject({ session: "newer-current", model: LEAD });
+  expect(readHerdrSessions(dir)["w2:p2"]?.modelFrom).toBeUndefined();
 });
 
 test("a lane's next session takes the lead's model of now; a model chosen now or before wins; with no lead known the lane keeps its own", () => {
@@ -119,10 +132,10 @@ test("an interrupted move of a lane that had no model gives the kept old pane no
   expect(back?.model).toBeUndefined();
 });
 
-test("the backlog checks the quota of the provider its lanes start on: the lead's, else defaultModel's", () => {
-  const config = omo().config;
-  leadRuns("anthropic-subscription/claude-opus-5-5:medium");
-  expect(launchProvider({ ...config, defaultModel: LEAD })).toBe("anthropic-subscription");
+test("a lane with no --model starts on the lead's recorded model; an aoe lead with none recorded keeps defaultModel", async () => {
+  const { config, run } = omo();
+  leadRuns(OPUS);
+  expect(await resolveLeadModel(run, { ...config, defaultModel: LEAD })).toBe(OPUS);
   rmSync(join(config.stateDir, "herdr-sessions.json"), { force: true });
-  expect(launchProvider({ ...config, defaultModel: LEAD })).toBe("kimi-coding");
+  expect(await resolveLeadModel(run, { ...config, backend: "aoe", defaultModel: LEAD })).toBe(LEAD);
 });

@@ -770,7 +770,7 @@ export type TickDeps = {
   // the host verdict dori can-launch gives (and the load guard): reasons when busy
   readonly busy: () => Promise<readonly string[]>;
   // why no model account can take a new lane now (the usage limit), or undefined
-  readonly limited: () => string | undefined;
+  readonly limited: () => Promise<string | undefined>;
   readonly host: HostSlots;
   // dori launch of one item from a fresh copy of its brief; throws StartRefused when the item makes it impossible
   readonly launch: (item: BacklogItem, brief: string, key: string) => Promise<{ readonly pane: string; readonly startup: string }>;
@@ -905,7 +905,7 @@ export const backlogTick = async (d: TickDeps, opts: { readonly force?: boolean 
         continue;
       }
       // checked again before each start: the start before it may have used the last pane, memory or account
-      const hold = [...(await d.busy()), ...[d.limited()].filter((x): x is string => Boolean(x))];
+      const hold = [...(await d.busy()), ...[await d.limited()].filter((x): x is string => Boolean(x))];
       if (hold.length) {
         quiet.push(`BACKLOG_HOLD ${hold.join(" | ")}; ${waiting.length - tried} item(s) wait`);
         break;

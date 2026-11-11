@@ -37,7 +37,7 @@ const deps = (patch: Partial<TickDeps> = {}, settings: Partial<BacklogSettings> 
   now: () => now,
   lanes: async () => lanes,
   busy: async () => [],
-  limited: () => undefined,
+  limited: async () => undefined,
   host: { dir: join(root, "host"), user: "me", instance: "i1", max: settings.hostMaxLanes ?? SETTINGS.hostMaxLanes },
   launch: async (item, _brief, key) => {
     launched.push(item.id);
@@ -148,7 +148,7 @@ test("a busy host or a usage limit holds every start", async () => {
   add("aa");
   // When
   const busy = await backlogTick(deps({ busy: async () => ["memory free 5% < 20%"] }));
-  const limited = await backlogTick(deps({ limited: () => "usage limit: no anthropic-subscription account is free" }), { force: true });
+  const limited = await backlogTick(deps({ limited: async () => "usage limit: no anthropic-subscription account is free" }), { force: true });
   // Then
   expect(busy).toEqual(["BACKLOG_HOLD memory free 5% < 20%; 1 item(s) wait"]);
   expect(limited[0]).toStartWith("BACKLOG_HOLD usage limit");

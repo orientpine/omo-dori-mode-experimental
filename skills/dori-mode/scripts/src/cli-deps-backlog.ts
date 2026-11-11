@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { launchProvider } from "./lane-model.ts";
+import { resolveLeadModel } from "./lane-model.ts";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { type FeedTodo, feedIntake, inboxReader, instanceOf, orderIntake, pairIntake, type TickDeps } from "./backlog.ts";
@@ -25,6 +25,8 @@ export const makeBacklogDeps = (cli: Pick<Cli, "config" | "deps" | "discordToken
     mkdirSync(join(inbox, ".."), { recursive: true });
     appendFileSync(inbox, `${JSON.stringify({ ts: new Date().toISOString(), id, kind, content })}\n`);
   };
+  // the lead's model the last quota check chose: the launch right after it starts on that same model
+  let chosen: string | undefined;
   const backlogDeps = (): TickDeps => ({
     stateDir: config.stateDir,
     settings: config.backlog,
@@ -36,7 +38,7 @@ export const makeBacklogDeps = (cli: Pick<Cli, "config" | "deps" | "discordToken
     },
     launch: async (item, brief, key) => {
       const leadBrief = readFileSync(brief, "utf8");
-      const input = { key, backlog: true, title: item.title, brief, done: item.done, thread: item.thread, noThread: item.noThread, whyNew: item.whyNew, cwd: item.cwd, tags: [...(item.tags ?? []), "backlog"], goal: item.goal };
+      const input = { key, backlog: true, title: item.title, brief, done: item.done, thread: item.thread, noThread: item.noThread, whyNew: item.whyNew, cwd: item.cwd, tags: [...(item.tags ?? []), "backlog"], goal: item.goal, leadModel: chosen };
       const r = await launchLane(deps, input, (line) => console.log(line)).catch((e: unknown) => {
         throw asStartFailure(e);
       });
@@ -45,8 +47,10 @@ export const makeBacklogDeps = (cli: Pick<Cli, "config" | "deps" | "discordToken
       }
       return { pane: r.lane.pane ?? "?", startup: r.startup };
     },
-    limited: () => {
-      const provider = launchProvider(config);
+    limited: async () => {
+      chosen = await resolveLeadModel(deps.run, config).catch(() => undefined);
+      if (!chosen) return `LAUNCH_LEAD_MODEL_MISSING ${config.leadPane || "<unset>"}: no lead model in its session log or herdr-sessions record`;
+      const provider = chosen.split("/")[0] ?? "";
       return poolFree(config.sessionsDir, provider, Date.now()) ? undefined : `usage limit: no ${provider} account is free in omo's credential pool`;
     },
     host: { dir: config.backlog.hostDir, user: userInfo().username, instance: instanceOf(config.stateDir), max: config.backlog.hostMaxLanes },
