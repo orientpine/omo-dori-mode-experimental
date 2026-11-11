@@ -34,10 +34,10 @@ export class Slack {
   }
 
   // Explicit form remains available for callers; known form-only methods select it automatically.
-  async call(method: string, params: Record<string, unknown>, policy?: RetryPolicy, form = FORM_METHODS.has(method)): Promise<Record<string, unknown>> {
+  async call(method: string, params: Record<string, unknown>, policy?: RetryPolicy, form = FORM_METHODS.has(method), signal?: AbortSignal): Promise<Record<string, unknown>> {
     const payload = form ? new URLSearchParams(Object.entries(params).flatMap(([k, v]): [string, string][] => v === undefined || v === null ? [] : [[k, String(v)]])).toString() : JSON.stringify(params);
     const headers = form ? { ...this.headers(false), "Content-Type": "application/x-www-form-urlencoded; charset=utf-8" } : this.headers(true);
-    const res = await withBackoff(this.http, this.clock, { method: "POST", url: `${this.base}/${method}`, headers, body: payload }, policy);
+    const res = await withBackoff(this.http, this.clock, { method: "POST", url: `${this.base}/${method}`, headers, body: payload, ...(signal ? { signal } : {}) }, policy);
     const body = JSON.parse(res.body || "{}") as Record<string, unknown>;
     if (res.status !== 200 || body["ok"] !== true) throw new MessengerError(`slack ${method}: ${String(body["error"] ?? res.status)}`, res.status, String(body["error"] ?? ""));
     if (this.ledger && method === "chat.postMessage" && typeof body["ts"] === "string") {

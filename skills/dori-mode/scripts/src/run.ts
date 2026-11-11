@@ -1,4 +1,5 @@
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { createConnection } from "node:net";
 import { delimiter, join } from "node:path";
 import { envFileEntries, envFilePath } from "./config-env.ts";
 
@@ -39,6 +40,21 @@ export const doriCore = (path: string = envFilePath()): string | undefined => {
     return undefined;
   }
 };
+
+// hc's core listens at $XDG_RUNTIME_DIR/herdr-core/<core>.sock. It runs only when that socket accepts a connection within
+// timeoutMs: a path alone may be a socket a killed core left (review 10 of #436). Read without an hc call, since any hc call
+// starts a core.
+export const hcCoreRunning = (core: string | undefined = doriCore(), env: Readonly<Record<string, string | undefined>> = process.env, timeoutMs = 1000): Promise<boolean> =>
+  new Promise((resolve) => {
+    const socket = createConnection({ path: join(env["XDG_RUNTIME_DIR"] || `/run/user/${process.getuid?.() ?? 0}`, "herdr-core", `${core ?? "default"}.sock`) });
+    const done = (running: boolean) => {
+      socket.destroy();
+      resolve(running);
+    };
+    socket.setTimeout(timeoutMs, () => done(false));
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+  });
 
 // A hook such as ["dori", "thread", "reply", ...] names the dori command. On native Windows that command is dori.ps1,
 // which Bun.spawn cannot start, so the hook runs this CLI with this Bun directly (no shell, the arguments as they are).

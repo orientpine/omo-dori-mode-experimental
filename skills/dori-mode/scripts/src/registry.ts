@@ -1,7 +1,8 @@
-import { mkdirSync, readdirSync, renameSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 import type { DirectivePick } from "./directives.ts";
+import { listLanes, scanLanes } from "./registry-scan.ts";
 import { parseRef, type SessionRef } from "./runtime/types.ts";
 import type { BudgetLimits } from "./supervision.ts";
 
@@ -103,7 +104,7 @@ export type Lane = {
   readonly lastReplyAt?: number;
   readonly lastNudgeAt?: number;
   readonly lastAutoReplyAt?: number;
-  readonly lastReport?: string | undefined;
+  readonly lastReport?: string | undefined; readonly reportProtocol?: "jsonl-v1"; readonly lastJournalError?: string | undefined;
   readonly fixes?: readonly FixAttempt[];
   // the owner's goal in their own words (dori launch --goal), and the lane's latest stated direction (dori intent-check)
   readonly goal?: string | undefined;
@@ -183,7 +184,7 @@ export const withStatus = (lane: Lane, status: LaneStatus, note: string, at: str
 // A lane recorded before 2026-11-02 keeps its last check under ownerCheck (the periodic owner check, removed then; dori
 // intent-check wrote there too): it is read as intentCheck, so a pending finding can still be re-read and a confirmed
 // re-read still makes the next finding rung 4. The old field is not written back.
-type Recorded = Lane & { readonly ownerCheck?: Lane["intentCheck"] };
+export type Recorded = Lane & { readonly ownerCheck?: Lane["intentCheck"] };
 const loaded = (raw: Recorded): Lane => {
   const { ownerCheck: old, ...lane } = raw;
   if (!old || lane.intentCheck) return upgradeLane(lane);
@@ -227,12 +228,9 @@ export class Registry {
     if (fresh) await this.write({ ...fresh, ...fields });
   }
 
-  async list(): Promise<Lane[]> {
-    mkdirSync(this.dir, { recursive: true });
-    const lanes: Lane[] = [];
-    for (const f of readdirSync(this.dir)) if (f.endsWith(".json")) lanes.push(loaded((await Bun.file(join(this.dir, f)).json()) as Recorded));
-    return lanes;
-  }
+  async list(): Promise<Lane[]> { return listLanes(this.dir, loaded); }
+
+  async scan(): Promise<{ lanes: Lane[]; unreadable: string[] }> { return scanLanes(this.dir, loaded); }
 
   async open(): Promise<Lane[]> {
     return (await this.list()).filter((l) => statusOf(l) !== "closed");

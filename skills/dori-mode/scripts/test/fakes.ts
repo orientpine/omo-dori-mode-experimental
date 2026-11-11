@@ -8,6 +8,7 @@ import type { FlowDeps } from "../src/done-flow.ts";
 import { Registry } from "../src/registry.ts";
 import type { Clock, Ran, Runner } from "../src/run.ts";
 import { duplicateLine, SEND_DUPLICATE_EXIT } from "../src/send-dedupe.ts";
+import type { FakeTerminal } from "./fake-hc.ts";
 
 // A launch adds nvm's node and the agent's pi to the PATH aoe add runs with when the caller's PATH lacks them (a systemd
 // unit's bare PATH, as dori watch runs a lane's Done command). A test that checks what aoe add got sets PATH to what the
@@ -39,9 +40,10 @@ export type World = {
   screen: string;
   screens: Record<string, string>;
   aoePs: { session: string; state: string }[];
-  panes: { pane_id: string; workspace_id: string; agent?: string; title?: string; cwd?: string }[];
+  panes: { pane_id: string; workspace_id: string; agent?: string; agent_status?: string; title?: string; cwd?: string }[];
   aoe: { id: string; title: string; path: string; tool?: string; profile?: string }[];
   tmux: string[];
+  tmuxGone?: string[];
   calls: string[][];
   // panes that got an Enter: their next screen read shows a running turn, the one after it does not
   started: string[];
@@ -59,6 +61,11 @@ export type World = {
   agentStart: string;
   // herdr panes the fake server does not have (pane get fails), and those where no agent runs any more (a bare shell)
   herdrGone?: string[];
+  terminals?: Record<string, FakeTerminal>;
+  hcGetError?: string;
+  aoeListError?: string;
+  tmuxLsError?: string;
+  tmuxHasError?: Record<string, string>;
   herdrDead?: string[] | undefined;
   // what herdr pane process-info names in front of a pane (null: the lookup fails); default the agent, or -bash once dead
   herdrFront?: Record<string, readonly { name?: string; argv?: string[] }[] | null>;
@@ -111,7 +118,29 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
     return ok(JSON.stringify({ result: { process_info: { pane_id: pane, shell_pid: 4000, foreground_processes: fg } } }));
   }
   if (cmd === "herdr" && a1 === "tab" && a2 === "get") return ok(JSON.stringify({ result: { tab: { tab_id: argv[3], pane_count: 1 } } }));
+  if (cmd === "hc" && a1 === "--json" && a2 === "get") {
+    const id = argv[3] ?? "";
+    if (w.hcGetError === id) return { code: 1, out: "", err: "boom" };
+    const terminal = w.terminals?.[id];
+    if (!terminal) return { code: 3, out: "", err: JSON.stringify({ error: { kind: "not_found", message: `no terminal "${id}"` } }) };
+    return ok(JSON.stringify({ address: id, ...terminal }));
+  }
+  if (cmd === "hc" && a1 === "--json" && a2 === "ls") {
+    const labelAt = argv.indexOf("--label");
+    const wanted = labelAt < 0 ? undefined : argv[labelAt + 1];
+    const [labelKey, labelValue] = wanted?.split("=") ?? [];
+    const rows = Object.entries(w.terminals ?? {}).filter(([, terminal]) => terminal.state === "live" && (!wanted || terminal.labels[labelKey ?? ""] === labelValue)).map(([address, terminal]) => ({
+      address,
+      state: terminal.state,
+      status: terminal.status?.state,
+      agent: terminal.foreground?.name,
+      cwd: terminal.cwd,
+      ...(terminal.name === undefined ? {} : { name: terminal.name }),
+    }));
+    return ok(JSON.stringify({ terminals: rows }));
+  }
   if (cmd === "herdr") return ok();
+  if (cmd === "aoe" && a1 === "list" && w.aoeListError) return { code: 1, out: "", err: w.aoeListError };
   if (cmd === "aoe" && a1 === "list") return ok(JSON.stringify(w.aoe));
   if (cmd === "aoe" && a1 === "ps") return ok(JSON.stringify(w.aoePs));
   if (cmd === "aoe" && a1 === "add") {
@@ -134,7 +163,14 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
     return value === undefined ? { code: 1, out: "", err: `unknown variable: ${name}` } : ok(`${name}=${value}`);
   }
   if (cmd === "aoe") return ok();
+  if (cmd === "tmux" && a1 === "ls" && w.tmuxLsError) return { code: 1, out: "", err: w.tmuxLsError };
   if (cmd === "tmux" && a1 === "ls") return ok(w.tmux.join("\n"));
+  if (cmd === "tmux" && a1 === "has-session") {
+    const name = (argv.at(-1) ?? "").replace(/^=/, "").replace(/:$/, "");
+    const failure = w.tmuxHasError?.[name];
+    if (failure) return { code: 1, out: "", err: failure };
+    return w.tmuxGone?.includes(name) ? { code: 1, out: "", err: `can't find session: ${name}` } : ok();
+  }
   if (cmd === "tmux" && a1 === "display-message") return ok("10");
   if (cmd === "tmux") return ok();
   if (cmd === "git" && w.inGit === false) return { code: 128, out: "", err: "fatal: not a git repository (or any of the parent directories): .git" };

@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { assignArm, keepTick, laneSessionFile, readArms, sessionUsage, trialRows, trialTable } from "../src/compaction-keep.ts";
 import { freshnessTick } from "../src/freshness.ts";
+import { Reports } from "../src/reports.ts";
 import type { DoriConfig } from "../src/config.ts";
 import type { Lane } from "../src/registry.ts";
 import { sessionDirFor } from "../src/session-id.ts";
@@ -99,6 +100,21 @@ test("a lane told not-done keeps both: freshness re-anchors it after a compactio
   const trialDeps = deps(T0, { compactionTrial: trial });
   expect((await freshnessTick(trialDeps, "/home/test")).map((a) => a.kind)).toContain("trial-compact");
   expect(sent(world).at(-1)).toBe("/compact");
+});
+
+test("a stalled structured lane still gets compaction recovery without a nudge", async () => {
+  const brief = join(state.dir, "brief.md");
+  writeFileSync(brief, "[목표] x\n");
+  const file = log();
+  const d = deps(T0 + 21 * 60_000);
+  await d.registry.write(lane(brief, { reportProtocol: "jsonl-v1", compactionsSeen: 0 }));
+  new Reports(state.dir).report("keep-lane", "milestone", "started", T0);
+  world.screens["w:p7"] = "❯ ";
+  appendFileSync(file, compaction("[Deterministic compaction recovery checkpoint]", "senpi.compaction.deterministic-fallback.v1"));
+  const acts = await freshnessTick(d, "/home/test");
+  expect(acts.map((a) => a.kind)).toContain("stalled");
+  expect(acts.map((a) => a.kind)).toContain("reanchored");
+  expect(acts.filter((a) => a.kind === "nudged" || a.kind === "lead-told")).toEqual([]);
 });
 
 test("a lane whose cwd is a symlink is read under the real path too, in the sweep and in the trial table; a session with no log is counted as unknown", () => {

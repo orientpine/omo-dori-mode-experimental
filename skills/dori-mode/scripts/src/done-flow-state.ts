@@ -11,6 +11,7 @@ import { watchLog } from "./watch-log.ts";
 import type { SignalIo } from "./done-signals.ts";
 import { reopenedText, windowMs } from "./done-flow-common.ts";
 import { appendRollover, outcomeLine, outcomeMissing, pendingStuck, readRollovers } from "./rollover.ts";
+import { Reports } from "./reports.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -137,7 +138,9 @@ export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, su
 // the claim without an objection. The claim is now taken back when the lead types into the lane (dori type) or the lane
 // runs a new turn after it sat idle: the lane is working again, without a timer, until it claims again.
 export const reopenClaim = async (deps: FlowDeps, lane: Lane, why: string): Promise<string> => {
-  await deps.registry.write(withStatus(lane, "working", `REOPENED: ${why}`, iso(deps.clock), { claim: undefined, idleSince: undefined, blocked: undefined, lastReplyAt: deps.clock.now() }));
+  const at = iso(deps.clock);
+  if (lane.reportProtocol === "jsonl-v1") new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at, state: "running", text: `REOPENED: ${why}` });
+  await deps.registry.write(withStatus(lane, "working", `REOPENED: ${why}`, at, { claim: undefined, idleSince: undefined, blocked: undefined, lastReplyAt: deps.clock.now() }));
   return `LANE_CLAIM_REOPENED ${lane.key} ${lane.pane ?? "-"} ${why}`;
 };
 
@@ -181,6 +184,7 @@ export const typeIntoPane = async (deps: FlowDeps, pane: string, text: string): 
 
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
   const at = iso(deps.clock);
+  if (lane.reportProtocol === "jsonl-v1") new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at, state: "running", text: `NOT_DONE: ${reasons.join("; ")}` });
   await deps.registry.write(withStatus(lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }));
   if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;

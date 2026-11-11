@@ -1,0 +1,156 @@
+import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { LANE_KEY } from "./registry.ts";
+
+export type ReportKind = "milestone" | "blocker" | "question" | "halted" | "done";
+export type ProgressState = "running" | "blocked" | "halted" | "done" | "stalled";
+export type Report = {
+  readonly type: "report";
+  readonly key: string;
+  readonly at: string;
+  readonly kind: ReportKind;
+  readonly text: string;
+};
+export type Activity = {
+  readonly type: "activity";
+  readonly key: string;
+  readonly at: string;
+  readonly state: "running" | "stalled";
+  readonly text: string;
+};
+export type LaneEvent = Report | Activity;
+export type Progress = {
+  readonly state: ProgressState;
+  readonly lastReport: Report | null;
+  readonly lastEvent: LaneEvent;
+};
+
+export class ReportError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+  }
+}
+
+export const isReportKind = (value: unknown): value is ReportKind =>
+  value === "milestone" || value === "blocker" || value === "question" || value === "halted" || value === "done";
+
+// A question waits on the owner's answer, so it is blocked like a blocker: posted, never nudged.
+export const reportState = (kind: ReportKind): ProgressState => {
+  switch (kind) {
+    case "milestone": return "running";
+    case "blocker": return "blocked";
+    case "question": return "blocked";
+    case "halted": return "halted";
+    case "done": return "done";
+  }
+};
+
+// Terminal output is one sanitized line; the journal keeps the raw text.
+export const reportLine = (report: Report): string =>
+  `[REPORT] ${report.key} | ${report.kind} | ${Bun.stripANSI(report.text).replace(/\s*[\r\n]+\s*/g, " ").replace(/\p{Cc}/gu, "")}`;
+
+export const parseEvent = (line: string, key: string): LaneEvent => {
+  const value: unknown = JSON.parse(line);
+  if (typeof value !== "object" || value === null || !("key" in value) || value.key !== key ||
+      !("at" in value) || typeof value.at !== "string" || !Number.isFinite(Date.parse(value.at)) ||
+      !("text" in value) || typeof value.text !== "string" || !value.text.trim() || !("type" in value)) {
+    throw new ReportError(`invalid report record for ${key}`);
+  }
+  const common = { key, at: value.at, text: value.text };
+  if (value.type === "report" && "kind" in value && isReportKind(value.kind)) {
+    return { ...common, type: "report", kind: value.kind };
+  }
+  if (value.type === "activity" && "state" in value && (value.state === "running" || value.state === "stalled")) {
+    return { ...common, type: "activity", state: value.state };
+  }
+  throw new ReportError(`invalid report kind or activity state for ${key}`);
+};
+
+// One O_APPEND write per event keeps concurrent lane/lead writers from overwriting each other.
+export class Reports {
+  constructor(readonly stateDir: string) {}
+
+  path(key: string): string {
+    if (!LANE_KEY.test(key)) throw new ReportError(`invalid lane key: ${key}`);
+    return join(this.stateDir, "lanes", key, "reports.jsonl");
+  }
+
+  read(key: string): Progress | null {
+    const path = this.path(key);
+    let progress: Progress | null = null;
+    let lastReport: Report | null = null;
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+      if (code === "ENOENT") return null;
+      throw new ReportError(`${path}: ${error.message}`, code);
+    }
+    for (const [index, line] of text.split("\n").entries()) {
+      if (!line.trim()) continue;
+      let event: LaneEvent;
+      try {
+        event = parseEvent(line, key);
+      } catch (error) {
+        if (!(error instanceof SyntaxError || error instanceof ReportError)) throw error;
+        throw new ReportError(`${path}:${index + 1}: ${error.message}`);
+      }
+      if (event.type === "report") {
+        lastReport = event;
+        progress = { state: reportState(event.kind), lastReport: event, lastEvent: event };
+      } else if (!progress || progress.state === "running" || progress.state === "stalled" || (event.state === "running" && progress.state === "done")) {
+        progress = { state: event.state, lastReport, lastEvent: event };
+      }
+    }
+    return progress;
+  }
+
+  append(event: LaneEvent): void {
+    const path = this.path(event.key);
+    parseEvent(JSON.stringify(event), event.key);
+    const dir = join(this.stateDir, "lanes", event.key);
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+      appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+      throw new ReportError(`${path}: ${error.message}`, code);
+    }
+  }
+
+  report(key: string, kind: ReportKind, text: string, now: number): Report {
+    const report: Report = { type: "report", key, kind, text: text.trim(), at: new Date(now).toISOString() };
+    this.append(report);
+    return report;
+  }
+
+  observe(key: string, screen: string, now: number, staleAfterMs: number, resumeOnWorking = true): Progress | null {
+    const progress = this.read(key);
+    if (!progress || (progress.state !== "running" && progress.state !== "stalled")) return progress;
+    const visible = Bun.stripANSI(screen);
+    const lastAt = (pattern: RegExp): number => {
+      let at = -1;
+      for (const match of visible.matchAll(pattern)) at = match.index;
+      return at;
+    };
+    const workingAt = lastAt(/^\s*[^\w\n]*Working\b/gim);
+    const working = workingAt >= 0;
+    // An old failure above later Working output is history, not the current state.
+    const failed = lastAt(/compaction (?:failed|failure|error)|failed to compact|error (?:during|in) compaction|auto-?compaction failed/gi) > workingAt;
+    const idle = /^\s*[❯>]\s*$/m.test(visible);
+    const stale = now - Date.parse(progress.lastReport?.at ?? progress.lastEvent.at) >= staleAfterMs;
+    const state = failed || (idle && !working && stale) ? "stalled" : working && resumeOnWorking ? "running" : progress.state;
+    if (state === progress.state) return progress;
+    const event: Activity = {
+      type: "activity", key, at: new Date(now).toISOString(), state,
+      text: failed ? "compaction failed" : state === "stalled" ? "idle prompt without Working or a fresh report" : "Working activity resumed",
+    };
+    this.append(event);
+    return this.read(key);
+  }
+}

@@ -14,6 +14,8 @@ import { LaunchFailed } from "./launch-types.ts";
 import { splitModel } from "./lane-handover.ts";
 import { withThinking } from "./lane-model.ts";
 import { startupFailure } from "./launch-screen.ts";
+import { HcStartupError } from "./hc-pane.ts";
+import { HerdrStartupError } from "./herdr.ts";
 
 // whether the newest model reply in the lane's own session (the exact id from its command line, under the cwd or its real
 // path) is from this launch (at or after since) and ended without an error; no id, no transcript or no such reply is none
@@ -84,7 +86,7 @@ export const withSessionId = (argv: readonly string[], id: string): string[] =>
   isOmoExecutable(argv[0] ?? "") && !hasSessionSelector(argv) ? [argv[0] ?? "omo", "--session-id", id, ...argv.slice(1)] : [...argv];
 
 // env: launchEnv for the lane (laneEnv), set on the agent's command line, since a herdr pane takes the server's environment
-export const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string, env: Readonly<Record<string, string | undefined>> = {}): Promise<Opened> => {
+export const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string, env: Readonly<Record<string, string | undefined>> = {}, beforeStart?: (opened: { readonly pane: string; readonly tab?: string }) => Promise<void>): Promise<Opened> => {
   // the template is checked, not the filled argv: the prompt is one argument and never a selector
   // an omo agent gets the model's level as its own --thinking (lane-model.ts withThinking)
   const filled = fill(withSessionId(deps.config.agentCommand, crypto.randomUUID()), { model, prompt });
@@ -94,8 +96,9 @@ export const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model:
   try {
     // omo needs node for its hooks (agentPath); another agent starts with the server's PATH as before
     const path = isOmoExecutable(argv[0] ?? "") ? { PATH: agentPath(argv[0] ?? "omo") } : {};
-    opened = await openHerdrSession(deps.run, deps.clock, { title: key, cwd, argv, env: { ...env, ...path }, ...(deps.config.laneWorkspace ? { workspace: deps.config.laneWorkspace } : {}) });
+    opened = await openHerdrSession(deps.run, deps.clock, { title: key, cwd, argv, env: { ...env, ...path }, ...(deps.config.laneWorkspace ? { workspace: deps.config.laneWorkspace } : {}), ...(beforeStart ? { beforeStart } : {}) });
   } catch (e) {
+    if (e instanceof HcStartupError || e instanceof HerdrStartupError) throw e;
     throw new LaunchFailed(e instanceof Error ? e.message : String(e));
   }
   const { pane, tab } = opened;
@@ -104,7 +107,7 @@ export const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model:
   return { pane, ...(tab ? { tab } : {}), session: elsewhere ? "" : argvSessionId(argv) };
 };
 
-export const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string, env: Readonly<Record<string, string | undefined>>): Promise<Opened> => {
+export const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: string, prompt: string, env: Readonly<Record<string, string | undefined>>, beforePrompt?: (pane: string) => Promise<void>): Promise<Opened> => {
   let pane: string;
   try {
     const { base, thinking } = splitModel(model);
@@ -120,6 +123,7 @@ export const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: s
   const off = await envMismatch(deps.run, pane, env);
   if (off.length) return { pane, failure: `launchEnv not in the session: ${off.join(", ")}; the lane prompt was not sent` };
   // an agent with no API key shows its error where the prompt went in and keeps the text: that error is the reason
+  await beforePrompt?.(pane);
   if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, prompt)))
     return { pane, failure: startupFailure(await readScreen(deps.run, "aoe", pane)) ?? "the launch prompt was not submitted (see NOT_SUBMITTED in the watch log)" };
   return { pane, session };

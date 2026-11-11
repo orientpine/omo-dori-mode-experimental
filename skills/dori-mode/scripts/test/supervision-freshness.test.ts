@@ -3,8 +3,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Lane } from "../src/registry.ts";
 import { defaultSupervision } from "../src/supervision.ts";
-import { claimDone, closeLane, watchTick } from "../src/done-flow.ts";
+import { claimDone, closeLane, objectDone, reopenClaim, watchTick } from "../src/done-flow.ts";
+import { Reports } from "../src/reports.ts";
 import { takeLock } from "../src/checkpoints.ts";
+import { appendRollover } from "../src/rollover.ts";
+import { readyFile } from "../src/lane-handover.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
@@ -35,6 +38,70 @@ describe("supervision in the freshness sweep and the close", () => {
       const world = newWorld();
       const deps = depsFor(world, fakeClock(T0 + 6 * 60_000), state.dir, { nudgeAfterMin: 999, supervision: { ...defaultSupervision(), defaults: { wallMinutes: 5 } } });
       await deps.registry.write({ ...working, status: "not-done" });
+      expect((await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "lane_cap").map((a) => a.detail.split(";")[0])).toEqual(["wallMinutes ceiling reached (5)"]);
+    } finally { state.done(); }
+  });
+
+  test("a stalled structured lane is still supervised without nudges or report relays", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const deps = depsFor(world, fakeClock(T0 + 6 * 60_000), state.dir, { nudgeAfterMin: 1, supervision: { ...defaultSupervision(), defaults: { wallMinutes: 5 } } });
+      await deps.registry.write({ ...working, reportProtocol: "jsonl-v1" });
+      new Reports(state.dir).report(working.key, "milestone", "started", T0);
+      const acts = await freshnessTick(deps, "/home/test");
+      expect(acts.map((a) => a.kind)).toContain("stalled");
+      expect(acts.filter((a) => a.kind === "lane_cap").map((a) => a.detail.split(";")[0])).toEqual(["wallMinutes ceiling reached (5)"]);
+      expect(acts.filter((a) => a.kind === "nudged" || a.kind === "lead-told")).toEqual([]);
+    } finally { state.done(); }
+  });
+
+  test("a stalled structured lane still gets its rollover check through freshnessTick", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const base = depsFor(world, fakeClock(T0 + 21 * 60_000), state.dir);
+      const deps = { ...base, config: { ...base.config, handover: { ...base.config.handover, laneContextPct: 80 } } };
+      await deps.registry.write({ ...working, reportProtocol: "jsonl-v1" });
+      new Reports(state.dir).report(working.key, "milestone", "stalled but due", T0);
+      const acts = await freshnessTick(deps, "/home/test", { signals: async () => ({ contextPct: 85 }) });
+      expect(acts.map((a) => a.kind)).toContain("stalled");
+      expect(acts.map((a) => a.kind)).toContain("rollover_due");
+      expect(acts.filter((a) => a.kind === "nudged" || a.kind === "lead-told")).toEqual([]);
+    } finally { state.done(); }
+  });
+
+  test("a stalled structured lane still resumes its approved handover through freshnessTick", async () => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const deps = depsFor(world, fakeClock(T0 + 21 * 60_000), state.dir);
+      await deps.registry.write({ ...working, reportProtocol: "jsonl-v1" });
+      new Reports(state.dir).report(working.key, "milestone", "stalled with an approved handover", T0);
+      appendRollover(state.dir, { kind: "rollover", who: "lane", key: working.key, at: new Date(T0 + 20 * 60_000).toISOString(), from: working.pane ?? "", approvedBy: "lead:test", signals: {}, steps: [], result: "refused", reasons: ["chain"], blocked: "work", pids: [4242], request: {} });
+      mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
+      writeFileSync(readyFile(state.dir, working.key), JSON.stringify({ key: working.key, pane: working.pane, at: new Date(T0 + 20 * 60_000 + 30_000).toISOString(), chains: [], note: "safe" }));
+      const resumed: string[] = [];
+      const acts = await freshnessTick(deps, "/home/test", { signals: async () => ({}), alive: () => false, resume: async (key) => {
+        resumed.push(key);
+        return { started: true, line: "unit=u" };
+      } });
+      expect(acts.map((a) => a.kind)).toContain("stalled");
+      expect(acts.map((a) => a.kind)).toContain("ready_resume");
+      expect(resumed).toEqual([working.key]);
+    } finally { state.done(); }
+  });
+
+  test.each(["reopen", "object"] as const)("a done journal no longer suppresses supervision after %s", async (transition) => {
+    const state = withState();
+    try {
+      const world = newWorld();
+      const deps = depsFor(world, fakeClock(T0 + 6 * 60_000), state.dir, { nudgeAfterMin: 999, supervision: { ...defaultSupervision(), defaults: { wallMinutes: 5 } } });
+      const claimed = { ...working, status: "done-claimed" as const, reportProtocol: "jsonl-v1" as const };
+      await deps.registry.write(claimed);
+      new Reports(state.dir).report(working.key, "done", "claimed too early", T0);
+      if (transition === "reopen") await reopenClaim(deps, claimed, "new work arrived");
+      else await objectDone(deps, claimed, ["checks still fail"]);
       expect((await freshnessTick(deps, "/home/test")).filter((a) => a.kind === "lane_cap").map((a) => a.detail.split(";")[0])).toEqual(["wallMinutes ceiling reached (5)"]);
     } finally { state.done(); }
   });

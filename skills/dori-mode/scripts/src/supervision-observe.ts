@@ -1,7 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { paneTranscript } from "./panes.ts";
-import type { Lane } from "./registry.ts";
+import type { Lane, LaneStatus } from "./registry.ts";
+import type { ProgressState } from "./reports.ts";
 import type { Clock, Runner } from "./run.ts";
 
 export const BUDGET_NAMES = ["wallMinutes", "tokens", "costUsd"] as const;
@@ -175,6 +176,7 @@ export type SupervisionDeps = {
 
 export type SupervisionResult = {
   readonly enabled: boolean;
+  readonly state?: LaneStatus | ProgressState;
   // alerts new since the last sweep, and those of them the lead did not get (sent again next sweep)
   readonly alerts: readonly string[];
   readonly undelivered: readonly string[];

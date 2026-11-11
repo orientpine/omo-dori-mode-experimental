@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { runWithPrompt } from "./config.ts";
+import { configPath, runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Lane } from "./registry.ts";
 import { iso } from "./run.ts";
@@ -73,7 +73,7 @@ export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<R
   const lessons = repoLessons(deps, draft.cwd ?? deps.config.defaultCwd, lead);
   const picked = chosen.pick ? `LAUNCH_DIRECTIVE_PICKED ${input.key}: ${chosen.pick.model} chose ${chosen.pick.picked.map((p) => p.id).join(", ")} (${chosen.pick.runs?.answered ?? 1} of ${chosen.pick.runs?.asked ?? 1} runs answered)` : chosen.pickFallback ? `LAUNCH_DIRECTIVE_PICK_FALLBACK ${input.key}: the scope rules decide (${chosen.pickFallback})` : undefined;
   const lines = [...(hint ? [hint] : []), ...(added ? [added] : []), ...(picked ? [picked] : []), ...waivedLines(input.key, plan), ...lessons.warnings];
-  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${lessons.section ? `${lessons.section}\n` : ""}${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos))}` };
+  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${lessons.section ? `${lessons.section}\n` : ""}${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos), { config: resolve(configPath()), stateDir: resolve(deps.config.stateDir) })}` };
 };
 
 // The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.

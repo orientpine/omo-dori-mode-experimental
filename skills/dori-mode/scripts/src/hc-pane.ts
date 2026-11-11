@@ -7,6 +7,7 @@ import { shellInFrontName } from "./herdr.ts";
 import { type ChosenRuntimes, type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
 import { formatRef, type RuntimeKind, type SessionInfo, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import { AGENT, procTable, topAgent } from "./session-id.ts";
+import { LaunchFailed } from "./launch-types.ts";
 
 // An hc (herdr-core) terminal in the fork's records: its pane is formatRef's "hc:t<n>", the one shape no herdr pane id
 // (w1:p2) or tmux name takes, so every primitive in herdr.ts and aoe.ts that gets it answers through hc. hc starts a core
@@ -129,17 +130,36 @@ export const hcSessions = async (run: Runner): Promise<{ id: string; title: stri
   return rows.map(({ ref, name, cwd, agent }) => ({ id: formatRef(ref), title: name ?? ref.id, path: cwd ?? "", ...(agent ? { tool: agent } : {}), ...(ref.group ? { profile: ref.group } : {}), pane: formatRef(ref) }));
 };
 
+export class HcStartupError extends LaunchFailed {
+  constructor(message: string, readonly rollback: boolean) {
+    super(message);
+  }
+}
+
 // A new labelled terminal in cwd running the user's shell (group: the dori.group label, "dori" unless laneWorkspace
 // names one), with line typed into it once its shell has drawn; the pane "hc:t<n>".
-export const hcOpen = async (rt: SessionRuntime, run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly workspace?: string }, line: string): Promise<{ readonly pane: string }> => {
+export const hcOpen = async (rt: SessionRuntime, run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly workspace?: string; readonly beforeStart?: (opened: { readonly pane: string }) => Promise<void> }, line: string): Promise<{ readonly pane: string }> => {
   const ref = await rt.create({ name: opts.title, cwd: opts.cwd, env: {}, role: "lane", container: "tab", ...(opts.workspace ? { group: opts.workspace } : {}) }).catch((e: unknown) => Promise.reject(new Error(`hc run failed: ${e instanceof Error ? e.message : String(e)}`)));
   const pane = formatRef(ref);
   for (let i = 0; i < 20 && !(await hcRead(run, pane)).trim(); i++) await clock.sleep(250);
+  const cleanup = async (): Promise<boolean> => {
+    try {
+      await rt.close(ref);
+      return (await rt.probe(ref)).status === "gone";
+    } catch {
+      return false;
+    }
+  };
+  await opts.beforeStart?.({ pane }).catch(async (error: unknown) => {
+    const why = `hc before start failed in ${pane}: ${error instanceof Error ? error.message : String(error)}`;
+    const cleaned = await cleanup();
+    throw new HcStartupError(why, cleaned);
+  });
   await rt.start(ref, line).catch(async (e: unknown) => {
-    // the terminal was made for this agent only: one whose agent never started is closed, not left behind as a shell
     const why = `hc send failed in ${pane}: ${e instanceof Error ? e.message : String(e)}`;
-    await rt.close(ref).catch((c: unknown) => Promise.reject(new Error(`${why}; closing it failed too: ${c instanceof Error ? c.message : String(c)}`)));
-    throw new Error(why);
+    const cleaned = await cleanup();
+    const definite = isKind(e, "invalid_params", "not_found", "finished", "blocked", "status_mismatch");
+    throw new HcStartupError(why, definite && cleaned);
   });
   return { pane };
 };

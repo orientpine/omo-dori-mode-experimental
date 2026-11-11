@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 
 import { type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
-import { HerdrCli, reasonOf } from "./runtime/herdr/exec.ts";
+import { HerdrCli, reasonOf, ToolError } from "./runtime/herdr/exec.ts";
 import type { SessionRef, SessionRuntime } from "./runtime/types.ts";
 import { commandExecutable, executableName } from "./executable.ts";
 import { powershellData } from "./powershell.ts";
 import { AGENT, type Proc, procTable, topAgent } from "./session-id.ts";
+import { LaunchFailed } from "./launch-types.ts";
 import { hcAgentPid, hcClose, hcLife, hcOpen, hcRead, hcRef, hcSessions, hcShellPid, isHcPane } from "./hc-pane.ts";
 export { paneGroup } from "./hc-pane.ts";
 
@@ -18,7 +19,7 @@ export { paneGroup } from "./hc-pane.ts";
 // https://github.com/sisyphuslabs/dori-superagent/issues/62).
 export const isHerdrPane = (pane: string): boolean => pane.includes(":");
 
-export type HerdrPane = { readonly pane_id: string; readonly tab_id?: string; readonly workspace_id?: string; readonly cwd?: string; readonly agent?: string };
+export type HerdrPane = { readonly pane_id: string; readonly tab_id?: string; readonly workspace_id?: string; readonly cwd?: string; readonly agent?: string; readonly agent_status?: string };
 type HerdrTab = { readonly tab_id: string; readonly label?: string; readonly pane_count?: number };
 
 // Every herdr call goes through the session runtime (upstream #147-#154, scripts/src/runtime): what its interface has
@@ -164,8 +165,25 @@ export const agentLine = (argv: readonly string[], env: Readonly<Record<string, 
   return [...(unset.length || set.length ? ["env", ...unset, ...set] : []), ...argv].map(shellQuote).join(" ");
 };
 
+export class HerdrStartupError extends LaunchFailed {
+  constructor(message: string, readonly rollback: boolean) {
+    super(message);
+  }
+}
+
 // A new tab labelled title in cwd (in workspace when given) whose root pane runs argv; the pane and tab ids.
-export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readonly title: string; readonly cwd: string; readonly argv: readonly string[]; readonly env?: Readonly<Record<string, string | undefined>>; readonly workspace?: string }): Promise<{ readonly pane: string; readonly tab?: string }> => {
+export const openHerdrSession = async (
+  run: Runner,
+  clock: Clock,
+  opts: {
+    readonly title: string;
+    readonly cwd: string;
+    readonly argv: readonly string[];
+    readonly env?: Readonly<Record<string, string | undefined>>;
+    readonly workspace?: string;
+    readonly beforeStart?: (opened: { readonly pane: string; readonly tab?: string }) => Promise<void>;
+  },
+): Promise<{ readonly pane: string; readonly tab?: string }> => {
   // a new session opens on the chosen runtime (default): a refused choice (DORI_RUNTIME=hc) throws here, before any tab
   const rt = runtimesOf(run).default;
   // hc's launch is a Unix env line in $SHELL, where the fork's native-Windows lanes run PowerShell (review 8 of #404)
@@ -186,10 +204,28 @@ export const openHerdrSession = async (run: Runner, clock: Clock, opts: { readon
   }
   const pane = ref.id;
   const tab = ref.container;
+  const cleanup = async (): Promise<boolean> => {
+    try {
+      await closeHerdrSession(run, pane);
+      return (await rt.probe(ref)).status === "gone";
+    } catch {
+      return false;
+    }
+  };
   // a fresh shell may drop what is typed before its prompt is drawn
   for (let i = 0; i < 20 && !(await herdrRead(run, pane)).trim(); i++) await clock.sleep(250);
   await requireHerdrPwsh(run, pane, process.platform, Object.entries(opts.env ?? {}).flatMap(([k, v]) => (v === "" ? [k] : [])));
-  await rt.start(ref, agentLine(opts.argv, opts.env)).catch((e: unknown) => Promise.reject(new Error(`herdr pane run failed in ${pane}: ${reasonOf(e)}`)));
+  await opts.beforeStart?.({ pane, ...(tab ? { tab } : {}) }).catch(async (error: unknown) => {
+    const why = `herdr before start failed in ${pane}: ${reasonOf(error)}`;
+    const cleaned = await cleanup();
+    throw new HerdrStartupError(why, cleaned);
+  });
+  await rt.start(ref, agentLine(opts.argv, opts.env)).catch(async (e: unknown) => {
+    const why = `herdr pane run failed in ${pane}: ${reasonOf(e)}`;
+    const cleaned = await cleanup();
+    const definite = e instanceof ToolError && /pane_not_found|pane .*not found|invalid|unsupported|refused|not ready|bad command|permission denied|unrecognized|usage:/i.test(reasonOf(e));
+    throw new HerdrStartupError(why, definite && cleaned);
+  });
   return { pane, ...(tab ? { tab } : {}) };
 };
 
