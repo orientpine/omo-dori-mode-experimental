@@ -12,6 +12,7 @@ import { type LaunchInput, LaunchError, LaunchFailed, NEW_THREAD, ThreadMissingE
 import { failureOf, startupGoal, openHerdr, openAoe } from "./launch-startup.ts";
 import { validateLaunch, threadGate, relatedGate, doneWeakWarning } from "./launch-gates.ts";
 import { aoeStartup } from "./launch-screen.ts";
+import { STARTUP_CHECK_MS, startupRechecks } from "./pending-goal.ts";
 import { briefAnchor } from "./launch-footer.ts";
 import { reopenLaneThread } from "./launch-state.ts";
 import { renderBrief } from "./launch-render.ts";
@@ -96,13 +97,16 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   }
   if (opened.failure) return { lane, startup: `STARTUP_ERROR ${input.key} ${opened.pane}: ${opened.failure}` };
   const prompted = deps.clock.now();
-  await deps.clock.sleep(20_000);
+  await deps.clock.sleep(STARTUP_CHECK_MS);
   const screen = await readScreen(deps.run, deps.config.backend, opened.pane, 40);
-  const bad = failureOf(deps, screen, cwd, opened.session ?? "", launchedAt);
+  const failure = (shown: string): string | undefined => failureOf(deps, shown, cwd, opened.session ?? "", launchedAt);
+  const bad = failure(screen);
   if (bad) return { lane, startup: `STARTUP_ERROR ${input.key} ${opened.pane}: ${bad}` };
-  const started = omoSession(deps.config) ? await aoeStartup(deps, input.key, opened.pane, screen) : `STARTUP_OK ${input.key} ${opened.pane}`;
+  // one start wait for an agent slow to come up, its ❯ prompt and then its first turn (#202)
+  const recheck = startupRechecks(deps);
+  const started = omoSession(deps.config) ? await aoeStartup(deps, input.key, opened.pane, screen, failure, recheck, prompted) : `STARTUP_OK ${input.key} ${opened.pane}`;
   if (!started.startsWith("STARTUP_OK")) return { lane, startup: started };
-  return { lane, startup: (await startupGoal(deps, input.key, opened.pane, cwd, opened.session ?? "", launchedAt, prompted)) ?? started };
+  return { lane, startup: (await startupGoal(deps, input.key, opened.pane, cwd, opened.session ?? "", launchedAt, prompted, recheck)) ?? started };
 };
 export { validateLaunch } from "./launch-gates.ts";
 export { keptModel, laneModel, modelMove, moveThinking } from "./lane-model.ts";

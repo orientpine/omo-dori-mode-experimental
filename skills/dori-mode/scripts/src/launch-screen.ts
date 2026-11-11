@@ -40,12 +40,19 @@ export const startupFailure = (screen: string, answered = false): string | undef
 // No failure word on screen is not a start (ported from dori-superagent 40034ad, #7, MIT,
 // https://github.com/sisyphuslabs/dori-superagent/commit/40034ad1a557b92a34aa1450565adcafd3352c96, with tmux and the
 // agent's own screen in place of herdr's agent_status): STARTUP_OK only when the session still runs and its agent shows a
-// running turn, a wake mark or its ❯ input line 20 s after the lane prompt; a session that ended is a STARTUP_ERROR, and
-// anything else is STARTUP_UNCONFIRMED with its last lines, for the lead to look at (exit 3 like an error).
-export const aoeStartup = async (deps: FlowDeps, key: string, pane: string, screen: string): Promise<string> => {
-  const life = await paneLife(deps.run, pane);
-  if (!life.live) return `STARTUP_ERROR ${key} ${pane}: ${life.how === "gone" ? (isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`}`;
-  const full = await readScreen(deps.run, "aoe", pane);
-  const shows = [screen, full].some((s) => turnRunning(s) || WAKE_MARKS.some((m) => s.includes(m)) || inputLine(s) !== undefined);
-  return shows ? `STARTUP_OK ${key} ${pane}` : `STARTUP_UNCONFIRMED ${key} ${pane}: no running turn and no ❯ prompt on screen; last lines: ${lastLines(full || screen)}`;
+// running turn, a wake mark or its ❯ input line 20 s after the lane prompt, or on a re-read while a slow host brings it up
+// (recheck, pending-goal.ts startupRechecks, #202); a session that ended, or a failure line on a re-read (failure), is a
+// STARTUP_ERROR at once, and an agent that shows none of them within the wait is STARTUP_UNCONFIRMED with its last lines,
+// for the lead to look at (exit 3 like an error). prompted: the clock when the agent got its prompt.
+export const aoeStartup = async (deps: FlowDeps, key: string, pane: string, screen: string, failure: (screen: string) => string | undefined, recheck: () => Promise<boolean>, prompted: number): Promise<string> => {
+  for (let shown = screen; ; ) {
+    const life = await paneLife(deps.run, pane);
+    if (!life.live) return `STARTUP_ERROR ${key} ${pane}: ${life.how === "gone" ? (isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`}`;
+    const full = await readScreen(deps.run, "aoe", pane);
+    if ([shown, full].some((s) => turnRunning(s) || WAKE_MARKS.some((m) => s.includes(m)) || inputLine(s) !== undefined)) return `STARTUP_OK ${key} ${pane}`;
+    if (!(await recheck())) return `STARTUP_UNCONFIRMED ${key} ${pane}: no running turn and no ❯ prompt on screen after ${Math.round((deps.clock.now() - prompted) / 1_000)} s; last lines: ${lastLines(full || shown)}`;
+    shown = await readScreen(deps.run, deps.config.backend, pane, 40);
+    const bad = failure(shown);
+    if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad}`;
+  }
 };

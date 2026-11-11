@@ -253,14 +253,14 @@ test("an aoe pane's session id is omo's --session-id under the tmux pane pid", a
 // ported from dori-superagent 40034ad (#7): no failure word is not a start; the agent has to show it runs
 const after20s = (deps: ReturnType<typeof at>, then: () => void) => ({ ...deps, clock: { ...deps.clock, sleep: async (ms: number) => { if (ms === 20_000) then(); } } });
 
-test("a lane whose screen shows no running turn and no prompt 20 s after its prompt is STARTUP_UNCONFIRMED with its last lines", async () => {
+test("a lane whose screen shows no running turn and no prompt through the start wait is STARTUP_UNCONFIRMED with its last lines", async () => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
   const deps = after20s(at(T0), () => {
     world.screen = "Do you trust the files in /home/test/work?\n  1. Trust (this session only)\n  2. Exit";
   });
   const r = await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
-  expect(r.startup).toBe(`STARTUP_UNCONFIRMED smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: no running turn and no ❯ prompt on screen; last lines: Do you trust the files in (local path) / 1. Trust (this session only) / 2. Exit`);
+  expect(r.startup).toBe(`STARTUP_UNCONFIRMED smoke aoe_smoke_${NEW_AOE_ID.slice(0, 8)}: no running turn and no ❯ prompt on screen after 0 s; last lines: Do you trust the files in (local path) / 1. Trust (this session only) / 2. Exit`);
 });
 
 test("a lane whose session ended within 20 s of its prompt is a STARTUP_ERROR, though no failure word shows", async () => {

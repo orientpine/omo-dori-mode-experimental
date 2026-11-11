@@ -98,7 +98,7 @@ dori launch fix-login --title "Fix login" --brief ~/.dori/briefs/fix-login.md \
   --done "merged acme/app#412" --thread discord:100000000000000001
 ```
 
-herdr opens a tab. aoe runs `aoe add <cwd> -t <key> --tool <tool> -l --extra-args "--model <model>"`, waits up to three minutes for the agent's `❯` prompt, then types the lane prompt. Startup failures produce `STARTUP_ERROR`; with aoe a session that shows neither a running turn nor its `❯` prompt 20 seconds after the lane prompt is `STARTUP_UNCONFIRMED` (exit 3) with its last lines. The registry's pane is a tmux session name such as `aoe_fix-login_1a2b3c4d`; aoe refuses a title/path pair that already exists, even in its trash.
+herdr opens a tab. aoe runs `aoe add <cwd> -t <key> --tool <tool> -l --extra-args "--model <model>"`, waits up to three minutes for the agent's `❯` prompt, then types the lane prompt. Startup failures produce `STARTUP_ERROR`; with aoe (and a herdr or hc omo lane) a session that still shows neither a running turn nor its `❯` prompt `startupWaitSeconds` (180) after the lane prompt (read at 20 seconds, then every 10) is `STARTUP_UNCONFIRMED` (exit 3) with its last lines, and so is one whose session still holds no transcript then: a slow host's agent takes its prompt late, so launch waits for it instead of having the lead send the prompt again. The registry's pane is a tmux session name such as `aoe_fix-login_1a2b3c4d`; aoe refuses a title/path pair that already exists, even in its trash.
 
 The footer tells lanes to send `[REPORT] <key> | <milestone|blocker|question|done> | <text>` to the lead. With aoe, send these as two argv arrays, not a shell string:
 

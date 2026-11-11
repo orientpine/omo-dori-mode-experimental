@@ -20,6 +20,16 @@ test("the shipped example config loads, with ~ paths expanded and unset fields d
   expect(c.guard.diskFreeMinGb).toBe(50);
 });
 
+test("startupWaitSeconds is a nonnegative number of seconds; anything else falls back to 180", async () => {
+  const path = join(state.dir, "startup-wait.json");
+  writeFileSync(path, JSON.stringify({ startupWaitSeconds: 300 }));
+  expect((await loadConfig(path, "/home/ana")).startupWaitSeconds).toBe(300);
+  for (const value of [null, "300", -1, {}, [300]]) {
+    writeFileSync(path, JSON.stringify({ startupWaitSeconds: value }));
+    expect((await loadConfig(path, "/home/ana")).startupWaitSeconds).toBe(180);
+  }
+});
+
 test("a missing config file falls back to defaults and DORI_STATE_DIR wins over the file", async () => {
   process.env["DORI_STATE_DIR"] = state.dir;
   const c = await loadConfig("/nonexistent/config.json", "/home/ana");

@@ -24,6 +24,25 @@ import { isHerdrPane } from "./herdr.ts";
 // work, so no lane stays pending forever
 export const GOAL_WAIT = { everyMs: 10_000, idleChecks: 3, maxPendingMs: 25 * 60_000 } as const;
 
+// A slow host starts the agent late (dori-superagent issue #202 reproduced here (MIT):
+// https://github.com/sisyphuslabs/dori-superagent/issues/202, upstream PR #203): in four real lanes its session took the
+// argv prompt as its first user message 47, 61, 63 and 140 s after launch, after launch had called them unconfirmed or
+// goal-less at 20 or 40 s and the lead had sent the prompt again. So an agent still coming up (no ❯ prompt yet, or no
+// transcript in its session yet) is read again every 10 s after the 20 s check until startupWaitSeconds after the lane
+// prompt (180 s: sixteen re-reads), one budget for both. The re-reads are counted, not timed, as upstream does.
+export const STARTUP_CHECK_MS = 20_000;
+
+// waits for one more re-read and says true, or says false once the budget is spent
+export const startupRechecks = (deps: Pick<FlowDeps, "clock" | "config">): (() => Promise<boolean>) => {
+  let left = Math.max(0, Math.ceil((deps.config.startupWaitSeconds * 1_000 - STARTUP_CHECK_MS) / GOAL_WAIT.everyMs));
+  return async () => {
+    if (left <= 0) return false;
+    left--;
+    await deps.clock.sleep(GOAL_WAIT.everyMs);
+    return true;
+  };
+};
+
 export const lastLines = (screen: string): string =>
   screen.split("\n").map((s) => s.trim()).filter(Boolean).slice(-3).join(" / ").replace(/\/(Users|home|Volumes|private|tmp)\/\S+/g, "(local path)").slice(0, 240) || "(blank)";
 
