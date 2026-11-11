@@ -76,7 +76,7 @@ test("herdr launch writes the activity journal before pane run starts the agent"
     }
     if (argv[1] === "pane" && argv[2] === "run") journalAtStart = new Reports(state.dir).read("smoke")?.lastEvent.type;
     return base(argv, opts);
-  } }, { noThread: "QA", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  } }, { noThread: "QA", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "m" });
   expect(result.startup).toBe("STARTUP_OK smoke w1:p3");
   expect(journalAtStart).toBe("activity");
   expect(result.lane.reportProtocol).toBe("jsonl-v1");

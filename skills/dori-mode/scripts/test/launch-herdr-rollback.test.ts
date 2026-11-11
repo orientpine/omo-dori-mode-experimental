@@ -54,7 +54,7 @@ const rig = (startError: string | undefined, closeRemoves: boolean) => {
     }
     return base(argv, opts);
   };
-  const input = { noThread: "QA", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" } as const;
+  const input = { noThread: "QA", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "m" } as const;
   return { deps, run, input, calls, succeed: () => { reject = false; } };
 };
 
