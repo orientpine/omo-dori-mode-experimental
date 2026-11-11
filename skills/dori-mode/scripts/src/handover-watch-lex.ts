@@ -1,7 +1,8 @@
 // The lexer of the watch classifier (handover-watch.ts): words with quotes removed, $( ) bodies lexed as commands of their
 // own, output and input redirections kept per simple command; anything it does not handle ends the lex as work (undefined).
-// A word with its quotes removed, each $( ) lexed as commands of its own (subs, \0 in the text); glob: an unquoted {*?[
-export type Word = { readonly text: string; readonly quoted: boolean; readonly expand: boolean; readonly glob: boolean; readonly subs: readonly Simple[][] };
+// A word with its quotes removed, each $( ) lexed as commands of its own (subs, \0 in the text); glob: an unquoted {*?[;
+// split: an expansion or glob outside double quotes, which the shell may turn into more than one word
+export type Word = { readonly text: string; readonly quoted: boolean; readonly expand: boolean; readonly glob: boolean; readonly split: boolean; readonly subs: readonly Simple[][] };
 // A simple command: its words, its output redirection targets ("&1" for a descriptor copy) and its input files.
 export type Simple = { readonly words: Word[]; readonly outs: Word[]; readonly ins: Word[] };
 
@@ -11,7 +12,7 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
   const cur = (): Simple => cmds[cmds.length - 1] as Simple;
   let i = start;
   const word = (): Word | undefined => {
-    let text = "", quoted = false, expand = false, glob = false;
+    let text = "", quoted = false, expand = false, glob = false, split = false;
     const subs: Simple[][] = [];
     const sub = (): boolean => {
       const r = s[i + 2] === "(" ? undefined : lex(s, i + 2, true);
@@ -52,15 +53,17 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
         i += 2;
       } else if (c === "`" || (c === "$" && s[i + 1] === "{")) return undefined;
       else if (c === "$" && s[i + 1] === "(") {
+        split = true;
         if (!sub()) return undefined;
       } else {
         expand ||= c === "$";
         glob ||= /[*?[{]/.test(c);
+        split ||= c === "$" || glob;
         text += c;
         i++;
       }
     }
-    return { text, quoted, expand, glob, subs };
+    return { text, quoted, expand, glob, split, subs };
   };
   while (i < s.length) {
     const c = s[i] ?? "";
@@ -87,7 +90,7 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
       if (s[i] === "&") {
         const n = /^\d+/.exec(s.slice(i + 1));
         if (!n) return undefined;
-        cur().outs.push({ text: `&${n[0]}`, quoted: false, expand: false, glob: false, subs: [] });
+        cur().outs.push({ text: `&${n[0]}`, quoted: false, expand: false, glob: false, split: false, subs: [] });
         i += 1 + n[0].length;
         continue;
       }

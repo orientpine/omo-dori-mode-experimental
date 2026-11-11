@@ -39,11 +39,12 @@ const GH_API: Spec = { vals: "q", long: ["paginate"], longVals: ["jq"] }; // a G
 const GIT = new Map<string, Spec>([["fetch", { flags: "q", long: ["quiet"] }], ["rev-parse", { long: ["verify"] }], ["log", { vals: "n", num: true, longVals: ["format"] }]]);
 const RAW = new Set(["echo", "printf"]);
 // test and [ only in shapes where no word, expanded or not, can be read as another operator: -v and -R evaluate an
-// array subscript and the command substitution in it (#414 review 25)
+// array subscript and the command substitution in it (#414 review 25); every expansion double-quoted, so none splits (review 26)
 const UNARY = new Set(["-n", "-z", "-e", "-f", "-s", "!"]);
 const BINARY = new Set(["=", "!=", "-eq", "-ne", "-lt", "-gt", "-ge", "-le"]);
 const testOk = (ws: readonly Word[]): boolean => {
   const op = (w: Word | undefined, set: ReadonlySet<string>) => !!w && !w.expand && !w.glob && set.has(w.text);
+  if (ws.some((w) => w.split)) return false;
   if (ws.length === 1) return true;
   if (ws.length === 2) return op(ws[0], UNARY);
   if (ws.length === 3) return op(ws[1], BINARY) || (ws[0]?.text === "!" && op(ws[0], UNARY) && testOk(ws.slice(1)));
