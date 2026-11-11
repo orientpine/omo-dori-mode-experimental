@@ -11,6 +11,7 @@ import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
 import { watchTick } from "./done-flow.ts";
+import { leadNow } from "./hc-pane.ts";
 import { guardTick, outsideLines, sampleHost, sampleOutside } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals } from "./lane-signals.ts";
 import { statusOf } from "./registry.ts";
@@ -51,7 +52,7 @@ const watchCommand: Command = async (context) => {
   const { deps } = context;
   console.log("LANE_WATCH_READY");
   for (;;) {
-    for (const line of await watchTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN ${String(e).slice(0, 200)}`])) console.log(line);
+    for (const line of await watchTick({ ...deps, leadPaneNow: () => leadNow(configPath()) }).catch((e: unknown) => [`LANE_WATCH_WARN ${String(e).slice(0, 200)}`])) console.log(line);
     await Bun.sleep(30_000);
   }
 };

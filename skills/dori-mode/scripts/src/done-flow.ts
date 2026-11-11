@@ -46,7 +46,16 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   return [...result.lines.filter((l) => l.startsWith("CLOSE_SUMMARY ") || l.startsWith("COST ") || l.startsWith("THREAD_MISSING ") || l.startsWith("THREAD_DONE_WARN ") || l.startsWith("THREAD_STATUS_WARN ")), `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`];
 };
 
-export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
+// dori watch outlives a handover that moves leadPane (it restarts only handover.services), and the frozen record and the
+// forward of the old lead are gone a day later, so each pass gives every check the lead the config names then
+// (2026-11-11: a watch kept reviving the frozen w1:p37 after ZzangDori's handover to w1:p4C; review 1 of #442)
+const withLeadNow = (deps: FlowDeps): FlowDeps => {
+  const pane = deps.leadPaneNow?.() ?? "";
+  return pane && pane !== deps.config.leadPane ? { ...deps, config: { ...deps.config, leadPane: pane } } : deps;
+};
+
+export const watchTick = async (given: FlowDeps): Promise<string[]> => {
+  const deps = withLeadNow(given);
   const out: string[] = [];
   for (const listed of await deps.registry.list()) {
     if (statusOf(listed) === "paused" && listed.claim && !listed.claim.emitted) {

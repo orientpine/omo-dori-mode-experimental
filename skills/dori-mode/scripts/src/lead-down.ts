@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import type { FlowDeps } from "./done-flow.ts";
 import { paneLife } from "./aoe.ts";
+import { frozenPanes } from "./frozen.ts";
 import { isHerdrPane } from "./herdr.ts";
 import { herdrLeadSession, readHerdrSessions, reviveHerdr } from "./herdr-sessions.ts";
 import { sendVerified } from "./panes.ts";
@@ -22,6 +23,9 @@ import type { Runner } from "./run.ts";
 //   conversation through aoe and types revivedText; again every REVIVE_EVERY_MS while still down, at most REVIVE_MAX times.
 //   The first one also posts discord.leadDownText as this Dori's bot where the owner last wrote (no model).
 // - LEAD_UP when the session is back.
+// Only the lead now is checked: watchTick hands every check the leadPane the config names on that pass (2026-11-11:
+// LEAD_REVIVE_WARN w1:p37 ... herdr has no such pane every ten minutes after ZzangDori's handover w1:p37 -> w1:p4C, from a
+// watch started before it), and a frozen pane is no lead to check or revive.
 
 const REVIVE_EVERY_MS = 10 * 60_000;
 const RECORD_EVERY_MS = 10 * 60_000;
@@ -73,7 +77,7 @@ export const reviveArgv = (unit: string, id: string, tmux: string, prompt: strin
 
 export const leadDownTick = async (deps: FlowDeps, env: Readonly<Record<string, string | undefined>> = process.env): Promise<string[]> => {
   const pane = deps.config.leadPane;
-  if (!pane || deps.config.leadReviveMin <= 0) return [];
+  if (!pane || deps.config.leadReviveMin <= 0 || frozenPanes(deps.config.stateDir).includes(pane)) return [];
   const mark = readMark(deps, pane);
   const now = deps.clock.now();
   if (await leadAlive(deps.run, pane)) {
@@ -108,7 +112,8 @@ export const leadDownTick = async (deps: FlowDeps, env: Readonly<Record<string, 
   if (next.lastReviveAt && now - Date.parse(next.lastReviveAt) < REVIVE_EVERY_MS) return out;
   let lead: string;
   try {
-    lead = await findLead(deps.run, deps.config, env);
+    // the pane checked above, not a DORI_LEAD_TMUX the watch was started with
+    lead = await findLead(deps.run, { ...deps.config, leadPane: pane }, { ...env, DORI_LEAD_TMUX: pane });
   } catch (e) {
     out.push(`LEAD_REVIVE_WARN ${pane} ${String(e).slice(0, 200)}`);
     return out;
