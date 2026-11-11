@@ -13,5 +13,6 @@ UnsetEnvironment=HERDR_PANE_ID HERDR_SOCKET HERDR_SOCKET_PATH HERDR_SESSION TMUX
 # with the host off, hc ls would start an hc core nobody serves; skip instead
 ExecCondition=/usr/bin/systemctl --user is-active --quiet doriface-host.service
 ExecStart=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts
-# Lane discovery uses sudo -n to read each Dori's registry as that account; the rows still run in hc's core unit.
+# bridge.ts only asks hc; the rows run under hc's own core unit, which is where sudo happens
+NoNewPrivileges=true
 UMask=0077

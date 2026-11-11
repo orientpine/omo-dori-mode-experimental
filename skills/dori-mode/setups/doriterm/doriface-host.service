@@ -15,7 +15,7 @@ ExecStartPost=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/doriterm/brid
 ExecStopPost=%h/.bun/bin/bun %h/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts stop
 Restart=on-failure
 RestartSec=5
-# ExecStartPost discovers lanes through sudo -n as each Dori account.
+NoNewPrivileges=true
 UMask=0077
 
 [Install]

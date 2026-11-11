@@ -14,12 +14,16 @@ const labels = { "dori.doriterm": "bridge", "dori.row": bridge.name };
 const foreign = (name: string, address = "t1"): Row => ({ address, name, argv: ["sleep", "600"], labels: {}, state: "live" });
 
 // Stateful hc boundary: ls deliberately omits argv AND labels, as the real 0.1.18 binary does.
-function core(initial: readonly Row[] = [], lanes: { key: string; terminal: string }[] = []) {
+function core(initial: readonly Row[] = [], lanes: { key: string; terminal: string }[] = [], restricted = false) {
   const rows = [...initial];
   const run: Runner = async (args) => {
-    if (args[0] === "/bin/sh") return { code: 0, out: JSON.stringify(lanes), err: "" };
+    if (args[0] === "/bin/sh") return restricted ? { code: 1, out: "", err: "sudo: no new privileges" } : { code: 0, out: JSON.stringify(lanes), err: "" };
     let out = "";
     switch (args[1]) {
+      case "exec":
+        if (args[2] !== "--") throw new Error("exec requires a raw command");
+        out = JSON.stringify(lanes);
+        break;
       case "ls": {
         const filters = args.flatMap((a, i) => a === "--label" ? [args[i + 1] ?? ""] : []);
         out = JSON.stringify({ terminals: rows.filter((r) => filters.every((f) => {
@@ -103,6 +107,16 @@ test("open hc lanes get distinct labeled rows even when sanitized names collide"
     { name: "zzangdori", argv: bridgeCommand(bridge), labels },
     { name: "zzangdori-work-one", argv: [...bridgeCommand(bridge), "", "t7"], labels: { ...labels, "dori.lane": "work.one" } },
     { name: "zzangdori-work-one-row", argv: [...bridgeCommand(bridge), "", "t8"], labels: { ...labels, "dori.lane": "work-one" } },
+  ]);
+});
+
+test("a hardened bridge host discovers account lanes through its independent hc core", async () => {
+  const own = { name: "okdori", account: "okdori" };
+  const hc = core([], [{ key: "work-one", terminal: "t7" }], true);
+  await ensureBridges(hc.run, [own]);
+  expect(hc.rows.map((r) => ({ name: r.name, argv: r.argv }))).toEqual([
+    { name: "okdori", argv: bridgeCommand(own) },
+    { name: "okdori-work-one", argv: [...bridgeCommand(own), "t7"] },
   ]);
 });
 

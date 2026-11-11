@@ -54,7 +54,9 @@ name, it stays untouched and the bridge starts as `<name>-row` (then `-row-2`, e
 to hc's 32-character limit). Other configured row names are reserved. Labels find that bridge on later timer runs,
 even if it was renamed; hc 0.1.18 prints labels and argv only in `get --json`, so discovery reads each local record.
 
-For each configured row, `bridge.ts` runs `attach.sh <account-or-empty> --lanes` once. It uses the same
+For each configured row, `bridge.ts` runs `hc exec -- /bin/sh <checkout>/attach.sh <account-or-empty> --lanes` once.
+The discovery command runs inside the bridge host's already-running hc core and returns its exact output and exit code.
+It uses the same
 `sudo -n -u <account> -H` and account paths as attaching; `hc-lead-core.ts lanes` reads that account's effective lead,
 `dori.env`, and registry (`DORI_STATE_DIR` from that file, else config `stateDir`, else `~/.dori/state`).
 An effective herdr lead returns no lane rows. For an hc lead, only open records whose pane is a local `hc:tN` and
@@ -73,9 +75,11 @@ The bridge only discovers, starts and closes clients; it never types into or res
 Only the lead attach runs the lead-change watcher. Lane attaches stay on their recorded terminal across lead handovers
 and exit when that terminal ends.
 
-The shipped host and bridge unit definitions allow uid switching because their start command now discovers lanes
-through sudo too (`NoNewPrivileges=true` would reject it). They use the existing NOPASSWD rule; no sudoers change is
-needed. Update both unit definitions, then `systemctl --user daemon-reload` and restart the host to apply the policy.
+Both shipped host units retain `NoNewPrivileges=true`. The core runs independently under the user manager, so
+discovery and the row clients can use the existing NOPASSWD rule there without weakening either host unit.
+An isolated-core check from a `systemd-run --user -p NoNewPrivileges=true` unit confirmed that `hc exec` runs its
+command with `NoNewPrivs: 0`. The bridge checks for its host socket before making any hc call; it never starts a
+core to discover lanes. No unit or sudoers policy change is needed.
 
 ## Web app
 

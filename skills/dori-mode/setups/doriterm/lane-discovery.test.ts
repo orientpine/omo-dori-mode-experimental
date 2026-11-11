@@ -103,10 +103,10 @@ test.each([["t8", true], ["t7", false], ["t7", "stale"]] as const)("a lane attac
   expect(r.err).not.toContain("unexpected-retry");
 });
 
-test("the service commands may switch uid for account-side lane discovery", async () => {
-  // Machine-consumed systemd policy: NoNewPrivileges would make sudo discovery fail in both callers.
+test("the host units retain NoNewPrivileges while discovery runs in the hc core", async () => {
+  // Machine-consumed systemd policy: discovery must not require weakening either shipped unit.
   for (const unit of ["doriface-host.service", "doriterm-bridges.service"]) {
     const policy = (await Bun.file(join(import.meta.dir, unit)).text()).split("\n").filter((line) => line.startsWith("NoNewPrivileges="));
-    expect(policy).not.toContain("NoNewPrivileges=true");
+    expect(policy).toEqual(["NoNewPrivileges=true"]);
   }
 });

@@ -91,7 +91,8 @@ export function bridgeCommand(bridge: Bridge): string[] {
 export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]): Promise<string[]> {
   const desired: Bridge[] = [];
   for (const bridge of bridges) {
-    const got = await runner([...bridgeCommand(bridge), ...(bridge.account ? [] : [""]), "--lanes"]);
+    // The host units keep NoNewPrivileges; sudo discovery runs in their independent, already-running hc core.
+    const got = await runner(["hc", "exec", "--", ...bridgeCommand(bridge), ...(bridge.account ? [] : [""]), "--lanes"]);
     if (got.code !== 0) throw new Error(`lane discovery ${bridge.name} failed: ${got.err || got.out}`);
     // Parse the account-side protocol here; no config or credentials cross back to the host.
     const value: unknown = JSON.parse(got.out);
