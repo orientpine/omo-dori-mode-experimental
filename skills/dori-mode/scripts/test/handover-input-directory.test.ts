@@ -185,3 +185,19 @@ test("a remote shell's input file is not read here, and a local input to ssh sti
   // a remote word that is no script (tail -F of a .sh file) is still only a watch
   expect(launchOf("ssh host tail -F /tmp/progress.sh", HOME, () => undefined)).toBeUndefined();
 });
+
+// #414 review 19: a shell fed its script from its input was work only when an older regex also matched its options, so
+// bash -o pipefail < /tmp/ci with plain contents gave no launch and the same command could be armed again. The shell
+// words already know the shell reads its script from that input; that alone makes it work.
+test("a shell that reads its script from its input is work whatever options come before the redirection", () => {
+  const read = (path: string) => (path === "/tmp/ci" ? "bun run test\n" : undefined);
+  const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
+  for (const command of ["bash -o pipefail < /tmp/ci", "bash -euo pipefail < /tmp/ci", "bash -O extglob -s < /tmp/ci", "bash --rcfile /etc/x < /tmp/ci", "sudo -u oriclaw bash -o pipefail -s < /tmp/ci"]) {
+    const launch = launchOf(command, HOME, read);
+    if (!launch) throw new Error(`not work: ${command}`);
+    expect([command, launch.why, launch.detached]).toEqual([command, "a script run by a shell from its input (bash -s < file)", false]);
+    expect(missingMonitors([{ description: "w", command, persistent: true, launch }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
+  }
+  // a -c string with an input is a command, not a script read from the input
+  expect(launchOf("bash -o pipefail -c 'tail -F /tmp/ci.log' < /dev/null", HOME, read)).toBeUndefined();
+});
