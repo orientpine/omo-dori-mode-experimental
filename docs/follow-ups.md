@@ -2,6 +2,18 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
+## Lane env: shell readers still see a server's inherited instance variables (#447)
+
+#447 (upstream #201) makes `loadEnvFile` drop every inherited instance variable (`DORI_DISCORD_*`, `DORI_SLACK_*`, `DORI_TELEGRAM_*`, `DORI_LEAD_*`, `DORI_ASR_*`, `DORI_GOOGLE_*`, `DORI_KAKAO_*`, `DORI_USAGE_*`, not `DORI_LEAD_PANE`, `DORI_DISCORD_SHADOW_INBOX` or `DORI_SLACK_WAIT_MS`), because a lane given its Slack token as a file has no differing token left to show that its herdr server's or hc core's environment is another home's (reviews 5-7 of #447). Every TypeScript entry point goes through `loadEnvFile`, but a shell script run in a lane pane does not: `self-restart.sh` sources `DORI_ENV_FILE`, which replaces only the keys that file sets, so a key the file omits keeps the server's value (the challenge of the plan after review 7). No lane path runs it today (`dori-lead.service` and a transient unit do). What would close it: drop inherited instance variables where the agent starts, in the line `agentLine` builds (`env -u` on POSIX, `Remove-Item Env:` on PowerShell), keeping the selectors and this home's token-file pair, with a test that a pane of a server holding another home's set starts with none of it.
+
+## Lane env: one herdr server or hc core per Dori home (#447)
+
+A pane inherits the environment its server was started with, for every variable family (tmux.1, GLOBAL AND SESSION ENVIRONMENT; an hc core does too: in the #447 QA a lane without a token file posted with the token its core was started with), so two homes sharing one herdr server or hc core is what #447 has to filter in every reader. tmux users meet the same split and run one server per environment (tmux -L; https://github.com/orgs/tmux/discussions/3997). What would close it: each home starts and addresses its own herdr server / hc core (socket or `HC_SESSION` named for the home), so a lane never inherits another home's set; a migration plan for the running Doris, which today share one per account.
+
+## ASR: transcribe-job.sh reads the first home's dori.env, not DORI_ENV_FILE (#447)
+
+`setups/discord-aoe/transcribe-job.sh` takes its ASR settings (`DORI_ASR_DIR`, `DORI_ASR_LANG`, `DORI_ASR_MODEL`, `DORI_DIAR_DIR`) from `~/.$USER/dori.env`, else `~/.dori/dori.env`, and never looks at `DORI_ENV_FILE`, so a second home on the same account transcribes with the first home's model and directories (found in the reader sweep of #447; it predates #447 and touches no credential). What would close it: read `DORI_ENV_FILE` first, then the current fallbacks, with a test that a second home's settings are used.
+
 ## Lead pane: freshness and dead-panes still read leadPane once when they start (#442)
 
 #442 makes each pass of `dori watch` read `leadPane` again (`DORI_LEAD_PANE`, else `config.json`) and hand it to every check of the watch, because a handover restarts only `handover.services` and a watch started before it kept checking, and reviving, the frozen old lead (ZzangDori 2026-11-11, `LEAD_REVIVE_WARN w1:p37 ... no such pane` every ten minutes). The separate `dori freshness --loop` and `dori dead-panes --loop` processes still take `leadPane` from the config they loaded at start, so after a handover that did not restart them they go on naming the old pane (freshness tells and reads the lead's screen there; dead-panes leaves the old pane out of its sweep and treats the new one as a lane-less pane). What would close it: the same per-pass read (hc-pane `leadNow(configPath())`, as `watchCommand` passes `leadPaneNow`) in both loops, with a test of each loop started on the old pane whose config then names the new one.
