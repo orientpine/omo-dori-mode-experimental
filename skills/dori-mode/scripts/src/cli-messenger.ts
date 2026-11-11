@@ -12,7 +12,7 @@ import { progressText } from "./messenger/discord-thread.ts";
 import { duplicateLine, SEND_DUPLICATE_EXIT, type Sent, sendKey, sendOnce, sentLine } from "./send-dedupe.ts";
 import { realTimers } from "./messenger/typing.ts";
 import type { Command } from "./cli-context.ts";
-import { die, every } from "./cli-context.ts";
+import { die, envSlackToken, every } from "./cli-context.ts";
 import { makeHandoverDeps } from "./cli-deps-handover.ts";
 import { makeDiscordDeps } from "./cli-deps-discord.ts";
 
@@ -73,7 +73,8 @@ const sendCommand: Command = async (context) => {
     return r;
   };
   if (platform === "slack") {
-    const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env["DORI_SLACK_COOKIE"] }, process.env["DORI_SLACK_API"]?.trim() || undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
+    const slackKey = envSlackToken();
+    const slack = new Slack(fetchHttp, realClock, { token: slackKey, cookie: process.env["DORI_SLACK_COOKIE"] }, process.env["DORI_SLACK_API"]?.trim() || undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
     if (edit) await slack.edit(to, edit, text);
     else {
       let posted: { channel: string; ts: string } | undefined;
@@ -93,8 +94,8 @@ const sendCommand: Command = async (context) => {
           return { id: p.ts, content: p.text };
         });
       // only the watcher's bot puts eyes on; a member's token (xoxp-) must never take a reaction off
-      if (posted && process.env["DORI_SLACK_TOKEN"]?.startsWith("xoxb-")) {
-        for (const line of await clearEyes(slackUnreact(process.env["DORI_SLACK_TOKEN"], process.env["DORI_SLACK_API"]?.trim() || undefined), files, posted, thread, 3000, known)) console.log(line);
+      if (posted && slackKey.startsWith("xoxb-")) {
+        for (const line of await clearEyes(slackUnreact(slackKey, process.env["DORI_SLACK_API"]?.trim() || undefined), files, posted, thread, 3000, known)) console.log(line);
       }
     }
   } else if (platform === "telegram") {
@@ -133,7 +134,7 @@ const presenceCommand: Command = async (context) => {
   const { key } = context;
   const { checkedDiscordToken, gatewaySocket } = makeDiscordDeps(context);
   if (key === "slack") {
-    const auth = { token: process.env["DORI_SLACK_TOKEN"] ?? die("DORI_SLACK_TOKEN is not set"), cookie: process.env["DORI_SLACK_COOKIE"] ?? die("DORI_SLACK_COOKIE is not set (user-token presence needs the d cookie)") };
+    const auth = { token: envSlackToken(), cookie: process.env["DORI_SLACK_COOKIE"] ?? die("DORI_SLACK_COOKIE is not set (user-token presence needs the d cookie)") };
     const p = slackPresence(new Slack(fetchHttp, realClock, auth), (url, headers) => {
       const options: Bun.WebSocketOptions = { headers: { ...headers } };
       const ws = new WebSocket(url, options);

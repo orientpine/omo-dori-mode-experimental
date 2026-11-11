@@ -9,6 +9,7 @@ import type { Slack } from "./messenger/slack.ts";
 import { type BootLane, finished, monitorCleanup, readMonitorManifests } from "./boot-monitors.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { ReportError, type Reports } from "./reports.ts";
+import { slackToken, TokenFileError } from "./slack-token.ts";
 import { type Worklog, worklogLines } from "./worklog.ts";
 
 export type SlackCheck = (signal?: AbortSignal) => Promise<{ readonly userId: string; readonly teamId: string } | null>;
@@ -27,6 +28,13 @@ export const slackAuthCheck = (slack: Pick<Slack, "call"> | null): SlackCheck =>
   const auth = await slack.call("auth.test", {}, undefined, undefined, signal);
   if (typeof auth["user_id"] !== "string" || !auth["user_id"] || typeof auth["team_id"] !== "string" || !auth["team_id"]) throw new Error("auth.test returned no user_id or team_id");
   return { userId: auth["user_id"], teamId: auth["team_id"] };
+};
+
+// The boot Slack step from the environment (#201): the token is read inside the step, so a bad token file is a failed
+// SLACK line and boot still runs and prints its other checks instead of exiting before them.
+export const envSlackCheck = (client: (token: string) => Pick<Slack, "call">, env: Readonly<Record<string, string | undefined>> = process.env, platform: string = process.platform): SlackCheck => async (signal) => {
+  const token = slackToken(env, platform);
+  return await slackAuthCheck(token ? client(token) : null)(signal);
 };
 
 // Read-only recovery after a restart or compaction. Every finding is printed; no lane, registry or watch is changed.
@@ -153,7 +161,8 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     failed = true;
-    lines.push(stop.signal.aborted ? `SLACK auth.test timed out after ${deadlineMs} ms` : "SLACK auth failed");
+    // a token file error names the path, never the value; any other error may carry provider text, so it is not shown
+    lines.push(error instanceof TokenFileError ? `SLACK token-file: ${error.message}` : stop.signal.aborted ? `SLACK auth.test timed out after ${deadlineMs} ms` : "SLACK auth failed");
   } finally {
     clearTimeout(timer);
   }

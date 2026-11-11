@@ -8,10 +8,23 @@ import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { HandoverDeps } from "./handover.ts";
 import { USAGE } from "./cli-usage.ts";
+import { slackToken } from "./slack-token.ts";
 
 export const die = (message: string, code = 1): never => {
   console.error(message);
   process.exit(code);
+};
+
+// The Slack token from DORI_SLACK_TOKEN, else the file DORI_SLACK_TOKEN_FILE names (#201); a bad token file is a clear
+// error, never read as no token. With neither, `missing` is the error.
+export const envSlackToken = (missing = "DORI_SLACK_TOKEN is not set (nor DORI_SLACK_TOKEN_FILE)"): string => {
+  let token: string | undefined;
+  try {
+    token = slackToken();
+  } catch (e) {
+    return die(e instanceof Error ? e.message : String(e));
+  }
+  return token ?? die(missing);
 };
 
 export const every = async (minutes: number, tick: () => Promise<void>): Promise<void> => {
