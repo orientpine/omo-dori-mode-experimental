@@ -35,7 +35,9 @@ test.each([
   ["the routing cannot be read", "", NEW, `HANDOVER_NEW_KEPT ${NEW}: the routed lead is still unreadable, so it is not closed`],
   ["the pane is the old lead", LEAD, LEAD, `HANDOVER_NEW_KEPT ${LEAD}: it is the old lead, so it is not closed`],
 ])("nothing is closed when %s", async (_, routed, pane, kept) => {
-  const { lines, closes } = await rollBack(newWorld(), routed, pane);
+  const { lines, told, closes } = await rollBack(newWorld(), routed, pane);
   expect(lines[0]).toBe(kept);
   expect(closes).toEqual([]);
+  // the old lead stays the lead: it is never told otherwise (review 1 of #457)
+  expect(told.filter((t) => t.startsWith(`${LEAD} `))).toEqual([]);
 });

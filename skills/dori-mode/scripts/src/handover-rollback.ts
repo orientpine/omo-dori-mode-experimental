@@ -24,6 +24,7 @@ export const rollBackNew = async (r: RollBack): Promise<void> => {
   const routed = await r.routedPane().catch(() => "");
   const keep = r.pane === r.lead ? "it is the old lead" : routed !== r.lead ? `the routed lead is still ${routed || "unreadable"}` : "";
   if (keep) r.emit(`HANDOVER_NEW_KEPT ${r.pane}: ${keep}, so it is not closed`);
+  if (r.pane === r.lead) return r.emit(`HANDOVER_ROLLED_BACK ${r.lead} stays the lead; nothing else was opened to close`);
   const closed = keep ? "" : await closeAoeSession(r.run, r.pane).catch((e: unknown) => `${r.pane} not closed: ${e instanceof Error ? e.message : String(e)}`);
   if (closed) r.emit(isClosedLine(closed) ? `HANDOVER_NEW_CLOSED ${closed}` : `HANDOVER_NEW_CLOSE_FAIL ${closed}`);
   if (isClosedLine(closed)) return r.emit(`HANDOVER_ROLLED_BACK ${r.lead} stays the lead; ${r.pane} is closed (its log stays)`);
