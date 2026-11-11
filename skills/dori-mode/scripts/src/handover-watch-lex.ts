@@ -85,14 +85,15 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
       if (!w) return undefined;
       cur().ins.push(w);
     } else if (fd) {
+      const at = i;
       i += fd[0].length;
       if (s[i] === ">") i++;
       if (s[i] === "(" || s[i] === "|") return undefined;
       if (s[i] === "&") {
-        const n = /^\d+/.exec(s.slice(i + 1));
-        if (!n) return undefined;
-        cur().outs.push({ text: `&${n[0]}`, quoted: false, expand: false, glob: false, split: false, dup: true, subs: [] });
-        i += 1 + n[0].length;
+        // only the exact word 2>&1 copies a descriptor; >&1.log writes the file 1.log (#414 review 29)
+        if (s.slice(at, i + 2) !== "2>&1" || !/^(?:[\s;&|)]|$)/.test(s.slice(i + 2, i + 3))) return undefined;
+        cur().outs.push({ text: "&1", quoted: false, expand: false, glob: false, split: false, dup: true, subs: [] });
+        i += 2;
         continue;
       }
       while (s[i] === " " || s[i] === "\t") i++;
