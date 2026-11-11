@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { dlopen, FFIType } from "bun:ffi";
-import { closeSync, fstatSync, fsyncSync, ftruncateSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
+import { dirname } from "node:path";
 
 export class CheckpointError extends Error {}
 
@@ -125,4 +126,30 @@ export const takeLock = (lock: string, now: number, what: string, key: string): 
     };
   }
   throw new CheckpointError(`${what} locked: ${key} (the lock file changed while taking it; retry)`);
+};
+
+/**
+ * Run body while holding the lock, waiting while another holder has it (polled, since a blocking flock would stop the
+ * event loop) up to waitMs, after which its CheckpointError stands. The lock file's folder is made first. The lane tree
+ * takes it around load, change and save (src/explore.ts updateTree), so two `dori tree add` calls at once never read
+ * one tree, hand out one F number twice and overwrite each other's entry (worklog 7d68e5b0: F183 twice).
+ */
+export const holdLock = async <T>(lock: string, what: string, key: string, body: () => Promise<T>, waitMs = 10_000): Promise<T> => {
+  mkdirSync(dirname(lock), { recursive: true });
+  const until = Date.now() + waitMs;
+  let release: () => void;
+  for (;;) {
+    try {
+      release = takeLock(lock, Date.now(), what, key);
+      break;
+    } catch (e) {
+      if (!(e instanceof CheckpointError) || Date.now() > until) throw e;
+      await Bun.sleep(20);
+    }
+  }
+  try {
+    return await body();
+  } finally {
+    release();
+  }
 };

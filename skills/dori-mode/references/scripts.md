@@ -359,6 +359,8 @@ The hypothesis tree of one area: a JSON file per repo (`<stateDir>/trees/cwd-<pa
 - `add --kind hypothesis|direction|finding|research --text T [--test X] [--metric M] [--result R]` prints `TREE_ADDED <id>`, or `TREE_EXISTS <id>` when the same kind already says the same thing (a missing test is filled in).
 - `falsify|support|close|reopen <ID> [--result R]` sets the status and prints `TREE_SET <id> <status> -> <result>`.
 
+Every write loads, changes and saves the tree file while holding its lock (`<tree file>.lock`, waited for up to 10 s), so parallel `add` calls on one area each get their own id and every entry is kept.
+
 Fed automatically by `fix-attempt` (tried attempts, branched hypotheses, research due), `freshness` (the lanes' tagged fix reports), and `fork-explore` (results). `launch` attaches the compact form to new briefs.
 
 ### `dori challenge <key> --plan FILE [--model M] [--all]` and `dori challenge --check [<key>]`

@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node
 import { basename, join, resolve } from "node:path";
 
 import { canonical, mentions } from "./auto-signals.ts";
+import { holdLock } from "./checkpoint-lock.ts";
 import { type DoriConfig, type Explore, expandHome, fill, type Stuck } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { tagsOf } from "./lane-signals.ts";
@@ -151,11 +152,9 @@ export const treeSection = (trees: readonly Tree[], limit: number, hint: string)
   return lines.join("\n");
 };
 
-export const updateTree = async (stateDir: string, a: TreeArea, change: (t: Tree) => Tree): Promise<Tree> => {
-  const next = change(await loadTree(stateDir, a));
-  await saveTree(stateDir, a, next);
-  return next;
-};
+// One lock per tree file: two dori tree add calls at once never hand out one F number twice (worklog 7d68e5b0).
+export const updateTree = (stateDir: string, a: TreeArea, change: (t: Tree) => Tree): Promise<Tree> =>
+  holdLock(`${treeFile(stateDir, a)}.lock`, "tree", areaName(a), async () => { const next = change(await loadTree(stateDir, a)); await saveTree(stateDir, a, next); return next; });
 
 // ---- the stuck ladder: one count per metric, one rung, one STUCK line ----
 
