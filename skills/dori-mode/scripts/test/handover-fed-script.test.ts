@@ -69,3 +69,14 @@ test("gh is foreground only as a listed read; checkout, clone and the like keep 
     expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
   }
 });
+
+// #414 review 43: test and [ only as [ A OP B ], [ OP A ] or [ A ] with a literal listed OP and no -v or -R, an expanded word
+// only as an operand and never split; printf is no foreground word (-v assigns)
+test("test and [ are foreground only in plain predicate shapes, and printf not at all", () => {
+  for (const command of ["test -v 'BASH_VERSINFO[$(/tmp/start)]' > /tmp/o.log", "op=-v; [ \"$op\" x ] > /tmp/o.log", "[ $x ] > /tmp/o.log", "[ -R x ] > /tmp/o.log", "[ a -a b ] > /tmp/o.log", "printf -v x %s y > /tmp/o.log", "printf 'x\\n' > /tmp/o.log"]) {
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
+  }
+  for (const command of ["until [ \"$n\" -ge 900 ]; do sleep 30; done; echo DONE > /tmp/o.log", "until [ -f /tmp/stop ]; do sleep 2; done; echo X > /tmp/o.log", "[ \"$a\" != \"$b\" ] && echo M > /tmp/o.log", "test -s /tmp/x && echo Y > /tmp/o.log"]) {
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, false]);
+  }
+});
