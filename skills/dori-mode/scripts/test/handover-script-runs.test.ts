@@ -57,3 +57,14 @@ test("git with an expanded argument keeps a fed script's watch; literal git call
   expect(["git -C \"$SRC\" fetch -q origin \"$REF\"\n", "git $opt log\n"].map(runsOther)).toEqual([true, true]);
   expect(["git -C /home/o/src fetch -q origin feat/x\n", "echo \"CI_HEAD $(git rev-parse HEAD)\"\n"].map(runsOther)).toEqual([false, false]);
 });
+
+// #414 review 39: a command substitution became an empty word before the guards, so printf with a quoted substitution of
+// echo -v got past them; a word that held a substitution now holds a dollar for every guard
+test("a word that held a command substitution counts as expanded for the argument guards", () => {
+  const script = "sleep 30\nprintf \"$(echo -v)\" \"$(echo a)\" %s x\n";
+  expect([script, "test \"$(echo -v)\" x\n", "git $(echo --upload-pack=x) fetch\n"].map(runsOther)).toEqual([true, true, true]);
+  const command = "bash -s < /tmp/outer.sh";
+  const launch = launchOf(command, HOME, (path) => (path === "/tmp/outer.sh" ? script : undefined));
+  expect(launch?.detached).toBe(true);
+  expect(workEnded([{ pid: 7, cmd: "w", pids: [8] }], () => false, () => undefined)({ description: "w", command, persistent: true, ...(launch ? { launch } : {}) })).toBe(false);
+});
