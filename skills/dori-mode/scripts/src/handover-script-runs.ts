@@ -25,7 +25,8 @@ export const runsOther = (text: string): boolean => {
     cur = cmds.push([]) - 1;
   };
   // a $( ) body is commands of its own; after its ) the outer command goes on
-  const outer: { readonly q: string | undefined; readonly cmd: number }[] = [];
+  // the outer word keeps a dollar where the substitution stood, so every argument guard sees it expanded (#414 review 39)
+  const outer: { readonly q: string | undefined; readonly cmd: number; readonly w: string }[] = [];
   let q: string | undefined;
   for (let i = 0; i < text.length; i++) {
     const c = text[i] ?? "";
@@ -33,8 +34,9 @@ export const runsOther = (text: string): boolean => {
       if (c === "'") q = undefined;
       else w += c;
     } else if (c === "$" && text[i + 1] === "(") {
-      end();
-      outer.push({ q, cmd: cur });
+      outer.push({ q, cmd: cur, w: `${w}$` });
+      w = "";
+      raw = false;
       q = undefined;
       start();
       i++;
@@ -52,6 +54,7 @@ export const runsOther = (text: string): boolean => {
       const o = outer.pop();
       q = o?.q;
       cur = o?.cmd ?? 0;
+      w = o?.w ?? "$";
       raw = true;
     } else if (/[;\n|&(){}]/.test(c)) start(); else if (/\s/.test(c)) end();
     else w += c;
