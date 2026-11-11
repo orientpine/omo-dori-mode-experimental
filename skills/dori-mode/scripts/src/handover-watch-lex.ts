@@ -1,8 +1,9 @@
 // The lexer of the watch classifier (handover-watch.ts): words with quotes removed, $( ) bodies lexed as commands of their
 // own, output and input redirections kept per simple command; anything it does not handle ends the lex as work (undefined).
 // A word with its quotes removed, each $( ) lexed as commands of its own (subs, \0 in the text); glob: an unquoted {*?[;
-// split: an expansion or glob outside double quotes, which the shell may turn into more than one word
-export type Word = { readonly text: string; readonly quoted: boolean; readonly expand: boolean; readonly glob: boolean; readonly split: boolean; readonly subs: readonly Simple[][] };
+// split: an expansion or glob outside double quotes, which the shell may turn into more than one word; dup: a descriptor
+// copy (>&1) the lexer read as an operator, never a quoted or expanded word that spells one (#414 review 28)
+export type Word = { readonly text: string; readonly quoted: boolean; readonly expand: boolean; readonly glob: boolean; readonly split: boolean; readonly dup?: true; readonly subs: readonly Simple[][] };
 // A simple command: its words, its output redirection targets ("&1" for a descriptor copy) and its input files.
 export type Simple = { readonly words: Word[]; readonly outs: Word[]; readonly ins: Word[] };
 
@@ -90,7 +91,7 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
       if (s[i] === "&") {
         const n = /^\d+/.exec(s.slice(i + 1));
         if (!n) return undefined;
-        cur().outs.push({ text: `&${n[0]}`, quoted: false, expand: false, glob: false, split: false, subs: [] });
+        cur().outs.push({ text: `&${n[0]}`, quoted: false, expand: false, glob: false, split: false, dup: true, subs: [] });
         i += 1 + n[0].length;
         continue;
       }

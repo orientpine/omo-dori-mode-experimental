@@ -91,7 +91,7 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   let k = 0;
   while (plain(w[k]) && CONTROL.has(w[k]?.text ?? "")) k++;
   const rest = w.slice(k);
-  if (!c.outs.every((o) => o.text === "/dev/null" || /^&\d+$/.test(o.text) || state(o))) return false;
+  if (!c.outs.every((o) => o.dup || (o.text === "/dev/null" && !o.expand && !o.glob) || state(o))) return false;
   if (rest.every((x) => plain(x) && CLOSE.has(x.text))) return true;
   // a statement of assignments only, to lowercase shell variables (an exported or uppercase name reaches programs)
   if (rest.every((x) => ASSIGN.test(x.text))) return rest.every((x) => VAR.test(ASSIGN.exec(x.text)?.[1] ?? ""));
