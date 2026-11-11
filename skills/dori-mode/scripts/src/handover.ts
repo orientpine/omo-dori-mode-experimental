@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { captureTmux, closeAoeSession, inputLine, isClosedLine, laneEnv, liveSessions, openAoeSession, sessionFor } from "./aoe.ts";
+import { rollBackNew } from "./handover-rollback.ts";
 import { strayTasks, taskRecords } from "./background.ts";
 import { laneHomeEnv } from "./home-env.ts";
 import type { HandoverWatcher } from "./config.ts";
@@ -831,14 +832,14 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   const startup = await awaitPrompt(deps, pane);
   mark("startup", !startup);
   if (startup) {
-    emit(`HANDOVER_FAIL new session ${pane}: ${startup}; nothing moved, ${config.leadPane} stays the lead`);
+    await rollBackNew({ run: deps.run, routedPane: deps.routedPane, tell, emit, lead: config.leadPane, pane, why: startup, fail: `HANDOVER_FAIL new session ${pane}: ${startup}; nothing moved, ${config.leadPane} stays the lead` });
     return { code: 3, note, to: pane };
   }
   setQuiet(config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
   await tell(config.leadPane, `[LEAD] Handover to ${pane} started (note ${note}). Stay quiet now: do not answer the owner or act on inbox, lane or session events, and ignore ${PROBE} lines. If the handover fails you are told and stay the lead.`);
   if (!(await sendVerified(deps.run, deps.clock, config, pane, `${config.handover.prompt}. Read the handover note at ${note} in full and do what it says, starting with its first section.`))) {
     await tell(config.leadPane, `[LEAD] Handover to ${pane} failed before anything moved: its first message did not register. You stay the lead.`);
-    emit(`HANDOVER_FAIL the first message did not register in ${pane}; nothing moved, ${config.leadPane} stays the lead`);
+    await rollBackNew({ run: deps.run, routedPane: deps.routedPane, tell, emit, lead: config.leadPane, pane, why: "its first message did not register", fail: `HANDOVER_FAIL the first message did not register in ${pane}; nothing moved, ${config.leadPane} stays the lead` });
     return { code: 3, note, to: pane };
   }
   const to: Target = { pane, aoeId: sessionFor(await liveSessions(deps.run), pane)?.id ?? "", session: "" };
@@ -864,8 +865,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     for (const line of await pointLead(deps, to, facts.from, stamp)) emit(line);
     await restartAll();
     await tell(config.leadPane, `[LEAD] Handover to ${pane} failed (${checked.reasons.join("; ")}). You stay the lead: answer the owner and handle events again.`);
-    await tell(pane, `[LEAD] HANDOVER_ROLLED_BACK: the handover failed (${checked.reasons.join("; ")}); ${config.leadPane} stays the lead. You are not the lead: do nothing more.`);
-    emit(`HANDOVER_ROLLED_BACK ${config.leadPane} stays the lead; ${pane} is left open to look at (aoe rm it when done)`);
+    await rollBackNew({ run: deps.run, routedPane: deps.routedPane, tell, emit, lead: config.leadPane, pane, why: checked.reasons.join("; ") });
     record("rolled-back", checked.reasons);
     return { code: 3, note, to: pane };
   }
