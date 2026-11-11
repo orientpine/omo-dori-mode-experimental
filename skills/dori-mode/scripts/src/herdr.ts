@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 import { type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
-import { HerdrCli, reasonOf } from "./runtime/herdr/exec.ts";
+import { HerdrCli, reasonOf, ToolError } from "./runtime/herdr/exec.ts";
 import type { SessionRef, SessionRuntime } from "./runtime/types.ts";
 import { commandExecutable, executableName } from "./executable.ts";
 import { powershellData } from "./powershell.ts";
@@ -223,8 +223,8 @@ export const openHerdrSession = async (
   await rt.start(ref, agentLine(opts.argv, opts.env)).catch(async (e: unknown) => {
     const why = `herdr pane run failed in ${pane}: ${reasonOf(e)}`;
     const cleaned = await cleanup();
-    const ambiguous = /timed?\s*out|timeout|unavailable|econn|epipe|socket|network|fetch failed|ambiguous/i.test(reasonOf(e));
-    throw new HerdrStartupError(why, !ambiguous && cleaned);
+    const definite = e instanceof ToolError && /pane_not_found|pane .*not found|invalid|unsupported|refused|not ready|bad command|permission denied|unrecognized|usage:/i.test(reasonOf(e));
+    throw new HerdrStartupError(why, definite && cleaned);
   });
   return { pane, ...(tab ? { tab } : {}) };
 };

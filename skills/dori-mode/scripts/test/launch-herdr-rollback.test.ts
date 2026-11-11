@@ -42,6 +42,7 @@ const rig = (startError: string | undefined, closeRemoves: boolean) => {
       return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p3", workspace_id: "w1", tab_id: "w1:t3" } } }), err: "" };
     }
     if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "run") {
+      if (reject && startError === "truncated-json") return { code: 0, out: '{"result":', err: "" };
       if (reject) return { code: 1, out: "", err: startError ?? "bad command" };
       return { code: 0, out: JSON.stringify({ result: {} }), err: "" };
     }
@@ -72,6 +73,13 @@ test("a definite herdr start rejection with confirmed cleanup unwinds and retrie
 test("an ambiguous herdr start outcome preserves registration after cleanup", async () => {
   const fixture = rig("connection timed out", true);
   await expect(launchLane({ ...fixture.deps, run: fixture.run }, fixture.input)).rejects.toThrow("herdr pane run failed");
+  expect(await fixture.deps.registry.read("smoke")).not.toBeNull();
+  expect(existsSync(new Reports(state.dir).path("smoke"))).toBe(true);
+});
+
+test.each(["truncated-json", "unexpected EOF"])("an unknown herdr start failure stays ambiguous after cleanup: %s", async (startError) => {
+  const fixture = rig(startError, true);
+  await expect(launchLane({ ...fixture.deps, run: fixture.run }, fixture.input)).rejects.toThrow();
   expect(await fixture.deps.registry.read("smoke")).not.toBeNull();
   expect(existsSync(new Reports(state.dir).path("smoke"))).toBe(true);
 });
