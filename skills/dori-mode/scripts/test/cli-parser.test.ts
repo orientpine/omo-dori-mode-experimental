@@ -136,3 +136,28 @@ test("thread open with a bare --session is refused before the thread is opened o
     state.done();
   }
 }, 30_000);
+
+// a repeatable value flag left without its value is refused like a single one, before the command runs (review 2 of #439)
+test("serve with a bare --only is refused before it reports ready or writes its log", async () => {
+  const state = withState();
+  try {
+    const log = join(state.dir, "serve.log");
+    const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
+      process.execPath, cli, "serve", "--log", log, "--only"], { timeoutMs: 20_000 });
+    expect({ code: r.code, err: r.err, out: r.out, logged: existsSync(log) }).toEqual({ code: 1, err: "--only needs a value", out: "", logged: false });
+  } finally {
+    state.done();
+  }
+}, 30_000);
+
+test("a bare --file on send keeps its own refusal", async () => {
+  const state = withState();
+  try {
+    const http = join(state.dir, "http.json");
+    const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`,
+      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "send", "discord", "--to", "channel", "--text", "hello", "--file"], { timeoutMs: 20_000 });
+    expect({ code: r.code, err: r.err, requested: existsSync(http) }).toEqual({ code: 2, err: "SEND_FILE_REFUSED --file takes a path; nothing was sent", requested: false });
+  } finally {
+    state.done();
+  }
+}, 30_000);

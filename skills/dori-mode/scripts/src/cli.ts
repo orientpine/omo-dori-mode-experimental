@@ -146,8 +146,12 @@ if (command === "--help" || flags.values.help) {
 // before any request or file write (review of #439). Left out are the flags whose commands give a bare flag its own
 // meaning or refusal: telegram's --thread/--edit id check, --loop, --ping, and the bare-means-empty backlog/card flags.
 const bareOwn = new Set(["ask", "channel", "reply-to", "thread", "no-thread", "why-new", "loop", "edit", "ping"]);
+// a repeatable one holds true among its values (dori serve --only); send and thread keep their own --file refusal
+const ownFileRefusal = command === "send" || command === "thread";
 for (const [name, spec] of Object.entries(options)) {
-  if (spec.type === "string" && !("multiple" in spec) && flags.values[name] === true && !bareOwn.has(name)) die(`--${name} needs a value`);
+  const value = flags.values[name];
+  const bare = value === true || (Array.isArray(value) && value.includes(true) && !(name === "file" && ownFileRefusal));
+  if (spec.type === "string" && bare && !bareOwn.has(name)) die(`--${name} needs a value`);
 }
 const cli = makeCli(command, rest, flags, config, deps, waive, discordToken, import.meta.path, import.meta.url, makeSignal());
 const { cardDir, threadStatuses, ownDiscord, env } = makeDiscordDeps(cli);
