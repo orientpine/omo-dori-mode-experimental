@@ -4,9 +4,9 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
 import { captureTmux, closeAoeSession, inputLine, isClosedLine, laneEnv, liveSessions, openAoeSession, sessionFor } from "./aoe.ts";
 import { strayTasks, taskRecords } from "./background.ts";
+import { laneHomeEnv } from "./home-env.ts";
 import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
@@ -831,7 +831,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     // the lead is no lane: it never starts with launchEnv, even when the handover runs from a lane's environment
     // the new lead opens in this Dori's backend: a herdr Dori's next to the old herdr lead (its workspace), an aoe lead moves to herdr once the config says so
     const workspace = config.backend === "herdr" && isHerdrPane(facts.from.pane) ? await paneGroup(deps.run, facts.from.pane) : undefined;
-    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", agentCommand: config.agentCommand, model, env: laneEnv(config.launchEnv, true), backend: config.backend, ...(workspace ? { workspace } : {}) });
+    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", agentCommand: config.agentCommand, model, env: { ...laneEnv(config.launchEnv, true), ...laneHomeEnv(config) }, backend: config.backend, ...(workspace ? { workspace } : {}) });
     mark("open", true);
   } catch (e) {
     mark("open", false);
