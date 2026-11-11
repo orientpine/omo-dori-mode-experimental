@@ -177,3 +177,7 @@ export const runtimesOf = (runner: Runner, config: { readonly runtime?: RuntimeK
   byKind.set(key, rts);
   return rts;
 };
+
+// The runtime a new session of this backend opens on, picked as aoe.ts openAoeSession and herdr.ts openHerdrSession pick it,
+// so a handover dry run names hc where the move opens hc (수돌 2026-11-11: the dry run said herdr, the move opened hc:t7)
+export const openingRuntime = (runner: Runner, backend: "aoe" | "herdr"): string => (backend === "herdr" ? runtimesOf(runner).default.kind : "aoe");
