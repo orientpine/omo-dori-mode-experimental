@@ -9,18 +9,22 @@ type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: R
 type SendCall = SendSpec & { readonly id: string; readonly tool: string; readonly at: number; sent: boolean; detachedReceipt: boolean };
 
 const qidsIn = (text: string): ReadonlySet<string> => new Set((text.match(/\bq\d+\b/gi) ?? []).map((q) => q.toUpperCase()));
+const unknownArgument = Symbol("unknown single argv value");
 const specsFromArgv = (argv: readonly unknown[]): (SendSpec | undefined)[] => {
   if (argv[0] !== "dori" || !["send", "thread"].includes(String(argv[1]))) return [];
-  if (!argv.every((part) => typeof part === "string")) return [undefined];
+  if (!argv.every((part) => typeof part === "string" || part === unknownArgument)) return [undefined];
+  const args = argv.slice(2);
   let flags: ReturnType<typeof parseArgs>;
   try {
     // The CLI uses this parser too: string options consume their own values, the last occurrence wins, and "=" works.
-    flags = parseArgs({ args: argv.slice(2), allowPositionals: true, strict: false, options: {
+    flags = parseArgs({ args: args.map((part) => typeof part === "string" ? part : ""), tokens: true, allowPositionals: true, strict: false, options: {
       to: { type: "string" }, thread: { type: "string" }, reply: { type: "string" }, text: { type: "string" },
       "text-file": { type: "string" }, edit: { type: "string" }, status: { type: "string" }, ping: { type: "string" },
       lane: { type: "string" }, file: { type: "string", multiple: true }, again: { type: "boolean" }, force: { type: "boolean" }, "no-typing": { type: "boolean" },
     } });
   } catch (error) { if (error instanceof TypeError && "code" in error && String(error.code).startsWith("ERR_PARSE_ARGS_")) return [undefined]; throw error; }
+  // A bare value cannot add argv entries. Only a proven --text value may be unknown; never guess routes or qids.
+  if (args.some((part, index) => part === unknownArgument && !flags.tokens?.some((token) => token.kind === "option" && token.name === "text" && token.inlineValue === false && token.index + 1 === index))) return [undefined];
   if (!(argv[1] === "send" && flags.positionals[0] === "discord") && !(argv[1] === "thread" && ["reply", "done", "wait"].includes(flags.positionals[0] ?? ""))) return [];
   const option = (name: string): string | undefined => { const value = flags.values[name]; return typeof value === "string" ? value.trim() : undefined; };
   const ref = flags.positionals[1], to = argv[1] === "send" && flags.positionals[0] === "discord" ? option("thread") ?? option("to") : argv[1] === "thread" && flags.positionals[0] === "reply" && ref?.startsWith("discord:") ? ref.slice("discord:".length) : undefined;
@@ -32,20 +36,35 @@ const specsFromShell = (command: string): (SendSpec | undefined)[] => {
   if (!args) return [undefined];
   const operator = args.findIndex((word) => word.startsWith("\0"));
   return specsFromArgv(operator < 0 ? args : args.slice(0, operator)); };
-const literalArrays = (text: string, source: ReturnType<typeof commandSource>): { readonly raw: string; readonly native: NativeCall | undefined }[] => {
-  const out: { readonly raw: string; readonly native: NativeCall | undefined }[] = [], calls = nativeCalls(text, source);
+const literalArrays = (text: string, source: ReturnType<typeof commandSource>): { readonly argv: readonly unknown[] | undefined; readonly native: NativeCall | undefined }[] => {
+  const out: { readonly argv: readonly unknown[] | undefined; readonly native: NativeCall | undefined }[] = [], calls = nativeCalls(text, source);
   for (const match of text.matchAll(/\[\s*["']dori["']\s*,\s*["'](?:send|thread)["']/g)) {
     const start = match.index, prefix = /(?:Bun\.spawn|Bun\.spawnSync|subprocess\.run|spawn|execFile|execa|exec)\s*\(\s*$/.exec(text.slice(0, start));
     if (!source.code[start] || !prefix) continue;
-    const raw = balancedBlock(text, start); if (raw) out.push({ raw, native: calls.find((call) => call.start === prefix.index) });
+    const raw = balancedBlock(text, start); if (!raw) continue;
+    const end = start + raw.length - 1, argv: unknown[] = [];
+    let at = start + 1, complete = true;
+    const gap = (): void => { while (at < end && (/\s/.test(text[at] ?? "") || !source.code[at] && !source.strings.has(at))) at++; };
+    while (at < end) {
+      gap(); if (at === end) break;
+      const literal = source.strings.get(at), identifier = /^[$A-Za-z_][\w$]*/.exec(text.slice(at));
+      if (literal?.value !== undefined) { argv.push(literal.value); at = literal.end; }
+      else if (identifier) {
+        try { const value: unknown = Bun.JSON5.parse(identifier[0]); argv.push(value); }
+        catch (error) { if (!(error instanceof SyntaxError)) throw error; argv.push(unknownArgument); }
+        at += identifier[0].length;
+      } else { complete = false; break; }
+      gap(); if (at === end) break;
+      if (text[at] !== ",") { complete = false; break; }
+      at++;
+    }
+    out.push({ argv: complete ? argv : undefined, native: calls.find((call) => call.start === prefix.index) });
   }
   return out; };
 // An unresolved posting operation still occupies a slot: one receipt cannot identify the successful operation.
 const specsFromText = (text: string): (SendSpec | undefined)[] => {
-  const source = commandSource(text), out: (SendSpec | undefined)[] = []; for (const { raw, native } of literalArrays(text, source)) {
-    try {
-      const parsed: unknown = Bun.JSON5.parse(raw); out.push(...(Array.isArray(parsed) ? specsFromArgv(parsed).map((spec) => spec ? { ...spec, ...(native ? { native } : {}) } : undefined) : [undefined]));
-    } catch (error) { if (!(error instanceof SyntaxError)) throw error; out.push(undefined); }
+  const source = commandSource(text), out: (SendSpec | undefined)[] = []; for (const { argv, native } of literalArrays(text, source)) {
+    out.push(...(argv ? specsFromArgv(argv).map((spec) => spec ? { ...spec, ...(native ? { native } : {}) } : undefined) : [undefined]));
   }
   out.push(...shellSpecs(text, source.code));
   const commands = executionCommands(text, source), natives = nativeCalls(text, source), alone = commands.filter((operation) => operation.tool === "bash").length === 1;

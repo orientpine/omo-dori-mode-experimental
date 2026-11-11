@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { discordAnswered, reconcileRows, sawAnswer } from "../src/missed-answers.ts";
+import { discordAnswered, readAnswerHistory, reconcileRows, sawAnswer } from "../src/missed-answers.ts";
+import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 import { sessionFile } from "../src/background.ts";
 import { recordHerdrSession } from "../src/herdr-sessions.ts";
@@ -156,4 +157,24 @@ test("card evidence requires delivered answer content, never assistant narration
     expect(sawAnswer(JSON.stringify(c.entry), "Q1", row, iso(row.at)), c.name).toBe(c.expected);
     expect(sawAnswer(JSON.stringify(c.entry), "Q1"), `${c.name} without a row`).toBe(c.expected);
   }
+});
+
+test.each(["record", "wrapped-record", "old-only", "old-record", "old-then-current", "current-then-old", "future"])("mixed %s card deliveries check every version and persist only delivered IDs", async (kind) => {
+  const state = withState(), store = new QuestionStore(join(state.dir, "cards")), oldAt = directRow.at - 120_000, currentAt = directRow.at - 60_000;
+  const q = store.create("continue?", ["yes"], "T-CARD", { tmux: "lead", thread: "T-CARD" }, iso(oldAt - 1000));
+  store.answer(q.id, "yes", "button", iso(oldAt)); store.reopen(q.id); store.answer(q.id, "yes", "button", iso(currentAt)); store.resolve(q.id);
+  const old = { id: "old-answer", qid: q.id, at: oldAt + 300 }, current = { id: "current-answer", qid: q.id, at: currentAt + 300 }, pending = { id: "pending-answer", qid: "Q2", at: currentAt + 300 };
+  const marker = (at: number) => `[DORI] ANSWER ${q.id} (button, ${iso(at)}): yes`;
+  const record = { kind: "answer", qid: q.id, id: current.id, ts: iso(current.at) };
+  const tail = kind === "record" ? JSON.stringify(record) : kind === "wrapped-record" ? JSON.stringify({ stdout: JSON.stringify(record) })
+    : kind === "old-record" ? JSON.stringify({ ...record, id: old.id, ts: iso(old.at) }) : kind === "future" ? marker(directRow.at)
+    : ["old-then-current", "current-then-old"].includes(kind) ? marker(currentAt) : "";
+  const content = kind === "current-then-old" ? `${tail}\n${marker(oldAt)}` : `${marker(oldAt)}\n${tail}`;
+  const text = JSON.stringify(directResult("read-inbox", content)), path = join(state.dir, "lead.jsonl"), good = ["record", "wrapped-record", "old-then-current", "current-then-old"].includes(kind);
+  writeFileSync(path, text);
+  try {
+    const deps = { ...depsFor(newWorld(), fakeClock(directRow.at), state.dir), answerHistory: () => readAnswerHistory(store.answersFile) };
+    expect(await reconcileRows({ rows: [old, current, pending], cards: store.all(), lead: { pane: "lead", path, title: "", text }, sessions: [], table: [], deps })).toEqual({ waiting: good ? [pending] : [current, pending], answeredIds: good ? [old.id, current.id] : [old.id] });
+    expect(JSON.parse(readFileSync(join(state.dir, "lead-answered.json"), "utf8"))).toEqual(good ? [old.id, current.id] : [old.id]);
+  } finally { state.done(); }
 });

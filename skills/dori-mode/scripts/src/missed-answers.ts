@@ -64,8 +64,11 @@ export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow, answ
   return transcript.split("\n").some((line) => {
     if (!line.includes(qid)) return false; try {
       const entry = JSON.parse(line) as { type?: string; customType?: string; content?: unknown; message?: { role?: string; content?: unknown } }, content = entry.type === "message" && ["user", "toolResult"].includes(entry.message?.role ?? "") ? entry.message?.content : entry.type === "custom_message" && ["senpi-monitor:notification", "senpi-codemode:notification"].includes(entry.customType ?? "") ? entry.content : undefined;
-      if (content === undefined) return false; const redelivered = (typeof content === "string" ? content : JSON.stringify(content)).match(new RegExp(`\\[DORI\\] ANSWER ${qid} \\([^,]+, ([^)]+)\\)`))?.[1];
-      if (redelivered !== undefined) return !row || (answeredAt !== undefined && Date.parse(redelivered) === Date.parse(answeredAt)); return answerRecords(content).some((record) => record.kind === "answer" && record.qid === qid && (!row || (row.id && record.id === row.id) || Date.parse(record.ts ?? record.answeredAt ?? "") >= row.at));
+      if (content === undefined) return false;
+      for (const marker of (typeof content === "string" ? content : JSON.stringify(content)).matchAll(new RegExp(`\\[DORI\\] ANSWER ${qid} \\([^,]+, ([^)]+)\\)`, "g"))) {
+        if (!row || answeredAt !== undefined && Date.parse(marker[1] ?? "") === Date.parse(answeredAt)) return true;
+      }
+      return answerRecords(content).some((record) => record.kind === "answer" && record.qid === qid && (!row || (row.id && record.id === row.id) || Date.parse(record.ts ?? record.answeredAt ?? "") >= row.at));
     } catch { return false; }
   }); };
 
