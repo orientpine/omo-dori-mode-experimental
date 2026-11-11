@@ -230,3 +230,9 @@ test("a predicate that evaluates a subscript in a fed script keeps its watch", (
   expect(launch?.detached).toBe(true);
   expect(workEnded([{ pid: 7, cmd: "w", pids: [8] }], () => false, () => undefined)({ description: "w", command, persistent: true, ...(launch ? { launch } : {}) })).toBe(false);
 });
+
+// lead before the 0a83 review: printf -v NAME assigns, and a NAME with an array subscript runs code; so can export and set
+test("printf -v, and export or set naming a subscript, keep a fed script's watch", () => {
+  expect(["printf -v x %s y\n", "printf %s -v x\n", "printf -v 'a[$(/tmp/inner)]' %s y\n", "export 'a[$(/tmp/inner)]=1'\n", "export \"$n\"=1\n", "set -- 'a[$(/tmp/inner)]'\n", "set -- \"$x\"\n"].map(runsOther)).toEqual([true, true, true, true, true, true, true]);
+  expect(["export PATH=\"$HOME/.bun/bin:$PATH\"\n", "set -u\n", "printf '%s' x\n"].map(runsOther)).toEqual([false, false, false]);
+});
