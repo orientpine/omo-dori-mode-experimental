@@ -76,7 +76,10 @@ export const runsOther = (text: string): boolean => {
     const args = word === "[" && ws.at(-1) === "]" ? ws.slice(k + 1, -1) : ws.slice(k + 1);
     if ((word === "test" || word === "[") && args.some((a) => /^-(?:v|R|eq|ne|lt|le|gt|ge)$/.test(a) || a.includes("[") || a.includes("$"))) return true;
     // printf -v assigns to a name, and a name with a subscript runs code; so can export (in the name before =) and set
-    if (word === "printf" && args.includes("-v")) return true;
+    // printf with any argument holding a dollar or [ keeps the watch: an expanded word can become -v and a name (review 38)
+    if (word === "printf" && args.some((a) => a === "-v" || /[[$]/.test(a))) return true;
+    // bun runs whatever an expanded word names (a script, a package bin)
+    if (word === "bun" && args.some((a) => a.includes("$"))) return true;
     if (word === "export" && args.some((a) => /[[$]/.test(a.split("=")[0] ?? ""))) return true;
     if (word === "set" && args.some((a) => /[[$]/.test(a))) return true;
     return word !== undefined && !PLAIN.has(word);

@@ -240,8 +240,8 @@ test("printf -v, and export or set naming a subscript, keep a fed script's watch
 // #414 review 38: printf takes options only before its format, so an expanded or dashed first argument can be -v
 test("an expanded printf option in a fed script keeps its watch", () => {
   const script = "sleep 30\nopt=-v\nprintf \"$opt\" 'a[$(/tmp/inner)]' %s x\n";
-  expect([script, "printf -- x\n"].map(runsOther)).toEqual([true, true]);
-  expect(runsOther("printf '%s' \"$x\"\n")).toBe(false);
+  expect([script].map(runsOther)).toEqual([true]);
+  expect([runsOther("printf '%s' \"$x\"\n"), runsOther("printf '%s' 'a[1]'\n"), runsOther("printf 'ok %s' x\n"), runsOther("bun $x\n"), runsOther("bun run ci\n")]).toEqual([true, true, false, true, false]);
   const command = "bash -s < /tmp/outer.sh";
   const launch = launchOf(command, HOME, (path) => (path === "/tmp/outer.sh" ? script : undefined));
   expect(launch?.detached).toBe(true);
