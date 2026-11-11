@@ -6,7 +6,10 @@
 // in after the watch's last line (a line that reads like it, \r redraws included, comes before it), and a wake's details
 // name the monitors it carries. So a watch counts as ended well when a wake carrying it alone has a summary kind and ends
 // with that summary's words, its filter cannot match them, and an earlier or the same wake carried a line of it (its
-// signal); an omo notice after the summary (overflow, pause) leaves it missing. A watch with no filter, an exit other than 0, a kill, or two watches
+// signal); an omo notice after the summary (overflow, pause) leaves it missing. The signal and the exit 0 are one run's
+// (dori review #458 round 1): the same runtime id in the wake details, after its last call and the run's previous
+// summary, and a line omo puts in itself, unfiltered (durable-command.js: "restored after up to ..."), is no signal and
+// ends the search, since the command started fresh there. A watch with no filter, an exit other than 0, a kill, or two watches
 // of one description with different commands stay missing.
 import { readFileSync } from "node:fs";
 
@@ -16,12 +19,14 @@ import { sessionFile } from "./rollover.ts";
 
 const DONE = "watcher completed (exit code 0)";
 type Armed = { readonly description?: string; readonly command?: string; readonly filter?: string; readonly persistent?: boolean };
-type Row = { readonly armed: Armed } | { readonly wake: { readonly description: string; readonly kinds: readonly string[]; readonly bodies: readonly string[] } };
+type Wake = { readonly id: string; readonly description: string; readonly kinds: readonly string[]; readonly bodies: readonly string[] };
+type Row = { readonly armed: Armed } | { readonly wake: Wake };
+const RESTORED = /^restored after up to .* offline; the command started fresh$/;
 type Line = {
   type?: string;
   customType?: string;
   content?: unknown;
-  details?: { monitors?: { description?: string; kinds?: string[] }[] };
+  details?: { monitors?: { id?: string; description?: string; kinds?: string[]; humanInput?: boolean }[] };
   message?: { role?: string; toolName?: string; toolCallId?: string; isError?: boolean; content?: { type?: string; id?: string; name?: string; arguments?: Armed }[]; details?: { toolCalls?: { name?: string; ok?: boolean; args?: Armed }[] } };
 };
 
@@ -42,20 +47,35 @@ const rows = (text: string): Row[] => {
     const direct = m?.toolCallId ? calls.get(m.toolCallId) : undefined;
     if (l.type === "message" && m?.role === "toolResult" && m.toolName === "monitor" && !m.isError && direct) out.push({ armed: direct });
     const only = l.details?.monitors?.length === 1 ? l.details.monitors[0] : undefined;
-    if (l.type !== "custom_message" || l.customType !== "senpi-monitor:notification" || typeof l.content !== "string" || !only?.description) continue;
+    if (l.type !== "custom_message" || l.customType !== "senpi-monitor:notification" || typeof l.content !== "string" || !only?.description || !only.id || only.humanInput) continue;
     const header = `<system-reminder>Monitor event(${only.description}): `;
     if (!l.content.startsWith(header) || !l.content.endsWith("</system-reminder>")) continue;
-    out.push({ wake: { description: only.description, kinds: only.kinds ?? [], bodies: l.content.slice(header.length, -"</system-reminder>".length).split("\n") } });
+    out.push({ wake: { id: only.id, description: only.description, kinds: only.kinds ?? [], bodies: l.content.slice(header.length, -"</system-reminder>".length).split("\n") } });
   }
   return out;
 };
 
-const cannotPass = (filter: string | undefined): boolean => {
+const regex = (filter: string | undefined): RegExp | undefined => {
   try {
-    return !!filter && !new RegExp(filter).test(DONE);
+    return filter ? new RegExp(filter) : undefined;
   } catch {
-    return false;
+    return undefined;
   }
+};
+
+// the run that ended in rows[end]: its own lines, newest first, back to its call, its previous summary or an omo restore
+const signalled = (rows: readonly Row[], end: number, wake: Wake, filter: RegExp): boolean => {
+  for (let k = end; k >= 0; k--) {
+    const o = rows[k];
+    if (o && "armed" in o && o.armed.description === wake.description) return false;
+    if (!o || !("wake" in o) || o.wake.description !== wake.description || o.wake.id !== wake.id) continue;
+    if (k < end && o.wake.kinds.includes("summary")) return false;
+    for (const body of (k === end ? o.wake.bodies.slice(0, -1) : o.wake.bodies).toReversed()) {
+      if (RESTORED.test(body)) return false;
+      if (filter.test(body)) return true;
+    }
+  }
+  return false;
 };
 
 // done for missingMonitors: the new session armed m again (a LAUNCHES_WORK one as a watch-only one with its description or
@@ -82,13 +102,12 @@ export const ranToEnd = (sessionDir: string, session: string, home: string, also
         : sameCommand(m.command ?? "", a.command, home) && (!m.filter || a.filter === m.filter));
     const all = read();
     return all.some((r, i) => {
-      if (!("armed" in r) || !carries(r.armed) || !cannotPass(r.armed.filter) || !r.armed.description) return false;
+      const re = "armed" in r ? regex(r.armed.filter) : undefined;
+      if (!("armed" in r) || !carries(r.armed) || !re || re.test(DONE) || !r.armed.description) return false;
       const { description, command, filter } = r.armed;
       // one description, one watch: a wake names its monitor only by description
       if (all.some((o) => "armed" in o && o.armed.description === description && (o.armed.command !== command || o.armed.filter !== filter))) return false;
-      const wakes = all.slice(i + 1).flatMap((o) => ("wake" in o && o.wake.description === description ? [o.wake] : []));
-      const end = wakes.findIndex((w) => w.kinds.includes("summary") && w.bodies.at(-1) === DONE);
-      return end >= 0 && wakes.slice(0, end + 1).some((w) => w.kinds.includes("line"));
+      return all.some((o, end) => end > i && "wake" in o && o.wake.description === description && o.wake.kinds.includes("summary") && o.wake.bodies.at(-1) === DONE && signalled(all, end, o.wake, re));
     });
   };
 };

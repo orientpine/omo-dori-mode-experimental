@@ -30,14 +30,15 @@ const gate = launched(OLD);
 type Args = { description: string; command?: string; filter?: string; persistent?: boolean };
 // the new session's monitor call as its eval cell records it, and a wake omo delivered for one or more monitors
 const arm = (args: Args) => ({ type: "message", message: { role: "toolResult", toolName: "eval", details: { toolCalls: [{ name: "monitor", ok: true, args, resultPreview: "Monitor started with ID: mon_SVVDTHZT1XBHDWPW" }] } } });
-const wake = (groups: { description: string; bodies: string[]; kinds: string[] }[]) => ({
+const wake = (groups: { description: string; bodies: string[]; kinds: string[]; id?: string }[]) => ({
   type: "custom_message",
   customType: "senpi-monitor:notification",
   content: `<system-reminder>${groups.map((g) => `Monitor event(${g.description}): ${g.bodies.join("\n")}`).join("\n")}</system-reminder>`,
   display: false,
-  details: { monitors: groups.map((g, i) => ({ id: `bash_${i + 2}`, description: g.description, eventCount: g.bodies.length, kinds: g.kinds })) },
+  details: { monitors: groups.map((g, i) => ({ id: g.id ?? `bash_${i + 2}`, description: g.description, eventCount: g.bodies.length, kinds: g.kinds })) },
 });
 const fired = (bodies = ["UPDATE_QUIET_456", DONE], description = DESC) => wake([{ description, bodies, kinds: ["line", "summary"] }]);
+const RESTORED = "restored after up to 2m offline; the command started fresh";
 const watchOnly: Args = { description: DESC, command: REARMED, filter: FILTER, persistent: true };
 const { filter: _a, ...unfiltered } = watchOnly;
 const { filter: _b, ...unfilteredGate } = gate;
@@ -122,6 +123,9 @@ test("a lane's handover goes on when the new session's re-armed gate fired and e
 test("a plain command gate the new session armed again and ran to its end is not missing", () => {
   const ready: MonitorSpec = { description: "x ready", command: "until [ -f /tmp/x ]; do sleep 5; done; echo READY", filter: "^READY$", persistent: true };
   expect(missing([ready], [arm({ ...ready }), fired(["READY", DONE], "x ready")])).toEqual([]);
+  // its signal in an earlier wake of the same run, or after omo restored it
+  expect(missing([ready], [arm({ ...ready }), wake([{ description: "x ready", bodies: ["READY"], kinds: ["line"] }]), fired([DONE], "x ready")])).toEqual([]);
+  expect(missing([ready], [arm({ ...ready }), fired([RESTORED, "READY", DONE], "x ready")])).toEqual([]);
 });
 
 test("a watch that did not end normally, or whose end cannot be told from its own lines, is still missing", () => {
@@ -140,6 +144,13 @@ test("a watch that did not end normally, or whose end cannot be told from its ow
     ["another monitor's lines in the same wake", [arm(watchOnly), wake([{ description: "other", bodies: [`Monitor event(${DESC}): ${DONE}`], kinds: ["line"] }, { description: DESC, bodies: ["UPDATE_QUIET_456", "watcher completed (exit code 1)"], kinds: ["line", "summary"] }])]],
     ["not persistent", [arm({ ...watchOnly, persistent: false }), fired()]],
     ["re-armed with the command that starts work", [arm({ ...watchOnly, command: OLD }), fired()]],
+    // dori review #458 round 1: a signal and an exit 0 of two runs, and omo's own restore line, which no filter screens
+    ["a retry of the same watch: the signal in a run that exited 1, exit 0 in the next", [arm(watchOnly), wake([{ description: DESC, id: "bash_2", bodies: ["UPDATE_QUIET_456", "watcher completed (exit code 1)"], kinds: ["line", "summary"] }]), arm(watchOnly), wake([{ description: DESC, id: "bash_3", bodies: [DONE], kinds: ["summary"] }])]],
+    ["a run id used again after a restart", [arm(watchOnly), wake([{ description: DESC, id: "bash_2", bodies: ["UPDATE_QUIET_456"], kinds: ["line"] }]), wake([{ description: DESC, id: "bash_2", bodies: ["watcher completed (exit code 1)"], kinds: ["summary"] }]), wake([{ description: DESC, id: "bash_2", bodies: [DONE], kinds: ["summary"] }])]],
+    ["the signal from another run id, exit 0 in this one", [arm(watchOnly), wake([{ description: DESC, id: "bash_2", bodies: ["UPDATE_QUIET_456"], kinds: ["line"] }]), wake([{ description: DESC, id: "bash_9", bodies: [DONE], kinds: ["summary"] }])]],
+    ["restored after a restart, then exit 0 with no signal", [arm(watchOnly), wake([{ description: DESC, id: "bash_4", bodies: [RESTORED, DONE], kinds: ["line", "summary"] }])]],
+    ["the signal before a restore, exit 0 after it", [arm(watchOnly), wake([{ description: DESC, id: "bash_4", bodies: ["UPDATE_QUIET_456", RESTORED, DONE], kinds: ["line", "summary"] }])]],
+    ["a restore line its loose filter passes", [arm({ ...watchOnly, filter: "after|QUIET" }), wake([{ description: DESC, bodies: [RESTORED, DONE], kinds: ["line", "summary"] }])], { ...gate, filter: "after|QUIET" }],
     ["a second watch with the same description and another command", [arm(watchOnly), arm({ ...watchOnly, command: "sleep 1; echo UPDATE_QUIET_456" }), fired()]],
   ];
   for (const [name, rows, wanted = gate] of cases) expect([name, missing([wanted], rows)]).toEqual([name, [`${DESC} (starts work: arm a watch-only one with the same description)`]]);
