@@ -66,19 +66,25 @@ export const workEnded = (work: readonly Work[], alive: (pid: number) => boolean
 // assignments and wrappers (sudo, env, nohup, exec, time, nice, setsid, stdbuf, timeout with their options; node-dori-do
 // and its host; ssh, its options and host, whose remote words are a command again) up to a shell named by any path:
 // options with an operand (-o, +o, -O, +O, --rcfile, --init-file) are skipped, a -c string is a command again, -s reads
-// its script from stdin, and the first other word is the script.
+// its script from stdin, and the first other word is the script. A script found in ssh's remote words runs on another
+// host (remote): a local file of that name says nothing about it (#414 review 18). Every o or O in a short option, also
+// combined (-euo pipefail), takes the next word as its value. A shell with -s or no script reads its script from its
+// last input redirection (< file), which is returned as its script, remote under ssh (dori challenge of review 18).
 const SHELL = /^(?:ba|z|da|k)?sh$/;
 const WRAP = /^(?:sudo|env|nohup|exec|time|nice|setsid|stdbuf|timeout)$/;
 // the options of each wrapper that take a value (sudo -n takes none, nice -n does)
 const WRAP_ARG: Record<string, RegExp> = { sudo: /^-[ugCDhprtU]$/, env: /^-[uCS]$/, nice: /^-n$/, timeout: /^-[sk]$/, stdbuf: /^-[ioe]$/ };
 const SSH_ARG = /^-[bcDEeFIiJLlmOoPpQRSWw]$/;
-const SHELL_ARG = /^(?:[-+][oO]|--rcfile|--init-file)$/;
-const shellWords = (text: string): string[][] => {
-  const cmds: string[][] = [[]];
+export type ShellScript = { readonly path: string; readonly remote: boolean };
+type Words = { readonly argv: string[]; readonly inputs: string[] };
+const shellWords = (text: string): Words[] => {
+  const cmds: Words[] = [{ argv: [], inputs: [] }];
+  let input = false;
   let w: string | undefined;
   let target = false;
   const end = () => {
-    if (w !== undefined && !target) cmds[cmds.length - 1]?.push(w);
+    if (w !== undefined && !target) cmds[cmds.length - 1]?.argv.push(w);
+    if (w !== undefined && target && input) cmds[cmds.length - 1]?.inputs.push(w);
     if (w !== undefined) target = false;
     w = undefined;
   };
@@ -100,13 +106,14 @@ const shellWords = (text: string): string[][] => {
     } else if (c === "<" || c === ">") {
       if (w !== undefined && /^\d+$/.test(w)) w = undefined;
       else end();
+      input = c === "<" && text[i + 1] !== "<" && text[i + 1] !== "(";
       while (text[i] === "<" || text[i] === ">") i++;
       if (text[i] === "&") i++;
       target = true;
     } else if (/[;&|()\n]/.test(c)) {
       end();
       target = false;
-      cmds.push([]);
+      cmds.push({ argv: [], inputs: [] });
       i++;
     } else if (/\s/.test(c)) {
       end();
@@ -119,10 +126,10 @@ const shellWords = (text: string): string[][] => {
   end();
   return cmds;
 };
-export const shellScripts = (command: string, depth = 0): string[] =>
+export const shellScripts = (command: string, depth = 0, remote = false): ShellScript[] =>
   depth > 4
     ? []
-    : shellWords(command).flatMap((argv) => {
+    : shellWords(command).flatMap(({ argv, inputs }) => {
         let k = 0;
         for (;;) {
           while (/^[A-Za-z_]\w*=/.test(argv[k] ?? "")) k++;
@@ -133,19 +140,28 @@ export const shellScripts = (command: string, depth = 0): string[] =>
           } else if (base === "node-dori-do") k += 2;
           else if (base === "ssh") {
             for (k++; (argv[k] ?? "").startsWith("-"); ) k += SSH_ARG.test(argv[k] ?? "") ? 2 : 1;
-            return shellScripts(argv.slice(k + 1).join(" "), depth + 1);
+            return shellScripts(argv.slice(k + 1).join(" "), depth + 1, true);
           } else if (SHELL.test(base)) {
+            let string = false;
+            let stdin = false;
             for (k++; k < argv.length; ) {
               const o = argv[k] ?? "";
               if (o === "--") { k++; break; }
-              if (SHELL_ARG.test(o)) k += 2;
+              if (o === "--rcfile" || o === "--init-file") k += 2;
               else if (o.startsWith("--")) k++;
-              else if (/^-[a-zA-Z]+$/.test(o) && o.includes("c")) return shellScripts(argv[k + 1] ?? "", depth + 1);
-              else if (/^-[a-zA-Z]+$/.test(o) && o.includes("s")) return [];
-              else if (/^[-+][a-zA-Z]+$/.test(o)) k++;
-              else break;
+              else if (/^[-+][a-zA-Z]+$/.test(o)) {
+                k++;
+                for (const ch of o.slice(1)) {
+                  if (ch === "o" || ch === "O") k++;
+                  else if (o.startsWith("-") && ch === "c") string = true;
+                  else if (o.startsWith("-") && ch === "s") stdin = true;
+                }
+              } else break;
             }
-            return argv[k] ? [argv[k] ?? ""] : [];
+            if (string) return shellScripts(argv[k] ?? "", depth + 1, remote);
+            const fed = inputs.slice(-1).map((path) => ({ path, remote }));
+            if (stdin) return fed;
+            return argv[k] ? [{ path: argv[k] ?? "", remote }] : fed;
           } else return [];
         }
       });
