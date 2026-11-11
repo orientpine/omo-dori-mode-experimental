@@ -31,3 +31,18 @@ test("a monitor that feeds any script to a shell keeps its watch", () => {
   }
   expect(launchOf("bash <<EOF\n/tmp/inner\nEOF", HOME, () => undefined)?.detached).toBe(true);
 });
+
+// #414 review 41: detached=false only when every command word is a foreground tool from a fixed list; a path, a script, an
+// unknown program or a fed input keeps the watch, and only such a foreground monitor may get the watch-only rearm
+test("a monitor keeps its watch unless every command word is a listed foreground tool, and only those get a rearm", () => {
+  const read = (path: string) => (path === "/tmp/run.sh" ? "echo $SENPI_MONITOR_RESTORED\nbun test\n" : path === "/tmp/start" ? "#!/bin/sh\nnohup setsid /tmp/worker >/dev/null 2>&1 &\n" : undefined);
+  const echoes = launchOf("bash /tmp/run.sh", HOME, read);
+  expect([echoes?.detached, echoes?.rearm]).toEqual([true, undefined]);
+  expect(launchOf("export SENPI_MONITOR_RESTORED=1; bash /tmp/run.sh", HOME, read)).toBeDefined();
+  for (const command of ["/tmp/start; tail -F /tmp/w.log", "/tmp/start", "bun run ci 2>&1 | tail -5", "make all"]) {
+    const launch = launchOf(command, HOME, read);
+    expect([command, launch?.detached]).toEqual([command, true]);
+    const monitor = { description: "w", command, persistent: true, ...(launch ? { launch } : {}) };
+    expect(workEnded([{ pid: 7, cmd: "w", pids: [8] }], () => false, () => undefined)(monitor)).toBe(false);
+  }
+});
