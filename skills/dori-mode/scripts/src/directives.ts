@@ -42,10 +42,11 @@ export type Directive = {
   readonly by: "owner" | "lead";
   readonly words: string;
   // his whole message(s) as he sent them, on record (several joined with " / "); words is this with only fillers (the
-  // ledger's fillers) and whole sentences deleted, nothing reworded, reordered or added (trimProblem checks it)
+  // ledger's fillers and this entry's drops) and whole sentences deleted, nothing reworded, reordered or added (trimProblem)
   readonly original?: string;
   // typos and speech-to-text errors in original, corrected before that check: [as received, corrected]
   readonly fixes?: readonly (readonly [string, string])[];
+  readonly drops?: readonly string[]; // phrases of original (after fixes) with no directive in them, for this entry only
   // what goes into a brief for an owner entry with words: the lead's rewrite of his words as a directive (imperative or
   // declarative, no question, no spoken filler), with every condition, target and strength of his words and nothing added.
   // words and original stay on record; dori directives check has a reviewer of another family compare prompt with original
@@ -308,11 +309,10 @@ export const ledgerProblems = (ledger: Ledger): string[] => {
     if (/…|\.\.\./.test(e.words ?? "")) out.push(`${at}: words cut with an ellipsis; put the whole sentences of his message, or none (by owner, no words: a decision on record)`);
     if (e.by === "lead" && (e.words || e.original)) out.push(`${at}: a lead rule has no owner words (put what he said in trigger)`);
     if (e.by === "owner" && e.original !== undefined) {
-      if (!e.words) out.push(`${at}: original without words (put his words, trimmed of fillers only)`);
-      else {
-        const p = trimProblem(e.original, e.words, ledger.fillers, e.fixes);
-        if (p) out.push(`${at}: ${p}`);
-      }
+      const fixed = (e.fixes ?? []).reduce((t, [from, to]) => (from ? t.split(from).join(to) : t), e.original);
+      for (const d of e.drops ?? []) if (!d.trim() || !fixed.includes(d)) out.push(`${at}: drop "${d}" is not in original`);
+      const p = e.words ? trimProblem(e.original, e.words, [...ledger.fillers, ...(e.drops ?? [])], e.fixes) : "original without words (put his words, trimmed of fillers only)";
+      if (p) out.push(`${at}: ${p}`);
     }
     // what goes into a brief for his words is the lead's directive-style rewrite, never his spoken words or a question
     if (e.by === "owner" && e.words && !e.prompt?.trim()) out.push(`${at}: owner words without prompt (write his words as a directive: every condition, target and strength kept, no question, nothing added)`);
