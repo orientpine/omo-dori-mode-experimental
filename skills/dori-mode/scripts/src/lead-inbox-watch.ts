@@ -11,7 +11,7 @@ import type { readManifest } from "./handover.ts";
 // mention does.
 export const callsThisDori = (text: string, names: readonly string[], botId: string): boolean => {
   const said = text.replaceAll("\\_", "_"), lower = said.toLowerCase(), own = names.map((n) => n.trim().toLowerCase()).filter(Boolean);
-  return !own.length || /^LEAD_[A-Z_]+\b/.test(said) || (botId ? said.includes(`<@${botId}>`) : /<@!?\d+>/.test(said)) || own.some((n) => lower.includes(n));
+  return !own.length || /^LEAD_[A-Z_]+\b/.test(said) || [...said.matchAll(/<@!?(\d+)>/g)].some((m) => !botId || m[1] === botId) || own.some((n) => lower.includes(n));
 };
 
 type Entry = ReturnType<typeof readManifest>[number] & { readonly deliveryPaused?: boolean };
