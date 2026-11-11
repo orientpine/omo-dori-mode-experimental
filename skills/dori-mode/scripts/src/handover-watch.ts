@@ -8,8 +8,8 @@
 // running twice. It trusts the listed programs and options to only read, and the session's environment. What it cannot
 // read (a subshell, a background job, a here-doc, $(( )), ${ }, a comment) is work; a real watch missing here is work
 // too, and the new session arms a watch-only monitor in its place: a manual step, never a second run.
-// A word with its quotes removed; each $( ) in it is lexed as commands of its own (subs) and left as \0 in the text.
-type Word = { readonly text: string; readonly quoted: boolean; readonly expand: boolean; readonly subs: readonly Simple[][] };
+// A word with its quotes removed, each $( ) lexed as commands of its own (subs, \0 in the text); glob: an unquoted {*?[
+type Word = { readonly text: string; readonly quoted: boolean; readonly expand: boolean; readonly glob: boolean; readonly subs: readonly Simple[][] };
 // A simple command: its words, its output redirection targets ("&1" for a descriptor copy) and its input files.
 type Simple = { readonly words: Word[]; readonly outs: Word[]; readonly ins: Word[] };
 
@@ -19,7 +19,7 @@ const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[]; end: n
   const cur = (): Simple => cmds[cmds.length - 1] as Simple;
   let i = start;
   const word = (): Word | undefined => {
-    let text = "", quoted = false, expand = false;
+    let text = "", quoted = false, expand = false, glob = false;
     const subs: Simple[][] = [];
     const sub = (): boolean => {
       const r = s[i + 2] === "(" ? undefined : lex(s, i + 2, true);
@@ -63,11 +63,12 @@ const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[]; end: n
         if (!sub()) return undefined;
       } else {
         expand ||= c === "$";
+        glob ||= /[*?[{]/.test(c);
         text += c;
         i++;
       }
     }
-    return { text, quoted, expand, subs };
+    return { text, quoted, expand, glob, subs };
   };
   while (i < s.length) {
     const c = s[i] ?? "";
@@ -94,7 +95,7 @@ const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[]; end: n
       if (s[i] === "&") {
         const n = /^\d+/.exec(s.slice(i + 1));
         if (!n) return undefined;
-        cur().outs.push({ text: `&${n[0]}`, quoted: false, expand: false, subs: [] });
+        cur().outs.push({ text: `&${n[0]}`, quoted: false, expand: false, glob: false, subs: [] });
         i += 1 + n[0].length;
         continue;
       }
@@ -192,7 +193,7 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   if (!plain(name) || name.subs.length) return false;
   // an expansion ($name or $( )) may become options or other words, so it is an argument only of echo, printf, test and
   // [ and the right side of an assignment; elsewhere only a state file, and for git a hash from git rev-parse (#414 reviews 22, 23)
-  if (!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !x.expand || state(x) || (name.text === "git" && hash(x)))) return false;
+  if ((!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !(x.expand || x.glob) || state(x) || (name.text === "git" && hash(x)))) || (name.text === "printf" && args[0]?.text.startsWith("-"))) return false;
   const a = args.map((x) => x.text);
   if (name.text === "tee") return argsOk({ flags: "a", operand: (x) => x.text === "/dev/null" || state(x) }, args);
   if (name.text === "kill") return a[0] === "-0" && a.length > 1 && a.slice(1).every((p) => /^\d+$/.test(p));
