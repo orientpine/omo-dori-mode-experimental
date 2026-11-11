@@ -2,7 +2,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { shellQuote } from "./herdr.ts";
 import { parseRef } from "./runtime/types.ts";
 import { type ChosenRuntimes, runtimesOf } from "./run.ts";
-import { aoeRefForLane, listAoeSessions, listSessions, probeAoeSession, type BootSession } from "./sessions.ts";
+import { aoeRefForLane, listAoeSessions, listSessions, probeAoeSession, RuntimeDormant, type BootSession } from "./sessions.ts";
 import { reconcilePanes } from "./reconcile.ts";
 import { driftCheck, workspaceCheck } from "./boot-checks.ts";
 import type { Slack } from "./messenger/slack.ts";
@@ -16,6 +16,7 @@ export type BootDeps = Pick<FlowDeps, "run" | "registry" | "config" | "clock"> &
   readonly reports: Reports;
   readonly worklog: Worklog;
   readonly rts: ChosenRuntimes;
+  readonly hcCoreUp: () => boolean;
   readonly slack: SlackCheck;
   readonly monitorDirs?: readonly string[];
   readonly slackDeadlineMs?: number;
@@ -76,14 +77,14 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   const leadRef = parseRef(deps.config.leadPane);
   let panes: BootSession[] | null = null;
   try {
-    const listed: BootSession[] = await listSessions(rts, { lanes: registered, requiredLanes: registered.filter((lane) => statusOf(lane) !== "closed"), groups: deps.config.workspaces, selected: deps.config.backend !== "aoe", ...(leadRef ? { lead: leadRef } : {}) });
+    const listed: BootSession[] = await listSessions(rts, { lanes: registered.filter((lane) => statusOf(lane) !== "closed"), hcCoreUp: deps.hcCoreUp, groups: deps.config.workspaces, selected: deps.config.backend !== "aoe", ...(leadRef ? { lead: leadRef } : {}) });
     const needsAoe = deps.config.backend === "aoe" || aoeRefForLane(deps.config.leadPane) !== undefined || registered.some((lane) => statusOf(lane) !== "closed" && aoeRefForLane(lane.pane));
     if (needsAoe) listed.push(...await listAoeSessions(deps.run));
     panes = listed;
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     failed = true;
-    lines.push("PANES unavailable (session list failed)");
+    lines.push(error instanceof RuntimeDormant ? `PANES unavailable (${error.message})` : "PANES unavailable (session list failed)");
   }
   if (panes) {
     const result = reconcilePanes(lanes, panes);

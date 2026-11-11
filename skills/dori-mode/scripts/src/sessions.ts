@@ -34,12 +34,18 @@ export const probeAoeSession = async (run: Runner, pane: string): Promise<PaneLi
   throw new Error(`tmux has-session failed: ${detail || `exit ${result.code}`}`);
 };
 
-// Every session of every runtime in use: required kinds come from non-closed lanes, the selected kind and the lead;
-// other stored runtimes are discovered best-effort so a retired server cannot abort boot. group keeps only one group.
-export const listSessions = async (rts: Runtimes, options: { readonly group?: string; readonly groups?: readonly string[]; readonly selected?: boolean; readonly lead?: SessionRef; readonly requiredLanes?: readonly { readonly sessionRef?: SessionRef | undefined }[]; readonly lanes?: readonly { readonly sessionRef?: SessionRef | undefined }[] } = {}): Promise<SessionInfo[]> => {
+// A required runtime that is not running: boot reports it and never starts it.
+export class RuntimeDormant extends Error {}
+
+// Every session of every runtime in use: the kinds of the given (open) lanes, the selected kind and the lead. No other
+// runtime is called, since an hc call starts a stopped core (review 9 of #436): a kind only closed lanes name is left as
+// it is, and hcCoreUp (read without an hc call) answers whether a required hc core runs. group keeps only one group.
+export const listSessions = async (rts: Runtimes, options: { readonly group?: string; readonly groups?: readonly string[]; readonly selected?: boolean; readonly lead?: SessionRef; readonly lanes?: readonly { readonly sessionRef?: SessionRef | undefined }[]; readonly hcCoreUp?: () => boolean } = {}): Promise<SessionInfo[]> => {
   const required = new Set<RuntimeKind>();
-  for (const lane of options.lanes ?? []) if (lane.sessionRef) rts.for(lane.sessionRef);
-  for (const lane of options.requiredLanes ?? options.lanes ?? []) if (lane.sessionRef) required.add(lane.sessionRef.runtime);
+  for (const lane of options.lanes ?? []) if (lane.sessionRef) {
+    rts.for(lane.sessionRef);
+    required.add(lane.sessionRef.runtime);
+  }
   if (options.lead) {
     rts.for(options.lead);
     required.add(options.lead.runtime);
@@ -51,7 +57,8 @@ export const listSessions = async (rts: Runtimes, options: { readonly group?: st
     if (rts.kinds().length === 0) throw e;
   }
   const out: SessionInfo[] = [];
-  for (const kind of rts.kinds()) try {
+  for (const kind of rts.kinds().filter((k) => required.has(k))) {
+    if (kind === "hc" && options.hcCoreUp && !options.hcCoreUp()) throw new RuntimeDormant("hc core not running; boot does not start it");
     const rt = rts.for({ runtime: kind, id: "" });
     const sessions = await rt.list(options.group === undefined ? undefined : { group: options.group });
     if (kind !== "hc" || !options.groups?.length) {
@@ -64,8 +71,6 @@ export const listSessions = async (rts: Runtimes, options: { readonly group?: st
       const group = session.ref.group ?? groupById.get(session.ref.id);
       return { ...session, ref: { ...session.ref, ...(group ? { group } : {}) } };
     }));
-  } catch (error) {
-    if (required.has(kind)) throw error;
   }
   return out;
 };

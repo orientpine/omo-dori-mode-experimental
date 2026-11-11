@@ -169,3 +169,19 @@ The next reviewed head `f8e4e8ae` received two follow-up BLOCK findings. Failing
 Implementation: launch renders the report command with `env DORI_CONFIG=<originating config> DORI_STATE_DIR=<originating stateDir>`, without forwarding `DORI_ENV_FILE` into shared runtime command lines. Structured relay now renders `progress.lastReport` after the supervision reread, so it quotes the current blocker instead of the pre-supervision milestone and works when the journal began with activity only.
 
 Verification: all prior and new owner and adjacent suites completed with **357 pass, 0 fail** across 27 files. The spawned-CLI case starts with no DORI selectors, uses an unrelated cwd and writes only into the non-default state's journal. The transition cases assert the actual lead text for a replaced milestone and for supervision's first blocker. Strict TypeScript passed. The final full CI completed with **2100 pass, 37 pre-existing skips, 0 fail** across 2137 tests in 172 files, with Biome, strict typecheck, knip, and `LOC_OK 383 files`.
+
+## Fork PR 436 review round 8
+
+The next reviewed head `e4aec033` received two follow-up BLOCK findings. Failing-first evidence in `/tmp/tmp.YSFgdiewgX/review-436-r8/eighth-red.log` shows **2 of 3 fail** on the unchanged base: the report command started with `env` on native Windows, and relative `DORI_CONFIG`/state selectors were embedded as given.
+
+Implementation: the footer report command is rendered with the platform-aware `agentLine` (PowerShell `Set-Item` assignments and call-operator argv on Windows), and both selectors are resolved against the launching cwd before they are embedded.
+
+Verification: `eighth-green.log` **3 pass, 0 fail**; the spawned PowerShell case runs where pwsh exists (the windows workflow, or `PWSH_TEST_BIN`) and ran here with PowerShell 7.4.6. The final full CI completed with **2102 pass, 37 pre-existing skips, 0 fail** across 2139 tests in 172 files, with `LOC_OK 383 files`.
+
+## Fork PR 436 review round 9
+
+The next reviewed head `a44309be` received one BLOCK finding: boot listed runtimes that only closed lanes name, and any hc call starts a stopped core, so a read-only boot could start one. Failing-first evidence in `/tmp/tmp.YSFgdiewgX/review-436-r9/ninth-red.log` shows **3 of 3 fail** on the unchanged base (`hc --json ls` and `hc --json get t5` against a stopped core).
+
+Implementation: `listSessions` lists only required runtimes (open lanes, the selected runtime, the lead). A required hc core is first checked through its socket (`hcCoreRunning`, no hc call); when it is not running, boot prints `PANES unavailable (hc core not running; boot does not start it)` and fails. A runtime only closed lanes name is not called at all.
+
+Verification: `ninth-green.log` **4 pass, 0 fail**; boot/sessions/reconcile suites **63 pass, 0 fail**; strict typecheck green. The final full CI completed with **2105 pass, 37 pre-existing skips, 0 fail** across 2142 tests in 172 files, with `LOC_OK 383 files`.

@@ -1,4 +1,4 @@
-import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { envFileEntries, envFilePath } from "./config-env.ts";
 
@@ -39,6 +39,11 @@ export const doriCore = (path: string = envFilePath()): string | undefined => {
     return undefined;
   }
 };
+
+// hc's core makes its socket at $XDG_RUNTIME_DIR/herdr-core/<core>.sock and removes it when it stops; read without an hc
+// call, since any hc call starts a core (as setups/doriterm/bridge.ts coreRunning)
+export const hcCoreRunning = (core: string | undefined = doriCore(), env: Readonly<Record<string, string | undefined>> = process.env): boolean =>
+  existsSync(join(env["XDG_RUNTIME_DIR"] || `/run/user/${process.getuid?.() ?? 0}`, "herdr-core", `${core ?? "default"}.sock`));
 
 // A hook such as ["dori", "thread", "reply", ...] names the dori command. On native Windows that command is dori.ps1,
 // which Bun.spawn cannot start, so the hook runs this CLI with this Bun directly (no shell, the arguments as they are).
