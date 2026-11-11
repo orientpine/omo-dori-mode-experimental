@@ -36,7 +36,7 @@ test("the plain poll shapes of real monitors stay watches the new session may ar
     "until [ \"$(sha256sum /opt/g/gate.py | cut -d' ' -f1)\" = a231 ]; do sleep 30; done; echo G $(systemctl is-active g.service) $(journalctl -u g -n 20 --no-pager | grep -c READY)",
     "while true; do a=$(GH_PAGER=cat gh pr view 1 -R o/r --json state -q .state 2>/dev/null); if [ \"$a\" = MERGED ]; then echo M; break; fi; sleep 1800; done",
     "last=\"\"; while true; do r=$(gh api repos/o/r/pulls/435/reviews --jq length 2>/dev/null); if [ -z \"$last\" ]; then last=\"$r\"; elif [ \"$r\" != \"$last\" ]; then break; fi; sleep 15; done",
-    "id=$(gh run list -R o/r --branch b --limit 5 --json databaseId -q '.[0].databaseId'); gh run watch $id -R o/r --interval 30 >/dev/null 2>&1; gh pr checks 42 -R o/r 2>&1 | awk '{print $1\"=\"$2}' | sed 's/^/R5: /'",
+    "gh run list -R o/r --branch b --limit 5 --json databaseId -q '.[0].databaseId'; gh run watch 7 -R o/r --interval 30 >/dev/null 2>&1; gh pr checks 42 -R o/r 2>&1 | awk '{print $1\"=\"$2}' | sed 's/^/R5: /'",
     "until ! kill -0 1234; do sleep 5; done; grep -c PASS < /tmp/x.log",
   ]) {
     expect([command, launchOf(command, HOME, () => undefined)]).toEqual([command, undefined]);
@@ -89,6 +89,9 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "gh api repos/o/r/issues/414/comments $(printf '%s' '-X POST')",
     "x=$(cat /tmp/f); git log -1 --format=$x",
     "id=$(gh run list -R o/r --json databaseId -q '.[0].databaseId'); gh run watch $id -R o/r",
+    "x=$(git rev-parse --output=/tmp/f HEAD); git log $x",
+    "x=$(git rev-parse HEAD); x=$(cat /tmp/f); git log $x",
+    "x=$(git rev-parse HEAD); gh api repos/o/r $x",
   ]) rejectsSameCommand(command);
 });
 
