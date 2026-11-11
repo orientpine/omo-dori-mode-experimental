@@ -92,6 +92,11 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "x=$(git rev-parse --output=/tmp/f HEAD); git log $x",
     "x=$(git rev-parse HEAD); x=$(cat /tmp/f); git log $x",
     "x=$(git rev-parse HEAD); gh api repos/o/r $x",
+    // the shell expands braces and globs into more words too (dori tree H263, H264), and printf -v sets a variable
+    "git log {--output=/tmp/x,HEAD}",
+    "git log -1 *",
+    "tail -F /tmp/-*",
+    "printf -v PATH /tmp/e; grep x /tmp/f",
   ]) rejectsSameCommand(command);
 });
 
