@@ -39,13 +39,20 @@ same interval. While attached it reads the lead again at that interval (at most 
 row ends its own client (never a terminal: the old lead stays frozen as the handover left it) and attaches the new lead, an
 hc or a herdr one. The bridge only attaches: it types
 nothing and focuses no pane. hc runs its core as its own systemd user service (`systemd-run`), outside this unit, so
-`ExecStopPost` runs `bridge.ts stop`, which ends and removes only the bridge rows it lists (a row of a bridge's name
-counts only when it is this machine's terminal, `tN`, and `hc get` shows it runs exactly that bridge's `attach.sh`
+`ExecStopPost` runs `bridge.ts stop`, which ends and removes only the bridge rows it lists (a row
+counts only when it is this machine's terminal, `tN`, carries `dori.doriterm=bridge` and `dori.row=<configured name>`,
+and `hc get` shows it runs exactly that bridge's `attach.sh`
 command; any other or unreadable row, and a mesh machine's `<machine>/tN` of the same name, is left alone, and start
 looks at the same rows) and leaves the core running:
 once the account's own Dori runs on hc, however it chose hc, that core also holds its lead and lanes. With no core running
 (no `$XDG_RUNTIME_DIR/herdr-core/<HC_SESSION or default>.sock`) it asks hc nothing, so it starts none. The unit drops `HERDR_PANE_ID` and the other pane variables so a unit started from a herdr pane does not pass
 the pane's identity to the client.
+
+Old unlabeled bridges with the configured name and exact command are still kept and stopped, so upgrading does not
+duplicate or leak running clients. New bridges always carry the two labels. When a Dori terminal holds the configured
+name, it stays untouched and the bridge starts as `<name>-row` (then `-row-2`, etc. if occupied, trimming the prefix
+to hc's 32-character limit). Other configured row names are reserved. Labels find that bridge on later timer runs,
+even if it was renamed; hc 0.1.18 prints labels and argv only in `get --json`, so discovery reads each local record.
 
 ## Web app
 
@@ -109,8 +116,19 @@ row whose focus file was removed says "the lead tab was not focused" and still a
 server, so the row stays. With `loginctl enable-linger` on the host account the units come back after a reboot.
 
 A paired device now reaches every listed account's herdr, where it can type into the lead and lanes and open panes:
-the same reach the host account already has through sudo, now from the paired phone. Remove a Dori from the list and
-`hc kill <name>` to take its row away. A harmless check that a row's input reaches its herdr: `ctrl+b` shows
+the same reach the host account already has through sudo, now from the paired phone. To take a Dori's row away, so the minute timer cannot bring it back halfway: stop the timer (and a refresh that
+is running), remove the row from `bridges.env`, stop just that row with its own `name[:account]`, then start the timer again:
+
+```sh
+systemctl --user stop doriterm-bridges.timer doriterm-bridges.service
+# edit ~/.config/doriterm/bridges.env: remove okdori:okdori
+DORITERM_BRIDGES="okdori:okdori" ~/.bun/bin/bun ~/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts stop
+systemctl --user start doriterm-bridges.timer
+```
+
+`stop` ends and removes only a terminal that carries that row's labels and runs exactly its command, under `<name>` or
+a fallback such as `<name>-row`. Never `hc kill <name>`: the name may be held by a Dori's own lane, while the row runs
+under its fallback. A harmless check that a row's input reaches its herdr: `ctrl+b` shows
 herdr's `PREFIX` bar and `Esc` cancels it; neither reaches the pane (Esc outside the prefix bar does).
 
 ## Other machines: one mesh
