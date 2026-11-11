@@ -162,7 +162,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     const due = lane.reportProtocol === "jsonl-v1" ? (current.lastAutoReplyAt ?? 0) <= heard : (current.lastAutoReplyAt ?? 0) < heard;
     if (progress?.state !== "stalled" && threadQuietMin >= deps.config.postAfterMin && lane.thread !== "none" && due) {
       // a report seen before still stands once it left the screens; only a lane never heard from is NO-REPORT
-      const known = lane.reportProtocol === "jsonl-v1" ? report : report ?? current.lastReport;
+      const known = lane.reportProtocol === "jsonl-v1" ? (progress?.lastReport ? reportLine(progress.lastReport) : null) : report ?? current.lastReport;
       if (!known) {
         acts.push({ kind: "no-report", lane: lane.key, detail: lane.reportProtocol === "jsonl-v1" ? "report journal has no report" : "pane has no [REPORT] line" });
         continue;

@@ -50,7 +50,26 @@ test("a running lane becomes blocked at its cap without a nudge in that sweep", 
     expect(acts.map((a) => a.kind)).toEqual(["lane_cap", "lead-told"]);
     expect(acts.filter((a) => a.kind === "nudged")).toEqual([]);
     expect(reports.read(working.key)?.state).toBe("blocked");
+    const leadText = typed(world.calls, "lead:p1").join("\n");
+    expect(leadText).toContain("Last report: [REPORT] quiet-lane | blocker | wallMinutes ceiling reached (5)");
+    expect(leadText).not.toContain("Last report: [REPORT] quiet-lane | milestone | started");
     expect(typed(world.calls, "w:p7")).toEqual([]);
+  } finally { state.done(); }
+});
+
+test("an activity-only journal relays supervision's first blocker with its actual text", async () => {
+  const state = withState();
+  try {
+    const world = newWorld();
+    world.screen = "Working (1m)\n❯ ";
+    const deps = depsFor(world, fakeClock(T0 + 6 * 60_000), state.dir, { nudgeAfterMin: 1, postAfterMin: 1, supervision: { ...defaultSupervision(), defaults: { wallMinutes: 5 } } });
+    await deps.registry.write({ ...working, reportProtocol: "jsonl-v1" });
+    const reports = new Reports(state.dir);
+    reports.append({ type: "activity", key: working.key, at: new Date(T0).toISOString(), state: "running", text: "lane launched in w:p7" });
+    const acts = await freshnessTick(deps, "/home/test");
+    expect(acts.map((a) => a.kind)).toEqual(["lane_cap", "lead-told"]);
+    expect(typed(world.calls, "lead:p1").join("\n")).toContain("Last report: [REPORT] quiet-lane | blocker | wallMinutes ceiling reached (5)");
+    expect(reports.read(working.key)?.lastReport?.text).toBe("wallMinutes ceiling reached (5)");
   } finally { state.done(); }
 });
 
