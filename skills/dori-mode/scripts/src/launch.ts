@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { rmSync } from "node:fs";
 import { laneEnv } from "./aoe.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { omoSession, readScreen } from "./panes.ts";
@@ -73,7 +74,11 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const opened = await (deps.config.backend === "aoe"
     ? openAoe(deps, input.key, cwd, model, prompt, env, async (pane) => beforeStart({ pane }))
     : openHerdr(deps, input.key, cwd, model, prompt, env, beforeStart)
-  ).catch((e: unknown) => {
+  ).catch(async (e: unknown) => {
+    if (seeded && deps.config.backend !== "aoe") {
+      rmSync(deps.registry.path(input.key), { force: true });
+      rmSync(new Reports(deps.config.stateDir).path(input.key), { force: true });
+    }
     throw e instanceof LaunchFailed && openedThread ? new LaunchFailed(e.message, openedThread) : e;
   });
   const arm = assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
