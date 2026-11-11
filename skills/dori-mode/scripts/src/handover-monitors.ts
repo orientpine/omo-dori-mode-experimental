@@ -69,13 +69,14 @@ export const workEnded = (work: readonly Work[], alive: (pid: number) => boolean
 // its script from stdin, and the first other word is the script. A script found in ssh's remote words runs on another
 // host (remote): a local file of that name says nothing about it (#414 review 18). Every o or O in a short option, also
 // combined (-euo pipefail), takes the next word as its value. A shell with -s or no script reads its script from its
-// last input redirection (< file), which is returned as its script, remote under ssh (dori challenge of review 18).
+// last input redirection (< file), which is returned as its script, remote under ssh (dori challenge of review 18),
+// marked stdin: such a shell runs whatever that file holds, so it starts work (#414 review 19).
 const SHELL = /^(?:ba|z|da|k)?sh$/;
 const WRAP = /^(?:sudo|env|nohup|exec|time|nice|setsid|stdbuf|timeout)$/;
 // the options of each wrapper that take a value (sudo -n takes none, nice -n does)
 const WRAP_ARG: Record<string, RegExp> = { sudo: /^-[ugCDhprtU]$/, env: /^-[uCS]$/, nice: /^-n$/, timeout: /^-[sk]$/, stdbuf: /^-[ioe]$/ };
 const SSH_ARG = /^-[bcDEeFIiJLlmOoPpQRSWw]$/;
-export type ShellScript = { readonly path: string; readonly remote: boolean };
+export type ShellScript = { readonly path: string; readonly remote: boolean; readonly stdin: boolean };
 type Words = { readonly argv: string[]; readonly inputs: string[] };
 const shellWords = (text: string): Words[] => {
   const cmds: Words[] = [{ argv: [], inputs: [] }];
@@ -159,9 +160,9 @@ export const shellScripts = (command: string, depth = 0, remote = false): ShellS
               } else break;
             }
             if (string) return shellScripts(argv[k] ?? "", depth + 1, remote);
-            const fed = inputs.slice(-1).map((path) => ({ path, remote }));
+            const fed = inputs.slice(-1).map((path) => ({ path, remote, stdin: true }));
             if (stdin) return fed;
-            return argv[k] ? [{ path: argv[k] ?? "", remote }] : fed;
+            return argv[k] ? [{ path: argv[k] ?? "", remote, stdin: false }] : fed;
           } else return [];
         }
       });
