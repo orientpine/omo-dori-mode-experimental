@@ -8,11 +8,14 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameS
 import { dirname, join } from "node:path";
 import { configPath, envFilePath, loadConfig, loadEnvFile, resolveInstance } from "../../scripts/src/config.ts";
 import { newAttempt, noteUneyed, readUneyed } from "../../scripts/src/messenger/slack.ts";
+import { slackToken, TokenFileError } from "../../scripts/src/slack-token.ts";
 import type { LedgerThread } from "../../scripts/src/messenger/thread-ledger.ts";
 
 export type SlackWatchOptions = {
   readonly appToken: string;
   readonly botToken: string;
+  // why the bot token file cannot be used (#201), naming the path, never the value
+  readonly botTokenProblem?: string;
   readonly owner: readonly string[];
   // the Dori's names, as DORI_KAKAO_MENTION is for KakaoTalk: a person's message holding one wakes the lead like a mention
   readonly mention: RegExp | null;
@@ -23,9 +26,19 @@ export type SlackWatchOptions = {
   readonly uneyed: string;
 };
 
+// The bot token as every dori command reads it (#201): DORI_SLACK_TOKEN, else the file DORI_SLACK_TOKEN_FILE names, which is
+// what a lane or a handed-over or revived lead gets (the variable blanked).
+const botTokenOf = (env: Record<string, string | undefined>): { readonly botToken: string; readonly botTokenProblem?: string } => {
+  try {
+    return { botToken: slackToken(env)?.trim() ?? "" };
+  } catch (e) {
+    return { botToken: "", botTokenProblem: e instanceof TokenFileError ? e.message : "DORI_SLACK_TOKEN_FILE cannot be read" };
+  }
+};
+
 export const slackWatchOptions = (env: Record<string, string | undefined>, stateDir: string): SlackWatchOptions => ({
   appToken: env["DORI_SLACK_APP_TOKEN"]?.trim() ?? "",
-  botToken: env["DORI_SLACK_TOKEN"]?.trim() ?? "",
+  ...botTokenOf(env),
   owner: (env["DORI_SLACK_OWNER_ID"] ?? "").split(",").map((x) => x.trim()).filter(Boolean),
   mention: env["DORI_SLACK_MENTION"]?.trim() ? new RegExp(env["DORI_SLACK_MENTION"].trim(), "i") : null,
   api: env["DORI_SLACK_API"]?.trim() || "https://slack.com/api",
@@ -35,12 +48,14 @@ export const slackWatchOptions = (env: Record<string, string | undefined>, state
 });
 
 // Why the watcher cannot run yet, or "" when both tokens are there. Only the prefix is checked, never printed whole.
-export const missingTokens = (o: Pick<SlackWatchOptions, "appToken" | "botToken">): string =>
+export const missingTokens = (o: Pick<SlackWatchOptions, "appToken" | "botToken" | "botTokenProblem">): string =>
   !o.appToken
     ? "DORI_SLACK_APP_TOKEN is not set"
     : !o.appToken.startsWith("xapp-")
       ? "DORI_SLACK_APP_TOKEN is not an app-level token (xapp-)"
-      : !o.botToken
+      : o.botTokenProblem
+        ? o.botTokenProblem
+        : !o.botToken
         ? "DORI_SLACK_TOKEN is not set"
         : !o.botToken.startsWith("xoxb-")
           ? "DORI_SLACK_TOKEN is not a bot token (xoxb-): this watcher never uses a member's token"

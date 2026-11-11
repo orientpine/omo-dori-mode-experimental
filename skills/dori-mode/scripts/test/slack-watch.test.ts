@@ -7,6 +7,7 @@ import { missingTokens, runSocket, slackWatchOptions, startWatch, writeEnvValues
 import { MessengerError } from "../src/messenger/http.ts";
 import { clearEyes, readUneyed } from "../src/messenger/slack.ts";
 import { run } from "../src/run.ts";
+import { slackEnvFile } from "./fakes.ts";
 
 const WATCH = join(import.meta.dir, "..", "..", "setups", "discord-aoe", "slack-watch.ts");
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
@@ -159,8 +160,7 @@ test("a DM to the bot is acked, becomes one inbox row and one SLACK_MSG line, an
 
   // When the lead answers a channel mention in its thread through dori send slack
   const state = scratch();
-  const sent = await run(["env", `DORI_CONFIG=${join(state, "missing.json")}`, `DORI_STATE_DIR=${state}`, `DORI_ENV_FILE=${join(state, "missing.env")}`, `DORI_SLACK_TOKEN=${BOT}`, `DORI_SLACK_API=${slack.api}`,
-    "bun", CLI, "send", "slack", "--to", "C1", "--thread", "1700000000.000200", "--text", "네, 확인할게요"]);
+  const sent = await run(["env", `DORI_CONFIG=${join(state, "missing.json")}`, `DORI_STATE_DIR=${state}`, `DORI_ENV_FILE=${slackEnvFile(state, BOT, slack.api)}`, "bun", CLI, "send", "slack", "--to", "C1", "--thread", "1700000000.000200", "--text", "네, 확인할게요"]);
   // Then the post is the bot's, in that thread
   expect(sent.code).toBe(0);
   expect(slack.calls.filter((c) => c.method === "chat.postMessage")).toEqual([{ method: "chat.postMessage", auth: `Bearer ${BOT}`, body: { channel: "C1", text: "네, 확인할게요", thread_ts: "1700000000.000200" } }]);
@@ -251,7 +251,7 @@ test("an app without reactions:write logs SLACK_REACT_SKIPPED once and stops ask
 // dori send slack in the watcher's own state dir, as the lead answers
 const send = (w: { o: { threads: string } }, slack: ReturnType<typeof fakeSlack>, args: string[], token = BOT) => {
   const state = dirname(w.o.threads);
-  return run(["env", `DORI_CONFIG=${join(state, "missing.json")}`, `DORI_STATE_DIR=${state}`, `DORI_ENV_FILE=${join(state, "missing.env")}`, `DORI_SLACK_TOKEN=${token}`, `DORI_SLACK_API=${slack.api}`, "bun", CLI, "send", "slack", ...args]);
+  return run(["env", `DORI_CONFIG=${join(state, "missing.json")}`, `DORI_STATE_DIR=${state}`, `DORI_ENV_FILE=${slackEnvFile(state, token, slack.api)}`, "bun", CLI, "send", "slack", ...args]);
 };
 const unreacted = (slack: ReturnType<typeof fakeSlack>) => slack.calls.filter((c) => c.method === "reactions.remove").map((c) => `${String(c.body["channel"])} ${String(c.body["timestamp"])} ${String(c.body["name"])} ${c.auth === `Bearer ${BOT}` ? "bot" : c.auth}`);
 

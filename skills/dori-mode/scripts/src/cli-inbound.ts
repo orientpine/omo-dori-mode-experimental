@@ -11,7 +11,7 @@ import { Telegram } from "./messenger/telegram.ts";
 import { DiscordListener } from "./messenger/discord-listener.ts";
 import { realTimers } from "./messenger/typing.ts";
 import type { Command } from "./cli-context.ts";
-import { die, every } from "./cli-context.ts";
+import { die, envSlackToken, every } from "./cli-context.ts";
 import { makeDiscordDeps } from "./cli-deps-discord.ts";
 import { makeDirectiveDeps } from "./cli-deps-directives.ts";
 
@@ -100,7 +100,7 @@ const inboundCommand: Command = async (context) => {
     return;
   }
   if (key !== "slack") die("inbound supports slack, discord and telegram");
-  const auth = { token: process.env["DORI_SLACK_TOKEN"] ?? die("DORI_SLACK_TOKEN is not set"), cookie: process.env["DORI_SLACK_COOKIE"] };
+  const auth = { token: envSlackToken(), cookie: process.env["DORI_SLACK_COOKIE"] };
   const ledger = new ThreadLedger(`${config.stateDir}/slack-threads.json`);
   const slack = new Slack(fetchHttp, realClock, auth, process.env["DORI_SLACK_API"]?.trim() || undefined, ledger);
   const me = String((await slack.call("auth.test", {}))["user_id"] ?? die("auth.test returned no user_id"));

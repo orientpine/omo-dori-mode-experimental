@@ -38,13 +38,14 @@ test("real Slack CLI preserves long text and context while warning once across t
   let child: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
   try {
     await Bun.write(join(state.dir, "config.json"), "{}");
-    await Bun.write(join(state.dir, "dori.env"), "");
+    // Slack settings come only from dori.env (#201 review 5)
+    await Bun.write(join(state.dir, "dori.env"), `DORI_SLACK_TOKEN=xoxb-fake\nDORI_SLACK_API=${server.url.toString().replace(/\/$/, "")}\n`);
     const ledgerFile = join(state.dir, "slack-threads.json");
     await new ThreadLedger(ledgerFile).record("C1", "1.1", "1.1");
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DORI_")));
     child = Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "slack-inbound-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "inbound", "slack", "--loop", "1"], {
       cwd: state.dir,
-      env: { ...env, HOME: state.dir, DORI_CONFIG: join(state.dir, "config.json"), DORI_ENV_FILE: join(state.dir, "dori.env"), DORI_STATE_DIR: state.dir, DORI_SLACK_TOKEN: "xoxb-fake", DORI_SLACK_API: server.url.toString().replace(/\/$/, "") },
+      env: { ...env, HOME: state.dir, DORI_CONFIG: join(state.dir, "config.json"), DORI_ENV_FILE: join(state.dir, "dori.env"), DORI_STATE_DIR: state.dir },
       stdin: "ignore", stdout: "pipe", stderr: "pipe",
       timeout: 20_000, killSignal: "SIGKILL",
     });

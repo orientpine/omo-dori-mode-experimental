@@ -15,7 +15,7 @@ import { leadNow } from "./hc-pane.ts";
 import { guardTick, outsideLines, sampleHost, sampleOutside } from "./host-guard.ts";
 import { areaLabel, type AreaQuery, areaSignals, formatSignals } from "./lane-signals.ts";
 import { statusOf } from "./registry.ts";
-import { bootCheck, slackAuthCheck } from "./boot.ts";
+import { bootCheck, envSlackCheck } from "./boot.ts";
 import { Reports } from "./reports.ts";
 import { Worklog } from "./worklog.ts";
 import { Slack } from "./messenger/slack.ts";
@@ -55,8 +55,6 @@ const updateCommand: Command = async (context) => {
 
 const bootCommand: Command = async (context) => {
   const { deps } = context;
-  const token = process.env["DORI_SLACK_TOKEN"];
-  const slack = token ? new Slack(fetchHttp, realClock, { token, cookie: process.env["DORI_SLACK_COOKIE"] }, process.env["DORI_SLACK_API"]?.trim() || undefined) : null;
   const sessionDirs = [process.env["PI_SESSION_DIR"], process.env["PI_SESSION_FILE"] && dirname(process.env["PI_SESSION_FILE"])];
   const result = await bootCheck({
     ...deps,
@@ -64,7 +62,8 @@ const bootCommand: Command = async (context) => {
     worklog: new Worklog(deps.config.stateDir),
     rts: runtimesOf(deps.run, { runtime: deps.config.runtime }),
     hcCoreUp: () => hcCoreRunning(),
-    slack: slackAuthCheck(slack),
+    // a bad token file is a failed boot line, not an exit: boot is the read-only report a fresh lead depends on (#201)
+    slack: envSlackCheck((token) => new Slack(fetchHttp, realClock, { token, cookie: process.env["DORI_SLACK_COOKIE"] }, process.env["DORI_SLACK_API"]?.trim() || undefined)),
     monitorDirs: sessionDirs.flatMap((dir) => (dir ? [join(dir, "extensions", "terminal")] : [])),
   });
   for (const line of result.lines) console.log(line);

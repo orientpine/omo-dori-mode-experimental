@@ -44,12 +44,12 @@ test("the discord-aoe setup's config loads as the aoe backend with built-in thre
   expect((await loadConfig("/nonexistent/config.json", "/home/ana")).discord.statusStyle).toBe("words");
 });
 
-test("the env file fills unset variables only, skips comments and strips quotes", async () => {
+test("the env file fills its values, skips comments and strips quotes; an inherited instance value never wins over it (#201 review 7)", async () => {
   const file = join(state.dir, "dori.env");
   writeFileSync(file, "# Discord\nDORI_DISCORD_OWNER=111\nDORI_DISCORD_CHANNEL='222'\nexport_me=x\nDORI_DISCORD_TOKEN=from-file\n");
   const env: Record<string, string | undefined> = { DORI_DISCORD_OWNER: "from-env" };
   await loadEnvFile(file, env);
-  expect(env).toEqual({ DORI_DISCORD_OWNER: "from-env", DORI_DISCORD_CHANNEL: "222", DORI_DISCORD_TOKEN: "from-file" });
+  expect(env).toEqual({ DORI_DISCORD_OWNER: "111", DORI_DISCORD_CHANNEL: "222", DORI_DISCORD_TOKEN: "from-file" });
   await loadEnvFile(join(state.dir, "missing.env"), env);
 });
 
@@ -121,7 +121,7 @@ test("every key the config loader knows is documented, and every DORI_ variable 
   const read = new Set<string>();
   for (const file of sources) for (const m of (await Bun.file(join(root, file)).text()).matchAll(/\bDORI_[A-Z0-9_]*[A-Z0-9]\b/g)) read.add(m[0]);
   // log-line tags, not variables
-  for (const tag of ["DORI_ENV_FOREIGN", "DORI_SHELL_CHECK_PASS"]) read.delete(tag);
+  for (const tag of ["DORI_SHELL_CHECK_PASS"]) read.delete(tag);
   // When
   // instances is [] by default, so its entry fields come from a sample; the discord words are documented by their bare names in the discord row
   const keys = [...knownConfigKeys(), ...configKeys({ instances: [{ config: "", envFile: "" }] })];

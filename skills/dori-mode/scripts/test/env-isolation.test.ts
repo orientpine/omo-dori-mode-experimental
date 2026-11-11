@@ -49,8 +49,8 @@ test("a Dori whose wrapper names its own dori.env posts with its own token under
     okdoriHome(state.dir, `DORI_DISCORD_TOKEN=${tok(OK)}\nDORI_DISCORD_CHANNEL=ok-channel\nDORI_DISCORD_PAIR_BOT=${ZZANG}\n`);
     const r = await sendFrom(state.dir, { ...zzangEnv(state.dir), ...okSelectors(state.dir) });
     expect({ code: r.code, out: r.out.split(" ").slice(0, 2).join(" "), auth: r.auth }).toEqual({ code: 0, out: "SENT 900", auth: [`Bot ${tok(OK)}`] });
-    expect(r.err).toContain("DORI_ENV_FOREIGN");
-    expect(r.err).toContain("DORI_DISCORD_INBOX");
+    // no inherited instance value is ever read (#201 review 7), so nothing is reported as dropped either
+    expect(r.err).not.toContain("DORI_ENV_FOREIGN");
   } finally {
     state.done();
   }
@@ -76,8 +76,9 @@ for (const [label, envFile, botId, inheritedAll, reason] of [
   test(`dori send refuses, before any request, a token that is not ${label}`, async () => {
     const state = withState();
     try {
-      okdoriHome(state.dir, envFile, botId);
-      const inherited = inheritedAll ? zzangEnv(state.dir) : { DORI_DISCORD_TOKEN: tok(ZZANG) };
+      // the wrong token is in this Dori's own dori.env: an inherited one is never read (#201 review 7)
+      okdoriHome(state.dir, `${envFile}DORI_DISCORD_TOKEN=${tok(ZZANG)}\n`, botId);
+      const inherited = inheritedAll ? zzangEnv(state.dir) : {};
       const r = await sendFrom(state.dir, { ...inherited, ...okSelectors(state.dir) });
       expect({ code: r.code, out: r.out, auth: r.auth }).toEqual({ code: 2, out: "", auth: [] });
       expect(r.err).toContain(`DISCORD_BOT_MISMATCH DORI_DISCORD_TOKEN ${reason}`);
@@ -87,21 +88,19 @@ for (const [label, envFile, botId, inheritedAll, reason] of [
   });
 }
 
-test("an inherited value of the same Dori (a rotated token of the same bot included) still wins over its file; another Dori's instance values are dropped", async () => {
+test("no inherited instance value wins over this Dori's file, its own or another Dori's (#201 review 7); selectors and run knobs stay", async () => {
   const state = withState();
   try {
     const file = join(state.dir, "dori.env");
     writeFileSync(file, `DORI_DISCORD_TOKEN=${tok(OK)}\nDORI_DISCORD_CHANNEL=ok-channel\n`);
     const rotated = tok(OK).replace(".fake.token", ".rotated.secret");
     const same: Record<string, string | undefined> = { DORI_DISCORD_TOKEN: rotated, DORI_DISCORD_INBOX: "/override/inbox.jsonl" };
-    const sameDropped = await loadEnvFile(file, same);
+    await loadEnvFile(file, same);
     const other: Record<string, string | undefined> = { ...zzangEnv(state.dir), DORI_KAKAO_SELF_ID: "another-account", DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane", DORI_DISCORD_SHADOW_INBOX: "/shadow.jsonl" };
-    const otherDropped = await loadEnvFile(file, other);
-    expect({ same, sameDropped, other, otherDropped: otherDropped.sort() }).toEqual({
-      same: { DORI_DISCORD_TOKEN: rotated, DORI_DISCORD_INBOX: "/override/inbox.jsonl", DORI_DISCORD_CHANNEL: "ok-channel" },
-      sameDropped: [],
+    await loadEnvFile(file, other);
+    expect({ same, other }).toEqual({
+      same: { DORI_DISCORD_TOKEN: tok(OK), DORI_DISCORD_CHANNEL: "ok-channel" },
       other: { DORI_DISCORD_TOKEN: tok(OK), DORI_DISCORD_CHANNEL: "ok-channel", DORI_CONFIG: "/ok/config.json", DORI_LEAD_PANE: "aoe_okdori_1", DORI_CLOSING_LANE: "lane", DORI_DISCORD_SHADOW_INBOX: "/shadow.jsonl" },
-      otherDropped: [...Object.keys(zzangEnv(state.dir)), "DORI_KAKAO_SELF_ID"].sort(),
     });
   } finally {
     state.done();

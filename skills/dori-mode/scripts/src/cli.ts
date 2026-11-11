@@ -47,8 +47,7 @@ import { directivesCommands } from "./cli-directives.ts";
 import { journalCommands } from "./cli-journal.ts";
 
 await resolveInstance(process.cwd());
-const foreignEnv = await loadEnvFile(envFilePath());
-if (foreignEnv.length) console.error(`DORI_ENV_FOREIGN dropped ${foreignEnv.length} inherited variables of another Dori (its bot token differs from ${envFilePath()}): ${foreignEnv.join(" ")}`);
+await loadEnvFile(envFilePath());
 const config = await loadConfig().catch((e: unknown) => (e instanceof ConfigError ? die(`CONFIG_INVALID ${e.message}`, 2) : Promise.reject(e)));
 useConfiguredRuntime(config.runtime);
 useDoriState({ stateDir: config.stateDir, configPath: configPath() });

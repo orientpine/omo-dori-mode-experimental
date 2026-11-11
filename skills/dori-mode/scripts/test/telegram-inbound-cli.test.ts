@@ -2,7 +2,7 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileTgInboundStore, pollTelegramInbound, writeLineSync } from "../src/messenger/telegram-inbound.ts";
-import { withState } from "./fakes.ts";
+import { withState, viaEnvFile } from "./fakes.ts";
 import { GROUP, mk, msg, OWNER, telegramFake, type U } from "./telegram-inbound-setup.ts";
 
 setDefaultTimeout(30_000); // load-proof: the CLI tests here start dori inbound telegram (bun src/cli.ts) as a child process; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
@@ -22,7 +22,7 @@ const inbound = async (vars: Record<string, string>, tail = "", batch: U[] = [{ 
   writeFileSync(join(dir, "batch.json"), JSON.stringify(batch));
   const argv = ["bun", "--preload", join(import.meta.dir, "telegram-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "inbound", "telegram"];
   const p = Bun.spawn(["bash", "-c", `"$@"${tail}`, "inbound", ...argv], {
-    env: { ...inherited, DORI_CONFIG: join(dir, "config.json"), DORI_ENV_FILE: join(dir, "missing.env"), DORI_STATE_DIR: join(dir, "state"), DORI_TEST_TG_LOG: log, DORI_TEST_TG_BATCH: join(dir, "batch.json"), DORI_TELEGRAM_TOKEN: "fake", DORI_TELEGRAM_OWNER_ID: String(OWNER), ...vars },
+    env: viaEnvFile({ ...inherited, DORI_CONFIG: join(dir, "config.json"), DORI_ENV_FILE: join(dir, "missing.env"), DORI_STATE_DIR: join(dir, "state"), DORI_TEST_TG_LOG: log, DORI_TEST_TG_BATCH: join(dir, "batch.json"), DORI_TELEGRAM_TOKEN: "fake", DORI_TELEGRAM_OWNER_ID: String(OWNER), ...vars }),
     stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);

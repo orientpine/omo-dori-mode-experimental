@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { viaEnvFile } from "./fakes.ts";
 import { byStartTime, clockFree, dropSidePanel, lastSaid, sessionDir, watchContext } from "../../setups/discord-aoe/session-watch-lib.ts";
 import { loadConfig } from "../src/config.ts";
 import { mapThread } from "../src/messenger/thread-map.ts";
@@ -44,7 +44,7 @@ test("the watcher switches its skipped panes between actual ticks and emits a ma
   const file = join(dir, "config.json");
   writeFileSync(file, JSON.stringify({ stateDir: dir, leadPane: "aoe_old_11111111", ignorePanes: ["aoe_before_33333333"], update: { repo: dir } }));
   mapThread(join(dir, "cards"), "300000000000000003", "11111111-old", "fix login");
-  const env: Record<string, string | undefined> = { ...process.env, DORI_CONFIG: file, DORI_STATE_DIR: dir, DORI_ENV_FILE: join(dir, "missing.env"), DORI_DISCORD_STATE_DIR: join(dir, "cards") };
+  const env: Record<string, string | undefined> = viaEnvFile({ ...process.env, DORI_CONFIG: file, DORI_STATE_DIR: dir, DORI_ENV_FILE: join(dir, "missing.env"), DORI_DISCORD_STATE_DIR: join(dir, "cards") });
   delete env["DORI_LEAD_PANE"];
   const p = Bun.spawn(["bun", "--preload", join(import.meta.dir, "session-watch-cli-fake.ts"), join(import.meta.dir, "../../setups/discord-aoe/session-watch.ts")], { env, stdout: "pipe", stderr: "pipe", timeout: 5000 });
   const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);

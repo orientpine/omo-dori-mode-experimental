@@ -157,7 +157,7 @@ const omoInputBox = (screen: string): boolean => {
 // A server that just started spawns its restored panes a second or two later (pane_not_found until then), and herdr 0.9.5
 // itself starts an omo it recognised (as pi) again with --session <its file> (measured 2026-11-03): the pane is waited
 // for, and an agent already running there only gets the prompt.
-export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriConfig, "stateDir" | "sessionsDir" | "agentCommand" | "defaultModel">, pane: string, prompt: string, type: (pane: string, text: string) => Promise<boolean>): Promise<string> => {
+export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriConfig, "stateDir" | "sessionsDir" | "agentCommand" | "defaultModel">, pane: string, prompt: string, type: (pane: string, text: string) => Promise<boolean>, platform: NodeJS.Platform = process.platform): Promise<string> => {
   const rec = readHerdrSessions(config.stateDir)[pane];
   if (!rec || !argvSessionId(["--session-id", rec.session])) return `REVIVE_FAIL ${pane}: no omo session recorded for this pane (${file(config.stateDir)})`;
   if (!(await herdrSessions(run)).some((s) => s.pane === pane)) return `REVIVE_FAIL ${pane}: herdr has no such pane (its tab was closed); open a new session instead`;
@@ -167,7 +167,8 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
   const selectedHome = homeEnv(config);
   if (!restored) {
     try {
-      await requireHerdrPwsh(run, pane);
+      // the same capability check as a fresh launch: pwsh before 7.5 drops an empty value such as the blanked DORI_SLACK_TOKEN
+      await requireHerdrPwsh(run, pane, platform, Object.entries(selectedHome).flatMap(([k, v]) => (v === "" ? [k] : [])));
     } catch (error) {
       if (error instanceof HerdrShellError) return `REVIVE_FAIL ${pane}: ${error.message}`;
       throw error;
