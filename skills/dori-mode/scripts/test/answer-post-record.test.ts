@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { reconcileRows } from "../src/missed-answers.ts";
@@ -67,6 +67,18 @@ test("a later post of this Dori in the message's own thread or channel counts wi
     await post(dir, inThread.channel, later, at + 60_000);
     await post(dir, inRoom.channel, "1569974345923690548", at + 60_000);
   })).toEqual([]);
+});
+
+test("a message answered by a post record is kept in the answered set like a transcript answer", async () => {
+  const state = withState();
+  try {
+    await post(state.dir, owner.channel, later, at + 61_000, owner.id);
+    const lead = leadLog(state.dir, []);
+    const deps = depsFor(newWorld(), fakeClock(at + 20 * 60_000), state.dir);
+    const result = await reconcileRows({ rows: [owner], cards: [], lead: { pane: "w1:p4C", path: lead.path, title: "lead", text: lead.text }, sessions: [], table: [], deps });
+    expect(result).toEqual({ waiting: [], answeredIds: [owner.id] });
+    expect(JSON.parse(readFileSync(join(state.dir, "lead-answered.json"), "utf8"))).toEqual([owner.id]);
+  } finally { state.done(); }
 });
 
 test("a post that does not answer the message leaves it waiting", async () => {
