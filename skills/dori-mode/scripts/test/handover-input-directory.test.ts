@@ -149,7 +149,7 @@ test("a shell's script operand comes from its words: options with operands, -c s
     // the same watch armed again in the new session counts
     expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual([]);
   }
-  for (const command of ["/bin/bash start.sh", "/usr/bin/env bash start.sh", "bash -O extglob start.sh", "sudo -u oriclaw bash start.sh", "bash -c 'bash start.sh'"]) {
+  for (const command of ["/bin/bash start.sh", "/usr/bin/env bash start.sh", "bash -O extglob start.sh", "sudo -u oriclaw bash start.sh", "sudo -n -u oriclaw -H bash start.sh", "nice -n 5 bash start.sh", "bash -c 'bash start.sh'", "ssh h 'bash start.sh'", "node-dori-do oriclaw bash start.sh"]) {
     const launch = launchOf(command, HOME, () => undefined);
     if (!launch) throw new Error(`not work: ${command}`);
     expect([command, launch.detached]).toEqual([command, true]);

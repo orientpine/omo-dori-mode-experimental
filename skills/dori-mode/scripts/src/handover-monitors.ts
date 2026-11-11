@@ -60,6 +60,96 @@ export const workEnded = (work: readonly Work[], alive: (pid: number) => boolean
   return over(w.pid, w.start) && (w.pids ?? []).every((pid, i) => over(pid, w.starts?.[i]));
 };
 
+// The scripts a command's shells run by name, read from shell words, not a regex (#414 review 17: bash -o pipefail -c took
+// pipefail for a script, and /bin/bash start.sh was no shell). Words split on blanks, quotes and backslashes resolved;
+// ; & | ( ) and newlines start a new command; a redirection and its target are no word. Each command is read past
+// assignments and wrappers (sudo, env, nohup, exec, time, nice, setsid, stdbuf, timeout with their options; node-dori-do
+// and its host; ssh, its options and host, whose remote words are a command again) up to a shell named by any path:
+// options with an operand (-o, +o, -O, +O, --rcfile, --init-file) are skipped, a -c string is a command again, -s reads
+// its script from stdin, and the first other word is the script.
+const SHELL = /^(?:ba|z|da|k)?sh$/;
+const WRAP = /^(?:sudo|env|nohup|exec|time|nice|setsid|stdbuf|timeout)$/;
+// the options of each wrapper that take a value (sudo -n takes none, nice -n does)
+const WRAP_ARG: Record<string, RegExp> = { sudo: /^-[ugCDhprtU]$/, env: /^-[uCS]$/, nice: /^-n$/, timeout: /^-[sk]$/, stdbuf: /^-[ioe]$/ };
+const SSH_ARG = /^-[bcDEeFIiJLlmOoPpQRSWw]$/;
+const SHELL_ARG = /^(?:[-+][oO]|--rcfile|--init-file)$/;
+const shellWords = (text: string): string[][] => {
+  const cmds: string[][] = [[]];
+  let w: string | undefined;
+  let target = false;
+  const end = () => {
+    if (w !== undefined && !target) cmds[cmds.length - 1]?.push(w);
+    if (w !== undefined) target = false;
+    w = undefined;
+  };
+  for (let i = 0; i < text.length; ) {
+    const c = text[i] ?? "";
+    if (c === "'") {
+      const j = text.indexOf("'", i + 1);
+      w = (w ?? "") + text.slice(i + 1, j < 0 ? text.length : j);
+      i = j < 0 ? text.length : j + 1;
+    } else if (c === '"') {
+      let j = i + 1;
+      let s = "";
+      for (; j < text.length && text[j] !== '"'; j++) s += text[j] === "\\" && j + 1 < text.length ? text[++j] : text[j];
+      w = (w ?? "") + s;
+      i = j + 1;
+    } else if (c === "\\") {
+      w = (w ?? "") + (text[i + 1] ?? "");
+      i += 2;
+    } else if (c === "<" || c === ">") {
+      if (w !== undefined && /^\d+$/.test(w)) w = undefined;
+      else end();
+      while (text[i] === "<" || text[i] === ">") i++;
+      if (text[i] === "&") i++;
+      target = true;
+    } else if (/[;&|()\n]/.test(c)) {
+      end();
+      target = false;
+      cmds.push([]);
+      i++;
+    } else if (/\s/.test(c)) {
+      end();
+      i++;
+    } else {
+      w = (w ?? "") + c;
+      i++;
+    }
+  }
+  end();
+  return cmds;
+};
+export const shellScripts = (command: string, depth = 0): string[] =>
+  depth > 4
+    ? []
+    : shellWords(command).flatMap((argv) => {
+        let k = 0;
+        for (;;) {
+          while (/^[A-Za-z_]\w*=/.test(argv[k] ?? "")) k++;
+          const base = (argv[k] ?? "").split("/").pop() ?? "";
+          if (WRAP.test(base)) {
+            for (k++; (argv[k] ?? "").startsWith("-"); ) k += WRAP_ARG[base]?.test(argv[k] ?? "") ? 2 : 1;
+            if (base === "timeout" && /^\d/.test(argv[k] ?? "")) k++;
+          } else if (base === "node-dori-do") k += 2;
+          else if (base === "ssh") {
+            for (k++; (argv[k] ?? "").startsWith("-"); ) k += SSH_ARG.test(argv[k] ?? "") ? 2 : 1;
+            return shellScripts(argv.slice(k + 1).join(" "), depth + 1);
+          } else if (SHELL.test(base)) {
+            for (k++; k < argv.length; ) {
+              const o = argv[k] ?? "";
+              if (o === "--") { k++; break; }
+              if (SHELL_ARG.test(o)) k += 2;
+              else if (o.startsWith("--")) k++;
+              else if (/^-[a-zA-Z]+$/.test(o) && o.includes("c")) return shellScripts(argv[k + 1] ?? "", depth + 1);
+              else if (/^-[a-zA-Z]+$/.test(o) && o.includes("s")) return [];
+              else if (/^[-+][a-zA-Z]+$/.test(o)) k++;
+              else break;
+            }
+            return argv[k] ? [argv[k] ?? ""] : [];
+          } else return [];
+        }
+      });
+
 type Deps = Pick<HandoverDeps, "run" | "config" | "procs" | "signal" | "clock" | "home">;
 type Facts = Pick<HandoverFacts, "from" | "monitors">;
 
