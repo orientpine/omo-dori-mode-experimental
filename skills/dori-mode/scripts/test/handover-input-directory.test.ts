@@ -247,3 +247,9 @@ test("an expanded printf option in a fed script keeps its watch", () => {
   expect(launch?.detached).toBe(true);
   expect(workEnded([{ pid: 7, cmd: "w", pids: [8] }], () => false, () => undefined)({ description: "w", command, persistent: true, ...(launch ? { launch } : {}) })).toBe(false);
 });
+
+// lead, review 38 audit: git with an expanded argument can run a command (--upload-pack, -c core.fsmonitor in a variable)
+test("git with an expanded argument keeps a fed script's watch; literal git calls do not", () => {
+  expect(["git -C \"$SRC\" fetch -q origin \"$REF\"\n", "git $opt log\n"].map(runsOther)).toEqual([true, true]);
+  expect(["git -C /home/o/src fetch -q origin feat/x\n", "echo \"CI_HEAD $(git rev-parse HEAD)\"\n"].map(runsOther)).toEqual([false, false]);
+});
