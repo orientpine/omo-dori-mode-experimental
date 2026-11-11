@@ -101,7 +101,7 @@ export const readAnswerHistory = (path: string): Question[] =>
   existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Question) : [];
 
 export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput<T>): Promise<T[]> => {
-  const { rows, cards, lead, sessions, table, deps } = input, cardById = new Map(cards.map((q) => [q.id, q])), transcripts = new Map<string, string>(), waiting: T[] = [];
+  const { rows, cards, lead, sessions, table, deps } = input, cardById = new Map(cards.map((q) => [q.id, q])), transcripts = new Map<string, { readonly text: string; readonly path?: string }>(), waiting: T[] = [];
   const history = deps.answerHistory?.() ?? [];
   let archived: readonly Lane[] | undefined;
   const predecessors = new Map<string, readonly string[]>();
@@ -123,15 +123,16 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
           if (path) file = { path };
         }
       }
-      transcripts.set(key, file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "");
+      transcripts.set(key, { text: file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "", ...(file ? { path: file.path } : {}) });
     }
-    const transcript = transcripts.get(key) ?? "";
+    const current = transcripts.get(key), transcript = current?.text ?? "";
     if (row.qid && sawAnswer(transcript, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) continue; if (discordAnswered(transcript, row)) continue;
-    if (target === lead.pane || row.qid && !session) {
+    if (target === lead.pane || row.qid) {
       let texts = predecessors.get(key);
       if (!texts) {
-        texts = predecessorTranscripts(deps, lead, target === lead.pane ? undefined : target);
-        if (row.qid && target !== lead.pane) {
+        const root = target === lead.pane || !session ? lead : current?.path ? { pane: target, path: current.path, text: transcript } : undefined;
+        texts = root ? predecessorTranscripts(deps, root, target === lead.pane ? undefined : target) : [];
+        if (row.qid && target !== lead.pane && !session) {
           archived ??= await deps.registry.list();
           texts = [...texts, ...lanePredecessorTranscripts(deps, archived, { pane: target, at: row.at, ...(version?.session ? { session: version.session } : {}) })];
         }

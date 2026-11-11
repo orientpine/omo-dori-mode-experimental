@@ -230,3 +230,12 @@ test.each(["foreground", "detached", "failed-metadata", "prepared-failure", "own
   expect(await replay(entries)).toEqual({ waiting: good ? [second] : [first, second], answeredIds: good ? [first.id] : [] });
   expect(cache()).toEqual(good ? [first.id] : []);
 });
+
+test.each(["tool", "nested-tool", "native", "decoder", "historical"])("parenthesized %s receiver preserves only owned detached receipts and cache", async (kind) => {
+  const bash = `tool.bash({command:${JSON.stringify(send)}})`, native = `Bun.spawnSync(${JSON.stringify(["dori", "send", "discord", "--to", first.channel, "--reply", first.id, "--text", "answer"])})`;
+  const expression = kind === "tool" ? `(await ${bash}).text` : kind === "nested-tool" ? `((await (${bash}))).text.trim()` : kind === "native" ? `(await ${native}).stdout.toString().trim()` : `(new TextDecoder()).decode((await ${native}).stdout).trim()`;
+  const code = kind === "historical" ? `await ${bash}; console.log((await Bun.file("historical.log").text()).trim())` : `console.log(${expression})`;
+  const completed = { type: "custom_message", customType: "senpi-codemode:notification", content: `Detached eval cell call-1 (js) completed.\n${sent}` }, good = kind !== "historical";
+  expect(await replay([call(code), result("Eval cell call-1 detached and is running"), completed])).toEqual({ waiting: good ? [second] : [first, second], answeredIds: good ? [first.id] : [] });
+  expect(cache()).toEqual(good ? [first.id] : []);
+});

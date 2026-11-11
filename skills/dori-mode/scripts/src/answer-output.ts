@@ -38,14 +38,22 @@ export const outputReceipt = (text: string, source: CommandSource, owner: Output
       expression = expression.replace(new RegExp(`(?<![\\w$.])${name.replace(/[$]/g, "\\$&")}(?![\\w$])`, "g"), (word, at: number) => { if (!syntax.code[at]) return word; attributed = true; return "$SEND"; });
     }
     const syntax = commandSource(expression);
-    let value = expression.replace(/\s+/g, (space, at: number) => syntax.code[at] ? "" : space);
+    let value = expression.replace(/(?<![\w$.])await(?![\w$])|\s+/g, (part, at: number) => syntax.code[at] ? "" : part);
     // These operations only remove boundary whitespace or unwrap a value. They cannot insert another source's receipt.
     for (;;) {
       const formatted = value.replace(/\.(?:trim|trimStart|trimEnd|strip|lstrip|rstrip)\(\)$/, "");
       if (formatted !== value) { value = formatted; continue; }
-      if (value.startsWith("(") && balancedBlock(value, 0) === value) { value = value.slice(1, -1); continue; }
-      if (value.startsWith("await")) { value = value.slice(5); continue; }
-      break;
+      const syntax = commandSource(value);
+      let grouped = false;
+      for (let at = 0; at < value.length; at++) {
+        // A call's argument parentheses remain significant; a grouping receiver can occur anywhere in a decoder.
+        if (value[at] !== "(" || !syntax.code[at] || /[\w$\])]/.test(value[at - 1] ?? "")) continue;
+        const group = balancedBlock(value, at);
+        if (!group) return false;
+        value = value.slice(0, at) + group.slice(1, -1) + value.slice(at + group.length);
+        grouped = true; break;
+      }
+      if (!grouped) break;
     }
     const root = { process: "\\$SEND\\.stdout", stdout: "\\$SEND", shell: "\\$SEND\\.stdout", tool: "\\$SEND\\.text" }[owner.shape], encoding = '(?:["\\\']utf-?8["\\\'])?';
     if (attributed && (new RegExp(`^(?:${root}(?:\\.(?:toString|decode)\\(${encoding}\\))?|newResponse\\(${root}\\)\\.text\\(\\)|newTextDecoder\\(${encoding}\\)\\.decode\\(${root}\\))$`).test(value) || owner.shape === "shell" && value === "$SEND.text()" || owner.shape === "tool" && value === "$SEND")) witnessed = true;
