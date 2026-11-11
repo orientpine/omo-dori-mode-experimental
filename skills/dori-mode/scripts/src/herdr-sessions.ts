@@ -14,7 +14,7 @@ import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionS
 // runs is kept here while it runs (dori lead, dori watch's lead check), and the lead is started again in that conversation
 // from it (reviveHerdr) when its agent is gone. log: the session's log file, when it was found (sessionLog). agent: the
 // agent process it was read from ("<pid> <start>"), so a later read of the same process still weighs this session.
-export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly log?: string; readonly agent?: string; readonly at: string };
+export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly log?: string; readonly agent?: string; readonly at: string; readonly previous?: readonly { readonly session: string; readonly cwd: string; readonly log?: string }[] };
 
 const file = (stateDir: string): string => join(stateDir, "herdr-sessions.json");
 
@@ -28,7 +28,12 @@ export const readHerdrSessions = (stateDir: string): Record<string, HerdrSession
 
 export const recordHerdrSession = (stateDir: string, pane: string, rec: HerdrSessionRecord): void => {
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(file(stateDir), JSON.stringify({ ...readHerdrSessions(stateDir), [pane]: rec }, null, 1), { mode: 0o600 });
+  const all = readHerdrSessions(stateDir), before = all[pane];
+  const sameAgent = before?.agent && before.agent === rec.agent && before.cwd === rec.cwd;
+  const history = sameAgent || before?.session === rec.session ? before?.previous ?? [] : [];
+  const outgoing = sameAgent && before.session !== rec.session ? [{ session: before.session, cwd: before.cwd, ...(before.log ? { log: before.log } : {}) }] : [];
+  const previous = [...new Map([...history, ...outgoing, ...(rec.previous ?? [])].filter((entry) => entry.session !== rec.session).map((entry) => [entry.session, entry])).values()];
+  writeFileSync(file(stateDir), JSON.stringify({ ...all, [pane]: { ...rec, ...(previous.length ? { previous } : {}) } }, null, 1), { mode: 0o600 });
 };
 
 const modelOf = (cmd: string): string | undefined => {

@@ -134,7 +134,7 @@ const SELECTORS = ["--session", "--session-id", "--continue", "-c", "--resume", 
 export const hasSessionSelector = (argv: readonly string[]): boolean => argv.some((a) => SELECTORS.some((s) => a === s || a.startsWith(`${s}=`)));
 
 // seen: the session recorded before for this same agent process (herdr-sessions.ts), when the caller keeps one
-export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[]; readonly seen?: (agent: Proc) => Promise<{ readonly id: string; readonly log?: string | undefined } | undefined> };
+export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[]; readonly seen?: (agent: Proc) => Promise<{ readonly id: string; readonly log?: string | undefined } | undefined>; readonly observed?: (id: string, sessions: readonly { readonly id: string; readonly log?: string | undefined }[]) => void };
 
 export const shellPidOf = async (pane: string, deps: SessionDeps): Promise<number> => {
   // the pane id says its backend, whatever the config says (aoe.ts tmuxPanePid: herdr process-info for a herdr pane id)
@@ -185,19 +185,20 @@ const sessionLogFor = (argv: readonly string[], id: string, cwd: string, deps: S
 // old session, and the child that showed the move can end. So of the sessions its arguments, its own children (a nested
 // agent's children carry that agent's session) and the record kept for this same agent (deps.seen) name, the one whose log
 // omo wrote last; when no log tells, the arguments' one, else the first child's. "" when none is named.
-const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: string, cwd: string, deps: SessionDeps): Promise<string> => {
-  const named: { readonly id: string; readonly log?: string | undefined }[] = [];
+const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: string, cwd: string, deps: SessionDeps): Promise<Pick<SessionHit, "id" | "via">> => {
+  const named: { readonly id: string; readonly log?: string | undefined; readonly current?: boolean }[] = [];
   for (const child of table.filter((p) => p.ppid === agent.pid).slice(0, 40)) {
     const env = await procEnv(deps.run, child);
     const id = ENV_ID.exec(env)?.[1];
-    if (id) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
+    if (id) named.push({ id, log: ENV_FILE.exec(env)?.[1], current: true });
   }
   if (fromFlag) named.push({ id: fromFlag });
   // the record counts on its own too: a selector-free agent whose children all ended still names it
   const seen = deps.seen ? await deps.seen(agent) : undefined;
-  if (seen) named.push(seen);
+  if (seen) named.push({ ...seen, current: true });
+  const result = (id: string, sessions: readonly { readonly id: string; readonly log?: string | undefined }[] = named): Pick<SessionHit, "id" | "via"> => { deps.observed?.(id, sessions); return { id, via: named.some((n) => n.id === id && n.current) ? "child-env" : id ? "argv" : "none" }; };
   const ids = [...new Set(named.map((n) => n.id))];
-  if (ids.length <= 1) return ids[0] ?? "";
+  if (!ids.length || (ids.length === 1 && !deps.observed)) return result(ids[0] ?? "");
   const written = (log: string | undefined): number => {
     try {
       return log ? statSync(log).mtimeMs : -Infinity;
@@ -208,9 +209,9 @@ const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: str
   // the real word boundaries matter here: a --session-dir with spaces is no two flags, and where they cannot be told
   // (macOS, a rewritten title) no path option is read from a whitespace split: the default folder and exact logs only
   const words = (await agentArgv(deps.run, agent.pid, agent.cmd)) ?? [];
-  const at = (id: string): number => Math.max(...named.filter((n) => n.id === id).map((n) => n.log ?? sessionLogFor(words, id, cwd, deps)).map(written));
-  const last = ids.map((id) => ({ id, at: at(id) })).reduce((a, b) => (b.at > a.at ? b : a));
-  return last.at > -Infinity ? last.id : fromFlag || (ids[0] ?? "");
+  const identities = ids.map((id) => ({ id, log: named.filter((n) => n.id === id).map((n) => n.log ?? sessionLogFor(words, id, cwd, deps)).reduce<string | undefined>((a, b) => written(b) > written(a) ? b : a, undefined) }));
+  const last = identities.map((entry) => ({ id: entry.id, at: written(entry.log) })).reduce((a, b) => (b.at > a.at ? b : a));
+  return result(last.at > -Infinity ? last.id : fromFlag || (ids[0] ?? ""), identities);
 };
 
 export const resolveSession = async (pane: string, cwd: string, table: readonly Proc[], deps: SessionDeps): Promise<SessionHit> => {
@@ -220,7 +221,7 @@ export const resolveSession = async (pane: string, cwd: string, table: readonly 
   const argv = process.platform === "win32" ? winArgv(agent.cmd) : agent.cmd.split(/\s+/);
   const fromFlag = argvSessionId(argv);
   const current = await currentSession(table, agent, fromFlag, cwd, deps);
-  if (current) return { id: current, via: current === fromFlag ? "argv" : "child-env", pid: agent.pid };
+  if (current.id) return { ...current, pid: agent.pid };
   // a selector omo resolves itself (a partial --session uuid, --continue, --resume, --fork, --rebind) can open an older
   // session, whose file name is no start time: only a child's exact PI_SESSION_ID may name it, never a nearby new session
   const selected = hasSessionSelector(argv);

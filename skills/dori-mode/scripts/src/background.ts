@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { liveMonitors, manifestPath, type MonitorSpec, readManifest } from "./handover.ts";
 import type { Runner } from "./run.ts";
-import { type Proc, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
+import { type Proc, procTable, resolveSession, sessionDirFor, type SessionHit } from "./session-id.ts";
+import { argvSessionLog, readHerdrSessions, recordHerdrSession } from "./herdr-sessions.ts";
 
 // Background work an omo session started and is still waiting on, read from its session transcript: a detached eval
 // cell, a background (or auto-detached) bash session, a background task child, a monitor a cell armed (tool.monitor, ended
@@ -29,7 +30,7 @@ const HINT = /detached and is running|"bash_id"|in background with ID|auto-detac
 
 const MONITOR_START = /^Monitor started with ID: (mon_\w+)/;
 
-type ToolCall = { readonly name?: string; readonly resultPreview?: string; readonly args?: { readonly description?: string; readonly path?: string } };
+type ToolCall = { readonly name?: string; readonly resultPreview?: string; readonly args?: { readonly command?: string; readonly description?: string; readonly path?: string } };
 // a monitor notification: each monitor it carries, by the watch's id (bash_<n> for a command) and description; kind
 // "summary" is the end of its command
 type MonitorEvent = { readonly id?: string; readonly description?: string; readonly kinds?: readonly string[] };
@@ -42,10 +43,11 @@ const EVAL_STOPPED = /^Eval cell (\S+) \(\w+\) is cancelled/;
 
 // the jobs one tool result started: its own detached cell, the bash sessions and tasks it (or its cell's tool calls) put
 // in the background
-const startsOf = (tool: string, callId: string, text: string, d: Details | undefined): [BackgroundJob["kind"], string][] => {
+export const backgroundStarts = (tool: string, callId: string, text: string, d: Details | undefined): [BackgroundJob["kind"], string][] => {
   const out: [BackgroundJob["kind"], string][] = [];
   if (tool === "eval" && callId && text.startsWith(`Eval cell ${callId} detached and is running`)) out.push(["eval", callId]);
-  if (tool === "bash" && d?.background && d.bash_id) out.push(["bash", d.bash_id]);
+  const directBash = tool === "bash" ? (d?.background ? d.bash_id : undefined) ?? BASH_START.exec(text)?.[1] : undefined;
+  if (directBash) out.push(["bash", directBash]);
   if (tool === "task" && d?.run_in_background) for (const t of d.items ?? [d]) if (t.task_id && t.status === "running") out.push(["task", t.task_id]);
   for (const c of d?.toolCalls ?? []) {
     const bash = c.name === "bash" ? BASH_START.exec(c.resultPreview ?? "")?.[1] : undefined;
@@ -98,7 +100,7 @@ export const pendingBackground = (transcript: string, since = 0, until = Number.
     if (stopped) open.delete(stopped);
     if (tool === "task_cancel") for (const m of text.matchAll(/\b(st_[0-9a-z]+)\b/g)) if (m[1]) open.delete(m[1]);
     if (tool === undefined || at < since) continue;
-    for (const [kind, id] of startsOf(tool, e.message?.toolCallId ?? "", text, e.message?.details)) if (!open.has(id)) open.set(id, { kind, id, at });
+    for (const [kind, id] of backgroundStarts(tool, e.message?.toolCallId ?? "", text, e.message?.details)) if (!open.has(id)) open.set(id, { kind, id, at });
     for (const c of e.message?.details?.toolCalls ?? []) {
       const mon = c.name === "monitor" ? MONITOR_START.exec(c.resultPreview ?? "")?.[1] : undefined;
       if (mon) monitors.set(mon, { description: c.args?.description ?? "", path: Boolean(c.args?.path) });
@@ -186,9 +188,25 @@ export const strayTasks = (home: string, session: string, alive: (pid: number) =
 // cannot be read. Jobs started before the agent process started died with the earlier process; jobs started before
 // notBefore (a server or watcher left running for hours) are not what the lane waits on.
 // The transcript file of the session a pane's omo runs, and that agent's pid, or undefined when either cannot be read.
-export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[]): Promise<{ readonly path: string; readonly pid: number } | undefined> => {
-  const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend: "aoe" });
+export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[], stateDir?: string): Promise<{ readonly path: string; readonly pid: number; readonly via: SessionHit["via"] } | undefined> => {
+  const kept = stateDir ? readHerdrSessions(stateDir)[pane] : undefined;
+  let recorded: { readonly id: string; readonly log?: string | undefined } | undefined, identity: string | undefined;
+  const seen = async (agent: Proc) => {
+    if (!kept && !stateDir) return undefined;
+    const start = process.platform === "win32" ? agent.startedAt ?? "" : (await run(["ps", "-o", "lstart=", "-p", String(agent.pid)])).out.trim();
+    identity = start ? `${agent.pid} ${start}` : undefined;
+    recorded = identity && kept?.agent === identity ? { id: kept.session, log: kept.log } : undefined;
+    return recorded;
+  };
+  const observed: NonNullable<Parameters<typeof resolveSession>[3]["observed"]> = (id, sessions) => {
+    if (!stateDir || !identity || !id) return;
+    const log = sessions.find((entry) => entry.id === id && entry.log)?.log ?? argvSessionLog([], sessionsDir, cwd, id);
+    if (log && existsSync(log)) recorded = { id, log };
+    recordHerdrSession(stateDir, pane, { session: id, cwd, ...(log ? { log } : {}), agent: identity, at: new Date().toISOString(), previous: sessions.filter((entry) => entry.id !== id).map((entry) => ({ session: entry.id, cwd, ...(entry.log ? { log: entry.log } : {}) })) });
+  };
+  const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend: "aoe", seen, ...(stateDir ? { observed } : {}) });
   if (!hit.id || !hit.pid) return undefined;
+  if (recorded?.id === hit.id && recorded.log && existsSync(recorded.log)) return { path: recorded.log, pid: hit.pid, via: hit.via };
   const dir = sessionDirFor(sessionsDir, cwd);
   let name: string | undefined;
   try {
@@ -196,7 +214,7 @@ export const sessionFile = async (run: Runner, sessionsDir: string, pane: string
   } catch {
     return undefined;
   }
-  return name ? { path: join(dir, name), pid: hit.pid } : undefined;
+  return name ? { path: join(dir, name), pid: hit.pid, via: hit.via } : undefined;
 };
 
 // A persistent monitor omo restored after a same-session restart has its start record before the new agent, so the start

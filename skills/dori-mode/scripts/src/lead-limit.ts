@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { liveSessions, sessionFor } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { currentTranscript, reconcileRows, type AnswerRow } from "./missed-answers.ts";
 import { sendVerified } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
@@ -20,7 +21,7 @@ import { procTable } from "./session-id.ts";
 //   once per newest message, and once more after the retry time the error named has passed.
 
 export type LeadReply = { readonly at: number; readonly error?: string };
-export type OwnerRow = { readonly id: string; readonly at: number; readonly channel?: string; readonly scope?: string; readonly text: string };
+export type OwnerRow = AnswerRow & { readonly scope?: string; readonly text: string };
 type LimitMark = { readonly pane: string; readonly noticeFor?: string; readonly noticeChannel?: string; readonly wakeKey?: string; readonly wakeIds?: readonly string[]; readonly wokeAt?: string };
 
 const TAIL_BYTES = 2 * 1024 * 1024;
@@ -71,11 +72,11 @@ export const ownerRows = (inbox: string, ownerId: string): OwnerRow[] => {
   for (const line of inbox.split("\n")) {
     if (!line.startsWith("{")) continue;
     try {
-      const r = JSON.parse(line) as { ts?: string; id?: string; kind?: string; via?: string; author_id?: string; scope?: string; channel_id?: string; content?: string; transcript?: string; answer?: string };
+      const r = JSON.parse(line) as { ts?: string; id?: string; kind?: string; via?: string; author_id?: string; scope?: string; channel_id?: string; content?: string; transcript?: string; answer?: string; qid?: string; thread?: string; tmux?: string | null };
       const owner = r.kind === "answer" || r.via === "owner-webhook" || (!!ownerId && r.author_id === ownerId && r.scope !== "pair-bot");
       const at = Date.parse(r.ts ?? "");
       if (!owner || Number.isNaN(at)) continue;
-      out.push({ id: r.id ?? r.ts ?? "", at, ...(r.channel_id ? { channel: r.channel_id } : {}), ...(r.scope ? { scope: r.scope } : {}), text: String(r.content || r.transcript || r.answer || "") });
+      out.push({ id: r.id ?? r.ts ?? "", at, ...(r.channel_id ? { channel: r.channel_id } : {}), ...(r.scope ? { scope: r.scope } : {}), ...(r.qid ? { qid: r.qid } : {}), ...(r.thread ? { thread: r.thread } : {}), ...(r.tmux ? { tmux: r.tmux } : {}), text: String(r.content || r.transcript || r.answer || "") });
     } catch {}
   }
   return out;
@@ -114,17 +115,16 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   const mark = readMark(deps, pane);
   if (!rows.length && !mark.noticeFor) return [];
   const [sessions, table] = await Promise.all([liveSessions(deps.run), procTable(deps.run)]);
-  const cwd = sessionFor(sessions, pane)?.path;
-  const file = cwd ? await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, table) : undefined;
+  const session = sessionFor(sessions, pane), file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table, deps.config.stateDir) : undefined;
   if (!file) return [];
-  const { replies, firstAt } = recentReplies(readFileSync(file.path, "utf8"));
+  const title = session?.title ?? "", transcript = currentTranscript(file, session?.title ?? "");
+  const { replies, firstAt } = recentReplies(transcript);
   const lastGood = replies.findLast((r) => !r.error)?.at ?? (Number.isNaN(firstAt) ? 0 : firstAt);
   const errors = replies.filter((r) => r.error && r.at > lastGood);
   const blocked = errors.length > 0;
   const until = blocked ? retryAt(errors.at(-1)?.error ?? "") : undefined;
-  const waiting = rows.filter((r) => r.at > lastGood);
-  const out: string[] = [];
-  let next: LimitMark = mark;
+  const { waiting } = await reconcileRows({ rows, cards: deps.answeredCards?.() ?? [], lead: { pane, path: file.path, title, text: transcript }, sessions, table, deps });
+  const out: string[] = []; let next: LimitMark = mark;
   const save = (m: LimitMark): void => {
     next = m;
     writeFileSync(markPath(deps), `${JSON.stringify(m)}\n`);

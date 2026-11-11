@@ -18,7 +18,7 @@ import { SUBMIT_TIMING } from "../src/submit.ts";
 import type { Lane } from "../src/registry.ts";
 import { argvSessionId, resolveSession } from "../src/session-id.ts";
 import { depsFor, fakeClock, launchReadyPath, NEW_AOE_ID, newWorld, RUNNING, sent, withState, type World } from "./fakes.ts";
-
+import "./lead-limit-evidence.test.ts";
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
 const MIN = 60_000;
 const LANE_ID = "abcdef1200112233";
@@ -1182,11 +1182,12 @@ const limitWorld = () => {
   const row = (ms: number, id: string, content: string, extra: object = {}) => appendFileSync(inbox, `${JSON.stringify({ ts: iso(ms), id, channel_id: "T-THREAD", scope: "thread", author_id: OWNER, content, ...extra })}\n`);
   const reply = (ms: number, errorMessage?: string) =>
     appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), type: "message", message: { role: "assistant", content: [], ...(errorMessage ? { stopReason: "error", errorMessage } : { stopReason: "stop" }) } })}\n`);
+  const discordReply = (ms: number, id: string) => { const call = `send-${id}`; appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: call, name: "eval", arguments: { code: `dori send discord --to T-THREAD --reply ${id} --text answer` } }] } })}\n${JSON.stringify({ timestamp: iso(ms + 1000), type: "message", message: { role: "toolResult", toolCallId: call, content: [{ type: "text", text: "SENT 153000000000000001" }] } })}\n`); }, cardAnswer = (ms: number, qid: string) => appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), type: "custom_message", customType: "senpi-monitor:notification", content: `<system-reminder>{"kind":"answer","qid":"${qid}","ts":"${iso(ms)}"}</system-reminder>` })}\n`);
   const laneReply = (ms: number, errorMessage?: string) => w.entry(ms, { type: "message", message: { role: "assistant", content: [], ...(errorMessage ? { stopReason: "error", errorMessage } : { stopReason: "stop" }) } });
   // an image the lead read: one tool-result line of base64 longer than the transcript tail the watch reads (2 MB)
   const image = (ms: number, bytes: number) =>
     appendFileSync(leadFile, `${JSON.stringify({ timestamp: iso(ms), type: "message", message: { role: "toolResult", toolName: "read", content: [{ type: "image", data: "A".repeat(bytes), mimeType: "image/png" }] } })}\n`);
-  return { deps, posts, row, reply, laneReply, image };
+  return { deps, posts, row, reply, discordReply, cardAnswer, laneReply, image };
 };
 const blockedError = (until: number) => `All Claude accounts for anthropic-subscription are currently blocked (rate limit or auth errors).\n  Soonest automatic retry: ${iso(until)}.\n  /claude-account list  - inspect account states`;
 
@@ -1213,7 +1214,7 @@ test("the lead's model out at its usage limit while the owner waits: the owner h
   expect(sent(world)[0]).toStartWith("[DORI] LEAD_OWNER_WAITING: 2 owner message(s) since 11:30 have had no reply from you for 121 min");
   expect(await watchTick(l.deps(T0 + 92 * MIN))).toEqual([]);
   // a reply works: the owner hears it where he heard of the limit, once
-  l.reply(T0 + 93 * MIN);
+  l.reply(T0 + 93 * MIN); l.discordReply(T0 + 93 * MIN, "m-1"); l.discordReply(T0 + 93 * MIN + 2000, "m-2");
   expect(await watchTick(l.deps(T0 + 94 * MIN))).toEqual([`LEAD_LIMIT_CLEARED aoe_Dori_0a1b2c3d since ${iso(T0 - 30 * MIN + 3000)}; POSTED T-THREAD m2`]);
   expect(l.posts[1]).toEqual(["T-THREAD", "My model works again; reading your messages now."]);
   expect(await watchTick(l.deps(T0 + 95 * MIN))).toEqual([]);
@@ -1235,8 +1236,7 @@ test("an owner message the lead has not answered for leadWakeMin is typed into i
   const l = limitWorld();
   world.screen = watching("5: Dori inbox");
   l.reply(T0 - 60 * MIN);
-  l.row(T0 - 59 * MIN, "m-0", "answered");
-  l.reply(T0 - 58 * MIN);
+  l.row(T0 - 59 * MIN, "m-0", "answered"); l.reply(T0 - 58 * MIN); l.discordReply(T0 - 58 * MIN, "m-0");
   l.row(T0 - 9 * MIN, "m-pair", "pair talk", { scope: "pair-bot" });
   l.row(T0 - 9 * MIN, "m-1", "30프로 여유 규칙 더 줄여 10%해");
   // an error with a retry a minute away is a short rate limit: no notice (its retry passed, so the lead is told to go on)
@@ -1248,9 +1248,9 @@ test("an owner message the lead has not answered for leadWakeMin is typed into i
   expect(l.posts).toEqual([]);
   expect(await watchTick(l.deps(T0 + 2 * MIN))).toEqual([]);
   // a card answer is the owner too; once the lead replied, nothing waits
-  l.row(T0 + 3 * MIN, "q-1", "", { kind: "answer", answer: "폰만", author_id: undefined, channel_id: undefined, scope: undefined });
+  l.row(T0 + 3 * MIN, "q-1", "", { kind: "answer", answer: "폰만", qid: "Q1", thread: "T-CARD", author_id: undefined, channel_id: undefined, scope: undefined });
   expect(await watchTick(l.deps(T0 + 14 * MIN))).toEqual([`LEAD_OWNER_WAITING aoe_Dori_0a1b2c3d 2 owner message(s), oldest ${iso(T0 - 9 * MIN)} (23 min), model failing; woke the lead (SUBMITTED)`]);
-  l.reply(T0 + 15 * MIN);
+  l.reply(T0 + 15 * MIN); l.discordReply(T0 + 15 * MIN, "m-1"); l.cardAnswer(T0 + 15 * MIN, "Q1");
   expect(await watchTick(l.deps(T0 + 40 * MIN))).toEqual([]);
   expect(sent(world)).toHaveLength(3);
 });
@@ -1262,7 +1262,7 @@ test("a lead whose transcript ends in an image longer than the read tail answere
   world.screen = watching("5: Dori inbox");
   l.reply(T0 - 60 * MIN);
   l.row(T0 - 30 * MIN, "m-1", "이 스레드 닫아도 되나?");
-  l.reply(T0 - 29 * MIN);
+  l.reply(T0 - 29 * MIN); l.discordReply(T0 - 29 * MIN, "m-1");
   l.image(T0 - 28 * MIN, 3 * 1024 * 1024);
   expect(await watchTick(l.deps(T0))).toEqual([]);
   expect(sent(world)).toEqual([]);
@@ -1348,10 +1348,10 @@ test("a card answered before its session started (a rollover) is not re-sent, an
   w.said(T0 - 20 * MIN, "new session after a rollover");
   const old = [card("Q7", T0 - 30 * MIN)];
   expect(await missedAnswersTick({ ...w.deps(T0), answeredCards: () => old })).toEqual([]);
-  expect(sawAnswer('{\\"qid\\":\\"Q7\\"}', "Q7")).toBe(true);
-  expect(sawAnswer('"qid": "Q7"', "Q7")).toBe(true);
+  expect(sawAnswer('{\\"qid\\":\\"Q7\\"}', "Q7")).toBe(false);
+  expect(sawAnswer('"qid": "Q7"', "Q7")).toBe(false);
   expect(sawAnswer('"qid":"Q70"', "Q7")).toBe(false);
-  expect(sawAnswer("[DORI] ANSWER Q7 (text, x): y", "Q7")).toBe(true);
+  expect(sawAnswer(JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "[DORI] ANSWER Q7 (text, x): y" }] } }), "Q7")).toBe(true);
   // the lead's session: its own transcript, under its cwd
   const deps = { ...w.deps(T0), answeredCards: () => [card("Q8", T0 - 10 * MIN, null)] };
   const leadDir = join(deps.config.sessionsDir, "--home-test-dori--");
