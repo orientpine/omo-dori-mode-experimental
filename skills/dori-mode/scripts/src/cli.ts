@@ -142,8 +142,8 @@ const flags = parseArgs({
     source: { type: "string" },
   },
 });
-if (flags.values.help) {
-  console.log(helpFor(command));
+if (command === "--help" || flags.values.help) {
+  console.log(command === "--help" ? USAGE : helpFor(command));
   process.exit(0);
 }
 const cli = makeCli(command, rest, flags, config, deps, waive, discordToken, import.meta.path, import.meta.url, makeSignal());

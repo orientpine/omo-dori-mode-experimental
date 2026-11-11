@@ -26,8 +26,8 @@ const sendCommand: Command = async (context) => {
   const to = need("to");
   const status = opt("status");
   if (status !== undefined && (platform !== "discord" || (status !== "working" && status !== "done"))) die("--status takes working or done, with discord");
-  const thread = opt("thread");
-  const edit = opt("edit");
+  const thread = flags.values.thread === true ? undefined : opt("thread");
+  const edit = flags.values.edit === true ? undefined : opt("edit");
   const filePaths = ((flags.values.file as (string | boolean)[] | undefined) ?? []).map((p) => (typeof p === "string" ? p.trim() : ""));
   if (filePaths.some((p) => !p)) die("SEND_FILE_REFUSED --file takes a path; nothing was sent", 2);
   if (filePaths.length && platform !== "slack" && platform !== "discord") die(`SEND_FILE_REFUSED --file is only supported for slack and discord, not ${platform}; nothing was sent`, 2);
@@ -97,9 +97,19 @@ const sendCommand: Command = async (context) => {
       }
     }
   } else if (platform === "telegram") {
+    // A malformed or empty id must not fall through to a General post or an edit with a null message id.
+    const id = (flag: "thread" | "edit", what: string): number | undefined => {
+      if (flags.values[flag] === undefined) return undefined;
+      const value = typeof flags.values[flag] === "string" ? opt(flag) ?? "" : "";
+      return /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value))
+        ? Number(value)
+        : die(`--${flag} must be a Telegram ${what} id, a whole number above 0`);
+    };
+    const threadId = id("thread", "topic");
+    const messageId = id("edit", "message");
     const tg = new Telegram(fetchHttp, realClock, token("DORI_TELEGRAM_TOKEN"));
-    const target = { chatId: to, ...(thread ? { threadId: Number(thread) } : {}) };
-    if (edit) await tg.edit(target, Number(edit), text);
+    const target = { chatId: to, ...(threadId !== undefined ? { threadId } : {}) };
+    if (messageId !== undefined) await tg.edit(target, messageId, text);
     else
       await once(async () => {
         const m = await tg.post(target, text);

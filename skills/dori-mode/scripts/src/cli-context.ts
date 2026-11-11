@@ -46,6 +46,8 @@ export const helpFor = (cmd: string): string => {
 export const makeCli = (command: string, rest: string[], flags: Flags, config: DoriConfig, deps: FlowDeps, waive: Record<string, string>, discordToken: string | undefined, cliPath: string, cliUrl: string, sendSignal: HandoverDeps["signal"]) => {
   const opt = (name: string): string | undefined => {
     const v = flags.values[name];
+    // With strict:false, parseArgs gives a string flag left without a value the boolean true.
+    if (v === true) die(`--${name} needs a value`);
     return typeof v === "string" ? v.trim() : undefined;
   };
   const need = (name: string): string => opt(name) || die(`--${name} is required`);
@@ -100,7 +102,7 @@ export const makeCli = (command: string, rest: string[], flags: Flags, config: D
   // 1 ms returns at once too, so a positive --loop under 1 ms is refused as well. Called before a watch prints its ready line.
   const loopMinutes = (): number => {
     if (flags.values.loop === undefined) return 0;
-    const value = opt("loop");
+    const value = flags.values.loop === true ? undefined : opt("loop");
     const minutes = Number(value);
     return value && Number.isFinite(minutes) && (minutes === 0 || minutes * 60_000 >= 1) ? minutes : die("--loop must be a number of minutes: 0 for one pass, or 1 ms (0.0000167) or more");
   };
