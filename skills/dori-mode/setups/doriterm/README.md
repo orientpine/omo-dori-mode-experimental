@@ -128,6 +128,46 @@ channel, and shred it after the join. `doriface-host mesh status` on ori0a83 lis
 restart ori0a83's host to add one (the phone is paired to it). The Windows PC kimm-cha has no doriface-host build
 (v0.1.11 ships linux and mac only), so it joins from inside WSL2.
 
+## A relay line that died without a word: the relay watch
+
+When a network path dies under the host without a FIN or RST (the company VPN on kimm-cha dropping, 2026-11-11), the
+host's one WebSocket to the relay stays open forever. doriface-host sends a ping every 30 s but never checks for the
+pong, and it redials only when that socket closes (sisyphuslabs/doriterm `packages/relay-client/src/flow-control.ts`
+`keepAlive` and `uplink.ts` at v0.1.11 `a4a83d5`; `packages/relay-client/src/` is unchanged through v0.1.18 `4df935a`,
+so no newer release fixes it). The relay reaps the silent socket after 90 s (`IDLE_TIMEOUT_MS`), every other member
+sees the host offline (`unreachableSince`, a `gate` of `offline`), and the host itself logs nothing: its own `mesh
+status` has no line for its own uplink, so it cannot tell. A restart of the unit brought it back.
+
+`relay-watch.sh` does that restart, and only when the relay agrees the host is gone. Every minute
+(`doriterm-relay-watch.timer`) it makes a real round trip through the relay back to the host itself, `doriface-host
+connect --mesh <own hostId>` (the running host dials the relay, which routes the dial to that host's own uplink); it
+fails while the relay has no live uplink for the host. After `DORITERM_RELAY_WATCH_DOWN_MINUTES` (3) of failed round
+trips it runs `systemctl --user restart doriface-host.service`, at most `DORITERM_RELAY_WATCH_MAX_RESTARTS` (3) times in
+an hour, then only logs `RELAY_WATCH_CAPPED` until an hour-old restart ages out. Why these values: the relay reaps after
+90 s, and a drop the host notices heals by itself within its 10 s connect timeout plus at most 30 s of backoff, so
+3 minutes of failed round trips is never a drop the host would heal; and a network that is simply down gets three tries
+an hour, not a restart every few minutes. A restart costs nothing that stays: paired devices and the mesh membership are
+kept, open sessions redial. A host whose unit is not running is left to that unit (`Restart=on-failure`); a running host
+that gives no `mesh status` counts as down, so a wedged host is restarted too. Its lines in the journal
+(`journalctl --user -u doriterm-relay-watch`): `RELAY_WATCH_UP`, `RELAY_WATCH_DOWN since <time> (<s> s): <why>`,
+`RELAY_WATCH_RESTART`, `RELAY_WATCH_CAPPED`, `RELAY_WATCH_WOULD_RESTART`, `RELAY_WATCH_SKIP`, `RELAY_WATCH_CONFIG_BAD`.
+
+It is POSIX sh and coreutils only, because the mesh hosts that run no Dori have no bun and no checkout. On each host
+account that runs doriface-host:
+
+```sh
+mkdir -p ~/.local/bin ~/.config/systemd/user
+install -m 0755 relay-watch.sh ~/.local/bin/doriterm-relay-watch
+install -m 0644 doriterm-relay-watch.service doriterm-relay-watch.timer ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now doriterm-relay-watch.timer
+```
+
+(from this directory, or the three files copied over to a host without the checkout). On ori0a83, the host the phone
+is paired to, a restart waits for a person: `echo DORITERM_RELAY_WATCH_RESTART=0 > ~/.config/doriterm/relay-watch.env`
+there first, and it only logs `RELAY_WATCH_WOULD_RESTART`. The same file takes the other `DORITERM_RELAY_WATCH_*`
+values and `DORIFACE_HOST`, `DORIFACE_HOST_STATE_DIR` for a host installed elsewhere. `systemctl --user disable --now
+doriterm-relay-watch.timer` turns it off.
+
 ## Turn it off
 
 ```sh
@@ -152,4 +192,6 @@ The full review, with source line references, is the doriterm-review lane report
 ## Tests
 
 `bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
-`stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try, and `focus-lead.ts` against a fake herdr runner. The unit's start and stop were also run under systemd against the real hc (see the PR).
+`stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try, and `focus-lead.ts` against a fake herdr runner, and `relay-watch.sh` against a fake `doriface-host` and `systemctl`
+(round trip up, a drop under and over the down minutes, the hourly cap, restarts off, a round trip that never answers,
+a stopped host, a host with no mesh status, a bad value). The unit's start and stop were also run under systemd against the real hc (see the PR).

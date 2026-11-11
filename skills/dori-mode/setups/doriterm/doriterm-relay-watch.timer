@@ -1,0 +1,10 @@
+[Unit]
+Description=doriterm relay watch: a relay round trip to this host every minute
+
+[Timer]
+OnActiveSec=60
+OnUnitInactiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
