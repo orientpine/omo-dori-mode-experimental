@@ -96,3 +96,22 @@ test("a bash tool's shell names the session omo runs, so a resume back to the in
   expect(await leadInboxTick({ ...deps(T0 + 20 * MIN), run })).toEqual([]);
   expect(checked()).toBe(SID);
 });
+
+// review 4 of #460: a watcher before this fix recorded the inherited session for the agent; that record proves nothing
+test("a previous tick's record of the inherited session, written before sessions were vetted, does not bring it back", async () => {
+  const run = lead(`/x/senpi/dist/bundle/cli.js --session-id ${NEW_SID}`, [[`/bin/bash -c tail -n 0 -F ${inbox}`, `${inherited()} SENPI_MONITOR_ID=mon_A`]]);
+  expect(await leadInboxTick({ ...deps(T0 + 20 * MIN), run })).toEqual([]);
+  expect(checked()).toBe(NEW_SID);
+});
+
+// review 4 of #460: the bash tool's command exec'd another program; it still leads the terminal session omo gave it (sid)
+test("a bash tool's command that exec'd another program still names the session omo runs", async () => {
+  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: NEW_SID, agentPid: 11, log: NEXT(), heardIds: [], baselineDone: true }));
+  const agent = "/x/senpi/dist/bundle/cli.js --continue";
+  const base = lead(agent, [["/x/claude-agent-sdk-linux-arm64/claude --output-format stream-json", inherited()], ["sleep 600", inherited()]]);
+  // pid ppid sid stat command: the provider stays in the agent's terminal session, the tool's command leads its own
+  const table = `10 1 10 S /bin/bash /tmp/aoe-pane-env\n11 10 10 S+ ${agent}\n12 11 10 S+ /x/claude-agent-sdk-linux-arm64/claude --output-format stream-json\n13 11 13 S+ sleep 600\n`;
+  const run: FlowDeps["run"] = async (argv, opts) => argv[0] === "ps" && argv[1] === "-A" && argv.some((a) => a.includes("sid=")) ? { code: 0, out: table, err: "" } : base(argv, opts);
+  expect(await leadInboxTick({ ...deps(T0 + 20 * MIN), run })).toEqual([]);
+  expect(checked()).toBe(SID);
+});

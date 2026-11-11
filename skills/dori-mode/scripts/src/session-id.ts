@@ -134,7 +134,7 @@ const SELECTORS = ["--session", "--session-id", "--continue", "-c", "--resume", 
 export const hasSessionSelector = (argv: readonly string[]): boolean => argv.some((a) => SELECTORS.some((s) => a === s || a.startsWith(`${s}=`)));
 
 // seen: the session recorded before for this same agent process (herdr-sessions.ts), when the caller keeps one
-export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[]; readonly seen?: (agent: Proc) => Promise<{ readonly id: string; readonly log?: string | undefined } | undefined>; readonly observed?: (id: string, sessions: readonly { readonly id: string; readonly log?: string | undefined }[]) => void };
+export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly backend?: Backend; readonly listDir?: (dir: string) => readonly string[]; readonly seen?: (agent: Proc) => Promise<{ readonly id: string; readonly log?: string | undefined; readonly vetted?: boolean } | undefined>; readonly observed?: (id: string, sessions: readonly { readonly id: string; readonly log?: string | undefined }[]) => void };
 
 export const shellPidOf = async (pane: string, deps: SessionDeps): Promise<number> => {
   // the pane id says its backend, whatever the config says (aoe.ts tmuxPanePid: herdr process-info for a herdr pane id)
@@ -150,10 +150,10 @@ export const procEnv = async (run: Runner, p: Proc): Promise<string> => {
   return line.startsWith(p.cmd) ? line.slice(p.cmd.length) : "";
 };
 
-// Whether omo handed child the session in its env: senpi sets it for its bash tools' shells and kernels (core/tools/bash.js,
-// kernels/session-env.ts); a monitor (SENPI_MONITOR_ID) or the provider keeps the agent's own env (launched; MooDori hc:t1).
+// Whether omo handed child the session in its env: senpi sets it for its bash tools' commands, each leading its own PTY's
+// session even after an exec (Linux sid), and its kernels; a monitor (SENPI_MONITOR_ID) or the provider keeps the agent's env.
 const SHELL = /^(?:\S*\/)?(?:sh|bash|zsh|dash|fish|ksh)(?:\s|$)/;
-export const handedSession = (child: Proc, env: string, launched: string): boolean => !/(?:^|\s)SENPI_MONITOR_ID=/.test(env) && (SHELL.test(child.cmd) || child.cmd.includes("senpi-codemode/src/kernels/") || ENV_ID.exec(env)?.[1] !== launched);
+export const handedSession = (child: Proc, env: string, launched: string): boolean => !/(?:^|\s)SENPI_MONITOR_ID=/.test(env) && (child.sid === child.pid || SHELL.test(child.cmd) || child.cmd.includes("senpi-codemode/src/kernels/") || ENV_ID.exec(env)?.[1] !== launched);
 export const launchSessionId = async (run: Runner, agent: Proc): Promise<string> => ENV_ID.exec(await procEnv(run, agent))?.[1] ?? "";
 
 export const flagValue = (argv: readonly string[], flag: string): string | undefined => {
@@ -202,7 +202,7 @@ const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: str
   if (fromFlag) named.push({ id: fromFlag });
   // the record counts on its own too: a selector-free agent whose children all ended still names it
   const seen = deps.seen ? await deps.seen(agent) : undefined;
-  if (seen) named.push({ ...seen, current: true });
+  if (seen && (seen.vetted || seen.id !== launched)) named.push({ ...seen, current: true });
   const result = (id: string, sessions: readonly { readonly id: string; readonly log?: string | undefined }[] = named): Pick<SessionHit, "id" | "via"> => { deps.observed?.(id, sessions); return { id, via: named.some((n) => n.id === id && n.current) ? "child-env" : id ? "argv" : "none" }; };
   const ids = [...new Set(named.map((n) => n.id))];
   if (!ids.length || (ids.length === 1 && !deps.observed)) return result(ids[0] ?? "");
@@ -234,7 +234,7 @@ export const resolveSession = async (pane: string, cwd: string, table: readonly 
   const selected = hasSessionSelector(argv);
   // its own children were read above and showed none; a deeper child's PI_SESSION_ID still names it
   for (const child of process.platform === "win32" ? [] : descendants(table, agent.pid).filter((p) => p.ppid !== agent.pid).slice(0, 40)) {
-    const env = await procEnv(deps.run, child), hit = handedSession(child, env, await launchSessionId(deps.run, agent)) ? ENV_ID.exec(env) : null;
+    const env = await procEnv(deps.run, child), hit = handedSession({ pid: child.pid, ppid: child.ppid, cmd: child.cmd }, env, await launchSessionId(deps.run, agent)) ? ENV_ID.exec(env) : null;
     if (hit?.[1]) return { id: hit[1], via: "child-env", pid: agent.pid };
   }
   if (selected) return { id: "", via: "none", pid: agent.pid };

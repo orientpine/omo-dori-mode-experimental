@@ -190,19 +190,19 @@ export const strayTasks = (home: string, session: string, alive: (pid: number) =
 // The transcript file of the session a pane's omo runs, and that agent's pid, or undefined when either cannot be read.
 export const sessionFile = async (run: Runner, sessionsDir: string, pane: string, cwd: string, table?: readonly Proc[], stateDir?: string): Promise<{ readonly path: string; readonly pid: number; readonly via: SessionHit["via"] } | undefined> => {
   const kept = stateDir ? readHerdrSessions(stateDir)[pane] : undefined;
-  let recorded: { readonly id: string; readonly log?: string | undefined } | undefined, identity: string | undefined;
+  let recorded: { readonly id: string; readonly log?: string | undefined; readonly vetted?: boolean } | undefined, identity: string | undefined;
   const seen = async (agent: Proc) => {
     if (!kept && !stateDir) return undefined;
     const start = process.platform === "win32" ? agent.startedAt ?? "" : (await run(["ps", "-o", "lstart=", "-p", String(agent.pid)])).out.trim();
     identity = start ? `${agent.pid} ${start}` : undefined;
-    recorded = identity && kept?.agent === identity ? { id: kept.session, log: kept.log } : undefined;
+    recorded = identity && kept?.agent === identity ? { id: kept.session, log: kept.log, ...(kept.vetted ? { vetted: true } : {}) } : undefined;
     return recorded;
   };
   const observed: NonNullable<Parameters<typeof resolveSession>[3]["observed"]> = (id, sessions) => {
     if (!stateDir || !identity || !id) return;
     const log = sessions.find((entry) => entry.id === id && entry.log)?.log ?? argvSessionLog([], sessionsDir, cwd, id);
-    if (log && existsSync(log)) recorded = { id, log };
-    recordHerdrSession(stateDir, pane, { session: id, cwd, ...(log ? { log } : {}), agent: identity, at: new Date().toISOString(), previous: sessions.filter((entry) => entry.id !== id).map((entry) => ({ session: entry.id, cwd, ...(entry.log ? { log: entry.log } : {}) })) });
+    if (log && existsSync(log)) recorded = { id, log, vetted: true };
+    recordHerdrSession(stateDir, pane, { session: id, cwd, ...(log ? { log } : {}), agent: identity, vetted: true, at: new Date().toISOString(), previous: sessions.filter((entry) => entry.id !== id).map((entry) => ({ session: entry.id, cwd, ...(entry.log ? { log: entry.log } : {}) })) });
   };
   const hit = await resolveSession(pane, cwd, table ?? (await procTable(run)), { run, sessionsDir, backend: "aoe", seen, ...(stateDir ? { observed } : {}) });
   if (!hit.id || !hit.pid) return undefined;

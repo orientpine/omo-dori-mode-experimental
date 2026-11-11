@@ -41,7 +41,7 @@ const REPEAT_MS = 30 * 60_000;
 
 type Kind = "owner" | "pair" | "pair-bot";
 type Row = { readonly id: string; readonly at: number; readonly kind: Kind; readonly text: string; readonly qid?: string };
-type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[]; readonly baselineDone?: boolean };
+type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[]; readonly baselineDone?: boolean; readonly vetted?: true };
 
 // the rows the lead must hear: the owner's (lead-limit.ts ownerRows), every owner row of the pair channel and the pair-bot
 // rows that call this Dori
@@ -144,9 +144,10 @@ const currentLeadSession = async (deps: FlowDeps, pane: string, cwd: string, tab
     if (id && handedSession(child, env, launched)) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
   }
   const previous = readMark(deps);
-  if (previous?.pane === pane && previous.agentPid === hit.pid) named.push({ id: previous.session, log: previous.log });
+  // a session remembered as the agent's launch one counts only when written vetted: a watcher before #460 recorded inherited ones
+  if (previous?.pane === pane && previous.agentPid === hit.pid && (previous.vetted || previous.session !== launched)) named.push({ id: previous.session, log: previous.log });
   const kept = readHerdrSessions(deps.config.stateDir)[pane];
-  if (kept?.session) named.push({ id: kept.session, log: kept.log });
+  if (kept?.session && (kept.vetted || kept.session !== launched)) named.push({ id: kept.session, log: kept.log });
   if (!named.length) return undefined;
   const candidates = await Promise.all([...new Set(named.map((n) => n.id))].map(async (id) => {
     const hint = named.findLast((n) => n.id === id && n.log)?.log;
@@ -211,7 +212,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
   const baselineDone = !problem || (sameSession && old?.baselineDone === true);
   const heardState = { heardIds: [...heard].sort(), ...(baselineDone ? { baselineDone: true } : {}) };
   const missingSince = problem ? (mark.missingSince ?? now) : undefined;
-  let next: Mark = { pane, session, agentPid: file.pid, log: file.path, ...heardState, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
+  let next: Mark = { pane, session, agentPid: file.pid, log: file.path, vetted: true, ...heardState, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
   const out: string[] = [];
   const oldest = unheard[0];
   const newest = unheard.at(-1);
