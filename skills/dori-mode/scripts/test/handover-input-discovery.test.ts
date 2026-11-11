@@ -103,10 +103,10 @@ test("with several input redirections the shell's effective source is the last o
       expect([command, launch.detached]).toEqual([command, true]);
       expect([command, missingMonitors([{ description: "ci on 4eae", command, persistent: true, launch }], [], () => true, HOME, 0, workEnded(work, () => true, gone))]).toEqual([command, asked]);
     }
-    // the last input with nothing detached ends with its processes, even when an earlier one detached
+    // #414 review 15: with several < the shell's script is not pinned exactly, so even a plain last input keeps its watch
     const plain = launchOf(command, HOME, (path) => (path === "/tmp/start" ? "sleep 30\nbun run ci\n" : "nohup setsid /tmp/job.sh &\n"));
     if (!plain) throw new Error(`not work: ${command}`);
-    expect([command, plain.detached]).toEqual([command, false]);
+    expect([command, plain.detached]).toEqual([command, true]);
   }
 });
 
@@ -117,10 +117,10 @@ test("a superseded .sh input is not read, and a quoted input name with a space i
   const read = (path: string) => (path === "/tmp/old.sh" ? "nohup setsid /tmp/job.sh &\n" : "sleep 30\nbun run ci\n");
   const launch = launchOf(command, HOME, read);
   if (!launch) throw new Error(`not work: ${command}`);
-  expect(launch.detached).toBe(false);
-  expect(missingMonitors([{ description: "ci on 4eae", command, persistent: true, launch }], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toEqual([]);
-  // the effective input detaching, or unreadable, still keeps the watch
+  // #414 review 15: several < keep the watch even when the effective input is plain
   const asked = ["ci on 4eae (starts work: arm a watch-only one with the same description)"];
+  expect(launch.detached).toBe(true);
+  expect(missingMonitors([{ description: "ci on 4eae", command, persistent: true, launch }], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toEqual(asked);
   for (const r of [(path: string) => (path === "/tmp/current.sh" ? "sleep 30\nnohup setsid /tmp/job.sh &\n" : ""), () => undefined]) {
     const l2 = launchOf(command, HOME, r);
     if (!l2) throw new Error(`not work: ${command}`);
