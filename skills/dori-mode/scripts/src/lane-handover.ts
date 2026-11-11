@@ -459,8 +459,8 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   `## Local chains of the old session (${f.chains.length})`,
   ...(f.chains.length ? ["Do NOT start these again now: they still run under the old session until it closes, and a second copy would run the same work twice (duplicate node jobs, results written over). Once the old session is closed and these pids are gone, a [LEAD] HANDOVER_CHAINS_ENDED line tells you; then restart only what is still needed, from its checkpoint or progress files, skipping steps that already finished.", ...f.chains.map(job)] : ["none"]),
   "",
-  ...(f.work?.length
-    ? [`## Work the old session's monitors started (${f.work.length})`, "It runs under a monitor of the old session (marked LAUNCHES_WORK under Monitors), so the handover keeps that session frozen instead of closing it, its monitors left running, and closes it once this work ended. Do not start it again; follow it with the watch-only monitors of step 1.", ...f.work.map((j) => `- monitor ${j.pid} "${j.cmd.slice(0, 120)}": ${(j.pids ?? []).join(", ")}`), ""]
+  ...(f.work?.some((j) => (j.pids ?? []).length > 0)
+    ? [`## Work the old session's monitors started (${f.work.filter((j) => (j.pids ?? []).length > 0).length})`, "It runs under a monitor of the old session (marked LAUNCHES_WORK under Monitors), so the handover keeps that session frozen instead of closing it, its monitors left running, and closes it once this work ended. Do not start it again; follow it with the watch-only monitors of step 1.", ...f.work.map((j) => `- monitor ${j.pid} "${j.cmd.slice(0, 120)}": ${(j.pids ?? []).join(", ")}`), ""]
     : []),
   `## Detached jobs (${f.detached.length})`,
   ...(f.detached.length ? ["They run in a terminal session of their own, outside the old pane, so closing it does not end them; the handover does not touch them. Check on them, do not start them twice.", ...f.detached.map(job)] : ["none"]),
@@ -892,7 +892,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     writeFileSync(note, renderLaneNote(facts, at, config.stateDir));
     writeFileSync(join(dir, `${key}-${id}.json`), JSON.stringify(facts, null, 1));
     emit(`HANDOVER_NOTE ${note}: ${monitors.length} monitors, ${facts.todos.length} todos, goal ${facts.goal ? "yes" : "no"}, ${chains.length} local chains, ${detached.length} detached jobs, ${tasks.length} background tasks, ${leadWords.length} lead instructions, context ${shown.contextPct ?? "?"}%, compactions ${signals.compactions ?? "?"}, age ${signals.ageH ?? "?"} h, ready ${ready ? ready.at : "no"}`);
-    if (jobs.length) emit(`HANDOVER_MONITOR_WORK ${key} ${jobs.length}: ${jobs.map((j) => `monitor ${j.pid} "${j.cmd.slice(0, 60)}" runs ${(j.pids ?? []).join(",")}`).join("; ")}; the old session is frozen, not closed, until it ends`);
+    if (jobs.some((j) => j.pids.length > 0)) emit(`HANDOVER_MONITOR_WORK ${key} ${jobs.filter((j) => j.pids.length > 0).length}: ${jobs.filter((j) => j.pids.length > 0).map((j) => `monitor ${j.pid} "${j.cmd.slice(0, 60)}" runs ${(j.pids ?? []).join(",")}`).join("; ")}; the old session is frozen, not closed, until it ends`);
     const title = titleFor(old.title, stamp);
     if (opts.dryRun) {
       if (blocked) return { code: 2, note };
@@ -1292,7 +1292,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   }
   // work a monitor of the old session started still runs under it: closing the session would end it, so the old agent and
   // everything else under it are frozen, the monitors with work left running, and freshness closes it once the work ended
-  const kept = (facts.work ?? []).filter((c) => running(deps, c));
+  const kept = (facts.work ?? []).filter((c) => (c.pids ?? []).length > 0 && running(deps, c));
   if (kept.length) {
     // the local chains are left running too: the new session is told they run on, as with --keep-old
     for (const line of await endOldMonitors(deps, facts, [...kept, ...facts.chains].map((c) => c.pid))) emit(line);

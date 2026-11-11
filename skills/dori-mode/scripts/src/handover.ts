@@ -231,7 +231,7 @@ export const liveMonitors = (entries: readonly ManifestEntry[], now: number, ali
 // The work a monitor that starts work (launch) still runs: the processes under its command besides the readers it follows
 // the work with (tail, grep). They are in the old session's process tree, so closing that session ends them (GongDori's
 // e7-leap chain s21 -> s31 under "dori heavy ... > log 2>&1 & tail --pid" died at its lane handover on 2026-10-24 04:05Z).
-// pid: the monitor's own process; pids: the work under it.
+// pid: the monitor's own process; pids: the work under it, none when the work is that process itself (#414 review 45).
 export type MonitorWork = { readonly pid: number; readonly start?: string | undefined; readonly cmd: string; readonly pids: readonly number[]; readonly starts?: readonly (string | undefined)[] };
 const READER = /^(?:\S*\/)?(?:tail|grep)\s/;
 export const monitorWork = (entries: readonly ManifestEntry[], table: readonly Proc[], now: number, alive: (pid: number) => boolean, home: string): MonitorWork[] =>
@@ -239,7 +239,7 @@ export const monitorWork = (entries: readonly ManifestEntry[], table: readonly P
     const pid = e.runtime?.pid;
     if (pid === undefined || !e.command || !running(e, now) || !alive(pid) || !launchOf(e.command, home)) return [];
     const pids = descendants(table, pid).filter((p) => !ended(p) && !READER.test(p.cmd)).map((p) => p.pid);
-    return pids.length ? [{ pid, start: procStart(pid), cmd: e.description || e.command, pids, starts: pids.map((p) => procStart(p)) }] : [];
+    return [{ pid, start: procStart(pid), cmd: e.description || e.command, pids, starts: pids.map((p) => procStart(p)) }];
   });
 
 const fillTarget = (argv: readonly string[], target: { readonly pane: string; readonly session: string }): string[] =>
@@ -873,7 +873,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   // committed: the old lead is frozen, not closed, so it spends no tokens and does nothing while its pane and log stay.
   // A rolled-back move never gets here, and before this point it was only told to stay quiet.
   // work a monitor of the old lead started goes on: those monitors are not stopped, and the session closes once it ended
-  const work = facts.from.session ? monitorWork(readManifest(manifestPath(config.sessionsDir, facts.from.cwd, facts.from.session)), await deps.procs(), deps.clock.now(), deps.alive, deps.home) : [];
+  const work = facts.from.session ? monitorWork(readManifest(manifestPath(config.sessionsDir, facts.from.cwd, facts.from.session)), await deps.procs(), deps.clock.now(), deps.alive, deps.home).filter((j) => j.pids.length > 0) : [];
   for (const line of await endOldMonitors(deps, facts, work.map((j) => j.pid))) emit(line);
   const ice = await freezePane(deps, config.leadPane, process.pid, work.map((j) => j.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
   mark("freeze", !!ice.agentPid);
