@@ -8,8 +8,9 @@ const REDIRECT = /^\d*(?:[<>]|&>)/;
 const OPERATOR_ONLY = /^\d*(?:>>?|<|>&|&>>?|>\|)$/;
 const CONTROL_WORD = /^(?:if|then|else|elif|fi|do|done|while|until|for|in|case|esac|function|!|\{|\})$/;
 export const runsOther = (text: string): boolean => {
-  // a backtick runs a command even inside double quotes (#414 review 34)
-  if (text.includes("`")) return true;
+  // a backtick runs a command even inside double quotes (#414 review 34); a backslash escape is grammar this reader
+  // does not follow, and an escaped quote opens no quote (review 35)
+  if (text.includes("`") || text.includes("\\")) return true;
   const cmds: string[][] = [[]];
   let cur = 0;
   let w = "";
