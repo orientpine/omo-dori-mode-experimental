@@ -1,11 +1,22 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hcCore } from "../src/hc-lead-core.ts";
 
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+const servers: Server[] = [];
+afterEach(() => {
+  for (const s of servers.splice(0)) s.close();
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+// a core's socket that accepts connections, as a running core's does; a plain file at the path is a socket a killed core left
+const listen = (path: string): Promise<void> => new Promise((resolve) => {
+  const server = createServer();
+  servers.push(server);
+  server.listen(path, () => resolve());
+});
 
 const rig = (lead: string): { dir: string; bin: string } => {
   const dir = mkdtempSync(join(tmpdir(), "dori-hc-attach-"));
@@ -18,10 +29,12 @@ const rig = (lead: string): { dir: string; bin: string } => {
   writeFileSync(join(dir, "wrong.env"), "HC_SESSION=foreign\n");
   writeFileSync(join(dir, "wrong-config.json"), JSON.stringify({ runtime: "hc", leadPane: "hc:t999" }));
   mkdirSync(join(dir, ".bun", "bin"), { recursive: true });
-  symlinkSync(process.execPath, join(dir, ".bun", "bin", "bun"));
+  // this checkout's CLI, run by dori.sh as \`bun .../scripts/src/cli.ts\`, is faked; every other bun run is the real bun
+  writeFileSync(join(dir, ".bun", "bin", "bun"), `#!/bin/sh\ncase "$1" in */scripts/src/cli.ts) shift; printf '%s state=%s config=%s\\n' "$1" "\${DORI_STATE_DIR:-unset}" "$DORI_CONFIG" >> "$HOME/cli-calls"; if [ "$1" = lead ]; then printf '%s\\n' '${lead}'; else printf 'dori %s\\n' "$*"; fi ;; *) exec '${process.execPath}' "$@" ;; esac\n`, { mode: 0o700 });
   symlinkSync(join(import.meta.dir, "../../../.."), join(dir, ".dori", "src"));
   const executable = (name: string, text: string) => writeFileSync(join(bin, name), `#!/bin/sh\n${text}\n`, { mode: 0o700 });
-  executable("dori", `if [ "$1" = lead ]; then printf '%s\\n' '${lead}'; else printf 'dori %s\\n' "$*"; fi`);
+  // a wrapper on PATH that picks another instance's files, as the documented ~/.second/bin/dori does
+  executable("dori", `printf 'wrapper dori %s\\n' "$*"; if [ "$1" = lead ]; then printf 'other-session hc:t999\\n'; fi`);
   executable("systemctl", `printf 'systemctl %s\\n' "$*"`);
   executable("hc", `if [ -n "$HC_SOCKET" ]; then printf 'unexpected socket %s\\n' "$HC_SOCKET"; fi\nprintf 'hc session=%s %s\\n' "\${HC_SESSION:-default}" "$*"`);
   executable("herdr", `printf 'unexpected herdr %s\\n' "$*"`);
@@ -30,7 +43,7 @@ const rig = (lead: string): { dir: string; bin: string } => {
 };
 
 const runLauncher = (dir: string, bin: string) => Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], {
-  env: { ...process.env, HOME: dir, PATH: `${bin}:${process.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_ENV_FILE: join(dir, "wrong.env"), DORI_CONFIG: join(dir, "wrong-config.json"), DORI_LEAD_PANE: "w1:p999", HC_SESSION: "inherited-host", HC_SOCKET: "/tmp/inherited.sock" },
+  env: { ...process.env, HOME: dir, PATH: `${bin}:${process.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_ENV_FILE: join(dir, "wrong.env"), DORI_CONFIG: join(dir, "wrong-config.json"), DORI_STATE_DIR: join(dir, "other-instance-state"), DORI_LEAD_PANE: "w1:p999", HC_SESSION: "inherited-host", HC_SOCKET: "/tmp/inherited.sock" },
   stdout: "pipe", stderr: "pipe",
 });
 
@@ -38,8 +51,8 @@ test("dori.sh revives a stopped hc lead and attaches it in the Dori's named core
   // Given: a stopped hc lead and its named core's socket
   const { dir, bin } = rig("session hc:t7 stopped");
   mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
-  writeFileSync(join(dir, "run", "herdr-core", "agents.sock"), "");
-  writeFileSync(join(dir, "run", "herdr-core", "foreign.sock"), "");
+  await listen(join(dir, "run", "herdr-core", "agents.sock"));
+  await listen(join(dir, "run", "herdr-core", "foreign.sock"));
   const child = runLauncher(dir, bin);
   // When
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -49,6 +62,25 @@ test("dori.sh revives a stopped hc lead and attaches it in the Dori's named core
     err: "",
     lines: ["systemctl --user start dori-inbound.service dori-google-watch.service", "dori revive hc:t7", "hc session=agents attach t7"],
   });
+  // and the lead was looked up and revived by this checkout's CLI with the account's own files: neither another instance's
+  // state dir nor a wrapper on PATH chose the session (review 1 of #453)
+  const config = join(dir, ".dori", "config.json");
+  expect(readFileSync(join(dir, "cli-calls"), "utf8")).toBe(`lead state=unset config=${config}\nrevive state=unset config=${config}\n`);
+});
+
+test("dori.sh treats a socket a killed core left as no core", async () => {
+  // Given: a live hc lead and a plain file where its named core's socket would be, with no listener
+  const { dir, bin } = rig("session hc:t7");
+  mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
+  writeFileSync(join(dir, "run", "herdr-core", "agents.sock"), "");
+  const child = runLauncher(dir, bin);
+  // When
+  const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  // Then: refused before any lead lookup or hc call, so hc cannot start a core there
+  expect(code).not.toBe(0);
+  expect(err).toContain("not starting one");
+  expect(out).not.toContain("hc session=");
+  expect(await Bun.file(join(dir, "cli-calls")).exists()).toBe(false);
 });
 
 test("dori.sh never starts a missing hc core", async () => {

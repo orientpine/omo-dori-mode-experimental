@@ -34,7 +34,10 @@ encrypted outbound connection to `relay-doriface.omo.dev:443`; it opens no liste
 every 5 seconds (`DORITERM_RETRY_SECONDS`) after it exits, so the bridge attaches once the herdr server is up (a boot
 where this unit starts first) and again after a herdr server restart. For an hc lead it runs `hc attach` in
 the core that Dori's `dori.env` names (else the default core), so the owner types into the lead from the row as into a herdr lead's client;
-if that core has no socket yet, it does not start one and tries again after the same interval. The bridge only attaches: it types
+if that core has no socket that answers yet (none, or one a killed core left), it does not start one and tries again after the
+same interval. While attached it reads the lead again at that interval (at most once a second); when a handover moved it, the
+row ends its own client (never a terminal: the old lead stays frozen as the handover left it) and attaches the new lead, an
+hc or a herdr one. The bridge only attaches: it types
 nothing and focuses no pane. hc runs its core as its own systemd user service (`systemd-run`), outside this unit, so
 `ExecStopPost` runs `bridge.ts stop`, which ends and removes only the bridge rows it lists (a row of a bridge's name
 counts only when it is this machine's terminal, `tN`, and `hc get` shows it runs exactly that bridge's `attach.sh`

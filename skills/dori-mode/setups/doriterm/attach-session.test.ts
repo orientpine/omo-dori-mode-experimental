@@ -1,14 +1,34 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridgeRun } from "./bridge.ts";
 
 // Review 9 of #404 left an hc lead unshown; the follow-up PR attaches it in the Dori's own core.
 const dirs: string[] = [];
+const servers: Server[] = [];
 afterEach(() => {
+  for (const s of servers.splice(0)) s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
+// a running core's socket accepts connections; a plain file at the path is what a killed core leaves
+const listen = (path: string): Promise<void> => new Promise((resolve) => {
+  const server = createServer();
+  servers.push(server);
+  server.listen(path, () => resolve());
+});
+const until = async (stream: ReadableStream<Uint8Array>, text: string): Promise<string> => {
+  const reader = stream.getReader();
+  let said = "";
+  while (!said.includes(text)) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    said += new TextDecoder().decode(value);
+  }
+  reader.releaseLock();
+  return said;
+};
 const scratch = (): string => {
   const d = mkdtempSync(join(tmpdir(), "doriterm-core-"));
   dirs.push(d);
@@ -58,7 +78,7 @@ test("attach.sh attaches an hc lead in the Dori's own core, so the owner can typ
     writeFileSync(join(dir, "wrong.env"), "HC_SESSION=inherited-env\n");
     bunAndSource(dir);
     mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
-    writeFileSync(join(dir, "run", "herdr-core", `${core}.sock`), "");
+    await listen(join(dir, "run", "herdr-core", `${core}.sock`));
     writeFileSync(join(dir, "hc"), `#!/bin/sh\nif [ -n "$HC_SOCKET" ]; then printf 'unexpected socket %s\\n' "$HC_SOCKET"; fi\nprintf 'hc session=%s %s\\n' "\${HC_SESSION:-default}" "$*"\n`, { mode: 0o700 });
     writeFileSync(join(dir, "herdr"), `#!/bin/sh\nprintf 'herdr %s\\n' "$*"\n`, { mode: 0o700 });
     const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
@@ -110,4 +130,55 @@ test("attach.sh never starts a missing hc core: without its socket hc is not cal
   expect(said).toContain("agents");
   expect(said).toContain("not starting one");
   expect(await new Response(child.stdout).text()).not.toContain("unexpected hc");
+}, 10_000);
+
+test("attach.sh treats a socket a killed core left as no core", async () => {
+  // Given: an hc lead and a plain file, no listener, where its core's socket would be
+  const dir = scratch();
+  const user = (await Bun.$`id -un`.text()).trim();
+  mkdirSync(join(dir, `.${user}`), { recursive: true });
+  writeFileSync(join(dir, `.${user}`, "config.json"), JSON.stringify({ leadPane: "hc:t4" }));
+  bunAndSource(dir);
+  mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
+  writeFileSync(join(dir, "run", "herdr-core", "default.sock"), "");
+  writeFileSync(join(dir, "hc"), `#!/bin/sh\nprintf 'unexpected hc %s\\n' "$*"\n`, { mode: 0o700 });
+  const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_LEAD_PANE: "w1:p999", DORITERM_RETRY_SECONDS: "0.2" },
+    stdout: "pipe", stderr: "pipe",
+  });
+  // When: stop on the refusal line
+  const said = await until(child.stderr, "not starting one");
+  child.kill();
+  await child.exited;
+  // Then: hc is never called, so it cannot start a core on that path
+  expect(said).toContain("not starting one");
+  expect(await new Response(child.stdout).text()).not.toContain("unexpected hc");
+}, 10_000);
+
+test("attach.sh moves to the new lead when a handover replaces it while the row is attached, leaving both terminals alone", async () => {
+  // Given: a row attached to hc:t4; the fake hc attach stays attached until its client is ended (or the test dir goes), as a
+  // real client does
+  const dir = scratch();
+  const user = (await Bun.$`id -un`.text()).trim();
+  const config = join(dir, `.${user}`, "config.json");
+  mkdirSync(join(dir, `.${user}`), { recursive: true });
+  writeFileSync(config, JSON.stringify({ leadPane: "hc:t4" }));
+  bunAndSource(dir);
+  mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
+  await listen(join(dir, "run", "herdr-core", "default.sock"));
+  writeFileSync(join(dir, "hc"), `#!/bin/sh\nprintf 'hc %s\\n' "$*"\nwhile [ -d "$HOME" ]; do sleep 0.2; done\n`, { mode: 0o700 });
+  const child = Bun.spawn(["/bin/sh", join(import.meta.dir, "attach.sh")], {
+    env: { ...Bun.env, HOME: dir, PATH: `${dir}:${Bun.env["PATH"]}`, XDG_RUNTIME_DIR: join(dir, "run"), DORI_LEAD_PANE: "w1:p999", DORITERM_RETRY_SECONDS: "0.2" },
+    stdout: "pipe", stderr: "pipe",
+  });
+  const first = await until(child.stdout, "hc attach t4\n");
+  // When: a handover points the config at the new lead hc:t9 (the old t4 is frozen, not ended, so its attach would stay)
+  writeFileSync(config, JSON.stringify({ leadPane: "hc:t9" }));
+  const then = await until(child.stdout, "hc attach t9\n");
+  child.kill();
+  await child.exited;
+  // Then: the row attached t9; only attach clients ran, never a kill or rm of a terminal
+  expect(first).toContain("hc attach t4");
+  expect(then).toContain("hc attach t9");
+  expect(`${first}${then}`).not.toMatch(/hc (kill|rm|interrupt)/);
 }, 10_000);

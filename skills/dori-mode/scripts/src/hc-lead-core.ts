@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { envFileEntries, envFilePath, configPath, loadEnvFile } from "./config-env.ts";
+import { hcCoreRunning } from "./run.ts";
 
 export const hcCore = (text: string): string => envFileEntries(text).get("HC_SESSION") ?? "";
 
@@ -25,7 +25,8 @@ if (import.meta.main) {
     console.log(lead ? ` ${lead}` : "");
   } else {
     const socket = hcCoreSocket(core);
-    if (!existsSync(socket)) {
+    // a socket path a killed core left is no core: only one that accepts a connection is (review 1 of #453)
+    if (!(await hcCoreRunning(core || undefined))) {
       console.error(`dori: no hc core ${core || "default"} at ${socket}; not starting one`);
       process.exit(1);
     }

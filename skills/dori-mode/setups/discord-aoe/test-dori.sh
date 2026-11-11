@@ -10,15 +10,28 @@ export PATH="$T:$PATH"
 export HOME="$T/home"
 export XDG_RUNTIME_DIR="$T/run"
 mkdir -p "$HOME/.bun/bin" "$HOME/.dori"
-ln -s "$(command -v bun)" "$HOME/.bun/bin/bun"
+REAL_BUN=$(command -v bun)
+export REAL_BUN
 ln -s "$R" "$HOME/.dori/src"
-unset DORI_CONFIG DORI_ENV_FILE DORI_STATE_DIR DORI_LEAD_PANE HC_SESSION HC_SOCKET || true
-cat >"$T/dori" <<'EOF'
+unset DORI_CONFIG DORI_ENV_FILE DORI_LEAD_PANE HC_SESSION HC_SOCKET || true
+# another instance's state dir, which the launcher must drop for the account's own config
+export DORI_STATE_DIR="$T/other-instance-state"
+# dori.sh runs this checkout's CLI with bun; that CLI is faked here, every other bun run is the real bun
+cat >"$HOME/.bun/bin/bun" <<'EOF'
 #!/usr/bin/env bash
+if [[ "$1" != */scripts/src/cli.ts ]]; then exec "$REAL_BUN" "$@"; fi
+shift
+[[ -z "${DORI_STATE_DIR:-}" ]] || { printf 'inherited state %s\n' "$DORI_STATE_DIR" >>"$CHECK_LOG"; exit 4; }
 if [[ "$1" == revive ]]; then printf 'dori %s\n' "$*" >>"$CHECK_LOG"; exit 0; fi
 [[ "$*" == lead ]] || exit 3
 [[ ${LEAD_FAIL:-0} == 0 ]] || exit 1
 printf '%s\n' "${LEAD_LINE:-fresh-lead-id aoe_fresh}"
+EOF
+# a dori wrapper on PATH that picks other files, as ~/.second/bin/dori does; the launcher must not use it
+cat >"$T/dori" <<'EOF'
+#!/usr/bin/env bash
+printf 'wrapper dori %s\n' "$*" >>"$CHECK_LOG"
+exit 5
 EOF
 cat >"$T/systemctl" <<'EOF'
 #!/usr/bin/env bash
@@ -37,7 +50,7 @@ cat >"$T/hc" <<'EOF'
 #!/usr/bin/env bash
 printf 'hc session=%s %s\n' "${HC_SESSION:-default}" "$*" >>"$CHECK_LOG"
 EOF
-chmod +x "$T/dori" "$T/systemctl" "$T/aoe" "$T/herdr" "$T/hc"
+chmod +x "$HOME/.bun/bin/bun" "$T/dori" "$T/systemctl" "$T/aoe" "$T/herdr" "$T/hc"
 bash "$S/dori.sh"
 expected=$'systemctl --user start dori-inbound.service dori-google-watch.service\naoe session start fresh-lead-id\naoe session attach fresh-lead-id'
 [[ "$( <"$CHECK_LOG")" == "$expected" ]] || { printf 'launcher command mismatch\n' >&2; exit 1; }
@@ -59,7 +72,12 @@ printf 'HC_SESSION=agents\n' >"$HOME/.dori/dori.env"
 printf 'HC_SESSION=foreign\n' >"$T/wrong.env"
 export DORI_ENV_FILE="$T/wrong.env"
 mkdir -p "$XDG_RUNTIME_DIR/herdr-core"
-: >"$XDG_RUNTIME_DIR/herdr-core/agents.sock"
+# a core socket that accepts connections, as a running core's does (a plain file is a socket a killed core left)
+mkfifo "$T/up"
+"$REAL_BUN" -e 'require("node:net").createServer().listen(process.argv[1], () => console.log("up"))' "$XDG_RUNTIME_DIR/herdr-core/agents.sock" >"$T/up" &
+listener=$!
+trap 'kill "$listener" 2>/dev/null; rm -rf "$T"' EXIT
+read -r _ <"$T/up"
 LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4" bash "$S/dori.sh"
 expected=$'systemctl --user start dori-inbound.service dori-google-watch.service\nhc session=agents attach t4'
 [[ "$( <"$CHECK_LOG")" == "$expected" ]] || { printf 'hc launcher command mismatch\n' >&2; cat "$CHECK_LOG" >&2; exit 1; }
@@ -69,6 +87,14 @@ LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4 stopped" bash "$S/dori.sh"
 expected=$'systemctl --user start dori-inbound.service dori-google-watch.service\ndori revive hc:t4\nhc session=agents attach t4'
 [[ "$( <"$CHECK_LOG")" == "$expected" ]] || { printf 'stopped hc launcher command mismatch\n' >&2; cat "$CHECK_LOG" >&2; exit 1; }
 rm "$CHECK_LOG"
+# a socket a killed core left (no listener): the same refusal as no socket
+kill "$listener"
+wait "$listener" 2>/dev/null || true
+rm -f "$XDG_RUNTIME_DIR/herdr-core/agents.sock"
+: >"$XDG_RUNTIME_DIR/herdr-core/agents.sock"
+if out=$(LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4" bash "$S/dori.sh" 2>&1); then printf 'stale hc socket launched\n' >&2; exit 1; fi
+[[ "$out" == *"not starting one"* ]] || { printf 'stale-socket refusal line missing: %s\n' "$out" >&2; exit 1; }
+[[ ! -e "$CHECK_LOG" ]] || { printf 'stale socket touched lead resolution or services\n' >&2; cat "$CHECK_LOG" >&2; exit 1; }
 # no core socket: the guard runs before dori lead, systemctl, revive or hc, so no core is started
 rm "$XDG_RUNTIME_DIR/herdr-core/agents.sock"
 if out=$(LEAD_LINE="11111111-2222-4333-8444-555555555555 hc:t4" bash "$S/dori.sh" 2>&1); then printf 'missing hc core launched\n' >&2; exit 1; fi

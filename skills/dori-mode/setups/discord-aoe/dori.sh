@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# The account's own files win over an inherited instance. For an hc lead the helper checks its core before dori lead or
-# revive can call hc; a herdr or aoe lead needs no core check.
+# The account's own files win over an inherited instance, and its config's stateDir over an inherited DORI_STATE_DIR. For an
+# hc lead the helper checks its core before dori lead or revive can call hc; a herdr or aoe lead needs no core check. The
+# lead is looked up and revived by this checkout's CLI with those same files, never a dori wrapper on PATH that may pick
+# another instance's (review 1 of #453).
 account_config=$HOME/.$(id -un)/config.json
 if [[ -f "$account_config" ]]; then export DORI_CONFIG="$account_config"; else export DORI_CONFIG="$HOME/.dori/config.json"; fi
 account_env=$HOME/.$(id -un)/dori.env
 if [[ -f "$account_env" ]]; then export DORI_ENV_FILE="$account_env"; else export DORI_ENV_FILE="$HOME/.dori/dori.env"; fi
-unset DORI_LEAD_PANE DORI_LEAD_TMUX DORI_LEAD_AOE_ID
+unset DORI_LEAD_PANE DORI_LEAD_TMUX DORI_LEAD_AOE_ID DORI_STATE_DIR
 bun_bin=$HOME/.bun/bin/bun
 [[ -x "$bun_bin" ]] || bun_bin=bun
-helper=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/src" && pwd)/hc-lead-core.ts
-resolved=$("$bun_bin" "$helper")
+src=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/src" && pwd)
+dori() { "$bun_bin" "$src/cli.ts" "$@"; }
+resolved=$("$bun_bin" "$src/hc-lead-core.ts")
 core=${resolved%% *}
-# dori lead must be installed (the lead-resolution PR supplies it).
 lead=$(dori lead)
 read -r AOE_ID PANE STATE <<< "$lead"
 if [[ -z "$AOE_ID" ]]; then

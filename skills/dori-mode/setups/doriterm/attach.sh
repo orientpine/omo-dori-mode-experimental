@@ -10,13 +10,27 @@
 # of that server. If it fails the row still attaches.
 # An hc lead is attached with hc attach, so the owner types into it from the row as into a herdr lead's client. Its core is the HC_SESSION in the
 # Dori's dori.env, else the default core, never the bridge host's inherited core.
+# A handover moves the lead and freezes the old one without ending it, so an attached client would stay on the old lead:
+# while attached, the lead is read again every interval and, once it changed, this client (never a terminal) is ended so
+# the loop attaches the new one (review 1 of #453).
 account=${1:-}
+retry=${DORITERM_RETRY_SECONDS:-5}
+case $retry in ''|*[!0-9.]*) retry=5 ;; esac
+# the lead is read again at the same interval, but never more often than once a second
+case $retry in 0|0.*|.*) watch=1 ;; *) watch=$retry ;; esac
 env='export XDG_RUNTIME_DIR=/run/user/$(id -u) PATH=$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin; '
 attach='c=$HOME/.$(id -un)/config.json; [ -f "$c" ] || c=$HOME/.dori/config.json
 e=$HOME/.$(id -un)/dori.env
 [ -f "$e" ] || e=$HOME/.dori/dori.env
 unset DORI_LEAD_PANE DORI_LEAD_TMUX DORI_LEAD_AOE_ID
-resolved=$(DORI_CONFIG=$c DORI_ENV_FILE=$e "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts") || exit 1
+resolve() { DORI_CONFIG=$c DORI_ENV_FILE=$e "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts"; }
+resolved=$(resolve) || exit 1
+client=$$
+(while sleep "$watch"; do
+  kill -0 "$client" 2>/dev/null || exit 0
+  now=$(resolve 2>/dev/null) || continue
+  [ "$now" = "$resolved" ] || { kill "$client"; exit 0; }
+done) </dev/null >/dev/null 2>&1 &
 core=${resolved%% *}
 selected=${resolved#* }
 case $selected in
@@ -37,9 +51,9 @@ DORI_CONFIG=$c "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/dor
 exec herdr client'
 while :; do
   if [ -n "$account" ]; then
-    sudo -n -u "$account" -H /bin/sh -c "$env$attach"
+    sudo -n -u "$account" -H /bin/sh -c "watch=$watch; $env$attach"
   else
-    /bin/sh -c "$attach"
+    /bin/sh -c "watch=$watch; $attach"
   fi
-  sleep "${DORITERM_RETRY_SECONDS:-5}"
+  sleep "$retry"
 done
