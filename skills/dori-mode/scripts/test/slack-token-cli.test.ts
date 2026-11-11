@@ -76,3 +76,30 @@ test.skipIf(process.platform === "win32")("another home's wrapper without a dori
   // Then: home B has no Slack token, which is said, and nothing is posted with home A's file
   expect({ code: r.code, err: r.err, seen }).toEqual({ code: 1, err: "DORI_SLACK_TOKEN is not set (nor DORI_SLACK_TOKEN_FILE)", seen: [] });
 });
+
+test.skipIf(process.platform === "win32")("another home's wrapper isolates the lane's Slack API and cookie too, so home B's token goes only to home B's endpoint (#201 review 4)", async () => {
+  // Given: home A's endpoint, home B's endpoint, and an A lane (token file, A's API and cookie inherited) calling B's wrapper; no other messenger token
+  const seenA: string[] = [];
+  const seenB: { auth: string; cookie: string }[] = [];
+  const endpoint = (record: (req: Request) => void) => Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => { record(req); return Response.json({ ok: true, channel: "C1", ts: "1.3", message: { text: "hi" } }); } });
+  const a = endpoint((req) => seenA.push(req.headers.get("authorization") ?? ""));
+  const b = endpoint((req) => seenB.push({ auth: req.headers.get("authorization") ?? "", cookie: req.headers.get("cookie") ?? "" }));
+  try {
+    const file = join(state.dir, "slack-token");
+    writeFileSync(file, "xoxb-FIXTURE-file\n");
+    chmodSync(file, 0o600);
+    const lane = laneHomeEnv({ stateDir: state.dir, backend: "herdr" }, { DORI_CONFIG: join(state.dir, "config.json"), DORI_ENV_FILE: join(state.dir, "dori.env") });
+    const other = join(state.dir, "home-b");
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, "dori.env"), `DORI_SLACK_TOKEN=xoxb-FIXTURE-homeb\nDORI_SLACK_API=http://127.0.0.1:${b.port}/api\n`);
+    const wrapped = { ...lane, DORI_CONFIG: join(other, "config.json"), DORI_ENV_FILE: join(other, "dori.env"), DORI_STATE_DIR: join(other, "state") };
+    // When: home B sends
+    const r = await run(["env", "-u", "DORI_DISCORD_TOKEN", "-u", "DORI_TELEGRAM_TOKEN", ...Object.entries(wrapped).map(([k, v]) => `${k}=${v}`), `DORI_SLACK_API=http://127.0.0.1:${a.port}/api`, "DORI_SLACK_COOKIE=FIXTURE-a-cookie",
+      process.execPath, CLI, "send", "slack", "--to", "C1", "--text", "from b"], { timeoutMs: 20_000 });
+    // Then: it goes to B's endpoint with B's token and without A's cookie, and A's endpoint sees nothing
+    expect({ code: r.code, a: seenA, b: seenB.map((s) => ({ auth: s.auth, aCookie: s.cookie.includes("FIXTURE-a-cookie") })) }).toEqual({ code: 0, a: [], b: [{ auth: "Bearer xoxb-FIXTURE-homeb", aCookie: false }] });
+  } finally {
+    a.stop(true);
+    b.stop(true);
+  }
+});

@@ -28,7 +28,8 @@ export const loadEnvFile = async (path: string, env: Record<string, string | und
   // before the file is looked at, since a home without a dori.env must not keep them either (review 3).
   const home = resolve(env["DORI_CONFIG"] ?? configPath());
   const marked = env["DORI_SLACK_TOKEN_HOME"];
-  if (marked !== undefined && marked !== home) {
+  const otherHome = marked !== undefined && marked !== home;
+  if (otherHome) {
     delete env["DORI_SLACK_TOKEN_FILE"];
     delete env["DORI_SLACK_TOKEN_HOME"];
     if (env["DORI_SLACK_TOKEN"] === "") delete env["DORI_SLACK_TOKEN"];
@@ -36,7 +37,8 @@ export const loadEnvFile = async (path: string, env: Record<string, string | und
   const file = Bun.file(path);
   if (!(await file.exists())) return [];
   const values = envFileEntries(await file.text());
-  const foreign = [...values].some(([name, value]) => {
+  // that home's lane env is another Dori's as a whole, its Slack API and cookie included (review 4), as a differing token is
+  const foreign = otherHome || [...values].some(([name, value]) => {
     const inherited = env[name];
     return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && inherited !== "" && tokenIdentity(name, inherited) !== tokenIdentity(name, value);
   });
