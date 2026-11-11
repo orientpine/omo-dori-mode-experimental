@@ -24,7 +24,7 @@ import { paneGroup, isHerdrPane } from "./herdr.ts";
 import { omoSession, sendVerified } from "./panes.ts";
 import { hasSessionSelector } from "./session-id.ts";
 import { type Lane, statusOf } from "./registry.ts";
-import { iso } from "./run.ts";
+import { iso, openingRuntime } from "./run.ts";
 import { descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
 import { flat, missingHeadings, quoted, ROUND_TRIES } from "./restatement.ts";
 import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFile, type Signals, sessionSignals, setQuiet, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
@@ -772,7 +772,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   const model = opts.model || config.handover.model || config.defaultModel;
   const title = opts.title || config.handover.title || `${old.title.replace(/-\d{8}$/, "")}-${stamp.slice(4, 8)}${stamp.slice(9, 13)}`;
   if (opts.dryRun) {
-    deps.print(`HANDOVER_DRY_RUN would open ${config.backend} session "${title}" in ${cwd} (${model}), point leadPane and ${facts.lanes.length} lanes at it, restart ${units.join(",") || "no units"}, check ${facts.monitors.length} monitors (${facts.monitors.map((m) => m.description || m.command || m.path).join(", ") || "none"}), ${facts.watchers.length} watchers (${facts.watchers.map((w) => w.name).join(", ") || "none"}) and two probes within ${opts.verifyMin ?? config.handover.verifyMin} min, then ${opts.keepOld ? "keep" : "close"} ${config.leadPane}`);
+    deps.print(`HANDOVER_DRY_RUN would open ${openingRuntime(deps.run, config.backend)} session "${title}" in ${cwd} (${model}), point leadPane and ${facts.lanes.length} lanes at it, restart ${units.join(",") || "no units"}, check ${facts.monitors.length} monitors (${facts.monitors.map((m) => m.description || m.command || m.path).join(", ") || "none"}), ${facts.watchers.length} watchers (${facts.watchers.map((w) => w.name).join(", ") || "none"}) and two probes within ${opts.verifyMin ?? config.handover.verifyMin} min, then ${opts.keepOld ? "keep" : "close"} ${config.leadPane}`);
     return { code: 0, note };
   }
   const lockFile = join(dir, "lock");
