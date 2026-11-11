@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { launchOf, missingMonitors } from "../src/handover.ts";
 
@@ -218,3 +221,36 @@ test("a shell reading an inherited input is work, and one reading an input the h
   expect(launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/ci > /tmp/ci.log 2>&1", HOME, read)?.detached).toBe(false);
   expect(launchOf("bash -c 'tail -F /tmp/ci.log' < /tmp/ci", HOME, read)).toBeUndefined();
 });
+
+// #414 review 21: a shell after a control word (then, do, else) was not found, so the same command could be armed again
+test("a shell after a control word is found like any other", () => {
+  const read = (path: string) => (path === "/tmp/ci" ? "bun run test\n" : undefined);
+  const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
+  for (const command of ["bash -c 'if test -f /tmp/ci; then bash -o pipefail; fi' < /tmp/ci", "bash -c 'while true; do bash -o pipefail; done' < /tmp/ci", "bash -c 'if false; then :; else bash -o pipefail; fi' < /tmp/ci", "bash -c '! bash -o pipefail' < /tmp/ci"]) {
+    const launch = launchOf(command, HOME, read);
+    if (!launch) throw new Error(`not work: ${command}`);
+    expect([command, launch.detached]).toEqual([command, false]);
+    expect(missingMonitors([{ description: "w", command, persistent: true, launch }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
+  }
+  expect(launchOf("bash -c 'if true; then tail -F /tmp/ci.log; fi' < /tmp/ci", HOME, read)).toBeUndefined();
+});
+
+// #414 review 21: the handover read a shell's input with readFileSync, so a FIFO input took bytes from the running shell
+// or blocked the handover. Only a regular file is read; any other input is unreadable work that keeps its watch. Run in a
+// child process so a regression that blocks on the FIFO fails within the bound instead of hanging the suite.
+test("a FIFO input is never read: it is work that keeps its watch", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hlw-fifo-"));
+  try {
+    const fifo = join(dir, "ci.fifo");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    const src = join(import.meta.dir, "..", "src", "handover.ts");
+    const proc = Bun.spawn([process.execPath, "-e", `const { launchOf } = await import(${JSON.stringify(src)}); console.log(JSON.stringify(launchOf(${JSON.stringify(`bash -o pipefail < ${fifo}`)}, "/home/test") ?? null));`], { stdout: "pipe", stderr: "pipe" });
+    const timer = setTimeout(() => proc.kill(), 10_000);
+    const code = await proc.exited;
+    clearTimeout(timer);
+    const out = await new Response(proc.stdout).text();
+    expect([code, out.trim()]).toEqual([0, JSON.stringify({ why: "a script run by a shell from its input (bash -s < file)", writes: [], detached: true })]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);
