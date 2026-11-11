@@ -156,3 +156,19 @@ test("a shell's script operand comes from its words: options with operands, -c s
     expect(missingMonitors([{ description: "w", command, persistent: true, launch }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
   }
 });
+
+// #414 review 18: a script run on another host was read from the local file of that name, so a harmless local copy hid
+// remote work; and combined short options (-euo pipefail) took the value of o for a script, so a watch read as work.
+test("a script a remote shell runs is never judged by a local file, and combined options keep their values", () => {
+  const harmless = () => "sleep 30\nbun run ci\n";
+  for (const command of ["ssh host bash /tmp/start", "ssh host bash /tmp/start.sh", "ssh -p 22 host 'bash -c \"bash /tmp/start.sh\"'"]) {
+    const launch = launchOf(command, HOME, harmless);
+    if (!launch) throw new Error(`not work: ${command}`);
+    expect([command, launch.detached]).toEqual([command, true]);
+  }
+  const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
+  for (const command of ["bash -euo pipefail -c 'tail -F /tmp/ci.log'", "bash -eO extglob -c 'tail -F /tmp/ci.log'", "bash +o history -c 'tail -F /tmp/ci.log'"]) {
+    expect([command, launchOf(command, HOME, () => undefined)]).toEqual([command, undefined]);
+    expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual([]);
+  }
+});
