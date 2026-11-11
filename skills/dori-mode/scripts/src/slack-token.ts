@@ -37,10 +37,12 @@ export const slackToken = (env: Env = process.env, platform: string = process.pl
 // DORI_SLACK_TOKEN_FILE always goes, even when that file is missing, so the lane reports it instead of falling back to an
 // inherited token; else `slack-token` next to its config when it exists; else nothing is added, as before.
 // DORI_SLACK_TOKEN is passed empty: a lane's pane inherits its server's or core's env, which may hold another home's
-// token, and a set DORI_SLACK_TOKEN is read before the file.
+// token, and a set DORI_SLACK_TOKEN is read before the file. DORI_SLACK_TOKEN_HOME names the config that chose the file,
+// so another home's wrapper called from the lane does not carry this home's credentials over (config-env.ts loadEnvFile).
 export const laneTokenEnv = (env: Env, configFile: string): Record<string, string> => {
+  const home = resolve(configFile);
   const chosen = env["DORI_SLACK_TOKEN_FILE"];
-  if (chosen) return { DORI_SLACK_TOKEN_FILE: resolve(chosen), DORI_SLACK_TOKEN: "" };
-  const found = join(dirname(resolve(configFile)), TOKEN_FILE_NAME);
-  return existsSync(found) ? { DORI_SLACK_TOKEN_FILE: found, DORI_SLACK_TOKEN: "" } : {};
+  if (chosen) return { DORI_SLACK_TOKEN_FILE: resolve(chosen), DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_HOME: home };
+  const found = join(dirname(home), TOKEN_FILE_NAME);
+  return existsSync(found) ? { DORI_SLACK_TOKEN_FILE: found, DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_HOME: home } : {};
 };

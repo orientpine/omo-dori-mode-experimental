@@ -26,13 +26,22 @@ export const loadEnvFile = async (path: string, env: Record<string, string | und
   const file = Bun.file(path);
   if (!(await file.exists())) return [];
   const values = envFileEntries(await file.text());
+  // A token file dori launch chose for another home (DORI_SLACK_TOKEN_HOME is not this run's config, as when a lane of one
+  // home calls another home's wrapper) is that home's credentials: dropped, so this home's own token is read (#201 review 2).
+  const home = resolve(env["DORI_CONFIG"] ?? configPath());
+  const marked = env["DORI_SLACK_TOKEN_HOME"];
+  if (marked !== undefined && marked !== home) {
+    delete env["DORI_SLACK_TOKEN_FILE"];
+    delete env["DORI_SLACK_TOKEN_HOME"];
+    if (env["DORI_SLACK_TOKEN"] === "") delete env["DORI_SLACK_TOKEN"];
+  }
   const foreign = [...values].some(([name, value]) => {
     const inherited = env[name];
     return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && inherited !== "" && tokenIdentity(name, inherited) !== tokenIdentity(name, value);
   });
-  // A token file path with DORI_SLACK_TOKEN blanked is what dori launch hands a lane of this home (#201): the launcher's
-  // choice of credentials, so it is kept through the isolation and not replaced by dori.env's token.
-  const chosen = env["DORI_SLACK_TOKEN_FILE"] && env["DORI_SLACK_TOKEN"] === "" ? ["DORI_SLACK_TOKEN_FILE", "DORI_SLACK_TOKEN"] : [];
+  // A token file path with DORI_SLACK_TOKEN blanked, chosen for this home, is what dori launch hands its lane (#201): the
+  // launcher's choice of credentials, so it is kept through the isolation and not replaced by dori.env's token.
+  const chosen = env["DORI_SLACK_TOKEN_FILE"] && env["DORI_SLACK_TOKEN"] === "" && env["DORI_SLACK_TOKEN_HOME"] === home ? ["DORI_SLACK_TOKEN_FILE", "DORI_SLACK_TOKEN", "DORI_SLACK_TOKEN_HOME"] : [];
   const dropped = foreign ? Object.keys(env).filter((name) => instanceVar(name) && env[name] !== undefined && !chosen.includes(name)) : [];
   for (const name of dropped) delete env[name];
   for (const [name, value] of values) if (env[name] === undefined) env[name] = value;

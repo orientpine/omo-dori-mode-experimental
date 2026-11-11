@@ -20,13 +20,15 @@ const tokenFile = (name: string, text: string, mode: number): string => {
   return file;
 };
 
+const HOST = process.platform;
+
 test("a nonempty DORI_SLACK_TOKEN is read first, then the trimmed token file when the variable is unset or empty", () => {
   const file = tokenFile("t", "  xoxb-FIXTURE-file\n", 0o600);
-  expect(slackToken({ DORI_SLACK_TOKEN: "xoxb-FIXTURE-env", DORI_SLACK_TOKEN_FILE: file }, "linux")).toBe("xoxb-FIXTURE-env");
-  expect(slackToken({ DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_FILE: file }, "linux")).toBe("xoxb-FIXTURE-file");
-  expect(slackToken({ DORI_SLACK_TOKEN_FILE: file }, "linux")).toBe("xoxb-FIXTURE-file");
-  expect(slackToken({ DORI_SLACK_TOKEN: "" }, "linux")).toBeUndefined();
-  expect(slackToken({}, "linux")).toBeUndefined();
+  expect(slackToken({ DORI_SLACK_TOKEN: "xoxb-FIXTURE-env", DORI_SLACK_TOKEN_FILE: file }, HOST)).toBe("xoxb-FIXTURE-env");
+  expect(slackToken({ DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_FILE: file }, HOST)).toBe("xoxb-FIXTURE-file");
+  expect(slackToken({ DORI_SLACK_TOKEN_FILE: file }, HOST)).toBe("xoxb-FIXTURE-file");
+  expect(slackToken({ DORI_SLACK_TOKEN: "" }, HOST)).toBeUndefined();
+  expect(slackToken({}, HOST)).toBeUndefined();
 });
 
 test.skipIf(process.platform === "win32")("a token file open to group or others is refused with chmod 600 on POSIX; Windows has no mode bits to check", () => {
@@ -38,9 +40,9 @@ test.skipIf(process.platform === "win32")("a token file open to group or others 
 
 test("a missing or empty token file is refused by path, never read as no token and never showing a value", () => {
   const absent = join(dir, "absent");
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: absent }, "linux")).toThrow(`DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
+  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: absent }, HOST)).toThrow(`DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
   const empty = tokenFile("empty", " \n", 0o600);
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: empty }, "linux")).toThrow(`DORI_SLACK_TOKEN_FILE ${empty} is empty`);
+  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: empty }, HOST)).toThrow(`DORI_SLACK_TOKEN_FILE ${empty} is empty`);
 });
 
 test("a lane home env adds the token file path and an empty token only when the file exists, and aoe gets nothing", () => {
@@ -58,7 +60,7 @@ test("an explicit DORI_SLACK_TOKEN_FILE goes to the lane with the token blanked 
   const absent = join(dir, "absent-token");
   const env = laneHomeEnv({ stateDir: join(dir, "state"), backend: "herdr" }, { DORI_CONFIG: join(dir, "config.json"), DORI_SLACK_TOKEN_FILE: absent, DORI_SLACK_TOKEN: "xoxb-FIXTURE-env" });
   expect(env).toMatchObject({ DORI_SLACK_TOKEN_FILE: absent, DORI_SLACK_TOKEN: "" });
-  expect(() => slackToken(env, "linux")).toThrow(`DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
+  expect(() => slackToken(env, HOST)).toThrow(`DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
 });
 
 test.skipIf(process.platform === "win32")("boot prints a bad token file as a failed SLACK token-file line, still runs its other checks, and shows no token", async () => {
