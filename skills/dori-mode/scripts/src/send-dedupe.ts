@@ -17,8 +17,8 @@ const PENDING_MS = 60_000;
 const POLL_MS = 200;
 const KEEP_MS = 24 * 60 * 60_000;
 
-// replyTo: the message the post answered (dori send discord --reply), read by repliedTo
-type Mark = { readonly at: number; readonly id?: string; readonly replyTo?: string };
+// replyTo: the message the post answered (dori send discord --reply), read by repliedTo; place: where it went (answeredBy)
+type Mark = { readonly at: number; readonly id?: string; readonly replyTo?: string; readonly place?: string };
 type Last = { readonly at: number; readonly key: string; readonly id: string };
 // what a post returned: its id and the content the service answered it holds (undefined when the answer had none)
 export type Sent = { readonly id: string; readonly content?: string | undefined };
@@ -124,7 +124,7 @@ export const sendOnce = async (dir: string, place: string, key: string, send: ()
   prune(dir, now());
   const path = join(dir, `${key}.json`);
   const posted = (sent: Sent): SendOnceResult => {
-    writeMark(path, { at: now(), id: sent.id, ...(opts.replyTo ? { replyTo: opts.replyTo } : {}) });
+    writeMark(path, { at: now(), id: sent.id, place, ...(opts.replyTo ? { replyTo: opts.replyTo } : {}) });
     writeLast(dir, place, { at: now(), key, id: sent.id });
     return { id: sent.id, duplicate: false, content: sent.content };
   };
@@ -188,6 +188,43 @@ export const repliedTo = (dir: string, message: string): string | undefined => {
     if (mark?.replyTo === message && mark.id !== undefined) return mark.id;
   }
   return undefined;
+};
+
+type Post = { readonly id: string; readonly at: number };
+// snowflakes order by the time Discord made them; an id that is no number falls back to the recorded time
+const later = (a: Post, b: Post): boolean => (/^\d+$/.test(a.id) && /^\d+$/.test(b.id) ? BigInt(a.id) > BigInt(b.id) : a.at > b.at);
+const readLastFile = (path: string): Last | undefined => {
+  try {
+    const l = JSON.parse(readFileSync(path, "utf8")) as Last;
+    return typeof l.id === "string" && typeof l.at === "number" ? l : undefined;
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) ignoreMissing(e);
+    return undefined;
+  }
+};
+
+// The id of a post of this Dori that answered message: a reply to it, or a later post in its place (`discord:<channel or
+// thread>`): the Dori's next turn there answers every message he wrote since its last one (two lines, one answer).
+// Written only once the service returned the id, by any session of this Dori, so dori watch (missed-answers.ts) sees a
+// reply a pane move or a handover hid from the lead's transcript (2026-11-11: 3-31 answered messages woke 4 Dori).
+export const answeredBy = (dir: string, message: Post & { readonly place?: string | undefined }): string | undefined => {
+  const replied = repliedTo(dir, message.id);
+  if (replied !== undefined || message.place === undefined) return replied;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    ignoreMissing(e);
+    return undefined;
+  }
+  const prefix = lastPrefix(message.place), posts: Post[] = [];
+  for (const name of names.filter((n) => n.endsWith(".json"))) {
+    const last = name.startsWith(LAST_PREFIX);
+    if (last && !name.startsWith(prefix)) continue; // a last- name holds its place; a mark from before place has none
+    const mark = last ? readLastFile(join(dir, name)) : readMark(join(dir, name));
+    if (mark?.id !== undefined && (last || (mark as Mark).place === message.place)) posts.push({ id: mark.id, at: mark.at });
+  }
+  return posts.find((post) => later(post, message))?.id;
 };
 
 // a repeat is not posted; the CLI exits SEND_DUPLICATE_EXIT so a caller cannot read it as a new post
