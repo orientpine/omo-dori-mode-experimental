@@ -6,6 +6,7 @@ import type { SessionRef, SessionRuntime } from "./runtime/types.ts";
 import { commandExecutable, executableName } from "./executable.ts";
 import { powershellData } from "./powershell.ts";
 import { AGENT, type Proc, procTable, topAgent } from "./session-id.ts";
+import { LaunchFailed } from "./launch-types.ts";
 import { hcAgentPid, hcClose, hcLife, hcOpen, hcRead, hcRef, hcSessions, hcShellPid, isHcPane } from "./hc-pane.ts";
 export { paneGroup } from "./hc-pane.ts";
 
@@ -164,6 +165,12 @@ export const agentLine = (argv: readonly string[], env: Readonly<Record<string, 
   return [...(unset.length || set.length ? ["env", ...unset, ...set] : []), ...argv].map(shellQuote).join(" ");
 };
 
+export class HerdrStartupError extends LaunchFailed {
+  constructor(message: string, readonly rollback: boolean) {
+    super(message);
+  }
+}
+
 // A new tab labelled title in cwd (in workspace when given) whose root pane runs argv; the pane and tab ids.
 export const openHerdrSession = async (
   run: Runner,
@@ -197,11 +204,28 @@ export const openHerdrSession = async (
   }
   const pane = ref.id;
   const tab = ref.container;
+  const cleanup = async (): Promise<boolean> => {
+    try {
+      await closeHerdrSession(run, pane);
+      return (await rt.probe(ref)).status === "gone";
+    } catch {
+      return false;
+    }
+  };
   // a fresh shell may drop what is typed before its prompt is drawn
   for (let i = 0; i < 20 && !(await herdrRead(run, pane)).trim(); i++) await clock.sleep(250);
   await requireHerdrPwsh(run, pane, process.platform, Object.entries(opts.env ?? {}).flatMap(([k, v]) => (v === "" ? [k] : [])));
-  await opts.beforeStart?.({ pane, ...(tab ? { tab } : {}) });
-  await rt.start(ref, agentLine(opts.argv, opts.env)).catch((e: unknown) => Promise.reject(new Error(`herdr pane run failed in ${pane}: ${reasonOf(e)}`)));
+  await opts.beforeStart?.({ pane, ...(tab ? { tab } : {}) }).catch(async (error: unknown) => {
+    const why = `herdr before start failed in ${pane}: ${reasonOf(error)}`;
+    const cleaned = await cleanup();
+    throw new HerdrStartupError(why, cleaned);
+  });
+  await rt.start(ref, agentLine(opts.argv, opts.env)).catch(async (e: unknown) => {
+    const why = `herdr pane run failed in ${pane}: ${reasonOf(e)}`;
+    const cleaned = await cleanup();
+    const ambiguous = /timed?\s*out|timeout|unavailable|econn|epipe|socket|network|fetch failed|ambiguous/i.test(reasonOf(e));
+    throw new HerdrStartupError(why, !ambiguous && cleaned);
+  });
   return { pane, ...(tab ? { tab } : {}) };
 };
 

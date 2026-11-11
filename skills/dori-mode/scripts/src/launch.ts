@@ -16,6 +16,7 @@ import { reopenLaneThread } from "./launch-state.ts";
 import { renderBrief } from "./launch-render.ts";
 import { resolveLeadModel } from "./lane-model.ts";
 import { HcStartupError } from "./hc-pane.ts";
+import { HerdrStartupError } from "./herdr.ts";
 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
@@ -76,7 +77,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     ? openAoe(deps, input.key, cwd, model, prompt, env, async (pane) => beforeStart({ pane }))
     : openHerdr(deps, input.key, cwd, model, prompt, env, beforeStart)
   ).catch(async (e: unknown) => {
-    if (registered && deps.config.backend !== "aoe" && e instanceof HcStartupError && e.rollback) {
+    if (registered && deps.config.backend !== "aoe" && (e instanceof HcStartupError || e instanceof HerdrStartupError) && e.rollback) {
       rmSync(deps.registry.path(input.key), { force: true });
       rmSync(new Reports(deps.config.stateDir).path(input.key), { force: true });
     }

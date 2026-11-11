@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { LANE_KEY } from "./registry.ts";
@@ -78,7 +78,6 @@ export class Reports {
 
   read(key: string): Progress | null {
     const path = this.path(key);
-    if (!existsSync(path)) return null;
     let progress: Progress | null = null;
     let lastReport: Report | null = null;
     let text: string;
@@ -87,6 +86,7 @@ export class Reports {
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+      if (code === "ENOENT") return null;
       throw new ReportError(`${path}: ${error.message}`, code);
     }
     for (const [index, line] of text.split("\n").entries()) {

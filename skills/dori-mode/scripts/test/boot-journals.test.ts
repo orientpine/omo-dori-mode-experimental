@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bootCheck } from "../src/boot.ts";
 import { objectDone, reopenClaim } from "../src/done-flow.ts";
@@ -56,6 +56,23 @@ test("an adopted lane's journal is not read, so a done record there cannot offer
   expect(result.lines.some((l) => /^(NO-)?REPORT adopted/.test(l))).toBe(false);
   expect(result.lines).toContain("MONITORS cleanupCandidates=0 deliveryPaused=0 expired=0 (from metadata; liveness unverified)");
   expect(result.exitCode).toBe(0);
+});
+
+test("a journal directory without execute permission is a lane-scoped EACCES, not a missing journal", async () => {
+  const world = newWorld();
+  const deps = bootDeps(world, state.dir);
+  await deps.registry.write(launched("a-broken"));
+  await deps.registry.write(launched("b-healthy"));
+  deps.reports.report("a-broken", "milestone", "started", T0);
+  deps.reports.report("b-healthy", "blocker", "needs the owner", T0);
+  const brokenDir = join(state.dir, "lanes", "a-broken");
+  chmodSync(brokenDir, 0o600);
+  const result = await bootCheck(deps).finally(() => {
+    chmodSync(brokenDir, 0o700);
+  });
+  expect(result.lines).toContain("JOURNAL-ERROR a-broken kind=EACCES");
+  expect(result.lines).toContain("REPORT b-healthy kind=blocker at=2026-01-01T12:00:00.000Z state=blocked registryStatus=working");
+  expect(result.exitCode).toBe(1);
 });
 
 test("an unreadable journal of any kind is that lane's error; the other lanes are still reported", async () => {
