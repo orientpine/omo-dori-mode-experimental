@@ -142,13 +142,13 @@ status` has no line for its own uplink, so it cannot tell. A restart of the unit
 (`doriterm-relay-watch.timer`) it makes a real round trip through the relay back to the host itself, `doriface-host
 connect --mesh <own hostId>` (the running host dials the relay, which routes the dial to that host's own uplink); it
 fails while the relay has no live uplink for the host. After `DORITERM_RELAY_WATCH_DOWN_MINUTES` (3) of failed round
-trips it runs `systemctl --user restart doriface-host.service`, at most `DORITERM_RELAY_WATCH_MAX_RESTARTS` (3) times in
+trips it runs `systemctl --user try-restart doriface-host.service` (a host stopped by hand stays stopped), at most `DORITERM_RELAY_WATCH_MAX_RESTARTS` (3) times in
 an hour, then only logs `RELAY_WATCH_CAPPED` until an hour-old restart ages out. Why these values: the relay reaps after
 90 s, and a drop the host notices heals by itself within its 10 s connect timeout plus at most 30 s of backoff, so
 3 minutes of failed round trips is never a drop the host would heal; and a network that is simply down gets three tries
 an hour, not a restart every few minutes. A restart costs nothing that stays: paired devices and the mesh membership are
 kept, open sessions redial. A host whose unit is not running is left to that unit (`Restart=on-failure`); a running host
-that gives no `mesh status` counts as down, so a wedged host is restarted too. Its lines in the journal
+that gives no `mesh status`, or no answer to it within the probe's 30 s, counts as down, so a wedged host is restarted too. Its lines in the journal
 (`journalctl --user -u doriterm-relay-watch`): `RELAY_WATCH_UP`, `RELAY_WATCH_DOWN since <time> (<s> s): <why>`,
 `RELAY_WATCH_RESTART`, `RELAY_WATCH_CAPPED`, `RELAY_WATCH_WOULD_RESTART`, `RELAY_WATCH_SKIP`, `RELAY_WATCH_CONFIG_BAD`.
 
@@ -194,4 +194,4 @@ The full review, with source line references, is the doriterm-review lane report
 `bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
 `stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try, and `focus-lead.ts` against a fake herdr runner, and `relay-watch.sh` against a fake `doriface-host` and `systemctl`
 (round trip up, a drop under and over the down minutes, the hourly cap, restarts off, a round trip that never answers,
-a stopped host, a host with no mesh status, a bad value). The unit's start and stop were also run under systemd against the real hc (see the PR).
+a stopped host, a host with no mesh status or none at all, a host stopped by hand during the check, a bad value). The unit's start and stop were also run under systemd against the real hc (see the PR).

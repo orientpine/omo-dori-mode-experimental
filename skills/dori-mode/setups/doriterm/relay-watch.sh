@@ -39,7 +39,8 @@ if ! systemctl --user is-active --quiet "$unit"; then
   echo "RELAY_WATCH_SKIP $unit is not running; its own unit brings it back"
   down_since=; save; exit 0
 fi
-status=$("$host" mesh status --json --state-dir "$dir" 2>&1)
+# a host that takes the connection and never answers would hold this oneshot run, and with it the timer, forever
+status=$(timeout "$probe_s" "$host" mesh status --json --state-dir "$dir" 2>&1) || [ -n "$status" ] || status="no answer in ${probe_s} s"
 self=$(printf '%s\n' "$status" | sed -n 's/.*"self"[[:space:]]*:[[:space:]]*"\([a-z0-9]*\)".*/\1/p' | head -n 1)
 if [ -n "$self" ]; then
   why=$(timeout "$probe_s" "$host" connect --mesh --state-dir "$dir" "$self" < /dev/null 2>&1 > /dev/null) && ok=1 || ok=0
@@ -69,7 +70,8 @@ elif [ "$(printf '%s\n' $restarts | grep -c .)" -ge "$max" ]; then
   echo "RELAY_WATCH_CAPPED $max restarts in the last hour; down since $(iso "$down_since") (${down} s): $why"
 else
   echo "RELAY_WATCH_RESTART $unit, down since $(iso "$down_since") (${down} s): $why"
-  systemctl --user restart "$unit" || echo "RELAY_WATCH_RESTART_FAILED $unit"
+  # try-restart: a host stopped by hand since the check above stays stopped
+  systemctl --user try-restart "$unit" || echo "RELAY_WATCH_RESTART_FAILED $unit"
   restarts="${restarts:+$restarts }$now"
   down_since=
 fi
