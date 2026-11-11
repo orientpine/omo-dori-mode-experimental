@@ -97,6 +97,8 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "git log -1 *",
     "tail -F /tmp/-*",
     "printf -v PATH /tmp/e; grep x /tmp/f",
+    "tail -F /tmp/x | sed -n 's/a/b/\nw /tmp/copy'",
+    "tail -F /tmp/x | sed '/a\nw x/q'",
   ]) rejectsSameCommand(command);
 });
 
