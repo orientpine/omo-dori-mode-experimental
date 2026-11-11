@@ -2,6 +2,10 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
+## Lead pane: freshness and dead-panes still read leadPane once when they start (#442)
+
+#442 makes each pass of `dori watch` read `leadPane` again (`DORI_LEAD_PANE`, else `config.json`) and hand it to every check of the watch, because a handover restarts only `handover.services` and a watch started before it kept checking, and reviving, the frozen old lead (ZzangDori 2026-11-11, `LEAD_REVIVE_WARN w1:p37 ... no such pane` every ten minutes). The separate `dori freshness --loop` and `dori dead-panes --loop` processes still take `leadPane` from the config they loaded at start, so after a handover that did not restart them they go on naming the old pane (freshness tells and reads the lead's screen there; dead-panes leaves the old pane out of its sweep and treats the new one as a lane-less pane). What would close it: the same per-pass read (hc-pane `leadNow(configPath())`, as `watchCommand` passes `leadPaneNow`) in both loops, with a test of each loop started on the old pane whose config then names the new one.
+
 ## Heavy tools: two installs of a tool are named only when the job runs here (#397)
 
 With two installs of rv under `~/.local/share` and none on PATH, `dori heavy --tools rv` sends `tools=rv` without a version, and `HEAVY_TOOLS_UNCLEAR` (which names both installs) is printed only when the job then runs here; a helper that takes the unversioned job runs its current bundle and nothing says the caller's rv was unclear (review of #397, LOW). What would close it: print `HEAVY_TOOLS_UNCLEAR` while planning, before the job is offered to a helper, with a test of two installs and an accepting helper.
