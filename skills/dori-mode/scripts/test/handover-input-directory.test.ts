@@ -172,3 +172,16 @@ test("a script a remote shell runs is never judged by a local file, and combined
     expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual([]);
   }
 });
+
+// dori challenge of the review 18 plan: a remote shell's input redirection names a file on the other host; the local file
+// of that name is neither read nor trusted, while a local input to a local ssh client still is
+test("a remote shell's input file is not read here, and a local input to ssh still is", () => {
+  const reads: string[] = [];
+  const result = launchOf("ssh host 'bash -s < /tmp/start'", HOME, (path) => { reads.push(path); return "sleep 30\n"; });
+  expect(reads).not.toContain("/tmp/start");
+  expect(result?.detached).toBe(true);
+  const local = launchOf("ssh host bash -s < /tmp/ci.sh", HOME, (path) => (path === "/tmp/ci.sh" ? "bun run ci\n" : undefined));
+  expect(local?.detached).toBe(false);
+  // a remote word that is no script (tail -F of a .sh file) is still only a watch
+  expect(launchOf("ssh host tail -F /tmp/progress.sh", HOME, () => undefined)).toBeUndefined();
+});
