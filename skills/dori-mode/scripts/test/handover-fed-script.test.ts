@@ -53,3 +53,11 @@ test("git, and gh with an unlisted subcommand, keep a work monitor's watch", () 
     expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
   }
 });
+
+// #414 review 42: a listed tool may start a program through its arguments (awk system, sed e, a pager); only tools that
+// cannot, whatever their arguments, are foreground, and an assignment in front of a command (PAGER=...) keeps the watch
+test("a tool that can start a program through its arguments keeps a work monitor's watch", () => {
+  for (const command of ["awk 'BEGIN{system(\"/tmp/start\")}' > /tmp/o.log", "sed -n '1e /tmp/start' /tmp/x > /tmp/o.log", "journalctl -u x > /tmp/o.log", "PAGER=/tmp/start gh pr view 1 > /tmp/o.log", "export PAGER=/tmp/start; gh pr view 1 > /tmp/o.log"]) {
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
+  }
+});
