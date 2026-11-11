@@ -218,3 +218,15 @@ test("a backslash in a fed script keeps its watch, and its work is not taken for
   const ended = workEnded([{ pid: 7, cmd: "w", pids: [8] }], () => false, () => undefined);
   expect(ended({ description: "w", command, persistent: true, ...(launch ? { launch } : {}) })).toBe(false);
 });
+
+// #414 review 36: test -v evaluates an array subscript and the command substitution in it; in a fed script a test or [ with
+// -v, -R, an arithmetic operator, or an argument holding [ or a dollar keeps the watch
+test("a predicate that evaluates a subscript in a fed script keeps its watch", () => {
+  const script = "sleep 30\ntest -v 'BASH_VERSINFO[$(/tmp/inner)]'\n";
+  expect([script, "[ -R x ]\n", "[ \"$n\" -eq 1 ]\n", "[ -n \"$x\" ]\n"].map(runsOther)).toEqual([true, true, true, true]);
+  expect(["until [ -f /tmp/qa/stop ]; do sleep 2; done\n", "test -s /tmp/x\n"].map(runsOther)).toEqual([false, false]);
+  const command = "bash -s < /tmp/outer.sh";
+  const launch = launchOf(command, HOME, (path) => (path === "/tmp/outer.sh" ? script : undefined));
+  expect(launch?.detached).toBe(true);
+  expect(workEnded([{ pid: 7, cmd: "w", pids: [8] }], () => false, () => undefined)({ description: "w", command, persistent: true, ...(launch ? { launch } : {}) })).toBe(false);
+});
