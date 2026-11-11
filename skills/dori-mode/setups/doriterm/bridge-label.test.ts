@@ -14,9 +14,10 @@ const labels = { "dori.doriterm": "bridge", "dori.row": bridge.name };
 const foreign = (name: string, address = "t1"): Row => ({ address, name, argv: ["sleep", "600"], labels: {}, state: "live" });
 
 // Stateful hc boundary: ls deliberately omits argv AND labels, as the real 0.1.18 binary does.
-function core(initial: readonly Row[] = []) {
+function core(initial: readonly Row[] = [], lanes: { key: string; terminal: string }[] = []) {
   const rows = [...initial];
   const run: Runner = async (args) => {
+    if (args[0] === "/bin/sh") return { code: 0, out: JSON.stringify(lanes), err: "" };
     let out = "";
     switch (args[1]) {
       case "ls": {
@@ -53,7 +54,7 @@ function core(initial: readonly Row[] = []) {
     }
     return { code: 0, out, err: "" };
   };
-  return { rows, run };
+  return { rows, run, lanes };
 }
 
 test("new bridges carry ownership and row labels", async () => {
@@ -93,4 +94,32 @@ test("labels without the exact command never grant bridge ownership", async () =
   expect(hc.rows.map((r) => r.name)).toEqual(["zzangdori", "zzangdori-row"]);
   await stopBridges(hc.run, [bridge]);
   expect(hc.rows).toEqual([lane]);
+});
+
+test("open hc lanes get distinct labeled rows even when sanitized names collide", async () => {
+  const hc = core([], [{ key: "work.one", terminal: "t7" }, { key: "work-one", terminal: "t8" }]);
+  await ensureBridges(hc.run, [bridge]);
+  expect(hc.rows.map((r) => ({ name: r.name, argv: r.argv, labels: r.labels }))).toEqual([
+    { name: "zzangdori", argv: bridgeCommand(bridge), labels },
+    { name: "zzangdori-work-one", argv: [...bridgeCommand(bridge), "", "t7"], labels: { ...labels, "dori.lane": "work.one" } },
+    { name: "zzangdori-work-one-row", argv: [...bridgeCommand(bridge), "", "t8"], labels: { ...labels, "dori.lane": "work-one" } },
+  ]);
+});
+
+test("a closed or ended lane row is removed while the lead and foreign labeled terminals stay live", async () => {
+  const lane = { ...foreign("unrelated"), labels: { ...labels, "dori.lane": "work-one" } };
+  const ended = { ...foreign("old-row", "t2"), argv: [...bridgeCommand(bridge), "", "t7"], labels: { ...labels, "dori.lane": "work-one" } };
+  const hc = core([lane, ended]);
+  await ensureBridges(hc.run, [bridge]);
+  expect(hc.rows.map((r) => r.name)).toEqual(["unrelated", "zzangdori"]);
+});
+
+test("a lane moving to another hc terminal replaces its old row and stop removes all owned rows", async () => {
+  const hc = core([], [{ key: "work-one", terminal: "t7" }]);
+  await ensureBridges(hc.run, [bridge]);
+  hc.lanes.splice(0, 1, { key: "work-one", terminal: "t9" });
+  await ensureBridges(hc.run, [bridge]);
+  expect(hc.rows.filter((r) => r.labels["dori.lane"] === "work-one").map((r) => r.argv.at(-1))).toEqual(["t9"]);
+  await stopBridges(hc.run, [bridge]);
+  expect(hc.rows).toEqual([]);
 });

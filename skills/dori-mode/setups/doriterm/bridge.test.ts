@@ -19,6 +19,13 @@ async function bridgeWithFakeHc(terminals: Row[], args: string[] = [], env: Reco
     writeFileSync(join(dir, path), text);
   }
   mkdirSync(join(dir, "get"));
+  if (args[0] !== "stop") {
+    mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
+    writeFileSync(join(dir, "run", "herdr-core", "default.sock"), "");
+  }
+  mkdirSync(join(dir, ".bun", "bin"), { recursive: true });
+  writeFileSync(join(dir, ".bun", "bin", "bun"), "#!/bin/sh\nprintf '[]\\n'\n", { mode: 0o700 });
+  writeFileSync(join(dir, "sudo"), "#!/bin/sh\nprintf '[]\\n'\n", { mode: 0o700 });
   // hc gives every row its address; a row given none here gets t1, t2, ... in list order, as hc numbers this machine's
   const rows = terminals.map((t, i) => (t.address ? t : { ...t, address: `t${i + 1}` }));
   for (const t of rows) {
@@ -81,6 +88,12 @@ test("stop with no hc core running asks hc nothing, so it starts none", async ()
   // Then: no hc call at all (any hc call would start a core)
   expect(`${r.code} ${r.out}`).toBe("0 bridges: stopped");
   expect(r.calls).toEqual([]);
+});
+
+test("start with no host core socket asks hc nothing", async () => {
+  const r = await bridgeWithFakeHc([], [], { HC_SESSION: "missing" });
+  expect(r.calls).toEqual([]);
+  expect(r.code).toBe(0);
 });
 
 test("stop ends only the bridge rows and never the core, whatever the Dori's config or environment says (reviews 4 and 5 of #404)", async () => {

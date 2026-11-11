@@ -14,29 +14,43 @@
 # while attached, the lead is read again every interval and, once it changed, this client (never a terminal) is ended so
 # the loop attaches the new one (review 1 of #453).
 account=${1:-}
+target=${2:-}
 retry=${DORITERM_RETRY_SECONDS:-5}
 case $retry in ''|*[!0-9.]*) retry=5 ;; esac
 # the lead is read again at the same interval, but never more often than once a second
 case $retry in 0|0.*|.*) watch=1 ;; *) watch=$retry ;; esac
+# A second argument --lanes lists open live hc lanes; tN attaches that lane once, without the lead's retry loop.
 env='export XDG_RUNTIME_DIR=/run/user/$(id -u) PATH=$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin; '
 attach='c=$HOME/.$(id -un)/config.json; [ -f "$c" ] || c=$HOME/.dori/config.json
 e=$HOME/.$(id -un)/dori.env
 [ -f "$e" ] || e=$HOME/.dori/dori.env
 unset DORI_LEAD_PANE DORI_LEAD_TMUX DORI_LEAD_AOE_ID
 resolve() { DORI_CONFIG=$c DORI_ENV_FILE=$e "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts"; }
-resolved=$(resolve) || exit 1
-client=$$
-(while sleep "$watch"; do
-  kill -0 "$client" 2>/dev/null || exit 0
-  now=$(resolve 2>/dev/null) || continue
-  [ "$now" = "$resolved" ] || { kill "$client"; exit 0; }
-done) </dev/null >/dev/null 2>&1 &
+if [ "${1:-}" = "--lanes" ]; then
+  unset DORI_STATE_DIR
+  exec env DORI_CONFIG="$c" DORI_ENV_FILE="$e" "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts" lanes
+fi
+if [ -n "${1:-}" ]; then
+  resolved=$(DORI_CONFIG=$c DORI_ENV_FILE=$e "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/scripts/src/hc-lead-core.ts" terminal "$1") || exit 1
+else
+  resolved=$(resolve) || exit 1
+  client=$$
+  (while sleep "$watch"; do
+    kill -0 "$client" 2>/dev/null || exit 0
+    now=$(resolve 2>/dev/null) || continue
+    [ "$now" = "$resolved" ] || { kill "$client"; exit 0; }
+  done) </dev/null >/dev/null 2>&1 &
+fi
 core=${resolved%% *}
 selected=${resolved#* }
 case $selected in
   hc:*)
   lead=${selected#hc:}
-  echo "doriterm: $(id -un) lead $selected; attaching"
+  if [ -n "${1:-}" ]; then
+    echo "doriterm: lane $selected; attaching"
+  else
+    echo "doriterm: $(id -un) lead $selected; attaching"
+  fi
   if [ -n "$core" ]; then
     HC_SESSION=$core
     export HC_SESSION
@@ -49,6 +63,13 @@ case $selected in
 esac
 DORI_CONFIG=$c "$HOME/.bun/bin/bun" "$HOME/.dori/src/skills/dori-mode/setups/doriterm/focus-lead.ts" || echo "doriterm: the lead tab was not focused; attaching anyway" >&2
 exec herdr client'
+# Discovery and lane attaches run once. A dead lane must not reconnect to a later terminal or linger in a retry loop.
+if [ -n "$target" ]; then
+  if [ -n "$account" ]; then
+    exec sudo -n -u "$account" -H /bin/sh -c "$env$attach" doriterm "$target"
+  fi
+  exec /bin/sh -c "$attach" doriterm "$target"
+fi
 while :; do
   if [ -n "$account" ]; then
     sudo -n -u "$account" -H /bin/sh -c "watch=$watch; $env$attach"

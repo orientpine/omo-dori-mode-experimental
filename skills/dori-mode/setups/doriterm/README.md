@@ -6,7 +6,7 @@ browser: agents grouped by whether they need you, a key bar with Ctrl, Esc and t
 in. So this setup adds a bridge: one hc terminal running a plain `herdr` client attached to the account's own herdr
 server with `herdr client`, the attach-only form (plain `herdr` starts a server when none runs; `herdr client` exits
 1 instead). The Dori shows as one row in the app; opening it shows the herdr
-TUI reflowed to the phone's width.
+TUI reflowed to the phone's width. An hc Dori has its lead row plus a separate row for each open hc lane.
 
 Owner decision: card Q522 (2026-11-07 13:27 KST) "짱돌 하나로 시범", a two-week pilot on one account (until 2026-11-21);
 widened the same day (2026-11-07 22:28 KST, "모든 도리들도 여기 붙여") to one row per Dori on the host, see "Six Doris"
@@ -54,6 +54,29 @@ name, it stays untouched and the bridge starts as `<name>-row` (then `-row-2`, e
 to hc's 32-character limit). Other configured row names are reserved. Labels find that bridge on later timer runs,
 even if it was renamed; hc 0.1.18 prints labels and argv only in `get --json`, so discovery reads each local record.
 
+For each configured row, `bridge.ts` runs `attach.sh <account-or-empty> --lanes` once. It uses the same
+`sudo -n -u <account> -H` and account paths as attaching; `hc-lead-core.ts lanes` reads that account's effective lead,
+`dori.env`, and registry (`DORI_STATE_DIR` from that file, else config `stateDir`, else `~/.dori/state`).
+An effective herdr lead returns no lane rows. For an hc lead, only open records whose pane is a local `hc:tN` and
+whose terminal is live in that Dori's core become rows. Paused and claimed lanes remain open; closed records do not.
+With no accepting Dori core socket (including a stale path) it calls no hc command and returns no lanes. With no host core socket the bridge timer
+also asks hc nothing. Discovery failures leave existing rows alone and fail the refresh instead of treating an unreadable registry as empty.
+
+Lane row names are `<row>-<lane key>`, with characters outside `a-z 0-9 - _` replaced by `-` and truncated to 32.
+Name collisions use the same fallback rule. Each carries `dori.doriterm=bridge`, `dori.row=<configured row>`, and
+`dori.lane=<original lane key>`; the original key in the label keeps truncated or sanitized collisions distinct.
+Its exact program is `/bin/sh attach.sh <account-or-empty> <tN>`. This checks the core connection and terminal before
+`hc attach` in the Dori's core, attaches once, and exits when the attachment ends. Unlike the lead row it never
+retries a finished terminal. Each timer run removes owned lane rows that closed, ended, or moved to another terminal,
+and starts new ones. Stop removes both lead and lane clients by address, leaving all actual Dori terminals alone.
+The bridge only discovers, starts and closes clients; it never types into or resizes a terminal.
+Only the lead attach runs the lead-change watcher. Lane attaches stay on their recorded terminal across lead handovers
+and exit when that terminal ends.
+
+The shipped host and bridge unit definitions allow uid switching because their start command now discovers lanes
+through sudo too (`NoNewPrivileges=true` would reject it). They use the existing NOPASSWD rule; no sudoers change is
+needed. Update both unit definitions, then `systemctl --user daemon-reload` and restart the host to apply the policy.
+
 ## Web app
 
 The phone opens the stock web app at https://app.doriterm.com. On an iPhone every browser, Chrome included, is
@@ -85,7 +108,8 @@ host's list (`bun bridge.ts` alone reads only the environment it is given, witho
 One paired phone reaches every Dori on the machine: one row per Dori, each a bridge terminal attached to that Dori's
 lead, on herdr or on hc. The host runs on one account (here oriclaw, the `zzangdori` row); the other Doris' rows attach as
 their own accounts with `sudo -n -u <account> -H` (`attach.sh <account>`), so the herdr servers, hc cores, sockets and panes
-stay each account's and nothing runs on the other accounts beyond the herdr client or hc attach while a row is open. A new herdr
+stay each account's. The timer briefly reads each account's lane registry and live terminal list as that account;
+open rows run only the herdr client or hc attach. A new herdr
 client opens on the tab its server focused last (a lane, a stray shell), so before each attach `attach.sh` focuses the
 lead's tab with the account's own `focus-lead.ts` (this directory) and its Dori config (`~/.<user>/config.json` for an
 instance account, else `~/.dori/config.json`). herdr's `tab focus` moves every client of that server; it happens when a
@@ -214,7 +238,9 @@ The full review, with source line references, is the doriterm-review lane report
 
 ## Tests
 
-`bun test skills/dori-mode/setups/doriterm` runs `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
+Run each `*.test.ts` file in this directory separately with `bun test <file>`. They run `bridge.ts` against a fake `hc` (no bridge, a live one, an ended one,
 `stop`, a list of rows with accounts, a malformed list), `attach.sh <account>` against a fake `sudo`, `attach.sh` against a fake `herdr` whose server answers only on the third try, and `focus-lead.ts` against a fake herdr runner, and `relay-watch.sh` against a fake `doriface-host` and `systemctl`
 (round trip up, a drop under and over the down minutes, the hourly cap, restarts off, a round trip that never answers,
 a stopped host, a host with no mesh status or none at all, a host stopped by hand during the check, a bad value). The unit's start and stop were also run under systemd against the real hc (see the PR).
+Lane tests cover registry and core selection, ended terminals, missing sockets, one-shot attachment, labeled ownership,
+sanitized name collisions, and stale-row removal. Hand QA uses isolated named hc cores; it never reads another Dori's live core.
