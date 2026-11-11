@@ -8,7 +8,7 @@ import { agentLine, herdrAgentPid, herdrRead, herdrSessions, herdrShellPid, Herd
 import { reasonOf } from "./runtime/herdr/exec.ts";
 import type { Clock, Runner } from "./run.ts";
 import { splitModel } from "./lane-handover.ts";
-import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionSelector, type Proc, procEnv, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
+import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionSelector, launchSessionId, type Proc, procEnv, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // A herdr server that stops ends every agent in its panes and gives back the same pane ids with fresh shells (herdr 0.9.5,
 // measured 2026-11-03), unlike an aoe session, which aoe starts again in its conversation. So the omo session a herdr lead
@@ -19,7 +19,7 @@ import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionS
 // stale after a /model, so a lane never follows it (lane-model.ts leadModel). modelAt: when dori lead last read the model
 // from the agent (herdrLeadSession); at moves on every read of the session, also those that read no model (background.ts
 // sessionFile), so the model is read again by modelAt (lead-down.ts).
-export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly modelFrom?: "argv"; readonly modelAt?: string; readonly log?: string; readonly agent?: string; readonly at: string; readonly previous?: readonly { readonly session: string; readonly cwd: string; readonly log?: string }[] };
+export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly modelFrom?: "argv"; readonly modelAt?: string; readonly log?: string; readonly agent?: string; readonly vetted?: true; readonly at: string; readonly previous?: readonly { readonly session: string; readonly cwd: string; readonly log?: string }[] };
 
 const file = (stateDir: string): string => join(stateDir, "herdr-sessions.json");
 
@@ -125,10 +125,12 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   // the session recorded for this same agent process still counts when no child of it shows that session any more
   const seen = async (p: Proc) => {
     agent = await identity(p);
-    return kept?.agent === agent ? { id: kept.session, log: kept.log } : undefined;
+    return kept?.agent === agent ? { id: kept.session, log: kept.log, ...(kept.vetted ? { vetted: true } : {}) } : undefined;
   };
   const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr", seen });
-  if (!hit.id) return kept?.session ?? "";
+  // a record from before vetting that only names the live agent's inherited launch session was refused above: not its session
+  const agentProc = table.find((p) => p.pid === hit.pid);
+  if (!hit.id) return kept && !kept.vetted && agentProc && kept.session === await launchSessionId(run, agentProc) ? "" : kept?.session ?? "";
   // what the session runs now (its log), else the model recorded for this same session (a log that cannot be read does not
   // send it back to the launch one), else what its agent was started with, marked modelFrom argv: a /model since then
   // leaves it stale, so only a revive uses it and a lane never follows it.
@@ -142,7 +144,7 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   const p = table.find((q) => q.pid === hit.pid);
   if (!agent && p) agent = await identity(p);
   const at = new Date().toISOString();
-  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(modelFrom ? { modelFrom } : {}), ...(log ? { log } : {}), ...(agent ? { agent } : {}), at, modelAt: at });
+  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(modelFrom ? { modelFrom } : {}), ...(log ? { log } : {}), ...(agent ? { agent } : {}), vetted: true, at, modelAt: at });
   return hit.id;
 };
 
