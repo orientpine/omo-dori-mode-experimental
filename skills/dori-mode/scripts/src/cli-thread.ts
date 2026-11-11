@@ -31,6 +31,8 @@ const threadCommand: Command = async (context) => {
     const title = bareThreadName(ref ?? "", config.discord).trim();
     const from = opt("from")?.trim();
     const first = opt("first")?.trim();
+    // every option is read before the thread is opened: a refusal after startThread would leave an unmapped thread
+    const session = opt("session") ?? null;
     if (first) postable(first, "thread open --first");
     if (!title || (!from && !first)) die("usage: dori thread open <title> [--from MSG_ID] [--first TEXT] [--session S]; standalone threads need --first");
     // a thread the lead opens is work without a lane brief: the ledger is read against its title, first message and the
@@ -44,7 +46,7 @@ const threadCommand: Command = async (context) => {
     const dc = discordClient();
     const id = await dc.startThread(env("DORI_DISCORD_CHANNEL"), from, threadName("working", title, config.discord));
     if (!from && first) await dc.send(id, first);
-    mapThread(cardDir(), id, opt("session") ?? null, title, { directives: found.map(({ e }) => e.id), openedAt: new Date().toISOString() });
+    mapThread(cardDir(), id, session, title, { directives: found.map(({ e }) => e.id), openedAt: new Date().toISOString() });
     console.log(`THREAD_DIRECTIVES discord:${id} ${found.length}: ${found.map(({ e, why }) => `${e.id} (${why})`).join(", ") || "none in scope"}; follow them in this thread's work`);
     for (const { e } of found) console.log(directiveLine(e));
     console.log(`THREAD_OPENED discord:${id}`);

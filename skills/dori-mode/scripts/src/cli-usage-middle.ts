@@ -150,6 +150,9 @@ export const USAGE_MIDDLE = `  challenge <key> --plan FILE [--model M] [--all]
   send slack --to CHANNEL --file PATH [--file PATH ...] [--text TEXT | --text-file FILE] [--thread TS]
   send discord --to CHANNEL --file PATH [--file PATH ...] [--text TEXT | --text-file FILE] [--thread ID] [--reply ID]
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN);
+                                       telegram --thread and --edit take a positive whole-number id; an empty, bare or malformed id is
+                                       refused before any request, never converted into a General post or a null-id edit;
+                                       a value flag left without its value is refused, and --help before a command prints usage without running it;
                                        --file (slack, up to 10, 1 GB each) uploads the files and shares them as one message
                                        with the text, in the thread with --thread (SENT <file ids>); a missing, empty or too
                                        big file is refused before anything is sent (SEND_FILE_MISSING|REFUSED|TOO_BIG, exit 2);

@@ -111,40 +111,61 @@ for (let i = rest.indexOf("--waive"); i >= 0; i = rest.indexOf("--waive")) {
   waive[id ?? ""] = reason?.trim() ?? "";
   rest.splice(i, 3);
 }
-const flags = parseArgs({
-  args: rest,
-  allowPositionals: true,
-  strict: false,
-  options: {
-    title: { type: "string" }, brief: { type: "string" }, done: { type: "string" }, thread: { type: "string" },
-    model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string", multiple: true },
-    reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
-    to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" }, "no-typing": { type: "boolean" }, ping: { type: "string" },
-    option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
-    from: { type: "string" }, first: { type: "string" }, "open-card": { type: "boolean" },
-    "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
-    pull: { type: "boolean" }, push: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" }, "use-gpu": { type: "boolean" }, ui: { type: "boolean" },
-    hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" }, template: { type: "boolean" },
-    goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
-    direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
-    summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
-    "keep-old": { type: "boolean" }, "wait-idle": { type: "string" }, "request-at": { type: "string" }, "request-pane": { type: "string" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
-    force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
-    answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
-    static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
-    remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
-    rule: { type: "string" }, outcome: { type: "string" }, lesson: { type: "string", multiple: true }, global: { type: "boolean" },
-    job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" }, mem: { type: "string" }, want: { type: "string" }, sync: { type: "string", multiple: true }, env: { type: "string", multiple: true }, tools: { type: "string", multiple: true }, back: { type: "string", multiple: true }, caller: { type: "string" }, "helpers-only": { type: "boolean" }, except: { type: "string", multiple: true },
-    reply: { type: "string" }, again: { type: "boolean" }, "stale-again": { type: "boolean" }, channel: { type: "string" }, "reply-to": { type: "string" }, posted: { type: "string" }, "post-summary": { type: "boolean" }, "rollover-outcome": { type: "string" }, "rollover-unresolved": { type: "boolean" }, stuck: { type: "boolean" },
-    step: { type: "string" }, "remote-effect": { type: "string", multiple: true },
-    "wall-minutes": { type: "string" }, "token-limit": { type: "string" }, "cost-limit": { type: "string" }, "activity-path": { type: "string", multiple: true },
-    "delete-branch": { type: "boolean" }, "no-test": { type: "string" }, "install-task": { type: "boolean" }, only: { type: "string", multiple: true }, log: { type: "string" }, priority: { type: "string" }, ask: { type: "string" }, "read-only": { type: "boolean" }, "owner-link": { type: "string" }, hash: { type: "string" }, question: { type: "string" },
-    source: { type: "string" },
-  },
-});
-if (flags.values.help) {
-  console.log(helpFor(command));
+const options = {
+  title: { type: "string" }, brief: { type: "string" }, done: { type: "string" }, thread: { type: "string" },
+  model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string", multiple: true },
+  reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
+  to: { type: "string" }, text: { type: "string" }, edit: { type: "string" }, status: { type: "string" }, "no-typing": { type: "boolean" }, ping: { type: "string" },
+  option: { type: "string", multiple: true }, session: { type: "string" }, tmux: { type: "string" }, open: { type: "boolean" },
+  from: { type: "string" }, first: { type: "string" }, "open-card": { type: "boolean" },
+  "done-weak-ok": { type: "boolean" }, tag: { type: "string", multiple: true }, lane: { type: "string" }, metric: { type: "string" }, hypothesis: { type: "string" }, date: { type: "string" }, post: { type: "boolean" },
+  pull: { type: "boolean" }, push: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" }, "use-gpu": { type: "boolean" }, ui: { type: "boolean" },
+  hypotheses: { type: "string", multiple: true }, test: { type: "string", multiple: true }, "no-hypotheses": { type: "string" }, improved: { type: "boolean" }, template: { type: "boolean" },
+  goal: { type: "string" }, "challenge-before": { type: "string", multiple: true }, plan: { type: "string" }, kind: { type: "string" }, result: { type: "string" },
+  direction: { type: "string" }, next: { type: "string" }, gpu: { type: "string", multiple: true }, "gpu-all": { type: "boolean" }, mode: { type: "string" }, minutes: { type: "string" },
+  summary: { type: "string" }, file: { type: "string", multiple: true }, all: { type: "boolean" }, check: { type: "boolean" }, send: { type: "boolean" },
+  "keep-old": { type: "boolean" }, "wait-idle": { type: "string" }, "request-at": { type: "string" }, "request-pane": { type: "string" }, "no-monitors": { type: "boolean" }, state: { type: "string" }, "text-file": { type: "string" },
+  force: { type: "boolean" }, thinking: { type: "string" }, "approved-by": { type: "string" }, window: { type: "string" }, reread: { type: "boolean" },
+  answer: { type: "string" }, repo: { type: "string", multiple: true }, since: { type: "string" }, until: { type: "string" }, backtest: { type: "boolean" },
+  static: { type: "boolean" }, dir: { type: "string", multiple: true }, "no-thread": { type: "string" }, "why-new": { type: "string" },
+  remote: { type: "string" }, url: { type: "string" }, by: { type: "string" }, "history-ok": { type: "string", multiple: true }, clock: { type: "string" },
+  rule: { type: "string" }, outcome: { type: "string" }, lesson: { type: "string", multiple: true }, global: { type: "boolean" },
+  job: { type: "string" }, in: { type: "string", multiple: true }, out: { type: "string" }, rl: { type: "boolean" }, mem: { type: "string" }, want: { type: "string" }, sync: { type: "string", multiple: true }, env: { type: "string", multiple: true }, tools: { type: "string", multiple: true }, back: { type: "string", multiple: true }, caller: { type: "string" }, "helpers-only": { type: "boolean" }, except: { type: "string", multiple: true },
+  reply: { type: "string" }, again: { type: "boolean" }, "stale-again": { type: "boolean" }, channel: { type: "string" }, "reply-to": { type: "string" }, posted: { type: "string" }, "post-summary": { type: "boolean" }, "rollover-outcome": { type: "string" }, "rollover-unresolved": { type: "boolean" }, stuck: { type: "boolean" },
+  step: { type: "string" }, "remote-effect": { type: "string", multiple: true },
+  "wall-minutes": { type: "string" }, "token-limit": { type: "string" }, "cost-limit": { type: "string" }, "activity-path": { type: "string", multiple: true },
+  "delete-branch": { type: "boolean" }, "no-test": { type: "string" }, "install-task": { type: "boolean" }, only: { type: "string", multiple: true }, log: { type: "string" }, priority: { type: "string" }, ask: { type: "string" }, "read-only": { type: "boolean" }, "owner-link": { type: "string" }, hash: { type: "string" }, question: { type: "string" },
+  source: { type: "string" },
+} as const;
+const flags = parseArgs({ args: rest, allowPositionals: true, strict: false, options });
+if (command === "--help" || flags.values.help) {
+  console.log(command === "--help" ? USAGE : helpFor(command));
   process.exit(0);
+}
+// strict:false gives a value flag left without its value the boolean true (a repeatable one holds true among its
+// values): refused here, before any command runs and so before any request or file write (reviews of #439). A flag is let
+// through only for the commands that check it bare themselves before any side effect: telegram's --thread/--edit id
+// check, send's --ping and --file and thread reply/wait/done's --file refusals, the loop commands' --loop, and the
+// launch, adopt, backlog add and ask flags whose bare value is the empty value their own validation refuses (backlog
+// add has no empty --why-new check, so a bare one is refused here).
+const sub = flags.positionals[0];
+const checksBare: Readonly<Record<string, readonly string[]>> = {
+  send: sub === "telegram" ? ["thread", "edit", "ping", "file"] : ["ping", "file"],
+  thread: sub === "reply" || sub === "wait" || sub === "done" ? ["file"] : [],
+  launch: ["thread", "no-thread", "why-new"],
+  adopt: ["thread"],
+  backlog: sub === "add" ? ["thread", "no-thread", "ask"] : [],
+  ask: ["thread", "channel", "reply-to"],
+  inbound: ["loop"],
+  freshness: ["loop"],
+  guard: ["loop"],
+  "dead-panes": ["loop"],
+};
+const ownCheck = new Set(Object.hasOwn(checksBare, command) ? checksBare[command] : []);
+for (const [name, spec] of Object.entries(options)) {
+  const value = flags.values[name];
+  const bare = value === true || (Array.isArray(value) && value.includes(true));
+  if (spec.type === "string" && bare && !ownCheck.has(name)) die(`--${name} needs a value`);
 }
 const cli = makeCli(command, rest, flags, config, deps, waive, discordToken, import.meta.path, import.meta.url, makeSignal());
 const { cardDir, threadStatuses, ownDiscord, env } = makeDiscordDeps(cli);
