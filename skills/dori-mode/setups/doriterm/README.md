@@ -116,12 +116,19 @@ row whose focus file was removed says "the lead tab was not focused" and still a
 server, so the row stays. With `loginctl enable-linger` on the host account the units come back after a reboot.
 
 A paired device now reaches every listed account's herdr, where it can type into the lead and lanes and open panes:
-the same reach the host account already has through sudo, now from the paired phone. To take a Dori's row away, first stop just that row
-while it is still known, with its own `name[:account]`:
-`DORITERM_BRIDGES="okdori:okdori" ~/.bun/bin/bun ~/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts stop` (it ends
-and removes only a terminal that carries that row's labels and runs exactly its command, under `<name>` or a fallback
-such as `<name>-row`), then remove it from the list. Never `hc kill <name>`: the name may be held by a Dori's own lane,
-while the row runs under its fallback. A harmless check that a row's input reaches its herdr: `ctrl+b` shows
+the same reach the host account already has through sudo, now from the paired phone. To take a Dori's row away, so the minute timer cannot bring it back halfway: stop the timer (and a refresh that
+is running), remove the row from `bridges.env`, stop just that row with its own `name[:account]`, then start the timer again:
+
+```sh
+systemctl --user stop doriterm-bridges.timer doriterm-bridges.service
+# edit ~/.config/doriterm/bridges.env: remove okdori:okdori
+DORITERM_BRIDGES="okdori:okdori" ~/.bun/bin/bun ~/.dori/src/skills/dori-mode/setups/doriterm/bridge.ts stop
+systemctl --user start doriterm-bridges.timer
+```
+
+`stop` ends and removes only a terminal that carries that row's labels and runs exactly its command, under `<name>` or
+a fallback such as `<name>-row`. Never `hc kill <name>`: the name may be held by a Dori's own lane, while the row runs
+under its fallback. A harmless check that a row's input reaches its herdr: `ctrl+b` shows
 herdr's `PREFIX` bar and `Esc` cancels it; neither reaches the pane (Esc outside the prefix bar does).
 
 ## Other machines: one mesh
