@@ -48,17 +48,20 @@ export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: 
 // briefly and never waits out a first turn (pending-goal.ts has the measurement): right after the 20 s check a goal is
 // STARTUP_OK; a first turn still on (its turn running, or the agent waiting on a background job of its own) is
 // STARTUP_PENDING_GOAL (exit 0; the lane is marked and dori watch finishes the judgement); three idle reads 10 s apart
-// with no goal are STARTUP_NO_GOAL (exit 3); an agent that ends or shows a startup failure is STARTUP_ERROR.
+// with no goal are STARTUP_NO_GOAL (exit 3); an agent that ends or shows a startup failure is STARTUP_ERROR. A session
+// whose transcript holds no user message yet (goal "unknown": no file, or only its header) has not taken its prompt: a slow host brings the agent up late (#202), so
+// such a read is no idle read; it is read again within the start wait (recheck, pending-goal.ts startupRechecks) and is
+// STARTUP_UNCONFIRMED (exit 3) once the wait is spent, never STARTUP_NO_GOAL, which would have the lead send it again.
 // prompted: the clock when the agent got its prompt. STARTUP_NO_GOAL gives the time read from the clock, since sleeps and
 // screen reads run long on a loaded host (dori-superagent PR #83 (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/83).
 // The goal record holds at any pane width; omo cuts its "Pursuing goal" footer to the pane's ("Pur..." at ~31 columns),
 // so no footer is read for the goal (dori-superagent PR #123 (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/123).
-export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: string, session: string, launchedAt: number, prompted: number): Promise<string | undefined> => {
+export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: string, session: string, launchedAt: number, prompted: number, recheck: () => Promise<boolean>): Promise<string | undefined> => {
   // no session id in the agent's command line (aoe did not pin one, or an agentCommand that is not omo): which session is
   // the lane's is not known, and guessing it could read another session's goal
   if (!deps.readGoal && !session) return `STARTUP_UNCONFIRMED ${key} ${pane}: the agent runs but its command line names no session id, so its goal cannot be read; last lines: ${lastLines(await readScreen(deps.run, deps.config.backend, pane, 40))}`;
   const read = goalReader(deps, cwd, session);
-  for (let idle = 1; ; idle++) {
+  for (let idle = 1; ; ) {
     // a goal is no good news from an agent that already ended, so the agent is read before its goal, every time
     const gone = await agentGone(deps, pane);
     if (gone) return `STARTUP_ERROR ${key} ${pane}: ${gone}`;
@@ -71,7 +74,11 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
       await deps.registry.patch(key, { pendingGoal: { idle: 0, at: deps.clock.now() } });
       return `STARTUP_PENDING_GOAL ${key} ${pane}: its first turn is still on and has set no goal yet; dori watch says LANE_NO_GOAL if it ends without one`;
     }
-    if (idle >= GOAL_WAIT.idleChecks) return `STARTUP_NO_GOAL ${key} ${pane}: the agent runs but ${noGoalWhy(goal)}: its first turn ended ${Math.round((deps.clock.now() - prompted) / 1_000)} s after its prompt; last lines: ${lastLines(screen)}`;
+    if (goal === "unknown") {
+      if (await recheck()) continue;
+      return `STARTUP_UNCONFIRMED ${key} ${pane}: the agent runs but its session holds no transcript of its prompt, so it has not taken its launch prompt, ${Math.round((deps.clock.now() - prompted) / 1_000)} s after it; last lines: ${lastLines(screen)}`;
+    }
+    if (idle++ >= GOAL_WAIT.idleChecks) return `STARTUP_NO_GOAL ${key} ${pane}: the agent runs but ${noGoalWhy(goal)}: its first turn ended ${Math.round((deps.clock.now() - prompted) / 1_000)} s after its prompt; last lines: ${lastLines(screen)}`;
     await deps.clock.sleep(GOAL_WAIT.everyMs);
   }
 };

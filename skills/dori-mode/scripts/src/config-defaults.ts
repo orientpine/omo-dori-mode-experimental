@@ -36,6 +36,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   agentCommand: ["omo", "--model", "{model}", "{prompt}"],
   defaultModel: "anthropic/claude-opus-5-5",
   launchKeywords: "ulw set goal and work",
+  startupWaitSeconds: 180,
   launchEnv: {},
   directives: { common: join(import.meta.dir, "../../references/directives.json"), local: "", links: "", linkPeers: [], memory: "", dailyAudit: true, pickModel: "anthropic-subscription/claude-haiku-5-5" },
   sessionsDir: join(home, ".omo", "agent", "sessions"),

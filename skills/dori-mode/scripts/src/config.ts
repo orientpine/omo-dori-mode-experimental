@@ -138,6 +138,8 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
     defaultCwd: expandHome(merged.defaultCwd, home),
     directives: { common: expandHome(raw.directives?.common ?? base.directives.common, home), local: expandHome(raw.directives?.local ?? "", home), links: expandHome(raw.directives?.links ?? "", home), linkPeers: raw.directives?.linkPeers ?? [], memory: expandHome(raw.directives?.memory ?? "", home), dailyAudit: raw.directives?.dailyAudit !== false , pickModel: raw.directives?.pickModel ?? base.directives.pickModel},
     sessionsDir: expandHome(merged.sessionsDir, home),
+    // only a nonnegative number is a wait: a string or null would end every launch at its first check
+    startupWaitSeconds: typeof raw.startupWaitSeconds === "number" && Number.isFinite(raw.startupWaitSeconds) && raw.startupWaitSeconds >= 0 ? raw.startupWaitSeconds : base.startupWaitSeconds,
     scorecard: { ...merged.scorecard, sessions: expandHome(merged.scorecard.sessions || merged.sessionsDir, home), lanesLog: expandHome(merged.scorecard.lanesLog || (raw.watchLog ?? join(stateDir, "lanes.log")), home), leadSessions: expandHome(merged.scorecard.leadSessions, home), inbox: expandHome(merged.scorecard.inbox, home) },
     handover: { ...merged.handover, inbox: expandHome(merged.handover.inbox, home), cwd: expandHome(merged.handover.cwd, home) },
     stateGit: {

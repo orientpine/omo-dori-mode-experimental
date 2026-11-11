@@ -54,8 +54,19 @@ export const sessionGoal = async (deps: FlowDeps, pane: string): Promise<GoalRea
 // The goal of the lane's session `id`, the exact id its agent runs under (dori launch reads it from the agent's command
 // line: aoe's own --session-id, or the one launch gave a herdr omo), so no other session can lend its goal and nothing is
 // inferred. omo keeps it in <session dir>/extensions/goal/<id>.json, the session dir named after the cwd or, for a
-// symlinked cwd, its real path. No goal file: "none" once the session's transcript is there, else "unknown" (not
-// written yet, or unreadable).
+// symlinked cwd, its real path. No goal file: "none" once the session's transcript holds a user message, else "unknown"
+// (not written yet, unreadable, or only its header: omo's control endpoint writes the header before it takes the initial
+// message, so a slow agent's session file is there before its prompt, review 1 of #450).
+const promptTaken = (transcript: string): boolean =>
+  readFileSync(transcript, "utf8").split("\n").some((line) => {
+    if (!line.includes('"user"')) return false;
+    try {
+      return (JSON.parse(line) as { message?: { role?: string } }).message?.role === "user";
+    } catch {
+      return false;
+    }
+  });
+
 export const laneGoal = (sessionsDir: string, cwd: string, id: string): GoalRead => {
   const at = resolve(cwd);
   let real = at;
@@ -69,7 +80,7 @@ export const laneGoal = (sessionsDir: string, cwd: string, id: string): GoalRead
   }
   const held = dirs.some((dir) => {
     try {
-      return readdirSync(dir).some((n) => n.endsWith(`_${id}.jsonl`));
+      return readdirSync(dir).some((n) => n.endsWith(`_${id}.jsonl`) && promptTaken(join(dir, n)));
     } catch {
       return false;
     }

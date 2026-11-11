@@ -57,6 +57,8 @@ export type DoriConfig = {
   readonly agentCommand: ArgvTemplate;
   readonly defaultModel: string;
   readonly launchKeywords: string;
+  // how long launch waits, from the lane prompt, for an agent slow to come up: its ❯ prompt and its first turn (#202)
+  readonly startupWaitSeconds: number;
   // variables every lane session starts with (aoe backend), e.g. {"CUDA_VISIBLE_DEVICES": ""} on a training node; a lane
   // launched with --use-gpu starts without them
   readonly launchEnv: Readonly<Record<string, string>>;
