@@ -92,3 +92,47 @@ test("a value flag still takes a following flag-shaped token verbatim", async ()
     state.done();
   }
 }, 30_000);
+
+// a bare --thread or --edit is Telegram's own refusal there; on Slack and Discord it is a value flag without its value
+for (const flag of ["--thread", "--edit"]) {
+  test(`discord send with a bare ${flag} is refused before any request`, async () => {
+    const state = withState();
+    try {
+      const http = join(state.dir, "http.json");
+      const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`,
+        process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "send", "discord", "--to", "channel", "--text", "hello", "--no-typing", flag], { timeoutMs: 20_000 });
+      expect({ code: r.code, err: r.err, requested: existsSync(http) }).toEqual({ code: 1, err: `${flag} needs a value`, requested: false });
+    } finally {
+      state.done();
+    }
+  }, 30_000);
+
+  test(`slack send with a bare ${flag} is refused before any request`, async () => {
+    const seen: string[] = [];
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => { seen.push(new URL(req.url).pathname); return Response.json({ ok: true, channel: "C1", ts: "1.2", message: { text: "hello" } }); } });
+    const state = withState();
+    try {
+      const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_SLACK_TOKEN=xoxp-fake", `DORI_SLACK_API=http://127.0.0.1:${server.port}/api`,
+        process.execPath, cli, "send", "slack", "--to", "C1", "--text", "hello", flag], { timeoutMs: 20_000 });
+      expect({ code: r.code, err: r.err, seen }).toEqual({ code: 1, err: `${flag} needs a value`, seen: [] });
+    } finally {
+      server.stop(true);
+      state.done();
+    }
+  }, 30_000);
+}
+
+test("thread open with a bare --session is refused before the thread is opened or posted to", async () => {
+  const state = withState();
+  try {
+    const http = join(state.dir, "http.json");
+    const config = join(state.dir, "config.json");
+    writeFileSync(join(state.dir, "ledger.json"), JSON.stringify({ entries: [] }));
+    writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, directives: { common: join(state.dir, "ledger.json"), local: "" } }));
+    const r = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, `DORI_DISCORD_STATE_DIR=${join(state.dir, "cards")}`, "DORI_DISCORD_TOKEN=fake", "DORI_DISCORD_CHANNEL=200000000000000002", `DORI_TEST_HTTP=${http}`,
+      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "thread", "open", "fix login", "--first", "Start here", "--session"], { timeoutMs: 20_000 });
+    expect({ code: r.code, err: r.err, out: r.out, requested: existsSync(http) }).toEqual({ code: 1, err: "--session needs a value", out: "", requested: false });
+  } finally {
+    state.done();
+  }
+}, 30_000);
