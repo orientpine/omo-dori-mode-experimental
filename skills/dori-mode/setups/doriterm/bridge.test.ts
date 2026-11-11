@@ -8,6 +8,7 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 
 // a row's argv as hc 0.1.18 shows it: only `hc get --json` has it, `hc ls --json` leaves it out (review 11 of #404)
 const ATTACH = ["/bin/sh", join(import.meta.dir, "attach.sh")];
+const start = (name: string, account = "", actual = name) => `run --bg --no-parent --name ${actual} --label dori.doriterm=bridge --label dori.row=${name} -- ${ATTACH.join(" ")}${account ? ` ${account}` : ""}`;
 type Row = { name: string; state: string; address?: string; argv?: string[] };
 
 async function bridgeWithFakeHc(terminals: Row[], args: string[] = [], env: Record<string, string> = {}, files: Record<string, string> = {}) {
@@ -55,7 +56,7 @@ test("starts the herdr client terminal when the account has none", async () => {
   expect(r.err).toBe("");
   expect(r.code).toBe(0);
   expect(r.out).toBe("zzangdori: started");
-  expect(r.calls).toEqual(["ls --all --json", `run --bg --no-parent --name zzangdori -- /bin/sh ${join(import.meta.dir, "attach.sh")}`]);
+  expect(r.calls).toEqual(["ls --all --json", "get --json t1", start("zzangdori")]);
 });
 
 test("leaves a live bridge alone", async () => {
@@ -71,7 +72,7 @@ test("replaces a finished bridge after a core restart", async () => {
   const r = await bridgeWithFakeHc([{ name: "zzangdori", state: "finished", argv: ATTACH }]);
   // Then: removed, then started again under the same name
   expect(r.out).toBe("zzangdori: started");
-  expect(r.calls).toEqual(["ls --all --json", "get --json t1", "rm t1", `run --bg --no-parent --name zzangdori -- /bin/sh ${join(import.meta.dir, "attach.sh")}`]);
+  expect(r.calls).toEqual(["ls --all --json", "get --json t1", "rm t1", start("zzangdori")]);
 });
 
 test("stop with no hc core running asks hc nothing, so it starts none", async () => {
@@ -94,7 +95,7 @@ test("stop ends only the bridge rows and never the core, whatever the Dori's con
     );
     // Then: the live bridge is ended and both bridge rows removed; the lead's terminal and the core are left running
     expect(`${r.code} ${r.out}`).toBe("0 bridges: stopped");
-    expect(r.calls).toEqual(["ls --all --json", "get --json t1", "kill t1", "rm t1", "get --json t2", "rm t2"]);
+    expect(r.calls).toEqual(["ls --all --json", "get --json t1", "get --json t2", "get --json t3", "kill t1", "rm t1", "rm t2"]);
   }
 });
 
@@ -102,9 +103,9 @@ test("a live terminal that holds a bridge's name but is no bridge (an hc lane na
   // Given: the name zzangdori held by a Dori lane, not by attach.sh
   const lane = { name: "zzangdori", state: "live", address: "t3", argv: ["env", "A=1", "/bin/sh"] };
   const started = await bridgeWithFakeHc([lane]);
-  // Then: start says so and runs nothing; stop on a running core kills and removes nothing
-  expect(started.out).toBe("zzangdori: the name is held by another terminal (t3), not a bridge; left alone");
-  expect(started.calls).toEqual(["ls --all --json", "get --json t3"]);
+  // Then: the row starts under a fallback name; stop on a running core kills and removes no foreign terminal
+  expect(started.out).toBe("zzangdori: started");
+  expect(started.calls).toEqual(["ls --all --json", "get --json t3", start("zzangdori", "", "zzangdori-row")]);
   const stopped = await bridgeWithFakeHc([lane], ["stop"], {}, { "run/herdr-core/default.sock": "" });
   expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
   expect(stopped.calls).toEqual(["ls --all --json", "get --json t3"]);
@@ -134,13 +135,13 @@ test("only the exact bridge command is a bridge: an unrelated attach.sh or anoth
     { name: "okdori", state: "live", address: "t2", argv: [...ATTACH, "moodori"] },
   ];
   const env = { DORITERM_BRIDGES: "zzangdori okdori:okdori" };
-  // Then: start names both as another terminal's and runs nothing; stop on a running core kills and removes nothing
+  // Then: start uses fallback names; stop on a running core kills and removes neither foreign terminal
   const started = await bridgeWithFakeHc(rows, [], env);
   expect(started.out.split("\n")).toEqual([
-    "zzangdori: the name is held by another terminal (t1), not a bridge; left alone",
-    "okdori: the name is held by another terminal (t2), not a bridge; left alone",
+    "zzangdori: started",
+    "okdori: started",
   ]);
-  expect(started.calls.filter((c) => /^(run|kill|rm) /.test(c))).toEqual([]);
+  expect(started.calls.filter((c) => /^(run|kill|rm) /.test(c))).toEqual([start("zzangdori", "", "zzangdori-row"), start("okdori", "okdori", "okdori-row")]);
   const stopped = await bridgeWithFakeHc(rows, ["stop"], env, { "run/herdr-core/default.sock": "" });
   expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
   expect(stopped.calls.filter((c) => /^(kill|rm) /.test(c))).toEqual([]);
@@ -153,7 +154,7 @@ test("another machine's terminal under a bridge's name (<machine>/tN in hc ls --
   const started = await bridgeWithFakeHc([{ name: "zzangdori", state: "finished", address: "t1", argv: ATTACH }, remote]);
   // Then: start removes the local record and starts the bridge here again, asking hc nothing about peer/t5
   expect(`${started.code} ${started.out}`).toBe("0 zzangdori: started");
-  expect(started.calls).toEqual(["ls --all --json", "get --json t1", "rm t1", `run --bg --no-parent --name zzangdori -- ${ATTACH.join(" ")}`]);
+  expect(started.calls).toEqual(["ls --all --json", "get --json t1", "rm t1", start("zzangdori")]);
   // Then: stop with the local bridge t2 live ends and removes t2 only, never the other machine's terminal
   const stopped = await bridgeWithFakeHc([{ name: "zzangdori", state: "live", address: "t2", argv: ATTACH }, remote], ["stop"], {}, { "run/herdr-core/default.sock": "" });
   expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
@@ -164,8 +165,8 @@ test("a row whose full record cannot be read is taken for another terminal: star
   // Given: hc lists a live zzangdori, but hc get gives no record of it
   const row = { name: "zzangdori", state: "live", address: "t5" };
   const started = await bridgeWithFakeHc([row]);
-  expect(started.out).toBe("zzangdori: the name is held by another terminal (t5), not a bridge; left alone");
-  expect(started.calls).toEqual(["ls --all --json", "get --json t5"]);
+  expect(started.out).toBe("zzangdori: started");
+  expect(started.calls).toEqual(["ls --all --json", "get --json t5", start("zzangdori", "", "zzangdori-row")]);
   const stopped = await bridgeWithFakeHc([row], ["stop"], {}, { "run/herdr-core/default.sock": "" });
   expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
   expect(stopped.calls).toEqual(["ls --all --json", "get --json t5"]);
@@ -178,7 +179,7 @@ test("stop waits for a bridge that takes a moment to exit, and one that never do
   const slow = await bridgeWithFakeHc(live, ["stop"], { DORITERM_BRIDGES: "zzangdori okdori:okdori", RM_LIVE_NAME: "t1", RM_LIVE_TIMES: "1" }, files);
   // Then: retried until removed, then okdori closed too
   expect(`${slow.code} ${slow.out}`).toBe("0 bridges: stopped");
-  expect(slow.calls).toEqual(["ls --all --json", "get --json t1", "kill t1", "rm t1", "rm t1", "get --json t2", "kill t2", "rm t2"]);
+  expect(slow.calls).toEqual(["ls --all --json", "get --json t1", "get --json t2", "kill t1", "rm t1", "rm t1", "kill t2", "rm t2"]);
   // Given: zzangdori never leaves
   const stuck = await bridgeWithFakeHc(live, ["stop"], { DORITERM_BRIDGES: "zzangdori okdori:okdori", RM_LIVE_NAME: "t1", RM_LIVE_TIMES: "99" }, files);
   // Then: okdori is still closed, and the stop fails naming zzangdori
@@ -203,8 +204,8 @@ test("one row per listed Dori, in order: a live one kept, an ended one replaced,
     "get --json t1",
     "get --json t2",
     "rm t2",
-    `run --bg --no-parent --name okdori -- /bin/sh ${join(import.meta.dir, "attach.sh")} okdori`,
-    `run --bg --no-parent --name yoodori -- /bin/sh ${join(import.meta.dir, "attach.sh")} yoodori`,
+    start("okdori", "okdori"),
+    start("yoodori", "yoodori"),
   ]);
 });
 
