@@ -1,5 +1,5 @@
 // End re-armed command monitors before freezing their old agent: a stopped watch still owns its locks and ports.
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { tmuxPanePid } from "./aoe.ts";
 import { agentTree } from "./frozen.ts";
@@ -58,6 +58,22 @@ export const workEnded = (work: readonly Work[], alive: (pid: number) => boolean
   if (!w) return false;
   const over = (pid: number, at: string | null | undefined): boolean => (at != null ? start(pid) !== at : !alive(pid));
   return over(w.pid, w.start) && (w.pids ?? []).every((pid, i) => over(pid, w.starts?.[i]));
+};
+
+// Only a regular file of at most 1 MiB is read. A FIFO, a device or a socket would take bytes from the running shell or
+// block the handover (#414 review 21); opened without blocking and checked on the open descriptor, so a path swapped
+// for a FIFO after a stat is not read either. Anything else is unreadable: work that keeps its watch.
+export const readText = (path: string): string | undefined => {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const stat = fstatSync(fd);
+    return stat.isFile() && stat.size <= 1 << 20 ? readFileSync(fd, "utf8") : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 };
 
 // The scripts a command's shells run by name, read from shell words, not a regex (#414 review 17: bash -o pipefail -c took

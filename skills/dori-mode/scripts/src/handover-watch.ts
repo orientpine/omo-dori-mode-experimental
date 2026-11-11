@@ -8,24 +8,6 @@
 // running twice. It trusts the listed programs and options to only read, and the session's environment. What it cannot
 // read (a subshell, a background job, a here-doc, $(( )), ${ }, a comment) is work; a real watch missing here is work
 // too, and the new session arms a watch-only monitor in its place: a manual step, never a second run.
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-
-// Only a regular file of at most 1 MiB is read. A FIFO, a device or a socket would take bytes from the running shell or
-// block the handover (#414 review 21); opened without blocking and checked on the open descriptor, so a path swapped
-// for a FIFO after a stat is not read either. Anything else is unreadable: work that keeps its watch.
-export const readText = (path: string): string | undefined => {
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
-    const stat = fstatSync(fd);
-    return stat.isFile() && stat.size <= 1 << 20 ? readFileSync(fd, "utf8") : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-};
-
 // A word with its quotes removed; each $( ) in it is lexed as commands of its own (subs) and left as \0 in the text.
 type Word = { readonly text: string; readonly quoted: boolean; readonly expand: boolean; readonly subs: readonly Simple[][] };
 // A simple command: its words, its output redirection targets ("&1" for a descriptor copy) and its input files.
@@ -121,8 +103,10 @@ const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[]; end: n
       if (!w) return undefined;
       cur().outs.push(w);
     } else {
+      // every step advances: a blank the lexer does not split on (a carriage return) ends here as work (#414 review 22)
+      const at = i;
       const w = word();
-      if (!w) return undefined;
+      if (!w || i === at) return undefined;
       cur().words.push(w);
     }
   }
@@ -159,12 +143,15 @@ const GIT = new Map<string, Spec>([["fetch", { flags: "q", long: ["quiet"] }], [
 const CONTROL = new Set(["if", "then", "else", "elif", "while", "until", "do", "{", "!"]);
 const CLOSE = new Set(["fi", "done", "}"]);
 const ASSIGN = /^([A-Za-z_]\w*)=/;
+const SSH_OPTION = /^(?:BatchMode|ConnectTimeout|ServerAliveInterval|StrictHostKeyChecking)=[\w.-]+$/;
 const VAR = /^[a-z_][a-z0-9_]*$/;
 // the environment a watch may set for gh: its config folder, and a pager that only prints
 const ENV = (w: Word): boolean => !w.subs.length && (/^GH_CONFIG_DIR=/.test(w.text) || w.text === "GH_PAGER=cat");
 
-const argsOk = (spec: Spec, args: readonly Word[]): boolean => {
+// an expanded word may split into options: outside echo, printf and test only this command's own poll variables (#414 review 22)
+const argsOk = (spec: Spec, args: readonly Word[], known: (w: Word) => boolean): boolean => {
   if (spec.raw) return true;
+  if (!args.every((w) => !w.expand || known(w))) return false;
   for (let k = 0; k < args.length; k++) {
     const t = (args[k] as Word).text;
     if (t.startsWith("--")) {
@@ -190,7 +177,8 @@ const argsOk = (spec: Spec, args: readonly Word[]): boolean => {
 const stateFile = (aliases: ReadonlySet<string>) => (w: Word): boolean =>
   !w.subs.length && ((/^\$SENPI_MONITOR_STATE_DIR(?:\/[\w.-]+)+$/.test(w.text) && !w.text.split("/").includes("..")) || aliases.has(/^\$([a-z_]\w*)$/.exec(w.text)?.[1] ?? "\0"));
 
-const simpleOk = (c: Simple, state: (w: Word) => boolean): boolean => {
+const simpleOk = (c: Simple, state: (w: Word) => boolean, own: ReadonlySet<string>): boolean => {
+  const known = (w: Word): boolean => state(w) || [...w.text.matchAll(/\$(\w+)/g)].every((m) => own.has(m[1] ?? ""));
   const w = c.words;
   const plain = (x: Word | undefined): x is Word => !!x && !x.quoted && !x.expand;
   let k = 0;
@@ -205,32 +193,35 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean): boolean => {
   const [name, ...args] = rest.slice(e);
   if (!plain(name) || name.subs.length) return false;
   const a = args.map((x) => x.text);
-  if (name.text === "tee") return argsOk({ flags: "a", operand: (x) => x.text === "/dev/null" || state(x) }, args);
+  if (name.text === "tee") return argsOk({ flags: "a", operand: (x) => x.text === "/dev/null" || state(x) }, args, state);
   if (name.text === "kill") return a[0] === "-0" && a.length > 1 && a.slice(1).every((p) => /^\d+$/.test(p));
   if (name.text === "export") return args.every(ENV);
   if (name.text === "systemctl") return a.length === 2 && a[0] === "is-active" && !a[1]?.startsWith("-");
-  if (name.text === "gh" && a[0] === "api") return !!a[1] && !a[1].startsWith("-") && argsOk(GH_API, args.slice(2));
-  if (name.text === "gh") return !!GH.get(`${a[0]} ${a[1]}`) && argsOk(GH.get(`${a[0]} ${a[1]}`) as Spec, args.slice(2));
+  if ((name.text === "gh" || name.text === "git") && !args.slice(0, 2).every((x) => !x.expand)) return false;
+  if (name.text === "gh" && a[0] === "api") return !!a[1] && !a[1].startsWith("-") && argsOk(GH_API, args.slice(2), known);
+  if (name.text === "gh") return !!GH.get(`${a[0]} ${a[1]}`) && argsOk(GH.get(`${a[0]} ${a[1]}`) as Spec, args.slice(2), known);
   // a watch run as another account (node-dori-do <account>) or host (ssh, a few plain options): its words are read
   // again as a command, as the remote shell reads them; anything there that is not a watch makes the whole command work
   if (name.text === "node-dori-do" || name.text === "ssh") {
     let k = 0;
-    while (name.text === "ssh" && /^-[oTnq]$/.test(a[k] ?? "")) k += a[k] === "-o" ? 2 : 1;
+    // only the ssh options of the real watches: -o with a value that runs nothing (no LocalCommand or ProxyCommand)
+    while (name.text === "ssh" && (/^-[Tnq]$/.test(a[k] ?? "") || (a[k] === "-o" && SSH_OPTION.test(a[k + 1] ?? "")))) k += a[k] === "-o" ? 2 : 1;
     const remote = a.slice(k + 1).join(" ");
-    const r = a[k] && !a[k]?.startsWith("-") && remote ? lex(remote, 0, false) : undefined;
+    // the remote shell reads the words again, so an expansion here could become a command there
+    const r = a[k] && !a[k]?.startsWith("-") && remote && args.every((x) => !x.expand) ? lex(remote, 0, false) : undefined;
     return !!r && cmdsOk(r.cmds, () => false);
   }
   if (name.text === "git") {
     const g = a[0] === "-C" ? args.slice(2) : args;
     const spec = GIT.get(g[0]?.text ?? "");
-    return !!spec && argsOk(spec, g.slice(1));
+    return !!spec && argsOk(spec, g.slice(1), known);
   }
   const spec = PROGRAMS.get(name.text);
-  return !!spec && argsOk(spec, args);
+  return !!spec && argsOk(spec, args, known);
 };
 
-const cmdsOk = (cmds: readonly Simple[], state: (w: Word) => boolean): boolean =>
-  cmds.every((c) => simpleOk(c, state) && [...c.words, ...c.outs, ...c.ins].every((w) => w.subs.every((s) => cmdsOk(s, state))));
+const cmdsOk = (cmds: readonly Simple[], state: (w: Word) => boolean, own: ReadonlySet<string> = new Set()): boolean =>
+  cmds.every((c) => simpleOk(c, state, own) && [...c.words, ...c.outs, ...c.ins].every((w) => w.subs.every((s) => cmdsOk(s, state, own))));
 
 const allWords = (cmds: readonly Simple[]): Word[] => cmds.flatMap((c) => [...c.words, ...c.outs, ...c.ins]).flatMap((w) => [w, ...w.subs.flatMap(allWords)]);
 
@@ -246,5 +237,14 @@ export const watchOnly = (command: string): boolean => {
   }
   const direct = stateFile(new Set());
   const aliases = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(direct)).map(([n]) => n));
-  return r.cmds.some((c) => c.words.length > 0) && cmdsOk(r.cmds, stateFile(aliases));
+  // the variables this command assigns only from substitutions, other such variables and text that adds no option
+  const own = new Set([...values.keys()].filter((n) => VAR.test(n)));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const n of own) {
+      const ok = (values.get(n) ?? []).every((v) => [...v.text.matchAll(/\$(\w+)/g)].every((m) => own.has(m[1] ?? "")) && !/(?:^|\s)-/.test(v.text.replace(/\$\w+|\0/g, "")));
+      if (!ok) changed = own.delete(n);
+    }
+  }
+  return r.cmds.some((c) => c.words.length > 0) && cmdsOk(r.cmds, stateFile(aliases), own);
 };
