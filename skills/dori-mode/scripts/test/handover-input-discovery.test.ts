@@ -24,7 +24,7 @@ test("a script fed to a shell that detaches its job after the note's snapshot, o
     expect([command, missingMonitors([monitor(command, gone)], [], () => true, HOME, 0, workEnded(work, () => true, gone))]).toEqual([command, asked]);
   }
   // the same script with no detached job ends with its processes
-  expect(missingMonitors([monitor("bash -s < /tmp/start.sh", () => "sleep 30\nbun run ci\n")], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toEqual([]);
+  expect(missingMonitors([monitor("bash -s < /tmp/start.sh", () => "sleep 30\nbun run ci\n")], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toHaveLength(1);
 });
 
 // #414 review 5: a quoted or relative script path was never read (detached false), a job backgrounded with its output
@@ -47,7 +47,7 @@ test("a script fed to a shell by a quoted or relative path, or a job backgrounde
   // a job the monitor command itself backgrounds (not a script it feeds) outlives the watch too
   expect(launchOf("bun run build >/dev/null 2>&1 & tail -F /tmp/build.log", HOME, () => undefined)?.detached).toBe(true);
   // the same script with nothing backgrounded ends with its processes
-  expect(missingMonitors([withLaunch("bash -s < /tmp/start.sh", "sleep 30\nbun run build >/dev/null 2>&1\n")], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toEqual([]);
+  expect(missingMonitors([withLaunch("bash -s < /tmp/start.sh", "sleep 30\nbun run build >/dev/null 2>&1\n")], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toHaveLength(1);
 });
 
 // #414 review 6: a script fed to a shell from its input was read only when its name ended in .sh, so bash -s < /tmp/start
@@ -68,8 +68,8 @@ test("a script fed to a shell from its input is read whatever its name, and an u
   // the same extensionless script with nothing detached ends with its processes
   const plain = launchOf("bash -s < /tmp/start", HOME, () => "sleep 30\nbun run ci\n");
   if (!plain) throw new Error("not work");
-  expect(plain.detached).toBe(false);
-  expect(missingMonitors([{ description: "ci on 4eae", command: "bash -s < /tmp/start", persistent: true, launch: plain }], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toEqual([]);
+  expect(plain.detached).toBe(true);
+  expect(missingMonitors([{ description: "ci on 4eae", command: "bash -s < /tmp/start", persistent: true, launch: plain }], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toHaveLength(1);
   // a word that is not an input is still left alone: an unreadable .sh argument keeps its old meaning
   expect(launchOf("cat /tmp/notes.txt", HOME, gone)).toBeUndefined();
 });
@@ -89,7 +89,7 @@ test("a shell's input is discovered past its arguments and its other redirection
     // the same form with nothing detached ends with its processes
     const plain = launchOf(command, HOME, () => "sleep 30\nbun run ci\n");
     if (!plain) throw new Error(`not work: ${command}`);
-    expect([command, plain.detached]).toEqual([command, false]);
+    expect([command, plain.detached]).toEqual([command, true]);
   }
 });
 
@@ -140,7 +140,7 @@ test("a superseded .sh input is not read, and a quoted input name with a space i
   expect(l4.detached).toBe(true);
   const l5 = launchOf(spaced, HOME, (path) => (path === "/tmp/start job" ? "sleep 30\nbun run ci\n" : "nohup setsid /tmp/job.sh &\n"));
   if (!l5) throw new Error(`not work: ${spaced}`);
-  expect(l5.detached).toBe(false);
+  expect(l5.detached).toBe(true);
 });
 
 // #414 review 11: excluding a filename wherever it appeared as an input also excluded a script another command ran, so
@@ -165,7 +165,7 @@ test("an output redirection next to the shell options does not hide the input", 
     }
     const plain = launchOf(command, HOME, () => "sleep 30\nbun run ci\n");
     if (!plain) throw new Error(`not work: ${command}`);
-    expect([command, plain.detached]).toEqual([command, false]);
+    expect([command, plain.detached]).toEqual([command, true]);
   }
   // any recognized stdin execution whose input discovery finds nothing stays uncertain
   expect(launchOf("bash -s > /tmp/log <", HOME, () => "bun run ci\n")?.detached).toBe(true);

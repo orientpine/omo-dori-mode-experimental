@@ -121,7 +121,7 @@ test("an input redirection of a later command is not the shell's script", () => 
   expect(seen).not.toContain("/tmp/result");
   // the remote ci of port-hc-runtime (2026-11-08 22:35Z): one absolute input, read, and its plain work ends with the watch
   const ci = launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/ci.sh > /tmp/ci.log 2>&1; echo CI4EAE_DONE", HOME, (path) => (path === "/tmp/ci.sh" ? "git worktree add -q --detach /tmp/w x\nbun run ci\n" : undefined));
-  expect(ci?.detached).toBe(false);
+  expect(ci?.detached).toBe(true);
 });
 
 
@@ -136,7 +136,7 @@ test("a script a shell runs by a bare name that cannot be read is work and keeps
     expect(missingMonitors([{ description: "chain", command, persistent: true, launch }], rearmed, () => true, HOME, 0)).toEqual(["chain (armed again with the command that starts work; arm a watch-only one instead)"]);
   }
   // the arguments of bash -s are not scripts, and a -c string is not one either
-  expect(launchOf("ssh h bash -s -- rv v0.2.1 < /tmp/tools.sh", HOME, (path) => (path === "/tmp/tools.sh" ? "bun run ci\n" : undefined))?.detached).toBe(false);
+  expect(launchOf("ssh h bash -s -- rv v0.2.1 < /tmp/tools.sh", HOME, (path) => (path === "/tmp/tools.sh" ? "bun run ci\n" : undefined))?.detached).toBe(true);
   expect(launchOf("bash -lc 'tail -F /tmp/ci.log'", HOME, () => undefined)?.why).toBe("a command that is not one of the plain watch shapes");
 });
 
@@ -181,7 +181,7 @@ test("a remote shell's input file is not read here, and a local input to ssh sti
   expect(reads).not.toContain("/tmp/start");
   expect(result?.detached).toBe(true);
   const local = launchOf("ssh host bash -s < /tmp/ci.sh", HOME, (path) => (path === "/tmp/ci.sh" ? "bun run ci\n" : undefined));
-  expect(local?.detached).toBe(false);
+  expect(local?.detached).toBe(true);
   // a remote word that is no script (tail -F of a .sh file) is still only a watch
   expect(launchOf("ssh host tail -F /tmp/progress.sh", HOME, () => undefined)).toBeUndefined();
 });
@@ -197,6 +197,6 @@ test("a script that runs another script keeps its watch, whatever the scripts sa
     expect([command, launchOf(command, HOME, read)?.detached]).toEqual([command, true]);
   }
   // a plain script fed to a shell from one absolute input still ends with its watch (the remote ci of 2026-11-08)
-  expect(launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/plain.sh > /tmp/ci.log 2>&1", HOME, read)?.detached).toBe(false);
+  expect(launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/plain.sh > /tmp/ci.log 2>&1", HOME, read)?.detached).toBe(true);
 });
 

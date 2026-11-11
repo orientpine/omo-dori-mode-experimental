@@ -18,13 +18,13 @@ const ci = launched("node-dori-do oriclaw bash -lc 'ssh ori4eae bash -s' < /tmp/
 const work = [{ pid: 100, start: "s100", cmd: "ci on 4eae", pids: [101, 102], starts: ["s101", "s102"] }];
 const startOf = (live: Record<number, string>) => (pid: number) => live[pid];
 
-test("a monitor that starts work asks for nothing once the monitor's own process and the work under it ended", () => {
+test("a monitor that feeds its work a script keeps its watch even after its own process and the work under it ended (#414 review 40)", () => {
   // the whole command (the work and the lines after it) ended
-  expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toEqual([]);
+  expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toHaveLength(1);
   // the work ended, but the monitor still runs its own lines (a grep, an echo) or a worker the note never saw
   expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(work, () => true, startOf({ 100: "s100" })))).toEqual(["ci on 4eae (starts work: arm a watch-only one with the same description)"]);
   // the monitor's pid now belongs to another process (another start time): the monitor ended
-  expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(work, () => true, startOf({ 100: "s999" })))).toEqual([]);
+  expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(work, () => true, startOf({ 100: "s999" })))).toHaveLength(1);
   // a recorded worker still runs
   expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(work, () => true, startOf({ 102: "s102" })))).toEqual(["ci on 4eae (starts work: arm a watch-only one with the same description)"]);
 });
@@ -36,7 +36,7 @@ test("a monitor whose work runs detached, or whose work the note did not record,
   // no start times recorded (no /proc): the pids alone decide, and a live pid keeps it asked for
   const bare = [{ pid: 100, cmd: "ci on 4eae", pids: [101] }];
   expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(bare, () => true, gone))).toEqual(["ci on 4eae (starts work: arm a watch-only one with the same description)"]);
-  expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(bare, () => false, gone))).toEqual([]);
+  expect(missingMonitors([ci], [], () => true, HOME, 0, workEnded(bare, () => false, gone))).toHaveLength(1);
 });
 
 test("two monitors with one description are judged by their own process, not by the first record with that name", () => {
@@ -50,7 +50,7 @@ test("two monitors with one description are judged by their own process, not by 
   const second = { pid: 200, start: "s200", cmd: "ci on 4eae", pids: [201], starts: ["s201"] };
   const done = workEnded([first, second], () => true, (pid) => ({ 100: "s999", 101: "s999", 200: "s200", 201: "s201" } as Record<number, string>)[pid]);
   // the first monitor's processes ended, the second's still run: only the first is not asked for
-  expect(done(monitor(100) as never)).toBe(true);
+  expect(done(monitor(100) as never)).toBe(false);
   expect(done(monitor(200) as never)).toBe(false);
 });
 

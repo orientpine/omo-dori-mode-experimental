@@ -137,12 +137,12 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
 
 // the remote ci of port-hc-runtime (2026-11-08 22:35Z) stays work whose watch ends with it, and a shell fed a script
 // with options before the redirection (#414 review 19) is work too
-test("the remote ci is work that ends with its watch; a script fed to a shell after options is work", () => {
+test("the remote ci is work that keeps its watch (#414 review 40); a script fed to a shell after options is work", () => {
   const read = (path: string) => (path === "/tmp/ci.sh" ? "git worktree add -q --detach /tmp/w x\nbun run ci\n" : undefined);
   const ci = launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/ci.sh > /tmp/ci.log 2>&1; echo CI4EAE_DONE", HOME, read);
-  expect([ci?.why, ci?.detached]).toEqual(["a script run by a shell from its input (bash -s < file)", false]);
+  expect([ci?.why, ci?.detached]).toEqual(["a script run by a shell from its input (bash -s < file)", true]);
   for (const command of ["bash -o pipefail < /tmp/ci.sh", "bash -euo pipefail < /tmp/ci.sh", "sudo -u oriclaw bash -o pipefail -s < /tmp/ci.sh"]) {
-    expect([command, launchOf(command, HOME, read)?.detached]).toEqual([command, false]);
+    expect([command, launchOf(command, HOME, read)?.detached]).toEqual([command, true]);
     rejectsSameCommand(command);
   }
 });

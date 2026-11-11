@@ -76,8 +76,6 @@ export const readText = (path: string): string | undefined => {
   }
 };
 
-export { runsOther } from "./handover-script-runs.ts";
-
 // The scripts a command's shells run by name, read from shell words, not a regex (#414 review 17: bash -o pipefail -c took
 // pipefail for a script, and /bin/bash start.sh was no shell). Words split on blanks, quotes and backslashes resolved;
 // ; & | ( ) and newlines start a new command; a redirection and its target are no word. Each command is read past
