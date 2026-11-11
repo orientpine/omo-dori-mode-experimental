@@ -59,11 +59,15 @@ export const withThinking = (argv: readonly string[], model: string): string[] =
 };
 
 // The model a lane started with no --model runs on, chosen once for both the backlog's quota check and the launch: the
-// lead's of now. On herdr a blank record is read again from the lead's session log (dori lead's read, which records only
-// what the log or this session's record says), and undefined when that does not tell either: the launch stops rather than
-// guess defaultModel. aoe records no lead model, so it keeps defaultModel.
+// lead's of now. On herdr the lead's session is read again first (dori lead's read: its log, so a /model since the last
+// record counts), and the record decides; undefined when neither tells: the launch stops rather than guess defaultModel. A
+// read that fails leaves the record as it was, and only with no model in it does its error stop the launch. aoe records no
+// lead model, so it keeps defaultModel.
 export const resolveLeadModel = async (run: Runner, config: Pick<DoriConfig, "backend" | "stateDir" | "sessionsDir" | "leadPane" | "defaultModel">): Promise<string | undefined> => {
   if (config.backend !== "herdr") return leadModel(config) ?? config.defaultModel;
-  if (!leadModel(config) && config.leadPane) await herdrLeadSession(run, config, config.leadPane, true);
-  return leadModel(config);
+  if (!config.leadPane) return undefined;
+  const failed = await herdrLeadSession(run, config, config.leadPane, true).then(() => undefined, (e: unknown) => e);
+  const model = leadModel(config);
+  if (!model && failed !== undefined) throw failed;
+  return model;
 };

@@ -77,9 +77,10 @@ export const leadDownTick = async (deps: FlowDeps, env: Readonly<Record<string, 
   const mark = readMark(deps, pane);
   const now = deps.clock.now();
   if (await leadAlive(deps.run, pane)) {
-    // a herdr lead's conversation is kept for its revive (herdr-sessions.ts), read again at most every RECORD_EVERY_MS
-    // (no record yet, as after a handover moved the lead to a new pane: read it now)
-    const recordedAt = Date.parse(readHerdrSessions(deps.config.stateDir)[pane]?.at ?? "");
+    // a herdr lead's conversation and model are kept for its revive and its lanes (herdr-sessions.ts), read again at most
+    // every RECORD_EVERY_MS since the model was last read (modelAt: reads that only see the session, as an owner row's
+    // lead-limit check, move at but not the model; no record yet, as after a handover moved the lead: read it now)
+    const recordedAt = Date.parse(readHerdrSessions(deps.config.stateDir)[pane]?.modelAt ?? "");
     if (isHerdrPane(pane) && !(now - recordedAt < RECORD_EVERY_MS)) await herdrLeadSession(deps.run, deps.config, pane, true).catch(() => "");
     if (!mark) return [];
     rmSync(markPath(deps), { force: true });

@@ -15,8 +15,10 @@ import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionS
 // from it (reviveHerdr) when its agent is gone. log: the session's log file, when it was found (sessionLog). agent: the
 // agent process it was read from ("<pid> <start>"), so a later read of the same process still weighs this session.
 // modelFrom "argv": the model is only the agent's startup --model (no log told it), good enough to revive the session but
-// stale after a /model, so a lane never follows it (lane-model.ts leadModel).
-export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly modelFrom?: "argv"; readonly log?: string; readonly agent?: string; readonly at: string; readonly previous?: readonly { readonly session: string; readonly cwd: string; readonly log?: string }[] };
+// stale after a /model, so a lane never follows it (lane-model.ts leadModel). modelAt: when dori lead last read the model
+// from the agent (herdrLeadSession); at moves on every read of the session, also those that read no model (background.ts
+// sessionFile), so the model is read again by modelAt (lead-down.ts).
+export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly modelFrom?: "argv"; readonly modelAt?: string; readonly log?: string; readonly agent?: string; readonly at: string; readonly previous?: readonly { readonly session: string; readonly cwd: string; readonly log?: string }[] };
 
 const file = (stateDir: string): string => join(stateDir, "herdr-sessions.json");
 
@@ -41,7 +43,8 @@ export const recordHerdrSession = (stateDir: string, pane: string, rec: HerdrSes
   const model = keep ? before?.model : rec.model;
   const modelFrom = keep ? before?.modelFrom : rec.modelFrom;
   const { modelFrom: _from, ...fields } = rec;
-  writeFileSync(file(stateDir), JSON.stringify({ ...all, [pane]: { ...fields, ...(model ? { model } : {}), ...(model && modelFrom ? { modelFrom } : {}), ...(previous.length ? { previous } : {}) } }, null, 1), { mode: 0o600 });
+  const modelAt = rec.modelAt ?? before?.modelAt;
+  writeFileSync(file(stateDir), JSON.stringify({ ...all, [pane]: { ...fields, ...(model ? { model } : {}), ...(model && modelFrom ? { modelFrom } : {}), ...(modelAt ? { modelAt } : {}), ...(previous.length ? { previous } : {}) } }, null, 1), { mode: 0o600 });
 };
 
 const modelOf = (cmd: string): string | undefined => {
@@ -137,7 +140,8 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   // recorded on every read, unchanged or not: its time is when it was last checked (lead-down reads again after 10 min)
   const p = table.find((q) => q.pid === hit.pid);
   if (!agent && p) agent = await identity(p);
-  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(modelFrom ? { modelFrom } : {}), ...(log ? { log } : {}), ...(agent ? { agent } : {}), at: new Date().toISOString() });
+  const at = new Date().toISOString();
+  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(modelFrom ? { modelFrom } : {}), ...(log ? { log } : {}), ...(agent ? { agent } : {}), at, modelAt: at });
   return hit.id;
 };
 
