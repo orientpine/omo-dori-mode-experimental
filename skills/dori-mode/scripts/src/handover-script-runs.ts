@@ -59,6 +59,7 @@ export const runsOther = (text: string): boolean => {
       for (k++; ws[k] === "-u" || /^[A-Za-z_]\w*=/.test(ws[k] ?? ""); ) k += ws[k] === "-u" ? 2 : 1;
     }
     const word = ws[k];
-    return word !== undefined && (word.includes("/") || word.endsWith(".sh") || word.includes("$") || RUNNER.test(word));
+    // after env, any option but -u (-S, -C, -i, --split-string) can hide the command it runs (#414 review 32)
+    return word !== undefined && (word.startsWith("-") || word.includes("/") || word.endsWith(".sh") || word.includes("$") || RUNNER.test(word));
   });
 };
