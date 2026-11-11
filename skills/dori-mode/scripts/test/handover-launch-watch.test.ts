@@ -103,9 +103,12 @@ test("a script fed to a shell with no space before < or with descriptor 0 starts
     expect([c, launchOf(c, HOME, () => "bun test")?.why]).toEqual([c, "a script run by a shell from its input (bash -s < file)"]);
   }
   // -c, a script argument and another descriptor still read no script from stdin
-  for (const c of ["bash -c 'tail -F /tmp/x.log'</dev/null", "bash -lc 'tail -F /tmp/x.log' 0</dev/null", "ssh host bash 10< /tmp/job.sh"]) {
+  for (const c of ["bash -c 'tail -F /tmp/x.log'</dev/null", "bash -lc 'tail -F /tmp/x.log' 0</dev/null"]) {
     expect([c, launchOf(c, HOME, () => undefined)]).toEqual([c, undefined]);
   }
+  // another descriptor is not stdin: the remote shell reads ssh's own input, which the handover cannot see, so it fails
+  // closed as work that keeps its watch (#414 review 20; before: no launch)
+  expect(launchOf("ssh host bash 10< /tmp/job.sh", HOME, () => "sleep 30\n")?.detached).toBe(true);
   // review 13: a script argument is not stdin work, but an unreadable executable script is still work and detached
   expect(launchOf("bash /nonexistent/x.sh 0< /tmp/in", HOME, () => undefined)).toEqual({ why: "a script the handover cannot read", writes: [], detached: true });
 });

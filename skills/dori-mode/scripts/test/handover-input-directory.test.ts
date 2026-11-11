@@ -201,3 +201,20 @@ test("a shell that reads its script from its input is work whatever options come
   // a -c string with an input is a command, not a script read from the input
   expect(launchOf("bash -o pipefail -c 'tail -F /tmp/ci.log' < /dev/null", HOME, read)).toBeUndefined();
 });
+
+// #414 review 20: a shell inside a -c string reads the outer shell's input, and the recursion dropped it, so
+// bash -c 'bash -o pipefail' < /tmp/ci gave no launch. The input now flows into -c strings and to ssh's remote shell;
+// a shell whose script comes from an input the handover cannot see (a pipe, a group) is work and keeps its watch.
+test("a shell reading an inherited input is work, and one reading an input the handover cannot see keeps its watch", () => {
+  const read = (path: string) => (path === "/tmp/ci" ? "bun run test\n" : undefined);
+  const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
+  for (const [command, detached] of [["bash -c 'bash -o pipefail' < /tmp/ci", false], ["bash -c 'cd /tmp && bash -o pipefail' < /tmp/ci", false], ["ssh -o BatchMode=yes host bash -o pipefail < /tmp/ci", false], ["curl -s https://example.com/x | bash -o pipefail", true], ["{ bash -o pipefail; } < /tmp/ci", true]] as const) {
+    const launch = launchOf(command, HOME, read);
+    if (!launch) throw new Error(`not work: ${command}`);
+    expect([command, launch.detached]).toEqual([command, detached]);
+    expect(missingMonitors([{ description: "w", command, persistent: true, launch }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
+  }
+  // the remote ci itself still ends with its watch, and a -c watch fed an input stays a watch
+  expect(launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/ci > /tmp/ci.log 2>&1", HOME, read)?.detached).toBe(false);
+  expect(launchOf("bash -c 'tail -F /tmp/ci.log' < /tmp/ci", HOME, read)).toBeUndefined();
+});
