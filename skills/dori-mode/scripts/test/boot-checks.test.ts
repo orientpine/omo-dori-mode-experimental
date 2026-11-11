@@ -95,10 +95,36 @@ test.each([
   { workspaces: ["lanes"], warning: false },
 ])("an hc live-agent group filter reports mismatch=$warning", async ({ workspaces, warning }) => {
   const world = newWorld();
-  world.terminals = { t1: hcTerm({ labels: { "dori.group": "lanes" } }) };
+  world.terminals = {
+    t1: hcTerm({ labels: { "dori.group": "other" } }),
+    t2: hcTerm({ labels: { "dori.group": "lanes" } }),
+  };
   const result = await boot(world, { runtime: "hc", leadPane: "hc:t1", workspaces, laneWorkspace: "" });
   expect(result.lines.some((line) => line === "CONFIG_WARN workspaces=[other] match none of the 1 live agent sessions on hc")).toBe(warning);
   expect(result.exitCode).toBe(warning ? 1 : 0);
+});
+
+test.each([
+  { excludedOnly: true, warning: false },
+  { excludedOnly: false, warning: true },
+])("an ignored hc terminal is normalized and cannot cover another agent (excludedOnly=$excludedOnly)", async ({ excludedOnly, warning }) => {
+  const world = newWorld();
+  world.terminals = excludedOnly
+    ? { t2: hcTerm({ labels: { "dori.group": "lanes" } }) }
+    : { t1: hcTerm({ labels: { "dori.group": "other" } }), t2: hcTerm({ labels: { "dori.group": "lanes" } }) };
+  const result = await boot(world, { runtime: "hc", leadPane: "", ignorePanes: ["hc:t2"], workspaces: excludedOnly ? ["other"] : ["lanes"], laneWorkspace: "" });
+  expect(result.lines.some((line) => line.startsWith("CONFIG_WARN"))).toBe(warning);
+  expect(result.exitCode).toBe(warning ? 1 : 0);
+});
+
+test("a configured herdr lead is listed while hc is selected", async () => {
+  const world = newWorld();
+  world.panes = [{ pane_id: "w2:p1", workspace_id: "w2" }];
+  world.terminals = { t1: hcTerm() };
+  const result = await boot(world, { runtime: "hc", leadPane: "w2:p1", workspaces: [] });
+  expect(result.lines).toContain("PANES lead=w2:p1 leadState=live registeredLive=0 vanished=0 unregistered=2");
+  expect(world.calls.some((call) => call[0] === "herdr" && call[1] === "pane" && call[2] === "list")).toBe(true);
+  expect(result.exitCode).toBe(0);
 });
 
 test("a probe that fails is named and fails boot, but is not counted as drift", async () => {

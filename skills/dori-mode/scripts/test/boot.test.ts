@@ -163,3 +163,48 @@ test("a vanished aoe lane is reconciled and probed even when herdr is available"
   expect(result.lines).toContain("DRIFT n=1 aoe-lost");
   expect(result.exitCode).toBe(1);
 });
+
+test("an aoe list failure publishes no partial panes or vanished verdict", async () => {
+  const world = newWorld();
+  const pane = "aoe_live_12345678";
+  world.aoeListError = "aoe unavailable";
+  world.tmuxGone = [pane];
+  world.aoe = [{ id: "12345678-abcd", title: "live", path: "/repo", tool: "omo" }];
+  world.tmux = [pane];
+  const deps = depsFor(world);
+  await deps.registry.write(lane("aoe-live", "working", pane));
+  const result = await bootCheck({ ...deps, config: { ...deps.config, backend: "aoe" } });
+  expect(result.lines).toContain("PANES unavailable (session list failed)");
+  expect(result.lines.some((line) => line.startsWith("VANISHED"))).toBe(false);
+  expect(result.lines.some((line) => line.startsWith("DRIFT"))).toBe(false);
+  expect(result.exitCode).toBe(1);
+});
+
+test("a tmux list failure publishes no partial panes or vanished verdict", async () => {
+  const world = newWorld();
+  const pane = "aoe_lost_87654321";
+  world.tmuxLsError = "socket permission denied";
+  world.tmuxGone = [pane];
+  world.panes = [{ pane_id: "w2:p1", workspace_id: "w2" }];
+  const deps = depsFor(world);
+  await deps.registry.write(lane("aoe-lost", "working", pane));
+  const result = await bootCheck(deps);
+  expect(result.lines).toContain("PANES unavailable (session list failed)");
+  expect(result.lines.some((line) => line.startsWith("VANISHED"))).toBe(false);
+  expect(result.lines.some((line) => line.startsWith("DRIFT"))).toBe(false);
+  expect(result.exitCode).toBe(1);
+});
+
+test.each(["no server running on /tmp/tmux-1000/default", "spawn tmux ENOENT", "socket permission denied"])("tmux probe failure is not confirmed drift: %s", async (message) => {
+  const world = newWorld();
+  const pane = "aoe_lost_87654321";
+  world.tmuxHasError = { [pane]: message };
+  world.panes = [{ pane_id: "w2:p1", workspace_id: "w2" }];
+  const deps = depsFor(world);
+  await deps.registry.write(lane("aoe-lost", "working", pane));
+  const result = await bootCheck(deps);
+  expect(result.lines).toContain("DRIFT n=0");
+  expect(result.lines.some((line) => line.startsWith("DRIFT probe-failed aoe-lost"))).toBe(true);
+  expect(result.lines).not.toContain("DRIFT n=1 aoe-lost");
+  expect(result.exitCode).toBe(1);
+});

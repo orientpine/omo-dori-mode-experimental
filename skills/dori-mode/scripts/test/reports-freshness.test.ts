@@ -1,6 +1,6 @@
 // Upstream #30 journal-driven freshness, with this fork's lead-notification policy.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { freshnessTick } from "../src/freshness.ts";
 import { Reports } from "../src/reports.ts";
 import type { Lane } from "../src/registry.ts";
@@ -186,4 +186,18 @@ test("a journal directory is a lane-scoped I/O error and the second lane still r
   const acts = await freshnessTick(deps, "/home/test");
   expect(acts.map((act) => `${act.kind} ${act.lane}`).sort()).toEqual(["journal-error bad-lane", "lead-told report-lane", `nudged ${lane.key}`]);
   expect(acts.find((act) => act.kind === "journal-error")?.detail).toContain("EISDIR");
+});
+
+test("a readable nonwritable journal is a lane-scoped append error and the second lane continues", async () => {
+  const world = newWorld();
+  world.screen = "❯ ";
+  const deps = depsFor(world, fakeClock(T0 + 30 * MIN), state.dir);
+  await deps.registry.write({ ...lane, key: "bad-lane", pane: "w:p8" });
+  await deps.registry.write(lane);
+  reports.report("bad-lane", "milestone", "first", T0);
+  chmodSync(reports.path("bad-lane"), 0o400);
+  reports.report(lane.key, "milestone", "started", T0);
+  const acts = await freshnessTick(deps, "/home/test");
+  expect(acts.map((act) => `${act.kind} ${act.lane}`).sort()).toEqual(["journal-error bad-lane", `stalled ${lane.key}`]);
+  expect(acts.find((act) => act.kind === "journal-error")?.detail).toContain("EACCES");
 });

@@ -63,6 +63,9 @@ export type World = {
   herdrGone?: string[];
   terminals?: Record<string, FakeTerminal>;
   hcGetError?: string;
+  aoeListError?: string;
+  tmuxLsError?: string;
+  tmuxHasError?: Record<string, string>;
   herdrDead?: string[] | undefined;
   // what herdr pane process-info names in front of a pane (null: the lookup fails); default the agent, or -bash once dead
   herdrFront?: Record<string, readonly { name?: string; argv?: string[] }[] | null>;
@@ -137,6 +140,7 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
     return ok(JSON.stringify({ terminals: rows }));
   }
   if (cmd === "herdr") return ok();
+  if (cmd === "aoe" && a1 === "list" && w.aoeListError) return { code: 1, out: "", err: w.aoeListError };
   if (cmd === "aoe" && a1 === "list") return ok(JSON.stringify(w.aoe));
   if (cmd === "aoe" && a1 === "ps") return ok(JSON.stringify(w.aoePs));
   if (cmd === "aoe" && a1 === "add") {
@@ -159,9 +163,12 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
     return value === undefined ? { code: 1, out: "", err: `unknown variable: ${name}` } : ok(`${name}=${value}`);
   }
   if (cmd === "aoe") return ok();
+  if (cmd === "tmux" && a1 === "ls" && w.tmuxLsError) return { code: 1, out: "", err: w.tmuxLsError };
   if (cmd === "tmux" && a1 === "ls") return ok(w.tmux.join("\n"));
   if (cmd === "tmux" && a1 === "has-session") {
     const name = (argv.at(-1) ?? "").replace(/^=/, "").replace(/:$/, "");
+    const failure = w.tmuxHasError?.[name];
+    if (failure) return { code: 1, out: "", err: failure };
     return w.tmuxGone?.includes(name) ? { code: 1, out: "", err: `can't find session: ${name}` } : ok();
   }
   if (cmd === "tmux" && a1 === "display-message") return ok("10");

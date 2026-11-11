@@ -2,6 +2,7 @@
 // session is gone while the registry still calls them open. Each finding is one line and fails the boot.
 import type { Runtimes } from "./runtime/registry.ts";
 import type { RuntimeKind } from "./runtime/types.ts";
+import { parseRef } from "./runtime/types.ts";
 import type { DoriConfig } from "./config.ts";
 import { type Lane, sessionOf, statusOf } from "./registry.ts";
 import { ALIVE_STATUSES } from "./panes.ts";
@@ -26,11 +27,14 @@ export const workspaceCheck = (
   if (config.laneWorkspace && !config.workspaces.includes(config.laneWorkspace))
     return [`CONFIG_WARN ${filter} does not include laneWorkspace=${config.laneWorkspace}`];
   if (!sessions) return [];
-  const skip = new Set([config.leadPane, ...config.ignorePanes].filter(Boolean));
+  const skip = new Set([config.leadPane, ...config.ignorePanes].filter(Boolean).map((pane) => {
+    const ref = parseRef(pane);
+    return ref ? `${ref.runtime}:${ref.id}` : `${kind}:${pane}`;
+  }));
   const agents = sessions.filter(
     (s) =>
       s.ref.runtime === kind &&
-      !skip.has(s.ref.id) &&
+      !skip.has(`${s.ref.runtime}:${s.ref.id}`) &&
       s.status !== undefined &&
       ALIVE_STATUSES.has(s.status) &&
       (!config.laneWorkspace || s.ref.group === config.laneWorkspace),

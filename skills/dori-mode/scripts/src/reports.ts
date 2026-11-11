@@ -112,9 +112,15 @@ export class Reports {
     const path = this.path(event.key);
     parseEvent(JSON.stringify(event), event.key);
     const dir = join(this.stateDir, "lanes", event.key);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    chmodSync(dir, 0o700);
-    appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+      appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+      throw new ReportError(`${path}: ${error.message}`, code);
+    }
   }
 
   report(key: string, kind: ReportKind, text: string, now: number): Report {

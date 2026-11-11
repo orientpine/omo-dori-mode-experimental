@@ -2,8 +2,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { shellQuote } from "./herdr.ts";
 import { parseRef } from "./runtime/types.ts";
 import { type ChosenRuntimes, runtimesOf } from "./run.ts";
-import { paneLife } from "./aoe.ts";
-import { aoeRefForLane, listAoeSessions, listSessions, type BootSession } from "./sessions.ts";
+import { aoeRefForLane, listAoeSessions, listSessions, probeAoeSession, type BootSession } from "./sessions.ts";
 import { reconcilePanes } from "./reconcile.ts";
 import { driftCheck, workspaceCheck } from "./boot-checks.ts";
 import type { Slack } from "./messenger/slack.ts";
@@ -74,11 +73,13 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
       lanes.push(lane);
     }
   }
+  const leadRef = parseRef(deps.config.leadPane);
   let panes: BootSession[] | null = null;
   try {
-    panes = await listSessions(rts, { lanes: registered, groups: deps.config.workspaces, selected: deps.config.backend !== "aoe" });
+    const listed: BootSession[] = await listSessions(rts, { lanes: registered, groups: deps.config.workspaces, selected: deps.config.backend !== "aoe", ...(leadRef ? { lead: leadRef } : {}) });
     const needsAoe = deps.config.backend === "aoe" || registered.some((lane) => statusOf(lane) !== "closed" && aoeRefForLane(lane.pane));
-    if (needsAoe) panes.push(...await listAoeSessions(deps.run));
+    if (needsAoe) listed.push(...await listAoeSessions(deps.run));
+    panes = listed;
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     failed = true;
@@ -89,12 +90,11 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     const lead = deps.config.leadPane;
     const done = new Set(lanes.filter(finished).map((lane) => lane.key));
     const vanished = result.lanes.filter((lane) => lane.paneState === "vanished" && !done.has(lane.key));
-    const leadRef = parseRef(lead);
     const leadLive = leadRef ? panes.some((pane) => pane.ref.runtime === leadRef.runtime && pane.ref.id === leadRef.id) : panes.some((pane) => pane.ref.id === lead);
     lines.push(`PANES lead=${lead || "unconfigured"} leadState=${leadLive ? "live" : "missing"} registeredLive=${result.lanes.filter((l) => l.paneState === "live" && l.status !== "closed").length} vanished=${vanished.length} unregistered=${result.unregistered.length}`);
     for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${lane.pane} status=${lane.status}; registry and worktrees preserved; no relaunch`);
     if (result.unregistered.length) lines.push(`UNREGISTERED ${result.unregistered.join(" ")}`);
-    const drift = await driftCheck(rts, registered, { sessions: panes, probeAoe: (pane) => paneLife(deps.run, pane) });
+    const drift = await driftCheck(rts, registered, { sessions: panes, probeAoe: (pane) => probeAoeSession(deps.run, pane) });
     lines.push(...drift.lines);
     if (drift.failed) failed = true;
   }
