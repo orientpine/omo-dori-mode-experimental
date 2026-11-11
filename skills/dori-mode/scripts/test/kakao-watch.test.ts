@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loginArgv, phoneLogin, readAccount } from "../../setups/discord-aoe/kakao-login.ts";
 import { kakaoOptions, kakaoTick, loadKakaoState, markReadConfirmed, type KakaoOptions, type KakaoSession, type OpenSession } from "../../setups/discord-aoe/kakao-watch.ts";
 import type { Runner } from "../src/run.ts";
+import { viaEnvFile } from "./fakes.ts";
 
 const SETUP = join(import.meta.dir, "..", "..", "setups", "discord-aoe");
 const dirs: string[] = [];
@@ -412,9 +413,8 @@ export class KakaoTalkClient {
   return cli;
 };
 const runScript = async (script: string, args: string[], env: Record<string, string>, cwd: string) => {
-  const p = Bun.spawn(["bun", join(SETUP, script), ...args], { cwd, env: { PATH: process.env["PATH"] ?? "", HOME: cwd, DORI_ENV_FILE: join(cwd, "none.env"), ...env }, stdout: "pipe", stderr: "pipe" });
-  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
-  return { out, err, code };
+  const p = Bun.spawn(["bun", join(SETUP, script), ...args], { cwd, env: viaEnvFile({ PATH: process.env["PATH"] ?? "", HOME: cwd, DORI_ENV_FILE: join(cwd, "none.env"), ...env }), stdout: "pipe", stderr: "pipe" });
+  return Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]).then(([out, err, code]) => ({ out, err, code }));
 };
 
 test("the script stays off without a Kakao id and runs one tick through flock with --once", async () => {

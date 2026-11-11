@@ -17,6 +17,19 @@ export const slackEnvFile = (dir: string, token: string, api: string): string =>
   return file;
 };
 
+// Instance values come only from dori.env (#201 review 7): an `env K=V ... cmd` argv or a spawn env object with them
+// written (quoted, so blanks survive) to the file its DORI_ENV_FILE names (replacing it) and taken out, so a test hands a CLI its fake ids as before.
+const instanceKey = (k: string): boolean => /^DORI_(DISCORD|SLACK|TELEGRAM|LEAD|ASR|GOOGLE|KAKAO|USAGE)_/.test(k) && !["DORI_LEAD_PANE", "DORI_DISCORD_SHADOW_INBOX", "DORI_SLACK_WAIT_MS"].includes(k);
+export function viaEnvFile(given: readonly string[]): string[];
+export function viaEnvFile(given: Record<string, string | undefined>): Record<string, string | undefined>;
+export function viaEnvFile(given: readonly string[] | Record<string, string | undefined>): string[] | Record<string, string | undefined> {
+  const pairs = Array.isArray(given) ? given.filter((a) => /^[A-Z_][A-Z0-9_]*=/.test(a)).map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as const) : Object.entries(given);
+  const file = pairs.find(([k]) => k === "DORI_ENV_FILE")?.[1];
+  if (!file) throw new Error("viaEnvFile needs a DORI_ENV_FILE");
+  writeFileSync(file, pairs.filter(([k, v]) => instanceKey(k) && v !== undefined).map(([k, v]) => `${k}="${v}"\n`).join(""));
+  return Array.isArray(given) ? given.filter((a) => !instanceKey(a.split("=")[0] ?? "")) : Object.fromEntries(Object.entries(given).filter(([k]) => !instanceKey(k)));
+}
+
 // A launch adds nvm's node and the agent's pi to the PATH aoe add runs with when the caller's PATH lacks them (a systemd
 // unit's bare PATH, as dori watch runs a lane's Done command). A test that checks what aoe add got sets PATH to what the
 // launch would make, so the result does not hang on the PATH of the shell that runs it; the returned function restores it.

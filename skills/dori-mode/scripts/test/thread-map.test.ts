@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { join } from "node:path";
 
 import { dropThread, mapThread, threads } from "../src/messenger/thread-map.ts";
-import { withState } from "./fakes.ts";
+import { withState, viaEnvFile } from "./fakes.ts";
 setDefaultTimeout(30_000); // load-proof: most tests here start the dori CLI (bun src/cli.ts) as a child process, up to four times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 const ID = "300000000000000003";
 const REF = `discord:${ID}`;
@@ -43,7 +43,7 @@ const dori = async (...args: string[]) => {
   if (localText !== undefined) writeFileSync(join(state.dir, "local.json"), localText);
   writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, discord: { statusStyle: "emoji", ...discordWords }, directives: { common: join(state.dir, "ledger.json"), local: localText === undefined ? "" : join(state.dir, "local.json") } }));
   const p = Bun.spawn(["bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args], {
-    env: { ...process.env, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_STATE_DIR: state.dir, DORI_DISCORD_STATE_DIR: join(state.dir, "cards"), DORI_DISCORD_TOKEN: "fake", DORI_DISCORD_CHANNEL: "200000000000000002", DORI_TEST_HTTP: join(state.dir, "http.json") },
+    env: viaEnvFile({ ...process.env, DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "missing.env"), DORI_STATE_DIR: state.dir, DORI_DISCORD_STATE_DIR: join(state.dir, "cards"), DORI_DISCORD_TOKEN: "fake", DORI_DISCORD_CHANNEL: "200000000000000002", DORI_TEST_HTTP: join(state.dir, "http.json") }),
     stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);

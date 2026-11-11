@@ -117,3 +117,14 @@ test("another home's env is still isolated when a differing Slack token or anoth
     ["/b/inbox.jsonl", "xoxb-FIXTURE-b", undefined],
   ]);
 });
+
+test("a fresh file-backed lane of home B (its own marker, blanked token) on a server holding home A's inbox reads B's inbox: no instance setting is inherited (#201 review 7)", async () => {
+  // Given: home B's dori.env with its inbox, and B's lane env as launch leaves it on a server whose env has A's inbox
+  writeFileSync(join(dir, "dori.env"), "DORI_DISCORD_INBOX=/b/inbox.jsonl\n");
+  tokenFile("slack-token", "xoxb-FIXTURE-b\n", 0o600);
+  const env: Record<string, string | undefined> = { DORI_DISCORD_INBOX: "/a/inbox.jsonl", DORI_DISCORD_CHANNEL: "a-channel", ...laneHomeEnv({ stateDir: join(dir, "state"), backend: "herdr" }, { DORI_CONFIG: join(dir, "config.json") }) };
+  // When: the lane loads its home's dori.env
+  await loadEnvFile(join(dir, "dori.env"), env);
+  // Then: B's inbox, no inherited channel (B's dori.env has none), and B's token file with its blanked token
+  expect([env["DORI_DISCORD_INBOX"], env["DORI_DISCORD_CHANNEL"], slackToken(env, HOST)]).toEqual(["/b/inbox.jsonl", undefined, "xoxb-FIXTURE-b"]);
+});

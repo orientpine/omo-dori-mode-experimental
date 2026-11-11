@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { run } from "../src/run.ts";
-import { withState } from "./fakes.ts";
+import { viaEnvFile, withState } from "./fakes.ts";
 
 const cli = join(import.meta.dir, "../src/cli.ts");
 const recorder = join(import.meta.dir, "telegram-cli-fake.ts");
@@ -14,7 +14,7 @@ const send = async (dir: string, flags: readonly string[]) => {
   const log = join(dir, "fetch.jsonl");
   const batch = join(dir, "batch.json");
   writeFileSync(batch, JSON.stringify({ message_id: 99, text: "hello" }));
-  const r = await run([
+  const r = await run(viaEnvFile([
     "env",
     `DORI_CONFIG=${join(dir, "missing.json")}`,
     `DORI_STATE_DIR=${dir}`,
@@ -33,7 +33,7 @@ const send = async (dir: string, flags: readonly string[]) => {
     "--text",
     "hello",
     ...flags,
-  ], { timeoutMs: 20_000 });
+  ]), { timeoutMs: 20_000 });
   const requests: RecordedRequest[] = existsSync(log)
     ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => {
         const row: { readonly url: string; readonly body: string } = JSON.parse(line);

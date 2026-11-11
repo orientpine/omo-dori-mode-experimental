@@ -8,7 +8,7 @@ import { discordThreadId, postInThread, setThreadStatus } from "../src/messenger
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { type Lane, Registry, statusOf } from "../src/registry.ts";
 import { run } from "../src/run.ts";
-import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
+import { depsFor, fakeClock, newWorld, withState, type World, viaEnvFile } from "./fakes.ts";
 
 setDefaultTimeout(30_000); // load-proof: the CLI tests here start dori send and dori thread (bun src/cli.ts) as child processes; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 
@@ -161,8 +161,8 @@ test("dori thread reply and dori send record a post in the lane's own thread, an
   await reg.write({ ...lane, pane: "pane-7" });
   const http = join(dir, "http.json");
   // the same leak as upstream #185 (https://github.com/sisyphuslabs/dori-superagent/pull/185): a run from an hc terminal must not read that terminal as the caller
-  const cli = (args: readonly string[], pane = "pane-7") => run(["env", "-u", "HC_TERMINAL_ID", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`, `HERDR_PANE_ID=${pane}`,
-    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]);
+  const cli = (args: readonly string[], pane = "pane-7") => run(viaEnvFile(["env", "-u", "HC_TERMINAL_ID", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`, `HERDR_PANE_ID=${pane}`,
+    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]));
   const reply = await cli(["thread", "reply", `discord:${THREAD_ID}`, "결과 한 줄이야."]);
   expect(reply.out).toContain("POSTED 900");
   const sent = await cli(["send", "discord", "--to", THREAD_ID, "--text", "결과 두 줄째야.", "--no-typing"]);

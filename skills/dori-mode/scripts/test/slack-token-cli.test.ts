@@ -54,8 +54,8 @@ test.skipIf(process.platform === "win32")("the token file a lane was given survi
   const r = await laneSend("DORI_DISCORD_TOKEN=this-home-discord\n", ["DORI_DISCORD_TOKEN=other-home-discord"]);
   // Then: the foreign Discord token is dropped, the lane's token file and blanked token are kept, and the post goes out with the file's token
   expect({ code: r.code, seen }).toEqual({ code: 0, seen: ["Bearer xoxb-FIXTURE-file"] });
-  // the inherited Slack API is never read at all (review 5), so the isolation names only the Discord token
-  expect(r.err).toBe(`DORI_ENV_FOREIGN dropped 1 inherited variables of another Dori (its bot token differs from ${join(state.dir, "dori.env")}): DORI_DISCORD_TOKEN`);
+  // no inherited instance value is read at all (review 7), so nothing is reported as dropped
+  expect(r.err).toBe("");
 });
 
 test.skipIf(process.platform === "win32")("a Slack token in dori.env does not override the launcher's token file and its deliberately empty DORI_SLACK_TOKEN", async () => {

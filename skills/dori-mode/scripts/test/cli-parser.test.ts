@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { run } from "../src/run.ts";
-import { withState } from "./fakes.ts";
+import { withState, viaEnvFile } from "./fakes.ts";
 
 const cli = join(import.meta.dir, "../src/cli.ts");
 const recorder = join(import.meta.dir, "telegram-cli-fake.ts");
@@ -12,7 +12,7 @@ const runCli = async (dir: string, args: readonly string[]) => {
   const log = join(dir, "fetch.jsonl");
   const batch = join(dir, "batch.json");
   writeFileSync(batch, JSON.stringify({ message_id: 99, text: "hello" }));
-  const r = await run([
+  const r = await run(viaEnvFile([
     "env",
     `DORI_CONFIG=${join(dir, "missing.json")}`,
     `DORI_STATE_DIR=${dir}`,
@@ -25,7 +25,7 @@ const runCli = async (dir: string, args: readonly string[]) => {
     recorder,
     cli,
     ...args,
-  ], { timeoutMs: 20_000 });
+  ]), { timeoutMs: 20_000 });
   return { ...r, requested: existsSync(log) };
 };
 
@@ -99,8 +99,8 @@ for (const flag of ["--thread", "--edit"]) {
     const state = withState();
     try {
       const http = join(state.dir, "http.json");
-      const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`,
-        process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "send", "discord", "--to", "channel", "--text", "hello", "--no-typing", flag], { timeoutMs: 20_000 });
+      const r = await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`,
+        process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "send", "discord", "--to", "channel", "--text", "hello", "--no-typing", flag]), { timeoutMs: 20_000 });
       expect({ code: r.code, err: r.err, requested: existsSync(http) }).toEqual({ code: 1, err: `${flag} needs a value`, requested: false });
     } finally {
       state.done();
@@ -112,8 +112,8 @@ for (const flag of ["--thread", "--edit"]) {
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => { seen.push(new URL(req.url).pathname); return Response.json({ ok: true, channel: "C1", ts: "1.2", message: { text: "hello" } }); } });
     const state = withState();
     try {
-      const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_SLACK_TOKEN=xoxp-fake", `DORI_SLACK_API=http://127.0.0.1:${server.port}/api`,
-        process.execPath, cli, "send", "slack", "--to", "C1", "--text", "hello", flag], { timeoutMs: 20_000 });
+      const r = await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_SLACK_TOKEN=xoxp-fake", `DORI_SLACK_API=http://127.0.0.1:${server.port}/api`,
+        process.execPath, cli, "send", "slack", "--to", "C1", "--text", "hello", flag]), { timeoutMs: 20_000 });
       expect({ code: r.code, err: r.err, seen }).toEqual({ code: 1, err: `${flag} needs a value`, seen: [] });
     } finally {
       server.stop(true);
@@ -129,8 +129,8 @@ test("thread open with a bare --session is refused before the thread is opened o
     const config = join(state.dir, "config.json");
     writeFileSync(join(state.dir, "ledger.json"), JSON.stringify({ entries: [] }));
     writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, directives: { common: join(state.dir, "ledger.json"), local: "" } }));
-    const r = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, `DORI_DISCORD_STATE_DIR=${join(state.dir, "cards")}`, "DORI_DISCORD_TOKEN=fake", "DORI_DISCORD_CHANNEL=200000000000000002", `DORI_TEST_HTTP=${http}`,
-      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "thread", "open", "fix login", "--first", "Start here", "--session"], { timeoutMs: 20_000 });
+    const r = await run(viaEnvFile(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, `DORI_DISCORD_STATE_DIR=${join(state.dir, "cards")}`, "DORI_DISCORD_TOKEN=fake", "DORI_DISCORD_CHANNEL=200000000000000002", `DORI_TEST_HTTP=${http}`,
+      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "thread", "open", "fix login", "--first", "Start here", "--session"]), { timeoutMs: 20_000 });
     expect({ code: r.code, err: r.err, out: r.out, requested: existsSync(http) }).toEqual({ code: 1, err: "--session needs a value", out: "", requested: false });
   } finally {
     state.done();
@@ -142,8 +142,8 @@ test("serve with a bare --only is refused before it reports ready or writes its 
   const state = withState();
   try {
     const log = join(state.dir, "serve.log");
-    const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
-      process.execPath, cli, "serve", "--log", log, "--only"], { timeoutMs: 20_000 });
+    const r = await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
+      process.execPath, cli, "serve", "--log", log, "--only"]), { timeoutMs: 20_000 });
     expect({ code: r.code, err: r.err, out: r.out, logged: existsSync(log) }).toEqual({ code: 1, err: "--only needs a value", out: "", logged: false });
   } finally {
     state.done();
@@ -154,8 +154,8 @@ test("a bare --file on send keeps its own refusal", async () => {
   const state = withState();
   try {
     const http = join(state.dir, "http.json");
-    const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`,
-      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "send", "discord", "--to", "channel", "--text", "hello", "--file"], { timeoutMs: 20_000 });
+    const r = await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${http}`,
+      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "send", "discord", "--to", "channel", "--text", "hello", "--file"]), { timeoutMs: 20_000 });
     expect({ code: r.code, err: r.err, requested: existsSync(http) }).toEqual({ code: 2, err: "SEND_FILE_REFUSED --file takes a path; nothing was sent", requested: false });
   } finally {
     state.done();
@@ -170,8 +170,8 @@ test("thread open with a bare --file is refused before the thread is opened, pos
     const config = join(state.dir, "config.json");
     writeFileSync(join(state.dir, "ledger.json"), JSON.stringify({ entries: [] }));
     writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, directives: { common: join(state.dir, "ledger.json"), local: "" } }));
-    const r = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, `DORI_DISCORD_STATE_DIR=${join(state.dir, "cards")}`, "DORI_DISCORD_TOKEN=fake", "DORI_DISCORD_CHANNEL=200000000000000002", `DORI_TEST_HTTP=${http}`,
-      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "thread", "open", "fix", "--first", "hi", "--file"], { timeoutMs: 20_000 });
+    const r = await run(viaEnvFile(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, `DORI_DISCORD_STATE_DIR=${join(state.dir, "cards")}`, "DORI_DISCORD_TOKEN=fake", "DORI_DISCORD_CHANNEL=200000000000000002", `DORI_TEST_HTTP=${http}`,
+      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "thread", "open", "fix", "--first", "hi", "--file"]), { timeoutMs: 20_000 });
     expect({ code: r.code, err: r.err, requested: existsSync(http), mapped: existsSync(join(state.dir, "cards", "threads.json")) }).toEqual({ code: 1, err: "--file needs a value", requested: false, mapped: false });
   } finally {
     state.done();
@@ -182,8 +182,8 @@ test("serve with a bare --loop is refused: only the loop commands check it thems
   const state = withState();
   try {
     const log = join(state.dir, "serve.log");
-    const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
-      process.execPath, cli, "serve", "--log", log, "--only", "none", "--loop"], { timeoutMs: 20_000 });
+    const r = await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
+      process.execPath, cli, "serve", "--log", log, "--only", "none", "--loop"]), { timeoutMs: 20_000 });
     expect({ code: r.code, err: r.err, out: r.out, logged: existsSync(log) }).toEqual({ code: 1, err: "--loop needs a value", out: "", logged: false });
   } finally {
     state.done();
@@ -195,8 +195,8 @@ test("backlog add with a bare --why-new is refused before the item is written", 
   try {
     const brief = join(state.dir, "brief.md");
     writeFileSync(brief, "[목표] qa\n");
-    const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
-      process.execPath, cli, "backlog", "add", "qa-i", "--title", "t", "--brief", brief, "--done", "merged o/r#1", "--thread", "new", "--why-new"], { timeoutMs: 20_000 });
+    const r = await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
+      process.execPath, cli, "backlog", "add", "qa-i", "--title", "t", "--brief", brief, "--done", "merged o/r#1", "--thread", "new", "--why-new"]), { timeoutMs: 20_000 });
     expect({ code: r.code, err: r.err, written: existsSync(join(state.dir, "backlog", "items", "qa-i.json")) }).toEqual({ code: 1, err: "--why-new needs a value", written: false });
   } finally {
     state.done();

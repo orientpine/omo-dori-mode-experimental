@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, truncateSync, writeFileSync } from "node:fs";
 import { run } from "../src/run.ts";
-import { slackEnvFile, withState } from "./fakes.ts";
+import { slackEnvFile, withState, viaEnvFile } from "./fakes.ts";
 import { DISCORD_FORM_SLACK, DISCORD_MESSAGE_MAX, type DiscordFile, discordMessageProblem } from "../src/messenger/upload-files.ts";
 setDefaultTimeout(30_000); // load-proof: every test here starts the dori CLI (bun src/cli.ts) as a child process, up to five times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 test("Discord CLI enables typing by default, skips it on request, and leaves edits alone", async () => {
@@ -12,8 +12,8 @@ test("Discord CLI enables typing by default, skips it on request, and leaves edi
     const results = [];
     for (const [i, extra] of [[], ["--no-typing"], ["--edit", "fake-message"]].entries()) {
       // a state dir per run: the same text twice in one would be a repeat (send-dedupe), not a second post
-      results.push(await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${join(state.dir, String(i))}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake",
-        "bun", "--preload", join(import.meta.dir, "fixtures/discord-send-preload.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--thread", "thread", "--text", "hello", ...extra]));
+      results.push(await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${join(state.dir, String(i))}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake",
+        "bun", "--preload", join(import.meta.dir, "fixtures/discord-send-preload.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--thread", "thread", "--text", "hello", ...extra])));
     }
     expect(results.map((r) => ({ code: r.code, out: r.out }))).toEqual([
       { code: 0, out: `REQUEST typing\nREQUEST messages\n${receipt("SENT", "fake-message", "hello")}` },
@@ -34,8 +34,8 @@ for (const [text, ping, content] of [
     const state = withState();
     try {
       const file = join(state.dir, "http.json");
-      const result = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
-        "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--thread", "thread", "--text", text, "--no-typing", ...(ping === undefined ? [] : ["--ping", ping])]);
+      const result = await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+        "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--thread", "thread", "--text", text, "--no-typing", ...(ping === undefined ? [] : ["--ping", ping])]));
       expect({ code: result.code, out: result.out, calls: JSON.parse(readFileSync(file, "utf8")).calls }).toEqual({
         code: 0, out: receipt("SENT", "900", content), calls: [{ method: "POST", path: "/channels/thread/messages", body: { content, allowed_mentions: { parse: [], ...(ping === undefined ? {} : { users: [ping] }) } } }],
       });
@@ -51,9 +51,9 @@ test("Discord CLI sends to DORI_DISCORD_API when it is set (a Dori behind an egr
   const state = withState();
   try {
     const base = ["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake"];
-    const gated = await run([...base, `DORI_DISCORD_API=http://127.0.0.1:${server.port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--no-typing"]);
+    const gated = await run(viaEnvFile([...base, `DORI_DISCORD_API=http://127.0.0.1:${server.port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--no-typing"]));
     const file = join(state.dir, "http.json");
-    const direct = await run([...base, `DORI_STATE_DIR=${join(state.dir, "direct")}`, `DORI_TEST_HTTP=${file}`, "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--no-typing"]);
+    const direct = await run(viaEnvFile([...base, `DORI_STATE_DIR=${join(state.dir, "direct")}`, `DORI_TEST_HTTP=${file}`, "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--no-typing"]));
     expect({ gated: gated.out, seen, direct: direct.out, calls: JSON.parse(readFileSync(file, "utf8")).calls.map((c: { path: string }) => c.path) }).toEqual({
       // this fake answers no content: the line says so instead of guessing
       gated: "SENT 901 content=not-returned", seen: ["POST /api/v10/channels/channel/messages Bot fake"], direct: receipt("SENT", "900", "hello"), calls: ["/channels/channel/messages"],
@@ -69,8 +69,8 @@ for (const ping of ["abc", "123x", "", " 123", "123\n"]) {
     const state = withState();
     try {
       const file = join(state.dir, "http.json");
-      const result = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
-        "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--ping", ping]);
+      const result = await run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+        "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--to", "channel", "--text", "hello", "--ping", ping]));
       expect({ code: result.code, sent: existsSync(file) }).toEqual({ code: 1, sent: false });
     } finally {
       state.done();
@@ -81,8 +81,8 @@ for (const ping of ["abc", "123x", "", " 123", "123\n"]) {
 // 2026-10-19: "line one\nline two" in shell double quotes reached Discord as a backslash and an n (E7 thread 1561758859717115997)
 const sendCli = async (dir: string, args: readonly string[]) => {
   const file = join(dir, "http.json");
-  const r = await run(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
-    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]);
+  const r = await run(viaEnvFile(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]));
   const calls = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).calls as { path: string; body?: { content?: string } }[]) : [];
   return { code: r.code, out: r.out, err: r.err, posted: calls.filter((c) => c.path.endsWith("/messages")).map((c) => c.body?.content) };
 };
@@ -146,8 +146,8 @@ const discordServer = (status = 200) => {
   return { posts, server, stop: () => server.stop(true) };
 };
 const sendTo = (dir: string, port: number | undefined, args: readonly string[]) =>
-  run(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake",
-    `DORI_DISCORD_API=http://127.0.0.1:${port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--no-typing", ...args]);
+  run(viaEnvFile(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake",
+    `DORI_DISCORD_API=http://127.0.0.1:${port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "send", "discord", "--no-typing", ...args]));
 const SAME = ["--to", "1561963113488842792", "--reply", "1561976021270396959", "--text", "시험 레인 열게"];
 
 // the receipt a post prints: the content the API answered, not the text the caller meant
@@ -326,8 +326,8 @@ test("a thread reply whose status step is held still counts as posted: the same 
     }
     return Response.json({});
   } });
-  const reply = () => run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake",
-    `DORI_DISCORD_API=http://127.0.0.1:${server.port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "thread", "reply", "discord:300000000000000004", "same words"]);
+  const reply = () => run(viaEnvFile(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake",
+    `DORI_DISCORD_API=http://127.0.0.1:${server.port}/api/v10`, "bun", join(import.meta.dir, "../src/cli.ts"), "thread", "reply", "discord:300000000000000004", "same words"]));
   try {
     const first = reply();
     await statusHeld;
@@ -442,9 +442,9 @@ const speechCli = async (dir: string, args: readonly string[], parent = "500") =
   const config = join(dir, "config.json");
   writeFileSync(config, JSON.stringify({ discord: { locale: "ko-KR" } }));
   const file = join(dir, "http.json");
-  const r = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+  const r = await run(viaEnvFile(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
     "DORI_DISCORD_CHANNEL=500", "DORI_DISCORD_PAIR_CHANNEL=600", `DORI_TEST_THREAD_PARENT=${parent}`,
-    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]);
+    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]));
   const calls = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).calls as { method: string; path: string; body?: { content?: string } }[]) : [];
   return { code: r.code, out: r.out, refused: r.err.includes("SPEECH_REFUSED") && r.err.includes("반말") && r.err.includes("nothing was sent"), posted: calls.filter((c) => c.method === "POST" && c.path.endsWith("/messages")).map((c) => c.body?.content) };
 };
@@ -639,8 +639,8 @@ test("send --file refuses a missing, empty, too big or non-regular file, more th
 // multipart message: payload_json plus files[n], each named in payload_json's attachments.
 const fileCli = async (dir: string, args: readonly string[]) => {
   const file = join(dir, "http.json");
-  const r = await run(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
-    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]);
+  const r = await run(viaEnvFile(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_DISCORD_TOKEN=fake", `DORI_TEST_HTTP=${file}`,
+    "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"), ...args]));
   const calls = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).calls as { method: string; path: string; body: Record<string, unknown>; files?: unknown[] }[]) : [];
   return { code: r.code, out: r.out, err: r.err, posts: calls.filter((c) => c.method === "POST" && c.path.endsWith("/messages")) };
 };
