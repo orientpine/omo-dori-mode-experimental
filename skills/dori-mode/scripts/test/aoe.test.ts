@@ -616,7 +616,7 @@ test("a herdr lane is held to its goal the same way: STARTUP_NO_GOAL without one
       return base.run(argv, o);
     } };
   };
-  const input = (key: string) => ({ noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  const input = (key: string) => ({ noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "m" });
   expect((await launchLane(herdr(["none"]), input("hd"))).startup).toStartWith("STARTUP_NO_GOAL hd w:p9: the agent runs but no goal in its session: its first turn ended");
   expect((await launchLane(herdr(["unknown", { status: "active" }]), input("hd2"))).startup).toBe("STARTUP_OK hd2 w:p9");
   // herdr runs the agent with the lane's own prompt in its command line: a key or brief named mcp is not an MCP server
@@ -703,7 +703,7 @@ test("goal record: a narrow pane that cuts the goal footer to Pur... is STARTUP_
       if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "run") cmd = argv[4] ?? "";
       return base.run(argv, o);
     } };
-    return (await launchLane(deps, { noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" })).startup;
+    return (await launchLane(deps, { noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "m" })).startup;
   };
   expect(await launch("narrow", "active")).toBe("STARTUP_OK narrow w:p9");
   expect(await launch("narrow-bare")).toStartWith("STARTUP_NO_GOAL narrow-bare w:p9: the agent runs but no goal in its session");
@@ -726,7 +726,7 @@ test("exact session id: a herdr omo lane gets launch's own --session-id after th
       return base.run(argv, o);
     } };
   };
-  const input = (key: string) => ({ noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w" });
+  const input = (key: string) => ({ noThread: "test lane", key, title: key, brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "m" });
   let id = "";
   const r = await launchLane(herdr(["omo", "--model", "{model}", "{prompt}"], (cmd) => {
     id = /(?:^|\s)omo --session-id ([0-9a-f-]{36}) --model /.exec(cmd)?.[1] ?? "";

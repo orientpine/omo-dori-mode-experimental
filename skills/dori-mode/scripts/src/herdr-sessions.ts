@@ -33,7 +33,9 @@ export const recordHerdrSession = (stateDir: string, pane: string, rec: HerdrSes
   const history = sameAgent || before?.session === rec.session ? before?.previous ?? [] : [];
   const outgoing = sameAgent && before.session !== rec.session ? [{ session: before.session, cwd: before.cwd, ...(before.log ? { log: before.log } : {}) }] : [];
   const previous = [...new Map([...history, ...outgoing, ...(rec.previous ?? [])].filter((entry) => entry.session !== rec.session).map((entry) => [entry.session, entry])).values()];
-  writeFileSync(file(stateDir), JSON.stringify({ ...all, [pane]: { ...rec, ...(previous.length ? { previous } : {}) } }, null, 1), { mode: 0o600 });
+  // A read that cannot resolve a model does not erase the last known one (or overwrite it with an empty string).
+  const model = rec.model || before?.model;
+  writeFileSync(file(stateDir), JSON.stringify({ ...all, [pane]: { ...rec, ...(model ? { model } : {}), ...(previous.length ? { previous } : {}) } }, null, 1), { mode: 0o600 });
 };
 
 const modelOf = (cmd: string): string | undefined => {

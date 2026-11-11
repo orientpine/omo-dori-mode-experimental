@@ -115,7 +115,7 @@ test("launch on a fresh herdr server (no workspace yet) opens the lane in a work
     if (argv[1] === "tab" && argv[2] === "create") return made ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p2", tab_id: "w1:t2" } } }), err: "" } : { code: 1, out: JSON.stringify({ error: { code: "workspace_not_found" } }), err: "" };
     if (argv[1] === "workspace" && argv[2] === "create") { made = true; return { code: 0, out: JSON.stringify({ result: { type: "workspace_created", workspace: { workspace_id: "w1" }, tab: { tab_id: "w1:t1" }, root_pane: { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1" } } }), err: "" }; }
     return base(argv, o);
-  } }, { noThread: "QA", key: "fresh", title: "fresh", brief, done: "file /x", cwd: "/tmp" });
+  } }, { noThread: "QA", key: "fresh", title: "fresh", brief, done: "file /x", cwd: "/tmp", model: "m" });
   expect(r.lane).toMatchObject({ pane: "w1:p2", tab: "w1:t2" });
 });
 
@@ -139,7 +139,7 @@ test("a herdr launch of an agent that is no omo needs no node: it starts with th
   try {
     const base = deps.run;
     const run: Runner = async (argv, o) => (argv[1] === "tab" && argv[2] === "create" ? { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w1:p3", tab_id: "w1:t3" } } }), err: "" } : base(argv, o));
-    const r = await launchLane({ ...deps, run, readGoal: async () => ({ status: "active" }) }, { noThread: "QA", key: "nonode", title: "nonode", brief, done: "file /x", cwd: "/tmp" });
+    const r = await launchLane({ ...deps, run, readGoal: async () => ({ status: "active" }) }, { noThread: "QA", key: "nonode", title: "nonode", brief, done: "file /x", cwd: "/tmp", model: "m" });
     expect(r.startup).not.toContain("NO_NODE");
     expect(world.calls.find((c) => c[2] === "run")?.[4] ?? "").not.toContain("PATH=");
   } finally {
