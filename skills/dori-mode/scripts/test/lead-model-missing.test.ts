@@ -107,6 +107,16 @@ test("dori lead records the model the lead's session log changed to with /model;
   expect(leadModel(config)).toBe(OPUS);
 });
 
+// review 5 of #460: a --continue lead that inherited ID and shows no session now; a record from before vetting named ID
+test("dori lead does not fall back to a record it just refused as only the live agent's inherited launch session", async () => {
+  const config = omo({ leadPane: "w2:p2", sessionsDir: join(dir, "sessions") }).config;
+  recordHerdrSession(dir, "w2:p2", { session: ID, cwd: dir, at: new Date(0).toISOString() });
+  const base = liveLead(omo().run, ID, join(dir, `gone_${ID}.jsonl`));
+  world.ps = "4000 1 -bash\n4001 4000 omo --continue\n";
+  const run: Runner = async (argv, o) => argv[0] === "ps" && argv[1] === "eww" && argv.at(-1) === "4001" ? { code: 0, out: `omo --continue PI_SESSION_ID=${ID}`, err: "" } : base(argv, o);
+  expect(await herdrLeadSession(run, config, "w2:p2", true)).toBe("");
+});
+
 test("the backlog checks the quota of the model a blank lead record resolves to from the transcript, not defaultModel's", async () => {
   const deps = omo({ leadPane: "w2:p2", sessionsDir: join(dir, "sessions"), defaultModel: LEAD });
   const log = join(dir, `2026-11-11T00-00-00-000Z_${ID}.jsonl`);

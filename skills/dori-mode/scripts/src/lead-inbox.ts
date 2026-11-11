@@ -13,7 +13,7 @@ import { callsThisDori, watchProblem } from "./lead-inbox-watch.ts";
 import { sawAnswer } from "./missed-answers.ts";
 import { tokenBotId } from "./messenger/discord.ts";
 import { sendVerified } from "./panes.ts";
-import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
+import { handedSession, procEnv, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // The lead hears the inbox only through a monitor its own session runs, and nothing said when there was none. On 2026-11-09
 // YooDori's lead (leadPane set back by hand, not by dori handover) missed a #dori-pair request at 11:48Z; ZzangDori's lead
@@ -41,7 +41,7 @@ const REPEAT_MS = 30 * 60_000;
 
 type Kind = "owner" | "pair" | "pair-bot";
 type Row = { readonly id: string; readonly at: number; readonly kind: Kind; readonly text: string; readonly qid?: string };
-type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[]; readonly baselineDone?: boolean };
+type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[]; readonly baselineDone?: boolean; readonly vetted?: true };
 
 // the rows the lead must hear: the owner's (lead-limit.ts ownerRows), every owner row of the pair channel and the pair-bot
 // rows that call this Dori
@@ -135,16 +135,19 @@ const currentLeadSession = async (deps: FlowDeps, pane: string, cwd: string, tab
   const hit = await resolveSession(pane, cwd, table, { run: deps.run, sessionsDir: deps.config.sessionsDir, backend: "aoe" });
   if (!hit.pid) return undefined;
   const named: { id: string; log?: string | undefined }[] = hit.id ? [{ id: hit.id }] : [];
+  const agent = table.find((p) => p.pid === hit.pid);
+  const launch = agent ? await procEnv(deps.run, agent) : "", launched = ENV_ID.exec(launch)?.[1] ?? "";
   for (const child of table.filter((p) => p.ppid === hit.pid).slice(0, 40)) {
     const line = (await deps.run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out.replace(/\r?\n$/, "");
     const env = line.startsWith(child.cmd) ? line.slice(child.cmd.length) : "";
     const id = ENV_ID.exec(env)?.[1];
-    if (id) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
+    if (id && handedSession(child, env, launch)) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
   }
   const previous = readMark(deps);
-  if (previous?.pane === pane && previous.agentPid === hit.pid) named.push({ id: previous.session, log: previous.log });
+  // a session remembered as the agent's launch one counts only when written vetted: a watcher before #460 recorded inherited ones
+  if (previous?.pane === pane && previous.agentPid === hit.pid && (previous.vetted || previous.session !== launched)) named.push({ id: previous.session, log: previous.log });
   const kept = readHerdrSessions(deps.config.stateDir)[pane];
-  if (kept?.session) named.push({ id: kept.session, log: kept.log });
+  if (kept?.session && (kept.vetted || kept.session !== launched)) named.push({ id: kept.session, log: kept.log });
   if (!named.length) return undefined;
   const candidates = await Promise.all([...new Set(named.map((n) => n.id))].map(async (id) => {
     const hint = named.findLast((n) => n.id === id && n.log)?.log;
@@ -209,7 +212,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
   const baselineDone = !problem || (sameSession && old?.baselineDone === true);
   const heardState = { heardIds: [...heard].sort(), ...(baselineDone ? { baselineDone: true } : {}) };
   const missingSince = problem ? (mark.missingSince ?? now) : undefined;
-  let next: Mark = { pane, session, agentPid: file.pid, log: file.path, ...heardState, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
+  let next: Mark = { pane, session, agentPid: file.pid, log: file.path, vetted: true, ...heardState, ...(missingSince !== undefined ? { missingSince } : {}), ...(mark.key ? { key: mark.key, typedAt: mark.typedAt } : {}) };
   const out: string[] = [];
   const oldest = unheard[0];
   const newest = unheard.at(-1);
@@ -233,7 +236,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
     if (ok) next = { ...next, key: incident.key, typedAt: now };
     out.push(`${incident.head}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane, typed again next tick"}`);
   } else if (!incident && !problem && !unheard.length && mark.key) {
-    next = { pane, session, agentPid: file.pid, log: file.path, ...heardState };
+    next = { pane, session, agentPid: file.pid, log: file.path, vetted: true, ...heardState };
     out.push(`LEAD_INBOX_OK ${pane} session ${session} hears its inbox again`);
   }
   if (JSON.stringify(next) !== JSON.stringify(old)) writeFileSync(markPath(deps), `${JSON.stringify(next)}\n`);
