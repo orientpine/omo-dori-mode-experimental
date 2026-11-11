@@ -30,6 +30,14 @@ test("the plain poll shapes of real monitors stay watches the new session may ar
     // the watch-only form a new session arms for work the old one started: wait on its pid
     "while kill -0 3636161 2>/dev/null; do sleep 2; done; echo QA_JOB_DONE",
     "until test -e /tmp/qa/stop; do sleep 2; done; stat -c %s /tmp/qa/stop; printf 'STOPPED\\n'",
+    // the shapes of the other real lane and lead notes: another account or host, a service, a gh read, a filter
+    "until node-dori-do okdori test -s /home/okdori/s.log 2>/dev/null; do sleep 120; done; echo X $(node-dori-do okdori tail -3 /home/okdori/s.log | tr '\\n' ' ' | cut -c1-300)",
+    "ssh ori644d 'tail -n +1 -F logs/bs_chain.out | grep --line-buffered -E \"BS_CHAIN_|Traceback\" | sed -u \"/BS_CHAIN_DONE/q\"'",
+    "until [ \"$(sha256sum /opt/g/gate.py | cut -d' ' -f1)\" = a231 ]; do sleep 30; done; echo G $(systemctl is-active g.service) $(journalctl -u g -n 20 --no-pager | grep -c READY)",
+    "while true; do a=$(GH_PAGER=cat gh pr view 1 -R o/r --json state -q .state 2>/dev/null); if [ \"$a\" = MERGED ]; then echo M; break; fi; sleep 1800; done",
+    "last=\"\"; while true; do r=$(gh api repos/o/r/pulls/435/reviews --jq length 2>/dev/null); if [ -z \"$last\" ]; then last=\"$r\"; elif [ \"$r\" != \"$last\" ]; then break; fi; sleep 15; done",
+    "id=$(gh run list -R o/r --branch b --limit 5 --json databaseId -q '.[0].databaseId'); gh run watch $id -R o/r --interval 30 >/dev/null 2>&1; gh pr checks 42 -R o/r 2>&1 | awk '{print $1\"=\"$2}' | sed 's/^/R5: /'",
+    "until ! kill -0 1234; do sleep 5; done; grep -c PASS < /tmp/x.log",
   ]) {
     expect([command, launchOf(command, HOME, () => undefined)]).toEqual([command, undefined]);
     expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual([]);
@@ -54,8 +62,6 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "$CMD /tmp/x",
     "until grep -q X /tmp/f; do sleep 5; done; echo `bun test`",
     "until grep -q X /tmp/f; do sleep 5; done & echo started",
-    "cat < /tmp/script",
-    "cat /tmp/notes.txt",
     "cd /tmp/hs-b/scripts && env -u DORI_STATE_DIR TMPDIR=/tmp/t timeout 500 bun test > /tmp/t/suite.txt 2>&1; echo \"SUITE_EXIT $?\"",
     "dori challenge lane --plan /tmp/t/plan.md > /tmp/t/challenge.txt 2>&1; echo \"CHALLENGE_EXIT $?\"",
     // a shell that runs a string or reads a script is not a plain poll, whatever the string or input holds
@@ -63,6 +69,15 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "bash -c 'if test -f /tmp/ci; then bash -o pipefail; fi' < /tmp/ci",
     "{ bash -o pipefail; } < /tmp/ci",
     "curl -s https://example.com/x | bash",
+    // the filters and remote forms on the list only in their plain shape
+    "tail -F /tmp/x | sed -n 'w /tmp/copy'",
+    "tail -F /tmp/x | awk '{system(\"bun test\")}'",
+    "ssh host",
+    "ssh host 'bun test'",
+    "node-dori-do oriclaw bash -s",
+    "GH_PAGER=less gh pr view 1",
+    "until [ $(( $(date +%s) - 5 )) -ge 9 ]; do sleep 20; done",
+    "grep X <<< \"$(bun test)\"",
   ]) rejectsSameCommand(command);
 });
 

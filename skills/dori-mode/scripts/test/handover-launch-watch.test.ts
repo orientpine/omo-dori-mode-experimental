@@ -46,7 +46,6 @@ test("a script fed to a shell, here or over ssh, under sudo or node-dori-do, wit
   for (const c of [
     `while kill -0 3146081 2>/dev/null; do sleep 20; done; echo "CI4EAE_DONE exit=unknown"; grep -E '^CI_EXIT' ${log} | head -12`,
     "ssh -o BatchMode=yes ori4eae tail -F /tmp/ci.log",
-    "ssh ori4eae 'bash -lc \"tail -n 0 -F /tmp/ci.log\"'",
     `grep -c PASS < ${log}`,
   ]) {
     expect([c, launchOf(c, "/home/test")]).toEqual([c, undefined]);
@@ -103,8 +102,9 @@ test("a script fed to a shell with no space before < or with descriptor 0 starts
     expect([c, launchOf(c, HOME, () => "bun test")?.why]).toEqual([c, "a script run by a shell from its input (bash -s < file)"]);
   }
   // -c, a script argument and another descriptor still read no script from stdin
+  // a shell given a string is work since #414 after review 21, whatever the string holds; its input is no script
   for (const c of ["bash -c 'tail -F /tmp/x.log'</dev/null", "bash -lc 'tail -F /tmp/x.log' 0</dev/null"]) {
-    expect([c, launchOf(c, HOME, () => undefined)]).toEqual([c, undefined]);
+    expect([c, launchOf(c, HOME, () => undefined)?.why]).toEqual([c, "a script the handover cannot read"]);
   }
   // another descriptor is not stdin: the remote shell reads ssh's own input, which the handover cannot see, so it fails
   // closed as work that keeps its watch (#414 review 20; before: no launch)

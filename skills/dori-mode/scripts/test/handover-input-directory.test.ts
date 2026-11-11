@@ -1,7 +1,4 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { launchOf, missingMonitors } from "../src/handover.ts";
 
@@ -140,7 +137,7 @@ test("a script a shell runs by a bare name that cannot be read is work and keeps
   }
   // the arguments of bash -s are not scripts, and a -c string is not one either
   expect(launchOf("ssh h bash -s -- rv v0.2.1 < /tmp/tools.sh", HOME, (path) => (path === "/tmp/tools.sh" ? "bun run ci\n" : undefined))?.detached).toBe(false);
-  expect(launchOf("bash -lc 'tail -F /tmp/ci.log'", HOME, () => undefined)).toBeUndefined();
+  expect(launchOf("bash -lc 'tail -F /tmp/ci.log'", HOME, () => undefined)?.why).toBe("a command that is not one of the plain watch shapes");
 });
 
 // #414 review 17: the operand after a shell was found by a regex, so bash -o pipefail -c took pipefail for a script (a
@@ -148,9 +145,9 @@ test("a script a shell runs by a bare name that cannot be read is work and keeps
 test("a shell's script operand comes from its words: options with operands, -c strings, wrappers, a shell by its path", () => {
   const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
   for (const command of ["bash -o pipefail -c 'tail -F /tmp/ci.log'", "bash -O extglob -c 'tail -F /tmp/ci.log'", "bash --rcfile /etc/x -c 'tail -F /tmp/ci.log'"]) {
-    expect([command, launchOf(command, HOME, () => undefined)]).toEqual([command, undefined]);
-    // the same watch armed again in the new session counts
-    expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual([]);
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, false]);
+    // a shell given a string is work (#414 after review 21): the same command armed again does not count
+    expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
   }
   for (const command of ["/bin/bash start.sh", "/usr/bin/env bash start.sh", "bash -O extglob start.sh", "sudo -u oriclaw bash start.sh", "sudo -n -u oriclaw -H bash start.sh", "nice -n 5 bash start.sh", "bash -c 'bash start.sh'", "ssh h 'bash start.sh'", "node-dori-do oriclaw bash start.sh"]) {
     const launch = launchOf(command, HOME, () => undefined);
@@ -171,8 +168,8 @@ test("a script a remote shell runs is never judged by a local file, and combined
   }
   const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
   for (const command of ["bash -euo pipefail -c 'tail -F /tmp/ci.log'", "bash -eO extglob -c 'tail -F /tmp/ci.log'", "bash +o history -c 'tail -F /tmp/ci.log'"]) {
-    expect([command, launchOf(command, HOME, () => undefined)]).toEqual([command, undefined]);
-    expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual([]);
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, false]);
+    expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
   }
 });
 
@@ -188,69 +185,3 @@ test("a remote shell's input file is not read here, and a local input to ssh sti
   // a remote word that is no script (tail -F of a .sh file) is still only a watch
   expect(launchOf("ssh host tail -F /tmp/progress.sh", HOME, () => undefined)).toBeUndefined();
 });
-
-// #414 review 19: a shell fed its script from its input was work only when an older regex also matched its options, so
-// bash -o pipefail < /tmp/ci with plain contents gave no launch and the same command could be armed again. The shell
-// words already know the shell reads its script from that input; that alone makes it work.
-test("a shell that reads its script from its input is work whatever options come before the redirection", () => {
-  const read = (path: string) => (path === "/tmp/ci" ? "bun run test\n" : undefined);
-  const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
-  for (const command of ["bash -o pipefail < /tmp/ci", "bash -euo pipefail < /tmp/ci", "bash -O extglob -s < /tmp/ci", "bash --rcfile /etc/x < /tmp/ci", "sudo -u oriclaw bash -o pipefail -s < /tmp/ci"]) {
-    const launch = launchOf(command, HOME, read);
-    if (!launch) throw new Error(`not work: ${command}`);
-    expect([command, launch.why, launch.detached]).toEqual([command, "a script run by a shell from its input (bash -s < file)", false]);
-    expect(missingMonitors([{ description: "w", command, persistent: true, launch }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
-  }
-  // a -c string with an input is a command, not a script read from the input
-  expect(launchOf("bash -o pipefail -c 'tail -F /tmp/ci.log' < /dev/null", HOME, read)).toBeUndefined();
-});
-
-// #414 review 20: a shell inside a -c string reads the outer shell's input, and the recursion dropped it, so
-// bash -c 'bash -o pipefail' < /tmp/ci gave no launch. The input now flows into -c strings and to ssh's remote shell;
-// a shell whose script comes from an input the handover cannot see (a pipe, a group) is work and keeps its watch.
-test("a shell reading an inherited input is work, and one reading an input the handover cannot see keeps its watch", () => {
-  const read = (path: string) => (path === "/tmp/ci" ? "bun run test\n" : undefined);
-  const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
-  for (const [command, detached] of [["bash -c 'bash -o pipefail' < /tmp/ci", false], ["bash -c 'cd /tmp && bash -o pipefail' < /tmp/ci", false], ["ssh -o BatchMode=yes host bash -o pipefail < /tmp/ci", false], ["curl -s https://example.com/x | bash -o pipefail", true], ["{ bash -o pipefail; } < /tmp/ci", true]] as const) {
-    const launch = launchOf(command, HOME, read);
-    if (!launch) throw new Error(`not work: ${command}`);
-    expect([command, launch.detached]).toEqual([command, detached]);
-    expect(missingMonitors([{ description: "w", command, persistent: true, launch }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
-  }
-  // the remote ci itself still ends with its watch, and a -c watch fed an input stays a watch
-  expect(launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/ci > /tmp/ci.log 2>&1", HOME, read)?.detached).toBe(false);
-  expect(launchOf("bash -c 'tail -F /tmp/ci.log' < /tmp/ci", HOME, read)).toBeUndefined();
-});
-
-// #414 review 21: a shell after a control word (then, do, else) was not found, so the same command could be armed again
-test("a shell after a control word is found like any other", () => {
-  const read = (path: string) => (path === "/tmp/ci" ? "bun run test\n" : undefined);
-  const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
-  for (const command of ["bash -c 'if test -f /tmp/ci; then bash -o pipefail; fi' < /tmp/ci", "bash -c 'while true; do bash -o pipefail; done' < /tmp/ci", "bash -c 'if false; then :; else bash -o pipefail; fi' < /tmp/ci", "bash -c '! bash -o pipefail' < /tmp/ci"]) {
-    const launch = launchOf(command, HOME, read);
-    if (!launch) throw new Error(`not work: ${command}`);
-    expect([command, launch.detached]).toEqual([command, false]);
-    expect(missingMonitors([{ description: "w", command, persistent: true, launch }], rearmed(command), () => true, HOME, 0)).toEqual(["w (armed again with the command that starts work; arm a watch-only one instead)"]);
-  }
-  expect(launchOf("bash -c 'if true; then tail -F /tmp/ci.log; fi' < /tmp/ci", HOME, read)).toBeUndefined();
-});
-
-// #414 review 21: the handover read a shell's input with readFileSync, so a FIFO input took bytes from the running shell
-// or blocked the handover. Only a regular file is read; any other input is unreadable work that keeps its watch. Run in a
-// child process so a regression that blocks on the FIFO fails within the bound instead of hanging the suite.
-test("a FIFO input is never read: it is work that keeps its watch", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "hlw-fifo-"));
-  try {
-    const fifo = join(dir, "ci.fifo");
-    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
-    const src = join(import.meta.dir, "..", "src", "handover.ts");
-    const proc = Bun.spawn([process.execPath, "-e", `const { launchOf } = await import(${JSON.stringify(src)}); console.log(JSON.stringify(launchOf(${JSON.stringify(`bash -o pipefail < ${fifo}`)}, "/home/test") ?? null));`], { stdout: "pipe", stderr: "pipe" });
-    const timer = setTimeout(() => proc.kill(), 10_000);
-    const code = await proc.exited;
-    clearTimeout(timer);
-    const out = await new Response(proc.stdout).text();
-    expect([code, out.trim()]).toEqual([0, JSON.stringify({ why: "a script run by a shell from its input (bash -s < file)", writes: [], detached: true })]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}, 20_000);

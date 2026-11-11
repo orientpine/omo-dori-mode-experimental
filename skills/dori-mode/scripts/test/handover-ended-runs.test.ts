@@ -65,8 +65,12 @@ test("a shell with no -c and no script reads its script from stdin and starts wo
   for (const c of ["bash < /tmp/job.sh", "ssh ori4eae bash < /tmp/job.sh", "ssh ori4eae 'bash' < /tmp/job.sh > /tmp/job.log 2>&1", "sudo -n -u oriclaw -H bash -l < /tmp/job.sh"]) {
     expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a script run by a shell from its input (bash -s < file)"]);
   }
-  for (const c of ["bash -lc 'tail -F /tmp/x.log' < /dev/null", "grep -c PASS < /tmp/x.log", "ssh ori4eae tail -F /tmp/x.log"]) {
+  for (const c of ["grep -c PASS < /tmp/x.log", "ssh ori4eae tail -F /tmp/x.log"]) {
     expect([c, launchOf(c, HOME)]).toEqual([c, undefined]);
+  }
+  // a shell given a string is not a plain watch shape (#414 after review 21): work that keeps its watch
+  for (const c of ["bash -lc 'tail -F /tmp/x.log' < /dev/null"]) {
+    expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a script the handover cannot read"]);
   }
 });
 

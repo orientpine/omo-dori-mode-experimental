@@ -69,17 +69,13 @@ export const workEnded = (work: readonly Work[], alive: (pid: number) => boolean
 // its script from stdin, and the first other word is the script. A script found in ssh's remote words runs on another
 // host (remote): a local file of that name says nothing about it (#414 review 18). Every o or O in a short option, also
 // combined (-euo pipefail), takes the next word as its value. A shell with -s or no script reads its script from its
-// last input redirection (< file), which is returned as its script, remote under ssh (dori challenge of review 18),
-// marked stdin: such a shell runs whatever that file holds, so it starts work (#414 review 19). The input flows into a
-// -c string and to ssh's remote shell (ssh forwards it, so that file is local); a shell whose input the handover cannot
-// see (a pipe, a group's redirection) gets an empty path, which is never read, so it is work and keeps its watch
-// (#414 review 20: fail closed instead of following every shell form).
+// last input redirection (< file), which is returned as its script, remote under ssh (dori challenge of review 18).
 const SHELL = /^(?:ba|z|da|k)?sh$/;
 const WRAP = /^(?:sudo|env|nohup|exec|time|nice|setsid|stdbuf|timeout)$/;
 // the options of each wrapper that take a value (sudo -n takes none, nice -n does)
 const WRAP_ARG: Record<string, RegExp> = { sudo: /^-[ugCDhprtU]$/, env: /^-[uCS]$/, nice: /^-n$/, timeout: /^-[sk]$/, stdbuf: /^-[ioe]$/ };
 const SSH_ARG = /^-[bcDEeFIiJLlmOoPpQRSWw]$/;
-export type ShellScript = { readonly path: string; readonly remote: boolean; readonly stdin: boolean };
+export type ShellScript = { readonly path: string; readonly remote: boolean };
 type Words = { readonly argv: string[]; readonly inputs: string[] };
 const shellWords = (text: string): Words[] => {
   const cmds: Words[] = [{ argv: [], inputs: [] }];
@@ -108,11 +104,9 @@ const shellWords = (text: string): Words[] => {
       w = (w ?? "") + (text[i + 1] ?? "");
       i += 2;
     } else if (c === "<" || c === ">") {
-      // only < and 0< feed stdin; 10< opens another descriptor
-      const fd = w !== undefined && /^\d+$/.test(w) ? w : undefined;
-      if (fd !== undefined) w = undefined;
+      if (w !== undefined && /^\d+$/.test(w)) w = undefined;
       else end();
-      input = c === "<" && (fd === undefined || fd === "0") && text[i + 1] !== "<" && text[i + 1] !== "(";
+      input = c === "<" && text[i + 1] !== "<" && text[i + 1] !== "(";
       while (text[i] === "<" || text[i] === ">") i++;
       if (text[i] === "&") i++;
       target = true;
@@ -132,15 +126,13 @@ const shellWords = (text: string): Words[] => {
   end();
   return cmds;
 };
-export const shellScripts = (command: string, depth = 0, remote = false, inherited: readonly ShellScript[] = []): ShellScript[] =>
+export const shellScripts = (command: string, depth = 0, remote = false): ShellScript[] =>
   depth > 4
     ? []
     : shellWords(command).flatMap(({ argv, inputs }) => {
-        const input = inputs.length ? inputs.slice(-1).map((path) => ({ path, remote, stdin: true })) : [...inherited];
         let k = 0;
         for (;;) {
-          // assignments, a group's {, ! and the control words a command can follow (#414 review 21)
-          while (/^[A-Za-z_]\w*=/.test(argv[k] ?? "") || /^(?:\{|!|if|then|else|elif|while|until|do)$/.test(argv[k] ?? "")) k++;
+          while (/^[A-Za-z_]\w*=/.test(argv[k] ?? "")) k++;
           const base = (argv[k] ?? "").split("/").pop() ?? "";
           if (WRAP.test(base)) {
             for (k++; (argv[k] ?? "").startsWith("-"); ) k += WRAP_ARG[base]?.test(argv[k] ?? "") ? 2 : 1;
@@ -148,7 +140,7 @@ export const shellScripts = (command: string, depth = 0, remote = false, inherit
           } else if (base === "node-dori-do") k += 2;
           else if (base === "ssh") {
             for (k++; (argv[k] ?? "").startsWith("-"); ) k += SSH_ARG.test(argv[k] ?? "") ? 2 : 1;
-            return shellScripts(argv.slice(k + 1).join(" "), depth + 1, true, input);
+            return shellScripts(argv.slice(k + 1).join(" "), depth + 1, true);
           } else if (SHELL.test(base)) {
             let string = false;
             let stdin = false;
@@ -166,10 +158,10 @@ export const shellScripts = (command: string, depth = 0, remote = false, inherit
                 }
               } else break;
             }
-            if (string) return shellScripts(argv[k] ?? "", depth + 1, remote, input);
-            const fed = input.length ? input : [{ path: "", remote, stdin: true }];
+            if (string) return shellScripts(argv[k] ?? "", depth + 1, remote);
+            const fed = inputs.slice(-1).map((path) => ({ path, remote }));
             if (stdin) return fed;
-            return argv[k] ? [{ path: argv[k] ?? "", remote, stdin: false }] : fed;
+            return argv[k] ? [{ path: argv[k] ?? "", remote }] : fed;
           } else return [];
         }
       });

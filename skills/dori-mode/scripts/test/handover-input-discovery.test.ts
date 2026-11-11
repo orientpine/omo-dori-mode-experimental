@@ -149,9 +149,8 @@ test("a script run by one command is still read when another command reads the s
   const launch = launchOf(command, HOME, read);
   if (!launch) throw new Error(`not work: ${command}`);
   expect(launch.detached).toBe(true);
-  // the same two commands with a foreground-only script that starts no work is not a launch
-  const plain = launchOf(command, HOME, () => "bun run build\n");
-  expect(plain).toBeUndefined();
+  // the same two commands with a foreground-only script still run a script, which is no plain watch shape
+  expect(launchOf(command, HOME, () => "bun run build\n")?.why).toBe("a command that is not one of the plain watch shapes");
 });
 // #414 review 14: bash -s>/tmp/log < /tmp/start launched work, but discovery required whitespace before the output
 // redirection and found no input. Output redirections may touch the shell's options.

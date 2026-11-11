@@ -324,7 +324,8 @@ test("kills a captured reader in another group after its monitor root exits", as
   let table = TREE.map((p) => p.pid === 12 ? { ...p, cmd: `bash -c "${command}"` } : p);
   writeManifest("old-sid", [monitor("inbox", command, { runtime: { pid: 12 } })]);
   live.add(12);
-  sim.arm = [{ description: "inbox", command, pid: 201 }];
+  // the command starts a job (&), so the new session arms the watch-only reader under the same description
+  sim.arm = [{ description: "inbox", command: INBOX_CMD, pid: 201 }];
   const deps: HandoverDeps = {
     ...base,
     procs: async () => table,
@@ -690,10 +691,9 @@ test("a monitor command that starts work is told from one that only watches; a s
     "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_",
     "ssh node 'tail -n +1 -F w/logs/chain.out | grep --line-buffered CHAIN_'",
     "until ! kill -0 1234; do sleep 5; done; echo GONE",
-    'curl -s "http://x/a?b=1&c=2" >/dev/null 2>&1; echo $?',
-    // the lead's listener alert: a backgrounded check that only reads
-    "tail -n 0 -F $L | while read -r l; do case \"$l\" in *CLOSED*) ( sleep 60; tail -n 40 $L | awk '/R/{r=NR} END{exit !(r>c)}' || echo NO-RECONNECT ) & ;; esac; done",
   ]) expect(launchOf(watch, "/home/test", read)).toBeUndefined();
+  // not a plain watch shape (#414 after review 21): a network call, a background job in a case: work that keeps its watch
+  for (const work of ['curl -s "http://x/a?b=1&c=2" >/dev/null 2>&1; echo $?', "tail -n 0 -F $L | while read -r l; do case \"$l\" in *CLOSED*) ( sleep 60; tail -n 40 $L | awk '/R/{r=NR} END{exit !(r>c)}' || echo NO-RECONNECT ) & ;; esac; done"]) expect(launchOf(work, "/home/test", read)?.why).toBe("a command that is not one of the plain watch shapes");
 });
 
 test("a monitor that starts work counts as re-armed only by a watch-only one with its description or filter; the same command armed again does not count", () => {
