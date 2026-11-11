@@ -163,6 +163,7 @@ export const watchOnly = (command: string): boolean => {
 // git is none (--upload-pack, -c core.fsmonitor, --exec run programs); gh only with these subcommands (extensions and aliases run programs)
 // only tools that cannot start a program whatever their arguments (#414 review 42): not awk (system), sed (e), journalctl
 // or systemctl (a pager), export or set (an environment a later program reads), nor any interpreter, wrapper or runner
+const SHELL_READS = new Set(["histchars", "auto_resume"]);
 const FOREGROUND = new Set(["sleep", "true", "false", "break", "continue", "cd", "cat", "echo", "date", "grep", "tail", "head", "sha256sum", "cut", "tr", "wc", "stat", "jq", "kill", "tee", "exit", "test", "["]);
 // the lone word [ is the test command, not a glob
 const plainWord = (w: Word | undefined, set: ReadonlySet<string>): boolean => !!w && !w.quoted && !w.expand && (!w.glob || w.text === "[") && set.has(w.text);
@@ -195,14 +196,18 @@ export const foregroundOnly = (command: string): boolean => {
   const ok = (cmds: readonly Simple[]): boolean =>
     cmds.every((c) => {
       let k = 0;
-      let assigned = false;
+      const names: string[] = [];
       for (let x = c.words[k]; x && ((!x.quoted && !x.expand && (CONTROL.has(x.text) || CLOSE.has(x.text))) || ASSIGN.test(x.text)); x = c.words[k]) {
-        assigned ||= ASSIGN.test(x.text);
+        const name = ASSIGN.exec(x.text)?.[1];
+        if (name) names.push(name);
         k++;
       }
       const w = c.words[k];
       // an assignment in front of a command (PAGER=x gh ...) hands that program an environment it may run
-      if (assigned && w) return false;
+      if (names.length && w) return false;
+      // a standalone assignment changes what later words run (PATH, IFS, BASH_ENV, PAGER, GH_...): only a lowercase name
+      // the shell does not read itself (#414 review 44)
+      if (names.some((n) => !/^[a-z_][a-z0-9_]*$/.test(n) || SHELL_READS.has(n))) return false;
       if (plainWord(w, new Set(["test", "["]))) {
         const args = c.words.slice(k + 1);
         if (w?.text === "[" ? !plainWord(args.at(-1), new Set(["]"])) || !predicate(args.slice(0, -1)) : !predicate(args)) return false;
