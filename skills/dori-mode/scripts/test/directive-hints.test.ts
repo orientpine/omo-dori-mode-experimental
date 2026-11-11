@@ -45,3 +45,13 @@ test("every entry a keyword calls is in a message's row; kind matches only fill 
   expect(lines.length).toBe(5);
   expect(lines.slice(0, 3)).toEqual(ids.slice(0, 3).map((id) => directiveLine(three.entries.find((x) => x.id === id)!)));
 });
+
+// review of #440: an entry with kinds and keywords gets its kind's reason as why; its keyword still keeps it in the row
+test("an entry whose kind gave its why still comes in by its keyword", async () => {
+  const entry = (id: string, scope: object) => ({ id, name: id, by: "owner", basis: "fixture basis line", words: `${id} 규칙`, prompt: `${id} 규칙.`, date: "2026-11-11", source: "https://discord.com/channels/1/2/9", scope, mode: "inject" });
+  const mail = [...Array.from({ length: 5 }, (_, i) => entry(`mail-${i}`, { keywords: ["회신"] })), entry("mixed", { kinds: ["learning"], keywords: ["회신"] })];
+  const ledger = loadLedger({ directives: { common: COMMON_LEDGER, local: await write("mixed.json", JSON.stringify({ entries: mail })) } });
+  expect(ledgerProblems(ledger)).toEqual([]);
+  expect(textDirectives("회신 강화학습", ledger).find(({ e }) => e.id === "mixed")?.why).toStartWith("learning work");
+  expect(messageLines("회신 강화학습", ledger)).toContain(directiveLine(ledger.entries.find((e) => e.id === "mixed")!));
+});

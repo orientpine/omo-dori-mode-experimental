@@ -8,13 +8,12 @@ import { type Directive, directiveLine, type Ledger, textDirectives } from "./di
 // mail-check-sent out of "회신 초안 써줘").
 export const HINT_LIMIT = 5;
 
-// The directives an owner message's row carries: every keyword match, then the other matches up to HINT_LIMIT in all,
-// in textDirectives' order.
+// The directives an owner message's row carries: every entry whose own keywords are in the text (even when a kind gave
+// its why), then the other matches up to HINT_LIMIT in all, in textDirectives' order.
 export const hintDirectives = (text: string, ledger: Ledger): { readonly e: Directive; readonly why: string }[] => {
   const found = textDirectives(text, ledger);
-  const keyword = found.filter(({ why }) => why.startsWith("keyword ")).length;
-  let room = Math.max(0, HINT_LIMIT - keyword);
-  return found.filter(({ why }) => why.startsWith("keyword ") || room-- > 0);
+  let room = Math.max(0, HINT_LIMIT - found.filter((x) => x.keyword).length);
+  return found.filter((x) => x.keyword || room-- > 0);
 };
 
 // What an owner message's inbox row carries: the lines of hintDirectives, and when the tolerant load left local lines out
