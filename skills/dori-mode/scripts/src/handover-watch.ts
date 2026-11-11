@@ -131,7 +131,7 @@ const PROGRAMS = new Map<string, Spec>([
   ["wc", { flags: "lcw" }],
   ["stat", { vals: "c" }],
   // a filter on its input only: sed printing, quitting or substituting (no w, e or r command, no file), awk printing fields
-  ["sed", { flags: "un", operand: (w) => /^(?:\/(?:[^/\\]|\\.)*\/[qpd]|s\/(?:[^/\\]|\\.)*\/(?:[^/\\]|\\.)*\/g?)$/.test(w.text) }],
+  ["sed", { flags: "un", operand: (w) => /^(?:\/(?:[^/\\\n]|\\[^\n])*\/[qpd]|s\/(?:[^/\\\n]|\\[^\n])*\/(?:[^/\\\n]|\\[^\n])*\/g?)$/.test(w.text) }],
   ["awk", { operand: (w) => /^\{\s*print(?:\s*(?:\$\d+|"[^"\\|>]*"|,))*\s*\}$/.test(w.text) }],
 ]);
 const GH = new Map<string, Spec>([
