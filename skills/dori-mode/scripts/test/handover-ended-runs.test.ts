@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 
-import { launchOf, missingMonitors } from "../src/handover.ts";
+import { launchOf, missingMonitors, monitorWork } from "../src/handover.ts";
+import { run } from "../src/run.ts";
+import { procTable } from "../src/session-id.ts";
 import { procStart, workEnded } from "../src/handover-monitors.ts";
 
 // After three reviews of #414 found new ways around reading omo's notice text (a watch's own lines can forge it, and omo
@@ -75,3 +77,24 @@ test("a shell with no -c and no script reads its script from stdin and starts wo
   }
 });
 
+
+// #414 review 45: a foreground monitor whose work is its own process (the shell execs sleep) has no worker children, and
+// monitorWork kept no record of it, so once it ended workEnded found nothing and the handover asked for it again
+test("a foreground monitor whose work is its own root process is done once that process ended", async () => {
+  const command = "sleep 30 > /tmp/root-only.out";
+  const launch = launchOf(command, HOME, () => undefined);
+  if (!launch || launch.detached) throw new Error("not foreground work");
+  const child = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+  try {
+    const entry = { description: "root only", command, persistent: true, suspended: false, expiresAt: null, runtime: { pid: child.pid } };
+    const work = monitorWork([entry as never], await procTable(run), Date.now(), () => true, HOME);
+    expect(work.map((w) => [w.pid, w.pids.length])).toEqual([[child.pid, 0]]);
+    const monitor = { description: "root only", command, persistent: true, pid: child.pid, launch };
+    expect(missingMonitors([monitor], [], () => true, HOME, 0, workEnded(work))).toHaveLength(1);
+    child.kill();
+    await child.exited;
+    expect(missingMonitors([monitor], [], () => true, HOME, 0, workEnded(work))).toEqual([]);
+  } finally {
+    child.kill();
+  }
+});
