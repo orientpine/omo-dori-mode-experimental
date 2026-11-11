@@ -11,9 +11,9 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-
 import { pendingBackground, taskOpen, taskRecord, taskRecords } from "./background.ts";
 import { captureTmux, closeAoeSession, envMismatch, inputLine, isClosedLine, laneEnv, liveSessions, openAoeSession, paneLife, QUESTION_MARK, sessionFor, tmuxPanePid } from "./aoe.ts";
+import { laneHomeEnv } from "./home-env.ts";
 import { turnRunning } from "./submit.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
@@ -1176,7 +1176,7 @@ const moveLane = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, facts
   try {
     // the new session opens in this Dori's backend, so a lane moves from aoe to herdr at its next handover
     const workspace = config.backend === "herdr" ? config.laneWorkspace || (isHerdrPane(from.pane) ? await paneGroup(deps.run, from.pane) : undefined) : undefined;
-    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", agentCommand: config.agentCommand, model: facts.model, ...(facts.thinking ? { thinking: facts.thinking } : {}), env: laneEnv(config.launchEnv, lane.useGpu), backend: config.backend, ...(workspace ? { workspace } : {}) });
+    pane = await openAoeSession(deps.run, deps.clock, { title, cwd: facts.cwd, tool: config.agentCommand[0] ?? "omo", agentCommand: config.agentCommand, model: facts.model, ...(facts.thinking ? { thinking: facts.thinking } : {}), env: { ...laneEnv(config.launchEnv, lane.useGpu), ...laneHomeEnv(config) }, backend: config.backend, ...(workspace ? { workspace } : {}) });
     ctx.mark("open", true);
   } catch (e) {
     ctx.mark("open", false);
@@ -1228,7 +1228,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
     emit(`HANDOVER_FAIL ${lane.key}: new session ${pane}: ${startup}`);
     return discard(`the new session did not start: ${startup}`);
   }
-  const off = await envMismatch(deps.run, pane, laneEnv(config.launchEnv, lane.useGpu));
+  const off = await envMismatch(deps.run, pane, { ...laneEnv(config.launchEnv, lane.useGpu), ...laneHomeEnv(config) });
   if (off.length) {
     emit(`HANDOVER_FAIL ${lane.key}: new session ${pane} lacks launchEnv: ${off.join(", ")}`);
     return discard(`the new session did not get launchEnv: ${off.join(", ")}`);

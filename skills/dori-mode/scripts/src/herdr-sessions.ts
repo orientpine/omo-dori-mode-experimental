@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, resolve } from "node:path";
 
 import type { DoriConfig } from "./config.ts";
+import { homeEnv } from "./home-env.ts";
 import { agentPath, herdrAgentArgv } from "./aoe.ts";
 import { agentLine, herdrAgentPid, herdrRead, herdrSessions, herdrShellPid, HerdrShellError, paneRef, paneRuntime, requireHerdrPwsh } from "./herdr.ts";
 import { reasonOf } from "./runtime/herdr/exec.ts";
@@ -163,6 +164,7 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
   for (let i = 0; i < 20 && !(await herdrShellPid(run, pane)); i++) await clock.sleep(1_000);
   const restored = await herdrAgentPid(run, pane);
   const read = () => herdrRead(run, pane);
+  const selectedHome = homeEnv(config);
   if (!restored) {
     try {
       await requireHerdrPwsh(run, pane);
@@ -180,7 +182,7 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, rec.session);
     // the screen is cleared first, so a ❯ the ended agent left there is gone before the new one draws
     const clear = process.platform === "win32" ? "Clear-Host; " : "clear && ";
-    const failed = await paneRuntime(run, pane).start(paneRef(pane), `${clear}${agentLine(argv, { PATH: agentPath(tool) })}`).then(() => undefined, (e: unknown) => reasonOf(e));
+    const failed = await paneRuntime(run, pane).start(paneRef(pane), `${clear}${agentLine(argv, { ...selectedHome, PATH: agentPath(tool) })}`).then(() => undefined, (e: unknown) => reasonOf(e));
     if (failed !== undefined) return `REVIVE_FAIL ${pane}: herdr pane run failed: ${failed.slice(0, 160)}`;
   }
   const how = restored ? ` (herdr had started it again, pid ${restored})` : "";

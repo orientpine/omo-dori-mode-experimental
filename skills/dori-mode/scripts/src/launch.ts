@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { rmSync } from "node:fs";
 import { laneEnv } from "./aoe.ts";
+import { laneHomeEnv } from "./home-env.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { omoSession, readScreen } from "./panes.ts";
 import type { Lane } from "./registry.ts";
@@ -65,7 +66,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${resolve(input.brief)} in full. You are the ${input.key} lane; report as the brief's footer says. ${briefAnchor({ ...draft, brief: resolve(input.brief) }, text)}`;
   // a model reply older than this is not an answer to this launch (a resumed session holds earlier ones)
   const launchedAt = deps.clock.now();
-  const env = laneEnv(deps.config.launchEnv, input.useGpu);
+  // Footer commands resolve this launching home even when the runtime core inherited another (#197); these win over launchEnv (herdr and hc).
+  const env = { ...laneEnv(deps.config.launchEnv, input.useGpu), ...laneHomeEnv(deps.config) };
   let registered = false;
   const beforeStart = async ({ pane, tab }: { readonly pane: string; readonly tab?: string }): Promise<void> => {
     const pending: Lane = { ...draft, reportProtocol: "jsonl-v1", pane, ...(tab ? { tab } : {}) };
