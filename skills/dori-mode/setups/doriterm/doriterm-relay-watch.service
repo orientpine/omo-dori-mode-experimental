@@ -1,0 +1,11 @@
+[Unit]
+Description=doriterm relay watch: restart doriface-host when the relay has had no live uplink for it for a few minutes
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# per host: DORITERM_RELAY_WATCH_RESTART=0 on the host a phone is paired to (report only), other DORITERM_RELAY_WATCH_* values
+EnvironmentFile=-%h/.config/doriterm/relay-watch.env
+ExecStart=/bin/sh %h/.local/bin/doriterm-relay-watch
+NoNewPrivileges=true
+UMask=0077
