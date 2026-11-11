@@ -185,3 +185,15 @@ test("a remote shell's input file is not read here, and a local input to ssh sti
   // a remote word that is no script (tail -F of a .sh file) is still only a watch
   expect(launchOf("ssh host tail -F /tmp/progress.sh", HOME, () => undefined)).toBeUndefined();
 });
+
+// #414 review 30: a script can run another script that detaches its work, and the handover reads only the named one; a
+// script run by name keeps its watch whatever it says, and a script fed to a shell does when its text runs another one
+test("a script that runs another script keeps its watch, whatever the scripts say", () => {
+  const files: Record<string, string> = { "/tmp/outer.sh": "bash /tmp/inner.sh\n", "/tmp/inner.sh": "nohup setsid /tmp/job > /tmp/job.log 2>&1 &\n", "/tmp/ci.sh": "bash /tmp/inner.sh\n", "/tmp/plain.sh": "git fetch -q\nbun run ci\n" };
+  const read = (path: string) => files[path];
+  for (const command of ["bash /tmp/outer.sh", "sh /tmp/outer.sh > /tmp/o.log", "bash -s < /tmp/ci.sh", "ssh host bash -s < /tmp/ci.sh"]) {
+    expect([command, launchOf(command, HOME, read)?.detached]).toEqual([command, true]);
+  }
+  // a plain script fed to a shell from one absolute input still ends with its watch (the remote ci of 2026-11-08)
+  expect(launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/plain.sh > /tmp/ci.log 2>&1", HOME, read)?.detached).toBe(false);
+});
