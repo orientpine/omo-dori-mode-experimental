@@ -46,3 +46,11 @@ test("a monitor keeps its watch unless every command word is a listed foreground
     expect(workEnded([{ pid: 7, cmd: "w", pids: [8] }], () => false, () => undefined)(monitor)).toBe(false);
   }
 });
+
+// lead before review 42: git runs other programs from literal options (--upload-pack, -c core.fsmonitor, --exec), and gh runs
+// extensions and aliases; git is no foreground word, gh only with pr, run, api, release, issue, repo or checks
+test("git, and gh with an unlisted subcommand, keep a work monitor's watch", () => {
+  for (const command of ["git fetch --upload-pack=/tmp/inner origin > /tmp/f.log", "git -c core.fsmonitor=/tmp/inner status > /tmp/s.log", "gh myext go > /tmp/g.log", "gh alias-run x > /tmp/g.log"]) {
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
+  }
+});
