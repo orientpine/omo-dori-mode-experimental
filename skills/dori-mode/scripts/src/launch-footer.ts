@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { Backend } from "./config.ts";
-import { shellQuote } from "./herdr.ts";
+import { agentLine } from "./herdr.ts";
 import { hasThread, type Lane } from "./registry.ts";
 import { type Ledger, uiHits, scopeText } from "./directives.ts";
 import { join } from "node:path";
@@ -78,7 +78,7 @@ export const uiWarning = (input: LaunchInput, brief: string, ledger: Pick<Ledger
     : `LAUNCH_UI_HINT ${input.key}: the brief reads like UI work (${words}) but has no --ui, so the owner's seven UI steps (references/ui-work.md) are not in it. Launched as is; for UI work, launch with --ui.`;
 };
 
-export const cliCommand = (path: string = fileURLToPath(new URL("./cli.ts", import.meta.url)), instance?: { readonly config: string; readonly stateDir: string }): string => `${instance ? `env DORI_CONFIG=${shellQuote(instance.config)} DORI_STATE_DIR=${shellQuote(instance.stateDir)} ` : ""}bun ${shellQuote(path)}`;
+export const cliCommand = (path: string = fileURLToPath(new URL("./cli.ts", import.meta.url)), instance?: { readonly config: string; readonly stateDir: string }, platform: string = process.platform): string => agentLine(["bun", path], instance ? { DORI_CONFIG: instance.config, DORI_STATE_DIR: instance.stateDir } : {}, platform);
 const CLI = cliCommand();
 
 export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr", gated: readonly string[] = [], instance?: { readonly config: string; readonly stateDir: string }): string => [
