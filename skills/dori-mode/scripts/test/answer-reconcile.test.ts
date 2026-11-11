@@ -9,7 +9,7 @@ const at = Date.parse("2026-01-01T12:00:00Z");
 const first = { id: "1569339203593044020", channel: "C-A", at };
 const second = { id: "1569339203593044021", channel: "C-B", at };
 const send = `dori send discord --to ${first.channel} --reply ${first.id} --text answer`;
-const sent = "SENT 153000000000000001 len=6 sha=12345678 first=answer";
+const sent = 'SENT 153000000000000001 len=6 sha=12345678 first="answer"';
 let state: ReturnType<typeof withState>;
 beforeEach(() => { state = withState(); });
 afterEach(() => state.done());

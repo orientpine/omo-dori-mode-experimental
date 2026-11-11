@@ -8,6 +8,15 @@ export type AnswerRow = { readonly id: string; readonly at: number; readonly cha
 type SendSpec = { readonly to: string; readonly reply?: string; readonly qids: ReadonlySet<string>; readonly aggregate?: boolean; readonly output?: boolean; readonly native?: NativeCall; readonly bash?: { readonly command: string; readonly alone: boolean; readonly peers?: readonly string[] } };
 type SendCall = SendSpec & { readonly id: string; readonly tool: string; readonly at: number; sent: boolean; detachedReceipt: boolean };
 
+const hasReceipt = (text: string): boolean => text.replace(/<\/system-reminder>\s*$/, "").split(/\r?\n/).some((line) => {
+  const record = /^(SENT|POSTED) \d{15,22}(?: content=not-returned| len=\d+ sha=[a-f0-9]{8} first=("(?:[^"\\\r\n]|\\.)*"))?(?: (THREAD_DONE|THREAD_WAITING|THREAD_LEFT_OPEN .+))?$/.exec(line.trim());
+  if (!record || record[3] && record[1] !== "POSTED") return false;
+  if (record[2] !== undefined) {
+    try { JSON.parse(record[2]); }
+    catch (error) { if (error instanceof SyntaxError) return false; throw error; }
+  }
+  return true;
+});
 const qidsIn = (text: string): ReadonlySet<string> => new Set((text.match(/\bq\d+\b/gi) ?? []).map((q) => q.toUpperCase()));
 const unknownArgument = Symbol("unknown single argv value");
 const specsFromArgv = (argv: readonly unknown[]): (SendSpec | undefined)[] => {
@@ -27,7 +36,7 @@ const specsFromArgv = (argv: readonly unknown[]): (SendSpec | undefined)[] => {
   if (args.some((part, index) => part === unknownArgument && !flags.tokens?.some((token) => token.kind === "option" && token.name === "text" && token.inlineValue === false && token.index + 1 === index))) return [undefined];
   if (!(argv[1] === "send" && flags.positionals[0] === "discord") && !(argv[1] === "thread" && ["reply", "done", "wait"].includes(flags.positionals[0] ?? ""))) return [];
   const option = (name: string): string | undefined => { const value = flags.values[name]; return typeof value === "string" ? value.trim() : undefined; };
-  const ref = flags.positionals[1], to = argv[1] === "send" && flags.positionals[0] === "discord" ? option("thread") ?? option("to") : argv[1] === "thread" && flags.positionals[0] === "reply" && ref?.startsWith("discord:") ? ref.slice("discord:".length) : undefined;
+  const ref = flags.positionals[1], to = argv[1] === "send" && flags.positionals[0] === "discord" ? option("thread") ?? option("to") : argv[1] === "thread" && ref?.startsWith("discord:") ? ref.slice("discord:".length) : undefined;
   if (!to) return [undefined];
   const reply = argv[1] === "send" ? option("reply") : undefined, text = argv[1] === "send" ? option("text") : flags.positionals[2];
   return [{ to, ...(reply ? { reply } : {}), qids: qidsIn(text ?? "") }]; };
@@ -114,20 +123,21 @@ const sendCalls = (transcript: string): SendCall[] => {
       const attempts = bash ? (nested ?? []).filter((operation) => operation.name === "bash" && (operation.args?.command !== undefined ? operation.args.command === bash.command : bash.alone && nested?.filter((part) => part.name === "bash").length === 1)) : [];
       // The detach result can prove that every other execution already finished without a receipt.
       // Then only the posting operation can add a receipt in this cell's later completion.
-      if (call.output !== false && bash?.peers && !/\b(?:SENT|POSTED) \d{15,22}\b/.test(text) && bash.peers.every((command) => nested?.some((operation) => {
+      if (call.output !== false && bash?.peers && !hasReceipt(text) && bash.peers.every((command) => nested?.some((operation) => {
         const preview = operation.resultPreview;
-        return operation.name === "bash" && operation.args?.command === command && preview !== undefined && !preview.endsWith("…") && !/\b(?:SENT|POSTED) \d{15,22}\b/.test(preview) && !backgroundStarts("bash", call.id, preview, undefined).length;
+        return operation.name === "bash" && operation.args?.command === command && preview !== undefined && !preview.endsWith("…") && !hasReceipt(preview) && !backgroundStarts("bash", call.id, preview, undefined).length;
       }))) call.detachedReceipt = true;
       const jobs = call.tool === "bash" ? call.aggregate === false ? [] : backgroundStarts(call.tool, call.id, text, entry.message.details) : attempts.flatMap((operation) => backgroundStarts("bash", call.id, operation.resultPreview ?? "", undefined));
       const started = [...new Set(jobs.filter(([kind]) => kind === "bash").map(([, id]) => id))];
       if (started.length === 1 && started[0]) handles.set(started[0], call);
       const receipt = bash && nested ? attempts.map((operation) => operation.resultPreview ?? "").join("\n") : call.aggregate === false ? "" : text;
-      if (/\b(?:SENT|POSTED) \d{15,22}\b/.test(receipt)) call.sent = true;
+      if (hasReceipt(receipt)) call.sent = true;
     } else if (entry.type === "custom_message" && entry.customType === "senpi-codemode:notification" && typeof entry.content === "string") {
-      if (!/\b(?:SENT|POSTED) \d{15,22}\b/.test(entry.content)) continue; const cell = entry.content.match(/Detached eval cell ([^\s]+) \((?:js|py)\) completed\./)?.[1], call = cell ? calls.get(cell) : undefined; if (call?.detachedReceipt) call.sent = true;
+      const header = entry.content.match(/^(?:<system-reminder>\s*)?Detached eval cell ([^\s]+) \((?:js|py)\) completed\.[ \t]*/), call = header?.[1] ? calls.get(header[1]) : undefined;
+      if (call?.detachedReceipt && header && hasReceipt(entry.content.slice(header[0].length))) call.sent = true;
     } else if (entry.type === "custom_message" && entry.customType === "senpi-monitor:notification" && typeof entry.content === "string") {
       const handle = entry.content.match(/^(?:<system-reminder>\s*)?Background terminal session (bash_\w+) finished\b/)?.[1], call = handle ? handles.get(handle) : undefined;
-      if (call && /\b(?:SENT|POSTED) \d{15,22}\b/.test(entry.content)) call.sent = true;
+      if (call && hasReceipt(entry.content)) call.sent = true;
     }
   }
   return [...calls.values()];

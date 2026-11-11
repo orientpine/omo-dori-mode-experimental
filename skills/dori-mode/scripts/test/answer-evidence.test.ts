@@ -84,7 +84,7 @@ test("template text is not executable but interpolation retains executable wrapp
     { code: `const output = \`sent \${await ${argv}}\``, expected: true },
     { code: `const output = \`sent \${await tool.bash({command: ${JSON.stringify(directCommand)}})}\``, expected: true },
   ];
-  for (const c of cases) expect(directAnswered([directCall("template", c.code), directResult("template", "historical SENT 153000000000000001")]), c.code).toBe(c.expected);
+  for (const c of cases) expect(directAnswered([directCall("template", c.code), directResult("template", "SENT 153000000000000001")]), c.code).toBe(c.expected);
 });
 
 test("following shell commands cannot supply a posting command's reply options or qids", () => {

@@ -135,9 +135,10 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
       if (!texts) {
         const root = target === lead.pane || !session ? lead : current?.path ? { pane: target, path: current.path, text: transcript } : undefined;
         texts = root ? predecessorTranscripts(deps, root, target === lead.pane ? undefined : target) : [];
-        if (row.qid && target !== lead.pane && !session) {
+        if (row.qid && target !== lead.pane) {
+          if (root?.pane !== lead.pane) texts = [...texts, ...predecessorTranscripts(deps, lead, target)];
           archived ??= await deps.registry.list();
-          texts = [...texts, ...lanePredecessorTranscripts(deps, archived, { pane: target, at: row.at, ...(version?.session ? { session: version.session } : {}) })];
+          texts = [...texts, ...lanePredecessorTranscripts(deps, archived.filter((lane) => !session || lane.pane !== target), { pane: target, at: row.at, ...(version?.session ? { session: version.session } : {}) })];
         }
         predecessors.set(key, texts);
       }

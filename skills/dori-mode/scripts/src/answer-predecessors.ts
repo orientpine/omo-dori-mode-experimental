@@ -36,26 +36,26 @@ const movedFrom = (note: string): { readonly from: Session; readonly laneKey?: s
 // Identity comes from the live resolver, same-agent observations, or a committed move to this exact pane/session.
 // A matching title, directory or filename alone never establishes a predecessor.
 export const predecessorTranscripts = (deps: FlowDeps, lead: { readonly pane: string; readonly path: string; readonly text?: string }, target?: string): string[] => {
-  const current = header(lead.text ?? textAt(lead.path));
+  const currentText = lead.text ?? textAt(lead.path), current = header(currentText);
   if (!current) return [];
-  const pending: Session[] = [{ ...current, pane: lead.pane }], seen = new Set([`${lead.pane}\0${current.session}`]), texts: string[] = [];
+  const pending: (Session & { readonly chain: readonly string[] })[] = [{ ...current, pane: lead.pane, chain: [currentText] }], seen = new Set([`${lead.pane}\0${current.session}`]), texts: string[] = [];
   const records = readHerdrSessions(deps.config.stateDir), moves = committedHandovers(deps.config.stateDir);
-  const add = (session: Session): void => {
+  const add = (session: Session, chain: readonly string[]): void => {
     const key = `${session.pane}\0${session.session}`;
     if (seen.has(key)) return;
     const text = sessionText(deps, session);
     if (!text) return;
-    seen.add(key); if (!target || session.pane === target) texts.push(text); pending.push(session);
+    seen.add(key); if (!target || session.pane === target) texts.push(text, ...(target ? chain : [])); pending.push({ ...session, chain: [text, ...chain] });
   };
   const resolved = header(textAt(lead.path));
-  if (resolved?.cwd === current.cwd) add({ ...resolved, pane: lead.pane, log: lead.path });
+  if (resolved?.cwd === current.cwd) add({ ...resolved, pane: lead.pane, log: lead.path }, [currentText]);
   for (let tip = pending.shift(); tip; tip = pending.shift()) {
     const kept = records[tip.pane];
-    if (kept?.session === tip.session && kept.cwd === tip.cwd) for (const prior of kept.previous ?? []) add({ ...prior, pane: tip.pane });
+    if (kept?.session === tip.session && kept.cwd === tip.cwd) for (const prior of kept.previous ?? []) add({ ...prior, pane: tip.pane }, tip.chain);
     for (const move of moves) {
       if (move.who !== "lead" || move.to !== tip.pane || move.session !== tip.session) continue;
       const facts = movedFrom(move.note);
-      if (facts) add(facts.from);
+      if (facts) add(facts.from, tip.chain);
     }
   }
   return texts;
@@ -73,18 +73,20 @@ export const lanePredecessorTranscripts = (deps: FlowDeps, lanes: readonly Lane[
       const text = sessionText(deps, { pane: asking.pane, session: asking.session, cwd: lane.cwd, ...(log ? { log } : {}) });
       if (text) texts.add(text);
     }
-    const pending = [lane.pane], seen = new Set<string>();
-    for (let pane = pending.pop(); pane; pane = pending.pop()) {
-      if (seen.has(pane)) continue;
-      seen.add(pane);
+    const kept = records[lane.pane], log = kept && kept.session === lane.session && kept.cwd === lane.cwd ? kept.log : undefined;
+    const current = lane.session ? sessionText(deps, { pane: lane.pane, session: lane.session, cwd: lane.cwd, ...(log ? { log } : {}) }) : "";
+    const pending: { readonly pane: string; readonly chain: readonly string[] }[] = [{ pane: lane.pane, chain: current ? [current] : [] }], seen = new Set<string>();
+    for (let tip = pending.pop(); tip; tip = pending.pop()) {
+      if (seen.has(tip.pane)) continue;
+      seen.add(tip.pane);
       for (const move of moves) {
-        if (move.who !== "lane" || move.key !== lane.key || move.to !== pane) continue;
+        if (move.who !== "lane" || move.key !== lane.key || move.to !== tip.pane) continue;
         const facts = movedFrom(move.note);
         if (facts?.laneKey !== lane.key || !prior.has(facts.from.session)) continue;
         const text = sessionText(deps, facts.from);
         if (!text) continue;
-        if (facts.from.pane === asking.pane) texts.add(text);
-        pending.push(facts.from.pane);
+        if (facts.from.pane === asking.pane) { texts.add(text); for (const successor of tip.chain) texts.add(successor); }
+        pending.push({ pane: facts.from.pane, chain: [text, ...tip.chain] });
       }
     }
   }
