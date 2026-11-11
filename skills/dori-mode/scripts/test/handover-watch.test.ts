@@ -122,6 +122,10 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "printf '%b' x",
     "printf '%(%s)T' -1",
     "printf '%5s' x",
+    // #414 review 28: a quoted target named &1 is a file, not a descriptor copy
+    "printf x > '&1'",
+    "printf x > \"&1\"; tail -F /tmp/watch.log",
+    "x='&1'; printf x > $x",
     "tail -F /tmp/x | sed -n 's/a/b/\nw /tmp/copy'",
     "tail -F /tmp/x | sed '/a\nw x/q'",
   ]) rejectsSameCommand(command);
