@@ -117,6 +117,11 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     // dori challenge of plan-414-r25: the format of printf expanded into -v
     "opts=-v; printf \"$opts\" PATH /tmp/replay; grep x /tmp/f",
     "printf $(echo -v) PATH /tmp/replay",
+    // #414 review 27: a printf format takes only %s and %%
+    "b=\"$SENPI_MONITOR_STATE_DIR/base\"; printf 'x%n' b; echo y > \"$b\"",
+    "printf '%b' x",
+    "printf '%(%s)T' -1",
+    "printf '%5s' x",
     "tail -F /tmp/x | sed -n 's/a/b/\nw /tmp/copy'",
     "tail -F /tmp/x | sed '/a\nw x/q'",
   ]) rejectsSameCommand(command);
