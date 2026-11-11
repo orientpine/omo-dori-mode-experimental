@@ -48,21 +48,25 @@ async function localRows(runner: Runner): Promise<Local[]> {
 function owned(t: Local, bridge: Bridge): boolean {
   // Unlabeled clients already running at upgrade keep their original name and exact command as their ownership proof.
   const tagged = t.labels?.["dori.doriterm"];
-  const row = tagged === undefined ? !bridge.lane && t.name === bridge.name : tagged === "bridge" && t.labels?.["dori.row"] === bridge.name && t.labels?.["dori.lane"] === bridge.lane?.key;
+  const row = tagged === undefined ? !bridge.lane && t.name === bridge.name : tagged === "bridge" && t.labels?.["dori.row"] === bridge.name && t.labels?.["dori.lane"] === bridge.lane?.key && t.labels?.["dori.core"] === bridge.lane?.core;
   const want = bridgeCommand(bridge);
   return row && Array.isArray(t.argv) && t.argv.length === want.length && want.every((a, i) => t.argv?.[i] === a);
 }
 export type Bridge = { readonly name: string; readonly account?: string; readonly lane?: HcLane };
-type HcLane = { readonly key: string; readonly terminal: string };
+// core: the hc core the lane's terminal is in; a Dori whose dori.env names another core can reuse the same tN there, and a
+// row of the old core must not be kept for it (review 2 of #456)
+type HcLane = { readonly key: string; readonly terminal: string; readonly core: string };
+const CORE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 const nameOf = (bridge: Bridge): string => bridge.lane ? `${bridge.name}-${bridge.lane.key}`.replace(/[^a-z0-9_-]/g, "-").slice(0, 32) : bridge.name;
 
 // Closed lanes are absent from discovery. Recover their former target only from labels plus the exact attach argv.
 function laneOwner(t: Local, bridge: Bridge): Bridge | undefined {
   const key = t.labels?.["dori.lane"];
+  const core = t.labels?.["dori.core"];
   const terminal = t.argv?.at(-1);
-  if (!key || !LANE_KEY.test(key) || typeof terminal !== "string" || !HC_ADDRESS.test(terminal)) return undefined;
-  const candidate = { ...bridge, lane: { key, terminal } };
+  if (!key || !LANE_KEY.test(key) || !core || typeof terminal !== "string" || !HC_ADDRESS.test(terminal)) return undefined;
+  const candidate = { ...bridge, lane: { key, terminal, core } };
   return owned(t, candidate) ? candidate : undefined;
 }
 
@@ -100,7 +104,9 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
     const lanes = value.map((lane: unknown): HcLane => {
       if (!lane || typeof lane !== "object" || !("key" in lane) || typeof lane.key !== "string" || !LANE_KEY.test(lane.key) ||
         !("terminal" in lane) || typeof lane.terminal !== "string" || !HC_ADDRESS.test(lane.terminal)) throw new Error("dori: invalid hc lane");
-      return { key: lane.key, terminal: lane.terminal };
+      const core = "core" in lane ? lane.core : "default";
+      if (typeof core !== "string" || !CORE.test(core)) throw new Error("dori: invalid hc lane core");
+      return { key: lane.key, terminal: lane.terminal, core };
     });
     desired.push(bridge, ...lanes.map((lane) => ({ ...bridge, lane })));
   }
@@ -110,6 +116,8 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
   const active = terminals.filter((t) => !stale.includes(t));
   const held = new Set(active.filter((t) => t.state === "live").map((t) => t.name));
   const reserved = new Set(desired.map(nameOf));
+  // a lane row never takes a listed row's own name, even as its preferred one (rows aa and aa-bb, lane bb of aa)
+  const listed = new Set(bridges.map((b) => b.name));
   const results: string[] = [];
   for (const bridge of desired) {
     // hc lists every record of a name, in terminal-id order: a finished record of another program may come before the live
@@ -126,11 +134,11 @@ export async function ensureBridges(runner: Runner, bridges: readonly Bridge[]):
     let name = preferred;
     // Keep the preferred name when free; otherwise suffix -row, then -row-2, etc., truncating only the prefix to 32.
     // Row labels find a fallback again without renaming it, and reserved names leave other configured rows their names.
-    for (let n = 1; held.has(name) || (name !== preferred && reserved.has(name)); n++) {
+    for (let n = 1; held.has(name) || (name !== preferred && reserved.has(name)) || (bridge.lane !== undefined && listed.has(name)); n++) {
       const suffix = n === 1 ? "-row" : `-row-${n}`;
       name = `${preferred.slice(0, 32 - suffix.length)}${suffix}`;
     }
-    const started = await runner(["hc", "run", "--bg", "--no-parent", "--name", name, "--label", "dori.doriterm=bridge", "--label", `dori.row=${bridge.name}`, ...(bridge.lane ? ["--label", `dori.lane=${bridge.lane.key}`] : []), "--", ...bridgeCommand(bridge)]);
+    const started = await runner(["hc", "run", "--bg", "--no-parent", "--name", name, "--label", "dori.doriterm=bridge", "--label", `dori.row=${bridge.name}`, ...(bridge.lane ? ["--label", `dori.lane=${bridge.lane.key}`, "--label", `dori.core=${bridge.lane.core}`] : []), "--", ...bridgeCommand(bridge)]);
     if (started.code !== 0) throw new Error(`hc run ${bridge.name} failed: ${started.err || started.out}`);
     held.add(name);
     results.push(`${bridge.name}: started`);

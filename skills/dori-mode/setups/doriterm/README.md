@@ -67,7 +67,10 @@ also asks hc nothing. Discovery failures leave existing rows alone and fail the 
 
 Lane row names are `<row>-<lane key>`, with characters outside `a-z 0-9 - _` replaced by `-` and truncated to 32.
 Name collisions use the same fallback rule. Each carries `dori.doriterm=bridge`, `dori.row=<configured row>`, and
-`dori.lane=<original lane key>`; the original key in the label keeps truncated or sanitized collisions distinct.
+`dori.lane=<original lane key>` and `dori.core=<the Dori's hc core>`; the original key in the label keeps truncated or sanitized
+collisions distinct, and the core makes a row of the old core give way when the Dori's `dori.env` moves its sessions to
+another core that reuses the same `tN`. A lane row never takes the name of another listed row (rows `aa` and `aa-bb`, lane
+`bb` of `aa`: the lane row falls back to `aa-bb-row`).
 Its exact program is `/bin/sh attach.sh <account-or-empty> <tN>`. This checks the core connection and terminal before
 `hc attach` in the Dori's core, attaches once, and exits when the attachment ends. Unlike the lead row it never
 retries a finished terminal. Each timer run removes owned lane rows that closed, ended, or moved to another terminal,

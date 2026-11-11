@@ -65,7 +65,7 @@ test("lanes mode reads open live hc lanes from this Dori's configured state and 
   f.lane("remote-one", "hc:peer/t7");
   const r = await f.helper("lanes");
   expect(r.code).toBe(0);
-  expect(JSON.parse(r.out)).toEqual([{ key: "live-one", terminal: "t7" }, { key: "paused-one", terminal: "t1b" }]);
+  expect(JSON.parse(r.out)).toEqual([{ key: "live-one", terminal: "t7", core: "agents" }, { key: "paused-one", terminal: "t1b", core: "agents" }]);
   expect(r.calls).toEqual(["agents ls --json"]);
 });
 
@@ -83,7 +83,7 @@ test("lanes mode honors the account's environment state directory and effective 
   writeFileSync(join(f.dir, ".dori", "dori.env"), `HC_SESSION=agents\nDORI_LEAD_TMUX=hc:t4\nDORI_STATE_DIR=${join(f.dir, "other")}\n`);
   f.lane("wrong-one", "hc:t7");
   const r = await f.helper("lanes");
-  expect(JSON.parse(r.out)).toEqual([{ key: "other-one", terminal: "t7" }]);
+  expect(JSON.parse(r.out)).toEqual([{ key: "other-one", terminal: "t7", core: "agents" }]);
 });
 
 test("a Dori whose lead is still on herdr shows its live hc lanes, so a lane opened mid-move is a row (review 1 of #456)", async () => {
@@ -91,7 +91,7 @@ test("a Dori whose lead is still on herdr shows its live hc lanes, so a lane ope
   f.lane("live-one", "hc:t7");
   f.lane("herdr-one", "w1:p3");
   const r = await f.helper("lanes");
-  expect({ code: r.code, rows: JSON.parse(r.out), calls: r.calls }).toEqual({ code: 0, rows: [{ key: "live-one", terminal: "t7" }], calls: ["agents ls --json"] });
+  expect({ code: r.code, rows: JSON.parse(r.out), calls: r.calls }).toEqual({ code: 0, rows: [{ key: "live-one", terminal: "t7", core: "agents" }], calls: ["agents ls --json"] });
 });
 
 test("an account without config.json takes its lead and state dir from dori.env (review 1 of #456)", async () => {
@@ -100,7 +100,7 @@ test("an account without config.json takes its lead and state dir from dori.env 
   writeFileSync(join(f.dir, ".dori", "dori.env"), `HC_SESSION=agents\nDORI_LEAD_TMUX=hc:t4\nDORI_STATE_DIR=${join(f.dir, "state")}\n`);
   f.lane("live-one", "hc:t7");
   const r = await f.helper("lanes");
-  expect({ code: r.code, rows: JSON.parse(r.out) }).toEqual({ code: 0, rows: [{ key: "live-one", terminal: "t7" }] });
+  expect({ code: r.code, rows: JSON.parse(r.out) }).toEqual({ code: 0, rows: [{ key: "live-one", terminal: "t7", core: "agents" }] });
 });
 
 test("a lane attach selects that terminal in the Dori core and exits without retrying", async () => {

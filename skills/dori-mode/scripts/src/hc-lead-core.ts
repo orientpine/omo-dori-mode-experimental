@@ -49,7 +49,7 @@ if (import.meta.main) {
       const live = new Set(raw.terminals.flatMap((t: unknown) => t && typeof t === "object" && "address" in t && typeof t.address === "string" && "state" in t && t.state === "live" ? [t.address] : []));
       const lanes = scanned.lanes.flatMap((lane) => {
         const terminal = lane.pane?.startsWith("hc:") ? lane.pane.slice(3) : "";
-        return statusOf(lane) !== "closed" && HC_ADDRESS.test(terminal) && live.has(terminal) ? [{ key: lane.key, terminal }] : [];
+        return statusOf(lane) !== "closed" && HC_ADDRESS.test(terminal) && live.has(terminal) ? [{ key: lane.key, terminal, core: core || "default" }] : [];
       });
       console.log(JSON.stringify(lanes));
     }
