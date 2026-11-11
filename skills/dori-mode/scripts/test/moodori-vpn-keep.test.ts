@@ -118,15 +118,15 @@ test("MOTP is RFC 6238 TOTP-SHA256 with 6 digits", () => {
 });
 
 const MON_10_KST = new Date("2026-11-02T01:00:00Z");
-// state: one answer for every check, or answers in turn (the last one repeats)
+// state: one answer for every check (a link check after a round too), or answers in turn (the last one repeats)
 const deps = (state: VpnState | VpnState[], logins: string[], over: Partial<KeepDeps> = {}) => {
   const calls: string[] = [];
   const states = Array.isArray(state) ? [...state] : [state];
   const d: KeepDeps = {
     paused: async () => false,
     state: async () => { calls.push("state"); return (states.length > 1 ? states.shift() : states[0]) ?? "DOWN"; },
-    wait: async () => { calls.push("wait"); },
-    ensureAgents: async () => { calls.push("agents"); },
+    link: async (since) => { calls.push("link"); const up = ((states.length > 1 ? states.shift() : states[0]) ?? "DOWN") === "UP"; return up ? { up, at: since + 1000 } : { up, why: "no Completed start after the last stop" }; },
+    wait: async () => { calls.push("wait"); }, ensureAgents: async () => { calls.push("agents"); },
     login: async () => { const r = logins.shift() ?? "FAIL"; calls.push(`login:${r}`); if (r.startsWith("throw")) throw new Error(r); return r; },
     restartAgent: async () => { calls.push("restart"); }, restartEdge: async () => { calls.push("restartEdge"); },
     log: (line) => calls.push(`log:${line}`),
@@ -153,11 +153,11 @@ test("a down VPN starts the agents and logs in; a login page that never comes re
   const ok = deps(["DOWN", "DOWN", "UP"], ["OK"]);
   const s = { fails: 2 };
   expect(await keepTick(o, s, ok.d, MON_10_KST)).toBe(60000);
-  expect(ok.calls).toEqual(["state", "log:DOWN", "agents", "login:OK", "wait", "state", "wait", "state", "log:RELOGIN OK"]);
+  expect(ok.calls).toEqual(["state", "log:DOWN", "agents", "login:OK", "wait", "link", "wait", "link", "log:RELOGIN OK"]);
   expect(s.fails).toBe(0);
   const stuck = deps(["NOLOG", "UP"], ["no login page", "OK"]);
   await keepTick(o, { fails: 0 }, stuck.d, MON_10_KST);
-  expect(stuck.calls).toEqual(["state", "log:NOLOG", "agents", "login:no login page", "log:AGENT_RESTART", "restart", "login:OK", "wait", "state", "log:RELOGIN OK"]);
+  expect(stuck.calls).toEqual(["state", "log:NOLOG", "agents", "login:no login page", "log:AGENT_RESTART", "restart", "login:OK", "wait", "link", "log:RELOGIN OK"]);
 });
 
 test("three failed rounds in a row rest 15 minutes and start counting again; a login that throws is a failed round; an up VPN ends the run", async () => {
@@ -191,7 +191,7 @@ test("a portal login whose tunnel never comes up within 30 s is a failed round, 
   }
   expect(waits).toEqual([60000, 60000, 900000]);
   expect(r.calls.filter((c) => c === "wait").length).toBe(6);
-  expect(r.calls.filter((c) => c.startsWith("log:RELOGIN") || c.startsWith("log:GIVEUP"))).toEqual(["log:RELOGIN OK portal, VPN still down after 30 s", "log:GIVEUP after 3 fails, resting 15 min"]);
+  expect(r.calls.filter((c) => c.startsWith("log:RELOGIN") || c.startsWith("log:GIVEUP"))).toEqual(["log:RELOGIN OK portal, VPN still down after 30 s (no Completed start after the last stop)", "log:GIVEUP after 3 fails, resting 15 min"]);
 });
 
 // A scripted Secuway portal behind a fake CDP: frames move on after the login and the OTP send buttons are clicked.

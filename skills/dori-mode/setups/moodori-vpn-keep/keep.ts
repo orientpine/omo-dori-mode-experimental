@@ -98,6 +98,23 @@ export const vpnState = (out: string): VpnState => {
   return line.startsWith("L|") && line.includes("Initialization Sequence Completed") && Number(count) > 0 ? "UP" : "DOWN";
 };
 
+// A relogin is judged by the connection itself, not by the portal page: the PowerShell below prints "C|" and
+// sslvpn.log's last tunnel start or stop line ("NOLOG" without a log), the PC's UTC offset in minutes (the log's
+// times are the PC's local time), and "T|True" when the portal's port 443 opens from the PC.
+export const linkPs = (host: string): string => `$q="$env:USERPROFILE\\AppData\\LocalLow\\SecuwaySSLU21\\log\\sslvpn.log"; if(-not (Test-Path $q)){'NOLOG'} else { $l=Select-String -Path $q -Pattern "Initialization Sequence Completed|SIGTERM" | select -Last 1; 'C|' + $l.Line }; [int][TimeZoneInfo]::Local.GetUtcOffset((Get-Date)).TotalMinutes; $c=New-Object Net.Sockets.TcpClient; try{$ok=$c.ConnectAsync(${psQuote(host)},443).Wait(4000)}catch{$ok=$false}; $c.Close(); 'T|' + $ok`;
+export type Link = { readonly up: true; readonly at: number } | { readonly up: false; readonly why: string };
+// Up when that last line is a Completed start written at or after since (the round's start, in ms) and 443 opens.
+export const linkFrom = (out: string, since: number): Link => {
+  const [line = "", offset = "", port = ""] = out.trim().split(/\r?\n/);
+  if (line === "NOLOG") return { up: false, why: "no sslvpn.log" };
+  const m = /^C\|(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d) Initialization Sequence Completed/.exec(line);
+  if (!m || !/^-?\d+$/.test(offset)) return { up: false, why: "no Completed start after the last stop" };
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number) as [number, number, number, number, number, number];
+  const at = Date.UTC(y, mo - 1, d, h, mi, s) - Number(offset) * 60_000;
+  if (at < Math.floor(since / 1000) * 1000) return { up: false, why: `last Completed ${new Date(at).toISOString()} is before the round began` };
+  return port === "T|True" ? { up: true, at } : { up: false, why: "portal 443 closed" };
+};
+
 // RFC 6238 TOTP with HMAC-SHA256, 6 digits, 30 s steps
 export const totp = (secretHex: string, nowMs: number): string => {
   const counter = Buffer.alloc(8);
@@ -118,6 +135,7 @@ export type KeepState = { fails: number };
 export type KeepDeps = {
   readonly paused: () => Promise<boolean>;
   readonly state: () => Promise<VpnState>;
+  readonly link: (since: number) => Promise<Link>;
   readonly ensureAgents: () => Promise<void>;
   readonly login: () => Promise<string>; // "OK", "no login page", or why it failed
   readonly restartAgent: () => Promise<void>;
@@ -126,15 +144,18 @@ export type KeepDeps = {
   readonly log: (line: string) => void;
 };
 
-// A portal login counts only when the tunnel then comes up: sslvpn.log's start line and the SecuwaySSL process.
+// A round counts by the connection, whatever the portal page said: once the MOTP code was sent (the flow ended OK or
+// FAIL) the link is checked every 5 s for 30 s, else once.
 export const UP_CHECKS = 6;
 export const UP_EVERY_MS = 5000;
-const vpnBack = async (d: KeepDeps): Promise<boolean> => {
-  for (let i = 0; i < UP_CHECKS; i++) {
-    await d.wait(UP_EVERY_MS);
-    if ((await d.state().catch((): VpnState => "DOWN")) === "UP") return true;
+const linkBack = async (d: KeepDeps, since: number, sent: boolean): Promise<Link> => {
+  let link: Link = { up: false, why: "not checked" };
+  for (let i = 0; i < (sent ? UP_CHECKS : 1); i++) {
+    if (sent) await d.wait(UP_EVERY_MS);
+    link = await d.link(since).catch((e: unknown): Link => ({ up: false, why: `ERR ${e instanceof Error ? e.message : String(e)}` }));
+    if (link.up) return link;
   }
-  return false;
+  return link;
 };
 
 // One check; returns how long to wait before the next. A login that throws counts as a failed attempt, so a broken
@@ -143,6 +164,7 @@ export async function keepTick(o: KeepOptions, s: KeepState, d: KeepDeps, now: D
   if (!inWindow(now, o) || (await d.paused())) return o.intervalMs;
   const state = await d.state();
   if (state === "UP") {
+    if (s.fails) d.log(`UP after ${s.fails} failed round${s.fails > 1 ? "s" : ""}`);
     s.fails = 0; // a recovery (by hand too) ends the run of failed rounds
     return o.intervalMs;
   }
@@ -162,9 +184,11 @@ export async function keepTick(o: KeepOptions, s: KeepState, d: KeepDeps, now: D
       r = await attempt();
     }
   } else if (r !== "OK") r = await attempt();
-  if (r === "OK" && !(await vpnBack(d))) r = `OK portal, VPN still down after ${(UP_CHECKS * UP_EVERY_MS) / 1000} s`;
+  const link = await linkBack(d, now.getTime(), r === "OK" || r.startsWith("FAIL"));
+  if (link.up) r = r === "OK" ? "OK" : `OK connected ${new Date(link.at).toISOString()} (portal flow: ${r.trim()})`;
+  else if (r === "OK") r = `OK portal, VPN still down after ${(UP_CHECKS * UP_EVERY_MS) / 1000} s (${link.why})`;
   d.log(`RELOGIN ${r}`);
-  s.fails = r === "OK" ? 0 : s.fails + 1;
+  s.fails = link.up ? 0 : s.fails + 1;
   if (s.fails < o.maxFails) return o.intervalMs;
   d.log(`GIVEUP after ${s.fails} fails, resting ${Math.round(o.restMs / 60_000)} min`);
   s.fails = 0;
@@ -325,6 +349,7 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
   return {
     paused: () => Bun.file(o.pauseFile).exists(),
     state: async () => vpnState(await ps(STATE_PS)),
+    link: async (since) => linkFrom(await ps(linkPs(new URL(o.vpnUrl).hostname)), since),
     ensureAgents,
     login,
     wait: (ms) => clock.sleep(ms),

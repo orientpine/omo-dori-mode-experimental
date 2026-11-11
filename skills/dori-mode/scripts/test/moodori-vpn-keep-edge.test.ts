@@ -16,9 +16,11 @@ const EDGES = [
   '202\t"C:\\x\\msedge.exe" --user-data-dir="C:\\profiles\\moodori-edge personal"',
   '203\t"C:\\x\\msedge.exe" --user-data-dir=C:\\profiles\\moodori-edge2 --type=gpu-process',
 ].join("\r\n");
-const fakePc = (edgeRestartHelps: boolean) => {
+// endsAtBookmark false: after the OTP is sent the portal shows some other page than bookmark, while the tunnel comes up
+// (vpn-keep.log 2026-11-11T08:43:36Z RELOGIN FAIL with sslvpn.log Completed at 17:43:05 KST).
+const fakePc = (edgeRestartHelps: boolean, endsAtBookmark = true) => {
   const pc = { stuck: true, stage: "login", focused: "", value: {} as Record<string, number>, agentRestarts: 0, edgeRestarts: [] as string[] };
-  const url = () => `https://vpn.example.com/${pc.stuck ? "activexloading" : pc.stage === "login" ? "login" : pc.stage === "cert" ? "flag3_cert" : "bookmark"}.jsp`;
+  const url = () => `https://vpn.example.com/${pc.stuck ? "activexloading" : pc.stage === "login" ? "login" : pc.stage === "cert" ? "flag3_cert" : endsAtBookmark ? "bookmark" : "main"}.jsp`;
   const val = (value: unknown) => ({ result: { type: typeof value, value } });
   const answer = (method: string, params: Record<string, unknown>): unknown => {
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top", url: "https://vpn.example.com/" }, childFrames: [{ frame: { id: "f", url: url() } }] } };
@@ -60,6 +62,8 @@ const fakePc = (edgeRestartHelps: boolean) => {
       pc.edgeRestarts.push(ps);
       if (edgeRestartHelps) pc.stuck = false;
     }
+    // sslvpn.log as the PC writes it: local time (KST, offset 540 min); the round began at 08:41:00 KST
+    if (ps.startsWith("$q=")) return { code: 0, out: `C|${pc.stage === "done" ? "2026-11-09 08:41:20 Initialization Sequence Completed" : "2026-11-09 08:37:00 SIGTERM[soft]"}\r\n540\r\nT|True\r\n`, err: "" };
     if (ps.startsWith("$p=")) return { code: 0, out: pc.stage === "done" ? "L|Mon Nov 09 08:40:00 2026 Initialization Sequence Completed\r\n1" : "L|Mon Nov 09 08:37:00 2026 SIGTERM[soft]\r\n0", err: "" };
     return { code: 0, out: "", err: "" };
   };
@@ -70,8 +74,8 @@ const MON_0841_KST = new Date("2026-11-08T23:41:00Z");
 // every wait of the flow is instant and the 10 s CDP timeouts never fire; at 15 s into a TOTP period the flow
 // itself never waits 10 s or more for a fresh code
 const clock = { now: () => 15_000, sleep: (ms: number) => (ms >= 10_000 ? new Promise<void>(() => {}) : Promise.resolve()) };
-const tick = async (edgeRestartHelps: boolean) => {
-  const { pc, edge, runner } = fakePc(edgeRestartHelps);
+const tick = async (edgeRestartHelps: boolean, endsAtBookmark = true) => {
+  const { pc, edge, runner } = fakePc(edgeRestartHelps, endsAtBookmark);
   const motp = join(mkdtempSync(join(tmpdir(), "vpn-keep-edge-")), "motp.json");
   writeFileSync(motp, JSON.stringify({ secret: "00112233" }));
   const c = keepConfig({ enabled: true, pcSsh: "user@pc.example", vpnUrl: "https://vpn.example.com/", credsCommand: ["creds"], motpFile: motp, cdpPort: edge.port });
@@ -94,6 +98,10 @@ test("a portal tab left on the agent check page after the agent restart gets Moo
     agentRestarts: 1,
     edgeRestarts: 1,
   });
+});
+
+test("a login whose portal never shows bookmark but whose sslvpn.log has a Completed start after the round began is RELOGIN OK", async () => {
+  expect((await tick(true, false)).logs).toEqual(["DOWN", "AGENT_RESTART", "VPN_EDGE_RESTART", "RELOGIN OK connected 2026-11-08T23:41:20.000Z (portal flow: FAIL)"]);
 });
 
 test("an Edge restart that does not help is tried once per round and the round fails as before", async () => {

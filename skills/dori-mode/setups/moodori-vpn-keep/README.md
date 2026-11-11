@@ -28,15 +28,22 @@ Every minute inside the window (`days`, `hours`, `timeZone`):
    its windows and other profiles stay) and
    starts `edgeTask` again. That is at most one agent restart and one Edge restart a round, so `maxFails` still bounds
    them. Any other failure is tried once more.
-4. The portal's bookmark page is not yet a recovery: within 30 s (every 5 s) the VPN state from step 1 must read up,
-   else the round failed (`RELOGIN OK portal, VPN still down after 30 s`). An up check ends a run of failed rounds.
+4. A round is judged by the connection, not by the portal page: it is a recovery when `sslvpn.log`'s last tunnel
+   start or stop line is an `Initialization Sequence Completed` written at or after the round began (the log's times
+   are the PC's local time, read with the PC's UTC offset) and the portal's port 443 (`vpnUrl`'s host) opens from the
+   PC. Once the MOTP code was sent (the portal flow ended at the bookmark page or with `FAIL`) this is checked every
+   5 s for 30 s, else once. A connected round whose portal flow said otherwise logs
+   `RELOGIN OK connected <UTC time of the Completed line> (portal flow: FAIL ...)`; a bookmark page without that
+   connection is a failed round (`RELOGIN OK portal, VPN still down after 30 s (<why>)`). A failed round is tried
+   again at the next check (`DOWN` again), and a next check that finds the VPN up logs `UP after N failed rounds`;
+   an up check ends a run of failed rounds.
 5. Three failed rounds in a row (`maxFails`; a login that errors counts too) rest 15 minutes (`restMs`), so the
    account is not tried every minute.
 
 `touch /tmp/moodori-vpn-keep.pause` (`pauseFile`) pauses it; remove the file to resume.
 
 Log lines (`~/.dori/vpn-keep.log`): `VPN_KEEP_ON ...` at start, `DOWN` / `NOLOG`, `AGENT_RESTART`, `VPN_EDGE_RESTART`,
-`RELOGIN OK|OK portal, VPN still down ...|FAIL ...|no cert ...|no otp field|ERR ...`, `GIVEUP after 3 fails, resting 15 min`, `ERR ...`. `VPN_KEEP_OFF` (exit 0)
+`RELOGIN OK|OK connected ...|OK portal, VPN still down ...|FAIL ...|no cert ...|no otp field|ERR ...`, `GIVEUP after 3 fails, resting 15 min`, `UP after N failed rounds`, `ERR ...`. `VPN_KEEP_OFF` (exit 0)
 when off, `VPN_KEEP_CONFIG_BAD` (exit 2) for an enabled config with a missing or wrong value. Neither the account nor
 the MOTP key or code is ever printed.
 
