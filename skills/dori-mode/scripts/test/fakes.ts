@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { sessionPath, withPi } from "../src/aoe.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,13 @@ import { Registry } from "../src/registry.ts";
 import type { Clock, Ran, Runner } from "../src/run.ts";
 import { duplicateLine, SEND_DUPLICATE_EXIT } from "../src/send-dedupe.ts";
 import type { FakeTerminal } from "./fake-hc.ts";
+
+// Slack settings come only from dori.env (#201 review 5), so a test's fake Slack token and API go in a file there; returns it.
+export const slackEnvFile = (dir: string, token: string, api: string): string => {
+  const file = join(dir, "slack.env");
+  writeFileSync(file, `DORI_SLACK_TOKEN=${token}\nDORI_SLACK_API=${api}\n`);
+  return file;
+};
 
 // A launch adds nvm's node and the agent's pi to the PATH aoe add runs with when the caller's PATH lacks them (a systemd
 // unit's bare PATH, as dori watch runs a lane's Done command). A test that checks what aoe add got sets PATH to what the

@@ -19,36 +19,38 @@ const tokenIdentity = (name: string, token: string): string => {
   return name === "DORI_TELEGRAM_TOKEN" && /^\d+:/.test(t) ? t.split(":")[0] ?? t : t;
 };
 
-// KEY=VALUE lines (tokens, Discord ids) for every dori command; a variable already set wins over the file, except when
+// KEY=VALUE lines (tokens, Discord ids) for every dori command; a variable already set wins over the file (Slack settings
+// aside: dropInheritedSlack), except when
 // the file names another bot than the inherited token. Then the environment is another Dori's: every inherited
 // instance variable is dropped first, so this file and the defaults apply. Returns the dropped names.
 export const loadEnvFile = async (path: string, env: Record<string, string | undefined> = process.env): Promise<string[]> => {
-  // A token file dori launch chose for another home (DORI_SLACK_TOKEN_HOME is not this run's config, as when a lane of one
-  // home calls another home's wrapper) is that home's credentials: dropped, so this home's own token is read (#201 review 2),
-  // before the file is looked at, since a home without a dori.env must not keep them either (review 3).
-  const home = resolve(env["DORI_CONFIG"] ?? configPath());
-  const marked = env["DORI_SLACK_TOKEN_HOME"];
-  const otherHome = marked !== undefined && marked !== home;
-  if (otherHome) {
-    delete env["DORI_SLACK_TOKEN_FILE"];
-    delete env["DORI_SLACK_TOKEN_HOME"];
-    if (env["DORI_SLACK_TOKEN"] === "") delete env["DORI_SLACK_TOKEN"];
-  }
+  dropInheritedSlack(env);
   const file = Bun.file(path);
   if (!(await file.exists())) return [];
   const values = envFileEntries(await file.text());
-  // that home's lane env is another Dori's as a whole, its Slack API and cookie included (review 4), as a differing token is
-  const foreign = otherHome || [...values].some(([name, value]) => {
+  const foreign = [...values].some(([name, value]) => {
     const inherited = env[name];
     return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && inherited !== "" && tokenIdentity(name, inherited) !== tokenIdentity(name, value);
   });
-  // A token file path with DORI_SLACK_TOKEN blanked, chosen for this home, is what dori launch hands its lane (#201): the
-  // launcher's choice of credentials, so it is kept through the isolation and not replaced by dori.env's token.
-  const chosen = env["DORI_SLACK_TOKEN_FILE"] && env["DORI_SLACK_TOKEN"] === "" && env["DORI_SLACK_TOKEN_HOME"] === home ? ["DORI_SLACK_TOKEN_FILE", "DORI_SLACK_TOKEN", "DORI_SLACK_TOKEN_HOME"] : [];
-  const dropped = foreign ? Object.keys(env).filter((name) => instanceVar(name) && env[name] !== undefined && !chosen.includes(name)) : [];
+  // what dropInheritedSlack kept is this run's own choice, so the isolation keeps it too
+  const dropped = foreign ? Object.keys(env).filter((name) => instanceVar(name) && env[name] !== undefined && !name.startsWith("DORI_SLACK_")) : [];
   for (const name of dropped) delete env[name];
   for (const [name, value] of values) if (env[name] === undefined) env[name] = value;
   return dropped;
+};
+
+// Slack instance settings (API, cookie, tokens, owner, mention) never come from the inherited environment, only from this
+// home's dori.env (absent there means unset): a lane's pane inherits its server's or core's env, which may be another
+// home's, and with the token passed as a file no differing token marks it foreign (#201 review 5). Kept: the token file a
+// caller set, unless dori launch chose it for another home (DORI_SLACK_TOKEN_HOME is not this run's config, as when a lane
+// of one home calls another home's wrapper, review 2); the blanked DORI_SLACK_TOKEN launch passes with a file of this home,
+// so dori.env's token does not replace it; and DORI_SLACK_WAIT_MS, which sets how this run waits, not who it is.
+const dropInheritedSlack = (env: Record<string, string | undefined>): void => {
+  const home = resolve(env["DORI_CONFIG"] ?? configPath());
+  const marked = env["DORI_SLACK_TOKEN_HOME"];
+  const file = marked === undefined || marked === home ? env["DORI_SLACK_TOKEN_FILE"] : undefined;
+  const keep = new Set(["DORI_SLACK_WAIT_MS", ...(file ? ["DORI_SLACK_TOKEN_FILE"] : []), ...(file && marked === home ? ["DORI_SLACK_TOKEN_HOME"] : []), ...(file && marked === home && env["DORI_SLACK_TOKEN"] === "" ? ["DORI_SLACK_TOKEN"] : [])]);
+  for (const name of Object.keys(env)) if (name.startsWith("DORI_SLACK_") && !keep.has(name)) delete env[name];
 };
 
 // A dori.env's KEY=VALUE lines: the first value of each name, its quotes taken off.

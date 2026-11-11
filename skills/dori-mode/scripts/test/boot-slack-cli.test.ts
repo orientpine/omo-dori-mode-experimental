@@ -21,7 +21,8 @@ test("the real boot CLI exits at its Slack deadline instead of keeping a 60-seco
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, "herdr"), "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then\n  printf '%s\\n' '{\"result\":{\"panes\":[]}}'\n  exit 0\nfi\nexit 1\n", { mode: 0o755 });
     writeFileSync(join(state.dir, "config.json"), JSON.stringify({ stateDir: state.dir, runtime: "herdr", backend: "herdr" }));
-    writeFileSync(join(state.dir, "dori.env"), "");
+    // Slack settings come only from dori.env (#201 review 5)
+    writeFileSync(join(state.dir, "dori.env"), `DORI_SLACK_TOKEN=xoxb-fixture\nDORI_SLACK_API=${server.url.toString().replace(/\/$/, "")}\n`);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DORI_")));
     child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli.ts"), "boot"], {
       cwd: state.dir,
@@ -32,8 +33,6 @@ test("the real boot CLI exits at its Slack deadline instead of keeping a 60-seco
         DORI_CONFIG: join(state.dir, "config.json"),
         DORI_ENV_FILE: join(state.dir, "dori.env"),
         DORI_RUNTIME: "herdr",
-        DORI_SLACK_TOKEN: "xoxb-fixture",
-        DORI_SLACK_API: server.url.toString().replace(/\/$/, ""),
       },
       stdin: "ignore",
       stdout: "pipe",

@@ -54,7 +54,8 @@ test.skipIf(process.platform === "win32")("the token file a lane was given survi
   const r = await laneSend("DORI_DISCORD_TOKEN=this-home-discord\n", ["DORI_DISCORD_TOKEN=other-home-discord"]);
   // Then: the foreign Discord token is dropped, the lane's token file and blanked token are kept, and the post goes out with the file's token
   expect({ code: r.code, seen }).toEqual({ code: 0, seen: ["Bearer xoxb-FIXTURE-file"] });
-  expect(r.err).toBe(`DORI_ENV_FOREIGN dropped 2 inherited variables of another Dori (its bot token differs from ${join(state.dir, "dori.env")}): DORI_SLACK_API DORI_DISCORD_TOKEN`);
+  // the inherited Slack API is never read at all (review 5), so the isolation names only the Discord token
+  expect(r.err).toBe(`DORI_ENV_FOREIGN dropped 1 inherited variables of another Dori (its bot token differs from ${join(state.dir, "dori.env")}): DORI_DISCORD_TOKEN`);
 });
 
 test.skipIf(process.platform === "win32")("a Slack token in dori.env does not override the launcher's token file and its deliberately empty DORI_SLACK_TOKEN", async () => {
@@ -98,6 +99,31 @@ test.skipIf(process.platform === "win32")("another home's wrapper isolates the l
       process.execPath, CLI, "send", "slack", "--to", "C1", "--text", "from b"], { timeoutMs: 20_000 });
     // Then: it goes to B's endpoint with B's token and without A's cookie, and A's endpoint sees nothing
     expect({ code: r.code, a: seenA, b: seenB.map((s) => ({ auth: s.auth, aCookie: s.cookie.includes("FIXTURE-a-cookie") })) }).toEqual({ code: 0, a: [], b: [{ auth: "Bearer xoxb-FIXTURE-homeb", aCookie: false }] });
+  } finally {
+    a.stop(true);
+    b.stop(true);
+  }
+});
+
+test.skipIf(process.platform === "win32")("a fresh file-backed lane of home B on a server carrying home A's Slack API and cookie sends only to B's endpoint (#201 review 5)", async () => {
+  // Given: two endpoints, home B with its token file and its dori.env naming B's endpoint, and B's lane env as launch
+  // leaves it, on a server whose env holds A's API and cookie and no other messenger token
+  const seenA: string[] = [];
+  const seenB: { auth: string; cookie: string }[] = [];
+  const endpoint = (record: (req: Request) => void) => Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => { record(req); return Response.json({ ok: true, channel: "C1", ts: "1.4", message: { text: "hi" } }); } });
+  const a = endpoint((req) => seenA.push(req.headers.get("authorization") ?? ""));
+  const b = endpoint((req) => seenB.push({ auth: req.headers.get("authorization") ?? "", cookie: req.headers.get("cookie") ?? "" }));
+  try {
+    const file = join(state.dir, "slack-token");
+    writeFileSync(file, "xoxb-FIXTURE-homeb-file\n");
+    chmodSync(file, 0o600);
+    writeFileSync(join(state.dir, "dori.env"), `DORI_SLACK_API=http://127.0.0.1:${b.port}/api\n`);
+    const lane = laneHomeEnv({ stateDir: state.dir, backend: "herdr" }, { DORI_CONFIG: join(state.dir, "config.json"), DORI_ENV_FILE: join(state.dir, "dori.env") });
+    // When: the lane sends
+    const r = await run(["env", "-u", "DORI_DISCORD_TOKEN", "-u", "DORI_TELEGRAM_TOKEN", `DORI_SLACK_API=http://127.0.0.1:${a.port}/api`, "DORI_SLACK_COOKIE=FIXTURE-a-cookie", ...Object.entries(lane).map(([k, v]) => `${k}=${v}`),
+      process.execPath, CLI, "send", "slack", "--to", "C1", "--text", "from b lane"], { timeoutMs: 20_000 });
+    // Then: B's endpoint gets B's file token without A's cookie, and A's endpoint sees nothing
+    expect({ code: r.code, err: r.err, a: seenA, b: seenB.map((s) => ({ auth: s.auth, aCookie: s.cookie.includes("FIXTURE-a-cookie") })) }).toEqual({ code: 0, err: "", a: [], b: [{ auth: "Bearer xoxb-FIXTURE-homeb-file", aCookie: false }] });
   } finally {
     a.stop(true);
     b.stop(true);

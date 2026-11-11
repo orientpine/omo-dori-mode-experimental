@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, truncateSync, writeFileSync } from "node:fs";
 import { run } from "../src/run.ts";
-import { withState } from "./fakes.ts";
+import { slackEnvFile, withState } from "./fakes.ts";
 import { DISCORD_FORM_SLACK, DISCORD_MESSAGE_MAX, type DiscordFile, discordMessageProblem } from "../src/messenger/upload-files.ts";
 setDefaultTimeout(30_000); // load-proof: every test here starts the dori CLI (bun src/cli.ts) as a child process, up to five times; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
 test("Discord CLI enables typing by default, skips it on request, and leaves edits alone", async () => {
@@ -522,7 +522,7 @@ const fakeSlack = (complete = 200, during: { upload?: () => void } = {}) => {
   return { calls, server };
 };
 const slackCli = (dir: string, port: number | undefined, args: readonly string[]) =>
-  run(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${join(dir, "missing.env")}`, "DORI_SLACK_TOKEN=xoxb-fake", "DORI_DISCORD_TOKEN=fake", `DORI_SLACK_API=http://127.0.0.1:${port}/api`,
+  run(["env", `DORI_CONFIG=${join(dir, "missing.json")}`, `DORI_STATE_DIR=${dir}`, `DORI_ENV_FILE=${slackEnvFile(dir, "xoxb-fake", `http://127.0.0.1:${port}/api`)}`, "DORI_DISCORD_TOKEN=fake",
     "bun", join(import.meta.dir, "../src/cli.ts"), "send", ...args]);
 
 test("slack: SENT prints the text Slack answered; the channel's last text again is a repeat at any age, another thread is another place", async () => {
