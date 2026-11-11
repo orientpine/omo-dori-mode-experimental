@@ -44,6 +44,8 @@ test("a script fed to a shell by a quoted or relative path, or a job backgrounde
     return { description: "ci on 4eae", command, persistent: true, launch };
   };
   expect(missingMonitors([withLaunch("bash -s < /tmp/start.sh", "sleep 30\nbun run build >/dev/null 2>&1 &\n")], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toEqual(asked);
+  // a job the monitor command itself backgrounds (not a script it feeds) outlives the watch too
+  expect(launchOf("bun run build >/dev/null 2>&1 & tail -F /tmp/build.log", HOME, () => undefined)?.detached).toBe(true);
   // the same script with nothing backgrounded ends with its processes
   expect(missingMonitors([withLaunch("bash -s < /tmp/start.sh", "sleep 30\nbun run build >/dev/null 2>&1\n")], [], () => true, HOME, 0, workEnded(work, () => true, gone))).toEqual([]);
 });
