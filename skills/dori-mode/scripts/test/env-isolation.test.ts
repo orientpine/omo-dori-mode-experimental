@@ -107,6 +107,11 @@ test("no inherited instance value wins over this Dori's file, its own or another
   }
 });
 
+test("a server tool gets no omo session of its caller, so an hc core a lead's shell starts hands none to the next lead", () => {
+  const env = { PATH: "/bin", PI_SESSION_ID: "6cb29829-a828-4a85-a9f8-8c7a95ed1b49", PI_SESSION_FILE: "/s/x.jsonl", PI_SESSION_CWD: "/w", PI_GOAL_STORE_FILE: "/g.json", PI_PROVIDER: "p", PI_MODEL: "m", PI_REASONING_LEVEL: "high", OMO_BROWSER_ENGINE: "e", SENPI_MONITOR_ID: "mon_A", SENPI_MONITOR_STATE_DIR: "/m" };
+  expect([childEnv(["hc", "--json", "run"], env), childEnv(["herdr", "pane", "run"], env), childEnv(["git", "status"], env)]).toEqual([{ PATH: "/bin" }, { PATH: "/bin" }, env]);
+});
+
 test("aoe and tmux, which can start the tmux server every pane inherits from, run without any DORI_* variable", () => {
   const env = { PATH: "/bin", DORI_DISCORD_TOKEN: "t", DORI_CONFIG: "/c" };
   expect([childEnv(["tmux", "new-session"], env), childEnv(["/usr/bin/tmux", "ls"], env), childEnv(["aoe", "session", "start", "x"], env), childEnv(["git", "status"], env)]).toEqual([{ PATH: "/bin" }, { PATH: "/bin" }, { PATH: "/bin" }, env]);

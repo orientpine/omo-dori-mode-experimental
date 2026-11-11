@@ -23,12 +23,17 @@ export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran
 // the core, whose terminals inherit its environment (review 8 of #404). An hc call also goes to this Dori's own core,
 // `core` (HC_SESSION from its dori.env, else the default core), never the caller's HC_SESSION: a stored hc:t<n> names a
 // terminal of one core only, so a unit or shell that selects another core would act on someone else's terminal (H188).
+// Nor do they get the caller's omo session (senpi's SESSION_ENVIRONMENT_KEYS, kernels/session-env.ts): an hc core a lead's
+// shell started handed it to the next lead's agent and every monitor of it, which then named the old lead's session (MooDori
+// hc:t1, 2026-11-11), nor the marker of the monitor that ran the call (SENPI_MONITOR_*): the next agent's tools would pass
+// for monitors (review 6 of #460).
+const OMO_SESSION = new Set(["PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL", "OMO_BROWSER_ENGINE"]);
 const SERVERS = ["aoe", "tmux", "herdr", "hc"];
 export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>, core?: string, named = false): Record<string, string | undefined> => {
   const tool = argv[0]?.split("/").pop() ?? "";
   if (!SERVERS.includes(tool)) return { ...env };
   // HC_SOCKET outranks the session's socket in hc (paths.rs), so it goes with HC_SESSION (review 10 of #404)
-  const clean: Record<string, string | undefined> = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_") && (tool !== "hc" || (name !== "HC_SESSION" && (named || name !== "HC_SOCKET")))));
+  const clean: Record<string, string | undefined> = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DORI_") && !OMO_SESSION.has(name) && !name.startsWith("SENPI_MONITOR_") && (tool !== "hc" || (name !== "HC_SESSION" && (named || name !== "HC_SOCKET")))));
   return tool === "hc" && core ? { ...clean, HC_SESSION: core } : clean;
 };
 
