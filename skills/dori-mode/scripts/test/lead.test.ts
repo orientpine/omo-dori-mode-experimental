@@ -306,13 +306,13 @@ test("self-restart puts nvm's default node on the session's PATH through the ali
 });
 
 test("dori.sh starts and attaches the lead with aoe given no DORI_* variable", async () => {
-  const bin = join(state.dir, "bin");
-  mkdirSync(bin);
+  const bin = join(state.dir, ".bun/bin"); // dori.sh runs this checkout's CLI with ~/.bun/bin/bun, faked here
+  mkdirSync(bin, { recursive: true });
   const log = join(state.dir, "commands");
-  executable(join(bin, "dori"), `printf '%s\\n' '${ID} ${TMUX}'`);
+  executable(join(bin, "bun"), `case "$1" in */scripts/src/cli.ts) printf '%s\\n' '${ID} ${TMUX}' ;; *) exec '${process.execPath}' "$@" ;; esac`);
   executable(join(bin, "systemctl"), "exit 0");
   executable(join(bin, "aoe"), `printf '%s\\n' "aoe $* dori-vars=$(env | grep -c '^DORI_')" >> "${log}"`);
-  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], { env: { ...process.env, PATH: `${bin}:${process.env["PATH"]}`, DORI_DISCORD_TOKEN: "inherited", DORI_CONFIG: "/c" }, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["bash", join(import.meta.dir, "../../setups/discord-aoe/dori.sh")], { env: { ...process.env, HOME: state.dir, PATH: `${bin}:${process.env["PATH"]}`, DORI_DISCORD_TOKEN: "inherited", DORI_CONFIG: "/c" }, stdout: "pipe", stderr: "pipe" });
   expect({ code: await p.exited, commands: readFileSync(log, "utf8").trim().split("\n") }).toEqual({ code: 0, commands: [`aoe session start ${ID} dori-vars=0`, `aoe session attach ${ID} dori-vars=0`] });
 });
 
