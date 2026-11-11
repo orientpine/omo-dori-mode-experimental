@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { launchOf } from "../src/handover.ts";
+import { launchOf, missingMonitors } from "../src/handover.ts";
 
 const HOME = "/home/test";
 
@@ -124,3 +124,18 @@ test("an input redirection of a later command is not the shell's script", () => 
   expect(ci?.detached).toBe(false);
 });
 
+
+// #414 review 16: a script a shell runs by a bare name that the handover cannot read ((cd /tmp/work && bash start.sh),
+// bash start) returned no launch, so the same command could be armed again and start its work a second time.
+test("a script a shell runs by a bare name that cannot be read is work and keeps its watch", () => {
+  for (const command of ["(cd /tmp/work && bash start.sh)", "bash start", "cd /tmp/work && bash 'start.sh'"]) {
+    const launch = launchOf(command, HOME, () => undefined);
+    if (!launch) throw new Error(`not work: ${command}`);
+    expect([command, launch.detached]).toEqual([command, true]);
+    const rearmed = [{ description: "chain", command, persistent: true, runtime: { pid: 7 } }];
+    expect(missingMonitors([{ description: "chain", command, persistent: true, launch }], rearmed, () => true, HOME, 0)).toEqual(["chain (armed again with the command that starts work; arm a watch-only one instead)"]);
+  }
+  // the arguments of bash -s are not scripts, and a -c string is not one either
+  expect(launchOf("ssh h bash -s -- rv v0.2.1 < /tmp/tools.sh", HOME, (path) => (path === "/tmp/tools.sh" ? "bun run ci\n" : undefined))?.detached).toBe(false);
+  expect(launchOf("bash -lc 'tail -F /tmp/ci.log'", HOME, () => undefined)).toBeUndefined();
+});
