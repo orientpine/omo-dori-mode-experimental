@@ -161,3 +161,44 @@ test("a bare --file on send keeps its own refusal", async () => {
     state.done();
   }
 }, 30_000);
+
+// an exemption holds only for the command that checks the bare flag itself (review 3 of #439)
+test("thread open with a bare --file is refused before the thread is opened, posted to or mapped", async () => {
+  const state = withState();
+  try {
+    const http = join(state.dir, "http.json");
+    const config = join(state.dir, "config.json");
+    writeFileSync(join(state.dir, "ledger.json"), JSON.stringify({ entries: [] }));
+    writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, directives: { common: join(state.dir, "ledger.json"), local: "" } }));
+    const r = await run(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`, `DORI_DISCORD_STATE_DIR=${join(state.dir, "cards")}`, "DORI_DISCORD_TOKEN=fake", "DORI_DISCORD_CHANNEL=200000000000000002", `DORI_TEST_HTTP=${http}`,
+      process.execPath, "--preload", join(import.meta.dir, "discord-cli-fake.ts"), cli, "thread", "open", "fix", "--first", "hi", "--file"], { timeoutMs: 20_000 });
+    expect({ code: r.code, err: r.err, requested: existsSync(http), mapped: existsSync(join(state.dir, "cards", "threads.json")) }).toEqual({ code: 1, err: "--file needs a value", requested: false, mapped: false });
+  } finally {
+    state.done();
+  }
+}, 30_000);
+
+test("serve with a bare --loop is refused: only the loop commands check it themselves", async () => {
+  const state = withState();
+  try {
+    const log = join(state.dir, "serve.log");
+    const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
+      process.execPath, cli, "serve", "--log", log, "--only", "none", "--loop"], { timeoutMs: 20_000 });
+    expect({ code: r.code, err: r.err, out: r.out, logged: existsSync(log) }).toEqual({ code: 1, err: "--loop needs a value", out: "", logged: false });
+  } finally {
+    state.done();
+  }
+}, 30_000);
+
+test("backlog add with a bare --why-new is refused before the item is written", async () => {
+  const state = withState();
+  try {
+    const brief = join(state.dir, "brief.md");
+    writeFileSync(brief, "[목표] qa\n");
+    const r = await run(["env", `DORI_CONFIG=${join(state.dir, "missing.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "missing.env")}`,
+      process.execPath, cli, "backlog", "add", "qa-i", "--title", "t", "--brief", brief, "--done", "merged o/r#1", "--thread", "new", "--why-new"], { timeoutMs: 20_000 });
+    expect({ code: r.code, err: r.err, written: existsSync(join(state.dir, "backlog", "items", "qa-i.json")) }).toEqual({ code: 1, err: "--why-new needs a value", written: false });
+  } finally {
+    state.done();
+  }
+}, 30_000);

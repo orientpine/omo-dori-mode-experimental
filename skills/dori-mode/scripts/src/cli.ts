@@ -142,16 +142,30 @@ if (command === "--help" || flags.values.help) {
   console.log(command === "--help" ? USAGE : helpFor(command));
   process.exit(0);
 }
-// strict:false gives a value flag left without its value the boolean true: refused here, before any command runs and so
-// before any request or file write (review of #439). Left out are the flags whose commands give a bare flag its own
-// meaning or refusal: telegram's --thread/--edit id check, --loop, --ping, and the bare-means-empty backlog/card flags.
-const bareOwn = new Set(["ask", "channel", "reply-to", "thread", "no-thread", "why-new", "loop", "edit", "ping"]);
-// a repeatable one holds true among its values (dori serve --only); send and thread keep their own --file refusal
-const ownFileRefusal = command === "send" || command === "thread";
+// strict:false gives a value flag left without its value the boolean true (a repeatable one holds true among its
+// values): refused here, before any command runs and so before any request or file write (reviews of #439). A flag is let
+// through only for the commands that check it bare themselves before any side effect: telegram's --thread/--edit id
+// check, send's --ping and --file and thread reply/wait/done's --file refusals, the loop commands' --loop, and the
+// launch, adopt, backlog add and ask flags whose bare value is the empty value their own validation refuses (backlog
+// add has no empty --why-new check, so a bare one is refused here).
+const sub = flags.positionals[0];
+const checksBare: Readonly<Record<string, readonly string[]>> = {
+  send: sub === "telegram" ? ["thread", "edit", "ping", "file"] : ["ping", "file"],
+  thread: sub === "reply" || sub === "wait" || sub === "done" ? ["file"] : [],
+  launch: ["thread", "no-thread", "why-new"],
+  adopt: ["thread"],
+  backlog: sub === "add" ? ["thread", "no-thread", "ask"] : [],
+  ask: ["thread", "channel", "reply-to"],
+  inbound: ["loop"],
+  freshness: ["loop"],
+  guard: ["loop"],
+  "dead-panes": ["loop"],
+};
+const ownCheck = new Set(Object.hasOwn(checksBare, command) ? checksBare[command] : []);
 for (const [name, spec] of Object.entries(options)) {
   const value = flags.values[name];
-  const bare = value === true || (Array.isArray(value) && value.includes(true) && !(name === "file" && ownFileRefusal));
-  if (spec.type === "string" && bare && !bareOwn.has(name)) die(`--${name} needs a value`);
+  const bare = value === true || (Array.isArray(value) && value.includes(true));
+  if (spec.type === "string" && bare && !ownCheck.has(name)) die(`--${name} needs a value`);
 }
 const cli = makeCli(command, rest, flags, config, deps, waive, discordToken, import.meta.path, import.meta.url, makeSignal());
 const { cardDir, threadStatuses, ownDiscord, env } = makeDiscordDeps(cli);
