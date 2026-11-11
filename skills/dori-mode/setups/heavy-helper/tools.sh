@@ -124,10 +124,10 @@ EOF
     ln -sfn "rv@$label" "$dir/rv.link-$$"
     mv -Tf "$dir/rv.link-$$" "$b"
     ln -sfn ../rv/bin/rv "$dir/bin/rv"
-    # the bundle's offline uv on every box's PATH, for a job that starts uv itself or a synced rv tree that calls it
-    # without --tools rv (2026-11-11: such jobs on 4eae ended "uv: command not found", exit 127)
-    ln -sfn ../rv/bin/uv "$dir/bin/uv"
   fi
+  # the current rv's offline uv on every box's PATH (after a commit install too), for a job that starts uv itself or a
+  # synced rv tree that calls it without --tools rv (2026-11-11: such jobs on 4eae ended "uv: command not found", 127)
+  ln -sfn ../rv/bin/uv "$dir/bin/uv"
   echo "TOOLS_OK rv $gen $label $tree playwright $pw packages $(echo $pkgs)"
 }
 
