@@ -72,6 +72,9 @@ export const runsOther = (text: string): boolean => {
       for (k++; ws[k] === "-u" || /^[A-Za-z_]\w*=/.test(ws[k] ?? ""); ) k += ws[k] === "-u" ? 2 : 1;
     }
     const word = ws[k];
+    // test and [ evaluate an array subscript with -v and -R and in arithmetic operands (#414 review 36)
+    const args = word === "[" && ws.at(-1) === "]" ? ws.slice(k + 1, -1) : ws.slice(k + 1);
+    if ((word === "test" || word === "[") && args.some((a) => /^-(?:v|R|eq|ne|lt|le|gt|ge)$/.test(a) || a.includes("[") || a.includes("$"))) return true;
     return word !== undefined && !PLAIN.has(word);
   });
 };
