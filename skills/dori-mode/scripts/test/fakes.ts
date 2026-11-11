@@ -43,6 +43,7 @@ export type World = {
   panes: { pane_id: string; workspace_id: string; agent?: string; agent_status?: string; title?: string; cwd?: string }[];
   aoe: { id: string; title: string; path: string; tool?: string; profile?: string }[];
   tmux: string[];
+  tmuxGone?: string[];
   calls: string[][];
   // panes that got an Enter: their next screen read shows a running turn, the one after it does not
   started: string[];
@@ -122,7 +123,10 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
     return ok(JSON.stringify({ address: id, ...terminal }));
   }
   if (cmd === "hc" && a1 === "--json" && a2 === "ls") {
-    const rows = Object.entries(w.terminals ?? {}).filter(([, terminal]) => terminal.state === "live").map(([address, terminal]) => ({
+    const labelAt = argv.indexOf("--label");
+    const wanted = labelAt < 0 ? undefined : argv[labelAt + 1];
+    const [labelKey, labelValue] = wanted?.split("=") ?? [];
+    const rows = Object.entries(w.terminals ?? {}).filter(([, terminal]) => terminal.state === "live" && (!wanted || terminal.labels[labelKey ?? ""] === labelValue)).map(([address, terminal]) => ({
       address,
       state: terminal.state,
       status: terminal.status?.state,
@@ -156,6 +160,10 @@ export const fakeRunner = (w: World): Runner => async (argv, opts) => {
   }
   if (cmd === "aoe") return ok();
   if (cmd === "tmux" && a1 === "ls") return ok(w.tmux.join("\n"));
+  if (cmd === "tmux" && a1 === "has-session") {
+    const name = (argv.at(-1) ?? "").replace(/^=/, "").replace(/:$/, "");
+    return w.tmuxGone?.includes(name) ? { code: 1, out: "", err: `can't find session: ${name}` } : ok();
+  }
   if (cmd === "tmux" && a1 === "display-message") return ok("10");
   if (cmd === "tmux") return ok();
   if (cmd === "git" && w.inGit === false) return { code: 128, out: "", err: "fatal: not a git repository (or any of the parent directories): .git" };

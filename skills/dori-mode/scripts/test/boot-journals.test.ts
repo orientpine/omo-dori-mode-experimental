@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bootCheck } from "../src/boot.ts";
+import { objectDone, reopenClaim } from "../src/done-flow.ts";
 import { bootDeps, launched, lane, manifest, newWorld, T0 } from "./boot-fixtures.ts";
 import { withState } from "./fakes.ts";
 
@@ -70,4 +71,21 @@ test("an unreadable journal of any kind is that lane's error; the other lanes ar
   expect(result.lines).toContain("REPORT b-healthy kind=blocker at=2026-01-01T12:00:00.000Z state=blocked registryStatus=working");
   expect(result.lines.at(-1)).toBe("BOOT incomplete read-only; nothing restarted, written or stopped");
   expect(result.exitCode).toBe(1);
+});
+
+test.each(["reopen", "object"] as const)("a historical done journal is invalidated by %s before boot", async (transition) => {
+  const world = newWorld();
+  const deps = bootDeps(world, state.dir);
+  const claimed = launched("again", "done-claimed", "w1:p8");
+  await deps.registry.write(claimed);
+  deps.reports.report("again", "done", "claimed too early", T0);
+  const terminal = join(deps.sessionsDir, "lead", "extensions", "terminal");
+  mkdirSync(terminal, { recursive: true });
+  writeFileSync(join(terminal, "owner.json"), JSON.stringify(manifest([{ command: "dori watch again", monitorId: "mon_AGAIN" }]).data));
+  if (transition === "reopen") await reopenClaim(deps, claimed, "new work arrived");
+  else await objectDone(deps, claimed, ["checks still fail"]);
+  const result = await bootCheck(deps);
+  expect(result.lines).toContain(`VANISHED again pane=w1:p8 status=${transition === "reopen" ? "working" : "not-done"}; registry and worktrees preserved; no relaunch`);
+  expect(result.lines).toContain("MONITORS cleanupCandidates=0 deliveryPaused=0 expired=0 (from metadata; liveness unverified)");
+  expect(result.lines.some((line) => line.includes("mon_AGAIN"))).toBe(false);
 });

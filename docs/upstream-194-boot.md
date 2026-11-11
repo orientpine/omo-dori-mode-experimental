@@ -102,9 +102,9 @@ The refreshed upstream diff remained unchanged at head `e8d62d60b958dd12c90c36dc
 
 Red reproduction after all prerequisites: **46 pass, 8 fail** across the six new boot-check cases and the updated boot/journal expectations.
 
-Implementation: `boot-checks.ts` adds `workspaceCheck` and `driftCheck`. Workspace mismatches print `CONFIG_WARN` and fail boot only on herdr. Open, non-closed lanes missing from the session list are probed through the existing runtime; confirmed-gone lanes are counted in `DRIFT n=...`, while probe failures are named separately and fail boot without being counted. Boot calls the checks after reconciliation and before journals. Existing runtime, worklog, and monitor code is reused.
+Implementation: `boot-checks.ts` adds `workspaceCheck` and `driftCheck`. Workspace and group-filter mismatches print `CONFIG_WARN` and fail boot on herdr and hc. Open, non-closed lanes missing from the session list are probed through the existing runtime; confirmed-gone lanes are counted in `DRIFT n=...`, while probe failures are named separately and fail boot without being counted. Boot calls the checks after reconciliation and before journals. Existing runtime, worklog, and monitor code is reused.
 
-Verification: **54 pass, 0 fail** across all boot and session-runtime files, with strict typecheck exit 0. The six cases cover laneWorkspace omission, live-agent mismatch, covering/empty filters, herdr drift with closed/live exclusions, hc drift with no workspace warning, and probe failure. The updated boot test allows only `pane list`/`pane get`, and the journal cases keep a silent lane on a live pane.
+Verification: **54 pass, 0 fail** across all boot and session-runtime files, with strict typecheck exit 0. The six cases cover laneWorkspace omission, live-agent mismatch, covering/empty filters, herdr drift with closed/live exclusions, hc drift with no workspace warning at that stage, and probe failure. The updated boot test allows only `pane list`/`pane get`, and the journal cases keep a silent lane on a live pane.
 
 All four mutation checks failed on their intended assertions: laneWorkspace warning removal (4 pass / 2 fail), live-agent coverage removal (5 pass / 1 fail), drift never counted (4 pass / 2 fail), and hc incorrectly treated as having workspaces (5 pass / 1 fail). The restored source is byte-identical and the six cases pass again.
 
@@ -113,3 +113,11 @@ The final full CI completed with **2032 pass, 0 fail** and `LOC_OK 371 files`.
 Real-CLI QA in `/home/soodori/.soodori/qa/port-upstream-194` passed all eight scenarios: herdr drift/config mismatch, live-agent mismatch, covering filter, empty filter, hc drift without workspace warnings, herdr probe failure, empty-state read-only boot, and report CLI persistence. The artifacts include command lines, stdout/stderr, exit codes, runtime argv logs, state hashes, and the report journal. Only list/get probes occurred and every boot state hash stayed unchanged.
 
 Documentation and NOTICE name the new output, non-zero exit, and upstream head.
+
+## Fork PR 436 review round 1
+
+The reviewed head `0bf0f6cf` received seven BLOCK findings. Failing-first evidence is under `/tmp/tmp.YSFgdiewgX/review-436-r1`: hc/aoe boot **16 pass / 4 fail**, freshness/lifecycle **1 pass / 9 fail**, and Slack deadline **3 pass / 2 fail**. The spawned Slack CLI was killed by its outer 15-second bound before the fix.
+
+Implementation: hc workspace checks use the fork's `dori.group`-aware listing and canonical `hc:t1` refs compare runtime plus id. aoe/tmux sessions join read-only reconciliation and gone probes. Stalled structured lanes suppress only nudges/report relays while supervision, compaction recovery, handover resumption, and rollover checks continue. Journal filesystem errors carry their OS code into the existing lane-scoped error path. Reopen/object transitions append running activity so a historical done report no longer terminates boot or supervision. Slack auth passes an abort signal into its request and clears retry sleeps at the deadline.
+
+Verification: the touched owner and adjacent suites completed with **258 pass, 0 fail**, including matching/mismatching hc groups, live/vanished aoe, stalled maintenance through `freshnessTick`, two-lane EISDIR isolation, done→reopen/object→boot/supervision, and real spawned-process Slack termination at 10 seconds with exit 1 and no signal. Strict TypeScript passed. The first full CI exposed a test-only tmux fake compatibility change and the Slack test's default five-second budget; those were corrected without changing production behavior. The final full CI completed with **2072 pass, 37 pre-existing skips, 0 fail** across 2109 tests in 167 files, with Biome, strict typecheck, knip, and `LOC_OK 377 files`.

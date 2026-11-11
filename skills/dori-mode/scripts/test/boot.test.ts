@@ -137,3 +137,29 @@ test("a failed pane list stays unknown instead of declaring every lane vanished"
   expect(result.lines).toContain("PANES unavailable (session list failed)");
   expect(result.lines.some((line) => line.startsWith("VANISHED"))).toBe(false);
 });
+
+test("an aoe-only boot lists tmux sessions read-only and reconciles a live lane", async () => {
+  const world = newWorld();
+  const pane = "aoe_live_12345678";
+  world.aoe = [{ id: "12345678-abcd", title: "live", path: "/repo", tool: "omo" }];
+  world.tmux = [pane];
+  const deps = depsFor(world);
+  await deps.registry.write(lane("aoe-live", "working", pane));
+  const result = await bootCheck({ ...deps, config: { ...deps.config, backend: "aoe" } });
+  expect(result.lines).toContain("PANES lead=w2:p1 leadState=missing registeredLive=1 vanished=0 unregistered=0");
+  expect(result.lines).toContain("DRIFT n=0");
+  expect(result.lines.some((line) => line.startsWith("VANISHED aoe-live"))).toBe(false);
+  expect(result.exitCode).toBe(0);
+});
+
+test("a vanished aoe lane is reconciled and probed even when herdr is available", async () => {
+  const world = newWorld();
+  world.tmuxGone = ["aoe_lost_87654321"];
+  world.panes = [{ pane_id: "w2:p1", workspace_id: "w2" }];
+  const deps = depsFor(world);
+  await deps.registry.write(lane("aoe-lost", "working", "aoe_lost_87654321"));
+  const result = await bootCheck(deps);
+  expect(result.lines).toContain("VANISHED aoe-lost pane=aoe_lost_87654321 status=working; registry and worktrees preserved; no relaunch");
+  expect(result.lines).toContain("DRIFT n=1 aoe-lost");
+  expect(result.exitCode).toBe(1);
+});

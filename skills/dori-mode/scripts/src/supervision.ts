@@ -187,7 +187,7 @@ export class Supervision {
       const blocker = capped.join("; ");
       if (!terminal && capped.length && progress?.lastReport?.text !== blocker) this.journals.report(lane.key, "blocker", blocker, now);
       else if (!terminal && hung && (!progress || progress.state === "running")) this.journals.append({ type: "activity", key: lane.key, at: new Date(now).toISOString(), state: "stalled", text: HUNG_MESSAGE });
-      else if (!alerts.length && progress?.state === "stalled" && activity !== previous?.activity) this.journals.append({ type: "activity", key: lane.key, at: new Date(now).toISOString(), state: "running", text: "Fresh report, checkpoint, or file activity observed" });
+      else if (!alerts.length && progress?.state === "stalled" && previous !== null && activity !== previous.activity) this.journals.append({ type: "activity", key: lane.key, at: new Date(now).toISOString(), state: "running", text: "Fresh report, checkpoint, or file activity observed" });
     }
     // Deliver before saving, so only alerts that reached the lead count as sent; a failed one is sent again next sweep.
     const undelivered: string[] = [];

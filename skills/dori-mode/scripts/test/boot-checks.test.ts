@@ -75,18 +75,30 @@ test("DRIFT counts open lanes whose pane herdr reports gone; closed and live lan
   expect(probed.sort()).toEqual(["w1:p8", "w1:p9"]);
 });
 
-test("on hc, DRIFT uses hc's own probe and the workspace check does not apply", async () => {
+test("on hc, DRIFT uses hc's own probe, group filters are checked, and the canonical lead ref is live", async () => {
   const world = newWorld();
-  world.terminals = { t1: hcTerm() };
+  world.terminals = { t1: hcTerm({ labels: { "dori.group": "lanes" } }) };
   const lanes = [
     lane("alive", "working", { runtime: "hc", id: "t1" }),
     lane("lost", "working", { runtime: "hc", id: "t9" }),
   ];
-  const result = await boot(world, { runtime: "hc", leadPane: "t1", workspaces: ["w1"], laneWorkspace: "w2" }, lanes);
+  const result = await boot(world, { runtime: "hc", leadPane: "hc:t1", workspaces: ["other"], laneWorkspace: "lanes" }, lanes);
   expect(result.lines).toContain("DRIFT n=1 lost");
-  expect(result.lines.some((l) => l.startsWith("CONFIG_WARN"))).toBe(false);
+  expect(result.lines).toContain("CONFIG_WARN workspaces=[other] does not include laneWorkspace=lanes");
+  expect(result.lines).toContain("PANES lead=hc:t1 leadState=live registeredLive=1 vanished=1 unregistered=0");
   expect(world.calls.some((c) => c[0] === "hc" && c[2] === "get" && c[3] === "t9")).toBe(true);
   expect(result.exitCode).toBe(1);
+});
+
+test.each([
+  { workspaces: ["other"], warning: true },
+  { workspaces: ["lanes"], warning: false },
+])("an hc live-agent group filter reports mismatch=$warning", async ({ workspaces, warning }) => {
+  const world = newWorld();
+  world.terminals = { t1: hcTerm({ labels: { "dori.group": "lanes" } }) };
+  const result = await boot(world, { runtime: "hc", leadPane: "hc:t1", workspaces, laneWorkspace: "" });
+  expect(result.lines.some((line) => line === "CONFIG_WARN workspaces=[other] match none of the 1 live agent sessions on hc")).toBe(warning);
+  expect(result.exitCode).toBe(warning ? 1 : 0);
 });
 
 test("a probe that fails is named and fails boot, but is not counted as drift", async () => {

@@ -26,7 +26,11 @@ export type Progress = {
   readonly lastEvent: LaneEvent;
 };
 
-export class ReportError extends Error {}
+export class ReportError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+  }
+}
 
 export const isReportKind = (value: unknown): value is ReportKind =>
   value === "milestone" || value === "blocker" || value === "question" || value === "halted" || value === "done";
@@ -77,7 +81,15 @@ export class Reports {
     if (!existsSync(path)) return null;
     let progress: Progress | null = null;
     let lastReport: Report | null = null;
-    for (const [index, line] of readFileSync(path, "utf8").split("\n").entries()) {
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+      throw new ReportError(`${path}: ${error.message}`, code);
+    }
+    for (const [index, line] of text.split("\n").entries()) {
       if (!line.trim()) continue;
       let event: LaneEvent;
       try {
@@ -89,7 +101,7 @@ export class Reports {
       if (event.type === "report") {
         lastReport = event;
         progress = { state: reportState(event.kind), lastReport: event, lastEvent: event };
-      } else if (!progress || progress.state === "running" || progress.state === "stalled") {
+      } else if (!progress || progress.state === "running" || progress.state === "stalled" || (event.state === "running" && progress.state === "done")) {
         progress = { state: event.state, lastReport, lastEvent: event };
       }
     }

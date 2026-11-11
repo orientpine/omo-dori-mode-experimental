@@ -54,3 +54,16 @@ test("Slack runs after the local checks and a stalled auth.test ends at the dead
   expect(result.lines.at(-1)).toBe("BOOT incomplete read-only; nothing restarted, written or stopped");
   expect(result.exitCode).toBe(1);
 });
+
+test("the Slack deadline cancels a retry wait and its request signal", async () => {
+  const calls: { url: string; signal?: AbortSignal }[] = [];
+  const http = async (req: { url: string; signal?: AbortSignal }) => {
+    calls.push(req);
+    return { status: 429, headers: { "retry-after": "60" }, body: JSON.stringify({ ok: false, error: "ratelimited" }) };
+  };
+  const slack = new Slack(http, fakeClock(T0), { token: "xoxp-FIXTURE" }, "https://slack.test/api");
+  const result = await bootCheck({ ...depsFor(newWorld()), slack: slackAuthCheck(slack), slackDeadlineMs: 20 });
+  expect(result.lines).toContain("SLACK auth.test timed out after 20 ms");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.signal?.aborted).toBe(true);
+});

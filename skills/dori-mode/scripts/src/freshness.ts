@@ -153,7 +153,6 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       continue;
     }
     if (statusOf(lane) !== "working") continue;
-    if (progress?.state === "stalled") continue;
     let current = lane;
     if (report && report !== lane.lastReport) {
       current = lane.reportProtocol === "jsonl-v1" ? { ...current, lastReport: report } : { ...current, lastReport: report, lastReplyAt: now };
@@ -194,7 +193,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     // wrote since, told him nothing (owner, 2026-11-04: "시간도 안맞고 말이야 도움도 안돼"); the lead is told, once per silence
     // (lastAutoReplyAt), with or without hooks.threadReply
     const due = lane.reportProtocol === "jsonl-v1" ? (current.lastAutoReplyAt ?? 0) <= heard : (current.lastAutoReplyAt ?? 0) < heard;
-    if (threadQuietMin >= deps.config.postAfterMin && lane.thread !== "none" && due) {
+    if (progress?.state !== "stalled" && threadQuietMin >= deps.config.postAfterMin && lane.thread !== "none" && due) {
       // a report seen before still stands once it left the screens; only a lane never heard from is NO-REPORT
       const known = lane.reportProtocol === "jsonl-v1" ? report : report ?? current.lastReport;
       if (!known) {

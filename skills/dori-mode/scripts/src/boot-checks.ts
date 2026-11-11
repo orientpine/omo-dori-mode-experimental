@@ -1,13 +1,15 @@
 // The boot checks a fresh lead cannot make by itself (#188): a workspace filter that matches no lane, and lanes whose
 // session is gone while the registry still calls them open. Each finding is one line and fails the boot.
 import type { Runtimes } from "./runtime/registry.ts";
-import type { RuntimeKind, SessionInfo } from "./runtime/types.ts";
+import type { RuntimeKind } from "./runtime/types.ts";
 import type { DoriConfig } from "./config.ts";
 import { type Lane, sessionOf, statusOf } from "./registry.ts";
 import { ALIVE_STATUSES } from "./panes.ts";
+import { aoeRefForLane, type BootSession } from "./sessions.ts";
+import type { PaneLife } from "./aoe.ts";
 
-/** Runtimes whose sessions sit in workspaces that `config.workspaces` filters on. hc has none: its group is a label. */
-const WORKSPACE_RUNTIMES: ReadonlySet<RuntimeKind> = new Set(["herdr"]);
+/** Runtimes whose sessions sit in groups that `config.workspaces` filters on (herdr workspace, hc dori.group label). */
+const WORKSPACE_RUNTIMES: ReadonlySet<RuntimeKind> = new Set(["herdr", "hc"]);
 
 /**
  * `CONFIG_WARN` when the workspace filter (`dead-panes`, `sync`) would see none of the lanes: `config.workspaces` does
@@ -17,7 +19,7 @@ const WORKSPACE_RUNTIMES: ReadonlySet<RuntimeKind> = new Set(["herdr"]);
 export const workspaceCheck = (
   config: Pick<DoriConfig, "workspaces" | "laneWorkspace" | "leadPane" | "ignorePanes">,
   kind: RuntimeKind | undefined,
-  sessions: readonly SessionInfo[] | null,
+  sessions: readonly BootSession[] | null,
 ): string[] => {
   if (kind === undefined || !WORKSPACE_RUNTIMES.has(kind) || config.workspaces.length === 0) return [];
   const filter = `workspaces=[${config.workspaces.join(",")}]`;
@@ -45,17 +47,22 @@ export const workspaceCheck = (
 export const driftCheck = async (
   rts: Runtimes,
   lanes: readonly Lane[],
-  sessions: readonly SessionInfo[],
+  input: { readonly sessions: readonly BootSession[]; readonly probeAoe: (pane: string) => Promise<PaneLife> },
 ): Promise<{ readonly lines: string[]; readonly failed: boolean }> => {
-  const live = new Set(sessions.map((s) => `${s.ref.runtime}:${s.ref.id}`));
+  const live = new Set(input.sessions.map((s) => `${s.ref.runtime}:${s.ref.id}`));
   const gone: string[] = [];
   const lines: string[] = [];
   let failed = false;
   for (const lane of lanes) {
     const ref = sessionOf(lane);
-    if (!ref || statusOf(lane) === "closed" || live.has(`${ref.runtime}:${ref.id}`)) continue;
+    const aoe = ref ? undefined : aoeRefForLane(lane.pane);
+    const identity = ref ?? aoe;
+    if (!identity || statusOf(lane) === "closed" || live.has(`${identity.runtime}:${identity.id}`)) continue;
     try {
-      if ((await rts.for(ref).probe(ref)).status === "gone") gone.push(lane.key);
+      if (aoe) {
+        const life = await input.probeAoe(aoe.id);
+        if (!life.live && life.how === "gone") gone.push(lane.key);
+      } else if (ref && (await rts.for(ref).probe(ref)).status === "gone") gone.push(lane.key);
     } catch (e) {
       failed = true;
       lines.push(`DRIFT probe-failed ${lane.key} (${e instanceof Error ? e.message : String(e)})`);

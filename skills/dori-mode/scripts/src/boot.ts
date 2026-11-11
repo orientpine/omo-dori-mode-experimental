@@ -1,8 +1,9 @@
 import type { FlowDeps } from "./done-flow.ts";
 import { shellQuote } from "./herdr.ts";
-import type { SessionInfo } from "./runtime/types.ts";
+import { parseRef } from "./runtime/types.ts";
 import { type ChosenRuntimes, runtimesOf } from "./run.ts";
-import { listSessions } from "./sessions.ts";
+import { paneLife } from "./aoe.ts";
+import { aoeRefForLane, listAoeSessions, listSessions, type BootSession } from "./sessions.ts";
 import { reconcilePanes } from "./reconcile.ts";
 import { driftCheck, workspaceCheck } from "./boot-checks.ts";
 import type { Slack } from "./messenger/slack.ts";
@@ -11,7 +12,7 @@ import { type Lane, statusOf } from "./registry.ts";
 import { ReportError, type Reports } from "./reports.ts";
 import { type Worklog, worklogLines } from "./worklog.ts";
 
-export type SlackCheck = () => Promise<{ readonly userId: string; readonly teamId: string } | null>;
+export type SlackCheck = (signal?: AbortSignal) => Promise<{ readonly userId: string; readonly teamId: string } | null>;
 export type BootDeps = Pick<FlowDeps, "run" | "registry" | "config" | "clock"> & {
   readonly reports: Reports;
   readonly worklog: Worklog;
@@ -21,9 +22,9 @@ export type BootDeps = Pick<FlowDeps, "run" | "registry" | "config" | "clock"> &
   readonly slackDeadlineMs?: number;
 };
 
-export const slackAuthCheck = (slack: Pick<Slack, "call"> | null): SlackCheck => async () => {
+export const slackAuthCheck = (slack: Pick<Slack, "call"> | null): SlackCheck => async (signal) => {
   if (!slack) return null;
-  const auth = await slack.call("auth.test", {});
+  const auth = await slack.call("auth.test", {}, undefined, undefined, signal);
   if (typeof auth["user_id"] !== "string" || !auth["user_id"] || typeof auth["team_id"] !== "string" || !auth["team_id"]) throw new Error("auth.test returned no user_id or team_id");
   return { userId: auth["user_id"], teamId: auth["team_id"] };
 };
@@ -69,13 +70,15 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       failed = true;
-      journals.push(`JOURNAL-ERROR ${lane.key} kind=${error instanceof ReportError || error instanceof SyntaxError ? "invalid-journal" : "code" in error && typeof error.code === "string" ? error.code : "unreadable"}`);
+      journals.push(`JOURNAL-ERROR ${lane.key} kind=${"code" in error && typeof error.code === "string" ? error.code : error instanceof ReportError || error instanceof SyntaxError ? "invalid-journal" : "unreadable"}`);
       lanes.push(lane);
     }
   }
-  let panes: SessionInfo[] | null = null;
+  let panes: BootSession[] | null = null;
   try {
-    panes = await listSessions(rts, { lanes: registered });
+    panes = await listSessions(rts, { lanes: registered, groups: deps.config.workspaces, selected: deps.config.backend !== "aoe" });
+    const needsAoe = deps.config.backend === "aoe" || registered.some((lane) => statusOf(lane) !== "closed" && aoeRefForLane(lane.pane));
+    if (needsAoe) panes.push(...await listAoeSessions(deps.run));
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     failed = true;
@@ -86,10 +89,12 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     const lead = deps.config.leadPane;
     const done = new Set(lanes.filter(finished).map((lane) => lane.key));
     const vanished = result.lanes.filter((lane) => lane.paneState === "vanished" && !done.has(lane.key));
-    lines.push(`PANES lead=${lead || "unconfigured"} leadState=${panes.some((p) => p.ref.id === lead) ? "live" : "missing"} registeredLive=${result.lanes.filter((l) => l.paneState === "live" && l.status !== "closed").length} vanished=${vanished.length} unregistered=${result.unregistered.length}`);
+    const leadRef = parseRef(lead);
+    const leadLive = leadRef ? panes.some((pane) => pane.ref.runtime === leadRef.runtime && pane.ref.id === leadRef.id) : panes.some((pane) => pane.ref.id === lead);
+    lines.push(`PANES lead=${lead || "unconfigured"} leadState=${leadLive ? "live" : "missing"} registeredLive=${result.lanes.filter((l) => l.paneState === "live" && l.status !== "closed").length} vanished=${vanished.length} unregistered=${result.unregistered.length}`);
     for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${lane.pane} status=${lane.status}; registry and worktrees preserved; no relaunch`);
     if (result.unregistered.length) lines.push(`UNREGISTERED ${result.unregistered.join(" ")}`);
-    const drift = await driftCheck(rts, registered, panes);
+    const drift = await driftCheck(rts, registered, { sessions: panes, probeAoe: (pane) => paneLife(deps.run, pane) });
     lines.push(...drift.lines);
     if (drift.failed) failed = true;
   }
@@ -128,12 +133,16 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   }
   for (const item of expired) lines.push(`EXPIRED ${item.lanes.join(",")} match=${item.match.join(",")} ownerSession=${item.sessionId} metadata=${shellQuote(item.metadata)} expiresAt=${new Date(item.expiresAt ?? 0).toISOString()}; nothing to stop`);
   const deadlineMs = deps.slackDeadlineMs ?? 10_000;
+  const stop = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const auth = await Promise.race([
-      deps.slack(),
+      deps.slack(stop.signal),
       new Promise<"timeout">((resolve) => {
-        timer = setTimeout(() => resolve("timeout"), deadlineMs);
+        timer = setTimeout(() => {
+          stop.abort();
+          resolve("timeout");
+        }, deadlineMs);
       }),
     ]);
     if (auth === "timeout") {
@@ -143,7 +152,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     failed = true;
-    lines.push("SLACK auth failed");
+    lines.push(stop.signal.aborted ? `SLACK auth.test timed out after ${deadlineMs} ms` : "SLACK auth failed");
   } finally {
     clearTimeout(timer);
   }
