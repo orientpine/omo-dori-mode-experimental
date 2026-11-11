@@ -69,7 +69,7 @@ test("lanes mode reads open live hc lanes from this Dori's configured state and 
   expect(r.calls).toEqual(["agents ls --json"]);
 });
 
-test.each([["hc:t4", false], ["hc:t4", "stale"], ["w1:p2", true]] as const)("lanes mode asks hc nothing for lead %s with socket %s", async (lead, socket) => {
+test.each([["hc:t4", false], ["hc:t4", "stale"], ["w1:p2", false]] as const)("lanes mode asks hc nothing for lead %s with socket %s", async (lead, socket) => {
   const f = await fixture(lead, socket);
   f.lane("live-one", "hc:t7");
   const r = await f.helper("lanes");
@@ -84,6 +84,23 @@ test("lanes mode honors the account's environment state directory and effective 
   f.lane("wrong-one", "hc:t7");
   const r = await f.helper("lanes");
   expect(JSON.parse(r.out)).toEqual([{ key: "other-one", terminal: "t7" }]);
+});
+
+test("a Dori whose lead is still on herdr shows its live hc lanes, so a lane opened mid-move is a row (review 1 of #456)", async () => {
+  const f = await fixture("w1:p2");
+  f.lane("live-one", "hc:t7");
+  f.lane("herdr-one", "w1:p3");
+  const r = await f.helper("lanes");
+  expect({ code: r.code, rows: JSON.parse(r.out), calls: r.calls }).toEqual({ code: 0, rows: [{ key: "live-one", terminal: "t7" }], calls: ["agents ls --json"] });
+});
+
+test("an account without config.json takes its lead and state dir from dori.env (review 1 of #456)", async () => {
+  const f = await fixture();
+  rmSync(join(f.dir, ".dori", "config.json"));
+  writeFileSync(join(f.dir, ".dori", "dori.env"), `HC_SESSION=agents\nDORI_LEAD_TMUX=hc:t4\nDORI_STATE_DIR=${join(f.dir, "state")}\n`);
+  f.lane("live-one", "hc:t7");
+  const r = await f.helper("lanes");
+  expect({ code: r.code, rows: JSON.parse(r.out) }).toEqual({ code: 0, rows: [{ key: "live-one", terminal: "t7" }] });
 });
 
 test("a lane attach selects that terminal in the Dori core and exits without retrying", async () => {

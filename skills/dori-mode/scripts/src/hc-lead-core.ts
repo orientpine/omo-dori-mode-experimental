@@ -31,10 +31,14 @@ if (import.meta.main) {
   const socket = hcCoreSocket(core);
   const hcRun = (args: readonly string[]) => run(["hc", ...args], { env: { HC_SESSION: core || undefined, HC_SOCKET: undefined } });
   if (mode === "lanes") {
-    if (!lead.startsWith("hc:") || !(await hcCoreRunning(core || undefined))) {
+    // every open hc lane counts, whatever runtime the lead is on: a lane opened on hc while the lead is still on herdr
+    // (a Dori moving over) is no herdr tab (review 1 of #456)
+    if (!(await hcCoreRunning(core || undefined))) {
       console.log("[]");
     } else {
-      const config: unknown = await Bun.file(configPath()).json();
+      // no config.json is an empty config, as loadConfig reads it; a malformed one still fails
+      const configFile = Bun.file(configPath());
+      const config: unknown = (await configFile.exists()) ? await configFile.json() : {};
       const state = process.env["DORI_STATE_DIR"] ?? (config && typeof config === "object" && "stateDir" in config && typeof config.stateDir === "string" ? config.stateDir : defaultConfig(homedir()).stateDir);
       const scanned = await new Registry(expandHome(state)).scan();
       if (scanned.unreadable.length) throw new Error(`dori: unreadable lanes: ${scanned.unreadable.join(", ")}`);

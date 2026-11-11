@@ -59,8 +59,9 @@ The discovery command runs inside the bridge host's already-running hc core and 
 It uses the same
 `sudo -n -u <account> -H` and account paths as attaching; `hc-lead-core.ts lanes` reads that account's effective lead,
 `dori.env`, and registry (`DORI_STATE_DIR` from that file, else config `stateDir`, else `~/.dori/state`).
-An effective herdr lead returns no lane rows. For an hc lead, only open records whose pane is a local `hc:tN` and
-whose terminal is live in that Dori's core become rows. Paused and claimed lanes remain open; closed records do not.
+Whatever runtime the lead is on (a Dori moving over opens hc lanes while its lead is still on herdr), open records whose
+pane is a local `hc:tN` and whose terminal is live in that Dori's core become rows; herdr lanes stay tabs of the herdr row.
+With no `config.json` the account's `dori.env` and the defaults choose the lead and the state dir, as `loadConfig` does. Paused and claimed lanes remain open; closed records do not.
 With no accepting Dori core socket (including a stale path) it calls no hc command and returns no lanes. With no host core socket the bridge timer
 also asks hc nothing. Discovery failures leave existing rows alone and fail the refresh instead of treating an unreadable registry as empty.
 
