@@ -33,11 +33,14 @@ export const slackToken = (env: Env = process.env, platform: string = process.pl
   return value;
 };
 
-// The env a lane needs to find this home's token: the token file's absolute path, never the token. The file is the
-// launcher's DORI_SLACK_TOKEN_FILE, else `slack-token` next to its config; with no such file nothing is added, as before.
+// The env a lane needs to find this home's token: the token file's absolute path, never the token. The launcher's own
+// DORI_SLACK_TOKEN_FILE always goes, even when that file is missing, so the lane reports it instead of falling back to an
+// inherited token; else `slack-token` next to its config when it exists; else nothing is added, as before.
 // DORI_SLACK_TOKEN is passed empty: a lane's pane inherits its server's or core's env, which may hold another home's
 // token, and a set DORI_SLACK_TOKEN is read before the file.
 export const laneTokenEnv = (env: Env, configFile: string): Record<string, string> => {
-  const file = resolve(env["DORI_SLACK_TOKEN_FILE"] || join(dirname(configFile), TOKEN_FILE_NAME));
-  return existsSync(file) ? { DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "" } : {};
+  const chosen = env["DORI_SLACK_TOKEN_FILE"];
+  if (chosen) return { DORI_SLACK_TOKEN_FILE: resolve(chosen), DORI_SLACK_TOKEN: "" };
+  const found = join(dirname(resolve(configFile)), TOKEN_FILE_NAME);
+  return existsSync(found) ? { DORI_SLACK_TOKEN_FILE: found, DORI_SLACK_TOKEN: "" } : {};
 };

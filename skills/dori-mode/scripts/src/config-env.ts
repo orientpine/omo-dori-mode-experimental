@@ -28,9 +28,12 @@ export const loadEnvFile = async (path: string, env: Record<string, string | und
   const values = envFileEntries(await file.text());
   const foreign = [...values].some(([name, value]) => {
     const inherited = env[name];
-    return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && tokenIdentity(name, inherited) !== tokenIdentity(name, value);
+    return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && inherited !== "" && tokenIdentity(name, inherited) !== tokenIdentity(name, value);
   });
-  const dropped = foreign ? Object.keys(env).filter((name) => instanceVar(name) && env[name] !== undefined) : [];
+  // A token file path with DORI_SLACK_TOKEN blanked is what dori launch hands a lane of this home (#201): the launcher's
+  // choice of credentials, so it is kept through the isolation and not replaced by dori.env's token.
+  const chosen = env["DORI_SLACK_TOKEN_FILE"] && env["DORI_SLACK_TOKEN"] === "" ? ["DORI_SLACK_TOKEN_FILE", "DORI_SLACK_TOKEN"] : [];
+  const dropped = foreign ? Object.keys(env).filter((name) => instanceVar(name) && env[name] !== undefined && !chosen.includes(name)) : [];
   for (const name of dropped) delete env[name];
   for (const [name, value] of values) if (env[name] === undefined) env[name] = value;
   return dropped;

@@ -54,6 +54,13 @@ test("a lane home env adds the token file path and an empty token only when the 
   expect(laneHomeEnv({ stateDir: join(dir, "state"), backend: "aoe" }, { DORI_CONFIG: config })).toEqual({});
 });
 
+test("an explicit DORI_SLACK_TOKEN_FILE goes to the lane with the token blanked even when the file is missing, so the lane reports it (#201 review 1)", () => {
+  const absent = join(dir, "absent-token");
+  const env = laneHomeEnv({ stateDir: join(dir, "state"), backend: "herdr" }, { DORI_CONFIG: join(dir, "config.json"), DORI_SLACK_TOKEN_FILE: absent, DORI_SLACK_TOKEN: "xoxb-FIXTURE-env" });
+  expect(env).toMatchObject({ DORI_SLACK_TOKEN_FILE: absent, DORI_SLACK_TOKEN: "" });
+  expect(() => slackToken(env, "linux")).toThrow(`DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
+});
+
 test.skipIf(process.platform === "win32")("boot prints a bad token file as a failed SLACK token-file line, still runs its other checks, and shows no token", async () => {
   // Given: a token file open to group and others, and a path with no file
   const open = tokenFile("wide", "xoxb-FIXTURE-secret\n", 0o644);
