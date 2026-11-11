@@ -11,7 +11,7 @@ import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
-import { endedWatch, endOldMonitors, procStart, readText, RUNS_SCRIPT, sameWatch, shellScripts } from "./handover-monitors.ts";
+import { endedWatch, endOldMonitors, procStart, readText, runsOther, sameWatch, shellScripts } from "./handover-monitors.ts";
 import { watchOnly } from "./handover-watch.ts";
 import { missingTodos, OWNER_HOURS, type OwnerWord, recentOwnerWords, todoTask } from "./handover-todos.ts";
 import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
@@ -218,7 +218,7 @@ export const launchOf = (command: string, home: string, read: (path: string) => 
   if (honours && new RegExp(`\\b${RESTORED}=1\\b`).test(command)) return undefined;
   const why = startsWork(command) ?? scripts.map(startsWork).find(Boolean) ?? (unread || texts.includes(undefined) ? "a script the handover cannot read" : "a command that is not one of the plain watch shapes");
   const writes = [...new Set([...command.matchAll(/(?:(?<![0-9&>])>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|'"()>]+)/g)].map((m) => m[1] ?? "").filter((f) => f && f !== "/dev/null"))];
-  return { why, writes, detached: unread || texts.includes(undefined) || named.some(([p]) => !inputs.some(([q]) => q === p)) || inputs.some((_, j) => RUNS_SCRIPT.test(scripts[named.length + j] ?? "")) || (command.match(/</g)?.length ?? 0) > 1 || [...named, ...inputs].some(([p]) => !/^(?:\/|~\/|\$HOME\/)/.test(p)) || (command.match(/</g)?.length ?? 0) > inputs.length || /\|\s*(?:\S*\/)?(?:ba|z|da|k)?sh\b/.test(command) || [command, ...scripts].some((t) => DETACHED.some((re) => re.test(t)) || /[^&>]&(?=\s|$|[;)'"])/.test(t)), ...(honours ? { rearm: `export ${RESTORED}=1; ${command}` } : {}) };
+  return { why, writes, detached: unread || texts.includes(undefined) || named.some(([p]) => !inputs.some(([q]) => q === p)) || inputs.some((_, j) => runsOther(scripts[named.length + j] ?? "")) || (command.match(/</g)?.length ?? 0) > 1 || [...named, ...inputs].some(([p]) => !/^(?:\/|~\/|\$HOME\/)/.test(p)) || (command.match(/</g)?.length ?? 0) > inputs.length || /\|\s*(?:\S*\/)?(?:ba|z|da|k)?sh\b/.test(command) || [command, ...scripts].some((t) => DETACHED.some((re) => re.test(t)) || /[^&>]&(?=\s|$|[;)'"])/.test(t)), ...(honours ? { rearm: `export ${RESTORED}=1; ${command}` } : {}) };
 };
 
 // Every watch the old session still runs, persistent or not (a command whose recorded process is gone is left out); the new

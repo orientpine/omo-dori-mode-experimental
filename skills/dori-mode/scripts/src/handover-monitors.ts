@@ -76,9 +76,8 @@ export const readText = (path: string): string | undefined => {
   }
 };
 
-// #414 review 30: a script the handover reads can run another one it does not read, so a script run by name keeps its watch,
-// and so does a script fed to a shell whose text runs a shell, a script, source or . or -c (a detaching word: DETACHED)
-export const RUNS_SCRIPT = /(?:^|[\s;&|(`])(?:\S*\/)?(?:ba|z|da|k)?sh\b|(?:^|[\s;&|(])(?:\.\/|\.\s|source\s)|\s-c\b/m;
+export { runsOther } from "./handover-script-runs.ts";
+
 // The scripts a command's shells run by name, read from shell words, not a regex (#414 review 17: bash -o pipefail -c took
 // pipefail for a script, and /bin/bash start.sh was no shell). Words split on blanks, quotes and backslashes resolved;
 // ; & | ( ) and newlines start a new command; a redirection and its target are no word. Each command is read past

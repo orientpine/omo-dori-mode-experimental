@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { launchOf, missingMonitors } from "../src/handover.ts";
+import { runsOther } from "../src/handover-script-runs.ts";
 
 const HOME = "/home/test";
 
@@ -189,13 +190,18 @@ test("a remote shell's input file is not read here, and a local input to ssh sti
 // #414 review 30: a script can run another script that detaches its work, and the handover reads only the named one; a
 // script run by name keeps its watch whatever it says, and a script fed to a shell does when its text runs another one
 test("a script that runs another script keeps its watch, whatever the scripts say", () => {
-  const files: Record<string, string> = { "/tmp/abs.sh": "cd /tmp\n/tmp/inner.sh\n", "/tmp/wrap.sh": "x=1 timeout 60 /tmp/inner\n", "/tmp/var.sh": "J=/tmp/inner.sh\n$J\n", "/tmp/bg.sh": "sleep 30 &\n", "/tmp/outer.sh": "bash /tmp/inner.sh\n", "/tmp/inner.sh": "nohup setsid /tmp/job > /tmp/job.log 2>&1 &\n", "/tmp/ci.sh": "bash /tmp/inner.sh\n", "/tmp/plain.sh": "git fetch -q\nbun run ci\n" };
+  const files: Record<string, string> = { "/tmp/abs.sh": "cd /tmp\n/tmp/inner.sh\n", "/tmp/path.sh": "cd /tmp\n/opt/job/run --go\n", "/tmp/wrap.sh": "x=1 timeout 60 /tmp/inner\n", "/tmp/var.sh": "J=/tmp/inner.sh\n$J\n", "/tmp/bg.sh": "sleep 30 &\n", "/tmp/outer.sh": "bash /tmp/inner.sh\n", "/tmp/inner.sh": "nohup setsid /tmp/job > /tmp/job.log 2>&1 &\n", "/tmp/ci.sh": "bash /tmp/inner.sh\n", "/tmp/plain.sh": "git fetch -q\nbun run ci\n" };
   const read = (path: string) => files[path];
   // #414 review 31: per command word of the fed script: a path, a .sh, a shell or exec-like word, an expanded command
   // word, a wrapper that runs another command, or a background job
-  for (const command of ["bash /tmp/outer.sh", "sh /tmp/outer.sh > /tmp/o.log", "bash -s < /tmp/ci.sh", "ssh host bash -s < /tmp/ci.sh", "bash -s < /tmp/abs.sh", "bash -s < /tmp/wrap.sh", "bash -s < /tmp/var.sh", "bash -s < /tmp/bg.sh"]) {
+  for (const command of ["bash /tmp/outer.sh", "sh /tmp/outer.sh > /tmp/o.log", "bash -s < /tmp/ci.sh", "ssh host bash -s < /tmp/ci.sh", "bash -s < /tmp/abs.sh", "bash -s < /tmp/path.sh", "bash -s < /tmp/wrap.sh", "bash -s < /tmp/var.sh", "bash -s < /tmp/bg.sh"]) {
     expect([command, launchOf(command, HOME, read)?.detached]).toEqual([command, true]);
   }
   // a plain script fed to a shell from one absolute input still ends with its watch (the remote ci of 2026-11-08)
   expect(launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/plain.sh > /tmp/ci.log 2>&1", HOME, read)?.detached).toBe(false);
+});
+
+test("a fed script runs another command when a command word is a path, expanded, a runner, or a job goes to the background", () => {
+  expect(["sleep 30 &\n", "/opt/job/run\n", "$J\n", "nohup x\n", "env /tmp/x\n", "echo \"$(bash x)\"\n"].map(runsOther)).toEqual([true, true, true, true, true, true]);
+  expect(["git fetch -q\nbun run ci\n", "env -u X FOO=1 bun run ci 2>&1\n", "echo \"a $(date) b\" >> /tmp/c\n", "until [ -f /tmp/s ]; do sleep 2; done\n"].map(runsOther)).toEqual([false, false, false, false]);
 });
