@@ -16,7 +16,7 @@ export type BootDeps = Pick<FlowDeps, "run" | "registry" | "config" | "clock"> &
   readonly reports: Reports;
   readonly worklog: Worklog;
   readonly rts: ChosenRuntimes;
-  readonly hcCoreUp: () => boolean;
+  readonly hcCoreUp: () => Promise<boolean>;
   readonly slack: SlackCheck;
   readonly monitorDirs?: readonly string[];
   readonly slackDeadlineMs?: number;

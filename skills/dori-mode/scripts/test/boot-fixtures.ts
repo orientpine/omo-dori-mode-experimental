@@ -38,7 +38,7 @@ export const manifest = (monitors: Monitor[]): Manifest => ({
 export const bootDeps = (world: World, stateDir: string, slack: () => Promise<{ userId: string; teamId: string } | null> = async () => null) => {
   const sessionsDir = join(stateDir, "sessions");
   const deps = depsFor(world, fakeClock(T0), stateDir, { sessionsDir, leadPane: "w2:p1" });
-  return { ...deps, rts: runtimesOf(deps.run, { runtime: deps.config.runtime }), hcCoreUp: () => true, reports: new Reports(stateDir), worklog: new Worklog(stateDir), slack, sessionsDir };
+  return { ...deps, rts: runtimesOf(deps.run, { runtime: deps.config.runtime }), hcCoreUp: async () => true, reports: new Reports(stateDir), worklog: new Worklog(stateDir), slack, sessionsDir };
 };
 
 export const snapshot = (dir: string) =>

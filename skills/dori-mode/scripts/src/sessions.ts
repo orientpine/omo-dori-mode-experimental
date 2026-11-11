@@ -40,7 +40,7 @@ export class RuntimeDormant extends Error {}
 // Every session of every runtime in use: the kinds of the given (open) lanes, the selected kind and the lead. No other
 // runtime is called, since an hc call starts a stopped core (review 9 of #436): a kind only closed lanes name is left as
 // it is, and hcCoreUp (read without an hc call) answers whether a required hc core runs. group keeps only one group.
-export const listSessions = async (rts: Runtimes, options: { readonly group?: string; readonly groups?: readonly string[]; readonly selected?: boolean; readonly lead?: SessionRef; readonly lanes?: readonly { readonly sessionRef?: SessionRef | undefined }[]; readonly hcCoreUp?: () => boolean } = {}): Promise<SessionInfo[]> => {
+export const listSessions = async (rts: Runtimes, options: { readonly group?: string; readonly groups?: readonly string[]; readonly selected?: boolean; readonly lead?: SessionRef; readonly lanes?: readonly { readonly sessionRef?: SessionRef | undefined }[]; readonly hcCoreUp?: () => Promise<boolean> } = {}): Promise<SessionInfo[]> => {
   const required = new Set<RuntimeKind>();
   for (const lane of options.lanes ?? []) if (lane.sessionRef) {
     rts.for(lane.sessionRef);
@@ -58,7 +58,7 @@ export const listSessions = async (rts: Runtimes, options: { readonly group?: st
   }
   const out: SessionInfo[] = [];
   for (const kind of rts.kinds().filter((k) => required.has(k))) {
-    if (kind === "hc" && options.hcCoreUp && !options.hcCoreUp()) throw new RuntimeDormant("hc core not running; boot does not start it");
+    if (kind === "hc" && options.hcCoreUp && !(await options.hcCoreUp())) throw new RuntimeDormant("hc core not running; boot does not start it");
     const rt = rts.for({ runtime: kind, id: "" });
     const sessions = await rt.list(options.group === undefined ? undefined : { group: options.group });
     if (kind !== "hc" || !options.groups?.length) {

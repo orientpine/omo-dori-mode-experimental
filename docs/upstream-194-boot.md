@@ -185,3 +185,11 @@ The next reviewed head `a44309be` received one BLOCK finding: boot listed runtim
 Implementation: `listSessions` lists only required runtimes (open lanes, the selected runtime, the lead). A required hc core is first checked through its socket (`hcCoreRunning`, no hc call); when it is not running, boot prints `PANES unavailable (hc core not running; boot does not start it)` and fails. A runtime only closed lanes name is not called at all.
 
 Verification: `ninth-green.log` **4 pass, 0 fail**; boot/sessions/reconcile suites **63 pass, 0 fail**; strict typecheck green. The final full CI completed with **2105 pass, 37 pre-existing skips, 0 fail** across 2142 tests in 172 files, with `LOC_OK 383 files`.
+
+## Fork PR 436 review round 10
+
+The next reviewed head `8f675671` received one BLOCK finding: `hcCoreRunning` accepted any existing path, so a socket a killed core left behind passed and boot went on to `hc --json ls`, which can start the core. Failing-first evidence in `/tmp/tmp.YSFgdiewgX/review-436-r10/tenth-red.log` shows the empty-file and stale-socket cases reading as running and boot calling hc.
+
+Implementation: `hcCoreRunning` connects to the socket with a 1 s limit and counts the core as running only when the connection is accepted; a missing path, a plain file and a stale socket all read as not running. Boot awaits it before any hc call.
+
+Verification: `tenth-green.log` **5 pass, 0 fail** (the stale socket is made by a process killed with SIGKILL); boot/sessions/reconcile/run suites **259 pass, 0 fail**; on this machine the live default core reads running and an absent core not running (`real-core-check.log`). The final full CI completed with **2106 pass, 37 pre-existing skips, 0 fail** across 2143 tests in 172 files, with `LOC_OK 383 files`.

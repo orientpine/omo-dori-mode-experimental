@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { bootCheck } from "../src/boot.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hcCoreRunning, runtimesFor } from "../src/run.ts";
 import { bootDeps, lane, newWorld } from "./boot-fixtures.ts";
@@ -49,7 +49,7 @@ test("a stopped hc core referenced only by closed lanes is left stopped", async 
     const deps = bootDeps(newWorld(), state.dir);
     await deps.registry.write(lane("old-hc", "closed", "hc:t5"));
     const { calls, run } = hcCalls(deps);
-    const result = await bootCheck({ ...deps, run, hcCoreUp: () => false, rts: runtimesFor({ runtime: "herdr" }, {}, run, deps.clock) });
+    const result = await bootCheck({ ...deps, run, hcCoreUp: async () => false, rts: runtimesFor({ runtime: "herdr" }, {}, run, deps.clock) });
     expect(calls).toEqual([]);
     expect(result.lines).toContain("DRIFT n=0");
     expect(result.lines.some((line) => line.startsWith("PANES unavailable"))).toBe(false);
@@ -57,15 +57,47 @@ test("a stopped hc core referenced only by closed lanes is left stopped", async 
   } finally { state.done(); }
 });
 
-test("an hc core counts as running only while its socket exists", () => {
+// A socket left by a killed core: the process that bound it dies by SIGKILL, so nothing unlinks the path.
+const staleSocket = async (path: string): Promise<void> => {
+  const child = Bun.spawn([process.execPath, "-e", `Bun.listen({ unix: ${JSON.stringify(path)}, socket: { data() {} } }); console.log("READY");`], { stdout: "pipe" });
+  const reader = child.stdout.getReader();
+  await reader.read();
+  child.kill("SIGKILL");
+  await child.exited;
+};
+
+test("an hc core counts as running only while its socket accepts a connection", async () => {
+  const state = withState();
+  const env = { XDG_RUNTIME_DIR: state.dir };
+  const dir = join(state.dir, "herdr-core");
+  mkdirSync(dir);
+  const listener = Bun.listen({ unix: join(dir, "live.sock"), socket: { data() {} } });
+  try {
+    expect(await hcCoreRunning(undefined, env)).toBe(false);
+    writeFileSync(join(dir, "empty.sock"), "");
+    expect(await hcCoreRunning("empty", env)).toBe(false);
+    await staleSocket(join(dir, "stale.sock"));
+    expect(existsSync(join(dir, "stale.sock"))).toBe(true);
+    expect(await hcCoreRunning("stale", env)).toBe(false);
+    expect(await hcCoreRunning("live", env)).toBe(true);
+  } finally {
+    listener.stop(true);
+    state.done();
+  }
+});
+
+test("a stale hc socket after an unclean shutdown makes boot report the core unavailable, not start it", async () => {
   const state = withState();
   try {
-    const env = { XDG_RUNTIME_DIR: state.dir };
-    expect(hcCoreRunning(undefined, env)).toBe(false);
+    const deps = bootDeps(newWorld(), state.dir);
     mkdirSync(join(state.dir, "herdr-core"));
-    writeFileSync(join(state.dir, "herdr-core", "dori-b.sock"), "");
-    expect(hcCoreRunning(undefined, env)).toBe(false);
-    expect(hcCoreRunning("dori-b", env)).toBe(true);
+    await staleSocket(join(state.dir, "herdr-core", "default.sock"));
+    await deps.registry.write(lane("open-hc", "working", "hc:t5"));
+    const { calls, run } = hcCalls(deps);
+    const result = await bootCheck({ ...deps, run, hcCoreUp: () => hcCoreRunning(undefined, { XDG_RUNTIME_DIR: state.dir }), rts: runtimesFor({ runtime: "herdr" }, {}, run, deps.clock) });
+    expect(calls).toEqual([]);
+    expect(result.lines).toContain("PANES unavailable (hc core not running; boot does not start it)");
+    expect(result.exitCode).toBe(1);
   } finally { state.done(); }
 });
 
@@ -75,7 +107,7 @@ test("a required hc runtime whose core is stopped is reported unavailable, not s
     const deps = bootDeps(newWorld(), state.dir);
     await deps.registry.write(lane("open-hc", "working", "hc:t5"));
     const { calls, run } = hcCalls(deps);
-    const result = await bootCheck({ ...deps, run, hcCoreUp: () => false, rts: runtimesFor({ runtime: "herdr" }, {}, run, deps.clock) });
+    const result = await bootCheck({ ...deps, run, hcCoreUp: async () => false, rts: runtimesFor({ runtime: "herdr" }, {}, run, deps.clock) });
     expect(calls).toEqual([]);
     expect(result.lines).toContain("PANES unavailable (hc core not running; boot does not start it)");
     expect(result.lines.at(-1)).toBe("BOOT incomplete read-only; nothing restarted, written or stopped");
