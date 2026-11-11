@@ -19,7 +19,7 @@ const rejectsSameCommand = (command: string) => {
 test("the plain poll shapes of real monitors stay watches the new session may arm again", () => {
   for (const command of [
     "tail -n 0 -F /home/test/.soodori/state/lanes.log | grep --line-buffered -E 'handover-launch-watch|#414'",
-    "until [ $(date -u +%s) -ge $(date -u -d '2026-11-08T23:15:00Z' +%s) ]; do sleep 60; done; printf 'SLOT_CHECK\\n'",
+    "until [ \"$(date -u +%s)\" -ge \"$(date -u -d '2026-11-08T23:15:00Z' +%s)\" ]; do sleep 60; done; printf 'SLOT_CHECK\\n'",
     "until grep -q REVIEW_EXIT /tmp/r/review.log 2>/dev/null; do sleep 10; done; printf 'READY\\n'; grep -E 'verdict=|REVIEW_' /tmp/r/review.log | tail -4",
     "until [ \"$(gh pr view 436 --repo o/r --json state -q .state)\" = \"MERGED\" ] || [ \"$(gh pr view 436 --repo o/r --json state -q .state)\" = \"CLOSED\" ]; do sleep 15; done; gh pr view 436 --repo o/r --json state,headRefOid,url",
     "while true; do state=$(gh pr view 435 --repo o/r --json state --jq .state 2>/dev/null); if [ \"$state\" != \"OPEN\" ] && [ -n \"$state\" ]; then printf 'PR_STATE %s\\n' \"$state\"; break; fi; sleep 15; done",
@@ -102,6 +102,11 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "[ -v 'a[$(touch /tmp/replayed)]' ]",
     "until [ -R 'a[$(touch /tmp/x)]' ]; do sleep 5; done",
     "x=-v; [ \"$x\" 'a[$(touch /tmp/x)]' ]",
+    // #414 review 26: an unquoted expansion splits into more arguments, -v among them
+    "x='-v BASH_VERSINFO[$(id>/tmp/replayed)]'; test $x; tail -F /tmp/watch.log",
+    "x='-v a[$(id>/tmp/replayed)]'; [ $x ]",
+    "until [ $(date -u +%s) -ge $(date -u -d '2026-11-08T23:15:00Z' +%s) ]; do sleep 60; done",
+    "[ -n /tmp/* ]",
     "x=$(git rev-parse --verify 'HEAD --output=/tmp/x'); git log $x",
     "x=$(git rev-parse --verify $y); git log $x",
     // the shell expands braces and globs into more words too (dori tree H263, H264), and printf -v sets a variable
