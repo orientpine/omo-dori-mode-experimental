@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { reconcileRows } from "../src/missed-answers.ts";
-import { sendKey, sendOnce } from "../src/send-dedupe.ts";
+import { notePosted, sendKey, sendOnce } from "../src/send-dedupe.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
 // The four shapes of the 2026-11-11 reports (#dori-pair 1569977418431594507, 1569977434269294616, 1569977449335234622):
@@ -79,6 +79,17 @@ test("a message answered by a post record is kept in the answered set like a tra
     expect(result).toEqual({ waiting: [], answeredIds: [owner.id] });
     expect(JSON.parse(readFileSync(join(state.dir, "lead-answered.json"), "utf8"))).toEqual([owner.id]);
   } finally { state.done(); }
+});
+
+test("a dori ask card posted after the message in its thread, or as a reply to it, counts", async () => {
+  // zzangdori 2026-11-11 11:25Z: owner 1570036789798772852 in the rv thread answered by card Q545 (1570036844106616863)
+  const inThread = { ...owner, id: "1570036789798772852", channel: "1569651000000000003" }, replied = { ...owner, id: "1570036789798772853", channel: "1566837864325455893" };
+  const before = { ...owner, id: "1570036900000000000", channel: "1569651000000000004" };
+  expect(await waitingFor([inThread, replied, before], async (dir) => {
+    notePosted(join(dir, "sent"), `discord:${inThread.channel}`, "1570036844106616863", { now: () => at + 60_000 });
+    notePosted(join(dir, "sent"), "discord:1569651000000000099", "1570036844106616864", { now: () => at + 60_000, replyTo: replied.id });
+    notePosted(join(dir, "sent"), `discord:${before.channel}`, "1570036844106616865", { now: () => at + 60_000 }); // a card older than the line
+  })).toEqual([before.id]);
 });
 
 test("a post that does not answer the message leaves it waiting", async () => {

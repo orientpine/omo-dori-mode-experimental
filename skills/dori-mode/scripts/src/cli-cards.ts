@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { currentTmuxSession } from "./aoe.ts";
 import { type AskPlace, AskPlaceError, askPlace } from "./ask-place.ts";
 import { run } from "./run.ts";
+import { notePosted } from "./send-dedupe.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { threads } from "./messenger/thread-map.ts";
 import type { Command } from "./cli-context.ts";
@@ -44,6 +45,8 @@ const askCommand: Command = async (context) => {
     ...(place.kind === "channel" ? { channelWhy: place.why } : {}),
     ...(place.kind === "reply" ? { replyTo: place.replyTo } : {}),
   });
+  // the card is this Dori's post in its place: it answers the owner's lines there like a dori send would (answeredBy)
+  if (q.message) notePosted(join(config.stateDir, "sent"), `discord:${q.channel}`, q.message, { replyTo: place.kind === "reply" ? place.replyTo : undefined });
   if (place.kind === "thread" && place.line) console.log(place.line);
   if (place.kind === "channel") console.log(`ASK_CHANNEL ${q.id}: ${place.why}`);
   if (place.kind === "reply") console.log(`ASK_REPLY ${q.id} ${place.replyTo} ${place.thread ? `in thread discord:${place.thread}` : "in the channel"}`);
