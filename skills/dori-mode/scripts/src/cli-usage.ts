@@ -72,8 +72,9 @@ const USAGE_START = `dori <command> [options]
                                        the dashboard drops its open item. backlog.dayReportAt sends one backlog-day row a day.
                                        tick runs a pass by hand (--force: a sweep now, even when off)
   directives [table|prompts|check [--static]|apply <key> [--dry-run]|hint <text>|links [--push]]
-                                       hint prints the directives (at most five) an owner message with that text carries
-                                       in its inbox row (DIRECTIVE_HINT / DIRECTIVE_HINT_NONE);
+                                       hint prints the directives an owner message with that text carries in its inbox
+                                       row (every keyword match, kind matches up to five in all; DIRECTIVE_HINT /
+                                       DIRECTIVE_HINT_NONE);
                                        the directive ledger: table (default) prints it as one table for the owner; prompts
                                        prints his words next to the prompt each brief gets (형 원문 | 지침문); check
                                        validates both layers and has a reviewer of another family compare every new or

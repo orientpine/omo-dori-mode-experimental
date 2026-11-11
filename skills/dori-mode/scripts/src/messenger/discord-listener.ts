@@ -136,7 +136,7 @@ export type ListenerDeps = {
   readonly log: (line: string) => void;
   readonly fatal: (closeCode: number) => void;
   readonly transcribe?: (url: string, filename: string) => Promise<string>;
-  // the ledger lines an owner message is about (dori inbound discord: textDirectives, at most HINT_LIMIT); it may throw
+  // the ledger lines an owner message is about (dori inbound discord: messageLines); it may throw
   readonly hints?: (text: string) => readonly string[];
 };
 

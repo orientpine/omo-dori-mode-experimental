@@ -517,10 +517,6 @@ export const requireMissing = (brief: string, e: Directive): string[] => (e.requ
 
 // --- the owner's message and a thread the lead opens: the work the lead does without a lane brief ---
 
-// How many directives an owner message carries in the inbox row (dori inbound discord): the lead reads them in every
-// monitor event, so only the ones his message is about, never more than this.
-export const HINT_LIMIT = 5;
-
 // The directives a text (an owner message, a thread's title and first message) is about, as a brief of that text would
 // get them, except that one hit of a kind's words counts (a message is short; a brief needs minHits). all: the entries for
 // every lane too (a thread the lead opens gets what a lane's brief gets); without it only those its words call: a keyword,
@@ -528,30 +524,26 @@ export const HINT_LIMIT = 5;
 // brief's, not a text to read. An entry with a pointer comes as its pointer, once. Order: the entries the text calls before
 // the every-lane ones; within each, the host's own entries first, then a keyword before a kind (the narrower match), then
 // the ledger's order.
-export const textDirectives = (text: string, ledger: Ledger, opts: { readonly all?: boolean } = {}): { readonly e: Directive; readonly why: string }[] => {
+export const textDirectives = (text: string, ledger: Ledger, opts: { readonly all?: boolean } = {}): { readonly e: Directive; readonly why: string; readonly keyword: boolean }[] => {
   const ctx = scopeContext(text, { ...ledger, minHits: 1 }, { repo: "" });
-  const out: { e: Directive; why: string; rank: number }[] = [];
+  const out: { e: Directive; why: string; keyword: boolean; rank: number }[] = [];
   for (const [i, e] of ledger.entries.entries()) {
     if (e.mode === "require" || e.block || (e.scope.briefOnly && !opts.all)) continue;
     // an every-lane entry joins a message's hints only when its own keywords are in the text (every lane gets it anyway)
     const why = e.scope.all && !opts.all ? keywordWhy(e, ctx) : e.scope.briefOnly ? "all lanes" : appliesWhy(e, ctx);
     if (!why) continue;
     const shown = e.mode === "inject" ? (pointerOf(e, ledger) ?? e) : e;
-    if (out.some((x) => x.e.id === shown.id)) continue;
+    // keyword: its own keywords are in the text, whatever why says first (a kind's reason comes before a keyword's)
+    const keyword = Boolean(keywordWhy(e, ctx)), seen = out.find((x) => x.e.id === shown.id);
+    if (seen) {
+      seen.keyword ||= keyword;
+      continue;
+    }
     // what the text calls before what every lane gets, however long the host's every-lane list is
     const rank = (why === "all lanes" ? 8 : 0) + (shown.layer === "local" ? 0 : 4) + (why.startsWith("keyword ") ? 0 : 1);
-    out.push({ e: shown, why: shown === e ? why : `${why}, for ${e.id}`, rank: rank * 10_000 + i });
+    out.push({ e: shown, why: shown === e ? why : `${why}, for ${e.id}`, keyword, rank: rank * 10_000 + i });
   }
-  return out.sort((a, b) => a.rank - b.rank).map(({ e, why }) => ({ e, why }));
-};
-
-// What an owner message's inbox row carries (dori inbound discord): the lines of the directives it calls, at most
-// HINT_LIMIT, and when the tolerant load left local lines out (or the whole local layer), one last line saying so, so the
-// lead knows the host's own directives may be missing (dori thread open refuses on it instead).
-export const messageLines = (text: string, ledger: Ledger): string[] => {
-  const lines = textDirectives(text, ledger).slice(0, HINT_LIMIT).map(({ e }) => directiveLine(e));
-  const skipped = ledger.skipped ?? [];
-  return skipped.length ? [...lines, `[장부 경고] 이 도리 로컬 장부에서 ${skipped.length}줄을 못 읽어 뺐다: ${skipped[0]?.slice(0, 200)}. dori directives check로 고친다.`] : lines;
+  return out.sort((a, b) => a.rank - b.rank).map(({ e, why, keyword }) => ({ e, why, keyword }));
 };
 
 // One line per directive: its tag and the text a brief gets (his prompt, or the lead's rule), on one line.
