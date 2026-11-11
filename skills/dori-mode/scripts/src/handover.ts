@@ -1,7 +1,7 @@
 // dori handover: move the lead to a new agent session without losing work, monitors or notifications.
 // Order: write the note -> open the new session -> point leadPane, lanes and cards at it -> check that its monitors run and
 // that a [REPORT] and an inbox event reach it -> only then close the old session. A failed check moves everything back.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { captureTmux, closeAoeSession, inputLine, isClosedLine, laneEnv, liveSessions, openAoeSession, sessionFor } from "./aoe.ts";
@@ -190,11 +190,19 @@ const STARTS: readonly RegExp[] = [
 ];
 const RESTORED = "SENPI_MONITOR_RESTORED";
 
+// Only a regular file of at most 1 MiB is read. A FIFO, a device or a socket would take bytes from the running shell or
+// block the handover (#414 review 21); opened without blocking and checked on the open descriptor, so a path swapped
+// for a FIFO after a stat is not read either. Anything else is unreadable: work that keeps its watch.
 const readText = (path: string): string | undefined => {
+  let fd: number | undefined;
   try {
-    return readFileSync(path, "utf8");
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const stat = fstatSync(fd);
+    return stat.isFile() && stat.size <= 1 << 20 ? readFileSync(fd, "utf8") : undefined;
   } catch {
     return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 };
 

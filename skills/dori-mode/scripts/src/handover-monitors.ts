@@ -139,7 +139,8 @@ export const shellScripts = (command: string, depth = 0, remote = false, inherit
         const input = inputs.length ? inputs.slice(-1).map((path) => ({ path, remote, stdin: true })) : [...inherited];
         let k = 0;
         for (;;) {
-          while (/^[A-Za-z_]\w*=/.test(argv[k] ?? "") || argv[k] === "{" || argv[k] === "!") k++;
+          // assignments, a group's {, ! and the control words a command can follow (#414 review 21)
+          while (/^[A-Za-z_]\w*=/.test(argv[k] ?? "") || /^(?:\{|!|if|then|else|elif|while|until|do)$/.test(argv[k] ?? "")) k++;
           const base = (argv[k] ?? "").split("/").pop() ?? "";
           if (WRAP.test(base)) {
             for (k++; (argv[k] ?? "").startsWith("-"); ) k += WRAP_ARG[base]?.test(argv[k] ?? "") ? 2 : 1;
