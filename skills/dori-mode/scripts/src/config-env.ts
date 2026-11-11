@@ -24,14 +24,17 @@ const tokenIdentity = (name: string, token: string): string => {
 // the file names another bot than the inherited token. Then the environment is another Dori's: every inherited
 // instance variable is dropped first, so this file and the defaults apply. Returns the dropped names.
 export const loadEnvFile = async (path: string, env: Record<string, string | undefined> = process.env): Promise<string[]> => {
-  dropInheritedSlack(env);
   const file = Bun.file(path);
-  if (!(await file.exists())) return [];
-  const values = envFileEntries(await file.text());
-  const foreign = [...values].some(([name, value]) => {
+  const values = (await file.exists()) ? envFileEntries(await file.text()) : undefined;
+  // Another home's env shows by a differing token (its Slack token too) or by a token file dori launch chose for another
+  // home (DORI_SLACK_TOKEN_HOME, review 2); both are read before dropInheritedSlack removes them (review 6)
+  const marked = env["DORI_SLACK_TOKEN_HOME"];
+  const foreign = values !== undefined && ((marked !== undefined && marked !== resolve(env["DORI_CONFIG"] ?? configPath())) || [...values].some(([name, value]) => {
     const inherited = env[name];
     return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && inherited !== "" && tokenIdentity(name, inherited) !== tokenIdentity(name, value);
-  });
+  }));
+  dropInheritedSlack(env);
+  if (!values) return [];
   // what dropInheritedSlack kept is this run's own choice, so the isolation keeps it too
   const dropped = foreign ? Object.keys(env).filter((name) => instanceVar(name) && env[name] !== undefined && !name.startsWith("DORI_SLACK_")) : [];
   for (const name of dropped) delete env[name];

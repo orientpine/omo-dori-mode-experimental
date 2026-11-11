@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bootCheck, envSlackCheck } from "../src/boot.ts";
@@ -96,4 +96,24 @@ test("a lane launched through another home's wrapper without a dori.env does not
   const lane = laneHomeEnv({ stateDir: join(dir, "home-b", "state"), backend: "herdr" }, env);
   // Then: neither the run nor its lane names home A's token file
   expect([env["DORI_SLACK_TOKEN_FILE"], lane["DORI_SLACK_TOKEN_FILE"], lane["DORI_SLACK_TOKEN_HOME"]]).toEqual([undefined, undefined, undefined]);
+});
+
+test("another home's env is still isolated when a differing Slack token or another home's token marker shows it, so that home's inbox never wins (#201 review 6)", async () => {
+  // Given: home B's dori.env with its Slack token and inbox; one env inheriting home A's Slack token and inbox, and one
+  // that is home A's file-backed lane env (blanked token, marker A) calling home B's wrapper with A's inbox
+  mkdirSync(join(dir, "home-b"));
+  const envB = join(dir, "home-b", "dori.env");
+  writeFileSync(envB, "DORI_SLACK_TOKEN=xoxb-FIXTURE-b\nDORI_DISCORD_INBOX=/b/inbox.jsonl\n");
+  const configB = join(dir, "home-b", "config.json");
+  tokenFile("slack-token", "xoxb-FIXTURE-a\n", 0o600);
+  const byToken: Record<string, string | undefined> = { DORI_CONFIG: configB, DORI_SLACK_TOKEN: "xoxb-FIXTURE-a", DORI_DISCORD_INBOX: "/a/inbox.jsonl" };
+  const byMarker: Record<string, string | undefined> = { ...laneHomeEnv({ stateDir: join(dir, "state"), backend: "herdr" }, { DORI_CONFIG: join(dir, "config.json") }), DORI_CONFIG: configB, DORI_DISCORD_INBOX: "/a/inbox.jsonl" };
+  // When: each loads home B's dori.env
+  await loadEnvFile(envB, byToken);
+  await loadEnvFile(envB, byMarker);
+  // Then: both read home B's inbox and token, and nothing of home A's token file is left
+  expect([byToken, byMarker].map((e) => [e["DORI_DISCORD_INBOX"], slackToken(e, HOST), e["DORI_SLACK_TOKEN_FILE"]])).toEqual([
+    ["/b/inbox.jsonl", "xoxb-FIXTURE-b", undefined],
+    ["/b/inbox.jsonl", "xoxb-FIXTURE-b", undefined],
+  ]);
 });
