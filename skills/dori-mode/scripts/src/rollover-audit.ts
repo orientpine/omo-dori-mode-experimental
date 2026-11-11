@@ -25,6 +25,7 @@ import { ChallengeError, checkReviewers, reviewerOrder, reviewers } from "./chal
 import { runWithPrompt } from "./config.ts";
 import { laneDirectiveWords } from "./directive-audit.ts";
 import { endedWatch, sameWatch, workEnded } from "./handover-monitors.ts";
+import { ranToEnd } from "./handover-ran.ts";
 import { allTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest } from "./handover.ts";
 import { type LaneFacts, type LaneHandoverDeps, missingFrom, UNDERSTOOD_HEADINGS } from "./lane-handover.ts";
@@ -232,9 +233,8 @@ const anyGoal = (sessionDir: string, session: string): string | undefined =>
   openGoal(sessionDir, session) ?? readJson<{ goal?: { objective?: string } }>(join(sessionDir, "extensions", "goal", `${session}.json`))?.goal?.objective;
 
 const norm = (text: string, home: string): string => text.replace(/(^|[\s=:'"])~\//g, `$1${home}/`).replace(/\s+/g, " ").trim();
-// carried: the new session armed the same watch at any time (an ended one-shot watch included), or it is a path watch with
-// nothing left to wait for (ENDED, endedWatch), or a command watch it ran to its end (done: its work ended, workEnded). LAUNCHES_WORK: by the watch-only one the note asks for (its description,
-// filter or watch-only form), never its own command (e7-leap's re-arm sent back as "never armed", 2026-10-24 04:15Z).
+// carried: the new session armed the same watch at any time, a path watch has nothing left to wait for (ENDED, endedWatch), or a command watch it ran to its end (done: ranToEnd, or its work ended, workEnded).
+// LAUNCHES_WORK: by the watch-only one the note asks for (its description, filter or watch-only form), never its own command (e7-leap's re-arm sent back as "never armed", 2026-10-24 04:15Z).
 const armed = (m: MonitorSpec, entries: ReturnType<typeof readManifest>, home: string, done: (m: MonitorSpec) => boolean = () => false): boolean => {
   if (m.ended || endedWatch(m) || done(m)) return true;
   const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
@@ -426,7 +426,7 @@ export const auditHandover = async (deps: LaneHandoverDeps, c: Committed, opts: 
   if (oldGoal && session && !anyGoal(sessionDir, session) && !quoted(flat(restated()), oldGoal.replace(/ \((active|paused|blocked)\)$/, ""))) gaps.push({ kind: "goal", text: oldGoal, under: "Goal", source: "the old session's goal; the new session registered none" });
   const monitors = laneFacts?.monitors ?? leadFacts?.monitors ?? [];
   const manifest = (): ReturnType<typeof readManifest> => (session ? readManifest(manifestPath(config.sessionsDir, cwd, session)) : []);
-  if (session) for (const m of monitors) if (!armed(m, manifest(), deps.home, workEnded(laneFacts?.work ?? []))) gaps.push({ kind: "monitor", text: m.description || m.command || m.path || "?", under: "Next step", source: `the old session's monitor${m.command ? ` (${m.command.slice(0, 120)})` : ""}; never armed in the new session${launchNote(m, deps.home)}` });
+  if (session) for (const m of monitors) if (!armed(m, manifest(), deps.home, ranToEnd(sessionDir, session, deps.home, workEnded(laneFacts?.work ?? [])))) gaps.push({ kind: "monitor", text: m.description || m.command || m.path || "?", under: "Next step", source: `the old session's monitor${m.command ? ` (${m.command.slice(0, 120)})` : ""}; never armed in the new session${launchNote(m, deps.home)}` });
   // only a restatement written before the commit (handovers before owner Q476) is measured against the note
   if (laneFacts && existsSync(understood)) for (const m of missingFrom(restated(), laneFacts)) if (m.kind !== "owner goal" && !gaps.some((g) => flat(g.text) === flat(m.text))) gaps.push({ ...m, conversation: m.kind === "decision" || m.kind === "owner's words" });
 
@@ -451,7 +451,7 @@ export const auditHandover = async (deps: LaneHandoverDeps, c: Committed, opts: 
         : g.kind === "lead instruction" || g.kind === "decision" ? !covered(text, g.text)
         : g.kind === "todo" ? !covered(todos, g.text)
         : g.kind === "goal" ? !(session && anyGoal(sessionDir, session)) && !quoted(flat(restated()), g.text)
-        : g.kind === "monitor" ? !monitors.some((m) => (m.description || m.command || m.path) === g.text && armed(m, entries, deps.home, workEnded(laneFacts?.work ?? [])))
+        : g.kind === "monitor" ? !monitors.some((m) => (m.description || m.command || m.path) === g.text && armed(m, entries, deps.home, ranToEnd(sessionDir, session, deps.home, workEnded(laneFacts?.work ?? []))))
         : g.kind === "tried fix" ? !flat(section(restated(), "Ruled out")).includes(flat(g.text))
         : !covered(text, g.text));
   };

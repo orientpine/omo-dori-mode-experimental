@@ -13,6 +13,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
 import { endedWatch, endOldMonitors, procStart, readText, sameWatch, shellScripts } from "./handover-monitors.ts";
+import { ranToEnd } from "./handover-ran.ts";
 import { foregroundOnly, watchOnly } from "./handover-watch.ts";
 import { missingTodos, OWNER_HOURS, type OwnerWord, recentOwnerWords, todoTask } from "./handover-todos.ts";
 import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
@@ -367,7 +368,7 @@ const notRunning = (e: ManifestEntry, alive: (pid: number) => boolean, now: numb
 // A monitor counts as re-armed when the new session runs a persistent watch with the same command (or path, or
 // description), whose process is alive. One that starts work (launchOf) counts as re-armed by a watch-only one instead:
 // a path watch, or a command that starts nothing, with the same description or filter (or its exact watch-only form);
-// the same command armed again does not count, since that started the work a second time. One whose work ended is not missing (done: workEnded, lane handovers).
+// the same command armed again does not count, since that started the work a second time. One the new session ran to its end, or whose work ended, is not missing (done: ranToEnd, workEnded).
 export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonly ManifestEntry[], alive: (pid: number) => boolean, home: string, now: number, done: (m: MonitorSpec) => boolean = () => false): string[] => {
   const live = entries.filter((e) => e.persistent && running(e, now) && (e.path || (e.runtime?.pid !== undefined && alive(e.runtime.pid))));
   const same = (a: string, b: string) => sameCommand(a, b, home);
@@ -576,7 +577,7 @@ export const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Targe
     let lost = facts.todos.map(todoTask);
     for (; i < tries; i++) {
       session ||= await deps.sessionOf(to.pane, facts.cwd).catch(() => "");
-      if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now());
+      if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), ranToEnd(sessionDirFor(deps.config.sessionsDir, facts.cwd), session, deps.home));
       if (session && facts.todos.length) lost = missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session);
       down = await missingWatchers(deps, facts.watchers, { pane: to.pane, session });
       if ((session || (!facts.monitors.length && !facts.todos.length)) && !missing.length && !down.length && !lost.length) break;
@@ -610,9 +611,8 @@ export const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Targe
   if (problems.length) return { reasons: problems, session };
   // No restatement before the commit (owner Q476, 2026-11-03): the probes' acks show the new lead reads its pane and its
   // inbox and runs dori; the note carries the owner's words word for word, and the audit after the commit checks the rest.
-  // checked again before the old lead goes: a monitor that ran at the first check can end before the move commits (a
-  // remote tail whose ssh dropped), and a new session is not told when a monitor ends
-  const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now()) : [];
+  // checked again before the old lead goes: a monitor that ran at the first check can end before the move commits (a remote tail whose ssh dropped); one that exited 0 after its signal is not missing
+  const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), ranToEnd(sessionDirFor(deps.config.sessionsDir, facts.cwd), session, deps.home)) : [];
   if (stopped.length) return { reasons: [`monitors stopped in ${to.pane} after the first check: ${stopped.join(", ")}`], session };
   // and the todos: a new lead can put them in and then write its list anew while it finishes its first turn (review of #416)
   const dropped = facts.todos.length ? missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session) : [];
