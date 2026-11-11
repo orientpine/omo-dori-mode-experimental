@@ -1,7 +1,7 @@
 // Which monitor commands only watch (#414). A command is a watch only when every command in it, at every depth ($( )
 // too), is one of the plain poll shapes of the real handover notes (2026-11-11: 45 distinct commands in 86 lane and
 // lead notes): tail -F | grep, until/while loops of sleep over grep, test, date or kill -0 <pid>, gh pr/run/api reads,
-// git fetch/rev-parse/log polls, a plain sed or awk filter, a state file under $SENPI_MONITOR_STATE_DIR, and the same
+// git fetch/rev-parse/log polls, a find that only reads (a re-armed gate, 2026-11-11 14:22Z), a plain sed or awk filter, a state file under $SENPI_MONITOR_STATE_DIR, and the same
 // run as another account or host (node-dori-do, ssh). Anything else is work and keeps its watch, so a new session never
 // arms it again (reviews 4-21 of #414 found a way around every list of forms that start work). Threat model: these are
 // the lane's own monitors, not an attacker's; the list keeps ordinary work (a bun test, a dori review, a remote ci) from
@@ -38,6 +38,19 @@ const GH = new Map<string, Spec>([
 const GH_API: Spec = { vals: "q", long: ["paginate"], longVals: ["jq"] }; // a GET: no -X, -f, -F or --input
 const GIT = new Map<string, Spec>([["fetch", { flags: "q", long: ["quiet"] }], ["rev-parse", { long: ["verify"] }], ["log", { vals: "n", num: true, longVals: ["format"] }]]);
 const RAW = new Set(["echo", "printf"]);
+// find as a read: its paths, then tests that only read, each with its literal value; never an action (-exec, -ok, -delete,
+// -fprint, -fls run or write), an option before the paths, or ( ! -o, whose grouping the list does not read
+const FIND_TESTS = new Map([["-mmin", 1], ["-mtime", 1], ["-newer", 1], ["-name", 1], ["-type", 1], ["-size", 1], ["-maxdepth", 1], ["-mindepth", 1], ["-empty", 0], ["-print", 0]]);
+const findRead = (a: readonly string[]): boolean => {
+  let k = 0;
+  while (k < a.length && !a[k]?.startsWith("-")) k++;
+  for (; k > 0 && k < a.length; k++) {
+    const n = FIND_TESTS.get(a[k] ?? "");
+    if (n === undefined || k + n >= a.length) return false;
+    k += n;
+  }
+  return k > 0;
+};
 // test and [ only in shapes where no word, expanded or not, can be read as another operator: -v and -R evaluate an
 // array subscript and the command substitution in it (#414 review 25); every expansion double-quoted, so none splits (review 26)
 const UNARY = new Set(["-n", "-z", "-e", "-f", "-s", "!"]);
@@ -125,6 +138,7 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
     const spec = GIT.get(g[0]?.text ?? "");
     return !!spec && argsOk(spec, g.slice(1));
   }
+  if (name.text === "find") return findRead(a);
   const spec = PROGRAMS.get(name.text);
   return !!spec && argsOk(spec, args);
 };

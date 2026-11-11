@@ -73,3 +73,17 @@ test("the audit asks for no path watch that has ended (its folder gone, or its f
   const supplements = sent(w).filter((l) => l.startsWith("[LEAD] HANDOVER_SUPPLEMENT"));
   expect(supplements).toHaveLength(1);
 });
+
+test("the audit asks for no command watch the new session ran to its end after its signal; one never armed is still a gap", async () => {
+  // Given: omo dropped the ended gate from the manifest; its call and its wake are in the new session's log
+  const gate = { description: "x ready", command: "until [ -f /tmp/x ]; do sleep 5; done; echo READY", filter: "^READY$", persistent: true };
+  const other = { description: "y ready", command: "until [ -f /tmp/y ]; do sleep 5; done; echo READY", filter: "^READY$", persistent: true };
+  handover([gate, other], []);
+  const call = { type: "message", message: { role: "toolResult", toolName: "eval", details: { toolCalls: [{ name: "monitor", ok: true, args: gate }] } } };
+  const wake = { type: "custom_message", customType: "senpi-monitor:notification", content: "<system-reminder>Monitor event(x ready): READY\nwatcher completed (exit code 0)</system-reminder>", details: { monitors: [{ id: "bash_1", description: "x ready", eventCount: 2, kinds: ["line", "summary"] }] } };
+  writeFileSync(join(sessionDirFor(join(state.dir, "sessions"), CWD), "2026-10-19T10-00-00-000Z_new-sid.jsonl"), `${JSON.stringify(call)}\n${JSON.stringify(wake)}\n`);
+  // When
+  await auditHandover(await setup(), committedHandovers(state.dir)[0] ?? (() => { throw new Error("no handover"); })(), { classify: none });
+  // Then
+  expect(readAudit(state.dir).filter((x) => x.kind === "monitor").map((x) => x.text)).toEqual(["y ready"]);
+});

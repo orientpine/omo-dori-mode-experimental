@@ -18,6 +18,7 @@ import { turnRunning } from "./submit.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
 import { endOldMonitors, workEnded } from "./handover-monitors.ts";
+import { ranToEnd } from "./handover-ran.ts";
 import { missingTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
 import { awaitPrompt, briefAnchor, keptModel, laneModel, modelMove, moveThinking } from "./launch.ts";
@@ -1026,7 +1027,7 @@ export const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane:
   for (; i < tries; i++) {
     shown = statusLine(await captureTmux(deps.run, pane), facts.model);
     session ||= await deps.sessionOf(pane, facts.cwd).catch(() => "");
-    if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), workEnded(facts.work ?? [], deps.alive));
+    if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), ranToEnd(sessionDirFor(deps.config.sessionsDir, facts.cwd), session, deps.home, workEnded(facts.work ?? [], deps.alive)));
     if (session && facts.todos.length) lost = missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session);
     if (settled()) break;
     await deps.clock.sleep(POLL_MS);
@@ -1061,9 +1062,8 @@ export const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane:
   if (by === undefined) return { reasons: [`no ack for the probe ${id}`], session };
   if (by !== pane) return { reasons: [`the probe was acked from ${by || "an unknown pane"}, not ${pane}`], session };
   // checked again before the old session goes: a monitor that ran at the first check can end before the move commits (a
-  // remote tail whose ssh dropped with code 255 after its first lines, live 2026-10-20 23:51Z), and a new session is not
-  // told when a monitor ends
-  const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), workEnded(facts.work ?? [], deps.alive)) : [];
+  // remote tail whose ssh dropped with code 255 after its first lines, live 2026-10-20 23:51Z); one that exited 0 after its signal is not missing
+  const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), ranToEnd(sessionDirFor(deps.config.sessionsDir, facts.cwd), session, deps.home, workEnded(facts.work ?? [], deps.alive))) : [];
   if (stopped.length) return { reasons: [`monitors stopped in ${pane} after the first check: ${stopped.join(", ")}`], session };
   const dropped = facts.todos.length ? missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session) : [];
   if (dropped.length) return { reasons: [`todos left the todo list of ${pane} after the first check: ${dropped.join(", ")}`], session };
