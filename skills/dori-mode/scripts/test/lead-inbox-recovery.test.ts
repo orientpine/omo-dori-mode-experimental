@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import type { DoriConfig } from "../src/config.ts";
 import { defaultDiscordWords } from "../src/config-discord.ts";
+import { discordText } from "../src/messenger/discord-markdown.ts";
 import type { FlowDeps } from "../src/done-flow.ts";
 import { leadInboxTick } from "../src/lead-inbox.ts";
 import { leadLimitTick } from "../src/lead-limit.ts";
@@ -166,9 +167,20 @@ test("with discord.callNames set, a pair-bot row counts only when it calls this 
   row(T0 - 20 * MIN, "p-other", { content: "수돌, the review is CLEAR" });
   row(T0 - 19 * MIN, "p-name", { content: "dori, can you check the relay" });
   row(T0 - 18 * MIN, "p-bot", { content: "<@300000000000000003> your lane is done" });
-  row(T0 - 17 * MIN, "p-alert", { content: "LEAD_RUNAWAY w1:p2 41: send one short check" });
-  const called = { discord: { ...defaultDiscordWords, callNames: ["Dori"], botId: "300000000000000003" } };
-  expect((await leadInboxTick(deps(T0, called)))[0]).toStartWith(`LEAD_INBOX_UNHEARD ${LEAD} 3 inbox row(s) (pair-bot 3) never reached session ${SID}, oldest p-name`);
+  // lead alerts as the other Dori's sender posts them (its underscores escaped)
+  row(T0 - 17 * MIN, "p-alert", { content: discordText("LEAD_RUNAWAY w1:p2 41: send one short check") });
+  row(T0 - 16 * MIN, "p-stuck", { content: discordText("LEAD_COMPACTION_STUCK w3:p1 3: its compaction did not complete") });
+  const called = (botId: string) => ({ discord: { ...defaultDiscordWords, callNames: ["Dori"], botId } });
+  expect((await leadInboxTick(deps(T0, called("300000000000000003"))))[0]).toStartWith(`LEAD_INBOX_UNHEARD ${LEAD} 4 inbox row(s) (pair-bot 4) never reached session ${SID}, oldest p-name`);
   // with no callNames this Dori cannot tell which rows call it: every pair-bot row counts
-  expect((await leadInboxTick(deps(T0 + MIN)))[0]).toStartWith(`LEAD_INBOX_UNHEARD ${LEAD} 4 inbox row(s) (pair-bot 4) never reached session ${SID}, oldest p-other`);
+  expect((await leadInboxTick(deps(T0 + MIN)))[0]).toStartWith(`LEAD_INBOX_UNHEARD ${LEAD} 5 inbox row(s) (pair-bot 5) never reached session ${SID}, oldest p-other`);
+  // no discord.botId: the bot id is read from DORI_DISCORD_TOKEN, so a mention of another bot does not call this one
+  const saved = process.env["DORI_DISCORD_TOKEN"];
+  process.env["DORI_DISCORD_TOKEN"] = `${Buffer.from("300000000000000009").toString("base64")}.x.y`;
+  try {
+    expect((await leadInboxTick(deps(T0 + 2 * MIN, called(""))))[0]).toStartWith(`LEAD_INBOX_UNHEARD ${LEAD} 3 inbox row(s) (pair-bot 3) never reached session ${SID}, oldest p-name`);
+  } finally {
+    if (saved === undefined) delete process.env["DORI_DISCORD_TOKEN"];
+    else process.env["DORI_DISCORD_TOKEN"] = saved;
+  }
 });

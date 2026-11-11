@@ -9,8 +9,9 @@ import { frozenPanes } from "./frozen.ts";
 import { manifestPath, readManifest } from "./handover.ts";
 import { readHerdrSessions, sessionLog } from "./herdr-sessions.ts";
 import { clock, ownerRows, tailOf } from "./lead-limit.ts";
-import { watchProblem } from "./lead-inbox-watch.ts";
+import { callsThisDori, watchProblem } from "./lead-inbox-watch.ts";
 import { sawAnswer } from "./missed-answers.ts";
+import { tokenBotId } from "./messenger/discord.ts";
 import { sendVerified } from "./panes.ts";
 import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
@@ -41,14 +42,6 @@ const REPEAT_MS = 30 * 60_000;
 type Kind = "owner" | "pair" | "pair-bot";
 type Row = { readonly id: string; readonly at: number; readonly kind: Kind; readonly text: string; readonly qid?: string };
 type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[]; readonly baselineDone?: boolean };
-
-// A pair-bot row is information, never a request, except one that calls this Dori (one of discord.callNames in it, or its
-// bot mentioned) and another Dori's lead alert (LEAD_RUNAWAY / LEAD_AUTOTURN_PAUSED asks it to act); a lead's inbox monitor
-// may drop the rest (MooDori 2026-11-11: 121 of 155 pair-bot rows named another Dori). With no callNames, every one counts.
-const callsThisDori = (text: string, names: readonly string[], botId: string): boolean => {
-  const said = text.toLowerCase(), own = names.map((n) => n.trim().toLowerCase()).filter(Boolean);
-  return !own.length || /^(LEAD_RUNAWAY|LEAD_AUTOTURN_PAUSED) /.test(text) || (!!botId && text.includes(`<@${botId}>`)) || own.some((n) => said.includes(n));
-};
 
 // the rows the lead must hear: the owner's (lead-limit.ts ownerRows), every owner row of the pair channel and the pair-bot
 // rows that call this Dori
@@ -195,7 +188,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
   const text = readFileSync(file.path, "utf8");
   const start = Date.parse(/"timestamp":"([^"]+)"/.exec(text)?.[1] ?? "");
   const told = ownerWokeIds(deps, pane);
-  const rows = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId, deps.config.discord.callNames, deps.config.discord.botId);
+  const rows = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId, deps.config.discord.callNames, deps.config.discord.botId || tokenBotId(process.env["DORI_DISCORD_TOKEN"] ?? "") || "");
   const delivered = deliveredIds(text);
   const deliveredText = text.split("\n").filter((line) => !line.includes('"customType":"work-custody"')).join("\n");
   const candidates = rows.filter((r) => now - r.at < DAY_MS && !(r.at < start)).sort((a, b) => a.at - b.at);
