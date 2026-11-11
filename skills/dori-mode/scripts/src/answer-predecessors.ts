@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 import { sessionFor, type AoeSession } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
+import { currentTranscript } from "./current-transcript.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { argvSessionLog, readHerdrSessions } from "./herdr-sessions.ts";
 import { committedHandovers } from "./rollover-audit.ts";
@@ -83,8 +84,8 @@ export const lanePredecessorTranscripts = async (deps: FlowDeps, lanes: readonly
     const current = lane.session ? sessionText(deps, { pane: lane.pane, session: lane.session, cwd: lane.cwd, ...(owner?.log ? { log: owner.log } : {}) }) : "";
     let chain = current ? [current] : [];
     if (file && current) {
-      const text = textAt(file.path), identity = header(text);
-      if (identity?.cwd === lane.cwd && kept?.session === identity.session && (identity.session === lane.session || owner !== undefined)) chain = [text, ...predecessorTranscripts(deps, { pane: lane.pane, path: file.path, text }, lane.pane)];
+      const text = currentTranscript(file, live?.title ?? ""), identity = header(text), resolved = header(textAt(file.path));
+      if (identity?.cwd === lane.cwd && resolved?.cwd === lane.cwd && kept?.session === resolved.session && (resolved.session === lane.session || owner !== undefined)) chain = [text, ...predecessorTranscripts(deps, { pane: lane.pane, path: file.path, text }, lane.pane)];
     }
     const pending: { readonly pane: string; readonly chain: readonly string[] }[] = [{ pane: lane.pane, chain }], seen = new Set<string>();
     for (let tip = pending.pop(); tip; tip = pending.pop()) {

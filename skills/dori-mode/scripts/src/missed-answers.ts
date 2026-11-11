@@ -1,5 +1,5 @@
-import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { liveSessions, sessionFor } from "./aoe.ts";
 import { balancedBlock, discordAnswered, type AnswerRow } from "./answer-sends.ts";
@@ -8,13 +8,15 @@ import type { AoeSession } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import { argvSessionLog, readHerdrSessions } from "./herdr-sessions.ts";
 import { lanePredecessorTranscripts, predecessorTranscripts } from "./answer-predecessors.ts";
+import { currentTranscript } from "./current-transcript.ts";
+export { currentTranscript } from "./current-transcript.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Question } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
 import { iso } from "./run.ts";
 import { type Lane, statusOf } from "./registry.ts";
-import { procTable, SESSION_FILE } from "./session-id.ts";
-import type { Proc, SessionHit } from "./session-id.ts";
+import { procTable } from "./session-id.ts";
+import type { Proc } from "./session-id.ts";
 
 // A card's answer reaches the session that asked only as one inbox row its monitor turns into an event. An event that
 // arrives while omo compacts the session's context is lost (2026-10-19: Q305 answered 20:37:23Z during the lead's
@@ -71,25 +73,6 @@ export const sawAnswer = (transcript: string, qid: string, row?: AnswerRow, answ
       return answerRecords(content).some((record) => record.kind === "answer" && record.qid === qid && (!row || (row.id && record.id === row.id) || Date.parse(record.ts ?? record.answeredAt ?? "") >= row.at));
     } catch { return false; }
   }); };
-
-// Child environments survive /clear. Compare their resolved log with current-title logs by write time; an older
-// same-name /resume wins when its log was written last, including after its identifying child ended (same-agent record).
-const sessionName = (path: string): string | undefined => {
-  const fd = openSync(path, "r"); try {
-    const buffer = Buffer.alloc(256 * 1024), bytes = readSync(fd, buffer, 0, buffer.length, 0); let name: string | undefined;
-    for (const line of buffer.toString("utf8", 0, bytes).split("\n")) {
-      if (!line.includes('"type":"session_info"')) continue;
-      try { const entry = JSON.parse(line) as { name?: string }; if (entry.name) name = entry.name; } catch {}
-    }
-    return name; } finally { closeSync(fd); }
-};
-
-export const currentTranscript = (file: { readonly path: string; readonly via?: SessionHit["via"] }, title: string): string => {
-  if (!title) return readFileSync(file.path, "utf8");
-  const dir = dirname(file.path), matches = readdirSync(dir).filter((n) => SESSION_FILE.test(n)).sort().reverse().map((n) => join(dir, n)).filter((path) => sessionName(path) === title).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  const newest = matches[0], resolved = file.via === "child-env" && sessionName(file.path) === title;
-  return readFileSync(newest && (!resolved || statSync(newest).mtimeMs > statSync(file.path).mtimeMs) ? newest : file.path, "utf8"); };
-
 
 type UnansweredInput<T extends AnswerRow> = {
   readonly rows: readonly T[];

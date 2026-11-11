@@ -11,10 +11,11 @@ import { readAnswerHistory, reconcileRows } from "../src/missed-answers.ts";
 import { procTable, sessionDirFor } from "../src/session-id.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
-test.each(["ack", "delivery", "history", "custom-log", "new-agent", "wrong-B-header", "rolled-back"])("lane A to B then %s clear trusts only C's verified successor evidence and cache", async (kind) => {
+test.each(["ack", "delivery", "history", "custom-log", "new-agent", "wrong-B-header", "rolled-back", "no-child", "stale-child", "custom-stale-child", "wrong-title", "rollback-stale-child"])("lane A to B then %s clear trusts only C's verified successor evidence and cache", async (kind) => {
   const state = withState(), at = Date.parse("2026-01-01T12:00:00Z"), iso = (t: number) => new Date(t).toISOString(), cwd = "/repo/asking";
   const a = "11111111-1111-1111-1111-111111111111", b = "22222222-2222-2222-2222-222222222222", c = "33333333-3333-3333-3333-333333333333", d = "44444444-4444-4444-4444-444444444444";
-  const oldPane = "aoe_Old_11111111", pane = "aoe_Asking_22222222", sessionsDir = join(state.dir, "sessions"), folder = sessionDirFor(sessionsDir, cwd), dir = kind === "custom-log" ? join(state.dir, "live logs") : folder;
+  const titleSelected = ["no-child", "stale-child", "custom-stale-child", "wrong-title", "rollback-stale-child"].includes(kind), custom = kind === "custom-log" || kind === "custom-stale-child";
+  const oldPane = "aoe_Old_11111111", pane = "aoe_Asking_22222222", sessionsDir = join(state.dir, "sessions"), folder = sessionDirFor(sessionsDir, cwd), dir = custom ? join(state.dir, "live logs") : folder;
   const moves = join(state.dir, "handover", "lanes");
   mkdirSync(folder, { recursive: true }); mkdirSync(dir, { recursive: true }); mkdirSync(moves, { recursive: true });
   const aPath = join(folder, `2026-01-01T11-59-00-000Z_${a}.jsonl`), bPath = join(dir, `2026-01-01T12-00-02-000Z_${b}.jsonl`), cPath = join(dir, `2026-01-01T12-00-04-000Z_${c}.jsonl`), dPath = join(dir, `2026-01-01T12-00-06-000Z_${d}.jsonl`);
@@ -27,15 +28,15 @@ test.each(["ack", "delivery", "history", "custom-log", "new-agent", "wrong-B-hea
     { type: "message", message: { role: "toolResult", toolCallId: "reply", content: [{ type: "text", text: "SENT 153000000000000001" }] } },
   ];
   writeFileSync(aPath, JSON.stringify({ type: "session", id: a, cwd, timestamp: iso(at - 2000) }));
-  writeFileSync(bPath, JSON.stringify({ type: "session", id: kind === "wrong-B-header" ? a : b, cwd, timestamp: iso(at + 2000) }));
-  writeFileSync(cPath, [{ type: "session", id: c, cwd, timestamp: iso(at + 4000) }, ...evidence].map((entry) => JSON.stringify(entry)).join("\n"));
+  writeFileSync(bPath, [{ type: "session", id: kind === "wrong-B-header" ? a : b, cwd, timestamp: iso(at + 2000) }, ...(titleSelected ? [{ type: "session_info", name: "Asking" }] : [])].map((entry) => JSON.stringify(entry)).join("\n"));
+  writeFileSync(cPath, [{ type: "session", id: c, cwd, timestamp: iso(at + 4000) }, ...(titleSelected ? [{ type: "session_info", name: kind === "wrong-title" ? "Other" : "Asking" }] : []), ...evidence].map((entry) => JSON.stringify(entry)).join("\n"));
   writeFileSync(dPath, JSON.stringify({ type: "session", id: d, cwd, timestamp: iso(at + 6000) }));
   for (const [path, ms] of [[bPath, at + 2000], [cPath, at + 5000], [dPath, at + 6000]] as const) utimesSync(path, new Date(ms), new Date(ms));
   const world = newWorld(); world.aoe = [{ id: "22222222aaaaaaaa", title: "Asking", path: cwd, tool: "omo", profile: "main" }]; world.tmux = [pane];
-  let agent = 11, childSession = c;
+  let agent = 11, childSession = titleSelected ? b : c;
   const configure = (flag: string, pid: number, started: number) => {
-    agent = pid; const argv = ["/x/senpi/dist/bundle/cli.js", ...(kind === "custom-log" ? ["--session-dir", dir] : []), "--session-id", flag];
-    world.cmdlines = { [pid]: argv }; world.ps = `10 1 /bin/bash\n${pid} 10 ${argv.join(" ")}\n${pid + 1} ${pid} /bin/sleep 100\n`; world.agentStart = new Date(started).toUTCString();
+    agent = pid; const argv = ["/x/senpi/dist/bundle/cli.js", ...(custom ? ["--session-dir", dir] : []), "--session-id", flag];
+    world.cmdlines = { [pid]: argv }; world.ps = `10 1 /bin/bash\n${pid} 10 ${argv.join(" ")}\n${kind === "no-child" ? "" : `${pid + 1} ${pid} /bin/sleep 100\n`}`; world.agentStart = new Date(started).toUTCString();
   };
   configure(b, 11, at + 2000);
   const base = depsFor(world, fakeClock(at + 8000), state.dir, { sessionsDir });
@@ -48,7 +49,7 @@ test.each(["ack", "delivery", "history", "custom-log", "new-agent", "wrong-B-hea
     await deps.registry.write(lane); await deps.registry.patch(lane.key, { pane }); await keepSessions(deps, lane.key, a, b);
     const note = join(moves, "move.md"), from = { pane: oldPane, session: a, cwd };
     writeFileSync(note.replace(/\.md$/, ".json"), JSON.stringify({ lane, from, cwd, oldLog: aPath }));
-    writeFileSync(note.replace(/\.md$/, ".result.json"), JSON.stringify({ at: iso(at + 2000), key: lane.key, to: pane, note, result: kind === "rolled-back" ? "rolled-back" : "done" }));
+    writeFileSync(note.replace(/\.md$/, ".result.json"), JSON.stringify({ at: iso(at + 2000), key: lane.key, to: pane, note, result: kind === "rolled-back" || kind === "rollback-stale-child" ? "rolled-back" : "done" }));
     store.retarget({ tmux: oldPane }, { tmux: pane, session: b });
     if (kind === "history" || kind === "new-agent") {
       if (kind === "new-agent") childSession = b;
@@ -56,11 +57,16 @@ test.each(["ack", "delivery", "history", "custom-log", "new-agent", "wrong-B-hea
       if (kind === "history") childSession = d;
       else { childSession = c; configure(c, 31, at + 4000); }
     }
-    const good = ["ack", "delivery", "history", "custom-log"].includes(kind), cache = join(state.dir, "lead-answered.json");
+    const good = ["ack", "delivery", "history", "custom-log", "no-child", "stale-child", "custom-stale-child"].includes(kind), cache = join(state.dir, "lead-answered.json");
     expect(existsSync(cache)).toBe(false);
+    if (titleSelected) expect(readHerdrSessions(state.dir)[pane]).toBeUndefined();
     expect(await reconcileRows({ rows: [answered, pending], cards: store.all(), lead: { pane: "lead", path: leadPath, title: "", text: readFileSync(leadPath, "utf8") }, sessions: world.aoe, table: await procTable(run), deps })).toEqual({ waiting: good ? [pending] : [answered, pending], answeredIds: good ? [answered.id] : [] });
     expect(existsSync(cache) ? JSON.parse(readFileSync(cache, "utf8")) : []).toEqual(good ? [answered.id] : []);
     expect((await deps.registry.read(lane.key))?.session).toBe(b);
-    if (good) expect(readHerdrSessions(state.dir)[pane]?.previous?.some((s) => s.session === b)).toBe(true);
+    if (good && !titleSelected) expect(readHerdrSessions(state.dir)[pane]?.previous?.some((s) => s.session === b)).toBe(true);
+    if (titleSelected) {
+      expect(readHerdrSessions(state.dir)[pane]?.session).toBe(b);
+      expect(readHerdrSessions(state.dir)[pane]?.previous?.some((s) => s.session === c) ?? false).toBe(false);
+    }
   } finally { state.done(); }
 });
