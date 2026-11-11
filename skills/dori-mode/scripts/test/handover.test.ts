@@ -677,7 +677,7 @@ test("a monitor counts as re-armed only with the same command and filter, or the
 // GongDori's E7 chain watch (2026-10-20): it starts the chain unless pgrep finds it, then tails the chain's log
 const E7 = `dori heavy e7-bs-chain -- ssh node 'cd w && if pgrep -f "^bash qa/chain.sh" >/dev/null; then echo CHAIN_ALREADY_RUNNING; else nohup setsid bash qa/chain.sh 400 > logs/chain.out 2>&1 & echo "CHAIN_PID=$!"; fi; sleep 3; tail -n +1 -F logs/chain.out | grep --line-buffered CHAIN_'`;
 
-test("a monitor command that starts work is told from one that only watches; a script that honours SENPI_MONITOR_RESTORED gets its watch-only form", () => {
+test("a monitor command that starts work is told from one that only watches", () => {
   // Given
   const script = 'if [ -n "${SENPI_MONITOR_RESTORED:-}" ]; then exec tail -F /x/chain.out; fi\nnohup setsid bash chain.sh > /x/chain.out 2>&1 &\n';
   const read = (p: string) => (p === "/home/test/w/watch.sh" ? script : undefined);
@@ -686,7 +686,6 @@ test("a monitor command that starts work is told from one that only watches; a s
   expect(launchOf("python train.py > /x/run.log 2>&1 &", "/home/test")?.why).toBe("a background job writing a file");
   expect(launchOf("until [ -f /x/done ]; do sleep 5; done && dori send discord pair done", "/home/test")?.why).toBe("dori send");
   expect(launchOf("bash ~/w/watch.sh 2>&1 | tee -a /x/w.log", "/home/test", read)).toEqual({ why: "nohup", writes: ["/x/w.log"], detached: true });
-  expect(launchOf("export SENPI_MONITOR_RESTORED=1; bash ~/w/watch.sh 2>&1 | tee -a /x/w.log", "/home/test", read)?.detached).toBe(true);
   for (const watch of [
     "tail -n 0 -F ~/.dori/lanes.log | grep --line-buffered LANE_",
     "ssh node 'tail -n +1 -F w/logs/chain.out | grep --line-buffered CHAIN_'",

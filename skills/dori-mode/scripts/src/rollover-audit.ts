@@ -26,7 +26,7 @@ import { runWithPrompt } from "./config.ts";
 import { laneDirectiveWords } from "./directive-audit.ts";
 import { endedWatch, sameWatch, workEnded } from "./handover-monitors.ts";
 import { allTodos, todoTask } from "./handover-todos.ts";
-import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest, sameCommand } from "./handover.ts";
+import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest } from "./handover.ts";
 import { type LaneFacts, type LaneHandoverDeps, missingFrom, UNDERSTOOD_HEADINGS } from "./lane-handover.ts";
 import { launchLedger } from "./launch.ts";
 import { beforeGenerated } from "./directives.ts";
@@ -240,7 +240,7 @@ const armed = (m: MonitorSpec, entries: ReturnType<typeof readManifest>, home: s
   const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
   if (m.command && launch) {
     return entries.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))
-      && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter) || (!!launch.rearm && !!e.command && sameCommand(launch.rearm, e.command, home))));
+      && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)));
   }
   return entries.some((e) => (m.command ? !!e.command && norm(m.command, home) === norm(e.command, home) : m.path ? !!e.path && norm(m.path, home) === norm(e.path, home) : !!m.description && e.description === m.description));
 };

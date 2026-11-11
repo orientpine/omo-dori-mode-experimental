@@ -74,7 +74,7 @@ export type HandoverOptions = {
 
 // A monitor command that starts work besides watching (see launchOf): why, the files its work writes, and the exact
 // watch-only command when its script has a mode for that.
-export type Launch = { readonly why: string; readonly writes: readonly string[]; readonly rearm?: string; readonly detached?: boolean };
+export type Launch = { readonly why: string; readonly writes: readonly string[]; readonly detached?: boolean };
 export type MonitorSpec = { readonly description: string; readonly command?: string; readonly filter?: string; readonly path?: string; readonly event?: string; readonly persistent: boolean; readonly launch?: Launch; readonly ended?: string; readonly pid?: number };
 
 type ManifestEntry = {
@@ -189,7 +189,6 @@ const STARTS: readonly RegExp[] = [
   /\bdori\s+(?:heavy|launch|send|type|close|claim-done|handover|ask|review|merge|thread\s+(?:reply|done))\b/, ...DETACHED.slice(5),
   /\b(?:pkill|killall|kill)\b(?!\s+-0\b)/, /\bgit\s+(?:push|commit|reset|checkout)\b/, /(?:^|[\s;&|(])(?:rm|mv)\s/,
 ];
-const RESTORED = "SENPI_MONITOR_RESTORED";
 
 const startsWork = (text: string): string | undefined => {
   for (const re of STARTS) {
@@ -200,7 +199,6 @@ const startsWork = (text: string): string | undefined => {
 };
 
 // A command that only watches gives undefined. A local script it runs (bash x.sh, ./x.sh, an absolute path) is read too; a shell's input is the last redirection, quoted or not, and only that file is read, so an unreadable one may detach a job after the snapshot. A relative input is read in the directory the command changes to; for detached only an absolute script in a command with one < is trusted (#414 review 15: guessing which file a shell reads was wrong 12 times), anything else keeps its watch; a script a shell runs that cannot be read, by any name (bash start.sh in a subshell, #414 review 16), is work and keeps its watch. A command that is not one of the plain watch shapes (watchOnly) is work as well, whatever it runs (#414 after review 21).
-// a script that honours SENPI_MONITOR_RESTORED (omo sets it when it restores a monitor) watches only when that is set, and only a monitor that ends with its watch (not detached) gets that watch-only rearm (#414 review 41).
 // The account's home for task and session records: homedir(), not $HOME, which native Windows does not set (USERPROFILE).
 export const accountHome = (): string => homedir();
 
@@ -215,10 +213,9 @@ export const launchOf = (command: string, home: string, read: (path: string) => 
   if (watchOnly(command)) return undefined;
   const found = [...command.matchAll(/(?:^|[\s;&|(<'"])((?:~\/|\$HOME\/|\/)?[^\s;&|'"()<>]*\.sh)\b/g)].filter((m) => !/0?<\s*['"]?[^\s;&|'"()<>]*$/.test(command.slice(0, m.index))).map((m) => [m[1] ?? "", m.index ?? 0] as const), ops = shellScripts(command), named = [...found, ...ops.filter((op) => !op.remote && !found.some(([q]) => q === op.path)).map((op) => [op.path, 0] as const)], inputs = [...command.matchAll(/(?<![\w.-])(?:ba|z|da|k)?sh(?:\s+-(?![\w-]*c)[\w-]+)*(?:\s*\d?>>?&?\s*(?:'[^']*'|"[^"]*"|[^\s;&|'"()<>]+)|\s+(?!\d?>>?&?)(?:'[^']*'|"[^"]*"|[^\s;&|'"()<>]+(?![^\s;&|'"()<>]*<))|\s*['"]?\s*0?<\s*['"]?(?:'[^']*'|"[^"]*"|[^\s;&|'"()<>]+))*\s*['"]?\s*0?<\s*(?:'([^']*)'|"([^"]*)"|((?:~\/|\$HOME\/|\/)?[^\s;&|'"()<>]+))/g)].map((m) => [m[1] ?? m[2] ?? m[3] ?? "", m.index ?? 0] as const), dirAt = (at: number) => /[()]/.test(command.slice(0, at)) ? "" : [...command.slice(0, at).matchAll(/\bcd\s+((?:~\/|\$HOME\/|\/|[^\s;&|'"()<>]+)[^\s;&|'"()<>]*)/g)].reduce((d, m) => { const p = m[1] ?? ""; return p.startsWith("/") || p.startsWith("~/") || p.startsWith("$HOME/") ? p : d && !d.startsWith("~/") && !d.startsWith("$HOME/") ? d.replace(/\/$/, "") + "/" + p : ""; }, ""), texts = [...named, ...inputs].map(([p, at]) => { if (ops.some((op) => op.remote && op.path === p)) return undefined; const d = dirAt(at), rel = !p.startsWith("/") && !p.startsWith("~/") && !p.startsWith("$HOME/"); return rel && d === "" ? undefined : read(((rel ? d + "/" : "") + p).replace(/^(?:~|\$HOME)\//, `${home}/`)); }), scripts = texts.map((t) => t ?? ""), unread = ops.some((op) => op.remote || texts[named.findIndex(([q]) => q === op.path)] === undefined);
   const detached = !foregroundOnly(command) || unread || texts.includes(undefined) || named.some(([p]) => !inputs.some(([q]) => q === p)) || inputs.length > 0 || (command.match(/</g)?.length ?? 0) > 1 || [...named, ...inputs].some(([p]) => !/^(?:\/|~\/|\$HOME\/)/.test(p)) || (command.match(/</g)?.length ?? 0) > inputs.length || /\|\s*(?:\S*\/)?(?:ba|z|da|k)?sh\b/.test(command) || [command, ...scripts].some((t) => DETACHED.some((re) => re.test(t)) || /[^&>]&(?=\s|$|[;)'"])/.test(t));
-  if (!detached && scripts.some((s) => s.includes(RESTORED)) && new RegExp(`\\b${RESTORED}=1\\b`).test(command)) return undefined;
   const why = startsWork(command) ?? scripts.map(startsWork).find(Boolean) ?? (unread || texts.includes(undefined) ? "a script the handover cannot read" : "a command that is not one of the plain watch shapes");
   const writes = [...new Set([...command.matchAll(/(?:(?<![0-9&>])>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|'"()>]+)/g)].map((m) => m[1] ?? "").filter((f) => f && f !== "/dev/null"))];
-  return { why, writes, detached, ...(!detached && scripts.some((s) => s.includes(RESTORED)) ? { rearm: `export ${RESTORED}=1; ${command}` } : {}) };
+  return { why, writes, detached };
 };
 
 // Every watch the old session still runs, persistent or not (a command whose recorded process is gone is left out); the new
@@ -379,7 +376,7 @@ export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonl
     const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
     if (m.command && launch) {
       const watchOnly = live.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))
-        && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter) || (!!launch.rearm && !!e.command && same(launch.rearm, e.command))));
+        && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)));
       const command = m.command;
       if (!watchOnly) out.push(live.some((e) => !!e.command && same(command, e.command)) ? `${name} (armed again with the command that starts work; arm a watch-only one instead)` : `${name} (starts work: arm a watch-only one with the same description)`);
       continue;
@@ -424,7 +421,7 @@ export const openGoal = (sessionDir: string, session: string): string | undefine
 
 const cell = (text: string): string => text.replace(/\s*\|\s*/g, " / ").replace(/\s*[\r\n]+\s*/g, " ").slice(0, 160);
 const launchHow = (m: MonitorSpec, l: Launch): string =>
-  ` LAUNCHES_WORK (${l.why}): do not arm this command again, it would start its work a second time. Arm in its place a persistent watch-only monitor with the same description${m.filter ? " and filter" : ""} that only reads what the work writes${l.writes.length ? ` (${l.writes.join(", ")})` : ""}, on this machine, in one of the plain watch shapes: tail -F of a file it writes piped to grep, an until or while loop of sleep over grep or test, or a wait on its pid (while kill -0 <pid> 2>/dev/null; do sleep 2; done; echo DONE); nothing that starts, posts or changes anything. A watch over ssh counts as work again.${l.rearm ? ` Its script has a watch-only mode: arm exactly command ${JSON.stringify(l.rearm)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}.` : ""}`;
+  ` LAUNCHES_WORK (${l.why}): do not arm this command again, it would start its work a second time. Arm in its place a persistent watch-only monitor with the same description${m.filter ? " and filter" : ""} that only reads what the work writes${l.writes.length ? ` (${l.writes.join(", ")})` : ""}, on this machine, in one of the plain watch shapes: tail -F of a file it writes piped to grep, an until or while loop of sleep over grep or test, or a wait on its pid (while kill -0 <pid> 2>/dev/null; do sleep 2; done; echo DONE); nothing that starts, posts or changes anything. A watch over ssh counts as work again.`;
 export const monitorLine = (m: MonitorSpec): string =>
   `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.ended ? ` ENDED (${m.ended}): do not arm it, it has nothing left to wait for; the handover does not check it. Look at the file (or the work that writes it) yourself once you may act.` : `${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}${m.launch ? launchHow(m, m.launch) : ""}`}`;
 const watcherLine = (w: HandoverWatcher): string => `- ${w.name}: check ${JSON.stringify(w.check)}${w.arm ? `; to start it: ${w.arm}` : "; runs outside omo, nothing to arm"}`;

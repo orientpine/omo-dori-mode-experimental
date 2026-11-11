@@ -160,14 +160,17 @@ export const watchOnly = (command: string): boolean => {
 
 // #414 review 41: a work monitor ends with its watch (detached false) only when every command word in it, at every depth,
 // is a listed foreground tool or shell word; a path, a script, an unknown program or a shell fed a script keeps the watch.
-const FOREGROUND = new Set([...PROGRAMS.keys(), "gh", "git", "kill", "tee", "export", "exit", "set", "systemctl"]);
+// git is none (--upload-pack, -c core.fsmonitor, --exec run programs); gh only with these subcommands (extensions and aliases run programs)
+const FOREGROUND = new Set([...PROGRAMS.keys(), "kill", "tee", "export", "exit", "set", "systemctl"]);
+const GH_SUBCOMMANDS = new Set(["pr", "run", "api", "release", "issue", "repo", "checks"]);
+const plainWord = (w: Word | undefined, set: ReadonlySet<string>): boolean => !!w && !w.quoted && !w.expand && !w.glob && set.has(w.text);
 export const foregroundOnly = (command: string): boolean => {
   const ok = (cmds: readonly Simple[]): boolean =>
     cmds.every((c) => {
       let k = 0;
       for (let x = c.words[k]; x && ((!x.quoted && !x.expand && (CONTROL.has(x.text) || CLOSE.has(x.text))) || ASSIGN.test(x.text)); x = c.words[k]) k++;
       const w = c.words[k];
-      return (!w || (!w.quoted && !w.expand && !w.glob && FOREGROUND.has(w.text))) && [...c.words, ...c.outs, ...c.ins].every((x) => x.subs.every(ok));
+      return (!w || plainWord(w, FOREGROUND) || (plainWord(w, new Set(["gh"])) && plainWord(c.words[k + 1], GH_SUBCOMMANDS))) && [...c.words, ...c.outs, ...c.ins].every((x) => x.subs.every(ok));
     });
   const r = lex(command, 0, false);
   return !!r && ok(r.cmds);
