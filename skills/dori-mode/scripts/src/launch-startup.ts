@@ -14,6 +14,7 @@ import { LaunchFailed } from "./launch-types.ts";
 import { splitModel } from "./lane-handover.ts";
 import { withThinking } from "./lane-model.ts";
 import { startupFailure } from "./launch-screen.ts";
+import { HcStartupError } from "./hc-pane.ts";
 
 // whether the newest model reply in the lane's own session (the exact id from its command line, under the cwd or its real
 // path) is from this launch (at or after since) and ended without an error; no id, no transcript or no such reply is none
@@ -96,6 +97,7 @@ export const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model:
     const path = isOmoExecutable(argv[0] ?? "") ? { PATH: agentPath(argv[0] ?? "omo") } : {};
     opened = await openHerdrSession(deps.run, deps.clock, { title: key, cwd, argv, env: { ...env, ...path }, ...(deps.config.laneWorkspace ? { workspace: deps.config.laneWorkspace } : {}), ...(beforeStart ? { beforeStart } : {}) });
   } catch (e) {
+    if (e instanceof HcStartupError) throw e;
     throw new LaunchFailed(e instanceof Error ? e.message : String(e));
   }
   const { pane, tab } = opened;

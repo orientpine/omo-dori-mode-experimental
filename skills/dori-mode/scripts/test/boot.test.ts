@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { bootCheck } from "../src/boot.ts";
 import { ChosenRuntimes, runtimesOf } from "../src/run.ts";
 import { bootDeps, launched, lane, manifest, newWorld, snapshot, T0 } from "./boot-fixtures.ts";
+import { terminal as hcTerm } from "./fake-hc.ts";
 import { withState, type World } from "./fakes.ts";
 
 let state: ReturnType<typeof withState>;
@@ -150,6 +151,36 @@ test("an aoe-only boot lists tmux sessions read-only and reconciles a live lane"
   expect(result.lines).toContain("DRIFT n=0");
   expect(result.lines.some((line) => line.startsWith("VANISHED aoe-live"))).toBe(false);
   expect(result.exitCode).toBe(0);
+});
+
+test("a configured aoe lead is discovered alongside herdr and hc lanes", async () => {
+  const world = newWorld();
+  const pane = "aoe_lead_12345678";
+  world.aoe = [{ id: "12345678-abcd", title: "lead", path: "/repo", tool: "omo" }];
+  world.tmux = [pane];
+  world.panes = [{ pane_id: "w1:p8", workspace_id: "w1" }];
+  world.terminals = { t1: hcTerm() };
+  const deps = depsFor(world);
+  await deps.registry.write(lane("herdr-lane", "working", "w1:p8"));
+  await deps.registry.write(lane("hc-lane", "working", "hc:t1"));
+  const result = await bootCheck({ ...deps, config: { ...deps.config, leadPane: pane } });
+  expect(result.lines).toContain(`PANES lead=${pane} leadState=live registeredLive=2 vanished=0 unregistered=1`);
+  expect(result.exitCode).toBe(0);
+});
+
+test("an aoe lead discovery failure is explicit and publishes no vanished verdict", async () => {
+  const world = newWorld();
+  const pane = "aoe_lead_12345678";
+  world.aoeListError = "aoe unavailable";
+  world.aoe = [{ id: "12345678-abcd", title: "lead", path: "/repo", tool: "omo" }];
+  world.tmux = [pane];
+  world.panes = [{ pane_id: "w1:p8", workspace_id: "w1" }];
+  const deps = depsFor(world);
+  await deps.registry.write(lane("herdr-lane", "working", "w1:p8"));
+  const result = await bootCheck({ ...deps, config: { ...deps.config, leadPane: pane } });
+  expect(result.lines).toContain("PANES unavailable (session list failed)");
+  expect(result.lines.some((line) => line.startsWith("VANISHED"))).toBe(false);
+  expect(result.exitCode).toBe(1);
 });
 
 test("a vanished aoe lane is reconciled and probed even when herdr is available", async () => {

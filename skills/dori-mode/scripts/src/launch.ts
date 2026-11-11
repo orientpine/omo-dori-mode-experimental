@@ -15,6 +15,7 @@ import { briefAnchor } from "./launch-footer.ts";
 import { reopenLaneThread } from "./launch-state.ts";
 import { renderBrief } from "./launch-render.ts";
 import { resolveLeadModel } from "./lane-model.ts";
+import { HcStartupError } from "./hc-pane.ts";
 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
@@ -64,18 +65,18 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   // a model reply older than this is not an answer to this launch (a resumed session holds earlier ones)
   const launchedAt = deps.clock.now();
   const env = laneEnv(deps.config.launchEnv, input.useGpu);
-  let seeded = false;
+  let registered = false;
   const beforeStart = async ({ pane, tab }: { readonly pane: string; readonly tab?: string }): Promise<void> => {
     const pending: Lane = { ...draft, reportProtocol: "jsonl-v1", pane, ...(tab ? { tab } : {}) };
     await deps.registry.write(pending);
+    registered = true;
     new Reports(deps.config.stateDir).append({ type: "activity", key: pending.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${pane}` });
-    seeded = true;
   };
   const opened = await (deps.config.backend === "aoe"
     ? openAoe(deps, input.key, cwd, model, prompt, env, async (pane) => beforeStart({ pane }))
     : openHerdr(deps, input.key, cwd, model, prompt, env, beforeStart)
   ).catch(async (e: unknown) => {
-    if (seeded && deps.config.backend !== "aoe") {
+    if (registered && deps.config.backend !== "aoe" && e instanceof HcStartupError && e.rollback) {
       rmSync(deps.registry.path(input.key), { force: true });
       rmSync(new Reports(deps.config.stateDir).path(input.key), { force: true });
     }
@@ -84,7 +85,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const arm = assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
   const lane: Lane = { ...draft, model, reportProtocol: "jsonl-v1", pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
   await deps.registry.write(lane);
-  if (!seeded) new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${lane.pane ?? "unknown"}` });
+  if (!registered) new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${lane.pane ?? "unknown"}` });
   // registered first, so the queue counts this lane as working in the thread; a thread --thread new just opened is 🔄 already
   if (input.thread !== NEW_THREAD) {
     const reopened = await reopenLaneThread(deps, lane);

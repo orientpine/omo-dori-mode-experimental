@@ -77,7 +77,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   let panes: BootSession[] | null = null;
   try {
     const listed: BootSession[] = await listSessions(rts, { lanes: registered, groups: deps.config.workspaces, selected: deps.config.backend !== "aoe", ...(leadRef ? { lead: leadRef } : {}) });
-    const needsAoe = deps.config.backend === "aoe" || registered.some((lane) => statusOf(lane) !== "closed" && aoeRefForLane(lane.pane));
+    const needsAoe = deps.config.backend === "aoe" || aoeRefForLane(deps.config.leadPane) !== undefined || registered.some((lane) => statusOf(lane) !== "closed" && aoeRefForLane(lane.pane));
     if (needsAoe) listed.push(...await listAoeSessions(deps.run));
     panes = listed;
   } catch (error) {
