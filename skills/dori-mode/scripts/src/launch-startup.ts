@@ -49,7 +49,7 @@ export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: 
 // STARTUP_OK; a first turn still on (its turn running, or the agent waiting on a background job of its own) is
 // STARTUP_PENDING_GOAL (exit 0; the lane is marked and dori watch finishes the judgement); three idle reads 10 s apart
 // with no goal are STARTUP_NO_GOAL (exit 3); an agent that ends or shows a startup failure is STARTUP_ERROR. A session
-// that holds no transcript yet (goal "unknown") has not taken its prompt: a slow host brings the agent up late (#202), so
+// whose transcript holds no user message yet (goal "unknown": no file, or only its header) has not taken its prompt: a slow host brings the agent up late (#202), so
 // such a read is no idle read; it is read again within the start wait (recheck, pending-goal.ts startupRechecks) and is
 // STARTUP_UNCONFIRMED (exit 3) once the wait is spent, never STARTUP_NO_GOAL, which would have the lead send it again.
 // prompted: the clock when the agent got its prompt. STARTUP_NO_GOAL gives the time read from the clock, since sleeps and
@@ -76,7 +76,7 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
     }
     if (goal === "unknown") {
       if (await recheck()) continue;
-      return `STARTUP_UNCONFIRMED ${key} ${pane}: the agent runs but its session holds no transcript, so it has not taken its launch prompt, ${Math.round((deps.clock.now() - prompted) / 1_000)} s after it; last lines: ${lastLines(screen)}`;
+      return `STARTUP_UNCONFIRMED ${key} ${pane}: the agent runs but its session holds no transcript of its prompt, so it has not taken its launch prompt, ${Math.round((deps.clock.now() - prompted) / 1_000)} s after it; last lines: ${lastLines(screen)}`;
     }
     if (idle++ >= GOAL_WAIT.idleChecks) return `STARTUP_NO_GOAL ${key} ${pane}: the agent runs but ${noGoalWhy(goal)}: its first turn ended ${Math.round((deps.clock.now() - prompted) / 1_000)} s after its prompt; last lines: ${lastLines(screen)}`;
     await deps.clock.sleep(GOAL_WAIT.everyMs);

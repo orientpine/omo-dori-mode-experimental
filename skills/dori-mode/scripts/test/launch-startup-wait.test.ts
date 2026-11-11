@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FlowDeps } from "../src/done-flow.ts";
 import type { GoalRead } from "../src/goal.ts";
@@ -47,17 +47,23 @@ const deliveries = (calls: readonly (readonly string[])[]): number => calls.filt
 
 // a herdr omo lane: herdr starts the agent with its prompt in the command line and launch's own --session-id, whose
 // transcript and goal record omo writes under sessionsDir once it took the prompt
-const herdrLane = (events: (lane: { arrive: (goal?: string) => void }) => Record<number, () => void>, patch: Record<string, unknown> = {}) => {
+const herdrLane = (events: (lane: { arrive: (goal?: string) => void; header: () => void }) => Record<number, () => void>, patch: Record<string, unknown> = {}) => {
   const sessions = join(state.dir, "sessions");
   const base = depsFor(world, { now: () => T0, sleep: async () => {} }, state.dir, { sessionsDir: sessions, ...patch });
   let session = "";
+  const dir = join(sessions, `--${CWD.replace(/^\//, "").replace(/\//g, "-")}--`);
+  const file = () => join(dir, `2026-01-01T12-00-01-000Z_${session}.jsonl`);
+  // omo's control endpoint writes the session header before it takes the initial message
+  const header = (): void => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file(), `${JSON.stringify({ type: "session", id: session, cwd: CWD })}\n`);
+  };
   const arrive = (goal?: string): void => {
-    const dir = join(sessions, `--${CWD.replace(/^\//, "").replace(/\//g, "-")}--`);
     mkdirSync(join(dir, "extensions", "goal"), { recursive: true });
-    writeFileSync(join(dir, `2026-01-01T12-00-01-000Z_${session}.jsonl`), `${JSON.stringify({ type: "message", message: { role: "user", content: "ulw. Read and execute the lane brief" } })}\n`);
+    appendFileSync(file(), `${JSON.stringify({ type: "message", message: { role: "user", content: "ulw. Read and execute the lane brief" } })}\n`);
     if (goal) writeFileSync(join(dir, "extensions", "goal", `${session}.json`), JSON.stringify({ goal: { status: goal } }));
   };
-  const clock = timeline(events({ arrive }));
+  const clock = timeline(events({ arrive, header }));
   const deps: FlowDeps = { ...base, clock, run: async (argv, o) => {
     if (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create") return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: PANE }, tab_id: "w:t9" } }), err: "" };
     if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "run") session = /--session-id[= ](\S+)/.exec(argv.join(" "))?.[1]?.replace(/'/g, "") ?? "";
@@ -77,6 +83,16 @@ test("a herdr omo lane whose first prompt arrives 47, 61, 63 or 140 s after laun
   }
 });
 
+test("a session whose transcript holds only its header is still waited for: a prompt taken at 60 s is STARTUP_OK, none at all is STARTUP_UNCONFIRMED after the whole wait", async () => {
+  const late = herdrLane(({ arrive, header }) => ({ 1: header, 60: () => arrive("active") }));
+  expect((await late.launch("header")).startup).toBe(`STARTUP_OK header ${PANE}`);
+  expect(late.clock.sleeps).toBe(5);
+  world = newWorld();
+  const never = herdrLane(({ header }) => ({ 1: header }));
+  expect((await never.launch("header-only")).startup).toStartWith(`STARTUP_UNCONFIRMED header-only ${PANE}: the agent runs but its session holds no transcript`);
+  expect(never.clock.sleeps).toBe(17);
+});
+
 test("a first prompt that arrives at 63 s into a running first turn is STARTUP_PENDING_GOAL; one that ends idle is STARTUP_NO_GOAL three reads after it, not before", async () => {
   const running = herdrLane(({ arrive }) => ({ 63: () => { arrive(); world.screens[PANE] = BUSY; } }));
   expect((await running.launch("pending")).startup).toStartWith(`STARTUP_PENDING_GOAL pending ${PANE}`);
@@ -88,7 +104,7 @@ test("a first prompt that arrives at 63 s into a running first turn is STARTUP_P
 
 test("an agent that never takes its prompt is STARTUP_UNCONFIRMED after the whole wait, never STARTUP_NO_GOAL; startupWaitSeconds sets the wait", async () => {
   const never = herdrLane(() => ({}));
-  expect((await never.launch("never")).startup).toStartWith(`STARTUP_UNCONFIRMED never ${PANE}: the agent runs but its session holds no transcript, so it has not taken its launch prompt, 180 s after it; last lines:`);
+  expect((await never.launch("never")).startup).toStartWith(`STARTUP_UNCONFIRMED never ${PANE}: the agent runs but its session holds no transcript of its prompt, so it has not taken its launch prompt, 180 s after it; last lines:`);
   expect(never.clock.sleeps).toBe(17);
   expect(deliveries(world.calls)).toBe(1);
   world = newWorld();
