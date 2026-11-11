@@ -37,7 +37,8 @@ const movedFrom = (note: string): { readonly from: Session; readonly laneKey?: s
   return { from: { session: from.session, pane: from.pane, cwd: from.cwd, ...("oldLog" in facts && typeof facts.oldLog === "string" ? { log: facts.oldLog } : {}) }, ...(lane && typeof lane === "object" && "key" in lane && typeof lane.key === "string" ? { laneKey: lane.key } : {}) };
 };
 
-// Identity comes from the live resolver, same-agent observations, or a committed move to this exact pane/session.
+// Identity comes from the live resolver, exact same-session records (including a manual move to another pane),
+// same-agent observations, or a committed move to this exact pane/session.
 // A matching title, directory or filename alone never establishes a predecessor.
 export const predecessorTranscripts = (deps: FlowDeps, lead: { readonly pane: string; readonly path: string; readonly text?: string }, target?: string): string[] => {
   const currentText = lead.text ?? textAt(lead.path), current = header(currentText);
@@ -56,6 +57,8 @@ export const predecessorTranscripts = (deps: FlowDeps, lead: { readonly pane: st
   for (let tip = pending.shift(); tip; tip = pending.shift()) {
     const kept = records[tip.pane];
     if (kept?.session === tip.session && kept.cwd === tip.cwd) for (const prior of kept.previous ?? []) add({ ...prior, pane: tip.pane }, tip.chain);
+    for (const [pane, prior] of Object.entries(records))
+      if (pane !== tip.pane && prior.session === tip.session && prior.cwd === tip.cwd) add({ ...prior, pane }, tip.chain);
     for (const move of moves) {
       if (move.who !== "lead" || move.to !== tip.pane || move.session !== tip.session) continue;
       const facts = movedFrom(move.note);
