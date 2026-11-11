@@ -8,118 +8,14 @@
 // running twice. It trusts the listed programs and options to only read, and the session's environment. What it cannot
 // read (a subshell, a background job, a here-doc, $(( )), ${ }, a comment) is work; a real watch missing here is work
 // too, and the new session arms a watch-only monitor in its place: a manual step, never a second run.
-// A word with its quotes removed, each $( ) lexed as commands of its own (subs, \0 in the text); glob: an unquoted {*?[
-type Word = { readonly text: string; readonly quoted: boolean; readonly expand: boolean; readonly glob: boolean; readonly subs: readonly Simple[][] };
-// A simple command: its words, its output redirection targets ("&1" for a descriptor copy) and its input files.
-type Simple = { readonly words: Word[]; readonly outs: Word[]; readonly ins: Word[] };
-
-// ; && || | and newlines split commands; ( ` # & alone, |&, ;;, here-docs and <( ) are never a plain poll, so the lexer gives up.
-const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[]; end: number } | undefined => {
-  const cmds: Simple[] = [{ words: [], outs: [], ins: [] }];
-  const cur = (): Simple => cmds[cmds.length - 1] as Simple;
-  let i = start;
-  const word = (): Word | undefined => {
-    let text = "", quoted = false, expand = false, glob = false;
-    const subs: Simple[][] = [];
-    const sub = (): boolean => {
-      const r = s[i + 2] === "(" ? undefined : lex(s, i + 2, true);
-      if (!r) return false;
-      subs.push(r.cmds);
-      i = r.end;
-      text += "\0";
-      expand = true;
-      return true;
-    };
-    while (i < s.length && !/[\s;&|()<>]/.test(s[i] ?? "")) {
-      const c = s[i] ?? "";
-      if (c === "'") {
-        const j = s.indexOf("'", i + 1);
-        if (j < 0) return undefined;
-        text += s.slice(i + 1, j);
-        quoted = true;
-        i = j + 1;
-      } else if (c === '"') {
-        quoted = true;
-        for (i++; s[i] !== '"'; ) {
-          const d = s[i];
-          if (d === undefined || d === "`" || (d === "$" && s[i + 1] === "{")) return undefined;
-          if (d === "\\") {
-            text += s[i + 1] ?? "";
-            i += 2;
-          } else if (d === "$" && s[i + 1] === "(") {
-            if (!sub()) return undefined;
-          } else {
-            expand ||= d === "$";
-            text += d;
-            i++;
-          }
-        }
-        i++;
-      } else if (c === "\\") {
-        text += s[i + 1] ?? "";
-        i += 2;
-      } else if (c === "`" || (c === "$" && s[i + 1] === "{")) return undefined;
-      else if (c === "$" && s[i + 1] === "(") {
-        if (!sub()) return undefined;
-      } else {
-        expand ||= c === "$";
-        glob ||= /[*?[{]/.test(c);
-        text += c;
-        i++;
-      }
-    }
-    return { text, quoted, expand, glob, subs };
-  };
-  while (i < s.length) {
-    const c = s[i] ?? "";
-    const fd = /^\d*[<>]/.exec(s.slice(i, i + 12));
-    if (c === " " || c === "\t") i++;
-    else if (c === "\n" || c === ";" || c === "&" || c === "|") {
-      if ((c === ";" && s[i + 1] === ";") || (c === "&" && s[i + 1] !== "&") || (c === "|" && s[i + 1] === "&")) return undefined;
-      cmds.push({ words: [], outs: [], ins: [] });
-      i += (c === "&" || c === "|") && s[i + 1] === c ? 2 : 1;
-    } else if (c === ")") return inSub ? { cmds, end: i + 1 } : undefined;
-    else if (c === "(" || c === "`" || c === "#") return undefined;
-    else if (fd?.[0].endsWith("<")) {
-      // an input file a listed program reads; <<, <<<, <( ), <& and <> are not
-      i += fd[0].length;
-      if (/[<(&>]/.test(s[i] ?? "")) return undefined;
-      while (s[i] === " " || s[i] === "\t") i++;
-      const w = /[\s;&|()<>]/.test(s[i] ?? ";") ? undefined : word();
-      if (!w) return undefined;
-      cur().ins.push(w);
-    } else if (fd) {
-      i += fd[0].length;
-      if (s[i] === ">") i++;
-      if (s[i] === "(" || s[i] === "|") return undefined;
-      if (s[i] === "&") {
-        const n = /^\d+/.exec(s.slice(i + 1));
-        if (!n) return undefined;
-        cur().outs.push({ text: `&${n[0]}`, quoted: false, expand: false, glob: false, subs: [] });
-        i += 1 + n[0].length;
-        continue;
-      }
-      while (s[i] === " " || s[i] === "\t") i++;
-      const w = /[\s;&|()<>]/.test(s[i] ?? ";") ? undefined : word();
-      if (!w) return undefined;
-      cur().outs.push(w);
-    } else {
-      // every step advances: a blank the lexer does not split on (a carriage return) ends here as work (#414 review 22)
-      const at = i;
-      const w = word();
-      if (!w || i === at) return undefined;
-      cur().words.push(w);
-    }
-  }
-  return inSub ? undefined : { cmds, end: i };
-};
+import { lex, type Simple, type Word } from "./handover-watch-lex.ts";
 
 // The options each listed program may take (flags: short options alone; vals: short options with a value; num: -N),
 // and what its other words may be. Any other option is work (date -s, grep -r, sort -o are not on the list).
 type Spec = { readonly flags?: string; readonly vals?: string; readonly long?: readonly string[]; readonly longVals?: readonly string[]; readonly num?: boolean; readonly raw?: boolean; readonly operand?: (w: Word) => boolean };
 const PROGRAMS = new Map<string, Spec>([
   ...["sleep", "true", "false", "break", "continue", "cd", "cat"].map((n) => [n, {}] as const),
-  ...["echo", "printf", "test", "["].map((n) => [n, { raw: true }] as const),
+  ...["echo", "printf"].map((n) => [n, { raw: true }] as const),
   ["date", { flags: "u", vals: "d", operand: (w) => w.text.startsWith("+") }],
   ["grep", { flags: "qExvicFnsw", vals: "e", long: ["line-buffered"] }],
   ["tail", { flags: "Ff", vals: "n", num: true }],
@@ -140,8 +36,19 @@ const GH = new Map<string, Spec>([
   ...["run list", "run view", "run watch"].map((n) => [n, { vals: "RLbq", long: ["exit-status"], longVals: ["repo", "branch", "limit", "json", "jq", "interval"] }] as const),
 ]);
 const GH_API: Spec = { vals: "q", long: ["paginate"], longVals: ["jq"] }; // a GET: no -X, -f, -F or --input
-const GIT = new Map<string, Spec>([["fetch", { flags: "q", long: ["quiet"] }], ["rev-parse", {}], ["log", { vals: "n", num: true, longVals: ["format"] }]]);
-const RAW = new Set(["echo", "printf", "test", "["]);
+const GIT = new Map<string, Spec>([["fetch", { flags: "q", long: ["quiet"] }], ["rev-parse", { long: ["verify"] }], ["log", { vals: "n", num: true, longVals: ["format"] }]]);
+const RAW = new Set(["echo", "printf"]);
+// test and [ only in shapes where no word, expanded or not, can be read as another operator: -v and -R evaluate an
+// array subscript and the command substitution in it (#414 review 25)
+const UNARY = new Set(["-n", "-z", "-e", "-f", "-s", "!"]);
+const BINARY = new Set(["=", "!=", "-eq", "-ne", "-lt", "-gt", "-ge", "-le"]);
+const testOk = (ws: readonly Word[]): boolean => {
+  const op = (w: Word | undefined, set: ReadonlySet<string>) => !!w && !w.expand && !w.glob && set.has(w.text);
+  if (ws.length === 1) return true;
+  if (ws.length === 2) return op(ws[0], UNARY);
+  if (ws.length === 3) return op(ws[1], BINARY) || (ws[0]?.text === "!" && op(ws[0], UNARY) && testOk(ws.slice(1)));
+  return ws.length === 4 && ws[0]?.text === "!" && op(ws[0], UNARY) && testOk(ws.slice(1));
+};
 const CONTROL = new Set(["if", "then", "else", "elif", "while", "until", "do", "{", "!"]);
 const CLOSE = new Set(["fi", "done", "}"]);
 const ASSIGN = /^([A-Za-z_]\w*)=/;
@@ -191,8 +98,9 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   while (ENV(rest[e] as Word) && rest[e + 1]?.text === "gh") e++;
   const [name, ...args] = rest.slice(e);
   if (!plain(name) || name.subs.length) return false;
-  // an expansion ($name or $( )) may become options or other words, so it is an argument only of echo, printf, test and
-  // [ and the right side of an assignment; elsewhere only a state file, and for git a hash from git rev-parse (#414 reviews 22, 23)
+  // an expansion ($name, $( ), a glob) may become options or other words: an argument only of echo, printf, test and [ (in
+  // their shapes) and the right side of an assignment; elsewhere a state file, for git a rev-parse --verify hash (#414 r22-r25)
+  if (name.text === "test" || name.text === "[") return name.text === "test" ? testOk(args) : args.at(-1)?.text === "]" && !args.at(-1)?.expand && testOk(args.slice(0, -1));
   if ((!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !(x.expand || x.glob) || state(x) || (name.text === "git" && hash(x)))) || (name.text === "printf" && (!args[0] || args[0].expand || args[0].glob || args[0].text.startsWith("-")))) return false;
   const a = args.map((x) => x.text);
   if (name.text === "tee") return argsOk({ flags: "a", operand: (x) => x.text === "/dev/null" || state(x) }, args);
@@ -236,13 +144,13 @@ export const watchOnly = (command: string): boolean => {
     if (name) values.set(name, [...(values.get(name) ?? []), { ...w, text: w.text.slice(name.length + 1) }]);
   }
   const direct = stateFile(new Set());
-  // a variable every assignment of which is $(git [-C dir] rev-parse <words>): a hash, or one of those option-free words back
+  // a variable every assignment of which is $(git [-C dir] rev-parse --verify <one ref>): one hash or nothing (#414 review 25)
   const revParse = (v: Word): boolean => {
     const [c, ...more] = v.text === "\0" ? (v.subs[0] ?? []) : [];
     if (!c || more.length || c.outs.length || c.ins.length || c.words.some((x) => x.expand)) return false;
     const w = c.words.map((x) => x.text);
     const rest = w[1] === "-C" ? w.slice(3) : w.slice(1);
-    return w[0] === "git" && rest[0] === "rev-parse" && rest.every((x) => !x.startsWith("-"));
+    return w[0] === "git" && rest[0] === "rev-parse" && rest[1] === "--verify" && rest.length === 3 && /^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(rest[2] ?? "");
   };
   const hashes = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(revParse)).map(([n]) => n));
   const aliases = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(direct)).map(([n]) => n));

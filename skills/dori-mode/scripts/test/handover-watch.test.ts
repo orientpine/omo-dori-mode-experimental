@@ -28,6 +28,7 @@ test("the plain poll shapes of real monitors stay watches the new session may ar
     // the watch-only form a new session arms for work the old one started: wait on its pid
     "while kill -0 3636161 2>/dev/null; do sleep 2; done; echo QA_JOB_DONE",
     "until test -e /tmp/qa/stop; do sleep 2; done; stat -c %s /tmp/qa/stop; printf 'STOPPED\\n'",
+    "p=$(git -C /tmp/wt rev-parse origin/main); while sleep 60; do git -C /tmp/wt fetch -q origin 2>/dev/null || continue; n=$(git -C /tmp/wt rev-parse origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $p..$n\"; p=$n; }; done",
     // the main-moved poll with a hash only rev-parse --verify prints (#414 review 25)
     "p=$(git -C /tmp/wt rev-parse --verify origin/main); while sleep 60; do git -C /tmp/wt fetch -q origin 2>/dev/null || continue; n=$(git -C /tmp/wt rev-parse --verify origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $(git -C /tmp/wt log -1 --format=%s $n | cut -c1-80)\"; p=$n; }; done",
     // the shapes of the other real lane and lead notes: another account or host, a service, a gh read, a filter
@@ -96,7 +97,6 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     // either; the main-moved polls that pass it to git log are work for now (follow-ups)
     "x=$(git rev-parse 'HEAD --output=/tmp/replayed'); git log $x; tail -F /tmp/watch.log",
     "cd /home/test/src; b=\"$SENPI_MONITOR_STATE_DIR/base\"; p=$(cat \"$b\" 2>/dev/null || git rev-parse origin/main | tee \"$b\"); while sleep 60; do git fetch -q origin main 2>/dev/null || true; n=$(git rev-parse origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $p..$n $(git log -1 --format=%s $n | cut -c1-80)\"; p=$n; echo \"$p\" > \"$b\"; }; done",
-    "p=$(git -C /tmp/wt rev-parse origin/main); while sleep 60; do git -C /tmp/wt fetch -q origin 2>/dev/null || continue; n=$(git -C /tmp/wt rev-parse origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $p..$n\"; p=$n; }; done",
     // test -v and -R evaluate an array subscript, and with it a command substitution hidden in quotes
     "test -v 'BASH_VERSINFO[$(touch /tmp/replayed)]'; tail -F /tmp/watch.log",
     "[ -v 'a[$(touch /tmp/replayed)]' ]",
