@@ -56,7 +56,7 @@ export const inboxRows = (inbox: string, ownerId: string, names: readonly string
       const kind: Kind | undefined = owner.has(id) ? "owner" : r.scope === "pair-bot" ? "pair-bot" : r.scope === "pair" ? "pair" : undefined;
       const at = Date.parse(r.ts ?? "");
       const text = String(r.content || r.transcript || r.answer || "");
-      if (kind === "pair-bot" && !callsThisDori(text, names, botId)) continue;
+      if (kind === "pair-bot" && !callsThisDori([r.content, r.transcript, r.answer].filter(Boolean).join("\n"), names, botId)) continue;
       if (kind && id && !Number.isNaN(at)) out.push({ id, at, kind, text, ...(r.qid ? { qid: r.qid } : {}) });
     } catch {}
   }
