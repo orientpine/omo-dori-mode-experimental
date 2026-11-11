@@ -4,6 +4,16 @@ import { basename } from "node:path";
 import { shellWords } from "./handover.ts";
 import type { readManifest } from "./handover.ts";
 
+// A pair-bot row is information, never a request, except one that calls this Dori (one of discord.callNames in it, or its
+// bot mentioned) and another Dori's lead alert (a LEAD_<WORD> line such as LEAD_RUNAWAY or LEAD_COMPACTION_STUCK asks the
+// other Dori to act; Discord's sender escapes its underscores); a lead's inbox monitor may drop the rest (MooDori
+// 2026-11-11: 121 of 155 pair-bot rows named another Dori). With no callNames every one counts; with no bot id known, any
+// mention does.
+export const callsThisDori = (text: string, names: readonly string[], botId: string): boolean => {
+  const said = text.replaceAll("\\_", "_"), lower = said.toLowerCase(), own = names.map((n) => n.trim().toLowerCase()).filter(Boolean);
+  return !own.length || /^LEAD_[A-Z_]+\b/.test(said) || [...said.matchAll(/<@!?(\d+)>/g)].some((m) => !botId || m[1] === botId) || own.some((n) => lower.includes(n));
+};
+
 type Entry = ReturnType<typeof readManifest>[number] & { readonly deliveryPaused?: boolean };
 
 const plain = (s: string, n: number): string => s.replace(/\s+/g, " ").replace(/`/g, "'").replaceAll("$(", "$ (").trim().slice(0, n);
