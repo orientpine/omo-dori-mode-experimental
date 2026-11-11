@@ -1,0 +1,38 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { missingTokens, slackWatchOptions } from "../../setups/discord-aoe/slack-watch.ts";
+import { loadEnvFile } from "../src/config.ts";
+import { homeEnv } from "../src/home-env.ts";
+
+const APP = ["xapp", "FIXTURE"].join("-");
+let dir: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "slack-watch-token-"));
+});
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+// The env a handed-over or revived lead runs the watcher in: production homeEnv (token file, blanked token), then dori.env.
+const leadEnv = async (mode: number): Promise<Record<string, string | undefined>> => {
+  const file = join(dir, "slack-token");
+  writeFileSync(file, "xoxb-FIXTURE-file\n");
+  chmodSync(file, mode);
+  writeFileSync(join(dir, "dori.env"), `DORI_SLACK_APP_TOKEN=${APP}\nDORI_SLACK_TOKEN=xoxb-FIXTURE-envfile\n`);
+  const env: Record<string, string | undefined> = { ...homeEnv({ stateDir: dir }, { DORI_CONFIG: join(dir, "config.json"), DORI_ENV_FILE: join(dir, "dori.env") }) };
+  await loadEnvFile(join(dir, "dori.env"), env);
+  return env;
+};
+
+test.skipIf(process.platform === "win32")("the Slack watcher reads the bot token from the lead's token file, not the blanked variable (#201 review 3)", async () => {
+  // Given: a lead env from production homeEnv with this home's owner-only token file
+  const options = slackWatchOptions(await leadEnv(0o600), dir);
+  // Then: the watcher has the file's bot token and nothing is missing
+  expect({ bot: options.botToken, why: missingTokens(options) }).toEqual({ bot: "xoxb-FIXTURE-file", why: "" });
+});
+
+test.skipIf(process.platform === "win32")("a token file open to others keeps the watcher off with the file's reason, naming the path, never the value", async () => {
+  const why = missingTokens(slackWatchOptions(await leadEnv(0o644), dir));
+  expect(why).toBe(`DORI_SLACK_TOKEN_FILE ${join(dir, "slack-token")} is open to group or others (mode 644); chmod 600 it`);
+  expect(why).not.toContain("FIXTURE");
+});

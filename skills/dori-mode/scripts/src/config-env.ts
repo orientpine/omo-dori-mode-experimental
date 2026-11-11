@@ -23,11 +23,9 @@ const tokenIdentity = (name: string, token: string): string => {
 // the file names another bot than the inherited token. Then the environment is another Dori's: every inherited
 // instance variable is dropped first, so this file and the defaults apply. Returns the dropped names.
 export const loadEnvFile = async (path: string, env: Record<string, string | undefined> = process.env): Promise<string[]> => {
-  const file = Bun.file(path);
-  if (!(await file.exists())) return [];
-  const values = envFileEntries(await file.text());
   // A token file dori launch chose for another home (DORI_SLACK_TOKEN_HOME is not this run's config, as when a lane of one
-  // home calls another home's wrapper) is that home's credentials: dropped, so this home's own token is read (#201 review 2).
+  // home calls another home's wrapper) is that home's credentials: dropped, so this home's own token is read (#201 review 2),
+  // before the file is looked at, since a home without a dori.env must not keep them either (review 3).
   const home = resolve(env["DORI_CONFIG"] ?? configPath());
   const marked = env["DORI_SLACK_TOKEN_HOME"];
   if (marked !== undefined && marked !== home) {
@@ -35,6 +33,9 @@ export const loadEnvFile = async (path: string, env: Record<string, string | und
     delete env["DORI_SLACK_TOKEN_HOME"];
     if (env["DORI_SLACK_TOKEN"] === "") delete env["DORI_SLACK_TOKEN"];
   }
+  const file = Bun.file(path);
+  if (!(await file.exists())) return [];
+  const values = envFileEntries(await file.text());
   const foreign = [...values].some(([name, value]) => {
     const inherited = env[name];
     return /^DORI_\w+_TOKEN$/.test(name) && value !== "" && inherited !== undefined && inherited !== "" && tokenIdentity(name, inherited) !== tokenIdentity(name, value);

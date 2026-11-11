@@ -29,7 +29,7 @@ afterEach(() => {
 
 // A lane's dori send slack as launch leaves it (production laneHomeEnv for home A: its dori.env, the token file's path,
 // DORI_SLACK_TOKEN blanked), optionally through another home's wrapper, which sets only that home's three selectors.
-const laneSend = async (doriEnv: string, inherited: readonly string[], wrapper?: { readonly doriEnv: string; readonly text?: string }) => {
+const laneSend = async (doriEnv: string, inherited: readonly string[], wrapper?: { readonly doriEnv?: string; readonly text?: string }) => {
   const envFile = join(state.dir, "dori.env");
   // the fake Slack API is in dori.env too, so an isolation that drops inherited Slack variables cannot reach slack.com
   const api = `DORI_SLACK_API=http://127.0.0.1:${server.port}/api\n`;
@@ -42,7 +42,7 @@ const laneSend = async (doriEnv: string, inherited: readonly string[], wrapper?:
   if (wrapper) {
     const other = join(state.dir, "home-b");
     mkdirSync(other, { recursive: true });
-    writeFileSync(join(other, "dori.env"), `${wrapper.doriEnv}${api}`);
+    if (wrapper.doriEnv !== undefined) writeFileSync(join(other, "dori.env"), `${wrapper.doriEnv}${api}`);
     Object.assign(home, { DORI_CONFIG: join(other, "config.json"), DORI_ENV_FILE: join(other, "dori.env"), DORI_STATE_DIR: join(other, "state") });
   }
   return await run(["env", ...Object.entries(home).map(([k, v]) => `${k}=${v}`), `DORI_SLACK_API=http://127.0.0.1:${server.port}/api`, ...inherited,
@@ -68,4 +68,11 @@ test.skipIf(process.platform === "win32")("another home's wrapper called from a 
   const same = await laneSend("", [], { doriEnv: "DORI_SLACK_TOKEN=xoxb-FIXTURE-homeb\n", text: "hello again" });
   // Then: both post with home B's token, never with home A's file
   expect({ foreign: foreign.code, same: same.code, seen }).toEqual({ foreign: 0, same: 0, seen: ["Bearer xoxb-FIXTURE-homeb", "Bearer xoxb-FIXTURE-homeb"] });
+});
+
+test.skipIf(process.platform === "win32")("another home's wrapper without a dori.env still drops the lane's token file, so nothing posts as the lane's home (#201 review 3)", async () => {
+  // Given: a home-A lane with A's token file calls home B's wrapper, and home B has no dori.env at all
+  const r = await laneSend("", [], {});
+  // Then: home B has no Slack token, which is said, and nothing is posted with home A's file
+  expect({ code: r.code, err: r.err, seen }).toEqual({ code: 1, err: "DORI_SLACK_TOKEN is not set (nor DORI_SLACK_TOKEN_FILE)", seen: [] });
 });

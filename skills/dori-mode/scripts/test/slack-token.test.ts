@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bootCheck, envSlackCheck } from "../src/boot.ts";
+import { loadEnvFile } from "../src/config.ts";
 import { laneHomeEnv } from "../src/home-env.ts";
 import { slackToken, TokenFileError } from "../src/slack-token.ts";
 import { bootDeps, newWorld } from "./boot-fixtures.ts";
@@ -83,4 +84,16 @@ test.skipIf(process.platform === "win32")("boot prints a bad token file as a fai
     expect(r.exitCode).toBe(1);
     expect(r.lines.join("\n")).not.toContain("FIXTURE");
   }
+});
+
+test("a lane launched through another home's wrapper without a dori.env does not carry the first home's token file over (#201 review 3)", async () => {
+  // Given: home A's lane env with A's token file, then home B's wrapper selectors, with no dori.env in home B
+  tokenFile("slack-token", "xoxb-FIXTURE-a\n", 0o600);
+  const env: Record<string, string | undefined> = { ...laneHomeEnv({ stateDir: join(dir, "state"), backend: "herdr" }, { DORI_CONFIG: join(dir, "config.json") }) };
+  Object.assign(env, { DORI_CONFIG: join(dir, "home-b", "config.json"), DORI_ENV_FILE: join(dir, "home-b", "dori.env") });
+  // When: the CLI starts in home B and launches a lane there
+  await loadEnvFile(join(dir, "home-b", "dori.env"), env);
+  const lane = laneHomeEnv({ stateDir: join(dir, "home-b", "state"), backend: "herdr" }, env);
+  // Then: neither the run nor its lane names home A's token file
+  expect([env["DORI_SLACK_TOKEN_FILE"], lane["DORI_SLACK_TOKEN_FILE"], lane["DORI_SLACK_TOKEN_HOME"]]).toEqual([undefined, undefined, undefined]);
 });
