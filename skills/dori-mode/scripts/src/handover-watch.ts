@@ -164,7 +164,21 @@ export const watchOnly = (command: string): boolean => {
 // only tools that cannot start a program whatever their arguments (#414 review 42): not awk (system), sed (e), journalctl
 // or systemctl (a pager), export or set (an environment a later program reads), nor any interpreter, wrapper or runner
 const FOREGROUND = new Set(["sleep", "true", "false", "break", "continue", "cd", "cat", "echo", "printf", "date", "grep", "tail", "head", "sha256sum", "cut", "tr", "wc", "stat", "jq", "kill", "tee", "exit", "test", "["]);
-const GH_SUBCOMMANDS = new Set(["pr", "run", "api", "release", "issue", "repo", "checks"]);
+// gh only as a read: pr checkout, repo clone/sync/fork run git and its hooks, pr create/merge can open an editor
+const GH_READS = new Map<string, ReadonlySet<string> | undefined>([
+  ["pr", new Set(["checks", "view", "list", "status", "diff"])],
+  ["run", new Set(["watch", "view", "list"])],
+  ["api", undefined],
+  ["release", new Set(["view", "list", "download"])],
+  ["issue", new Set(["view", "list"])],
+  ["repo", new Set(["view"])],
+]);
+const ghRead = (ws: readonly Word[], k: number): boolean => {
+  const [sub, verb] = [ws[k + 1], ws[k + 2]];
+  if (!plainWord(sub, new Set(GH_READS.keys()))) return false;
+  const verbs = GH_READS.get(sub?.text ?? "");
+  return !verbs || plainWord(verb, verbs);
+};
 const plainWord = (w: Word | undefined, set: ReadonlySet<string>): boolean => !!w && !w.quoted && !w.expand && !w.glob && set.has(w.text);
 export const foregroundOnly = (command: string): boolean => {
   const ok = (cmds: readonly Simple[]): boolean =>
@@ -178,7 +192,7 @@ export const foregroundOnly = (command: string): boolean => {
       const w = c.words[k];
       // an assignment in front of a command (PAGER=x gh ...) hands that program an environment it may run
       if (assigned && w) return false;
-      return (!w || plainWord(w, FOREGROUND) || (plainWord(w, new Set(["gh"])) && plainWord(c.words[k + 1], GH_SUBCOMMANDS))) && [...c.words, ...c.outs, ...c.ins].every((x) => x.subs.every(ok));
+      return (!w || plainWord(w, FOREGROUND) || (plainWord(w, new Set(["gh"])) && ghRead(c.words, k))) && [...c.words, ...c.outs, ...c.ins].every((x) => x.subs.every(ok));
     });
   const r = lex(command, 0, false);
   return !!r && ok(r.cmds);
