@@ -151,6 +151,11 @@ const omoInputBox = (screen: string): boolean => {
   return lines.some((l, i) => l.trimStart().startsWith("❯") && lines.slice(Math.max(0, i - 2), i).some((u) => u.trimStart().startsWith("─")));
 };
 
+// Clears the pane before a revived agent starts, so the ended agent's ❯ box is gone before the new one draws. clear needs
+// terminfo (a restored TERM=dumb has none and fails), so the terminal's own erase sequence follows when it fails: the
+// shell's printf builtin needs neither, and the emulator wipes the screen before the agent's pid can show (review 2 of #453).
+export const UNIX_CLEAR = "clear 2>/dev/null || printf '\\033[H\\033[2J\\033[3J'; ";
+
 // Starts the recorded conversation of a herdr pane again in that pane, whose agent is gone (its shell stayed or herdr
 // gave the pane back after a restart): omo --session-id resumes an existing session exactly. Waits for omo's ❯ prompt,
 // then types prompt (when not "") through type. A line saying what happened.
@@ -188,7 +193,7 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
     const { base, thinking } = splitModel((log ? sessionModel(log) : undefined) || rec.model || config.defaultModel);
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, rec.session);
     // the screen is cleared first, so a ❯ the ended agent left there is gone before the new one draws
-    const clear = process.platform === "win32" ? "Clear-Host; " : "clear || true; ";
+    const clear = process.platform === "win32" ? "Clear-Host; " : UNIX_CLEAR;
     const failed = await paneRuntime(run, pane).start(paneRef(pane), `${clear}${agentLine(argv, { ...selectedHome, PATH: agentPath(tool) })}`).then(() => undefined, (e: unknown) => reasonOf(e));
     if (failed !== undefined) return `REVIVE_FAIL ${pane}: herdr pane run failed: ${failed.slice(0, 160)}`;
   }

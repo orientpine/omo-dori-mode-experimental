@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { argvSessionLog, herdrLeadSession, readHerdrSessions, recordHerdrSession, reviveHerdr } from "../src/herdr-sessions.ts";
+import { argvSessionLog, herdrLeadSession, readHerdrSessions, recordHerdrSession, reviveHerdr, UNIX_CLEAR } from "../src/herdr-sessions.ts";
 import { findLead } from "../src/lead.ts";
 import { leadDownTick } from "../src/lead-down.ts";
 import type { Runner } from "../src/run.ts";
@@ -44,7 +44,7 @@ test("a herdr lead whose agent is gone is named stopped with the session recorde
   if (process.platform === "win32") {
     expect(ran[4]).toStartWith("Clear-Host; $PSNativeCommandArgumentPassing = 'Standard'; Set-Item -LiteralPath ('Env:' + ");
     expect(winData(ran[4] ?? "")).toEqual(["DORI_CONFIG", configPath(), "DORI_STATE_DIR", dir, "DORI_ENV_FILE", envFilePath(), "PATH", expect.any(String), "omo", "--session-id", "11111111-2222-4333-8444-555555555555", "--model", "m/x"]);
-  } else expect(ran[4]).toMatch(/^clear \|\| true; env DORI_CONFIG=\S+ DORI_STATE_DIR=\S+ DORI_ENV_FILE=\S+ PATH=\S+ omo --session-id 11111111-2222-4333-8444-555555555555 --model m\/x$/);
+  } else expect(ran[4]).toMatch(/^clear 2>\/dev\/null \|\| printf '\\033\[H\\033\[2J\\033\[3J'; env DORI_CONFIG=\S+ DORI_STATE_DIR=\S+ DORI_ENV_FILE=\S+ PATH=\S+ omo --session-id 11111111-2222-4333-8444-555555555555 --model m\/x$/);
   expect(typed).toEqual(["[DORI] back"]);
   expect(await reviveHerdr(deps.run, deps.clock, deps.config, "w1:p9", "", async () => true)).toStartWith("REVIVE_FAIL w1:p9: no omo session recorded");
   expect(readHerdrSessions(dir)["w1:p1"]?.model).toBe("m/x");
@@ -345,5 +345,5 @@ test("a revived agent that runs but has not drawn omo's input box yet is not rea
   const typed: string[] = [];
   expect(await reviveHerdr(run, deps.clock, deps.config, "w1:p1", "[DORI] back", async (_p, t) => (typed.push(t), true))).toBe("REVIVE_OK w1:p1 session 11111111-2222-4333-8444-555555555555 (prompt submitted)");
   expect(reads).toBeGreaterThanOrEqual(4);
-  expect(world.calls.find((c) => c[2] === "run")?.[4] ?? "").toStartWith(process.platform === "win32" ? "Clear-Host; " : "clear || true; ");
+  expect(world.calls.find((c) => c[2] === "run")?.[4] ?? "").toStartWith(process.platform === "win32" ? "Clear-Host; " : UNIX_CLEAR);
 });
