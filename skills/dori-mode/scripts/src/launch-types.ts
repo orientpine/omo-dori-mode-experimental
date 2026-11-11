@@ -19,6 +19,8 @@ export type LaunchInput = {
   // why --thread new opens a new thread though related open threads were shown (dori launch --why-new "<reason>")
   readonly whyNew?: string | undefined;
   readonly model?: string | undefined;
+  // the lead's model the backlog already chose for this launch and checked the quota of (resolveLeadModel); not pinned
+  readonly leadModel?: string | undefined;
   readonly cwd?: string | undefined;
   readonly tags?: readonly string[];
   // launch without the LAUNCH_DONE_WEAK warning

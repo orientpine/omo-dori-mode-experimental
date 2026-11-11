@@ -1,7 +1,8 @@
 import type { DoriConfig } from "./config.ts";
-import { readHerdrSessions } from "./herdr-sessions.ts";
+import { herdrLeadSession, readHerdrSessions } from "./herdr-sessions.ts";
 import { splitModel } from "./lane-handover.ts";
 import type { Lane } from "./registry.ts";
+import type { Runner } from "./run.ts";
 
 // A lane runs its lead's model (owner 2026-11-10: "각 리드 하위의 레인들이 리드와 동일한 모델을 쓰도록 해줘"): dori launch without
 // --model and every dori handover --lane (by hand or automatic) start it on the lead's model of then, so a lead moved to
@@ -9,9 +10,12 @@ import type { Lane } from "./registry.ts";
 // for it (launch or handover --lane --model) carries modelPinned and keeps that model.
 
 // The model and thinking the lead runs now ("<provider>/<model>:<level>"), as dori lead and dori watch's lead check last
-// read it from its session (herdr-sessions.json); undefined while none is recorded (an aoe lead, a lead not read yet).
-export const leadModel = (config: Pick<DoriConfig, "stateDir" | "leadPane">): string | undefined =>
-  (config.leadPane ? readHerdrSessions(config.stateDir)[config.leadPane]?.model : undefined) || undefined;
+// read it from its session (herdr-sessions.json); undefined while none is recorded (an aoe lead, a lead not read yet) or
+// only its startup --model is (modelFrom argv: stale after a /model).
+export const leadModel = (config: Pick<DoriConfig, "stateDir" | "leadPane">): string | undefined => {
+  const rec = config.leadPane ? readHerdrSessions(config.stateDir)[config.leadPane] : undefined;
+  return rec?.modelFrom === "argv" ? undefined : rec?.model || undefined;
+};
 
 // The model a lane's new session starts with: the one chosen now, else the lead's of now (lead: true) unless the lane's own
 // was chosen, else the lane's own.
@@ -54,6 +58,12 @@ export const withThinking = (argv: readonly string[], model: string): string[] =
   return out;
 };
 
-// The provider a lane started with no --model runs on (the lead's of now, else defaultModel): the one whose quota the
-// backlog checks before it starts a lane.
-export const launchProvider = (config: Pick<DoriConfig, "stateDir" | "leadPane" | "defaultModel">): string => (leadModel(config) ?? config.defaultModel).split("/")[0] ?? "";
+// The model a lane started with no --model runs on, chosen once for both the backlog's quota check and the launch: the
+// lead's of now. On herdr a blank record is read again from the lead's session log (dori lead's read, which records only
+// what the log or this session's record says), and undefined when that does not tell either: the launch stops rather than
+// guess defaultModel. aoe records no lead model, so it keeps defaultModel.
+export const resolveLeadModel = async (run: Runner, config: Pick<DoriConfig, "backend" | "stateDir" | "sessionsDir" | "leadPane" | "defaultModel">): Promise<string | undefined> => {
+  if (config.backend !== "herdr") return leadModel(config) ?? config.defaultModel;
+  if (!leadModel(config) && config.leadPane) await herdrLeadSession(run, config, config.leadPane, true);
+  return leadModel(config);
+};

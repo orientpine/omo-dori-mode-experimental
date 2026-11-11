@@ -30,7 +30,7 @@ const deps = (): TickDeps => ({
   now: () => NOW,
   lanes: async () => lanes,
   busy: async () => [],
-  limited: () => undefined,
+  limited: async () => undefined,
   host: { dir: join(root, "host"), user: "me", instance: "i1", max: 3 },
   launch: async (item, _brief, key) => {
     launched.push(item.id);

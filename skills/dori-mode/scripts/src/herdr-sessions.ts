@@ -14,7 +14,9 @@ import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionS
 // runs is kept here while it runs (dori lead, dori watch's lead check), and the lead is started again in that conversation
 // from it (reviveHerdr) when its agent is gone. log: the session's log file, when it was found (sessionLog). agent: the
 // agent process it was read from ("<pid> <start>"), so a later read of the same process still weighs this session.
-export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly log?: string; readonly agent?: string; readonly at: string; readonly previous?: readonly { readonly session: string; readonly cwd: string; readonly log?: string }[] };
+// modelFrom "argv": the model is only the agent's startup --model (no log told it), good enough to revive the session but
+// stale after a /model, so a lane never follows it (lane-model.ts leadModel).
+export type HerdrSessionRecord = { readonly session: string; readonly cwd: string; readonly model?: string; readonly modelFrom?: "argv"; readonly log?: string; readonly agent?: string; readonly at: string; readonly previous?: readonly { readonly session: string; readonly cwd: string; readonly log?: string }[] };
 
 const file = (stateDir: string): string => join(stateDir, "herdr-sessions.json");
 
@@ -34,8 +36,12 @@ export const recordHerdrSession = (stateDir: string, pane: string, rec: HerdrSes
   const outgoing = sameAgent && before.session !== rec.session ? [{ session: before.session, cwd: before.cwd, ...(before.log ? { log: before.log } : {}) }] : [];
   const previous = [...new Map([...history, ...outgoing, ...(rec.previous ?? [])].filter((entry) => entry.session !== rec.session).map((entry) => [entry.session, entry])).values()];
   // A read that cannot resolve a model does not erase the last known one (or overwrite it with an empty string).
-  const model = rec.model || before?.model;
-  writeFileSync(file(stateDir), JSON.stringify({ ...all, [pane]: { ...rec, ...(model ? { model } : {}), ...(previous.length ? { previous } : {}) } }, null, 1), { mode: 0o600 });
+  // Nor does a startup --model alone (modelFrom argv) replace one a log told.
+  const keep = !rec.model || (rec.modelFrom === "argv" && !!before?.model && before.modelFrom !== "argv");
+  const model = keep ? before?.model : rec.model;
+  const modelFrom = keep ? before?.modelFrom : rec.modelFrom;
+  const { modelFrom: _from, ...fields } = rec;
+  writeFileSync(file(stateDir), JSON.stringify({ ...all, [pane]: { ...fields, ...(model ? { model } : {}), ...(model && modelFrom ? { modelFrom } : {}), ...(previous.length ? { previous } : {}) } }, null, 1), { mode: 0o600 });
 };
 
 const modelOf = (cmd: string): string | undefined => {
@@ -120,15 +126,18 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr", seen });
   if (!hit.id) return kept?.session ?? "";
   // what the session runs now (its log), else the model recorded for this same session (a log that cannot be read does not
-  // send it back to the launch one), else what its agent was started with
+  // send it back to the launch one), else what its agent was started with, marked modelFrom argv: a /model since then
+  // leaves it stale, so only a revive uses it and a lane never follows it.
   const cmd = table.find((p) => p.pid === hit.pid)?.cmd ?? "";
   const same = kept?.session === hit.id ? kept : undefined;
   const log = hit.pid ? await sessionLog(run, table, hit.pid, hit.id, config.sessionsDir, cwd, same?.log) : same?.log;
-  const model = (log ? sessionModel(log) : undefined) ?? same?.model ?? modelOf(cmd);
+  const logged = log ? sessionModel(log) : undefined;
+  const model = logged ?? same?.model ?? modelOf(cmd);
+  const modelFrom = logged ? undefined : same?.model ? same.modelFrom : model ? "argv" : undefined;
   // recorded on every read, unchanged or not: its time is when it was last checked (lead-down reads again after 10 min)
   const p = table.find((q) => q.pid === hit.pid);
   if (!agent && p) agent = await identity(p);
-  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(log ? { log } : {}), ...(agent ? { agent } : {}), at: new Date().toISOString() });
+  if (config.stateDir) recordHerdrSession(config.stateDir, pane, { session: hit.id, cwd, ...(model ? { model } : {}), ...(modelFrom ? { modelFrom } : {}), ...(log ? { log } : {}), ...(agent ? { agent } : {}), at: new Date().toISOString() });
   return hit.id;
 };
 
