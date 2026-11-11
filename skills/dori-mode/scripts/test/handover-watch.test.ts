@@ -84,6 +84,11 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "ssh -o PermitLocalCommand=yes -o 'LocalCommand=dori review o/r#414' host tail -F /tmp/watch.log",
     "ssh -o ProxyCommand='bun test' host tail -F /tmp/watch.log",
     "node-dori-do okdori tail -F $log",
+    // #414 review 23: a read-only substitution's output can still be options
+    "opts=$(printf '%s' '-X POST -f body=done'); gh api repos/o/r/issues/414/comments $opts; tail -F /tmp/watch.log",
+    "gh api repos/o/r/issues/414/comments $(printf '%s' '-X POST')",
+    "x=$(cat /tmp/f); git log -1 --format=$x",
+    "id=$(gh run list -R o/r --json databaseId -q '.[0].databaseId'); gh run watch $id -R o/r",
   ]) rejectsSameCommand(command);
 });
 
