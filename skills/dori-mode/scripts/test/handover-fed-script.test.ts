@@ -61,3 +61,11 @@ test("a tool that can start a program through its arguments keeps a work monitor
     expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
   }
 });
+
+// lead before review 43: gh pr checkout, repo clone/sync/fork run git (and its hooks), pr create/merge can run an editor;
+// gh is foreground only as one of the listed two-word reads, or gh api
+test("gh is foreground only as a listed read; checkout, clone and the like keep a work monitor's watch", () => {
+  for (const command of ["gh pr checkout 1 > /tmp/o.log", "gh repo clone o/r > /tmp/o.log", "gh repo sync > /tmp/o.log", "gh pr merge 1 > /tmp/o.log", "gh checks x > /tmp/o.log", "gh pr 'view' 1 > /tmp/o.log"]) {
+    expect([command, launchOf(command, HOME, () => undefined)?.detached]).toEqual([command, true]);
+  }
+});
