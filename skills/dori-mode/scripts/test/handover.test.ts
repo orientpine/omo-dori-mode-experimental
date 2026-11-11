@@ -150,7 +150,7 @@ const simulate = () => {
   }
 };
 
-const stopped = () => w.calls.some((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop");
+const stopped = () => w.calls.some((c) => c[0] === "aoe" && c[1] === "session" && c[2] === "stop" && c[3] === OLD_ID);
 const leadPaneInConfig = () => (JSON.parse(readFileSync(join(state.dir, "config.json"), "utf8")) as { leadPane: string }).leadPane;
 
 beforeEach(() => {
@@ -489,10 +489,10 @@ test("an inbox probe acked by the old lead does not count: nothing is closed and
   expect(readFileSync(lane().brief, "utf8")).not.toContain(NEW);
   expect(new QuestionStore(join(state.dir, "discord")).get("Q1")?.tmux).toBe(OLD);
   expect(sent(w).some((t) => t.startsWith(`[LEAD] Handover to ${NEW} failed`))).toBe(true);
-  expect(printed.some((l) => l.startsWith(`HANDOVER_ROLLED_BACK ${OLD} stays the lead`))).toBe(true);
-  expect(sent(w).some((t) => t.startsWith("[LEAD] HANDOVER_ROLLED_BACK: the handover failed") && t.includes("You are not the lead"))).toBe(true);
+  // rolled back: the session the move opened is closed (2026-11-11: w9:p13 stayed open beside the lead); the old lead is not
+  expect(w.calls.filter((c) => c[0] === "aoe" && (c[1] === "rm" || c[2] === "stop"))).toEqual([["aoe", "session", "stop", NEW_AOE_ID], ["aoe", "rm", NEW_AOE_ID]]);
+  expect(printed.filter((l) => l.startsWith("HANDOVER_NEW_") || l.startsWith("HANDOVER_ROLLED_BACK"))).toEqual([`HANDOVER_NEW_CLOSED aoe session ${NEW_AOE_ID} (${NEW}) stopped and trashed`, `HANDOVER_ROLLED_BACK ${OLD} stays the lead; ${NEW} is closed (its log stays)`]);
   expect(sent(w).some((t) => t.includes("HANDOVER_COMMITTED:"))).toBe(false);
-  // rolled back: the old lead is never stopped, it goes on as the lead
   expect(sigs).toEqual([]);
   expect(readFrozen(state.dir)).toEqual([]);
 });
