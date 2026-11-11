@@ -17,7 +17,7 @@ import { laneHomeEnv } from "./home-env.ts";
 import { turnRunning } from "./submit.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { freezePane, freezeSignal, writeFrozen } from "./frozen.ts";
-import { endOldMonitors } from "./handover-monitors.ts";
+import { endOldMonitors, workEnded } from "./handover-monitors.ts";
 import { missingTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, endStrayTasks, type HandoverDeps, liveMonitors, manifestPath, monitorLine, type MonitorSpec, missingMonitors, monitorWork, openGoal, openTodos, PROBE, readManifest, takeLock } from "./handover.ts";
 import { awaitPrompt, briefAnchor, keptModel, laneModel, modelMove, moveThinking } from "./launch.ts";
@@ -93,7 +93,7 @@ export type ReadyMark = { readonly key: string; readonly pane: string; readonly 
 export type StatusLine = { readonly model?: string; readonly thinking?: string; readonly contextPct?: number; readonly account?: string };
 
 // pids: the chain and every process under it, so a grandchild that outlives its parent still counts as the chain running
-type Job = { readonly pid: number; readonly cmd: string; readonly pids?: readonly number[] };
+type Job = { readonly pid: number; readonly start?: string | undefined; readonly cmd: string; readonly pids?: readonly number[]; readonly starts?: readonly (string | undefined)[] };
 
 export type LaneFacts = {
   readonly lane: Lane;
@@ -459,8 +459,8 @@ export const renderLaneNote = (f: LaneFacts, at: string, stateDir: string): stri
   `## Local chains of the old session (${f.chains.length})`,
   ...(f.chains.length ? ["Do NOT start these again now: they still run under the old session until it closes, and a second copy would run the same work twice (duplicate node jobs, results written over). Once the old session is closed and these pids are gone, a [LEAD] HANDOVER_CHAINS_ENDED line tells you; then restart only what is still needed, from its checkpoint or progress files, skipping steps that already finished.", ...f.chains.map(job)] : ["none"]),
   "",
-  ...(f.work?.length
-    ? [`## Work the old session's monitors started (${f.work.length})`, "It runs under a monitor of the old session (marked LAUNCHES_WORK under Monitors), so the handover keeps that session frozen instead of closing it, its monitors left running, and closes it once this work ended. Do not start it again; follow it with the watch-only monitors of step 1.", ...f.work.map((j) => `- monitor ${j.pid} "${j.cmd.slice(0, 120)}": ${(j.pids ?? []).join(", ")}`), ""]
+  ...(f.work?.some((j) => (j.pids ?? []).length > 0)
+    ? [`## Work the old session's monitors started (${f.work.filter((j) => (j.pids ?? []).length > 0).length})`, "It runs under a monitor of the old session (marked LAUNCHES_WORK under Monitors), so the handover keeps that session frozen instead of closing it, its monitors left running, and closes it once this work ended. Do not start it again; follow it with the watch-only monitors of step 1.", ...f.work.map((j) => `- monitor ${j.pid} "${j.cmd.slice(0, 120)}": ${(j.pids ?? []).join(", ")}`), ""]
     : []),
   `## Detached jobs (${f.detached.length})`,
   ...(f.detached.length ? ["They run in a terminal session of their own, outside the old pane, so closing it does not end them; the handover does not touch them. Check on them, do not start them twice.", ...f.detached.map(job)] : ["none"]),
@@ -892,7 +892,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
     writeFileSync(note, renderLaneNote(facts, at, config.stateDir));
     writeFileSync(join(dir, `${key}-${id}.json`), JSON.stringify(facts, null, 1));
     emit(`HANDOVER_NOTE ${note}: ${monitors.length} monitors, ${facts.todos.length} todos, goal ${facts.goal ? "yes" : "no"}, ${chains.length} local chains, ${detached.length} detached jobs, ${tasks.length} background tasks, ${leadWords.length} lead instructions, context ${shown.contextPct ?? "?"}%, compactions ${signals.compactions ?? "?"}, age ${signals.ageH ?? "?"} h, ready ${ready ? ready.at : "no"}`);
-    if (jobs.length) emit(`HANDOVER_MONITOR_WORK ${key} ${jobs.length}: ${jobs.map((j) => `monitor ${j.pid} "${j.cmd.slice(0, 60)}" runs ${(j.pids ?? []).join(",")}`).join("; ")}; the old session is frozen, not closed, until it ends`);
+    if (jobs.some((j) => j.pids.length > 0)) emit(`HANDOVER_MONITOR_WORK ${key} ${jobs.filter((j) => j.pids.length > 0).length}: ${jobs.filter((j) => j.pids.length > 0).map((j) => `monitor ${j.pid} "${j.cmd.slice(0, 60)}" runs ${(j.pids ?? []).join(",")}`).join("; ")}; the old session is frozen, not closed, until it ends`);
     const title = titleFor(old.title, stamp);
     if (opts.dryRun) {
       if (blocked) return { code: 2, note };
@@ -1026,7 +1026,7 @@ export const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane:
   for (; i < tries; i++) {
     shown = statusLine(await captureTmux(deps.run, pane), facts.model);
     session ||= await deps.sessionOf(pane, facts.cwd).catch(() => "");
-    if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now());
+    if (session && facts.monitors.length) missing = missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), workEnded(facts.work ?? [], deps.alive));
     if (session && facts.todos.length) lost = missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session);
     if (settled()) break;
     await deps.clock.sleep(POLL_MS);
@@ -1063,7 +1063,7 @@ export const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane:
   // checked again before the old session goes: a monitor that ran at the first check can end before the move commits (a
   // remote tail whose ssh dropped with code 255 after its first lines, live 2026-10-20 23:51Z), and a new session is not
   // told when a monitor ends
-  const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now()) : [];
+  const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), workEnded(facts.work ?? [], deps.alive)) : [];
   if (stopped.length) return { reasons: [`monitors stopped in ${pane} after the first check: ${stopped.join(", ")}`], session };
   const dropped = facts.todos.length ? missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session) : [];
   if (dropped.length) return { reasons: [`todos left the todo list of ${pane} after the first check: ${dropped.join(", ")}`], session };
