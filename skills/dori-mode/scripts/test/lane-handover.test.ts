@@ -2552,13 +2552,13 @@ test("E7 on 2026-10-20: a lane whose monitor starts its chain is moved with a wa
 });
 
 test("e7-leap on 2026-10-24: work a monitor of the old session started keeps running; the old session is frozen, not closed, and closes once that work ended", async () => {
-  // Given: GongDori's monitor put its chain in the background and followed its log; the chain runs under the monitor's shell
+  // Given: GongDori's monitor put its chain in the background and followed its log; the chain runs under the monitor's shell; pid 40 is a root-only foreground monitor that holds nothing open (#414 review 45)
   const LOG = "/tmp/x/e7-leap-cut-chain.log";
   const CUT = `cd w; dori heavy e7-leap-cut-chain -- ssh n "bash cut_chain_mn.sh 400" > ${LOG} 2>&1 & pid=$!; echo "PID cut-chain $pid"; tail --pid=$pid -n +1 -f ${LOG}; echo "EXIT cut-chain"`;
-  table.push({ pid: 30, ppid: 11, cmd: `/bin/bash -c ${CUT}` }, { pid: 31, ppid: 30, cmd: "bun /h/dori/src/cli.ts heavy e7-leap-cut-chain -- ssh n bash cut_chain_mn.sh 400" }, { pid: 32, ppid: 31, cmd: "ssh n bash cut_chain_mn.sh 400" }, { pid: 33, ppid: 30, cmd: `tail --pid=31 -n +1 -f ${LOG}` });
-  for (const pid of [30, 31, 32, 33]) live.add(pid);
+  table.push({ pid: 30, ppid: 11, cmd: `/bin/bash -c ${CUT}` }, { pid: 31, ppid: 30, cmd: "bun /h/dori/src/cli.ts heavy e7-leap-cut-chain -- ssh n bash cut_chain_mn.sh 400" }, { pid: 32, ppid: 31, cmd: "ssh n bash cut_chain_mn.sh 400" }, { pid: 33, ppid: 30, cmd: `tail --pid=31 -n +1 -f ${LOG}` }, { pid: 40, ppid: 11, cmd: "sleep 600" });
+  for (const pid of [30, 31, 32, 33, 40]) live.add(pid);
   const base = await setup();
-  writeManifest("old-sid", [monitor("scratch events", EVENTS, 14), monitor("cut chain s21 -> s31", CUT, 30, { filter: "PID|CUT_CHAIN|EXIT" })]);
+  writeManifest("old-sid", [monitor("scratch events", EVENTS, 14), monitor("cut chain s21 -> s31", CUT, 30, { filter: "PID|CUT_CHAIN|EXIT" }), monitor("quiet sleep", "sleep 600 > /tmp/x/q.out", 40)]);
   ready(base, [15]);
   sim.fromNote = true;
   // closing the old session ends everything in its process tree, the monitor's work with it
@@ -2579,7 +2579,7 @@ test("e7-leap on 2026-10-24: work a monitor of the old session started keeps run
   expect(stoppedIds()).toEqual([]);
   expect(live.has(31) && live.has(32)).toBe(true);
   expect(sigs.filter((s) => / 3[0-3]$/.test(s))).toEqual([]);
-  expect(sigs).toContain("SIGTERM -14");
+  expect(sigs).toEqual(expect.arrayContaining(["SIGTERM -14", "SIGTERM -40"]));
   expect(sigs.indexOf("SIGTERM -14")).toBeLessThan(sigs.indexOf("SIGSTOP 12"));
   expect(sigs.filter((signal) => signal === "SIGSTOP 11")).toHaveLength(1);
   expect(readFrozen(state.dir)[0]?.pids).not.toContain(14);

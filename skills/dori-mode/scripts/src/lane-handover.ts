@@ -1292,7 +1292,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
   }
   // work a monitor of the old session started still runs under it: closing the session would end it, so the old agent and
   // everything else under it are frozen, the monitors with work left running, and freshness closes it once the work ended
-  const kept = (facts.work ?? []).filter((c) => (c.pids ?? []).length > 0 && running(deps, c));
+  const kept = (facts.work ?? []).filter((c) => running(deps, c));
   if (kept.length) {
     // the local chains are left running too: the new session is told they run on, as with --keep-old
     for (const line of await endOldMonitors(deps, facts, [...kept, ...facts.chains].map((c) => c.pid))) emit(line);
