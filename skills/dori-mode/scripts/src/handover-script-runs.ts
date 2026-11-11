@@ -8,6 +8,8 @@ const REDIRECT = /^\d*(?:[<>]|&>)/;
 const OPERATOR_ONLY = /^\d*(?:>>?|<|>&|&>>?|>\|)$/;
 const CONTROL_WORD = /^(?:if|then|else|elif|fi|do|done|while|until|for|in|case|esac|function|!|\{|\})$/;
 export const runsOther = (text: string): boolean => {
+  // a backtick runs a command even inside double quotes (#414 review 34)
+  if (text.includes("`")) return true;
   const cmds: string[][] = [[]];
   let cur = 0;
   let w = "";
@@ -41,8 +43,7 @@ export const runsOther = (text: string): boolean => {
     } else if (c === "'" || c === '"') {
       q = c;
       raw = true;
-    } else if (c === "`") return true;
-    else if (c === "#" && !w) i = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i) - 1;
+    } else if (c === "#" && !w) i = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i) - 1;
     else if (c === "&" && (text[i - 1] === ">" || text[i + 1] === ">")) w += c;
     else if (c === "&" && text[i + 1] !== "&" && text[i - 1] !== "&") return true;
     else if (c === ")" && outer.length) {
