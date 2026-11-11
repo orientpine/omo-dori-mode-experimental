@@ -16,7 +16,8 @@
 #                                   current version) turn to the new generation only when every step worked; a job keeps
 #                                   the generation the helper picked when it admitted it. A commit (7-40 hex digits, an rv
 #                                   before its tag) is built from exactly its files as <VERSION>+g<commit>, linked only
-#                                   as rv@<VERSION>+g<commit> (and as rv when there is none).
+#                                   as rv@<VERSION>+g<commit> (and as rv when there is none). The current rv's bin/rv and
+#                                   bin/uv are linked into the tools bin, so every box has them on PATH.
 #                                   prints TOOLS_OK rv <generation> <version> RV_TREE <sha256> <files> playwright <version>
 #                                   packages <list>
 set -euo pipefail
@@ -124,6 +125,9 @@ EOF
     mv -Tf "$dir/rv.link-$$" "$b"
     ln -sfn ../rv/bin/rv "$dir/bin/rv"
   fi
+  # the current rv's offline uv on every box's PATH (after a commit install too), for a job that starts uv itself or a
+  # synced rv tree that calls it without --tools rv (2026-11-11: such jobs on 4eae ended "uv: command not found", 127)
+  ln -sfn ../rv/bin/uv "$dir/bin/uv"
   echo "TOOLS_OK rv $gen $label $tree playwright $pw packages $(echo $pkgs)"
 }
 

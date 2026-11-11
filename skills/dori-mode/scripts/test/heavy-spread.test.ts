@@ -228,7 +228,7 @@ test("the system programs a job starts through its venv links or its first word 
   symlinkSync("/usr/bin/python3.99", join(work, ".venv", "bin", "python"));
   const bin = join(state.dir, "bin");
   mkdirSync(bin);
-  writeFileSync(join(bin, "mytool"), "#!/bin/sh\n", { mode: 0o755 });
+  for (const name of ["mytool", "uv"]) writeFileSync(join(bin, name), "#!/bin/sh\n", { mode: 0o755 });
   mkdirSync(join(work, "tools"));
   writeFileSync(join(work, "tools", "build"), "#!/bin/sh\n", { mode: 0o755 });
 
@@ -243,12 +243,12 @@ test("the system programs a job starts through its venv links or its first word 
   // a system program on --env PATH is looked up by the helper on that PATH, wherever it sits there
   const pinned = spreadPlan(jobOf(["sh", "-c", "true"], { env: { PATH: "/usr/local/bin:/usr/bin:/bin" } }), who);
   expect(pinned.ok && [pinned.needs, pinned.which, pinned.path]).toEqual([["/usr/bin/python3.99"], ["sh"], "/usr/local/bin:/usr/bin:/bin"]);
-  // the box's own tools are asked about too: a helper may not have installed them
+  // the box's own tools are asked about too: a helper may not have installed them (uv: even when this host's is in no --sync path)
   // relative and empty entries of --env PATH are the job's folder's, as the job will look them up
   const relative = spreadPlan(jobOf(["sh", "-c", "true"], { env: { PATH: "usr/../bin::/usr/local/missing/../bin:/bin" } }), who);
   expect(relative.ok && relative.path).toBe(`${work}/usr/../bin:${work}:/usr/local/missing/../bin:/bin`);
-  const tool = spreadPlan(jobOf(["ffmpeg", "-version"]), who);
-  expect(tool.ok && tool.which).toEqual(["ffmpeg"]);
+  const tools = ["ffmpeg", "uv"].map((name) => spreadPlan(jobOf([name, "-version"]), { ...who, path: `${bin}:/usr/bin:/bin` }));
+  expect(tools.map((t) => t.ok && t.which)).toEqual([["ffmpeg"], ["uv"]]);
   expect(spreadPlan(jobOf(["mytool"], { env: { PATH: `${bin}:/usr/bin` } }), who)).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool on the job's --env PATH, which is not in a --sync path` });
   expect(spreadPlan(jobOf(["mytool"]), { ...who, path: `${bin}:/usr/bin:/bin` })).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool, which is in no --sync path and no system folder, so a helper has none` });
   expect(spreadPlan(jobOf(["../x"]), who)).toEqual({ ok: false, why: `the command ../x is ${join(state.dir, "x")}, which is not in a --sync path` });

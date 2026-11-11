@@ -44,9 +44,9 @@ const ENV_NAME = /^[A-Za-z_]\w{0,63}$/;
 const SYSTEM = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/proc", "/dev", "/sys"];
 // the system folders programs live in: a program the job starts from one of them must be on the helper too (need=)
 const PROGRAM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt"];
-// the box's PATH after its own bun and tools folders, and the programs those two folders give every helper
+// the box's PATH after its own bun and tools folders, and the programs those two folders give every helper (uv: the rv bundle's, tools.sh rv)
 const BOX_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin";
-const BOX_PROGRAMS = new Set(["bun", "bunx", "ffmpeg", "ffprobe"]);
+const BOX_PROGRAMS = new Set(["bun", "bunx", "ffmpeg", "ffprobe", "uv"]);
 const NEED_PATH = /^\/[\w.+@-][\w.+@/-]{0,254}$/;
 const NEEDS_MAX = 32;
 const BOX_PATH_OK = /^[\w.+@/:-]{1,2048}$/;
