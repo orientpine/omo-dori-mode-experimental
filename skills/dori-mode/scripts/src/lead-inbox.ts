@@ -42,8 +42,17 @@ type Kind = "owner" | "pair" | "pair-bot";
 type Row = { readonly id: string; readonly at: number; readonly kind: Kind; readonly text: string; readonly qid?: string };
 type Mark = { readonly pane: string; readonly session: string; readonly agentPid?: number; readonly log?: string; readonly missingSince?: number; readonly key?: string; readonly typedAt?: number; readonly heardIds?: readonly string[]; readonly baselineDone?: boolean };
 
-// the rows the lead must hear: the owner's (lead-limit.ts ownerRows) and every row of the pair channel
-export const inboxRows = (inbox: string, ownerId: string): Row[] => {
+// A pair-bot row is information, never a request, except one that calls this Dori (one of discord.callNames in it, or its
+// bot mentioned) and another Dori's lead alert (LEAD_RUNAWAY / LEAD_AUTOTURN_PAUSED asks it to act); a lead's inbox monitor
+// may drop the rest (MooDori 2026-11-11: 121 of 155 pair-bot rows named another Dori). With no callNames, every one counts.
+const callsThisDori = (text: string, names: readonly string[], botId: string): boolean => {
+  const said = text.toLowerCase(), own = names.map((n) => n.trim().toLowerCase()).filter(Boolean);
+  return !own.length || /^(LEAD_RUNAWAY|LEAD_AUTOTURN_PAUSED) /.test(text) || (!!botId && text.includes(`<@${botId}>`)) || own.some((n) => said.includes(n));
+};
+
+// the rows the lead must hear: the owner's (lead-limit.ts ownerRows), every owner row of the pair channel and the pair-bot
+// rows that call this Dori
+export const inboxRows = (inbox: string, ownerId: string, names: readonly string[] = [], botId = ""): Row[] => {
   const owner = new Set(ownerRows(inbox, ownerId).map((r) => r.id));
   const out: Row[] = [];
   for (const line of inbox.split("\n")) {
@@ -53,7 +62,9 @@ export const inboxRows = (inbox: string, ownerId: string): Row[] => {
       const id = r.id ?? r.ts ?? "";
       const kind: Kind | undefined = owner.has(id) ? "owner" : r.scope === "pair-bot" ? "pair-bot" : r.scope === "pair" ? "pair" : undefined;
       const at = Date.parse(r.ts ?? "");
-      if (kind && id && !Number.isNaN(at)) out.push({ id, at, kind, text: String(r.content || r.transcript || r.answer || ""), ...(r.qid ? { qid: r.qid } : {}) });
+      const text = String(r.content || r.transcript || r.answer || "");
+      if (kind === "pair-bot" && !callsThisDori(text, names, botId)) continue;
+      if (kind && id && !Number.isNaN(at)) out.push({ id, at, kind, text, ...(r.qid ? { qid: r.qid } : {}) });
     } catch {}
   }
   return out;
@@ -184,7 +195,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
   const text = readFileSync(file.path, "utf8");
   const start = Date.parse(/"timestamp":"([^"]+)"/.exec(text)?.[1] ?? "");
   const told = ownerWokeIds(deps, pane);
-  const rows = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId);
+  const rows = inboxRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId, deps.config.discord.callNames, deps.config.discord.botId);
   const delivered = deliveredIds(text);
   const deliveredText = text.split("\n").filter((line) => !line.includes('"customType":"work-custody"')).join("\n");
   const candidates = rows.filter((r) => now - r.at < DAY_MS && !(r.at < start)).sort((a, b) => a.at - b.at);
