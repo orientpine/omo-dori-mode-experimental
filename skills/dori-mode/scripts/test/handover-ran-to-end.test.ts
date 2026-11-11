@@ -123,8 +123,7 @@ test("a lane's handover goes on when the new session's re-armed gate fired and e
 test("a plain command gate the new session armed again and ran to its end is not missing", () => {
   const ready: MonitorSpec = { description: "x ready", command: "until [ -f /tmp/x ]; do sleep 5; done; echo READY", filter: "^READY$", persistent: true };
   expect(missing([ready], [arm({ ...ready }), fired(["READY", DONE], "x ready")])).toEqual([]);
-  // its signal in an earlier wake of the same run, or after omo restored it
-  expect(missing([ready], [arm({ ...ready }), wake([{ description: "x ready", bodies: ["READY"], kinds: ["line"] }]), fired([DONE], "x ready")])).toEqual([]);
+  // its signal after omo restored it, in the wake of its exit
   expect(missing([ready], [arm({ ...ready }), fired([RESTORED, "READY", DONE], "x ready")])).toEqual([]);
 });
 
@@ -147,6 +146,10 @@ test("a watch that did not end normally, or whose end cannot be told from its ow
     // dori review #458 round 1: a signal and an exit 0 of two runs, and omo's own restore line, which no filter screens
     ["a retry of the same watch: the signal in a run that exited 1, exit 0 in the next", [arm(watchOnly), wake([{ description: DESC, id: "bash_2", bodies: ["UPDATE_QUIET_456", "watcher completed (exit code 1)"], kinds: ["line", "summary"] }]), arm(watchOnly), wake([{ description: DESC, id: "bash_3", bodies: [DONE], kinds: ["summary"] }])]],
     ["a run id used again after a restart", [arm(watchOnly), wake([{ description: DESC, id: "bash_2", bodies: ["UPDATE_QUIET_456"], kinds: ["line"] }]), wake([{ description: DESC, id: "bash_2", bodies: ["watcher completed (exit code 1)"], kinds: ["summary"] }]), wake([{ description: DESC, id: "bash_2", bodies: [DONE], kinds: ["summary"] }])]],
+    // round 2: a run that crashed after its signal, and a restored run that reused its id and exited 0 within omo's grace,
+    // with no summary or restore line between them: only a signal in the wake of the exit counts
+    ["the signal in an earlier wake, no summary or restore line before the exit", [arm(watchOnly), wake([{ description: DESC, id: "bash_2", bodies: ["UPDATE_QUIET_456"], kinds: ["line"] }]), wake([{ description: DESC, id: "bash_2", bodies: [DONE], kinds: ["summary"] }])]],
+    ["a line its filter does not pass (one omo put in), then exit 0", [arm(watchOnly), fired(["monitor paused for 1 min", DONE])]],
     ["the signal from another run id, exit 0 in this one", [arm(watchOnly), wake([{ description: DESC, id: "bash_2", bodies: ["UPDATE_QUIET_456"], kinds: ["line"] }]), wake([{ description: DESC, id: "bash_9", bodies: [DONE], kinds: ["summary"] }])]],
     ["restored after a restart, then exit 0 with no signal", [arm(watchOnly), wake([{ description: DESC, id: "bash_4", bodies: [RESTORED, DONE], kinds: ["line", "summary"] }])]],
     ["the signal before a restore, exit 0 after it", [arm(watchOnly), wake([{ description: DESC, id: "bash_4", bodies: ["UPDATE_QUIET_456", RESTORED, DONE], kinds: ["line", "summary"] }])]],

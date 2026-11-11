@@ -7,10 +7,11 @@
 // name the monitors it carries. So a watch counts as ended well when a wake carrying it alone has a summary kind and ends
 // with that summary's words, its filter cannot match them, and an earlier or the same wake carried a line of it (its
 // signal); an omo notice after the summary (overflow, pause) leaves it missing. The signal and the exit 0 are one run's
-// (dori review #458 round 1): the same runtime id in the wake details, after its last call and the run's previous
-// summary, and a line omo puts in itself, unfiltered (durable-command.js: "restored after up to ..."), is no signal and
-// ends the search, since the command started fresh there. A watch with no filter, an exit other than 0, a kill, or two watches
-// of one description with different commands stay missing.
+// (dori review #458 rounds 1-2): both in that one wake, which one process's notifier built for one runtime id, never
+// joined across wakes (a crashed run's signal and a restored run that reused its bash_N id and exited 0 within omo's
+// grace leave no summary or restore line between them); a line omo puts in itself, unfiltered (durable-command.js:
+// "restored after up to ..."), is no signal and ends the search, since the command started fresh there. 1226 of the
+// 1249 single-watch exit-0 wakes in this account's session logs carry the watch's line too (2026-11-11).
 import { readFileSync } from "node:fs";
 
 import { launchOf, type MonitorSpec, sameCommand } from "./handover.ts";
@@ -63,17 +64,11 @@ const regex = (filter: string | undefined): RegExp | undefined => {
   }
 };
 
-// the run that ended in rows[end]: its own lines, newest first, back to its call, its previous summary or an omo restore
-const signalled = (rows: readonly Row[], end: number, wake: Wake, filter: RegExp): boolean => {
-  for (let k = end; k >= 0; k--) {
-    const o = rows[k];
-    if (o && "armed" in o && o.armed.description === wake.description) return false;
-    if (!o || !("wake" in o) || o.wake.description !== wake.description || o.wake.id !== wake.id) continue;
-    if (k < end && o.wake.kinds.includes("summary")) return false;
-    for (const body of (k === end ? o.wake.bodies.slice(0, -1) : o.wake.bodies).toReversed()) {
-      if (RESTORED.test(body)) return false;
-      if (filter.test(body)) return true;
-    }
+// the run that ended in this wake: a line of it, newest first, that its filter passes, back to an omo restore line
+const signalled = (wake: Wake, filter: RegExp): boolean => {
+  for (const body of wake.bodies.slice(0, -1).toReversed()) {
+    if (RESTORED.test(body)) return false;
+    if (filter.test(body)) return true;
   }
   return false;
 };
@@ -107,7 +102,7 @@ export const ranToEnd = (sessionDir: string, session: string, home: string, also
       const { description, command, filter } = r.armed;
       // one description, one watch: a wake names its monitor only by description
       if (all.some((o) => "armed" in o && o.armed.description === description && (o.armed.command !== command || o.armed.filter !== filter))) return false;
-      return all.some((o, end) => end > i && "wake" in o && o.wake.description === description && o.wake.kinds.includes("summary") && o.wake.bodies.at(-1) === DONE && signalled(all, end, o.wake, re));
+      return all.some((o, end) => end > i && "wake" in o && o.wake.description === description && o.wake.kinds.includes("summary") && o.wake.bodies.at(-1) === DONE && signalled(o.wake, re));
     });
   };
 };
