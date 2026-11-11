@@ -78,6 +78,12 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "GH_PAGER=less gh pr view 1",
     "until [ $(( $(date +%s) - 5 )) -ge 9 ]; do sleep 20; done",
     "grep X <<< \"$(bun test)\"",
+    // #414 review 22: an expansion the shell splits into options, and an ssh option that runs a command
+    "opts='-X POST -f body=done'; gh api repos/o/r/issues/414/comments $opts; tail -F /tmp/watch.log",
+    "gh api repos/o/r/issues/414/comments \"$opts\"",
+    "ssh -o PermitLocalCommand=yes -o 'LocalCommand=dori review o/r#414' host tail -F /tmp/watch.log",
+    "ssh -o ProxyCommand='bun test' host tail -F /tmp/watch.log",
+    "node-dori-do okdori tail -F $log",
   ]) rejectsSameCommand(command);
 });
 
@@ -111,4 +117,16 @@ test("a FIFO input is never read: it is work that keeps its watch", async () => 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}, 20_000);
+
+// #414 review 22: an unquoted carriage return made the lexer loop forever, so a copied CRLF command hung the handover.
+// Run in a child process so a regression fails within the bound instead of hanging the suite.
+test("a command with a carriage return or other unusual blank is work, decided at once", async () => {
+  const src = join(import.meta.dir, "..", "src", "handover.ts");
+  const commands = ["tail -F /tmp/x.log\r\n", "sleep\v5", "tail\u00a0-F /tmp/x.log"];
+  const proc = Bun.spawn([process.execPath, "-e", `const { launchOf } = await import(${JSON.stringify(src)}); console.log(JSON.stringify(${JSON.stringify(commands)}.map((c) => !!launchOf(c, "/home/test", () => undefined))));`], { stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => proc.kill(), 10_000);
+  const code = await proc.exited;
+  clearTimeout(timer);
+  expect([code, (await new Response(proc.stdout).text()).trim()]).toEqual([0, JSON.stringify([true, true, true])]);
 }, 20_000);
