@@ -30,6 +30,7 @@ const code = (e: unknown): string | undefined => (e as NodeJS.ErrnoException | u
 const ignoreMissing = (e: unknown): void => {
   if (code(e) !== "ENOENT") throw e;
 };
+const removeIfThere = (path: string): void => { try { unlinkSync(path); } catch (e) { ignoreMissing(e); } };
 
 // the place a message goes (platform, channel or thread), what it replies to, who it pings and its text
 export const sendKey = (parts: readonly (string | undefined)[]): string => createHash("sha256").update(JSON.stringify(parts.map((p) => p ?? ""))).digest("hex").slice(0, 32);
@@ -79,13 +80,7 @@ const readLast = (dir: string, place: string): (Last & { readonly file: string }
   const files = readdirSync(dir).filter((n) => n.startsWith(prefix) && n.endsWith(".json")).sort();
   const newest = files.at(-1);
   if (newest === undefined) return undefined;
-  for (const older of files.slice(0, -1)) {
-    try {
-      unlinkSync(join(dir, older));
-    } catch (e) {
-      ignoreMissing(e);
-    }
-  }
+  for (const older of files.slice(0, -1)) removeIfThere(join(dir, older));
   const file = join(dir, newest);
   try {
     const l = JSON.parse(readFileSync(file, "utf8")) as Last;
@@ -148,11 +143,7 @@ export const sendOnce = async (dir: string, place: string, key: string, send: ()
       try {
         sent = await send();
       } catch (e) {
-        try {
-          unlinkSync(path);
-        } catch (u) {
-          ignoreMissing(u);
-        }
+        removeIfThere(path);
         throw e;
       }
       return posted(sent);
@@ -162,11 +153,7 @@ export const sendOnce = async (dir: string, place: string, key: string, send: ()
     const age = now() - mark.at;
     if (mark.id !== undefined && age < windowMs) return { id: mark.id, duplicate: true, ageMs: Math.max(0, age), last: false };
     if (mark.id !== undefined || age > PENDING_MS) {
-      try {
-        unlinkSync(path);
-      } catch (e) {
-        ignoreMissing(e);
-      }
+      removeIfThere(path);
       continue;
     }
     await sleep(POLL_MS);
@@ -225,6 +212,16 @@ export const answeredBy = (dir: string, message: Post & { readonly place?: strin
     if (mark?.id !== undefined && (last || (mark as Mark).place === message.place)) posts.push({ id: mark.id, at: mark.at });
   }
   return posts.find((post) => later(post, message))?.id;
+};
+
+// A post that does not go through sendOnce (a `dori ask` card) is recorded the same way, once Discord returned its id, so
+// answeredBy counts it as a later post in its place or a reply (2026-11-11: ZzangDori answered the owner's "이제 이 스레드랑
+// 레인 닫아도 돼?" with card Q545 in that thread, and LEAD_OWNER_WAITING still woke it 10 minutes later).
+export const notePosted = (dir: string, place: string, id: string, opts: { readonly now?: () => number; readonly replyTo?: string | undefined } = {}): void => {
+  const at = (opts.now ?? Date.now)(), key = sendKey([place, "posted", id]);
+  mkdirSync(dir, { recursive: true });
+  writeMark(join(dir, `${key}.json`), { at, id, place, ...(opts.replyTo ? { replyTo: opts.replyTo } : {}) });
+  writeLast(dir, place, { at, key, id });
 };
 
 // a repeat is not posted; the CLI exits SEND_DUPLICATE_EXIT so a caller cannot read it as a new post
