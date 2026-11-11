@@ -13,6 +13,7 @@ export { currentTranscript } from "./current-transcript.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Question } from "./messenger/discord-cards.ts";
 import { sendVerified } from "./panes.ts";
+import { answeredBy } from "./send-dedupe.ts";
 import { iso } from "./run.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
@@ -135,7 +136,12 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
 export const reconcileRows = async <T extends AnswerRow>(input: UnansweredInput<T>): Promise<{ readonly waiting: T[]; readonly answeredIds: readonly string[] }> => {
   const path = join(input.deps.config.stateDir, "lead-answered.json"); let previousIds: string[] = [];
   try { previousIds = JSON.parse(readFileSync(path, "utf8")) as string[]; } catch (error) { if (!(error instanceof SyntaxError) && !(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
-  const previous = new Set(previousIds), candidates = input.rows.filter((row) => !previous.has(row.id)); const waiting = await unansweredRows({ ...input, rows: candidates });
+  const previous = new Set(previousIds), sent = join(input.deps.config.stateDir, "sent");
+  // This Dori's own post records answer an owner message first, in whatever session or pane it was posted: a --reply to
+  // it, or a later post in its place. A card answer (qid) still has to reach the session that asked, so only a --reply
+  // to it counts here. The rest is read from the transcripts (unansweredRows).
+  const posted = (row: T): boolean => answeredBy(sent, { id: row.id, at: row.at, ...(row.qid || !row.channel ? {} : { place: `discord:${row.channel}` }) }) !== undefined;
+  const candidates = input.rows.filter((row) => !previous.has(row.id) && !posted(row)); const waiting = await unansweredRows({ ...input, rows: candidates });
   const waitingIds = new Set(waiting.map((row) => row.id)), currentIds = new Set(input.rows.map((row) => row.id));
   const answeredIds = [...new Set([...previousIds.filter((id) => currentIds.has(id)), ...candidates.filter((row) => !waitingIds.has(row.id)).map((row) => row.id)])]; if (answeredIds.join("\0") !== previousIds.join("\0")) writeFileSync(path, `${JSON.stringify(answeredIds)}\n`);
   return { waiting, answeredIds }; };
