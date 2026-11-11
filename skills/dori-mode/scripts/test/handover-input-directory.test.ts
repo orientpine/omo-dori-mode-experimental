@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { launchOf, missingMonitors } from "../src/handover.ts";
+import { workEnded } from "../src/handover-monitors.ts";
 import { runsOther } from "../src/handover-script-runs.ts";
 
 const HOME = "/home/test";
@@ -204,4 +205,16 @@ test("a script that runs another script keeps its watch, whatever the scripts sa
 test("a fed script runs another command when a command word is a path, expanded, a runner, or a job goes to the background", () => {
   expect(["sleep 30 &\n", "/opt/job/run\n", "$J\n", "nohup x\n", "env /tmp/x\n", "echo \"$(bash x)\"\n", "env -S 'bash /tmp/x'\n", "env -C /tmp bun run ci\n", "env --split-string='sh x'\n", "env -i bun run ci\n", "2>&1 bash /tmp/inner.sh\n", ">/dev/null /tmp/inner\n", "python3 job.py\n", "make all\n", "echo 'unclosed\n", "echo \"x `bash /tmp/inner` y\"\n", "echo 'x ` y'\n", "echo \"a $(python3 job.py) b\"\n"].map(runsOther)).toEqual([true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]);
   expect(["git fetch -q\nbun run ci\n", "env -u X FOO=1 bun run ci 2>&1\n", "echo \"a $(date) b\" >> /tmp/c\n", "until [ -f /tmp/s ]; do sleep 2; done\n", "git -C \"$SRC\" fetch -q origin x || { echo F; exit 90; }\ncode=$?\nbun run ci 2>&1 >/tmp/l\n"].map(runsOther)).toEqual([false, false, false, false, false]);
+});
+
+// #414 review 35: an escaped quote is no quote to the shell, so the command between two of them runs; any backslash in a
+// fed script keeps its watch, and workEnded does not take such work for ended when the monitor's own process ends
+test("a backslash in a fed script keeps its watch, and its work is not taken for ended", () => {
+  const script = 'sleep 30\necho \\"\n/tmp/inner\necho \\"\n';
+  expect(runsOther(script)).toBe(true);
+  const command = "bash -s < /tmp/outer.sh";
+  const launch = launchOf(command, HOME, (path) => (path === "/tmp/outer.sh" ? script : undefined));
+  expect(launch?.detached).toBe(true);
+  const ended = workEnded([{ pid: 7, cmd: "w", pids: [8] }], () => false, () => undefined);
+  expect(ended({ description: "w", command, persistent: true, ...(launch ? { launch } : {}) })).toBe(false);
 });
