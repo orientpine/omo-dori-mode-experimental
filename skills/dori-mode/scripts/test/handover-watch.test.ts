@@ -97,6 +97,9 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "git log -1 *",
     "tail -F /tmp/-*",
     "printf -v PATH /tmp/e; grep x /tmp/f",
+    // dori challenge of plan-414-r25: the format of printf expanded into -v
+    "opts=-v; printf \"$opts\" PATH /tmp/replay; grep x /tmp/f",
+    "printf $(echo -v) PATH /tmp/replay",
     "tail -F /tmp/x | sed -n 's/a/b/\nw /tmp/copy'",
     "tail -F /tmp/x | sed '/a\nw x/q'",
   ]) rejectsSameCommand(command);
