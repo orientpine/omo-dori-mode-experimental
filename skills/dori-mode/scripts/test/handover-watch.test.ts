@@ -126,6 +126,10 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "printf x > '&1'",
     "printf x > \"&1\"; tail -F /tmp/watch.log",
     "x='&1'; printf x > $x",
+    // #414 review 29: >&1.log redirects into the file 1.log; only the exact word 2>&1 copies a descriptor
+    "printf x >&1.log",
+    "printf x 2>&1.log; tail -F /tmp/watch.log",
+    "echo x 3>&1",
     "tail -F /tmp/x | sed -n 's/a/b/\nw /tmp/copy'",
     "tail -F /tmp/x | sed '/a\nw x/q'",
   ]) rejectsSameCommand(command);
