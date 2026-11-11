@@ -43,18 +43,19 @@ const bunAndSource = (dir: string): void => {
 
 test("the bridges' hc calls go to the bridge host's core, not the core the host account's dori.env names", async () => {
   const d = scratch();
-  writeFileSync(join(d, "hc"), "#!/bin/sh\nif [ -n \"$HC_SESSION\" ]; then printf '%s' \"$HC_SESSION\"; else printf default; fi\n");
+  writeFileSync(join(d, "hc"), "#!/bin/sh\nif [ -n \"$HC_SOCKET\" ]; then printf 'wrong socket'; elif [ -n \"$HC_SESSION\" ]; then printf '%s' \"$HC_SESSION\"; else printf default; fi\n");
   chmodSync(join(d, "hc"), 0o755);
   writeFileSync(join(d, "dori.env"), "HC_SESSION=agents\n");
-  const keep = { env: process.env["DORI_ENV_FILE"], hc: process.env["HC_SESSION"] };
+  const keep = { env: process.env["DORI_ENV_FILE"], hc: process.env["HC_SESSION"], socket: process.env["HC_SOCKET"] };
   process.env["DORI_ENV_FILE"] = join(d, "dori.env");
+  process.env["HC_SOCKET"] = "/tmp/another-core.sock";
   try {
     delete process.env["HC_SESSION"];
     expect((await bridgeRun([join(d, "hc"), "ls"])).out).toBe("default");
     process.env["HC_SESSION"] = "host";
     expect((await bridgeRun([join(d, "hc"), "ls"])).out).toBe("host");
   } finally {
-    for (const [k, v] of [["DORI_ENV_FILE", keep.env], ["HC_SESSION", keep.hc]] as const) {
+    for (const [k, v] of [["DORI_ENV_FILE", keep.env], ["HC_SESSION", keep.hc], ["HC_SOCKET", keep.socket]] as const) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }

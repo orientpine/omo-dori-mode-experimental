@@ -9,6 +9,7 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 // a row's argv as hc 0.1.18 shows it: only `hc get --json` has it, `hc ls --json` leaves it out (review 11 of #404)
 const ATTACH = ["/bin/sh", join(import.meta.dir, "attach.sh")];
 const start = (name: string, account = "", actual = name) => `run --bg --no-parent --name ${actual} --label dori.doriterm=bridge --label dori.row=${name} -- ${ATTACH.join(" ")}${account ? ` ${account}` : ""}`;
+const discover = (account = "") => ["exec", "--", ...ATTACH, account, "--lanes"].join(" ");
 type Row = { name: string; state: string; address?: string; argv?: string[] };
 
 async function bridgeWithFakeHc(terminals: Row[], args: string[] = [], env: Record<string, string> = {}, files: Record<string, string> = {}) {
@@ -19,6 +20,13 @@ async function bridgeWithFakeHc(terminals: Row[], args: string[] = [], env: Reco
     writeFileSync(join(dir, path), text);
   }
   mkdirSync(join(dir, "get"));
+  if (args[0] !== "stop") {
+    mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
+    writeFileSync(join(dir, "run", "herdr-core", "default.sock"), "");
+  }
+  mkdirSync(join(dir, ".bun", "bin"), { recursive: true });
+  writeFileSync(join(dir, ".bun", "bin", "bun"), "#!/bin/sh\nprintf '[]\\n'\n", { mode: 0o700 });
+  writeFileSync(join(dir, "sudo"), "#!/bin/sh\nprintf '[]\\n'\n", { mode: 0o700 });
   // hc gives every row its address; a row given none here gets t1, t2, ... in list order, as hc numbers this machine's
   const rows = terminals.map((t, i) => (t.address ? t : { ...t, address: `t${i + 1}` }));
   for (const t of rows) {
@@ -32,6 +40,7 @@ async function bridgeWithFakeHc(terminals: Row[], args: string[] = [], env: Reco
   writeFileSync(join(dir, "hc"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$HOME/calls"
 case "$1" in
+  exec) [ "$2" = -- ] || exit 1; shift 2; exec "$@";;
   ls) cat "$HOME/ls.json";;
   get) if [ -f "$HOME/get/$3.json" ]; then cat "$HOME/get/$3.json"; else echo '{"error":{"kind":"not_found","message":"no such terminal"}}' >&2; exit 1; fi;;
   rm) if [ "$2" = "\${RM_LIVE_NAME:-}" ] && [ "$(grep -c "^rm $2\$" "$HOME/calls")" -le "\${RM_LIVE_TIMES:-0}" ]; then echo '{"error":{"kind":"live","message":"still running"}}' >&2; exit 1; fi;;
@@ -56,7 +65,7 @@ test("starts the herdr client terminal when the account has none", async () => {
   expect(r.err).toBe("");
   expect(r.code).toBe(0);
   expect(r.out).toBe("zzangdori: started");
-  expect(r.calls).toEqual(["ls --all --json", "get --json t1", start("zzangdori")]);
+  expect(r.calls).toEqual([discover(), "ls --all --json", "get --json t1", start("zzangdori")]);
 });
 
 test("leaves a live bridge alone", async () => {
@@ -64,7 +73,7 @@ test("leaves a live bridge alone", async () => {
   const r = await bridgeWithFakeHc([{ name: "zzangdori", state: "live", argv: ATTACH }]);
   // Then: no second client is started
   expect(r.out).toBe("zzangdori: kept");
-  expect(r.calls).toEqual(["ls --all --json", "get --json t1"]);
+  expect(r.calls).toEqual([discover(), "ls --all --json", "get --json t1"]);
 });
 
 test("replaces a finished bridge after a core restart", async () => {
@@ -72,7 +81,7 @@ test("replaces a finished bridge after a core restart", async () => {
   const r = await bridgeWithFakeHc([{ name: "zzangdori", state: "finished", argv: ATTACH }]);
   // Then: removed, then started again under the same name
   expect(r.out).toBe("zzangdori: started");
-  expect(r.calls).toEqual(["ls --all --json", "get --json t1", "rm t1", start("zzangdori")]);
+  expect(r.calls).toEqual([discover(), "ls --all --json", "get --json t1", "rm t1", start("zzangdori")]);
 });
 
 test("stop with no hc core running asks hc nothing, so it starts none", async () => {
@@ -81,6 +90,12 @@ test("stop with no hc core running asks hc nothing, so it starts none", async ()
   // Then: no hc call at all (any hc call would start a core)
   expect(`${r.code} ${r.out}`).toBe("0 bridges: stopped");
   expect(r.calls).toEqual([]);
+});
+
+test("start with no host core socket asks hc nothing", async () => {
+  const r = await bridgeWithFakeHc([], [], { HC_SESSION: "missing" });
+  expect(r.calls).toEqual([]);
+  expect(r.code).toBe(0);
 });
 
 test("stop ends only the bridge rows and never the core, whatever the Dori's config or environment says (reviews 4 and 5 of #404)", async () => {
@@ -105,7 +120,7 @@ test("a live terminal that holds a bridge's name but is no bridge (an hc lane na
   const started = await bridgeWithFakeHc([lane]);
   // Then: the row starts under a fallback name; stop on a running core kills and removes no foreign terminal
   expect(started.out).toBe("zzangdori: started");
-  expect(started.calls).toEqual(["ls --all --json", "get --json t3", start("zzangdori", "", "zzangdori-row")]);
+  expect(started.calls).toEqual([discover(), "ls --all --json", "get --json t3", start("zzangdori", "", "zzangdori-row")]);
   const stopped = await bridgeWithFakeHc([lane], ["stop"], {}, { "run/herdr-core/default.sock": "" });
   expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
   expect(stopped.calls).toEqual(["ls --all --json", "get --json t3"]);
@@ -154,7 +169,7 @@ test("another machine's terminal under a bridge's name (<machine>/tN in hc ls --
   const started = await bridgeWithFakeHc([{ name: "zzangdori", state: "finished", address: "t1", argv: ATTACH }, remote]);
   // Then: start removes the local record and starts the bridge here again, asking hc nothing about peer/t5
   expect(`${started.code} ${started.out}`).toBe("0 zzangdori: started");
-  expect(started.calls).toEqual(["ls --all --json", "get --json t1", "rm t1", start("zzangdori")]);
+  expect(started.calls).toEqual([discover(), "ls --all --json", "get --json t1", "rm t1", start("zzangdori")]);
   // Then: stop with the local bridge t2 live ends and removes t2 only, never the other machine's terminal
   const stopped = await bridgeWithFakeHc([{ name: "zzangdori", state: "live", address: "t2", argv: ATTACH }, remote], ["stop"], {}, { "run/herdr-core/default.sock": "" });
   expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
@@ -166,7 +181,7 @@ test("a row whose full record cannot be read is taken for another terminal: star
   const row = { name: "zzangdori", state: "live", address: "t5" };
   const started = await bridgeWithFakeHc([row]);
   expect(started.out).toBe("zzangdori: started");
-  expect(started.calls).toEqual(["ls --all --json", "get --json t5", start("zzangdori", "", "zzangdori-row")]);
+  expect(started.calls).toEqual([discover(), "ls --all --json", "get --json t5", start("zzangdori", "", "zzangdori-row")]);
   const stopped = await bridgeWithFakeHc([row], ["stop"], {}, { "run/herdr-core/default.sock": "" });
   expect(`${stopped.code} ${stopped.out}`).toBe("0 bridges: stopped");
   expect(stopped.calls).toEqual(["ls --all --json", "get --json t5"]);
@@ -200,6 +215,7 @@ test("one row per listed Dori, in order: a live one kept, an ended one replaced,
   expect(r.err).toBe("");
   expect(r.out.split("\n")).toEqual(["zzangdori: kept", "okdori: started", "yoodori: started"]);
   expect(r.calls).toEqual([
+    discover(), discover("okdori"), discover("yoodori"),
     "ls --all --json",
     "get --json t1",
     "get --json t2",
