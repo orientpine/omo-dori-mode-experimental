@@ -1,8 +1,11 @@
-// #414 reviews 30-31: a script the handover reads can run another one it does not read, so a script fed to a shell keeps
-// its watch when any of its commands (split at ; newlines | & ( ) { } and $( ), quotes kept) has a command word, after
-// assignments, control words and env with its -u and NAME=value words, that is a path, a .sh, an expansion, a shell or a
-// word that runs another command; or when it puts a job in the background with a lone &.
-const RUNNER = /^(?:(?:ba|z|da|k)?sh|source|\.|exec|eval|nohup|setsid|disown|sudo|su|timeout|nice|stdbuf|xargs|command|builtin|time|ssh|node-dori-do|flock|script|systemd-run|tmux|screen|watch|parallel)$/;
+// #414 reviews 30-33: a script the handover reads can run another one it does not read, so a script fed to a shell ends
+// with its watch only when every command in it (split at ; newlines | & ( ) { } and $( ), quotes kept), after assignments,
+// control words, redirections at its start and env with only -u and NAME=value, starts with a word of this list (the
+// commands of the real remote ci script and the QA job); anything else, a lone &, a backtick, an unclosed quote or $( ),
+// or a redirection with no target keeps the watch.
+const PLAIN = new Set(["cd", "bun", "git", "echo", "printf", "set", "export", "test", "[", "cat", "sleep", "true", "false", "exit", "mkdir", "date", "hostname", "cut", "nproc"]);
+const REDIRECT = /^\d*(?:[<>]|&>)/;
+const OPERATOR_ONLY = /^\d*(?:>>?|<|>&|&>>?|>\|)$/;
 const CONTROL_WORD = /^(?:if|then|else|elif|fi|do|done|while|until|for|in|case|esac|function|!|\{|\})$/;
 export const runsOther = (text: string): boolean => {
   const cmds: string[][] = [[]];
@@ -40,7 +43,8 @@ export const runsOther = (text: string): boolean => {
       raw = true;
     } else if (c === "`") return true;
     else if (c === "#" && !w) i = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i) - 1;
-    else if (c === "&" && text[i + 1] !== "&" && text[i - 1] !== "&" && text[i - 1] !== ">" && text[i + 1] !== ">") return true;
+    else if (c === "&" && (text[i - 1] === ">" || text[i + 1] === ">")) w += c;
+    else if (c === "&" && text[i + 1] !== "&" && text[i - 1] !== "&") return true;
     else if (c === ")" && outer.length) {
       end();
       const o = outer.pop();
@@ -50,16 +54,22 @@ export const runsOther = (text: string): boolean => {
     } else if (/[;\n|&(){}]/.test(c)) start(); else if (/\s/.test(c)) end();
     else w += c;
   }
+  if (q || outer.length) return true;
   end();
   return cmds.some((ws) => {
     let k = 0;
     for (;;) {
-      while (CONTROL_WORD.test(ws[k] ?? "") || /^[A-Za-z_]\w*=/.test(ws[k] ?? "")) k++;
+      for (;;) {
+        const x = ws[k] ?? "";
+        if (CONTROL_WORD.test(x) || /^[A-Za-z_]\w*=/.test(x)) k++;
+        else if (REDIRECT.test(x)) k += OPERATOR_ONLY.test(x) ? 2 : 1;
+        else break;
+      }
+      if (k > ws.length) return true;
       if (ws[k] !== "env") break;
       for (k++; ws[k] === "-u" || /^[A-Za-z_]\w*=/.test(ws[k] ?? ""); ) k += ws[k] === "-u" ? 2 : 1;
     }
     const word = ws[k];
-    // after env, any option but -u (-S, -C, -i, --split-string) can hide the command it runs (#414 review 32)
-    return word !== undefined && (word.startsWith("-") || word.includes("/") || word.endsWith(".sh") || word.includes("$") || RUNNER.test(word));
+    return word !== undefined && !PLAIN.has(word);
   });
 };
