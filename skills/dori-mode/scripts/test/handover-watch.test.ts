@@ -25,11 +25,11 @@ test("the plain poll shapes of real monitors stay watches the new session may ar
     "while true; do state=$(gh pr view 435 --repo o/r --json state --jq .state 2>/dev/null); if [ \"$state\" != \"OPEN\" ] && [ -n \"$state\" ]; then printf 'PR_STATE %s\\n' \"$state\"; break; fi; sleep 15; done",
     "export GH_CONFIG_DIR=$HOME/.config/gh; sleep 20; until gh pr checks 232 -R o/r --json name,state -q '[.[]|select(.state==\"PENDING\")]|length' 2>/dev/null | grep -qx 0; do sleep 30; done; gh pr checks 232 -R o/r --json name,state -q '.[]|.name' | tr '\\n' ' '; printf '\\nCHECKS_SETTLED\\n'",
     "until gh pr view 42 -R o/r --json headRefOid -q .headRefOid | grep -q ^bea2357; do sleep 10; done; sleep 20; gh pr checks 42 -R o/r --watch --interval 30 >/dev/null 2>&1; echo \"CI5 $(gh pr checks 42 -R o/r 2>&1 | cut -f1,2 | tr '\\t\\n' '= ')\"",
-    "cd /home/test/src; b=\"$SENPI_MONITOR_STATE_DIR/base\"; p=$(cat \"$b\" 2>/dev/null || git rev-parse origin/main | tee \"$b\"); while sleep 60; do git fetch -q origin main 2>/dev/null || true; n=$(git rev-parse origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $p..$n $(git log -1 --format=%s $n | cut -c1-80)\"; p=$n; echo \"$p\" > \"$b\"; }; done",
-    "p=$(git -C /tmp/wt rev-parse origin/main); while sleep 60; do git -C /tmp/wt fetch -q origin 2>/dev/null || continue; n=$(git -C /tmp/wt rev-parse origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $p..$n\"; p=$n; }; done",
     // the watch-only form a new session arms for work the old one started: wait on its pid
     "while kill -0 3636161 2>/dev/null; do sleep 2; done; echo QA_JOB_DONE",
     "until test -e /tmp/qa/stop; do sleep 2; done; stat -c %s /tmp/qa/stop; printf 'STOPPED\\n'",
+    // the main-moved poll with a hash only rev-parse --verify prints (#414 review 25)
+    "p=$(git -C /tmp/wt rev-parse --verify origin/main); while sleep 60; do git -C /tmp/wt fetch -q origin 2>/dev/null || continue; n=$(git -C /tmp/wt rev-parse --verify origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $(git -C /tmp/wt log -1 --format=%s $n | cut -c1-80)\"; p=$n; }; done",
     // the shapes of the other real lane and lead notes: another account or host, a service, a gh read, a filter
     "until node-dori-do okdori test -s /home/okdori/s.log 2>/dev/null; do sleep 120; done; echo X $(node-dori-do okdori tail -3 /home/okdori/s.log | tr '\\n' ' ' | cut -c1-300)",
     "ssh ori644d 'tail -n +1 -F logs/bs_chain.out | grep --line-buffered -E \"BS_CHAIN_|Traceback\" | sed -u \"/BS_CHAIN_DONE/q\"'",
@@ -92,6 +92,18 @@ test("work hidden in a substitution, an option, an output target or an unlisted 
     "x=$(git rev-parse --output=/tmp/f HEAD); git log $x",
     "x=$(git rev-parse HEAD); x=$(cat /tmp/f); git log $x",
     "x=$(git rev-parse HEAD); gh api repos/o/r $x",
+    // #414 review 25: git rev-parse prints an unresolved operand back, options and all, so its output is no safe argument
+    // either; the main-moved polls that pass it to git log are work for now (follow-ups)
+    "x=$(git rev-parse 'HEAD --output=/tmp/replayed'); git log $x; tail -F /tmp/watch.log",
+    "cd /home/test/src; b=\"$SENPI_MONITOR_STATE_DIR/base\"; p=$(cat \"$b\" 2>/dev/null || git rev-parse origin/main | tee \"$b\"); while sleep 60; do git fetch -q origin main 2>/dev/null || true; n=$(git rev-parse origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $p..$n $(git log -1 --format=%s $n | cut -c1-80)\"; p=$n; echo \"$p\" > \"$b\"; }; done",
+    "p=$(git -C /tmp/wt rev-parse origin/main); while sleep 60; do git -C /tmp/wt fetch -q origin 2>/dev/null || continue; n=$(git -C /tmp/wt rev-parse origin/main); [ \"$n\" != \"$p\" ] && { echo \"MOVED $p..$n\"; p=$n; }; done",
+    // test -v and -R evaluate an array subscript, and with it a command substitution hidden in quotes
+    "test -v 'BASH_VERSINFO[$(touch /tmp/replayed)]'; tail -F /tmp/watch.log",
+    "[ -v 'a[$(touch /tmp/replayed)]' ]",
+    "until [ -R 'a[$(touch /tmp/x)]' ]; do sleep 5; done",
+    "x=-v; [ \"$x\" 'a[$(touch /tmp/x)]' ]",
+    "x=$(git rev-parse --verify 'HEAD --output=/tmp/x'); git log $x",
+    "x=$(git rev-parse --verify $y); git log $x",
     // the shell expands braces and globs into more words too (dori tree H263, H264), and printf -v sets a variable
     "git log {--output=/tmp/x,HEAD}",
     "git log -1 *",
