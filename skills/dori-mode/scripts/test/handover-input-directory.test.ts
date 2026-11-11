@@ -116,7 +116,9 @@ test("an input redirection of a later command is not the shell's script", () => 
   if (!launch) throw new Error("not work");
   expect(launch.detached).toBe(true);
   // one < that belongs to the later command: the shell's own input is unknown, so nothing says it ends with the watch
-  expect(launchOf("bash -s >/tmp/log; cat < /tmp/result", HOME, read)?.detached ?? true).toBe(true);
+  const seen: string[] = [];
+  expect(launchOf("bash -s >/tmp/log; cat < /tmp/result", HOME, (path) => { seen.push(path); return read(path); })?.detached ?? true).toBe(true);
+  expect(seen).not.toContain("/tmp/result");
   // the remote ci of port-hc-runtime (2026-11-08 22:35Z): one absolute input, read, and its plain work ends with the watch
   const ci = launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/ci.sh > /tmp/ci.log 2>&1; echo CI4EAE_DONE", HOME, (path) => (path === "/tmp/ci.sh" ? "git worktree add -q --detach /tmp/w x\nbun run ci\n" : undefined));
   expect(ci?.detached).toBe(false);
