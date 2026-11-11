@@ -151,9 +151,9 @@ export const procEnv = async (run: Runner, p: Proc): Promise<string> => {
 };
 
 // Whether omo handed child the session in its env: senpi sets it for its bash tools' commands, each leading its own PTY's
-// session even after an exec (Linux sid), and its kernels; a monitor (SENPI_MONITOR_ID) or the provider keeps the agent's env.
+// session even after an exec (ps state s, Linux and macOS), and its kernels; a monitor (SENPI_MONITOR_ID) or the provider keeps the agent's env.
 const SHELL = /^(?:\S*\/)?(?:sh|bash|zsh|dash|fish|ksh)(?:\s|$)/;
-export const handedSession = (child: Proc, env: string, launched: string): boolean => !/(?:^|\s)SENPI_MONITOR_ID=/.test(env) && (child.sid === child.pid || SHELL.test(child.cmd) || child.cmd.includes("senpi-codemode/src/kernels/") || ENV_ID.exec(env)?.[1] !== launched);
+export const handedSession = (child: Proc, env: string, launched: string): boolean => !/(?:^|\s)SENPI_MONITOR_ID=/.test(env) && (/s/.test(child.stat ?? "") || SHELL.test(child.cmd) || child.cmd.includes("senpi-codemode/src/kernels/") || ENV_ID.exec(env)?.[1] !== launched);
 export const launchSessionId = async (run: Runner, agent: Proc): Promise<string> => ENV_ID.exec(await procEnv(run, agent))?.[1] ?? "";
 
 export const flagValue = (argv: readonly string[], flag: string): string | undefined => {

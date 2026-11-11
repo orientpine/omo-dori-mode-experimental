@@ -236,7 +236,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
     if (ok) next = { ...next, key: incident.key, typedAt: now };
     out.push(`${incident.head}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane, typed again next tick"}`);
   } else if (!incident && !problem && !unheard.length && mark.key) {
-    next = { pane, session, agentPid: file.pid, log: file.path, ...heardState };
+    next = { pane, session, agentPid: file.pid, log: file.path, vetted: true, ...heardState };
     out.push(`LEAD_INBOX_OK ${pane} session ${session} hears its inbox again`);
   }
   if (JSON.stringify(next) !== JSON.stringify(old)) writeFileSync(markPath(deps), `${JSON.stringify(next)}\n`);

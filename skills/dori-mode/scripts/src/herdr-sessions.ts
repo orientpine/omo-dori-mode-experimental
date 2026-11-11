@@ -8,7 +8,7 @@ import { agentLine, herdrAgentPid, herdrRead, herdrSessions, herdrShellPid, Herd
 import { reasonOf } from "./runtime/herdr/exec.ts";
 import type { Clock, Runner } from "./run.ts";
 import { splitModel } from "./lane-handover.ts";
-import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionSelector, type Proc, procEnv, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
+import { agentArgv, argvSessionId, descendants, ENV_FILE, flagValue, hasSessionSelector, launchSessionId, type Proc, procEnv, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // A herdr server that stops ends every agent in its panes and gives back the same pane ids with fresh shells (herdr 0.9.5,
 // measured 2026-11-03), unlike an aoe session, which aoe starts again in its conversation. So the omo session a herdr lead
@@ -128,7 +128,9 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
     return kept?.agent === agent ? { id: kept.session, log: kept.log, ...(kept.vetted ? { vetted: true } : {}) } : undefined;
   };
   const hit = await resolveSession(pane, cwd, table, { run, sessionsDir: config.sessionsDir, backend: "herdr", seen });
-  if (!hit.id) return kept?.session ?? "";
+  // a record from before vetting that only names the live agent's inherited launch session was refused above: not its session
+  const agentProc = table.find((p) => p.pid === hit.pid);
+  if (!hit.id) return kept && !kept.vetted && agentProc && kept.session === await launchSessionId(run, agentProc) ? "" : kept?.session ?? "";
   // what the session runs now (its log), else the model recorded for this same session (a log that cannot be read does not
   // send it back to the launch one), else what its agent was started with, marked modelFrom argv: a /model since then
   // leaves it stale, so only a revive uses it and a lane never follows it.

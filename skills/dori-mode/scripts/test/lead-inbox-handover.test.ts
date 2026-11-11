@@ -110,8 +110,25 @@ test("a bash tool's command that exec'd another program still names the session 
   const agent = "/x/senpi/dist/bundle/cli.js --continue";
   const base = lead(agent, [["/x/claude-agent-sdk-linux-arm64/claude --output-format stream-json", inherited()], ["sleep 600", inherited()]]);
   // pid ppid sid stat command: the provider stays in the agent's terminal session, the tool's command leads its own
-  const table = `10 1 10 S /bin/bash /tmp/aoe-pane-env\n11 10 10 S+ ${agent}\n12 11 10 S+ /x/claude-agent-sdk-linux-arm64/claude --output-format stream-json\n13 11 13 S+ sleep 600\n`;
+  const table = `10 1 10 S /bin/bash /tmp/aoe-pane-env\n11 10 10 S+ ${agent}\n12 11 10 S+ /x/claude-agent-sdk-linux-arm64/claude --output-format stream-json\n13 11 13 Ss+ sleep 600\n`;
   const run: FlowDeps["run"] = async (argv, opts) => argv[0] === "ps" && argv[1] === "-A" && argv.some((a) => a.includes("sid=")) ? { code: 0, out: table, err: "" } : base(argv, opts);
   expect(await leadInboxTick({ ...deps(T0 + 20 * MIN), run })).toEqual([]);
+  expect(checked()).toBe(SID);
+  // macOS ps has no sid column; its state letters mark a session leader with s too (ps(1): "s The process is a session leader")
+  rmSync(join(state.dir, "lead-inbox.json"));
+  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: NEW_SID, agentPid: 11, log: NEXT(), heardIds: [], baselineDone: true }));
+  const darwin = table.replace(/^(\d+ \d+) \d+ /gm, "$1 ");
+  const mac: FlowDeps["run"] = async (argv, opts) => argv[0] === "ps" && argv[1] === "-A" ? { code: 0, out: darwin, err: "" } : base(argv, opts);
+  expect(await leadInboxTick({ ...deps(T0 + 20 * MIN), run: mac })).toEqual([]);
+  expect(checked()).toBe(SID);
+});
+
+// review 5 of #460: the tick that sees an incident clear rewrites the mark; the resumed launch session it holds stays vetted
+test("the mark an incident's recovery writes stays vetted, so a resumed launch session is still the lead's next tick", async () => {
+  writeFileSync(join(state.dir, "lead-inbox.json"), JSON.stringify({ pane: LEAD, session: SID, agentPid: 11, log: transcript, heardIds: [], baselineDone: true, vetted: true, key: "unwatched|x", typedAt: T0 }));
+  writeFileSync(join(state.dir, "herdr-sessions.json"), JSON.stringify({ [LEAD]: { session: NEW_SID, cwd: "/home/test/dori", log: NEXT(), vetted: true, at: iso(T0) } }));
+  const run = lead("/x/senpi/dist/bundle/cli.js --continue", [[`/bin/bash -c tail -n 0 -F ${inbox}`, `${inherited()} SENPI_MONITOR_ID=mon_A`]]);
+  expect(await leadInboxTick({ ...deps(T0 + 20 * MIN), run })).toEqual([`LEAD_INBOX_OK ${LEAD} session ${SID} hears its inbox again`]);
+  expect(await leadInboxTick({ ...deps(T0 + 30 * MIN), run })).toEqual([]);
   expect(checked()).toBe(SID);
 });
