@@ -202,6 +202,6 @@ test("a script that runs another script keeps its watch, whatever the scripts sa
 });
 
 test("a fed script runs another command when a command word is a path, expanded, a runner, or a job goes to the background", () => {
-  expect(["sleep 30 &\n", "/opt/job/run\n", "$J\n", "nohup x\n", "env /tmp/x\n", "echo \"$(bash x)\"\n"].map(runsOther)).toEqual([true, true, true, true, true, true]);
+  expect(["sleep 30 &\n", "/opt/job/run\n", "$J\n", "nohup x\n", "env /tmp/x\n", "echo \"$(bash x)\"\n", "env -S 'bash /tmp/x'\n", "env -C /tmp bun run ci\n", "env --split-string='sh x'\n", "env -i bun run ci\n"].map(runsOther)).toEqual([true, true, true, true, true, true, true, true, true, true]);
   expect(["git fetch -q\nbun run ci\n", "env -u X FOO=1 bun run ci 2>&1\n", "echo \"a $(date) b\" >> /tmp/c\n", "until [ -f /tmp/s ]; do sleep 2; done\n"].map(runsOther)).toEqual([false, false, false, false]);
 });
