@@ -150,6 +150,12 @@ export const procEnv = async (run: Runner, p: Proc): Promise<string> => {
   return line.startsWith(p.cmd) ? line.slice(p.cmd.length) : "";
 };
 
+// Whether omo handed child the session in its env: senpi sets it for its bash tools' shells and kernels (core/tools/bash.js,
+// kernels/session-env.ts); a monitor (SENPI_MONITOR_ID) or the provider keeps the agent's own env (launched; MooDori hc:t1).
+const SHELL = /^(?:\S*\/)?(?:sh|bash|zsh|dash|fish|ksh)(?:\s|$)/;
+export const handedSession = (child: Proc, env: string, launched: string): boolean => !/(?:^|\s)SENPI_MONITOR_ID=/.test(env) && (SHELL.test(child.cmd) || child.cmd.includes("senpi-codemode/src/kernels/") || ENV_ID.exec(env)?.[1] !== launched);
+export const launchSessionId = async (run: Runner, agent: Proc): Promise<string> => ENV_ID.exec(await procEnv(run, agent))?.[1] ?? "";
+
 export const flagValue = (argv: readonly string[], flag: string): string | undefined => {
   const at = argv.findIndex((a) => a === flag || a.startsWith(`${flag}=`));
   return at < 0 ? undefined : argv[at]?.startsWith(`${flag}=`) ? argv[at]?.slice(flag.length + 1) : argv[at + 1];
@@ -187,10 +193,11 @@ const sessionLogFor = (argv: readonly string[], id: string, cwd: string, deps: S
 // omo wrote last; when no log tells, the arguments' one, else the first child's. "" when none is named.
 const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: string, cwd: string, deps: SessionDeps): Promise<Pick<SessionHit, "id" | "via">> => {
   const named: { readonly id: string; readonly log?: string | undefined; readonly current?: boolean }[] = [];
+  const launched = await launchSessionId(deps.run, agent);
   for (const child of table.filter((p) => p.ppid === agent.pid).slice(0, 40)) {
     const env = await procEnv(deps.run, child);
     const id = ENV_ID.exec(env)?.[1];
-    if (id) named.push({ id, log: ENV_FILE.exec(env)?.[1], current: true });
+    if (id && handedSession(child, env, launched)) named.push({ id, log: ENV_FILE.exec(env)?.[1], current: true });
   }
   if (fromFlag) named.push({ id: fromFlag });
   // the record counts on its own too: a selector-free agent whose children all ended still names it
@@ -227,7 +234,7 @@ export const resolveSession = async (pane: string, cwd: string, table: readonly 
   const selected = hasSessionSelector(argv);
   // its own children were read above and showed none; a deeper child's PI_SESSION_ID still names it
   for (const child of process.platform === "win32" ? [] : descendants(table, agent.pid).filter((p) => p.ppid !== agent.pid).slice(0, 40)) {
-    const hit = ENV_ID.exec(await procEnv(deps.run, child));
+    const env = await procEnv(deps.run, child), hit = handedSession(child, env, await launchSessionId(deps.run, agent)) ? ENV_ID.exec(env) : null;
     if (hit?.[1]) return { id: hit[1], via: "child-env", pid: agent.pid };
   }
   if (selected) return { id: "", via: "none", pid: agent.pid };

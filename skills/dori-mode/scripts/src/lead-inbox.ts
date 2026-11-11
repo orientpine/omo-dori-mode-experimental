@@ -13,7 +13,7 @@ import { callsThisDori, watchProblem } from "./lead-inbox-watch.ts";
 import { sawAnswer } from "./missed-answers.ts";
 import { tokenBotId } from "./messenger/discord.ts";
 import { sendVerified } from "./panes.ts";
-import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
+import { handedSession, launchSessionId, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // The lead hears the inbox only through a monitor its own session runs, and nothing said when there was none. On 2026-11-09
 // YooDori's lead (leadPane set back by hand, not by dori handover) missed a #dori-pair request at 11:48Z; ZzangDori's lead
@@ -135,11 +135,13 @@ const currentLeadSession = async (deps: FlowDeps, pane: string, cwd: string, tab
   const hit = await resolveSession(pane, cwd, table, { run: deps.run, sessionsDir: deps.config.sessionsDir, backend: "aoe" });
   if (!hit.pid) return undefined;
   const named: { id: string; log?: string | undefined }[] = hit.id ? [{ id: hit.id }] : [];
+  const agent = table.find((p) => p.pid === hit.pid);
+  const launched = agent ? await launchSessionId(deps.run, agent) : "";
   for (const child of table.filter((p) => p.ppid === hit.pid).slice(0, 40)) {
     const line = (await deps.run(["ps", "eww", "-o", "command=", "-p", String(child.pid)])).out.replace(/\r?\n$/, "");
     const env = line.startsWith(child.cmd) ? line.slice(child.cmd.length) : "";
     const id = ENV_ID.exec(env)?.[1];
-    if (id) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
+    if (id && handedSession(child, env, launched)) named.push({ id, log: ENV_FILE.exec(env)?.[1] });
   }
   const previous = readMark(deps);
   if (previous?.pane === pane && previous.agentPid === hit.pid) named.push({ id: previous.session, log: previous.log });
