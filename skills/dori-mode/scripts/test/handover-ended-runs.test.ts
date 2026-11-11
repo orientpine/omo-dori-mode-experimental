@@ -48,7 +48,7 @@ test("two monitors with one description are judged by their own process, not by 
   };
   const first = { pid: 100, start: "s100", cmd: "ci on 4eae", pids: [101], starts: ["s101"] };
   const second = { pid: 200, start: "s200", cmd: "ci on 4eae", pids: [201], starts: ["s201"] };
-  const done = workEnded([first, second], () => true, (pid) => ({ 100: "s999", 101: "s999", 200: "s200", 201: "s201" })[pid]);
+  const done = workEnded([first, second], () => true, (pid) => ({ 100: "s999", 101: "s999", 200: "s200", 201: "s201" } as Record<number, string>)[pid]);
   // the first monitor's processes ended, the second's still run: only the first is not asked for
   expect(done(monitor(100) as never)).toBe(true);
   expect(done(monitor(200) as never)).toBe(false);

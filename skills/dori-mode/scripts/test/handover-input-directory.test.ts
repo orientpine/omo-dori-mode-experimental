@@ -14,9 +14,10 @@ test("a relative input is read in the directory the command changes to", () => {
   if (!launch) throw new Error(`not work: ${command}`);
   expect(launch.detached).toBe(true);
   expect(seen).toContain("/tmp/work/ci.sh");
+  // #414 review 15: a relative script is never pinned exactly (quoted cd, cd -, pushd, $VAR), so even a plain one keeps its watch
   const plain = launchOf(command, HOME, (path) => (path === "/tmp/work/ci.sh" ? "sleep 30\nbun run ci\n" : "bun run build\n"));
   if (!plain) throw new Error(`not work: ${command}`);
-  expect(plain.detached).toBe(false);
+  expect(plain.detached).toBe(true);
   // a directory the command never names stays uncertain: an unreadable relative input is detached
   const uncertain = launchOf("bash -s < ci.sh", HOME, () => "bun run ci\n");
   if (!uncertain) throw new Error("not work");
@@ -82,7 +83,7 @@ test("a relative cd composes with the last absolute directory", () => {
   expect(seen).toEqual(["/tmp/work/sub/ci.sh"]);
   const plain = launchOf(command, HOME, (path) => (path === "/tmp/work/sub/ci.sh" ? "sleep 30\nbun run ci\n" : "nohup setsid /tmp/job.sh &\n"));
   if (!plain) throw new Error(`not work: ${command}`);
-  expect(plain.detached).toBe(false);
+  expect(plain.detached).toBe(true);
   // a relative cd with no absolute base is unresolved, not a path in the caller's directory
   expect(launchOf("cd sub && bash -s < ci.sh", HOME, () => "bun run ci\n")?.detached).toBe(true);
 });
@@ -97,5 +98,27 @@ test("a directory change inside a subshell does not resolve the parent shell's i
   if (!launch) throw new Error(`not work: ${command}`);
   expect(launch.detached).toBe(true);
   expect(seen).toEqual([]);
+});
+
+// #414 review 15: a quoted cd target was skipped, so the parent's harmless ci.sh decided for the child's detaching one.
+// Root cause of reviews 4-15: detached=false came from guessing which file a shell reads. Now only an absolute script
+// path in a command with one input redirection is read for that; anything else keeps the watch.
+test("a relative script after a quoted cd keeps its watch whatever the parent's script says", () => {
+  const read = (path: string) => (path === "/tmp/work/sub/ci.sh" ? "sleep 30\nnohup setsid /tmp/job.sh &\n" : "sleep 30\nbun run ci\n");
+  expect(launchOf("cd /tmp/work && cd 'sub' && bash -s < ci.sh", HOME, read)?.detached).toBe(true);
+});
+
+// #414 review 15: the output operand of bash -s>/tmp/log ran on past the < and the ;, so cat's /tmp/result was taken for
+// the shell's script and its harmless text hid /tmp/start's delayed job.
+test("an input redirection of a later command is not the shell's script", () => {
+  const read = (path: string) => (path === "/tmp/start" ? "sleep 30\nnohup setsid /tmp/job.sh &\n" : "done\n");
+  const launch = launchOf("bash -s>/tmp/log</tmp/start; cat < /tmp/result", HOME, read);
+  if (!launch) throw new Error("not work");
+  expect(launch.detached).toBe(true);
+  // one < that belongs to the later command: the shell's own input is unknown, so nothing says it ends with the watch
+  expect(launchOf("bash -s >/tmp/log; cat < /tmp/result", HOME, read)?.detached ?? true).toBe(true);
+  // the remote ci of port-hc-runtime (2026-11-08 22:35Z): one absolute input, read, and its plain work ends with the watch
+  const ci = launchOf("node-dori-do oriclaw bash -lc 'ssh -o BatchMode=yes ori4eae bash -s' < /tmp/ci.sh > /tmp/ci.log 2>&1; echo CI4EAE_DONE", HOME, (path) => (path === "/tmp/ci.sh" ? "git worktree add -q --detach /tmp/w x\nbun run ci\n" : undefined));
+  expect(ci?.detached).toBe(false);
 });
 
