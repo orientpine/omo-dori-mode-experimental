@@ -480,8 +480,8 @@ const threadCards = (name = "🔄 fix login") => {
     if (req.method === "PATCH" && req.url.endsWith("/channels/300")) thread.name = JSON.parse(String(req.body)).name ?? thread.name;
     return req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {};
   });
-  const cards = new QuestionCards(f.dc, f.store, { channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji" } }, () => Date.parse("2026-01-02T03:04:00Z"));
-  return { ...f, cards, thread };
+  writeFileSync(f.store.file.replace(/[^/]+$/, "thread-names.json"), JSON.stringify({ "300": name })); // a name this Dori gave it
+  return { ...f, cards: new QuestionCards(f.dc, f.store, { channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji" } }, () => Date.parse("2026-01-02T03:04:00Z")), thread };
 };
 const threadTap = (customId: string): Interaction => ({ ...tap(customId), channel_id: "300" });
 

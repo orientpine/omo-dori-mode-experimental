@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
-import { desiredStatus, setThreadStatus, type ThreadMark, type ThreadStatus } from "./discord-thread.ts";
+import { desiredStatus, setThreadStatus, STATUS_EMOJI, type ThreadInfo, type ThreadMark, type ThreadStatus, threadName } from "./discord-thread.ts";
 import { MessengerError } from "./http.ts";
 import { dropThread, threads } from "./thread-map.ts";
 
@@ -118,6 +118,32 @@ export class ThreadStatusQueue {
     }, Math.max(0, due - this.d.now()));
   }
 
+  // The names this queue last gave each thread (thread-names.json next to the queue file). A 🔔 that is not one of them
+  // was set by another writer (a YooDori node's mail card, the egress gate's card), which keeps it while its card waits
+  // and replaces it when the card is decided; the receiver never undoes it (2026-11-12, mail thread 1570290417285726290).
+  private namesFile(): string {
+    return join(dirname(this.d.file), "thread-names.json");
+  }
+
+  private ownNames(): Record<string, string> {
+    return existsSync(this.namesFile()) ? (JSON.parse(readFileSync(this.namesFile(), "utf8")) as Record<string, string>) : {};
+  }
+
+  private recordName(thread: string, name: string | undefined): void {
+    const all = this.ownNames();
+    if (name === undefined) delete all[thread];
+    else all[thread] = name;
+    const tmp = `${this.namesFile()}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(all, null, 1), { mode: 0o600 });
+    renameSync(tmp, this.namesFile());
+  }
+
+  private othersWaiting(info: ThreadInfo): boolean {
+    const name = info.name ?? "";
+    const waiting = [STATUS_EMOJI.waiting, "⏸"].some((m) => name.startsWith(m)) || name.startsWith(`[${this.d.words.waiting}]`);
+    return waiting && [10, 11, 12].includes(info.type ?? -1) && this.ownNames()[info.id ?? ""] !== name;
+  }
+
   private forget(thread: string, rev: number): void {
     this.edit(thread, (cur) => (cur && cur.rev === rev ? undefined : cur));
   }
@@ -142,7 +168,17 @@ export class ThreadStatusQueue {
     // what decided it, when not the event: the open cards, the lanes that kept it working past them
     const why = asked !== e.status || (cards.length && lanes.length) ? [cards.length ? ` open=${cards.join(",")}` : "", lanes.length ? ` working=${lanes.join(",")}` : ""].join("") : "";
     try {
-      const changed = await setThreadStatus(this.d.dc.once(), thread, status, this.d.words, undefined, standing === false);
+      const dc = this.d.dc.once();
+      const info = { ...(await dc.call<ThreadInfo>("GET", `/channels/${thread}`)), id: thread };
+      if (status !== "waiting" && status !== "standing" && this.othersWaiting(info)) {
+        if (status === "done") dropThread(dirname(this.d.file), thread);
+        this.forget(thread, e.rev);
+        this.d.log(`THREAD_STATUS_KEPT ${thread} ${status}: 🔔 was set by another writer`);
+        return "unchanged";
+      }
+      const changed = await setThreadStatus(dc, thread, status, this.d.words, info, standing === false);
+      // a 🔔 our own open question card keeps is ours too, even when another writer had already set it
+      if (changed || (status === "waiting" && cards.length)) this.recordName(thread, status === "done" ? undefined : threadName(status, info.name ?? "", this.d.words, standing === false));
       if (status === "done") dropThread(dirname(this.d.file), thread);
       this.forget(thread, e.rev);
       this.d.log(`THREAD_STATUS_APPLIED ${thread} ${status}${changed ? "" : " unchanged"}${why}`);

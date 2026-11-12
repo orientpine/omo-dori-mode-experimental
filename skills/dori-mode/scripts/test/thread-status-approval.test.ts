@@ -1,0 +1,48 @@
+import { afterEach, expect, test } from "bun:test";
+
+import { doneWorld, live, THREAD } from "./thread-status-world.ts";
+
+afterEach(doneWorld);
+
+// 2026-11-12 (YooDori mail thread 1570290417285726290): the owner wrote in a thread whose mail approval card still
+// waited for him, and the receiver turned the node's 🔔 into 🔄. The lead's rule: a card waiting for the owner keeps 🔔;
+// with no card left his message gives 🔄. The receiver cannot see a node's or the egress gate's cards, but the one who
+// set a 🔔 keeps it while its card waits, so the receiver never undoes a 🔔 it did not set itself.
+
+test("the owner writing in a thread another writer marked 🔔 (a waiting mail card) leaves it 🔔 with no rename", async () => {
+  const { w, listener, say } = live("🔔 ✉️ lecture reply");
+  await listener.onMessage(say("1004", "add a question about their level"));
+  expect({ name: w.name, patches: w.patches }).toEqual({ name: "🔔 ✉️ lecture reply", patches: [] });
+  expect(w.logs).toContain(`THREAD_STATUS_KEPT ${THREAD} working: 🔔 was set by another writer`);
+});
+
+test("a working lane in that thread does not take another writer's 🔔 either", async () => {
+  const { w, q } = live("🔔 ✉️ lecture reply", async () => ["lane-a"]);
+  await q.request(THREAD, "working");
+  expect({ name: w.name, patches: w.patches }).toEqual({ name: "🔔 ✉️ lecture reply", patches: [] });
+});
+
+test("a 🔔 the receiver set itself still turns 🔄 when the owner answers", async () => {
+  const { w, q, listener, say } = live("🔄 fix login");
+  await q.request(THREAD, "waiting");
+  expect(w.name).toBe("🔔 fix login");
+  await listener.onMessage(say("1005", "here is the answer"));
+  expect(w.name).toBe("🔄 fix login");
+});
+
+test("a thread another writer ended (✅ ⛔ 💤) reopens 🔄 on the owner's message: no card waits there", async () => {
+  for (const name of ["✅ ✉️ lecture reply", "💤 ✉️ lecture reply"]) {
+    const { w, listener, say } = live(name);
+    await listener.onMessage(say("1006", "one more change"));
+    expect(w.name).toBe("🔄 ✉️ lecture reply");
+    doneWorld();
+  }
+});
+
+test("once another writer renames the thread to its own 🔔, the receiver's earlier 🔔 no longer counts as its own", async () => {
+  const { w, q, listener, say } = live("🔄 ✉️ lecture reply");
+  await q.request(THREAD, "waiting");
+  w.name = "🔔 ✉️ revised lecture reply";
+  await listener.onMessage(say("1007", "and this too"));
+  expect(w.name).toBe("🔔 ✉️ revised lecture reply");
+});

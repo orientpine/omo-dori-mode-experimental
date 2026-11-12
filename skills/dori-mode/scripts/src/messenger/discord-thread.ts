@@ -111,7 +111,7 @@ export const isOwnerTurnName = (name: string, words: DiscordWords): boolean =>
 export const progressText = (status: "working" | "done", text: string, words: DiscordWords): string =>
   words.statusStyle === "emoji" ? (status === "working" ? `⏳ · ${text}` : `${STATUS_EMOJI.done} ${text}`) : `${words[status]}: ${text}`;
 
-export type ThreadInfo = { readonly name?: string; readonly type?: number; readonly thread_metadata?: { readonly archived?: boolean } };
+export type ThreadInfo = { readonly id?: string; readonly name?: string; readonly type?: number; readonly thread_metadata?: { readonly archived?: boolean } };
 
 // Discord channel types that are threads (announcement, public, private). Only these get a status mark: a text
 // channel, forum or category passed in as a "thread" (a card asked with --thread pointing at the channel) keeps its name.

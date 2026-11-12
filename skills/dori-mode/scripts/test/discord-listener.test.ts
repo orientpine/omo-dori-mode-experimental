@@ -254,11 +254,11 @@ test("the owner answering a thread that showed his turn (🔔 with no card, the 
     const id = /\/channels\/(\d+)$/.exec(req.url)?.[1] ?? "";
     return id in names ? { parent_id: CHANNEL, name: names[id], type: 11, thread_metadata: { archived: id === "514" || id === "515" } } : {};
   });
+  writeFileSync(`${state.dir}/discord/thread-names.json`, JSON.stringify({ "511": names["511"], "512": names["512"] })); // 🔔 and ⏸️ are ours
   for (const [n, thread] of Object.keys(names).entries()) await listener.onMessage(msg(`200${n}`, { channel_id: thread }));
   const patches = seen.filter((r) => r.method === "PATCH").map((r) => [r.url.replace("https://discord.com/api/v10", ""), JSON.parse(String(r.body)).name]);
   expect(patches).toEqual([
-    ["/channels/511", "🔄 asked you"],
-    ["/channels/512", "🔄 old wait"],
+    ["/channels/511", "🔄 asked you"], ["/channels/512", "🔄 old wait"],
     ["/channels/513", "🔄 🔐 share failed"],
     ["/channels/514", "🔄 ✉️ cancelled mail"],
     ["/channels/515", "🔄 ✉️ replaced draft"],
