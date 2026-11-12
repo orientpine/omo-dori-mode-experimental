@@ -17,6 +17,8 @@ export type FakeTerminal = {
   name?: string;
   labels: Record<string, string>;
   screen?: string;
+  /** The terminal's width, as hc get prints it. */
+  cols?: number;
   /** Lines above the screen, read only when `--lines` asks for more than the screen (hc 0.1.18 api.rs). */
   history?: string;
 };

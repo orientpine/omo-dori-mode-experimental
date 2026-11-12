@@ -87,6 +87,9 @@ export const listKeptSessions = async (rts: ChosenRuntimes): Promise<SessionInfo
 // open-question check are read from, so an answered question in the history blocks nothing (review 7 of #404); a caller
 // that asks for lines gets that much history too
 export const hcRead = (run: Runner, pane: string, lines?: number): Promise<string> => hc(run).read(hcRef(pane), lines ?? 0).catch(() => "");
+// the terminal's width from hc get, which hcRead's rows are cut at (launch-screen.ts startupFailure); none when hc cannot say
+export const hcCols = (run: Runner, pane: string): Promise<number | undefined> =>
+  hcCall(execOf(run), ["get", hcRef(pane).id]).then((r) => (typeof r["cols"] === "number" && r["cols"] > 0 ? r["cols"] : undefined), () => undefined);
 
 const probeOf = (run: Runner, pane: string) => hc(run).probe(hcRef(pane)).catch(() => undefined);
 

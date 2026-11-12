@@ -17,7 +17,7 @@ import { briefAnchor } from "./launch-footer.ts";
 import { reopenLaneThread } from "./launch-state.ts";
 import { renderBrief } from "./launch-render.ts";
 import { resolveLeadModel } from "./lane-model.ts";
-import { HcStartupError } from "./hc-pane.ts";
+import { HcStartupError, hcCols, isHcPane } from "./hc-pane.ts";
 import { HerdrStartupError } from "./herdr.ts";
 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line: string) => void = () => {}): Promise<{ readonly lane: Lane; readonly startup: string }> => {
@@ -99,14 +99,16 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const prompted = deps.clock.now();
   await deps.clock.sleep(STARTUP_CHECK_MS);
   const screen = await readScreen(deps.run, deps.config.backend, opened.pane, 40);
-  const failure = (shown: string): string | undefined => failureOf(deps, shown, cwd, opened.session ?? "", launchedAt);
+  // an hc terminal's rows come back cut at its width, so an own error line is read across them (upstream #205)
+  const cols = isHcPane(opened.pane) ? await hcCols(deps.run, opened.pane) : undefined;
+  const failure = (shown: string): string | undefined => failureOf(deps, shown, cwd, opened.session ?? "", launchedAt, cols);
   const bad = failure(screen);
   if (bad) return { lane, startup: `STARTUP_ERROR ${input.key} ${opened.pane}: ${bad}` };
   // one start wait for an agent slow to come up, its ❯ prompt and then its first turn (#202)
   const recheck = startupRechecks(deps);
   const started = omoSession(deps.config) ? await aoeStartup(deps, input.key, opened.pane, screen, failure, recheck, prompted) : `STARTUP_OK ${input.key} ${opened.pane}`;
   if (!started.startsWith("STARTUP_OK")) return { lane, startup: started };
-  return { lane, startup: (await startupGoal(deps, input.key, opened.pane, cwd, opened.session ?? "", launchedAt, prompted, recheck)) ?? started };
+  return { lane, startup: (await startupGoal(deps, input.key, opened.pane, cwd, opened.session ?? "", launchedAt, prompted, recheck, cols)) ?? started };
 };
 export { validateLaunch } from "./launch-gates.ts";
 export { keptModel, laneModel, modelMove, moveThinking } from "./lane-model.ts";
