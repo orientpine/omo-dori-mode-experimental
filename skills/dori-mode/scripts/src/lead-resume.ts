@@ -7,6 +7,7 @@ import { hcRead, isHcPane } from "./hc-pane.ts";
 import { herdrOk, herdrReadAnsi, isHerdrPane } from "./herdr.ts";
 import { holdOf, jobSignal, resumeAgent, type StatOf } from "./job-control.ts";
 import { ownerRows, placeOf, tailOf } from "./lead-limit.ts";
+import { waitingOwnerRows } from "./owner-waiting.ts";
 import { execOf } from "./run.ts";
 import { hcCall } from "./runtime/hc/exec.ts";
 
@@ -172,7 +173,9 @@ const tryResume = async (deps: FlowDeps, io: LeadResumeIO, pane: string, pid: nu
 
 const ownerChannel = (deps: FlowDeps): string => {
   const inbox = deps.ownerInbox;
-  const rows = inbox && existsSync(inbox.path) ? ownerRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId).filter((r) => deps.clock.now() - r.at < DAY_MS) : [];
+  // where his newest message still waiting on this lead is, as LEAD_OWNER_WAITING picks it (owner-waiting.ts)
+  const tail = inbox && existsSync(inbox.path) ? tailOf(inbox.path, INBOX_TAIL_BYTES) : "";
+  const rows = inbox && tail ? waitingOwnerRows(ownerRows(tail, inbox.ownerId).filter((r) => deps.clock.now() - r.at < DAY_MS), tail, inbox.path) : [];
   return placeOf(rows, inbox?.ownerChannel ?? "");
 };
 
