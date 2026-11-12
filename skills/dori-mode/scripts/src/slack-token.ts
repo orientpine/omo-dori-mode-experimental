@@ -2,14 +2,8 @@
 // #204 -> #208 -> #211 -> #213 -> #218 -> https://github.com/sisyphuslabs/dori-superagent/pull/219 landed it on main (squash
 // 49fba4dc): the Slack token without putting it on a command line. A lane's env is its agent line (`env K=V ... omo`),
 // which ps, hc and herdr show, so a lane gets the path of an owner-only token file instead of the token itself.
-//
-// Threat model (fork, reviews 1-3 of #474). Defended: a token file of another home reaching this one (an inherited
-// DORI_SLACK_TOKEN_FILE, a link inside the home, `..` after a link, a lane env carried into another home), a token file
-// that is not this user's owner-only regular file, a link put at the token name or (on Linux, via /proc/self/fd) at a
-// directory on its path after it was checked, and a check and a mark taken against two different resolutions of the
-// home within one call. Not defended: a process running as this same user that rewrites this home's own directories
-// can read both homes' token files directly, so racing it further buys nothing; off Linux, a directory swapped for a
-// link and swapped back between the open and the path check is not seen.
+// What this defends and what it does not, by decision (reviews 1-3 of the fork's #474): references/scripts.md,
+// "Token file threat model".
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { configPath } from "./config-env.ts";
