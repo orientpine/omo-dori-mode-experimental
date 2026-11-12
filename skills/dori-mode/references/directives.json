@@ -881,6 +881,28 @@
         ]
       },
       "mode": "inject"
+    },
+    {
+      "id": "usage-each-dori",
+      "name": "형이 '사용량'이라고 하면 도리마다 /claude-account와 /gpt-account를 실행해 사용량을 보여 준다",
+      "by": "owner",
+      "basis": "'앞으로 내가 \"사용량\"이라고 하면 …'은 앞으로 형이 사용량을 부를 때마다 지킬 일반 지시라 형 지침, 범위는 사용량을 다루는 일. usage-off(언제: 형이 부를 때만)·usage-expired-skip(어느 계정: 만료 계정은 리셋 시각 뒤에만)과 대조함: 이 항목은 형이 불렀을 때 무엇으로 재서 어떻게 보여 주는가라 뜻이 겹치지 않고 셋이 함께 읽힌다. 형의 말은 한 문장이라 words는 original 그대로다. 이 지침이 대체한 로컬 항목(수돌 usage-snapshot: 사용량 PNG, 짱돌 usage-table: omo-usage PNG 한 장)은 각 로컬 장부에서 지운다. 모으는 도리와 계정 표기는 형의 이 말에 없고 전달된 적용 방법이라 prompt에 넣지 않고 rule에만 둔다.",
+      "words": "앞으로 내가 “사용량”이라고 하면 각 도리들에게 /claude-account , /gpt-account 명령어를 실행해서 사용량을 보여줘",
+      "original": "앞으로 내가 “사용량”이라고 하면 각 도리들에게 /claude-account , /gpt-account 명령어를 실행해서 사용량을 보여줘",
+      "prompt": "형이 \"사용량\"이라고 하면 각 도리에게 /claude-account와 /gpt-account 명령을 실행하게 해서 사용량을 보여 준다.",
+      "rule": "형이 '사용량'이라고 부를 때만(usage-off) 형이 부른 자리의 도리가 자기 세션에서 /claude-account와 /gpt-account를 실제로 한 번씩 실행하고, #dori-pair로 다른 도리들에게도 같은 두 명령을 실제로 실행해 결과를 달라고 한 뒤, 도리별로 모아 형이 물은 자리에 보여 준다. 캐시 파일만 읽고 실행했다고 하지 않는다. 토큰이 만료된 계정은 잔여 요청을 보내지 않고 기록한 리셋 시각만 적는다(usage-expired-skip). 실패하면 다시 돌리지 않고 이유를 한 줄로 알린다. 계정은 등록 이름으로만 적고 토큰 값은 쓰지 않으며, 리셋 시각은 KST로 적는다.",
+      "date": "2026-11-13",
+      "source": "형 2026-11-13 02:57 KST(짱돌 채널), 전달 짱돌 #dori-pair, 레인 ledger-usage-each-dori",
+      "scope": {
+        "keywords": [
+          "사용량",
+          "\\busage\\b",
+          "omo-usage",
+          "claude-account",
+          "gpt-account"
+        ]
+      },
+      "mode": "inject"
     }
   ],
   "reviewed": []
