@@ -43,7 +43,7 @@ const reachedDirectly = (path: string, fd: number): boolean => {
   }
 };
 
-const readTokenFile = (path: string, platform: string, uid: Uid): string => {
+const readTokenFile = (path: string, platform: string, uid: Uid, home: string, outsideAllowed: boolean): string => {
   // `path` is already resolved (see tokenFileToRead). POSIX opens it as-is with O_NOFOLLOW, so a link put at that name
   // after it was resolved is refused, never followed.
   const posix = platform !== "win32";
@@ -60,13 +60,13 @@ const readTokenFile = (path: string, platform: string, uid: Uid): string => {
     // is caught here, as the path no longer resolves to itself or no longer names the file this descriptor opened
     if (posix && !reachedDirectly(path, fd))
       throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is reached through a link; give the path links resolved`);
+    // the file just opened (at `path` itself, as checked above) must lie in this home: a marker naming the wrong home, from
+    // a race or a carried env, never lets another home's file through (plan r4 of the fork's #474)
+    if (!inside(home, path) && !outsideAllowed)
+      throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is outside this home (${home}), so it may be another home's; set ${OUTSIDE_HOME_FLAG}=1 if it is meant`);
     if (platform !== "win32") {
-      if (uid !== undefined && st.uid !== uid)
-        throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is owned by uid ${st.uid}, not by this user (${uid})`);
-      if ((st.mode & 0o077) !== 0)
-        throw new TokenFileError(
-          `DORI_SLACK_TOKEN_FILE ${path} is open to group or others (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`,
-        );
+      if (uid !== undefined && st.uid !== uid) throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is owned by uid ${st.uid}, not by this user (${uid})`);
+      if ((st.mode & 0o077) !== 0) throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is open to group or others (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`);
     }
     let value: string;
     try {
@@ -94,8 +94,9 @@ export const slackToken = (
 ): string | undefined => {
   const token = env["DORI_SLACK_TOKEN"];
   if (token) return token;
-  const path = tokenFileToRead(env, configFile);
-  return path ? readTokenFile(path, platform, uid) : undefined;
+  const home = homeOf(configFile);
+  const path = tokenFileToRead(env, configFile, home);
+  return path ? readTokenFile(path, platform, uid, home, env[OUTSIDE_HOME_FLAG] === "1") : undefined;
 };
 
 /** Set by launch beside DORI_SLACK_TOKEN_FILE to the same string: the path a lane gets is already resolved. */
@@ -115,10 +116,9 @@ export const RESOLVED_HOME = "DORI_SLACK_TOKEN_HOME";
  * home-checks the path itself and refuses A's file. Any unmarked path (the lead's own setting, `dori boot`, `dori send`)
  * is resolved once here and home-checked (homeTokenFile), and that same string is the one read.
  */
-export const tokenFileToRead = (env: Env, configFile: string): string | undefined => {
+export const tokenFileToRead = (env: Env, configFile: string, home: string = homeOf(configFile)): string | undefined => {
   const named = env["DORI_SLACK_TOKEN_FILE"];
   if (!named) return undefined;
-  const home = homeOf(configFile);
   const marked = env[RESOLVED_MARK] === named && env[RESOLVED_HOME] === home;
   return marked ? named : homeTokenFile(env, configFile, home);
 };

@@ -173,3 +173,37 @@ test("a lane's marked path whose parent directory is later swapped for a link to
   symlinkSync(otherKeys, keys);
   expect(inLane).toThrow(/is reached through a link/);
 });
+
+// Plan r4 of the fork's #474: containment is decided on the opened descriptor, so a marker naming the wrong home (from any
+// race or carried env) never lets another home's file through.
+test("a marker naming home B on home A's token file is refused in B: the opened file must lie inside B", () => {
+  const homeA = join(base(), "mark-a");
+  const homeB = join(base(), "mark-b");
+  const fileA = tokenFile(homeA, "xoxb-planted\n", 0o600);
+  mkdirSync(homeB, { recursive: true });
+  const configB = join(homeB, "config.json");
+  const wrong = { DORI_SLACK_TOKEN_FILE: fileA, DORI_SLACK_TOKEN_FILE_RESOLVED: fileA, DORI_SLACK_TOKEN_HOME: realpathSync(homeB), DORI_SLACK_TOKEN: "" };
+  expect(() => slackToken(wrong, "linux", process.getuid?.(), configB)).toThrow(/is outside this home/);
+});
+
+test("same-home parent swap: a marked path whose directory is swapped for a link to another directory of the same home is refused", () => {
+  const home = join(base(), "same-home");
+  const keys = join(home, "keys");
+  const file = tokenFile(keys, "xoxb-own\n", 0o600);
+  tokenFile(join(home, "other"), "xoxb-other\n", 0o600);
+  const config = join(home, "config.json");
+  const lane = laneTokenEnv({ DORI_SLACK_TOKEN_FILE: file }, config);
+  renameSync(keys, `${keys}.moved`);
+  symlinkSync(join(home, "other"), keys);
+  expect(() => slackToken({ ...lane, DORI_SLACK_TOKEN_FILE_OUTSIDE_HOME: "1" }, "linux", process.getuid?.(), config)).toThrow(/is reached through a link/);
+});
+
+test("a lane handed an outside-home file by the flag reads it only while its home's flag is on", () => {
+  const home = join(base(), "flag-lane");
+  mkdirSync(home, { recursive: true });
+  const far = tokenFile(join(base(), "flag-far"), "xoxb-far\n", 0o600);
+  const config = join(home, "config.json");
+  const lane = laneTokenEnv({ DORI_SLACK_TOKEN_FILE: far, DORI_SLACK_TOKEN_FILE_OUTSIDE_HOME: "1" }, config);
+  expect(slackToken({ ...lane, DORI_SLACK_TOKEN_FILE_OUTSIDE_HOME: "1" }, "linux", process.getuid?.(), config)).toBe("xoxb-far");
+  expect(() => slackToken(lane, "linux", process.getuid?.(), config)).toThrow(/is outside this home/);
+});
