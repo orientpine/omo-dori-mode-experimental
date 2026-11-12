@@ -3,8 +3,9 @@ import { BUSY_MARK, liveSessions, QUESTION_MARK, sessionFor } from "./aoe.ts";
 import { readFrozen } from "./frozen.ts";
 import { Registry } from "./registry.ts";
 import { hcCall, isKind } from "./runtime/hc/exec.ts";
+import { slugName } from "./runtime/hc/sessions.ts";
 import { shellInFrontName } from "./herdr.ts";
-import { type ChosenRuntimes, type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
+import { type ChosenRuntimes, type Clock, execOf, openingRuntime, type Runner, runtimesOf } from "./run.ts";
 import { formatRef, type RuntimeKind, type SessionInfo, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import { AGENT, procTable, topAgent } from "./session-id.ts";
 import { LaunchFailed } from "./launch-types.ts";
@@ -128,6 +129,20 @@ export const hcSessions = async (run: Runner): Promise<{ id: string; title: stri
   // hc not answering is no empty list: a caller then keeps what it would drop as gone (a frozen record)
   const rows = await hc(run).list();
   return rows.map(({ ref, name, cwd, agent }) => ({ id: formatRef(ref), title: name ?? ref.id, path: cwd ?? "", ...(agent ? { tool: agent } : {}), ...(ref.group ? { profile: ref.group } : {}), pane: formatRef(ref) }));
+};
+
+// The name of a new lead's hc terminal: <this Dori>-lead from the first discord.callNames entry hc can spell (ZzangDori ->
+// zzangdori-lead), so doriterm's lead row says whose lead it is (owner 2026-11-12: "dori-mode-11111163은 뭐야?"). A live
+// terminal holding it (the old lead, frozen until it closes) gives -2, -3, ...; an unreadable list only skips that check,
+// since create() drops a name hc reports taken. Undefined off hc or without such a name: the handover keeps its own title.
+export const hcLeadTitle = async (run: Runner, backend: "aoe" | "herdr", callNames: readonly string[]): Promise<string | undefined> => {
+  const dori = callNames.map((n) => slugName(n.trim())).find((s) => s !== undefined && /[a-z]/.test(s));
+  if (!dori || openingRuntime(run, backend) !== "hc") return undefined;
+  const taken = new Set((await hc(run).list().catch(() => [])).flatMap((t) => t.name ?? []));
+  const base = `${dori.slice(0, 24)}-lead`;
+  let name = base;
+  for (let i = 2; taken.has(name); i++) name = `${base}-${i}`;
+  return name;
 };
 
 export class HcStartupError extends LaunchFailed {
