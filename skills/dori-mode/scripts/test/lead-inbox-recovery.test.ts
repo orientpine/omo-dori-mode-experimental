@@ -80,6 +80,22 @@ test("two successful owner wakes retain the union of covered row ids", async () 
   expect(new Set(mark.wakeIds)).toEqual(new Set(["o-a", "o-b"]));
 });
 
+test("an owner message the lead took its eyes off, or his uncalled reply to another Dori's post, never wakes it as owner-waiting", async () => {
+  reply(T0 - 40 * MIN);
+  row(T0 - 35 * MIN, "p-other");
+  row(T0 - 30 * MIN, "o-to-other", { scope: "pair", author_id: OWNER, called: false, reply_to: "p-other" });
+  row(T0 - 28 * MIN, "o-eyes", { scope: "thread", author_id: OWNER });
+  appendFileSync(join(state.dir, "eyes-off.jsonl"), `${JSON.stringify({ ts: iso(T0 - 27 * MIN), channel: "T", id: "o-eyes" })}\n`);
+  expect(await leadLimitTick(deps(T0))).toEqual([]);
+  // asked every Dori, replying to nobody: still owed, though another Dori answered it
+  row(T0 - 26 * MIN, "o-all", { scope: "pair", author_id: OWNER, called: false, reply_to: null });
+  row(T0 - 25 * MIN, "p-answer", { reply_to: "o-all" });
+  const out = await leadLimitTick(deps(T0));
+  expect(out).toHaveLength(1);
+  expect(out[0]).toStartWith("LEAD_OWNER_WAITING");
+  expect(out[0]).toContain("1 owner message(s), oldest 2026-01-01T11:34:00.000Z");
+});
+
 test("a custom --session-dir still gets the inbox check and its own manifest", async () => {
   const custom = join(state.dir, "custom-sessions");
   mkdirSync(join(custom, "extensions", "terminal"), { recursive: true });

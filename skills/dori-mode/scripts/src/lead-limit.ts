@@ -5,6 +5,7 @@ import { liveSessions, sessionFor } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { currentTranscript, reconcileRows, type AnswerRow } from "./missed-answers.ts";
+import { waitingOwnerRows } from "./owner-waiting.ts";
 import { sendVerified } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
@@ -111,7 +112,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
   const inbox = deps.ownerInbox;
   if (!pane || !inbox || !existsSync(inbox.path)) return [];
   const now = deps.clock.now();
-  const rows = ownerRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId).filter((r) => now - r.at < DAY_MS);
+  const tail = tailOf(inbox.path, INBOX_TAIL_BYTES), rows = waitingOwnerRows(ownerRows(tail, inbox.ownerId).filter((r) => now - r.at < DAY_MS), tail, inbox.path);
   const mark = readMark(deps, pane);
   if (!rows.length && !mark.noticeFor) return [];
   const [sessions, table] = await Promise.all([liveSessions(deps.run), procTable(deps.run)]);
