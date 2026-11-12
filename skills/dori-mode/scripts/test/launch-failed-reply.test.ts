@@ -67,3 +67,19 @@ test("a failed reply with no failure phrase that is still the newest after three
   world.screen = [" The openai account usage limit ", " has been reached. Switch to    ", " another provider with /model.  ", BOX].join("\n");
   expect(await launch(s.sessionsDir, ["none"])).toBe(`STARTUP_ERROR smoke ${PANE}: usage_not_included`);
 });
+
+// a goal is good news only when this launch's newest model reply did not fail: a resumed session keeps its goal, and a lane
+// may set its goal before a later call fails (review 9 of #471)
+test("a session that holds a goal but whose newest reply of this launch failed is STARTUP_ERROR after the same idle reads", async () => {
+  const s = session();
+  s.reply(T0 + 5_000, "usage_not_included");
+  world.screen = [" The openai account usage limit ", " has been reached. Switch to    ", " another provider with /model.  ", BOX].join("\n");
+  expect(await launch(s.sessionsDir, [{ status: "active" }])).toBe(`STARTUP_ERROR smoke ${PANE}: usage_not_included`);
+});
+
+test("a session that holds a goal and whose failed reply a retry answers is STARTUP_OK", async () => {
+  const s = session();
+  s.reply(T0 + 5_000, "Connection error.");
+  world.screen = `working on it\n${BOX}`;
+  expect(await launch(s.sessionsDir, [{ status: "active" }], (read) => { if (read === 1) s.reply(T0 + 30_000); })).toBe(`STARTUP_OK smoke ${PANE}`);
+});

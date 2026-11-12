@@ -67,11 +67,15 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
     const gone = await agentGone(deps, pane);
     if (gone) return `STARTUP_ERROR ${key} ${pane}: ${gone}`;
     const goal = await read(pane);
-    if (typeof goal === "object") return undefined;
+    // a goal is good news only when this launch's newest model reply did not fail: a resumed session keeps its goal, and a
+    // lane may set its goal before a later call fails; such a reply goes through the same idle reads (review 9 of #471)
+    if (typeof goal === "object" && launchReply(deps.config.sessionsDir, cwd, session, launchedAt)?.error === undefined) return undefined;
     const screen = await readScreen(deps.run, deps.config.backend, pane, 40);
     const bad = failureOf(deps, screen, cwd, session, launchedAt);
     if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad}`;
     if (await firstTurnRuns(deps, pane, cwd, session, screen)) {
+      // a lane with a goal whose turn runs again (a retry) is at work
+      if (typeof goal === "object") return undefined;
       await deps.registry.patch(key, { pendingGoal: { idle: 0, at: deps.clock.now() } });
       return `STARTUP_PENDING_GOAL ${key} ${pane}: its first turn is still on and has set no goal yet; dori watch says LANE_NO_GOAL if it ends without one`;
     }
