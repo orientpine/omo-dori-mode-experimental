@@ -2,18 +2,6 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
-## Thread status: a 🔔 this Dori set before #467 counts as another writer's (#467)
-
-#467 makes the receiver leave a 🔔 alone unless it is a name the queue itself gave the thread (`thread-names.json`). A 🔔 set before that file existed has no record, so the owner's next answer in such a thread (an old question card, an old wait) keeps it 🔔 once until the receiver renames the thread again (review 6 of #467, MEDIUM). What would close it: a one-time migration that records, for threads this Dori maps or has asked in, the current name when it is the receiver's kind of 🔔, with a test of answering a pre-upgrade question with no names file.
-
-## Thread status: an egress-gate card that expires in a thread it did not name leaves that thread's 🔔 (#467)
-
-The egress gate renames only the 🔐 threads it named when its card ends (`close_card_thread`); a gate card that expires in a thread whose 🔔 nobody else replaces (no waiting mail card, no node end mark) leaves it 🔔, and since #467 the receiver no longer turns that 🔔 into 🔄 on the owner's message (review 6 of #467, MEDIUM). What would close it: the gate tells which threads it set 🔔 on and releases that mark when its last card there ends, with a test of an expired gate card under a foreign 🔔.
-
-## Thread status: another writer's card that joins a 🔔 this Dori set is not seen (#467)
-
-The receiver knows a 🔔 is its own only by the name it last gave the thread; the egress gate keeps an already-right waiting name when its card joins (`gate.py` join), so a gate card that joins a receiver-owned 🔔 unchanged is not seen, and the owner's next message turns it 🔄 while that card waits (review 7 of #467, MEDIUM). What would close it, with the two entries above: a claim/release record each writer of a card thread keeps (the gate and the node mark the waits they own and release them when their card ends), read by the receiver instead of the name alone.
-
 ## Lead pane: freshness and dead-panes still read leadPane once when they start (#442)
 
 #442 makes each pass of `dori watch` read `leadPane` again (`DORI_LEAD_PANE`, else `config.json`) and hand it to every check of the watch, because a handover restarts only `handover.services` and a watch started before it kept checking, and reviving, the frozen old lead (ZzangDori 2026-11-11, `LEAD_REVIVE_WARN w1:p37 ... no such pane` every ten minutes). The separate `dori freshness --loop` and `dori dead-panes --loop` processes still take `leadPane` from the config they loaded at start, so after a handover that did not restart them they go on naming the old pane (freshness tells and reads the lead's screen there; dead-panes leaves the old pane out of its sweep and treats the new one as a lane-less pane). What would close it: the same per-pass read (hc-pane `leadNow(configPath())`, as `watchCommand` passes `leadPaneNow`) in both loops, with a test of each loop started on the old pane whose config then names the new one.

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
-import { desiredStatus, setThreadStatus, STATUS_EMOJI, type ThreadInfo, type ThreadMark, type ThreadStatus, threadName } from "./discord-thread.ts";
+import { desiredStatus, isCardThread, setThreadStatus, STATUS_EMOJI, type ThreadInfo, type ThreadMark, type ThreadStatus, threadName } from "./discord-thread.ts";
 import { guardText, MessengerError } from "./http.ts";
 import { dropThread, threads } from "./thread-map.ts";
 
@@ -142,7 +142,7 @@ export class ThreadStatusQueue {
   private othersWaiting(info: ThreadInfo): boolean {
     const name = info.name ?? "";
     const waiting = [STATUS_EMOJI.waiting, "⏸"].some((m) => name.startsWith(m)) || name.startsWith(`[${this.d.words.waiting}]`);
-    return waiting && [10, 11, 12].includes(info.type ?? -1) && this.ownNames()[info.id ?? ""] !== name;
+    return waiting && [10, 11, 12].includes(info.type ?? -1) && (isCardThread(name, this.d.words) || this.ownNames()[info.id ?? ""] !== name);
   }
 
   private forget(thread: string, rev: number): void {
@@ -172,9 +172,11 @@ export class ThreadStatusQueue {
       const dc = this.d.dc.once();
       const info = { ...(await dc.call<ThreadInfo>("GET", `/channels/${thread}`)), id: thread };
       const foreign = this.othersWaiting(info);
-      if (status !== "waiting" && status !== "standing" && foreign) {
+      // a card thread's 🔔 is its card writer's: this Dori neither takes it away nor sets it there
+      const cardWait = status === "waiting" && [10, 11, 12].includes(info.type ?? -1) && isCardThread(info.name ?? "", this.d.words);
+      if ((status !== "waiting" && status !== "standing" && foreign) || cardWait) {
         this.forget(thread, e.rev);
-        this.d.log(`THREAD_STATUS_KEPT ${thread} ${status}: 🔔 was set by another writer`);
+        this.d.log(`THREAD_STATUS_KEPT ${thread} ${status}: ${cardWait ? "a card thread's 🔔 is its card writer's" : "🔔 was set by another writer"}`);
         return "kept";
       }
       const changed = await setThreadStatus(dc, thread, status, this.d.words, info, standing === false);

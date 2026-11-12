@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 
 import { mapThread, threads } from "../src/messenger/thread-map.ts";
 import { doneWorld, live, THREAD } from "./thread-status-world.ts";
@@ -77,4 +78,25 @@ test("a 🔔 this Dori set on a title of Discord's full 100 characters is still 
   expect(w.name).toBe(`🔔 ${long}`.slice(0, 100));
   await listener.onMessage(say("1010", "answer"));
   expect(w.name.startsWith("🔄")).toBe(true);
+});
+
+test("this Dori never sets 🔔 in a card thread: a wait asked there leaves the card writer's mark as it is", async () => {
+  const { w, q } = live("🔄 ✉️ lecture reply");
+  expect(await q.request(THREAD, "waiting")).toBe("kept");
+  expect({ name: w.name, patches: w.patches }).toEqual({ name: "🔄 ✉️ lecture reply", patches: [] });
+});
+
+test("a 🔔 in a card thread stays the card writers' even when it matches a name this Dori once gave (a gate card joined it unchanged)", async () => {
+  const { w, listener, say, dir } = live("🔔 ✉️ lecture reply");
+  writeFileSync(`${dir}/discord/thread-names.json`, JSON.stringify({ [THREAD]: "🔔 ✉️ lecture reply" }));
+  await listener.onMessage(say("1011", "the room is booked"));
+  expect(w.name).toBe("🔔 ✉️ lecture reply");
+});
+
+test("a gate card that joins a 🔔 this Dori set renames it a card thread (🔔 🔐), and the receiver leaves it", async () => {
+  const { w, q, listener, say } = live("🔄 fix login");
+  await q.request(THREAD, "waiting");
+  w.name = "🔔 🔐 fix login";
+  await listener.onMessage(say("1012", "go ahead"));
+  expect(w.name).toBe("🔔 🔐 fix login");
 });
