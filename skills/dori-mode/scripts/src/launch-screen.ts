@@ -20,42 +20,23 @@ import { startupPhrase } from "./startup-phrases.ts";
 // without an error (a resumed session's older replies say nothing about this start).
 const OWN_ERROR = /^ ?(?:error:|All \S+ accounts for \S+ are currently blocked|The \S+ account usage limit has been reached|Pane is dead)/i;
 
-// hc prints a long line as rows cut at the pane's width (cols) with trailing blanks dropped, so an own error line can carry
-// its failure words across a wrap ("Error: rate" / "limit reached"): the line goes on into each next row while its row
-// fills the pane, cols cells (cut inside a word: joined as is) or cols - 1 (a cut space, put back) (dori-superagent PR #205
-// (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/205, its hc joinWrapped). Each row is judged on
-// the line it starts, never on the whole screen joined: a full-width warning row joined to the next printed line would
-// hide that line's own error from OWN_ERROR, and that next line still starts a line of its own here.
-// joins: where a full-width row met the next with nothing put between, a row boundary the phrase check keeps (review 2
-// of #471: "Error: rate limit reached" filling the pane, then "Please retry later", is no "reachedPlease")
-const ownLine = (lines: readonly string[], i: number, end: number, cols: number | undefined): { line: string; joins: Set<number> } => {
-  let line = lines[i] ?? "";
-  const joins = new Set<number>();
-  for (let j = i; cols !== undefined && cols > 1 && j + 1 < end; j++) {
-    const width = Bun.stringWidth(lines[j] ?? "");
-    if (width < cols - 1) break;
-    if (width >= cols) joins.add(line.length);
-    line += (width >= cols ? "" : " ") + (lines[j + 1] ?? "");
-  }
-  return { line, joins };
-};
+// Each line of the screen is a line the agent printed: hc's read joins the rows a long line wraps onto (its text is
+// ghostty-vt's plain_text, "soft wraps joined", herdrdev/herdr-core since ca5699ab; hc 0.1.18 measured, review 3 of #471).
+// dori-superagent PR #205 (SUL-1.0: NOTICE, https://github.com/sisyphuslabs/dori-superagent/pull/205) and #470 joined a
+// full-width row to the next instead, which only glued two printed lines; that join is taken out again here.
 
 // omo draws its running-turn mark ("── • Working (4s • esc to interrupt) ──") on the border right above the ❯ line;
 // the status lines under the box may quote the words (a session title), so only the lines just above the ❯ are read.
-// cols: the pane's width when its rows come back wrapped (an hc terminal), else none and no row is taken as wrapped
-export const startupFailure = (screen: string, answered = false, cols?: number): string | undefined => {
+export const startupFailure = (screen: string, answered = false): string | undefined => {
   const lines = screen.split("\n");
   const box = lines.findLastIndex((l) => l.trimStart().startsWith("❯"));
   const running = box >= 0 && lines.slice(Math.max(0, box - 3), box).some((l) => l.toLowerCase().includes(BUSY_MARK));
   if (answered || running) return undefined;
   for (const [i, line] of lines.entries()) {
-    // the whole printed line is rebuilt before it is judged: a wrap can cut omo's own marker too ("All <name> accounts for
-    // <provider>" / "are currently blocked", review 1 of #470)
     const above = box < 0 || i < box;
-    const { line: whole, joins } = above ? ownLine(lines, i, box < 0 ? lines.length : box, cols) : { line, joins: new Set<number>() };
-    const own = above ? OWN_ERROR.test(whole) : line.startsWith("Pane is dead");
+    const own = above ? OWN_ERROR.test(line) : line.startsWith("Pane is dead");
     // the failure phrase table of dori-superagent #207 and #210 (startup-phrases.ts): a topic word is none
-    const bad = own ? startupPhrase(whole, joins) : null;
+    const bad = own ? startupPhrase(line) : null;
     if (bad) return bad;
   }
   return undefined;

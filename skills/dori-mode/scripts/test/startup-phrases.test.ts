@@ -143,18 +143,15 @@ test("on the agent's own error line launch reports the table's phrase, and a top
   for (const text of HEALTHY.filter((t) => !t.includes("\n") && t !== "RATE_LIMIT_EXCEEDED = 1")) expect([text, startupFailure(`Error: ${text}\n${BOX}`)]).toEqual([text, undefined]);
 });
 
-// hc cuts every line at the pane's width (launch-screen.ts ownLine joins it back): the corpus reads the same at every
-// width, a healthy line wrapped anywhere is still no failure and an own failure line wrapped anywhere still reports its
-// phrase, whatever printed line follows (review 3 of #471).
-const wrap = (text: string, width: number): string => (text.match(new RegExp(`.{1,${width}}`, "g")) ?? []).map((row) => row.trimEnd()).join("\n");
+// hc reads each printed line back whole (its plain_text joins soft wraps, test/launch-startup-wrap.test.ts), so a line
+// launch judges is never glued to the next: a healthy line is no failure and an own failure line reports its phrase,
+// whatever printed line follows it, a path, a capitalised sentence or a lower-case one (review 3 of #471).
 const OWN = REAL.filter(([, text]) => /^ ?error:/i.test(text));
-test("wrapped at every width from 8 to 90, the corpus reads as unwrapped", () => {
-  for (let width = 8; width <= 90; width++) {
+test("whatever printed line follows, the corpus reads line by line", () => {
+  for (const next of ["Please retry later", "/tmp/w", "retry later", "_v2", "  Soonest automatic retry: x"]) {
     for (const text of HEALTHY.filter((t) => !t.includes("\n") && t !== "RATE_LIMIT_EXCEEDED = 1"))
-      expect([width, text, startupFailure(`${wrap(`Error: ${text}`, width)}\n${BOX}`, false, width)]).toEqual([width, text, undefined]);
-    for (const next of ["Please retry later", "  Soonest automatic retry: x"])
-      for (const [source, text, found] of OWN)
-        expect([width, source, startupFailure(`${wrap(text, width)}\n${next}\n${BOX}`, false, width)]).toEqual([width, source, found]);
+      expect([next, text, startupFailure(`Error: ${text}\n${next}\n${BOX}`)]).toEqual([next, text, undefined]);
+    for (const [source, text, found] of OWN) expect([next, source, startupFailure(`${text}\n${next}\n${BOX}`)]).toEqual([next, source, found]);
   }
 });
 

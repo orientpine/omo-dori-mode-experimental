@@ -37,9 +37,8 @@ const modelAnswered = (sessionsDir: string, cwd: string, session: string, since:
   return false;
 };
 
-// cols: an hc pane's width, whose rows come back wrapped (launch-screen.ts startupFailure)
-export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: string, since: number, cols?: number): string | undefined =>
-  startupFailure(screen, modelAnswered(deps.config.sessionsDir, cwd, session, since), cols);
+export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: string, since: number): string | undefined =>
+  startupFailure(screen, modelAnswered(deps.config.sessionsDir, cwd, session, since));
 
 // A running agent is not yet a good start: a lane that never sets its goal does its first turn and stops, and the lead
 // found the quiet lane long after a STARTUP_OK (dori-superagent issue #50 reproduced here (MIT):
@@ -57,7 +56,7 @@ export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: 
 // screen reads run long on a loaded host (dori-superagent PR #83 (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/83).
 // The goal record holds at any pane width; omo cuts its "Pursuing goal" footer to the pane's ("Pur..." at ~31 columns),
 // so no footer is read for the goal (dori-superagent PR #123 (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/123).
-export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: string, session: string, launchedAt: number, prompted: number, recheck: () => Promise<boolean>, cols?: number): Promise<string | undefined> => {
+export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: string, session: string, launchedAt: number, prompted: number, recheck: () => Promise<boolean>): Promise<string | undefined> => {
   // no session id in the agent's command line (aoe did not pin one, or an agentCommand that is not omo): which session is
   // the lane's is not known, and guessing it could read another session's goal
   if (!deps.readGoal && !session) return `STARTUP_UNCONFIRMED ${key} ${pane}: the agent runs but its command line names no session id, so its goal cannot be read; last lines: ${lastLines(await readScreen(deps.run, deps.config.backend, pane, 40))}`;
@@ -69,7 +68,7 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
     const goal = await read(pane);
     if (typeof goal === "object") return undefined;
     const screen = await readScreen(deps.run, deps.config.backend, pane, 40);
-    const bad = failureOf(deps, screen, cwd, session, launchedAt, cols);
+    const bad = failureOf(deps, screen, cwd, session, launchedAt);
     if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad}`;
     if (await firstTurnRuns(deps, pane, cwd, session, screen)) {
       await deps.registry.patch(key, { pendingGoal: { idle: 0, at: deps.clock.now() } });

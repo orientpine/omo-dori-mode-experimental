@@ -128,7 +128,7 @@ The removed attempt (PR #435 at ff0f3256, `aoe-launch-env.ts`, `aoe-migration.ts
 
 `listPanes` (panes.ts) lists each `config.workspaces` group of hc by its `dori.group` label and gives a terminal its group from that, but a failed `hc ls --label` is taken as an empty group (`.catch(() => [])`), so on a busy or stopped core `dori dead-panes` and `dori sync` silently leave out every hc lane of that group. Upstream #198's `listWatched` lets the failure through. What would close it: let a required hc group listing fail the sweep as `listKeptSessions` does for a required runtime, with a test whose fake hc refuses `ls --label`.
 
-## Launch: herdr panes' wrapped rows are not read across (upstream #205)
+## Launch: whether herdr panes' rows come back wrapped is not measured (upstream #205)
 
-#205's port reads an own error line across hc's wrapped rows, using the width from `hc get`. A herdr lane's screen (`herdr pane read`) may come back wrapped the same way on a narrow pane; that was not measured, and the fork has no herdr width to join by. What would close it: measure `herdr pane read` on a pane narrower than an omo error line, and, if it wraps, hand launch the pane's width as for hc.
+On hc, `hc read` joins the rows a long line wraps onto itself (ghostty-vt `plain_text`, "soft wraps joined"; hc 0.1.18 measured in #471), so launch reads every row as a printed line and the width-based join #470 took from upstream #205 was taken out again. Whether a herdr lane's screen (`herdr pane read`) comes back cut at the pane's width on a narrow pane was not measured. What would close it: print an omo-style error line longer than a narrow herdr pane, read it back with `herdr pane read`, and only if it comes back cut, find a wrap flag (as hc and tmux `capture-pane -J` have) instead of guessing from the width.
 

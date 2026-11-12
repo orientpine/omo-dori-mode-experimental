@@ -1,14 +1,14 @@
 // Every phrase that means a lane failed to start, one row each (dori-superagent PRs #206, #207 and #210 reproduced here
 // (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/206,
 // https://github.com/sisyphuslabs/dori-superagent/pull/207, https://github.com/sisyphuslabs/dori-superagent/pull/210,
-// their src/startup-screen.ts). launch-screen.ts reads it only on the agent's own error line, rebuilt across hc's wrapped
-// rows; upstream reads the whole screen with omo's extension warning cut out, which the fork never needs (#205, #470), so
+// their src/startup-screen.ts). launch-screen.ts reads it only on the agent's own error line, one printed
+// line; upstream reads the whole screen with omo's extension warning cut out, which the fork never needs (#205, #470), so
 // upstream's Bun tail rule (#206) is not taken. Three kinds:
-// - `anywhere`: text no healthy screen prints (omo's own failure lines, provider messages). It matches even glued onto the
-//   end of a pane-wide row by hc's wrap join (`...okNo API key`).
+// - `anywhere`: text no healthy screen prints (omo's own failure lines, provider messages). It matches even glued onto other
+//   text (`...okNo API key`).
 // - `word`: a phrase that names a failure, not a topic (`rate limit reached`, never bare `rate limit`, `quota` or a
-//   component such as `rate limiter`). It must stand alone; see `standsAlone`. Its gaps are single spaces as printed (the
-//   join puts back a space hc cut at a wrap), never `-`, so a kebab-case lane key such as `fix-rate-limit-error` is not one.
+//   component such as `rate limiter`). It must stand alone; see `standsAlone`. Its gaps are single spaces as printed,
+//   never `-`, so a kebab-case lane key such as `fix-rate-limit-error` is not one.
 // - `value`: an error code (`insufficient_quota`, `QUOTA_EXCEEDED`), counted only where it is a value: after `error`,
 //   `code`, `type` or `status` and a `:` or `=` (`"type":"rate_limit_error"`, `code=quotaExceeded`). The same code in
 //   source (`case 'rate_limit_error':`, `instanceof RateLimitError`, `X === 'RESOURCE_EXHAUSTED'`) is not.
@@ -46,21 +46,13 @@ const PATTERNS = PHRASES.map(([kind, source]) => ({ kind, re: new RegExp(source,
 // What touching a word match makes it part of something else: a word, a path, a kebab-case name, a file name.
 const JOINS = /[a-z0-9_/\\.-]/i;
 // A `word` match stands alone when nothing in JOINS touches its end (a `.` only when a word goes on: `reached.` ends a
-// sentence, `limited.md` is a file), and nothing touches its start, except when a join glued it onto a pane-wide row,
-// whatever that row ended in (`ok`, `....`, `----`, a path). Then it must read as printed text: it starts with a capital
+// sentence, `limited.md` is a file), and nothing touches its start, except when it is glued onto the end of other text,
+// whatever that text ended in (`ok`, `....`, `----`, a path). Then it must read as printed text: it starts with a capital
 // and has a space (`...okRate limit reached`), which camelCase (`onRateLimitExceeded`) and lower-case names
 // (`fix-rate-limit-error`) never are.
-// rows: the fork's row joins (launch-screen.ts ownLine), positions where a full-width row met the next. A full-width row is
-// either a soft wrap (the text goes on) or a printed line exactly as wide as the pane, so a join is a boundary only after
-// a match and only when the next row starts with a letter, as a printed line does ("...reached" + "Please retry", review 2
-// of #471). A path or name a soft wrap cut goes on with a /, \, ., _, - or digit ("/x/rate limit reached" + "/notes.md"), and
-// no failure phrase is the start of a longer word. The start keeps upstream's rule, a capital and a space (review 3 of
-// #471: "/x/briefs/" + "quota exhausted handling.md" is no failure).
-const newLineAt = (text: string, at: number, rows: ReadonlySet<number>): boolean => rows.has(at) && /[A-Za-z]/.test(text[at] ?? "");
-const standsAlone = (text: string, at: number, found: string, rows: ReadonlySet<number>): boolean => {
-  const end = at + found.length;
-  const after = text[end] ?? "";
-  if (!newLineAt(text, end, rows) && JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[end + 1] ?? ""))) return false;
+const standsAlone = (text: string, at: number, found: string): boolean => {
+  const after = text[at + found.length] ?? "";
+  if (JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[at + found.length + 1] ?? ""))) return false;
   const before = text[at - 1] ?? "";
   if (!JOINS.test(before)) return true;
   return /^[A-Z]/.test(found) && found.includes(" ");
@@ -70,16 +62,16 @@ const standsAlone = (text: string, at: number, found: string, rows: ReadonlySet<
 // one), and a `= '`, `: '` or `===` is source code (`const code = 'insufficient_quota'`), never a value. The fork also
 // takes omo's own capitalised `Error:` (`Error: QUOTA_EXCEEDED`, review 1 of #471), the way it prints its error lines.
 const VALUE_KEY = /(?:^|[^A-Za-z0-9_])"?(?:[Ee]rror|code|type|status)"?(?::\s*"?|=)$/;
-const isValue = (text: string, at: number, found: string, rows: ReadonlySet<number>): boolean =>
-  VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && (newLineAt(text, at + found.length, rows) || !/[a-z0-9_]/i.test(text[at + found.length] ?? ""));
-const counts = (kind: Kind, text: string, at: number, found: string, rows: ReadonlySet<number>): boolean =>
-  kind === "anywhere" || (kind === "word" ? standsAlone(text, at, found, rows) : isValue(text, at, found, rows));
+const isValue = (text: string, at: number, found: string): boolean =>
+  VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && !/[a-z0-9_]/i.test(text[at + found.length] ?? "");
+const counts = (kind: Kind, text: string, at: number, found: string): boolean =>
+  kind === "anywhere" || (kind === "word" ? standsAlone(text, at, found) : isValue(text, at, found));
 // the first failure phrase in the text, by position, as printed; null when none counts
-export const startupPhrase = (text: string, rows: ReadonlySet<number> = new Set()): string | null => {
+export const startupPhrase = (text: string): string | null => {
   let first: { at: number; found: string } | undefined;
   for (const { kind, re } of PATTERNS) {
     for (const m of text.matchAll(re)) {
-      if (!counts(kind, text, m.index, m[0], rows)) continue;
+      if (!counts(kind, text, m.index, m[0])) continue;
       if (!first || m.index < first.at) first = { at: m.index, found: m[0] };
       break;
     }
