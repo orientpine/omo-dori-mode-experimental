@@ -156,3 +156,20 @@ test("a token path with '..' after a link is home-checked where the OS opens it,
   const raw = `${home}/link/../slack-token`;
   expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: raw }, join(home, "config.json"))).toThrow(/is outside this home/);
 });
+
+// Review 1 of the fork's #474: O_NOFOLLOW guards only the last component, so a parent directory swapped for a link after
+// launch must be caught too.
+test("a lane's marked path whose parent directory is later swapped for a link to another home is refused, not read", () => {
+  const dir = join(base(), "parent-swap");
+  const keys = join(dir, "keys");
+  const file = tokenFile(keys, "xoxb-own\n", 0o600);
+  const otherKeys = join(base(), "parent-other", "keys");
+  tokenFile(otherKeys, "xoxb-planted\n", 0o600);
+  const config = join(dir, "config.json");
+  const lane = laneTokenEnv({ DORI_SLACK_TOKEN_FILE: file }, config);
+  const inLane = () => slackToken(lane, "linux", process.getuid?.(), config);
+  expect(inLane()).toBe("xoxb-own");
+  renameSync(keys, `${keys}.moved`);
+  symlinkSync(otherKeys, keys);
+  expect(inLane).toThrow(/is reached through a link/);
+});

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { laneHomeEnv } from "../src/home-env.ts";
@@ -127,5 +127,32 @@ test.skipIf(process.platform === "win32")("a fresh file-backed lane of home B on
   } finally {
     a.stop(true);
     b.stop(true);
+  }
+});
+
+test.skipIf(process.platform === "win32")("with DORI_CONFIG and DORI_ENV_FILE both under near/link/.. (link -> far/a), the lane posts with far's token to far's API, never near's (review 1 of #474)", async () => {
+  // Given: two homes with their own token and Slack API, and a launcher whose selectors reach far through near's link
+  const nearSeen: string[] = [];
+  const near = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => (nearSeen.push(req.headers.get("authorization") ?? ""), Response.json({ ok: true, channel: "C1", ts: "1.3", message: { text: "x" } })) });
+  try {
+    const nearDir = join(state.dir, "near");
+    const farDir = join(state.dir, "far");
+    mkdirSync(join(farDir, "a"), { recursive: true });
+    mkdirSync(nearDir);
+    for (const [dir, api, token] of [[farDir, server.port, "xoxb-FIXTURE-far"], [nearDir, near.port, "xoxb-FIXTURE-near"]] as const) {
+      writeFileSync(join(dir, "config.json"), "{}");
+      writeFileSync(join(dir, "dori.env"), `DORI_SLACK_API=http://127.0.0.1:${api}/api\n`);
+      writeFileSync(join(dir, "slack-token"), `${token}\n`);
+      chmodSync(join(dir, "slack-token"), 0o600);
+    }
+    symlinkSync(join(farDir, "a"), join(nearDir, "link"));
+    const via = (name: string) => `${nearDir}/link/../${name}`;
+    const lane = laneHomeEnv({ stateDir: via("state"), backend: "herdr" }, { DORI_CONFIG: via("config.json"), DORI_ENV_FILE: via("dori.env") });
+    // When: the lane sends
+    const r = await run(["env", ...Object.entries(lane).map(([k, v]) => `${k}=${v}`), process.execPath, CLI, "send", "slack", "--to", "C1", "--text", "two homes"], { timeoutMs: 20_000 });
+    // Then: far's API got far's token, and near's API got nothing
+    expect({ code: r.code, seen, nearSeen }).toEqual({ code: 0, seen: ["Bearer xoxb-FIXTURE-far"], nearSeen: [] });
+  } finally {
+    near.stop(true);
   }
 });

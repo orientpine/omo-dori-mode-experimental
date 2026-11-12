@@ -116,3 +116,32 @@ test("an absolute DORI_CONFIG reaches the lane unchanged, so a link in it resolv
 test("a DORI_CONFIG whose home moves when normalized (empty, '.', '..') is refused instead of moving the home up", () => {
   for (const raw of ["", ".", ".."]) expect(() => laneConfig(raw)).toThrow(/does not name a config file/);
 });
+
+test("the home's own slack-token as a dangling or looping link is refused by name, never skipped as no file (review 1 of #474)", () => {
+  const home = join(state.dir, "broken-own");
+  mkdirSync(home, { recursive: true });
+  symlinkSync(join(state.dir, "nowhere", "slack-token"), join(home, "slack-token"));
+  expect(() => laneTokenEnv({}, join(home, "config.json"))).toThrow(/is a link whose target does not exist/);
+  const loop = join(state.dir, "loop-own");
+  mkdirSync(loop, { recursive: true });
+  symlinkSync(join(loop, "other"), join(loop, "slack-token"));
+  symlinkSync(join(loop, "slack-token"), join(loop, "other"));
+  expect(() => laneTokenEnv({}, join(loop, "config.json"))).toThrow(/is a link loop/);
+});
+
+test("the home's own slack-token linking outside the home passes with the outside-home flag, as a named one does (review 1 of #474)", () => {
+  const far = tokenFile(join(state.dir, "central"), "xoxb-FIXTURE-central\n", 0o600);
+  const home = join(state.dir, "flag-own");
+  mkdirSync(home, { recursive: true });
+  symlinkSync(far, join(home, "slack-token"));
+  expect(() => laneTokenEnv({}, join(home, "config.json"))).toThrow(/links outside this home/);
+  expect(laneTokenEnv({ [OUTSIDE_HOME_FLAG]: "1" }, join(home, "config.json"))["DORI_SLACK_TOKEN_FILE"]).toBe(real(far));
+});
+
+test("DORI_ENV_FILE and DORI_STATE_DIR reach the lane as DORI_CONFIG does, '..' kept, so all three selectors name the same home (review 1 of #474)", () => {
+  const raw = (name: string) => `${join(state.dir, "sel-home")}/link/../${name}`;
+  const rel = `${relative(process.cwd(), join(state.dir, "sel-home"))}${sep}link${sep}..${sep}dori.env`;
+  const env = homeEnv({ stateDir: raw("state") }, { DORI_CONFIG: raw("config.json"), DORI_ENV_FILE: raw("dori.env") });
+  expect([env["DORI_CONFIG"], env["DORI_ENV_FILE"], env["DORI_STATE_DIR"]]).toEqual([raw("config.json"), raw("dori.env"), raw("state")]);
+  expect(homeEnv({ stateDir: raw("state") }, { DORI_CONFIG: raw("config.json"), DORI_ENV_FILE: rel })["DORI_ENV_FILE"]).toBe(`${process.cwd()}${sep}${rel}`);
+});

@@ -10,14 +10,18 @@ import { laneTokenEnv, TokenFileError } from "./slack-token.ts";
 // or path.join, which collapse `..` on paper, so the OS resolves links and `..` for the lane exactly as it did for the
 // launcher and both find the same token home. One whose home moves when normalized (empty, `.`, `..`) names no config
 // file and is refused rather than letting the home check move up a directory.
+const asGiven = (path: string): string => (isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`);
+
 export const homeEnv = (config: Pick<DoriConfig, "stateDir">, env: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> => {
   const raw = env["DORI_CONFIG"] ?? configPath();
   if (dirname(resolve(raw)) !== resolve(dirname(raw))) throw new TokenFileError(`DORI_CONFIG "${raw}" does not name a config file; set it to the config file's path`);
-  const configFile = isAbsolute(raw) ? raw : `${process.cwd()}${sep}${raw}`;
+  const configFile = asGiven(raw);
+  // the other two selectors the same way (review 1 of #474): a dori.env selector collapsed on paper would name another
+  // home's file than the config the OS opens through a link, and that home's Slack API would get this home's token
   return {
     DORI_CONFIG: configFile,
-    DORI_STATE_DIR: resolve(config.stateDir),
-    DORI_ENV_FILE: resolve(env["DORI_ENV_FILE"] ?? envFilePath()),
+    DORI_STATE_DIR: asGiven(config.stateDir),
+    DORI_ENV_FILE: asGiven(env["DORI_ENV_FILE"] ?? envFilePath()),
     ...laneTokenEnv(env, configFile),
   };
 };

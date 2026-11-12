@@ -152,3 +152,22 @@ test.skipIf(process.platform === "win32")("a lane env whose home is reached thro
   // Then: home A's token file, its mark and its home are dropped
   expect([env["DORI_SLACK_TOKEN_FILE"], env["DORI_SLACK_TOKEN_FILE_RESOLVED"], env["DORI_SLACK_TOKEN_HOME"]]).toEqual([undefined, undefined, undefined]);
 });
+
+test("a lane launched before this change (marker = its config path) keeps its token file, now home-checked, not trusted as resolved (review 1 of #474)", async () => {
+  // Given: the env the previous fork launch gave a lane: the file, the blanked token, and the config path as marker
+  const file = tokenFile("slack-token", "xoxb-FIXTURE-legacy\n", 0o600);
+  const config = join(dir, "config.json");
+  const legacy: Record<string, string | undefined> = { DORI_CONFIG: config, DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_HOME: config };
+  // When: the lane runs a dori command after the update
+  await loadEnvFile(join(dir, "dori.env"), legacy);
+  // Then: the file and the blanked token are kept, the old marker is gone, and the read still home-checks the file
+  expect([legacy["DORI_SLACK_TOKEN_FILE"], legacy["DORI_SLACK_TOKEN"], legacy["DORI_SLACK_TOKEN_HOME"], slackToken(legacy, HOST)]).toEqual([file, "", undefined, "xoxb-FIXTURE-legacy"]);
+  const outside = join(dir, "elsewhere");
+  mkdirSync(outside);
+  const far = join(outside, "slack-token");
+  writeFileSync(far, "xoxb-FIXTURE-far\n");
+  chmodSync(far, 0o600);
+  const legacyFar: Record<string, string | undefined> = { DORI_CONFIG: join(dir, "home", "config.json"), DORI_SLACK_TOKEN_FILE: far, DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_HOME: join(dir, "home", "config.json") };
+  await loadEnvFile(join(dir, "home", "dori.env"), legacyFar);
+  expect(() => slackToken(legacyFar, HOST)).toThrow(/is outside this home/);
+});

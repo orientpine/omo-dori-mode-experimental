@@ -2,7 +2,7 @@
 // #204 -> #208 -> #211 -> #213 -> #218 -> https://github.com/sisyphuslabs/dori-superagent/pull/219 landed it on main (squash
 // 49fba4dc): the Slack token without putting it on a command line. A lane's env is its agent line (`env K=V ... omo`),
 // which ps, hc and herdr show, so a lane gets the path of an owner-only token file instead of the token itself.
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { configPath } from "./config-env.ts";
 
@@ -26,6 +26,21 @@ type Uid = number | undefined;
  * and owner-only (no group or other bits). The mode and owner are POSIX checks: on Windows stat reports 0666 or 0444 and
  * no uid, so there the NTFS ACL is the owner's job and boot says so (WIN32_ACL_NOTICE).
  */
+// Whether the descriptor was opened at `path` itself, no link on the way. Linux names the file a descriptor opened in
+// /proc/self/fd (race-free, and " (deleted)" once it was replaced after the open, which reads the original as upstream
+// wants); elsewhere the path must still resolve to itself.
+const reachedDirectly = (path: string, fd: number): boolean => {
+  try {
+    const opened = readlinkSync(`/proc/self/fd/${fd}`);
+    return opened === path || opened === `${path} (deleted)`;
+  } catch {}
+  try {
+    return osReal(path) === path;
+  } catch {
+    return false;
+  }
+};
+
 const readTokenFile = (path: string, platform: string, uid: Uid): string => {
   // `path` is already resolved (see tokenFileToRead). POSIX opens it as-is with O_NOFOLLOW, so a link put at that name
   // after it was resolved is refused, never followed.
@@ -39,6 +54,10 @@ const readTokenFile = (path: string, platform: string, uid: Uid): string => {
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is not a regular file`);
+    // O_NOFOLLOW guards only the last component (review 1 of the fork's #474): a directory on the way swapped for a link
+    // is caught here, as the path no longer resolves to itself or no longer names the file this descriptor opened
+    if (posix && !reachedDirectly(path, fd))
+      throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is reached through a link; give the path links resolved`);
     if (platform !== "win32") {
       if (uid !== undefined && st.uid !== uid)
         throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is owned by uid ${st.uid}, not by this user (${uid})`);
@@ -211,10 +230,12 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
   if (file) return pass(file);
   const home = homeOf(configFile);
   const own = join(home, TOKEN_FILE_NAME);
-  if (existsSync(own)) {
+  // lstat, not existsSync: a dangling or looping slack-token is a broken setup that real() names, never "no file", and the
+  // outside-home flag counts here as for a named file (review 1 of the fork's #474)
+  if (lstatSync(own, { throwIfNoEntry: false })) {
     // The home's own file gets the same check as a named one, on the one resolved string the lane also gets.
     const resolved = real(own);
-    if (!inside(home, resolved))
+    if (!inside(home, resolved) && env[OUTSIDE_HOME_FLAG] !== "1")
       throw new TokenFileError(`${own} links outside this home (${home}), so it may be another home's token file`);
     return pass(resolved);
   }
