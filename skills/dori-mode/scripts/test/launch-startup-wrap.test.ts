@@ -72,6 +72,20 @@ test("a failure phrase glued onto a full-width own error row counts, and reports
   expect(startupFailure(`${row}\nfix-rate-limit-error lane\n${BOX}`, false, row.length)).toBeUndefined();
 });
 
+// The join of a full-width row is a row boundary, not text: a phrase that ends the row still ends there when the next
+// printed line is glued on (review 2 of #471), and a code ending the row is still a whole value.
+test("a failure phrase or code that ends a full-width own error row still counts when the next line is glued on", () => {
+  for (const [first, next, found] of [
+    ["Error: rate limit reached", "Please retry later", "rate limit reached"],
+    ["Error: rate limit reached", "retry later", "rate limit reached"],
+    ["Error: all quotas exhausted", "see the plan", "quotas exhausted"],
+    ["Error: QUOTA_EXCEEDED", "Action: check the plan", "QUOTA_EXCEEDED"],
+  ] as const)
+    expect([first, startupFailure(`${first}\n${next}\n${BOX}`, false, first.length)]).toEqual([first, found]);
+  // a phrase cut inside the row and finished on the next one is still read as one
+  expect(startupFailure(`Error: rate limit reac\nhed, retry\n${BOX}`, false, 22)).toBe("rate limit reached");
+});
+
 test("an hc lane whose own error wraps on a narrow pane is STARTUP_ERROR at the first check", async () => {
   const previous = process.env["DORI_RUNTIME"];
   process.env["DORI_RUNTIME"] = "hc";

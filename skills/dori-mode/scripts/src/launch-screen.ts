@@ -26,14 +26,18 @@ const OWN_ERROR = /^ ?(?:error:|All \S+ accounts for \S+ are currently blocked|T
 // (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/205, its hc joinWrapped). Each row is judged on
 // the line it starts, never on the whole screen joined: a full-width warning row joined to the next printed line would
 // hide that line's own error from OWN_ERROR, and that next line still starts a line of its own here.
-const ownLine = (lines: readonly string[], i: number, end: number, cols: number | undefined): string => {
+// joins: where a full-width row met the next with nothing put between, a row boundary the phrase check keeps (review 2
+// of #471: "Error: rate limit reached" filling the pane, then "Please retry later", is no "reachedPlease")
+const ownLine = (lines: readonly string[], i: number, end: number, cols: number | undefined): { line: string; joins: Set<number> } => {
   let line = lines[i] ?? "";
+  const joins = new Set<number>();
   for (let j = i; cols !== undefined && cols > 1 && j + 1 < end; j++) {
     const width = Bun.stringWidth(lines[j] ?? "");
     if (width < cols - 1) break;
+    if (width >= cols) joins.add(line.length);
     line += (width >= cols ? "" : " ") + (lines[j + 1] ?? "");
   }
-  return line;
+  return { line, joins };
 };
 
 // omo draws its running-turn mark ("── • Working (4s • esc to interrupt) ──") on the border right above the ❯ line;
@@ -48,10 +52,10 @@ export const startupFailure = (screen: string, answered = false, cols?: number):
     // the whole printed line is rebuilt before it is judged: a wrap can cut omo's own marker too ("All <name> accounts for
     // <provider>" / "are currently blocked", review 1 of #470)
     const above = box < 0 || i < box;
-    const whole = above ? ownLine(lines, i, box < 0 ? lines.length : box, cols) : line;
+    const { line: whole, joins } = above ? ownLine(lines, i, box < 0 ? lines.length : box, cols) : { line, joins: new Set<number>() };
     const own = above ? OWN_ERROR.test(whole) : line.startsWith("Pane is dead");
     // the failure phrase table of dori-superagent #207 and #210 (startup-phrases.ts): a topic word is none
-    const bad = own ? startupPhrase(whole) : null;
+    const bad = own ? startupPhrase(whole, joins) : null;
     if (bad) return bad;
   }
   return undefined;

@@ -50,11 +50,14 @@ const JOINS = /[a-z0-9_/\\.-]/i;
 // whatever that row ended in (`ok`, `....`, `----`, a path). Then it must read as printed text: it starts with a capital
 // and has a space (`...okRate limit reached`), which camelCase (`onRateLimitExceeded`) and lower-case names
 // (`fix-rate-limit-error`) never are.
-const standsAlone = (text: string, at: number, found: string): boolean => {
-  const after = text[at + found.length] ?? "";
-  if (JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[at + found.length + 1] ?? ""))) return false;
+// rows: the fork's row joins (launch-screen.ts ownLine), positions where a full-width row met the next; either side of a
+// match that sits on one is a boundary as good as a space (review 2 of #471).
+const standsAlone = (text: string, at: number, found: string, rows: ReadonlySet<number>): boolean => {
+  const end = at + found.length;
+  const after = text[end] ?? "";
+  if (!rows.has(end) && JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[end + 1] ?? ""))) return false;
   const before = text[at - 1] ?? "";
-  if (!JOINS.test(before)) return true;
+  if (rows.has(at) || !JOINS.test(before)) return true;
   return /^[A-Z]/.test(found) && found.includes(" ");
 };
 // A `value` match counts only as the value of an `error`, `code`, `type` or `status` field as logs and JSON print it:
@@ -62,16 +65,16 @@ const standsAlone = (text: string, at: number, found: string): boolean => {
 // one), and a `= '`, `: '` or `===` is source code (`const code = 'insufficient_quota'`), never a value. The fork also
 // takes omo's own capitalised `Error:` (`Error: QUOTA_EXCEEDED`, review 1 of #471), the way it prints its error lines.
 const VALUE_KEY = /(?:^|[^A-Za-z0-9_])"?(?:[Ee]rror|code|type|status)"?(?::\s*"?|=)$/;
-const isValue = (text: string, at: number, found: string): boolean =>
-  VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && !/[a-z0-9_]/i.test(text[at + found.length] ?? "");
-const counts = (kind: Kind, text: string, at: number, found: string): boolean =>
-  kind === "anywhere" || (kind === "word" ? standsAlone(text, at, found) : isValue(text, at, found));
+const isValue = (text: string, at: number, found: string, rows: ReadonlySet<number>): boolean =>
+  VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && (rows.has(at + found.length) || !/[a-z0-9_]/i.test(text[at + found.length] ?? ""));
+const counts = (kind: Kind, text: string, at: number, found: string, rows: ReadonlySet<number>): boolean =>
+  kind === "anywhere" || (kind === "word" ? standsAlone(text, at, found, rows) : isValue(text, at, found, rows));
 // the first failure phrase in the text, by position, as printed; null when none counts
-export const startupPhrase = (text: string): string | null => {
+export const startupPhrase = (text: string, rows: ReadonlySet<number> = new Set()): string | null => {
   let first: { at: number; found: string } | undefined;
   for (const { kind, re } of PATTERNS) {
     for (const m of text.matchAll(re)) {
-      if (!counts(kind, text, m.index, m[0])) continue;
+      if (!counts(kind, text, m.index, m[0], rows)) continue;
       if (!first || m.index < first.at) first = { at: m.index, found: m[0] };
       break;
     }
