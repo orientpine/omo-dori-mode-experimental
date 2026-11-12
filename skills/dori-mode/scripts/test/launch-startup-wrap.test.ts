@@ -42,6 +42,15 @@ test("omo's own error line wrapped by hc still counts: a cut space is put back, 
   expect(startupFailure(`${limited}\n${BOX}`)).toBeUndefined();
 });
 
+test("omo's provider notices count when the wrap cuts their own marker: blocked accounts and a reached usage limit at 40 columns (review 1 of #470)", () => {
+  const blocked = wrap(" All Claude accounts for anthropic-subscription are currently blocked (rate limit or auth errors).", 40);
+  expect(blocked.split("\n")[0]).not.toContain("blocked");
+  expect(startupFailure(`${blocked}\n  Soonest automatic retry: 2026-01-01T13:00:00.000Z.\n${BOX}`, false, 40)).toBe("rate limit");
+  const limit = wrap(" The fakep account usage limit has been reached. Switch to another provider with /model.", 40);
+  expect(limit.split("\n")[0]).not.toContain("reached");
+  expect(startupFailure(`${limit}\n${BOX}`, false, 40)).toBe("usage limit");
+});
+
 test("only rows that fill the pane go on: a real line break, a warning row and code that only looks like a failure are none", () => {
   expect(startupFailure(`Error: tool rate\nlimits apply\n${BOX}`, false, 40)).toBeUndefined();
   expect(startupFailure(`load is moderate\nlimits apply\n${BOX}`, false, 16)).toBeUndefined();

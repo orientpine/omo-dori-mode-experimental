@@ -24,8 +24,9 @@ const OWN_ERROR = /^ ?(?:error:|All \S+ accounts for \S+ are currently blocked|T
 // hc prints a long line as rows cut at the pane's width (cols) with trailing blanks dropped, so an own error line can carry
 // its failure words across a wrap ("Error: rate" / "limit reached"): the line goes on into each next row while its row
 // fills the pane, cols cells (cut inside a word: joined as is) or cols - 1 (a cut space, put back) (dori-superagent PR #205
-// (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/205, its hc joinWrapped). Only an own error row
-// goes on: a full-width warning row joined to the next printed line would hide that line's own error from OWN_ERROR.
+// (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/205, its hc joinWrapped). Each row is judged on
+// the line it starts, never on the whole screen joined: a full-width warning row joined to the next printed line would
+// hide that line's own error from OWN_ERROR, and that next line still starts a line of its own here.
 const ownLine = (lines: readonly string[], i: number, end: number, cols: number | undefined): string => {
   let line = lines[i] ?? "";
   for (let j = i; cols !== undefined && cols > 1 && j + 1 < end; j++) {
@@ -45,8 +46,12 @@ export const startupFailure = (screen: string, answered = false, cols?: number):
   const running = box >= 0 && lines.slice(Math.max(0, box - 3), box).some((l) => l.toLowerCase().includes(BUSY_MARK));
   if (answered || running) return undefined;
   for (const [i, line] of lines.entries()) {
-    const own = box < 0 || i < box ? OWN_ERROR.test(line) : line.startsWith("Pane is dead");
-    const bad = own ? STARTUP_FAILURE.exec(box < 0 || i < box ? ownLine(lines, i, box < 0 ? lines.length : box, cols) : line) : null;
+    // the whole printed line is rebuilt before it is judged: a wrap can cut omo's own marker too ("All <name> accounts for
+    // <provider>" / "are currently blocked", review 1 of #470)
+    const above = box < 0 || i < box;
+    const whole = above ? ownLine(lines, i, box < 0 ? lines.length : box, cols) : line;
+    const own = above ? OWN_ERROR.test(whole) : line.startsWith("Pane is dead");
+    const bad = own ? STARTUP_FAILURE.exec(whole) : null;
     if (bad) return bad[0];
   }
   return undefined;
