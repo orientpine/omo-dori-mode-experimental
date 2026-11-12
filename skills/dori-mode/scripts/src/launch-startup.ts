@@ -7,7 +7,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { agentGone, firstTurnRuns, GOAL_WAIT, goalReader, lastLines, noGoalWhy } from "./pending-goal.ts";
 import { AGENT, argvSessionId, descendants, ended, hasSessionSelector, procTable, sessionDirFor, shellPidOf } from "./session-id.ts";
 import { isOmoExecutable } from "./executable.ts";
-import { leadReplies } from "./lead-limit.ts";
+import { leadReplies, type LeadReply } from "./lead-limit.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { join } from "node:path";
 import { LaunchFailed } from "./launch-types.ts";
@@ -17,10 +17,11 @@ import { startupFailure } from "./launch-screen.ts";
 import { HcStartupError } from "./hc-pane.ts";
 import { HerdrStartupError } from "./herdr.ts";
 
-// whether the newest model reply in the lane's own session (the exact id from its command line, under the cwd or its real
-// path) is from this launch (at or after since) and ended without an error; no id, no transcript or no such reply is none
-const modelAnswered = (sessionsDir: string, cwd: string, session: string, since: number): boolean => {
-  if (!session) return false;
+// the newest model reply in the lane's own session (the exact id from its command line, under the cwd or its real path)
+// when it is from this launch (at or after since), with its error when the call failed; no id, no transcript or no such
+// reply is none, and then only the screen can tell
+const launchReply = (sessionsDir: string, cwd: string, session: string, since: number): LeadReply | undefined => {
+  if (!session) return undefined;
   const at = resolve(cwd);
   let real = at;
   try {
@@ -31,14 +32,14 @@ const modelAnswered = (sessionsDir: string, cwd: string, session: string, since:
       const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
       if (!name) continue;
       const last = leadReplies(readFileSync(join(dir, name), "utf8")).at(-1);
-      return last !== undefined && last.at >= since && last.error === undefined;
+      return last !== undefined && last.at >= since ? last : undefined;
     } catch {}
   }
-  return false;
+  return undefined;
 };
 
 export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: string, since: number): string | undefined =>
-  startupFailure(screen, modelAnswered(deps.config.sessionsDir, cwd, session, since));
+  startupFailure(screen, launchReply(deps.config.sessionsDir, cwd, session, since));
 
 // A running agent is not yet a good start: a lane that never sets its goal does its first turn and stops, and the lead
 // found the quiet lane long after a STARTUP_OK (dori-superagent issue #50 reproduced here (MIT):

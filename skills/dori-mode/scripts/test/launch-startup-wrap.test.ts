@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { FlowDeps } from "../src/done-flow.ts";
 import { launchLane, startupFailure } from "../src/launch.ts";
+import { failureOf } from "../src/launch-startup.ts";
+import { sessionDirFor } from "../src/session-id.ts";
 import { terminal as hcTerm } from "./fake-hc.ts";
 import { depsFor, newWorld, withState, type World } from "./fakes.ts";
 
@@ -78,6 +81,30 @@ test("an hc lane whose own error shows on its screen is STARTUP_ERROR at the fir
   expect(await hcLaunch("hc-narrow", 12, `Error: rate limit reached, retry later\n${BOX}`)).toBe("STARTUP_ERROR hc-narrow hc:t1: rate limit reached");
   // an own error line exactly as wide as the pane, then a path line: not glued, the error stands (challenge of review 3's plan)
   expect(await hcLaunch("hc-exact", 27, `Error: all quotas exhausted\n/tmp/w\n${BOX}`)).toBe("STARTUP_ERROR hc-exact hc:t1: quotas exhausted");
+});
+
+// omo wraps its own text itself (pi-tui Text.render, one space each side) and prints the rows as lines, so hc keeps the
+// breaks: these rows are its out-of-quota error at 32 columns, rendered by the installed renderer (review 5 of #471)
+const NARROW = [" Error: The provider account is ", " out of quota. Action: check    ", " the plan or credits.           ", BOX].join("\n");
+const SESSION = "0b6c2f1e-1d2c-4b5a-9e8f-7a6b5c4d3e2f";
+// the lane's own session holds a reply of the model that failed with errorMessage, written at `at`
+const failedReply = (errorMessage: string, at: number): FlowDeps => {
+  const sessionsDir = join(state.dir, "sessions");
+  const dir = sessionDirFor(sessionsDir, "/tmp/w");
+  mkdirSync(dir, { recursive: true });
+  appendFileSync(join(dir, `2026-01-01T12-00-01-000Z_${SESSION}.jsonl`), `${JSON.stringify({ type: "message", timestamp: new Date(at).toISOString(), message: { role: "assistant", stopReason: "error", errorMessage } })}\n`);
+  const base = depsFor(world, { now: () => T0, sleep: async () => {} }, state.dir);
+  return { ...base, config: { ...base.config, sessionsDir } };
+};
+
+test("a failed reply of this launch is judged by its own error text, which no pane width wraps; the screen only without one", () => {
+  expect(startupFailure(NARROW)).toBeUndefined();
+  expect(failureOf(failedReply("The provider account is out of quota. Action: check the plan or credits.", T0 + 5_000), NARROW, "/tmp/w", SESSION, T0)).toBe("out of quota");
+  // the newest reply failed with no failure phrase: the session says how the start went, a phrase the screen quotes is not it
+  const aborted = failedReply("The operation was aborted.", T0 + 6_000);
+  expect(failureOf(aborted, `Error: 429 Rate limit reached for requests\n${BOX}`, "/tmp/w", SESSION, T0)).toBeUndefined();
+  // a reply from before this launch (a resumed session) says nothing about it: the screen is read
+  expect(failureOf(aborted, `Error: No API key found for groq.\n${BOX}`, "/tmp/w", SESSION, T0 + 60_000)).toBe("No API key");
 });
 
 test("on hc, an own line one cell short of the pane and the next printed line never make a failure together", async () => {
