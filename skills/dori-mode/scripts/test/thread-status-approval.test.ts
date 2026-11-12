@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 
-import { mapThread, threads } from "../src/messenger/thread-map.ts";
+import { mapThread, standThread, threads, unstandThread } from "../src/messenger/thread-map.ts";
 import { doneWorld, live, THREAD } from "./thread-status-world.ts";
 
 afterEach(doneWorld);
@@ -99,4 +99,20 @@ test("a gate card that joins a 🔔 this Dori set renames it a card thread (🔔
   w.name = "🔔 🔐 fix login";
   await listener.onMessage(say("1012", "go ahead"));
   expect(w.name).toBe("🔔 🔐 fix login");
+});
+
+test("releasing a standing card thread (📌 📬 Digest) shows it working, never a 🔔 of this Dori's making (review 8 of #467)", async () => {
+  const { w, q, dir } = live("📌 📬 Digest");
+  standThread(`${dir}/discord`, THREAD);
+  unstandThread(`${dir}/discord`, THREAD);
+  await q.request(THREAD, "waiting");
+  expect(w.name).toBe("🔄 📬 Digest");
+});
+
+test("another writer's 🔔 seen over a name this Dori recorded drops that record (review 8 of #467)", async () => {
+  const { w, q, listener, say, dir } = live("⏸️ task");
+  writeFileSync(`${dir}/discord/thread-names.json`, JSON.stringify({ [THREAD]: "🔔 task" }));
+  await q.request(THREAD, "waiting");
+  await listener.onMessage(say("1013", "done with it?"));
+  expect(w.name.startsWith("🔔")).toBe(true);
 });

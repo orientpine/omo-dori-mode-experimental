@@ -1061,7 +1061,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_joined_thread_already_named_right_or_opened_by_the_owner_keeps_its_name(self):
         for name, owner in (("🔔 🔐 정해영 OmO 문의 답장", "7"), ("🔔 ✉️ 정해영 OmO 문의 답장", "7"), ("📌 📬 Digest", "7"),
-                            ("🔄 ✉️ Reply", "7"), ("형의 요청", "1")):
+                            ("형의 요청", "1")):
             with self.subTest(name=name, owner=owner):
                 self.thread_meta.clear()
                 self.thread_patches.clear()
@@ -1072,6 +1072,25 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
                 self.assertEqual(self.card_channels[self.service.pending()[-1]["message"]], "100")
                 self.assertEqual(self.thread_patches, [])
+
+    async def test_a_card_joining_a_card_thread_marked_otherwise_sets_its_bell_and_its_end_releases_it(self):
+        # 2026-11-12 (review 8 of #467): "🔄 ✉️ Reply" kept its name when a card joined, so the owner saw no 🔔 for it,
+        # and a 🔔 the gate set in a thread it did not name was never released when the card ended.
+        self.dori_thread("100", "🔄 ✉️ Reply")
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        self.assertEqual(self.thread_patches, [("100", {"name": "🔔 ✉️ Reply", "archived": False})])
+        self.approve()
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches[-1], ("100", {"name": "✅ ✉️ Reply", "archived": True}))
+
+    async def test_a_bell_another_writer_set_is_left_when_the_gate_card_ends(self):
+        self.dori_thread("100", "🔔 ✉️ Reply")
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        self.approve()
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches, [])
 
     async def test_a_joined_archived_dori_thread_is_unarchived_by_the_rename(self):
         # Discord renames an archived thread only together with archived: false.

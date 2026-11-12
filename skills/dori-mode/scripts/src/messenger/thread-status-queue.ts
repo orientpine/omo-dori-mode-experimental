@@ -165,15 +165,20 @@ export class ThreadStatusQueue {
     // a standing thread keeps its mark through every event, a released one (false) loses its 📌 at every rename; read
     // here, so a one-shot command's change counts and a failed rename leaves it for the next
     const standing = threads(dirname(this.d.file))[thread]?.standing;
-    const status: ThreadMark = standing === true ? "standing" : asked;
+    let status: ThreadMark = standing === true ? "standing" : asked;
     // what decided it, when not the event: the open cards, the lanes that kept it working past them
     const why = asked !== e.status || (cards.length && lanes.length) ? [cards.length ? ` open=${cards.join(",")}` : "", lanes.length ? ` working=${lanes.join(",")}` : ""].join("") : "";
     try {
       const dc = this.d.dc.once();
       const info = { ...(await dc.call<ThreadInfo>("GET", `/channels/${thread}`)), id: thread };
       const foreign = this.othersWaiting(info);
-      // a card thread's 🔔 is its card writer's: this Dori neither takes it away nor sets it there
-      const cardWait = status === "waiting" && [10, 11, 12].includes(info.type ?? -1) && isCardThread(info.name ?? "", this.d.words);
+      // a record this Dori kept for a thread now showing another writer's 🔔 is stale: a later rename must not match it
+      if (foreign && this.ownNames()[thread] !== undefined) this.recordName(thread, undefined);
+      // a card thread's 🔔 is its card writer's: this Dori neither takes it away nor sets it there; releasing its 📌
+      // shows it working
+      const card = [10, 11, 12].includes(info.type ?? -1) && isCardThread(info.name ?? "", this.d.words);
+      if (card && status === "waiting" && standing === false) status = "working";
+      const cardWait = card && status === "waiting";
       if ((status !== "waiting" && status !== "standing" && foreign) || cardWait) {
         this.forget(thread, e.rev);
         this.d.log(`THREAD_STATUS_KEPT ${thread} ${status}: ${cardWait ? "a card thread's 🔔 is its card writer's" : "🔔 was set by another writer"}`);

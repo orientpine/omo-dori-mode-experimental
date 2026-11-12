@@ -94,7 +94,7 @@ export const bareThreadName = (name: string, words: DiscordWords): string => spl
 // replaces it when the card is decided (2026-11-12, mail thread 1570290417285726290).
 const CARD_ICONS = ["↩", "✉", "💳", "📜", "🛠", "🗓", "🤝", "📚", "🚀", "🔎", "📦", "📥", "🔌", "🏷", "📝", "📋", "📬", "🔐"];
 export const isCardThread = (name: string, words: DiscordWords): boolean => {
-  const bare = bareThreadName(name, words).replace(/\uFE0F/gu, "");
+  const bare = unpinnedName(name, words).replace(/\uFE0F/gu, "");
   return CARD_ICONS.some((icon) => bare.startsWith(`${icon} `));
 };
 

@@ -2352,13 +2352,15 @@ class Gate:
             if not name or not owner or owner == str(self.config["owner_id"]):
                 return
             bare = bare_thread_name(name)
-            if bare.startswith(KIND_ICONS) and bare != name and LEADING_MARK.sub("", name, count=1) == bare:
-                return  # one mark (any of them) and a kind icon: already the shape
+            if (bare.startswith(KIND_ICONS) and name.startswith((WAITING_MARK, "📌"))
+                    and LEADING_MARK.sub("", name, count=1) == bare):
+                return  # 🔔 (whoever set it) or a standing 📌, then a kind icon: already the shape
             wanted = f"{WAITING_MARK} {bare if bare.startswith(KIND_ICONS) else '🔐 ' + bare}"[:100]
             # Discord renames an archived thread only together with unarchiving it; the card goes in next anyway.
             status, _, _ = await self.bot_call("PATCH", f"/channels/{thread}", {"name": wanted, "archived": False})
             if not 200 <= status < 300:
                 raise OSError(status)
+            self.set_thread_mark(thread, wanted)
         except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
             print("GATE_CARD_THREAD_RENAME_FAILED", file=sys.stderr, flush=True)
 
@@ -2481,15 +2483,40 @@ class Gate:
             name = str(info.get("name") or "")
             if info.get("type") not in (11, 12) or str(info.get("parent_id")) != channel:
                 return
-            name = bare_thread_name(name)
-            if not name.startswith("🔐 "):
+            marked = self.thread_marks().get(str(thread))
+            self.set_thread_mark(thread, None)
+            # a thread the gate named (🔐), or one whose 🔔 it set when its card joined and nobody renamed since
+            if not bare_thread_name(name).startswith("🔐 ") and name != marked:
                 return
+            name = bare_thread_name(name)
             status, _, _ = await self.bot_call("PATCH", f"/channels/{thread}",
                                                {"name": f"{prefix} {name}"[:100], "archived": True})
             if not 200 <= status < 300:
                 raise OSError(status)
         except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
             print("GATE_THREAD_CLOSE_FAILED", file=sys.stderr, flush=True)
+
+    def thread_marks(self) -> dict:
+        """The 🔔 names the gate set on threads it joined (state/thread-marks.json): its own to release.
+
+        2026-11-12 (review 8 of #467): a card joining "🔄 ✉️ Reply" now sets 🔔, and the Dori receiver leaves a card
+        thread's 🔔 to its card writers, so the gate releases the 🔔 it set when its last card there ends, and
+        only while the name is still the one it set."""
+        try:
+            data = json.loads((self.state / "thread-marks.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def set_thread_mark(self, thread, name) -> None:
+        marks = self.thread_marks()
+        if name is None and str(thread) not in marks:
+            return
+        if name is None:
+            marks.pop(str(thread), None)
+        else:
+            marks[str(thread)] = name
+        private_write(self.state / "thread-marks.json", json_bytes(marks))
 
     async def closed_decided_thread(self, method, route) -> str | None:
         """The thread a message POST goes into when that thread is archived under a decided title.
