@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
 import { desiredStatus, setThreadStatus, STATUS_EMOJI, type ThreadInfo, type ThreadMark, type ThreadStatus, threadName } from "./discord-thread.ts";
-import { MessengerError } from "./http.ts";
+import { guardText, MessengerError } from "./http.ts";
 import { dropThread, threads } from "./thread-map.ts";
 
 // One entry per thread: the status the latest event asked for, the earliest time the rename may run, and how many
@@ -171,13 +171,15 @@ export class ThreadStatusQueue {
     try {
       const dc = this.d.dc.once();
       const info = { ...(await dc.call<ThreadInfo>("GET", `/channels/${thread}`)), id: thread };
-      if (status !== "waiting" && status !== "standing" && this.othersWaiting(info)) {
+      const foreign = this.othersWaiting(info);
+      if (status !== "waiting" && status !== "standing" && foreign) {
         this.forget(thread, e.rev);
         this.d.log(`THREAD_STATUS_KEPT ${thread} ${status}: 🔔 was set by another writer`);
         return "kept";
       }
       const changed = await setThreadStatus(dc, thread, status, this.d.words, info, standing === false);
-      if (changed) this.recordName(thread, status === "done" ? undefined : threadName(status, info.name ?? "", this.d.words, standing === false));
+      // a rename of another writer's 🔔 (this Dori's style, an unarchive) leaves it theirs; the name kept is the one Discord holds
+      if (changed && !foreign) this.recordName(thread, status === "done" ? undefined : guardText(threadName(status, info.name ?? "", this.d.words, standing === false)).slice(0, 100));
       if (status === "done") dropThread(dirname(this.d.file), thread);
       this.forget(thread, e.rev);
       this.d.log(`THREAD_STATUS_APPLIED ${thread} ${status}${changed ? "" : " unchanged"}${why}`);

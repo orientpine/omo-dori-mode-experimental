@@ -61,3 +61,20 @@ test("done on a thread another writer keeps 🔔 is kept open: the result says s
   expect(await q.request(THREAD, "done")).toBe("kept");
   expect({ name: w.name, archived: w.archived, mapped: Boolean(threads(`${dir}/discord`)[THREAD]) }).toEqual({ name: "🔔 ✉️ lecture reply", archived: false, mapped: true });
 });
+
+test("renaming another writer's 🔔 to this Dori's style or reopening it does not make it ours (review 7 of #467)", async () => {
+  const { w, q, listener, say } = live("🔔 ✉️ lecture reply");
+  w.archived = true;
+  await q.request(THREAD, "waiting");
+  await listener.onMessage(say("1009", "and the venue"));
+  expect(w.name.startsWith("🔔")).toBe(true);
+});
+
+test("a 🔔 this Dori set on a title of Discord's full 100 characters is still its own (review 7 of #467)", async () => {
+  const long = "x".repeat(100);
+  const { w, q, listener, say } = live(long);
+  await q.request(THREAD, "waiting");
+  expect(w.name).toBe(`🔔 ${long}`.slice(0, 100));
+  await listener.onMessage(say("1010", "answer"));
+  expect(w.name.startsWith("🔄")).toBe(true);
+});
