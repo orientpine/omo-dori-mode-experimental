@@ -145,3 +145,32 @@ test("DORI_ENV_FILE and DORI_STATE_DIR reach the lane as DORI_CONFIG does, '..' 
   expect([env["DORI_CONFIG"], env["DORI_ENV_FILE"], env["DORI_STATE_DIR"]]).toEqual([raw("config.json"), raw("dori.env"), raw("state")]);
   expect(homeEnv({ stateDir: raw("state") }, { DORI_CONFIG: raw("config.json"), DORI_ENV_FILE: rel })["DORI_ENV_FILE"]).toBe(`${process.cwd()}${sep}${rel}`);
 });
+
+test("the marker names the home that was checked, even if the home's link moves while laneTokenEnv runs (review 3 of #474)", () => {
+  // Given: a home reached through a link to A, and a B with its own token; the link moves to B right after its first use
+  const a = join(state.dir, "race-a");
+  const b = join(state.dir, "race-b");
+  tokenFile(a, "xoxb-FIXTURE-a\n", 0o600);
+  tokenFile(b, "xoxb-FIXTURE-b\n", 0o600);
+  const link = join(state.dir, "race-home");
+  symlinkSync(a, link);
+  const native = fs.realpathSync.native;
+  let moved = false;
+  const spy = spyOn(fs.realpathSync, "native").mockImplementation(((p: fs.PathLike, o?: unknown) => {
+    const out = native(p, o as never);
+    if (!moved && String(p).startsWith(link)) {
+      moved = true;
+      fs.rmSync(link);
+      symlinkSync(b, link);
+    }
+    return out;
+  }) as typeof fs.realpathSync.native);
+  try {
+    // When: launch builds the lane's token env
+    const env = laneTokenEnv({}, join(link, "config.json"));
+    // Then: the file and the marker are both A's, the home that was checked
+    expect([env["DORI_SLACK_TOKEN_FILE"], env[RESOLVED_HOME]]).toEqual([real(join(a, "slack-token")), real(a)]);
+  } finally {
+    spy.mockRestore();
+  }
+});

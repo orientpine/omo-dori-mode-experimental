@@ -2,6 +2,14 @@
 // #204 -> #208 -> #211 -> #213 -> #218 -> https://github.com/sisyphuslabs/dori-superagent/pull/219 landed it on main (squash
 // 49fba4dc): the Slack token without putting it on a command line. A lane's env is its agent line (`env K=V ... omo`),
 // which ps, hc and herdr show, so a lane gets the path of an owner-only token file instead of the token itself.
+//
+// Threat model (fork, reviews 1-3 of #474). Defended: a token file of another home reaching this one (an inherited
+// DORI_SLACK_TOKEN_FILE, a link inside the home, `..` after a link, a lane env carried into another home), a token file
+// that is not this user's owner-only regular file, a link put at the token name or (on Linux, via /proc/self/fd) at a
+// directory on its path after it was checked, and a check and a mark taken against two different resolutions of the
+// home within one call. Not defended: a process running as this same user that rewrites this home's own directories
+// can read both homes' token files directly, so racing it further buys nothing; off Linux, a directory swapped for a
+// link and swapped back between the open and the path check is not seen.
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { configPath } from "./config-env.ts";
@@ -116,8 +124,9 @@ export const RESOLVED_HOME = "DORI_SLACK_TOKEN_HOME";
 export const tokenFileToRead = (env: Env, configFile: string): string | undefined => {
   const named = env["DORI_SLACK_TOKEN_FILE"];
   if (!named) return undefined;
-  const marked = env[RESOLVED_MARK] === named && env[RESOLVED_HOME] === homeOf(configFile);
-  return marked ? named : homeTokenFile(env, configFile);
+  const home = homeOf(configFile);
+  const marked = env[RESOLVED_MARK] === named && env[RESOLVED_HOME] === home;
+  return marked ? named : homeTokenFile(env, configFile, home);
 };
 
 /** Boot's note about a token taken from a file on Windows, whose ACL nothing checks; undefined everywhere else. */
@@ -189,10 +198,11 @@ const inside = (dir: string, path: string): boolean => {
  * DORI_SLACK_TOKEN_FILE_OUTSIDE_HOME=1 says it is meant: it is most likely inherited from another home's core (#200, one
  * variable over). Launch checks it before handing the path to a lane, and boot before it authenticates with it.
  */
-export const homeTokenFile = (env: Env, configFile: string): string | undefined => {
+// `home` is passed by a caller that resolved it already, so one call never checks against one home and marks or reads
+// against another, should a link in the config path move in between (review 3 of the fork's #474).
+export const homeTokenFile = (env: Env, configFile: string, home: string = homeOf(configFile)): string | undefined => {
   const named = env["DORI_SLACK_TOKEN_FILE"];
   if (!named) return undefined;
-  const home = homeOf(configFile);
   // Resolved once: the string checked is the string the lane gets, so a link swapped later is never followed.
   // Never resolve() first: it collapses `..` on paper, and the OS may open the file through a link instead.
   const file = real(isAbsolute(named) ? named : `${process.cwd()}${sep}${named}`);
@@ -219,16 +229,17 @@ export const homeTokenFile = (env: Env, configFile: string): string | undefined 
  * lane never carries this home's permission into a home it starts.
  */
 export const laneTokenEnv = (env: Env, configFile: string): Record<string, string> => {
+  // the home is resolved once and is both the one checked and the one marked
+  const home = homeOf(configFile);
   const pass = (file: string): Record<string, string> => ({
     DORI_SLACK_TOKEN_FILE: file,
     [RESOLVED_MARK]: file,
-    [RESOLVED_HOME]: homeOf(configFile),
+    [RESOLVED_HOME]: home,
     DORI_SLACK_TOKEN: "",
     [OUTSIDE_HOME_FLAG]: "",
   });
-  const file = homeTokenFile(env, configFile);
+  const file = homeTokenFile(env, configFile, home);
   if (file) return pass(file);
-  const home = homeOf(configFile);
   const own = join(home, TOKEN_FILE_NAME);
   // lstat, not existsSync: a dangling or looping slack-token is a broken setup that real() names, never "no file", and the
   // outside-home flag counts here as for a named file (review 1 of the fork's #474)
