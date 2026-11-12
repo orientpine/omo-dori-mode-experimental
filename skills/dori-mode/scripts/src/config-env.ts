@@ -24,13 +24,14 @@ const instanceVar = (name: string): boolean => /^DORI_(DISCORD|SLACK|TELEGRAM|LE
 export const loadEnvFile = async (path: string, env: Record<string, string | undefined> = process.env): Promise<void> => {
   const marked = env[RESOLVED_HOME];
   const config = env["DORI_CONFIG"] ?? configPath();
-  // a lane launched before upstream #219's port carries the old marker, this config's path (review 1 of #474): its file
-  // and blanked token are kept, the marker is not, so the reader home-checks the file under the new rule
+  // a lane launched before upstream #219's port carries the old marker, this config's path (review 1 of #474): its file,
+  // blanked token and that marker are kept, so every later load keeps them too (review 2), but never a resolved-path mark,
+  // so the reader home-checks the file under the new rule
   const legacy = marked !== undefined && marked === resolve(config);
   const home = marked === undefined || legacy ? undefined : tokenHome(config);
   const file = marked === undefined || legacy || marked === home ? env["DORI_SLACK_TOKEN_FILE"] : undefined;
   const ours = file !== undefined && marked !== undefined && !legacy && marked === home;
-  const keep = new Set([...(file ? ["DORI_SLACK_TOKEN_FILE"] : []), ...(ours ? [RESOLVED_HOME, RESOLVED_MARK] : []), ...(file && (ours || legacy) && env["DORI_SLACK_TOKEN"] === "" ? ["DORI_SLACK_TOKEN"] : [])]);
+  const keep = new Set([...(file ? ["DORI_SLACK_TOKEN_FILE"] : []), ...(ours ? [RESOLVED_HOME, RESOLVED_MARK] : []), ...(file && legacy ? [RESOLVED_HOME] : []), ...(file && (ours || legacy) && env["DORI_SLACK_TOKEN"] === "" ? ["DORI_SLACK_TOKEN"] : [])]);
   for (const name of Object.keys(env)) if (instanceVar(name) && !keep.has(name)) delete env[name];
   const envFile = Bun.file(path);
   if (!(await envFile.exists())) return;

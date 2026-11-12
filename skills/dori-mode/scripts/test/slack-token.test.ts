@@ -158,10 +158,11 @@ test("a lane launched before this change (marker = its config path) keeps its to
   const file = tokenFile("slack-token", "xoxb-FIXTURE-legacy\n", 0o600);
   const config = join(dir, "config.json");
   const legacy: Record<string, string | undefined> = { DORI_CONFIG: config, DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_HOME: config };
-  // When: the lane runs a dori command after the update
-  await loadEnvFile(join(dir, "dori.env"), legacy);
-  // Then: the file and the blanked token are kept, the old marker is gone, and the read still home-checks the file
-  expect([legacy["DORI_SLACK_TOKEN_FILE"], legacy["DORI_SLACK_TOKEN"], legacy["DORI_SLACK_TOKEN_HOME"], slackToken(legacy, HOST)]).toEqual([file, "", undefined, "xoxb-FIXTURE-legacy"]);
+  // When: the lane runs dori commands after the update, each loading a dori.env that holds another token
+  writeFileSync(join(dir, "dori.env"), "DORI_SLACK_TOKEN=xoxb-FIXTURE-envfile\n");
+  for (const _ of [1, 2, 3]) await loadEnvFile(join(dir, "dori.env"), legacy);
+  // Then: every load keeps the file, the blanked token and the old marker (no resolved mark), so the read still home-checks the file (review 2)
+  expect([legacy["DORI_SLACK_TOKEN_FILE"], legacy["DORI_SLACK_TOKEN"], legacy["DORI_SLACK_TOKEN_HOME"], legacy["DORI_SLACK_TOKEN_FILE_RESOLVED"], slackToken(legacy, HOST)]).toEqual([file, "", config, undefined, "xoxb-FIXTURE-legacy"]);
   const outside = join(dir, "elsewhere");
   mkdirSync(outside);
   const far = join(outside, "slack-token");

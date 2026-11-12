@@ -39,7 +39,10 @@ test.skipIf(process.platform === "win32")("a token file open to others keeps the
   expect(why).not.toContain("FIXTURE");
 });
 
-test.skipIf(process.platform === "win32")("--wait started by a lead with a token file signs in with the file's bot token once the app token appears (#201 challenge)", async () => {
+// the second env is a lead launched before upstream #219's port (marker = its config's path), with another token in dori.env:
+// every reload must keep the file's token (review 2 of #474)
+for (const legacy of [false, true])
+test.skipIf(process.platform === "win32")(`--wait started by a lead with a token file signs in with the file's bot token once the app token appears (#201 challenge${legacy ? ", legacy marker, review 2 of #474" : ""})`, async () => {
   // Given: a fake Slack that records the bearer of auth.test, and a lead env from production homeEnv with an owner-only token file
   const bearer = Promise.withResolvers<string>();
   const server = Bun.serve({
@@ -55,8 +58,10 @@ test.skipIf(process.platform === "win32")("--wait started by a lead with a token
   chmodSync(file, 0o600);
   const envFile = join(dir, "dori.env");
   // the fake API sits in dori.env, so no reload can reach slack.com
-  writeFileSync(envFile, `DORI_SLACK_API=http://127.0.0.1:${server.port}/api\n`);
-  const env: Record<string, string | undefined> = { ...process.env, ...homeEnv({ stateDir: dir }, { DORI_CONFIG: join(dir, "config.json"), DORI_ENV_FILE: envFile }), DORI_SLACK_WAIT_MS: "100" };
+  writeFileSync(envFile, `DORI_SLACK_API=http://127.0.0.1:${server.port}/api\n${legacy ? "DORI_SLACK_TOKEN=xoxb-FIXTURE-envfile\n" : ""}`);
+  const config = join(dir, "config.json");
+  const old = { DORI_CONFIG: config, DORI_ENV_FILE: envFile, DORI_STATE_DIR: dir, DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_HOME: config };
+  const env: Record<string, string | undefined> = { ...process.env, ...(legacy ? old : homeEnv({ stateDir: dir }, { DORI_CONFIG: config, DORI_ENV_FILE: envFile })), DORI_SLACK_WAIT_MS: "100" };
   for (const k of ["DORI_SLACK_APP_TOKEN", "DORI_SLACK_API"]) delete env[k];
   const proc = Bun.spawn(["bun", WATCH, "--wait"], { env, stdout: "pipe", stderr: "pipe" });
   const waiting = Promise.withResolvers<void>();
