@@ -35,11 +35,16 @@ const eyesOffIds = (inboxPath: string): Set<string> => {
   return new Set(jsonLines<{ id?: unknown }>(existsSync(path) ? readFileSync(path, "utf8") : "").flatMap((r) => (typeof r.id === "string" && r.id ? [r.id] : [])));
 };
 
-// inboxText: the inbox tail the rows were read from; it holds the pair-bot rows their reply_to points at
+// inboxText: the inbox tail the rows were read from. A reply_to that points before the tail (the owner answered an older
+// Dori post) is looked up in the whole inbox file, and only for those ids (review 2 of #466).
 export const waitingOwnerRows = <T extends OwnerRow>(rows: readonly T[], inboxText: string, inboxPath: string): T[] => {
   const inbox = jsonLines<InboxRow>(inboxText);
-  const otherDoris = new Set(inbox.flatMap((r) => (r.scope === "pair-bot" && r.id ? [r.id] : [])));
-  const toOtherDori = new Set(inbox.flatMap((r) => (r.scope === "pair" && r.called === false && r.id && r.reply_to && otherDoris.has(r.reply_to) ? [r.id] : [])));
+  const replies = inbox.filter((r) => r.scope === "pair" && r.called === false && r.id && r.reply_to);
+  const seen = new Set(inbox.flatMap((r) => (r.id ? [r.id] : [])));
+  const before = new Set(replies.flatMap((r) => (r.reply_to && !seen.has(r.reply_to) ? [r.reply_to] : [])));
+  const older = before.size && existsSync(inboxPath) ? jsonLines<InboxRow>(readFileSync(inboxPath, "utf8")).filter((r) => r.id && before.has(r.id)) : [];
+  const otherDoris = new Set([...inbox, ...older].flatMap((r) => (r.scope === "pair-bot" && r.id ? [r.id] : [])));
+  const toOtherDori = new Set(replies.flatMap((r) => (r.id && r.reply_to && otherDoris.has(r.reply_to) ? [r.id] : [])));
   const off = eyesOffIds(inboxPath);
   return rows.filter((row) => !off.has(row.id) && !toOtherDori.has(row.id));
 };
