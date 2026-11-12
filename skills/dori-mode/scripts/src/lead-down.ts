@@ -11,6 +11,7 @@ import { herdrLeadSession, readHerdrSessions, reviveHerdr } from "./herdr-sessio
 import { sendVerified } from "./panes.ts";
 import { findLead } from "./lead.ts";
 import { clock, ownerRows, placeOf, tailOf } from "./lead-limit.ts";
+import { waitingOwnerRows } from "./owner-waiting.ts";
 import type { Runner } from "./run.ts";
 
 // The lead died and nothing started it again (2026-10-22 18:23-18:50 KST): a lane's QA cleanup ran
@@ -163,7 +164,9 @@ export const leadDownTick = async (deps: FlowDeps, env: Readonly<Record<string, 
   }
   if (next.notice) return out;
   const inbox = deps.ownerInbox;
-  const rows = inbox && existsSync(inbox.path) ? ownerRows(tailOf(inbox.path, INBOX_TAIL_BYTES), inbox.ownerId).filter((r) => now - r.at < DAY_MS) : [];
+  // where his newest message still waiting on this lead is, as LEAD_OWNER_WAITING picks it (owner-waiting.ts)
+  const tail = inbox && existsSync(inbox.path) ? tailOf(inbox.path, INBOX_TAIL_BYTES) : "";
+  const rows = inbox && tail ? waitingOwnerRows(ownerRows(tail, inbox.ownerId).filter((r) => now - r.at < DAY_MS), tail, inbox.path) : [];
   const channel = placeOf(rows, inbox?.ownerChannel ?? "");
   const cannot = !deps.postOwner ? "no bot token" : !channel ? "no owner channel" : "";
   const text = deps.config.discord.leadDownText.replaceAll("{since}", clock(deps, since));
