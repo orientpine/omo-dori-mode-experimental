@@ -7,7 +7,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { agentGone, firstTurnRuns, GOAL_WAIT, goalReader, lastLines, noGoalWhy } from "./pending-goal.ts";
 import { AGENT, argvSessionId, descendants, ended, hasSessionSelector, procTable, sessionDirFor, shellPidOf } from "./session-id.ts";
 import { isOmoExecutable } from "./executable.ts";
-import { leadReplies } from "./lead-limit.ts";
+import { leadReplies, type LeadReply } from "./lead-limit.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { join } from "node:path";
 import { LaunchFailed } from "./launch-types.ts";
@@ -17,10 +17,11 @@ import { startupFailure } from "./launch-screen.ts";
 import { HcStartupError } from "./hc-pane.ts";
 import { HerdrStartupError } from "./herdr.ts";
 
-// whether the newest model reply in the lane's own session (the exact id from its command line, under the cwd or its real
-// path) is from this launch (at or after since) and ended without an error; no id, no transcript or no such reply is none
-const modelAnswered = (sessionsDir: string, cwd: string, session: string, since: number): boolean => {
-  if (!session) return false;
+// the newest model reply in the lane's own session (the exact id from its command line, under the cwd or its real path)
+// when it is from this launch (at or after since), with its error when the call failed; no id, no transcript or no such
+// reply is none, and then only the screen can tell
+const launchReply = (sessionsDir: string, cwd: string, session: string, since: number): LeadReply | undefined => {
+  if (!session) return undefined;
   const at = resolve(cwd);
   let real = at;
   try {
@@ -31,15 +32,14 @@ const modelAnswered = (sessionsDir: string, cwd: string, session: string, since:
       const name = readdirSync(dir).find((n) => n.endsWith(`_${session}.jsonl`));
       if (!name) continue;
       const last = leadReplies(readFileSync(join(dir, name), "utf8")).at(-1);
-      return last !== undefined && last.at >= since && last.error === undefined;
+      return last !== undefined && last.at >= since ? last : undefined;
     } catch {}
   }
-  return false;
+  return undefined;
 };
 
-// cols: an hc pane's width, whose rows come back wrapped (launch-screen.ts startupFailure)
-export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: string, since: number, cols?: number): string | undefined =>
-  startupFailure(screen, modelAnswered(deps.config.sessionsDir, cwd, session, since), cols);
+export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: string, since: number): string | undefined =>
+  startupFailure(screen, launchReply(deps.config.sessionsDir, cwd, session, since));
 
 // A running agent is not yet a good start: a lane that never sets its goal does its first turn and stops, and the lead
 // found the quiet lane long after a STARTUP_OK (dori-superagent issue #50 reproduced here (MIT):
@@ -57,7 +57,7 @@ export const failureOf = (deps: FlowDeps, screen: string, cwd: string, session: 
 // screen reads run long on a loaded host (dori-superagent PR #83 (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/83).
 // The goal record holds at any pane width; omo cuts its "Pursuing goal" footer to the pane's ("Pur..." at ~31 columns),
 // so no footer is read for the goal (dori-superagent PR #123 (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/123).
-export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: string, session: string, launchedAt: number, prompted: number, recheck: () => Promise<boolean>, cols?: number): Promise<string | undefined> => {
+export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd: string, session: string, launchedAt: number, prompted: number, recheck: () => Promise<boolean>): Promise<string | undefined> => {
   // no session id in the agent's command line (aoe did not pin one, or an agentCommand that is not omo): which session is
   // the lane's is not known, and guessing it could read another session's goal
   if (!deps.readGoal && !session) return `STARTUP_UNCONFIRMED ${key} ${pane}: the agent runs but its command line names no session id, so its goal cannot be read; last lines: ${lastLines(await readScreen(deps.run, deps.config.backend, pane, 40))}`;
@@ -67,11 +67,15 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
     const gone = await agentGone(deps, pane);
     if (gone) return `STARTUP_ERROR ${key} ${pane}: ${gone}`;
     const goal = await read(pane);
-    if (typeof goal === "object") return undefined;
+    // a goal is good news only when this launch's newest model reply did not fail: a resumed session keeps its goal, and a
+    // lane may set its goal before a later call fails; such a reply goes through the same idle reads (review 9 of #471)
+    if (typeof goal === "object" && launchReply(deps.config.sessionsDir, cwd, session, launchedAt)?.error === undefined) return undefined;
     const screen = await readScreen(deps.run, deps.config.backend, pane, 40);
-    const bad = failureOf(deps, screen, cwd, session, launchedAt, cols);
+    const bad = failureOf(deps, screen, cwd, session, launchedAt);
     if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad}`;
     if (await firstTurnRuns(deps, pane, cwd, session, screen)) {
+      // a lane with a goal whose turn runs again (a retry) is at work
+      if (typeof goal === "object") return undefined;
       await deps.registry.patch(key, { pendingGoal: { idle: 0, at: deps.clock.now() } });
       return `STARTUP_PENDING_GOAL ${key} ${pane}: its first turn is still on and has set no goal yet; dori watch says LANE_NO_GOAL if it ends without one`;
     }
@@ -79,6 +83,12 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
       if (await recheck()) continue;
       return `STARTUP_UNCONFIRMED ${key} ${pane}: the agent runs but its session holds no transcript of its prompt, so it has not taken its launch prompt, ${Math.round((deps.clock.now() - prompted) / 1_000)} s after it; last lines: ${lastLines(screen)}`;
     }
+    // three idle reads with no running turn and no job of its own: the first turn is over, so a model reply of this launch
+    // that is still the newest and failed is the failed start, whatever its text says (its first line is the reason)
+    const failed = idle >= GOAL_WAIT.idleChecks ? launchReply(deps.config.sessionsDir, cwd, session, launchedAt)?.error : undefined;
+    if (failed !== undefined) return `STARTUP_ERROR ${key} ${pane}: ${failed.split("\n")[0]?.trim().slice(0, 160) || "the model call failed"}`;
+    // a goal held back above only by a failed reply that a retry answered during this read: the lane is at work (review 10 of #471)
+    if (idle >= GOAL_WAIT.idleChecks && typeof goal === "object") return undefined;
     if (idle++ >= GOAL_WAIT.idleChecks) return `STARTUP_NO_GOAL ${key} ${pane}: the agent runs but ${noGoalWhy(goal)}: its first turn ended ${Math.round((deps.clock.now() - prompted) / 1_000)} s after its prompt; last lines: ${lastLines(screen)}`;
     await deps.clock.sleep(GOAL_WAIT.everyMs);
   }

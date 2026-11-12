@@ -4,8 +4,7 @@ import { isHerdrPane } from "./herdr.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen } from "./panes.ts";
 import { lastLines } from "./pending-goal.ts";
-
-const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API key|model_not_available|usage limit|rate limit|quota|Session crashed|unknown provider|Model "[^"\n]*" not found|Pane is dead/i;
+import { startupPhrase } from "./startup-phrases.ts";
 
 // A failure word is a failed start only where the agent itself put it (dori-superagent PR #51 review reproduced here (MIT):
 // https://github.com/sisyphuslabs/dori-superagent/pull/51#discussion_r4445875794, a working lane quotes such words). On
@@ -16,43 +15,44 @@ const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API ke
 // "The <provider> account usage limit has been reached" or "All <name> accounts for <provider> are currently blocked";
 // tmux adds "Pane is dead" at the bottom; bun's own crash is "error: Cannot find module". So a failure word counts only on
 // such a line (prose that merely starts with a failure word or "Error handling ..." is none), never while a turn runs (a
-// running lane quotes what it reads; a 429 omo retries shows no running-turn mark and still counts), and never once the
-// model has answered this launch: the newest reply in the lane's own session, written since the launch began, ended
-// without an error (a resumed session's older replies say nothing about this start).
+// running lane quotes what it reads; a 429 omo retries shows no running-turn mark and still counts). The lane's own
+// session goes first: when its newest reply was written since the launch began (a resumed session's older replies say
+// nothing about this start), that reply says how the start went: none when it ended without an error, else the phrase in
+// its error text, read as omo shows it, after "Error: " (a bare raw code such as QUOTA_EXCEEDED is then a value, review 6
+// of #471). That text is whole, while omo wraps its own error to the pane itself (pi-tui Text, one space each side) and
+// prints the rows as lines hc keeps apart: at 32 columns " Error: The provider account is" / " out of quota. ..."
+// (review 5 of #471). The session keeps the provider's raw text, and omo shows some of it only as its own notice on
+// screen (a raw usage_not_included as "The <p> account usage limit has been reached", senpi describeUsageLimitMessage),
+// so a failed reply whose text names no failure is read on screen next. A narrow pane can split that notice too, yet one
+// read cannot tell a failed reply from a retry or fallback omo is still making in the same turn (no screen text proves
+// the turn is over, dori challenge of the review 7 plan of #471): such a reply is judged where launch would say
+// STARTUP_NO_GOAL (launch-startup.ts startupGoal). With no reply of this launch only the screen can tell.
+// Decided trade-offs (lead decision 2026-11-12, references/sessions.md): before the model has replied, an own error omo's
+// renderer splits across rows on a narrow pane is STARTUP_NO_GOAL or UNCONFIRMED, not STARTUP_ERROR (the lane still
+// shows as stopped); a failed reply with no failure phrase is reported about 40 s after the prompt, not at 20 s.
 const OWN_ERROR = /^ ?(?:error:|All \S+ accounts for \S+ are currently blocked|The \S+ account usage limit has been reached|Pane is dead)/i;
 
-// hc prints a long line as rows cut at the pane's width (cols) with trailing blanks dropped, so an own error line can carry
-// its failure words across a wrap ("Error: rate" / "limit reached"): the line goes on into each next row while its row
-// fills the pane, cols cells (cut inside a word: joined as is) or cols - 1 (a cut space, put back) (dori-superagent PR #205
-// (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/205, its hc joinWrapped). Each row is judged on
-// the line it starts, never on the whole screen joined: a full-width warning row joined to the next printed line would
-// hide that line's own error from OWN_ERROR, and that next line still starts a line of its own here.
-const ownLine = (lines: readonly string[], i: number, end: number, cols: number | undefined): string => {
-  let line = lines[i] ?? "";
-  for (let j = i; cols !== undefined && cols > 1 && j + 1 < end; j++) {
-    const width = Bun.stringWidth(lines[j] ?? "");
-    if (width < cols - 1) break;
-    line += (width >= cols ? "" : " ") + (lines[j + 1] ?? "");
-  }
-  return line;
-};
+// Each line of the screen is a line the agent printed: hc's read joins the rows a long line wraps onto (its text is
+// ghostty-vt's plain_text, "soft wraps joined", herdrdev/herdr-core since ca5699ab; hc 0.1.18 measured, review 3 of #471).
+// dori-superagent PR #205 (SUL-1.0: NOTICE, https://github.com/sisyphuslabs/dori-superagent/pull/205) and #470 joined a
+// full-width row to the next instead, which only glued two printed lines; that join is taken out again here.
 
 // omo draws its running-turn mark ("── • Working (4s • esc to interrupt) ──") on the border right above the ❯ line;
 // the status lines under the box may quote the words (a session title), so only the lines just above the ❯ are read.
-// cols: the pane's width when its rows come back wrapped (an hc terminal), else none and no row is taken as wrapped
-export const startupFailure = (screen: string, answered = false, cols?: number): string | undefined => {
+export const startupFailure = (screen: string, reply?: { readonly error?: string }): string | undefined => {
   const lines = screen.split("\n");
   const box = lines.findLastIndex((l) => l.trimStart().startsWith("❯"));
   const running = box >= 0 && lines.slice(Math.max(0, box - 3), box).some((l) => l.toLowerCase().includes(BUSY_MARK));
-  if (answered || running) return undefined;
+  if (running) return undefined;
+  if (reply && reply.error === undefined) return undefined;
+  const said = reply?.error === undefined ? null : startupPhrase(`Error: ${reply.error}`);
+  if (said) return said;
   for (const [i, line] of lines.entries()) {
-    // the whole printed line is rebuilt before it is judged: a wrap can cut omo's own marker too ("All <name> accounts for
-    // <provider>" / "are currently blocked", review 1 of #470)
     const above = box < 0 || i < box;
-    const whole = above ? ownLine(lines, i, box < 0 ? lines.length : box, cols) : line;
-    const own = above ? OWN_ERROR.test(whole) : line.startsWith("Pane is dead");
-    const bad = own ? STARTUP_FAILURE.exec(whole) : null;
-    if (bad) return bad[0];
+    const own = above ? OWN_ERROR.test(line) : line.startsWith("Pane is dead");
+    // the failure phrase table of dori-superagent #207 and #210 (startup-phrases.ts): a topic word is none
+    const bad = own ? startupPhrase(line) : null;
+    if (bad) return bad;
   }
   return undefined;
 };
