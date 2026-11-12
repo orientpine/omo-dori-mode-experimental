@@ -6,6 +6,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { paneLife } from "./aoe.ts";
 import { frozenPanes } from "./frozen.ts";
 import { isHerdrPane } from "./herdr.ts";
+import { hcStaleBlock, isHcPane } from "./hc-pane.ts";
 import { herdrLeadSession, readHerdrSessions, reviveHerdr } from "./herdr-sessions.ts";
 import { sendVerified } from "./panes.ts";
 import { findLead } from "./lead.ts";
@@ -51,6 +52,23 @@ const readMark = (deps: FlowDeps, pane: string): DownMark | undefined => {
 // pane exists and an agent runs in it (aoe.ts paneLife)
 export const leadAlive = async (run: Runner, pane: string): Promise<boolean> => (await paneLife(run, pane)).live;
 
+// An hc lead whose status stayed blocked with no dialog on its screen (hc-pane.ts hcStaleBlock; 2026-11-12 hc:t2r, Needs
+// you on the owner's phone for hours with nothing to answer): told once per block, keyed by the time hc's status was set,
+// so a lead going from working back to idle under the same block is not told again and a new block is.
+const stalePath = (deps: FlowDeps): string => join(deps.config.stateDir, "lead-stale-blocked.json");
+const staleBlockNotice = async (deps: FlowDeps, pane: string, now: number): Promise<string[]> => {
+  const since = await hcStaleBlock(deps.run, pane, now);
+  if (since === undefined) return [];
+  try {
+    const told = JSON.parse(readFileSync(stalePath(deps), "utf8")) as { pane?: string; since?: number };
+    if (told.pane === pane && told.since === since) return [];
+  } catch {
+    // not told yet
+  }
+  writeFileSync(stalePath(deps), `${JSON.stringify({ pane, since })}\n`);
+  return [`LEAD_STALE_BLOCKED ${pane} hc has said blocked since ${new Date(since).toISOString()} but omo's idle input box is on screen and no dialog: the owner's phone shows Needs you with nothing to answer. dori type still gets through; the status clears only when the lead restarts in the same conversation while idle (ask Soodori in #dori-pair)`];
+};
+
 export const revivedText = (since: string, what = "tmux session"): string =>
   `[DORI] LEAD_REVIVED: your session was down since ${since} (its ${what} was gone) and dori watch started it again in the same conversation. Read the owner's messages in the inbox since then and answer him.`;
 
@@ -86,9 +104,10 @@ export const leadDownTick = async (deps: FlowDeps, env: Readonly<Record<string, 
     // lead-limit check, move at but not the model; no record yet, as after a handover moved the lead: read it now)
     const recordedAt = Date.parse(readHerdrSessions(deps.config.stateDir)[pane]?.modelAt ?? "");
     if (isHerdrPane(pane) && !(now - recordedAt < RECORD_EVERY_MS)) await herdrLeadSession(deps.run, deps.config, pane, true).catch(() => "");
-    if (!mark) return [];
+    const stale = isHcPane(pane) ? await staleBlockNotice(deps, pane, now) : [];
+    if (!mark) return stale;
     rmSync(markPath(deps), { force: true });
-    return [`LEAD_UP ${pane} down since ${mark.since} (${Math.round((now - Date.parse(mark.since)) / 60_000)} min, ${mark.revives} revive(s))`];
+    return [...stale, `LEAD_UP ${pane} down since ${mark.since} (${Math.round((now - Date.parse(mark.since)) / 60_000)} min, ${mark.revives} revive(s))`];
   }
   const out: string[] = [];
   let next: DownMark = mark ?? { pane, since: new Date(now).toISOString(), revives: 0 };

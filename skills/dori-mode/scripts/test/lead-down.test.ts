@@ -8,6 +8,7 @@ import { recordHerdrSession } from "../src/herdr-sessions.ts";
 import { watchTick } from "../src/done-flow.ts";
 import { leadDownTick, REVIVE_SCRIPT } from "../src/lead-down.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
+import { FakeHc, terminal } from "./fake-hc.ts";
 
 const T0 = Date.parse("2026-10-22T09:23:14Z");
 const MIN = 60_000;
@@ -65,6 +66,28 @@ test("a lead whose tmux session is gone is started again in its own unit after l
   life.down = false;
   expect(await leadDownTick(deps(T0 + 17 * MIN), ENV)).toEqual([`LEAD_UP ${PANE} down since 2026-10-22T09:23:14.000Z (17 min, 2 revive(s))`]);
   expect(await leadDownTick(deps(T0 + 18 * MIN), ENV)).toEqual([]);
+});
+
+test("an hc lead whose status stayed blocked over its idle input box is told once per block as LEAD_STALE_BLOCKED", async () => {
+  // 2026-11-12 hc:t2r: a permission dialog left the screen unsettled and hc said blocked for hours (Needs you on the phone)
+  const blocked = (ms: number) => ({ status: { state: "blocked", app: "omo" }, status_ms: ms });
+  const fake = new FakeHc({ t9: terminal({ ...blocked(T0 - 30 * MIN), screen: "reply\n─────\n❯ \n─────\n(OmO) watching 6" }) });
+  const base = depsFor(newWorld(), fakeClock(T0), state.dir, { leadPane: "hc:t9" });
+  const deps: FlowDeps = {
+    ...base,
+    run: async (argv, opts) => {
+      if (argv[0] !== "hc") return base.run(argv, opts);
+      const r = await fake.exec("hc", argv.slice(1));
+      return { code: r.code, out: r.stdout.trim(), err: r.stderr.trim() };
+    },
+  };
+  expect(await leadDownTick(deps, ENV)).toEqual([expect.stringContaining("LEAD_STALE_BLOCKED hc:t9")]);
+  expect(await leadDownTick(deps, ENV)).toEqual([]);
+  const t9 = fake.terminals.get("t9");
+  if (t9) Object.assign(t9, { status: { state: "idle", app: "omo" }, status_ms: T0 - 10 * MIN });
+  expect(await leadDownTick(deps, ENV)).toEqual([]);
+  if (t9) Object.assign(t9, blocked(T0 - 5 * MIN));
+  expect(await leadDownTick(deps, ENV)).toEqual([expect.stringContaining("LEAD_STALE_BLOCKED hc:t9")]);
 });
 
 test("after three starts that did not bring the lead back it gives up once; leadReviveMin 0 never starts it; a live lead costs nothing", async () => {
