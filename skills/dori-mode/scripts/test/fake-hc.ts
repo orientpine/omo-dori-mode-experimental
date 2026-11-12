@@ -9,6 +9,8 @@ export type FakeTerminal = {
   title?: string;
   cwd?: string;
   status: FakeStatus;
+  /** When the program last set its status (hc get's status_ms, wall clock ms). */
+  status_ms?: number;
   reported: boolean;
   turn: number;
   foreground: { name: string; argv: string[]; pid: number } | null;

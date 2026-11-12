@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { liveSessions, QUESTION_MARK, sessionFor } from "./aoe.ts";
+import { BUSY_MARK, liveSessions, QUESTION_MARK, sessionFor } from "./aoe.ts";
 import { readFrozen } from "./frozen.ts";
 import { Registry } from "./registry.ts";
 import { hcCall, isKind } from "./runtime/hc/exec.ts";
@@ -164,6 +164,32 @@ export const hcOpen = async (rt: SessionRuntime, run: Runner, clock: Clock, opts
   return { pane };
 };
 
+// A blocked status no dialog holds any more (2026-11-12, hc:t2r): senpi reports blocked while a dialog's promise is open,
+// and took a permission dialog off the screen without settling it, so the status stayed blocked for hours over omo's own
+// input box. It is stale only when all of these hold: hc's status has said blocked for STALE_BLOCKED_MS (a dialog that
+// just opened draws within that), and the bottom of the screen is omo's empty input box with no running-turn mark and no
+// open question. A dialog on screen replaces that box (senpi's selector has no ❯ line), and an idle agent starts no new
+// dialog before a turn runs, so the text goes to the editor and answers nothing. The status's time, else undefined.
+const STALE_BLOCKED_MS = 2 * 60_000;
+const idleInputBox = (screen: string): boolean => {
+  const lines = screen.replace(/\n+$/, "").split("\n");
+  const box = lines.findLastIndex((l) => l.trimStart().startsWith("❯"));
+  if (box < 0 || lines.length - 1 - box > 4) return false;
+  const border = (l: string): boolean => l.trimStart().startsWith("─");
+  const above = lines.slice(Math.max(0, box - 2), box);
+  // an empty editor only: a draft on the ❯ line, or a second line under it, would be sent with the text (review 1 of #464)
+  const empty = (lines[box] ?? "").trim() === "❯" && border(lines[box + 1] ?? "");
+  return empty && above.some(border) && !above.some((l) => l.toLowerCase().includes(BUSY_MARK));
+};
+export const hcStaleBlock = async (run: Runner, pane: string, now = Date.now()): Promise<number | undefined> => {
+  const t = await hcCall(execOf(run), ["get", hcRef(pane).id]).catch(() => undefined);
+  const status = t?.["status"] as { state?: unknown } | undefined;
+  const since = t?.["status_ms"];
+  if (status?.state !== "blocked" || typeof since !== "number" || now - since < STALE_BLOCKED_MS) return undefined;
+  const screen = await hc(run).read(hcRef(pane), 0).catch(() => "");
+  return idleInputBox(screen) && !QUESTION_MARK.test(screen) ? since : undefined;
+};
+
 // What dori type gets into an hc pane: hc send pastes the text and presses Enter in one call, so Enter is nothing here;
 // typed under "any" like a herdr pane (a running turn takes it as steering), never into a shell, an unreported program,
 // a blocked agent or an open omo question. A string is why nothing was sent.
@@ -184,6 +210,17 @@ export const hcType = async (run: Runner, pane: string, text: string): Promise<s
   const out = await hc(run).deliver(hcRef(pane), text, { when: "any" });
   if (out.kind === "delivered") return undefined;
   if (out.kind === "no-agent") return `PANE_DEAD: hc says no agent reads ${pane}; nothing was typed`;
+  if (out.kind === "not-ready" && out.status === "blocked") {
+    const since = await hcStaleBlock(run, pane);
+    if (since !== undefined) {
+      const forced = await hc(run).deliver(hcRef(pane), text, { when: "any", force: true });
+      if (forced.kind === "delivered") {
+        process.stderr.write(`STALE_BLOCKED ${pane}: hc has said blocked since ${new Date(since).toISOString()} but omo's idle input box is on screen and no dialog, so the text was typed; the agent's own status (Needs you) clears only when it restarts in the same conversation at idle\n`);
+        return undefined;
+      }
+      if (forced.kind === "ambiguous") return `hc send to ${pane} did not complete (${forced.detail}); the text may have arrived`;
+    }
+  }
   if (out.kind === "not-ready") return out.status === "blocked" ? `PANE_BLOCKED: the agent in ${pane} waits on a confirmation the text would answer; nothing was typed` : `the agent in ${pane} is in state ${out.status}, not one that reads input, so nothing was typed`;
   return `hc send to ${pane} did not complete (${out.kind === "ambiguous" ? out.detail : out.kind}); the text may have arrived`;
 };

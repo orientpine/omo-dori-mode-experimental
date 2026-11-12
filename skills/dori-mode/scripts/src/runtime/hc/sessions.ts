@@ -2,7 +2,8 @@
 import type { Exec } from "../exec.ts";
 import { type CreateSpec, HC_ADDRESS, type SessionInfo, type SessionRef } from "../types.ts";
 import { hcCall, isKind } from "./exec.ts";
-import { statusWord } from "./probe.ts";
+import { interactiveShellInFront } from "../foreground.ts";
+import { probe, statusWord } from "./probe.ts";
 
 const NAME_MAX = 32;
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -91,9 +92,21 @@ export async function create(exec: Exec, spec: CreateSpec, shell: string): Promi
   return { runtime: "hc", id, group: spec.group ?? "dori" };
 }
 
-/** Types the command into the session's shell: a shell reports no status, so there is no `--if` gate. */
+/**
+ * Types the command into the session's shell: a shell reports no status, so there is no `--if` gate. hc keeps the last
+ * status of a program that died (hc 0.1.18: a blocked omo killed at its prompt stayed blocked over its bash, hc:t2r
+ * 2026-11-12), and refuses a send as `blocked`; with only the shell in front no dialog can take the text, so it is sent
+ * again with `--force`. Any other refusal, or a blocked terminal whose program still runs, is thrown as before.
+ */
 export async function start(exec: Exec, id: string, command: string): Promise<void> {
-  await hcCall(exec, ["send", id, "--", command]);
+  try {
+    await hcCall(exec, ["send", id, "--", command]);
+  } catch (e) {
+    // a shell seen in front, never the doubt a missing foreground is (shellInFront is true then too; review 1 of #464)
+    const fg = isKind(e, "blocked") ? (await probe(exec, id)).foreground : undefined;
+    if (!fg?.length || !interactiveShellInFront(fg)) throw e;
+    await hcCall(exec, ["send", id, "--force", "--", command]);
+  }
 }
 
 /** This core's live terminals, all of them or those labelled `dori.group=<group>`. */
