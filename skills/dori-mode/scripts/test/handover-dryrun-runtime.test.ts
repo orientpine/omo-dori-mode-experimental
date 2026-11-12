@@ -42,10 +42,10 @@ const laneDryRun = async (runtime: RuntimeKind): Promise<string> => {
   return printed.find((l) => l.startsWith("HANDOVER_DRY_RUN")) ?? printed.join("\n");
 };
 
-const leadDryRun = async (runtime: RuntimeKind): Promise<string> => {
+const leadDryRun = async (runtime: RuntimeKind, callNames: readonly string[] = []): Promise<string> => {
   useConfiguredRuntime(runtime);
   const base = depsFor(world, fakeClock(0), dir, { backend: "herdr", runtime, leadPane: "w1:p1", agentCommand: ["omo", "--model", "{model}", "{prompt}"], sessionsDir: join(dir, "sessions") });
-  const deps: HandoverDeps = { ...base, ...extras, cardDir: join(dir, "cards"), configPath: join(dir, "config.json"), envPath: join(dir, "dori.env"), inbox: join(dir, "inbox.jsonl"), routedPane: async () => "w1:p1", envLeadPane: "", timers: async () => [], restart: async () => undefined };
+  const deps: HandoverDeps = { ...base, ...extras, config: { ...base.config, discord: { ...base.config.discord, callNames } }, cardDir: join(dir, "cards"), configPath: join(dir, "config.json"), envPath: join(dir, "dori.env"), inbox: join(dir, "inbox.jsonl"), routedPane: async () => "w1:p1", envLeadPane: "", timers: async () => [], restart: async () => undefined };
   const r = await handover(deps, { dryRun: true, noMonitors: true });
   expect(r.code).toBe(0);
   return printed.find((l) => l.startsWith("HANDOVER_DRY_RUN")) ?? printed.join("\n");
@@ -57,4 +57,10 @@ test.each(["hc", "herdr"] as const)("a lane dry run on backend herdr names the r
 
 test.each(["hc", "herdr"] as const)("a lead dry run on backend herdr names the runtime %s that the config chose", async (runtime) => {
   expect(await leadDryRun(runtime)).toStartWith(`HANDOVER_DRY_RUN would open ${runtime} session "`);
+});
+
+// The lead's hc terminal is named after this Dori (its first call name hc can spell); herdr tabs and a Dori with no such
+// name keep the handover's own title (owner 2026-11-12, doriterm's lead rows).
+test.each([["hc", ["짱돌", "ZzangDori"], true], ["herdr", ["짱돌", "ZzangDori"], false], ["hc", ["짱돌", "짱도리"], false]] as const)("a lead dry run on %s with call names %j opens zzangdori-lead: %p", async (runtime, names, named) => {
+  expect((await leadDryRun(runtime, names)).includes(' session "zzangdori-lead" ')).toBe(named);
 });

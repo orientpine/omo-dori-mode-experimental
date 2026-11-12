@@ -115,6 +115,22 @@ test("hc lead handover commits replacement routing in the same group and named c
   expect(readRollovers(dir).at(-1)).toMatchObject({ result: "done-frozen" });
 }, { timeout: 0 });
 
+// The owner reads the lead rows in doriterm by name (2026-11-12: "dori-mode-11111163은 뭐야? 다른 리드들은 이름이 바로 보이는데?"):
+// a new hc lead is named after this Dori, and while the frozen old lead holds that name the next free -2 is used.
+test.each([["dori-mode-11111633", "zzangdori-lead"], ["zzangdori-lead", "zzangdori-lead-2"]])("hc lead handover from a lead named %s names the new terminal %s", async (old, expected) => {
+  // Given: an hc lead with that name, and a Dori the owner calls 짱돌 / ZzangDori; the handover gets no title
+  const { rig, deps: baseDeps } = setup();
+  const state = rig.read();
+  saveCore(dir, { ...state, terminals: { t1: { ...state.terminals["t1"]!, name: old } } });
+  const deps: HandoverDeps = { ...baseDeps, config: { ...baseDeps.config, discord: { ...baseDeps.config.discord, callNames: ["짱돌", "짱도리", "ZzangDori"] } } };
+  // When
+  const result = await handover(deps, { approvedBy: OPTIONS.approvedBy, noMonitors: true, verifyMin: 1 });
+  // Then: the replacement terminal carries this Dori's lead name, its labels too
+  expect(result).toMatchObject({ code: 0, to: "hc:t2" });
+  expect(rig.read().terminals["t2"]?.name).toBe(expected);
+  expect(rig.read().terminals["t2"]?.labels["dori.name"]).toBe(expected);
+}, { timeout: 0 });
+
 test("hc lead handover leaves the old lead routed and closes the replacement when its agent cannot start", async () => {
   // Given: hc creates the replacement's shell but rejects its initial agent command.
   const { rig, deps, lines, signals } = setup();

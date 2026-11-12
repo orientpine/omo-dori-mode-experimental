@@ -22,10 +22,10 @@ import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
 import { paneGroup, isHerdrPane } from "./herdr.ts";
 import { omoSession, sendVerified } from "./panes.ts";
-import { hasSessionSelector } from "./session-id.ts";
+import { hcLeadTitle } from "./hc-pane.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso, openingRuntime } from "./run.ts";
-import { descendants, ended, type Proc, sessionDirFor } from "./session-id.ts";
+import { descendants, ended, hasSessionSelector, type Proc, sessionDirFor } from "./session-id.ts";
 import { flat, missingHeadings, quoted, ROUND_TRIES } from "./restatement.ts";
 import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFile, type Signals, sessionSignals, setQuiet, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
 import { turnRunning } from "./submit.ts";
@@ -770,7 +770,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   emit(`HANDOVER_NOTE ${note}: ${facts.lanes.length} lanes, ${facts.monitors.length} monitors, ${facts.watchers.length} watchers, ${facts.cards.length} open questions, ${facts.todos.length} todos, ${facts.worklog?.open ?? 0} open worklog items, ${facts.timers.length} timers, ${facts.ownerWords.length} owner messages, ${facts.quotes?.length ?? 0} quotes from the old conversation, old log ${facts.oldLog ? "yes" : "no"}${opts.note ? "" : "; HANDOVER_NO_LEAD_NOTE (pass --note FILE with your summary, dori handover --template)"}`);
   const units = config.handover.services.length ? config.handover.services : config.update.services.map((s) => s.unit);
   const model = opts.model || config.handover.model || config.defaultModel;
-  const title = opts.title || config.handover.title || `${old.title.replace(/-\d{8}$/, "")}-${stamp.slice(4, 8)}${stamp.slice(9, 13)}`;
+  const title = opts.title || config.handover.title || (await hcLeadTitle(deps.run, config.backend, config.discord.callNames)) || `${old.title.replace(/-\d{8}$/, "")}-${stamp.slice(4, 8)}${stamp.slice(9, 13)}`;
   if (opts.dryRun) {
     deps.print(`HANDOVER_DRY_RUN would open ${openingRuntime(deps.run, config.backend)} session "${title}" in ${cwd} (${model}), point leadPane and ${facts.lanes.length} lanes at it, restart ${units.join(",") || "no units"}, check ${facts.monitors.length} monitors (${facts.monitors.map((m) => m.description || m.command || m.path).join(", ") || "none"}), ${facts.watchers.length} watchers (${facts.watchers.map((w) => w.name).join(", ") || "none"}) and two probes within ${opts.verifyMin ?? config.handover.verifyMin} min, then ${opts.keepOld ? "keep" : "close"} ${config.leadPane}`);
     return { code: 0, note };
