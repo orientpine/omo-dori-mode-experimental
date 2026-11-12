@@ -78,7 +78,8 @@ test.skipIf(process.platform === "win32")("a herdr lane launched with this home'
 });
 
 test("a revive that blanks DORI_SLACK_TOKEN is refused on pwsh before 7.5, which would drop the empty value, as a fresh launch is (#201 review 2)", async () => {
-  // Given: a stopped herdr agent whose pane shell is pwsh 7.4, and a launcher with an explicit token file
+  // Given: a stopped herdr agent whose pane shell is pwsh 7.4, and a launcher naming its home's own token file
+  process.env["DORI_CONFIG"] = join(state.dir, "config.json");
   process.env["DORI_SLACK_TOKEN_FILE"] = join(state.dir, "slack-token");
   const base = depsFor(world, fakeClock(T0), state.dir, { backend: "herdr" });
   recordHerdrSession(state.dir, "w9:p9", { session: SESSION, cwd: state.dir, model: "m/x", at: new Date(0).toISOString() });
@@ -92,6 +93,6 @@ test("a revive that blanks DORI_SLACK_TOKEN is refused on pwsh before 7.5, which
   // When: the lead revives it on Windows
   const line = await reviveHerdr(pwsh74, base.clock, base.config, "w9:p9", "", async () => true, "win32");
   // Then: it is refused, naming the variable, and no agent line is run
-  expect(line).toMatch(/^REVIVE_FAIL w9:p9: .*DORI_SLACK_TOKEN needs pwsh 7\.5\+/);
+  expect(line).toMatch(/^REVIVE_FAIL w9:p9: .*DORI_SLACK_TOKEN\b.* needs pwsh 7\.5\+/);
   expect(world.calls.some((c) => c[0] === "herdr" && c[2] === "run")).toBe(false);
 });

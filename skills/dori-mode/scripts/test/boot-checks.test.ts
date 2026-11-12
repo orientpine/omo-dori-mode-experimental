@@ -75,6 +75,18 @@ test("DRIFT counts open lanes whose pane herdr reports gone; closed and live lan
   expect(probed.sort()).toEqual(["w1:p8", "w1:p9"]);
 });
 
+// From upstream https://github.com/sisyphuslabs/dori-superagent/pull/219 (token stack squash 49fba4dc, #204's DRIFT LOW).
+test("a verified-done lane on a gone pane is not drift, as it is not VANISHED (crash before the closed write)", async () => {
+  // Given a lane settled as verified-done whose pane was closed before its status reached closed.
+  const world = newWorld();
+  world.panes = [{ pane_id: "w2:p1", workspace_id: "w2" }];
+  const result = await boot(world, {}, [lane("settled", "verified-done", { runtime: "herdr", id: "w1:p8" })]);
+  // Then boot neither flags nor probes it.
+  expect(result.lines).toContain("DRIFT n=0");
+  expect(result.lines.some((l) => l.startsWith("VANISHED"))).toBe(false);
+  expect(world.calls.some((c) => c[0] === "herdr" && c[2] === "get")).toBe(false);
+});
+
 test("on hc, DRIFT uses hc's own probe, group filters are checked, and the canonical lead ref is live", async () => {
   const world = newWorld();
   world.terminals = { t1: hcTerm({ labels: { "dori.group": "lanes" } }) };

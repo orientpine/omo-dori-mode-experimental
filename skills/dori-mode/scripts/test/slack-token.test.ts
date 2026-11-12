@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bootCheck, envSlackCheck } from "../src/boot.ts";
 import { loadEnvFile } from "../src/config.ts";
 import { laneHomeEnv } from "../src/home-env.ts";
-import { slackToken, TokenFileError } from "../src/slack-token.ts";
+import { slackToken as readToken, TokenFileError } from "../src/slack-token.ts";
 import { bootDeps, newWorld } from "./boot-fixtures.ts";
 
 let dir: string;
@@ -22,6 +22,8 @@ const tokenFile = (name: string, text: string, mode: number): string => {
 };
 
 const HOST = process.platform;
+// dir is this home (its config.json), so a token file in it passes the home check (upstream #219, token stack)
+const slackToken = (env: Parameters<typeof readToken>[0], platform: string): string | undefined => readToken(env, platform, process.getuid?.(), env?.["DORI_CONFIG"] ?? join(dir, "config.json"));
 
 test("a nonempty DORI_SLACK_TOKEN is read first, then the trimmed token file when the variable is unset or empty", () => {
   const file = tokenFile("t", "  xoxb-FIXTURE-file\n", 0o600);
@@ -41,7 +43,7 @@ test.skipIf(process.platform === "win32")("a token file open to group or others 
 
 test("a missing or empty token file is refused by path, never read as no token and never showing a value", () => {
   const absent = join(dir, "absent");
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: absent }, HOST)).toThrow(`DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
+  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: absent }, HOST)).toThrow(`DORI_SLACK_TOKEN_FILE ${absent} does not exist`);
   const empty = tokenFile("empty", " \n", 0o600);
   expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: empty }, HOST)).toThrow(`DORI_SLACK_TOKEN_FILE ${empty} is empty`);
 });
@@ -57,11 +59,12 @@ test("a lane home env adds the token file path and an empty token only when the 
   expect(laneHomeEnv({ stateDir: join(dir, "state"), backend: "aoe" }, { DORI_CONFIG: config })).toEqual({});
 });
 
-test("an explicit DORI_SLACK_TOKEN_FILE goes to the lane with the token blanked even when the file is missing, so the lane reports it (#201 review 1)", () => {
-  const absent = join(dir, "absent-token");
+test("an explicit DORI_SLACK_TOKEN_FILE at the home's own slack-token goes to the lane with the token blanked even when missing, so the lane reports it; any other missing name is refused (#201 review 1, upstream #213)", () => {
+  const absent = join(dir, "slack-token");
   const env = laneHomeEnv({ stateDir: join(dir, "state"), backend: "herdr" }, { DORI_CONFIG: join(dir, "config.json"), DORI_SLACK_TOKEN_FILE: absent, DORI_SLACK_TOKEN: "xoxb-FIXTURE-env" });
   expect(env).toMatchObject({ DORI_SLACK_TOKEN_FILE: absent, DORI_SLACK_TOKEN: "" });
   expect(() => slackToken(env, HOST)).toThrow(`DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
+  expect(() => laneHomeEnv({ stateDir: join(dir, "state"), backend: "herdr" }, { DORI_CONFIG: join(dir, "config.json"), DORI_SLACK_TOKEN_FILE: join(dir, "absent-token") })).toThrow(/does not exist/);
 });
 
 test.skipIf(process.platform === "win32")("boot prints a bad token file as a failed SLACK token-file line, still runs its other checks, and shows no token", async () => {
@@ -73,11 +76,11 @@ test.skipIf(process.platform === "win32")("boot prints a bad token file as a fai
     throw new Error("no Slack client is made for a bad token file");
   };
   // When: boot runs with each
-  const wide = await bootCheck({ ...bootDeps(newWorld(), dir), slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: open }, "linux") });
-  const missing = await bootCheck({ ...bootDeps(newWorld(), dir), slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: absent }, "linux") });
+  const wide = await bootCheck({ ...bootDeps(newWorld(), dir), slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: open }, "linux", join(dir, "config.json")) });
+  const missing = await bootCheck({ ...bootDeps(newWorld(), dir), slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: absent }, "linux", join(dir, "config.json")) });
   // Then: each names the file, the local checks ran, boot is incomplete, and the value never shows
   expect(wide.lines).toContain(`SLACK token-file: DORI_SLACK_TOKEN_FILE ${open} is open to group or others (mode ${mode}); chmod 600 it`);
-  expect(missing.lines).toContain(`SLACK token-file: DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
+  expect(missing.lines.some((l) => l.startsWith(`SLACK token-file: DORI_SLACK_TOKEN_FILE ${absent} does not exist`))).toBe(true);
   for (const r of [wide, missing]) {
     expect(r.lines.some((l) => l.startsWith("RUNTIME "))).toBe(true);
     expect(r.lines.at(-1)).toBe("BOOT incomplete read-only; nothing restarted, written or stopped");
@@ -127,4 +130,45 @@ test("a fresh file-backed lane of home B (its own marker, blanked token) on a se
   await loadEnvFile(join(dir, "dori.env"), env);
   // Then: B's inbox, no inherited channel (B's dori.env has none), and B's token file with its blanked token
   expect([env["DORI_DISCORD_INBOX"], env["DORI_DISCORD_CHANNEL"], slackToken(env, HOST)]).toEqual(["/b/inbox.jsonl", undefined, "xoxb-FIXTURE-b"]);
+});
+
+test.skipIf(process.platform === "win32")("a lane env whose home is reached through 'link/..' is another home's in a home that only reads the same on paper (upstream #219)", async () => {
+  // Given: home A's config is near/link/../config.json, which the OS opens as far/config.json, so far is A's token home;
+  // home B's config is near/config.json, the same text once '..' is collapsed on paper
+  const far = join(dir, "far");
+  const near = join(dir, "near");
+  mkdirSync(join(far, "a"), { recursive: true });
+  mkdirSync(near);
+  writeFileSync(join(far, "config.json"), "{}");
+  const fileA = join(far, "slack-token");
+  writeFileSync(fileA, "xoxb-FIXTURE-a\n");
+  chmodSync(fileA, 0o600);
+  symlinkSync(join(far, "a"), join(near, "link"));
+  const env: Record<string, string | undefined> = { ...laneHomeEnv({ stateDir: join(dir, "state"), backend: "herdr" }, { DORI_CONFIG: `${near}/link/../config.json` }) };
+  expect(env["DORI_SLACK_TOKEN_FILE"]).toBe(realpathSync(fileA));
+  // When: home B's wrapper runs with that env
+  env["DORI_CONFIG"] = join(near, "config.json");
+  await loadEnvFile(join(near, "dori.env"), env);
+  // Then: home A's token file, its mark and its home are dropped
+  expect([env["DORI_SLACK_TOKEN_FILE"], env["DORI_SLACK_TOKEN_FILE_RESOLVED"], env["DORI_SLACK_TOKEN_HOME"]]).toEqual([undefined, undefined, undefined]);
+});
+
+test("a lane launched before this change (marker = its config path) keeps its token file, now home-checked, not trusted as resolved (review 1 of #474)", async () => {
+  // Given: the env the previous fork launch gave a lane: the file, the blanked token, and the config path as marker
+  const file = tokenFile("slack-token", "xoxb-FIXTURE-legacy\n", 0o600);
+  const config = join(dir, "config.json");
+  const legacy: Record<string, string | undefined> = { DORI_CONFIG: config, DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_HOME: config };
+  // When: the lane runs dori commands after the update, each loading a dori.env that holds another token
+  writeFileSync(join(dir, "dori.env"), "DORI_SLACK_TOKEN=xoxb-FIXTURE-envfile\n");
+  for (const _ of [1, 2, 3]) await loadEnvFile(join(dir, "dori.env"), legacy);
+  // Then: every load keeps the file, the blanked token and the old marker (no resolved mark), so the read still home-checks the file (review 2)
+  expect([legacy["DORI_SLACK_TOKEN_FILE"], legacy["DORI_SLACK_TOKEN"], legacy["DORI_SLACK_TOKEN_HOME"], legacy["DORI_SLACK_TOKEN_FILE_RESOLVED"], slackToken(legacy, HOST)]).toEqual([file, "", config, undefined, "xoxb-FIXTURE-legacy"]);
+  const outside = join(dir, "elsewhere");
+  mkdirSync(outside);
+  const far = join(outside, "slack-token");
+  writeFileSync(far, "xoxb-FIXTURE-far\n");
+  chmodSync(far, 0o600);
+  const legacyFar: Record<string, string | undefined> = { DORI_CONFIG: join(dir, "home", "config.json"), DORI_SLACK_TOKEN_FILE: far, DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_HOME: join(dir, "home", "config.json") };
+  await loadEnvFile(join(dir, "home", "dori.env"), legacyFar);
+  expect(() => slackToken(legacyFar, HOST)).toThrow(/is outside this home/);
 });

@@ -9,10 +9,11 @@ import type { Slack } from "./messenger/slack.ts";
 import { type BootLane, finished, monitorCleanup, readMonitorManifests } from "./boot-monitors.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { ReportError, type Reports } from "./reports.ts";
-import { slackToken, TokenFileError } from "./slack-token.ts";
+import { configPath } from "./config-env.ts";
+import { slackToken, TokenFileError, tokenFileNotice } from "./slack-token.ts";
 import { type Worklog, worklogLines } from "./worklog.ts";
 
-export type SlackCheck = (signal?: AbortSignal) => Promise<{ readonly userId: string; readonly teamId: string } | null>;
+export type SlackCheck = (signal?: AbortSignal) => Promise<{ readonly userId: string; readonly teamId: string; readonly notice?: string } | null>;
 export type BootDeps = Pick<FlowDeps, "run" | "registry" | "config" | "clock"> & {
   readonly reports: Reports;
   readonly worklog: Worklog;
@@ -31,10 +32,14 @@ export const slackAuthCheck = (slack: Pick<Slack, "call"> | null): SlackCheck =>
 };
 
 // The boot Slack step from the environment (#201): the token is read inside the step, so a bad token file is a failed
-// SLACK line and boot still runs and prints its other checks instead of exiting before them.
-export const envSlackCheck = (client: (token: string) => Pick<Slack, "call">, env: Readonly<Record<string, string | undefined>> = process.env, platform: string = process.platform): SlackCheck => async (signal) => {
-  const token = slackToken(env, platform);
-  return await slackAuthCheck(token ? client(token) : null)(signal);
+// SLACK line and boot still runs and prints its other checks instead of exiting before them. A token file outside this
+// home is refused here too, so the lead sees it at boot and not only at a launch, and the string home-checked is the one
+// read; on Windows a token from a file comes with the notice that its ACL is unchecked (upstream #219, token stack).
+export const envSlackCheck = (client: (token: string) => Pick<Slack, "call">, env: Readonly<Record<string, string | undefined>> = process.env, platform: string = process.platform, configFile: string = env["DORI_CONFIG"] ?? configPath()): SlackCheck => async (signal) => {
+  const token = slackToken(env, platform, process.getuid?.(), configFile);
+  const auth = await slackAuthCheck(token ? client(token) : null)(signal);
+  const notice = tokenFileNotice(env, platform);
+  return auth && notice ? { ...auth, notice } : auth;
 };
 
 // Read-only recovery after a restart or compaction. Every finding is printed; no lane, registry or watch is changed.
@@ -103,7 +108,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     lines.push(`PANES lead=${lead || "unconfigured"} leadState=${leadLive ? "live" : "missing"} registeredLive=${result.lanes.filter((l) => l.paneState === "live" && l.status !== "closed").length} vanished=${vanished.length} unregistered=${result.unregistered.length}`);
     for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${lane.pane} status=${lane.status}; registry and worktrees preserved; no relaunch`);
     if (result.unregistered.length) lines.push(`UNREGISTERED ${result.unregistered.join(" ")}`);
-    const drift = await driftCheck(rts, registered, { sessions: panes, probeAoe: (pane) => probeAoeSession(deps.run, pane) });
+    const drift = await driftCheck(rts, lanes, { sessions: panes, probeAoe: (pane) => probeAoeSession(deps.run, pane) });
     lines.push(...drift.lines);
     if (drift.failed) failed = true;
   }
@@ -157,7 +162,10 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     if (auth === "timeout") {
       failed = true;
       lines.push(`SLACK auth.test timed out after ${deadlineMs} ms`);
-    } else lines.push(auth ? `SLACK authenticated user=${auth.userId} team=${auth.teamId} (auth.test only; inbox delivery unverified)` : "SLACK skipped (DORI_SLACK_TOKEN not set)");
+    } else {
+      lines.push(auth ? `SLACK authenticated user=${auth.userId} team=${auth.teamId} (auth.test only; inbox delivery unverified)` : "SLACK skipped (DORI_SLACK_TOKEN not set)");
+      if (auth?.notice) lines.push(`SLACK token-file: ${auth.notice}`);
+    }
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     failed = true;
