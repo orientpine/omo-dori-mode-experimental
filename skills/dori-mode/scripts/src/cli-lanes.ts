@@ -63,7 +63,7 @@ const launchCommand: Command = async (context) => {
     }
   }
   console.log(r.startup);
-  process.exit(/^STARTUP_(OK|PENDING_GOAL) /.test(r.startup) ? 0 : 3);
+  process.exit(/^STARTUP_(OK|PENDING_GOAL|DONE) /.test(r.startup) ? 0 : 3);
 };
 
 const adoptCommand: Command = async (context) => {
