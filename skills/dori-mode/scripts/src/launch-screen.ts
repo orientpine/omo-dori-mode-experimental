@@ -18,9 +18,13 @@ import { startupPhrase } from "./startup-phrases.ts";
 // running lane quotes what it reads; a 429 omo retries shows no running-turn mark and still counts). The lane's own
 // session goes first: when its newest reply was written since the launch began (a resumed session's older replies say
 // nothing about this start), that reply says how the start went: none when it ended without an error, else the phrase in
-// its error text. That text is whole, while omo wraps its own error to the pane itself (pi-tui Text, one space each side)
-// and prints the rows as lines hc keeps apart: at 32 columns " Error: The provider account is" / " out of quota. ..."
-// (review 5 of #471). Only with no such reply is the screen read, where a narrow pane can still split a phrase.
+// its error text, read as omo shows it, after "Error: " (a bare raw code such as QUOTA_EXCEEDED is then a value, review 6
+// of #471). That text is whole, while omo wraps its own error to the pane itself (pi-tui Text, one space each side) and
+// prints the rows as lines hc keeps apart: at 32 columns " Error: The provider account is" / " out of quota. ..."
+// (review 5 of #471). The session keeps the provider's raw text, and omo shows some of it only as its own notice on
+// screen (a raw usage_not_included as "The <p> account usage limit has been reached", senpi describeUsageLimitMessage),
+// so a failed reply whose text names no failure, or no such reply at all, leaves the screen to judge, where a narrow
+// pane can still split a phrase.
 const OWN_ERROR = /^ ?(?:error:|All \S+ accounts for \S+ are currently blocked|The \S+ account usage limit has been reached|Pane is dead)/i;
 
 // Each line of the screen is a line the agent printed: hc's read joins the rows a long line wraps onto (its text is
@@ -35,7 +39,9 @@ export const startupFailure = (screen: string, reply?: { readonly error?: string
   const box = lines.findLastIndex((l) => l.trimStart().startsWith("❯"));
   const running = box >= 0 && lines.slice(Math.max(0, box - 3), box).some((l) => l.toLowerCase().includes(BUSY_MARK));
   if (running) return undefined;
-  if (reply) return reply.error === undefined ? undefined : (startupPhrase(reply.error) ?? undefined);
+  if (reply && reply.error === undefined) return undefined;
+  const said = reply?.error === undefined ? null : startupPhrase(`Error: ${reply.error}`);
+  if (said) return said;
   for (const [i, line] of lines.entries()) {
     const above = box < 0 || i < box;
     const own = above ? OWN_ERROR.test(line) : line.startsWith("Pane is dead");

@@ -97,14 +97,18 @@ const failedReply = (errorMessage: string, at: number): FlowDeps => {
   return { ...base, config: { ...base.config, sessionsDir } };
 };
 
-test("a failed reply of this launch is judged by its own error text, which no pane width wraps; the screen only without one", () => {
+test("a failed reply of this launch is judged by its own error text as omo shows it, which no pane width wraps; the screen when that names no failure", () => {
   expect(startupFailure(NARROW)).toBeUndefined();
   expect(failureOf(failedReply("The provider account is out of quota. Action: check the plan or credits.", T0 + 5_000), NARROW, "/tmp/w", SESSION, T0)).toBe("out of quota");
-  // the newest reply failed with no failure phrase: the session says how the start went, a phrase the screen quotes is not it
-  const aborted = failedReply("The operation was aborted.", T0 + 6_000);
-  expect(failureOf(aborted, `Error: 429 Rate limit reached for requests\n${BOX}`, "/tmp/w", SESSION, T0)).toBeUndefined();
+  // the session keeps the provider's raw text, which omo shows after "Error: ": there a bare code is a value (review 6)
+  expect(failureOf(failedReply("QUOTA_EXCEEDED", T0 + 6_000), BOX, "/tmp/w", SESSION, T0)).toBe("QUOTA_EXCEEDED");
+  // omo shows a raw usage limit only as its account notice (senpi retry-fallback/usage-limit.js describeUsageLimitMessage),
+  // so a raw error that names no failure leaves the screen to say it
+  const raw = failedReply("usage_not_included", T0 + 7_000);
+  expect(failureOf(raw, ` The fakep account usage limit has been reached. Switch to another provider with /model.\n${BOX}`, "/tmp/w", SESSION, T0)).toBe("account usage limit has been reached");
+  expect(failureOf(raw, BOX, "/tmp/w", SESSION, T0)).toBeUndefined();
   // a reply from before this launch (a resumed session) says nothing about it: the screen is read
-  expect(failureOf(aborted, `Error: No API key found for groq.\n${BOX}`, "/tmp/w", SESSION, T0 + 60_000)).toBe("No API key");
+  expect(failureOf(raw, `Error: No API key found for groq.\n${BOX}`, "/tmp/w", SESSION, T0 + 60_000)).toBe("No API key");
 });
 
 test("on hc, an own line one cell short of the pane and the next printed line never make a failure together", async () => {
