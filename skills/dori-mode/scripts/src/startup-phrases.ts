@@ -1,7 +1,7 @@
-// Every phrase that means a lane failed to start, one row each (dori-superagent PRs #206, #207 and #210 reproduced here
-// (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/206,
+// Every phrase that means a lane failed to start, one row each (dori-superagent PRs #206, #207, #210 and #212 reproduced
+// here (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/206,
 // https://github.com/sisyphuslabs/dori-superagent/pull/207, https://github.com/sisyphuslabs/dori-superagent/pull/210,
-// their src/startup-screen.ts). launch-screen.ts reads it only on the agent's own error line, one printed
+// https://github.com/sisyphuslabs/dori-superagent/pull/212, their src/startup-screen.ts). launch-screen.ts reads it only on the agent's own error line, one printed
 // line; upstream reads the whole screen with omo's extension warning cut out, which the fork never needs (#205, #470), so
 // upstream's Bun tail rule (#206) is not taken. Three kinds:
 // - `anywhere`: text no healthy screen prints (omo's own failure lines, provider messages). It matches even glued onto other
@@ -10,7 +10,7 @@
 //   component such as `rate limiter`). It must stand alone; see `standsAlone`. Its gaps are single spaces as printed,
 //   never `-`, so a kebab-case lane key such as `fix-rate-limit-error` is not one.
 // - `value`: an error code (`insufficient_quota`, `QUOTA_EXCEEDED`), counted only where it is a value: after `error`,
-//   `code`, `type` or `status` and a `:` or `=` (`"type":"rate_limit_error"`, `code=quotaExceeded`). The same code in
+//   `code`, `type` or `status` in any case and a `:` or `=` (`"type":"rate_limit_error"`, `code=quotaExceeded`). The same code in
 //   source (`case 'rate_limit_error':`, `instanceof RateLimitError`, `X === 'RESOURCE_EXHAUSTED'`) is not.
 // The last five rows are the fork's own, measured on omo 5.1.51 and tmux (launch-screen.ts, test/aoe.test.ts): omo's
 // notices that are failures as a whole, which no upstream row names. test/startup-phrases.test.ts holds the corpus.
@@ -22,7 +22,7 @@ const PHRASES: readonly (readonly [Kind, string])[] = [
   ["anywhere", "model_not_available"],
   ["anywhere", "Session crashed"],
   ["anywhere", "unknown provider"],
-  ["anywhere", "(?:429|Error:|HTTP \\d\\.?\\d?) Too Many Requests"],
+  ["anywhere", "(?:429|Error:) Too Many Requests"],
   ["anywhere", "RESOURCE_EXHAUSTED: Resource exhausted"],
   ["anywhere", "429 status code \\(no body\\)"],
   ["anywhere", "RateLimitError: 4\\d\\d"],
@@ -55,13 +55,17 @@ const standsAlone = (text: string, at: number, found: string): boolean => {
   if (JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[at + found.length + 1] ?? ""))) return false;
   const before = text[at - 1] ?? "";
   if (!JOINS.test(before)) return true;
-  return /^[A-Z]/.test(found) && found.includes(" ");
+  // Glued after an identifier character (`foo_Rate limit exceeded`) is a name, never printed text (#212).
+  return before !== "_" && /^[A-Z]/.test(found) && found.includes(" ");
 };
-// A `value` match counts only as the value of an `error`, `code`, `type` or `status` field as logs and JSON print it:
-// `key: VALUE`, `"key":"VALUE"` or `key=VALUE` with no spaces. The key is a whole lower-case word (`errorType` is not
-// one), and a `= '`, `: '` or `===` is source code (`const code = 'insufficient_quota'`), never a value. The fork also
-// takes omo's own capitalised `Error:` (`Error: QUOTA_EXCEEDED`, review 1 of #471), the way it prints its error lines.
-const VALUE_KEY = /(?:^|[^A-Za-z0-9_])"?(?:[Ee]rror|code|type|status)"?(?::\s*"?|=)$/;
+// A `value` match counts only as the value of an `error`, `code`, `type` or `status` field as logs, JSON and Python reprs
+// print it (#212): `Error: VALUE` or `key=VALUE` (unquoted key, unquoted value), `"key": "VALUE"` (JSON) or
+// `'key': 'VALUE'` (a Python dict repr): the value is quoted only when its key is, with the same quote. The key is a whole
+// word in any case (`ERROR`, `Status`, omo's own `Error:`), never the end of a longer name (`errorType`). An unquoted key
+// with a quoted value is source code (`throw { type: "rate_limit_error" }`, `const code = 'insufficient_quota'`), never a
+// value. The trade-offs this leaves are DECIDED rows in test/startup-phrases.test.ts.
+const VALUE_KEY =
+  /(?:^|[^A-Za-z0-9_])(?:"(?:error|code|type|status)"\s*:\s*"|'(?:error|code|type|status)'\s*:\s*'|(?:error|code|type|status)(?::\s*|=))$/i;
 const isValue = (text: string, at: number, found: string): boolean =>
   VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && !/[a-z0-9_]/i.test(text[at + found.length] ?? "");
 const counts = (kind: Kind, text: string, at: number, found: string): boolean =>

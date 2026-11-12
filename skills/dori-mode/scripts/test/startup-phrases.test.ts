@@ -69,6 +69,11 @@ const RULE: readonly (readonly [string, string])[] = [
   ["error: QUOTA_EXCEEDED", "QUOTA_EXCEEDED"],
   ["code=quotaExceeded", "quotaExceeded"],
   ["status: RESOURCE_EXHAUSTED", "RESOURCE_EXHAUSTED"],
+  // keys in any case and Python reprs (dori-superagent PR #212 (SUL-1.0: NOTICE): https://github.com/sisyphuslabs/dori-superagent/pull/212)
+  ["Error: QUOTA_EXCEEDED", "QUOTA_EXCEEDED"],
+  ["ERROR: insufficient_quota", "insufficient_quota"],
+  ["Status: RESOURCE_EXHAUSTED", "RESOURCE_EXHAUSTED"],
+  ["{'type': 'error', 'error': {'type': 'rate_limit_error', 'message': 'x'}}", "rate_limit_error"],
   ["usage limit reached.", "usage limit reached"],
   ["Loading providers okNo API key found", "No API key"],
   ["Loading providers okRate limit exceeded", "Rate limit exceeded"],
@@ -106,6 +111,8 @@ const HEALTHY: readonly string[] = [
   "throw { type: 'rate_limit_error', message: 'x' }",
   "errorType: RESOURCE_EXHAUSTED",
   "if (code == 'quota_exceeded') retry()",
+  'throw { type: "rate_limit_error", message: "x" }',
+  "foo_Rate limit exceeded",
   "the userQuota field is set",
   "maxQuota of 10",
   "loaded the quota-meter extension",
@@ -123,6 +130,30 @@ const HEALTHY: readonly string[] = [
   "notes in /x/briefs/quota exhausted handling.md",
   "\u276f \n Pursuing goal (1m)",
 ];
+
+// DECIDED: trade-offs ruled on after six review rounds of this matcher (dori-superagent PR #212, LEAD 2026-11-12). Each
+// row says what it reports and why. Changing one is a decision, not a regex fix.
+const DECIDED: readonly (readonly [string, string | null, string])[] = [
+  [
+    "notes in /x/briefs/Quota exceeded handling.md",
+    "Quota exceeded",
+    "a provider phrase glued after a path is caught (/very/long/path/Rate limit exceeded), so a capitalised one inside a path segment alarms too; lane keys and brief names are kebab-case and lower-case",
+  ],
+  [
+    'expect(err.message).toBe("Error: Too Many Requests")',
+    "Error: Too Many Requests",
+    "the printed line is caught wherever it shows; code that quotes it alarms too, and here only the agent's own error line is read",
+  ],
+  [
+    "dispatch({ status: RESOURCE_EXHAUSTED })",
+    "RESOURCE_EXHAUSTED",
+    "an unquoted key with an unquoted value is how logs print a status field, so the same shape in source alarms too",
+  ],
+];
+
+test("every decided trade-off reports what was decided", () => {
+  for (const [text, found, why] of DECIDED) expect([text, why, startupPhrase(text)]).toEqual([text, why, found]);
+});
 
 test("every real tool and provider line reports its phrase", () => {
   for (const [source, text, found] of REAL) expect([source, startupPhrase(text)]).toEqual([source, found]);
@@ -156,7 +187,7 @@ test("whatever printed line follows, the corpus reads line by line", () => {
 });
 
 // omo prints its own errors as `Error: <message>`, so an error code right after that capitalised key is its value (review 1
-// of #471): main counted these quota errors, and so does the table.
+// of #471): main counted these quota errors, and so does the table, which since #212 takes every key in any case.
 test("an error code as the value of omo's own capitalised Error: line is a failure", () => {
   for (const [line, found] of [
     [" Error: QUOTA_EXCEEDED", "QUOTA_EXCEEDED"],
@@ -166,6 +197,4 @@ test("an error code as the value of omo's own capitalised Error: line is a failu
   ] as const)
     expect([line, startupFailure(`${line}\n${BOX}`)]).toEqual([line, found]);
   expect(startupPhrase("Error: QUOTA_EXCEEDED")).toBe("QUOTA_EXCEEDED");
-  // a capitalised key other than omo's Error is still no value context
-  expect(startupPhrase("Type: QUOTA_EXCEEDED")).toBeNull();
 });
