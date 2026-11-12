@@ -79,6 +79,10 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
       if (await recheck()) continue;
       return `STARTUP_UNCONFIRMED ${key} ${pane}: the agent runs but its session holds no transcript of its prompt, so it has not taken its launch prompt, ${Math.round((deps.clock.now() - prompted) / 1_000)} s after it; last lines: ${lastLines(screen)}`;
     }
+    // three idle reads with no running turn and no job of its own: the first turn is over, so a model reply of this launch
+    // that is still the newest and failed is the failed start, whatever its text says (its first line is the reason)
+    const failed = idle >= GOAL_WAIT.idleChecks ? launchReply(deps.config.sessionsDir, cwd, session, launchedAt)?.error : undefined;
+    if (failed !== undefined) return `STARTUP_ERROR ${key} ${pane}: ${failed.split("\n")[0]?.trim().slice(0, 160) || "the model call failed"}`;
     if (idle++ >= GOAL_WAIT.idleChecks) return `STARTUP_NO_GOAL ${key} ${pane}: the agent runs but ${noGoalWhy(goal)}: its first turn ended ${Math.round((deps.clock.now() - prompted) / 1_000)} s after its prompt; last lines: ${lastLines(screen)}`;
     await deps.clock.sleep(GOAL_WAIT.everyMs);
   }
