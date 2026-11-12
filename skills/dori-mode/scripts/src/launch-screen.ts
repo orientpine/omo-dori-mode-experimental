@@ -5,6 +5,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { readScreen } from "./panes.ts";
 import { lastLines } from "./pending-goal.ts";
 import { startupPhrase } from "./startup-phrases.ts";
+import { launchDone } from "./launch-finished.ts";
 
 // A failure word is a failed start only where the agent itself put it (dori-superagent PR #51 review reproduced here (MIT):
 // https://github.com/sisyphuslabs/dori-superagent/pull/51#discussion_r4445875794, a working lane quotes such words). On
@@ -68,6 +69,10 @@ export const startupFailure = (screen: string, reply?: { readonly error?: string
 export const aoeStartup = async (deps: FlowDeps, key: string, pane: string, screen: string, failure: (screen: string) => string | undefined, recheck: () => Promise<boolean>, prompted: number): Promise<string> => {
   for (let shown = screen; ; ) {
     const life = await paneLife(deps.run, pane);
+    if (!life.live && life.how === "gone") {
+      const done = await launchDone(deps, key, pane);
+      if (done) return done;
+    }
     if (!life.live) return `STARTUP_ERROR ${key} ${pane}: ${life.how === "gone" ? (isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`}`;
     const full = await readScreen(deps.run, "aoe", pane);
     if ([shown, full].some((s) => turnRunning(s) || WAKE_MARKS.some((m) => s.includes(m)) || inputLine(s) !== undefined)) return `STARTUP_OK ${key} ${pane}`;

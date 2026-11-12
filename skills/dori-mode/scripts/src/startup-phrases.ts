@@ -46,10 +46,12 @@ const PATTERNS = PHRASES.map(([kind, source]) => ({ kind, re: new RegExp(source,
 // What touching a word match makes it part of something else: a word, a path, a kebab-case name, a file name.
 const JOINS = /[a-z0-9_/\\.-]/i;
 // A `word` match stands alone when nothing in JOINS touches its end (a `.` only when a word goes on: `reached.` ends a
-// sentence, `limited.md` is a file), and nothing touches its start, except when it is glued onto the end of other text,
-// whatever that text ended in (`ok`, `....`, `----`, a path). Then it must read as printed text: it starts with a capital
-// and has a space (`...okRate limit reached`), which camelCase (`onRateLimitExceeded`) and lower-case names
-// (`fix-rate-limit-error`) never are.
+// sentence, `limited.md` is a file), and nothing touches its start. A JOINS character before it is allowed only when the
+// match reads as printed text: it starts with a capital and has a space (`...okRate limit reached`, `----Rate limit
+// reached`, `/path/Rate limit exceeded`). That is how a join glues a phrase onto other text, but the check is on the match
+// itself, not on what the text before it ends in, so a mid-line `xRate limit reached` counts too. A `_` before it never
+// does (`foo_Rate limit exceeded` is a name), nor do camelCase (`onRateLimitExceeded`) and lower-case names
+// (`fix-rate-limit-error`) (dori-superagent PR #214 (MIT): https://github.com/sisyphuslabs/dori-superagent/pull/214).
 const standsAlone = (text: string, at: number, found: string): boolean => {
   const after = text[at + found.length] ?? "";
   if (JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[at + found.length + 1] ?? ""))) return false;

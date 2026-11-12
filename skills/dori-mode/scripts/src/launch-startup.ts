@@ -14,6 +14,7 @@ import { LaunchFailed } from "./launch-types.ts";
 import { splitModel } from "./lane-handover.ts";
 import { withThinking } from "./lane-model.ts";
 import { startupFailure } from "./launch-screen.ts";
+import { launchDone } from "./launch-finished.ts";
 import { HcStartupError } from "./hc-pane.ts";
 import { HerdrStartupError } from "./herdr.ts";
 
@@ -65,7 +66,7 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
   for (let idle = 1; ; ) {
     // a goal is no good news from an agent that already ended, so the agent is read before its goal, every time
     const gone = await agentGone(deps, pane);
-    if (gone) return `STARTUP_ERROR ${key} ${pane}: ${gone}`;
+    if (gone) return (await launchDone(deps, key, pane)) ?? `STARTUP_ERROR ${key} ${pane}: ${gone}`;
     const goal = await read(pane);
     // a goal is good news only when this launch's newest model reply did not fail: a resumed session keeps its goal, and a
     // lane may set its goal before a later call fails; such a reply goes through the same idle reads (review 9 of #471)
