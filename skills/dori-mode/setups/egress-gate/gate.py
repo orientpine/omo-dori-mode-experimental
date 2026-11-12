@@ -2480,20 +2480,22 @@ class Gate:
         if (any(e.get("thread") == thread for e in self.pending())
                 or any(b["thread"] == thread and b["status"] == "pending" for b in self.batches())):
             return
+        record = self.thread_marks().get(str(thread))
+        marked = record.get("name") if isinstance(record, dict) else None
+        if marked:  # kept, before any lookup, until the rename lands: a failed one is tried again by the next poll
+            self.set_thread_mark(thread, {"name": marked, "closing": outcome})
         try:
             status, _, body = await self.bot_call("GET", f"/channels/{thread}")
-            info = json_object(body) if 200 <= status < 300 else {}
+            if not 200 <= status < 300:
+                raise OSError(status)
+            info = json_object(body)
             name = str(info.get("name") or "")
             if info.get("type") not in (11, 12) or str(info.get("parent_id")) != channel:
                 return
-            record = self.thread_marks().get(str(thread))
-            marked = record.get("name") if isinstance(record, dict) else None
             # a thread the gate named (🔐), or one whose 🔔 it set when its card joined and nobody renamed since
             if not bare_thread_name(name).startswith("🔐 ") and name != marked:
                 self.set_thread_mark(thread, None)
                 return
-            if marked:  # kept until the rename lands: a failed one is tried again by the next poll
-                self.set_thread_mark(thread, {"name": marked, "closing": outcome})
             name = bare_thread_name(name)
             status, _, _ = await self.bot_call("PATCH", f"/channels/{thread}",
                                                {"name": f"{prefix} {name}"[:100], "archived": True})

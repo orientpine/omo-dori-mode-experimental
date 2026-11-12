@@ -1100,6 +1100,27 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.thread_patches[-1], ("100", {"name": "✅ ✉️ Reply", "archived": True}))
         self.assertEqual(self.service.thread_marks(), {})
 
+    async def test_a_release_whose_first_lookup_fails_is_tried_again_on_the_next_poll(self):
+        # review 10 of #467: the closing was recorded only after the thread lookup, so a failed lookup lost it
+        self.dori_thread("100", "🔄 ✉️ Reply")
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        self.approve()
+        real_call, failed = self.service.bot_call, []
+
+        async def call(method, path, data=None):
+            if method == "GET" and path == "/channels/100" and not failed:
+                failed.append(path)
+                return 503, {}, b"{}"
+            return await real_call(method, path, data)
+
+        self.service.bot_call = call
+        await self.service.poll_approvals()
+        self.assertEqual((failed, self.thread_meta["100"]["name"]), (["/channels/100"], "🔔 ✉️ Reply"))
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches[-1], ("100", {"name": "✅ ✉️ Reply", "archived": True}))
+        self.assertEqual(self.service.thread_marks(), {})
+
     async def test_a_bell_another_writer_set_is_left_when_the_gate_card_ends(self):
         self.dori_thread("100", "🔔 ✉️ Reply")
         self.approval()

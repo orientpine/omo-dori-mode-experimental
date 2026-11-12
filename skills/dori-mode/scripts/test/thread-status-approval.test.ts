@@ -127,3 +127,10 @@ test("two processes recording names at once lose none of them (review 9 of #467)
   const missing = [...Array(100).keys()].flatMap((i) => [1000 + i, 2000 + i]).filter((i) => recordedThreadName(`${dir}/discord`, String(i)) !== `🔔 t${i}`);
   expect(missing).toEqual([]);
 });
+
+test("the owner writing in an ended card thread reopens it 🔄 even while this Dori's own question is open there (review 10 of #467)", async () => {
+  const { w, cards, listener, say } = live("✅ ✉️ lecture reply");
+  await cards.ask("Which date?", ["Fri", "Sat"], { thread: THREAD });
+  await listener.onMessage(say("1014", "one more change"));
+  expect(w.name).toBe("🔄 ✉️ lecture reply");
+});

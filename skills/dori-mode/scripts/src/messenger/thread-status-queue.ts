@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
-import { desiredStatus, isCardThread, setThreadStatus, STATUS_EMOJI, type ThreadInfo, type ThreadMark, type ThreadStatus, threadName } from "./discord-thread.ts";
+import { desiredStatus, isCardThread, isDoneName, setThreadStatus, STATUS_EMOJI, type ThreadInfo, type ThreadMark, type ThreadStatus, threadName } from "./discord-thread.ts";
 import { guardText, MessengerError } from "./http.ts";
 import { dropThread, threads } from "./thread-map.ts";
 
@@ -186,6 +186,8 @@ export class ThreadStatusQueue {
       // shows it working
       const card = [10, 11, 12].includes(info.type ?? -1) && isCardThread(info.name ?? "", this.d.words);
       if (card && status === "waiting" && standing === false) status = "working";
+      // the owner reopening an ended card thread brings it back working, even with this Dori's own question open there
+      if (card && status === "waiting" && e.status === "working" && isDoneName(info.name ?? "", this.d.words)) status = "working";
       const cardWait = card && status === "waiting";
       if ((status !== "waiting" && status !== "standing" && foreign) || cardWait) {
         this.forget(thread, e.rev);
