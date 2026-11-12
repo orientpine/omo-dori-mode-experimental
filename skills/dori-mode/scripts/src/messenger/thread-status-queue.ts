@@ -13,7 +13,8 @@ import { dropThread, threads } from "./thread-map.ts";
 export type PendingStatus = { readonly status: ThreadStatus; readonly due: number; readonly tries: number; readonly rev: number };
 type Pending = Record<string, PendingStatus>;
 
-export type FlushResult = "applied" | "unchanged" | "pending" | "dropped" | "none";
+// kept: another writer's 🔔 was left as it is (a done request leaves the thread open and mapped)
+export type FlushResult = "applied" | "unchanged" | "kept" | "pending" | "dropped" | "none";
 
 export type QueueTimers = { readonly setTimeout: (cb: () => void, ms: number) => unknown; readonly setInterval: (cb: () => void, ms: number) => unknown };
 
@@ -171,14 +172,12 @@ export class ThreadStatusQueue {
       const dc = this.d.dc.once();
       const info = { ...(await dc.call<ThreadInfo>("GET", `/channels/${thread}`)), id: thread };
       if (status !== "waiting" && status !== "standing" && this.othersWaiting(info)) {
-        if (status === "done") dropThread(dirname(this.d.file), thread);
         this.forget(thread, e.rev);
         this.d.log(`THREAD_STATUS_KEPT ${thread} ${status}: 🔔 was set by another writer`);
-        return "unchanged";
+        return "kept";
       }
       const changed = await setThreadStatus(dc, thread, status, this.d.words, info, standing === false);
-      // a 🔔 our own open question card keeps is ours too, even when another writer had already set it
-      if (changed || (status === "waiting" && cards.length)) this.recordName(thread, status === "done" ? undefined : threadName(status, info.name ?? "", this.d.words, standing === false));
+      if (changed) this.recordName(thread, status === "done" ? undefined : threadName(status, info.name ?? "", this.d.words, standing === false));
       if (status === "done") dropThread(dirname(this.d.file), thread);
       this.forget(thread, e.rev);
       this.d.log(`THREAD_STATUS_APPLIED ${thread} ${status}${changed ? "" : " unchanged"}${why}`);

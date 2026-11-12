@@ -259,8 +259,7 @@ test("the owner answering a thread that showed his turn (🔔 with no card, the 
   const patches = seen.filter((r) => r.method === "PATCH").map((r) => [r.url.replace("https://discord.com/api/v10", ""), JSON.parse(String(r.body)).name]);
   expect(patches).toEqual([
     ["/channels/511", "🔄 asked you"], ["/channels/512", "🔄 old wait"],
-    ["/channels/513", "🔄 🔐 share failed"],
-    ["/channels/514", "🔄 ✉️ cancelled mail"],
+    ["/channels/513", "🔄 🔐 share failed"], ["/channels/514", "🔄 ✉️ cancelled mail"],
     ["/channels/515", "🔄 ✉️ replaced draft"],
   ]);
   expect(logs.filter((l) => /^THREAD_(REOPENED|ANSWERED)/.test(l))).toEqual(["THREAD_ANSWERED 511", "THREAD_ANSWERED 512", "THREAD_ANSWERED 513", "THREAD_REOPENED 514", "THREAD_REOPENED 515"]);
@@ -336,6 +335,7 @@ test("a tap on a card inside its work thread is taken, lands in the inbox with i
   await cards.ask("Ship?", ["Yes", "No"], { thread: THREAD, session: "sess-1", tmux: "aoe_demo_1234abcd" });
   expect(calls()[0]).toBe(`POST /channels/${THREAD}/messages`);
   const before = calls().length;
+  writeFileSync(`${state.dir}/discord/thread-names.json`, JSON.stringify({ [THREAD]: "🔔 fix login" })); // the 🔔 is ours
   listener.start();
   gw.push({ op: 0, s: 1, t: "INTERACTION_CREATE", d: { id: "5001", token: "tok", type: 3, channel_id: "777", member: { user: { id: OWNER } }, data: { custom_id: "q:Q1:0" } } });
   gw.push({ op: 0, s: 2, t: "INTERACTION_CREATE", d: { id: "5002", token: "tok", type: 3, channel_id: THREAD, member: { user: { id: OWNER } }, data: { custom_id: "q:Q1:1" } } });

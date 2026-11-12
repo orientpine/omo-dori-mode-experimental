@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 
+import { mapThread, threads } from "../src/messenger/thread-map.ts";
 import { doneWorld, live, THREAD } from "./thread-status-world.ts";
 
 afterEach(doneWorld);
@@ -45,4 +46,18 @@ test("once another writer renames the thread to its own 🔔, the receiver's ear
   w.name = "🔔 ✉️ revised lecture reply";
   await listener.onMessage(say("1007", "and this too"));
   expect(w.name).toBe("🔔 ✉️ revised lecture reply");
+});
+
+test("a question this Dori asks in that thread does not take the other writer's 🔔: answering it leaves 🔔 (review 6 of #467)", async () => {
+  const { w, cards, listener, tap } = live("🔔 ✉️ lecture reply");
+  await cards.ask("Which date?", ["Fri", "Sat"], { thread: THREAD });
+  await listener.onInteraction(tap("Q1"));
+  expect(w.name).toBe("🔔 ✉️ lecture reply");
+});
+
+test("done on a thread another writer keeps 🔔 is kept open: the result says so and the lane mapping stays (review 6 of #467)", async () => {
+  const { w, q, dir } = live("🔔 ✉️ lecture reply");
+  mapThread(`${dir}/discord`, THREAD, "session-1", "lecture reply");
+  expect(await q.request(THREAD, "done")).toBe("kept");
+  expect({ name: w.name, archived: w.archived, mapped: Boolean(threads(`${dir}/discord`)[THREAD]) }).toEqual({ name: "🔔 ✉️ lecture reply", archived: false, mapped: true });
 });
