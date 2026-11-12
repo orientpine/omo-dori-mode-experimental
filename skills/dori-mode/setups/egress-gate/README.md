@@ -250,8 +250,11 @@ thread in the approval channel (any thread failure falls back to the channel); a
 first (`dori thread open --from` on the owner's message, or a Dori thread the request was written in), that
 thread is renamed to the same shape with the Dori's title kept: `🔔 정해영 OmO 문의 답장` becomes
 `🔔 🔐 정해영 OmO 문의 답장`, so the decision later marks it like any card thread (2026-11-04). A name
-already in that shape (one mark, then `🔐`, `✉️` or `📬`) and a thread the owner opened himself keep their
-name; a failed rename is logged (`GATE_CARD_THREAD_RENAME_FAILED`) and the card is posted anyway. The cards one owner message asks for
+already in that shape (🔔, or a standing 📌, then `🔐`, `✉️` or `📬`) and a thread the owner opened himself keep their
+name; a card thread showing another mark (`🔄 ✉️ Reply`) gets 🔔, since a card thread's 🔔 is its card writers' and the Dori
+receiver leaves it to them (#467). The gate keeps each 🔔 it set in `state/thread-marks.json` and, when its last card
+there is decided, gives that thread its end mark only while the name is still the one it set, so a 🔔 another
+writer set or renamed stays theirs; a failed rename is logged (`GATE_CARD_THREAD_RENAME_FAILED`) and the card is posted anyway. The cards one owner message asks for
 share one thread (owner Q474, 2026-11-03; one request had made eighteen Drive sharing threads in two
 minutes): a card or a batch card whose owner message already has an undecided card or batch card in a
 thread goes into that thread, in any order and also when they arrive at once. Choosing the thread until the

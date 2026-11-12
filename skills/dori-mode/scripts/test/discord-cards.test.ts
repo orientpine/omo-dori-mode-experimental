@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import { takeLock } from "../src/checkpoints.ts";
 import { defaultDiscordWords } from "../src/config.ts";
@@ -480,8 +480,8 @@ const threadCards = (name = "🔄 fix login") => {
     if (req.method === "PATCH" && req.url.endsWith("/channels/300")) thread.name = JSON.parse(String(req.body)).name ?? thread.name;
     return req.method === "POST" && req.url.endsWith("/messages") ? { id: "900" } : {};
   });
-  const cards = new QuestionCards(f.dc, f.store, { channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji" } }, () => Date.parse("2026-01-02T03:04:00Z"));
-  return { ...f, cards, thread };
+  mkdirSync(f.store.file.replace(/[^/]+$/, "thread-names"), { recursive: true }); writeFileSync(f.store.file.replace(/[^/]+$/, "thread-names/300"), name); // a name this Dori gave it
+  return { ...f, cards: new QuestionCards(f.dc, f.store, { channel: CHANNEL, owner: OWNER, words: { ...defaultDiscordWords, statusStyle: "emoji" } }, () => Date.parse("2026-01-02T03:04:00Z")), thread };
 };
 const threadTap = (customId: string): Interaction => ({ ...tap(customId), channel_id: "300" });
 

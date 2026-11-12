@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import type { DiscordWords } from "../config.ts";
 import type { Discord } from "./discord.ts";
-import { desiredStatus, setThreadStatus, type ThreadMark, type ThreadStatus } from "./discord-thread.ts";
-import { MessengerError } from "./http.ts";
+import { desiredStatus, isCardThread, isDoneName, setThreadStatus, STATUS_EMOJI, type ThreadInfo, type ThreadMark, type ThreadStatus, threadName } from "./discord-thread.ts";
+import { guardText, MessengerError } from "./http.ts";
 import { dropThread, threads } from "./thread-map.ts";
 
 // One entry per thread: the status the latest event asked for, the earliest time the rename may run, and how many
@@ -13,7 +13,8 @@ import { dropThread, threads } from "./thread-map.ts";
 export type PendingStatus = { readonly status: ThreadStatus; readonly due: number; readonly tries: number; readonly rev: number };
 type Pending = Record<string, PendingStatus>;
 
-export type FlushResult = "applied" | "unchanged" | "pending" | "dropped" | "none";
+// kept: another writer's 🔔 was left as it is (a done request leaves the thread open and mapped)
+export type FlushResult = "applied" | "unchanged" | "kept" | "pending" | "dropped" | "none";
 
 export type QueueTimers = { readonly setTimeout: (cb: () => void, ms: number) => unknown; readonly setInterval: (cb: () => void, ms: number) => unknown };
 
@@ -44,6 +45,26 @@ const errText = (e: unknown): string => (e instanceof Error ? e.message : String
 // per thread). Each event records the status it wants; the rename that runs uses the latest one, decided against the
 // open question cards at that moment. A 429 keeps the entry on disk with the time Discord gave, so the long-running
 // listener applies it later, also after a restart.
+// The names this Dori's queue last gave each thread, one file per thread in thread-names/ next to the queue file, so the
+// listener and a one-shot command never overwrite each other's record (review 9 of #467). A 🔔 that is not one of them
+// was set by another writer, which keeps it while its card waits; the receiver never undoes it (2026-11-12, mail thread
+// 1570290417285726290).
+export const recordThreadName = (dir: string, thread: string, name: string | undefined): void => {
+  const path = join(dir, "thread-names", thread);
+  if (name === undefined) {
+    rmSync(path, { force: true });
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, name, { mode: 0o600 });
+  renameSync(tmp, path);
+};
+export const recordedThreadName = (dir: string, thread: string): string | undefined => {
+  const path = join(dir, "thread-names", thread);
+  return existsSync(path) ? readFileSync(path, "utf8") : undefined;
+};
+
 export class ThreadStatusQueue {
   private timers: QueueTimers | undefined;
   private readonly scheduled = new Map<string, number>();
@@ -118,6 +139,20 @@ export class ThreadStatusQueue {
     }, Math.max(0, due - this.d.now()));
   }
 
+  private ownName(thread: string): string | undefined {
+    return recordedThreadName(dirname(this.d.file), thread);
+  }
+
+  private recordName(thread: string, name: string | undefined): void {
+    recordThreadName(dirname(this.d.file), thread, name);
+  }
+
+  private othersWaiting(info: ThreadInfo): boolean {
+    const name = info.name ?? "";
+    const waiting = [STATUS_EMOJI.waiting, "⏸"].some((m) => name.startsWith(m)) || name.startsWith(`[${this.d.words.waiting}]`);
+    return waiting && [10, 11, 12].includes(info.type ?? -1) && (isCardThread(name, this.d.words) || this.ownName(info.id ?? "") !== name);
+  }
+
   private forget(thread: string, rev: number): void {
     this.edit(thread, (cur) => (cur && cur.rev === rev ? undefined : cur));
   }
@@ -138,11 +173,30 @@ export class ThreadStatusQueue {
     // a standing thread keeps its mark through every event, a released one (false) loses its 📌 at every rename; read
     // here, so a one-shot command's change counts and a failed rename leaves it for the next
     const standing = threads(dirname(this.d.file))[thread]?.standing;
-    const status: ThreadMark = standing === true ? "standing" : asked;
+    let status: ThreadMark = standing === true ? "standing" : asked;
     // what decided it, when not the event: the open cards, the lanes that kept it working past them
     const why = asked !== e.status || (cards.length && lanes.length) ? [cards.length ? ` open=${cards.join(",")}` : "", lanes.length ? ` working=${lanes.join(",")}` : ""].join("") : "";
     try {
-      const changed = await setThreadStatus(this.d.dc.once(), thread, status, this.d.words, undefined, standing === false);
+      const dc = this.d.dc.once();
+      const info = { ...(await dc.call<ThreadInfo>("GET", `/channels/${thread}`)), id: thread };
+      const foreign = this.othersWaiting(info);
+      // a record this Dori kept for a thread now showing another writer's 🔔 is stale: a later rename must not match it
+      if (foreign && this.ownName(thread) !== undefined) this.recordName(thread, undefined);
+      // a card thread's 🔔 is its card writer's: this Dori neither takes it away nor sets it there; releasing its 📌
+      // shows it working
+      const card = [10, 11, 12].includes(info.type ?? -1) && isCardThread(info.name ?? "", this.d.words);
+      if (card && status === "waiting" && standing === false) status = "working";
+      // the owner reopening an ended card thread brings it back working, even with this Dori's own question open there
+      if (card && status === "waiting" && e.status === "working" && isDoneName(info.name ?? "", this.d.words)) status = "working";
+      const cardWait = card && status === "waiting";
+      if ((status !== "waiting" && status !== "standing" && foreign) || cardWait) {
+        this.forget(thread, e.rev);
+        this.d.log(`THREAD_STATUS_KEPT ${thread} ${status}: ${cardWait ? "a card thread's 🔔 is its card writer's" : "🔔 was set by another writer"}`);
+        return "kept";
+      }
+      const changed = await setThreadStatus(dc, thread, status, this.d.words, info, standing === false);
+      // a rename of another writer's 🔔 (this Dori's style, an unarchive) leaves it theirs; the name kept is the one Discord holds
+      if (changed && !foreign) this.recordName(thread, status === "done" ? undefined : guardText(threadName(status, info.name ?? "", this.d.words, standing === false)).slice(0, 100));
       if (status === "done") dropThread(dirname(this.d.file), thread);
       this.forget(thread, e.rev);
       this.d.log(`THREAD_STATUS_APPLIED ${thread} ${status}${changed ? "" : " unchanged"}${why}`);

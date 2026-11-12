@@ -67,6 +67,7 @@ const deps: FlowDeps = {
           // a rename left pending (429) is applied later by the listener; the close still says it did not happen yet
           const outcome = await threadStatuses(ownDiscord(discordToken)).request(discordThreadId(ref), "done");
           if (outcome === "pending" || outcome === "dropped") throw new Error(`thread rename ${outcome}, see the THREAD_STATUS line`);
+          if (outcome === "kept") throw new Error("thread left open: another writer's card waits there (its 🔔, THREAD_STATUS_KEPT)");
         },
         postInThread: async (ref: string, text: string) => postInThread(ownDiscord(discordToken), ref, text),
         requestThreadStatus: async (ref: string, status: "working" | "waiting") => String(await threadStatuses(ownDiscord(discordToken)).request(discordThreadId(ref), status)),

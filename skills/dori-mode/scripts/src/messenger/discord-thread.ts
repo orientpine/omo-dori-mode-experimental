@@ -88,6 +88,16 @@ const splitMarks = (name: string, words: DiscordWords): { readonly outcome?: str
 
 export const bareThreadName = (name: string, words: DiscordWords): string => splitMarks(name, words).rest;
 
+// The kind icons a card thread's name carries after its mark: a YooDori node's approval kinds (cytoplasm
+// approval_surface KIND_ICONS, ✉️ mail and the rest), its mail digest (📬) and the egress gate's cards (🔐). Each card
+// writer puts its icon in every thread its card waits in and owns that thread's 🔔: it sets it while the card waits and
+// replaces it when the card is decided (2026-11-12, mail thread 1570290417285726290).
+const CARD_ICONS = ["↩", "✉", "💳", "📜", "🛠", "🗓", "🤝", "📚", "🚀", "🔎", "📦", "📥", "🔌", "🏷", "📝", "📋", "📬", "🔐"];
+export const isCardThread = (name: string, words: DiscordWords): boolean => {
+  const bare = unpinnedName(name, words).replace(/\uFE0F/gu, "");
+  return CARD_ICONS.some((icon) => bare.startsWith(`${icon} `));
+};
+
 // 📌 is not a status mark to every other name, so a title of its own that starts with one stays: only a standing mark
 // being set (one 📌, not two) or released (unpin) takes it off.
 export const unpinnedName = (name: string, words: DiscordWords): string => bareThreadName(name, words).replace(/^(?:📌\uFE0F?\s*)+/u, "");
@@ -111,7 +121,7 @@ export const isOwnerTurnName = (name: string, words: DiscordWords): boolean =>
 export const progressText = (status: "working" | "done", text: string, words: DiscordWords): string =>
   words.statusStyle === "emoji" ? (status === "working" ? `⏳ · ${text}` : `${STATUS_EMOJI.done} ${text}`) : `${words[status]}: ${text}`;
 
-export type ThreadInfo = { readonly name?: string; readonly type?: number; readonly thread_metadata?: { readonly archived?: boolean } };
+export type ThreadInfo = { readonly id?: string; readonly name?: string; readonly type?: number; readonly thread_metadata?: { readonly archived?: boolean } };
 
 // Discord channel types that are threads (announcement, public, private). Only these get a status mark: a text
 // channel, forum or category passed in as a "thread" (a card asked with --thread pointing at the channel) keeps its name.

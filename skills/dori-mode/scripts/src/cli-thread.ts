@@ -138,9 +138,10 @@ const threadCommand: Command = async (context) => {
   // (review 10 of #338: a slow status step left the post unrecorded past the claim's minute). A repeat is not posted,
   // but the status still goes through: a done after a reply with the same words still closes
   const r = await threadOnce(() => postInThread(dc, ref ?? "", prepared, files, true));
-  await mark(discordThreadId(ref ?? ""), VERB_STATUS[verb as ThreadVerb]);
+  const marked = await mark(discordThreadId(ref ?? ""), VERB_STATUS[verb as ThreadVerb]);
   if (!r.duplicate) await notePost(discordThreadId(ref ?? ""), r.id, withFileNames(body, files));
-  console.log(`${r.duplicate ? duplicateLine(place, r) : sentLine("POSTED", r)}${verb === "done" ? " THREAD_DONE" : verb === "wait" ? " THREAD_WAITING" : ""}`);
+  const done = marked === "kept" ? ` THREAD_LEFT_OPEN ${place}: another writer's card waits there; not marked done` : " THREAD_DONE";
+  console.log(`${r.duplicate ? duplicateLine(place, r) : sentLine("POSTED", r)}${verb === "done" ? done : verb === "wait" ? " THREAD_WAITING" : ""}`);
   // wait and done still set their status, so only a reply that posted nothing exits as a repeat
   if (r.duplicate && verb === "reply") process.exitCode = SEND_DUPLICATE_EXIT;
   return;

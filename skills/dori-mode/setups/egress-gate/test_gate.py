@@ -252,6 +252,9 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                     data = [{"id": m, "content": c, "author": {"bot": True}}
                             for m, c in sorted(self.cards.items(), reverse=True) if self.card_channels.get(m) == parts[2]]
                 elif (parts[1] == "channels" and len(parts) == 3 and parts[2] in self.thread_meta and method == "PATCH"
+                      and getattr(self, "patch_failures", None)):
+                    status, data = self.patch_failures.pop(0), {"message": "You are being rate limited.", "retry_after": 5}
+                elif (parts[1] == "channels" and len(parts) == 3 and parts[2] in self.thread_meta and method == "PATCH"
                       and "name" in json.loads(body) and json.loads(body).get("archived") is not False
                       and (self.thread_meta[parts[2]].get("thread_metadata") or {}).get("archived")):
                     status, data = 400, {"code": 50083, "message": "Thread is archived"}  # Discord: unarchive to rename
@@ -1061,7 +1064,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_joined_thread_already_named_right_or_opened_by_the_owner_keeps_its_name(self):
         for name, owner in (("🔔 🔐 정해영 OmO 문의 답장", "7"), ("🔔 ✉️ 정해영 OmO 문의 답장", "7"), ("📌 📬 Digest", "7"),
-                            ("🔄 ✉️ Reply", "7"), ("형의 요청", "1")):
+                            ("형의 요청", "1")):
             with self.subTest(name=name, owner=owner):
                 self.thread_meta.clear()
                 self.thread_patches.clear()
@@ -1072,6 +1075,59 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                 await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
                 self.assertEqual(self.card_channels[self.service.pending()[-1]["message"]], "100")
                 self.assertEqual(self.thread_patches, [])
+
+    async def test_a_card_joining_a_card_thread_marked_otherwise_sets_its_bell_and_its_end_releases_it(self):
+        # 2026-11-12 (review 8 of #467): "🔄 ✉️ Reply" kept its name when a card joined, so the owner saw no 🔔 for it,
+        # and a 🔔 the gate set in a thread it did not name was never released when the card ended.
+        self.dori_thread("100", "🔄 ✉️ Reply")
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        self.assertEqual(self.thread_patches, [("100", {"name": "🔔 ✉️ Reply", "archived": False})])
+        self.approve()
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches[-1], ("100", {"name": "✅ ✉️ Reply", "archived": True}))
+
+    async def test_a_failed_release_of_the_gates_bell_is_tried_again_on_the_next_poll(self):
+        # review 9 of #467: the record went before the rename, so a 429 lost the 🔔 the gate had set for good
+        self.dori_thread("100", "🔄 ✉️ Reply")
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        self.approve()
+        self.patch_failures = [429]
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_meta["100"]["name"], "🔔 ✉️ Reply")
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches[-1], ("100", {"name": "✅ ✉️ Reply", "archived": True}))
+        self.assertEqual(self.service.thread_marks(), {})
+
+    async def test_a_release_whose_first_lookup_fails_is_tried_again_on_the_next_poll(self):
+        # review 10 of #467: the closing was recorded only after the thread lookup, so a failed lookup lost it
+        self.dori_thread("100", "🔄 ✉️ Reply")
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        self.approve()
+        real_call, failed = self.service.bot_call, []
+
+        async def call(method, path, data=None):
+            if method == "GET" and path == "/channels/100" and not failed:
+                failed.append(path)
+                return 503, {}, b"{}"
+            return await real_call(method, path, data)
+
+        self.service.bot_call = call
+        await self.service.poll_approvals()
+        self.assertEqual((failed, self.thread_meta["100"]["name"]), (["/channels/100"], "🔔 ✉️ Reply"))
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches[-1], ("100", {"name": "✅ ✉️ Reply", "archived": True}))
+        self.assertEqual(self.service.thread_marks(), {})
+
+    async def test_a_bell_another_writer_set_is_left_when_the_gate_card_ends(self):
+        self.dori_thread("100", "🔔 ✉️ Reply")
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        self.approve()
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches, [])
 
     async def test_a_joined_archived_dori_thread_is_unarchived_by_the_rename(self):
         # Discord renames an archived thread only together with archived: false.
