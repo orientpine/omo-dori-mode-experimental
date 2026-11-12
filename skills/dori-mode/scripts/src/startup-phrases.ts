@@ -59,8 +59,9 @@ const standsAlone = (text: string, at: number, found: string): boolean => {
 };
 // A `value` match counts only as the value of an `error`, `code`, `type` or `status` field as logs and JSON print it:
 // `key: VALUE`, `"key":"VALUE"` or `key=VALUE` with no spaces. The key is a whole lower-case word (`errorType` is not
-// one), and a `= '`, `: '` or `===` is source code (`const code = 'insufficient_quota'`), never a value.
-const VALUE_KEY = /(?:^|[^A-Za-z0-9_])"?(?:error|code|type|status)"?(?::\s*"?|=)$/;
+// one), and a `= '`, `: '` or `===` is source code (`const code = 'insufficient_quota'`), never a value. The fork also
+// takes omo's own capitalised `Error:` (`Error: QUOTA_EXCEEDED`, review 1 of #471), the way it prints its error lines.
+const VALUE_KEY = /(?:^|[^A-Za-z0-9_])"?(?:[Ee]rror|code|type|status)"?(?::\s*"?|=)$/;
 const isValue = (text: string, at: number, found: string): boolean =>
   VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && !/[a-z0-9_]/i.test(text[at + found.length] ?? "");
 const counts = (kind: Kind, text: string, at: number, found: string): boolean =>

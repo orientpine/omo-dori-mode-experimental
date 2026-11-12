@@ -140,5 +140,20 @@ test("no code, name, path or prose in the corpus is a failure", () => {
 test("on the agent's own error line launch reports the table's phrase, and a topic, code or name there is no failure", () => {
   for (const [source, text, found] of REAL.filter(([, text]) => /^ ?(?:error:|All |The |Pane is dead)/i.test(text)))
     expect([source, startupFailure(`${text}\n${BOX}`)]).toEqual([source, found]);
-  for (const text of HEALTHY.filter((t) => !t.includes("\n"))) expect([text, startupFailure(`Error: ${text}\n${BOX}`)]).toEqual([text, undefined]);
+  for (const text of HEALTHY.filter((t) => !t.includes("\n") && t !== "RATE_LIMIT_EXCEEDED = 1")) expect([text, startupFailure(`Error: ${text}\n${BOX}`)]).toEqual([text, undefined]);
+});
+
+// omo prints its own errors as `Error: <message>`, so an error code right after that capitalised key is its value (review 1
+// of #471): main counted these quota errors, and so does the table.
+test("an error code as the value of omo's own capitalised Error: line is a failure", () => {
+  for (const [line, found] of [
+    [" Error: QUOTA_EXCEEDED", "QUOTA_EXCEEDED"],
+    [" Error: insufficient_quota", "insufficient_quota"],
+    ["Error: RATE_LIMIT_EXCEEDED = 1", "RATE_LIMIT_EXCEEDED"],
+    ["error: resource_exhausted", "resource_exhausted"],
+  ] as const)
+    expect([line, startupFailure(`${line}\n${BOX}`)]).toEqual([line, found]);
+  expect(startupPhrase("Error: QUOTA_EXCEEDED")).toBe("QUOTA_EXCEEDED");
+  // a capitalised key other than omo's Error is still no value context
+  expect(startupPhrase("Type: QUOTA_EXCEEDED")).toBeNull();
 });
