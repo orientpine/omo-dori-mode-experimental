@@ -143,6 +143,21 @@ test("on the agent's own error line launch reports the table's phrase, and a top
   for (const text of HEALTHY.filter((t) => !t.includes("\n") && t !== "RATE_LIMIT_EXCEEDED = 1")) expect([text, startupFailure(`Error: ${text}\n${BOX}`)]).toEqual([text, undefined]);
 });
 
+// hc cuts every line at the pane's width (launch-screen.ts ownLine joins it back): the corpus reads the same at every
+// width, a healthy line wrapped anywhere is still no failure and an own failure line wrapped anywhere still reports its
+// phrase, whatever printed line follows (review 3 of #471).
+const wrap = (text: string, width: number): string => (text.match(new RegExp(`.{1,${width}}`, "g")) ?? []).map((row) => row.trimEnd()).join("\n");
+const OWN = REAL.filter(([, text]) => /^ ?error:/i.test(text));
+test("wrapped at every width from 8 to 90, the corpus reads as unwrapped", () => {
+  for (let width = 8; width <= 90; width++) {
+    for (const text of HEALTHY.filter((t) => !t.includes("\n") && t !== "RATE_LIMIT_EXCEEDED = 1"))
+      expect([width, text, startupFailure(`${wrap(`Error: ${text}`, width)}\n${BOX}`, false, width)]).toEqual([width, text, undefined]);
+    for (const next of ["Please retry later", "  Soonest automatic retry: x"])
+      for (const [source, text, found] of OWN)
+        expect([width, source, startupFailure(`${wrap(text, width)}\n${next}\n${BOX}`, false, width)]).toEqual([width, source, found]);
+  }
+});
+
 // omo prints its own errors as `Error: <message>`, so an error code right after that capitalised key is its value (review 1
 // of #471): main counted these quota errors, and so does the table.
 test("an error code as the value of omo's own capitalised Error: line is a failure", () => {

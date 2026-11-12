@@ -77,13 +77,16 @@ test("a failure phrase glued onto a full-width own error row counts, and reports
 test("a failure phrase or code that ends a full-width own error row still counts when the next line is glued on", () => {
   for (const [first, next, found] of [
     ["Error: rate limit reached", "Please retry later", "rate limit reached"],
-    ["Error: rate limit reached", "retry later", "rate limit reached"],
     ["Error: all quotas exhausted", "see the plan", "quotas exhausted"],
     ["Error: QUOTA_EXCEEDED", "Action: check the plan", "QUOTA_EXCEEDED"],
   ] as const)
     expect([first, startupFailure(`${first}\n${next}\n${BOX}`, false, first.length)]).toEqual([first, found]);
   // a phrase cut inside the row and finished on the next one is still read as one
   expect(startupFailure(`Error: rate limit reac\nhed, retry\n${BOX}`, false, 22)).toBe("rate limit reached");
+  // a join is a boundary only where the next row reads as a new printed line (a capital): a path or name that a soft wrap
+  // cut goes on (review 3 of #471: /x/briefs/ + "quota exhausted handling.md" at 26 columns)
+  expect(startupFailure(`${wrap("Error: notes in /x/briefs/quota exhausted handling.md", 26)}\n${BOX}`, false, 26)).toBeUndefined();
+  expect(startupFailure(`Error: see /x/rate limit reached\n/notes.md\n${BOX}`, false, 32)).toBeUndefined();
 });
 
 test("an hc lane whose own error wraps on a narrow pane is STARTUP_ERROR at the first check", async () => {

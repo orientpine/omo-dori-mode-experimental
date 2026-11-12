@@ -50,14 +50,19 @@ const JOINS = /[a-z0-9_/\\.-]/i;
 // whatever that row ended in (`ok`, `....`, `----`, a path). Then it must read as printed text: it starts with a capital
 // and has a space (`...okRate limit reached`), which camelCase (`onRateLimitExceeded`) and lower-case names
 // (`fix-rate-limit-error`) never are.
-// rows: the fork's row joins (launch-screen.ts ownLine), positions where a full-width row met the next; either side of a
-// match that sits on one is a boundary as good as a space (review 2 of #471).
+// rows: the fork's row joins (launch-screen.ts ownLine), positions where a full-width row met the next. A full-width row is
+// either a soft wrap (the text goes on) or a printed line exactly as wide as the pane, so a join is a boundary only after
+// a match and only when the next row starts with a letter, as a printed line does ("...reached" + "Please retry", review 2
+// of #471). A path or name a soft wrap cut goes on with a /, \, ., _, - or digit ("/x/rate limit reached" + "/notes.md"), and
+// no failure phrase is the start of a longer word. The start keeps upstream's rule, a capital and a space (review 3 of
+// #471: "/x/briefs/" + "quota exhausted handling.md" is no failure).
+const newLineAt = (text: string, at: number, rows: ReadonlySet<number>): boolean => rows.has(at) && /[A-Za-z]/.test(text[at] ?? "");
 const standsAlone = (text: string, at: number, found: string, rows: ReadonlySet<number>): boolean => {
   const end = at + found.length;
   const after = text[end] ?? "";
-  if (!rows.has(end) && JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[end + 1] ?? ""))) return false;
+  if (!newLineAt(text, end, rows) && JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[end + 1] ?? ""))) return false;
   const before = text[at - 1] ?? "";
-  if (rows.has(at) || !JOINS.test(before)) return true;
+  if (!JOINS.test(before)) return true;
   return /^[A-Z]/.test(found) && found.includes(" ");
 };
 // A `value` match counts only as the value of an `error`, `code`, `type` or `status` field as logs and JSON print it:
@@ -66,7 +71,7 @@ const standsAlone = (text: string, at: number, found: string, rows: ReadonlySet<
 // takes omo's own capitalised `Error:` (`Error: QUOTA_EXCEEDED`, review 1 of #471), the way it prints its error lines.
 const VALUE_KEY = /(?:^|[^A-Za-z0-9_])"?(?:[Ee]rror|code|type|status)"?(?::\s*"?|=)$/;
 const isValue = (text: string, at: number, found: string, rows: ReadonlySet<number>): boolean =>
-  VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && (rows.has(at + found.length) || !/[a-z0-9_]/i.test(text[at + found.length] ?? ""));
+  VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && (newLineAt(text, at + found.length, rows) || !/[a-z0-9_]/i.test(text[at + found.length] ?? ""));
 const counts = (kind: Kind, text: string, at: number, found: string, rows: ReadonlySet<number>): boolean =>
   kind === "anywhere" || (kind === "word" ? standsAlone(text, at, found, rows) : isValue(text, at, found, rows));
 // the first failure phrase in the text, by position, as printed; null when none counts
