@@ -40,7 +40,7 @@ test("a long-blocked hc pane whose screen shows omo's idle input box takes the t
   expect(fake.sent).toEqual([{ id: "t1", text: "[LEAD] hi" }]);
 });
 
-test("a blocked hc pane gets nothing typed while its dialog is on screen, its turn runs, or the block is new", async () => {
+test("a blocked hc pane gets nothing typed while its dialog is on screen, its turn runs, its editor holds a draft, or the block is new", async () => {
   const dialog = "─────\nPermission required: external_directory\n→ Allow once\n  Always\n  Reject\n─────\n(OmO) watching 6";
   const running = "── • Working (3s • esc to interrupt) ──\n❯ \n─────\n(OmO) watching 6";
   const fake = new FakeHc({
@@ -48,9 +48,12 @@ test("a blocked hc pane gets nothing typed while its dialog is on screen, its tu
     t2: terminal({ status: BLOCKED, status_ms: OLD(), screen: running }),
     t3: terminal({ status: BLOCKED, status_ms: Date.now(), screen: IDLE_BOX }),
     t4: terminal({ status: BLOCKED, screen: IDLE_BOX }),
+    // the owner's unfinished draft, one line or several, would go out with the text (review 1 of #464)
+    t5: terminal({ status: BLOCKED, status_ms: OLD(), screen: IDLE_BOX.replace("❯ ", "❯ half typed") }),
+    t6: terminal({ status: BLOCKED, status_ms: OLD(), screen: IDLE_BOX.replace("❯ ", "❯ line one\n  line two") }),
   });
   const deps = depsFor(newWorld(), fakeClock(0), dir, { backend: "herdr" });
-  for (const pane of ["hc:t1", "hc:t2", "hc:t3", "hc:t4"])
+  for (const pane of ["hc:t1", "hc:t2", "hc:t3", "hc:t4", "hc:t5", "hc:t6"])
     expect(await submitToPane(runnerOf(fake), deps.clock, deps.config, pane, "[LEAD] hi")).toMatchObject({ status: "NOT_SUBMITTED", reason: expect.stringContaining("PANE_BLOCKED") });
   expect(fake.sent).toEqual([]);
 });

@@ -73,16 +73,19 @@ describe("create / start / createGroup", () => {
     expect(fake.calls).toEqual([["send", "t1", "--", "omo --x 'a b'"]]);
   });
 
-  test("start into a shell whose dead program left a blocked status forces past it; one with an agent in front does not", async () => {
+  test("start into a shell whose dead program left a blocked status forces past it; one with an agent or nothing readable in front does not", async () => {
     // a program that set blocked and died (2026-11-12, hc:t2r): hc keeps the status with only the shell in front
     const { fake, rt } = rig({
       t1: terminal({ status: { state: "blocked", app: "omo" }, foreground: { name: "bash", argv: ["bash"], pid: 77 } }),
       t2: terminal({ status: { state: "blocked", app: "omo" } }),
+      // no foreground hc can read is no shell seen: never forced (review 1 of #464)
+      t3: terminal({ status: { state: "blocked", app: "omo" }, foreground: null }),
     });
     await rt.start(T1, "omo --session-id s");
     expect(fake.sent).toEqual([{ id: "t1", text: "omo --session-id s" }]);
     expect(fake.calls.at(-1)).toEqual(["send", "t1", "--force", "--", "omo --session-id s"]);
     await expect(rt.start({ runtime: "hc", id: "t2" }, "omo")).rejects.toThrow();
+    await expect(rt.start({ runtime: "hc", id: "t3" }, "omo")).rejects.toThrow();
     expect(fake.sent).toHaveLength(1);
   });
 

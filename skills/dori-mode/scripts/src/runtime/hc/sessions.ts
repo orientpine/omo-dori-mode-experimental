@@ -2,6 +2,7 @@
 import type { Exec } from "../exec.ts";
 import { type CreateSpec, HC_ADDRESS, type SessionInfo, type SessionRef } from "../types.ts";
 import { hcCall, isKind } from "./exec.ts";
+import { interactiveShellInFront } from "../foreground.ts";
 import { probe, statusWord } from "./probe.ts";
 
 const NAME_MAX = 32;
@@ -101,7 +102,9 @@ export async function start(exec: Exec, id: string, command: string): Promise<vo
   try {
     await hcCall(exec, ["send", id, "--", command]);
   } catch (e) {
-    if (!isKind(e, "blocked") || !(await probe(exec, id)).shellInFront) throw e;
+    // a shell seen in front, never the doubt a missing foreground is (shellInFront is true then too; review 1 of #464)
+    const fg = isKind(e, "blocked") ? (await probe(exec, id)).foreground : undefined;
+    if (!fg?.length || !interactiveShellInFront(fg)) throw e;
     await hcCall(exec, ["send", id, "--force", "--", command]);
   }
 }

@@ -177,7 +177,9 @@ const idleInputBox = (screen: string): boolean => {
   if (box < 0 || lines.length - 1 - box > 4) return false;
   const border = (l: string): boolean => l.trimStart().startsWith("─");
   const above = lines.slice(Math.max(0, box - 2), box);
-  return above.some(border) && !above.some((l) => l.toLowerCase().includes(BUSY_MARK)) && lines.slice(box + 1, box + 3).some(border);
+  // an empty editor only: a draft on the ❯ line, or a second line under it, would be sent with the text (review 1 of #464)
+  const empty = (lines[box] ?? "").trim() === "❯" && border(lines[box + 1] ?? "");
+  return empty && above.some(border) && !above.some((l) => l.toLowerCase().includes(BUSY_MARK));
 };
 export const hcStaleBlock = async (run: Runner, pane: string, now = Date.now()): Promise<number | undefined> => {
   const t = await hcCall(execOf(run), ["get", hcRef(pane).id]).catch(() => undefined);
