@@ -106,7 +106,12 @@ test("a failed reply of this launch is judged by its own error text as omo shows
   // so a raw error that names no failure leaves the screen to say it
   const raw = failedReply("usage_not_included", T0 + 7_000);
   expect(failureOf(raw, ` The fakep account usage limit has been reached. Switch to another provider with /model.\n${BOX}`, "/tmp/w", SESSION, T0)).toBe("account usage limit has been reached");
-  expect(failureOf(raw, BOX, "/tmp/w", SESSION, T0)).toBeUndefined();
+  // the same notice as omo's renderer wraps it at 32 columns: its rows are no own line, yet the failed reply stays a failed
+  // start, whatever its raw text says, once its turn has ended (review 7); while omo shows its retry, the next read decides
+  const wrapped = [" The openai account usage limit ", " has been reached. Switch to    ", " another provider with /model.  "].join("\n");
+  expect(failureOf(raw, `${wrapped}\n${BOX}`, "/tmp/w", SESSION, T0)).toBe("usage_not_included");
+  expect(failureOf(raw, BOX, "/tmp/w", SESSION, T0)).toBe("usage_not_included");
+  expect(failureOf(raw, `${wrapped}\n── ⠧ The model provider may be having trouble. Retrying... (2/5, in 1s; esc to cancel) ──\n❯ \n────`, "/tmp/w", SESSION, T0)).toBeUndefined();
   // a reply from before this launch (a resumed session) says nothing about it: the screen is read
   expect(failureOf(raw, `Error: No API key found for groq.\n${BOX}`, "/tmp/w", SESSION, T0 + 60_000)).toBe("No API key");
 });

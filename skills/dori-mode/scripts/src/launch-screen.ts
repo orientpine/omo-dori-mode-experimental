@@ -23,8 +23,9 @@ import { startupPhrase } from "./startup-phrases.ts";
 // prints the rows as lines hc keeps apart: at 32 columns " Error: The provider account is" / " out of quota. ..."
 // (review 5 of #471). The session keeps the provider's raw text, and omo shows some of it only as its own notice on
 // screen (a raw usage_not_included as "The <p> account usage limit has been reached", senpi describeUsageLimitMessage),
-// so a failed reply whose text names no failure, or no such reply at all, leaves the screen to judge, where a narrow
-// pane can still split a phrase.
+// so a failed reply whose text names no failure is read on screen next; and since a narrow pane can split that notice
+// too, a failed reply is a failed start whatever its text says once its turn has ended (omo shows no retry above its
+// box), reported by its first line (review 7 of #471). With no reply of this launch only the screen can tell.
 const OWN_ERROR = /^ ?(?:error:|All \S+ accounts for \S+ are currently blocked|The \S+ account usage limit has been reached|Pane is dead)/i;
 
 // Each line of the screen is a line the agent printed: hc's read joins the rows a long line wraps onto (its text is
@@ -49,7 +50,8 @@ export const startupFailure = (screen: string, reply?: { readonly error?: string
     const bad = own ? startupPhrase(line) : null;
     if (bad) return bad;
   }
-  return undefined;
+  const retrying = box >= 0 && lines.slice(Math.max(0, box - 3), box).some((l) => /\bRetrying\b/.test(l));
+  return reply?.error === undefined || retrying ? undefined : reply.error.split("\n")[0]?.trim().slice(0, 160) || "the model call failed";
 };
 
 
