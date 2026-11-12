@@ -32,7 +32,8 @@ export const USAGE_END = `                                       --text-file pos
   eyes off <message id | link>         take this Dori's own eyes off one message at once: an owner message it read and
                                        will not answer (another Dori's work in the pair channel). Prints EYES_OFF
                                        <channel> <id>; the channel comes from the link, eyes.json or
-                                       DORI_DISCORD_PAIR_CHANNEL. Other reactions stay
+                                       DORI_DISCORD_PAIR_CHANNEL. Other reactions stay. The id goes into eyes-off.jsonl
+                                       beside the inbox, so LEAD_OWNER_WAITING no longer counts that message
   ask --text Q --option A [--option B ...] [--thread REF | --reply-to MSG | --channel "<reason>"] [--session ID] [--tmux NAME]
                                        post a Discord question card; the first option is the recommended one. It goes in
                                        its work's thread: --thread, else the open lane thread of the asking session

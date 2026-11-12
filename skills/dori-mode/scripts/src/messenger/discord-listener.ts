@@ -160,11 +160,10 @@ const answeredIds = (channel: string, replyTo: string | null | undefined, conten
   [...new Set([replyTo ?? "", ...[...(content ?? "").matchAll(MESSAGE_LINK)].filter(([, ch]) => ch === channel).map(([, , id]) => id ?? "")])].filter(Boolean);
 const pairNote = (id: string): string => `the owner wrote in the pair channel without calling you: if it is another Dori's work, do not answer and take your eyes off at once with dori eyes off ${id}`;
 
-// dori eyes off <message id | link>: the lead read an owner message that is not its own and will not answer it, so this
-// Dori's eyes come off it at once (owner 2026-11-03 09:58 KST). The channel comes from the link, else the eyes.json entry
-// that tracks the id, else fallbackChannel (the pair channel). Only this bot's own reaction is removed (@me). eyes.json
-// is only read: the running listener owns it, so the id stays listed until the listener's next sweep there drops it
-// (that removal finds nothing left to remove).
+// dori eyes off <message id | link>: the lead read an owner message that is not its own and will not answer it (owner
+// 2026-11-03 09:58 KST): only this bot's reaction comes off (@me), in the link's channel, else the one whose eyes.json entry
+// tracks the id, else fallbackChannel. eyes.json is only read (the listener owns it and drops the id at its next sweep);
+// the id goes into eyes-off.jsonl beside it, so LEAD_OWNER_WAITING no longer counts it (owner-waiting.ts EYES_OFF_FILE).
 export async function eyesOff(dc: Discord, eyesFile: string, ref: string, fallbackChannel: string): Promise<string> {
   const link = [...ref.matchAll(MESSAGE_LINK)][0];
   const id = link?.[2] ?? (/^\d{15,}$/.test(ref.trim()) ? ref.trim() : "");
@@ -173,6 +172,7 @@ export async function eyesOff(dc: Discord, eyesFile: string, ref: string, fallba
   const channel = link?.[1] ?? Object.keys(eyes).find((ch) => eyes[ch]?.includes(id)) ?? fallbackChannel;
   if (!channel) throw new Error(`eyes off: ${id} is not in ${eyesFile} and no pair channel is set; give its link`);
   await dc.unreact(channel, id, EYES);
+  appendFileSync(join(dirname(eyesFile), "eyes-off.jsonl"), `${JSON.stringify({ ts: new Date().toISOString(), channel, id })}\n`);
   return `EYES_OFF ${channel} ${id}`;
 }
 
