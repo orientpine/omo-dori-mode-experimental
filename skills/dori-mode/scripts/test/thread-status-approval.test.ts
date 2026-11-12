@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
 
 import { mapThread, standThread, threads, unstandThread } from "../src/messenger/thread-map.ts";
+import { recordThreadName } from "../src/messenger/thread-status-queue.ts";
 import { doneWorld, live, THREAD } from "./thread-status-world.ts";
 
 afterEach(doneWorld);
@@ -88,7 +88,7 @@ test("this Dori never sets 🔔 in a card thread: a wait asked there leaves the 
 
 test("a 🔔 in a card thread stays the card writers' even when it matches a name this Dori once gave (a gate card joined it unchanged)", async () => {
   const { w, listener, say, dir } = live("🔔 ✉️ lecture reply");
-  writeFileSync(`${dir}/discord/thread-names.json`, JSON.stringify({ [THREAD]: "🔔 ✉️ lecture reply" }));
+  recordThreadName(`${dir}/discord`, THREAD, "🔔 ✉️ lecture reply");
   await listener.onMessage(say("1011", "the room is booked"));
   expect(w.name).toBe("🔔 ✉️ lecture reply");
 });
@@ -111,8 +111,19 @@ test("releasing a standing card thread (📌 📬 Digest) shows it working, neve
 
 test("another writer's 🔔 seen over a name this Dori recorded drops that record (review 8 of #467)", async () => {
   const { w, q, listener, say, dir } = live("⏸️ task");
-  writeFileSync(`${dir}/discord/thread-names.json`, JSON.stringify({ [THREAD]: "🔔 task" }));
+  recordThreadName(`${dir}/discord`, THREAD, "🔔 task");
   await q.request(THREAD, "waiting");
   await listener.onMessage(say("1013", "done with it?"));
   expect(w.name.startsWith("🔔")).toBe(true);
+});
+
+test("two processes recording names at once lose none of them (review 9 of #467)", async () => {
+  const { dir } = live("🔄 fix login");
+  const queue = new URL("../src/messenger/thread-status-queue.ts", import.meta.url).pathname;
+  const writer = (from: number) => Bun.spawn(["bun", "-e", `const { recordThreadName } = await import(${JSON.stringify(queue)}); for (let i = ${from}; i < ${from} + 100; i++) recordThreadName(${JSON.stringify(`${dir}/discord`)}, String(i), "🔔 t" + i);`]);
+  const runs = [writer(1000), writer(2000)];
+  expect(await Promise.all(runs.map((p) => p.exited))).toEqual([0, 0]);
+  const { recordedThreadName } = await import(queue);
+  const missing = [...Array(100).keys()].flatMap((i) => [1000 + i, 2000 + i]).filter((i) => recordedThreadName(`${dir}/discord`, String(i)) !== `🔔 t${i}`);
+  expect(missing).toEqual([]);
 });

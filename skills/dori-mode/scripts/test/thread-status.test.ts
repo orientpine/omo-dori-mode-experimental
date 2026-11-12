@@ -1,10 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
 
 import { Discord } from "../src/messenger/discord.ts";
 import { openCardIds, QuestionCards, QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { Http } from "../src/messenger/http.ts";
-import { DEBOUNCE_MS, ThreadStatusQueue } from "../src/messenger/thread-status-queue.ts";
+import { DEBOUNCE_MS, recordThreadName, ThreadStatusQueue } from "../src/messenger/thread-status-queue.ts";
 import { mapThread, threads } from "../src/messenger/thread-map.ts";
 import { fakeClock, withState } from "./fakes.ts";
 import { CHANNEL, doneWorld, live, ok, OWNER, T0, THREAD, WORDS, world } from "./thread-status-world.ts";
@@ -50,7 +49,7 @@ test("a rename refused with 429 waits out retry_after plus jitter, then one retr
 
 test("a rename left pending by a one-shot command is applied by a listener started after it, also after a restart", async () => {
   const { w, queue, timers, advance, pending, dir } = world("🔔 fix login");
-  writeFileSync(`${dir}/discord/thread-names.json`, JSON.stringify({ [THREAD]: "🔔 fix login" }));
+  recordThreadName(`${dir}/discord`, THREAD, "🔔 fix login");
   w.limited.push(120);
   // the command (no timers) hits the limit and leaves the rename on disk instead of waiting
   expect(await queue().request(THREAD, "working")).toBe("pending");

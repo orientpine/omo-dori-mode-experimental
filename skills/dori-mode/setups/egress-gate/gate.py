@@ -2360,7 +2360,7 @@ class Gate:
             status, _, _ = await self.bot_call("PATCH", f"/channels/{thread}", {"name": wanted, "archived": False})
             if not 200 <= status < 300:
                 raise OSError(status)
-            self.set_thread_mark(thread, wanted)
+            self.set_thread_mark(thread, {"name": wanted})
         except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
             print("GATE_CARD_THREAD_RENAME_FAILED", file=sys.stderr, flush=True)
 
@@ -2406,6 +2406,9 @@ class Gate:
     async def poll_approvals(self):
         async with self.approval_lock:
             await self.poll_batches()
+            for thread, record in self.thread_marks().items():
+                if isinstance(record, dict) and record.get("closing"):
+                    await self.close_card_thread(thread, record["closing"])
             for entry in self.pending():
                 pending_path = self.state / "pending" / (entry["id"] + ".json")
                 base = f"/channels/{entry['channel']}/messages/{entry['message']}"
@@ -2483,16 +2486,20 @@ class Gate:
             name = str(info.get("name") or "")
             if info.get("type") not in (11, 12) or str(info.get("parent_id")) != channel:
                 return
-            marked = self.thread_marks().get(str(thread))
-            self.set_thread_mark(thread, None)
+            record = self.thread_marks().get(str(thread))
+            marked = record.get("name") if isinstance(record, dict) else None
             # a thread the gate named (🔐), or one whose 🔔 it set when its card joined and nobody renamed since
             if not bare_thread_name(name).startswith("🔐 ") and name != marked:
+                self.set_thread_mark(thread, None)
                 return
+            if marked:  # kept until the rename lands: a failed one is tried again by the next poll
+                self.set_thread_mark(thread, {"name": marked, "closing": outcome})
             name = bare_thread_name(name)
             status, _, _ = await self.bot_call("PATCH", f"/channels/{thread}",
                                                {"name": f"{prefix} {name}"[:100], "archived": True})
             if not 200 <= status < 300:
                 raise OSError(status)
+            self.set_thread_mark(thread, None)
         except (Refused, OSError, ValueError, KeyError, http.client.HTTPException):
             print("GATE_THREAD_CLOSE_FAILED", file=sys.stderr, flush=True)
 

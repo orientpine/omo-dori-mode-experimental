@@ -252,6 +252,9 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
                     data = [{"id": m, "content": c, "author": {"bot": True}}
                             for m, c in sorted(self.cards.items(), reverse=True) if self.card_channels.get(m) == parts[2]]
                 elif (parts[1] == "channels" and len(parts) == 3 and parts[2] in self.thread_meta and method == "PATCH"
+                      and getattr(self, "patch_failures", None)):
+                    status, data = self.patch_failures.pop(0), {"message": "You are being rate limited.", "retry_after": 5}
+                elif (parts[1] == "channels" and len(parts) == 3 and parts[2] in self.thread_meta and method == "PATCH"
                       and "name" in json.loads(body) and json.loads(body).get("archived") is not False
                       and (self.thread_meta[parts[2]].get("thread_metadata") or {}).get("archived")):
                     status, data = 400, {"code": 50083, "message": "Thread is archived"}  # Discord: unarchive to rename
@@ -1083,6 +1086,19 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.approve()
         await self.service.poll_approvals()
         self.assertEqual(self.thread_patches[-1], ("100", {"name": "✅ ✉️ Reply", "archived": True}))
+
+    async def test_a_failed_release_of_the_gates_bell_is_tried_again_on_the_next_poll(self):
+        # review 9 of #467: the record went before the rename, so a 429 lost the 🔔 the gate had set for good
+        self.dori_thread("100", "🔄 ✉️ Reply")
+        self.approval()
+        await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]})
+        self.approve()
+        self.patch_failures = [429]
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_meta["100"]["name"], "🔔 ✉️ Reply")
+        await self.service.poll_approvals()
+        self.assertEqual(self.thread_patches[-1], ("100", {"name": "✅ ✉️ Reply", "archived": True}))
+        self.assertEqual(self.service.thread_marks(), {})
 
     async def test_a_bell_another_writer_set_is_left_when_the_gate_card_ends(self):
         self.dori_thread("100", "🔔 ✉️ Reply")
