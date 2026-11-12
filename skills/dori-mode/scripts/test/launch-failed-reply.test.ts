@@ -43,11 +43,14 @@ const session = () => {
   return { sessionsDir, reply };
 };
 
-// launch with the goal store giving reads[i] on the i-th read; during(i) runs before it
-const launch = async (sessionsDir: string, reads: readonly GoalRead[], during: (read: number) => void = () => {}) => {
+// launch with the goal store giving reads[i] on the i-th read; during(i) runs before it; onScreen(n) runs on each screen
+// read, n being how many goal reads came before it
+const launch = async (sessionsDir: string, reads: readonly GoalRead[], during: (read: number) => void = () => {}, onScreen: (reads: number) => void = () => {}) => {
   const brief = join(state.dir, "brief.md");
   await Bun.write(brief, "# brief\n");
   let read = 0;
+  const screen = world.screen;
+  Object.defineProperty(world, "screen", { configurable: true, get: () => { onScreen(read); return screen; } });
   const base = depsFor(world, fakeClock(T0), state.dir, { backend: "aoe", leadPane: "aoe_Dori_0a1b2c3d" });
   const deps: FlowDeps = { ...base, config: { ...base.config, sessionsDir }, readGoal: async () => { during(read); return reads[Math.min(read++, reads.length - 1)] as GoalRead; } };
   return (await launchLane(deps, { noThread: "test lane", key: "smoke", title: "smoke", brief, done: "file /tmp/ok", cwd: "/tmp/w" })).startup;
@@ -75,6 +78,17 @@ test("a session that holds a goal but whose newest reply of this launch failed i
   s.reply(T0 + 5_000, "usage_not_included");
   world.screen = [" The openai account usage limit ", " has been reached. Switch to    ", " another provider with /model.  ", BOX].join("\n");
   expect(await launch(s.sessionsDir, [{ status: "active" }])).toBe(`STARTUP_ERROR smoke ${PANE}: usage_not_included`);
+});
+
+// the retry answers while the third idle read reads the screen, after that read found the failed reply newest (review 10
+// of #471): the goal it read still holds, so the lane is at work, not STARTUP_NO_GOAL
+test("a session that holds a goal and whose retry answers during the third idle read is STARTUP_OK", async () => {
+  const s = session();
+  s.reply(T0 + 5_000, "Connection error.");
+  world.screen = `working on it\n${BOX}`;
+  let answered = false;
+  const onScreen = (reads: number) => { if (reads === 3 && !answered) { answered = true; s.reply(T0 + 30_000); } };
+  expect(await launch(s.sessionsDir, [{ status: "active" }], () => {}, onScreen)).toBe(`STARTUP_OK smoke ${PANE}`);
 });
 
 test("a session that holds a goal and whose failed reply a retry answers is STARTUP_OK", async () => {

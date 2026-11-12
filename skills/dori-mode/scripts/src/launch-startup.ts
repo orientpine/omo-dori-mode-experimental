@@ -87,6 +87,8 @@ export const startupGoal = async (deps: FlowDeps, key: string, pane: string, cwd
     // that is still the newest and failed is the failed start, whatever its text says (its first line is the reason)
     const failed = idle >= GOAL_WAIT.idleChecks ? launchReply(deps.config.sessionsDir, cwd, session, launchedAt)?.error : undefined;
     if (failed !== undefined) return `STARTUP_ERROR ${key} ${pane}: ${failed.split("\n")[0]?.trim().slice(0, 160) || "the model call failed"}`;
+    // a goal held back above only by a failed reply that a retry answered during this read: the lane is at work (review 10 of #471)
+    if (idle >= GOAL_WAIT.idleChecks && typeof goal === "object") return undefined;
     if (idle++ >= GOAL_WAIT.idleChecks) return `STARTUP_NO_GOAL ${key} ${pane}: the agent runs but ${noGoalWhy(goal)}: its first turn ended ${Math.round((deps.clock.now() - prompted) / 1_000)} s after its prompt; last lines: ${lastLines(screen)}`;
     await deps.clock.sleep(GOAL_WAIT.everyMs);
   }
