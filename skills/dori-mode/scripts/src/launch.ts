@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { rmSync } from "node:fs";
 import { laneEnv } from "./aoe.ts";
 import { laneHomeEnv } from "./home-env.ts";
+import { TokenFileError } from "./slack-token.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { omoSession, readScreen } from "./panes.ts";
 import type { Lane } from "./registry.ts";
@@ -51,6 +52,14 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     watchLog(deps.config.watchLog, deps.clock, { source: "launch", line });
   }
   if (missing.length) throw new DirectiveMissingError(missing);
+  // the token env is checked here, before any thread or session, so a refused token file (another home's, a missing
+  // named one, a bad DORI_CONFIG) stops the launch with nothing opened (upstream #219, token stack)
+  let home: Record<string, string>;
+  try {
+    home = laneHomeEnv(deps.config);
+  } catch (e) {
+    throw e instanceof TokenFileError ? new LaunchError(`token file refused: ${e.message}`) : e;
+  }
   // opened only once nothing else can stop the launch, so a refused launch leaves no empty thread behind
   let openedThread: string | undefined;
   if (input.thread === NEW_THREAD && deps.openThread) {
@@ -68,7 +77,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   // a model reply older than this is not an answer to this launch (a resumed session holds earlier ones)
   const launchedAt = deps.clock.now();
   // Footer commands resolve this launching home even when the runtime core inherited another (#197); these win over launchEnv (herdr and hc).
-  const env = { ...laneEnv(deps.config.launchEnv, input.useGpu), ...laneHomeEnv(deps.config) };
+  const env = { ...laneEnv(deps.config.launchEnv, input.useGpu), ...home };
   let registered = false;
   const beforeStart = async ({ pane, tab }: { readonly pane: string; readonly tab?: string }): Promise<void> => {
     const pending: Lane = { ...draft, reportProtocol: "jsonl-v1", pane, ...(tab ? { tab } : {}) };

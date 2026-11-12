@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import type { FlowDeps } from "../src/done-flow.ts";
 import { launchLane } from "../src/launch.ts";
 import { depsFor, fakeClock, newWorld } from "./fakes.ts";
@@ -42,8 +42,7 @@ const tokenFile = (path: string): string => {
 };
 
 // The hc lane's agent line (typed into its terminal) and every hc argv the launch ran.
-const launchOnHc = async (key: string): Promise<{ line: string; argv: string[] }> => {
-  const rig = flowRig(dir);
+const launchOnHc = async (key: string, rig = flowRig(dir)): Promise<{ line: string; argv: string[] }> => {
   const base = depsFor(newWorld(), fakeClock(Date.parse("2026-11-09T00:00:00Z")), join(dir, "second", "state"), { runtime: "hc", backend: "herdr", leadPane: "hc:t1" });
   const deps: FlowDeps = { ...base, run: rig.run, readGoal: async () => ({ status: "active" }) };
   const brief = join(dir, `${key}.md`);
@@ -68,11 +67,43 @@ test.skipIf(process.platform === "win32")("an hc lane gets the slack-token file 
 
 test.skipIf(process.platform === "win32")("the launcher's own DORI_SLACK_TOKEN_FILE wins over the file next to the config, as an absolute path", async () => {
   tokenFile(join(dir, "second", "slack-token"));
-  const own = tokenFile(join(dir, "own-token"));
+  // inside this home: one outside it is refused (upstream #219, token stack)
+  const own = tokenFile(join(dir, "second", "own-token"));
   process.env["DORI_SLACK_TOKEN_FILE"] = own;
   const { line, argv } = await launchOnHc("own-lane");
   expect(line).toContain(`DORI_SLACK_TOKEN_FILE=${own}`);
   expect(argv.filter((a) => a.includes("FIXTURE"))).toEqual([]);
+});
+
+// From upstream https://github.com/sisyphuslabs/dori-superagent/pull/219 (token stack squash 49fba4dc): a launch with a
+// token file outside this home is refused before any session is created.
+test.skipIf(process.platform === "win32")("a launch with a token file outside this home is refused before any session is created", async () => {
+  process.env["DORI_SLACK_TOKEN_FILE"] = tokenFile(join(dir, "other-token"));
+  const rig = flowRig(dir);
+  await expect(launchOnHc("outside-lane", rig)).rejects.toThrow(/^token file refused: DORI_SLACK_TOKEN_FILE .* is outside this home/);
+  expect(rig.read().calls.some((c) => c.includes("run") || c.includes("new"))).toBe(false);
+});
+
+// From upstream #219 test/slack-token-home.test.ts, with real links: 'near/link/../config.json' opens far's config, so far
+// is the token home for launcher and lane alike, whether that config exists yet or not.
+test.skipIf(process.platform === "win32")("with a real link, 'link/../config.json' makes far the token home, and the lane gets that DORI_CONFIG as text", async () => {
+  delete process.env["DORI_SLACK_TOKEN"];
+  const near = join(dir, "near");
+  const far = join(dir, "far");
+  mkdirSync(join(far, "a"), { recursive: true });
+  mkdirSync(near);
+  const farToken = tokenFile(join(far, "slack-token"));
+  tokenFile(join(near, "slack-token"));
+  symlinkSync(join(far, "a"), join(near, "link"));
+  const raw = `${relative(process.cwd(), near)}${sep}link${sep}..${sep}config.json`;
+  process.env["DORI_CONFIG"] = raw;
+  const missing = (await launchOnHc("nolink-lane")).line;
+  writeFileSync(join(far, "config.json"), "{}");
+  const existing = (await launchOnHc("link-lane")).line;
+  for (const line of [missing, existing]) {
+    expect(line).toContain(`DORI_SLACK_TOKEN_FILE=${realpathSync(farToken)}`);
+    expect(line).toContain(`DORI_CONFIG=${process.cwd()}${sep}${raw}`);
+  }
 });
 
 test.skipIf(process.platform === "win32")("with no token file the lane gets neither variable, as in a single-home setup", async () => {

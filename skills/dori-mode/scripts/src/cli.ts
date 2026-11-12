@@ -11,6 +11,7 @@ import { ConfigError, configPath, envFilePath, loadConfig, loadEnvFile, resolveI
 import { type FlowDeps, LaneStateError } from "./done-flow.ts";
 import { HeavyJobError } from "./heavy-queue.ts";
 import { LaunchError } from "./launch.ts";
+import { TokenFileError } from "./slack-token.ts";
 import { DirectiveError } from "./directives.ts";
 import { TreeError } from "./explore.ts";
 import { ChallengeError } from "./challenge.ts";
@@ -197,6 +198,6 @@ try {
     process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof GateRefusal || e instanceof ForkError || e instanceof DirectiveError || e instanceof HeavyJobError || e instanceof CheckpointError || e instanceof LessonError || e instanceof WorklogError || e instanceof ReportError) die(e.message);
+  if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof GateRefusal || e instanceof ForkError || e instanceof DirectiveError || e instanceof HeavyJobError || e instanceof CheckpointError || e instanceof LessonError || e instanceof WorklogError || e instanceof ReportError || e instanceof TokenFileError) die(e.message);
   throw e;
 }

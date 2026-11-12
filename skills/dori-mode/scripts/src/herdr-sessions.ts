@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import type { DoriConfig } from "./config.ts";
 import { homeEnv } from "./home-env.ts";
+import { TokenFileError } from "./slack-token.ts";
 import { agentPath, herdrAgentArgv } from "./aoe.ts";
 import { agentLine, herdrAgentPid, herdrRead, herdrSessions, herdrShellPid, HerdrShellError, paneRef, paneRuntime, requireHerdrPwsh } from "./herdr.ts";
 import { reasonOf } from "./runtime/herdr/exec.ts";
@@ -177,8 +178,15 @@ export const reviveHerdr = async (run: Runner, clock: Clock, config: Pick<DoriCo
   if (!shellReadable) return `REVIVE_FAIL ${pane}: the restored shell stayed unreadable after 5 s; the agent was not started`;
   const restored = await herdrAgentPid(run, pane);
   const read = () => herdrRead(run, pane);
-  const selectedHome = homeEnv(config);
   if (!restored) {
+    let selectedHome: Record<string, string>;
+    try {
+      selectedHome = homeEnv(config);
+    } catch (error) {
+      // the token env a fresh launch refuses (upstream #219, token stack) is refused here too, before the agent starts
+      if (error instanceof TokenFileError) return `REVIVE_FAIL ${pane}: token file refused: ${error.message}`;
+      throw error;
+    }
     try {
       // the same capability check as a fresh launch: pwsh before 7.5 drops an empty value such as the blanked DORI_SLACK_TOKEN
       await requireHerdrPwsh(run, pane, platform, Object.entries(selectedHome).flatMap(([k, v]) => (v === "" ? [k] : [])));

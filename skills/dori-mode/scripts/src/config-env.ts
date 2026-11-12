@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { InstanceRef } from "./config-types.ts";
+import { homeOf, RESOLVED_HOME, RESOLVED_MARK } from "./slack-token.ts";
 
 export const envFilePath = (): string => process.env["DORI_ENV_FILE"] ?? join(homedir(), ".dori", "dori.env");
 
@@ -17,12 +18,15 @@ const instanceVar = (name: string): boolean => /^DORI_(DISCORD|SLACK|TELEGRAM|LE
 // 5-7), so every inherited instance variable is dropped first. Kept: a token file the caller set, unless dori launch chose
 // it for another home (DORI_SLACK_TOKEN_HOME is not this run's config, as when a lane of one home calls another home's
 // wrapper, review 2), with the blanked DORI_SLACK_TOKEN and the marker launch passes with a file of this home, so
-// dori.env's token does not replace it. Other variables (selectors, run knobs) still win over the file.
+// dori.env's token does not replace it. Other variables (selectors, run knobs) still win over the file. The marker is the
+// token home as upstream #219 resolves it (homeOf: the directory of the config the OS opens), never the config path on
+// paper, where `link/../config.json` of one home reads as another's; a home that cannot be resolved matches no marker.
 export const loadEnvFile = async (path: string, env: Record<string, string | undefined> = process.env): Promise<void> => {
-  const home = resolve(env["DORI_CONFIG"] ?? configPath());
-  const marked = env["DORI_SLACK_TOKEN_HOME"];
+  const marked = env[RESOLVED_HOME];
+  const home = marked === undefined ? undefined : tokenHome(env["DORI_CONFIG"] ?? configPath());
   const file = marked === undefined || marked === home ? env["DORI_SLACK_TOKEN_FILE"] : undefined;
-  const keep = new Set([...(file ? ["DORI_SLACK_TOKEN_FILE"] : []), ...(file && marked === home ? ["DORI_SLACK_TOKEN_HOME"] : []), ...(file && marked === home && env["DORI_SLACK_TOKEN"] === "" ? ["DORI_SLACK_TOKEN"] : [])]);
+  const ours = file !== undefined && marked !== undefined && marked === home;
+  const keep = new Set([...(file ? ["DORI_SLACK_TOKEN_FILE"] : []), ...(ours ? [RESOLVED_HOME, RESOLVED_MARK] : []), ...(ours && env["DORI_SLACK_TOKEN"] === "" ? ["DORI_SLACK_TOKEN"] : [])]);
   for (const name of Object.keys(env)) if (instanceVar(name) && !keep.has(name)) delete env[name];
   const envFile = Bun.file(path);
   if (!(await envFile.exists())) return;
@@ -37,6 +41,14 @@ export const envFileEntries = (text: string): Map<string, string> => {
     if (name && value !== undefined && !values.has(name)) values.set(name, value.trim().replace(/^(["'])(.*)\1$/, "$2"));
   }
   return values;
+};
+
+const tokenHome = (configFile: string): string | undefined => {
+  try {
+    return homeOf(configFile);
+  } catch {
+    return undefined;
+  }
 };
 
 const realOr = (path: string): string => {
