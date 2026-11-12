@@ -73,6 +73,10 @@ const setup = () => {
 };
 
 const OPTIONS = { approvedBy: "https://discord.com/channels/1/2/3", title: "replacement", noMonitors: true, verifyMin: 1 } as const;
+// A handover runs real hc calls and takes seconds under load (#426), so its tests get a long deadline. Not { timeout: 0 }: in a
+// file with beforeEach/afterEach, bun 1.4.2 still fires the hook's 5 s default from that test's start and SIGTERMs whatever
+// process runs then, the next test's hc call included ("killed 1 dangling process", the zzangdori-lead-2 flake in 4eae ci).
+const HANDOVER_TIMEOUT = { timeout: 120_000 } as const;
 
 test("hc lead handover commits replacement routing in the same group and named core before freezing the old lead", async () => {
   // Given: an hc lead in a named core; the caller's core points elsewhere.
@@ -113,7 +117,7 @@ test("hc lead handover commits replacement routing in the same group and named c
   expect(rig.read().sent.at(-1)).toEqual({ id: "t2", text: "[REPORT] after commit" });
   expect(lines).toContain("HANDOVER_COMMITTED lead hc:t2");
   expect(readRollovers(dir).at(-1)).toMatchObject({ result: "done-frozen" });
-}, { timeout: 0 });
+}, HANDOVER_TIMEOUT);
 
 // The owner reads the lead rows in doriterm by name (2026-11-12: "dori-mode-11111163은 뭐야? 다른 리드들은 이름이 바로 보이는데?"):
 // a new hc lead is named after this Dori, and while the frozen old lead holds that name the next free -2 is used.
@@ -129,7 +133,7 @@ test.each([["dori-mode-11111633", "zzangdori-lead"], ["zzangdori-lead", "zzangdo
   expect(result).toMatchObject({ code: 0, to: "hc:t2" });
   expect(rig.read().terminals["t2"]?.name).toBe(expected);
   expect(rig.read().terminals["t2"]?.labels["dori.name"]).toBe(expected);
-}, { timeout: 0 });
+}, HANDOVER_TIMEOUT);
 
 test("hc lead handover leaves the old lead routed and closes the replacement when its agent cannot start", async () => {
   // Given: hc creates the replacement's shell but rejects its initial agent command.
