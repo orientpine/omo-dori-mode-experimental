@@ -34,7 +34,7 @@ test("Bun's tail after the missing module names the extension's own path: a dire
 test("omo's own error line wrapped by hc still counts: a cut space is put back, a cut inside a word is joined as is", () => {
   const limited = wrap("Error: rate limit reached, retry later", 12);
   expect(limited.split("\n")[0]).toBe("Error: rate");
-  expect(startupFailure(`${limited}\n${BOX}`, false, 12)).toBe("rate limit");
+  expect(startupFailure(`${limited}\n${BOX}`, false, 12)).toBe("rate limit reached");
   const noKey = wrap("Error: No API key found for anthropic", 12);
   expect(noKey.split("\n")[0]).toBe("Error: No AP");
   expect(startupFailure(`${noKey}\n${BOX}`, false, 12)).toBe("No API key");
@@ -45,10 +45,10 @@ test("omo's own error line wrapped by hc still counts: a cut space is put back, 
 test("omo's provider notices count when the wrap cuts their own marker: blocked accounts and a reached usage limit at 40 columns (review 1 of #470)", () => {
   const blocked = wrap(" All Claude accounts for anthropic-subscription are currently blocked (rate limit or auth errors).", 40);
   expect(blocked.split("\n")[0]).not.toContain("blocked");
-  expect(startupFailure(`${blocked}\n  Soonest automatic retry: 2026-01-01T13:00:00.000Z.\n${BOX}`, false, 40)).toBe("rate limit");
+  expect(startupFailure(`${blocked}\n  Soonest automatic retry: 2026-01-01T13:00:00.000Z.\n${BOX}`, false, 40)).toBe("accounts for anthropic-subscription are currently blocked");
   const limit = wrap(" The fakep account usage limit has been reached. Switch to another provider with /model.", 40);
   expect(limit.split("\n")[0]).not.toContain("reached");
-  expect(startupFailure(`${limit}\n${BOX}`, false, 40)).toBe("usage limit");
+  expect(startupFailure(`${limit}\n${BOX}`, false, 40)).toBe("account usage limit has been reached");
 });
 
 test("only rows that fill the pane go on: a real line break, a warning row and code that only looks like a failure are none", () => {
@@ -59,6 +59,17 @@ test("only rows that fill the pane go on: a real line break, a warning row and c
   const exact = `Warning: Failed to load extension "x.js": Cannot find module '${"a".repeat(17)}'`;
   expect(exact.length).toBe(80);
   expect(startupFailure(`${exact}\nError: No API key found\n${BOX}`, false, 80)).toBe("No API key");
+});
+
+// dori-superagent PRs #206 and #207 (SUL-1.0: NOTICE, https://github.com/sisyphuslabs/dori-superagent/pull/207, its
+// launch-startup-wait.test.ts hc-filled and hc-glue cases): an own error row exactly as wide as the pane is joined to the
+// next row as is, and a phrase glued on after a letter still counts, as a provider prints it.
+test("a failure phrase glued onto a full-width own error row counts, and reports the whole phrase", () => {
+  const row = "Error: loading ok";
+  for (const [line, found] of [["No API key found", "No API key"], ["Rate limit exceeded", "Rate limit exceeded"], ["Quota exceeded for model", "Quota exceeded"], ["Usage limit reached", "Usage limit reached"]] as const)
+    expect([line, startupFailure(`${row}\n${line}\n${BOX}`, false, row.length)]).toEqual([line, found]);
+  // a kebab-case name glued the same way is none
+  expect(startupFailure(`${row}\nfix-rate-limit-error lane\n${BOX}`, false, row.length)).toBeUndefined();
 });
 
 test("an hc lane whose own error wraps on a narrow pane is STARTUP_ERROR at the first check", async () => {
@@ -77,7 +88,7 @@ test("an hc lane whose own error wraps on a narrow pane is STARTUP_ERROR at the 
       return base.run(argv, o);
     };
     const { startup } = await launchLane({ ...base, run }, { noThread: "QA", key: "hc-split", title: "hc-split", brief, done: "file /tmp/ok", cwd: "/tmp/w", model: "m" });
-    expect(startup).toBe("STARTUP_ERROR hc-split hc:t1: rate limit");
+    expect(startup).toBe("STARTUP_ERROR hc-split hc:t1: rate limit reached");
   } finally {
     if (previous === undefined) delete process.env["DORI_RUNTIME"];
     else process.env["DORI_RUNTIME"] = previous;

@@ -1392,25 +1392,25 @@ test("startup failure scope: once the model answered the lane in its own session
     const file = join(sessions, "--tmp-w--", `2026-01-01T12-00-01-000Z_${ID}.jsonl`);
     appendFileSync(file, `${JSON.stringify({ type: "message", timestamp: iso(at), message: { role: "assistant", stopReason, ...(errorMessage ? { errorMessage } : {}) } })}\n`);
   };
-  const screen = [" Error: rate limit (quoted from a log)", " done", BOX, STATUS].join("\n");
+  const screen = [" Error: 429 Rate limit reached for requests (quoted from a log)", " done", BOX, STATUS].join("\n");
   reply("stop");
   expect(await scoped("q3", screen, deps)).toBe(`STARTUP_OK q3 aoe_q3_${NEW_AOE_ID.slice(0, 8)}`);
   // a resumed session (herdr --session) holds a good reply from before this launch: it is no answer to this one
   reply("stop", undefined, T0 - 60 * MIN);
   expect(await scoped("q5", [" Error: No API key found for groq.", BOX].join("\n"), deps)).toBe(`STARTUP_ERROR q5 aoe_q5_${NEW_AOE_ID.slice(0, 8)}: No API key`);
   reply("error", "429 Rate limit reached for requests");
-  expect(await scoped("q4", screen, deps)).toBe(`STARTUP_ERROR q4 aoe_q4_${NEW_AOE_ID.slice(0, 8)}: rate limit`);
+  expect(await scoped("q4", screen, deps)).toBe(`STARTUP_ERROR q4 aoe_q4_${NEW_AOE_ID.slice(0, 8)}: Rate limit reached`);
 });
 
 test("startup failure scope: the agent's own failures stay STARTUP_ERROR: no API key, out of quota, a 429 omo still retries, all accounts blocked, a dead pane", async () => {
   const cases: [string, string, string][] = [
     ["f1", [" Error: No API key found for groq.", " Use /login to log into a provider via OAuth or API key. See:", BOX, "/tmp/w • 0/131K (0.0%) (auto)    (groq) llama-3.3-70b-versatile"].join("\n"), "No API key"],
-    ["f2", [" The fakep account usage limit has been reached. Switch to another provider with /model.", " Error: The provider account is out of quota. Action: check the plan or credits.", " Welcome to OmO. Ask anything.", BOX].join("\n"), "usage limit"],
-    ["f3", [" say hi", ' Error: 429: {"message":"Rate limit reached for requests","type":"rate_limit_exceeded"}', "── ⠧ The model provider may be having trouble. Retrying... (2/5, in 1s; esc to cancel) ──", "❯ ", "────"].join("\n"), "Rate limit"],
-    ["f4", [" All Claude accounts for anthropic-subscription are currently blocked (rate limit or auth errors).", "  Soonest automatic retry: 2026-01-01T13:00:00.000Z.", BOX].join("\n"), "rate limit"],
+    ["f2", [" The fakep account usage limit has been reached. Switch to another provider with /model.", " Error: The provider account is out of quota. Action: check the plan or credits.", " Welcome to OmO. Ask anything.", BOX].join("\n"), "account usage limit has been reached"],
+    ["f3", [" say hi", ' Error: 429: {"message":"Rate limit reached for requests","type":"rate_limit_exceeded"}', "── ⠧ The model provider may be having trouble. Retrying... (2/5, in 1s; esc to cancel) ──", "❯ ", "────"].join("\n"), "Rate limit reached"],
+    ["f4", [" All Claude accounts for anthropic-subscription are currently blocked (rate limit or auth errors).", "  Soonest automatic retry: 2026-01-01T13:00:00.000Z.", BOX].join("\n"), "accounts for anthropic-subscription are currently blocked"],
     ["f5", [BOX, "", "Pane is dead (status 1, Thu Jan  1 12:00:20 2026)"].join("\n"), "Pane is dead"],
     // a session title in the status lines that quotes the running-turn mark is no running turn
-    ["f6", [' Error: 429: {"message":"Rate limit reached for requests"}', BOX, "/tmp/w • Fix esc to interrupt indicator • 40K/1M (4.0%)"].join("\n"), "Rate limit"],
+    ["f6", [' Error: 429: {"message":"Rate limit reached for requests"}', BOX, "/tmp/w • Fix esc to interrupt indicator • 40K/1M (4.0%)"].join("\n"), "Rate limit reached"],
   ];
   for (const [key, screen, word] of cases) expect(await scoped(key, screen)).toBe(`STARTUP_ERROR ${key} aoe_${key}_${NEW_AOE_ID.slice(0, 8)}: ${word}`);
 });

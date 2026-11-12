@@ -4,8 +4,7 @@ import { isHerdrPane } from "./herdr.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen } from "./panes.ts";
 import { lastLines } from "./pending-goal.ts";
-
-const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API key|model_not_available|usage limit|rate limit|quota|Session crashed|unknown provider|Model "[^"\n]*" not found|Pane is dead/i;
+import { startupPhrase } from "./startup-phrases.ts";
 
 // A failure word is a failed start only where the agent itself put it (dori-superagent PR #51 review reproduced here (MIT):
 // https://github.com/sisyphuslabs/dori-superagent/pull/51#discussion_r4445875794, a working lane quotes such words). On
@@ -51,8 +50,9 @@ export const startupFailure = (screen: string, answered = false, cols?: number):
     const above = box < 0 || i < box;
     const whole = above ? ownLine(lines, i, box < 0 ? lines.length : box, cols) : line;
     const own = above ? OWN_ERROR.test(whole) : line.startsWith("Pane is dead");
-    const bad = own ? STARTUP_FAILURE.exec(whole) : null;
-    if (bad) return bad[0];
+    // the failure phrase table of dori-superagent #207 and #210 (startup-phrases.ts): a topic word is none
+    const bad = own ? startupPhrase(whole) : null;
+    if (bad) return bad;
   }
   return undefined;
 };
