@@ -10,10 +10,12 @@ import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
+import { assetsHave, assetsOptOk, assetsWord, haveOf, settleAssets, skipOf } from "./heavy-assets.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
+export { withPipefail } from "./heavy-pipefail.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH... -- <cmd>: a lane's own command (a browser test, a build) runs on
 // the less busy PC. When this host is more than SPREAD_MARGIN points busier than a helper, the helper runs it; else it
@@ -72,29 +74,6 @@ export type SpreadJob = {
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
 // path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
 export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string };
-
-// A bash -c script whose pipeline ends in tail, grep or head exits with that last command's code, so a failing test run
-// piped into tail looked like a pass (2026-11-02: 171 of 744 failed on the helper, HEAVY_DONE exit 0). The script that pipes
-// and does not set pipefail itself runs with set -o pipefail, so any failing stage fails the job; anything else is unchanged.
-export const withPipefail = (cmd: readonly string[]): readonly string[] => {
-  if (basename(cmd[0] ?? "") !== "bash" || cmd.some((a) => a.includes("pipefail"))) return cmd;
-  let sawC = false;
-  for (let i = 1; i < cmd.length; i++) {
-    const a = cmd[i]!;
-    if (/^[-+][oO]$/.test(a)) {
-      i++;
-      continue;
-    }
-    if (/^-[A-Za-z]+$/.test(a)) {
-      sawC ||= a.includes("c");
-      continue;
-    }
-    if (a === "--" || a.startsWith("--")) continue;
-    if (!sawC || !/(?:^|[^|])\|(?!\|)/.test(a)) return cmd;
-    return [...cmd.slice(0, i), `set -o pipefail; ${a}`, ...cmd.slice(i + 1)];
-  }
-  return cmd;
-};
 
 // absolute paths inside one argument: the whole argument, or what follows = , or : (not the // of a URL)
 export const pathsIn = (arg: string): string[] => [...arg.matchAll(/(?:^|[=,:])(\/(?!\/)[^\s=,:;"'\]}]*)/g)].map((m) => normalize(m[1]!));
@@ -253,8 +232,9 @@ type Sink = { write(s: string): unknown }; type Started = { readonly helper: str
 type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
-export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
-  const args = execWords(job, plan, below);
+export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets = true): Promise<HelperTry> => {
+  const word = assets ? assetsWord(plan.sync) : undefined; // the --sync trees by hash (heavy-assets.ts); a helper that does not know assets= is asked once more without it
+  const args = execWords(job, plan, below, word);
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // ssh, tar and untar stay in the caller's process group: a Ctrl-C on its terminal ends them with it
   const reader = p.stderr.getReader();
   const lines = readerLines(reader);
@@ -265,11 +245,14 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
     await letGo(p, reader, answered ? STALE_GRACE_MS : 0);
     if (!answered) return { kind: "down", why: `no answer to the admission within ${staleMs / 60_000} min (heavyQueue.staleMin)` };
     if (!verdict) return { kind: "down", why: last || `ssh exited ${p.exitCode ?? p.signalCode}` };
+    if (word && verdict[1] === "REFUSED" && verdict[2]?.startsWith('unknown option "assets=')) return startExec(ctx, h, job, plan, below, false);
     return helperVerdict(verdict[1] ?? "", verdict[2] ?? "");
   }
+  const skip = skipOf(plan.sync, word, haveOf(verdict[2] ?? ""));
+  if (skip.length) ctx.deps.log?.(`HEAVY_ASSET ${job.label} ${h.name}: ${skip.join(", ")} already there by hash, not sent`);
   const stop = onStop(() => p.kill("SIGKILL"));
   const aliveSec = aliveOf(verdict?.[2] ?? "");
-  const watch = staleWatch({ label: job.label, helper: h.name, total: (cut) => syncBytes(plan.sync, cut), staleMs, ...(aliveSec ? { aliveSec } : {}), now: () => ctx.deps.clock.now(), log: (l) => ctx.deps.log?.(l) });
+  const watch = staleWatch({ label: job.label, helper: h.name, total: (cut) => syncBytes(plan.sync.filter((s) => !skip.includes(s)), cut), staleMs, ...(aliveSec ? { aliveSec } : {}), now: () => ctx.deps.clock.now(), log: (l) => ctx.deps.log?.(l) });
   let stale: string | undefined;
   const kids: Bun.Subprocess[] = [p];
   void watch.stale.then((why) => {
@@ -299,7 +282,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
   kids.push(untar);
   const done = (async (): Promise<number | null | Stale> => {
     let sent = -1;
-    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`));
+    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`), skip);
     try {
       sent = await Promise.race([up, watch.stale.then(() => -1)]);
       watch.synced();
@@ -475,7 +458,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const needOk = (o: string): boolean => o.startsWith("need=") && NEED_PATH.test(o.slice(5)) && !o.split("/").includes("..") && inProgramDirs(o.slice(5));
   const whichOk = (o: string): boolean => /^which=[\w.+@-]{1,64}$/.test(o) && !/^which=\.+$/.test(o);
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
-  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && o !== "back");
+  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && !assetsOptOk(o) && o !== "back");
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : (hostRefusal(ctx.q.kinds, kind, opts) ?? memRefusal(opts, ctx.deps.headroom?.free ?? 10));
   if (off) return d.refuse(label, off);
@@ -515,7 +498,8 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     rmSync(dir, { recursive: true, force: true });
     releaseSlot(t.slot);
   });
-  console.error(`WORKER_ADMIT ${basename(t.slot)} alive=${ctx.q.aliveSec ?? 60} run=${runId}`);
+  const have = assetsHave(ctx.deps.dir, d.caller, opts);
+  console.error(`WORKER_ADMIT ${basename(t.slot)} alive=${ctx.q.aliveSec ?? 60} run=${runId}${have.length ? ` have=${have.join(",")}` : ""}`);
   const root = join(dir, "in");
   let cmdName = "-";
   let inBytes = 0;
@@ -536,6 +520,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
       return 3;
     }
     cmdName = basename(spec.argv[0]!);
+    settleAssets(root, spec.sync, opts, ctx.deps.dir, d.caller, have, log);
     for (const p of spec.sync) if (!existsSync(join(root, p))) mkdirSync(join(root, p), { recursive: true });
     beat.set("playwright");
     if (playwright && kind === "browser" && d.tools.browsersDir) await ensurePlaywright(playwright, d.tools.browsersDir, log);

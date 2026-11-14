@@ -50,7 +50,7 @@ const heavyCommand: Command = async (context) => {
   if (itemsOpt !== undefined && needBytes && !perBytes) die("dori heavy --items --mem SIZE caps the items each host runs at once, so it needs --mem-per-worker SIZE");
   if (itemsOpt !== undefined && name.length > 56) die(`dori heavy --items: the label takes 56 characters at most (each item runs as <label>.<n>)`);
   const deps = heavyDeps(load);
-  // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-spread.ts withPipefail)
+  // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-pipefail.ts withPipefail)
   const jobCmd = withPipefail(cmd);
   if (jobCmd !== cmd) deps.log?.(`HEAVY_PIPEFAIL ${name}: the bash -c script pipes, so it runs with set -o pipefail and a failing stage fails the job`);
   // a --helpers-only job never runs here: the helper that takes it checks its own memory (heavy-spread.ts heavyExec)

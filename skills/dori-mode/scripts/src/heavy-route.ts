@@ -75,7 +75,7 @@ export const archOf = (sync: readonly string[]): { readonly arch?: string } => {
 };
 
 // the words after the helper's ssh argv: dori heavy-worker "exec <label> <kind> <below> [options]"
-export const execWords = (job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): string[] => ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : []), ...(plan.toolOpts ?? []), ...(plan.arch ? [`arch=${plan.arch}`] : [])];
+export const execWords = (job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets?: string): string[] => ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : []), ...(plan.toolOpts ?? []), ...(plan.arch ? [`arch=${plan.arch}`] : []), ...(assets ? [assets] : [])];
 
 // ssh hands those words to the helper's login shell, which reads them before the worker checks them: a helper reached
 // without a forced command (cha, Tailscale SSH, 2026-11-08) would run a label like `t; touch x` outside its box. Only
