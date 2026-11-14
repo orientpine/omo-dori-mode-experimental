@@ -498,13 +498,13 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     rmSync(dir, { recursive: true, force: true });
     releaseSlot(t.slot);
   });
-  const have = await assetsHave(ctx.deps.dir, d.caller, opts, join(dir, "pin"));
+  const have = assetsHave(ctx.deps.dir, d.caller, opts, join(dir, "pin"));
   console.error(`WORKER_ADMIT ${basename(t.slot)} alive=${ctx.q.aliveSec ?? 60} run=${runId}${have.length ? ` have=${have.join(",")}` : ""}`);
   const root = join(dir, "in");
   let cmdName = "-";
   let inBytes = 0;
   try {
-    await unpackFrom("inherit", root);
+    await unpackFrom("inherit", root, opts.some((o) => o.startsWith("assets=")));
     inBytes = duBytes(root);
     let raw: unknown = null;
     try {

@@ -110,8 +110,9 @@ export const packTo = async (dir: string, entries: readonly string[], to: "inher
   return bytes;
 };
 
-export const unpackFrom = async (from: "inherit" | Uint8Array, dir: string): Promise<void> => {
-  const p = Bun.spawn(["tar", "-C", dir, "--no-same-owner", "-xf", "-"], { stdin: from, stdout: "ignore", stderr: "pipe" });
+// keepModes: modes exactly as sent (tar -p), for a job whose --sync trees are checked by hash (heavy-assets.ts); else the umask limits them
+export const unpackFrom = async (from: "inherit" | Uint8Array, dir: string, keepModes = false): Promise<void> => {
+  const p = Bun.spawn(["tar", "-C", dir, "--no-same-owner", ...(keepModes ? ["-p"] : []), "-xf", "-"], { stdin: from, stdout: "ignore", stderr: "pipe" });
   const code = await p.exited;
   if (code !== 0) throw new TarError(`tar -x exited ${code}: ${(await new Response(p.stderr).text()).trim().slice(0, 200)}`);
 };

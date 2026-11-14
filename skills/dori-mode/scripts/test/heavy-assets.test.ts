@@ -80,6 +80,46 @@ test("a tree the helper got once is taken from its store the next time, not sent
   expect(helperLog()).toContain(`ASSET_OK ${h2} ${work} kept`);
 });
 
+test("a tree whose group bits the helper's umask drops is still kept and taken from the store the next time (review 3 of #477)", async () => {
+  const was = process.umask(0o022);
+  try {
+    chmodSync(work, 0o775);
+    chmodSync(join(work, "data.txt"), 0o664);
+    const ctx = ctxWith(helperArgv());
+    const h = (await assetHash(work))!;
+    expect(await runOnce(ctx)).toEqual({ code: 0, out: "first\n2097152\n" });
+    expect(helperLog()).toContain(`ASSET_OK ${h} ${work} kept`);
+    logs = [];
+    expect(await runOnce(ctx)).toEqual({ code: 0, out: "first\n2097152\n" });
+    expect(helperLog()).toContain(`ASSET_OK ${h} ${work} cached`);
+  } finally {
+    process.umask(was);
+  }
+});
+
+test("a mode-only change sends the tree again and the job sees the new mode (challenge of the review-3 plan of #477)", async () => {
+  const was = process.umask(0o022);
+  try {
+    const ctx = ctxWith(helperArgv());
+    const mode = async (): Promise<string> => {
+      let out = "";
+      const job: SpreadJob = { label: "t", kind: "cpu", cmd: ["stat", "-c", "%a", "data.txt"], cwd: work, sync: [work], env: {}, out: { write: (s: string) => (out += s) } };
+      const plan = spreadPlan(job, who);
+      if (!plan.ok) throw new Error(plan.why);
+      await heavySpread(ctx, job, plan);
+      return out.trim();
+    };
+    chmodSync(join(work, "data.txt"), 0o644);
+    expect(await mode()).toBe("644");
+    chmodSync(join(work, "data.txt"), 0o600);
+    logs = [];
+    expect(await mode()).toBe("600");
+    expect(logs.some((l) => l.startsWith("HEAVY_ASSET"))).toBe(false);
+  } finally {
+    process.umask(was);
+  }
+});
+
 test("a helper whose dori does not know assets= is asked once more without it, and the job runs there", async () => {
   const f = join(state.dir, "old-helper.sh");
   writeFileSync(f, `#!/bin/sh\ncase "$*" in *assets=*) echo 'WORKER_REFUSED unknown option "assets=x"' >&2; exit 3;; esac\nexec "$@"\n`);

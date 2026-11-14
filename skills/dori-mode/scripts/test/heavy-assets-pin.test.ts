@@ -45,6 +45,29 @@ test("a tree offered to a job is that job's even when the store loses it before 
   expect(await settleAssets(root, ["/w"], [`assets=${h}`], heavy(), "tester", [h], say)).toBe(true);
   expect(lines.at(-1)).toBe(`ASSET_OK ${h} /w cached`);
   expect(readFileSync(join(root, "w", "run.py"), "utf8")).toBe("print(1)\n");
+  // the job's pin goes back to the store once its trees are in place (review 3 of #477)
+  expect(existsSync(join(store(), h, "ok"))).toBe(true);
+});
+
+test("an offered entry is moved, not copied, before the helper answers, so another job does not see it meanwhile (review 3 of #477)", async () => {
+  const h = await keep();
+  const { pin } = job(1);
+  expect(await assetsHave(heavy(), "tester", [`assets=${h}`], pin)).toEqual([h]);
+  expect(existsSync(join(store(), h))).toBe(false);
+  expect(existsSync(join(pin, h, "tree", "run.py"))).toBe(true);
+  // a second job asking at once is not offered it, so it sends the tree itself
+  expect(await assetsHave(heavy(), "tester", [`assets=${h}`], job(2).pin)).toEqual([]);
+});
+
+test("two --sync paths with one hash are both put in place from one offered entry (review 3 of #477)", async () => {
+  const h = await keep();
+  const { root, pin } = job(1);
+  expect(await assetsHave(heavy(), "tester", [`assets=${h},${h}`], pin)).toEqual([h]);
+  mkdirSync(root, { recursive: true });
+  // both paths end in w, so the two trees hash the same
+  expect(await settleAssets(root, ["/a/w", "/b/w"], [`assets=${h},${h}`], heavy(), "tester", [h], say)).toBe(true);
+  expect(lines.slice(-2)).toEqual([`ASSET_OK ${h} /a/w cached`, `ASSET_OK ${h} /b/w cached`]);
+  for (const d of ["a", "b"]) expect(readFileSync(join(root, d, "w", "run.py"), "utf8")).toBe("print(1)\n");
 });
 
 test("an entry whose copy cannot be made is dropped and not offered, so the next job sends the tree and keeps it again", async () => {
@@ -66,7 +89,7 @@ test("a tree's hash covers its files' and folders' modes and its bytes under one
   const readOnly = await assetHash(d);
   expect(readOnly).not.toBe(base);
   chmodSync(join(d, "sub", "in.csv"), 0o644);
-  chmodSync(join(d, "sub"), 0o700);
+  chmodSync(join(d, "sub"), 0o555);
   expect(await assetHash(d)).not.toBe(base);
   chmodSync(join(d, "sub"), 0o755);
   // the same name, size and mtime with other bytes

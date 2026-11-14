@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { assetHash, assetsHave, settleAssets } from "../src/heavy-assets.ts";
@@ -69,12 +69,12 @@ test("an entry offered to an admitted job is not pruned by another job, and a lo
   expect(await assetsHave(join(state.dir, "heavy"), "tester", [`assets=${offered}`], join(state.dir, "job", "pin"))).toEqual([offered]);
   const root = join(state.dir, "in");
   expect(await settleAssets(root, ["/w"], await arrived(root, "/w", { "a.py": "1\n" }), join(state.dir, "heavy"), "tester", [], say)).toBe(true);
-  expect(existsSync(join(store(), offered, "ok"))).toBe(true);
+  // the offered entry waits in that job's own folder, where pruning cannot reach it
+  expect(existsSync(join(state.dir, "job", "pin", offered, "ok"))).toBe(true);
   expect(readdirSync(store()).filter((h) => hashes.includes(h)).length).toBeLessThan(9);
-  // a held tree whose copy is gone: the job does not run on part of its inputs
+  // a job told it holds a tree its own pin/ lacks: it does not run on part of its inputs
   const gone = hashes[0]!;
-  const r2 = join(state.dir, "in2");
-  rmSync(join(store(), gone, "tree"), { recursive: true });
+  const r2 = join(state.dir, "other-job", "in");
   expect(await settleAssets(r2, ["/w/sub"], [`assets=${gone}`], join(state.dir, "heavy"), "tester", [gone], say)).toBe(false);
   expect(lines.at(-1)).toBe(`ASSET_BAD /w/sub: the copy of ${gone} offered to this job is gone; the job does not run`);
 });

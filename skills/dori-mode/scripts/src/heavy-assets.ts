@@ -5,14 +5,17 @@ import { basename, dirname, join } from "node:path";
 // A helper keeps the --sync paths a caller sent, by hash, and the next job that sends the same tree takes its copy there
 // instead of the upload (owner 2026-11-14 "가용한 모든 리소스를 효율적으로 쓸수있게 해", gongdori's E7: a code tree and a uv
 // environment shipped again with every job of a batch). The hash is of the tree's contents (review 1 of #477: equal size
-// and mtime said nothing of the bytes): the root's name, every path with its type and mode (review 2: a mode-only change is
-// another input), a file's bytes, a link's target (a folder's size and mtime differ between file systems and change as tar
-// fills it). Hashing and copying are asynchronous, so a caller's other transfers and a helper's heartbeat go on meanwhile.
-// The caller sends one hash per --sync path (assets=); the helper copies each one it holds into the job's own folder
-// (pin/) before it answers, and names only those (WORKER_ADMIT ... have=), so nothing the store does after (pruning,
-// another job) takes a tree from a job it was offered to, and an entry that cannot be copied is dropped, not offered
-// (review 2 of #477). The caller leaves those out of the upload (HEAVY_ASSET), the helper moves each into place
-// (ASSET_OK <hash> <path> cached) or, for one that came,
+// and mtime said nothing of the bytes): the root's name, every path with its type and mode (review 2: a mode-only change
+// is another input; review 3: a job sending assets= is unpacked with its modes kept, tar -p, heavy-job.ts unpackFrom, so
+// the helper's umask does not change what arrives and a cached copy has the modes a fresh upload would), a file's bytes, a link's target (a folder's size and mtime
+// differ between file systems and change as tar fills it). Hashing and copying are asynchronous, so a caller's other
+// transfers and a helper's heartbeat go on meanwhile. The caller sends one hash per --sync path (assets=); before it
+// answers, the helper moves each entry it holds out of the store into the job's own folder (pin/, one rename: instant and
+// atomic, so a second job asking at once is not offered it and nothing the store does after - pruning, another job - can
+// touch it) and names only those (WORKER_ADMIT ... have=); an entry without its tree is dropped, not offered (review 2
+// and 3 of #477). The caller leaves those out of the upload (HEAVY_ASSET), the helper copies the pinned tree into every
+// --sync path of that hash (ASSET_OK <hash> <path> cached) and moves the pin back into the store; a job that ends before
+// that loses the entry (the next job sends the tree again). For a tree that came,
 // lists what arrived and keeps it only when that gives the hash it was sent as (ASSET_OK ... kept; else ASSET_BAD, and the
 // job runs on what arrived). A tree a job changes gets a new hash, so the next job sends it again.
 
@@ -90,23 +93,40 @@ const cp = async (from: string, to: string): Promise<boolean> => {
   return (await run(["cp", "-a", "--reflink=auto", from, to])).code === 0;
 };
 
-// as a helper, before it answers: each hash of this job it holds copied into the job's pin/ folder (marked used now); the
-// ones copied are offered, an entry whose copy failed is dropped so the caller sends that tree again
-export const assetsHave = async (dir: string, caller: string, opts: readonly string[], pin: string): Promise<string[]> => {
+// as a helper, before it answers: each entry of this job's hashes it holds moved out of the store into the job's pin/
+// folder (a rename: a job that lost the race to another is not offered it); an entry without its tree is dropped
+export const assetsHave = (dir: string, caller: string, opts: readonly string[], pin: string): string[] => {
   const store = storeOf(dir, caller);
   const held: string[] = [];
   for (const h of new Set(hashesOf(opts))) {
-    if (!HASH.test(h) || !existsSync(join(store, h, "ok"))) continue;
-    if (existsSync(join(store, h, "tree")) && (await cp(join(store, h, "tree"), join(pin, h)))) {
-      const now = new Date();
-      utimesSync(join(store, h, "ok"), now, now);
+    const at = join(store, h);
+    if (!HASH.test(h) || !existsSync(join(at, "ok"))) continue;
+    try {
+      if (!existsSync(join(at, "tree"))) throw new Error("no tree");
+      mkdirSync(pin, { recursive: true, mode: 0o700 });
+      renameSync(at, join(pin, h));
       held.push(h);
-    } else {
-      rmSync(join(pin, h), { recursive: true, force: true });
-      rmSync(join(store, h), { recursive: true, force: true });
+    } catch {
+      if (!existsSync(join(at, "tree"))) rmSync(at, { recursive: true, force: true });
     }
   }
   return held;
+};
+
+// a pinned entry back into the store once the job's trees are in place (marked used now); dropped when the store got one
+// of that hash meanwhile
+const unpin = (pinned: string, at: string): void => {
+  try {
+    if (!existsSync(at)) {
+      renameSync(pinned, at);
+      const now = new Date();
+      utimesSync(join(at, "ok"), now, now);
+    }
+  } catch {
+    // the store keeps whatever it has; this job's trees are already in place
+  } finally {
+    rmSync(pinned, { recursive: true, force: true });
+  }
 };
 
 // the store's oldest entries past KEEP_MS, and past KEEP_MAX, go, one of this job's hashes never (a job offered one has its
@@ -123,9 +143,10 @@ const prune = (store: string, keep: readonly string[]): void => {
   });
 };
 
-// as a helper, after the upload is unpacked under root (the job's in/, beside its pin/): each --sync path it was offered moved
-// from pin/, each that came checked against its hash and kept; say gets the ASSET_ lines. false: an offered tree is not in
-// pin/, so the job must not run on a part of its inputs (the worker ends without WORKER_EXIT: the caller sends it again)
+// as a helper, after the upload is unpacked under root (the job's in/, beside its pin/): each --sync path it was offered
+// copied from pin/ (every path of that hash), each that came checked against its hash and kept, then the pins go back;
+// say gets the ASSET_ lines. false: an offered tree could not be put in place, so the job must not run on a part of its
+// inputs (the worker ends without WORKER_EXIT: the caller sends it again)
 export const settleAssets = async (root: string, sync: readonly string[], opts: readonly string[], dir: string, caller: string, have: readonly string[], say: (line: string) => void): Promise<boolean> => {
   const hashes = hashesOf(opts);
   if (!hashes.length) return true;
@@ -135,12 +156,13 @@ export const settleAssets = async (root: string, sync: readonly string[], opts: 
     const at = join(root, p);
     if (!HASH.test(h)) return true;
     if (have.includes(h)) {
-      const pinned = join(dirname(root), "pin", h);
-      const ok = existsSync(pinned);
-      if (ok) {
-        mkdirSync(dirname(at), { recursive: true });
+      const tree = join(dirname(root), "pin", h, "tree");
+      let ok = existsSync(tree);
+      try {
         rmSync(at, { recursive: true, force: true });
-        renameSync(pinned, at);
+        ok = ok && (await cp(tree, at));
+      } catch {
+        ok = false;
       }
       say(ok ? `ASSET_OK ${h} ${p} cached` : `ASSET_BAD ${p}: the copy of ${h} offered to this job is gone; the job does not run`);
       return ok;
@@ -168,6 +190,7 @@ export const settleAssets = async (root: string, sync: readonly string[], opts: 
   };
   let whole = true;
   for (const [i, p] of sync.entries()) whole = (await one(p, hashes[i] ?? NONE)) && whole;
+  for (const h of have) unpin(join(dirname(root), "pin", h), join(store, h));
   prune(store, hashes);
   return whole;
 };
