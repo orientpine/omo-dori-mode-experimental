@@ -75,16 +75,14 @@ test("a tree's hash covers its files' and folders' modes and its bytes under one
   expect(await assetHash(d)).not.toBe(base);
 });
 
-test("hashing a large tree lets the event loop run (a helper's heartbeat, the batch's other transfers)", async () => {
+test("hashing a tree lets the event loop run before it ends (a helper's heartbeat, the batch's other transfers)", async () => {
   const d = join(state.dir, "big");
   mkdirSync(d);
-  writeFileSync(join(d, "a.bin"), Buffer.alloc(48 << 20, 7));
-  let ticks = 0;
-  const t = setInterval(() => ticks++, 1);
-  try {
-    expect(await assetHash(d)).toMatch(/^[0-9a-f]{32}$/);
-  } finally {
-    clearInterval(t);
-  }
-  expect(ticks).toBeGreaterThan(0);
+  writeFileSync(join(d, "a.bin"), Buffer.alloc(8 << 20, 7));
+  // a macrotask queued before the hash starts runs before the hash is done only when hashing waits on the event loop
+  const order: string[] = [];
+  setImmediate(() => order.push("loop"));
+  expect(await assetHash(d)).toMatch(/^[0-9a-f]{32}$/);
+  order.push("hashed");
+  expect(order).toEqual(["loop", "hashed"]);
 });
