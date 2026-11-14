@@ -4,16 +4,18 @@ import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:pa
 
 import type { HeavyHelper } from "./config.ts";
 import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
-import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
+import { newJobDir, onStop, removeTree, stopWithCaller, TarError } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
+import { assetsOptOk, assetsWord, unpackChecked, type Stager } from "./heavy-assets.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
 export { toolsHere } from "./heavy-tools.ts";
+export { withPipefail } from "./heavy-pipefail.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH... -- <cmd>: a lane's own command (a browser test, a build) runs on
 // the less busy PC. When this host is more than SPREAD_MARGIN points busier than a helper, the helper runs it; else it
@@ -65,36 +67,13 @@ export type SpreadJob = {
   // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), globs of what comes back (--back, heavy-back.ts); helpersOnly: never this host's slot (--helpers-only)
   readonly tools?: readonly string[];
   readonly back?: readonly string[]; readonly helpersOnly?: boolean; readonly out?: Sink; readonly err?: Sink; readonly runner?: Sink; // out, err: where its lines go (a batch item's own files, heavy-batch.ts), else this process's; runner: the helper's own lines (never the command's), else err
-  readonly staleAgain?: boolean; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts)
+  readonly staleAgain?: boolean; readonly assets?: Stager; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts); assets: the job's or batch's one archive of its --sync paths (heavy-assets.ts)
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
 // which the helper must have before it takes the job
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
 // path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
 export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string };
-
-// A bash -c script whose pipeline ends in tail, grep or head exits with that last command's code, so a failing test run
-// piped into tail looked like a pass (2026-11-02: 171 of 744 failed on the helper, HEAVY_DONE exit 0). The script that pipes
-// and does not set pipefail itself runs with set -o pipefail, so any failing stage fails the job; anything else is unchanged.
-export const withPipefail = (cmd: readonly string[]): readonly string[] => {
-  if (basename(cmd[0] ?? "") !== "bash" || cmd.some((a) => a.includes("pipefail"))) return cmd;
-  let sawC = false;
-  for (let i = 1; i < cmd.length; i++) {
-    const a = cmd[i]!;
-    if (/^[-+][oO]$/.test(a)) {
-      i++;
-      continue;
-    }
-    if (/^-[A-Za-z]+$/.test(a)) {
-      sawC ||= a.includes("c");
-      continue;
-    }
-    if (a === "--" || a.startsWith("--")) continue;
-    if (!sawC || !/(?:^|[^|])\|(?!\|)/.test(a)) return cmd;
-    return [...cmd.slice(0, i), `set -o pipefail; ${a}`, ...cmd.slice(i + 1)];
-  }
-  return cmd;
-};
 
 // absolute paths inside one argument: the whole argument, or what follows = , or : (not the // of a URL)
 export const pathsIn = (arg: string): string[] => [...arg.matchAll(/(?:^|[=,:])(\/(?!\/)[^\s=,:;"'\]}]*)/g)].map((m) => normalize(m[1]!));
@@ -249,12 +228,14 @@ export const copyBack = (back: string, sync: readonly string[]): { files: number
   return n;
 };
 
-type Sink = { write(s: string): unknown }; type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<number | null | Stale> };
+type Sink = { write(s: string): unknown }; type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<number | null | Stale>; readonly assets?: string };
 type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
-export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
-  const args = execWords(job, plan, below);
+export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets = true): Promise<HelperTry> => {
+  const a = assets ? await job.assets?.get(plan.sync) : undefined; // the --sync paths as one archive checked by its sha256 there (heavy-assets.ts); a helper that does not know assets= is asked once more without it
+  if (a && "why" in a) return { kind: "refused", why: a.why };
+  const args = execWords(job, plan, below, a && assetsWord(a));
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // ssh, tar and untar stay in the caller's process group: a Ctrl-C on its terminal ends them with it
   const reader = p.stderr.getReader();
   const lines = readerLines(reader);
@@ -265,6 +246,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
     await letGo(p, reader, answered ? STALE_GRACE_MS : 0);
     if (!answered) return { kind: "down", why: `no answer to the admission within ${staleMs / 60_000} min (heavyQueue.staleMin)` };
     if (!verdict) return { kind: "down", why: last || `ssh exited ${p.exitCode ?? p.signalCode}` };
+    if (a && verdict[1] === "REFUSED" && verdict[2]?.startsWith('unknown option "assets=')) return startExec(ctx, h, job, plan, below, false);
     return helperVerdict(verdict[1] ?? "", verdict[2] ?? "");
   }
   const stop = onStop(() => p.kill("SIGKILL"));
@@ -299,7 +281,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
   kids.push(untar);
   const done = (async (): Promise<number | null | Stale> => {
     let sent = -1;
-    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`));
+    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`), a);
     try {
       sent = await Promise.race([up, watch.stale.then(() => -1)]);
       watch.synced();
@@ -322,7 +304,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
       rmSync(back, { recursive: true, force: true });
     }
   })();
-  return { kind: "started", run: { helper: h.name, done, id: runOf(verdict?.[2] ?? "") } };
+  return { kind: "started", run: { helper: h.name, done, id: runOf(verdict?.[2] ?? ""), ...(a ? { assets: a.sha } : {}) } };
 };
 
 // abandoned: a stale run left something not ended (HEAVY_STALE_LEFT): the caller exits without waiting on it
@@ -475,7 +457,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const needOk = (o: string): boolean => o.startsWith("need=") && NEED_PATH.test(o.slice(5)) && !o.split("/").includes("..") && inProgramDirs(o.slice(5));
   const whichOk = (o: string): boolean => /^which=[\w.+@-]{1,64}$/.test(o) && !/^which=\.+$/.test(o);
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
-  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && o !== "back");
+  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && !assetsOptOk(o) && o !== "back");
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : (hostRefusal(ctx.q.kinds, kind, opts) ?? memRefusal(opts, ctx.deps.headroom?.free ?? 10));
   if (off) return d.refuse(label, off);
@@ -511,8 +493,9 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const dir = newJobDir(join(ctx.deps.dir, "exec"));
   const runId = markRun(dir, d.caller, label);
   const beat = heartbeat(ctx.q.aliveSec ?? 60);
+  // the job's folder may hold read-only folders it was sent (tar -p keeps 0555): removeTree makes them writable first
   const forget = onStop(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
     releaseSlot(t.slot);
   });
   console.error(`WORKER_ADMIT ${basename(t.slot)} alive=${ctx.q.aliveSec ?? 60} run=${runId}`);
@@ -520,7 +503,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   let cmdName = "-";
   let inBytes = 0;
   try {
-    await unpackFrom("inherit", root);
+    if (!(await unpackChecked(root, opts, log))) return 3;
     inBytes = duBytes(root);
     let raw: unknown = null;
     try {
@@ -573,7 +556,8 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     return 0;
   } finally {
     beat.stop();
-    rmSync(dir, { recursive: true, force: true });
+    const left = removeTree(dir);
+    if (left) log(`HEAVY_EXEC_LEFT ${label} caller=${d.caller}: the run's folder ${dir} could not be removed (${left})`);
     releaseSlot(t.slot);
     forget();
   }

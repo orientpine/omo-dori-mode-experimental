@@ -1,5 +1,6 @@
 import { homedir, userInfo } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { stager } from "./heavy-assets.ts";
 import { defaultOut, heavyBatch, readItems } from "./heavy-batch.ts";
 import { heavyOuter, runHere } from "./heavy-here.ts";
 import { holdCommand } from "./heavy-hold.ts";
@@ -50,7 +51,7 @@ const heavyCommand: Command = async (context) => {
   if (itemsOpt !== undefined && needBytes && !perBytes) die("dori heavy --items --mem SIZE caps the items each host runs at once, so it needs --mem-per-worker SIZE");
   if (itemsOpt !== undefined && name.length > 56) die(`dori heavy --items: the label takes 56 characters at most (each item runs as <label>.<n>)`);
   const deps = heavyDeps(load);
-  // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-spread.ts withPipefail)
+  // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-pipefail.ts withPipefail)
   const jobCmd = withPipefail(cmd);
   if (jobCmd !== cmd) deps.log?.(`HEAVY_PIPEFAIL ${name}: the bash -c script pipes, so it runs with set -o pipefail and a failing stage fails the job`);
   // a --helpers-only job never runs here: the helper that takes it checks its own memory (heavy-spread.ts heavyExec)
@@ -94,7 +95,9 @@ const heavyCommand: Command = async (context) => {
     if (!plan.ok) deps.log?.(`HEAVY_LOCAL ${name}: ${plan.why}`);
     else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
     else {
-      const r = await heavySpread({ q: config.heavyQueue, deps }, job, plan);
+      // its --sync paths archived once for every helper it is offered to, and removed when it ended (heavy-assets.ts)
+      const assets = stager(join(deps.dir, "assets"), name, (l) => deps.log?.(l));
+      const r = await heavySpread({ q: config.heavyQueue, deps }, { ...job, assets }, plan).finally(assets.drop);
       // a stale run left a child or a pipe not ended (HEAVY_STALE_LEFT): it would keep this process alive, so exit
       abandoned = r.abandoned === true;
       if ("code" in r) {

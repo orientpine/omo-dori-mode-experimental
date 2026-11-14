@@ -44,11 +44,13 @@ const caller = (name: string, ssh: string[], staleMin: number, path?: string, mo
   return Bun.spawn([process.execPath, CLI, "heavy", "t", "--kind", "cpu", "--sync", work, ...(items ? ["--items", items, "--out", join(state.dir, "out")] : []), "--", "true"], { cwd: work, env: { ...env, ...(path ? { PATH: `${path}:${process.env["PATH"]}` } : {}), DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env") }, stdout: "ignore", stderr: "pipe", detached: true });
 };
 
-// a tar first on PATH whose upload (tar -cf) runs script instead; tar -x is the real one
-const tarWith = (script: string): string => {
+// a tar first on PATH that runs script instead of one tar -cf: the upload's (the job's job.json, after admission) or the
+// archive of the --sync paths made before it (heavy-assets.ts); every other tar is the real one
+const tarWith = (script: string, of: "upload" | "archive" = "upload"): string => {
   const bin = join(state.dir, "bin");
   mkdirSync(bin);
-  writeFileSync(join(bin, "tar"), `#!/bin/sh\ncase "$1" in -cf) ${script};; esac\nexec /usr/bin/tar "$@"\n`, { mode: 0o755 });
+  const at = of === "upload" ? "-cf*job.json*" : "-cf*job.json*) ;; -cf*";
+  writeFileSync(join(bin, "tar"), `#!/bin/sh\ncase "$*" in ${at}) ${script};; esac\nexec /usr/bin/tar "$@"\n`, { mode: 0o755 });
   return bin;
 };
 
@@ -210,15 +212,15 @@ test("a batch whose item went stale on both helpers, each leaving a child holdin
   }
 }, 30_000);
 
-test("a batch item whose upload read a file that changed meanwhile (tar exit 1) still runs on the helper", async () => {
+test("a batch item whose archive read a file that changed meanwhile (tar exit 1) still runs on the helper", async () => {
   const dir = join(state.dir, "helper");
   mkdirSync(dir);
   writeFileSync(join(dir, "config.json"), JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
   const helper = ["env", `DORI_CONFIG=${join(dir, "config.json")}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
-  const bin = tarWith(`/usr/bin/tar "$@"; echo "tar: ${work}/in.txt: file changed as we read it" >&2; exit 1`);
+  const bin = tarWith(`/usr/bin/tar "$@"; echo "tar: ${work}/in.txt: file changed as we read it" >&2; exit 1`, "archive");
   const p = caller("h1", helper, 5, bin, [], itemsFile());
   const [code, err] = await Promise.all([p.exited, new Response(p.stderr).text()]);
   expect(code).toBe(0);
-  expect(err).toContain(`HEAVY_SYNC_CHANGED t.1 h1: tar: ${work}/in.txt: file changed as we read it; sent as read (tar exit 1), the job runs on that`);
+  expect(err).toContain(`HEAVY_SYNC_CHANGED t: tar: ${work}/in.txt: file changed as we read it; archived as read (tar exit 1), the job runs on that`);
   expect(err).toContain("HEAVY_BATCH_DONE t: 1/1 items exit 0; h1 1; 0 retried");
 }, 30_000);

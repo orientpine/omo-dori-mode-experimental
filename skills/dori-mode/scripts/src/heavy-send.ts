@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { Assets } from "./heavy-assets.ts";
 import { TarError } from "./heavy-job.ts";
 import type { SpreadJob } from "./heavy-spread.ts";
 import { killAlive, readerLines, settle } from "./heavy-settle.ts";
@@ -11,17 +12,23 @@ import { killAlive, readerLines, settle } from "./heavy-settle.ts";
 type Sink = { write(chunk: Uint8Array): number | Promise<number>; flush(): number | Promise<number>; end(): number | Promise<number> };
 
 // the job (job.json) and the --sync paths that exist, as one tar into the helper's stdin, its tar killed on cut (stale)
-// while it runs and put in kids; the bytes sent
-export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[], took: (bytes: number) => void, cut: Promise<unknown>, kids: Bun.Subprocess[], changed?: (why: string) => void): Promise<number> => {
+// while it runs and put in kids; the bytes sent. With assets: the --sync paths' archive made once (heavy-assets.ts), its
+// bytes as they are, then a tar of job.json alone (the helper unpacks both with tar -i)
+export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[], took: (bytes: number) => void, cut: Promise<unknown>, kids: Bun.Subprocess[], changed?: (why: string) => void, assets?: Assets): Promise<number> => {
   const tmp = mkdtempSync(join(tmpdir(), "dori-spread-"));
   try {
     writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: job.cmd, cwd: job.cwd, sync, env: job.env, ...(job.back?.length ? { back: job.back } : {}) }));
     const have = sync.filter((s) => existsSync(s)).map((s) => s.slice(1));
-    const tar = Bun.spawn(["tar", "-cf", "-", "-C", tmp, "job.json", ...(have.length ? ["-C", "/", ...have] : [])], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const tar = Bun.spawn(["tar", "-cf", "-", "-C", tmp, "job.json", ...(have.length && !assets ? ["-C", "/", ...have] : [])], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     kids.push(tar);
-    void cut.then(() => killAlive(tar));
+    let gone = false;
+    void cut.then(() => {
+      gone = true;
+      killAlive(tar);
+    });
     let bytes = 0;
-    for await (const chunk of tar.stdout) {
+    for (const part of [...(assets ? [Bun.file(assets.path).stream()] : []), tar.stdout]) for await (const chunk of part) {
+      if (gone) break;
       bytes += chunk.byteLength;
       took(chunk.byteLength);
       sink.write(chunk);

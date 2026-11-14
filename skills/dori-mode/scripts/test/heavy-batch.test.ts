@@ -180,3 +180,16 @@ test("a retry that waited RETRY_WAIT_MS for another host goes back to the one it
   expect(Date.parse(x!.end) - Date.parse(x!.start)).toBeGreaterThanOrEqual(10 * 60_000);
   expect(y!.exit).toBe(0);
 });
+
+test("a batch archives its --sync once: every helper item gets the same bytes and its receipt names their sha256 (lead's condition 1 of #477 H334)", async () => {
+  writeFileSync(join(work, "code.py"), "print(1)\n");
+  const code = await batchCode(ctxWith([realHelper("h1")]), batchOf(["a", "b"], ["sh", "-c", "cat code.py"]));
+  expect(code).toBe(0);
+  const rs = receipts();
+  expect(rs.map((r) => r.host)).toEqual(["h1", "h1"]);
+  const sha = rs[0]!.assets;
+  expect(sha).toMatch(/^[0-9a-f]{64}$/);
+  expect(rs[1]!.assets).toBe(sha);
+  expect(logs.filter((l) => l.startsWith("HEAVY_ASSET b:"))).toHaveLength(1);
+  expect(readFileSync(join(state.dir, "h1", "state", "heavy", "heavy.log"), "utf8").match(new RegExp(`ASSET_OK ${sha} `, "g"))).toHaveLength(2);
+});
