@@ -15,8 +15,11 @@ export const allowedHost = (b: Pick<BatchJob, "onHosts" | "notOn">, name: string
 // hosts: every helper's name and this host's; usable: the ones the batch may take (allowedHost, batch: false left out)
 export const refusal = (b: BatchJob, plans: readonly Plan[], hosts: { readonly known: readonly string[]; readonly usable: readonly string[]; readonly here: string }): string | undefined => {
   if (b.memCap !== undefined && b.memPerWorker !== undefined && b.memCap < b.memPerWorker) return `--mem ${fmtMem(b.memCap)} is less than one worker's --mem-per-worker ${fmtMem(b.memPerWorker)}`;
-  // a helper named like this host would take --local's items (review 9 of #479): ambiguous, so refused, never guessed
-  if (hosts.known.filter((n) => n === hosts.here).length > 1) return `heavyQueue.helpers has a helper named ${hosts.here}, this host's own name, so --local, --on and --not-on cannot tell them apart; rename that helper`;
+  // one name twice (a helper named like this host, or two helpers alike) would let --local's items or a batch: false
+  // helper in by name (reviews 9-10 of #479): ambiguous, so refused, never guessed
+  const twice = hosts.known.find((n, i) => hosts.known.indexOf(n) !== i);
+  if (twice === hosts.here) return `heavyQueue.helpers has a helper named ${hosts.here}, this host's own name, so --local, --on and --not-on cannot tell them apart; rename that helper`;
+  if (twice !== undefined) return `heavyQueue.helpers names ${twice} twice, so --on, --not-on and batch: false cannot tell them apart; give each helper its own name`;
   const unknown = [...(b.onHosts ?? []), ...(b.notOn ?? [])].filter((n) => !hosts.known.includes(n));
   if (unknown.length) return `--on/--not-on name ${unknown.join(", ")}, which is no host here (known: ${hosts.known.join(", ")})`;
   if (!hosts.usable.length) return `--on/--not-on leave no host the batch may use (a helper with batch: false is never one)`;

@@ -100,6 +100,11 @@ test("a helper named like this host refuses the batch before any item, and --loc
   expect(await batchCode(ctxWith([twin], false), batchOf(["1"], ["true"], { onHosts: [hostname()] }))).toBe(2);
   expect(logs).toContain(`HEAVY_BATCH_REFUSED b: heavyQueue.helpers has a helper named ${hostname()}, this host's own name, so --local, --on and --not-on cannot tell them apart; rename that helper`);
   expect(existsSync(contacted)).toBe(false);
+  // review 10: two helpers of one name, one of them batch: false, refuse the batch too, and neither is contacted
+  const off = { ...fakeHelper("dup", `touch ${contacted}; exit 255`), batch: false };
+  expect(await batchCode(ctxWith([off, fakeHelper("dup", `touch ${contacted}; exit 255`)], false), batchOf(["1"], ["true"]))).toBe(2);
+  expect(logs).toContain("HEAVY_BATCH_REFUSED b: heavyQueue.helpers names dup twice, so --on, --not-on and batch: false cannot tell them apart; give each helper its own name");
+  expect(existsSync(contacted)).toBe(false);
 });
 
 // the documented way to bring a venv along (references/scripts.md): --sync it, so each item's box has it

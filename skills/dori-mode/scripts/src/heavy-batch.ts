@@ -127,7 +127,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   const receipts = join(b.out, "receipts.jsonl");
   writeFileSync(receipts, "");
   const cap = b.memPerWorker && b.memCap ? Math.floor(b.memCap / b.memPerWorker) : Infinity;
-  const helpers = pending.some((it) => it.plan.ok) ? ctx.q.helpers.filter((h) => usable.includes(h.name)) : [];
+  const helpers = pending.some((it) => it.plan.ok) ? ctx.q.helpers.filter((h) => h.batch !== false && usable.includes(h.name)) : [];
   const hosts: Host[] = [...helpers.map((h) => ({ name: h.name, helper: h })), ...(usable.includes(hostname()) ? [{ name: hostname() }] : [])].map((h) => ({ ...h, running: 0, cap, until: 0, next: 0, busy: false, offering: false, said: "" }));
   log(`HEAVY_BATCH ${b.label}: ${pending.length} item(s) over ${hosts.map((h) => h.name).join(", ")}; out ${b.out}`);
   if (cap !== Infinity) for (const h of hosts) log(`HEAVY_BATCH_HOST ${b.label} ${h.name}: up to ${cap} worker(s) at once (--mem ${fmtMem(b.memCap!)} / --mem-per-worker ${fmtMem(b.memPerWorker!)})`);

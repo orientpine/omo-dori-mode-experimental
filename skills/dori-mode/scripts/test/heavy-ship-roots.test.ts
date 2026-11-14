@@ -183,6 +183,18 @@ test("a relative value after = names its own target only, so a job with that tar
   expect(s).toHaveProperty("plan");
 });
 
+// review 10 of #479: an absolute word that does not exist yet (a new output) is weighed whole, never by a covered prefix
+test("a new absolute output named with a space or a colon beside the working folder stops a job and a batch", () => {
+  const work = join(home, "work");
+  mkdirSync(work);
+  for (const out of [`${work} result.txt`, `${work}:out.txt`]) {
+    const j = { ...job(["touch", out]), cwd: work, sync: [work] };
+    expect(shipMissing(j, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${out})`) });
+    expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${out})`)]);
+  }
+  expect(shipMissing({ ...job(["touch", join(work, "new.txt")]), cwd: work, sync: [work] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+});
+
 // review 8 of #479: a relative argument that is itself an existing file, : or = in its name, is weighed whole as well
 test("a relative file with : or = in its name is weighed whole: unsynced it stops a job and a batch, synced it runs", () => {
   const work = join(home, "input");
