@@ -81,7 +81,10 @@ const heavyCommand: Command = async (context) => {
       if (!items.length) die(`dori heavy --items ${itemsOpt}: no item in it (one per line; blank and # lines are skipped)`);
       const back = flags.values.back as string[] | undefined;
       const here = toolsHere(name, many("tools"), deps.log).env;
-      process.exitCode = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? defaultOut(name, Date.now())), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}), ...(here ? { hereEnv: here } : {}) });
+      const r = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? defaultOut(name, Date.now())), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}), ...(here ? { hereEnv: here } : {}) });
+      // a stale helper run left a child or pipe not ended: exit now instead of waiting on it
+      if (r.abandoned) process.exit(r.code);
+      process.exitCode = r.code;
       return;
     }
     const job: SpreadJob = { ...(helpersOnly ? { helpersOnly } : {}), label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}), ...(flags.values["stale-again"] ? { staleAgain: true } : {}) };

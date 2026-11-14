@@ -12,7 +12,7 @@ type Sink = { write(chunk: Uint8Array): number | Promise<number>; flush(): numbe
 
 // the job (job.json) and the --sync paths that exist, as one tar into the helper's stdin, its tar killed on cut (stale)
 // while it runs and put in kids; the bytes sent
-export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[], took: (bytes: number) => void, cut: Promise<unknown>, kids: Bun.Subprocess[]): Promise<number> => {
+export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[], took: (bytes: number) => void, cut: Promise<unknown>, kids: Bun.Subprocess[], changed?: (why: string) => void): Promise<number> => {
   const tmp = mkdtempSync(join(tmpdir(), "dori-spread-"));
   try {
     writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: job.cmd, cwd: job.cwd, sync, env: job.env, ...(job.back?.length ? { back: job.back } : {}) }));
@@ -29,7 +29,10 @@ export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[
     }
     await sink.end();
     const code = await tar.exited;
-    if (code !== 0) throw new TarError(`tar -c exited ${code}: ${(await new Response(tar.stderr).text()).trim().slice(0, 200)}`);
+    // GNU tar exits 1 when a file changed, shrank or went away while it read it (another job of a batch writing under the
+    // --sync paths): what it read is sent, and the job runs on that; any other failure breaks the upload
+    if (code === 1) changed?.((await new Response(tar.stderr).text()).trim().split("\n")[0]?.slice(0, 200) ?? "");
+    else if (code !== 0) throw new TarError(`tar -c exited ${code}: ${(await new Response(tar.stderr).text()).trim().slice(0, 200)}`);
     return bytes;
   } finally {
     rmSync(tmp, { recursive: true, force: true });

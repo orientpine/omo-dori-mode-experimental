@@ -299,7 +299,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
   kids.push(untar);
   const done = (async (): Promise<number | null | Stale> => {
     let sent = -1;
-    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids);
+    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`));
     try {
       sent = await Promise.race([up, watch.stale.then(() => -1)]);
       watch.synced();

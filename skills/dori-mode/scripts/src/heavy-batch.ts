@@ -1,6 +1,6 @@
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { HeavyHelper } from "./config.ts";
 import { NESTED_ENV } from "./heavy-here.ts";
@@ -8,7 +8,7 @@ import { fmtMem, spawnScoped } from "./heavy-mem.ts";
 import type { HeavyCtx } from "./heavy-queue.ts";
 import { unsafeRemote } from "./heavy-route.ts";
 import { admitOnce, releaseSlot } from "./heavy-slot.ts";
-import { reown } from "./heavy-slot-store.ts";
+import { setSlotTree } from "./heavy-slot-store.ts";
 import { pathsIn, QUICK_SETTLE_SEC, spreadPlan, startExec, within, type Kind, type Plan, type SpreadJob } from "./heavy-spread.ts";
 import { stopOnHelper } from "./heavy-stale.ts";
 
@@ -21,9 +21,7 @@ import { stopOnHelper } from "./heavy-stale.ts";
 // own line of waiting jobs first), and never more than --mem / --mem-per-worker of them at once. A host short of memory
 // starts no new item (HEAVY_BATCH_SHRINK); its running ones go on. An item whose helper dies or that is killed for memory
 // runs once more on another host (HEAVY_BATCH_RETRY). Every item's stdout and stderr, and one receipt per item naming the
-// host it ran on, land in one folder here (--out), outside the --sync paths so no upload carries them.
-// Each host is offered one item at a time and on its own, so a helper slow to answer (an ssh that hangs up to staleMin)
-// holds back only itself; an item being offered is out of the line meanwhile and comes back to its front when refused.
+// host it ran on, land in one folder here (--out), outside the --sync paths so no upload carries them. Each host is offered one item at a time and on its own, so a helper slow to answer (an ssh that hangs up to staleMin) holds back only itself; an item being offered is out of the line meanwhile and comes back to its front when refused.
 
 export type BatchJob = {
   readonly label: string; readonly kind: Kind; readonly cmd: readonly string[]; readonly cwd: string; readonly sync: readonly string[];
@@ -75,7 +73,7 @@ const pump = async (s: ReadableStream<Uint8Array> | undefined, sink: Sink): Prom
   if (s) for await (const c of s) sink.write(c);
 };
 
-// one item on this host: a slot only if this host's admission takes it now (jobs waiting in its own line go first), then owned by the item's own process (heavy-slot-store.ts reown); a GPU item settles and gets its room as a GPU job does
+// one item on this host: a slot only if this host's admission takes it now (jobs waiting in its own line go first), held by the batch until the item ran and drained, measured by the item's own process tree (heavy-slot-store.ts setSlotTree); its environment is this host's as for a single job here (the --tools PATH, not the --env copies a helper gets); a GPU item settles and gets its room as a GPU job does
 const offerHere = async (ctx: HeavyCtx, b: BatchJob, it: Item, out: Sink, err: Sink, oom: () => void): Promise<Offer> => {
   const t = await admitOnce(ctx.deps, it.job.label, b.kind === "gpu" ? undefined : QUICK_SETTLE_SEC, b.memPerWorker && b.memPerWorker / 1024);
   if (!t || !("slot" in t)) return { kind: "busy", why: t?.why ?? "another job is being admitted" };
@@ -88,8 +86,8 @@ const offerHere = async (ctx: HeavyCtx, b: BatchJob, it: Item, out: Sink, err: S
       const pumps: Promise<void>[] = [];
       const gpu = b.kind === "gpu" ? { gpuFreeKb: ctx.deps.headroom?.gpuFreeKb ?? 0 } : {};
       const run = { label: it.job.label, cmd: it.job.cmd, free: ctx.deps.headroom?.free ?? 10, log, ...gpu, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}) };
-      const code = await spawnScoped(run, { cwd: it.job.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...(b.hereEnv ?? process.env), ...it.job.env, [NESTED_ENV]: it.job.label } }, (pid, p) => {
-        reown(t.slot, pid, it.job.label, ctx.deps.clock.now());
+      const code = await spawnScoped(run, { cwd: it.job.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...(b.hereEnv ?? process.env), DORI_HEAVY_ITEM: it.text, DORI_HEAVY_ITEM_N: String(it.n), [NESTED_ENV]: it.job.label } }, (pid, p) => {
+        setSlotTree(t.slot, pid);
         pumps.push(pump(p.stdout as ReadableStream<Uint8Array>, out), pump(p.stderr as ReadableStream<Uint8Array>, err));
       });
       await Promise.all(pumps);
@@ -101,15 +99,15 @@ const offerHere = async (ctx: HeavyCtx, b: BatchJob, it: Item, out: Sink, err: S
   return { done };
 };
 
-// one item on a helper (heavy-spread.ts startExec), its lines into the item's own files; a stale run is ended there
-const offerHelper = async (ctx: HeavyCtx, h: HeavyHelper, it: Item, plan: Extract<Plan, { ok: true }>, out: Sink, err: Sink): Promise<Offer> => {
+// one item on a helper (heavy-spread.ts startExec), its lines into the item's own files; a stale run is ended there, and abandon says it left something running (heavy-stale.ts), so the CLI exits once the batch is done, as heavySpread's caller does
+const offerHelper = async (ctx: HeavyCtx, h: HeavyHelper, it: Item, plan: Extract<Plan, { ok: true }>, out: Sink, err: Sink, abandon: () => void): Promise<Offer> => {
   const job = { ...it.job, out, err };
   const t = unsafeRemote(job, plan) ?? (await startExec(ctx, h, job, plan, 100));
   if (t.kind !== "started") return t;
   const done = t.run.done.then(async (code): Promise<Outcome> => {
     if (code === null) return { code: null, result: "cut" };
     if (typeof code === "number") return { code, result: `exit ${code}` };
-    await stopOnHelper(h, it.job.label, (l) => ctx.deps.log?.(l), t.run.id, 30_000);
+    if ((await stopOnHelper(h, it.job.label, (l) => ctx.deps.log?.(l), t.run.id, 30_000)) || code.abandoned) abandon();
     return { code: null, result: `stale: ${code.stale}` };
   });
   return { done };
@@ -121,7 +119,8 @@ const refusal = (b: BatchJob, plan: Plan): string | undefined => {
   return inSync ? `--out ${b.out} and the --sync path ${inSync} hold one another, so uploads would carry the batch's own files; give --out a folder outside them` : undefined;
 };
 
-export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who = { uid: process.getuid?.() ?? -1, home: homedir() }): Promise<number> => {
+export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who = { uid: process.getuid?.() ?? -1, home: homedir() }): Promise<{ readonly code: number; readonly abandoned: boolean }> => {
+  let abandoned = false;
   const log = (l: string): void => ctx.deps.log?.(l);
   const now = (): number => ctx.deps.clock.now();
   const iso = (): string => new Date(now()).toISOString();
@@ -131,14 +130,16 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who = { uid: proces
   const why = refusal(b, plan);
   if (why) {
     log(`HEAVY_BATCH_REFUSED ${b.label}: ${why}`);
-    return 2;
+    return { code: 2, abandoned };
   }
   if (!plan.ok) log(`HEAVY_LOCAL ${b.label}: ${plan.why}; every item runs here`);
   mkdirSync(join(b.out, "items"), { recursive: true });
   const receipts = join(b.out, "receipts.jsonl");
   writeFileSync(receipts, "");
-  const known = new Set(jobOf(b.items[0] ?? "", 1).cmd.flatMap(pathsIn));
-  const goes = (job: SpreadJob): boolean => plan.ok && job.cmd.flatMap(pathsIn).every((p) => known.has(p) || plan.sync.some((s) => within(p, s)));
+  // the paths a command names: absolute ones in its words, and its program when that is a path, resolved from its folder (as spreadPlan does)
+  const named = (job: SpreadJob): string[] => [...job.cmd.flatMap(pathsIn), ...((job.cmd[0] ?? "").includes("/") ? [resolve(job.cwd, job.cmd[0]!)] : [])];
+  const known = new Set(named(jobOf(b.items[0] ?? "", 1)));
+  const goes = (job: SpreadJob): boolean => plan.ok && named(job).every((p) => known.has(p) || plan.sync.some((s) => within(p, s)));
   const pending: Item[] = b.items.map((text, i) => ({ n: i + 1, text, job: jobOf(text, i + 1), remote: goes(jobOf(text, i + 1)), tries: [] }));
   const cap = b.memPerWorker && b.memCap ? Math.floor(b.memCap / b.memPerWorker) : Infinity;
   const helpers = plan.ok ? ctx.q.helpers.filter((h) => h.batch !== false) : [];
@@ -196,7 +197,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who = { uid: proces
     const err = fileSink(files.err, (s) => {
       if (OOM.test(s)) oom = true;
     });
-    const t = h.helper ? await offerHelper(ctx, h.helper, it, plan as Extract<Plan, { ok: true }>, out, err) : await offerHere(ctx, b, it, out, err, () => (oom = true));
+    const t = h.helper ? await offerHelper(ctx, h.helper, it, plan as Extract<Plan, { ok: true }>, out, err, () => (abandoned = true)) : await offerHere(ctx, b, it, out, err, () => (oom = true));
     if (!("done" in t)) {
       out.close();
       err.close();
@@ -245,5 +246,5 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who = { uid: proces
   }
   writeFileSync(join(b.out, "summary.json"), `${JSON.stringify({ label: b.label, items: b.items.length, ok, failed, retried, hosts: perHost }, null, 1)}\n`);
   log(`HEAVY_BATCH_DONE ${b.label}: ${ok}/${b.items.length} items exit 0${failed ? `, ${failed} failed` : ""}; ${Object.entries(perHost).map(([n, c]) => `${n} ${c}`).join(", ")}; ${retried} retried; receipts ${receipts}`);
-  return failed ? 1 : 0;
+  return { code: failed ? 1 : 0, abandoned };
 };

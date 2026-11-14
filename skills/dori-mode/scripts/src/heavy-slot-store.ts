@@ -66,16 +66,14 @@ export const tryTake = (deps: SlotDeps, n: number, label: string, memKb?: number
   return claim();
 };
 
-// A slot this process took for a job it starts afterwards (dori heavy --items here, heavy-batch.ts): the owner becomes that
-// job's pid, so admission measures that job's own process tree, not every item of the batch under this one process, and
-// the slot is free again once that job is gone. now: after the job started, so the job counts as alive for it (pidAlive).
-export const reown = (slot: string, pid: number, label: string, now: number): void => {
-  const owner = `${pid} ${label} ${new Date(now).toISOString()}`;
-  writeFileSync(join(slot, "owner"), owner);
-  taken.set(slot, owner);
-};
+// The process whose tree is a slot's job, when that is not the slot's owner (dori heavy --items here, heavy-batch.ts): the
+// batch owns the slot until the item ran and was cleaned up (so it is never free while that item's output still drains),
+// and admission measures the item's own process tree, not every item under the batch's one process.
+const TREE_FILE = "tree";
+export const setSlotTree = (slot: string, pid: number): void => writeFileSync(join(slot, TREE_FILE), String(pid));
 
-export type Holder = { readonly n: number; readonly pid: number; readonly label: string; readonly since: number };
+// pid: the owner, whose life holds the slot; tree: the process whose tree is the job (its TREE_FILE, else the owner)
+export type Holder = { readonly n: number; readonly pid: number; readonly tree: number; readonly label: string; readonly since: number };
 
 export const holders = (deps: SlotDeps, max: number): Holder[] => {
   const out: Holder[] = [];
@@ -87,7 +85,14 @@ export const holders = (deps: SlotDeps, max: number): Holder[] => {
       continue;
     }
     const { pid, label, since } = parseOwner(owner);
-    if (deps.alive(pid, since)) out.push({ n, pid, label, since: since ?? 0 });
+    if (!deps.alive(pid, since)) continue;
+    let tree = pid;
+    try {
+      tree = Number(readFileSync(join(deps.dir, `slot.${n}`, TREE_FILE), "utf8")) || pid;
+    } catch {
+      tree = pid;
+    }
+    out.push({ n, pid, tree, label, since: since ?? 0 });
   }
   return out;
 };

@@ -37,20 +37,22 @@ const fakeHelper = (name: string, script: string): HeavyHelper => {
 
 // here: this host's slots; full: slot.1 held by another job, so no item runs here
 // skip: each sleep of the batch moves the clock on by all it asked for, so a 15 s wait for a busy host takes 50 ms
-const ctxWith = (helpers: HeavyHelper[], full = true, staleMin?: number, skip = false): HeavyCtx => {
+const ctxWith = (helpers: HeavyHelper[], full = true, staleMin?: number, skip = false, slots = 1): HeavyCtx => {
   let ahead = 0;
   const usage = async () => ({ host: { gpu: null, gpuMem: null, cpu: 0, mem: 10 }, unified: false, jobs: [], memTotalKb: 1e8 });
   if (full) {
     mkdirSync(join(state.dir, "heavy", "slot.1"), { recursive: true });
     writeFileSync(join(state.dir, "heavy", "slot.1", "owner"), `${HOLDER} other-job ${new Date().toISOString()}`);
   }
-  const deps: SlotDeps = { dir: join(state.dir, "heavy"), slots: 1, maxLoad: 80, clock: { now: () => Date.now() + ahead, sleep: (ms) => {
+  const deps: SlotDeps = { dir: join(state.dir, "heavy"), slots, maxLoad: 80, clock: { now: () => Date.now() + ahead, sleep: (ms) => {
         if (skip) ahead += ms;
         return Bun.sleep(Math.min(ms, 50));
-      } }, pid: process.pid, load: async () => 10, alive: (p) => p === HOLDER || p === process.pid, headroom: { maxSlots: 1, free: 10, settleSec: 0, usage }, log: (l) => logs.push(l) };
+      } }, pid: process.pid, load: async () => 10, alive: (p) => p === HOLDER || p === process.pid, headroom: { maxSlots: slots, free: 10, settleSec: 0, usage }, log: (l) => logs.push(l) };
   return { q: { jobs: {}, helpers, queue: [], rl: true, jobDir: join(state.dir, "jobs"), exec: false, execMaxMin: 240, ...(staleMin ? { staleMin } : {}) } satisfies HeavyQueue, deps };
 };
 
+// the batch's exit code (abandoned is the stale CLI tests' concern, heavy-stale-cli.test.ts)
+const batchCode = async (...a: Parameters<typeof heavyBatch>): Promise<number> => (await heavyBatch(...a)).code;
 const batchOf = (items: string[], cmd: string[], extra: Partial<BatchJob> = {}): BatchJob => ({ label: "b", kind: "cpu", cmd, cwd: work, sync: [work], env: {}, items, out: join(state.dir, "out"), ...extra });
 const receipts = (): BatchReceipt[] => readFileSync(join(state.dir, "out", "receipts.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as BatchReceipt);
 const outOf = (r: BatchReceipt): string => readFileSync(r.out, "utf8");
@@ -65,7 +67,7 @@ afterEach(() => state.done());
 
 test("every item of the batch runs once, on this host or a helper, and its output and the host it ran on come back to one folder", async () => {
   const items = ["a", "b", "c", "d", "e", "f"];
-  const code = await heavyBatch(ctxWith([realHelper("h1"), realHelper("h2")], false), batchOf(items, ["sh", "-c", "echo item=$0 n=$DORI_HEAVY_ITEM_N; echo made > out-$0.txt", "{item}"]));
+  const code = await batchCode(ctxWith([realHelper("h1"), realHelper("h2")], false), batchOf(items, ["sh", "-c", "echo item=$0 n=$DORI_HEAVY_ITEM_N; echo made > out-$0.txt", "{item}"]));
   expect(code).toBe(0);
   const rs = receipts();
   expect(rs.map((r) => r.item).sort()).toEqual(items);
@@ -93,14 +95,14 @@ test("an item whose helper dies, or that is killed for memory, runs once more on
   for (const [result, script] of Object.entries(fails)) {
     fresh();
     // the failing helper is first in line, so the item goes there first
-    const code = await heavyBatch(ctxWith([fakeHelper("bad", script), realHelper("ok")]), batchOf(["x"], ["sh", "-c", "echo ran $0", "{item}"]));
+    const code = await batchCode(ctxWith([fakeHelper("bad", script), realHelper("ok")]), batchOf(["x"], ["sh", "-c", "echo ran $0", "{item}"]));
     expect(code).toBe(0);
     expect(receipts()).toMatchObject([{ item: "x", host: "ok", exit: 0, tries: [{ host: "bad", result }, { host: "ok", result: "exit 0" }] }]);
     expect(logs.some((l) => l.startsWith("HEAVY_BATCH_RETRY b #1 bad: "))).toBe(true);
   }
   // only failing hosts: the item tries twice and ends failed
   fresh();
-  const again = await heavyBatch(ctxWith([fakeHelper("dead", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; exit 255'), fakeHelper("dead2", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; exit 255')]), batchOf(["z"], ["true"]));
+  const again = await batchCode(ctxWith([fakeHelper("dead", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; exit 255'), fakeHelper("dead2", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; exit 255')]), batchOf(["z"], ["true"]));
   expect(again).toBe(1);
   expect(receipts()).toMatchObject([{ item: "z", exit: null, tries: [{ result: "cut" }, { result: "cut" }] }]);
 });
@@ -109,7 +111,7 @@ test("--mem over --mem-per-worker caps the items running at once on each host; a
   // admits one item, then answers that memory is short while that one still runs
   const tight = fakeHelper("tight", `if mkdir ${join(state.dir, "tight.lock")} 2>/dev/null; then echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; sleep 1; echo "O ran on tight" >&2; echo "WORKER_EXIT 0" >&2; tar -cf - -T /dev/null; else echo "WORKER_BUSY memory: needs 15.0G, 20.0G available -> 4% free (needs 10% free)" >&2; exit 75; fi`);
   const capped = realHelper("capped", 4);
-  const code = await heavyBatch(ctxWith([tight, capped]), batchOf(["1", "2", "3", "4", "5"], ["sh", "-c", "date +%s%N; sleep 0.4; date +%s%N"], { memPerWorker: 1024 ** 3, memCap: 2 * 1024 ** 3 }));
+  const code = await batchCode(ctxWith([tight, capped]), batchOf(["1", "2", "3", "4", "5"], ["sh", "-c", "date +%s%N; sleep 0.4; date +%s%N"], { memPerWorker: 1024 ** 3, memCap: 2 * 1024 ** 3 }));
   expect(code).toBe(0);
   expect(logs).toContain("HEAVY_BATCH_HOST b capped: up to 2 worker(s) at once (--mem 2.0G / --mem-per-worker 1.0G)");
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_SHRINK b tight: memory: needs 15.0G") && l.includes("1 running there go on"))).toBe(true);
@@ -120,18 +122,20 @@ test("--mem over --mem-per-worker caps the items running at once on each host; a
   expect(most).toBe(2);
 });
 
-test("an item here runs in a slot its own process owns, so admission measures that item and not the whole batch (review 1 of #476)", async () => {
-  const code = await heavyBatch(ctxWith([], false), batchOf(["a", "b"], ["sh", "-c", `echo pid=$$; cat ${join(state.dir, "heavy")}/slot.*/owner`]));
+test("an item here is measured by its own process, and its slot stays the batch's until the item drained, so a later item never takes it over (review 2 of #476)", async () => {
+  // item 1 exits at once but a child holds its output for 2 s; item 2, in the second slot, looks at the first meanwhile
+  const heavy = join(state.dir, "heavy");
+  const code = await batchCode(ctxWith([], false, undefined, false, 2), batchOf(["1", "2"], ["sh", "-c", `if [ "$0" = 1 ]; then echo pid=$$; (sleep 2) & exit 0; fi; sleep 0.5; cat ${heavy}/slot.1/owner; echo; cat ${heavy}/slot.1/tree`, "{item}"]));
   expect(code).toBe(0);
-  for (const r of receipts()) {
-    const [first = "", owner = ""] = outOf(r).trim().split("\n");
-    expect(owner.startsWith(`${first.slice(4)} b.${r.n} `)).toBe(true);
-  }
+  const [one, two] = [1, 2].map((n) => outOf(receipts().find((r) => r.n === n)!).trim());
+  const [owner = "", tree = ""] = two!.split("\n");
+  expect(owner.startsWith(`${process.pid} b.1 `)).toBe(true);
+  expect(`pid=${tree}`).toBe(one!);
 });
 
 test("a helper that does not answer holds back only itself: the other hosts run the items meanwhile (review 1 of #476)", async () => {
   const hang = fakeHelper("hang", "sleep 30");
-  const code = await heavyBatch(ctxWith([hang, realHelper("ok")], true, 0.05), batchOf(["1", "2", "3"], ["true"]));
+  const code = await batchCode(ctxWith([hang, realHelper("ok")], true, 0.05), batchOf(["1", "2", "3"], ["true"]));
   expect(code).toBe(0);
   expect(receipts().every((r) => r.host === "ok")).toBe(true);
   const down = logs.findIndex((l) => l.startsWith("HEAVY_BATCH_WAIT b hang: down"));
@@ -140,14 +144,14 @@ test("a helper that does not answer holds back only itself: the other hosts run 
 
 test("an item that failed goes back to the same host when the only other one is down, and the batch ends (review 1 of #476)", async () => {
   const oom = fakeHelper("oom", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null');
-  const code = await heavyBatch(ctxWith([oom, { name: "down", ssh: ["false"] }]), batchOf(["x"], ["true"]));
+  const code = await batchCode(ctxWith([oom, { name: "down", ssh: ["false"] }]), batchOf(["x"], ["true"]));
   expect(code).toBe(1);
   expect(receipts()).toMatchObject([{ item: "x", exit: 137, tries: [{ host: "oom", result: "oom" }, { host: "oom", result: "oom" }] }]);
 });
 
 test("a batch whose --out lies in a --sync path, or whose --mem holds less than one worker, is refused before any item (review 1 of #476)", async () => {
-  expect(await heavyBatch(ctxWith([]), batchOf(["x"], ["true"], { out: join(work, "out") }))).toBe(2);
-  expect(await heavyBatch(ctxWith([]), batchOf(["x"], ["true"], { memPerWorker: 2 * 1024 ** 3, memCap: 1024 ** 3 }))).toBe(2);
+  expect(await batchCode(ctxWith([]), batchOf(["x"], ["true"], { out: join(work, "out") }))).toBe(2);
+  expect(await batchCode(ctxWith([]), batchOf(["x"], ["true"], { memPerWorker: 2 * 1024 ** 3, memCap: 1024 ** 3 }))).toBe(2);
   expect(logs.filter((l) => l.startsWith("HEAVY_BATCH_REFUSED b: "))).toHaveLength(2);
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_START"))).toBe(false);
 });
@@ -158,7 +162,7 @@ test("an item whose own command names a path outside the --sync paths runs here;
   // this host is full for a second, so only its own path keeps the third item off the helper, which takes the first two
   const ctx = ctxWith([realHelper("h1")], true, undefined, true);
   setTimeout(() => rmSync(join(state.dir, "heavy", "slot.1"), { recursive: true, force: true }), 1000);
-  const code = await heavyBatch(ctx, batchOf(["a.txt", "a.txt", "../b.txt"], ["cat", `${work}/{item}`]));
+  const code = await batchCode(ctx, batchOf(["a.txt", "a.txt", "../b.txt"], ["cat", `${work}/{item}`]));
   expect(code).toBe(0);
   const two = receipts().find((r) => r.n === 3)!;
   expect(two.host).toBe(hostname());
@@ -171,7 +175,21 @@ test("an item here runs with the --tools PATH this host found (review 1 of #476)
   mkdirSync(bin);
   writeFileSync(join(bin, "mytool"), "#!/bin/sh\necho tool ran\n");
   chmodSync(join(bin, "mytool"), 0o755);
-  const code = await heavyBatch(ctxWith([], false), batchOf(["x"], ["mytool"], { hereEnv: { ...process.env, PATH: `${bin}:${process.env["PATH"]}` } }));
+  // the job's --env PATH (what a helper gets) does not undo it here (review 2 of #476)
+  const code = await batchCode(ctxWith([], false), batchOf(["x"], ["mytool"], { env: { PATH: process.env["PATH"] ?? "" }, hereEnv: { ...process.env, PATH: `${bin}:${process.env["PATH"]}` } }));
   expect(code).toBe(0);
   expect(outOf(receipts()[0]!)).toBe("tool ran\n");
+});
+
+test("a relative program of a later item that lies outside the --sync paths keeps that item here (review 2 of #476)", async () => {
+  for (const [f, say] of [[join(work, "in.sh"), "inside"], [join(state.dir, "out.sh"), "outside"]] as const) {
+    writeFileSync(f, `#!/bin/sh\necho ${say}\n`);
+    chmodSync(f, 0o755);
+  }
+  // as in the path test above: this host is full for a second, so only its own path keeps the third item off the helper
+  const ctx = ctxWith([realHelper("h1")], true, undefined, true);
+  setTimeout(() => rmSync(join(state.dir, "heavy", "slot.1"), { recursive: true, force: true }), 1000);
+  expect(await batchCode(ctx, batchOf(["in.sh", "in.sh", "../out.sh"], ["./{item}"]))).toBe(0);
+  const three = receipts().find((r) => r.n === 3)!;
+  expect([three.host, outOf(three)]).toEqual([hostname(), "outside\n"]);
 });

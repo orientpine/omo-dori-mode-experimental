@@ -88,7 +88,7 @@ const tryAdmit = async (deps: SlotDeps, label: string, memKb?: number, settleSec
   const max = Math.max(deps.slots, h?.maxSlots ?? 0);
   const running = holders(deps, max);
   let sample: UsageSample | undefined;
-  const usage = async (u: Headroom): Promise<UsageSample> => (sample ??= await u.usage(running.map((r) => r.pid)));
+  const usage = async (u: Headroom): Promise<UsageSample> => (sample ??= await u.usage(running.map((r) => r.tree)));
   let memWhy = "";
   if (memKb && h) {
     const s = await usage(h);
