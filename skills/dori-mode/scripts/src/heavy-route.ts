@@ -109,6 +109,13 @@ export const helperProblem = (h: HeavyHelper): string | undefined => {
   if (typeof h.name !== "string" || !/^[\w.-]{1,64}$/.test(h.name) || !isArgv(h.ssh)) return "heavyQueue.helpers: each needs a name (letters, digits, . _ -) and an ssh argv";
   if (h.prefer !== undefined && (!Array.isArray(h.prefer) || !h.prefer.every((k) => KINDS.includes(k)))) return `heavyQueue.helpers.${h.name}.prefer must list kinds of ${KINDS.join(", ")}`;
   if (h.batch !== undefined && typeof h.batch !== "boolean") return `heavyQueue.helpers.${h.name}.batch must be true or false`;
+  // the owner's PC entry: no default fills a missing number, so a malformed one never turns the idle check off (review 4 of #480)
+  if (h.owner !== undefined) {
+    const o = h.owner as Record<string, unknown> | null;
+    const int = (v: unknown, lo: number, hi: number): boolean => typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi;
+    const kindsOk = o?.["kinds"] === undefined || (Array.isArray(o["kinds"]) && o["kinds"].length > 0 && o["kinds"].every((k) => KINDS.includes(k)));
+    if (!o || typeof o !== "object" || !int(o["idleMin"], 1, 1440) || !int(o["cpuPct"], 1, 100) || !int(o["memPct"], 1, 100) || !kindsOk) return `heavyQueue.helpers.${h.name}.owner needs idleMin (1-1440), cpuPct and memPct (1-100) as whole numbers, and kinds of ${KINDS.join(", ")} if given`;
+  }
   return undefined;
 };
 

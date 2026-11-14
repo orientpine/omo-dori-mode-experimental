@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { HeavyHelper } from "../src/config.ts";
 import { notAway, ownerBusy, ownerCpuCap, ownerNever, ownerTakes, ownerWords } from "../src/heavy-owner-pc.ts";
 import { helperVerdict } from "../src/heavy-queue.ts";
+import { helperProblem } from "../src/heavy-route.ts";
 import { admitOnce, type SlotDeps } from "../src/heavy-slot.ts";
 import { batchCode, batchOf, ctxWith, logs, realHelper, receipts, start, state, stop } from "./heavy-batch-fixture.ts";
 
@@ -119,4 +120,13 @@ test("the owner's memory cap counts running items' reservations at admission", a
   const blind = { ...deps, headroom: { ...deps.headroom, usage: async () => ({ ...(await usage()), memTotalKb: 0 }) } } as unknown as SlotDeps;
   const unweighed = await admitOnce(blind, "item2", 0, 20 * gb, 40);
   expect(unweighed && "wait" in unweighed ? unweighed.why : unweighed).toContain("owner's memory cap cannot be weighed");
+});
+
+// review 4 of #480: a malformed owner entry (idleMin null would become idle=0) is a config error, never a silent default
+test("an owner entry with a missing or out-of-range number or an unknown kind is refused when the config loads", () => {
+  const h = (owner: unknown) => ({ name: "cha", ssh: ["true"], owner }) as unknown as HeavyHelper;
+  expect(helperProblem(h({ idleMin: null, cpuPct: 50, memPct: 40 }))).toContain("heavyQueue.helpers.cha.owner");
+  expect(helperProblem(h({ idleMin: 20, cpuPct: 150, memPct: 40 }))).toContain("heavyQueue.helpers.cha.owner");
+  expect(helperProblem(h({ idleMin: 20, cpuPct: 50, memPct: 40, kinds: ["cpu", "nope"] }))).toContain("heavyQueue.helpers.cha.owner");
+  expect(helperProblem(h({ idleMin: 20, cpuPct: 50, memPct: 40, kinds: ["cpu", "browser"] }))).toBeUndefined();
 });
