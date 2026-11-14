@@ -64,7 +64,7 @@ export type SpreadJob = {
   readonly needBytes?: number;
   // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), globs of what comes back (--back, heavy-back.ts); helpersOnly: never this host's slot (--helpers-only)
   readonly tools?: readonly string[];
-  readonly back?: readonly string[]; readonly helpersOnly?: boolean; readonly out?: Sink; readonly err?: Sink; // out, err: where its lines go (a batch item's own files, heavy-batch.ts), else this process's
+  readonly back?: readonly string[]; readonly helpersOnly?: boolean; readonly out?: Sink; readonly err?: Sink; readonly runner?: Sink; // out, err: where its lines go (a batch item's own files, heavy-batch.ts), else this process's; runner: the helper's own lines (never the command's), else err
   readonly staleAgain?: boolean; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts)
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
@@ -99,7 +99,7 @@ export const withPipefail = (cmd: readonly string[]): readonly string[] => {
 // absolute paths inside one argument: the whole argument, or what follows = , or : (not the // of a URL)
 export const pathsIn = (arg: string): string[] => [...arg.matchAll(/(?:^|[=,:])(\/(?!\/)[^\s=,:;"'\]}]*)/g)].map((m) => normalize(m[1]!));
 
-const nearestExisting = (p: string): string => {
+export const nearestExisting = (p: string): string => {
   let at = p;
   while (!existsSync(at) && at !== "/") at = dirname(at);
   return at;
@@ -289,7 +289,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
       else if (/^WORKER_EXIT \d+$/.test(l)) exit = Number(l.slice(12));
       else {
         if (l.startsWith("WORKER_BACK_TOO_BIG")) tooBig = true;
-        (job.err ?? process.stderr).write(`${l}\n`);
+        (job.runner ?? job.err ?? process.stderr).write(`${l}\n`);
       }
     }
   })();

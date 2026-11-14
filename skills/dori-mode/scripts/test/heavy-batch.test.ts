@@ -3,67 +3,11 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
-import type { HeavyHelper, HeavyQueue } from "../src/config.ts";
-import { heavyBatch, itemCmd, type BatchJob, type BatchReceipt } from "../src/heavy-batch.ts";
-import type { HeavyCtx } from "../src/heavy-queue.ts";
-import type { SlotDeps } from "../src/heavy-slot.ts";
-import { withState } from "./fakes.ts";
+import { itemCmd } from "../src/heavy-batch.ts";
+import { batchCode, batchOf, ctxWith, fakeHelper, fresh, logs, outOf, realHelper, receipts, start, state, stop, work } from "./heavy-batch-fixture.ts";
 
-// dori heavy <label> --items FILE: the items of one batch spread over this host and the helpers. Real helpers are the real
-// CLI (`dori heavy-worker`) behind an argv that stands in for ssh, as in heavy-spread.test.ts; a helper that dies or
-// whose item is killed for memory is a script speaking the worker's lines.
-const CLI = join(import.meta.dir, "../src/cli.ts");
-const HOLDER = 4243;
-let state: ReturnType<typeof withState>;
-let logs: string[];
-let work: string;
-
-const realHelper = (name: string, slots = 3): HeavyHelper => {
-  const dir = join(state.dir, name);
-  mkdirSync(dir, { recursive: true });
-  const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavySlots: slots, heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
-  const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
-  return { name, ssh: ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"] };
-};
-
-// a helper that speaks the worker's lines: script reads the upload (cat), then says what it says
-const fakeHelper = (name: string, script: string): HeavyHelper => {
-  const f = join(state.dir, `${name}.sh`);
-  writeFileSync(f, `#!/bin/sh\n${script}\n`);
-  chmodSync(f, 0o755);
-  return { name, ssh: [f] };
-};
-
-// here: this host's slots; full: slot.1 held by another job, so no item runs here
-// skip: each sleep of the batch moves the clock on by all it asked for, so a 15 s wait for a busy host takes 50 ms
-const ctxWith = (helpers: HeavyHelper[], full = true, staleMin?: number, skip = false, slots = 1): HeavyCtx => {
-  let ahead = 0;
-  const usage = async () => ({ host: { gpu: null, gpuMem: null, cpu: 0, mem: 10 }, unified: false, jobs: [], memTotalKb: 1e8 });
-  if (full) {
-    mkdirSync(join(state.dir, "heavy", "slot.1"), { recursive: true });
-    writeFileSync(join(state.dir, "heavy", "slot.1", "owner"), `${HOLDER} other-job ${new Date().toISOString()}`);
-  }
-  const deps: SlotDeps = { dir: join(state.dir, "heavy"), slots, maxLoad: 80, clock: { now: () => Date.now() + ahead, sleep: (ms) => {
-        if (skip) ahead += ms;
-        return Bun.sleep(Math.min(ms, 50));
-      } }, pid: process.pid, load: async () => 10, alive: (p) => p === HOLDER || p === process.pid, headroom: { maxSlots: slots, free: 10, settleSec: 0, usage }, log: (l) => logs.push(l) };
-  return { q: { jobs: {}, helpers, queue: [], rl: true, jobDir: join(state.dir, "jobs"), exec: false, execMaxMin: 240, ...(staleMin ? { staleMin } : {}) } satisfies HeavyQueue, deps };
-};
-
-// the batch's exit code (abandoned is the stale CLI tests' concern, heavy-stale-cli.test.ts)
-const batchCode = async (...a: Parameters<typeof heavyBatch>): Promise<number> => (await heavyBatch(...a)).code;
-const batchOf = (items: string[], cmd: string[], extra: Partial<BatchJob> = {}): BatchJob => ({ label: "b", kind: "cpu", cmd, cwd: work, sync: [work], env: {}, items, out: join(state.dir, "out"), ...extra });
-const receipts = (): BatchReceipt[] => readFileSync(join(state.dir, "out", "receipts.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as BatchReceipt);
-const outOf = (r: BatchReceipt): string => readFileSync(r.out, "utf8");
-
-beforeEach(() => {
-  state = withState();
-  logs = [];
-  work = join(state.dir, "work");
-  mkdirSync(work);
-});
-afterEach(() => state.done());
+beforeEach(start);
+afterEach(stop);
 
 test("every item of the batch runs once, on this host or a helper, and its output and the host it ran on come back to one folder", async () => {
   const items = ["a", "b", "c", "d", "e", "f"];
@@ -81,14 +25,6 @@ test("every item of the batch runs once, on this host or a helper, and its outpu
   expect(JSON.parse(readFileSync(join(state.dir, "out", "summary.json"), "utf8"))).toMatchObject({ items: 6, ok: 6, failed: 0 });
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_DONE b: 6/6 items exit 0"))).toBe(true);
 });
-
-const fresh = (): void => {
-  logs = [];
-  state.done();
-  state = withState();
-  work = join(state.dir, "work");
-  mkdirSync(work);
-};
 
 test("an item whose helper dies, or that is killed for memory, runs once more on another host; a second failure is final", async () => {
   const fails = { cut: 'echo "WORKER_ADMIT slot.1 alive=60 run=1-x" >&2; cat >/dev/null; exit 255', oom: 'echo "WORKER_ADMIT slot.1 alive=60 run=1-x" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null' };
