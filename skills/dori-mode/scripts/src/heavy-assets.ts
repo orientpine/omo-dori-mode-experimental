@@ -119,27 +119,25 @@ export const settleAssets = (root: string, sync: readonly string[], opts: readon
   const hashes = hashesOf(opts);
   if (!hashes.length) return true;
   const store = privateStore(dir, caller);
-  let whole = true;
-  sync.forEach((p, i) => {
-    const h = hashes[i] ?? NONE;
+  // one --sync path: false only when a held copy could not be put in place
+  const one = (p: string, h: string): boolean => {
     const at = join(root, p);
-    if (!HASH.test(h)) return;
+    if (!HASH.test(h)) return true;
     if (have.includes(h)) {
-      if (cp(join(store, h, "tree"), at)) return say(`ASSET_OK ${h} ${p} cached`);
-      whole = false;
-      say(`ASSET_BAD ${p}: the copy of ${h} kept here could not be copied; the job does not run`);
-      return;
+      const ok = cp(join(store, h, "tree"), at);
+      say(ok ? `ASSET_OK ${h} ${p} cached` : `ASSET_BAD ${p}: the copy of ${h} kept here could not be copied; the job does not run`);
+      return ok;
     }
     const got = assetHash(at);
     if (got !== h) {
       say(`ASSET_BAD ${p}: sent as ${h}, ${got ?? "nothing"} arrived; the job runs on what arrived, which is not kept`);
-      return;
+      return true;
     }
     const tmp = join(store, `${h}.${process.pid}.tmp`);
     try {
       rmSync(tmp, { recursive: true, force: true });
       mkdirSync(tmp, { mode: 0o700 });
-      if (!cp(at, join(tmp, "tree"))) return say(`ASSET_BAD ${p}: ${h} arrived but could not be kept`);
+      if (!cp(at, join(tmp, "tree"))) throw new Error("copy");
       writeFileSync(join(tmp, "ok"), "");
       // two jobs that sent one tree at once: the first to publish it wins, the other keeps nothing and runs on what came
       if (!existsSync(join(store, h))) renameSync(tmp, join(store, h));
@@ -149,7 +147,9 @@ export const settleAssets = (root: string, sync: readonly string[], opts: readon
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
+    return true;
+  };
+  const whole = sync.map((p, i) => one(p, hashes[i] ?? NONE)).every(Boolean);
   prune(store, hashes);
   return whole;
 };
