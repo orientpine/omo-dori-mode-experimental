@@ -73,7 +73,7 @@ export type SpreadJob = {
 // which the helper must have before it takes the job
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
 // path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
-export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string; readonly missing?: string };
+export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string; readonly kind?: "ship" | "sync"; readonly path?: string };
 
 // absolute paths inside one argument: the whole argument, or what follows = , or : (not the // of a URL)
 export const pathsIn = (arg: string): string[] => [...arg.matchAll(/(?:^|[=,:])(\/(?!\/)[^\s=,:;"'\]}]*)/g)].map((m) => normalize(m[1]!));
@@ -100,37 +100,37 @@ const linksIn = (root: string): [string, string][] => {
 // Whether the job can run on another host unchanged: every path it needs travels with --sync, and every --sync path is
 // this account's own (home or /tmp, owned, no link on the way, no ..), --tools trees too. Else it runs here (HEAVY_LOCAL).
 export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }): Plan => {
-  const no = (why: string, missing?: string): Plan => ({ ok: false, why, ...(missing ? { missing } : {}) }); // missing: the folder or file whose absence alone kept it here (heavy-ship.ts)
-  if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)", job.cwd);
+  // kind (heavy-ship.ts, review 3 of #479): "ship", the working folder or its checkout, sent along; "sync", a path only --sync may send; none: it runs here
+  const no = (why: string, kind?: "ship" | "sync", path?: string): Plan => ({ ok: false, why, ...(kind && path ? { kind, path } : {}) });
+  // a folder that must run here (its tests start boxes and systemd scopes, which a helper's box cannot) is known first
+  const top = gitTop(job.cwd);
+  const stay = stayHere(job.cwd, top ?? job.sync.find((s) => within(job.cwd, s)) ?? who.home);
+  if (stay) return no(stay);
+  if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)", "ship", job.cwd);
   if (backGlobProblem(job.back)) return no(backGlobProblem(job.back)!);
   const tp = toolPlan(job.tools ?? [], { path: who.path ?? process.env["PATH"] ?? "", home: who.home });
   if ("why" in tp) return no(tp.why);
   const roots: string[] = [];
   for (const raw of [...job.sync, ...tp.trees]) {
-    if (!isAbsolute(raw) || raw.split("/").includes("..")) return no(`--sync ${raw} must be an absolute path without ..`);
+    if (!isAbsolute(raw) || raw.split("/").includes("..")) return no(`--sync ${raw} must be an absolute path without ..`, "sync", raw);
     const p = normalize(raw).replace(/(.)\/$/, "$1");
-    if (!within(p, who.home) && !within(p, "/tmp") || p === who.home || p === "/tmp") return no(`--sync ${p} must be a folder or file inside your home or /tmp`);
+    if (!within(p, who.home) && !within(p, "/tmp") || p === who.home || p === "/tmp") return no(`--sync ${p} must be a folder or file inside your home or /tmp`, "sync", p);
     const at = nearestExisting(p);
-    if (realpathSync(at) !== at) return no(`--sync ${p} goes through a link (${at} is ${realpathSync(at)}); give the real path`);
+    if (realpathSync(at) !== at) return no(`--sync ${p} goes through a link (${at} is ${realpathSync(at)}); give the real path`, "sync", p);
     if (at === p) {
       const st = lstatSync(p);
-      if (st.uid !== who.uid) return no(`--sync ${p} belongs to another account`);
-      if (!st.isDirectory() && !st.isFile()) return no(`--sync ${p} is not a folder or a file`);
+      if (st.uid !== who.uid) return no(`--sync ${p} belongs to another account`, "sync", p);
+      if (!st.isDirectory() && !st.isFile()) return no(`--sync ${p} is not a folder or a file`, "sync", p);
     }
     roots.push(p);
   }
   // a path inside another --sync path travels with it
   const sync = [...new Set(roots)].sort((a, b) => a.length - b.length).filter((p, i, all) => !all.slice(0, i).some((q) => within(p, q)));
   const covered = (p: string): boolean => sync.some((s) => within(p, s)) || SYSTEM.some((s) => within(p, s));
-  // a folder that says it must run here, and a checkout synced in part (its tests read the rest by relative path), are
-  // known before the working folder is weighed for sending along (review 2 of #479; 2026-11-02: scripts/ only, 171 of
-  // 744 failed there); a path cut off at a space is never one to send along, only one that keeps the job here
-  const top = gitTop(job.cwd);
-  const stay = stayHere(job.cwd, top ?? sync.find((s) => within(job.cwd, s)) ?? who.home);
-  if (stay) return no(stay);
-  if (top && top !== who.home && (within(top, who.home) || within(top, "/tmp")) && !sync.some((s) => within(top, s))) return no(`the working folder is in the git checkout ${top}, which --sync carries only in part (its tests read the rest); add --sync ${top}`, sync.some((s) => within(job.cwd, s)) ? undefined : top);
-  if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, job.cwd);
-  for (const arg of job.cmd) for (const p of pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, /\s/.test(arg) ? undefined : p);
+  if (top && top !== who.home && (within(top, who.home) || within(top, "/tmp")) && !sync.some((s) => within(top, s))) return no(`the working folder is in the git checkout ${top}, which --sync carries only in part (its tests read the rest); add --sync ${top}`, sync.some((s) => within(job.cwd, s)) ? undefined : "ship", top);
+  if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, "ship", job.cwd);
+  // an argument that is one existing path is weighed whole, so a prefix that happens to be covered cannot stand for it
+  for (const arg of job.cmd) for (const p of [...(isAbsolute(arg) && existsSync(arg) ? [normalize(arg)] : []), ...pathsIn(arg)]) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, "sync", p);
   // A system program the job starts is checked on the helper before it takes the job: a venv's python links to the
   // system python it was made with, and on a helper without that version the link dangles in the box, so the run printed
   // nothing (2026-11-07: a check of two runs on a helper without the venv's python read two empty logs as the same).
@@ -139,20 +139,20 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   for (const s of sync) {
     if (!existsSync(s) || !statSync(s).isDirectory()) continue;
     for (const [link, to] of linksIn(s)) {
-      if (existsSync(to) && !covered(to)) return no(`the link ${link} points to ${to}, which is not in a --sync path (add it with --sync)`);
+      if (existsSync(to) && !covered(to)) return no(`the link ${link} points to ${to}, which is not in a --sync path`, "sync", to);
       if (inProgramDirs(to)) needs.add(to);
     }
   }
   const first = job.cmd[0] ?? "";
   if (first.includes("/")) {
     const p = resolve(job.cwd, first);
-    if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`, p);
+    if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`, "sync", p);
     if (inProgramDirs(p)) needs.add(p);
   } else if (job.env["PATH"] !== undefined) {
     // --env PATH is the box's PATH too: a command in a --sync path travels, one in a system folder is looked up by the
     // helper on that same PATH (it may sit in another of its folders there)
     const at = Bun.which(first, { PATH: job.env["PATH"], cwd: job.cwd });
-    if (at && !covered(at)) return no(`the command ${first} is ${at} on the job's --env PATH, which is not in a --sync path`);
+    if (at && !covered(at)) return no(`the command ${first} is ${at} on the job's --env PATH, which is not in a --sync path`, "sync", at);
     if (at && !sync.some((s) => within(at, s))) which.add(first);
   } else {
     // the box's own bun and tools, a tool bundle the job names, or a system folder: the helper looks the name up on its box PATH

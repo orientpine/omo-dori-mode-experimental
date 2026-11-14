@@ -210,3 +210,8 @@ test("dori heavy --help prints every heavy block, the --items batch too (gongdor
   expect(h.startsWith("dori heavy <label> [--mem SIZE] -- <command ...>")).toBe(true);
   expect(h).not.toContain("gpu-room");
 });
+
+test("dori send --help keeps every line of its block, past the literal \\n it quotes (review 3 of #479)", () => {
+  const h = helpFor("send");
+  for (const want of ["--status (discord)", "--reply ID", "--again sends it anyway"]) expect(h).toContain(want);
+});

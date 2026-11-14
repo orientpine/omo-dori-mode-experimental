@@ -7,7 +7,7 @@ import { spreadPlan, within, type Plan, type SpreadJob } from "./heavy-spread.ts
 // dori heavy --kind: a job whose working folder or job file lies outside its --sync paths no longer runs on this host in
 // silence. Owner 2026-11-14 ("Doriterm 연결된 모든 리소스 효율적으로 쓰게 만들어 놨는데 왜 이번에 동작 안 했는지 확인하고
 // 개선해"): gongdori's jobs of 2026-11-12 said HEAVY_LOCAL "... is not in a --sync path" and ran on 0a83 alone while five
-// helpers sat idle, and one died at its cap on 11/14. Now the missing folder or file goes along (HEAVY_SHIP, one
+// helpers sat idle, and one died at its cap on 11/14. Now the working folder (or its git checkout) goes along (HEAVY_SHIP, one
 // HEAVY_SHIP_FILE line per file in heavy.log) when it holds at most heavyShipMaxMb and nothing of a no-ship path
 // (heavyNoShip, default ~/data: gongdori's raw expert data may never leave this host, only the reduced trajectory file
 // the owner allowed, #dori-pair 1571030089280266255), read through realpath, links inside it too. Otherwise the job
@@ -15,9 +15,9 @@ import { spreadPlan, within, type Plan, type SpreadJob } from "./heavy-spread.ts
 
 export type ShipFile = { readonly path: string; readonly bytes: number };
 export type Shipped = { readonly job: SpreadJob; readonly plan: Extract<Plan, { ok: true }>; readonly shipped: readonly string[]; readonly files: readonly ShipFile[] };
-// the working folder, then each file the command names: a plan says one missing path at a time; past ROUNDS the job is
-// refused, never sent back to this host in silence (review 1 of #479)
-const ROUNDS = 32;
+// the working folder, then its checkout: at most two paths are sent along; past that the job is refused, never sent back
+// to this host in silence (review 1 of #479)
+const ROUNDS = 2;
 
 const home = (p: string): string => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 const realOr = (p: string): string | undefined => {
@@ -82,9 +82,11 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
   return why ? { why } : { files };
 };
 
-// the job with every missing folder or file it may take along added to its --sync paths, and its plan; refuse: a missing
-// path that may not go along (the job stops); else why it stays here for a reason of its own, as before (HEAVY_LOCAL:
-// a .dori-heavy-local file, a git checkout synced in part, a link out of --sync)
+// the job with its working folder (or that folder's whole git checkout) added to its --sync paths when that alone kept it
+// here, and its plan. A helper gets only what is declared, the --sync paths, and that folder; never a path guessed from the
+// command's arguments (review 3 of #479; Bazel and GNU parallel send only declared inputs too). refuse: the job stops
+// before it runs (a path only --sync may send, or a folder that may not go along); else it runs here for a reason of its
+// own (HEAVY_LOCAL: a .dori-heavy-local file, a git checkout synced in part)
 export type NotShipped = { readonly why: string; readonly refuse: boolean };
 export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }, noShip: readonly string[], maxBytes: number): Shipped | NotShipped => {
   let j = job;
@@ -93,16 +95,16 @@ export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonl
   for (let round = 0; round <= ROUNDS; round++) {
     const plan = spreadPlan(j, who);
     if (plan.ok) return { job: j, plan, shipped, files };
-    const miss = plan.missing;
-    if (!miss) return { why: plan.why, refuse: false };
-    if (round === ROUNDS) return { why: `${plan.why}; it is not sent along: more than ${ROUNDS} paths outside --sync, give them with --sync`, refuse: true };
-    const f = shipFiles(miss, noShip, maxBytes - files.reduce((n, x) => n + x.bytes, 0));
+    if (plan.kind === "sync") return { why: `${plan.why}; a helper gets only the --sync paths and the working folder (add --sync ${plan.path})`, refuse: true };
+    if (plan.kind !== "ship" || !plan.path) return { why: plan.why, refuse: false };
+    if (round === ROUNDS) return { why: `${plan.why}; it is not sent along: the working folder and its checkout are already sent`, refuse: true };
+    const f = shipFiles(plan.path, noShip, maxBytes - files.reduce((n, x) => n + x.bytes, 0));
     if ("why" in f) return { why: `${plan.why}; it is not sent along: ${f.why}`, refuse: true };
-    shipped.push(miss);
+    shipped.push(plan.path);
     files.push(...f.files);
-    j = { ...j, sync: [...j.sync, miss] };
+    j = { ...j, sync: [...j.sync, plan.path] };
   }
-  return { why: "unreachable", refuse: false };
+  return { why: "unreachable", refuse: true };
 };
 
 // one HEAVY_SHIP line per folder or file sent along (stderr and heavy.log), and one HEAVY_SHIP_FILE line per file in heavy.log alone

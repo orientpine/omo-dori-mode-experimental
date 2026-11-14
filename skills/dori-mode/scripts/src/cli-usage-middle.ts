@@ -117,8 +117,8 @@ export const USAGE_MIDDLE = `  challenge <key> --plan FILE [--model M] [--all]
                                        run the lane's own command on the less busy PC: a heavyQueue.helpers host when this
                                        one is more than 15 points busier or refuses it, in a bwrap box with no network,
                                        the --sync folders copied there at the same paths and changed files copied back
-                                       (HEAVY_SPREAD / HEAVY_SYNC / HEAVY_BACK / HEAVY_DONE); a folder or file outside --sync
-                                       goes along (HEAVY_SHIP) or stops it (HEAVY_LOCAL_REFUSED; --local runs it here);
+                                       (HEAVY_SPREAD / HEAVY_SYNC / HEAVY_BACK / HEAVY_DONE); the working folder outside --sync
+                                       goes along (HEAVY_SHIP); another path stops it (HEAVY_LOCAL_REFUSED: add --sync; --local: here);
                                        the --sync paths go as one archive checked there by its sha256 (ASSET_OK: its bytes
                                        arrived as sent and tar took them; the unpacked tree is not walked again)
                                        no sign of life for heavyQueue.staleMin minutes: HEAVY_HELPER_STALE, exit 124

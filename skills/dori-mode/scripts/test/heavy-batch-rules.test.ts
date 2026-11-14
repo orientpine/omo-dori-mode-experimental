@@ -111,16 +111,19 @@ test("an item every host left to it refuses ends the batch as failed instead of 
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_ITEM b #1 -: no host left: bad refused it (program python3.99 not found)"))).toBe(true);
 });
 
-test("items that each send a folder of their own along share one archive of the batch: one digest in every receipt", async () => {
-  for (const n of ["1", "2"]) {
-    mkdirSync(join(state.dir, `ext-${n}`));
-    writeFileSync(join(state.dir, `ext-${n}`, "data.txt"), `data ${n}\n`);
-  }
+test("a batch whose working folder goes along makes one archive for all its items; a path an item names outside --sync stops the batch", async () => {
+  const cwd = join(state.dir, "ext-cwd");
+  mkdirSync(cwd);
+  writeFileSync(join(cwd, "data.txt"), "data\n");
   const ship = { noShip: [], maxBytes: 1024 ** 3, heavyLog: join(state.dir, "heavy.log") };
-  expect(await batchCode(ctxWith([realHelper("h1")]), batchOf(["1", "2"], ["cat", `${state.dir}/ext-{item}/data.txt`], { ship }))).toBe(0);
-  const rs = receipts().sort((a, b) => a.n - b.n);
-  expect(rs.map(outOf)).toEqual(["data 1\n", "data 2\n"]);
+  expect(await batchCode(ctxWith([realHelper("h1")]), batchOf(["1", "2"], ["cat", "data.txt"], { cwd, ship }))).toBe(0);
+  const rs = receipts();
+  expect(rs.map(outOf)).toEqual(["data\n", "data\n"]);
   expect(rs[0]!.assets).toMatch(/^[0-9a-f]{64}$/);
   expect(rs[1]!.assets).toBe(rs[0]!.assets);
   expect(logs.filter((l) => l.startsWith("HEAVY_ASSET b:"))).toHaveLength(1);
+  fresh();
+  writeFileSync(join(state.dir, "outside.txt"), "x\n");
+  expect(await batchCode(ctxWith([realHelper("h1")]), batchOf(["1"], ["cat", join(state.dir, "outside.txt")], { ship: { ...ship, heavyLog: join(state.dir, "heavy.log") } }))).toBe(2);
+  expect(logs.some((l) => l.startsWith("HEAVY_LOCAL_REFUSED b: 1 item(s) would run here, #1: ") && l.includes(`(add --sync ${join(state.dir, "outside.txt")})`))).toBe(true);
 });

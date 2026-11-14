@@ -1,5 +1,5 @@
 export const USAGE_END = `                                       --text-file posts the file's text (real line breaks) the same way as --text. A text
-                                       with a literal \n and no real line break outside code is refused before anything is
+                                       with a literal \\n and no real line break outside code is refused before anything is
                                        sent (SEND_LITERAL_NEWLINE, exit 2; also thread reply|wait|done|open --first, ask,
                                        claim-done and close --summary)
                                        --status (discord) writes it as the progress message, in discord.statusStyle;
