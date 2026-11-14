@@ -208,6 +208,15 @@ test("a new absolute output named with a space or a colon beside the working fol
   // and . or .. in a list is a path item: a covered PYTHONPATH=<lib>:. runs
   mkdirSync(join(home, "lib"));
   expect(shipMissing({ ...job(["env", `PYTHONPATH=${join(home, "lib")}:.`, "true"]), cwd: work, sync: [work, join(home, "lib")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  // the lead after review 13: an item that is there (lib in the working folder) makes a list too, so a covered
+  // <lib>:lib runs; ${work}:out.txt above stays one new output (out.txt is not there); a ~/data item still stops it
+  mkdirSync(join(work, "lib"));
+  expect(shipMissing({ ...job(["env", `PYTHONPATH=${join(home, "lib")}:lib`, "true"]), cwd: work, sync: [work, join(home, "lib")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  const data = join(home, "data");
+  mkdirSync(join(data, "lib"), { recursive: true });
+  const dj = { ...job(["env", `PYTHONPATH=${join(data, "lib")}:lib`, "true"]), cwd: work, sync: [work] };
+  expect(shipMissing(dj, who, [data], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining("heavyNoShip") });
+  expect(shipItems(batchOf([], []), [dj], who).stops).toEqual([expect.stringContaining(join(data, "lib"))]);
   writeFileSync(join(home, "a.jar"), "a");
   writeFileSync(join(home, "b.jar"), "b");
   const jars = [join(home, "a.jar"), join(home, "b.jar")];
