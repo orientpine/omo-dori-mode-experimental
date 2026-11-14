@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
 import type { ArgvTemplate } from "./config.ts";
 import { type MemInfo, neverFits, readMeminfo } from "./heavy-mem.ts";
+import type { OwnerPc } from "./heavy-owner-pc.ts";
 import type { Kind, Plan, SpreadJob } from "./heavy-spread.ts";
 
 // a helper asked for a job with its own estimate (exec mem=, dori heavy --mem) that it can never fit refuses it, so the
@@ -14,8 +15,8 @@ export const memRefusal = (opts: readonly string[], free: number, m: MemInfo | u
 };
 
 // a host the queue host hands jobs to: ssh argv to its `dori heavy-worker`; prefer: the --kind kinds it takes first;
-// batch: false keeps it out of dori heavy --items batches (an owner's own PC, until his card says when it may be used)
-export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate; readonly prefer?: readonly string[]; readonly batch?: boolean };
+// batch: false keeps it out of dori heavy --items batches; owner: an owner's own PC, which takes a batch's items only while he is away (heavy-owner-pc.ts)
+export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate; readonly prefer?: readonly string[]; readonly batch?: boolean; readonly owner?: OwnerPc };
 
 // Which helper a dori heavy --kind job may go to, beyond "the less busy PC" (heavy-spread.ts).
 // Owner 2026-11-08: "우리 학습용 spark 있는데 자율 굴착 시험왜 여기서 돌리고 있어?" and "doriterm에 연결된 모든 기기들 확인해서,
@@ -77,7 +78,7 @@ export const archOf = (sync: readonly string[]): { readonly arch?: string } => {
 };
 
 // the words after the helper's ssh argv: dori heavy-worker "exec <label> <kind> <below> [options]"
-export const execWords = (job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets?: string): string[] => ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : []), ...(plan.toolOpts ?? []), ...(plan.arch ? [`arch=${plan.arch}`] : []), ...(assets ? [assets] : [])];
+export const execWords = (job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets?: string): string[] => ["exec", job.label, job.kind, String(Math.max(0, Math.min(100, Math.floor(below)))), ...(plan.playwright ? [`playwright=${plan.playwright}`] : []), ...(job.needBytes ? [`mem=${Math.round(job.needBytes)}`] : []), ...plan.needs.map((p) => `need=${p}`), ...plan.which.map((n) => `which=${n}`), ...(plan.path !== undefined ? [`path=${plan.path}`] : []), ...(plan.tools ?? []).map((t) => `tools=${t}`), ...(job.back?.length ? ["back"] : []), ...(plan.toolOpts ?? []), ...(plan.arch ? [`arch=${plan.arch}`] : []), ...(assets ? [assets] : []), ...(job.helperWords ?? [])];
 
 // ssh hands those words to the helper's login shell, which reads them before the worker checks them: a helper reached
 // without a forced command (cha, Tailscale SSH, 2026-11-08) would run a label like `t; touch x` outside its box. Only
@@ -108,6 +109,13 @@ export const helperProblem = (h: HeavyHelper): string | undefined => {
   if (typeof h.name !== "string" || !/^[\w.-]{1,64}$/.test(h.name) || !isArgv(h.ssh)) return "heavyQueue.helpers: each needs a name (letters, digits, . _ -) and an ssh argv";
   if (h.prefer !== undefined && (!Array.isArray(h.prefer) || !h.prefer.every((k) => KINDS.includes(k)))) return `heavyQueue.helpers.${h.name}.prefer must list kinds of ${KINDS.join(", ")}`;
   if (h.batch !== undefined && typeof h.batch !== "boolean") return `heavyQueue.helpers.${h.name}.batch must be true or false`;
+  // the owner's PC entry: no default fills a missing number, so a malformed one never turns the idle check off (review 4 of #480)
+  if (h.owner !== undefined) {
+    const o = h.owner as Record<string, unknown> | null;
+    const int = (v: unknown, lo: number, hi: number): boolean => typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi;
+    const kindsOk = o?.["kinds"] === undefined || (Array.isArray(o["kinds"]) && o["kinds"].length > 0 && o["kinds"].every((k) => KINDS.includes(k)));
+    if (!o || typeof o !== "object" || !int(o["idleMin"], 1, 1440) || !int(o["cpuPct"], 1, 100) || !int(o["memPct"], 1, 100) || !kindsOk) return `heavyQueue.helpers.${h.name}.owner needs idleMin (1-1440), cpuPct and memPct (1-100) as whole numbers, and kinds of ${KINDS.join(", ")} if given`;
+  }
   return undefined;
 };
 
