@@ -12,12 +12,11 @@ type Sink = { write(chunk: Uint8Array): number | Promise<number>; flush(): numbe
 
 // the job (job.json) and the --sync paths that exist, as one tar into the helper's stdin, its tar killed on cut (stale)
 // while it runs and put in kids; the bytes sent
-export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[], took: (bytes: number) => void, cut: Promise<unknown>, kids: Bun.Subprocess[], changed?: (why: string) => void, skip: readonly string[] = []): Promise<number> => {
+export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[], took: (bytes: number) => void, cut: Promise<unknown>, kids: Bun.Subprocess[], changed?: (why: string) => void): Promise<number> => {
   const tmp = mkdtempSync(join(tmpdir(), "dori-spread-"));
   try {
     writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: job.cmd, cwd: job.cwd, sync, env: job.env, ...(job.back?.length ? { back: job.back } : {}) }));
-    // skip: --sync paths the helper holds by hash (heavy-assets.ts); job.json still names them all
-    const have = sync.filter((s) => existsSync(s) && !skip.includes(s)).map((s) => s.slice(1));
+    const have = sync.filter((s) => existsSync(s)).map((s) => s.slice(1));
     const tar = Bun.spawn(["tar", "-cf", "-", "-C", tmp, "job.json", ...(have.length ? ["-C", "/", ...have] : [])], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     kids.push(tar);
     void cut.then(() => killAlive(tar));

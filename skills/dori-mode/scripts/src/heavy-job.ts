@@ -51,6 +51,23 @@ export const killTree = (pid: number): void => {
   }
 };
 
+// a job's folder removed, read-only folders in it too (a tree sent with tar -p keeps a 0555 folder, which rm -r cannot
+// empty: review 4 of #477); the error when even that fails, so the caller can say so
+export const removeTree = (dir: string): string | undefined => {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return undefined;
+  } catch {
+    Bun.spawnSync(["chmod", "-R", "u+rwx", dir], { stdout: "ignore", stderr: "ignore" });
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return undefined;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+};
+
 export const newJobDir = (root: string): string => {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const dir = mkdtempSync(join(root, `${process.pid}-`));

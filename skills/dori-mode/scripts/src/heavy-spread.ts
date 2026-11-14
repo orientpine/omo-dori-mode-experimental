@@ -4,13 +4,13 @@ import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:pa
 
 import type { HeavyHelper } from "./config.ts";
 import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
-import { newJobDir, onStop, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
+import { newJobDir, onStop, removeTree, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
-import { assetsHave, assetsOptOk, assetsWord, haveOf, settleAssets, skipOf } from "./heavy-assets.ts";
+import { assetsOptOk, assetsWord, checkAssets } from "./heavy-assets.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
@@ -248,11 +248,9 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
     if (word && verdict[1] === "REFUSED" && verdict[2]?.startsWith('unknown option "assets=')) return startExec(ctx, h, job, plan, below, false);
     return helperVerdict(verdict[1] ?? "", verdict[2] ?? "");
   }
-  const skip = skipOf(plan.sync, word, haveOf(verdict[2] ?? ""));
-  if (skip.length) ctx.deps.log?.(`HEAVY_ASSET ${job.label} ${h.name}: ${skip.join(", ")} already there by hash, not sent`);
   const stop = onStop(() => p.kill("SIGKILL"));
   const aliveSec = aliveOf(verdict?.[2] ?? "");
-  const watch = staleWatch({ label: job.label, helper: h.name, total: (cut) => syncBytes(plan.sync.filter((s) => !skip.includes(s)), cut), staleMs, ...(aliveSec ? { aliveSec } : {}), now: () => ctx.deps.clock.now(), log: (l) => ctx.deps.log?.(l) });
+  const watch = staleWatch({ label: job.label, helper: h.name, total: (cut) => syncBytes(plan.sync, cut), staleMs, ...(aliveSec ? { aliveSec } : {}), now: () => ctx.deps.clock.now(), log: (l) => ctx.deps.log?.(l) });
   let stale: string | undefined;
   const kids: Bun.Subprocess[] = [p];
   void watch.stale.then((why) => {
@@ -282,7 +280,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
   kids.push(untar);
   const done = (async (): Promise<number | null | Stale> => {
     let sent = -1;
-    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`), skip);
+    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`));
     try {
       sent = await Promise.race([up, watch.stale.then(() => -1)]);
       watch.synced();
@@ -494,12 +492,12 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const dir = newJobDir(join(ctx.deps.dir, "exec"));
   const runId = markRun(dir, d.caller, label);
   const beat = heartbeat(ctx.q.aliveSec ?? 60);
+  // the job's folder may hold read-only folders it was sent (tar -p keeps 0555): removeTree makes them writable first
   const forget = onStop(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
     releaseSlot(t.slot);
   });
-  const have = assetsHave(ctx.deps.dir, d.caller, opts, join(dir, "pin"));
-  console.error(`WORKER_ADMIT ${basename(t.slot)} alive=${ctx.q.aliveSec ?? 60} run=${runId}${have.length ? ` have=${have.join(",")}` : ""}`);
+  console.error(`WORKER_ADMIT ${basename(t.slot)} alive=${ctx.q.aliveSec ?? 60} run=${runId}`);
   const root = join(dir, "in");
   let cmdName = "-";
   let inBytes = 0;
@@ -520,7 +518,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
       return 3;
     }
     cmdName = basename(spec.argv[0]!);
-    if (!(await settleAssets(root, spec.sync, opts, ctx.deps.dir, d.caller, have, log))) return 3;
+    await checkAssets(root, spec.sync, opts, log);
     for (const p of spec.sync) if (!existsSync(join(root, p))) mkdirSync(join(root, p), { recursive: true });
     beat.set("playwright");
     if (playwright && kind === "browser" && d.tools.browsersDir) await ensurePlaywright(playwright, d.tools.browsersDir, log);
@@ -558,7 +556,8 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     return 0;
   } finally {
     beat.stop();
-    rmSync(dir, { recursive: true, force: true });
+    const left = removeTree(dir);
+    if (left) log(`HEAVY_EXEC_LEFT ${label} caller=${d.caller}: the run's folder ${dir} could not be removed (${left})`);
     releaseSlot(t.slot);
     forget();
   }
