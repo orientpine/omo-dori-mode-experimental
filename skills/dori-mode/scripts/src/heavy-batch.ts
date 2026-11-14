@@ -35,12 +35,12 @@ export type BatchReceipt = { readonly n: number; readonly item: string; readonly
 
 // a helper whose run broke off, or that did not answer, gets no new item for this long
 const PAUSE_MS = 60_000;
-// how long a host that turned an item away waits before it is offered one again
-const POLL_MS = 15_000;
+const POLL_MS = 15_000; // how long a host that turned an item away waits before it is offered one again
+export const RETRY_WAIT_MS = 10 * 60_000; // how long a retry waits for another host (busy, full or still answering) before it may go back to the one it failed on
 const OOM = /^HEAVY_OOM \S+: killed at MemoryMax=/m;
 
 type Host = { readonly name: string; readonly helper?: HeavyHelper; running: number; readonly cap: number; gone?: string; until: number; next: number; busy: boolean; offering: boolean; said: string };
-type Item = { readonly n: number; readonly text: string; readonly job: SpreadJob; readonly plan: Plan; readonly tries: BatchTry[]; start?: string };
+type Item = { readonly n: number; readonly text: string; readonly job: SpreadJob; readonly plan: Plan; readonly tries: BatchTry[]; start?: string; failedAt?: number };
 type Outcome = { readonly code: number | null; readonly result: string };
 type Sink = { write(s: string | Uint8Array): unknown; close(): void };
 type Offer = { readonly done: Promise<Outcome> } | { readonly kind: string; readonly why: string };
@@ -152,11 +152,10 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   let failed = 0;
   let retried = 0;
   const fits = (h: Host, it: Item): boolean => !h.gone && (h.helper === undefined || it.plan.ok);
-  // a host that could be offered an item now: not gone, waiting, full or still answering another offer
-  const usable = (h: Host): boolean => !h.gone && !h.busy && !h.offering && h.running < h.cap && now() >= h.until && now() >= h.next;
   const tried = (it: Item, h: Host): boolean => it.tries.some((t) => t.host === h.name);
-  // an item that failed on a host goes elsewhere first, and back there only while no other host can take it now
-  const pick = (h: Host): Item | undefined => pending.find((it) => fits(h, it) && (!tried(it, h) || !hosts.some((o) => o !== h && fits(o, it) && !tried(it, o) && usable(o))));
+  // its one retry goes elsewhere (the brief: "다른 곳에서 다시(한 번)"): it waits for another host that may still take it, busy, full or answering an offer now, and goes back to the one it failed on only once every other is gone or paused, or RETRY_WAIT_MS passed
+  const elsewhere = (it: Item, h: Host): boolean => hosts.some((o) => o !== h && fits(o, it) && !tried(it, o) && now() >= o.until);
+  const pick = (h: Host): Item | undefined => pending.find((it) => fits(h, it) && (!tried(it, h) || !elsewhere(it, h) || now() - (it.failedAt ?? 0) >= RETRY_WAIT_MS));
   const note = (h: Host, kind: string, why: string): void => {
     if (kind === "refused" || kind === "old" || kind === "notools") {
       h.gone = why;
@@ -179,6 +178,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
     if ((o.code === null || oom) && it.tries.length < 2) {
       retried++;
       log(`HEAVY_BATCH_RETRY ${b.label} #${it.n} ${h.name}: ${result}; once more on another host`);
+      it.failedAt = now();
       pending.unshift(it);
       return;
     }

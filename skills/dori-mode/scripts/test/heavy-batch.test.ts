@@ -144,7 +144,8 @@ test("a helper that does not answer holds back only itself: the other hosts run 
 
 test("an item that failed goes back to the same host when the only other one is down, and the batch ends (review 1 of #476)", async () => {
   const oom = fakeHelper("oom", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null');
-  const code = await batchCode(ctxWith([oom, { name: "down", ssh: ["false"] }]), batchOf(["x"], ["true"]));
+  // this host is full for good, so the retry waits RETRY_WAIT_MS for it (the clock skips each poll) and goes back to oom; the down helper never counts
+  const code = await batchCode(ctxWith([oom, { name: "down", ssh: ["false"] }], true, 60, true), batchOf(["x"], ["true"]));
   expect(code).toBe(1);
   expect(receipts()).toMatchObject([{ item: "x", exit: 137, tries: [{ host: "oom", result: "oom" }, { host: "oom", result: "oom" }] }]);
 });
@@ -216,12 +217,30 @@ test("a pipeline an item puts into a bash -c script fails the item when a stage 
   expect(receipts()).toMatchObject([{ host: "h1", exit: 1 }]);
 });
 
-test("a failed item goes back to its own host when the only other one is at its worker cap (review 3 of #476)", async () => {
-  const oom = fakeHelper("oom", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null');
-  // y holds the second helper's only worker for 3 s; x fails on the first and must not wait for y
-  const code = await batchCode(ctxWith([oom, realHelper("capped")]), batchOf(["x", "y"], ["sh", "-c", 'if [ "$0" = y ]; then sleep 3; fi', "{item}"], { memPerWorker: 1024 ** 3, memCap: 1024 ** 3 }));
+test("a failed item waits for the other host at its worker cap and runs there once it frees, its one retry elsewhere (challenge of the review-3 plan)", async () => {
+  // y holds the second helper's only worker for 3 s; x fails on the first and waits for it rather than spend its retry there again
+  const code = await batchCode(ctxWith([fakeHelper("oom", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null'), realHelper("capped")]), batchOf(["x", "y"], ["sh", "-c", 'if [ "$0" = y ]; then sleep 3; fi', "{item}"], { memPerWorker: 1024 ** 3, memCap: 1024 ** 3 }));
+  expect(code).toBe(0);
+  const [x, y] = ["x", "y"].map((i) => receipts().find((r) => r.item === i)!);
+  expect(x!.tries).toEqual([{ host: "oom", result: "oom" }, { host: "capped", result: "exit 0" }]);
+  expect(Date.parse(x!.end)).toBeGreaterThan(Date.parse(y!.end));
+});
+
+test("a failed item waits for another host still answering an offer, not only for one that is free (challenge of the review-3 plan)", async () => {
+  const f = join(state.dir, "slow-admit.sh");
+  writeFileSync(f, '#!/bin/sh\nsleep 2\nexec "$@"\n', { mode: 0o755 });
+  const slow = { name: "slow", ssh: [f, ...realHelper("slow").ssh] };
+  const code = await batchCode(ctxWith([fakeHelper("oom", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null'), slow]), batchOf(["x", "y"], ["true"]));
+  expect(code).toBe(0);
+  expect(receipts().find((r) => r.item === "x")!.tries).toEqual([{ host: "oom", result: "oom" }, { host: "slow", result: "exit 0" }]);
+});
+
+test("a retry that waited RETRY_WAIT_MS for another host goes back to the one it failed on (challenge of the review-3 plan)", async () => {
+  // the clock skips each 15 s poll, so the 10-minute wait passes in about 2 s while y still holds the other host's worker
+  const code = await batchCode(ctxWith([fakeHelper("oom", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null'), realHelper("capped")], true, 60, true), batchOf(["x", "y"], ["sh", "-c", 'if [ "$0" = y ]; then sleep 4; fi', "{item}"], { memPerWorker: 1024 ** 3, memCap: 1024 ** 3 }));
   expect(code).toBe(1);
-  const x = receipts().find((r) => r.item === "x")!;
-  expect(x.tries).toEqual([{ host: "oom", result: "oom" }, { host: "oom", result: "oom" }]);
-  expect(Date.parse(x.end)).toBeLessThan(Date.parse(receipts().find((r) => r.item === "y")!.end));
+  const [x, y] = ["x", "y"].map((i) => receipts().find((r) => r.item === i)!);
+  expect(x!.tries).toEqual([{ host: "oom", result: "oom" }, { host: "oom", result: "oom" }]);
+  expect(Date.parse(x!.end) - Date.parse(x!.start)).toBeGreaterThanOrEqual(10 * 60_000);
+  expect(y!.exit).toBe(0);
 });
