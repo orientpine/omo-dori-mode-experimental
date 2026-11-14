@@ -208,10 +208,19 @@ test("a new absolute output named with a space or a colon beside the working fol
   // and . or .. in a list is a path item: a covered PYTHONPATH=<lib>:. runs
   mkdirSync(join(home, "lib"));
   expect(shipMissing({ ...job(["env", `PYTHONPATH=${join(home, "lib")}:.`, "true"]), cwd: work, sync: [work, join(home, "lib")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
-  // the lead after review 13: an item that is there (lib in the working folder) makes a list too, so a covered
-  // <lib>:lib runs; ${work}:out.txt above stays one new output (out.txt is not there); a ~/data item still stops it
+  // review 14: an item being there cannot tell a list from a new output (an out.txt beside it made <work>:out.txt
+  // pass and its output was lost), so only path-shaped items make a list: <work>:out.txt stops even with out.txt
+  // there, a bare <lib>:lib stops and says to write ./lib, and <lib>:./lib runs
   mkdirSync(join(work, "lib"));
-  expect(shipMissing({ ...job(["env", `PYTHONPATH=${join(home, "lib")}:lib`, "true"]), cwd: work, sync: [work, join(home, "lib")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  writeFileSync(join(work, "out.txt"), "old\n");
+  for (const arg of [`${work}:out.txt`, `of=${work}:out.txt`]) {
+    const oj = { ...job(["touch", arg]), cwd: work, sync: [work] };
+    expect({ arg, s: shipMissing(oj, who, [], 1024 ** 3) }).toMatchObject({ arg, s: { refuse: true, why: expect.stringContaining(`${work}:out.txt (in`) } });
+    expect(shipItems(batchOf([], []), [oj], who).stops).toEqual([expect.stringContaining(`${work}:out.txt (in`)]);
+  }
+  const bare = { ...job(["env", `PYTHONPATH=${join(home, "lib")}:lib`, "true"]), cwd: work, sync: [work, join(home, "lib")] };
+  expect(shipMissing(bare, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining("write each relative item with ./ (./lib)") });
+  expect(shipMissing({ ...bare, cmd: ["env", `PYTHONPATH=${join(home, "lib")}:./lib`, "true"] }, who, [], 1024 ** 3)).toHaveProperty("plan");
   const data = join(home, "data");
   mkdirSync(join(data, "lib"), { recursive: true });
   const dj = { ...job(["env", `PYTHONPATH=${join(data, "lib")}:lib`, "true"]), cwd: work, sync: [work] };

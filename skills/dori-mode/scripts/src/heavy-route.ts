@@ -142,8 +142,8 @@ export const refusals = (now: () => number) => {
 // the git checkout a folder is in, or undefined
 // the git checkout a folder is in, or undefined
 // the paths one argument names, each weighed whole, never by a covered prefix (reviews 6-11 of #479): a path there as
-// written; else the value after a key's first = (if=..., --in=...); else a , or : list whose items are all paths or
-// there (lib in the working folder: the lead after review 13)
+// written; else the value after a key's first = (if=..., --in=...); else a , or : list whose items are all path-shaped
+// (a bare lib is not: being there cannot tell it from a new output's name, review 14, so ./lib it)
 // (-cp /a.jar:/b.jar, PYTHONPATH=/lib:.); else the word itself (a new output, /tmp/work result.bin). A relative one counts
 // with . or .. only.
 const pathWord = (w: string): boolean => isAbsolute(w) || w === "." || w.startsWith("./") || w.split("/").includes("..");
@@ -153,7 +153,7 @@ export const argPaths = (arg: string, cwd: string): string[] => {
     const eq = w.indexOf("=");
     if (eq > 0 && !w.slice(0, eq).includes("/")) return words(w.slice(eq + 1));
     const parts = w.split(/[,:]/);
-    return parts.length > 1 && parts.every((x) => pathWord(x) || (x !== "" && existsSync(isAbsolute(x) ? x : `${cwd}/${x}`))) ? parts.flatMap(words) : [w];
+    return parts.length > 1 && parts.every(pathWord) ? parts.flatMap(words) : [w];
   };
   return words(arg).filter(pathWord).map((w) => resolve(cwd, w));
 };

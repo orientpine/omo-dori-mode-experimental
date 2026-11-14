@@ -103,7 +103,8 @@ const syncFix = (p: string, sync: readonly string[], home: string, hit: (real: s
   const at = existsSync(p) ? p : dirname(p);
   const mayGo = (within(at, home) && at !== home) || (within(at, "/tmp") && at !== "/tmp");
   if (!mayGo) return at === p ? "only paths in your home or /tmp go to a helper: copy it there and give that with --sync, or run it here with --local" : "a new output goes to a helper only inside a folder given with --sync: write it into one, or run it here with --local";
-  return sync.includes(p) ? "it cannot go to a helper as given: fix that --sync path, or run it here with --local" : `a helper gets only the --sync paths and the working folder (add --sync ${at})`;
+  const list = at !== p && /[,:]/.test(p.slice(p.lastIndexOf("/"))) ? "; if it is a list, write each relative item with ./ (./lib)" : "";
+  return sync.includes(p) ? "it cannot go to a helper as given: fix that --sync path, or run it here with --local" : `a helper gets only the --sync paths and the working folder (add --sync ${at})${list}`;
 };
 
 export type NotShipped = { readonly why: string; readonly refuse: boolean };
