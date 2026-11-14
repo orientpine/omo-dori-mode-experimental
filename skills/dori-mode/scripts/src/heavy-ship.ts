@@ -87,6 +87,13 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
 // command's arguments (review 3 of #479; Bazel and GNU parallel send only declared inputs too). refuse: the job stops
 // before it runs (a path only --sync may send, or a folder that may not go along); else it runs here for a reason of its
 // own (HEAVY_LOCAL: a .dori-heavy-local file, a git checkout synced in part)
+// the fix line for a path only --sync may send, one that works (challenge of #479 r5): a path outside home and /tmp cannot
+// be a --sync path at all, and one already given with --sync needs that path fixed, not added again
+const syncFix = (p: string, sync: readonly string[], home: string): string => {
+  const mayGo = (within(p, home) && p !== home) || (within(p, "/tmp") && p !== "/tmp");
+  if (!mayGo) return "only paths in your home or /tmp go to a helper: copy it there and give that with --sync, or run it here with --local";
+  return sync.includes(p) ? "it cannot go to a helper as given: fix that --sync path, or run it here with --local" : `a helper gets only the --sync paths and the working folder (add --sync ${p})`;
+};
 export type NotShipped = { readonly why: string; readonly refuse: boolean };
 export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }, noShip: readonly string[], maxBytes: number): Shipped | NotShipped => {
   let j = job;
@@ -95,11 +102,11 @@ export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonl
   for (let round = 0; round <= ROUNDS; round++) {
     const plan = spreadPlan(j, who);
     if (plan.ok) return { job: j, plan, shipped, files };
-    if (plan.kind === "sync") return { why: `${plan.why}; a helper gets only the --sync paths and the working folder (add --sync ${plan.path})`, refuse: true };
+    if (plan.kind === "sync") return { why: `${plan.why}; ${syncFix(plan.path ?? "", j.sync, who.home)}`, refuse: true };
     if (plan.kind !== "ship" || !plan.path) return { why: plan.why, refuse: false };
     if (round === ROUNDS) return { why: `${plan.why}; it is not sent along: the working folder and its checkout are already sent`, refuse: true };
     const f = shipFiles(plan.path, noShip, maxBytes - files.reduce((n, x) => n + x.bytes, 0));
-    if ("why" in f) return { why: `${plan.why}; it is not sent along: ${f.why}`, refuse: true };
+    if ("why" in f) return { why: `${plan.why}; it is not sent along: ${f.why}; give the folders it needs with --sync instead`, refuse: true };
     shipped.push(plan.path);
     files.push(...f.files);
     j = { ...j, sync: [...j.sync, plan.path] };

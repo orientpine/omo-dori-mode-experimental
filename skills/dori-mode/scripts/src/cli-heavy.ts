@@ -77,7 +77,7 @@ const heavyCommand: Command = async (context) => {
   if (helpersOnly && kind === undefined) die("dori heavy --helpers-only goes with --kind cpu|browser|gpu --sync PATH ...: only those can run on a helper");
   if (local && helpersOnly) die("dori heavy --local runs the job on this host, --helpers-only never does: give one of them");
   const refuseLocal = (why: string): void => {
-    deps.log?.(`HEAVY_LOCAL_REFUSED ${name}: ${why}; it did not run: give that path with --sync, or run it on this host with --local`);
+    deps.log?.(`HEAVY_LOCAL_REFUSED ${name}: ${why}; it did not run (--local runs it on this host)`);
     process.exitCode = 2;
   };
   const refuseHere = (why: string): void => {

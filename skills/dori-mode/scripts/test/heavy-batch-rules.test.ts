@@ -72,7 +72,7 @@ test("a batch whose working folder is a heavyNoShip path runs no item (HEAVY_LOC
   mkdirSync(join(data, "raw"), { recursive: true });
   const ship = { noShip: [data], maxBytes: 1024 ** 3, heavyLog: join(state.dir, "heavy.log") };
   expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["x"], ["true"], { cwd: join(data, "raw"), ship }))).toBe(2);
-  expect(logs.some((l) => l.startsWith("HEAVY_LOCAL_REFUSED b: 1 item(s) would run here, #1: the working folder ") && l.endsWith("no item ran: give that path with --sync, or run them here with --local"))).toBe(true);
+  expect(logs.some((l) => l.startsWith("HEAVY_LOCAL_REFUSED b: 1 item(s) would run here, #1: the working folder ") && l.endsWith("no item ran (--local runs them on this host)"))).toBe(true);
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_START"))).toBe(false);
 });
 

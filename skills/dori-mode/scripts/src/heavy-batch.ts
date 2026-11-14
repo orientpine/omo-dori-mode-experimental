@@ -112,7 +112,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   const { items: prepared, stops, shipped } = shipItems(b, b.items.map((text, i) => jobOf(text, i + 1)), who);
   const pending: Item[] = prepared.map(({ job, plan }, i) => ({ n: i + 1, text: b.items[i]!, job, plan, tries: [], refused: [] }));
   if (stops.length) {
-    log(`HEAVY_LOCAL_REFUSED ${b.label}: ${stops.length} item(s) would run here, ${stops[0]}; no item ran: give that path with --sync, or run them here with --local`);
+    log(`HEAVY_LOCAL_REFUSED ${b.label}: ${stops.length} item(s) would run here, ${stops[0]}; no item ran (--local runs them on this host)`);
     return { code: 2, abandoned };
   }
   const usable = [...ctx.q.helpers.filter((h) => h.batch !== false).map((h) => h.name), hostname()].filter((n) => allowedHost(b, n));

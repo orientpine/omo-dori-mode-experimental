@@ -85,7 +85,7 @@ test("a working folder with a link into ~/data never leaves, nor one over heavyS
   writeFileSync(join(big, "a.bin"), "x".repeat(2 * 1024 ** 2));
   const over = await heavy(big, [], { heavyShipMaxMb: 1 });
   expect(over.code).toBe(2);
-  expect(over.err).toContain(`it is not sent along: ${big} holds over 1M (heavyShipMaxMb); it did not run: give that path with --sync, or run it on this host with --local`);
+  expect(over.err).toContain(`it is not sent along: ${big} holds over 1M (heavyShipMaxMb); give the folders it needs with --sync instead; it did not run (--local runs it on this host)`);
   expect(existsSync(join(work, "ran.txt")) || existsSync(join(big, "ran.txt"))).toBe(false);
 }, 60_000);
 
@@ -143,8 +143,11 @@ test("a path outside home and /tmp stops the job, named in the command or given 
   const p = `/var/tmp/heavy-ship-test-${process.pid}.txt`;
   writeFileSync(p, "input\n");
   try {
-    expect(shipMissing(job(["cat", p]), who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${p})`) });
-    expect(shipMissing({ ...job(["cat", p]), sync: [other, p] }, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`--sync ${p} must be a folder or file inside your home or /tmp`) });
+    // the fix line must be one that works: --sync cannot take this path either (challenge of #479 r5)
+    const where = "only paths in your home or /tmp go to a helper: copy it there and give that with --sync, or run it here with --local";
+    expect(shipMissing(job(["cat", p]), who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(where) });
+    expect(shipMissing(job(["cat", p]), who, [], 1024 ** 3)).not.toMatchObject({ why: expect.stringContaining("add --sync") });
+    expect(shipMissing({ ...job(["cat", p]), sync: [other, p] }, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`--sync ${p} must be a folder or file inside your home or /tmp; ${where}`) });
   } finally {
     rmSync(p, { force: true });
   }
