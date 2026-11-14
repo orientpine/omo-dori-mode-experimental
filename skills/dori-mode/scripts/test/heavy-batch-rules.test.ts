@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
@@ -91,6 +91,15 @@ test("--on and --not-on keep a batch on the hosts named, and a name that is no h
   writeFileSync(join(state.dir, "b.txt"), "outside\n");
   expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["../b.txt"], ["cat", `${work}/{item}`], { onHosts: ["h1"] }))).toBe(2);
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_REFUSED b: item #1 can run only on this host (") && l.endsWith("), which --on/--not-on leave out"))).toBe(true);
+});
+
+// review 9 of #479: a helper named like this host would take --local's (and --on's) items, batch: false or not
+test("a helper named like this host refuses the batch before any item, and --local never contacts it", async () => {
+  const contacted = join(state.dir, "twin.contacted");
+  const twin = { ...fakeHelper(hostname(), `touch ${contacted}; exit 255`), batch: false };
+  expect(await batchCode(ctxWith([twin], false), batchOf(["1"], ["true"], { onHosts: [hostname()] }))).toBe(2);
+  expect(logs).toContain(`HEAVY_BATCH_REFUSED b: heavyQueue.helpers has a helper named ${hostname()}, this host's own name, so --local, --on and --not-on cannot tell them apart; rename that helper`);
+  expect(existsSync(contacted)).toBe(false);
 });
 
 // the documented way to bring a venv along (references/scripts.md): --sync it, so each item's box has it
