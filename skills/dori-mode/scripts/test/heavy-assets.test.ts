@@ -61,7 +61,7 @@ afterEach(() => state.done());
 
 test("a tree the helper got once is taken from its store the next time, not sent again, and the job sees the same files; a changed tree is sent again", async () => {
   const ctx = ctxWith(helperArgv());
-  const h = assetHash(work)!;
+  const h = (await assetHash(work))!;
   expect(await runOnce(ctx)).toEqual({ code: 0, out: "first\n2097152\n" });
   expect(sentBytes()).toBeGreaterThan(2 * 1024 * 1024);
   expect(helperLog()).toContain(`ASSET_OK ${h} ${work} kept`);
@@ -72,7 +72,7 @@ test("a tree the helper got once is taken from its store the next time, not sent
   expect(helperLog()).toContain(`ASSET_OK ${h} ${work} cached`);
   logs = [];
   writeFileSync(join(work, "data.txt"), "second!\n");
-  const h2 = assetHash(work)!;
+  const h2 = (await assetHash(work))!;
   expect(h2).not.toBe(h);
   expect(await runOnce(ctx)).toEqual({ code: 0, out: "second!\n2097152\n" });
   expect(logs.some((l) => l.startsWith("HEAVY_ASSET"))).toBe(false);
@@ -91,14 +91,14 @@ test("a helper whose dori does not know assets= is asked once more without it, a
   expect(logs.some((l) => l.startsWith("HEAVY_DONE t helper: exit 0"))).toBe(true);
 });
 
-test("a tree that arrives other than its hash says is used as it came and never kept", () => {
+test("a tree that arrives other than its hash says is used as it came and never kept", async () => {
   const root = join(state.dir, "root");
   mkdirSync(join(root, work), { recursive: true });
   writeFileSync(join(root, work, "data.txt"), "arrived\n");
   const said: string[] = [];
   const dir = join(state.dir, "store");
-  settleAssets(root, [work], [`assets=${"0".repeat(32)}`], dir, "tester", [], (l) => said.push(l));
-  expect(said).toEqual([`ASSET_BAD ${work}: sent as ${"0".repeat(32)}, ${assetHash(join(root, work))} arrived; the job runs on what arrived, which is not kept`]);
+  await settleAssets(root, [work], [`assets=${"0".repeat(32)}`], dir, "tester", [], (l) => said.push(l));
+  expect(said).toEqual([`ASSET_BAD ${work}: sent as ${"0".repeat(32)}, ${await assetHash(join(root, work))} arrived; the job runs on what arrived, which is not kept`]);
   expect(readdirSync(join(dir, "assets", "tester"))).toEqual([]);
   expect(existsSync(join(root, work, "data.txt"))).toBe(true);
 });

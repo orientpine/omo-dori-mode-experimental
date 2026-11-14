@@ -15,12 +15,12 @@ const say = (l: string): void => {
 const store = (): string => join(state.dir, "heavy", "assets", "tester");
 
 // a tree as an upload leaves it under a job's root, and the assets= word that names it
-const arrived = (root: string, p: string, files: Record<string, string>): string[] => {
+const arrived = async (root: string, p: string, files: Record<string, string>): Promise<string[]> => {
   for (const [name, text] of Object.entries(files)) {
     mkdirSync(join(root, p), { recursive: true });
     writeFileSync(join(root, p, name), text);
   }
-  return [`assets=${assetHash(join(root, p))}`];
+  return [`assets=${await assetHash(join(root, p))}`];
 };
 
 beforeEach(() => {
@@ -29,25 +29,26 @@ beforeEach(() => {
 });
 afterEach(() => state.done());
 
-test("trees of one size and mtime but other bytes, or single files of other names, hash apart", () => {
-  const [a, b] = [join(state.dir, "a"), join(state.dir, "b")];
+test("trees of one name, size and mtime but other bytes, or single files of other names, hash apart", async () => {
+  // both trees are named t, so only their bytes can tell them apart (review 2 of #477)
+  const [a, b] = [join(state.dir, "one", "t"), join(state.dir, "two", "t")];
   for (const [d, text] of [[a, "one"], [b, "two"]] as const) {
-    mkdirSync(d);
+    mkdirSync(d, { recursive: true });
     writeFileSync(join(d, "f.py"), text);
     utimesSync(join(d, "f.py"), 1e9, 1e9);
   }
-  expect(assetHash(a)).not.toBe(assetHash(b));
+  expect(await assetHash(a)).not.toBe(await assetHash(b));
   writeFileSync(join(state.dir, "x.txt"), "same");
   writeFileSync(join(state.dir, "y.txt"), "same");
-  expect(assetHash(join(state.dir, "x.txt"))).not.toBe(assetHash(join(state.dir, "y.txt")));
+  expect(await assetHash(join(state.dir, "x.txt"))).not.toBe(await assetHash(join(state.dir, "y.txt")));
 });
 
-test("a kept copy and its store are the owner's alone whatever the umask", () => {
+test("a kept copy and its store are the owner's alone whatever the umask", async () => {
   const was = process.umask(0o022);
   try {
     const root = join(state.dir, "in");
-    const opts = arrived(root, "/w", { "run.py": "print(1)\n" });
-    expect(settleAssets(root, ["/w"], opts, join(state.dir, "heavy"), "tester", [], say)).toBe(true);
+    const opts = await arrived(root, "/w", { "run.py": "print(1)\n" });
+    expect(await settleAssets(root, ["/w"], opts, join(state.dir, "heavy"), "tester", [], say)).toBe(true);
     expect(lines[0]).toMatch(/^ASSET_OK [0-9a-f]{32} \/w kept$/);
     for (const d of [join(state.dir, "heavy", "assets"), store()]) expect(statSync(d).mode & 0o077).toBe(0);
   } finally {
@@ -55,7 +56,7 @@ test("a kept copy and its store are the owner's alone whatever the umask", () =>
   }
 });
 
-test("an entry offered to an admitted job is not pruned by another job, and a lost copy stops the job", () => {
+test("an entry offered to an admitted job is not pruned by another job, and a lost copy stops the job", async () => {
   mkdirSync(store(), { recursive: true });
   const old = Date.now() / 1000 - 5 * 3600;
   const hashes = Array.from({ length: 9 }, (_, i) => i.toString(16).padStart(32, "0"));
@@ -65,27 +66,27 @@ test("an entry offered to an admitted job is not pruned by another job, and a lo
     utimesSync(join(store(), h, "ok"), old, old);
   }
   const offered = hashes[0]!;
-  expect(assetsHave(join(state.dir, "heavy"), "tester", [`assets=${offered}`])).toEqual([offered]);
+  expect(await assetsHave(join(state.dir, "heavy"), "tester", [`assets=${offered}`], join(state.dir, "job", "pin"))).toEqual([offered]);
   const root = join(state.dir, "in");
-  expect(settleAssets(root, ["/w"], arrived(root, "/w", { "a.py": "1\n" }), join(state.dir, "heavy"), "tester", [], say)).toBe(true);
+  expect(await settleAssets(root, ["/w"], await arrived(root, "/w", { "a.py": "1\n" }), join(state.dir, "heavy"), "tester", [], say)).toBe(true);
   expect(existsSync(join(store(), offered, "ok"))).toBe(true);
   expect(readdirSync(store()).filter((h) => hashes.includes(h)).length).toBeLessThan(9);
   // a held tree whose copy is gone: the job does not run on part of its inputs
   const gone = hashes[0]!;
   const r2 = join(state.dir, "in2");
   rmSync(join(store(), gone, "tree"), { recursive: true });
-  expect(settleAssets(r2, ["/w/sub"], [`assets=${gone}`], join(state.dir, "heavy"), "tester", [gone], say)).toBe(false);
-  expect(lines.at(-1)).toBe(`ASSET_BAD /w/sub: the copy of ${gone} kept here could not be copied; the job does not run`);
+  expect(await settleAssets(r2, ["/w/sub"], [`assets=${gone}`], join(state.dir, "heavy"), "tester", [gone], say)).toBe(false);
+  expect(lines.at(-1)).toBe(`ASSET_BAD /w/sub: the copy of ${gone} offered to this job is gone; the job does not run`);
 });
 
 test("two workers keeping one tree at once both end well, and a gone worker's .tmp is swept", async () => {
   const root = join(state.dir, "in");
-  const opts = arrived(root, "/w", { "big.bin": "x".repeat(1 << 20) });
+  const opts = await arrived(root, "/w", { "big.bin": "x".repeat(1 << 20) });
   const h = opts[0]!.slice(7);
   mkdirSync(store(), { recursive: true });
   mkdirSync(join(store(), `${h}.999999.tmp`, "tree"), { recursive: true });
   const mod = join(import.meta.dir, "../src/heavy-assets.ts");
-  const script = `const { settleAssets } = await import(${JSON.stringify(mod)}); const ok = settleAssets(process.env.ROOT, ["/w"], [${JSON.stringify(opts[0])}], ${JSON.stringify(join(state.dir, "heavy"))}, "tester", [], (l) => console.log(l)); process.exit(ok ? 0 : 1);`;
+  const script = `const { settleAssets } = await import(${JSON.stringify(mod)}); const ok = await settleAssets(process.env.ROOT, ["/w"], [${JSON.stringify(opts[0])}], ${JSON.stringify(join(state.dir, "heavy"))}, "tester", [], (l) => console.log(l)); process.exit(ok ? 0 : 1);`;
   const runs = Array.from({ length: 6 }, (_, i) => {
     const r = join(state.dir, `in${i}`);
     cpSync(root, r, { recursive: true });
