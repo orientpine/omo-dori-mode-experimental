@@ -142,9 +142,10 @@ export const refusals = (now: () => number) => {
 // the git checkout a folder is in, or undefined
 // the paths a relative argument (whole, or after = , or :) names outside the working folder, such as ../input.txt: weighed
 // like an absolute one, so a helper never runs the job without them (review 6 of #479); a word with = , or : is weighed by
-// its parts alone, never whole (review 7: if=../../input is no path of its own)
+// its parts, unless it is there as written, then whole alone (review 7: if=../../input is no path of its own; review 8:
+// ../input:part.txt is one); the kernel resolves the unnormalized name, so if=.. counts only as a real folder
 export const upPaths = (arg: string, cwd: string): string[] =>
-  (/[=,:]/.test(arg) ? arg.split(/[=,:]/) : [arg]).filter((a) => a && !isAbsolute(a) && a.split("/").includes("..")).map((a) => resolve(cwd, a)).filter((p) => p !== cwd && !p.startsWith(`${cwd}/`));
+  (/[=,:]/.test(arg) && !existsSync(`${cwd}/${arg}`) ? arg.split(/[=,:]/) : [arg]).filter((a) => a && !isAbsolute(a) && a.split("/").includes("..")).map((a) => resolve(cwd, a)).filter((p) => p !== cwd && !p.startsWith(`${cwd}/`));
 
 export const gitTop = (dir: string): string | undefined => {
   const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });

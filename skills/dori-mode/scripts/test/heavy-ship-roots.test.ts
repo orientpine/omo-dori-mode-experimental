@@ -182,3 +182,17 @@ test("a relative value after = names its own target only, so a job with that tar
   const s = shipMissing({ ...job(["dd", "if=../../../input", "of=out"]), cwd: work, sync: [work, join(home, "input")] }, who, [], 1024 ** 3);
   expect(s).toHaveProperty("plan");
 });
+
+// review 8 of #479: a relative argument that is itself an existing file, : or = in its name, is weighed whole as well
+test("a relative file with : or = in its name is weighed whole: unsynced it stops a job and a batch, synced it runs", () => {
+  const work = join(home, "input");
+  mkdirSync(work);
+  for (const name of ["input:part.txt", "x=y.txt"]) {
+    const f = join(home, name);
+    writeFileSync(f, "in\n");
+    const j = { ...job(["cat", `../${name}`]), cwd: work, sync: [work] };
+    expect(shipMissing(j, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${f})`) });
+    expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${f})`)]);
+    expect(shipMissing({ ...j, sync: [work, f] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  }
+});
