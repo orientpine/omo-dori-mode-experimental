@@ -64,7 +64,7 @@ export type SpreadJob = {
   readonly needBytes?: number;
   // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), globs of what comes back (--back, heavy-back.ts); helpersOnly: never this host's slot (--helpers-only)
   readonly tools?: readonly string[];
-  readonly back?: readonly string[]; readonly helpersOnly?: boolean;
+  readonly back?: readonly string[]; readonly helpersOnly?: boolean; readonly out?: Sink; readonly err?: Sink; // out, err: where its lines go (a batch item's own files, heavy-batch.ts), else this process's
   readonly staleAgain?: boolean; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts)
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
@@ -249,11 +249,11 @@ export const copyBack = (back: string, sync: readonly string[]): { files: number
   return n;
 };
 
-type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<number | null | Stale> };
+type Sink = { write(s: string): unknown }; type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<number | null | Stale> };
 type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
-const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
+export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
   const args = execWords(job, plan, below);
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // ssh, tar and untar stay in the caller's process group: a Ctrl-C on its terminal ends them with it
   const reader = p.stderr.getReader();
@@ -284,12 +284,12 @@ const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Ex
       const l = n.value;
       watch.heard();
       if (l.startsWith("WORKER_ALIVE")) continue;
-      if (l.startsWith("O ")) process.stdout.write(`${l.slice(2)}\n`);
-      else if (l.startsWith("E ")) process.stderr.write(`${l.slice(2)}\n`);
+      if (l.startsWith("O ")) (job.out ?? process.stdout).write(`${l.slice(2)}\n`);
+      else if (l.startsWith("E ")) (job.err ?? process.stderr).write(`${l.slice(2)}\n`);
       else if (/^WORKER_EXIT \d+$/.test(l)) exit = Number(l.slice(12));
       else {
         if (l.startsWith("WORKER_BACK_TOO_BIG")) tooBig = true;
-        process.stderr.write(`${l}\n`);
+        (job.err ?? process.stderr).write(`${l}\n`);
       }
     }
   })();

@@ -1,5 +1,6 @@
 import { homedir, userInfo } from "node:os";
 import { resolve } from "node:path";
+import { heavyBatch, readItems } from "./heavy-batch.ts";
 import { heavyOuter, runHere } from "./heavy-here.ts";
 import { holdCommand } from "./heavy-hold.ts";
 import { gpuRoom, neverFits, parseMem, readMeminfo } from "./heavy-mem.ts";
@@ -41,13 +42,21 @@ const heavyCommand: Command = async (context) => {
   const name = label && label !== "--" && !label.startsWith("-") && cmd.length ? label : die("usage: dori heavy <label> [--mem SIZE] [--kind cpu|browser|gpu --sync PATH ... [--env NAME ...]] -- <command ...>");
   const memOpt = opt("mem");
   const needBytes = memOpt === undefined ? undefined : (parseMem(memOpt) ?? die(`dori heavy --mem takes a size like 70G or 200M, not "${memOpt}"`));
+  // --items: a batch over every host (heavy-batch.ts); there --mem caps each host's items at once, --mem-per-worker is one item's
+  const itemsOpt = opt("items");
+  const perOpt = opt("mem-per-worker");
+  const perBytes = perOpt === undefined ? undefined : (parseMem(perOpt) ?? die(`dori heavy --mem-per-worker takes a size like 15G, not "${perOpt}"`));
+  if ((itemsOpt !== undefined || perBytes !== undefined) && (itemsOpt === undefined || opt("kind") === undefined || helpersOnly || heavyOuter())) die("usage: dori heavy <label> --kind cpu|browser|gpu --sync PATH ... --items FILE [--mem-per-worker SIZE [--mem SIZE]] [--out DIR] -- <command with {item}>, not with --helpers-only or inside another heavy job");
+  if (itemsOpt !== undefined && needBytes && !perBytes) die("dori heavy --items --mem SIZE caps the items each host runs at once, so it needs --mem-per-worker SIZE");
+  if (itemsOpt !== undefined && name.length > 56) die(`dori heavy --items: the label takes 56 characters at most (each item runs as <label>.<n>)`);
   const deps = heavyDeps(load);
   // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-spread.ts withPipefail)
   const jobCmd = withPipefail(cmd);
   if (jobCmd !== cmd) deps.log?.(`HEAVY_PIPEFAIL ${name}: the bash -c script pipes, so it runs with set -o pipefail and a failing stage fails the job`);
   // a --helpers-only job never runs here: the helper that takes it checks its own memory (heavy-spread.ts heavyExec)
   const host = helpersOnly ? undefined : readMeminfo();
-  const never = needBytes && host ? neverFits(needBytes, host, config.heavyHeadroomPct) : undefined;
+  const oneJob = itemsOpt !== undefined ? perBytes : needBytes;
+  const never = oneJob && host ? neverFits(oneJob, host, config.heavyHeadroomPct) : undefined;
   if (never) {
     deps.log?.(`HEAVY_REFUSED ${name}: ${never}`);
     process.exitCode = 2;
@@ -67,6 +76,13 @@ const heavyCommand: Command = async (context) => {
     const badEnv = many("env").find((e) => !/^[A-Za-z_]\w{0,63}$/.test(e));
     if (badEnv !== undefined) die(`dori heavy --env takes a variable name, not "${badEnv}"`);
     const env = Object.fromEntries(["LANG", "TZ", ...many("env")].flatMap((k) => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])));
+    if (itemsOpt !== undefined) {
+      const items = readItems(resolve(itemsOpt));
+      if (!items.length) die(`dori heavy --items ${itemsOpt}: no item in it (one per line; blank and # lines are skipped)`);
+      const back = flags.values.back as string[] | undefined;
+      process.exitCode = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? `${name}.batch`), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}) });
+      return;
+    }
     const job: SpreadJob = { ...(helpersOnly ? { helpersOnly } : {}), label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}), ...(flags.values["stale-again"] ? { staleAgain: true } : {}) };
     const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
     if (!plan.ok && helpersOnly) return refuseHere(plan.why);
