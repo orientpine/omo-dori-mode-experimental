@@ -175,12 +175,15 @@ test("a file whose name is not UTF-8 stops the upload with why, instead of the t
 });
 
 // review 7 of #479: a relative value after = is weighed alone, never also as part of the whole word (if=../x is no path)
-test("a relative value after = names its own target only, so a job with that target synced runs", () => {
+// the lead after review 17: the whole word is weighed too, so if=../../../input also names a/b/input; the refusal names
+// a folder that, given with --sync, lets the job run
+test("a relative value after = is weighed with its whole word, and the folder the refusal names lets it run", () => {
   const work = join(home, "a", "b", "work");
   mkdirSync(work, { recursive: true });
   writeFileSync(join(home, "input"), "in\n");
-  const s = shipMissing({ ...job(["dd", "if=../../../input", "of=out"]), cwd: work, sync: [work, join(home, "input")] }, who, [], 1024 ** 3);
-  expect(s).toHaveProperty("plan");
+  const j = { ...job(["dd", "if=../../../input", "of=out"]), cwd: work, sync: [work, join(home, "input")] };
+  expect(shipMissing(j, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${join(home, "a", "b")})`) });
+  expect(shipMissing({ ...j, sync: [...j.sync, join(home, "a", "b")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
 });
 
 // review 8 of #479: a relative argument that is itself an existing file, : or = in its name, is weighed whole as well
@@ -193,6 +196,7 @@ test("a relative file with : or = in its name is weighed whole: unsynced it stop
     const j = { ...job(["cat", `../${name}`]), cwd: work, sync: [work] };
     expect(shipMissing(j, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${f})`) });
     expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${f})`)]);
-    expect(shipMissing({ ...j, sync: [work, f] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+    // the lead after review 17: a piece such as ../x is weighed too, so the folder above both lets it run
+    expect(shipMissing({ ...j, sync: [home] }, who, [], 1024 ** 3)).toHaveProperty("plan");
   }
 });

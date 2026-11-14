@@ -203,9 +203,12 @@ test("a path with : or a space given with --sync runs, whether its cut-off start
     writeFileSync(named, "this\n");
     for (const prefix of [false, true]) {
       if (prefix) writeFileSync(join(home, "in", "input"), "not this\n");
-      const s = shipMissing({ ...job(["cat", named]), sync: [other, named] }, who, [], 1024 ** 3);
+      // the lead after review 17: a : name's piece (in/input) is weighed too, so its folder is what goes along
+      const sync = name.includes(":") ? [other, join(home, "in")] : [other, named];
+      const s = shipMissing({ ...job(["cat", named]), sync }, who, [], 1024 ** 3);
       if (!("plan" in s)) throw new Error(`${name} prefix=${prefix}: ${s.why}`);
       expect(s.shipped).toEqual([]);
+      if (name.includes(":")) expect(shipMissing({ ...job(["cat", named]), sync: [other, named] }, who, [], 1024 ** 3)).toMatchObject({ refuse: true });
       rmSync(join(home, "in", "input"), { force: true });
     }
   }

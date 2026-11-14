@@ -46,10 +46,12 @@ test("a new absolute output named with a space or a colon beside the working fol
   const nj = { ...job(["dd", "if=/dev/zero", `of=${join(res, "result.bin")}`]), cwd: work, sync: [work] };
   expect(shipMissing(nj, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${res})`) });
   expect(shipMissing({ ...nj, sync: [work, res] }, who, [], 1024 ** 3)).toHaveProperty("plan");
-  // and . or .. in a list is a path item: a covered PYTHONPATH=<lib>:. runs
+  // the lead after review 17: <lib>:. is weighed as a run too, a loud refusal whose folder lets it run
   mkdirSync(join(home, "lib"));
-  expect(shipMissing({ ...job(["env", `PYTHONPATH=${join(home, "lib")}:.`, "true"]), cwd: work, sync: [work, join(home, "lib")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
-  // review 14: only path-shaped items make a list (being there cannot tell lib from a new output's name)
+  const dot = { ...job(["env", `PYTHONPATH=${join(home, "lib")}:.`, "true"]), cwd: work, sync: [work, join(home, "lib")] };
+  expect(shipMissing(dot, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${home})`) });
+  expect(shipMissing({ ...dot, sync: [work, home] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  // review 14: an out.txt there never makes <work>:out.txt pass
   mkdirSync(join(work, "lib"));
   writeFileSync(join(work, "out.txt"), "old\n");
   for (const arg of [`${work}:out.txt`, `of=${work}:out.txt`]) {
@@ -57,9 +59,10 @@ test("a new absolute output named with a space or a colon beside the working fol
     expect({ arg, s: shipMissing(oj, who, [], 1024 ** 3) }).toMatchObject({ arg, s: { refuse: true, why: expect.stringContaining(`${work}:out.txt (in`) } });
     expect(shipItems(batchOf([], []), [oj], who).stops).toEqual([expect.stringContaining(`${work}:out.txt (in`)]);
   }
+  // the lead after review 17: <lib>:lib is weighed as a run too, a loud refusal whose folder lets it run
   const bare = { ...job(["env", `PYTHONPATH=${join(home, "lib")}:lib`, "true"]), cwd: work, sync: [work, join(home, "lib")] };
-  expect(shipMissing(bare, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining("write each relative item with ./ (./lib)") });
-  expect(shipMissing({ ...bare, cmd: ["env", `PYTHONPATH=${join(home, "lib")}:./lib`, "true"] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  expect(shipMissing(bare, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${home})`) });
+  expect(shipMissing({ ...bare, sync: [work, home] }, who, [], 1024 ** 3)).toHaveProperty("plan");
   // review 15: a mixed list never drops its path-shaped items (lib:../shared weighs ../shared)
   mkdirSync(join(home, "shared"));
   const mixed = { ...job(["env", "PYTHONPATH=lib:../shared", "true"]), cwd: work, sync: [work] };
@@ -85,5 +88,8 @@ test("a new absolute output named with a space or a colon beside the working fol
   writeFileSync(join(home, "a.jar"), "a");
   writeFileSync(join(home, "b.jar"), "b");
   const jars = [join(home, "a.jar"), join(home, "b.jar")];
-  expect(shipMissing({ ...job(["true", "-cp", jars.join(":"), "Main"]), cwd: work, sync: [work, ...jars] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  // the lead after review 17: an absolute list is weighed whole too, a loud refusal whose folder lets it run
+  const cp = { ...job(["true", "-cp", jars.join(":"), "Main"]), cwd: work, sync: [work, ...jars] };
+  expect(shipMissing(cp, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${home})`) });
+  expect(shipMissing({ ...cp, sync: [work, home] }, who, [], 1024 ** 3)).toHaveProperty("plan");
 });
