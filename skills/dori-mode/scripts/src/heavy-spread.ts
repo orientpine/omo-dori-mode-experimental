@@ -520,7 +520,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
       return 3;
     }
     cmdName = basename(spec.argv[0]!);
-    settleAssets(root, spec.sync, opts, ctx.deps.dir, d.caller, have, log);
+    if (!settleAssets(root, spec.sync, opts, ctx.deps.dir, d.caller, have, log)) return 3;
     for (const p of spec.sync) if (!existsSync(join(root, p))) mkdirSync(join(root, p), { recursive: true });
     beat.set("playwright");
     if (playwright && kind === "browser" && d.tools.browsersDir) await ensurePlaywright(playwright, d.tools.browsersDir, log);
