@@ -33,14 +33,15 @@ afterEach(() => state.done());
 const silentHelper = (name: string, admit: string, script: string): string[] => ["sh", "-c", `if [ "$1" = stop ]; then echo "WORKER_STOPPED 1" >&2; exit 0; fi; echo "${admit}" >&2; ${script}`, name];
 
 // the real dori CLI as caller of one helper (ssh: its argv), this host's only slot held; PATH may put a tar first
-const caller = (name: string, ssh: string[], staleMin: number, path?: string, more: { name: string; ssh: string[] }[] = []) => {
+// items: an --items file, so the caller runs a batch (heavy-batch.ts) with its files in state.dir/out
+const caller = (name: string, ssh: string[], staleMin: number, path?: string, more: { name: string; ssh: string[] }[] = [], items?: string) => {
   const dir = join(state.dir, "caller");
   mkdirSync(join(dir, "heavy", "slot.1"), { recursive: true });
   writeFileSync(join(dir, "heavy", "slot.1", "owner"), `${process.pid} hold ${new Date().toISOString()}`);
   const config = join(state.dir, "caller.json");
   writeFileSync(config, JSON.stringify({ stateDir: dir, heavySlots: 1, heavyMaxSlots: 1, heavyHoldDir: join(state.dir, "hold"), heavyQueue: { staleMin, helpers: [{ name, ssh }, ...more] } }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "DORI_STATE_DIR"));
-  return Bun.spawn([process.execPath, CLI, "heavy", "t", "--kind", "cpu", "--sync", work, "--", "true"], { cwd: work, env: { ...env, ...(path ? { PATH: `${path}:${process.env["PATH"]}` } : {}), DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env") }, stdout: "ignore", stderr: "pipe", detached: true });
+  return Bun.spawn([process.execPath, CLI, "heavy", "t", "--kind", "cpu", "--sync", work, ...(items ? ["--items", items, "--out", join(state.dir, "out")] : []), "--", "true"], { cwd: work, env: { ...env, ...(path ? { PATH: `${path}:${process.env["PATH"]}` } : {}), DORI_CONFIG: config, DORI_ENV_FILE: join(state.dir, "none.env") }, stdout: "ignore", stderr: "pipe", detached: true });
 };
 
 // a tar first on PATH whose upload (tar -cf) runs script instead; tar -x is the real one
@@ -187,4 +188,37 @@ test("Ctrl-C on the caller ends the ssh and tars it started, as they share its t
   } finally {
     Bun.spawnSync(["pkill", "-f", sleeping(588)]);
   }
+}, 30_000);
+
+// --items (review 2 of #476): a batch whose helpers' stale runs left children holding their pipes ends too, and an upload
+// that read a changing file (tar exit 1) still runs its item
+const itemsFile = (): string => {
+  writeFileSync(join(state.dir, "items.txt"), "one\n");
+  return join(state.dir, "items.txt");
+};
+
+test("a batch whose item went stale on both helpers, each leaving a child holding its pipes, still ends", async () => {
+  const held = (n: string): string[] => ["sh", "-c", `if [ "$1" = stop ]; then echo "WORKER_STOPPED 1" >&2; exit 0; fi; ${sleeper(583)} >&2 & echo "WORKER_ADMIT slot.1 alive=0.1 run=1-abc" >&2; cat > /dev/null; exec sleep 600`, n];
+  try {
+    const p = caller("held", held("held"), STALE_MIN, undefined, [{ name: "held2", ssh: held("held2") }], itemsFile());
+    const [code, err] = await Promise.all([p.exited, new Response(p.stderr).text()]);
+    expect(code).toBe(1);
+    expect(err).toMatch(/HEAVY_STALE_LEFT t\.1 held2?: /);
+    expect(err).toContain("HEAVY_BATCH_DONE t: 0/1 items exit 0, 1 failed");
+  } finally {
+    Bun.spawnSync(["pkill", "-f", sleeping(583)]);
+  }
+}, 30_000);
+
+test("a batch item whose upload read a file that changed meanwhile (tar exit 1) still runs on the helper", async () => {
+  const dir = join(state.dir, "helper");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
+  const helper = ["env", `DORI_CONFIG=${join(dir, "config.json")}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
+  const bin = tarWith(`/usr/bin/tar "$@"; echo "tar: ${work}/in.txt: file changed as we read it" >&2; exit 1`);
+  const p = caller("h1", helper, 5, bin, [], itemsFile());
+  const [code, err] = await Promise.all([p.exited, new Response(p.stderr).text()]);
+  expect(code).toBe(0);
+  expect(err).toContain(`HEAVY_SYNC_CHANGED t.1 h1: tar: ${work}/in.txt: file changed as we read it; sent as read (tar exit 1), the job runs on that`);
+  expect(err).toContain("HEAVY_BATCH_DONE t: 1/1 items exit 0; h1 1; 0 retried");
 }, 30_000);

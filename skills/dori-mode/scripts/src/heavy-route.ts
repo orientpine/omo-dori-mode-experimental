@@ -11,8 +11,9 @@ export const memRefusal = (opts: readonly string[], free: number, m: MemInfo | u
   return mem && m ? neverFits(mem, m, free) : undefined;
 };
 
-// a host the queue host hands jobs to: ssh argv to its `dori heavy-worker`; prefer: the --kind kinds it takes first
-export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate; readonly prefer?: readonly string[] };
+// a host the queue host hands jobs to: ssh argv to its `dori heavy-worker`; prefer: the --kind kinds it takes first;
+// batch: false keeps it out of dori heavy --items batches (an owner's own PC, until his card says when it may be used)
+export type HeavyHelper = { readonly name: string; readonly ssh: ArgvTemplate; readonly prefer?: readonly string[]; readonly batch?: boolean };
 
 // Which helper a dori heavy --kind job may go to, beyond "the less busy PC" (heavy-spread.ts).
 // Owner 2026-11-08: "우리 학습용 spark 있는데 자율 굴착 시험왜 여기서 돌리고 있어?" and "doriterm에 연결된 모든 기기들 확인해서,
@@ -104,6 +105,7 @@ const isArgv = (v: unknown): boolean => Array.isArray(v) && v.length > 0 && v.ev
 export const helperProblem = (h: HeavyHelper): string | undefined => {
   if (typeof h.name !== "string" || !/^[\w.-]{1,64}$/.test(h.name) || !isArgv(h.ssh)) return "heavyQueue.helpers: each needs a name (letters, digits, . _ -) and an ssh argv";
   if (h.prefer !== undefined && (!Array.isArray(h.prefer) || !h.prefer.every((k) => KINDS.includes(k)))) return `heavyQueue.helpers.${h.name}.prefer must list kinds of ${KINDS.join(", ")}`;
+  if (h.batch !== undefined && typeof h.batch !== "boolean") return `heavyQueue.helpers.${h.name}.batch must be true or false`;
   return undefined;
 };
 
