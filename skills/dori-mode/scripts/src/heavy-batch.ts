@@ -1,9 +1,10 @@
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import type { HeavyHelper } from "./config.ts";
 import { stager } from "./heavy-assets.ts";
+import { allowedHost, refusal } from "./heavy-batch-check.ts";
 import { fileSink, pump, watched, type Sink } from "./heavy-batch-sink.ts";
 import { NESTED_ENV } from "./heavy-here.ts";
 import { fmtMem, spawnScoped } from "./heavy-mem.ts";
@@ -11,7 +12,7 @@ import type { HeavyCtx } from "./heavy-queue.ts";
 import { unsafeRemote } from "./heavy-route.ts";
 import { admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { setSlotTree } from "./heavy-slot-store.ts";
-import { nearestExisting, QUICK_SETTLE_SEC, spreadPlan, startExec, withPipefail, within, type Kind, type Plan, type SpreadJob } from "./heavy-spread.ts";
+import { QUICK_SETTLE_SEC, spreadPlan, startExec, withPipefail, within, type Kind, type Plan, type SpreadJob } from "./heavy-spread.ts";
 import { logShip, shipMissing, type ShipFile } from "./heavy-ship.ts";
 import { stopOnHelper } from "./heavy-stale.ts";
 
@@ -32,6 +33,7 @@ export type BatchJob = {
   readonly memPerWorker?: number; readonly memCap?: number; readonly tools?: readonly string[]; readonly back?: readonly string[];
   // this host's environment for its items (dori heavy --tools: a tool installed off PATH first on it, heavy-tools.ts toolsHere)
   readonly hereEnv?: Readonly<Record<string, string | undefined>>;
+  readonly onHosts?: readonly string[]; readonly notOn?: readonly string[]; // --on / --not-on (heavy-batch-check.ts allowedHost)
   // an item's folder or file outside --sync goes along within these, else no item runs (heavy-ship.ts); absent: --local, or no helper
   readonly ship?: { readonly noShip: readonly string[]; readonly maxBytes: number; readonly heavyLog: string };
 };
@@ -98,15 +100,6 @@ const offerHelper = async (ctx: HeavyCtx, h: HeavyHelper, it: Item, plan: Extrac
   return { done };
 };
 
-const refusal = (b: BatchJob, plans: readonly Plan[]): string | undefined => {
-  if (b.memCap !== undefined && b.memPerWorker !== undefined && b.memCap < b.memPerWorker) return `--mem ${fmtMem(b.memCap)} is less than one worker's --mem-per-worker ${fmtMem(b.memPerWorker)}`;
-  // --out read through realpath, fail closed: through a link it could lie in an upload whatever its words say
-  const at = nearestExisting(resolve(b.out));
-  if (realpathSync(at) !== at) return `--out ${b.out} goes through a link (${at} is ${realpathSync(at)}); give a real folder outside the --sync paths`;
-  const inSync = [...b.sync, ...plans.flatMap((p) => (p.ok ? p.sync : []))].find((s) => within(b.out, s) || within(s, b.out));
-  return inSync ? `--out ${b.out} and the --sync path ${inSync} hold one another, so uploads would carry the batch's own files; give --out a folder outside them` : undefined;
-};
-
 export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid: number; readonly home: string; readonly path?: string } = { uid: process.getuid?.() ?? -1, home: homedir() }): Promise<{ readonly code: number; readonly abandoned: boolean }> => {
   let abandoned = false;
   const log = (l: string): void => ctx.deps.log?.(l);
@@ -130,7 +123,8 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
     log(`HEAVY_LOCAL_REFUSED ${b.label}: ${stops.length} item(s) would run here, ${stops[0]}; no item ran: give that path with --sync, or run them here with --local`);
     return { code: 2, abandoned };
   }
-  const why = refusal(b, pending.map((it) => it.plan));
+  const usable = [...ctx.q.helpers.filter((h) => h.batch !== false).map((h) => h.name), hostname()].filter((n) => allowedHost(b, n));
+  const why = refusal(b, pending.map((it) => it.plan), { known: [...ctx.q.helpers.map((h) => h.name), hostname()], usable, here: hostname() });
   if (why) {
     log(`HEAVY_BATCH_REFUSED ${b.label}: ${why}`);
     return { code: 2, abandoned };
@@ -141,8 +135,8 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   const receipts = join(b.out, "receipts.jsonl");
   writeFileSync(receipts, "");
   const cap = b.memPerWorker && b.memCap ? Math.floor(b.memCap / b.memPerWorker) : Infinity;
-  const helpers = pending.some((it) => it.plan.ok) ? ctx.q.helpers.filter((h) => h.batch !== false) : [];
-  const hosts: Host[] = [...helpers.map((h) => ({ name: h.name, helper: h })), { name: hostname() }].map((h) => ({ ...h, running: 0, cap, until: 0, next: 0, busy: false, offering: false, said: "" }));
+  const helpers = pending.some((it) => it.plan.ok) ? ctx.q.helpers.filter((h) => usable.includes(h.name)) : [];
+  const hosts: Host[] = [...helpers.map((h) => ({ name: h.name, helper: h })), ...(usable.includes(hostname()) ? [{ name: hostname() }] : [])].map((h) => ({ ...h, running: 0, cap, until: 0, next: 0, busy: false, offering: false, said: "" }));
   log(`HEAVY_BATCH ${b.label}: ${pending.length} item(s) over ${hosts.map((h) => h.name).join(", ")}; out ${b.out}`);
   if (cap !== Infinity) for (const h of hosts) log(`HEAVY_BATCH_HOST ${b.label} ${h.name}: up to ${cap} worker(s) at once (--mem ${fmtMem(b.memCap!)} / --mem-per-worker ${fmtMem(b.memPerWorker!)})`);
   const running = new Map<Item, Promise<void>>();

@@ -43,17 +43,17 @@ type Flags = {
   readonly positionals: string[];
 };
 
-// `dori <command> --help`: that command's lines of USAGE
+// `dori <command> --help`: every block of USAGE for that command (dori heavy has several: gongdori 2026-11-14 found no --items in its help)
 export const helpFor = (cmd: string): string => {
-  const lines = USAGE.split("\n");
-  const at = lines.findIndex((l) => new RegExp(`^  ${cmd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`).test(l));
-  if (!cmd || at < 0) return USAGE;
-  const out = [lines[at] ?? ""];
-  for (const l of lines.slice(at + 1)) {
-    if (/^  \S/.test(l)) break;
-    out.push(l);
+  const head = new RegExp(`^  ${cmd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`);
+  const out: string[] = [];
+  let inside = false;
+  for (const l of USAGE.split("\n")) {
+    if (/^  \S/.test(l)) inside = head.test(l);
+    else if (!/^ {3,}\S/.test(l)) inside = false;
+    if (inside) out.push(out.length ? l : l.trim());
   }
-  return `dori ${out.join("\n").trim()}`;
+  return cmd && out.length ? `dori ${out.join("\n")}` : USAGE;
 };
 
 export const makeCli = (command: string, rest: string[], flags: Flags, config: DoriConfig, deps: FlowDeps, waive: Record<string, string>, discordToken: string | undefined, cliPath: string, cliUrl: string, sendSignal: HandoverDeps["signal"]) => {

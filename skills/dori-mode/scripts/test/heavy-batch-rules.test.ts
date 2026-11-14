@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync 
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
-import { batchCode, batchOf, ctxWith, fakeHelper, fresh, logs, realHelper, receipts, start, state, stop, work } from "./heavy-batch-fixture.ts";
+import { batchCode, batchOf, ctxWith, fakeHelper, fresh, logs, outOf, realHelper, receipts, start, state, stop, work } from "./heavy-batch-fixture.ts";
 
 // review 4 of #476: the three rules of the batch (the lead, 2026-11-14): a helper leaves only for a helper-level failure, OOM is the runner's word, --out is real and outside every upload
 beforeEach(start);
@@ -74,4 +74,31 @@ test("a batch whose working folder is a heavyNoShip path runs no item (HEAVY_LOC
   expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["x"], ["true"], { cwd: join(data, "raw"), ship }))).toBe(2);
   expect(logs.some((l) => l.startsWith("HEAVY_LOCAL_REFUSED b: 1 item(s) would run here, #1: the working folder ") && l.endsWith("no item ran: give that path with --sync, or run them here with --local"))).toBe(true);
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_START"))).toBe(false);
+});
+
+// gongdori 2026-11-14 (#dori-pair 1571035412586168382): pick the hosts of a batch
+test("--on and --not-on keep a batch on the hosts named, and a name that is no host refuses it", async () => {
+  expect(await batchCode(ctxWith([realHelper("h1"), realHelper("h2")], false), batchOf(["1", "2", "3"], ["true"], { onHosts: ["h1"] }))).toBe(0);
+  expect(receipts().every((r) => r.host === "h1")).toBe(true);
+  fresh();
+  expect(await batchCode(ctxWith([realHelper("h1"), realHelper("h2")], false), batchOf(["1", "2", "3"], ["true"], { notOn: [hostname(), "h1"] }))).toBe(0);
+  expect(receipts().every((r) => r.host === "h2")).toBe(true);
+  fresh();
+  expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["1"], ["true"], { onHosts: ["h9"] }))).toBe(2);
+  expect(logs).toContain(`HEAVY_BATCH_REFUSED b: --on/--not-on name h9, which is no host here (known: h1, ${hostname()})`);
+  // an item that can run only here (it names a path outside --sync) and a batch kept off this host
+  fresh();
+  writeFileSync(join(state.dir, "b.txt"), "outside\n");
+  expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["../b.txt"], ["cat", `${work}/{item}`], { onHosts: ["h1"] }))).toBe(2);
+  expect(logs.some((l) => l.startsWith("HEAVY_BATCH_REFUSED b: item #1 can run only on this host (") && l.endsWith("), which --on/--not-on leave out"))).toBe(true);
+});
+
+// the documented way to bring a venv along (references/scripts.md): --sync it, so each item's box has it
+test("a venv given with --sync runs each item on a helper, whose box has no /home of its own", async () => {
+  mkdirSync(join(work, ".venv", "bin"), { recursive: true });
+  symlinkSync("/usr/bin/python3", join(work, ".venv", "bin", "python"));
+  writeFileSync(join(work, "run.py"), "import sys; print('item', sys.argv[1])\n");
+  expect(await batchCode(ctxWith([realHelper("h1", 1)]), batchOf(["1", "2"], [join(work, ".venv", "bin", "python"), join(work, "run.py"), "{item}"]))).toBe(0);
+  const rs = receipts().sort((a, b) => a.n - b.n);
+  expect(rs.map((r) => [r.host, outOf(r)])).toEqual([["h1", "item 1\n"], ["h1", "item 2\n"]]);
 });

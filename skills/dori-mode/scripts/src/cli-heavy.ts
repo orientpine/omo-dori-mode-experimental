@@ -49,6 +49,10 @@ const heavyCommand: Command = async (context) => {
   const perOpt = opt("mem-per-worker");
   const perBytes = perOpt === undefined ? undefined : (parseMem(perOpt) ?? die(`dori heavy --mem-per-worker takes a size like 15G, not "${perOpt}"`));
   if ((itemsOpt !== undefined || perBytes !== undefined) && (itemsOpt === undefined || opt("kind") === undefined || helpersOnly || heavyOuter())) die("usage: dori heavy <label> --kind cpu|browser|gpu --sync PATH ... --items FILE [--mem-per-worker SIZE [--mem SIZE]] [--out DIR] -- <command with {item}>, not with --helpers-only or inside another heavy job");
+  // --on / --not-on HOST,...: the hosts a batch may use, or not (heavy-batch-check.ts)
+  const hostsOpt = (k: string): string[] | undefined => opt(k)?.split(",").map((h) => h.trim()).filter(Boolean);
+  const [onHosts, notOn] = [hostsOpt("on"), hostsOpt("not-on")];
+  if ((onHosts || notOn) && itemsOpt === undefined) die("dori heavy --on / --not-on HOST,... pick the hosts of a --items batch; give --items FILE");
   if (itemsOpt !== undefined && needBytes && !perBytes) die("dori heavy --items --mem SIZE caps the items each host runs at once, so it needs --mem-per-worker SIZE");
   if (itemsOpt !== undefined && name.length > 56) die(`dori heavy --items: the label takes 56 characters at most (each item runs as <label>.<n>)`);
   const deps = heavyDeps(load);
@@ -89,7 +93,7 @@ const heavyCommand: Command = async (context) => {
       if (!items.length) die(`dori heavy --items ${itemsOpt}: no item in it (one per line; blank and # lines are skipped)`);
       const back = flags.values.back as string[] | undefined;
       const here = toolsHere(name, many("tools"), deps.log).env;
-      const r = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? defaultOut(name, Date.now())), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}), ...(here ? { hereEnv: here } : {}), ...(!local && config.heavyQueue.helpers.length ? { ship: { noShip: config.heavyNoShip, maxBytes: config.heavyShipMaxMb * 1024 ** 2, heavyLog: `${config.stateDir}/heavy/heavy.log` } } : {}) });
+      const r = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? defaultOut(name, Date.now())), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}), ...(here ? { hereEnv: here } : {}), ...(onHosts ? { onHosts } : {}), ...(notOn ? { notOn } : {}), ...(!local && config.heavyQueue.helpers.length ? { ship: { noShip: config.heavyNoShip, maxBytes: config.heavyShipMaxMb * 1024 ** 2, heavyLog: `${config.stateDir}/heavy/heavy.log` } } : {}) });
       // a stale helper run left a child or pipe not ended: exit now instead of waiting on it
       if (r.abandoned) process.exit(r.code);
       process.exitCode = r.code;
