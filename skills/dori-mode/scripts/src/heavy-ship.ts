@@ -37,11 +37,11 @@ const hitOf = (noShip: readonly string[]): ((real: string) => string | undefined
 };
 const KEEP = "it never leaves this host: run it here with --local";
 
-// why the paths may not leave this host (a heavyNoShip hit), from the one archive builder that also makes the list tar gets
+// why the paths may not leave this host (a heavyNoShip hit, a name that cannot be listed), from the one archive builder that also makes the list tar gets
 // (heavy-upload.ts); a path it cannot read is said by shipFiles or when it is archived, not as a heavyNoShip one
 const builderWhy = (roots: readonly string[], noShip: readonly string[]): string | undefined => {
   const l = archiveList(roots, noShip);
-  return "blocked" in l ? l.why : undefined;
+  return "why" in l && l.kind !== "read" ? l.why : undefined;
 };
 
 // the files under p (p itself when it is a file), or why p may not go along: it holds more than maxBytes, or cannot be read

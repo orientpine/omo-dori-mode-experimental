@@ -141,9 +141,10 @@ export const refusals = (now: () => number) => {
 
 // the git checkout a folder is in, or undefined
 // the paths a relative argument (whole, or after = , or :) names outside the working folder, such as ../input.txt: weighed
-// like an absolute one, so a helper never runs the job without them (review 6 of #479)
+// like an absolute one, so a helper never runs the job without them (review 6 of #479); a word with = , or : is weighed by
+// its parts alone, never whole (review 7: if=../../input is no path of its own)
 export const upPaths = (arg: string, cwd: string): string[] =>
-  [arg, ...arg.split(/[=,:]/).slice(1)].filter((a) => a && !isAbsolute(a) && a.split("/").includes("..")).map((a) => resolve(cwd, a)).filter((p) => p !== cwd && !p.startsWith(`${cwd}/`));
+  (/[=,:]/.test(arg) ? arg.split(/[=,:]/) : [arg]).filter((a) => a && !isAbsolute(a) && a.split("/").includes("..")).map((a) => resolve(cwd, a)).filter((p) => p !== cwd && !p.startsWith(`${cwd}/`));
 
 export const gitTop = (dir: string): string | undefined => {
   const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });

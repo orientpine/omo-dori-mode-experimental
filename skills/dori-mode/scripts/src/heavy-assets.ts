@@ -126,7 +126,7 @@ export const stageAssets = async (sync: readonly string[], dir: string, noShip: 
     const first = (await Bun.file(`/proc/self/fd/${err}`).text()).trim().split("\n")[0]?.slice(0, 200) ?? "";
     if (code !== 0 && code !== 1) return await fail(`archiving the --sync paths failed (exit ${code}: ${first})`);
     const moved = movedOf(list.entries);
-    if (moved) return await fail(`${moved} changed into another path while it was archived, so the archive is not sent`);
+    if (moved) return await fail(`${moved}, so the archive is not sent`);
     // the archive's descriptor goes to the caller (Stager.drop closes it); tar's stderr is done with
     fds.length = 0;
     closeSync(err);

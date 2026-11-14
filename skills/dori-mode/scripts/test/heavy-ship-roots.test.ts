@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -151,4 +151,34 @@ test("a folder swapped for a link into a heavyNoShip path while it is archived s
   const r = await stageAssets([work], stage, [deny], { argv: ["sh", "-c", swap, "sh", ...TAR_LIST] });
   expect(r).toEqual({ why: `${sub} changed into another path while it was archived, so the archive is not sent` });
   expect(readdirSync(stage)).toEqual([]);
+  // review 7 of #479: the link taken away again after tar read through it, or a new folder put in its place, is no safe
+  // ending either: every listed entry is read again by its device and inode, and one gone or another refuses the archive
+  for (const after of [`rm ${sub}`, `rm ${sub} && mkdir ${sub}`]) {
+    rmSync(sub, { recursive: true, force: true });
+    rmSync(`${sub}.was`, { recursive: true, force: true });
+    mkdirSync(sub);
+    writeFileSync(join(sub, "input"), "PUBLIC\n");
+    const undo = `mv ${sub} ${sub}.was && ln -s ${deny} ${sub} && { tar "$@"; c=$?; ${after}; exit $c; }`;
+    const u = await stageAssets([work], stage, [deny], { argv: ["sh", "-c", undo, "sh", ...TAR_LIST] });
+    expect({ after, u }).toEqual({ after, u: { why: expect.stringMatching(/changed into another path while it was archived|was gone or another file after it was archived/) } });
+    expect(readdirSync(stage)).toEqual([]);
+  }
+});
+
+// review 7 of #479: a name that is not UTF-8 cannot be listed as it is, so it stops the upload instead of being left out
+test("a file whose name is not UTF-8 stops the upload with why, instead of the tree arriving without it", async () => {
+  const work = join(home, "bytes");
+  mkdirSync(work);
+  writeFileSync(Buffer.concat([Buffer.from(`${work}/a`), Buffer.from([0xff]), Buffer.from(".bin")]), "x\n");
+  const r = await stageAssets([work], join(state.dir, "stage"), []);
+  expect(r).toEqual({ why: expect.stringContaining(`${work} holds a name that is not UTF-8, so it cannot be listed to send it`) });
+});
+
+// review 7 of #479: a relative value after = is weighed alone, never also as part of the whole word (if=../x is no path)
+test("a relative value after = names its own target only, so a job with that target synced runs", () => {
+  const work = join(home, "a", "b", "work");
+  mkdirSync(work, { recursive: true });
+  writeFileSync(join(home, "input"), "in\n");
+  const s = shipMissing({ ...job(["dd", "if=../../../input", "of=out"]), cwd: work, sync: [work, join(home, "input")] }, who, [], 1024 ** 3);
+  expect(s).toHaveProperty("plan");
 });
