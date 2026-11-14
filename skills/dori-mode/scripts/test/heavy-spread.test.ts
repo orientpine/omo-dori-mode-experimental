@@ -212,12 +212,12 @@ test("a job that names a path outside its --sync paths, or links out of them, st
   mkdirSync(outside);
   // When / Then
   const arg = spreadPlan(jobOf(["bun", "t.ts", `--clip=${outside}/c.webm`]), who);
-  expect(arg).toEqual({ ok: false, why: `${outside}/c.webm (in "--clip=${outside}/c.webm") is not in a --sync path` });
+  expect(arg).toEqual({ ok: false, why: `${outside}/c.webm (in "--clip=${outside}/c.webm") is not in a --sync path`, kind: "sync", path: `${outside}/c.webm` });
   symlinkSync(outside, join(work, "node_modules"));
   const link = spreadPlan(jobOf(["true"]), who);
-  expect(link.ok ? "" : link.why).toBe(`the link ${work}/node_modules points to ${outside}, which is not in a --sync path (add it with --sync)`);
+  expect(link.ok ? "" : link.why).toBe(`the link ${work}/node_modules points to ${outside}, which is not in a --sync path`);
   expect(spreadPlan(jobOf(["true"], { sync: [work, outside] }), who).ok).toBe(true);
-  expect(spreadPlan(jobOf(["true"], { cwd: outside }), who)).toEqual({ ok: false, why: `the working folder ${outside} is not in a --sync path` });
+  expect(spreadPlan(jobOf(["true"], { cwd: outside }), who)).toEqual({ ok: false, why: `the working folder ${outside} is not in a --sync path`, kind: "ship", path: outside });
   expect(spreadPlan(jobOf(["true"], { sync: [join(work, "node_modules")] , cwd: join(work, "node_modules") }), who).ok).toBe(false);
   expect(spreadPlan(jobOf(["true"], { sync: ["/etc"] }), who).ok).toBe(false);
 });
@@ -249,9 +249,9 @@ test("the system programs a job starts through its venv links or its first word 
   expect(relative.ok && relative.path).toBe(`${work}/usr/../bin:${work}:/usr/local/missing/../bin:/bin`);
   const tools = ["ffmpeg", "uv"].map((name) => spreadPlan(jobOf([name, "-version"]), { ...who, path: `${bin}:/usr/bin:/bin` }));
   expect(tools.map((t) => t.ok && t.which)).toEqual([["ffmpeg"], ["uv"]]);
-  expect(spreadPlan(jobOf(["mytool"], { env: { PATH: `${bin}:/usr/bin` } }), who)).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool on the job's --env PATH, which is not in a --sync path` });
+  expect(spreadPlan(jobOf(["mytool"], { env: { PATH: `${bin}:/usr/bin` } }), who)).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool on the job's --env PATH, which is not in a --sync path`, kind: "sync", path: `${bin}/mytool` });
   expect(spreadPlan(jobOf(["mytool"]), { ...who, path: `${bin}:/usr/bin:/bin` })).toEqual({ ok: false, why: `the command mytool is ${bin}/mytool, which is in no --sync path and no system folder, so a helper has none` });
-  expect(spreadPlan(jobOf(["../x"]), who)).toEqual({ ok: false, why: `the command ../x is ${join(state.dir, "x")}, which is not in a --sync path` });
+  expect(spreadPlan(jobOf(["../x"]), who)).toEqual({ ok: false, why: `the command ../x is ${join(state.dir, "x")}, which is not in a --sync path`, kind: "sync", path: join(state.dir, "x") });
   expect(spreadPlan(jobOf(["bun", "test"]), { ...who, path: bin }).ok).toBe(true);
 });
 

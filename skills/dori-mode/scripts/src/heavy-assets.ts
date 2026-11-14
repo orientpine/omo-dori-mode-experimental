@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, rmSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, rmSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
+
+import { archiveList, movedOf, TAR_LIST } from "./heavy-upload.ts";
 
 // A job's --sync paths go to a helper as one tar archive made once, here, and checked there by its sha256 (owner
 // 2026-11-14 "가용한 모든 리소스를 효율적으로 쓸수있게 해", gongdori's E7: a code tree and a uv environment sent to every helper
@@ -15,6 +17,7 @@ import { join } from "node:path";
 // Nothing is kept between jobs (review 4 of #477; reuse is a follow-up, docs/follow-ups.md).
 
 export const STAGE_STALL_MS = 60_000;
+
 // path: where it is read again (/proc/self/fd/<fd>), fd: what keeps it
 export type Assets = { readonly path: string; readonly fd: number; readonly sha: string; readonly bytes: number };
 // argv: what makes the archive (tests give one that stalls or fails); write: how a chunk goes into it (tests make it fail)
@@ -69,11 +72,13 @@ const nameless = (dir: string): number => {
 
 // the job's --sync paths as one archive with no name on disk (under dir only for a moment), with its sha256 and size;
 // every failure, of setup, of tar or of a write, ends tar, cancels its read and closes what was opened
-export const stageAssets = async (sync: readonly string[], dir: string, o: StageOpts = {}): Promise<Staged | undefined> => {
-  const have = sync.filter((s) => existsSync(s)).map((s) => s.slice(1));
-  if (!have.length && !o.argv) return undefined;
+export const stageAssets = async (sync: readonly string[], dir: string, noShip: readonly string[] | undefined, o: StageOpts = {}): Promise<Staged | undefined> => {
+  const list = archiveList(sync, noShip);
+  if ("why" in list) return { why: list.why };
+  if (!list.entries.length && !o.argv) return undefined;
+  const names = new Blob([list.entries.map((e) => e.path.slice(1)).join("\0")]);
   const fds: number[] = [];
-  let p: Bun.Subprocess<"ignore", "pipe", number> | undefined;
+  let p: Bun.Subprocess<Blob, "pipe", number> | undefined;
   let r: { cancel: () => Promise<void> } | undefined;
   let w: ReturnType<typeof watchFor> | undefined;
   const stallMs = o.stallMs ?? STAGE_STALL_MS;
@@ -98,7 +103,7 @@ export const stageAssets = async (sync: readonly string[], dir: string, o: Stage
     // tar's stderr goes to a nameless file too, not a pipe: a child of it that holds its pipes cannot keep this waiting
     const err = nameless(dir);
     fds.push(err);
-    const tar = Bun.spawn([...(o.argv ?? ["tar", "-cf", "-", "-C", "/", ...have])], { stdin: "ignore", stdout: "pipe", stderr: err });
+    const tar = Bun.spawn([...(o.argv ?? ["tar", ...TAR_LIST])], { stdin: names, stdout: "pipe", stderr: err });
     p = tar;
     const reader = tar.stdout.getReader();
     r = reader;
@@ -120,6 +125,8 @@ export const stageAssets = async (sync: readonly string[], dir: string, o: Stage
     const code = await tar.exited;
     const first = (await Bun.file(`/proc/self/fd/${err}`).text()).trim().split("\n")[0]?.slice(0, 200) ?? "";
     if (code !== 0 && code !== 1) return await fail(`archiving the --sync paths failed (exit ${code}: ${first})`);
+    const moved = movedOf(list.entries);
+    if (moved) return await fail(`${moved}, so the archive is not sent`);
     // the archive's descriptor goes to the caller (Stager.drop closes it); tar's stderr is done with
     fds.length = 0;
     closeSync(err);
@@ -134,7 +141,7 @@ export const stageAssets = async (sync: readonly string[], dir: string, o: Stage
 // one job's or one batch's archives, made on first use for a --sync list and closed by drop (one made after drop is
 // closed as it comes); a why when it failed
 export type Stager = { readonly get: (sync: readonly string[]) => Promise<Assets | { readonly why: string } | undefined>; readonly drop: () => void };
-export const stager = (dir: string, label: string, log: (l: string) => void, o: StageOpts = {}): Stager => {
+export const stager = (dir: string, label: string, log: (l: string) => void, noShip: readonly string[] | undefined, o: StageOpts = {}): Stager => {
   const made = new Map<string, Promise<Assets | { readonly why: string } | undefined>>();
   const fds: number[] = [];
   let dropped = false;
@@ -142,7 +149,7 @@ export const stager = (dir: string, label: string, log: (l: string) => void, o: 
     const key = JSON.stringify(sync);
     let p = made.get(key);
     if (!p) {
-      p = stageAssets(sync, dir, o).then((r) => {
+      p = stageAssets(sync, dir, noShip, o).then((r) => {
         if (!r) return undefined;
         if ("why" in r) {
           log(`HEAVY_ASSET_UNSENT ${label}: ${r.why}; no helper is offered it`);
@@ -199,7 +206,8 @@ export const unpackChecked = async (dir: string, opts: readonly string[], say: (
     // tar has gone; its exit says why
   }
   const code = await tar.exited;
-  const why = code !== 0 ? `tar -x exited ${code}: ${(await said).trim().slice(0, 200)}` : undefined;
+  // tar's lines joined into one: ASSET_BAD and HEAVY_EXEC_UNPACK are single lines of the helper's protocol and its log
+  const why = code !== 0 ? `tar -x exited ${code}: ${(await said).trim().split(/\s*\n\s*/).join(" | ").slice(0, 200)}` : undefined;
   if (!want) {
     if (why) say(`HEAVY_EXEC_UNPACK ${why}`);
     return !why;

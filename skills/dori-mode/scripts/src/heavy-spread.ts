@@ -7,10 +7,10 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, removeTree, stopWithCaller, TarError } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
-import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
+import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote, argPaths } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
-import { assetsOptOk, assetsWord, unpackChecked, type Stager } from "./heavy-assets.ts";
+import { assetsOptOk, assetsWord, stager, unpackChecked, type Stager } from "./heavy-assets.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
@@ -73,7 +73,7 @@ export type SpreadJob = {
 // which the helper must have before it takes the job
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
 // path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
-export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string };
+export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string; readonly kind?: "ship" | "sync"; readonly path?: string };
 
 // absolute paths inside one argument: the whole argument, or what follows = , or : (not the // of a URL)
 export const pathsIn = (arg: string): string[] => [...arg.matchAll(/(?:^|[=,:])(\/(?!\/)[^\s=,:;"'\]}]*)/g)].map((m) => normalize(m[1]!));
@@ -97,57 +97,40 @@ const linksIn = (root: string): [string, string][] => {
   return out;
 };
 
-// the git checkout a folder is in, or undefined
-const gitTop = (dir: string): string | undefined => {
-  const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
-  const top = p.exitCode === 0 ? p.stdout.toString().trim() : "";
-  return top && isAbsolute(top) ? normalize(top) : undefined;
-};
-
-// STAY_FILE in the working folder or a folder above it up to `root`: its first line says why the job runs here only
-export const STAY_FILE = ".dori-heavy-local";
-const stayHere = (cwd: string, root: string): string | undefined => {
-  for (let at = cwd; ; at = dirname(at)) {
-    const f = join(at, STAY_FILE);
-    if (existsSync(f)) return `${f}: ${readFileSync(f, "utf8").split("\n").map((l) => l.trim()).find(Boolean)?.slice(0, 200) ?? "runs here only"}`;
-    if (at === root || !within(at, root) || at === "/") return undefined;
-  }
-};
-
 // Whether the job can run on another host unchanged: every path it needs travels with --sync, and every --sync path is
 // this account's own (home or /tmp, owned, no link on the way, no ..), --tools trees too. Else it runs here (HEAVY_LOCAL).
 export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }): Plan => {
-  const no = (why: string): Plan => ({ ok: false, why });
-  if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)");
+  // kind (heavy-ship.ts, #479 r3-4): "ship" sends the working folder; "sync" only --sync may send (no guess, no auto checkout); none: here.
+  const no = (why: string, kind?: "ship" | "sync", path?: string): Plan => ({ ok: false, why, ...(kind && path ? { kind, path } : {}) });
+  const top = gitTop(job.cwd);
+  const outer = job.sync.map((s) => normalize(s).replace(/(.)\/$/, "$1")).filter((s) => within(job.cwd, s)).sort((a, b) => a.length - b.length)[0];
+  const stay = stayHere(job.cwd, top ?? outer ?? who.home);
+  if (stay) return no(stay);
+  const inTop = top && top !== who.home && (within(top, who.home) || within(top, "/tmp")) ? top : undefined;
+  if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)", inTop ? "sync" : "ship", inTop ?? job.cwd);
   if (backGlobProblem(job.back)) return no(backGlobProblem(job.back)!);
   const tp = toolPlan(job.tools ?? [], { path: who.path ?? process.env["PATH"] ?? "", home: who.home });
   if ("why" in tp) return no(tp.why);
   const roots: string[] = [];
   for (const raw of [...job.sync, ...tp.trees]) {
-    if (!isAbsolute(raw) || raw.split("/").includes("..")) return no(`--sync ${raw} must be an absolute path without ..`);
+    if (!isAbsolute(raw) || raw.split("/").includes("..")) return no(`--sync ${raw} must be an absolute path without ..`, "sync", raw);
     const p = normalize(raw).replace(/(.)\/$/, "$1");
-    if (!within(p, who.home) && !within(p, "/tmp") || p === who.home || p === "/tmp") return no(`--sync ${p} must be a folder or file inside your home or /tmp`);
+    if (!within(p, who.home) && !within(p, "/tmp") || p === who.home || p === "/tmp") return no(`--sync ${p} must be a folder or file inside your home or /tmp`, "sync", p);
     const at = nearestExisting(p);
-    if (realpathSync(at) !== at) return no(`--sync ${p} goes through a link (${at} is ${realpathSync(at)}); give the real path`);
+    if (realpathSync(at) !== at) return no(`--sync ${p} goes through a link (${at} is ${realpathSync(at)}); give the real path`, "sync", p);
     if (at === p) {
       const st = lstatSync(p);
-      if (st.uid !== who.uid) return no(`--sync ${p} belongs to another account`);
-      if (!st.isDirectory() && !st.isFile()) return no(`--sync ${p} is not a folder or a file`);
+      if (st.uid !== who.uid) return no(`--sync ${p} belongs to another account`, "sync", p);
+      if (!st.isDirectory() && !st.isFile()) return no(`--sync ${p} is not a folder or a file`, "sync", p);
     }
     roots.push(p);
   }
-  // a path inside another --sync path travels with it
-  const sync = [...new Set(roots)].sort((a, b) => a.length - b.length).filter((p, i, all) => !all.slice(0, i).some((q) => within(p, q)));
+  const sync = [...new Set(roots)].sort((a, b) => a.length - b.length).filter((p, i, all) => !all.slice(0, i).some((q) => within(p, q))); // a path inside another travels with it
   const covered = (p: string): boolean => sync.some((s) => within(p, s)) || SYSTEM.some((s) => within(p, s));
-  if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`);
-  // a test run reads its whole checkout (docs, fixtures, sibling folders) by relative path, which no argument names: a
-  // checkout synced in part fails on the helper and passes here (2026-11-02: scripts/ only, 171 of 744 failed there)
-  const top = gitTop(job.cwd);
-  if (top && top !== who.home && (within(top, who.home) || within(top, "/tmp")) && !sync.some((s) => within(top, s))) return no(`the working folder is in the git checkout ${top}, which --sync carries only in part (its tests read the rest); add --sync ${top}`);
-  // a folder that says it must run here (its tests start boxes and systemd scopes themselves, which a helper's box cannot)
-  const stay = stayHere(job.cwd, top ?? sync.find((s) => within(job.cwd, s))!);
-  if (stay) return no(stay);
-  for (const arg of job.cmd) for (const p of pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`);
+  if (inTop && !sync.some((s) => within(inTop, s))) return no(`the working folder is in the git checkout ${inTop}, which --sync carries only in part (its tests read the rest)${sync.some((s) => within(job.cwd, s)) ? `; add --sync ${inTop}` : ""}`, sync.some((s) => within(job.cwd, s)) ? undefined : "sync", inTop);
+  if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, "ship", job.cwd);
+  // every path an argument names, weighed whole (heavy-route.ts argPaths: a covered prefix never stands for a longer name), and the absolute pieces of one that is not a path there
+  for (const arg of job.cmd) for (const p of [...(arg !== job.cmd[0] || isAbsolute(arg) ? argPaths(arg, job.cwd) : []), ...(isAbsolute(arg) && existsSync(arg) ? [] : pathsIn(arg))]) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, "sync", p);
   // A system program the job starts is checked on the helper before it takes the job: a venv's python links to the
   // system python it was made with, and on a helper without that version the link dangles in the box, so the run printed
   // nothing (2026-11-07: a check of two runs on a helper without the venv's python read two empty logs as the same).
@@ -156,20 +139,20 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   for (const s of sync) {
     if (!existsSync(s) || !statSync(s).isDirectory()) continue;
     for (const [link, to] of linksIn(s)) {
-      if (existsSync(to) && !covered(to)) return no(`the link ${link} points to ${to}, which is not in a --sync path (add it with --sync)`);
+      if (existsSync(to) && !covered(to)) return no(`the link ${link} points to ${to}, which is not in a --sync path`, "sync", to);
       if (inProgramDirs(to)) needs.add(to);
     }
   }
   const first = job.cmd[0] ?? "";
   if (first.includes("/")) {
     const p = resolve(job.cwd, first);
-    if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`);
+    if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`, "sync", p);
     if (inProgramDirs(p)) needs.add(p);
   } else if (job.env["PATH"] !== undefined) {
     // --env PATH is the box's PATH too: a command in a --sync path travels, one in a system folder is looked up by the
     // helper on that same PATH (it may sit in another of its folders there)
     const at = Bun.which(first, { PATH: job.env["PATH"], cwd: job.cwd });
-    if (at && !covered(at)) return no(`the command ${first} is ${at} on the job's --env PATH, which is not in a --sync path`);
+    if (at && !covered(at)) return no(`the command ${first} is ${at} on the job's --env PATH, which is not in a --sync path`, "sync", at);
     if (at && !sync.some((s) => within(at, s))) which.add(first);
   } else {
     // the box's own bun and tools, a tool bundle the job names, or a system folder: the helper looks the name up on its box PATH
@@ -232,8 +215,8 @@ type Sink = { write(s: string): unknown }; type Started = { readonly helper: str
 type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
-export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets = true): Promise<HelperTry> => {
-  const a = assets ? await job.assets?.get(plan.sync) : undefined; // the --sync paths as one archive checked by its sha256 there (heavy-assets.ts); a helper that does not know assets= is asked once more without it
+export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
+  const a = job.assets ? await job.assets.get(plan.sync) : plan.sync.length ? { why: "its --sync paths have no archive (heavy-assets.ts stager), and nothing else may send them" } : undefined; // the --sync paths as one archive, listed and checked by the one builder (heavy-assets.ts), its sha256 checked there; a helper that does not know assets= is out of date (helperVerdict: old)
   if (a && "why" in a) return { kind: "refused", why: a.why };
   const args = execWords(job, plan, below, a && assetsWord(a));
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // ssh, tar and untar stay in the caller's process group: a Ctrl-C on its terminal ends them with it
@@ -246,7 +229,6 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
     await letGo(p, reader, answered ? STALE_GRACE_MS : 0);
     if (!answered) return { kind: "down", why: `no answer to the admission within ${staleMs / 60_000} min (heavyQueue.staleMin)` };
     if (!verdict) return { kind: "down", why: last || `ssh exited ${p.exitCode ?? p.signalCode}` };
-    if (a && verdict[1] === "REFUSED" && verdict[2]?.startsWith('unknown option "assets=')) return startExec(ctx, h, job, plan, below, false);
     return helperVerdict(verdict[1] ?? "", verdict[2] ?? "");
   }
   const stop = onStop(() => p.kill("SIGKILL"));
@@ -311,7 +293,13 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
 export type SpreadResult = ({ readonly slot: string } | { readonly code: number }) & { readonly abandoned?: true };
 
 // The caller's side: a helper's exit code, or this host's heavy slot when the job is to run here after all.
+// a job given without its archive gets one from the same builder (heavyNoShip from ctx.noShip, unset: ~/data), dropped at its end
 export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<Plan, { ok: true }>): Promise<SpreadResult> => {
+  if (job.assets) return spreadWith(ctx, job, plan);
+  const assets = stager(join(ctx.deps.dir, "assets"), job.label, (l) => ctx.deps.log?.(l), ctx.noShip);
+  return spreadWith(ctx, { ...job, assets }, plan).finally(assets.drop);
+};
+const spreadWith = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<Plan, { ok: true }>): Promise<SpreadResult> => {
   const log = (line: string) => ctx.deps.log?.(line);
   const seen = new Map<string, string>();
   // a helper that refused this job is not asked again, for good or a while (heavy-route.ts refusals)

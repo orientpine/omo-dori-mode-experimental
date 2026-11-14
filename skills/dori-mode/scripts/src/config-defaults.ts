@@ -55,6 +55,8 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   heavyHeadroomPct: 10,
   heavySettleSec: 120,
   heavyGpuFreeGb: 20,
+  heavyShipMaxMb: 512,
+  heavyNoShip: ["~/data"],
   heavyHoldDir: "/tmp/dori-heavy-hold",
   heavyQueue: { jobs: {}, helpers: [], queue: [], rl: true, jobDir: "/dev/shm/dori-heavy", exec: false, execMaxMin: 240, staleMin: 20, aliveSec: 60 },
   deadPanePatterns: ["has stopped", "no suitable jobs"],

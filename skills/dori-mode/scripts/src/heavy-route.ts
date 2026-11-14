@@ -1,4 +1,6 @@
-import { closeSync, existsSync, openSync, readdirSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
 import type { ArgvTemplate } from "./config.ts";
 import { type MemInfo, neverFits, readMeminfo } from "./heavy-mem.ts";
@@ -136,4 +138,46 @@ export const refusals = (now: () => number) => {
     final: (names: readonly string[]): boolean => names.length > 0 && names.every((n) => live(n) && m.get(n)?.kind !== "stale"),
     list: (): string => [...m].map(([n, r]) => `${n}: ${r.why}`).join("; "),
   };
+};
+
+// the git checkout a folder is in, or undefined
+// the git checkout a folder is in, or undefined
+// the paths one argument names, by the lead's rule after review 17 of #479 (no exception that weighs less): the word
+// itself when it is path-shaped, and every path-shaped piece of it cut at = : or , - all of them must be covered. The
+// one exception is a URL word (https://..., s3://...), whole or as the value after a key's =. A bare name (out.txt,
+// lib) is in the working folder, so already covered.
+const pathShaped = (w: string): boolean => w === ".." || /^(\/|\.\/|\.\.\/|~)/.test(w) || w.includes("/");
+const URL_WORD = /^[a-z][a-z0-9+.-]*:\/\//i;
+const tilde = (w: string): string => (w === "~" || w.startsWith("~/") ? join(homedir(), w.slice(1)) : w);
+// every run of pieces between separators is weighed (of=/w:out.txt names /w:out.txt), not only single pieces
+const runs = (arg: string): string[] => {
+  const t = arg.split(/([=:,])/);
+  const n = (t.length + 1) / 2;
+  // past the budget no run is dropped: the word fails closed as "/", which no --sync covers (review 18)
+  if (n > 256) return ["/"];
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) for (let j = i; j < n; j++) out.push(t.slice(2 * i, 2 * j + 1).join(""));
+  return out.sort((x, y) => y.length - x.length); // the whole word first, so a refusal names it
+};
+export const argPaths = (arg: string, cwd: string): string[] => {
+  if (URL_WORD.test(arg)) return [];
+  const eq = arg.indexOf("=");
+  const words = eq >= 0 && URL_WORD.test(arg.slice(eq + 1)) ? [arg] : runs(arg);
+  return [...new Set(words.filter((w) => w && pathShaped(w)).map((w) => resolve(cwd, tilde(w))))];
+};
+
+export const gitTop = (dir: string): string | undefined => {
+  const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
+  const top = p.exitCode === 0 ? p.stdout.toString().trim() : "";
+  return top && isAbsolute(top) ? normalize(top) : undefined;
+};
+
+// STAY_FILE in the working folder or a folder above it up to `root`: its first line says why the job runs here only
+const STAY_FILE = ".dori-heavy-local";
+export const stayHere = (cwd: string, root: string): string | undefined => {
+  for (let at = cwd; ; at = dirname(at)) {
+    const f = join(at, STAY_FILE);
+    if (existsSync(f)) return `${f}: ${readFileSync(f, "utf8").split("\n").map((l) => l.trim()).find(Boolean)?.slice(0, 200) ?? "runs here only"}`;
+    if (at === root || !`${at}/`.startsWith(`${root}/`) || at === "/") return undefined;
+  }
 };

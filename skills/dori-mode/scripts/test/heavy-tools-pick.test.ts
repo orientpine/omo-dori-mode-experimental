@@ -158,7 +158,7 @@ test("a caller's tree with a link out of what travels keeps the job here, as a -
   mkdirSync(outside);
   symlinkSync(outside, join(home, ".local", "share", "rv", "own-video-tool", "vendor"));
   const p = spreadPlan(job(["rv"]), { uid: process.getuid?.() ?? -1, home, path: "/usr/bin:/bin" });
-  expect(p).toEqual({ ok: false, why: `the link ${join(home, ".local", "share", "rv", "own-video-tool", "vendor")} points to ${outside}, which is not in a --sync path (add it with --sync)` });
+  expect(p).toEqual({ ok: false, why: `the link ${join(home, ".local", "share", "rv", "own-video-tool", "vendor")} points to ${outside}, which is not in a --sync path`, kind: "sync", path: outside });
 });
 
 test("however a job starts the caller's tree, by path, relative or first on its own --env PATH, it gets the bundle's runtime", async () => {

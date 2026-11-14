@@ -105,6 +105,10 @@ export type DoriConfig = {
   // cache is pushed out within MemAvailable over the heavyHeadroomPct floor (heavy-mem.ts gpuRoom; 0: never). On a
   // unified-memory GPU (GB10) the driver fails a CUDA context when cache has left almost nothing free (2026-11-02).
   readonly heavyGpuFreeGb: number;
+  // dori heavy --kind: a working folder or job file outside --sync goes along up to heavyShipMaxMb, never one that is, holds or
+  // links into a heavyNoShip path (~ is this home; default ~/data, gongdori's raw data, 2026-11-14), else HEAVY_LOCAL_REFUSED (heavy-ship.ts)
+  readonly heavyShipMaxMb: number;
+  readonly heavyNoShip: readonly string[];
   readonly heavyQueue: HeavyQueue;
   // dori heavy hold-local: the directory every account on this host keeps its hold in (1777, sticky; heavy-hold.ts)
   readonly heavyHoldDir: string;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -45,7 +45,7 @@ const jobWith = (cmd: string[], assets: SpreadJob["assets"], out?: (s: string) =
 // one job on the helper as dori heavy runs it (its own archive, removed after): its exit code and what it printed
 const runOnce = async (ctx: HeavyCtx, cmd = ["sh", "-c", "cat data.txt; wc -c < big.bin"]): Promise<{ code: unknown; out: string }> => {
   let out = "";
-  const st = stager(stage, "t", (l) => logs.push(l));
+  const st = stager(stage, "t", (l) => logs.push(l), []);
   const job = jobWith(cmd, st, (s) => (out += s));
   const plan = spreadPlan(job, who);
   if (!plan.ok) throw new Error(plan.why);
@@ -116,15 +116,16 @@ test("a job whose tree holds a read-only folder leaves no folder behind on the h
   }
 });
 
-test("a helper whose dori does not know assets= is asked once more without it, and the job runs there", async () => {
+// no --sync tar is made but the builder's (review 6 of #479), so a helper without assets= alone is left out (lead, r7 plan)
+test("a helper whose dori does not know assets= is left out as old, and the job runs on a helper that knows it", async () => {
   const f = join(state.dir, "old-helper.sh");
   writeFileSync(f, `#!/bin/sh\ncase "$*" in *assets=*) echo 'WORKER_REFUSED unknown option "assets=x"' >&2; exit 3;; esac\nexec "$@"\n`);
   chmodSync(f, 0o755);
-  // the wrapper sees the exec words after the real helper argv, as the helper's forced command would
-  expect(await runOnce(ctxWith([f, ...helperArgv()]))).toEqual({ code: 0, out: "first\n2097152\n" });
-  expect(logs.some((l) => l.startsWith("HEAVY_HELPER_OLD"))).toBe(false);
-  expect(logs.some((l) => l.startsWith("HEAVY_DONE t helper: exit 0"))).toBe(true);
-  expect(helperLog()).not.toContain("ASSET_");
+  const ctx = ctxWith(helperArgv()), both = { ...ctx, q: { ...ctx.q, helpers: [{ name: "old", ssh: [f, ...helperArgv()] }, ...ctx.q.helpers] } };
+  expect(await runOnce(both)).toEqual({ code: 0, out: "first\n2097152\n" });
+  expect(logs).toContainEqual(expect.stringMatching(/^HEAVY_HELPER_OLD t old: its dori is older than this one and does not know "assets=x"; update it there/));
+  expect(logs.filter((l) => l.startsWith("HEAVY_DONE t "))).toEqual(["HEAVY_DONE t helper: exit 0"]);
+  expect(helperLog()).toContain(`ASSET_OK ${staged()[0]} `);
 });
 
 test("a byte changed on the way is ASSET_BAD: the job does not run and its folder on the helper goes", async () => {
@@ -144,7 +145,7 @@ await p.stdin.end();
 process.exit(await p.exited);
 `);
   const ctx = ctxWith([process.execPath, flip, ...helperArgv()]);
-  const st = stager(stage, "t", (l) => logs.push(l));
+  const st = stager(stage, "t", (l) => logs.push(l), []);
   const job = jobWith(["sh", "-c", "touch ran.txt"], st);
   const plan = spreadPlan(job, who);
   if (!plan.ok) throw new Error(plan.why);
@@ -162,7 +163,7 @@ process.exit(await p.exited);
 test("an archive that cannot be made (tar exit 2) offers the job to no helper", async () => {
   const contacted = join(state.dir, "contacted");
   const ctx = ctxWith(["sh", "-c", `touch ${contacted}; cat > /dev/null`]);
-  const st = stager(stage, "t", (l) => logs.push(l), { argv: ["sh", "-c", `tar -cf - -C / ${work.slice(1)}; exit 2`] });
+  const st = stager(stage, "t", (l) => logs.push(l), [], { argv: ["sh", "-c", `tar -cf - -C / ${work.slice(1)}; exit 2`] });
   const job = jobWith(["true"], st);
   const plan = spreadPlan(job, who);
   if (!plan.ok) throw new Error(plan.why);
@@ -176,7 +177,7 @@ test("an archive that cannot be made (tar exit 2) offers the job to no helper", 
 
 test("an archive whose bytes stop coming is given up and leaves nothing", async () => {
   const t0 = Date.now();
-  expect(await stageAssets([work], stage, { argv: ["sleep", "30"], stallMs: 50 })).toEqual({ why: "the --sync paths gave no bytes for 0.05 s while they were archived (a hung mount?)" });
+  expect(await stageAssets([work], stage, [], { argv: ["sleep", "30"], stallMs: 50 })).toEqual({ why: "the --sync paths gave no bytes for 0.05 s while they were archived (a hung mount?)" });
   expect(Date.now() - t0).toBeLessThan(10_000);
   expect(readdirSync(stage)).toEqual([]);
 });
@@ -184,7 +185,7 @@ test("an archive whose bytes stop coming is given up and leaves nothing", async 
 test("an archive whose tar is gone while a child of it holds its output is given up, not waited on", async () => {
   const mark = `31.${process.pid}`;
   try {
-    expect(await stageAssets([work], stage, { argv: ["sh", "-c", `sleep ${mark} & exit 0`], stallMs: 50 })).toEqual({ why: "the --sync paths gave no bytes for 0.05 s while they were archived (a hung mount?)" });
+    expect(await stageAssets([work], stage, [], { argv: ["sh", "-c", `sleep ${mark} & exit 0`], stallMs: 50 })).toEqual({ why: "the --sync paths gave no bytes for 0.05 s while they were archived (a hung mount?)" });
     expect(readdirSync(stage)).toEqual([]);
   } finally {
     Bun.spawnSync(["pkill", "-f", `^sleep ${mark}$`]);
@@ -192,14 +193,14 @@ test("an archive whose tar is gone while a child of it holds its output is given
 });
 
 test("the archive has no name on disk while it is held, so nothing is left whatever ends the caller (review 7 of #477)", async () => {
-  const st = stager(stage, "t", (l) => logs.push(l));
+  const st = stager(stage, "t", (l) => logs.push(l), []);
   const a = await st.get([work]);
   if (!a || "why" in a) throw new Error(`not staged: ${JSON.stringify(a)}`);
   expect(readdirSync(stage)).toEqual([]);
   expect((await Bun.file(a.path).arrayBuffer()).byteLength).toBe(a.bytes);
   st.drop();
   const child = join(state.dir, "stage-and-wait.ts");
-  writeFileSync(child, `import { stager } from ${JSON.stringify(join(import.meta.dir, "../src/heavy-assets.ts"))};\nconst a = await stager(process.argv[2]!, "t", () => {}).get([process.argv[3]!]);\nconsole.log(a && "sha" in a ? "STAGED" : "NOT");\nawait Bun.sleep(600_000);\n`);
+  writeFileSync(child, `import { stager } from ${JSON.stringify(join(import.meta.dir, "../src/heavy-assets.ts"))};\nconst a = await stager(process.argv[2]!, "t", () => {}, []).get([process.argv[3]!]);\nconsole.log(a && "sha" in a ? "STAGED" : "NOT");\nawait Bun.sleep(600_000);\n`);
   const p = Bun.spawn([process.execPath, child, stage, work], { stdout: "pipe", stderr: "ignore" });
   const first = await p.stdout.getReader().read();
   expect(new TextDecoder().decode(first.value)).toBe("STAGED\n");
@@ -211,7 +212,7 @@ test("the archive has no name on disk while it is held, so nothing is left whate
 test("a staging write that fails ends the archive's tar and says why (review 7 of #477)", async () => {
   const mark = `y.${process.pid}`;
   try {
-    const r = await stageAssets([work], stage, { argv: ["yes", mark], write: (): never => { throw new Error("ENOSPC: no space left on device"); } });
+    const r = await stageAssets([work], stage, [], { argv: ["yes", mark], write: (): never => { throw new Error("ENOSPC: no space left on device"); } });
     expect(r).toEqual({ why: "archiving the --sync paths failed: Error: ENOSPC: no space left on device" });
     expect(Bun.spawnSync(["pgrep", "-f", `^yes ${mark}$`]).exitCode).toBe(1);
     expect(readdirSync(stage)).toEqual([]);
@@ -221,7 +222,7 @@ test("a staging write that fails ends the archive's tar and says why (review 7 o
 });
 
 test("a staging folder that cannot be made is a failure to say, not a throw (review 7 of #477)", async () => {
-  const r = await stageAssets([work], join(work, "data.txt", "stage"));
+  const r = await stageAssets([work], join(work, "data.txt", "stage"), []);
   expect(r && "why" in r ? r.why : r).toStartWith("archiving the --sync paths failed: ");
 });
 
@@ -230,20 +231,20 @@ test("a name a stager killed between open and unlink left is swept by the next o
   const dead = Bun.spawnSync(["true"]).pid;
   writeFileSync(join(stage, `assets-${dead}-x.tar`), "");
   writeFileSync(join(stage, `assets-${process.pid}-y.tar`), "");
-  const r = await stageAssets([work], stage);
-  expect(r && "assets" in r).toBe(true);
+  const r = await stageAssets([work], stage, []);
+  if (!r || !("assets" in r)) throw new Error(`not staged: ${JSON.stringify(r)}`);
+  closeSync(r.assets.fd);
   expect(readdirSync(stage)).toEqual([`assets-${process.pid}-y.tar`]);
 });
 
 test("an archive cut short on the way is ASSET_BAD", async () => {
-  const r = await stageAssets([work], stage);
+  const r = await stageAssets([work], stage, []);
   if (!r || "why" in r) throw new Error(`not staged: ${JSON.stringify(r)}`);
   const bytes = readFileSync(r.assets.path);
+  closeSync(r.assets.fd);
   const root = join(state.dir, "root");
   mkdirSync(root);
   const said: string[] = [];
   expect(await unpackChecked(root, [assetsWord(r.assets)], (l) => said.push(l), new Blob([bytes.subarray(0, bytes.length - 20_000)]).stream())).toBe(false);
-  expect(said).toHaveLength(1);
-  expect(said[0]).toStartWith(`ASSET_BAD `);
-  expect(said[0]).toEndWith("; the job does not run");
+  expect(said).toEqual([expect.stringMatching(/^ASSET_BAD .*; the job does not run$/)]);
 });

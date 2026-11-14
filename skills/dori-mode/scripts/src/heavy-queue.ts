@@ -12,7 +12,8 @@ import { acquire, releaseSlot, type SlotDeps } from "./heavy-slot.ts";
 // back to the front of the line. Any other host sends its jobs to the queue host and runs them itself only while the
 // queue host cannot be reached.
 
-export type HeavyCtx = { readonly q: HeavyQueue; readonly deps: SlotDeps };
+// noShip: heavyNoShip for an archive heavySpread makes itself (heavy-upload.ts; unset: ~/data)
+export type HeavyCtx = { readonly q: HeavyQueue; readonly deps: SlotDeps; readonly noShip?: readonly string[] };
 
 export class HeavyJobError extends Error {}
 

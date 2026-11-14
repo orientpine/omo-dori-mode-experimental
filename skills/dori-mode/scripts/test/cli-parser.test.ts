@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { run } from "../src/run.ts";
+import { helpFor } from "../src/cli-context.ts";
 import { withState, viaEnvFile } from "./fakes.ts";
 
 const cli = join(import.meta.dir, "../src/cli.ts");
@@ -202,3 +203,15 @@ test("backlog add with a bare --why-new is refused before the item is written", 
     state.done();
   }
 }, 30_000);
+
+test("dori heavy --help prints every heavy block, the --items batch too (gongdori 2026-11-14 found none)", () => {
+  const h = helpFor("heavy");
+  for (const want of ["--items FILE", "--helpers-only", "--job <name>", "heavy hold-local", "--on HOST,..."]) expect(h).toContain(want);
+  expect(h.startsWith("dori heavy <label> [--mem SIZE] -- <command ...>")).toBe(true);
+  expect(h).not.toContain("gpu-room");
+});
+
+test("dori send --help keeps every line of its block, past the literal \\n it quotes (review 3 of #479)", () => {
+  const h = helpFor("send");
+  for (const want of ["--status (discord)", "--reply ID", "--again sends it anyway"]) expect(h).toContain(want);
+});

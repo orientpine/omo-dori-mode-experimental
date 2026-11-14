@@ -11,15 +11,15 @@ import { killAlive, readerLines, settle } from "./heavy-settle.ts";
 
 type Sink = { write(chunk: Uint8Array): number | Promise<number>; flush(): number | Promise<number>; end(): number | Promise<number> };
 
-// the job (job.json) and the --sync paths that exist, as one tar into the helper's stdin, its tar killed on cut (stale)
-// while it runs and put in kids; the bytes sent. With assets: the --sync paths' archive made once (heavy-assets.ts), its
-// bytes as they are, then a tar of job.json alone (the helper unpacks both with tar -i)
+// the --sync paths' archive made once and checked by the one archive builder (heavy-assets.ts), its bytes as they are,
+// then a tar of job.json alone (the helper unpacks both with tar -i), into the helper's stdin; its tar killed on cut
+// (stale) while it runs and put in kids; the bytes sent. No file of the --sync paths is ever tarred here (review 6 of #479:
+// one place lists what leaves); a helper too old to take assets= is left out (heavy-spread.ts startExec)
 export const sendTar = async (sink: Sink, job: SpreadJob, sync: readonly string[], took: (bytes: number) => void, cut: Promise<unknown>, kids: Bun.Subprocess[], changed?: (why: string) => void, assets?: Assets): Promise<number> => {
   const tmp = mkdtempSync(join(tmpdir(), "dori-spread-"));
   try {
     writeFileSync(join(tmp, "job.json"), JSON.stringify({ argv: job.cmd, cwd: job.cwd, sync, env: job.env, ...(job.back?.length ? { back: job.back } : {}) }));
-    const have = sync.filter((s) => existsSync(s)).map((s) => s.slice(1));
-    const tar = Bun.spawn(["tar", "-cf", "-", "-C", tmp, "job.json", ...(have.length && !assets ? ["-C", "/", ...have] : [])], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const tar = Bun.spawn(["tar", "-cf", "-", "-C", tmp, "job.json"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     kids.push(tar);
     let gone = false;
     void cut.then(() => {

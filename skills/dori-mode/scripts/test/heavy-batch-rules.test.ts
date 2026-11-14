@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
-import { batchCode, batchOf, ctxWith, fakeHelper, fresh, logs, realHelper, receipts, start, state, stop, work } from "./heavy-batch-fixture.ts";
+import { batchCode, batchOf, ctxWith, fakeHelper, fresh, logs, outOf, realHelper, receipts, start, state, stop, work } from "./heavy-batch-fixture.ts";
 
 // review 4 of #476: the three rules of the batch (the lead, 2026-11-14): a helper leaves only for a helper-level failure, OOM is the runner's word, --out is real and outside every upload
 beforeEach(start);
@@ -64,4 +64,80 @@ test("an --out inside a --tools tree that only later items upload is refused, th
   const code = await batchCode(ctxWith([]), batchOf(["../b.txt", "a.txt"], ["cat", `${work}/{item}`], { tools: ["rv"], out: join(install, "batch-results") }), who);
   expect(code).toBe(2);
   expect(logs.some((l) => l.startsWith(`HEAVY_BATCH_REFUSED b: --out ${join(install, "batch-results")} and the --sync path ${install}`))).toBe(true);
+});
+
+// PR C: a batch whose items would leave a no-ship folder behind runs no item at all
+test("a batch whose working folder is a heavyNoShip path runs no item (HEAVY_LOCAL_REFUSED)", async () => {
+  const data = join(state.dir, "data");
+  mkdirSync(join(data, "raw"), { recursive: true });
+  const ship = { noShip: [data], maxBytes: 1024 ** 3, heavyLog: join(state.dir, "heavy.log") };
+  expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["x"], ["true"], { cwd: join(data, "raw"), ship }))).toBe(2);
+  expect(logs.some((l) => l.startsWith("HEAVY_LOCAL_REFUSED b: 1 item(s) would run here, #1: the working folder ") && l.endsWith("no item ran (--local runs them on this host)"))).toBe(true);
+  expect(logs.some((l) => l.startsWith("HEAVY_BATCH_START"))).toBe(false);
+});
+
+// gongdori 2026-11-14 (#dori-pair 1571035412586168382): pick the hosts of a batch
+test("--on and --not-on keep a batch on the hosts named, and a name that is no host refuses it", async () => {
+  expect(await batchCode(ctxWith([realHelper("h1"), realHelper("h2")], false), batchOf(["1", "2", "3"], ["true"], { onHosts: ["h1"] }))).toBe(0);
+  expect(receipts().every((r) => r.host === "h1")).toBe(true);
+  fresh();
+  expect(await batchCode(ctxWith([realHelper("h1"), realHelper("h2")], false), batchOf(["1", "2", "3"], ["true"], { notOn: [hostname(), "h1"] }))).toBe(0);
+  expect(receipts().every((r) => r.host === "h2")).toBe(true);
+  fresh();
+  expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["1"], ["true"], { onHosts: ["h9"] }))).toBe(2);
+  expect(logs).toContain(`HEAVY_BATCH_REFUSED b: --on/--not-on name h9, which is no host here (known: h1, ${hostname()})`);
+  // an item that can run only here (it names a path outside --sync) and a batch kept off this host
+  fresh();
+  writeFileSync(join(state.dir, "b.txt"), "outside\n");
+  expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["../b.txt"], ["cat", `${work}/{item}`], { onHosts: ["h1"] }))).toBe(2);
+  expect(logs.some((l) => l.startsWith("HEAVY_BATCH_REFUSED b: item #1 can run only on this host (") && l.endsWith("), which --on/--not-on leave out"))).toBe(true);
+});
+
+// review 9 of #479: a helper named like this host would take --local's (and --on's) items, batch: false or not
+test("a helper named like this host refuses the batch before any item, and --local never contacts it", async () => {
+  const contacted = join(state.dir, "twin.contacted");
+  const twin = { ...fakeHelper(hostname(), `touch ${contacted}; exit 255`), batch: false };
+  expect(await batchCode(ctxWith([twin], false), batchOf(["1"], ["true"], { onHosts: [hostname()] }))).toBe(2);
+  expect(logs).toContain(`HEAVY_BATCH_REFUSED b: heavyQueue.helpers has a helper named ${hostname()}, this host's own name, so --local, --on and --not-on cannot tell them apart; rename that helper`);
+  expect(existsSync(contacted)).toBe(false);
+  // review 10: two helpers of one name, one of them batch: false, refuse the batch too, and neither is contacted
+  const off = { ...fakeHelper("dup", `touch ${contacted}; exit 255`), batch: false };
+  expect(await batchCode(ctxWith([off, fakeHelper("dup", `touch ${contacted}; exit 255`)], false), batchOf(["1"], ["true"]))).toBe(2);
+  expect(logs).toContain("HEAVY_BATCH_REFUSED b: heavyQueue.helpers names dup twice, so --on, --not-on and batch: false cannot tell them apart; give each helper its own name");
+  expect(existsSync(contacted)).toBe(false);
+});
+
+// the documented way to bring a venv along (references/scripts.md): --sync it, so each item's box has it
+test("a venv given with --sync runs each item on a helper, whose box has no /home of its own", async () => {
+  mkdirSync(join(work, ".venv", "bin"), { recursive: true });
+  symlinkSync("/usr/bin/python3", join(work, ".venv", "bin", "python"));
+  writeFileSync(join(work, "run.py"), "import sys; print('item', sys.argv[1])\n");
+  expect(await batchCode(ctxWith([realHelper("h1", 1)]), batchOf(["1", "2"], [join(work, ".venv", "bin", "python"), join(work, "run.py"), "{item}"]))).toBe(0);
+  const rs = receipts().sort((a, b) => a.n - b.n);
+  expect(rs.map((r) => [r.host, outOf(r)])).toEqual([["h1", "item 1\n"], ["h1", "item 2\n"]]);
+});
+
+// review 1 of #479
+test("an item every host left to it refuses ends the batch as failed instead of waiting for ever", async () => {
+  const bad = fakeHelper("bad", 'echo "WORKER_REFUSED program python3.99 not found" >&2; exit 1');
+  expect(await batchCode(ctxWith([bad]), batchOf(["1", "2"], ["true"], { onHosts: ["bad"] }))).toBe(1);
+  expect(receipts().map((r) => [r.n, r.host, r.exit]).sort()).toEqual([[1, "-", null], [2, "-", null]]);
+  expect(logs.some((l) => l.startsWith("HEAVY_BATCH_ITEM b #1 -: no host left: bad refused it (program python3.99 not found)"))).toBe(true);
+});
+
+test("a batch whose working folder goes along makes one archive for all its items; a path an item names outside --sync stops the batch", async () => {
+  const cwd = join(state.dir, "ext-cwd");
+  mkdirSync(cwd);
+  writeFileSync(join(cwd, "data.txt"), "data\n");
+  const ship = { noShip: [], maxBytes: 1024 ** 3, heavyLog: join(state.dir, "heavy.log") };
+  expect(await batchCode(ctxWith([realHelper("h1")]), batchOf(["1", "2"], ["cat", "data.txt"], { cwd, ship }))).toBe(0);
+  const rs = receipts();
+  expect(rs.map(outOf)).toEqual(["data\n", "data\n"]);
+  expect(rs[0]!.assets).toMatch(/^[0-9a-f]{64}$/);
+  expect(rs[1]!.assets).toBe(rs[0]!.assets);
+  expect(logs.filter((l) => l.startsWith("HEAVY_ASSET b:"))).toHaveLength(1);
+  fresh();
+  writeFileSync(join(state.dir, "outside.txt"), "x\n");
+  expect(await batchCode(ctxWith([realHelper("h1")]), batchOf(["1"], ["cat", join(state.dir, "outside.txt")], { ship: { ...ship, heavyLog: join(state.dir, "heavy.log") } }))).toBe(2);
+  expect(logs.some((l) => l.startsWith("HEAVY_LOCAL_REFUSED b: 1 item(s) would run here, #1: ") && l.includes(`(add --sync ${join(state.dir, "outside.txt")})`))).toBe(true);
 });

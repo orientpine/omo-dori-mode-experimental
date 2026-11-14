@@ -117,7 +117,8 @@ export const USAGE_MIDDLE = `  challenge <key> --plan FILE [--model M] [--all]
                                        run the lane's own command on the less busy PC: a heavyQueue.helpers host when this
                                        one is more than 15 points busier or refuses it, in a bwrap box with no network,
                                        the --sync folders copied there at the same paths and changed files copied back
-                                       (HEAVY_SPREAD / HEAVY_SYNC / HEAVY_BACK / HEAVY_DONE); paths outside --sync run here (HEAVY_LOCAL);
+                                       (HEAVY_SPREAD / HEAVY_SYNC / HEAVY_BACK / HEAVY_DONE); the working folder outside --sync
+                                       goes along (HEAVY_SHIP); another path stops it (HEAVY_LOCAL_REFUSED: add --sync; --local: here);
                                        the --sync paths go as one archive checked there by its sha256 (ASSET_OK: its bytes
                                        arrived as sent and tar took them; the unpacked tree is not walked again)
                                        no sign of life for heavyQueue.staleMin minutes: HEAVY_HELPER_STALE, exit 124
@@ -127,6 +128,12 @@ export const USAGE_MIDDLE = `  challenge <key> --plan FILE [--model M] [--all]
                                        job of any account but --except ones takes a slot here; one that may go to a helper
                                        goes there, the rest wait (HEAVY_HOLD_LOCAL lines name who, why and until); running
                                        jobs go on, and --job transcribe runs here (HEAVY_HOLD_EXEMPT)
+  heavy <label> --kind cpu|browser|gpu --sync PATH ... --items FILE [--mem-per-worker SIZE [--mem SIZE]] [--out DIR] [--on HOST,...] [--not-on HOST,...] -- <command with {item} and {n}>
+                                       one batch over this host and every helper at once (not batch: false ones; --on /
+                                       --not-on narrow them): each line of FILE a job of its own, up to --mem /
+                                       --mem-per-worker per host, none new on a host short of memory (HEAVY_BATCH_SHRINK),
+                                       a dead helper's or OOM item once more elsewhere (HEAVY_BATCH_RETRY); outputs and
+                                       receipts.jsonl (the host of each item) in --out (HEAVY_BATCH_DONE)
   heavy <label> --helpers-only --kind cpu|browser|gpu --sync PATH ... -- <command ...>
                                        the same, never on this host: it waits for a helper that admits it (it takes no
                                        slot or ticket here), exit 2 with HEAVY_HELPERS_ONLY when none can take it
