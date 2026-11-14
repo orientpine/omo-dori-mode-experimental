@@ -28,14 +28,47 @@ const realOr = (p: string): string | undefined => {
   }
 };
 
-// the files under p (p itself when it is a file), or why p may not leave this host: it is or holds a no-ship path, a link
-// under it leads into one, or it holds more than maxBytes
-export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number): { readonly files: ShipFile[] } | { readonly why: string } => {
+// the heavyNoShip path real (a realpath of) p is in or holds
+const hitOf = (noShip: readonly string[]): ((real: string) => string | undefined) => {
   const blocked = noShip.map(home).map((b) => realOr(b) ?? b);
-  const hit = (real: string): string | undefined => blocked.find((b) => within(real, b) || within(b, real));
+  return (real) => blocked.find((b) => within(real, b) || within(b, real));
+};
+const KEEP = "it never leaves this host: run it here with --local";
+
+// why a declared --sync path may not leave this host: it is or holds a heavyNoShip path, or a link under it leads into one
+// (review 5 of #479: the guard held only for what went along unasked). Nothing is kept: tar reads the same tree anyway.
+const noShipWhy = (p: string, hit: (real: string) => string | undefined): string | undefined => {
+  const at = hit(realOr(p) ?? p);
+  if (at) return `${p} is or holds ${at}, a heavyNoShip path`;
+  const walk = (f: string): string | undefined => {
+    let names: string[];
+    try {
+      const st = lstatSync(f);
+      if (st.isSymbolicLink()) {
+        const into = hit(realOr(f) ?? f);
+        return into ? `the link ${f} leads into ${into}, a heavyNoShip path` : undefined;
+      }
+      names = st.isDirectory() ? readdirSync(f) : [];
+    } catch {
+      return undefined; // what cannot be read cannot be archived either
+    }
+    for (const e of names) {
+      const why = walk(join(f, e));
+      if (why) return why;
+    }
+    return undefined;
+  };
+  return walk(p);
+};
+
+// the files under p (p itself when it is a file), or why p may not leave this host: it is or holds a no-ship path, a link
+// under it leads into one (keep: no --sync fixes that), or it holds more than maxBytes
+export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number): { readonly files: ShipFile[] } | { readonly why: string; readonly keep?: true } => {
+  const hit = hitOf(noShip);
   const top = realOr(p) ?? p;
   const at = hit(top);
-  if (at) return { why: `${p} is or holds ${at}, a heavyNoShip path that never leaves this host` };
+  if (at) return { why: `${p} is or holds ${at}, a heavyNoShip path that never leaves this host`, keep: true };
+  let keep = false;
   const files: ShipFile[] = [];
   let total = 0;
   // a path that is not there yet, or that cannot be read, is a reason to stop, not a throw (review 1 of #479)
@@ -53,6 +86,7 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
     if (st.isSymbolicLink()) {
       const to = realOr(f);
       const into = to && hit(to);
+      keep = !!into;
       return into ? `the link ${f} leads into ${into}, a heavyNoShip path that never leaves this host` : undefined;
     }
     if (st.isDirectory()) {
@@ -79,7 +113,7 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
     return total > maxBytes ? `${p} holds over ${Math.round(maxBytes / 1024 ** 2)}M (heavyShipMaxMb)` : undefined;
   };
   const why = walk(p);
-  return why ? { why } : { files };
+  return why ? { why, ...(keep ? { keep: true as const } : {}) } : { files };
 };
 
 // the job with its working folder (or that folder's whole git checkout) added to its --sync paths when that alone kept it
@@ -89,26 +123,42 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
 // own (HEAVY_LOCAL: a .dori-heavy-local file, a git checkout synced in part)
 // the fix line for a path only --sync may send, one that works (challenge of #479 r5): a path outside home and /tmp cannot
 // be a --sync path at all, and one already given with --sync needs that path fixed, not added again
-const syncFix = (p: string, sync: readonly string[], home: string): string => {
+const syncFix = (p: string, sync: readonly string[], home: string, hit: (real: string) => string | undefined): string => {
+  if (hit(realOr(p) ?? p)) return `${p} is in a heavyNoShip path: ${KEEP}`;
   const mayGo = (within(p, home) && p !== home) || (within(p, "/tmp") && p !== "/tmp");
   if (!mayGo) return "only paths in your home or /tmp go to a helper: copy it there and give that with --sync, or run it here with --local";
   return sync.includes(p) ? "it cannot go to a helper as given: fix that --sync path, or run it here with --local" : `a helper gets only the --sync paths and the working folder (add --sync ${p})`;
 };
 export type NotShipped = { readonly why: string; readonly refuse: boolean };
-export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }, noShip: readonly string[], maxBytes: number): Shipped | NotShipped => {
+// what one batch already weighed, keyed by path: its items share one walk and one inventory (review 5 of #479)
+export type ShipSeen = Map<string, string | undefined | ReturnType<typeof shipFiles>>;
+export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }, noShip: readonly string[], maxBytes: number, seen: ShipSeen = new Map()): Shipped | NotShipped => {
+  const hit = hitOf(noShip);
+  const once = <T extends string | undefined | ReturnType<typeof shipFiles>>(k: string, f: () => T): T => {
+    if (!seen.has(k)) seen.set(k, f());
+    return seen.get(k) as T;
+  };
   let j = job;
   const shipped: string[] = [];
-  const files: ShipFile[] = [];
+  let files: readonly ShipFile[] = [];
   for (let round = 0; round <= ROUNDS; round++) {
     const plan = spreadPlan(j, who);
-    if (plan.ok) return { job: j, plan, shipped, files };
-    if (plan.kind === "sync") return { why: `${plan.why}; ${syncFix(plan.path ?? "", j.sync, who.home)}`, refuse: true };
+    if (plan.ok) {
+      for (const s of job.sync) {
+        const why = once(`sync\0${s}`, () => noShipWhy(s, hit));
+        if (why) return { why: `--sync ${why}; ${KEEP}`, refuse: true };
+      }
+      return { job: j, plan, shipped, files };
+    }
+    if (plan.kind === "sync") return { why: `${plan.why}; ${syncFix(plan.path ?? "", j.sync, who.home, hit)}`, refuse: true };
     if (plan.kind !== "ship" || !plan.path) return { why: plan.why, refuse: false };
     if (round === ROUNDS) return { why: `${plan.why}; it is not sent along: the working folder and its checkout are already sent`, refuse: true };
-    const f = shipFiles(plan.path, noShip, maxBytes - files.reduce((n, x) => n + x.bytes, 0));
-    if ("why" in f) return { why: `${plan.why}; it is not sent along: ${f.why}; give the folders it needs with --sync instead`, refuse: true };
+    const left = maxBytes - files.reduce((n, x) => n + x.bytes, 0);
+    const path = plan.path;
+    const f = once(`ship\0${left}\0${path}`, () => shipFiles(path, noShip, left));
+    if ("why" in f) return { why: `${plan.why}; it is not sent along: ${f.why}; ${f.keep ? KEEP : "give the folders it needs with --sync instead"}`, refuse: true };
     shipped.push(plan.path);
-    files.push(...f.files);
+    files = files.length ? [...files, ...f.files] : f.files;
     j = { ...j, sync: [...j.sync, plan.path] };
   }
   return { why: "unreachable", refuse: true };

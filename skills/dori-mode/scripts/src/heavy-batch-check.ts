@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import type { BatchJob } from "./heavy-batch.ts";
 import { fmtMem } from "./heavy-mem.ts";
-import { shipMissing, type ShipFile } from "./heavy-ship.ts";
+import { shipMissing, type ShipFile, type ShipSeen } from "./heavy-ship.ts";
 import { nearestExisting, spreadPlan, within, type Plan, type SpreadJob } from "./heavy-spread.ts";
 
 // What refuses a dori heavy --items batch before any item (HEAVY_BATCH_REFUSED, exit 2), and which hosts it may use.
@@ -36,10 +36,12 @@ export const shipItems = (b: BatchJob, jobs: readonly SpreadJob[], who: { readon
   const shipped = new Map<string, ShipFile[]>();
   if (!b.ship) return { items: jobs.map((job) => ({ job, plan: spreadPlan(job, who) })), stops, shipped };
   const { noShip, maxBytes } = b.ship;
+  // one walk and one inventory per path for the whole batch, shared by its items (review 5 of #479)
+  const seen: ShipSeen = new Map();
   const each = jobs.map((job, i) => {
-    const s = shipMissing(job, who, noShip, maxBytes);
+    const s = shipMissing(job, who, noShip, maxBytes, seen);
     if ("refuse" in s && s.refuse) stops.push(`#${i + 1}: ${s.why}`);
-    if ("job" in s) for (const p of s.shipped) shipped.set(p, s.files.filter((f) => within(f.path, p)));
+    if ("job" in s) for (const p of s.shipped) if (!shipped.has(p)) shipped.set(p, s.files.filter((f) => within(f.path, p)));
     return s;
   });
   const bytes = [...new Map([...shipped.values()].flat().map((f) => [f.path, f.bytes])).values()].reduce((n, x) => n + x, 0);
