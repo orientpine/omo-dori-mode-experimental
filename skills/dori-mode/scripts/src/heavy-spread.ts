@@ -11,6 +11,7 @@ import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, p
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
 import { assetsOptOk, assetsWord, stager, unpackChecked, type Stager } from "./heavy-assets.ts";
+import { ownerBusy, ownerOptOk } from "./heavy-owner-pc.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
@@ -67,7 +68,7 @@ export type SpreadJob = {
   // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), globs of what comes back (--back, heavy-back.ts); helpersOnly: never this host's slot (--helpers-only)
   readonly tools?: readonly string[];
   readonly back?: readonly string[]; readonly helpersOnly?: boolean; readonly out?: Sink; readonly err?: Sink; readonly runner?: Sink; // out, err: where its lines go (a batch item's own files, heavy-batch.ts), else this process's; runner: the helper's own lines (never the command's), else err
-  readonly staleAgain?: boolean; readonly assets?: Stager; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts); assets: the job's or batch's one archive of its --sync paths (heavy-assets.ts)
+  readonly staleAgain?: boolean; readonly assets?: Stager; readonly helperWords?: readonly string[]; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts); assets: the job's or batch's one archive of its --sync paths (heavy-assets.ts); helperWords: idle= cap= for an owner's PC (heavy-owner-pc.ts)
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
 // which the helper must have before it takes the job
@@ -445,7 +446,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const needOk = (o: string): boolean => o.startsWith("need=") && NEED_PATH.test(o.slice(5)) && !o.split("/").includes("..") && inProgramDirs(o.slice(5));
   const whichOk = (o: string): boolean => /^which=[\w.+@-]{1,64}$/.test(o) && !/^which=\.+$/.test(o);
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
-  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && !assetsOptOk(o) && o !== "back");
+  const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && !assetsOptOk(o) && !ownerOptOk(o) && o !== "back");
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
   const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : (hostRefusal(ctx.q.kinds, kind, opts) ?? memRefusal(opts, ctx.deps.headroom?.free ?? 10));
   if (off) return d.refuse(label, off);
@@ -463,12 +464,11 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const playwright = opts.find((o) => o.startsWith("playwright="))?.slice("playwright=".length);
   const mem = Number(opts.find((o) => o.startsWith("mem="))?.slice(4)) || undefined;
   const below = Number(belowS);
-  if (below < 100) {
-    const b = await busyOf(ctx, kind);
-    if (b >= below) {
-      console.error(`WORKER_BUSY this host is ${b}% busy (${kind}), not under ${below}%`);
-      return 75;
-    }
+  const b = below < 100 ? await busyOf(ctx, kind) : 0;
+  const busy = ownerBusy(opts, mem) ?? (below < 100 && b >= below ? `this host is ${b}% busy (${kind}), not under ${below}%` : undefined);
+  if (busy) {
+    console.error(`WORKER_BUSY ${busy}`);
+    return 75;
   }
   const t = await admitOnce(ctx.deps, label, settleFor(kind), mem && mem / 1024);
   if (!t || !("slot" in t)) {

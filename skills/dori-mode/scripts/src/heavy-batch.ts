@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { HeavyHelper } from "./config.ts";
 import { stager } from "./heavy-assets.ts";
 import { allowedHost, refusal, shipItems } from "./heavy-batch-check.ts";
+import { ownerTakes, ownerWords } from "./heavy-owner-pc.ts";
 import { fileSink, pump, watched, type Sink } from "./heavy-batch-sink.ts";
 import { NESTED_ENV } from "./heavy-here.ts";
 import { fmtMem, spawnScoped } from "./heavy-mem.ts";
@@ -34,8 +35,7 @@ export type BatchJob = {
   // this host's environment for its items (dori heavy --tools: a tool installed off PATH first on it, heavy-tools.ts toolsHere)
   readonly hereEnv?: Readonly<Record<string, string | undefined>>;
   readonly onHosts?: readonly string[]; readonly notOn?: readonly string[]; // --on / --not-on (heavy-batch-check.ts allowedHost)
-  // an item's folder or file outside --sync goes along within these, else no item runs (heavy-ship.ts); absent: --local, or no helper
-  readonly ship?: { readonly noShip: readonly string[]; readonly maxBytes: number; readonly heavyLog: string };
+  readonly ship?: { readonly noShip: readonly string[]; readonly maxBytes: number; readonly heavyLog: string }; // an item's folder or file outside --sync goes along within these, else no item runs (heavy-ship.ts); absent: --local, or no helper
 };
 type BatchTry = { readonly host: string; readonly result: string }; type Refusal = { readonly host: string; readonly why: string };
 // assets: the sha256 of the --sync archive a helper ran it on, one for the whole batch (heavy-assets.ts)
@@ -88,7 +88,7 @@ const offerHere = async (ctx: HeavyCtx, b: BatchJob, it: Item, out: Sink, err: S
 
 // one item on a helper (heavy-spread.ts startExec), its lines into the item's own files; a stale run is ended there, and abandon says it left something running (heavy-stale.ts), so the CLI exits once the batch is done, as heavySpread's caller does
 const offerHelper = async (ctx: HeavyCtx, h: HeavyHelper, it: Item, plan: Extract<Plan, { ok: true }>, out: Sink, err: Sink, abandon: () => void, oom: () => void): Promise<Offer> => {
-  const job = { ...it.job, out, err, runner: watched(err, (l) => oomOf(it.job.label)(l) && oom()) };
+  const job = { ...it.job, out, err, runner: watched(err, (l) => oomOf(it.job.label)(l) && oom()), ...(h.owner ? { helperWords: ownerWords(h.owner) } : {}) };
   const t = unsafeRemote(job, plan) ?? (await startExec(ctx, h, job, plan, 100));
   if (t.kind !== "started") return t;
   const done = t.run.done.then(async (code): Promise<Outcome> => {
@@ -115,7 +115,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
     log(`HEAVY_LOCAL_REFUSED ${b.label}: ${stops.length} item(s) would run here, ${stops[0]}; no item ran (--local runs them on this host)`);
     return { code: 2, abandoned };
   }
-  const usable = [...ctx.q.helpers.filter((h) => h.batch !== false).map((h) => h.name), hostname()].filter((n) => allowedHost(b, n));
+  const usable = [...ctx.q.helpers.filter((h) => h.batch !== false && ownerTakes(h.owner, b.kind)).map((h) => h.name), hostname()].filter((n) => allowedHost(b, n));
   const why = refusal(b, pending.map((it) => it.plan), { known: [...ctx.q.helpers.map((h) => h.name), hostname()], usable, here: hostname() });
   if (why) {
     log(`HEAVY_BATCH_REFUSED ${b.label}: ${why}`);
