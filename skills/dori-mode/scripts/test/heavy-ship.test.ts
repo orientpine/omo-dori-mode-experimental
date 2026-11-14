@@ -180,12 +180,33 @@ test("a folder marked .dori-heavy-local stays here, with or without --sync, befo
   expect(r.code).toBe(0);
 }, 60_000);
 
-test("a working folder inside a git checkout --sync leaves out sends the whole checkout along, never part of it", () => {
+// review 4 of #479: only --sync and the working folder go (the lead's preset fallback); a checkout is never picked for the user
+test("a working folder inside a git checkout --sync leaves out stops the job and names the checkout's --sync, with or without --sync", () => {
   const repo = join(home, "repo");
   mkdirSync(join(repo, "sub"), { recursive: true });
   writeFileSync(join(repo, "README"), "r\n");
   Bun.spawnSync(["git", "init", "-q", repo]);
-  const s = shipMissing({ ...job(["true"]), cwd: join(repo, "sub") }, who, [], 1024 ** 3);
-  if (!("plan" in s)) throw new Error(s.why);
-  expect(s.shipped).toEqual([repo]);
+  for (const sync of [[other], []]) expect(shipMissing({ ...job(["true"]), cwd: join(repo, "sub"), sync }, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${repo})`) });
+});
+
+test("a marker in an outer --sync folder keeps the job here whichever order the --sync paths come in", () => {
+  const p = join(home, "p");
+  mkdirSync(join(p, "sub"), { recursive: true });
+  writeFileSync(join(p, ".dori-heavy-local"), "keep here\n");
+  for (const sync of [[join(p, "sub"), p], [p, join(p, "sub")]]) expect(shipMissing({ ...job(["true"]), cwd: join(p, "sub"), sync }, who, [], 1024 ** 3)).toMatchObject({ refuse: false, why: `${join(p, ".dori-heavy-local")}: keep here` });
+});
+
+test("a path with : or a space given with --sync runs, whether its cut-off start exists or not", () => {
+  mkdirSync(join(home, "in"));
+  for (const name of ["input:part.txt", "input file.txt"]) {
+    const named = join(home, "in", name);
+    writeFileSync(named, "this\n");
+    for (const prefix of [false, true]) {
+      if (prefix) writeFileSync(join(home, "in", "input"), "not this\n");
+      const s = shipMissing({ ...job(["cat", named]), sync: [other, named] }, who, [], 1024 ** 3);
+      if (!("plan" in s)) throw new Error(`${name} prefix=${prefix}: ${s.why}`);
+      expect(s.shipped).toEqual([]);
+      rmSync(join(home, "in", "input"), { force: true });
+    }
+  }
 });

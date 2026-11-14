@@ -100,13 +100,14 @@ const linksIn = (root: string): [string, string][] => {
 // Whether the job can run on another host unchanged: every path it needs travels with --sync, and every --sync path is
 // this account's own (home or /tmp, owned, no link on the way, no ..), --tools trees too. Else it runs here (HEAVY_LOCAL).
 export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }): Plan => {
-  // kind (heavy-ship.ts, review 3 of #479): "ship", the working folder or its checkout, sent along; "sync", a path only --sync may send; none: it runs here
+  // kind (heavy-ship.ts, #479 r3-4): "ship" sends the working folder; "sync" only --sync may send (no guess, no auto checkout); none: here.
   const no = (why: string, kind?: "ship" | "sync", path?: string): Plan => ({ ok: false, why, ...(kind && path ? { kind, path } : {}) });
-  // a folder that must run here (its tests start boxes and systemd scopes, which a helper's box cannot) is known first
   const top = gitTop(job.cwd);
-  const stay = stayHere(job.cwd, top ?? job.sync.find((s) => within(job.cwd, s)) ?? who.home);
+  const outer = job.sync.map((s) => normalize(s).replace(/(.)\/$/, "$1")).filter((s) => within(job.cwd, s)).sort((a, b) => a.length - b.length)[0];
+  const stay = stayHere(job.cwd, top ?? outer ?? who.home);
   if (stay) return no(stay);
-  if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)", "ship", job.cwd);
+  const inTop = top && top !== who.home && (within(top, who.home) || within(top, "/tmp")) ? top : undefined;
+  if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)", inTop ? "sync" : "ship", inTop ?? job.cwd);
   if (backGlobProblem(job.back)) return no(backGlobProblem(job.back)!);
   const tp = toolPlan(job.tools ?? [], { path: who.path ?? process.env["PATH"] ?? "", home: who.home });
   if ("why" in tp) return no(tp.why);
@@ -124,13 +125,12 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
     }
     roots.push(p);
   }
-  // a path inside another --sync path travels with it
-  const sync = [...new Set(roots)].sort((a, b) => a.length - b.length).filter((p, i, all) => !all.slice(0, i).some((q) => within(p, q)));
+  const sync = [...new Set(roots)].sort((a, b) => a.length - b.length).filter((p, i, all) => !all.slice(0, i).some((q) => within(p, q))); // a path inside another travels with it
   const covered = (p: string): boolean => sync.some((s) => within(p, s)) || SYSTEM.some((s) => within(p, s));
-  if (top && top !== who.home && (within(top, who.home) || within(top, "/tmp")) && !sync.some((s) => within(top, s))) return no(`the working folder is in the git checkout ${top}, which --sync carries only in part (its tests read the rest); add --sync ${top}`, sync.some((s) => within(job.cwd, s)) ? undefined : "ship", top);
+  if (inTop && !sync.some((s) => within(inTop, s))) return no(`the working folder is in the git checkout ${inTop}, which --sync carries only in part (its tests read the rest)${sync.some((s) => within(job.cwd, s)) ? `; add --sync ${inTop}` : ""}`, sync.some((s) => within(job.cwd, s)) ? undefined : "sync", inTop);
   if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, "ship", job.cwd);
-  // an argument that is one existing path is weighed whole, so a prefix that happens to be covered cannot stand for it
-  for (const arg of job.cmd) for (const p of [...(isAbsolute(arg) && existsSync(arg) ? [normalize(arg)] : []), ...pathsIn(arg)]) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, "sync", p);
+  // an argument that is one existing path is weighed whole, instead of its pieces: a covered prefix cannot stand for it, nor an uncovered one refuse it
+  for (const arg of job.cmd) for (const p of isAbsolute(arg) && existsSync(arg) ? [normalize(arg)] : pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, "sync", p);
   // A system program the job starts is checked on the helper before it takes the job: a venv's python links to the
   // system python it was made with, and on a helper without that version the link dangles in the box, so the run printed
   // nothing (2026-11-07: a check of two runs on a helper without the venv's python read two empty logs as the same).
