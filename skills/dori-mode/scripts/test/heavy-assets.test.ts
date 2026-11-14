@@ -191,6 +191,50 @@ test("an archive whose tar is gone while a child of it holds its output is given
   }
 });
 
+test("the archive has no name on disk while it is held, so nothing is left whatever ends the caller (review 7 of #477)", async () => {
+  const st = stager(stage, "t", (l) => logs.push(l));
+  const a = await st.get([work]);
+  if (!a || "why" in a) throw new Error(`not staged: ${JSON.stringify(a)}`);
+  expect(readdirSync(stage)).toEqual([]);
+  expect((await Bun.file(a.path).arrayBuffer()).byteLength).toBe(a.bytes);
+  st.drop();
+  const child = join(state.dir, "stage-and-wait.ts");
+  writeFileSync(child, `import { stager } from ${JSON.stringify(join(import.meta.dir, "../src/heavy-assets.ts"))};\nconst a = await stager(process.argv[2]!, "t", () => {}).get([process.argv[3]!]);\nconsole.log(a && "sha" in a ? "STAGED" : "NOT");\nawait Bun.sleep(600_000);\n`);
+  const p = Bun.spawn([process.execPath, child, stage, work], { stdout: "pipe", stderr: "ignore" });
+  const first = await p.stdout.getReader().read();
+  expect(new TextDecoder().decode(first.value)).toBe("STAGED\n");
+  p.kill("SIGKILL");
+  await p.exited;
+  expect(readdirSync(stage)).toEqual([]);
+});
+
+test("a staging write that fails ends the archive's tar and says why (review 7 of #477)", async () => {
+  const mark = `y.${process.pid}`;
+  try {
+    const r = await stageAssets([work], stage, { argv: ["yes", mark], write: (): never => { throw new Error("ENOSPC: no space left on device"); } });
+    expect(r).toEqual({ why: "archiving the --sync paths failed: Error: ENOSPC: no space left on device" });
+    expect(Bun.spawnSync(["pgrep", "-f", `^yes ${mark}$`]).exitCode).toBe(1);
+    expect(readdirSync(stage)).toEqual([]);
+  } finally {
+    Bun.spawnSync(["pkill", "-f", `^yes ${mark}$`]);
+  }
+});
+
+test("a staging folder that cannot be made is a failure to say, not a throw (review 7 of #477)", async () => {
+  const r = await stageAssets([work], join(work, "data.txt", "stage"));
+  expect(r && "why" in r ? r.why : r).toStartWith("archiving the --sync paths failed: ");
+});
+
+test("a name a stager killed between open and unlink left is swept by the next one, not one of a live process", async () => {
+  mkdirSync(stage);
+  const dead = Bun.spawnSync(["true"]).pid;
+  writeFileSync(join(stage, `assets-${dead}-x.tar`), "");
+  writeFileSync(join(stage, `assets-${process.pid}-y.tar`), "");
+  const r = await stageAssets([work], stage);
+  expect(r && "assets" in r).toBe(true);
+  expect(readdirSync(stage)).toEqual([`assets-${process.pid}-y.tar`]);
+});
+
 test("an archive cut short on the way is ASSET_BAD", async () => {
   const r = await stageAssets([work], stage);
   if (!r || "why" in r) throw new Error(`not staged: ${JSON.stringify(r)}`);
