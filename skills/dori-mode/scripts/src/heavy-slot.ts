@@ -95,6 +95,8 @@ const tryAdmit = async (deps: SlotDeps, label: string, memKb?: number, settleSec
   if (ownerMemPct !== undefined && !(memKb && h)) return { wait: "memory", why: "the owner's memory cap cannot be weighed here (no estimate or no headroom sample)" };
   if (memKb && h) {
     const s = await usage(h);
+    // the owner's cap with a sample that read no memory: wait, never admit unweighed (review 2 of #480)
+    if (ownerMemPct !== undefined && !(s.memTotalKb > 0)) return { wait: "memory", why: "the owner's memory cap cannot be weighed here (the memory sample read nothing)" };
     if (s.memTotalKb > 0) {
       const reservedKb = running.reduce((a, r, i) => a + Math.max(0, slotMemKb(deps, r.n) - ((s.jobs[i]?.mem ?? 0) * s.memTotalKb) / 100), 0);
       const owner = ownerMemPct === undefined ? undefined : ownerMemWhy(s.memTotalKb, (s.memTotalKb * s.host.mem) / 100, reservedKb, memKb, ownerMemPct);

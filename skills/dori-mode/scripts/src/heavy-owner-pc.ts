@@ -63,7 +63,6 @@ export const ownerBusy = (opts: readonly string[], needBytes = 0, now = Date.now
   if (away) return away;
   const cap = CAP.exec(opts.find((o) => CAP.test(o)) ?? "");
   if (!cap) return undefined;
-  if (!needBytes) return "an item on the owner's PC needs a memory estimate (dori heavy --mem-per-worker) to be held to its memory cap, so it waits for another host";
   const u = use();
   const [cpuMax, memMax] = [Number(cap[1]), Number(cap[2])];
   if (u.cpuPct >= cpuMax) return `this PC is ${Math.round(u.cpuPct)}% busy (cpu), its batch cap is ${cpuMax}%`;
@@ -80,4 +79,13 @@ export const ownerMemCap = (opts: readonly string[]): number | undefined => {
 export const ownerMemWhy = (totalKb: number, usedKb: number, reservedKb: number, needKb: number, capPct: number): string | undefined => {
   const pct = totalKb > 0 ? ((usedKb + reservedKb + needKb) / totalKb) * 100 : 100;
   return pct > capPct ? `memory with it and the running items' reservations would be ${Math.round(pct)}% used, over the owner's memory cap of ${capPct}%` : undefined;
+};
+// why an item can never start on the owner's PC, so it is refused there, never kept waiting (review 2 of #480): no memory
+// estimate to hold to the memory cap, or one over the whole cap
+export const ownerNever = (opts: readonly string[], needBytes: number | undefined, use: () => Use = useNow): string | undefined => {
+  const capPct = ownerMemCap(opts);
+  if (capPct === undefined) return undefined;
+  if (!needBytes) return "an item on the owner's PC needs a memory estimate (dori heavy --mem-per-worker) to be held to its memory cap";
+  const total = use().memTotal;
+  return total > 0 && (needBytes / total) * 100 > capPct ? `its ${Math.round(needBytes / 1024 ** 3)}G estimate is over the owner's memory cap of ${capPct}% by itself` : undefined;
 };

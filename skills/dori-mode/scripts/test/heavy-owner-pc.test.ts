@@ -4,7 +4,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 
 import type { HeavyHelper } from "../src/config.ts";
-import { notAway, ownerBusy, ownerTakes, ownerWords } from "../src/heavy-owner-pc.ts";
+import { notAway, ownerBusy, ownerNever, ownerTakes, ownerWords } from "../src/heavy-owner-pc.ts";
 import { helperVerdict } from "../src/heavy-queue.ts";
 import { admitOnce, type SlotDeps } from "../src/heavy-slot.ts";
 import { batchCode, batchOf, ctxWith, logs, realHelper, receipts, start, state, stop } from "./heavy-batch-fixture.ts";
@@ -64,7 +64,7 @@ test("a batch item goes to the owner's PC only while he is away; while he is on 
   // this host frees after a second, so the item that cha keeps waiting runs here
   const ctx = ctxWith([on], true, undefined, true);
   setTimeout(() => rmSync(join(state.dir, "heavy", "slot.1"), { recursive: true, force: true }), 1000);
-  expect(await batchCode(ctx, batchOf(["x"], ["true"]))).toBe(0);
+  expect(await batchCode(ctx, batchOf(["x"], ["true"], { memPerWorker: 64 * 1024 ** 2 }))).toBe(0);
   expect(receipts()).toMatchObject([{ host: hostname(), exit: 0 }]);
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_WAIT b cha: busy: the owner is on this PC (screen not locked"))).toBe(true);
 }, 60_000);
@@ -83,13 +83,18 @@ test("an idle file whose time cannot be or is in the future is unreadable, so th
   expect(notAway(20, NOW, idleFile(dir, { at: iso(NOW + 10 * 60_000), locked: true, lastInputAt: iso(NOW) }))).toContain("cannot be read");
 });
 
-// review 1 of #480: an item with no memory estimate cannot be held to the owner's memory cap, so it waits elsewhere
-test("an item without a memory estimate waits for another host on the owner's PC", () => {
-  const file = idleFile(join(state.dir, "est"), { at: iso(NOW), locked: true, lastInputAt: iso(NOW) });
+// reviews 1-2 of #480: an item with no memory estimate, or one over the owner's whole memory cap, can never start there,
+// so the owner's PC refuses it (the batch sends it elsewhere or ends it), never only busy
+test("an item without a memory estimate or over the whole memory cap is refused on the owner's PC, not kept waiting", async () => {
   const use = () => ({ cpuPct: 0, memTotal: 100 * 1024 ** 3, memAvail: 90 * 1024 ** 3 });
-  expect(ownerBusy(ownerWords({ idleMin: 20, cpuPct: 50, memPct: 40 }), 0, NOW, file, use)).toContain("needs a memory estimate");
-  expect(ownerBusy(ownerWords({ idleMin: 20, cpuPct: 50, memPct: 40 }), 1024 ** 3, NOW, file, use)).toBeUndefined();
-});
+  const words = ownerWords({ idleMin: 20, cpuPct: 50, memPct: 40 });
+  expect(ownerNever(words, 0, use)).toContain("needs a memory estimate");
+  expect(ownerNever(words, 50 * 1024 ** 3, use)).toContain("over the owner's memory cap of 40%");
+  expect(ownerNever(words, 1024 ** 3, use)).toBeUndefined();
+  const away = ownerHelper({ at: iso(Date.now()), locked: true, lastInputAt: iso(Date.now()) });
+  expect(await batchCode(ctxWith([away]), batchOf(["x"], ["true"], { onHosts: ["cha"] }))).not.toBe(0);
+  expect(receipts()).toMatchObject([{ n: 1, refused: [{ host: "cha", why: expect.stringContaining("needs a memory estimate") }] }]);
+}, 60_000);
 
 // review 1 of #480: the owner's memory cap counts what running items reserved and do not use yet, under the slot lock
 test("the owner's memory cap counts running items' reservations at admission", async () => {
@@ -104,4 +109,8 @@ test("the owner's memory cap counts running items' reservations at admission", a
   expect(capped && "wait" in capped ? capped.why : capped).toContain("owner's memory cap");
   const free = await admitOnce(deps, "item", 0, 20 * gb);
   expect(free && "slot" in free).toBe(true);
+  // review 2: with the owner's cap, a memory sample that read nothing waits instead of admitting unweighed
+  const blind = { ...deps, headroom: { ...deps.headroom, usage: async () => ({ ...(await usage()), memTotalKb: 0 }) } } as unknown as SlotDeps;
+  const unweighed = await admitOnce(blind, "item2", 0, 20 * gb, 40);
+  expect(unweighed && "wait" in unweighed ? unweighed.why : unweighed).toContain("owner's memory cap cannot be weighed");
 });
