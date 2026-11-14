@@ -7,7 +7,7 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, removeTree, stopWithCaller, TarError } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
-import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
+import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote, upPaths } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
 import { assetsOptOk, assetsWord, unpackChecked, type Stager } from "./heavy-assets.ts";
@@ -130,7 +130,7 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   if (inTop && !sync.some((s) => within(inTop, s))) return no(`the working folder is in the git checkout ${inTop}, which --sync carries only in part (its tests read the rest)${sync.some((s) => within(job.cwd, s)) ? `; add --sync ${inTop}` : ""}`, sync.some((s) => within(job.cwd, s)) ? undefined : "sync", inTop);
   if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, "ship", job.cwd);
   // an argument that is one existing path is weighed whole, instead of its pieces: a covered prefix cannot stand for it, nor an uncovered one refuse it
-  for (const arg of job.cmd) for (const p of isAbsolute(arg) && existsSync(arg) ? [normalize(arg)] : pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, "sync", p);
+  for (const arg of job.cmd) for (const p of isAbsolute(arg) && existsSync(arg) ? [normalize(arg)] : [...pathsIn(arg), ...upPaths(arg === job.cmd[0] ? "" : arg, job.cwd)]) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, "sync", p);
   // A system program the job starts is checked on the helper before it takes the job: a venv's python links to the
   // system python it was made with, and on a helper without that version the link dangles in the box, so the run printed
   // nothing (2026-11-07: a check of two runs on a helper without the venv's python read two empty logs as the same).

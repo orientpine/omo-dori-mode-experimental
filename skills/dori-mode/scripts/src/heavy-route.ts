@@ -1,5 +1,5 @@
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
-import { dirname, isAbsolute, join, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
 import type { ArgvTemplate } from "./config.ts";
 import { type MemInfo, neverFits, readMeminfo } from "./heavy-mem.ts";
@@ -140,6 +140,11 @@ export const refusals = (now: () => number) => {
 };
 
 // the git checkout a folder is in, or undefined
+// the paths a relative argument (whole, or after = , or :) names outside the working folder, such as ../input.txt: weighed
+// like an absolute one, so a helper never runs the job without them (review 6 of #479)
+export const upPaths = (arg: string, cwd: string): string[] =>
+  [arg, ...arg.split(/[=,:]/).slice(1)].filter((a) => a && !isAbsolute(a) && a.split("/").includes("..")).map((a) => resolve(cwd, a)).filter((p) => p !== cwd && !p.startsWith(`${cwd}/`));
+
 export const gitTop = (dir: string): string | undefined => {
   const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
   const top = p.exitCode === 0 ? p.stdout.toString().trim() : "";

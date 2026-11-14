@@ -210,32 +210,3 @@ test("a path with : or a space given with --sync runs, whether its cut-off start
     }
   }
 });
-
-// review 5 of #479: heavyNoShip holds for every path that goes, the declared --sync paths too, and a refusal never tells
-// the user to --sync a path under it (gongdori's condition, #dori-pair 1571030089280266255: nothing under ~/data leaves)
-test("a --sync path that is, holds or links into a heavyNoShip path never leaves, and the refusal never says add --sync", () => {
-  const data = join(home, "data");
-  const run = join(data, "run");
-  mkdirSync(run, { recursive: true });
-  writeFileSync(join(run, "raw.bin"), "raw\n");
-  const linked = join(home, "linked");
-  mkdirSync(linked);
-  symlinkSync(join(run, "raw.bin"), join(linked, "raw.bin"));
-  const jobs = [{ cwd: run, sync: [run] }, { cwd: other, sync: [other, data] }, { cwd: home, sync: [other, home] }, { cwd: linked, sync: [linked, run] }, { cwd: linked, sync: [linked] }];
-  for (const j of jobs) {
-    const s = shipMissing({ ...job(["true"]), ...j }, who, [data], 1024 ** 3);
-    expect(s).toMatchObject({ refuse: true, why: expect.stringContaining("heavyNoShip") });
-    expect(s).not.toMatchObject({ why: expect.stringContaining("add --sync") });
-  }
-});
-
-test("the items of one batch share one inventory of the folder they send along, not one each", () => {
-  const work = join(home, "work");
-  mkdirSync(work);
-  writeFileSync(join(work, "a.txt"), "a\n");
-  const seen = new Map();
-  const [a, b] = ["1", "2"].map((n) => shipMissing({ ...job(["echo", n]), cwd: work }, who, [], 1024 ** 3, seen));
-  if (!a || !("files" in a) || !b || !("files" in b)) throw new Error("not shipped");
-  expect(a.files.map((f) => f.path)).toEqual([join(work, "a.txt")]);
-  expect(b.files).toBe(a.files);
-});

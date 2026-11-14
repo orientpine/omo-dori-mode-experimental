@@ -144,7 +144,8 @@ export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonl
   for (let round = 0; round <= ROUNDS; round++) {
     const plan = spreadPlan(j, who);
     if (plan.ok) {
-      for (const s of job.sync) {
+      // every root that is archived, the --tools trees too (review 6 of #479); what went along unasked was weighed above
+      for (const s of plan.sync.filter((r) => !shipped.includes(r))) {
         const why = once(`sync\0${s}`, () => noShipWhy(s, hit));
         if (why) return { why: `--sync ${why}; ${KEEP}`, refuse: true };
       }
