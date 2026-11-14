@@ -7,7 +7,7 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, removeTree, stopWithCaller, TarError } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
-import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
+import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
 import { assetsOptOk, assetsWord, unpackChecked, type Stager } from "./heavy-assets.ts";
@@ -97,23 +97,6 @@ const linksIn = (root: string): [string, string][] => {
   return out;
 };
 
-// the git checkout a folder is in, or undefined
-const gitTop = (dir: string): string | undefined => {
-  const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
-  const top = p.exitCode === 0 ? p.stdout.toString().trim() : "";
-  return top && isAbsolute(top) ? normalize(top) : undefined;
-};
-
-// STAY_FILE in the working folder or a folder above it up to `root`: its first line says why the job runs here only
-export const STAY_FILE = ".dori-heavy-local";
-const stayHere = (cwd: string, root: string): string | undefined => {
-  for (let at = cwd; ; at = dirname(at)) {
-    const f = join(at, STAY_FILE);
-    if (existsSync(f)) return `${f}: ${readFileSync(f, "utf8").split("\n").map((l) => l.trim()).find(Boolean)?.slice(0, 200) ?? "runs here only"}`;
-    if (at === root || !within(at, root) || at === "/") return undefined;
-  }
-};
-
 // Whether the job can run on another host unchanged: every path it needs travels with --sync, and every --sync path is
 // this account's own (home or /tmp, owned, no link on the way, no ..), --tools trees too. Else it runs here (HEAVY_LOCAL).
 export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }): Plan => {
@@ -139,15 +122,15 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   // a path inside another --sync path travels with it
   const sync = [...new Set(roots)].sort((a, b) => a.length - b.length).filter((p, i, all) => !all.slice(0, i).some((q) => within(p, q)));
   const covered = (p: string): boolean => sync.some((s) => within(p, s)) || SYSTEM.some((s) => within(p, s));
-  if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, job.cwd);
-  // a test run reads its whole checkout (docs, fixtures, sibling folders) by relative path, which no argument names: a
-  // checkout synced in part fails on the helper and passes here (2026-11-02: scripts/ only, 171 of 744 failed there)
+  // a folder that says it must run here, and a checkout synced in part (its tests read the rest by relative path), are
+  // known before the working folder is weighed for sending along (review 2 of #479; 2026-11-02: scripts/ only, 171 of
+  // 744 failed there); a path cut off at a space is never one to send along, only one that keeps the job here
   const top = gitTop(job.cwd);
-  if (top && top !== who.home && (within(top, who.home) || within(top, "/tmp")) && !sync.some((s) => within(top, s))) return no(`the working folder is in the git checkout ${top}, which --sync carries only in part (its tests read the rest); add --sync ${top}`);
-  // a folder that says it must run here (its tests start boxes and systemd scopes themselves, which a helper's box cannot)
-  const stay = stayHere(job.cwd, top ?? sync.find((s) => within(job.cwd, s))!);
+  const stay = stayHere(job.cwd, top ?? sync.find((s) => within(job.cwd, s)) ?? who.home);
   if (stay) return no(stay);
-  for (const arg of job.cmd) for (const p of pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, p);
+  if (top && top !== who.home && (within(top, who.home) || within(top, "/tmp")) && !sync.some((s) => within(top, s))) return no(`the working folder is in the git checkout ${top}, which --sync carries only in part (its tests read the rest); add --sync ${top}`, sync.some((s) => within(job.cwd, s)) ? undefined : top);
+  if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, job.cwd);
+  for (const arg of job.cmd) for (const p of pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, /\s/.test(arg) ? undefined : p);
   // A system program the job starts is checked on the helper before it takes the job: a venv's python links to the
   // system python it was made with, and on a helper without that version the link dangles in the box, so the run printed
   // nothing (2026-11-07: a check of two runs on a helper without the venv's python read two empty logs as the same).

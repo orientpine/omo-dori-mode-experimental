@@ -1,4 +1,5 @@
-import { closeSync, existsSync, openSync, readdirSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
+import { dirname, isAbsolute, join, normalize } from "node:path";
 
 import type { ArgvTemplate } from "./config.ts";
 import { type MemInfo, neverFits, readMeminfo } from "./heavy-mem.ts";
@@ -136,4 +137,21 @@ export const refusals = (now: () => number) => {
     final: (names: readonly string[]): boolean => names.length > 0 && names.every((n) => live(n) && m.get(n)?.kind !== "stale"),
     list: (): string => [...m].map(([n, r]) => `${n}: ${r.why}`).join("; "),
   };
+};
+
+// the git checkout a folder is in, or undefined
+export const gitTop = (dir: string): string | undefined => {
+  const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
+  const top = p.exitCode === 0 ? p.stdout.toString().trim() : "";
+  return top && isAbsolute(top) ? normalize(top) : undefined;
+};
+
+// STAY_FILE in the working folder or a folder above it up to `root`: its first line says why the job runs here only
+const STAY_FILE = ".dori-heavy-local";
+export const stayHere = (cwd: string, root: string): string | undefined => {
+  for (let at = cwd; ; at = dirname(at)) {
+    const f = join(at, STAY_FILE);
+    if (existsSync(f)) return `${f}: ${readFileSync(f, "utf8").split("\n").map((l) => l.trim()).find(Boolean)?.slice(0, 200) ?? "runs here only"}`;
+    if (at === root || !`${at}/`.startsWith(`${root}/`) || at === "/") return undefined;
+  }
 };

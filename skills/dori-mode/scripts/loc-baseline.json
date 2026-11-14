@@ -8,7 +8,7 @@
   "src/explore.ts": 665,
   "src/handover.ts": 917,
   "src/heavy-mem.ts": 251,
-  "src/heavy-spread.ts": 564,
+  "src/heavy-spread.ts": 547,
   "src/intent-check.ts": 432,
   "src/lane-handover.ts": 1345,
   "src/lane-signals.ts": 349,

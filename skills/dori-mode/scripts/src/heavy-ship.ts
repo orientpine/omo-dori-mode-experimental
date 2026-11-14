@@ -1,4 +1,4 @@
-import { appendFileSync, lstatSync, readdirSync, realpathSync } from "node:fs";
+import { accessSync, appendFileSync, constants, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -69,6 +69,11 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
       return undefined;
     }
     if (!st.isFile()) return undefined;
+    try {
+      accessSync(f, constants.R_OK);
+    } catch (e) {
+      return unread(f, e);
+    }
     total += st.size;
     files.push({ path: f, bytes: st.size });
     return total > maxBytes ? `${p} holds over ${Math.round(maxBytes / 1024 ** 2)}M (heavyShipMaxMb)` : undefined;

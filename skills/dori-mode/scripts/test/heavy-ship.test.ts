@@ -132,3 +132,45 @@ test("a path outside --sync that does not exist yet, or cannot be read, stops th
     chmodSync(join(home, "locked"), 0o755);
   }
 });
+
+// review 2 of #479
+test("a file outside --sync that cannot be read stops the job with why, though its folder can be", () => {
+  const p = join(home, "shut", "x.txt");
+  mkdirSync(join(home, "shut"));
+  writeFileSync(p, "x\n");
+  chmodSync(p, 0o000);
+  try {
+    expect(shipMissing(job(["cat", p]), who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`could not be read here to send it along (EACCES at ${p})`) });
+  } finally {
+    chmodSync(p, 0o644);
+  }
+});
+
+test("a path with a space is never sent along by its cut-off start, even when that start exists", () => {
+  mkdirSync(join(home, "in"));
+  writeFileSync(join(home, "in", "input"), "not this\n");
+  writeFileSync(join(home, "in", "input file.txt"), "this\n");
+  const s = shipMissing(job(["cat", join(home, "in", "input file.txt")]), who, [], 1024 ** 3);
+  expect(s).toMatchObject({ refuse: false, why: expect.stringContaining("is not in a --sync path") });
+});
+
+test("a working folder that says it runs here (.dori-heavy-local) stays here before anything of it is weighed for sending", async () => {
+  const work = join(home, "big-local");
+  mkdirSync(work);
+  writeFileSync(join(work, ".dori-heavy-local"), "keep here\n");
+  writeFileSync(join(work, "a.bin"), "x".repeat(2 * 1024 ** 2));
+  const r = await heavy(work, [], { heavyShipMaxMb: 1 });
+  expect(r.err).toContain(`HEAVY_LOCAL t: ${join(work, ".dori-heavy-local")}: keep here`);
+  expect(r.err).not.toContain("HEAVY_LOCAL_REFUSED");
+  expect(r.code).toBe(0);
+}, 60_000);
+
+test("a working folder inside a git checkout --sync leaves out sends the whole checkout along, never part of it", () => {
+  const repo = join(home, "repo");
+  mkdirSync(join(repo, "sub"), { recursive: true });
+  writeFileSync(join(repo, "README"), "r\n");
+  Bun.spawnSync(["git", "init", "-q", repo]);
+  const s = shipMissing({ ...job(["true"]), cwd: join(repo, "sub") }, who, [], 1024 ** 3);
+  if (!("plan" in s)) throw new Error(s.why);
+  expect(s.shipped).toEqual([repo]);
+});
