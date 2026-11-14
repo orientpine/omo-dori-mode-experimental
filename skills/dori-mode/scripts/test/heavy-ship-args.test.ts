@@ -70,6 +70,13 @@ test("a new absolute output named with a space or a colon beside the working fol
   const url = { ...job(["printf", "%s\\n", "https://example.org/a", "--url=https://example.org/b:8080"]), cwd: work, sync: [work] };
   expect(shipMissing(url, who, [], 1024 ** 3)).toHaveProperty("plan");
   expect(shipItems(batchOf([], []), [url], who).stops).toEqual([]);
+  // review 17: //path is an absolute path on Linux, never a URL piece: unsynced, an input or a new output stops
+  writeFileSync(join(home, "in.txt"), "in\n");
+  for (const arg of [`/${join(home, "in.txt")}`, `/${join(home, "res", "result.txt")}`]) {
+    const dj = { ...job(["touch", arg]), cwd: work, sync: [work] };
+    expect({ arg, s: shipMissing(dj, who, [], 1024 ** 3) }).toMatchObject({ arg, s: { refuse: true, why: expect.stringContaining("is not in a --sync path") } });
+    expect(shipItems(batchOf([], []), [dj], who).stops).toEqual([expect.stringContaining("is not in a --sync path")]);
+  }
   const data = join(home, "data");
   mkdirSync(join(data, "lib"), { recursive: true });
   const dj = { ...job(["env", `PYTHONPATH=${join(data, "lib")}:lib`, "true"]), cwd: work, sync: [work] };

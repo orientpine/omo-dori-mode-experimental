@@ -146,8 +146,9 @@ export const refusals = (now: () => number) => {
 // (a bare lib is not: being there cannot tell it from a new output's name, review 14, so ./lib it)
 // (-cp /a.jar:/b.jar, PYTHONPATH=/lib:.); else the word itself (a new output, /tmp/work result.bin). A relative one counts
 // with . or .. only.
-const pathWord = (w: string): boolean => (isAbsolute(w) && !w.startsWith("//")) || w === "." || w.startsWith("./") || w.split("/").includes("..");
-// a URL (https://..., s3://...) names no path here, whole or in pieces (review 16 of #479)
+const pathWord = (w: string): boolean => isAbsolute(w) || w === "." || w.startsWith("./") || w.split("/").includes("..");
+// a URL (https://..., s3://...) names no path here; a list is never cut at its scheme's : (review 16 of #479), while
+// //path stays an absolute path (review 17)
 const URL_WORD = /^[a-z][a-z0-9+.-]*:\/\//i;
 export const argPaths = (arg: string, cwd: string): string[] => {
   const words = (w: string): string[] => {
@@ -155,7 +156,7 @@ export const argPaths = (arg: string, cwd: string): string[] => {
     if (existsSync(isAbsolute(w) ? w : `${cwd}/${w}`)) return [w];
     const eq = w.indexOf("=");
     if (eq > 0 && !w.slice(0, eq).includes("/")) return words(w.slice(eq + 1));
-    const parts = w.split(/[,:]/);
+    const parts = w.split(/,|:(?!\/\/)/);
     if (parts.length < 2) return [w];
     // all path-shaped: a list; mixed: the whole word and its path-shaped items, so none is dropped (review 15: lib:../shared)
     return parts.every(pathWord) ? parts.flatMap(words) : [w, ...parts.filter(pathWord).flatMap(words)];
