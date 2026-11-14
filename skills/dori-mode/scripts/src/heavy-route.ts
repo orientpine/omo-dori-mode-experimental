@@ -143,8 +143,9 @@ export const refusals = (now: () => number) => {
 // the git checkout a folder is in, or undefined
 // the paths one argument names, each weighed whole, never by a covered prefix (reviews 6-11 of #479): a path there as
 // written; else the value after a key's first = (if=..., --in=...); else a , or : list whose items are all paths
-// (-cp /a.jar:/b.jar); else the word itself (a new output, /tmp/work result.bin). A relative one counts with a .. only.
-const pathWord = (w: string): boolean => isAbsolute(w) || w.split("/").includes("..");
+// (-cp /a.jar:/b.jar, PYTHONPATH=/lib:.); else the word itself (a new output, /tmp/work result.bin). A relative one counts
+// with . or .. only.
+const pathWord = (w: string): boolean => isAbsolute(w) || w === "." || w.startsWith("./") || w.split("/").includes("..");
 export const argPaths = (arg: string, cwd: string): string[] => {
   const words = (w: string): string[] => {
     if (!w || existsSync(isAbsolute(w) ? w : `${cwd}/${w}`)) return w ? [w] : [];

@@ -155,8 +155,3 @@ The lead set #479's threat model on 2026-11-14. `heavyNoShip` keeps a trusted Do
 - a hard link to a file under `~/data`.
 
 What would close it: the builder opens every entry itself (`openat` with `O_NOFOLLOW` from the root down) and writes the tar stream from those descriptors, so no name is opened twice. Hard links: refuse a regular file whose link count is over 1 and whose other names are not known to be inside the upload.
-
-## dori heavy --kind argument paths: two loud refusals left by #479 (review 12, lead scope 2026-11-14)
-
-- A mixed path list such as `PYTHONPATH=/tmp/lib:.` is weighed as one name, because `.` and `./lib` are not seen as path items, so a fully synced job stops with `HEAVY_LOCAL_REFUSED`. What would close it: `argPaths` takes `.` and `./x` as relative list items, resolved against the working folder. Add single-job and batch tests for mixed lists.
-- For a new output, such as `/tmp/results/result.bin`, the refusal says `add --sync /tmp/results/result.bin`, but a missing `--sync` root is made as a folder on the helper, so `dd of=` there then fails. What would close it: suggest the nearest existing folder above it, or a place inside a synced folder. Add an end-to-end test that follows the advice and gets a regular file back.

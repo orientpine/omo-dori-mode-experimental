@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { BatchJob } from "../src/heavy-batch.ts";
 import { shipItems } from "../src/heavy-batch-check.ts";
@@ -189,16 +189,25 @@ test("a new absolute output named with a space or a colon beside the working fol
   mkdirSync(work);
   for (const out of [`${work} result.txt`, `${work}:out.txt`]) {
     const j = { ...job(["touch", out]), cwd: work, sync: [work] };
-    expect(shipMissing(j, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${out})`) });
-    expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${out})`)]);
+    expect(shipMissing(j, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${dirname(out)})`) });
+    expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${dirname(out)})`)]);
   }
   expect(shipMissing({ ...job(["touch", join(work, "new.txt")]), cwd: work, sync: [work] }, who, [], 1024 ** 3)).toHaveProperty("plan");
   // review 11: an assigned or relative new output is weighed whole too; an absolute list of synced paths still runs
   for (const [arg, out] of [[`of=${work} result.bin`, `${work} result.bin`], ["../work:result.txt", `${work}:result.txt`]] as const) {
     const j = { ...job(["dd", arg]), cwd: work, sync: [work] };
-    expect({ arg, s: shipMissing(j, who, [], 1024 ** 3) }).toMatchObject({ arg, s: { refuse: true, why: expect.stringContaining(`(add --sync ${out})`) } });
-    expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${out})`)]);
+    expect({ arg, s: shipMissing(j, who, [], 1024 ** 3) }).toMatchObject({ arg, s: { refuse: true, why: expect.stringContaining(`(add --sync ${dirname(out)})`) } });
+    expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${dirname(out)})`)]);
   }
+  // the lead after review 12: the advice names the new output's folder (a missing --sync root is a folder on a helper),
+  // and doing what it says lets the job go
+  const res = join(home, "results");
+  const nj = { ...job(["dd", "if=/dev/zero", `of=${join(res, "result.bin")}`]), cwd: work, sync: [work] };
+  expect(shipMissing(nj, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${res})`) });
+  expect(shipMissing({ ...nj, sync: [work, res] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  // and . or .. in a list is a path item: a covered PYTHONPATH=<lib>:. runs
+  mkdirSync(join(home, "lib"));
+  expect(shipMissing({ ...job(["env", `PYTHONPATH=${join(home, "lib")}:.`, "true"]), cwd: work, sync: [work, join(home, "lib")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
   writeFileSync(join(home, "a.jar"), "a");
   writeFileSync(join(home, "b.jar"), "b");
   const jars = [join(home, "a.jar"), join(home, "b.jar")];

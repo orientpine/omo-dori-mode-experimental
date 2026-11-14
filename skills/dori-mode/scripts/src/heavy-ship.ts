@@ -1,6 +1,6 @@
-import { accessSync, appendFileSync, constants, lstatSync, readdirSync, realpathSync } from "node:fs";
+import { accessSync, appendFileSync, constants, existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { spreadPlan, within, type Plan, type SpreadJob } from "./heavy-spread.ts";
 import { archiveList } from "./heavy-upload.ts";
@@ -98,10 +98,14 @@ export const shipFiles = (p: string, maxBytes: number): { readonly files: ShipFi
 // be a --sync path at all, and one already given with --sync needs that path fixed, not added again
 const syncFix = (p: string, sync: readonly string[], home: string, hit: (real: string) => string | undefined): string => {
   if (hit(realOr(p) ?? p)) return `${p} is in a heavyNoShip path: ${KEEP}`;
-  const mayGo = (within(p, home) && p !== home) || (within(p, "/tmp") && p !== "/tmp");
-  if (!mayGo) return "only paths in your home or /tmp go to a helper: copy it there and give that with --sync, or run it here with --local";
-  return sync.includes(p) ? "it cannot go to a helper as given: fix that --sync path, or run it here with --local" : `a helper gets only the --sync paths and the working folder (add --sync ${p})`;
+  // a path not there yet (a new output) is named by its folder: a missing --sync root is made as a folder on a helper,
+  // so --sync <the file> would fail there (the lead after review 12 of #479)
+  const at = existsSync(p) ? p : dirname(p);
+  const mayGo = (within(at, home) && at !== home) || (within(at, "/tmp") && at !== "/tmp");
+  if (!mayGo) return at === p ? "only paths in your home or /tmp go to a helper: copy it there and give that with --sync, or run it here with --local" : "a new output goes to a helper only inside a folder given with --sync: write it into one, or run it here with --local";
+  return sync.includes(p) ? "it cannot go to a helper as given: fix that --sync path, or run it here with --local" : `a helper gets only the --sync paths and the working folder (add --sync ${at})`;
 };
+
 export type NotShipped = { readonly why: string; readonly refuse: boolean };
 // what one batch already weighed, keyed by path: its items share one walk and one inventory (review 5 of #479)
 export type ShipSeen = Map<string, string | undefined | ReturnType<typeof shipFiles>>;

@@ -118,7 +118,7 @@ test("a file outside --sync the command names is never sent: the job stops and s
     writeFileSync(p, "x\n");
   }
   expect(shipMissing(job(["cat", ...files]), who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${files[0]})`) });
-  expect(shipMissing(job(["touch", join(home, "later", "new.txt")]), who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${join(home, "later", "new.txt")})`) });
+  expect(shipMissing(job(["touch", join(home, "later", "new.txt")]), who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${join(home, "later")})`) });
 });
 
 test("a path cut out of an argument (at a space or a :) stops the job, whether its cut-off start exists or not", () => {
