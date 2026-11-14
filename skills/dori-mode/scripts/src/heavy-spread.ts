@@ -4,13 +4,13 @@ import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:pa
 
 import type { HeavyHelper } from "./config.ts";
 import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
-import { newJobDir, onStop, removeTree, stopWithCaller, TarError, unpackFrom } from "./heavy-job.ts";
+import { newJobDir, onStop, removeTree, stopWithCaller, TarError } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { archOf, boxDev, execWords, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
-import { assetsOptOk, assetsWord, checkAssets } from "./heavy-assets.ts";
+import { assetsOptOk, assetsWord, unpackChecked, type Stager } from "./heavy-assets.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
@@ -67,7 +67,7 @@ export type SpreadJob = {
   // the helper tool bundles the job needs (dori heavy --tools, heavy-tools.ts), globs of what comes back (--back, heavy-back.ts); helpersOnly: never this host's slot (--helpers-only)
   readonly tools?: readonly string[];
   readonly back?: readonly string[]; readonly helpersOnly?: boolean; readonly out?: Sink; readonly err?: Sink; readonly runner?: Sink; // out, err: where its lines go (a batch item's own files, heavy-batch.ts), else this process's; runner: the helper's own lines (never the command's), else err
-  readonly staleAgain?: boolean; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts)
+  readonly staleAgain?: boolean; readonly assets?: Stager; // --stale-again: a stale helper run goes back to the line instead of ending (heavy-stale.ts); assets: the job's or batch's one archive of its --sync paths (heavy-assets.ts)
 };
 // needs: the system programs the job starts (its first word, links in its --sync paths that lead into a system folder),
 // which the helper must have before it takes the job
@@ -228,13 +228,14 @@ export const copyBack = (back: string, sync: readonly string[]): { files: number
   return n;
 };
 
-type Sink = { write(s: string): unknown }; type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<number | null | Stale> };
+type Sink = { write(s: string): unknown }; type Started = { readonly helper: string; readonly id: string | undefined; readonly done: Promise<number | null | Stale>; readonly assets?: string };
 type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets = true): Promise<HelperTry> => {
-  const word = assets ? await assetsWord(plan.sync, (l) => ctx.deps.log?.(`HEAVY_ASSET ${job.label} ${h.name}: ${l}`)) : undefined; // the --sync trees by hash (heavy-assets.ts); a helper that does not know assets= is asked once more without it
-  const args = execWords(job, plan, below, word);
+  const a = assets ? await job.assets?.get(plan.sync) : undefined; // the --sync paths as one archive checked by its sha256 there (heavy-assets.ts); a helper that does not know assets= is asked once more without it
+  if (a && "why" in a) return { kind: "refused", why: a.why };
+  const args = execWords(job, plan, below, a && assetsWord(a));
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // ssh, tar and untar stay in the caller's process group: a Ctrl-C on its terminal ends them with it
   const reader = p.stderr.getReader();
   const lines = readerLines(reader);
@@ -245,7 +246,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
     await letGo(p, reader, answered ? STALE_GRACE_MS : 0);
     if (!answered) return { kind: "down", why: `no answer to the admission within ${staleMs / 60_000} min (heavyQueue.staleMin)` };
     if (!verdict) return { kind: "down", why: last || `ssh exited ${p.exitCode ?? p.signalCode}` };
-    if (word && verdict[1] === "REFUSED" && verdict[2]?.startsWith('unknown option "assets=')) return startExec(ctx, h, job, plan, below, false);
+    if (a && verdict[1] === "REFUSED" && verdict[2]?.startsWith('unknown option "assets=')) return startExec(ctx, h, job, plan, below, false);
     return helperVerdict(verdict[1] ?? "", verdict[2] ?? "");
   }
   const stop = onStop(() => p.kill("SIGKILL"));
@@ -280,7 +281,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
   kids.push(untar);
   const done = (async (): Promise<number | null | Stale> => {
     let sent = -1;
-    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`));
+    const up = sendTar(p.stdin, plan.toolEnv ? { ...job, env: { ...job.env, ...plan.toolEnv } } : job, plan.sync, watch.sent, watch.stale, kids, (why) => ctx.deps.log?.(`HEAVY_SYNC_CHANGED ${job.label} ${h.name}: ${why}; sent as read (tar exit 1), the job runs on that`), a);
     try {
       sent = await Promise.race([up, watch.stale.then(() => -1)]);
       watch.synced();
@@ -303,7 +304,7 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
       rmSync(back, { recursive: true, force: true });
     }
   })();
-  return { kind: "started", run: { helper: h.name, done, id: runOf(verdict?.[2] ?? "") } };
+  return { kind: "started", run: { helper: h.name, done, id: runOf(verdict?.[2] ?? ""), ...(a ? { assets: a.sha } : {}) } };
 };
 
 // abandoned: a stale run left something not ended (HEAVY_STALE_LEFT): the caller exits without waiting on it
@@ -502,7 +503,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   let cmdName = "-";
   let inBytes = 0;
   try {
-    await unpackFrom("inherit", root, opts.some((o) => o.startsWith("assets=")));
+    if (!(await unpackChecked(root, opts, log))) return 3;
     inBytes = duBytes(root);
     let raw: unknown = null;
     try {
@@ -518,7 +519,6 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
       return 3;
     }
     cmdName = basename(spec.argv[0]!);
-    await checkAssets(root, spec.sync, opts, log);
     for (const p of spec.sync) if (!existsSync(join(root, p))) mkdirSync(join(root, p), { recursive: true });
     beat.set("playwright");
     if (playwright && kind === "browser" && d.tools.browsersDir) await ensurePlaywright(playwright, d.tools.browsersDir, log);

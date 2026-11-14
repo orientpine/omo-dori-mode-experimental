@@ -1,121 +1,157 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 
-// Each --sync path a job sends goes with its hash (assets=, one per path), and the helper checks what arrived against it
-// (owner 2026-11-14 "가용한 모든 리소스를 효율적으로 쓸수있게 해", gongdori's E7: a code tree and a uv environment sent to
-// every helper of a batch). The hash is of the tree's contents (review 1 of #477: equal size and mtime said nothing of the
-// bytes): the root's name, every path with its type and mode (review 2: a mode-only change is another input), a file's
-// bytes, a link's target (a folder's size and mtime differ between file systems and change as tar fills it). A job that
-// sends assets= is unpacked with its modes kept (tar -p, heavy-job.ts unpackFrom, review 3), so the helper's umask does
-// not change what arrives. Hashing is asynchronous, so a caller's other transfers and a helper's heartbeat go on.
-// Nothing is kept between jobs: every job sends its trees into its own folder, which goes when the job ends (review 4 of
-// #477 found a shared store's pruning racing a job taking an entry, read-only folders it could not delete and old mtimes
-// on a cached copy; lead 2026-11-14: "작업마다 그 작업 폴더로 새로 올리고 해시(ASSET_OK) 확인 ... 캐시 재사용은
-// docs/follow-ups.md로. 더 느려도 맞는 게 먼저야").
+// A job's --sync paths go to a helper as one tar archive made once, here, and checked there by its sha256 (owner
+// 2026-11-14 "가용한 모든 리소스를 효율적으로 쓸수있게 해", gongdori's E7: a code tree and a uv environment sent to every helper
+// of a batch). ASSET_OK means the archive's bytes arrived as they left and tar -x took them; the unpacked tree is not
+// walked again (lead 2026-11-14, #477 H334: reviews 1-6 found one canonical-tree-hash edge after another - modes, umask,
+// newlines, stalls, memory, UTF-8 - while checking one upload needs no canonical form, F405-F409). A batch archives its
+// --sync once and every helper gets the same bytes, so its receipts show one digest per item (lead's condition 1).
+// The archive is made into a private file under a watch: no bytes for STAGE_STALL_MS (a file on a hung mount) and tar is
+// killed; tar exit 1 (a file changed while read) is sent as read, as an upload always was; any other exit offers the job
+// to no helper (it runs here). The helper reads its stdin itself: the archive's bytes, hashed as they pass, then the job's
+// own small job.json archive, both into one tar -i -x, and the job runs only when tar ended well and the digest matched.
+// Nothing is kept between jobs (review 4 of #477; reuse is a follow-up, docs/follow-ups.md).
 
-const HASH = /^[0-9a-f]{32}$/;
-const NONE = "-";
-export const ASSETS_MAX = 64;
-// Hashing reads every byte, so a file whose bytes stop coming (a hung mount) would hold the job before the caller's
-// upload watchdog or the helper's run limit starts (review 5 of #477): it gives up after HASH_STALL_MS without progress,
-// cancels its reads and its find, and the path counts as not hashed. read: how a file's bytes are read (tests stall it).
-export const HASH_STALL_MS = 60_000;
-export type HashOpts = { readonly stallMs?: number; readonly read?: (path: string) => ReadableStream<Uint8Array> };
-// the watch cancels every read and kills find when it gives up, which ends a pending read; a read is awaited alone, never
-// raced against a promise that stays pending (review 6 of #477: each race kept its chunk until the hash ended)
-type Watch = { beat: () => void; readonly stops: Set<() => void>; isStalled: () => boolean; end: () => void };
-const watchFor = (stallMs: number): Watch => {
+export const STAGE_STALL_MS = 60_000;
+export type Assets = { readonly path: string; readonly sha: string; readonly bytes: number };
+// argv: what makes the archive (tests give one that stalls or fails)
+export type StageOpts = { readonly stallMs?: number; readonly argv?: readonly string[] };
+type Staged = { readonly assets: Assets; readonly changed?: string } | { readonly why: string };
+
+const WORD = /^assets=([0-9a-f]{64}):(\d{1,15})$/;
+export const assetsWord = (a: Assets): string => `assets=${a.sha}:${a.bytes}`;
+export const assetsOptOk = (o: string): boolean => WORD.test(o);
+
+// the watch kills tar when it gives up, which ends the read; a read is awaited alone, never raced against a promise that
+// stays pending (review 6 of #477: each race kept its chunk until the end)
+const watchFor = (stallMs: number, stop: () => void): { beat: () => void; isStalled: () => boolean; end: () => void } => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let gone = false;
-  const stops = new Set<() => void>();
   const beat = (): void => {
     clearTimeout(timer);
     timer = setTimeout(() => {
       gone = true;
-      for (const s of stops) s();
+      stop();
     }, stallMs);
   };
   beat();
-  return { beat, stops, isStalled: () => gone, end: () => clearTimeout(timer) };
-};
-// a stream read to its end, each chunk a sign of progress; false when the watch gave up first (the read is cancelled)
-const drain = async (s: ReadableStream<Uint8Array>, w: Watch, take: (c: Uint8Array) => void): Promise<boolean> => {
-  const r = s.getReader();
-  const stop = (): void => void r.cancel().catch(() => undefined);
-  w.stops.add(stop);
-  try {
-    for (;;) {
-      const x = await r.read();
-      if (w.isStalled()) return false;
-      if (x.done) return true;
-      w.beat();
-      take(x.value);
-    }
-  } finally {
-    w.stops.delete(stop);
-  }
+  return { beat, isStalled: () => gone, end: () => clearTimeout(timer) };
 };
 
-// the hash of one --sync path's tree, or undefined when it is not there, cannot be listed or read, stalls, or holds a name
-// or link target that is not UTF-8 (review 6 of #477: decoding would merge such bytes). Each row is a JSON tuple, so no
-// name or link target can move a separator (review 5 of #477: a newline in a link target)
-export const assetHash = async (root: string, o: HashOpts = {}): Promise<string | undefined> => {
-  if (!existsSync(root)) return undefined;
-  const w = watchFor(o.stallMs ?? HASH_STALL_MS);
-  const read = o.read ?? ((p: string) => Bun.file(p).stream());
+// the job's --sync paths as one archive in a private folder under dir, with its sha256 and size
+export const stageAssets = async (sync: readonly string[], dir: string, o: StageOpts = {}): Promise<Staged | undefined> => {
+  const have = sync.filter((s) => existsSync(s)).map((s) => s.slice(1));
+  if (!have.length && !o.argv) return undefined;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const at = mkdtempSync(join(dir, "assets-"));
+  const path = join(at, "sync.tar");
+  // tar's stderr goes to a file, not a pipe: a child of it that holds its pipes cannot keep this waiting on them
+  const p = Bun.spawn([...(o.argv ?? ["tar", "-cf", "-", "-C", "/", ...have])], { stdin: "ignore", stdout: "pipe", stderr: Bun.file(join(at, "tar.err")) });
+  const r = p.stdout.getReader();
+  const stallMs = o.stallMs ?? STAGE_STALL_MS;
+  // on a stall the read is cancelled too: tar may be gone while a child of it still holds its stdout
+  const w = watchFor(stallMs, () => {
+    p.kill("SIGKILL");
+    r.cancel().catch(() => undefined);
+  });
+  const h = createHash("sha256");
+  const file = Bun.file(path).writer();
+  let bytes = 0;
+  const fail = (why: string): Staged => {
+    rmSync(at, { recursive: true, force: true });
+    return { why };
+  };
   try {
-    const p = Bun.spawn(["find", root, "-printf", "%P\\0%y\\0%m\\0%l\\0"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-    const kill = (): void => void p.kill("SIGKILL");
-    w.stops.add(kill);
-    const chunks: Uint8Array[] = [];
-    if (!(await drain(p.stdout, w, (c) => chunks.push(c)))) return undefined;
-    const code = await p.exited;
-    w.stops.delete(kill);
-    if (code !== 0) return undefined;
-    const f = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)).split("\0");
-    const rows: string[] = [JSON.stringify(["", "root", basename(root)])];
-    for (let i = 0; i + 3 < f.length; i += 4) {
-      const [path, type, mode, link] = f.slice(i, i + 4) as [string, string, string, string];
-      if (type === "f") {
-        const h = createHash("sha256");
-        if (!(await drain(read(path ? join(root, path) : root), w, (c) => h.update(c)))) return undefined;
-        rows.push(JSON.stringify([path, "f", mode, h.digest("hex")]));
-      } else rows.push(JSON.stringify(type === "l" ? [path, "l", link] : [path, type, mode]));
+    for (let x = await r.read(); !x.done && !w.isStalled(); x = await r.read()) {
+      w.beat();
+      h.update(x.value);
+      file.write(x.value);
+      await file.flush();
+      bytes += x.value.byteLength;
     }
-    return createHash("sha256").update(rows.sort().join("\n")).digest("hex").slice(0, 32);
-  } catch {
-    return undefined;
+    await file.end();
+    if (w.isStalled()) return fail(`the --sync paths gave no bytes for ${stallMs / 1000} s while they were archived (a hung mount?)`);
+    const code = await p.exited;
+    const first = (await Bun.file(join(at, "tar.err")).text()).trim().split("\n")[0]?.slice(0, 200) ?? "";
+    if (code !== 0 && code !== 1) return fail(`archiving the --sync paths failed (exit ${code}: ${first})`);
+    return { assets: { path, sha: h.digest("hex"), bytes }, ...(code === 1 ? { changed: first } : {}) };
+  } catch (e) {
+    return fail(`archiving the --sync paths failed: ${String(e).slice(0, 200)}`);
   } finally {
     w.end();
   }
 };
-const stallWords = (o: HashOpts): string => `no progress for ${Math.round((o.stallMs ?? HASH_STALL_MS) / 1000)} s, unreadable, or a name not in UTF-8`;
 
-// the caller's assets= word for the --sync paths, in their order ("-" for one that is not there, or not hashed: say tells)
-export const assetsWord = async (sync: readonly string[], say: (line: string) => void, o: HashOpts = {}): Promise<string> => {
-  const hashes: string[] = [];
-  for (const p of sync) {
-    const h = await assetHash(p, o);
-    if (h === undefined && existsSync(p)) say(`${p} could not be hashed (${stallWords(o)}), so it goes without one`);
-    hashes.push(h ?? NONE);
-  }
-  return `assets=${hashes.join(",")}`;
+// one job's or one batch's archives, made on first use for a --sync list and removed by drop; a why when it failed
+export type Stager = { readonly get: (sync: readonly string[]) => Promise<Assets | { readonly why: string } | undefined>; readonly drop: () => void };
+export const stager = (dir: string, label: string, log: (l: string) => void, o: StageOpts = {}): Stager => {
+  const made = new Map<string, Promise<Assets | { readonly why: string } | undefined>>();
+  const paths: string[] = [];
+  const get: Stager["get"] = (sync) => {
+    const key = JSON.stringify(sync);
+    let p = made.get(key);
+    if (!p) {
+      p = stageAssets(sync, dir, o).then((r) => {
+        if (!r) return undefined;
+        if ("why" in r) {
+          log(`HEAVY_ASSET_UNSENT ${label}: ${r.why}; no helper is offered it`);
+          return { why: r.why };
+        }
+        paths.push(r.assets.path);
+        if (r.changed) log(`HEAVY_SYNC_CHANGED ${label}: ${r.changed}; archived as read (tar exit 1), the job runs on that`);
+        log(`HEAVY_ASSET ${label}: --sync archived once, sha256 ${r.assets.sha}, ${r.assets.bytes} bytes; every helper gets these bytes`);
+        return r.assets;
+      });
+      made.set(key, p);
+    }
+    return p;
+  };
+  return {
+    get,
+    drop: () => {
+      for (const p of paths.splice(0)) rmSync(dirname(p), { recursive: true, force: true });
+    },
+  };
 };
-export const assetsOptOk = (o: string): boolean => o.startsWith("assets=") && o.slice(7).split(",").length <= ASSETS_MAX && o.slice(7).split(",").every((h) => h === NONE || HASH.test(h));
-const hashesOf = (opts: readonly string[]): string[] => opts.find((o) => o.startsWith("assets="))?.slice(7).split(",") ?? [];
 
-// as a helper, after the upload is unpacked under root: each --sync path checked against the hash it was sent as; say gets
-// ASSET_OK <hash> <path>, or ASSET_BAD when what arrived is other (it changed while it was sent: the job runs on that, as
-// HEAVY_SYNC_CHANGED tells the caller)
-export const checkAssets = async (root: string, sync: readonly string[], opts: readonly string[], say: (line: string) => void, o: HashOpts = {}): Promise<void> => {
-  const hashes = hashesOf(opts);
-  for (const [i, p] of sync.entries()) {
-    const h = hashes[i] ?? NONE;
-    if (!HASH.test(h)) continue;
-    const at = join(root, p);
-    const got = await assetHash(at, o);
-    if (got === undefined && existsSync(at)) say(`ASSET_BAD ${p}: could not be hashed here (${stallWords(o)}); the job runs on what arrived`);
-    else say(got === h ? `ASSET_OK ${h} ${p}` : `ASSET_BAD ${p}: sent as ${h}, ${got ?? "nothing"} arrived; the job runs on what arrived`);
+// as a helper: stdin unpacked under dir; with assets=, its first bytes are the caller's archive, hashed as they pass, and
+// then the job's own archive, both through one tar -i -x with modes kept (tar -p: the helper's umask does not change them).
+// say gets ASSET_OK or ASSET_BAD; false: the job must not run (tar failed, or the bytes are not the ones sent)
+export const unpackChecked = async (dir: string, opts: readonly string[], say: (l: string) => void, from: ReadableStream<Uint8Array> = Bun.stdin.stream()): Promise<boolean> => {
+  const m = opts.map((x) => WORD.exec(x)).find((x) => x);
+  const want = m ? { sha: m[1]!, bytes: Number(m[2]) } : undefined;
+  const tar = Bun.spawn(["tar", "-C", dir, "--no-same-owner", ...(want ? ["-p", "-i"] : []), "-xf", "-"], { stdin: "pipe", stdout: "ignore", stderr: "pipe" });
+  const said = new Response(tar.stderr).text();
+  const h = createHash("sha256");
+  let seen = 0;
+  let open = true;
+  // read to the end on its own, whatever tar does: a tar that stops early cannot leave the check undone
+  for await (const c of from) {
+    if (want && seen < want.bytes) h.update(c.subarray(0, Math.min(c.byteLength, want.bytes - seen)));
+    seen += c.byteLength;
+    if (!open) continue;
+    try {
+      tar.stdin.write(c);
+      await tar.stdin.flush();
+    } catch {
+      open = false;
+    }
   }
+  try {
+    await tar.stdin.end();
+  } catch {
+    // tar has gone; its exit says why
+  }
+  const code = await tar.exited;
+  const why = code !== 0 ? `tar -x exited ${code}: ${(await said).trim().slice(0, 200)}` : undefined;
+  if (!want) {
+    if (why) say(`HEAVY_EXEC_UNPACK ${why}`);
+    return !why;
+  }
+  const got = h.digest("hex");
+  const bad = why ?? (seen < want.bytes || got !== want.sha ? `sent as ${want.sha} (${want.bytes} bytes), ${got} arrived (${Math.min(seen, want.bytes)} bytes)` : undefined);
+  say(bad ? `ASSET_BAD ${bad}; the job does not run` : `ASSET_OK ${want.sha} ${want.bytes}`);
+  return !bad;
 };

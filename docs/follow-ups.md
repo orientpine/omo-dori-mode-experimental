@@ -135,9 +135,9 @@ On hc, `hc read` joins the rows a long line wraps onto itself (ghostty-vt `plain
 
 ## dori heavy: reuse a --sync tree a helper already has (#477)
 
-#477 sends every `--sync` tree with every job and checks it by hash on the helper (`ASSET_OK`); nothing is kept between jobs. A batch that sends one code tree and one uv environment to a helper for each item uploads them again each time. A store of trees by hash on the helper was in #477 until review 4, which found three defects in it:
+#477 sends a job's `--sync` paths with every job as one archive, checked on the helper by the sha256 of its bytes (`ASSET_OK`); nothing is kept between jobs. A batch that sends one code tree and one uv environment to a helper for each item uploads them again each time. A store of trees by hash on the helper was in #477 until review 4, which found three defects in it:
 - Pruning that deletes an entry in place can race a job taking the same entry, so the job runs on a partly deleted tree.
 - A cached copy with a read-only folder (0555) cannot be removed by the helper account.
 - A cached copy keeps the old file mtimes, so an incremental build after a timestamp-only change sees its target as current.
 
-What would close it: eviction renames an entry to a private name before deleting it, the same rename admission uses; deletion makes folders writable first; and either mtimes count in the hash or the caller's mtimes are applied to a cached copy. Each needs a test, including an eviction interleaved with an admission. Lead 2026-11-14: "캐시 재사용은 docs/follow-ups.md로. 더 느려도 맞는 게 먼저야."
+What would close it: eviction renames an entry to a private name before deleting it, the same rename admission uses; deletion makes folders writable first; and either mtimes count in the hash or the caller's mtimes are applied to a cached copy. Each needs a test, including an eviction interleaved with an admission. A store keyed by content also needs a canonical address of a tree, which an archive's sha256 is not (tar bytes carry mtimes and order): follow a published format such as Nix's NAR or the Bazel remote-execution Directory proto rather than a hand-made one (#477 reviews 5-6 found edge after edge in one). Lead 2026-11-14: "캐시 재사용은 docs/follow-ups.md로. 더 느려도 맞는 게 먼저야."

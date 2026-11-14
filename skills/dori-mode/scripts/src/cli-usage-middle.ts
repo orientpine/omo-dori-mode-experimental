@@ -118,6 +118,8 @@ export const USAGE_MIDDLE = `  challenge <key> --plan FILE [--model M] [--all]
                                        one is more than 15 points busier or refuses it, in a bwrap box with no network,
                                        the --sync folders copied there at the same paths and changed files copied back
                                        (HEAVY_SPREAD / HEAVY_SYNC / HEAVY_BACK / HEAVY_DONE); paths outside --sync run here (HEAVY_LOCAL);
+                                       the --sync paths go as one archive checked there by its sha256 (ASSET_OK: its bytes
+                                       arrived as sent and tar took them; the unpacked tree is not walked again)
                                        no sign of life for heavyQueue.staleMin minutes: HEAVY_HELPER_STALE, exit 124
                                        (--stale-again: back to the line, another helper or here)
   heavy hold-local [on --until <30|2h|HH:MM|ISO> --reason "<why>" [--except <account> ...] | off]

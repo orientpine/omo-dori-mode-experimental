@@ -3,6 +3,7 @@ import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
 
 import type { HeavyHelper } from "./config.ts";
+import { stager } from "./heavy-assets.ts";
 import { fileSink, pump, watched, type Sink } from "./heavy-batch-sink.ts";
 import { NESTED_ENV } from "./heavy-here.ts";
 import { fmtMem, spawnScoped } from "./heavy-mem.ts";
@@ -32,7 +33,8 @@ export type BatchJob = {
   readonly hereEnv?: Readonly<Record<string, string | undefined>>;
 };
 type BatchTry = { readonly host: string; readonly result: string }; type Refusal = { readonly host: string; readonly why: string };
-export type BatchReceipt = { readonly n: number; readonly item: string; readonly host: string; readonly exit: number | null; readonly tries: readonly BatchTry[]; readonly refused?: readonly Refusal[]; readonly out: string; readonly err: string; readonly start: string; readonly end: string };
+// assets: the sha256 of the --sync archive a helper ran it on, one for the whole batch (heavy-assets.ts)
+export type BatchReceipt = { readonly n: number; readonly item: string; readonly host: string; readonly exit: number | null; readonly tries: readonly BatchTry[]; readonly refused?: readonly Refusal[]; readonly out: string; readonly err: string; readonly start: string; readonly end: string; readonly assets?: string };
 
 // a helper whose run broke off, or that did not answer, gets no new item for this long
 const PAUSE_MS = 60_000;
@@ -43,7 +45,7 @@ const oomOf = (label: string) => (l: string): boolean => l.startsWith(`HEAVY_OOM
 
 type Host = { readonly name: string; readonly helper?: HeavyHelper; running: number; readonly cap: number; gone?: string; until: number; next: number; busy: boolean; offering: boolean; said: string };
 type Item = { readonly n: number; readonly text: string; readonly job: SpreadJob; readonly plan: Plan; readonly tries: BatchTry[]; readonly refused: Refusal[]; start?: string; failedAt?: number };
-type Outcome = { readonly code: number | null; readonly result: string };
+type Outcome = { readonly code: number | null; readonly result: string; readonly assets?: string };
 type Offer = { readonly done: Promise<Outcome> } | { readonly kind: string; readonly why: string };
 
 // the items of an --items file: one per line, blank lines and # lines skipped
@@ -89,7 +91,7 @@ const offerHelper = async (ctx: HeavyCtx, h: HeavyHelper, it: Item, plan: Extrac
     if (typeof code === "number") return { code, result: `exit ${code}` };
     if ((await stopOnHelper(h, it.job.label, (l) => ctx.deps.log?.(l), t.run.id, 30_000)) || code.abandoned) abandon();
     return { code: null, result: `stale: ${code.stale}` };
-  });
+  }).then((o) => (t.run.assets ? { ...o, assets: t.run.assets } : o));
   return { done };
 };
 
@@ -107,7 +109,9 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   const log = (l: string): void => ctx.deps.log?.(l);
   const now = (): number => ctx.deps.clock.now();
   const iso = (): string => new Date(now()).toISOString();
-  const jobOf = (text: string, n: number): SpreadJob => ({ label: `${b.label}.${n}`, kind: b.kind, cmd: withPipefail(itemCmd(b.cmd, text, n)), cwd: b.cwd, sync: b.sync, env: { ...b.env, DORI_HEAVY_ITEM: text, DORI_HEAVY_ITEM_N: String(n) }, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}), ...(b.tools?.length ? { tools: b.tools } : {}), ...(b.back?.length ? { back: b.back } : {}) });
+  // the --sync paths archived once for the whole batch, so every helper gets the same bytes (lead's condition 1 of #477 H334)
+  const assets = stager(join(ctx.deps.dir, "assets"), b.label, log);
+  const jobOf = (text: string, n: number): SpreadJob => ({ assets, label: `${b.label}.${n}`, kind: b.kind, cmd: withPipefail(itemCmd(b.cmd, text, n)), cwd: b.cwd, sync: b.sync, env: { ...b.env, DORI_HEAVY_ITEM: text, DORI_HEAVY_ITEM_N: String(n) }, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}), ...(b.tools?.length ? { tools: b.tools } : {}), ...(b.back?.length ? { back: b.back } : {}) });
   // each item is prepared as a single job of its own (its pipefail, its plan: what it starts, what it names, its program),
   // as GNU parallel builds each job's command line apart; --out is weighed against what any item may upload (its --sync paths and --tools trees)
   const pending: Item[] = b.items.map((text, i) => {
@@ -169,7 +173,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
     if (o.code === 0 && !oom) ok++;
     else failed++;
     perHost[h.name] = (perHost[h.name] ?? 0) + 1;
-    const r: BatchReceipt = { n: it.n, item: it.text, host: h.name, exit: o.code, tries: it.tries, ...(it.refused.length ? { refused: it.refused } : {}), ...files, start: it.start ?? iso(), end: iso() };
+    const r: BatchReceipt = { n: it.n, item: it.text, host: h.name, exit: o.code, tries: it.tries, ...(it.refused.length ? { refused: it.refused } : {}), ...files, start: it.start ?? iso(), end: iso(), ...(o.assets ? { assets: o.assets } : {}) };
     appendFileSync(receipts, `${JSON.stringify(r)}\n`);
     log(`HEAVY_BATCH_ITEM ${b.label} #${it.n} ${h.name}: ${result}`);
   };
@@ -223,10 +227,14 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
       offers.add(p);
     }
   };
-  for (;;) {
-    kick();
-    if (!pending.length && !running.size && !offers.size) break;
-    await Promise.race([...running.values(), ...offers, ctx.deps.clock.sleep(POLL_MS)]);
+  try {
+    for (;;) {
+      kick();
+      if (!pending.length && !running.size && !offers.size) break;
+      await Promise.race([...running.values(), ...offers, ctx.deps.clock.sleep(POLL_MS)]);
+    }
+  } finally {
+    assets.drop();
   }
   writeFileSync(join(b.out, "summary.json"), `${JSON.stringify({ label: b.label, items: b.items.length, ok, failed, retried, hosts: perHost }, null, 1)}\n`);
   log(`HEAVY_BATCH_DONE ${b.label}: ${ok}/${b.items.length} items exit 0${failed ? `, ${failed} failed` : ""}; ${Object.entries(perHost).map(([n, c]) => `${n} ${c}`).join(", ")}; ${retried} retried; receipts ${receipts}`);
