@@ -4,7 +4,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 
 import type { HeavyHelper } from "../src/config.ts";
-import { notAway, ownerBusy, ownerNever, ownerTakes, ownerWords } from "../src/heavy-owner-pc.ts";
+import { notAway, ownerBusy, ownerCpuCap, ownerNever, ownerTakes, ownerWords } from "../src/heavy-owner-pc.ts";
 import { helperVerdict } from "../src/heavy-queue.ts";
 import { admitOnce, type SlotDeps } from "../src/heavy-slot.ts";
 import { batchCode, batchOf, ctxWith, logs, realHelper, receipts, start, state, stop } from "./heavy-batch-fixture.ts";
@@ -109,6 +109,12 @@ test("the owner's memory cap counts running items' reservations at admission", a
   expect(capped && "wait" in capped ? capped.why : capped).toContain("owner's memory cap");
   const free = await admitOnce(deps, "item", 0, 20 * gb);
   expect(free && "slot" in free).toBe(true);
+  // review 3: the owner's CPU cap is the quota of the one item it runs, so a second item waits even with memory free
+  writeFileSync(join(dir, "slot.1", "mem"), String(gb));
+  const one = await admitOnce(deps, "item3", 0, gb, 40);
+  expect(one && "wait" in one ? one.why : one).toContain("one batch item at a time");
+  expect(ownerCpuCap(ownerWords({ idleMin: 20, cpuPct: 50, memPct: 40 }))).toBe(50);
+  expect(ownerCpuCap(["idle=20"])).toBeUndefined();
   // review 2: with the owner's cap, a memory sample that read nothing waits instead of admitting unweighed
   const blind = { ...deps, headroom: { ...deps.headroom, usage: async () => ({ ...(await usage()), memTotalKb: 0 }) } } as unknown as SlotDeps;
   const unweighed = await admitOnce(blind, "item2", 0, 20 * gb, 40);

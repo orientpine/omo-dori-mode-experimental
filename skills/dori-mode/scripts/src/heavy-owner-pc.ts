@@ -89,3 +89,8 @@ export const ownerNever = (opts: readonly string[], needBytes: number | undefine
   const total = use().memTotal;
   return total > 0 && (needBytes / total) * 100 > capPct ? `its ${Math.round(needBytes / 1024 ** 3)}G estimate is over the owner's memory cap of ${capPct}% by itself` : undefined;
 };
+// the owner's CPU cap of cap=<cpu>:<mem>: the CPUQuota of the one item the owner's PC runs at a time (review 3 of #480)
+export const ownerCpuCap = (opts: readonly string[]): number | undefined => {
+  const cap = CAP.exec(opts.find((o) => CAP.test(o)) ?? "");
+  return cap ? Number(cap[1]) : undefined;
+};

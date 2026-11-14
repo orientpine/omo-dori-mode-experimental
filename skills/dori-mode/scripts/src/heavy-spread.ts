@@ -11,7 +11,7 @@ import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, p
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
 import { assetsOptOk, assetsWord, stager, unpackChecked, type Stager } from "./heavy-assets.ts";
-import { ownerBusy, ownerMemCap, ownerNever, ownerOptOk } from "./heavy-owner-pc.ts";
+import { ownerBusy, ownerCpuCap, ownerMemCap, ownerNever, ownerOptOk } from "./heavy-owner-pc.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
@@ -518,7 +518,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     const pumps: Promise<void>[] = [];
     const ncpu = Math.max(1, cpus().length);
     const code = await spawnScoped(
-      { label, cmd: sandboxArgv(kind, spec, (p) => join(root, p), tools), free: ctx.deps.headroom?.free ?? 10, ...(mem ? { needBytes: mem } : {}), ...(kind === "gpu" ? { gpuFreeKb: ctx.deps.headroom?.gpuFreeKb ?? 0 } : {}), props: [`CPUQuota=${ncpu * 90}%`, `RuntimeMaxSec=${d.maxMin * 60}`], log },
+      { label, cmd: sandboxArgv(kind, spec, (p) => join(root, p), tools), free: ctx.deps.headroom?.free ?? 10, ...(mem ? { needBytes: mem } : {}), ...(kind === "gpu" ? { gpuFreeKb: ctx.deps.headroom?.gpuFreeKb ?? 0 } : {}), props: [`CPUQuota=${ncpu * (ownerCpuCap(opts) ?? 90)}%`, `RuntimeMaxSec=${d.maxMin * 60}`], log },
       { cwd: dir, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
       (_pid, proc) => {
         const pump = async (s: ReadableStream<Uint8Array> | undefined, tag: string) => {

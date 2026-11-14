@@ -106,6 +106,8 @@ const tryAdmit = async (deps: SlotDeps, label: string, memKb?: number, settleSec
       memWhy = `; ${v.why}`;
     }
   }
+  // the owner's PC runs one batch item at a time, so the CPU quota it gets is the owner's whole CPU cap (review 3 of #480)
+  if (ownerMemPct !== undefined && running.length > 0) return { wait: "full", why: `the owner's PC runs one batch item at a time, so its CPU cap holds: ${heldBy(deps, running)}` };
   if (running.length < deps.slots || !h) {
     for (let n = 1; n <= deps.slots; n++) {
       const slot = tryTake(deps, n, label, memKb, settleSec);
