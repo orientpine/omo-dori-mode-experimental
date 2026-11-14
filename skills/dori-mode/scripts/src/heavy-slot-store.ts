@@ -66,6 +66,15 @@ export const tryTake = (deps: SlotDeps, n: number, label: string, memKb?: number
   return claim();
 };
 
+// A slot this process took for a job it starts afterwards (dori heavy --items here, heavy-batch.ts): the owner becomes that
+// job's pid, so admission measures that job's own process tree, not every item of the batch under this one process, and
+// the slot is free again once that job is gone. now: after the job started, so the job counts as alive for it (pidAlive).
+export const reown = (slot: string, pid: number, label: string, now: number): void => {
+  const owner = `${pid} ${label} ${new Date(now).toISOString()}`;
+  writeFileSync(join(slot, "owner"), owner);
+  taken.set(slot, owner);
+};
+
 export type Holder = { readonly n: number; readonly pid: number; readonly label: string; readonly since: number };
 
 export const holders = (deps: SlotDeps, max: number): Holder[] => {

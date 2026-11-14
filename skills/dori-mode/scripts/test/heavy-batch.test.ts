@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 
 import type { HeavyHelper, HeavyQueue } from "../src/config.ts";
-import { heavyBatch, type BatchJob, type BatchReceipt } from "../src/heavy-batch.ts";
+import { heavyBatch, itemCmd, type BatchJob, type BatchReceipt } from "../src/heavy-batch.ts";
 import type { HeavyCtx } from "../src/heavy-queue.ts";
 import type { SlotDeps } from "../src/heavy-slot.ts";
 import { withState } from "./fakes.ts";
@@ -36,14 +36,19 @@ const fakeHelper = (name: string, script: string): HeavyHelper => {
 };
 
 // here: this host's slots; full: slot.1 held by another job, so no item runs here
-const ctxWith = (helpers: HeavyHelper[], full = true): HeavyCtx => {
+// skip: each sleep of the batch moves the clock on by all it asked for, so a 15 s wait for a busy host takes 50 ms
+const ctxWith = (helpers: HeavyHelper[], full = true, staleMin?: number, skip = false): HeavyCtx => {
+  let ahead = 0;
   const usage = async () => ({ host: { gpu: null, gpuMem: null, cpu: 0, mem: 10 }, unified: false, jobs: [], memTotalKb: 1e8 });
   if (full) {
     mkdirSync(join(state.dir, "heavy", "slot.1"), { recursive: true });
     writeFileSync(join(state.dir, "heavy", "slot.1", "owner"), `${HOLDER} other-job ${new Date().toISOString()}`);
   }
-  const deps: SlotDeps = { dir: join(state.dir, "heavy"), slots: 1, maxLoad: 80, clock: { now: () => Date.now(), sleep: (ms) => Bun.sleep(Math.min(ms, 50)) }, pid: process.pid, load: async () => 10, alive: (p) => p === HOLDER || p === process.pid, headroom: { maxSlots: 1, free: 10, settleSec: 0, usage }, log: (l) => logs.push(l) };
-  return { q: { jobs: {}, helpers, queue: [], rl: true, jobDir: join(state.dir, "jobs"), exec: false, execMaxMin: 240 } satisfies HeavyQueue, deps };
+  const deps: SlotDeps = { dir: join(state.dir, "heavy"), slots: 1, maxLoad: 80, clock: { now: () => Date.now() + ahead, sleep: (ms) => {
+        if (skip) ahead += ms;
+        return Bun.sleep(Math.min(ms, 50));
+      } }, pid: process.pid, load: async () => 10, alive: (p) => p === HOLDER || p === process.pid, headroom: { maxSlots: 1, free: 10, settleSec: 0, usage }, log: (l) => logs.push(l) };
+  return { q: { jobs: {}, helpers, queue: [], rl: true, jobDir: join(state.dir, "jobs"), exec: false, execMaxMin: 240, ...(staleMin ? { staleMin } : {}) } satisfies HeavyQueue, deps };
 };
 
 const batchOf = (items: string[], cmd: string[], extra: Partial<BatchJob> = {}): BatchJob => ({ label: "b", kind: "cpu", cmd, cwd: work, sync: [work], env: {}, items, out: join(state.dir, "out"), ...extra });
@@ -113,4 +118,60 @@ test("--mem over --mem-per-worker caps the items running at once on each host; a
   expect(spans.length).toBe(4);
   const most = Math.max(...spans.map(([at]) => spans.filter(([s, e]) => s <= at && at < e).length));
   expect(most).toBe(2);
+});
+
+test("an item here runs in a slot its own process owns, so admission measures that item and not the whole batch (review 1 of #476)", async () => {
+  const code = await heavyBatch(ctxWith([], false), batchOf(["a", "b"], ["sh", "-c", `echo pid=$$; cat ${join(state.dir, "heavy")}/slot.*/owner`]));
+  expect(code).toBe(0);
+  for (const r of receipts()) {
+    const [first = "", owner = ""] = outOf(r).trim().split("\n");
+    expect(owner.startsWith(`${first.slice(4)} b.${r.n} `)).toBe(true);
+  }
+});
+
+test("a helper that does not answer holds back only itself: the other hosts run the items meanwhile (review 1 of #476)", async () => {
+  const hang = fakeHelper("hang", "sleep 30");
+  const code = await heavyBatch(ctxWith([hang, realHelper("ok")], true, 0.05), batchOf(["1", "2", "3"], ["true"]));
+  expect(code).toBe(0);
+  expect(receipts().every((r) => r.host === "ok")).toBe(true);
+  const down = logs.findIndex((l) => l.startsWith("HEAVY_BATCH_WAIT b hang: down"));
+  expect(down).toBeGreaterThan(logs.findIndex((l) => l.startsWith("HEAVY_BATCH_START b #2 ok")));
+});
+
+test("an item that failed goes back to the same host when the only other one is down, and the batch ends (review 1 of #476)", async () => {
+  const oom = fakeHelper("oom", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null');
+  const code = await heavyBatch(ctxWith([oom, { name: "down", ssh: ["false"] }]), batchOf(["x"], ["true"]));
+  expect(code).toBe(1);
+  expect(receipts()).toMatchObject([{ item: "x", exit: 137, tries: [{ host: "oom", result: "oom" }, { host: "oom", result: "oom" }] }]);
+});
+
+test("a batch whose --out lies in a --sync path, or whose --mem holds less than one worker, is refused before any item (review 1 of #476)", async () => {
+  expect(await heavyBatch(ctxWith([]), batchOf(["x"], ["true"], { out: join(work, "out") }))).toBe(2);
+  expect(await heavyBatch(ctxWith([]), batchOf(["x"], ["true"], { memPerWorker: 2 * 1024 ** 3, memCap: 1024 ** 3 }))).toBe(2);
+  expect(logs.filter((l) => l.startsWith("HEAVY_BATCH_REFUSED b: "))).toHaveLength(2);
+  expect(logs.some((l) => l.startsWith("HEAVY_BATCH_START"))).toBe(false);
+});
+
+test("an item whose own command names a path outside the --sync paths runs here; the item text stays literal (review 1 of #476)", async () => {
+  writeFileSync(join(work, "a.txt"), "inside\n");
+  writeFileSync(join(state.dir, "b.txt"), "outside\n");
+  // this host is full for a second, so only its own path keeps the third item off the helper, which takes the first two
+  const ctx = ctxWith([realHelper("h1")], true, undefined, true);
+  setTimeout(() => rmSync(join(state.dir, "heavy", "slot.1"), { recursive: true, force: true }), 1000);
+  const code = await heavyBatch(ctx, batchOf(["a.txt", "a.txt", "../b.txt"], ["cat", `${work}/{item}`]));
+  expect(code).toBe(0);
+  const two = receipts().find((r) => r.n === 3)!;
+  expect(two.host).toBe(hostname());
+  expect(outOf(two)).toBe("outside\n");
+  expect(itemCmd(["x={item}-{n}"], "a$&b{n}", 3)).toEqual(["x=a$&b{n}-3"]);
+});
+
+test("an item here runs with the --tools PATH this host found (review 1 of #476)", async () => {
+  const bin = join(state.dir, "offpath");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "mytool"), "#!/bin/sh\necho tool ran\n");
+  chmodSync(join(bin, "mytool"), 0o755);
+  const code = await heavyBatch(ctxWith([], false), batchOf(["x"], ["mytool"], { hereEnv: { ...process.env, PATH: `${bin}:${process.env["PATH"]}` } }));
+  expect(code).toBe(0);
+  expect(outOf(receipts()[0]!)).toBe("tool ran\n");
 });
