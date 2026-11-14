@@ -153,7 +153,9 @@ export const argPaths = (arg: string, cwd: string): string[] => {
     const eq = w.indexOf("=");
     if (eq > 0 && !w.slice(0, eq).includes("/")) return words(w.slice(eq + 1));
     const parts = w.split(/[,:]/);
-    return parts.length > 1 && parts.every(pathWord) ? parts.flatMap(words) : [w];
+    if (parts.length < 2) return [w];
+    // all path-shaped: a list; mixed: the whole word and its path-shaped items, so none is dropped (review 15: lib:../shared)
+    return parts.every(pathWord) ? parts.flatMap(words) : [w, ...parts.filter(pathWord).flatMap(words)];
   };
   return words(arg).filter(pathWord).map((w) => resolve(cwd, w));
 };

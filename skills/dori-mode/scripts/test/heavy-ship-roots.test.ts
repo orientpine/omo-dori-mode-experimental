@@ -199,8 +199,7 @@ test("a new absolute output named with a space or a colon beside the working fol
     expect({ arg, s: shipMissing(j, who, [], 1024 ** 3) }).toMatchObject({ arg, s: { refuse: true, why: expect.stringContaining(`(add --sync ${dirname(out)})`) } });
     expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${dirname(out)})`)]);
   }
-  // the lead after review 12: the advice names the new output's folder (a missing --sync root is a folder on a helper),
-  // and doing what it says lets the job go
+  // the lead after review 12: the advice names the new output's folder, and doing what it says lets the job go
   const res = join(home, "results");
   const nj = { ...job(["dd", "if=/dev/zero", `of=${join(res, "result.bin")}`]), cwd: work, sync: [work] };
   expect(shipMissing(nj, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${res})`) });
@@ -208,9 +207,7 @@ test("a new absolute output named with a space or a colon beside the working fol
   // and . or .. in a list is a path item: a covered PYTHONPATH=<lib>:. runs
   mkdirSync(join(home, "lib"));
   expect(shipMissing({ ...job(["env", `PYTHONPATH=${join(home, "lib")}:.`, "true"]), cwd: work, sync: [work, join(home, "lib")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
-  // review 14: an item being there cannot tell a list from a new output (an out.txt beside it made <work>:out.txt
-  // pass and its output was lost), so only path-shaped items make a list: <work>:out.txt stops even with out.txt
-  // there, a bare <lib>:lib stops and says to write ./lib, and <lib>:./lib runs
+  // review 14: only path-shaped items make a list (being there cannot tell lib from a new output's name)
   mkdirSync(join(work, "lib"));
   writeFileSync(join(work, "out.txt"), "old\n");
   for (const arg of [`${work}:out.txt`, `of=${work}:out.txt`]) {
@@ -221,6 +218,12 @@ test("a new absolute output named with a space or a colon beside the working fol
   const bare = { ...job(["env", `PYTHONPATH=${join(home, "lib")}:lib`, "true"]), cwd: work, sync: [work, join(home, "lib")] };
   expect(shipMissing(bare, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining("write each relative item with ./ (./lib)") });
   expect(shipMissing({ ...bare, cmd: ["env", `PYTHONPATH=${join(home, "lib")}:./lib`, "true"] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  // review 15: a mixed list never drops its path-shaped items (lib:../shared weighs ../shared)
+  mkdirSync(join(home, "shared"));
+  const mixed = { ...job(["env", "PYTHONPATH=lib:../shared", "true"]), cwd: work, sync: [work] };
+  expect(shipMissing(mixed, who, [], 1024 ** 3)).toMatchObject({ refuse: true, why: expect.stringContaining(`(add --sync ${join(home, "shared")})`) });
+  expect(shipItems(batchOf([], []), [mixed], who).stops).toEqual([expect.stringContaining(`(add --sync ${join(home, "shared")})`)]);
+  expect(shipMissing({ ...mixed, sync: [work, join(home, "shared")] }, who, [], 1024 ** 3)).toHaveProperty("plan");
   const data = join(home, "data");
   mkdirSync(join(data, "lib"), { recursive: true });
   const dj = { ...job(["env", `PYTHONPATH=${join(data, "lib")}:lib`, "true"]), cwd: work, sync: [work] };
