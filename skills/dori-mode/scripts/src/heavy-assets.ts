@@ -199,7 +199,8 @@ export const unpackChecked = async (dir: string, opts: readonly string[], say: (
     // tar has gone; its exit says why
   }
   const code = await tar.exited;
-  const why = code !== 0 ? `tar -x exited ${code}: ${(await said).trim().slice(0, 200)}` : undefined;
+  // tar's lines joined into one: ASSET_BAD and HEAVY_EXEC_UNPACK are single lines of the helper's protocol and its log
+  const why = code !== 0 ? `tar -x exited ${code}: ${(await said).trim().split(/\s*\n\s*/).join(" | ").slice(0, 200)}` : undefined;
   if (!want) {
     if (why) say(`HEAVY_EXEC_UNPACK ${why}`);
     return !why;

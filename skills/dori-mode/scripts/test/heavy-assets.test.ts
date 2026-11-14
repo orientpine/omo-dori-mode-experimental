@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -231,7 +231,8 @@ test("a name a stager killed between open and unlink left is swept by the next o
   writeFileSync(join(stage, `assets-${dead}-x.tar`), "");
   writeFileSync(join(stage, `assets-${process.pid}-y.tar`), "");
   const r = await stageAssets([work], stage);
-  expect(r && "assets" in r).toBe(true);
+  if (!r || !("assets" in r)) throw new Error(`not staged: ${JSON.stringify(r)}`);
+  closeSync(r.assets.fd);
   expect(readdirSync(stage)).toEqual([`assets-${process.pid}-y.tar`]);
 });
 
@@ -239,11 +240,10 @@ test("an archive cut short on the way is ASSET_BAD", async () => {
   const r = await stageAssets([work], stage);
   if (!r || "why" in r) throw new Error(`not staged: ${JSON.stringify(r)}`);
   const bytes = readFileSync(r.assets.path);
+  closeSync(r.assets.fd);
   const root = join(state.dir, "root");
   mkdirSync(root);
   const said: string[] = [];
   expect(await unpackChecked(root, [assetsWord(r.assets)], (l) => said.push(l), new Blob([bytes.subarray(0, bytes.length - 20_000)]).stream())).toBe(false);
-  expect(said).toHaveLength(1);
-  expect(said[0]).toStartWith(`ASSET_BAD `);
-  expect(said[0]).toEndWith("; the job does not run");
+  expect(said).toEqual([expect.stringMatching(/^ASSET_BAD .*; the job does not run$/)]);
 });
