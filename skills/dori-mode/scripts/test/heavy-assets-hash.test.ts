@@ -85,7 +85,7 @@ test("a caller whose --sync file stalls while it is hashed sends that path witho
   const s = stalled();
   const said: string[] = [];
   expect(await assetsWord([d], (l) => said.push(l), { stallMs: 50, read: s.read })).toBe("assets=-");
-  expect(said).toEqual([`${d} could not be hashed (no progress for 0 s, or unreadable), so it goes without one`]);
+  expect(said).toEqual([`${d} could not be hashed (no progress for 0 s, unreadable, or a name not in UTF-8), so it goes without one`]);
   expect(s.cancelled()).toBe(true);
 });
 
@@ -96,6 +96,43 @@ test("a helper whose arrived file stalls while it is checked says ASSET_BAD and 
   const s = stalled();
   const said: string[] = [];
   await checkAssets(root, ["/w"], [`assets=${"0".repeat(32)}`], (l) => said.push(l), { stallMs: 50, read: s.read });
-  expect(said).toEqual(["ASSET_BAD /w: could not be hashed here (no progress for 0 s, or unreadable); the job runs on what arrived"]);
+  expect(said).toEqual(["ASSET_BAD /w: could not be hashed here (no progress for 0 s, unreadable, or a name not in UTF-8); the job runs on what arrived"]);
   expect(s.cancelled()).toBe(true);
+});
+
+test("hashing many chunks holds only the chunk in hand, not every chunk read so far (review 6 of #477)", async () => {
+  const d = join(state.dir, "m");
+  mkdirSync(d);
+  writeFileSync(join(d, "big.bin"), "x");
+  const n = 400;
+  let i = 0;
+  let early = 0;
+  let late = 0;
+  const rss = (): number => {
+    Bun.gc(true);
+    return process.memoryUsage().rss;
+  };
+  // a fresh 1 MiB chunk each time: memory taken at chunk 20 and at the last one
+  const read = (): ReadableStream<Uint8Array> =>
+    new ReadableStream<Uint8Array>({
+      pull: (c) => {
+        i++;
+        if (i === 20) early = rss();
+        if (i === n) late = rss();
+        if (i > n) c.close();
+        else c.enqueue(new Uint8Array(1 << 20).fill(i & 255));
+      },
+    });
+  expect(await assetHash(d, { read })).toMatch(/^[0-9a-f]{32}$/);
+  expect(late - early).toBeLessThan(128 << 20);
+});
+
+test("a tree whose link target is not UTF-8 is not hashed, so two such trees never pass for one (review 6 of #477)", async () => {
+  const [a, b] = [join(state.dir, "ua", "t"), join(state.dir, "ub", "t")];
+  for (const [d, byte] of [[a, 0xfe], [b, 0xff]] as const) {
+    mkdirSync(d, { recursive: true });
+    symlinkSync(Buffer.from([0x61, byte]), Buffer.from(join(d, "l")));
+  }
+  expect(await assetHash(a)).toBeUndefined();
+  expect(await assetHash(b)).toBeUndefined();
 });

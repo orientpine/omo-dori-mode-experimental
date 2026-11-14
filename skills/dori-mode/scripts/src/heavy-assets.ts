@@ -22,25 +22,22 @@ export const ASSETS_MAX = 64;
 // cancels its reads and its find, and the path counts as not hashed. read: how a file's bytes are read (tests stall it).
 export const HASH_STALL_MS = 60_000;
 export type HashOpts = { readonly stallMs?: number; readonly read?: (path: string) => ReadableStream<Uint8Array> };
-type Watch = { beat: () => void; readonly stalled: Promise<"stalled">; readonly stops: Set<() => void>; isStalled: () => boolean; end: () => void };
+// the watch cancels every read and kills find when it gives up, which ends a pending read; a read is awaited alone, never
+// raced against a promise that stays pending (review 6 of #477: each race kept its chunk until the hash ended)
+type Watch = { beat: () => void; readonly stops: Set<() => void>; isStalled: () => boolean; end: () => void };
 const watchFor = (stallMs: number): Watch => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let gone = false;
-  let stall!: () => void;
-  const stalled = new Promise<"stalled">((r) => {
-    stall = () => r("stalled");
-  });
   const stops = new Set<() => void>();
   const beat = (): void => {
     clearTimeout(timer);
     timer = setTimeout(() => {
       gone = true;
-      stall();
       for (const s of stops) s();
     }, stallMs);
   };
   beat();
-  return { beat, stalled, stops, isStalled: () => gone, end: () => clearTimeout(timer) };
+  return { beat, stops, isStalled: () => gone, end: () => clearTimeout(timer) };
 };
 // a stream read to its end, each chunk a sign of progress; false when the watch gave up first (the read is cancelled)
 const drain = async (s: ReadableStream<Uint8Array>, w: Watch, take: (c: Uint8Array) => void): Promise<boolean> => {
@@ -49,8 +46,8 @@ const drain = async (s: ReadableStream<Uint8Array>, w: Watch, take: (c: Uint8Arr
   w.stops.add(stop);
   try {
     for (;;) {
-      const x = await Promise.race([r.read(), w.stalled]);
-      if (x === "stalled" || w.isStalled()) return false;
+      const x = await r.read();
+      if (w.isStalled()) return false;
       if (x.done) return true;
       w.beat();
       take(x.value);
@@ -60,8 +57,9 @@ const drain = async (s: ReadableStream<Uint8Array>, w: Watch, take: (c: Uint8Arr
   }
 };
 
-// the hash of one --sync path's tree, or undefined when it is not there, cannot be listed or read, or stalls. Each row is
-// a JSON tuple, so no name or link target can move a separator (review 5 of #477: a newline in a link target)
+// the hash of one --sync path's tree, or undefined when it is not there, cannot be listed or read, stalls, or holds a name
+// or link target that is not UTF-8 (review 6 of #477: decoding would merge such bytes). Each row is a JSON tuple, so no
+// name or link target can move a separator (review 5 of #477: a newline in a link target)
 export const assetHash = async (root: string, o: HashOpts = {}): Promise<string | undefined> => {
   if (!existsSync(root)) return undefined;
   const w = watchFor(o.stallMs ?? HASH_STALL_MS);
@@ -72,10 +70,10 @@ export const assetHash = async (root: string, o: HashOpts = {}): Promise<string 
     w.stops.add(kill);
     const chunks: Uint8Array[] = [];
     if (!(await drain(p.stdout, w, (c) => chunks.push(c)))) return undefined;
-    const code = await Promise.race([p.exited, w.stalled]);
+    const code = await p.exited;
     w.stops.delete(kill);
     if (code !== 0) return undefined;
-    const f = Buffer.concat(chunks).toString("utf8").split("\0");
+    const f = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)).split("\0");
     const rows: string[] = [JSON.stringify(["", "root", basename(root)])];
     for (let i = 0; i + 3 < f.length; i += 4) {
       const [path, type, mode, link] = f.slice(i, i + 4) as [string, string, string, string];
@@ -92,7 +90,7 @@ export const assetHash = async (root: string, o: HashOpts = {}): Promise<string 
     w.end();
   }
 };
-const stallWords = (o: HashOpts): string => `no progress for ${Math.round((o.stallMs ?? HASH_STALL_MS) / 1000)} s, or unreadable`;
+const stallWords = (o: HashOpts): string => `no progress for ${Math.round((o.stallMs ?? HASH_STALL_MS) / 1000)} s, unreadable, or a name not in UTF-8`;
 
 // the caller's assets= word for the --sync paths, in their order ("-" for one that is not there, or not hashed: say tells)
 export const assetsWord = async (sync: readonly string[], say: (line: string) => void, o: HashOpts = {}): Promise<string> => {
