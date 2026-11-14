@@ -116,7 +116,7 @@ const heavyCommand: Command = async (context) => {
     else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
     else {
       // its --sync paths archived once for every helper it is offered to, and removed when it ended (heavy-assets.ts)
-      const assets = stager(join(deps.dir, "assets"), name, (l) => deps.log?.(l));
+      const assets = stager(join(deps.dir, "assets"), name, (l) => deps.log?.(l), config.heavyNoShip);
       const r = await heavySpread({ q: config.heavyQueue, deps }, { ...(sent?.job ?? job), assets }, plan).finally(assets.drop);
       // a stale run left a child or a pipe not ended (HEAVY_STALE_LEFT): it would keep this process alive, so exit
       abandoned = r.abandoned === true;

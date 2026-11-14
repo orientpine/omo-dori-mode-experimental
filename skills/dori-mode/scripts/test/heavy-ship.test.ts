@@ -79,7 +79,7 @@ test("a working folder with a link into ~/data never leaves, nor one over heavyS
   symlinkSync(join(home, "data"), join(work, "raw"));
   const linked = await heavy(work);
   expect(linked.code).toBe(2);
-  expect(linked.err).toContain(`it is not sent along: the link ${join(work, "raw")} leads into ${join(home, "data")}, a heavyNoShip path that never leaves this host`);
+  expect(linked.err).toContain(`it is not sent along: ${join(work, "raw")} is a link into ${join(home, "data")}, a heavyNoShip path that never leaves this host`);
   const big = join(home, "big");
   mkdirSync(big);
   writeFileSync(join(big, "a.bin"), "x".repeat(2 * 1024 ** 2));

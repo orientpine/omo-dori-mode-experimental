@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { spreadPlan, within, type Plan, type SpreadJob } from "./heavy-spread.ts";
+import { archiveList } from "./heavy-upload.ts";
 
 // dori heavy --kind: a job whose working folder or job file lies outside its --sync paths no longer runs on this host in
 // silence. Owner 2026-11-14 ("Doriterm 연결된 모든 리소스 효율적으로 쓰게 만들어 놨는데 왜 이번에 동작 안 했는지 확인하고
@@ -28,47 +29,24 @@ const realOr = (p: string): string | undefined => {
   }
 };
 
-// the heavyNoShip path real (a realpath of) p is in or holds
+// the heavyNoShip path real (a realpath of) p is in or holds: only to word a refusal's fix (syncFix); what may leave is
+// decided by the one archive builder alone (heavy-upload.ts archiveList, the lead after review 6 of #479)
 const hitOf = (noShip: readonly string[]): ((real: string) => string | undefined) => {
   const blocked = noShip.map(home).map((b) => realOr(b) ?? b);
   return (real) => blocked.find((b) => within(real, b) || within(b, real));
 };
 const KEEP = "it never leaves this host: run it here with --local";
 
-// why a declared --sync path may not leave this host: it is or holds a heavyNoShip path, or a link under it leads into one
-// (review 5 of #479: the guard held only for what went along unasked). Nothing is kept: tar reads the same tree anyway.
-const noShipWhy = (p: string, hit: (real: string) => string | undefined): string | undefined => {
-  const at = hit(realOr(p) ?? p);
-  if (at) return `${p} is or holds ${at}, a heavyNoShip path`;
-  const walk = (f: string): string | undefined => {
-    let names: string[];
-    try {
-      const st = lstatSync(f);
-      if (st.isSymbolicLink()) {
-        const into = hit(realOr(f) ?? f);
-        return into ? `the link ${f} leads into ${into}, a heavyNoShip path` : undefined;
-      }
-      names = st.isDirectory() ? readdirSync(f) : [];
-    } catch {
-      return undefined; // what cannot be read cannot be archived either
-    }
-    for (const e of names) {
-      const why = walk(join(f, e));
-      if (why) return why;
-    }
-    return undefined;
-  };
-  return walk(p);
+// why the paths may not leave this host (a heavyNoShip hit), from the one archive builder that also makes the list tar gets
+// (heavy-upload.ts); a path it cannot read is said by shipFiles or when it is archived, not as a heavyNoShip one
+const builderWhy = (roots: readonly string[], noShip: readonly string[]): string | undefined => {
+  const l = archiveList(roots, noShip);
+  return "blocked" in l ? l.why : undefined;
 };
 
-// the files under p (p itself when it is a file), or why p may not leave this host: it is or holds a no-ship path, a link
-// under it leads into one (keep: no --sync fixes that), or it holds more than maxBytes
-export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number): { readonly files: ShipFile[] } | { readonly why: string; readonly keep?: true } => {
-  const hit = hitOf(noShip);
-  const top = realOr(p) ?? p;
-  const at = hit(top);
-  if (at) return { why: `${p} is or holds ${at}, a heavyNoShip path that never leaves this host`, keep: true };
-  let keep = false;
+// the files under p (p itself when it is a file), or why p may not go along: it holds more than maxBytes, or cannot be read
+// (heavyNoShip is the archive builder's alone, weighed before this)
+export const shipFiles = (p: string, maxBytes: number): { readonly files: ShipFile[] } | { readonly why: string } => {
   const files: ShipFile[] = [];
   let total = 0;
   // a path that is not there yet, or that cannot be read, is a reason to stop, not a throw (review 1 of #479)
@@ -83,12 +61,7 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
     } catch (e) {
       return unread(f, e);
     }
-    if (st.isSymbolicLink()) {
-      const to = realOr(f);
-      const into = to && hit(to);
-      keep = !!into;
-      return into ? `the link ${f} leads into ${into}, a heavyNoShip path that never leaves this host` : undefined;
-    }
+    if (st.isSymbolicLink()) return undefined; // a link goes as a link; where it leads was weighed by the builder
     if (st.isDirectory()) {
       let names: string[];
       try {
@@ -113,7 +86,7 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
     return total > maxBytes ? `${p} holds over ${Math.round(maxBytes / 1024 ** 2)}M (heavyShipMaxMb)` : undefined;
   };
   const why = walk(p);
-  return why ? { why, ...(keep ? { keep: true as const } : {}) } : { files };
+  return why ? { why } : { files };
 };
 
 // the job with its working folder (or that folder's whole git checkout) added to its --sync paths when that alone kept it
@@ -144,9 +117,10 @@ export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonl
   for (let round = 0; round <= ROUNDS; round++) {
     const plan = spreadPlan(j, who);
     if (plan.ok) {
-      // every root that is archived, the --tools trees too (review 6 of #479); what went along unasked was weighed above
+      // every root that is archived, the --tools trees too (review 6 of #479), through the one builder; what went along
+      // unasked was weighed by it below
       for (const s of plan.sync.filter((r) => !shipped.includes(r))) {
-        const why = once(`sync\0${s}`, () => noShipWhy(s, hit));
+        const why = once(`sync\0${s}`, () => builderWhy([s], noShip));
         if (why) return { why: `--sync ${why}; ${KEEP}`, refuse: true };
       }
       return { job: j, plan, shipped, files };
@@ -156,8 +130,10 @@ export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonl
     if (round === ROUNDS) return { why: `${plan.why}; it is not sent along: the working folder and its checkout are already sent`, refuse: true };
     const left = maxBytes - files.reduce((n, x) => n + x.bytes, 0);
     const path = plan.path;
-    const f = once(`ship\0${left}\0${path}`, () => shipFiles(path, noShip, left));
-    if ("why" in f) return { why: `${plan.why}; it is not sent along: ${f.why}; ${f.keep ? KEEP : "give the folders it needs with --sync instead"}`, refuse: true };
+    const kept = once(`sync\0${path}`, () => builderWhy([path], noShip));
+    if (kept) return { why: `${plan.why}; it is not sent along: ${kept}; ${KEEP}`, refuse: true };
+    const f = once(`ship\0${left}\0${path}`, () => shipFiles(path, left));
+    if ("why" in f) return { why: `${plan.why}; it is not sent along: ${f.why}; give the folders it needs with --sync instead`, refuse: true };
     shipped.push(plan.path);
     files = files.length ? [...files, ...f.files] : f.files;
     j = { ...j, sync: [...j.sync, plan.path] };

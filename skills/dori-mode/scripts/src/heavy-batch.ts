@@ -106,7 +106,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   const now = (): number => ctx.deps.clock.now();
   const iso = (): string => new Date(now()).toISOString();
   // the --sync paths archived once for the whole batch, so every helper gets the same bytes (lead's condition 1 of #477 H334)
-  const assets = stager(join(ctx.deps.dir, "assets"), b.label, log);
+  const assets = stager(join(ctx.deps.dir, "assets"), b.label, log, b.ship?.noShip);
   const jobOf = (text: string, n: number): SpreadJob => ({ assets, label: `${b.label}.${n}`, kind: b.kind, cmd: withPipefail(itemCmd(b.cmd, text, n)), cwd: b.cwd, sync: b.sync, env: { ...b.env, DORI_HEAVY_ITEM: text, DORI_HEAVY_ITEM_N: String(n) }, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}), ...(b.tools?.length ? { tools: b.tools } : {}), ...(b.back?.length ? { back: b.back } : {}) });
   // each item a single job of its own (its pipefail and plan, as GNU parallel builds each command line apart), one --sync for all (heavy-batch-check.ts shipItems)
   const { items: prepared, stops, shipped } = shipItems(b, b.items.map((text, i) => jobOf(text, i + 1)), who);

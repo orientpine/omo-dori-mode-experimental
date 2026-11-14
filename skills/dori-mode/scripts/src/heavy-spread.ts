@@ -10,7 +10,7 @@ import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
 import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote, upPaths } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
-import { assetsOptOk, assetsWord, unpackChecked, type Stager } from "./heavy-assets.ts";
+import { assetsOptOk, assetsWord, stager, unpackChecked, type Stager } from "./heavy-assets.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
@@ -215,8 +215,8 @@ type Sink = { write(s: string): unknown }; type Started = { readonly helper: str
 type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonly kind: "busy" | "down" | "refused" | "old" | "notools"; readonly why: string };
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
-export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets = true): Promise<HelperTry> => {
-  const a = assets ? await job.assets?.get(plan.sync) : undefined; // the --sync paths as one archive checked by its sha256 there (heavy-assets.ts); a helper that does not know assets= is asked once more without it
+export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number): Promise<HelperTry> => {
+  const a = job.assets ? await job.assets.get(plan.sync) : plan.sync.length ? { why: "its --sync paths have no archive (heavy-assets.ts stager), and nothing else may send them" } : undefined; // the --sync paths as one archive, listed and checked by the one builder (heavy-assets.ts), its sha256 checked there; a helper that does not know assets= is out of date (helperVerdict: old)
   if (a && "why" in a) return { kind: "refused", why: a.why };
   const args = execWords(job, plan, below, a && assetsWord(a));
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // ssh, tar and untar stay in the caller's process group: a Ctrl-C on its terminal ends them with it
@@ -229,7 +229,6 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
     await letGo(p, reader, answered ? STALE_GRACE_MS : 0);
     if (!answered) return { kind: "down", why: `no answer to the admission within ${staleMs / 60_000} min (heavyQueue.staleMin)` };
     if (!verdict) return { kind: "down", why: last || `ssh exited ${p.exitCode ?? p.signalCode}` };
-    if (a && verdict[1] === "REFUSED" && verdict[2]?.startsWith('unknown option "assets=')) return startExec(ctx, h, job, plan, below, false);
     return helperVerdict(verdict[1] ?? "", verdict[2] ?? "");
   }
   const stop = onStop(() => p.kill("SIGKILL"));
@@ -294,7 +293,13 @@ export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, p
 export type SpreadResult = ({ readonly slot: string } | { readonly code: number }) & { readonly abandoned?: true };
 
 // The caller's side: a helper's exit code, or this host's heavy slot when the job is to run here after all.
+// a job given without its archive gets one from the same builder (heavyNoShip from ctx.noShip, unset: ~/data), dropped at its end
 export const heavySpread = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<Plan, { ok: true }>): Promise<SpreadResult> => {
+  if (job.assets) return spreadWith(ctx, job, plan);
+  const assets = stager(join(ctx.deps.dir, "assets"), job.label, (l) => ctx.deps.log?.(l), ctx.noShip);
+  return spreadWith(ctx, { ...job, assets }, plan).finally(assets.drop);
+};
+const spreadWith = async (ctx: HeavyCtx, job: SpreadJob, plan: Extract<Plan, { ok: true }>): Promise<SpreadResult> => {
   const log = (line: string) => ctx.deps.log?.(line);
   const seen = new Map<string, string>();
   // a helper that refused this job is not asked again, for good or a while (heavy-route.ts refusals)

@@ -141,3 +141,9 @@ On hc, `hc read` joins the rows a long line wraps onto itself (ghostty-vt `plain
 - A cached copy keeps the old file mtimes, so an incremental build after a timestamp-only change sees its target as current.
 
 What would close it: eviction renames an entry to a private name before deleting it, the same rename admission uses; deletion makes folders writable first; and either mtimes count in the hash or the caller's mtimes are applied to a cached copy. Each needs a test, including an eviction interleaved with an admission. A store keyed by content also needs a canonical address of a tree, which an archive's sha256 is not (tar bytes carry mtimes and order): follow a published format such as Nix's NAR or the Bazel remote-execution Directory proto rather than a hand-made one (#477 reviews 5-6 found edge after edge in one). Lead 2026-11-14: "캐시 재사용은 docs/follow-ups.md로. 더 느려도 맞는 게 먼저야."
+
+## heavy --job --in uploads are not weighed by the archive builder (#479)
+
+`dori heavy <label> --job --in <file>` (heavy-queue.ts, heavy-job.ts `stageInputs` and `packTo`) copies its input files into the job folder and tars that folder for the queue host. It predates #479 and is not the `--kind` upload. #479 made one archive builder (heavy-upload.ts `archiveList`) the only place a `--kind` job's or batch's upload is listed and held against `heavyNoShip`. The `--in` files do not go through it yet, so one under `~/data` would still go to the GPU helper.
+
+What would close it: `stageInputs` takes the `--in` paths through `archiveList(paths, config.heavyNoShip)` first and refuses with `HEAVY_LOCAL_REFUSED` on a hit. A test gives a `--in` link into `~/data` and expects no job to be sent.

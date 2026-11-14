@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { BatchJob } from "../src/heavy-batch.ts";
 import { shipItems } from "../src/heavy-batch-check.ts";
+import { stageAssets } from "../src/heavy-assets.ts";
+import { sendTar } from "../src/heavy-send.ts";
 import { shipMissing } from "../src/heavy-ship.ts";
 import type { SpreadJob } from "../src/heavy-spread.ts";
+import { TAR_LIST } from "../src/heavy-upload.ts";
 import { withState } from "./fakes.ts";
 
 // What a --kind job sends to a helper, weighed for every path that goes (reviews 5 and 6 of #479): the --sync paths and
@@ -85,4 +88,67 @@ test("a relative path that leaves the working folder stops the job and names its
     expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${join(home, "input.txt")})`)]);
   }
   expect(shipMissing({ ...job(["cat", "sub/../in.txt"]), cwd: work, sync: [] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+});
+
+// the lead after review 6 of #479: one archive builder makes every list tar gets, so no input kind can go around the
+// heavyNoShip check. Every kind is given as a link into ~/data and refused; the two tar makers refuse such a root too.
+test("no path into an upload's tar goes around the archive builder: every input kind linked into ~/data is refused", async () => {
+  const data = join(home, "data");
+  const run = join(data, "run");
+  mkdirSync(join(data, "rv"), { recursive: true });
+  mkdirSync(run);
+  writeFileSync(join(run, "raw.bin"), "raw\n");
+  writeFileSync(join(data, "rv", "rv"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(data, "rv", "rv"), 0o755);
+  writeFileSync(join(data, "rv", "VERSION"), "0.2.1\n");
+  mkdirSync(join(home, "bin"));
+  symlinkSync(join(data, "rv", "rv"), join(home, "bin", "rv"));
+  const me = { ...who, path: `${join(home, "bin")}:/usr/bin:/bin` };
+  const linked = (name: string): string => {
+    mkdirSync(join(home, name));
+    symlinkSync(join(run, "raw.bin"), join(home, name, "raw.bin"));
+    return join(home, name);
+  };
+  symlinkSync(run, join(home, "toData"));
+  const inSync = linked("insync");
+  const work = linked("work");
+  mkdirSync(join(home, "plain"));
+  symlinkSync(join(run, "raw.bin"), join(home, "up.bin"));
+  const kinds: Record<string, SpreadJob> = {
+    "--sync root": { ...job(["true"]), sync: [other, join(home, "toData")] },
+    "link in --sync": { ...job(["true"]), cwd: inSync, sync: [inSync] },
+    "working folder sent along": { ...job(["true"]), cwd: work, sync: [] },
+    "--tools tree": { ...job(["rv", "make", other]), tools: ["rv"] },
+    "relative ../ argument": { ...job(["cat", "../up.bin"]), cwd: join(home, "plain"), sync: [] },
+  };
+  for (const [kind, j] of Object.entries(kinds)) {
+    const s = shipMissing(j, me, [data], 1024 ** 3);
+    expect({ kind, s }).toMatchObject({ kind, s: { refuse: true, why: expect.stringContaining("heavyNoShip") } });
+    expect({ kind, s }).not.toMatchObject({ s: { why: expect.stringContaining("add --sync") } });
+  }
+  const staged = await stageAssets([inSync], join(state.dir, "assets"), [data]);
+  expect(staged).toMatchObject({ why: expect.stringContaining("heavyNoShip") });
+  // the other tar maker sends job.json alone: no file of a --sync path is tarred outside the builder
+  const sent: Uint8Array[] = [];
+  const sink = { write: (b: Uint8Array) => sent.push(b.slice()), flush: () => 0, end: () => 0 };
+  await sendTar(sink, kinds["link in --sync"]!, [inSync], () => {}, new Promise(() => {}), []);
+  const listed = Bun.spawn(["tar", "-tf", "-"], { stdin: new Blob(sent), stdout: "pipe" });
+  expect((await new Response(listed.stdout).text()).trim().split("\n")).toEqual(["job.json"]);
+});
+
+// the challenge of the r7 plan: tar opens each listed name again, so a folder swapped for a link into a heavyNoShip path
+// between the check and tar would send what is behind it; the same list read again after tar throws that archive away
+test("a folder swapped for a link into a heavyNoShip path while it is archived sends nothing", async () => {
+  const work = join(home, "work");
+  const deny = join(home, "deny");
+  mkdirSync(join(work, "sub"), { recursive: true });
+  mkdirSync(deny);
+  writeFileSync(join(work, "sub", "input"), "PUBLIC\n");
+  writeFileSync(join(deny, "input"), "SECRET_SENTINEL\n");
+  const sub = join(work, "sub");
+  const stage = join(state.dir, "stage");
+  const swap = `mv ${sub} ${sub}.was && ln -s ${deny} ${sub} && exec tar "$@"`;
+  const r = await stageAssets([work], stage, [deny], { argv: ["sh", "-c", swap, "sh", ...TAR_LIST] });
+  expect(r).toEqual({ why: `${sub} changed into another path while it was archived, so the archive is not sent` });
+  expect(readdirSync(stage)).toEqual([]);
 });
