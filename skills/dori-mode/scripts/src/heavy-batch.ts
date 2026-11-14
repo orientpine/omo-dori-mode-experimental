@@ -93,12 +93,12 @@ const offerHelper = async (ctx: HeavyCtx, h: HeavyHelper, it: Item, plan: Extrac
   return { done };
 };
 
-const refusal = (b: BatchJob, plan: Plan): string | undefined => {
+const refusal = (b: BatchJob, plans: readonly Plan[]): string | undefined => {
   if (b.memCap !== undefined && b.memPerWorker !== undefined && b.memCap < b.memPerWorker) return `--mem ${fmtMem(b.memCap)} is less than one worker's --mem-per-worker ${fmtMem(b.memPerWorker)}`;
   // --out read through realpath, fail closed: through a link it could lie in an upload whatever its words say
   const at = nearestExisting(resolve(b.out));
   if (realpathSync(at) !== at) return `--out ${b.out} goes through a link (${at} is ${realpathSync(at)}); give a real folder outside the --sync paths`;
-  const inSync = [...b.sync, ...(plan.ok ? plan.sync : [])].find((s) => within(b.out, s) || within(s, b.out));
+  const inSync = [...b.sync, ...plans.flatMap((p) => (p.ok ? p.sync : []))].find((s) => within(b.out, s) || within(s, b.out));
   return inSync ? `--out ${b.out} and the --sync path ${inSync} hold one another, so uploads would carry the batch's own files; give --out a folder outside them` : undefined;
 };
 
@@ -109,12 +109,12 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   const iso = (): string => new Date(now()).toISOString();
   const jobOf = (text: string, n: number): SpreadJob => ({ label: `${b.label}.${n}`, kind: b.kind, cmd: withPipefail(itemCmd(b.cmd, text, n)), cwd: b.cwd, sync: b.sync, env: { ...b.env, DORI_HEAVY_ITEM: text, DORI_HEAVY_ITEM_N: String(n) }, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}), ...(b.tools?.length ? { tools: b.tools } : {}), ...(b.back?.length ? { back: b.back } : {}) });
   // each item is prepared as a single job of its own (its pipefail, its plan: what it starts, what it names, its program),
-  // as GNU parallel builds each job's command line apart; the --sync paths are the same for all, so the refusal is weighed once
+  // as GNU parallel builds each job's command line apart; --out is weighed against what any item may upload (its --sync paths and --tools trees)
   const pending: Item[] = b.items.map((text, i) => {
     const job = jobOf(text, i + 1);
     return { n: i + 1, text, job, plan: spreadPlan(job, who), tries: [], refused: [] };
   });
-  const why = refusal(b, pending[0]?.plan ?? { ok: false, why: "no item" });
+  const why = refusal(b, pending.map((it) => it.plan));
   if (why) {
     log(`HEAVY_BATCH_REFUSED ${b.label}: ${why}`);
     return { code: 2, abandoned };

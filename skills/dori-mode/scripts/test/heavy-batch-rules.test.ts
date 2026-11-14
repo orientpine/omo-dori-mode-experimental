@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, symlinkSync, } from "node:fs";
-import { hostname } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
 import { batchCode, batchOf, ctxWith, fakeHelper, fresh, logs, realHelper, receipts, start, state, stop, work } from "./heavy-batch-fixture.ts";
@@ -46,4 +46,22 @@ test("an --out that goes through a link is refused before any item, wherever the
   for (const out of [join(state.dir, "into-work"), join(state.dir, "into-work", "new", "deeper"), join(state.dir, "out-link")]) expect(await batchCode(ctxWith([]), batchOf(["x"], ["true"], { out }))).toBe(2);
   expect(logs.filter((l) => l.startsWith("HEAVY_BATCH_REFUSED b: --out ") && l.includes("goes through a link"))).toHaveLength(3);
   expect(logs.some((l) => l.startsWith("HEAVY_BATCH_START"))).toBe(false);
+});
+
+// rule 3 again (review 5 of #476): what every item may upload counts, not the first item's plan alone
+test("an --out inside a --tools tree that only later items upload is refused, though the first item stays here", async () => {
+  const install = join(state.dir, "caller", "rv-video-tool");
+  mkdirSync(install, { recursive: true });
+  writeFileSync(join(install, "rv"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(install, "rv"), 0o755);
+  writeFileSync(join(install, "VERSION"), "0.2.1\n");
+  mkdirSync(join(state.dir, "caller", "bin"));
+  symlinkSync(join(install, "rv"), join(state.dir, "caller", "bin", "rv"));
+  writeFileSync(join(work, "a.txt"), "inside\n");
+  writeFileSync(join(state.dir, "b.txt"), "outside\n");
+  const who = { uid: process.getuid?.() ?? -1, home: homedir(), path: `${join(state.dir, "caller", "bin")}:/usr/bin:/bin` };
+  // item 1 names a file outside the --sync paths (it stays here); item 2 may go to a helper with the rv tree
+  const code = await batchCode(ctxWith([]), batchOf(["../b.txt", "a.txt"], ["cat", `${work}/{item}`], { tools: ["rv"], out: join(install, "batch-results") }), who);
+  expect(code).toBe(2);
+  expect(logs.some((l) => l.startsWith(`HEAVY_BATCH_REFUSED b: --out ${join(install, "batch-results")} and the --sync path ${install}`))).toBe(true);
 });
