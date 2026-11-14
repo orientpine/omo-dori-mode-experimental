@@ -29,7 +29,11 @@ const readJson = (file: string): unknown => {
     return undefined;
   }
 };
-const timeOf = (v: unknown): number | undefined => (typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(v) ? Date.parse(v) : undefined);
+// a time that cannot be (2026-13-99...) is no time (review 1 of #480)
+const timeOf = (v: unknown): number | undefined => {
+  const t = typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(v) ? Date.parse(v) : Number.NaN;
+  return Number.isFinite(t) ? t : undefined;
+};
 
 // why the owner is not away by the idle file, or undefined when he is
 export const notAway = (idleMin: number, now: number, file = join(homedir(), ".dori", "idle.json"), read: (f: string) => unknown = readJson): string | undefined => {
@@ -37,7 +41,8 @@ export const notAway = (idleMin: number, now: number, file = join(homedir(), ".d
   const s = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;
   const at = timeOf(s?.["at"]);
   const last = timeOf(s?.["lastInputAt"]);
-  if (!s || at === undefined || last === undefined || typeof s["locked"] !== "boolean") return `the owner's idle state (${file}) cannot be read, so this PC takes no batch item`;
+  // a file from the future (a clock set back) is no fresh file either
+  if (!s || at === undefined || last === undefined || typeof s["locked"] !== "boolean" || at > now + 60_000) return `the owner's idle state (${file}) cannot be read, so this PC takes no batch item`;
   if (now - at > IDLE_FRESH_MS) return `the owner's idle state (${file}) is ${Math.round((now - at) / 1000)} s old, so this PC takes no batch item`;
   if (s["locked"] || now - last >= idleMin * 60_000) return undefined;
   return `the owner is on this PC (screen not locked, input ${Math.round((now - last) / 60_000)} min ago, under ${idleMin}), so it takes no new batch item; the ones running go on`;
@@ -58,9 +63,21 @@ export const ownerBusy = (opts: readonly string[], needBytes = 0, now = Date.now
   if (away) return away;
   const cap = CAP.exec(opts.find((o) => CAP.test(o)) ?? "");
   if (!cap) return undefined;
+  if (!needBytes) return "an item on the owner's PC needs a memory estimate (dori heavy --mem-per-worker) to be held to its memory cap, so it waits for another host";
   const u = use();
   const [cpuMax, memMax] = [Number(cap[1]), Number(cap[2])];
   if (u.cpuPct >= cpuMax) return `this PC is ${Math.round(u.cpuPct)}% busy (cpu), its batch cap is ${cpuMax}%`;
   const memPct = u.memTotal ? ((u.memTotal - u.memAvail + needBytes) / u.memTotal) * 100 : 100;
   return memPct > memMax ? `this PC's memory would be ${Math.round(memPct)}% used with it, its batch cap is ${memMax}%` : undefined;
+};
+
+// the owner's memory cap of cap=<cpu>:<mem>, and why an item may not start under it: what is used, what running items
+// reserved and do not use yet, and its own estimate together (checked under the slot lock, heavy-slot.ts tryAdmit)
+export const ownerMemCap = (opts: readonly string[]): number | undefined => {
+  const cap = CAP.exec(opts.find((o) => CAP.test(o)) ?? "");
+  return cap ? Number(cap[2]) : undefined;
+};
+export const ownerMemWhy = (totalKb: number, usedKb: number, reservedKb: number, needKb: number, capPct: number): string | undefined => {
+  const pct = totalKb > 0 ? ((usedKb + reservedKb + needKb) / totalKb) * 100 : 100;
+  return pct > capPct ? `memory with it and the running items' reservations would be ${Math.round(pct)}% used, over the owner's memory cap of ${capPct}%` : undefined;
 };

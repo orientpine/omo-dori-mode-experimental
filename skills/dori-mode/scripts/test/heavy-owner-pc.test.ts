@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { HeavyHelper } from "../src/config.ts";
 import { notAway, ownerBusy, ownerTakes, ownerWords } from "../src/heavy-owner-pc.ts";
 import { helperVerdict } from "../src/heavy-queue.ts";
+import { admitOnce, type SlotDeps } from "../src/heavy-slot.ts";
 import { batchCode, batchOf, ctxWith, logs, realHelper, receipts, start, state, stop } from "./heavy-batch-fixture.ts";
 
 // The owner's own PC as a batch helper (owner's card Q46): cha takes a batch's items only while its owner is away by
@@ -40,8 +41,8 @@ test("the caps keep an item off while CPU or memory with it would pass them; kin
   const words = ownerWords({ idleMin: 20, cpuPct: 50, memPct: 40 });
   expect(words).toEqual(["idle=20", "cap=50:40"]);
   const use = (cpuPct: number, usedGb: number) => () => ({ cpuPct, memTotal: 100 * 1024 ** 3, memAvail: (100 - usedGb) * 1024 ** 3 });
-  expect(ownerBusy(words, 0, NOW, file, use(20, 10))).toBeUndefined();
-  expect(ownerBusy(words, 0, NOW, file, use(55, 10))).toBe("this PC is 55% busy (cpu), its batch cap is 50%");
+  expect(ownerBusy(words, 1024 ** 3, NOW, file, use(20, 10))).toBeUndefined();
+  expect(ownerBusy(words, 1024 ** 3, NOW, file, use(55, 10))).toBe("this PC is 55% busy (cpu), its batch cap is 50%");
   expect(ownerBusy(words, 35 * 1024 ** 3, NOW, file, use(20, 10))).toBe("this PC's memory would be 45% used with it, its batch cap is 40%");
   expect(ownerTakes({ idleMin: 20, cpuPct: 50, memPct: 40, kinds: ["cpu", "browser"] }, "gpu")).toBe(false);
   expect(ownerTakes({ idleMin: 20, cpuPct: 50, memPct: 40, kinds: ["cpu", "browser"] }, "browser")).toBe(true);
@@ -70,6 +71,37 @@ test("a batch item goes to the owner's PC only while he is away; while he is on 
 
 test("a batch item goes to the owner's PC while its screen is locked", async () => {
   const away = ownerHelper({ at: iso(Date.now()), locked: true, lastInputAt: iso(Date.now()) });
-  expect(await batchCode(ctxWith([away]), batchOf(["x"], ["true"]))).toBe(0);
+  // an owner PC holds an item to its memory cap, so the batch gives it an estimate (review 1 of #480)
+  expect(await batchCode(ctxWith([away]), batchOf(["x"], ["true"], { memPerWorker: 64 * 1024 ** 2 }))).toBe(0);
   expect(receipts()).toMatchObject([{ host: "cha", exit: 0 }]);
 }, 60_000);
+
+// review 1 of #480: a time that cannot be (2026-13-99...) or is ahead of now never counts as a fresh file
+test("an idle file whose time cannot be or is in the future is unreadable, so the PC takes no item", () => {
+  const dir = state.dir;
+  expect(notAway(20, NOW, idleFile(dir, { at: "2026-13-99T99:99:99Z", locked: true, lastInputAt: iso(NOW) }))).toContain("cannot be read");
+  expect(notAway(20, NOW, idleFile(dir, { at: iso(NOW + 10 * 60_000), locked: true, lastInputAt: iso(NOW) }))).toContain("cannot be read");
+});
+
+// review 1 of #480: an item with no memory estimate cannot be held to the owner's memory cap, so it waits elsewhere
+test("an item without a memory estimate waits for another host on the owner's PC", () => {
+  const file = idleFile(join(state.dir, "est"), { at: iso(NOW), locked: true, lastInputAt: iso(NOW) });
+  const use = () => ({ cpuPct: 0, memTotal: 100 * 1024 ** 3, memAvail: 90 * 1024 ** 3 });
+  expect(ownerBusy(ownerWords({ idleMin: 20, cpuPct: 50, memPct: 40 }), 0, NOW, file, use)).toContain("needs a memory estimate");
+  expect(ownerBusy(ownerWords({ idleMin: 20, cpuPct: 50, memPct: 40 }), 1024 ** 3, NOW, file, use)).toBeUndefined();
+});
+
+// review 1 of #480: the owner's memory cap counts what running items reserved and do not use yet, under the slot lock
+test("the owner's memory cap counts running items' reservations at admission", async () => {
+  const dir = join(state.dir, "slots");
+  mkdirSync(join(dir, "slot.1"), { recursive: true });
+  writeFileSync(join(dir, "slot.1", "owner"), `4242 running ${new Date().toISOString()}`);
+  writeFileSync(join(dir, "slot.1", "mem"), String(20 * 1024 ** 2));
+  const gb = 1024 ** 2;
+  const usage = async () => ({ host: { gpu: null, gpuMem: null, cpu: 0, mem: 10 }, unified: false, jobs: [{ mem: 0 }], memTotalKb: 100 * gb });
+  const deps = { dir, slots: 4, maxLoad: 1e9, clock: { now: () => Date.now(), sleep: async () => {} }, pid: process.pid, load: async () => 0, alive: (p: number) => p === 4242, headroom: { maxSlots: 4, free: 5, settleSec: 0, usage } } as unknown as SlotDeps;
+  const capped = await admitOnce(deps, "item", 0, 20 * gb, 40);
+  expect(capped && "wait" in capped ? capped.why : capped).toContain("owner's memory cap");
+  const free = await admitOnce(deps, "item", 0, 20 * gb);
+  expect(free && "slot" in free).toBe(true);
+});

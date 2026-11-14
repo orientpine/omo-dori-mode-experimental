@@ -11,7 +11,7 @@ import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, p
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
 import { assetsOptOk, assetsWord, stager, unpackChecked, type Stager } from "./heavy-assets.ts";
-import { ownerBusy, ownerOptOk } from "./heavy-owner-pc.ts";
+import { ownerBusy, ownerMemCap, ownerOptOk } from "./heavy-owner-pc.ts";
 import { firstAnswer, killAlive, letGo, readerLines, settle, staleLeft } from "./heavy-settle.ts";
 import { aliveOf, heartbeat, markRun, runOf, STALE_EXIT, STALE_GRACE_MS, staleWatch, stopOnHelper, type Stale } from "./heavy-stale.ts";
 import { bundleEnv, ensurePlaywright, playwrightVersion, toolBundles, toolOptOk, toolPlan } from "./heavy-tools.ts";
@@ -470,7 +470,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
     console.error(`WORKER_BUSY ${busy}`);
     return 75;
   }
-  const t = await admitOnce(ctx.deps, label, settleFor(kind), mem && mem / 1024);
+  const t = await admitOnce(ctx.deps, label, settleFor(kind), mem && mem / 1024, ownerMemCap(opts));
   if (!t || !("slot" in t)) {
     console.error(`WORKER_BUSY ${t?.why ?? "another job is being admitted"}`);
     return 75;

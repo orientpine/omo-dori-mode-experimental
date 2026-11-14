@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { basename, join } from "node:path";
 import { headroomVerdict, type UsageSample } from "./heavy-headroom.ts";
 import { memVerdict } from "./heavy-mem.ts";
+import { ownerMemWhy } from "./heavy-owner-pc.ts";
 import { heldBy, type Holder, holders, releaseSlot, slotMemKb, slotSettleSec, tryTake, withLock } from "./heavy-slot-store.ts";
 
 import type { Headroom, SlotDeps } from "./heavy-slot-types.ts";
@@ -57,13 +58,14 @@ const line = (deps: SlotDeps): string[] => {
 
 // One admission try now, for a helper that serves another host's queue: a job waiting in this host's own line goes first.
 // memKb: the job's own estimate (exec mem=), kept free beside the running jobs as for a job of this host (tryAdmit)
-export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: number, memKb?: number): Promise<Try | null> => {
+// ownerMemPct: the owner's memory cap of an owner PC (heavy-owner-pc.ts), with every reservation counted
+export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: number, memKb?: number, ownerMemPct?: number): Promise<Try | null> => {
   mkdirSync(deps.dir, { recursive: true });
   const held = deps.hold?.();
   if (held) return { wait: "hold", why: `this host's heavy slots are held ${held}` };
   const waiting = line(deps).length;
   if (waiting) return { wait: "queue", why: `${waiting} job(s) wait in this host's queue` };
-  const t = await admitUnheld(deps, () => tryAdmit(deps, label, memKb, settleSec));
+  const t = await admitUnheld(deps, () => tryAdmit(deps, label, memKb, settleSec, ownerMemPct));
   return t && "wait" in t && t.wait === "hold" ? { wait: "hold", why: `this host's heavy slots are held ${t.why}` } : t;
 };
 
@@ -81,7 +83,7 @@ const admitUnheld = async (deps: SlotDeps, admit: () => Promise<Try>, holdExempt
 
 // memKb: the job's own estimate (dori heavy --mem). With it even the first slot waits until the memory it needs, beside
 // what running jobs said they need and do not use yet, keeps headroom.free percent of the host free.
-const tryAdmit = async (deps: SlotDeps, label: string, memKb?: number, settleSec?: number): Promise<Try> => {
+const tryAdmit = async (deps: SlotDeps, label: string, memKb?: number, settleSec?: number, ownerMemPct?: number): Promise<Try> => {
   const load = await deps.load();
   if (load >= deps.maxLoad) return { wait: "load", why: `load ${load.toFixed(0)} >= ${deps.maxLoad}` };
   const h = deps.headroom;
@@ -90,10 +92,13 @@ const tryAdmit = async (deps: SlotDeps, label: string, memKb?: number, settleSec
   let sample: UsageSample | undefined;
   const usage = async (u: Headroom): Promise<UsageSample> => (sample ??= await u.usage(running.map((r) => r.tree)));
   let memWhy = "";
+  if (ownerMemPct !== undefined && !(memKb && h)) return { wait: "memory", why: "the owner's memory cap cannot be weighed here (no estimate or no headroom sample)" };
   if (memKb && h) {
     const s = await usage(h);
     if (s.memTotalKb > 0) {
       const reservedKb = running.reduce((a, r, i) => a + Math.max(0, slotMemKb(deps, r.n) - ((s.jobs[i]?.mem ?? 0) * s.memTotalKb) / 100), 0);
+      const owner = ownerMemPct === undefined ? undefined : ownerMemWhy(s.memTotalKb, (s.memTotalKb * s.host.mem) / 100, reservedKb, memKb, ownerMemPct);
+      if (owner) return { wait: "memory", why: owner };
       const v = memVerdict({ totalKb: s.memTotalKb, availKb: s.memTotalKb * (1 - s.host.mem / 100) }, memKb, reservedKb, h.free);
       if (!v.ok) return { wait: "memory", why: v.why };
       memWhy = `; ${v.why}`;
