@@ -233,7 +233,7 @@ type HelperTry = { readonly kind: "started"; readonly run: Started } | { readonl
 const VERDICT = /^WORKER_(ADMIT|BUSY|REFUSED)\b ?(.*)$/;
 
 export const startExec = async (ctx: HeavyCtx, h: HeavyHelper, job: SpreadJob, plan: Extract<Plan, { ok: true }>, below: number, assets = true): Promise<HelperTry> => {
-  const word = assets ? await assetsWord(plan.sync) : undefined; // the --sync trees by hash (heavy-assets.ts); a helper that does not know assets= is asked once more without it
+  const word = assets ? await assetsWord(plan.sync, (l) => ctx.deps.log?.(`HEAVY_ASSET ${job.label} ${h.name}: ${l}`)) : undefined; // the --sync trees by hash (heavy-assets.ts); a helper that does not know assets= is asked once more without it
   const args = execWords(job, plan, below, word);
   const p = Bun.spawn([...h.ssh, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // ssh, tar and untar stay in the caller's process group: a Ctrl-C on its terminal ends them with it
   const reader = p.stderr.getReader();

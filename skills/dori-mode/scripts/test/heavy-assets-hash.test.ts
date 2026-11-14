@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { assetHash } from "../src/heavy-assets.ts";
+import { assetHash, assetsWord, checkAssets } from "../src/heavy-assets.ts";
 import { withState } from "./fakes.ts";
 
 // What a --sync tree's hash covers (review 1 and 2 of #477, and the challenge of the review-3 plan): the root's name,
@@ -56,4 +56,46 @@ test("hashing a tree lets the event loop run before it ends (a helper's heartbea
   expect(await assetHash(d)).toMatch(/^[0-9a-f]{32}$/);
   order.push("hashed");
   expect(order).toEqual(["loop", "hashed"]);
+});
+
+test("a newline cannot move between a link's target and the next name without changing the hash (review 5 of #477)", async () => {
+  const [a, b] = [join(state.dir, "one", "t"), join(state.dir, "two", "t")];
+  for (const d of [a, b]) mkdirSync(d, { recursive: true });
+  symlinkSync("b\nc", join(a, "a"));
+  writeFileSync(join(a, "x"), "same");
+  symlinkSync("b", join(b, "a"));
+  writeFileSync(join(b, "c\nx"), "same");
+  expect(await assetHash(a)).not.toBe(await assetHash(b));
+});
+
+// a file whose metadata reads but whose bytes never come (a hung mount): hashing gives up after stallMs without progress
+// and cancels its read, on the caller (the path goes without a hash) and on the helper (ASSET_BAD, the job runs on it)
+const stalled = (): { read: () => ReadableStream<Uint8Array>; cancelled: () => boolean } => {
+  let cancelled = false;
+  const cancel = (): void => {
+    cancelled = true;
+  };
+  return { read: () => new ReadableStream<Uint8Array>({ cancel }), cancelled: () => cancelled };
+};
+
+test("a caller whose --sync file stalls while it is hashed sends that path without a hash and says so (review 5 of #477)", async () => {
+  const d = join(state.dir, "w");
+  mkdirSync(d);
+  writeFileSync(join(d, "data.bin"), "x");
+  const s = stalled();
+  const said: string[] = [];
+  expect(await assetsWord([d], (l) => said.push(l), { stallMs: 50, read: s.read })).toBe("assets=-");
+  expect(said).toEqual([`${d} could not be hashed (no progress for 0 s, or unreadable), so it goes without one`]);
+  expect(s.cancelled()).toBe(true);
+});
+
+test("a helper whose arrived file stalls while it is checked says ASSET_BAD and goes on (review 5 of #477)", async () => {
+  const root = join(state.dir, "in");
+  mkdirSync(join(root, "w"), { recursive: true });
+  writeFileSync(join(root, "w", "data.bin"), "x");
+  const s = stalled();
+  const said: string[] = [];
+  await checkAssets(root, ["/w"], [`assets=${"0".repeat(32)}`], (l) => said.push(l), { stallMs: 50, read: s.read });
+  expect(said).toEqual(["ASSET_BAD /w: could not be hashed here (no progress for 0 s, or unreadable); the job runs on what arrived"]);
+  expect(s.cancelled()).toBe(true);
 });
