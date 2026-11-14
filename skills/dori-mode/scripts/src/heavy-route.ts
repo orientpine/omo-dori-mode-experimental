@@ -146,10 +146,13 @@ export const refusals = (now: () => number) => {
 // (a bare lib is not: being there cannot tell it from a new output's name, review 14, so ./lib it)
 // (-cp /a.jar:/b.jar, PYTHONPATH=/lib:.); else the word itself (a new output, /tmp/work result.bin). A relative one counts
 // with . or .. only.
-const pathWord = (w: string): boolean => isAbsolute(w) || w === "." || w.startsWith("./") || w.split("/").includes("..");
+const pathWord = (w: string): boolean => (isAbsolute(w) && !w.startsWith("//")) || w === "." || w.startsWith("./") || w.split("/").includes("..");
+// a URL (https://..., s3://...) names no path here, whole or in pieces (review 16 of #479)
+const URL_WORD = /^[a-z][a-z0-9+.-]*:\/\//i;
 export const argPaths = (arg: string, cwd: string): string[] => {
   const words = (w: string): string[] => {
-    if (!w || existsSync(isAbsolute(w) ? w : `${cwd}/${w}`)) return w ? [w] : [];
+    if (!w || URL_WORD.test(w)) return [];
+    if (existsSync(isAbsolute(w) ? w : `${cwd}/${w}`)) return [w];
     const eq = w.indexOf("=");
     if (eq > 0 && !w.slice(0, eq).includes("/")) return words(w.slice(eq + 1));
     const parts = w.split(/[,:]/);
