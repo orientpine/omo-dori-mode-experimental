@@ -80,6 +80,13 @@ test("a new absolute output named with a space or a colon beside the working fol
     expect({ arg, s: shipMissing(dj, who, [], 1024 ** 3) }).toMatchObject({ arg, s: { refuse: true, why: expect.stringContaining("is not in a --sync path") } });
     expect(shipItems(batchOf([], []), [dj], who).stops).toEqual([expect.stringContaining("is not in a --sync path")]);
   }
+  // review 18: a bare .. is a path, and a word past the piece budget fails closed instead of losing runs
+  const many = `of=${work}${":".repeat(63)}result.bin`;
+  for (const cmd of [["cp", "in.txt", ".."], ["dd", many], ["dd", `of=${"x:".repeat(300)}y`]]) {
+    const bj = { ...job(cmd), cwd: work, sync: [work] };
+    expect({ cmd: cmd[1], s: shipMissing(bj, who, [], 1024 ** 3) }).toMatchObject({ cmd: cmd[1], s: { refuse: true } });
+    expect(shipItems(batchOf([], []), [bj], who).stops).toHaveLength(1);
+  }
   const data = join(home, "data");
   mkdirSync(join(data, "lib"), { recursive: true });
   const dj = { ...job(["env", `PYTHONPATH=${join(data, "lib")}:lib`, "true"]), cwd: work, sync: [work] };

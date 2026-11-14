@@ -146,14 +146,15 @@ export const refusals = (now: () => number) => {
 // itself when it is path-shaped, and every path-shaped piece of it cut at = : or , - all of them must be covered. The
 // one exception is a URL word (https://..., s3://...), whole or as the value after a key's =. A bare name (out.txt,
 // lib) is in the working folder, so already covered.
-const pathShaped = (w: string): boolean => /^(\/|\.\/|\.\.\/|~)/.test(w) || w.includes("/");
+const pathShaped = (w: string): boolean => w === ".." || /^(\/|\.\/|\.\.\/|~)/.test(w) || w.includes("/");
 const URL_WORD = /^[a-z][a-z0-9+.-]*:\/\//i;
 const tilde = (w: string): string => (w === "~" || w.startsWith("~/") ? join(homedir(), w.slice(1)) : w);
 // every run of pieces between separators is weighed (of=/w:out.txt names /w:out.txt), not only single pieces
 const runs = (arg: string): string[] => {
   const t = arg.split(/([=:,])/);
   const n = (t.length + 1) / 2;
-  if (n > 64) return [arg, ...t.filter((_, k) => k % 2 === 0)];
+  // past the budget no run is dropped: the word fails closed as "/", which no --sync covers (review 18)
+  if (n > 256) return ["/"];
   const out: string[] = [];
   for (let i = 0; i < n; i++) for (let j = i; j < n; j++) out.push(t.slice(2 * i, 2 * j + 1).join(""));
   return out.sort((x, y) => y.length - x.length); // the whole word first, so a refusal names it
