@@ -73,7 +73,7 @@ export type SpreadJob = {
 // which the helper must have before it takes the job
 // which: the bare command names the helper must find on its box PATH (as here, where they may sit in another folder)
 // path: the job's --env PATH, the box's PATH there, on which the helper looks the names up
-export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string };
+export type Plan = { readonly ok: true; readonly sync: readonly string[]; readonly needs: readonly string[]; readonly which: readonly string[]; readonly path?: string; readonly playwright?: string; readonly tools?: readonly string[]; readonly toolOpts?: readonly string[]; readonly toolEnv?: Readonly<Record<string, string>>; readonly arch?: string } | { readonly ok: false; readonly why: string; readonly missing?: string };
 
 // absolute paths inside one argument: the whole argument, or what follows = , or : (not the // of a URL)
 export const pathsIn = (arg: string): string[] => [...arg.matchAll(/(?:^|[=,:])(\/(?!\/)[^\s=,:;"'\]}]*)/g)].map((m) => normalize(m[1]!));
@@ -117,8 +117,8 @@ const stayHere = (cwd: string, root: string): string | undefined => {
 // Whether the job can run on another host unchanged: every path it needs travels with --sync, and every --sync path is
 // this account's own (home or /tmp, owned, no link on the way, no ..), --tools trees too. Else it runs here (HEAVY_LOCAL).
 export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly home: string; readonly path?: string }): Plan => {
-  const no = (why: string): Plan => ({ ok: false, why });
-  if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)");
+  const no = (why: string, missing?: string): Plan => ({ ok: false, why, ...(missing ? { missing } : {}) }); // missing: the folder or file whose absence alone kept it here (heavy-ship.ts)
+  if (!job.sync.length) return no("no --sync path (the command's folder travels only with --sync)", job.cwd);
   if (backGlobProblem(job.back)) return no(backGlobProblem(job.back)!);
   const tp = toolPlan(job.tools ?? [], { path: who.path ?? process.env["PATH"] ?? "", home: who.home });
   if ("why" in tp) return no(tp.why);
@@ -139,7 +139,7 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   // a path inside another --sync path travels with it
   const sync = [...new Set(roots)].sort((a, b) => a.length - b.length).filter((p, i, all) => !all.slice(0, i).some((q) => within(p, q)));
   const covered = (p: string): boolean => sync.some((s) => within(p, s)) || SYSTEM.some((s) => within(p, s));
-  if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`);
+  if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, job.cwd);
   // a test run reads its whole checkout (docs, fixtures, sibling folders) by relative path, which no argument names: a
   // checkout synced in part fails on the helper and passes here (2026-11-02: scripts/ only, 171 of 744 failed there)
   const top = gitTop(job.cwd);
@@ -147,7 +147,7 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   // a folder that says it must run here (its tests start boxes and systemd scopes themselves, which a helper's box cannot)
   const stay = stayHere(job.cwd, top ?? sync.find((s) => within(job.cwd, s))!);
   if (stay) return no(stay);
-  for (const arg of job.cmd) for (const p of pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`);
+  for (const arg of job.cmd) for (const p of pathsIn(arg)) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, p);
   // A system program the job starts is checked on the helper before it takes the job: a venv's python links to the
   // system python it was made with, and on a helper without that version the link dangles in the box, so the run printed
   // nothing (2026-11-07: a check of two runs on a helper without the venv's python read two empty logs as the same).
@@ -163,7 +163,7 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   const first = job.cmd[0] ?? "";
   if (first.includes("/")) {
     const p = resolve(job.cwd, first);
-    if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`);
+    if (!covered(p)) return no(`the command ${first} is ${p}, which is not in a --sync path`, p);
     if (inProgramDirs(p)) needs.add(p);
   } else if (job.env["PATH"] !== undefined) {
     // --env PATH is the box's PATH too: a command in a --sync path travels, one in a system folder is looked up by the

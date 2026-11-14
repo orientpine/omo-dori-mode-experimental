@@ -12,6 +12,7 @@ import { unsafeRemote } from "./heavy-route.ts";
 import { admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { setSlotTree } from "./heavy-slot-store.ts";
 import { nearestExisting, QUICK_SETTLE_SEC, spreadPlan, startExec, withPipefail, within, type Kind, type Plan, type SpreadJob } from "./heavy-spread.ts";
+import { logShip, shipMissing, type ShipFile } from "./heavy-ship.ts";
 import { stopOnHelper } from "./heavy-stale.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH ... --items FILE [--mem-per-worker SIZE [--mem SIZE]] [--out DIR]
@@ -31,6 +32,8 @@ export type BatchJob = {
   readonly memPerWorker?: number; readonly memCap?: number; readonly tools?: readonly string[]; readonly back?: readonly string[];
   // this host's environment for its items (dori heavy --tools: a tool installed off PATH first on it, heavy-tools.ts toolsHere)
   readonly hereEnv?: Readonly<Record<string, string | undefined>>;
+  // an item's folder or file outside --sync goes along within these, else no item runs (heavy-ship.ts); absent: --local, or no helper
+  readonly ship?: { readonly noShip: readonly string[]; readonly maxBytes: number; readonly heavyLog: string };
 };
 type BatchTry = { readonly host: string; readonly result: string }; type Refusal = { readonly host: string; readonly why: string };
 // assets: the sha256 of the --sync archive a helper ran it on, one for the whole batch (heavy-assets.ts)
@@ -114,15 +117,25 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   const jobOf = (text: string, n: number): SpreadJob => ({ assets, label: `${b.label}.${n}`, kind: b.kind, cmd: withPipefail(itemCmd(b.cmd, text, n)), cwd: b.cwd, sync: b.sync, env: { ...b.env, DORI_HEAVY_ITEM: text, DORI_HEAVY_ITEM_N: String(n) }, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}), ...(b.tools?.length ? { tools: b.tools } : {}), ...(b.back?.length ? { back: b.back } : {}) });
   // each item is prepared as a single job of its own (its pipefail, its plan: what it starts, what it names, its program),
   // as GNU parallel builds each job's command line apart; --out is weighed against what any item may upload (its --sync paths and --tools trees)
+  const stops: string[] = [];
+  const shipped = new Map<string, ShipFile[]>();
   const pending: Item[] = b.items.map((text, i) => {
     const job = jobOf(text, i + 1);
-    return { n: i + 1, text, job, plan: spreadPlan(job, who), tries: [], refused: [] };
+    const s = b.ship ? shipMissing(job, who, b.ship.noShip, b.ship.maxBytes) : undefined;
+    if (s && "refuse" in s && s.refuse) stops.push(`#${i + 1}: ${s.why}`);
+    if (s && "job" in s) for (const p of s.shipped) shipped.set(p, s.files.filter((f) => within(f.path, p)));
+    return { n: i + 1, text, job: s && "job" in s ? s.job : job, plan: s && "plan" in s ? s.plan : s ? { ok: false, why: s.why } : spreadPlan(job, who), tries: [], refused: [] };
   });
+  if (stops.length) {
+    log(`HEAVY_LOCAL_REFUSED ${b.label}: ${stops.length} item(s) would run here, ${stops[0]}; no item ran: give that path with --sync, or run them here with --local`);
+    return { code: 2, abandoned };
+  }
   const why = refusal(b, pending.map((it) => it.plan));
   if (why) {
     log(`HEAVY_BATCH_REFUSED ${b.label}: ${why}`);
     return { code: 2, abandoned };
   }
+  if (b.ship && shipped.size) logShip(b.ship.heavyLog, b.label, { shipped: [...shipped.keys()], files: [...shipped.values()].flat() }, log);
   for (const w of new Set(pending.flatMap((it) => (it.plan.ok ? [] : [it.plan.why])))) log(`HEAVY_LOCAL ${b.label}: ${w}; ${pending.filter((it) => !it.plan.ok && it.plan.why === w).length} item(s) run here`);
   mkdirSync(join(b.out, "items"), { recursive: true });
   const receipts = join(b.out, "receipts.jsonl");

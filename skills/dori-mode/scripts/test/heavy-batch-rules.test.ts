@@ -65,3 +65,13 @@ test("an --out inside a --tools tree that only later items upload is refused, th
   expect(code).toBe(2);
   expect(logs.some((l) => l.startsWith(`HEAVY_BATCH_REFUSED b: --out ${join(install, "batch-results")} and the --sync path ${install}`))).toBe(true);
 });
+
+// PR C: a batch whose items would leave a no-ship folder behind runs no item at all
+test("a batch whose working folder is a heavyNoShip path runs no item (HEAVY_LOCAL_REFUSED)", async () => {
+  const data = join(state.dir, "data");
+  mkdirSync(join(data, "raw"), { recursive: true });
+  const ship = { noShip: [data], maxBytes: 1024 ** 3, heavyLog: join(state.dir, "heavy.log") };
+  expect(await batchCode(ctxWith([realHelper("h1")], false), batchOf(["x"], ["true"], { cwd: join(data, "raw"), ship }))).toBe(2);
+  expect(logs.some((l) => l.startsWith("HEAVY_LOCAL_REFUSED b: 1 item(s) would run here, #1: the working folder ") && l.endsWith("no item ran: give that path with --sync, or run them here with --local"))).toBe(true);
+  expect(logs.some((l) => l.startsWith("HEAVY_BATCH_START"))).toBe(false);
+});

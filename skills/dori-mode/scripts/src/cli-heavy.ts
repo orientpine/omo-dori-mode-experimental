@@ -7,7 +7,8 @@ import { holdCommand } from "./heavy-hold.ts";
 import { gpuRoom, neverFits, parseMem, readMeminfo } from "./heavy-mem.ts";
 import { heavyJobCommand, heavyServe } from "./heavy-queue.ts";
 import { heavyWorker } from "./heavy-worker.ts";
-import { heavySpread, isKind, spreadPlan, toolsHere, withPipefail, type SpreadJob } from "./heavy-spread.ts";
+import { logShip, shipMissing } from "./heavy-ship.ts";
+import { heavySpread, isKind, spreadPlan, toolsHere, withPipefail, type Plan, type SpreadJob } from "./heavy-spread.ts";
 import { sampleHost } from "./host-guard.ts";
 import { run } from "./run.ts";
 import type { Command } from "./cli-context.ts";
@@ -67,6 +68,12 @@ const heavyCommand: Command = async (context) => {
   const kindOpt = opt("kind");
   const kind = kindOpt === undefined ? undefined : isKind(kindOpt) ? kindOpt : die(`dori heavy --kind takes cpu, browser or gpu, not "${kindOpt}"`);
   if (helpersOnly && kind === undefined) die("dori heavy --helpers-only goes with --kind cpu|browser|gpu --sync PATH ...: only those can run on a helper");
+  const local = Boolean(flags.values["local"]);
+  if (local && helpersOnly) die("dori heavy --local runs the job on this host, --helpers-only never does: give one of them");
+  const refuseLocal = (why: string): void => {
+    deps.log?.(`HEAVY_LOCAL_REFUSED ${name}: ${why}; it did not run: give that path with --sync, or run it on this host with --local`);
+    process.exitCode = 2;
+  };
   const refuseHere = (why: string): void => {
     deps.log?.(`HEAVY_HELPERS_ONLY ${name}: ${why}; it does not run here`);
     process.exitCode = 2;
@@ -82,14 +89,20 @@ const heavyCommand: Command = async (context) => {
       if (!items.length) die(`dori heavy --items ${itemsOpt}: no item in it (one per line; blank and # lines are skipped)`);
       const back = flags.values.back as string[] | undefined;
       const here = toolsHere(name, many("tools"), deps.log).env;
-      const r = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? defaultOut(name, Date.now())), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}), ...(here ? { hereEnv: here } : {}) });
+      const r = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? defaultOut(name, Date.now())), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}), ...(here ? { hereEnv: here } : {}), ...(!local && config.heavyQueue.helpers.length ? { ship: { noShip: config.heavyNoShip, maxBytes: config.heavyShipMaxMb * 1024 ** 2, heavyLog: `${config.stateDir}/heavy/heavy.log` } } : {}) });
       // a stale helper run left a child or pipe not ended: exit now instead of waiting on it
       if (r.abandoned) process.exit(r.code);
       process.exitCode = r.code;
       return;
     }
     const job: SpreadJob = { ...(helpersOnly ? { helpersOnly } : {}), label: name, kind, cmd: jobCmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, ...(needBytes ? { needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(flags.values.back ? { back: flags.values.back as string[] } : {}), ...(flags.values["stale-again"] ? { staleAgain: true } : {}) };
-    const plan = spreadPlan(job, { uid: process.getuid?.() ?? -1, home: homedir() });
+    // a folder or file outside --sync goes along, or the job stops here before it runs; --local runs it here on purpose (heavy-ship.ts)
+    const who = { uid: process.getuid?.() ?? -1, home: homedir() };
+    const ship = !local && config.heavyQueue.helpers.length ? shipMissing(job, who, config.heavyNoShip, config.heavyShipMaxMb * 1024 ** 2) : undefined;
+    if (ship && "refuse" in ship && ship.refuse) return helpersOnly ? refuseHere(ship.why) : refuseLocal(ship.why);
+    const sent = ship && "plan" in ship ? ship : undefined;
+    if (sent) logShip(`${config.stateDir}/heavy/heavy.log`, name, sent, (l) => deps.log?.(l));
+    const plan: Plan = sent?.plan ?? (ship && "why" in ship ? { ok: false, why: ship.why } : spreadPlan(job, who));
     if (!plan.ok && helpersOnly) return refuseHere(plan.why);
     if (!config.heavyQueue.helpers.length && helpersOnly) return refuseHere("no heavyQueue.helpers on this host");
     if (!plan.ok) deps.log?.(`HEAVY_LOCAL ${name}: ${plan.why}`);
@@ -97,7 +110,7 @@ const heavyCommand: Command = async (context) => {
     else {
       // its --sync paths archived once for every helper it is offered to, and removed when it ended (heavy-assets.ts)
       const assets = stager(join(deps.dir, "assets"), name, (l) => deps.log?.(l));
-      const r = await heavySpread({ q: config.heavyQueue, deps }, { ...job, assets }, plan).finally(assets.drop);
+      const r = await heavySpread({ q: config.heavyQueue, deps }, { ...(sent?.job ?? job), assets }, plan).finally(assets.drop);
       // a stale run left a child or a pipe not ended (HEAVY_STALE_LEFT): it would keep this process alive, so exit
       abandoned = r.abandoned === true;
       if ("code" in r) {
