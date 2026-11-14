@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { shipMissing } from "../src/heavy-ship.ts";
+import type { SpreadJob } from "../src/heavy-spread.ts";
 import { withState } from "./fakes.ts";
 
 // A --kind job whose working folder lies outside --sync: gongdori's 2026-11-12 jobs said HEAVY_LOCAL "the working folder
@@ -85,3 +88,47 @@ test("a working folder with a link into ~/data never leaves, nor one over heavyS
   expect(over.err).toContain(`it is not sent along: ${big} holds over 1M (heavyShipMaxMb); it did not run: give that path with --sync, or run it on this host with --local`);
   expect(existsSync(join(work, "ran.txt")) || existsSync(join(big, "ran.txt"))).toBe(false);
 }, 60_000);
+
+// review 1 of #479
+test("--local runs a job here even when its plan could go to a preferred helper, which is never contacted", async () => {
+  const contacted = join(state.dir, "contacted");
+  const r = await heavy(other, ["--local"], { heavyQueue: { helpers: [{ name: "second", ssh: ["sh", "-c", `touch ${contacted}; exit 255`], prefer: ["cpu"] }] } });
+  expect(r.code).toBe(0);
+  expect(existsSync(contacted)).toBe(false);
+  expect(readFileSync(join(other, "ran.txt"), "utf8")).toBe("ran\n");
+}, 60_000);
+
+test("a batch kept off this host is not refused for this host's memory: its helpers weigh their own", async () => {
+  writeFileSync(join(state.dir, "items.txt"), "1\n");
+  const r = await heavy(other, ["--items", join(state.dir, "items.txt"), "--on", "second", "--mem-per-worker", "100000G", "--out", join(state.dir, "out")]);
+  expect(r.err).not.toContain("HEAVY_REFUSED t:");
+  expect(r.err).toContain("HEAVY_BATCH_ITEM t #1 -: no host left");
+  expect(r.code).toBe(1);
+}, 60_000);
+
+const job = (cmd: string[]): SpreadJob => ({ label: "t", kind: "cpu", cmd, cwd: other, sync: [other], env: {} });
+const who = { uid: process.getuid?.() ?? -1, home: homedir() };
+
+test("every file outside --sync the command names goes along, five as well as one", () => {
+  const files = [1, 2, 3, 4, 5].map((i) => join(home, `in${i}`, "x.txt"));
+  for (const p of files) {
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, "x\n");
+  }
+  const s = shipMissing(job(["cat", ...files]), who, [], 1024 ** 3);
+  if (!("plan" in s)) throw new Error(s.why);
+  expect([...s.shipped].sort()).toEqual([...files].sort());
+});
+
+test("a path outside --sync that does not exist yet, or cannot be read, stops the job with why", () => {
+  const made = shipMissing(job(["touch", join(home, "later", "new.txt")]), who, [], 1024 ** 3);
+  expect(made).toMatchObject({ refuse: true, why: expect.stringContaining(`${join(home, "later", "new.txt")} does not exist on this host`) });
+  mkdirSync(join(home, "locked", "in"), { recursive: true });
+  chmodSync(join(home, "locked"), 0o000);
+  try {
+    const shut = shipMissing(job(["cat", join(home, "locked", "in", "x.txt")]), who, [], 1024 ** 3);
+    expect(shut).toMatchObject({ refuse: true, why: expect.stringMatching(/could not be read here to send it along \(E/) });
+  } finally {
+    chmodSync(join(home, "locked"), 0o755);
+  }
+});

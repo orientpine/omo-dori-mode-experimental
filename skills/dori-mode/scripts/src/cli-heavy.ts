@@ -1,4 +1,4 @@
-import { homedir, userInfo } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { stager } from "./heavy-assets.ts";
 import { defaultOut, heavyBatch, readItems } from "./heavy-batch.ts";
@@ -59,8 +59,11 @@ const heavyCommand: Command = async (context) => {
   // a bash -c pipe into tail must not turn a failure into exit 0, here or on a helper (heavy-pipefail.ts withPipefail)
   const jobCmd = withPipefail(cmd);
   if (jobCmd !== cmd) deps.log?.(`HEAVY_PIPEFAIL ${name}: the bash -c script pipes, so it runs with set -o pipefail and a failing stage fails the job`);
-  // a --helpers-only job never runs here: the helper that takes it checks its own memory (heavy-spread.ts heavyExec)
-  const host = helpersOnly ? undefined : readMeminfo();
+  const local = Boolean(flags.values["local"]);
+  if (local && (onHosts || notOn)) die("dori heavy --local keeps a batch on this host; --on / --not-on pick other hosts: give one of them");
+  // a --helpers-only job, or a batch --on/--not-on keep off this host, never runs here: the helper that takes it checks its own memory (heavy-spread.ts heavyExec)
+  const offHere = itemsOpt !== undefined && ((onHosts && !onHosts.includes(hostname())) || notOn?.includes(hostname()));
+  const host = helpersOnly || offHere ? undefined : readMeminfo();
   const oneJob = itemsOpt !== undefined ? perBytes : needBytes;
   const never = oneJob && host ? neverFits(oneJob, host, config.heavyHeadroomPct) : undefined;
   if (never) {
@@ -72,7 +75,6 @@ const heavyCommand: Command = async (context) => {
   const kindOpt = opt("kind");
   const kind = kindOpt === undefined ? undefined : isKind(kindOpt) ? kindOpt : die(`dori heavy --kind takes cpu, browser or gpu, not "${kindOpt}"`);
   if (helpersOnly && kind === undefined) die("dori heavy --helpers-only goes with --kind cpu|browser|gpu --sync PATH ...: only those can run on a helper");
-  const local = Boolean(flags.values["local"]);
   if (local && helpersOnly) die("dori heavy --local runs the job on this host, --helpers-only never does: give one of them");
   const refuseLocal = (why: string): void => {
     deps.log?.(`HEAVY_LOCAL_REFUSED ${name}: ${why}; it did not run: give that path with --sync, or run it on this host with --local`);
@@ -93,7 +95,7 @@ const heavyCommand: Command = async (context) => {
       if (!items.length) die(`dori heavy --items ${itemsOpt}: no item in it (one per line; blank and # lines are skipped)`);
       const back = flags.values.back as string[] | undefined;
       const here = toolsHere(name, many("tools"), deps.log).env;
-      const r = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? defaultOut(name, Date.now())), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}), ...(here ? { hereEnv: here } : {}), ...(onHosts ? { onHosts } : {}), ...(notOn ? { notOn } : {}), ...(!local && config.heavyQueue.helpers.length ? { ship: { noShip: config.heavyNoShip, maxBytes: config.heavyShipMaxMb * 1024 ** 2, heavyLog: `${config.stateDir}/heavy/heavy.log` } } : {}) });
+      const r = await heavyBatch({ q: config.heavyQueue, deps }, { label: name, kind, cmd, cwd: process.cwd(), sync: many("sync").map((s) => resolve(s)), env, items, out: resolve(opt("out") ?? defaultOut(name, Date.now())), ...(perBytes ? { memPerWorker: perBytes } : {}), ...(needBytes ? { memCap: needBytes } : {}), ...(many("tools").length ? { tools: many("tools") } : {}), ...(back?.length ? { back } : {}), ...(here ? { hereEnv: here } : {}), ...(local ? { onHosts: [hostname()] } : onHosts ? { onHosts } : {}), ...(notOn ? { notOn } : {}), ...(!local && config.heavyQueue.helpers.length ? { ship: { noShip: config.heavyNoShip, maxBytes: config.heavyShipMaxMb * 1024 ** 2, heavyLog: `${config.stateDir}/heavy/heavy.log` } } : {}) });
       // a stale helper run left a child or pipe not ended: exit now instead of waiting on it
       if (r.abandoned) process.exit(r.code);
       process.exitCode = r.code;
@@ -110,6 +112,7 @@ const heavyCommand: Command = async (context) => {
     if (!plan.ok && helpersOnly) return refuseHere(plan.why);
     if (!config.heavyQueue.helpers.length && helpersOnly) return refuseHere("no heavyQueue.helpers on this host");
     if (!plan.ok) deps.log?.(`HEAVY_LOCAL ${name}: ${plan.why}`);
+    else if (local) deps.log?.(`HEAVY_LOCAL ${name}: --local runs it on this host`);
     else if (!config.heavyQueue.helpers.length) deps.log?.(`HEAVY_LOCAL ${name}: no heavyQueue.helpers on this host`);
     else {
       // its --sync paths archived once for every helper it is offered to, and removed when it ended (heavy-assets.ts)

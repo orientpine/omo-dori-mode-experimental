@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import type { HeavyHelper } from "./config.ts";
 import { stager } from "./heavy-assets.ts";
-import { allowedHost, refusal } from "./heavy-batch-check.ts";
+import { allowedHost, refusal, shipItems } from "./heavy-batch-check.ts";
 import { fileSink, pump, watched, type Sink } from "./heavy-batch-sink.ts";
 import { NESTED_ENV } from "./heavy-here.ts";
 import { fmtMem, spawnScoped } from "./heavy-mem.ts";
@@ -12,8 +12,8 @@ import type { HeavyCtx } from "./heavy-queue.ts";
 import { unsafeRemote } from "./heavy-route.ts";
 import { admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { setSlotTree } from "./heavy-slot-store.ts";
-import { QUICK_SETTLE_SEC, spreadPlan, startExec, withPipefail, within, type Kind, type Plan, type SpreadJob } from "./heavy-spread.ts";
-import { logShip, shipMissing, type ShipFile } from "./heavy-ship.ts";
+import { QUICK_SETTLE_SEC, startExec, withPipefail, type Kind, type Plan, type SpreadJob } from "./heavy-spread.ts";
+import { logShip } from "./heavy-ship.ts";
 import { stopOnHelper } from "./heavy-stale.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH ... --items FILE [--mem-per-worker SIZE [--mem SIZE]] [--out DIR]
@@ -108,17 +108,9 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   // the --sync paths archived once for the whole batch, so every helper gets the same bytes (lead's condition 1 of #477 H334)
   const assets = stager(join(ctx.deps.dir, "assets"), b.label, log);
   const jobOf = (text: string, n: number): SpreadJob => ({ assets, label: `${b.label}.${n}`, kind: b.kind, cmd: withPipefail(itemCmd(b.cmd, text, n)), cwd: b.cwd, sync: b.sync, env: { ...b.env, DORI_HEAVY_ITEM: text, DORI_HEAVY_ITEM_N: String(n) }, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}), ...(b.tools?.length ? { tools: b.tools } : {}), ...(b.back?.length ? { back: b.back } : {}) });
-  // each item is prepared as a single job of its own (its pipefail, its plan: what it starts, what it names, its program),
-  // as GNU parallel builds each job's command line apart; --out is weighed against what any item may upload (its --sync paths and --tools trees)
-  const stops: string[] = [];
-  const shipped = new Map<string, ShipFile[]>();
-  const pending: Item[] = b.items.map((text, i) => {
-    const job = jobOf(text, i + 1);
-    const s = b.ship ? shipMissing(job, who, b.ship.noShip, b.ship.maxBytes) : undefined;
-    if (s && "refuse" in s && s.refuse) stops.push(`#${i + 1}: ${s.why}`);
-    if (s && "job" in s) for (const p of s.shipped) shipped.set(p, s.files.filter((f) => within(f.path, p)));
-    return { n: i + 1, text, job: s && "job" in s ? s.job : job, plan: s && "plan" in s ? s.plan : s ? { ok: false, why: s.why } : spreadPlan(job, who), tries: [], refused: [] };
-  });
+  // each item a single job of its own (its pipefail and plan, as GNU parallel builds each command line apart), one --sync for all (heavy-batch-check.ts shipItems)
+  const { items: prepared, stops, shipped } = shipItems(b, b.items.map((text, i) => jobOf(text, i + 1)), who);
+  const pending: Item[] = prepared.map(({ job, plan }, i) => ({ n: i + 1, text: b.items[i]!, job, plan, tries: [], refused: [] }));
   if (stops.length) {
     log(`HEAVY_LOCAL_REFUSED ${b.label}: ${stops.length} item(s) would run here, ${stops[0]}; no item ran: give that path with --sync, or run them here with --local`);
     return { code: 2, abandoned };
@@ -184,6 +176,14 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
     appendFileSync(receipts, `${JSON.stringify(r)}\n`);
     log(`HEAVY_BATCH_ITEM ${b.label} #${it.n} ${h.name}: ${result}`);
   };
+  // an item no host left to the batch may take (each refused it, or left the batch) ends failed instead of waiting for ever (review 1 of #479)
+  const stuck = (it: Item): void => {
+    pending.splice(pending.indexOf(it), 1);
+    failed++;
+    const why = [...it.refused.map((r) => `${r.host} refused it (${r.why})`), ...hosts.filter((h) => h.gone).map((h) => `${h.name} left the batch (${h.gone})`)].join(", ");
+    appendFileSync(receipts, `${JSON.stringify({ n: it.n, item: it.text, host: "-", exit: null, tries: it.tries, refused: it.refused, out: "", err: "", start: it.start ?? iso(), end: iso() } satisfies BatchReceipt)}\n`);
+    log(`HEAVY_BATCH_ITEM ${b.label} #${it.n} -: no host left: ${why}`);
+  };
   const offer = async (h: Host, it: Item): Promise<void> => {
     const k = it.tries.length + 1;
     const files = { out: join(b.out, "items", `${it.n}.${k}.out`), err: join(b.out, "items", `${it.n}.${k}.err`) };
@@ -237,6 +237,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid
   try {
     for (;;) {
       kick();
+      for (const it of pending.filter((x) => !hosts.some((h) => fits(h, x)))) stuck(it);
       if (!pending.length && !running.size && !offers.size) break;
       await Promise.race([...running.values(), ...offers, ctx.deps.clock.sleep(POLL_MS)]);
     }

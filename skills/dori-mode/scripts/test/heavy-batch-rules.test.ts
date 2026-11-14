@@ -102,3 +102,25 @@ test("a venv given with --sync runs each item on a helper, whose box has no /hom
   const rs = receipts().sort((a, b) => a.n - b.n);
   expect(rs.map((r) => [r.host, outOf(r)])).toEqual([["h1", "item 1\n"], ["h1", "item 2\n"]]);
 });
+
+// review 1 of #479
+test("an item every host left to it refuses ends the batch as failed instead of waiting for ever", async () => {
+  const bad = fakeHelper("bad", 'echo "WORKER_REFUSED program python3.99 not found" >&2; exit 1');
+  expect(await batchCode(ctxWith([bad]), batchOf(["1", "2"], ["true"], { onHosts: ["bad"] }))).toBe(1);
+  expect(receipts().map((r) => [r.n, r.host, r.exit]).sort()).toEqual([[1, "-", null], [2, "-", null]]);
+  expect(logs.some((l) => l.startsWith("HEAVY_BATCH_ITEM b #1 -: no host left: bad refused it (program python3.99 not found)"))).toBe(true);
+});
+
+test("items that each send a folder of their own along share one archive of the batch: one digest in every receipt", async () => {
+  for (const n of ["1", "2"]) {
+    mkdirSync(join(state.dir, `ext-${n}`));
+    writeFileSync(join(state.dir, `ext-${n}`, "data.txt"), `data ${n}\n`);
+  }
+  const ship = { noShip: [], maxBytes: 1024 ** 3, heavyLog: join(state.dir, "heavy.log") };
+  expect(await batchCode(ctxWith([realHelper("h1")]), batchOf(["1", "2"], ["cat", `${state.dir}/ext-{item}/data.txt`], { ship }))).toBe(0);
+  const rs = receipts().sort((a, b) => a.n - b.n);
+  expect(rs.map(outOf)).toEqual(["data 1\n", "data 2\n"]);
+  expect(rs[0]!.assets).toMatch(/^[0-9a-f]{64}$/);
+  expect(rs[1]!.assets).toBe(rs[0]!.assets);
+  expect(logs.filter((l) => l.startsWith("HEAVY_ASSET b:"))).toHaveLength(1);
+});

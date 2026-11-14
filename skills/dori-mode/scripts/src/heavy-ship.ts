@@ -15,7 +15,9 @@ import { spreadPlan, within, type Plan, type SpreadJob } from "./heavy-spread.ts
 
 export type ShipFile = { readonly path: string; readonly bytes: number };
 export type Shipped = { readonly job: SpreadJob; readonly plan: Extract<Plan, { ok: true }>; readonly shipped: readonly string[]; readonly files: readonly ShipFile[] };
-const ROUNDS = 4; // the working folder, then each file the command names: a plan says one missing path at a time
+// the working folder, then each file the command names: a plan says one missing path at a time; past ROUNDS the job is
+// refused, never sent back to this host in silence (review 1 of #479)
+const ROUNDS = 32;
 
 const home = (p: string): string => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 const realOr = (p: string): string | undefined => {
@@ -36,15 +38,31 @@ export const shipFiles = (p: string, noShip: readonly string[], maxBytes: number
   if (at) return { why: `${p} is or holds ${at}, a heavyNoShip path that never leaves this host` };
   const files: ShipFile[] = [];
   let total = 0;
+  // a path that is not there yet, or that cannot be read, is a reason to stop, not a throw (review 1 of #479)
+  const unread = (f: string, e: unknown): string => {
+    const code = (e as { code?: string }).code ?? String(e).slice(0, 80);
+    return f === p && code === "ENOENT" ? `${p} does not exist on this host, so it cannot go along (one the job makes? put it under a --sync folder)` : `${p} could not be read here to send it along (${code} at ${f})`;
+  };
   const walk = (f: string): string | undefined => {
-    const st = lstatSync(f);
+    let st: ReturnType<typeof lstatSync>;
+    try {
+      st = lstatSync(f);
+    } catch (e) {
+      return unread(f, e);
+    }
     if (st.isSymbolicLink()) {
       const to = realOr(f);
       const into = to && hit(to);
       return into ? `the link ${f} leads into ${into}, a heavyNoShip path that never leaves this host` : undefined;
     }
     if (st.isDirectory()) {
-      for (const e of readdirSync(f)) {
+      let names: string[];
+      try {
+        names = readdirSync(f);
+      } catch (e) {
+        return unread(f, e);
+      }
+      for (const e of names) {
         const why = walk(join(f, e));
         if (why) return why;
       }
@@ -71,7 +89,8 @@ export const shipMissing = (job: SpreadJob, who: { readonly uid: number; readonl
     const plan = spreadPlan(j, who);
     if (plan.ok) return { job: j, plan, shipped, files };
     const miss = plan.missing;
-    if (!miss || round === ROUNDS) return { why: plan.why, refuse: false };
+    if (!miss) return { why: plan.why, refuse: false };
+    if (round === ROUNDS) return { why: `${plan.why}; it is not sent along: more than ${ROUNDS} paths outside --sync, give them with --sync`, refuse: true };
     const f = shipFiles(miss, noShip, maxBytes - files.reduce((n, x) => n + x.bytes, 0));
     if ("why" in f) return { why: `${plan.why}; it is not sent along: ${f.why}`, refuse: true };
     shipped.push(miss);
