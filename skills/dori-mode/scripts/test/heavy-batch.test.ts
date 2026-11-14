@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
 import type { HeavyHelper, HeavyQueue } from "../src/config.ts";
@@ -192,4 +192,36 @@ test("a relative program of a later item that lies outside the --sync paths keep
   expect(await batchCode(ctx, batchOf(["in.sh", "in.sh", "../out.sh"], ["./{item}"]))).toBe(0);
   const three = receipts().find((r) => r.n === 3)!;
   expect([three.host, outOf(three)]).toEqual([hostname(), "outside\n"]);
+});
+
+test("a later item's bare program found only on the caller's PATH keeps that item here, and each item gets its own plan (review 3 of #476)", async () => {
+  const bin = join(state.dir, "mine");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "private-tool"), "#!/bin/sh\necho private\n", { mode: 0o755 });
+  const path = `${bin}:${process.env["PATH"]}`;
+  // this host is full for a second, so only its own plan keeps the third item off the helper
+  const ctx = ctxWith([realHelper("h1")], true, undefined, true);
+  setTimeout(() => rmSync(join(state.dir, "heavy", "slot.1"), { recursive: true, force: true }), 1000);
+  const code = await batchCode(ctx, batchOf(["true", "true", "private-tool"], ["{item}"], { hereEnv: { ...process.env, PATH: path } }), { uid: process.getuid?.() ?? -1, home: homedir(), path });
+  expect(code).toBe(0);
+  const three = receipts().find((r) => r.n === 3)!;
+  expect([three.host, outOf(three)]).toEqual([hostname(), "private\n"]);
+});
+
+test("a pipeline an item puts into a bash -c script fails the item when a stage fails, here and on a helper (review 3 of #476)", async () => {
+  expect(await batchCode(ctxWith([], false), batchOf(["false | tail -n 1"], ["bash", "-c", "{item}"]))).toBe(1);
+  expect(receipts()).toMatchObject([{ host: hostname(), exit: 1 }]);
+  fresh();
+  expect(await batchCode(ctxWith([realHelper("h1")]), batchOf(["false | tail -n 1"], ["bash", "-c", "{item}"]))).toBe(1);
+  expect(receipts()).toMatchObject([{ host: "h1", exit: 1 }]);
+});
+
+test("a failed item goes back to its own host when the only other one is at its worker cap (review 3 of #476)", async () => {
+  const oom = fakeHelper("oom", 'echo "WORKER_ADMIT slot.1" >&2; cat >/dev/null; echo "HEAVY_OOM b.1: killed at MemoryMax=1.0G" >&2; echo "WORKER_EXIT 137" >&2; tar -cf - -T /dev/null');
+  // y holds the second helper's only worker for 3 s; x fails on the first and must not wait for y
+  const code = await batchCode(ctxWith([oom, realHelper("capped")]), batchOf(["x", "y"], ["sh", "-c", 'if [ "$0" = y ]; then sleep 3; fi', "{item}"], { memPerWorker: 1024 ** 3, memCap: 1024 ** 3 }));
+  expect(code).toBe(1);
+  const x = receipts().find((r) => r.item === "x")!;
+  expect(x.tries).toEqual([{ host: "oom", result: "oom" }, { host: "oom", result: "oom" }]);
+  expect(Date.parse(x.end)).toBeLessThan(Date.parse(receipts().find((r) => r.item === "y")!.end));
 });

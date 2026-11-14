@@ -1,6 +1,6 @@
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import type { HeavyHelper } from "./config.ts";
 import { NESTED_ENV } from "./heavy-here.ts";
@@ -9,7 +9,7 @@ import type { HeavyCtx } from "./heavy-queue.ts";
 import { unsafeRemote } from "./heavy-route.ts";
 import { admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { setSlotTree } from "./heavy-slot-store.ts";
-import { pathsIn, QUICK_SETTLE_SEC, spreadPlan, startExec, within, type Kind, type Plan, type SpreadJob } from "./heavy-spread.ts";
+import { QUICK_SETTLE_SEC, spreadPlan, startExec, withPipefail, within, type Kind, type Plan, type SpreadJob } from "./heavy-spread.ts";
 import { stopOnHelper } from "./heavy-stale.ts";
 
 // dori heavy <label> --kind cpu|browser|gpu --sync PATH ... --items FILE [--mem-per-worker SIZE [--mem SIZE]] [--out DIR]
@@ -40,7 +40,7 @@ const POLL_MS = 15_000;
 const OOM = /^HEAVY_OOM \S+: killed at MemoryMax=/m;
 
 type Host = { readonly name: string; readonly helper?: HeavyHelper; running: number; readonly cap: number; gone?: string; until: number; next: number; busy: boolean; offering: boolean; said: string };
-type Item = { readonly n: number; readonly text: string; readonly job: SpreadJob; readonly remote: boolean; readonly tries: BatchTry[]; start?: string };
+type Item = { readonly n: number; readonly text: string; readonly job: SpreadJob; readonly plan: Plan; readonly tries: BatchTry[]; start?: string };
 type Outcome = { readonly code: number | null; readonly result: string };
 type Sink = { write(s: string | Uint8Array): unknown; close(): void };
 type Offer = { readonly done: Promise<Outcome> } | { readonly kind: string; readonly why: string };
@@ -119,30 +119,29 @@ const refusal = (b: BatchJob, plan: Plan): string | undefined => {
   return inSync ? `--out ${b.out} and the --sync path ${inSync} hold one another, so uploads would carry the batch's own files; give --out a folder outside them` : undefined;
 };
 
-export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who = { uid: process.getuid?.() ?? -1, home: homedir() }): Promise<{ readonly code: number; readonly abandoned: boolean }> => {
+export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who: { readonly uid: number; readonly home: string; readonly path?: string } = { uid: process.getuid?.() ?? -1, home: homedir() }): Promise<{ readonly code: number; readonly abandoned: boolean }> => {
   let abandoned = false;
   const log = (l: string): void => ctx.deps.log?.(l);
   const now = (): number => ctx.deps.clock.now();
   const iso = (): string => new Date(now()).toISOString();
-  const jobOf = (text: string, n: number): SpreadJob => ({ label: `${b.label}.${n}`, kind: b.kind, cmd: itemCmd(b.cmd, text, n), cwd: b.cwd, sync: b.sync, env: { ...b.env, DORI_HEAVY_ITEM: text, DORI_HEAVY_ITEM_N: String(n) }, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}), ...(b.tools?.length ? { tools: b.tools } : {}), ...(b.back?.length ? { back: b.back } : {}) });
-  // what can go to a helper is weighed once, on the first item; another item goes only when every path in its own command is one the first item's had or lies in the --sync paths
-  const plan = spreadPlan(jobOf(b.items[0] ?? "", 1), who);
-  const why = refusal(b, plan);
+  const jobOf = (text: string, n: number): SpreadJob => ({ label: `${b.label}.${n}`, kind: b.kind, cmd: withPipefail(itemCmd(b.cmd, text, n)), cwd: b.cwd, sync: b.sync, env: { ...b.env, DORI_HEAVY_ITEM: text, DORI_HEAVY_ITEM_N: String(n) }, ...(b.memPerWorker ? { needBytes: b.memPerWorker } : {}), ...(b.tools?.length ? { tools: b.tools } : {}), ...(b.back?.length ? { back: b.back } : {}) });
+  // each item is prepared as a single job of its own (its pipefail, its plan: what it starts, what it names, its program),
+  // as GNU parallel builds each job's command line apart; the --sync paths are the same for all, so the refusal is weighed once
+  const pending: Item[] = b.items.map((text, i) => {
+    const job = jobOf(text, i + 1);
+    return { n: i + 1, text, job, plan: spreadPlan(job, who), tries: [] };
+  });
+  const why = refusal(b, pending[0]?.plan ?? { ok: false, why: "no item" });
   if (why) {
     log(`HEAVY_BATCH_REFUSED ${b.label}: ${why}`);
     return { code: 2, abandoned };
   }
-  if (!plan.ok) log(`HEAVY_LOCAL ${b.label}: ${plan.why}; every item runs here`);
+  for (const w of new Set(pending.flatMap((it) => (it.plan.ok ? [] : [it.plan.why])))) log(`HEAVY_LOCAL ${b.label}: ${w}; ${pending.filter((it) => !it.plan.ok && it.plan.why === w).length} item(s) run here`);
   mkdirSync(join(b.out, "items"), { recursive: true });
   const receipts = join(b.out, "receipts.jsonl");
   writeFileSync(receipts, "");
-  // the paths a command names: absolute ones in its words, and its program when that is a path, resolved from its folder (as spreadPlan does)
-  const named = (job: SpreadJob): string[] => [...job.cmd.flatMap(pathsIn), ...((job.cmd[0] ?? "").includes("/") ? [resolve(job.cwd, job.cmd[0]!)] : [])];
-  const known = new Set(named(jobOf(b.items[0] ?? "", 1)));
-  const goes = (job: SpreadJob): boolean => plan.ok && named(job).every((p) => known.has(p) || plan.sync.some((s) => within(p, s)));
-  const pending: Item[] = b.items.map((text, i) => ({ n: i + 1, text, job: jobOf(text, i + 1), remote: goes(jobOf(text, i + 1)), tries: [] }));
   const cap = b.memPerWorker && b.memCap ? Math.floor(b.memCap / b.memPerWorker) : Infinity;
-  const helpers = plan.ok ? ctx.q.helpers.filter((h) => h.batch !== false) : [];
+  const helpers = pending.some((it) => it.plan.ok) ? ctx.q.helpers.filter((h) => h.batch !== false) : [];
   const hosts: Host[] = [...helpers.map((h) => ({ name: h.name, helper: h })), { name: hostname() }].map((h) => ({ ...h, running: 0, cap, until: 0, next: 0, busy: false, offering: false, said: "" }));
   log(`HEAVY_BATCH ${b.label}: ${pending.length} item(s) over ${hosts.map((h) => h.name).join(", ")}; out ${b.out}`);
   if (cap !== Infinity) for (const h of hosts) log(`HEAVY_BATCH_HOST ${b.label} ${h.name}: up to ${cap} worker(s) at once (--mem ${fmtMem(b.memCap!)} / --mem-per-worker ${fmtMem(b.memPerWorker!)})`);
@@ -152,8 +151,9 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who = { uid: proces
   let ok = 0;
   let failed = 0;
   let retried = 0;
-  const fits = (h: Host, it: Item): boolean => !h.gone && (h.helper === undefined || it.remote);
-  const usable = (h: Host): boolean => !h.gone && !h.busy && now() >= h.until;
+  const fits = (h: Host, it: Item): boolean => !h.gone && (h.helper === undefined || it.plan.ok);
+  // a host that could be offered an item now: not gone, waiting, full or still answering another offer
+  const usable = (h: Host): boolean => !h.gone && !h.busy && !h.offering && h.running < h.cap && now() >= h.until && now() >= h.next;
   const tried = (it: Item, h: Host): boolean => it.tries.some((t) => t.host === h.name);
   // an item that failed on a host goes elsewhere first, and back there only while no other host can take it now
   const pick = (h: Host): Item | undefined => pending.find((it) => fits(h, it) && (!tried(it, h) || !hosts.some((o) => o !== h && fits(o, it) && !tried(it, o) && usable(o))));
@@ -197,7 +197,7 @@ export const heavyBatch = async (ctx: HeavyCtx, b: BatchJob, who = { uid: proces
     const err = fileSink(files.err, (s) => {
       if (OOM.test(s)) oom = true;
     });
-    const t = h.helper ? await offerHelper(ctx, h.helper, it, plan as Extract<Plan, { ok: true }>, out, err, () => (abandoned = true)) : await offerHere(ctx, b, it, out, err, () => (oom = true));
+    const t = h.helper ? await offerHelper(ctx, h.helper, it, it.plan as Extract<Plan, { ok: true }>, out, err, () => (abandoned = true)) : await offerHere(ctx, b, it, out, err, () => (oom = true));
     if (!("done" in t)) {
       out.close();
       err.close();
