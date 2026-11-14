@@ -6,8 +6,11 @@ import { join } from "node:path";
 // --sync root, --tools tree, working folder sent along or link brings in is walked here, each read through realpath and
 // held against heavyNoShip; one hit refuses the whole upload. tar then gets this list itself (--no-recursion -T -) and
 // never a tree to walk, and the same list is read again after tar ended: a folder swapped for a link meanwhile (tar opens
-// the names again: challenge of the r7 plan) throws the archive away before a byte is sent. Not caught (threat model): a
-// hard link to a file under heavyNoShip (it has its own realpath), and a swap put back while tar still runs.
+// the names again: challenge of the r7 plan) throws the archive away before a byte is sent.
+// Threat model (the lead, 2026-11-14): heavyNoShip keeps a trusted dori of this account from sending ~/data out by mistake
+// (a config, a link, a relative path, an input kind). Someone who swaps files on purpose while the upload is made is out of
+// scope: the re-read by device and inode is a cheap net, not a guarantee. Not caught: a hard link to a file under
+// heavyNoShip (it has its own realpath), and a swap that puts the same inode back while tar runs (docs/follow-ups.md).
 // noShip: the config's heavyNoShip; unset means the default ["~/data"], only an explicit [] blocks nothing (lead).
 export const NO_SHIP_DEFAULT = ["~/data"];
 const inside = (p: string, root: string): boolean => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);

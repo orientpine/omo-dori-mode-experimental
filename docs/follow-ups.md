@@ -147,3 +147,11 @@ What would close it: eviction renames an entry to a private name before deleting
 `dori heavy <label> --job --in <file>` (heavy-queue.ts, heavy-job.ts `stageInputs` and `packTo`) copies its input files into the job folder and tars that folder for the queue host. It predates #479 and is not the `--kind` upload. #479 made one archive builder (heavy-upload.ts `archiveList`) the only place a `--kind` job's or batch's upload is listed and held against `heavyNoShip`. The `--in` files do not go through it yet, so one under `~/data` would still go to the GPU helper.
 
 What would close it: `stageInputs` takes the `--in` paths through `archiveList(paths, config.heavyNoShip)` first and refuses with `HEAVY_LOCAL_REFUSED` on a hit. A test gives a `--in` link into `~/data` and expects no job to be sent.
+
+## heavyNoShip against a deliberate swap while the upload is made (#479)
+
+The lead set #479's threat model on 2026-11-14. `heavyNoShip` keeps a trusted Dori of the same account from sending `~/data` out by mistake: a config, a link, a relative path, an input kind. Someone who swaps files on purpose while the archive is made is out of scope. The builder's read-back after tar (realpath, device and inode of every listed entry) is a cheap net, not a guarantee. Two cases still get through:
+- a swap that puts the very same inode back while tar runs;
+- a hard link to a file under `~/data`.
+
+What would close it: the builder opens every entry itself (`openat` with `O_NOFOLLOW` from the root down) and writes the tar stream from those descriptors, so no name is opened twice. Hard links: refuse a regular file whose link count is over 1 and whose other names are not known to be inside the upload.
