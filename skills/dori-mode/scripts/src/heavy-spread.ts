@@ -7,7 +7,7 @@ import { BACK_MAX_BYTES, backGlobProblem, backPick } from "./heavy-back.ts";
 import { newJobDir, onStop, removeTree, stopWithCaller, TarError } from "./heavy-job.ts";
 import { canScope, spawnScoped } from "./heavy-mem.ts";
 import { helperVerdict, linesOf, type HeavyCtx } from "./heavy-queue.ts";
-import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote, upPaths } from "./heavy-route.ts";
+import { archOf, boxDev, execWords, gitTop, stayHere, hostRefusal, memRefusal, preferredFor, refusals, unsafeRemote, argPaths } from "./heavy-route.ts";
 import { acquire, admitOnce, releaseSlot } from "./heavy-slot.ts";
 import { sendTar, syncBytes } from "./heavy-send.ts";
 import { assetsOptOk, assetsWord, stager, unpackChecked, type Stager } from "./heavy-assets.ts";
@@ -129,8 +129,8 @@ export const spreadPlan = (job: SpreadJob, who: { readonly uid: number; readonly
   const covered = (p: string): boolean => sync.some((s) => within(p, s)) || SYSTEM.some((s) => within(p, s));
   if (inTop && !sync.some((s) => within(inTop, s))) return no(`the working folder is in the git checkout ${inTop}, which --sync carries only in part (its tests read the rest)${sync.some((s) => within(job.cwd, s)) ? `; add --sync ${inTop}` : ""}`, sync.some((s) => within(job.cwd, s)) ? undefined : "sync", inTop);
   if (!sync.some((s) => within(job.cwd, s))) return no(`the working folder ${job.cwd} is not in a --sync path`, "ship", job.cwd);
-  // an absolute word is weighed whole, its pieces too only when it does not exist (a new output: review 10 of #479): a covered prefix never stands for it
-  for (const arg of job.cmd) for (const p of isAbsolute(arg) ? [normalize(arg), ...(existsSync(arg) ? [] : pathsIn(arg))] : [...pathsIn(arg), ...upPaths(arg === job.cmd[0] ? "" : arg, job.cwd)]) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, "sync", p);
+  // every path an argument names, weighed whole (heavy-route.ts argPaths: a covered prefix never stands for a longer name), and the absolute pieces of one that is not a path there
+  for (const arg of job.cmd) for (const p of [...(arg !== job.cmd[0] || isAbsolute(arg) ? argPaths(arg, job.cwd) : []), ...(isAbsolute(arg) && existsSync(arg) ? [] : pathsIn(arg))]) if (!covered(p)) return no(`${p} (in "${arg.slice(0, 80)}") is not in a --sync path`, "sync", p);
   // A system program the job starts is checked on the helper before it takes the job: a venv's python links to the
   // system python it was made with, and on a helper without that version the link dangles in the box, so the run printed
   // nothing (2026-11-07: a check of two runs on a helper without the venv's python read two empty logs as the same).

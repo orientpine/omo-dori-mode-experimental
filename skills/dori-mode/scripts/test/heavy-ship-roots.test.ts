@@ -193,6 +193,16 @@ test("a new absolute output named with a space or a colon beside the working fol
     expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${out})`)]);
   }
   expect(shipMissing({ ...job(["touch", join(work, "new.txt")]), cwd: work, sync: [work] }, who, [], 1024 ** 3)).toHaveProperty("plan");
+  // review 11: an assigned or relative new output is weighed whole too; an absolute list of synced paths still runs
+  for (const [arg, out] of [[`of=${work} result.bin`, `${work} result.bin`], ["../work:result.txt", `${work}:result.txt`]] as const) {
+    const j = { ...job(["dd", arg]), cwd: work, sync: [work] };
+    expect({ arg, s: shipMissing(j, who, [], 1024 ** 3) }).toMatchObject({ arg, s: { refuse: true, why: expect.stringContaining(`(add --sync ${out})`) } });
+    expect(shipItems(batchOf([], []), [j], who).stops).toEqual([expect.stringContaining(`(add --sync ${out})`)]);
+  }
+  writeFileSync(join(home, "a.jar"), "a");
+  writeFileSync(join(home, "b.jar"), "b");
+  const jars = [join(home, "a.jar"), join(home, "b.jar")];
+  expect(shipMissing({ ...job(["true", "-cp", jars.join(":"), "Main"]), cwd: work, sync: [work, ...jars] }, who, [], 1024 ** 3)).toHaveProperty("plan");
 });
 
 // review 8 of #479: a relative argument that is itself an existing file, : or = in its name, is weighed whole as well
