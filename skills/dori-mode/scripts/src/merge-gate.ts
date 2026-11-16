@@ -307,8 +307,8 @@ export const reviewPr = async (deps: FlowDeps, pr: PrRef, opts: ReviewOptions): 
   const lines: string[] = [];
   const cfg = deps.config.mergeGate;
   const testDir = join(root, cfg.testDir);
-  // a new run at this head replaces the old result: a pass from before must not outlive a failure now (of the checks too)
-  rmSync(receiptPath(deps.config.stateDir, pr, sha, "tests"), { force: true });
+  // a new run at this head replaces both old results: a pass or a CLEAR from before must not outlive a failure, no verdict or a reviewer that cannot start now (dori-superagent #232 https://github.com/sisyphuslabs/dori-superagent/pull/232)
+  for (const kind of ["tests", "review"] as const) rmSync(receiptPath(deps.config.stateDir, pr, sha, kind), { force: true });
   const read = await readPrCommits(deps, pr, root, sha);
   const identity = Object.entries(cfg.identities ?? {}).find(([r]) => r.toLowerCase() === pr.repo.toLowerCase())?.[1];
   const checked = checkCommits(pr.repo, read.commits, { atHead: read.atHead, executables: read.executables, ...(identity ? { identity } : {}), ...(opts.noTest ? { noTest: opts.noTest } : {}) });

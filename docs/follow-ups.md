@@ -155,3 +155,9 @@ The lead set #479's threat model on 2026-11-14. `heavyNoShip` keeps a trusted Do
 - a hard link to a file under `~/data`.
 
 What would close it: the builder opens every entry itself (`openat` with `O_NOFOLLOW` from the root down) and writes the tar stream from those descriptors, so no name is opened twice. Hard links: refuse a regular file whose link count is over 1 and whose other names are not known to be inside the upload.
+
+## dori review: two reviews, or a merge, at one head at the same time (upstream #232)
+
+Upstream #232 (https://github.com/sisyphuslabs/dori-superagent/pull/232) also puts a live-PID lock on the `(PR, head)` receipt (`Store.lockReceipt`): a second review at that head refuses instead of starting, and `dori merge` during a review refuses `review_in_progress`. The fork took in only the clear (merge-gate.ts `reviewPr` takes back the head's review receipt before its reviewer runs), as the lane brief set. While one review of a head runs, a merge of that head already refuses (its receipt is gone); what is left open is two overlapping reviews of one head, where the earlier one can still write its verdict after the later one.
+
+What would close it: `reviewPr` and `mergePr` take one lock file beside the receipt (`<receipt>.lock`, the pid lock the fork's other locks use), freed by a dead pid; a test runs two reviews at one head with the first reviewer held open and expects the second to refuse.

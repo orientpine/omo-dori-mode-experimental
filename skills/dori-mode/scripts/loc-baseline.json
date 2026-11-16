@@ -35,7 +35,7 @@
   "test/kakao-watch.test.ts": 429,
   "test/lane-handover.test.ts": 3079,
   "test/lead.test.ts": 331,
-  "test/merge-gate.test.ts": 384,
+  "test/merge-gate.test.ts": 320,
   "test/moodori-vpn-keep.test.ts": 258,
   "test/pause-close.test.ts": 356,
   "test/rollover-audit.test.ts": 405,
