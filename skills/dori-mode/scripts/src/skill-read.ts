@@ -7,8 +7,8 @@ const SHELL_VAR = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|n
 export const skillRead = (name: string | undefined, args: unknown, skill = "ulw-research"): boolean => {
   const path = `(?<![\\w.-])${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[/\\\\]SKILL\\.md`;
   const skillPath = new RegExp(`${path}(?![\\w.-])`);
-  const literal = new RegExp("([\"'`])(?:\\/|~|\\.|\\$\\{)[^\"'`\\s]*" + path + "\\1");
-  const shell = new RegExp("(?:^|[\\n;&|(`\"']|\\$\\()\\s*(?:cat|sed|head|tail|less|more|bat|nl|awk)\\b[^\\n;&|`]*?[\\s\"'][^\\s\"';&|`]*" + path + "(?![\\w.-])");
+  const literal = new RegExp(`(["'\`])(?:\\/|~|\\.|\\$\\{)[^"'\`\\s]*${path}\\1`);
+  const shell = new RegExp(`(?:^|[\\n;&|(\`"']|\\$\\()\\s*(?:cat|sed|head|tail|less|more|bat|nl|awk)\\b[^\\n;&|\`]*?[\\s"'][^\\s"';&|\`]*${path}(?![\\w.-])`);
   const a = (args ?? {}) as Record<string, unknown>;
   if (name?.toLowerCase() === "read") return [a["path"], a["file_path"], a["filePath"]].some((p) => typeof p === "string" && skillPath.test(p));
   const code = [a["code"], a["command"], a["cmd"]].find((c): c is string => typeof c === "string");

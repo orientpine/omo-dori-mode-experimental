@@ -44,7 +44,7 @@ test("missing named skill warns on stderr and watch log while the real claim suc
   expect(result.code).toBe(0);
   expect(result.out.trim()).toBe("LANE_DONE_CLAIMED qa-skills - isolated proof");
   expect(result.err).toContain("SKILL_NOT_READ qa-skills: bun");
-  expect(result.err).toContain("(directive skill-check; a warning until 2026-12-01, then it refuses)");
+  expect(result.err).toContain("(directive skill-check; a warning for now, refusal to be reviewed on 2026-12-01)");
   expect(await log()).toContain(` claim-done ${result.err.trim()}`);
   expect((await new Registry(state.dir).read(lane.key))?.status).toBe("done-claimed");
 }, 40_000);
@@ -113,6 +113,19 @@ test("legacy lanes use their report marker and exclude the lead's copies", async
   expect((await invoke()).err).toContain("SKILL_NOT_READ");
   session([msg("assistant", `[REPORT] ${lane.key} | done`), read("bun")]);
   expect((await invoke()).err).toBe("");
+}, 40_000);
+
+test("an identified lane in the shared lead folder warns before any lead handover", async () => {
+  const cfg = await Bun.file(join(state.dir, "config.json")).json();
+  writeFileSync(join(state.dir, "config.json"), JSON.stringify({ ...cfg, scorecard: { leadSessions: sessions } }));
+  session([msg("assistant", "done without reading the skill")]);
+  let r = await invoke();
+  expect(r.code).toBe(0);
+  expect(r.err).toContain("SKILL_NOT_READ qa-skills: bun");
+  session([read("bun")]);
+  r = await invoke();
+  expect(r.code).toBe(0);
+  expect(r.err).toBe("");
 }, 40_000);
 
 test("each unique missing skill warns once, while a read skill stays clean", async () => {

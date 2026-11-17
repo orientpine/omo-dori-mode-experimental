@@ -2,7 +2,7 @@ import { isAbsolute, join } from "node:path";
 import { laneSessionFiles } from "./auto-signals.ts";
 import { leadText } from "./directives.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { leadSessionFiles } from "./lead-sessions.ts";
+import { leadSessionFiles, leadSessionIds } from "./lead-sessions.ts";
 import type { Lane } from "./registry.ts";
 import { skillRead } from "./skill-read.ts";
 import { watchLog } from "./watch-log.ts";
@@ -38,13 +38,15 @@ export const warnClaimSkills = async (deps: Pick<FlowDeps, "config" | "clock">, 
     const skills = namedSkills(await Bun.file(brief).text());
     if (!skills.length) return;
     const lead = new Set(leadSessionFiles(deps.config.scorecard.leadSessions, deps.config.stateDir));
+    const leadIds = leadSessionIds(deps.config.stateDir);
     const ids = new Set([lane.session, ...(lane.priorSessions ?? [])].filter(Boolean));
     const own: Entry[] = [];
     for (const file of laneSessionFiles(deps.config, lane)) {
-      if (lead.has(file)) continue;
       const text = await Bun.file(file).text();
       const rows = entries(text);
       const id = rows.find((e) => e.type === "session")?.id;
+      // The lead's unknown-identity folder fallback may also hold this lane's identified session.
+      if ((id && leadIds.has(id)) || (!ids.size && lead.has(file))) continue;
       if (ids.size ? !ids.has(id) : !text.includes(`[REPORT] ${lane.key} |`)) continue;
       own.push(...rows);
     }
@@ -59,7 +61,7 @@ export const warnClaimSkills = async (deps: Pick<FlowDeps, "config" | "clock">, 
     }));
   } catch { return; } // unavailable brief/session files: preserve claim-done's behavior
   for (const skill of missing) {
-    const line = `SKILL_NOT_READ ${lane.key}: ${skill} has no SKILL.md read or attached skill pointer in the lane's sessions (directive skill-check; a warning until 2026-12-01, then it refuses)`;
+    const line = `SKILL_NOT_READ ${lane.key}: ${skill} has no SKILL.md read or attached skill pointer in the lane's sessions (directive skill-check; a warning for now, refusal to be reviewed on 2026-12-01)`;
     console.error(line);
     try { watchLog(deps.config.watchLog, deps.clock, { source: "claim-done", line }); }
     catch { /* A warning must not fail a recorded claim when the log is unavailable. */ }
