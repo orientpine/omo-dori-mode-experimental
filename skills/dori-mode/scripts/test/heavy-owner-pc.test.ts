@@ -56,8 +56,9 @@ const ownerHelper = (idle: unknown): HeavyHelper => {
   const h = realHelper("cha");
   const home = join(state.dir, "cha-home");
   idleFile(home, idle);
-  // HOME goes among the env words, before the worker's own five (bun, cli.ts, heavy-worker, --caller, tester)
-  return { name: "cha", ssh: [...h.ssh.slice(0, -5), `HOME=${home}`, ...h.ssh.slice(-5)], owner: { idleMin: 20, cpuPct: 100, memPct: 100 } };
+  // HOME goes among the env words, right before the worker's command (bun and its own arguments)
+  const at = h.ssh.indexOf(process.execPath);
+  return { name: "cha", ssh: [...h.ssh.slice(0, at), `HOME=${home}`, ...h.ssh.slice(at)], owner: { idleMin: 20, cpuPct: 100, memPct: 100 } };
 };
 
 test("a batch item goes to the owner's PC only while he is away; while he is on it the item runs elsewhere", async () => {
