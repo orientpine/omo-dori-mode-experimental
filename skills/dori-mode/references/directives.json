@@ -100,7 +100,8 @@
       "scope": {
         "all": true
       },
-      "mode": "inject"
+      "mode": "inject",
+      "enforced": { "by": "skills/dori-mode/scripts/src/review-docs.ts:warnDocsUntouched", "token": "DOCS_UNTOUCHED" }
     },
     {
       "id": "skill-check",
