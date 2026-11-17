@@ -95,3 +95,12 @@ test("a UTC clock with a promise to convert it (KST로) is not a KST time; a rea
   expect(kstOwnerProblem("10:30Z에 끝나고 KST 19:30에 알려줄게", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("오늘 10:30Z에 끝나 (KST)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 2 of #501: real converted forms with particles count, conversion promises do not", () => {
+  expect(kstOwnerProblem("10:30Z / 한국 시간으로 19:30에 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30Z에 끝나고 19:30 KST부터 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30Z에 끝나고 19:30 KST에 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 (KST 변환 예정)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("10:30Z에 끝나고 KST는 19:30이야", "ko-KR")).toBe("UTC time without a KST time");
+});
