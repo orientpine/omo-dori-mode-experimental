@@ -16,7 +16,8 @@ const T0 = Date.parse("2026-10-29T00:00:00Z");
 
 const cliIn = (dir: string) => {
   const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: dir, defaultCwd: dir, hooks: {} }));
+  // Lesson previews use scope rules, like eight-steps/ui-steps tests: never call the host's real directive picker.
+  writeFileSync(config, JSON.stringify({ stateDir: dir, defaultCwd: dir, hooks: {}, directives: { pickModel: "" } }));
   return (env: string[], ...args: string[]) =>
     // upstream dori-superagent #185 (https://github.com/sisyphuslabs/dori-superagent/pull/185, closes its issue #181): env adds to
     // the inherited environment and the caller's own session reads HC_TERMINAL_ID first, so a run from an hc terminal saw that terminal
@@ -41,6 +42,8 @@ test("CLI add --global needs no lane, reaches a launch in any repo, and refuses 
     expect(JSON.parse(added.out)).toEqual(stored);
     expect(JSON.parse(added.out)).toMatchObject({ lane: "lead", scope: "global", outcome: "pending" });
     // a stub brief lacks the ledger's directives, so the fork's dry run ends with LAUNCH_DIRECTIVE_MISSING (exit 4)
+    expect(preview.code).toBe(4);
+    expect(preview.out).not.toContain("LAUNCH_DIRECTIVE_PICK_FALLBACK");
     expect(preview.out).toContain("DRY_RUN qa-new: brief not written");
     expect(preview.out).toContain("## Lessons for every lane (written by dori launch)\n");
     expect(preview.out).toContain(`- [pending; lead; ${stored?.id}] Delete bulky job data once results are saved\n`);
