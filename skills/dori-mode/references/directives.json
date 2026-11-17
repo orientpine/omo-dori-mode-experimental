@@ -117,7 +117,8 @@
       "scope": {
         "all": true
       },
-      "mode": "inject"
+      "mode": "inject",
+      "enforced": { "by": "skills/dori-mode/scripts/src/skill-check.ts:warnClaimSkills", "token": "SKILL_NOT_READ" }
     },
     {
       "id": "fix-existing",
