@@ -697,7 +697,8 @@
       "scope": {
         "all": true
       },
-      "mode": "inject"
+      "mode": "inject",
+      "enforced": { "by": "skills/dori-mode/scripts/src/freshness-heavy.ts:heavyBypassTick", "token": "HEAVY_BYPASS" }
     },
     {
       "id": "standing-thread-emoji",
