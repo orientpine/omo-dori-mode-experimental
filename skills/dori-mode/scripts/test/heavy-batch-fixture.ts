@@ -24,7 +24,7 @@ export const realHelper = (name: string, slots = 3): HeavyHelper => {
   const config = join(dir, "config.json");
   writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavySlots: slots, heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
   const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
-  return { name, ssh: ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"] };
+  return { name, ssh: ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, "--preload", join(import.meta.dir, "heavy-headroom-cli-fake.ts"), CLI, "heavy-worker", "--caller", "tester"] };
 };
 
 // a helper that speaks the worker's lines: script reads the upload (cat), then says what it says
