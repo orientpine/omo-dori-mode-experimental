@@ -1,7 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { koreanOwnerProblem } from "../src/owner-text-warning.ts";
+import { koreanOwnerProblem, textWarning } from "../src/owner-text-warning.ts";
 import { defaultConfig } from "../src/config.ts";
 import { makeDiscordDeps } from "../src/cli-deps-discord.ts";
 import type { FlowDeps } from "../src/done-flow.ts";
@@ -70,3 +70,19 @@ for (const [text, locale, pair, warn] of [["Finished", "ko-KR", false, true], ["
     } finally { state.done(); }
   });
 }
+
+test("a watch log that cannot be written does not stop the warning's command: the warning and the failure go to stderr (review 1 of #497)", () => {
+  const state = withState();
+  const blocker = join(state.dir, "not-a-dir");
+  writeFileSync(blocker, "a file where the log's folder would be");
+  const err = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(() => textWarning(join(blocker, "watch.log"), "send discord", "OWNER_NOT_KOREAN", "korean-discord", "prose has no Hangul")).not.toThrow();
+    const lines = err.mock.calls.map((c) => String(c[0]));
+    expect(lines[0]).toStartWith("OWNER_NOT_KOREAN send discord: prose has no Hangul (directive korean-discord;");
+    expect(lines[1]).toStartWith(`OWNER_NOT_KOREAN not written to the watch log ${join(blocker, "watch.log")}: `);
+  } finally {
+    err.mockRestore();
+    state.done();
+  }
+});

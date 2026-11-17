@@ -20,5 +20,10 @@ export const koreanOwnerProblem = (text: string, locale: string): string | undef
 export const textWarning = (path: string, where: string, token: string, id: string, problem: string): void => {
   const line = `${token} ${where}: ${problem} (directive ${id}; a warning for now, refusal to be reviewed on 2026-12-01)`;
   console.error(line);
-  watchLog(path, realClock, { source: where.split(" ")[0] ?? where, line });
+  // a watch log that cannot be written must not stop the send this warning rides on: say so on stderr and go on
+  try {
+    watchLog(path, realClock, { source: where.split(" ")[0] ?? where, line });
+  } catch (e) {
+    console.error(`${token} not written to the watch log ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 };
