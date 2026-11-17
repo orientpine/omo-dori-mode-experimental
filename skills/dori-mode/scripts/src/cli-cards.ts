@@ -1,7 +1,9 @@
 import { join } from "node:path";
 import { currentTmuxSession } from "./aoe.ts";
 import { type AskPlace, AskPlaceError, askPlace } from "./ask-place.ts";
-import { run } from "./run.ts";
+import { askRelayWarning } from "./ask-relay.ts";
+import { realClock, run } from "./run.ts";
+import { watchLog } from "./watch-log.ts";
 import { notePosted } from "./send-dedupe.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { threads } from "./messenger/thread-map.ts";
@@ -19,22 +21,29 @@ const askCommand: Command = async (context) => {
   await ownerSpeech([need("text"), ...((flags.values.option as string[] | undefined) ?? [])].join("\n"), "ask", async () => true);
   const text = postable(need("text"), "ask");
   let place: AskPlace;
+  const input = {
+    thread: threadOpt(),
+    channel: flags.values.channel === true ? "" : opt("channel"),
+    replyTo: flags.values["reply-to"] === true ? "" : opt("reply-to"),
+    tmux: opt("tmux"),
+    session: opt("session"),
+    here: await currentTmuxSession(run).catch(() => ""),
+    lanes: await deps.registry.open(),
+    threads: threads(cardDir()),
+    inbox: process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
+    owner: process.env["DORI_DISCORD_OWNER"]?.trim() ?? "",
+  };
   try {
-    place = askPlace({
-      thread: threadOpt(),
-      channel: flags.values.channel === true ? "" : opt("channel"),
-      replyTo: flags.values["reply-to"] === true ? "" : opt("reply-to"),
-      tmux: opt("tmux"),
-      session: opt("session"),
-      here: await currentTmuxSession(run).catch(() => ""),
-      lanes: await deps.registry.open(),
-      threads: threads(cardDir()),
-      inbox: process.env["DORI_DISCORD_INBOX"]?.trim() || join(config.stateDir, "discord", "inbox.jsonl"),
-      owner: process.env["DORI_DISCORD_OWNER"]?.trim() ?? "",
-    });
+    place = askPlace(input);
   } catch (e) {
     if (e instanceof AskPlaceError) die(e.message, 2);
     throw e;
+  }
+  const warning = askRelayWarning(input, place, [text, ...((flags.values.option as string[] | undefined) ?? [])].join("\n"));
+  if (warning) {
+    console.error(warning);
+    try { watchLog(config.watchLog, realClock, { source: "ask", line: warning }); }
+    catch (e) { console.error(`ASK_WARNING_LOG_FAILED: ${e instanceof Error ? e.message : String(e)}`); }
   }
   const thread = place.kind === "channel" ? null : place.thread;
   const q = await questionCards(discordClient()).ask(text, (flags.values.option as string[] | undefined) ?? [], {

@@ -199,7 +199,7 @@ The CLI also carries the messenger pieces a Dori needs. You can import them as t
 | `dori can-launch` | tell whether there's room for another lane |
 | `dori inbound slack [--loop MIN]` | catch everything addressed to the Dori on Slack: unread replies from the Threads view, new replies in any thread it posted in (even untagged ones), and DMs or channels with unread mentions |
 | `dori inbound discord` | gateway listener for owner messages, voice transcription and question-card answers |
-| `dori ask` / `questions [--open]` / `reopen <Qn>` / `resolve <Qn>` | post, list, reopen and resolve Discord question cards |
+| `dori ask` / `questions [--open]` / `reopen <Qn>` / `resolve <Qn>` | post, list, reopen and resolve Discord question cards; `ASK_RELAY_RECHECK` warns about confirming recent owner work relayed through pair |
 | `dori thread reply\|wait\|done discord:<id> <text>` | post in a work thread and mark working, waiting or done; done archives it |
 
 The modules also cover a few things that have no command:

@@ -33,6 +33,10 @@ export type AskPlaceInput = {
 
 const discordThread = (ref: string): string | undefined => (ref.startsWith("discord:") ? ref.slice("discord:".length) : undefined);
 
+// The asking lane uses the same session precedence for placement and relay provenance.
+export const askingLane = (input: AskPlaceInput): Lane | undefined =>
+  input.lanes.find((l) => (input.tmux ? l.pane === input.tmux : input.session ? l.session === input.session : !!input.here && l.pane === input.here));
+
 type InboxRow = { readonly id?: string; readonly channel_id?: string; readonly scope?: string; readonly author_id?: string };
 const inboxRow = (file: string, id: string): InboxRow | undefined => {
   if (!file || !existsSync(file)) return undefined;
@@ -42,7 +46,7 @@ const inboxRow = (file: string, id: string): InboxRow | undefined => {
       const row = JSON.parse(line) as InboxRow;
       if (row.id === id) return row;
     } catch {
-      continue;
+      // A malformed inbox line does not hide earlier messages.
     }
   }
   return undefined;
@@ -77,7 +81,7 @@ export const askPlace = (input: AskPlaceInput): AskPlace => {
       throw new AskPlaceError(`ASK_REPLY_TO_UNKNOWN ${input.replyTo}: --reply-to takes the id or link of the owner's own message in this Dori's channel or one of its threads (from the inbox); nothing was posted`);
     return { kind: "reply", replyTo: id, thread: row.scope === "thread" ? (row.channel_id ?? null) : null };
   }
-  const lane = input.lanes.find((l) => (input.tmux ? l.pane === input.tmux : input.session ? l.session === input.session : !!input.here && l.pane === input.here));
+  const lane = askingLane(input);
   const own = lane && hasThread(lane) ? discordThread(lane.thread) : undefined;
   if (lane && own) return { kind: "thread", thread: own, line: `ASK_THREAD_AUTO discord:${own} lane ${lane.key}`, ...(lane.pane ? { pane: lane.pane } : {}) };
   const who = input.tmux || input.session || input.here;
