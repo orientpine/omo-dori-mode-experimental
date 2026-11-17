@@ -581,6 +581,8 @@ The same Korean owner places warn `OWNER_TIME_NOT_KST` for a UTC time (`HH:MMZ`,
 
 For Discord sends or edits whose actual destination equals `DORI_DISCORD_PAIR_CHANNEL`, `PAIR_REPORT_SHAPE` warns when the first line starts with `[REPORT]`, and `PAIR_ACK_ONLY` warns when the entire text is acknowledgements such as 받았어, 확인했어, 알겠어, ok or 넵. A message carrying attachments is not acknowledgement-only. An unset or empty pair channel disables these checks. The warnings go to stderr and the `send` watch-log tag; posting and exit status stay unchanged until 2026-12-01. These are partial checks: `report-shape` and `pair-efficient` stay `mode: inject`; report completeness and useful handoff content still require judgment.
 
+`UPDATE_NOTICE_REPEAT` warns when a Dori with `update.maintainer: false` sends or edits an update summary in its own `DORI_DISCORD_CHANNEL`. It recognizes a `[UPDATE]` summary line, or the announcement's `Changed guidance:` plus `Restarts:`/`CONFIG_NEW_KEY:` headings, excluding code and quotations. Maintenance Doris, other destinations, owner threads and an unset owner channel are untouched. Stderr and the `send` watch-log tag receive the warning; the send and exit status stay unchanged until 2026-12-01. This covers only repeated announcement shapes: checking every Dori's applied state, grouping updates, the maintenance fallback and making one final report remain prose duties; the directive is not promoted to `mode: code`.
+
 ### `dori presence <slack|discord>`
 Keeps the account shown as online until stopped.
 - **Discord:** the bot connects to the gateway and identifies as online.

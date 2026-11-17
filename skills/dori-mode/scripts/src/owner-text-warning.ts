@@ -1,7 +1,8 @@
 import { realClock } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
 
-const ownText = (text: string): string => text
+// The author's own text, keeping time values and announcement headings while excluding quoted or executable material.
+export const ownerText = (text: string): string => text
   .replace(/```[\s\S]*?(?:```|$)/g, " ")
   .replace(/`[^`\n]*`/g, " ")
   .replace(/"[^"\n]*"|“[^”\n]*”|'[^'\n]*'/g, " ")
@@ -9,7 +10,7 @@ const ownText = (text: string): string => text
   .replace(/https?:\/\/\S+/g, " ");
 
 // Only the author's prose counts: code, quotations, links, identifiers and shell commands are not language evidence.
-export const ownerProse = (text: string): string => ownText(text).replace(/<[@#][!&]?\d+>|(?:\b[\da-f]{7,40}\b)|\b[A-Z][A-Z0-9_]*_[A-Z0-9_]+\b|\b\d+\b/g, " ");
+export const ownerProse = (text: string): string => ownerText(text).replace(/<[@#][!&]?\d+>|(?:\b[\da-f]{7,40}\b)|\b[A-Z][A-Z0-9_]*_[A-Z0-9_]+\b|\b\d+\b/g, " ");
 
 // Warn only for Korean owners, and only when some prose remains but none of it contains Hangul.
 export const koreanOwnerProblem = (text: string, locale: string): string | undefined => {
@@ -21,7 +22,7 @@ export const koreanOwnerProblem = (text: string, locale: string): string | undef
 // A UTC clock time needs its Korean-time counterpart; a bare mention of KST is not a converted time.
 export const kstOwnerProblem = (text: string, locale: string): string | undefined => {
   if (!locale.toLowerCase().startsWith("ko")) return undefined;
-  const own = ownText(text);
+  const own = ownerText(text);
   const utc = /\bUTC\b|\b(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?Z\b|\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z\b/i.test(own);
   const clockRe = /(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?|(?:오전|오후)?\s*\d{1,2}시(?!간)(?:\s*\d{1,2}분)?/g;
   const zoneRe = /\bKST\b|한국\s*(?:시간|시각)|한국표준시/gi;

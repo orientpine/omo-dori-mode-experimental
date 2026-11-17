@@ -17,6 +17,7 @@ import { makeHandoverDeps } from "./cli-deps-handover.ts";
 import { makeDiscordDeps } from "./cli-deps-discord.ts";
 import { pairTextWarnings } from "./pair-text-warning.ts";
 import { textWarning } from "./owner-text-warning.ts";
+import { updateNoticeProblem } from "./update-notice-warning.ts";
 
 const sendCommand: Command = async (context) => {
   const { key, onlyOptions, need, opt, flags, postable, textOrFile, config } = context;
@@ -131,6 +132,9 @@ const sendCommand: Command = async (context) => {
       const existing = edit ? await dc.once().call<{ attachments?: unknown[] }>("GET", `/channels/${to}/messages/${edit}`).then((m) => Array.isArray(m.attachments) && m.attachments.length > 0).catch(() => false) : false;
       for (const warning of pairTextWarnings(body, discordFiles.length > 0 || existing)) textWarning(config.watchLog, "send", warning.token, warning.id, warning.problem);
     }
+    const update = updateNoticeProblem(body, config.update.maintainer);
+    const owner = process.env["DORI_DISCORD_CHANNEL"]?.trim();
+    if (update && owner && (edit ? to : (thread ?? to)) === owner) textWarning(config.watchLog, "send", "UPDATE_NOTICE_REPEAT", "update-notice-once", update);
     await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
     if (edit) await dc.edit(to, edit, text);
     else {
