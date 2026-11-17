@@ -168,3 +168,9 @@ test("review 11 of #501: a KST-first message with the UTC clock in parentheses s
   expect(kstOwnerProblem("10:30 (UTC) / 19:30 KST에 시작해", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("10:30 (UTC) (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 12 of #501: a UTC clock in a conversion promise does not count, and a completed KST display is not a promise", () => {
+  expect(kstOwnerProblem("KST로 10:30Z를 변환할게", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST로 표시했어", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST로 바꿀게", "ko-KR")).toBe("UTC time without a KST time");
+});

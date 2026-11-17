@@ -30,12 +30,15 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   // a conversion promise (KST로, KST 변환 예정, KST로 바꿀게) is not a KST time; every other KST annotation with a
   // clock right next to it is, whatever the UTC clock looks like elsewhere in the message
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
-  const conversion = (end: number): boolean => /^\s*[()]*\s*(?:으로|로|변환|예정|바꿀)/.test(own.slice(end, end + 12));
+  const conversion = (end: number): boolean => /(?:변환|예정|바꿀)/.test(own.slice(end, end + 12));
+  const utcClock = (c: { end: number }): boolean => /^\s*(?:\.\d+)?Z/.test(own.slice(c.end)) || /^\s*\(?\s*UTC\b/i.test(own.slice(c.end));
   const kst = plus9 || [...own.matchAll(zoneRe)].some((m) => {
     const at = m.index ?? 0, end = at + m[0].length;
-    const afterClock = clocks.some((c) => c.at >= end && near(own.slice(end, c.at)));
-    const beforeClock = clocks.some((c) => c.end <= at && near(own.slice(c.end, at)));
-    return afterClock || (beforeClock && !conversion(end));
+    const afterC = clocks.find((c) => c.at >= end && near(own.slice(end, c.at)));
+    const beforeC = clocks.some((c) => c.end <= at && near(own.slice(c.end, at)));
+    // a clock after the zone counts unless it is the UTC clock of a conversion promise (KST로 10:30Z를 변환할게);
+    // a clock before it counts unless conversion prose follows (KST로 바꿀게, KST 변환 예정)
+    return (afterC && !(conversion(end) && utcClock(afterC))) || (beforeC && !conversion(end));
   });
   return utc && !kst ? "UTC time without a KST time" : undefined;
 };
