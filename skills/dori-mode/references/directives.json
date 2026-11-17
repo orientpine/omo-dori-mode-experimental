@@ -533,7 +533,8 @@
         ],
         "briefOnly": true
       },
-      "mode": "inject"
+      "mode": "inject",
+      "enforced": { "by": "skills/dori-mode/scripts/src/ask-relay.ts:askRelayWarning", "token": "ASK_RELAY_RECHECK" }
     },
     {
       "id": "deck-context",
