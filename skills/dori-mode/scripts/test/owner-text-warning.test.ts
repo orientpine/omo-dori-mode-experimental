@@ -194,3 +194,9 @@ test("review 15 of #501: KST 기준으로 배포 예정 is scheduling, and KST �
   expect(kstOwnerProblem("KST 변환: 10:30Z → ?", "ko-KR")).toBe("UTC time without a KST time");
   expect(kstOwnerProblem("UTC 10:30 (KST 기준으로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 16 of #501: a parenthesized UTC clock is not a suffix of the KST clock, and any UTC clock after a KST zone is a conversion target", () => {
+  expect(kstOwnerProblem("KST 변환: 19:30 (UTC 10:30)에 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("KST 환산: 10:30Z → ?", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("10:30 (UTC) (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+});
