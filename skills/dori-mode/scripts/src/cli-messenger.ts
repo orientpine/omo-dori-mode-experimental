@@ -126,8 +126,11 @@ const sendCommand: Command = async (context) => {
   } else if (platform === "discord") {
     const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")), discordApi());
     const pair = process.env["DORI_DISCORD_PAIR_CHANNEL"]?.trim();
-    if (pair && (edit ? to : (thread ?? to)) === pair)
-      for (const warning of pairTextWarnings(body, discordFiles.length > 0)) textWarning(config.watchLog, "send", warning.token, warning.id, warning.problem);
+    if (pair && (edit ? to : (thread ?? to)) === pair) {
+      // an edit keeps the original message's attachments, which --file never shows; a failed lookup must not stop the edit
+      const existing = edit ? await dc.once().call<{ attachments?: unknown[] }>("GET", `/channels/${to}/messages/${edit}`).then((m) => Array.isArray(m.attachments) && m.attachments.length > 0).catch(() => false) : false;
+      for (const warning of pairTextWarnings(body, discordFiles.length > 0 || existing)) textWarning(config.watchLog, "send", warning.token, warning.id, warning.problem);
+    }
     await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
     if (edit) await dc.edit(to, edit, text);
     else {

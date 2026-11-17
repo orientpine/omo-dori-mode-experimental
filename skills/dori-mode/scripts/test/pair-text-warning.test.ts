@@ -51,3 +51,23 @@ for (const [to, configured, text, expected, extra] of [
     } finally { state.done(); }
   });
 }
+
+test("an edit to ok on a message that already has an attachment is not acknowledgement-only (review 1 of #502)", async () => {
+  const state = withState();
+  try {
+    const file = join(state.dir, "http.json");
+    const watch = join(state.dir, "watch.log");
+    const config = join(state.dir, "config.json");
+    writeFileSync(config, JSON.stringify({ stateDir: state.dir, watchLog: watch, discord: { locale: "ko-KR" } }));
+    const r = await run(viaEnvFile(["env", `DORI_CONFIG=${config}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "test.env")}`, "DORI_DISCORD_TOKEN=fake",
+      "DORI_DISCORD_CHANNEL=owner", "DORI_DISCORD_PAIR_CHANNEL=pair", "DORI_TEST_THREAD_PARENT=other", `DORI_TEST_HTTP=${file}`, "DORI_TEST_MESSAGE_ATTACHMENTS=1",
+      "bun", "--preload", join(import.meta.dir, "discord-cli-fake.ts"), join(import.meta.dir, "../src/cli.ts"),
+      "send", "discord", "--to", "pair", "--text", "ok", "--no-typing", "--edit", "900"]));
+    expect(r.code).toBe(0);
+    expect(r.err).not.toContain("PAIR_ACK_ONLY");
+    expect(existsSync(watch) ? readFileSync(watch, "utf8") : "").not.toContain("PAIR_");
+    const calls = JSON.parse(readFileSync(file, "utf8")).calls as { method: string; path: string; body: { content?: string } }[];
+    expect(calls.some((c) => c.method === "GET" && c.path === "/channels/pair/messages/900")).toBe(true);
+    expect(calls.some((c) => c.method === "PATCH" && c.body.content === "ok")).toBe(true);
+  } finally { state.done(); }
+});
