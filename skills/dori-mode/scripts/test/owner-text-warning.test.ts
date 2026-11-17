@@ -218,3 +218,9 @@ test("review 19 of #501: a UTC label belongs only to qualifier particles, and a 
   expect(kstOwnerProblem("UTC 10:30 / 19:30 KST로 변환했어", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 20 of #501: UTC 시각 is a qualifier, and KST 변환 완료 is not a promise", () => {
+  expect(kstOwnerProblem("UTC 시각 10:30, KST로는?", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST 변환 완료", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 / KST 변환 예정", "ko-KR")).toBe("UTC time without a KST time");
+});
