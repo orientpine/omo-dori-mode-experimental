@@ -13,6 +13,7 @@ import { dailyAuditSince, linksDue } from "./directive-audit.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { watchLog } from "./watch-log.ts";
+import { heavyBypassTick } from "./freshness-heavy.ts";
 import { readJson, readyResume, type RolloverHooks, type SweepAct } from "./freshness-handover.ts";
 import { leadDueFile, leadStuckAlert, rolloverDue, screenSignals } from "./freshness-rollover.ts";
 import { keepTick } from "./compaction-keep.ts";
@@ -53,6 +54,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     return path ? readFileSync(path, "utf8") : undefined;
   }, ...given };
   const acts: SweepAct[] = [];
+  await heavyBypassTick(deps);
   const now = deps.clock.now();
   let leadScreen: string | undefined;
   let leadLines: readonly string[] | undefined;

@@ -173,7 +173,7 @@ The watcher runs each check itself when it closes the lane, with no shell, and n
 | `dori claim-done` / `object-done` / `close` | the done flow; a close with no usable thread prints `THREAD_MISSING <key>` instead of skipping the thread hook silently; with `DORI_DISCORD_TOKEN` set, a close also marks a `discord:` work thread done and archives it, unless another open lane or an open question card still uses it: then it only posts the lane's result there |
 | `dori pause <key> <reason>` / `dori resume <key>` | park a lane that waits on you: no freshness nudge or post, `LANE_BLOCKED` or `DEAD_PANE` for it, and a done claim doesn't close it; with aoe it also pauses the omo goal of the lane's session (`/goal pause`, read back; `PAUSE_UNVERIFIED`, exit 3, if not confirmed); `resume` puts back the status it had and the goal it paused |
 | `dori watch` | the auto-close watcher, plus aoe `LANE_BLOCKED` events; run it as a persistent monitor |
-| `dori freshness [--loop MIN]` | nudge lanes that went quiet, then hand the last report to the lead (nothing is posted in their thread) |
+| `dori freshness [--loop MIN]` | nudge lanes that went quiet, then hand the last report to the lead (nothing is posted in their thread); `HEAVY_BYPASS` warns once per lane/GPU pid outside `dori heavy` |
 | `dori dead-panes [--loop MIN]` | report agent panes that stopped |
 | `dori guard [--loop MIN]` | alert on load, memory, disk and pane count |
 | `dori fix-attempt <key> --metric M --hypothesis H` | count a fix you asked a lane for; lanes tag such reports `(fix: M / H)`, and from the third attempt on one metric with one hypothesis `SAME_FIX_3` tells you to switch the lane to a root-cause hunt; it first prints the hypotheses already tried on that metric (`PRIOR_FIX`) |

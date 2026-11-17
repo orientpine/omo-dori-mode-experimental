@@ -75,7 +75,7 @@ export const setSlotTree = (slot: string, pid: number): void => writeFileSync(jo
 // pid: the owner, whose life holds the slot; tree: the process whose tree is the job (its TREE_FILE, else the owner)
 export type Holder = { readonly n: number; readonly pid: number; readonly tree: number; readonly label: string; readonly since: number };
 
-export const holders = (deps: SlotDeps, max: number): Holder[] => {
+export const holders = (deps: Pick<SlotDeps, "dir" | "alive">, max: number): Holder[] => {
   const out: Holder[] = [];
   for (let n = 1; n <= max; n++) {
     let owner: string;
