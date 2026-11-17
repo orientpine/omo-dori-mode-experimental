@@ -224,3 +224,9 @@ test("review 20 of #501: UTC 시각 is a qualifier, and KST 변환 완료 is not
   expect(kstOwnerProblem("UTC 10:30 / 19:30 KST 변환 완료", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("UTC 10:30 / KST 변환 예정", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 21 of #501: a version change after KST is not a conversion promise", () => {
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST에 새 버전으로 바꿀게", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 (KST 기준으로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+});
