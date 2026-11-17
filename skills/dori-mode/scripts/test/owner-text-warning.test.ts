@@ -138,3 +138,9 @@ test("review 6 of #501: Korean UTC qualifiers (기준, 시간) mark the UTC cloc
   expect(kstOwnerProblem("UTC 기준 10:30 / 19:30 KST", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("UTC 시간 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 7 of #501: any Korean qualifier after UTC marks the clock, but UTC contrasted with KST does not steal the KST clock", () => {
+  expect(kstOwnerProblem("UTC 기준으로 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 기준으로 10:30 / 19:30 KST", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC와 달리 KST 19:30에 시작해", "ko-KR")).toBeUndefined();
+});
