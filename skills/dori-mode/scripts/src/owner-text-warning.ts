@@ -31,7 +31,9 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
     const after = own.slice(end), before = own.slice(0, at);
     const pre = before.slice(-12), utcAt = pre.toUpperCase().lastIndexOf("UTC");
     const tail = utcAt < 0 ? "" : pre.slice(utcAt + 3);
-    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || (utcAt >= 0 && !/\d/.test(tail) && !/(?:KST|한국)/i.test(tail)) || /^\s*UTC\b/i.test(after);
+    // a UTC right after a clock is that clock's suffix, not a qualifier of the next one (10:30 UTC / 19:30 KST)
+    const qualifier = utcAt >= 0 && !/\d{1,2}:\d{2}\s*$/.test(pre.slice(0, utcAt)) && !/\d/.test(tail) && !/(?:KST|한국)/i.test(tail);
+    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || qualifier || /^\s*UTC\b/i.test(after);
     return { at, end, utcLabel };
   });
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
