@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import type { DoriConfig } from "./config.ts";
+import { type Enforced, enforcedLabel, enforcedProblems, withEnforcers } from "./directive-enforced.ts";
 import type { Lane } from "./registry.ts";
 
 // The directive ledger: the owner's standing directives in machine-readable form, in two layers. The fork's
@@ -10,9 +11,9 @@ import type { Lane } from "./registry.ts";
 // entry with the id of a fork entry overrides its fields (a link as source, a retirement). dori launch reads both:
 // an inject directive in scope that the brief lacks goes in as written in the ledger (LAUNCH_DIRECTIVE_ADDED); a require
 // directive the brief does not meet stops the launch (LAUNCH_DIRECTIVE_MISSING) unless the lead waives it with a reason;
-// a lead directive is checked against what the lead did (dori directive-audit).
+// a lead directive is checked against what the lead did (dori directive-audit); a code directive is enforced by a check in the code (directive-enforced.ts).
 
-export const DIRECTIVE_MODES = ["inject", "require", "lead"] as const;
+export const DIRECTIVE_MODES = ["inject", "require", "lead", "code"] as const;
 export type DirectiveMode = (typeof DIRECTIVE_MODES)[number];
 // built-in blocks dori launch already places itself (the brief template's eight steps, the UI steps)
 export const DIRECTIVE_BLOCKS = ["eight-steps", "ui-steps"] as const;
@@ -67,6 +68,8 @@ export type Directive = {
   // an inject entry that stays on record and in scope, but goes into a brief as the pointer entry with this id (one text
   // that names where the rule is written, e.g. a repo's AGENTS.md); the pointer in a brief counts as this entry
   readonly via?: string;
+  readonly enforced?: Enforced;
+  readonly gone?: string; // set by the load: why the check of a code entry is gone (the entry is inject again)
   readonly layer: "common" | "local";
 };
 
@@ -203,7 +206,7 @@ export const loadLedger = (cfg: Pick<DoriConfig, "directives">, opts: { readonly
       skipped.push(`DIRECTIVES_LOCAL_SKIP ${id || "(no id)"}: ${what} (${own.join("; ")})`);
     }
   }
-  return { entries: [...byId.values()], kinds, minHits, labels, standing, reviewed, fillers, files, ...(opts.tolerant ? { skipped } : {}) };
+  return { entries: withEnforcers([...byId.values()]), kinds, minHits, labels, standing, reviewed, fillers, files, ...(opts.tolerant ? { skipped } : {}) };
 };
 
 // --- words against original: deletion only ---
@@ -324,6 +327,7 @@ export const ledgerProblems = (ledger: Ledger): string[] => {
     if (!/^\d{4}-\d{2}-\d{2}/.test(e.date ?? "")) out.push(`${at}: date must start YYYY-MM-DD`);
     if (!e.source) out.push(`${at}: no source`);
     if (!DIRECTIVE_MODES.includes(e.mode)) out.push(`${at}: mode must be ${DIRECTIVE_MODES.join("|")}`);
+    out.push(...enforcedProblems(e, at));
     if (!e.scope || typeof e.scope !== "object") out.push(`${at}: no scope`);
     for (const k of e.scope?.kinds ?? []) if (!kinds.has(k)) out.push(`${at}: unknown kind ${k}`);
     for (const re of e.scope?.keywords ?? []) if (!compiles(re)) out.push(`${at}: keyword ${re} does not compile`);
@@ -500,11 +504,7 @@ export const hasDirective = (brief: string, e: Directive): boolean => {
   return b.includes(squash(directiveTag(e))) || b.includes(`[지침 ${e.id}]`) || (Boolean(own) && b.includes(squash(own)));
 };
 // The pointer that goes into a brief for an entry with via (undefined when it has none).
-export const pointerOf = (e: Directive, ledger: Pick<Ledger, "entries">): Directive | undefined => {
-  if (!e.via) return undefined;
-  const p = ledger.entries.find((x) => x.id === e.via);
-  return p;
-};
+export const pointerOf = (e: Directive, ledger: Pick<Ledger, "entries">): Directive | undefined => (e.via ? ledger.entries.find((x) => x.id === e.via) : undefined);
 // In the brief as its own text, or through its pointer; a pointer is also in a brief that already has every entry
 // naming it as their own texts (a lane launched before the pointer), so it is not sent on top of them.
 export const coveredBy = (brief: string, e: Directive, ledger: Pick<Ledger, "entries">): boolean => {
@@ -528,7 +528,7 @@ export const textDirectives = (text: string, ledger: Ledger, opts: { readonly al
   const ctx = scopeContext(text, { ...ledger, minHits: 1 }, { repo: "" });
   const out: { e: Directive; why: string; keyword: boolean; rank: number }[] = [];
   for (const [i, e] of ledger.entries.entries()) {
-    if (e.mode === "require" || e.block || (e.scope.briefOnly && !opts.all)) continue;
+    if (e.mode === "require" || e.mode === "code" || e.block || (e.scope.briefOnly && !opts.all)) continue;
     // an every-lane entry joins a message's hints only when its own keywords are in the text (every lane gets it anyway)
     const why = e.scope.all && !opts.all ? keywordWhy(e, ctx) : e.scope.briefOnly ? "all lanes" : appliesWhy(e, ctx);
     if (!why) continue;
@@ -658,7 +658,7 @@ export const unledgered = (inbox: string, ledger: Ledger, owner: string, since: 
     if (!standing.test(text) || cited.includes(e.id) || ledger.reviewed.includes(e.id)) continue;
     const g = e.guild_id || guild;
     const ref = g && e.channel_id ? `https://discord.com/channels/${g}/${e.channel_id}/${e.id}` : `${e.channel_id ?? "?"}/${e.id}`;
-    out.push({ lane: "-", id: e.id, line: `DIRECTIVE_UNLEDGERED ${ref} "${text.replace(/\s+/g, " ").slice(0, 160)}": reads like a standing directive and no ledger entry cites it; add it to the ledger (owner's words, link) or list its id under reviewed` });
+    out.push({ lane: "-", id: e.id, line: `DIRECTIVE_UNLEDGERED ${ref} "${text.replace(/\s+/g, " ").slice(0, 160)}": reads like a standing directive and no ledger entry cites it (directive ledger-same-day); add it to the ledger (owner's words, link) or list its id under reviewed` });
   }
   return out;
 };
@@ -711,7 +711,7 @@ export const promptTable = (ledger: Ledger): string => {
 export const ledgerTable = (ledger: Ledger): string => {
   const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
   const scope = (s: DirectiveScope) => [s.all ? "모든 lane" : "", s.ui ? "UI" : "", ...(s.kinds ?? []), ...(s.repos ?? []).map((r) => `저장소 ${r}`), ...(s.keywords ?? []).map((k) => `낱말 /${k}/`), s.briefOnly ? "브리프만(리드 쪽은 모든 lane처럼)" : ""].filter(Boolean).join(", ");
-  const how = (e: Directive) => (e.mode === "inject" ? (e.block ? `주입(${e.block})` : e.via ? `주입(포인터 ${e.via}로)` : "주입") : e.mode === "require" ? "브리프 확인(없으면 멈춤)" : e.check === "none" ? "리드 행동(기계 확인 없음, intent-check가 읽음)" : `리드 행동 확인(${e.check})`);
+  const how = (e: Directive) => [e.mode === "code" ? "" : e.mode === "inject" ? (e.block ? `주입(${e.block})` : e.via ? `주입(포인터 ${e.via}로)` : "주입") : e.mode === "require" ? "브리프 확인(없으면 멈춤)" : e.check === "none" ? "리드 행동(기계 확인 없음, intent-check가 읽음)" : `리드 행동 확인(${e.check})`, enforcedLabel(e)].filter(Boolean).join(" · ");
   const words = (e: Directive) => (e.words ? `"${e.words}"` : e.block ? `(블록 원문: ${e.block === "eight-steps" ? "references/sessions.md 1. 조사 … 8. 보고" : "references/ui-work.md [UI 지침] 1)…7)"})` : e.by === "lead" ? "-" : "(원문 없음)");
   return [
     "| id | 이름 | 누가 | 판단 근거 | 형 원문(지침 문장) | 지침문(브리프에 들어감) | 계기가 된 형 말 | 규칙 | 날짜 | 출처 | 적용 범위 | 강제 방식 | 층 |",

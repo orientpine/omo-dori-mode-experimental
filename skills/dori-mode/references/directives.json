@@ -45,6 +45,7 @@
         "all": true
       },
       "mode": "inject",
+      "enforced": { "by": "skills/dori-mode/scripts/src/launch-footer.ts:withEightSteps", "token": "LAUNCH_STEPS_ADDED" },
       "block": "eight-steps"
     },
     {
@@ -61,6 +62,7 @@
         "all": true
       },
       "mode": "require",
+      "enforced": { "by": "skills/dori-mode/scripts/src/directives.ts:requireMissing", "token": "LAUNCH_DIRECTIVE_MISSING" },
       "require": [
         "^\\s*\\[목표(?:\\]|\\s)",
         "^\\s*\\[끝난 상태(?:\\]|\\s)",
@@ -81,6 +83,7 @@
         "ui": true
       },
       "mode": "inject",
+      "enforced": { "by": "skills/dori-mode/scripts/src/launch-footer.ts:withUiSteps", "token": "withUiSteps" },
       "block": "ui-steps"
     },
     {
@@ -234,6 +237,7 @@
         "all": true
       },
       "mode": "lead",
+      "enforced": { "by": "skills/dori-mode/scripts/src/launch-gates.ts:threadGate", "token": "LAUNCH_NO_THREAD" },
       "check": "thread"
     },
     {
@@ -251,6 +255,7 @@
         "all": true
       },
       "mode": "lead",
+      "enforced": { "by": "skills/dori-mode/scripts/src/launch-gates.ts:threadGate", "token": "LAUNCH_NO_THREAD" },
       "check": "thread"
     },
     {
@@ -309,6 +314,7 @@
         "all": true
       },
       "mode": "lead",
+      "enforced": { "by": "skills/dori-mode/scripts/src/directives.ts:unledgered", "token": "DIRECTIVE_UNLEDGERED" },
       "check": "ledger"
     },
     {
@@ -801,8 +807,8 @@
       "scope": {
         "all": true
       },
-      "mode": "lead",
-      "check": "none"
+      "mode": "code",
+      "enforced": { "by": "skills/dori-mode/scripts/src/lane-model.ts:laneModel", "token": "laneModel" }
     },
     {
       "id": "video-tool-goal",

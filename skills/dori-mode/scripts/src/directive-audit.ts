@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { laneSessionFiles, readLeadRelays, type ReportLine } from "./auto-signals.ts";
 import { checkReviewers, ChallengeError, reviewers } from "./challenge.ts";
 import { runWithPrompt } from "./config.ts";
+import { enforcerGaps } from "./directive-enforced.ts";
 import { APPLIED_HEADING, appliesUnder, appliesWhy, briefGaps, checkedLedger, coveredBy, type Directive, type DirectiveBlock, DirectiveError, directiveText, duplicated, type Gap, GENERATED_SECTION, headingAt, type Ledger, leadGaps, LINK_SOURCE, loadLedger, pickCandidates, scopeContext, unledgered } from "./directives.ts";
 import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
@@ -24,10 +25,7 @@ export const blockTexts = async (): Promise<Record<DirectiveBlock, string>> => (
 // A lane launched before briefs were stored absolute keeps the path the lead typed, relative to the lane's cwd.
 const briefOf = (lane: Pick<Lane, "brief" | "cwd">, defaultCwd: string): string => (isAbsolute(lane.brief) ? lane.brief : join(lane.cwd ?? defaultCwd, lane.brief));
 
-const readBrief = async (path: string): Promise<string> => {
-  const f = Bun.file(path);
-  return (await f.exists()) ? await f.text() : "";
-};
+const readBrief = async (path: string): Promise<string> => ((await Bun.file(path).exists()) ? await Bun.file(path).text() : "");
 
 // The lead's [LEAD] lines typed into the lane since it opened, read as intent-check reads them: from the lane's own session
 // files (those that carry its reports; the lead's sessions, which get every lane's reports, are not its own).
@@ -400,7 +398,7 @@ export const runDirectiveAudit = async (deps: FlowDeps, opts: { readonly since: 
   }
   const notCounted = excused.length ? ` (${excused.length} not counted: entered the ledger after the lane opened, the lead relayed it in a [LEAD] line, or the model left out what a scope rule calls; listed with --dry-run)` : "";
   const excusedLines = opts.dryRun ? excused.map((x) => x.line) : [];
-  gaps.push(...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env["DORI_DISCORD_GUILD"]?.trim() ?? ""));
+  gaps.push(...enforcerGaps(ledger.entries), ...unledgered(await readBrief(opts.inbox), ledger, opts.owner, opts.since, process.env["DORI_DISCORD_GUILD"]?.trim() ?? ""));
   if (opts.threads) gaps.push(...leadThreadGaps(opts.threads, await deps.registry.list(), opts.since));
   if (opts.memory && opts.memory !== "off") gaps.push(...duplicated(memoryFiles(opts.memory, memoryNotes), ledger));
   if (!opts.dryRun) writeStamp(deps, opts.since, true);
