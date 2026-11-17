@@ -32,14 +32,14 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
   const conversion = (end: number): boolean => {
     const s = own.slice(end, end + 20);
-    // KST 변환 예정, KST로 바꿀게, KST 기준으로 바꿀게; not KST에 배포 예정, not KST 기준으로 배포 예정
-    return /^\s*[()]*\s*(?:변환|예정)/.test(s) || (/(?:으로|로|기준)/.test(s) && /(?:변환|바꿀)/.test(s));
+    // future promises only: KST 변환 예정, KST로 바꿀게, KST 기준으로 바꿀게; not KST로 변환했어 (completed)
+    return /^\s*[()]*\s*(?:변환|예정)/.test(s) || (/(?:으로|로|기준)/.test(s) && /(?:변환할|바꿀)/.test(s));
   };
   const utcClock = (c: { at: number; end: number }): boolean => {
     const after = own.slice(c.end);
     if (/^\s*(?:\.\d+)?Z/.test(after) || /^[ \t]*UTC\b/i.test(after) || /^[ \t]*\([ \t]*UTC[ \t]*\)/i.test(after)) return true;
     const before = own.slice(Math.max(0, c.at - 12), c.at);
-    return /\bUTC/i.test(before) && !/(?:KST|한국)/i.test(before) && !/\d/.test(before.replace(/\bUTC\b/i, ""));
+    return /\bUTC\s*(?:기준|으로|로|시간|:|：|\s)*$/i.test(before) && !/(?:KST|한국)/i.test(before);
   };
   const kst = plus9 || [...own.matchAll(zoneRe)].some((m) => {
     const at = m.index ?? 0, end = at + m[0].length;

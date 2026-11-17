@@ -212,3 +212,9 @@ test("review 18 of #501: a UTC-labelled clock before KST is not a counterpart, a
   expect(kstOwnerProblem("UTC 10:30에 시작해. 한국 시간은 9시간 빨라.", "ko-KR")).toBe("UTC time without a KST time");
   expect(kstOwnerProblem("UTC 10:30 / 19:30 (KST)", "ko-KR")).toBeUndefined();
 });
+
+test("review 19 of #501: a UTC label belongs only to qualifier particles, and a completed conversion is not a promise", () => {
+  expect(kstOwnerProblem("10:30 UTC (현지 시각 19:30 KST)에 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST로 변환했어", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+});
