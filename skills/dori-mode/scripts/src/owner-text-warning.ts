@@ -23,12 +23,15 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   if (!locale.toLowerCase().startsWith("ko")) return undefined;
   const own = ownText(text);
   const utc = /\bUTC\b|\b(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?Z\b|\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z\b/i.test(own);
-  const clock = "(?:(?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?|(?:오전|오후)?\\s*\\d{1,2}시(?:\\s*\\d{1,2}분)?)";
-  const zone = "(?:\\bKST\\b|한국\\s*(?:시간|시각)|한국표준시)";
-  // zone-before-clock may carry a particle (한국 시간으로 19:30); clock-before-zone counts only a complete
-  // annotation (the zone ends it, or a time particle follows), never a conversion promise (KST로, KST 변환 예정)
-  const kst = new RegExp(`${zone}(?:으로|로)?\\s*[():：]?\\s*${clock}|${clock}\\s*\\(?\\s*${zone}(?=$|[).,]|부터|까지|에|도|만)|\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(?::\\d\\d(?:\\.\\d+)?)?\\+09:00`, "i").test(own);
-  return utc && !kst ? "UTC time without a KST time" : undefined;
+  const clockRe = /(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?|(?:오전|오후)?\s*\d{1,2}시(?:\s*\d{1,2}분)?/g;
+  const zone = /\bKST\b|한국\s*(?:시간|시각)|한국표준시/i.test(own) || /\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?\+09:00/.test(own);
+  // the counterpart is any clock that is not the UTC-labelled one (10:30Z, UTC 10:30, an ISO ...Z): a conversion
+  // promise (KST로, KST 변환 예정) has no other clock, while real prose delimiters after KST change nothing
+  const local = [...own.matchAll(clockRe)].some((m) => {
+    const at = m.index ?? 0;
+    return !/^\s*Z/.test(own.slice(at + m[0].length)) && !/\bUTC\s*$/i.test(own.slice(0, at));
+  });
+  return utc && !(zone && local) ? "UTC time without a KST time" : undefined;
 };
 
 // Warning-only rollout: preserve the send and its exit status, and record the same line under the command's tag.

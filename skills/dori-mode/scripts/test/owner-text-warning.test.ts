@@ -102,5 +102,17 @@ test("review 2 of #501: real converted forms with particles count, conversion pr
   expect(kstOwnerProblem("10:30Z에 끝나고 19:30 KST에 시작해", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("UTC 10:30 (KST 변환 예정)", "ko-KR")).toBe("UTC time without a KST time");
   expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
-  expect(kstOwnerProblem("10:30Z에 끝나고 KST는 19:30이야", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("10:30Z에 끝나고 KST는 19:30이야", "ko-KR")).toBeUndefined();
+});
+
+test("review 3 of #501: whitespace, newlines and punctuation after a KST time still count; UTC-labelled clocks do not count as the counterpart", () => {
+  expect(kstOwnerProblem("10:30Z / 19:30 KST 기준으로 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30Z / 19:30 KST\n작업 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30Z / 19:30 KST.", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 (KST 변환 예정)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("10:30Z에 끝나", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("2026-11-17T10:30:00Z에 끝나", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("10:30Z / 2026-11-17T19:30:00+09:00", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30Z / 19:30", "ko-KR")).toBe("UTC time without a KST time");
 });
