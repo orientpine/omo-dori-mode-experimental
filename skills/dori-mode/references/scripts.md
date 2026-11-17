@@ -577,6 +577,8 @@ What goes to the owner is in the speech this Dori uses with him (`discord.ownerS
 
 Korean owner posts and edits checked by `dori send` also warn `OWNER_NOT_KOREAN` when prose has no Hangul, excluding code, quotes, URLs, identifiers and command lines. The warning is printed to stderr and the watch log; the send continues unchanged until the warning rollout ends on 2026-12-01. Other locales and the pair channel are untouched.
 
+The same Korean owner places warn `OWNER_TIME_NOT_KST` for a UTC time (`HH:MMZ`, `UTC`, or an ISO timestamp ending in `Z`) without a KST time. A converted clock time labelled KST or 한국 시간, or an ISO `+09:00` timestamp, satisfies the check; mentioning KST alone does not. Code, quotations, URLs and command lines are excluded. `thread reply|wait|done` apply this warning too. It goes to stderr and the command's watch-log tag and leaves the send and exit status unchanged during the warning period until 2026-12-01.
+
 ### `dori presence <slack|discord>`
 Keeps the account shown as online until stopped.
 - **Discord:** the bot connects to the gateway and identifies as online.

@@ -5,7 +5,7 @@ import { currentTmuxSession } from "./aoe.ts";
 import { configPath, envFilePath } from "./config.ts";
 import { recordThreadPost } from "./done-flow.ts";
 import { ownerSpeechProblem } from "./close-summary.ts";
-import { koreanOwnerProblem, textWarning } from "./owner-text-warning.ts";
+import { koreanOwnerProblem, kstOwnerProblem, textWarning } from "./owner-text-warning.ts";
 import { bareThreadName } from "./messenger/discord-thread.ts";
 import { statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
@@ -85,8 +85,10 @@ export const makeDiscordDeps = (cli: Pick<Cli, "deps" | "config">) => {
   const ownerSpeech = async (text: string, what: string, toOwner: () => Promise<boolean>): Promise<void> => {
     const problem = ownerSpeechProblem(text, config.discord.locale, config.discord.ownerSpeech);
     const korean = koreanOwnerProblem(text, config.discord.locale);
-    if ((problem || korean) && await toOwner()) {
+    const time = kstOwnerProblem(text, config.discord.locale);
+    if ((problem || korean || time) && await toOwner()) {
       if (korean) textWarning(config.watchLog, what, "OWNER_NOT_KOREAN", "korean-discord", korean);
+      if (time) textWarning(config.watchLog, what, "OWNER_TIME_NOT_KST", "kst-times", time);
       if (problem) die(`SPEECH_REFUSED ${what}: ${problem}; nothing was sent`, 2);
     }
   };

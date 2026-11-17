@@ -192,7 +192,7 @@ The CLI also carries the messenger pieces a Dori needs. You can import them as t
 
 | Command | What it does |
 |---|---|
-| `dori send slack\|telegram\|discord --to T --text X [--thread ID] [--edit ID]` | post or edit a message; rate limits are retried, and text containing `$(` is refused; Korean owner prose without Hangul warns `OWNER_NOT_KOREAN` (send continues; warning rollout until 2026-12-01) |
+| `dori send slack\|telegram\|discord --to T --text X [--thread ID] [--edit ID]` | post or edit a message; rate limits are retried, and text containing `$(` is refused; Korean owner prose without Hangul warns `OWNER_NOT_KOREAN`, UTC times without a KST counterpart warn `OWNER_TIME_NOT_KST` (send continues; warning rollout until 2026-12-01) |
 | `dori send slack --to C --file PATH [--file PATH ...] [--text X] [--thread TS]` | upload up to 10 files (1 GB each) and share them as one Slack message with the text; a missing, empty or too big file is refused before anything is sent |
 | `dori presence slack\|discord` | keep the account shown online (a Discord bot on the gateway, or a Slack user account through a web-client socket tickled every minute) |
 | `dori transcribe <file>` | turn a voice note into text through your `hooks.transcribe` command |
