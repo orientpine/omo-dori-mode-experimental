@@ -23,13 +23,13 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   if (!locale.toLowerCase().startsWith("ko")) return undefined;
   const own = ownText(text);
   const utc = /\bUTC\b|\b(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?Z\b|\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z\b/i.test(own);
-  const clockRe = /(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?|(?:오전|오후)?\s*\d{1,2}시(?:\s*\d{1,2}분)?/g;
+  const clockRe = /(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?|(?:오전|오후)?\s*\d{1,2}시(?:\s*\d{1,2}분)?/g;
   const zoneRe = /\bKST\b|한국\s*(?:시간|시각)|한국표준시/gi;
   const plus9 = /\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?\+09:00/.test(own);
   const clocks = [...own.matchAll(clockRe)].map((m) => {
     const at = m.index ?? 0, end = at + m[0].length;
     const after = own.slice(end), before = own.slice(0, at);
-    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || /\bUTC\s*$/i.test(before) || /^\s*UTC\b/i.test(after);
+    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || /\bUTC\s*[:：]?\s*$/i.test(before) || /^\s*UTC\b/i.test(after);
     return { at, end, utcLabel };
   });
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);

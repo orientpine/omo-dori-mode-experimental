@@ -126,3 +126,9 @@ test("review 4 of #501: only a clock next to a KST zone counts; UTC suffix, frac
   expect(kstOwnerProblem("10:30Z / 한국 시간으로 19:30에 시작해", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("10:30Z / KST 19:30", "ko-KR")).toBeUndefined();
 });
+
+test("review 5 of #501: fractional KST clocks count, and a punctuated UTC label still marks the UTC clock", () => {
+  expect(kstOwnerProblem("10:30:00.123Z / 19:30:00.123 KST", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC: 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC: 10:30 / 19:30 KST", "ko-KR")).toBeUndefined();
+});
