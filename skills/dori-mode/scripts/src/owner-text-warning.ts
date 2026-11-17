@@ -28,17 +28,7 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const zoneRe = /\bKST\b|한국\s*(?:시간|시각)|한국표준시/gi;
   const plus9 = /\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?\+09:00/.test(own);
   const clocks = [...own.matchAll(clockRe)].map((m) => ({ at: m.index ?? 0, end: (m.index ?? 0) + m[0].length }));
-  // a conversion promise (KST로, KST 변환 예정, KST로 바꿀게) is not a KST time; every other KST annotation with a
-  // clock right next to it is, whatever the UTC clock looks like elsewhere in the message
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
-  const conversion = (end: number): boolean => {
-    const s = own.slice(end, end + 20);
-    const q = /^\s*[()]*\s*(?:기준으로|으로|로|기준)/.exec(s);
-    const rest = q ? s.slice(q[0].length) : "";
-    const beforeVerb = rest.split(/변환할|바꿀/)[0] ?? "";
-    // a second particle before the conversion verb means another action (새 버전으로), not a promise
-    return /^\s*[()]*\s*변환\s*(?:예정|할)/.test(s) || (q !== null && !/(?:으로|로)/.test(beforeVerb) && /(?:변환할|바꿀)/.test(rest));
-  };
   const utcClock = (c: { at: number; end: number }): boolean => {
     const after = own.slice(c.end);
     if (/^\s*(?:\.\d+)?Z/.test(after) || /^[ \t]*UTC\b/i.test(after) || /^[ \t]*\([ \t]*UTC[ \t]*\)/i.test(after)) return true;
@@ -50,7 +40,7 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
     const afterC = clocks.find((c) => c.at >= end && near(own.slice(end, c.at)));
     const beforeC = clocks.some((c) => c.end <= at && near(own.slice(c.end, at)) && !utcClock(c) && !/→|->|=>/.test(own.slice(c.end, at)));
     // a UTC-labelled clock right after a KST zone is a conversion target, never the KST time itself
-    return (afterC && !utcClock(afterC)) || (beforeC && !conversion(end));
+    return (afterC && !utcClock(afterC)) || beforeC;
   });
   return utc && !kst ? "UTC time without a KST time" : undefined;
 };
