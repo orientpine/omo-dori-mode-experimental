@@ -39,7 +39,7 @@ const ledgerWith = async (checkText: string) => {
 };
 const input = (brief: string) => ({ key: "lane-a", title: "t", brief, done: 'command ["bun","test"]', cwd: "/work/app", goal: "g", noThread: "test lane" });
 
-test("a code entry needs its check named (enforced by and token); a fork entry names it by a path from the fork's root", async () => {
+test("a code entry needs its check named (enforced by and token); a host ledger may point a fork entry at a check outside the fork", async () => {
   const ledger = loadLedger({ directives: await ledgerWith('throw new Error("KEPT_REFUSED x");') });
   const base = ledger.entries.find((e) => e.id === "kept-check")!;
   const { enforced: _e, ...unchecked } = base;
@@ -48,7 +48,7 @@ test("a code entry needs its check named (enforced by and token); a fork entry n
   expect(ledgerProblems({ ...ledger, entries: [unchecked] })).toEqual(["directive kept-check: a code directive needs enforced { by, token } (the check that enforces it)"]);
   expect(ledgerProblems({ ...ledger, entries: [{ ...base, enforced: { by: base.enforced!.by, token: "has space" } }] })[0]).toContain("enforced.token must be");
   expect(ledgerProblems({ ...ledger, entries: [{ ...noText, by: "owner" }] })).toEqual(["directive kept-check: a code directive needs words or a rule (it goes into briefs again when its check is gone)"]);
-  expect(ledgerProblems({ ...ledger, entries: [{ ...base, layer: "common" }] })).toEqual(["directive kept-check: enforced.by of a fork entry is a path from the fork's root"]);
+  expect(ledgerProblems({ ...ledger, entries: [{ ...base, layer: "common" }] })).toEqual([]);
   expect(ledgerProblems({ ...ledger, entries: [{ ...base, mode: "nope" as "code" }] })[0]).toBe("directive kept-check: mode must be inject|require|lead|code");
 });
 

@@ -13,7 +13,8 @@ import type { Directive, Gap } from "./directives.ts";
 
 export type Enforced = { readonly by: string; readonly token: string };
 
-// the fork checkout: a relative by is a path from its root (skills/dori-mode/scripts/src/...)
+// the fork checkout: a relative by is a path from its root (skills/dori-mode/scripts/src/...); a host's ledger may name an
+// absolute or ~/ path for a check outside the fork, also for a fork entry it overrides (the fork file itself holds no paths)
 const FORK_ROOT = join(import.meta.dir, "../../../..");
 
 const fileOf = (by: string): string => {
@@ -45,7 +46,6 @@ export const enforcedProblems = (e: Directive, at: string): string[] => {
   const { by, token } = e.enforced;
   if (typeof by !== "string" || !by.trim()) out.push(`${at}: enforced.by must name the file (and symbol) of the check`);
   if (typeof token !== "string" || !/^[A-Za-z_$][\w$.-]{2,}$/.test(token)) out.push(`${at}: enforced.token must be the check's refusal or warning token (letters, digits, _ . -)`);
-  if (e.layer === "common" && typeof by === "string" && (isAbsolute(by) || by.startsWith("~"))) out.push(`${at}: enforced.by of a fork entry is a path from the fork's root`);
   return out;
 };
 
