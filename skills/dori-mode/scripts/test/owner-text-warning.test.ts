@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { koreanOwnerProblem, textWarning } from "../src/owner-text-warning.ts";
+import { koreanOwnerProblem, kstOwnerProblem, textWarning } from "../src/owner-text-warning.ts";
 import { defaultConfig } from "../src/config.ts";
 import { makeDiscordDeps } from "../src/cli-deps-discord.ts";
 import type { FlowDeps } from "../src/done-flow.ts";
@@ -85,4 +85,13 @@ test("a watch log that cannot be written does not stop the warning's command: th
     err.mockRestore();
     state.done();
   }
+});
+
+test("a UTC clock with a promise to convert it (KST로) is not a KST time; a real annotation counts (review 1 of #501)", () => {
+  expect(kstOwnerProblem("작업은 UTC 10:30 (KST로 바꿀게)에 끝나", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("10:30Z에 끝나고 19:30 KST에 알려줄게", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30Z에 끝나고 KST 오후 7시 30분에 알려줄게", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30Z에 끝나고 KST 19:30에 알려줄게", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("오늘 10:30Z에 끝나 (KST)", "ko-KR")).toBe("UTC time without a KST time");
 });

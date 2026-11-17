@@ -24,7 +24,8 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const own = ownText(text);
   const utc = /\bUTC\b|\b(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?Z\b|\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z\b/i.test(own);
   const clock = "(?:(?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?|(?:오전|오후)?\\s*\\d{1,2}시(?:\\s*\\d{1,2}분)?)";
-  const zone = "(?:\\bKST\\b|한국\\s*(?:시간|시각)|한국표준시)";
+  // a zone word followed by a particle (KST로, KST는, 한국 시간으로) is talk about KST, not a converted clock
+  const zone = "(?:\\bKST\\b|한국\\s*(?:시간|시각)|한국표준시)(?!(?:으로|로|는|은|이|가|을|를|도|만|부터|까지))";
   const kst = new RegExp(`${zone}\\s*[():：]?\\s*${clock}|${clock}\\s*\\(?\\s*${zone}|\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(?::\\d\\d(?:\\.\\d+)?)?\\+09:00`, "i").test(own);
   return utc && !kst ? "UTC time without a KST time" : undefined;
 };
