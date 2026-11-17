@@ -18,7 +18,7 @@ export const koreanOwnerProblem = (text: string, locale: string): string | undef
 
 // Warning-only rollout: preserve the send and its exit status, and record the same line under the command's tag.
 export const textWarning = (path: string, where: string, token: string, id: string, problem: string): void => {
-  const line = `${token} ${where}: ${problem} (directive ${id}; a warning until 2026-12-01, then it refuses)`;
+  const line = `${token} ${where}: ${problem} (directive ${id}; a warning for now, refusal to be reviewed on 2026-12-01)`;
   console.error(line);
   watchLog(path, realClock, { source: where.split(" ")[0] ?? where, line });
 };
