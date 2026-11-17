@@ -5,6 +5,8 @@ import { currentTmuxSession } from "./aoe.ts";
 import { configPath, envFilePath } from "./config.ts";
 import { recordThreadPost } from "./done-flow.ts";
 import { ownerSpeechProblem } from "./close-summary.ts";
+import { koreanOwnerProblem, textWarning } from "./owner-text-warning.ts";
+import { bareThreadName } from "./messenger/discord-thread.ts";
 import { statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
 import { fetchHttp } from "./messenger/http.ts";
@@ -62,9 +64,13 @@ export const makeDiscordDeps = (cli: Pick<Cli, "deps" | "config">) => {
   const ownDiscord = (token: string): Discord => {
     const why = discordBotProblem(token);
     if (why) throw new Error(why);
-    return new Discord(fetchHttp, realClock, token, discordApi());
+    const dc: Discord = new Discord(fetchHttp, realClock, token, discordApi(), undefined, async (id, name) => {
+      const problem = koreanOwnerProblem(bareThreadName(name, config.discord), config.discord.locale);
+      if (problem && await ownerPlace(dc, id)) textWarning(config.watchLog, "thread name", "OWNER_NOT_KOREAN", "korean-discord", problem);
+    });
+    return dc;
   };
-  const discordClient = () => new Discord(fetchHttp, realClock, checkedDiscordToken(env("DORI_DISCORD_TOKEN")), discordApi());
+  const discordClient = () => ownDiscord(checkedDiscordToken(env("DORI_DISCORD_TOKEN")));
   // A Discord place that is the owner's: DORI_DISCORD_CHANNEL, a thread in it, or a DM (a bot's DM is with the owner). The pair
   // channel is the Doris' own. A place that cannot be looked up counts as his.
   const ownerPlace = async (dc: Discord, id: string): Promise<boolean> => {
@@ -78,7 +84,11 @@ export const makeDiscordDeps = (cli: Pick<Cli, "deps" | "config">) => {
   // ownerSpeechProblem), refused before anything is sent; the place is looked up only for a text that fails.
   const ownerSpeech = async (text: string, what: string, toOwner: () => Promise<boolean>): Promise<void> => {
     const problem = ownerSpeechProblem(text, config.discord.locale, config.discord.ownerSpeech);
-    if (problem && (await toOwner())) die(`SPEECH_REFUSED ${what}: ${problem}; nothing was sent`, 2);
+    const korean = koreanOwnerProblem(text, config.discord.locale);
+    if ((problem || korean) && await toOwner()) {
+      if (korean) textWarning(config.watchLog, what, "OWNER_NOT_KOREAN", "korean-discord", korean);
+      if (problem) die(`SPEECH_REFUSED ${what}: ${problem}; nothing was sent`, 2);
+    }
   };
   // question cards and their answers; DORI_DISCORD_STATE_DIR keeps them where an existing install already has them
   const cardDir = (): string => process.env["DORI_DISCORD_STATE_DIR"]?.trim() || join(config.stateDir, "discord");

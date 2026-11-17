@@ -26,12 +26,13 @@ export class Discord {
     private readonly botToken: string,
     private readonly base = "https://discord.com/api/v10",
     private readonly policy: RetryPolicy = DEFAULT_RETRY,
+    private readonly checkThreadName?: (channel: string, name: string) => Promise<void>,
   ) {}
 
   // One attempt and no waiting: a 429 comes back at once as a MessengerError carrying retry_after, for a caller
   // that schedules its own retry (a thread rename can be told to wait several minutes).
   once(): Discord {
-    return new Discord(this.http, this.clock, this.botToken, this.base, { ...this.policy, attempts: 1 });
+    return new Discord(this.http, this.clock, this.botToken, this.base, { ...this.policy, attempts: 1 }, this.checkThreadName);
   }
 
   // a FormData body is multipart: fetch writes its Content-Type with the boundary
@@ -103,11 +104,13 @@ export class Discord {
   }
 
   async startThread(channelId: string, messageId: string | undefined, name: string): Promise<string> {
+    await this.checkThreadName?.(channelId, name);
     const path = messageId ? `/channels/${channelId}/messages/${messageId}/threads` : `/channels/${channelId}/threads`;
     return (await this.call<{ id: string }>("POST", path, { name: guardText(name).slice(0, 100), ...(!messageId ? { type: 11, auto_archive_duration: 10080 } : {}) })).id;
   }
 
   async setThread(threadId: string, patch: { readonly name?: string; readonly archived?: boolean }): Promise<void> {
+    if (patch.name) await this.checkThreadName?.(threadId, patch.name);
     await this.call("PATCH", `/channels/${threadId}`, { ...(patch.name ? { name: guardText(patch.name).slice(0, 100) } : {}), ...(patch.archived !== undefined ? { archived: patch.archived } : {}) });
   }
 }
