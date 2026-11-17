@@ -26,16 +26,24 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const clockRe = /(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?|(?:오전|오후)?\s*\d{1,2}시(?:\s*\d{1,2}분)?/g;
   const zoneRe = /\bKST\b|한국\s*(?:시간|시각)|한국표준시/gi;
   const plus9 = /\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?\+09:00/.test(own);
-  const clocks = [...own.matchAll(clockRe)].map((m) => {
-    const at = m.index ?? 0, end = at + m[0].length;
-    const after = own.slice(end), before = own.slice(0, at);
-    const pre = before.slice(-12), utcAt = pre.toUpperCase().lastIndexOf("UTC");
-    const tail = utcAt < 0 ? "" : pre.slice(utcAt + 3);
-    // a UTC right after a clock is that clock's suffix, not a qualifier of the next one (10:30 UTC / 19:30 KST)
-    const qualifier = utcAt >= 0 && !/\d{1,2}:\d{2}\s*$/.test(pre.slice(0, utcAt)) && !/\d/.test(tail) && !/(?:KST|한국)/i.test(tail);
-    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || qualifier || /^\s*UTC\b/i.test(after);
-    return { at, end, utcLabel };
-  });
+  const clocks = [...own.matchAll(clockRe)].map((m) => ({ at: m.index ?? 0, end: (m.index ?? 0) + m[0].length, utcLabel: false }));
+  const utcAt = [...own.matchAll(/\bUTC/gi)].map((m) => m.index ?? 0);
+  const suffix = new Set<number>();
+  for (const u of utcAt) {
+    const owner = clocks.find((c) => c.end <= u && /^\s*$/.test(own.slice(c.end, u)));
+    // a UTC right after a clock belongs to that clock (suffix), whatever the clock's format
+    if (owner) { owner.utcLabel = true; suffix.add(u); }
+  }
+  for (const c of clocks) {
+    if (c.utcLabel) continue;
+    if (/^\s*(?:\.\d+)?Z/.test(own.slice(c.end))) { c.utcLabel = true; continue; }
+    const start = Math.max(0, c.at - 12), rel = own.slice(start, c.at).toUpperCase().lastIndexOf("UTC");
+    if (rel >= 0) {
+      const u = start + rel, between = own.slice(u + 3, c.at);
+      // a qualifier of this clock: not another clock's suffix, no digits or KST between
+      if (!suffix.has(u) && !/\d/.test(between) && !/(?:KST|한국)/i.test(between)) c.utcLabel = true;
+    }
+  }
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
   // a clock counts as the counterpart only right next to a KST zone (whitespace, parentheses or a Korean particle
   // between them), and never the UTC-labelled one; an unrelated other-zone clock (PST) is not next to KST

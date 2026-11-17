@@ -150,3 +150,9 @@ test("review 8 of #501: a UTC suffix belongs to its own clock, not to the KST cl
   expect(kstOwnerProblem("10:30 UTC (19:30 KST)", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("10:30 UTC (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 9 of #501: UTC suffixes belong to complete parsed clocks of any format, including fractional and Korean", () => {
+  expect(kstOwnerProblem("10:30:00.123 UTC / 19:30:00.123 KST에 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10시 30분 UTC / 19시 30분 KST에 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30:00.123 UTC (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+});
