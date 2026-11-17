@@ -188,3 +188,9 @@ test("review 14 of #501: microsecond UTC clocks after KST로 do not count, and K
   expect(kstOwnerProblem("UTC 10:30 / 19:30 KST에 배포 예정이야", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("UTC 10:30 / 19:30 KST로 표시했어", "ko-KR")).toBeUndefined();
 });
+
+test("review 15 of #501: KST 기준으로 배포 예정 is scheduling, and KST 변환: <UTC clock> is a conversion", () => {
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST 기준으로 배포 예정이야", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("KST 변환: 10:30Z → ?", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 (KST 기준으로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+});
