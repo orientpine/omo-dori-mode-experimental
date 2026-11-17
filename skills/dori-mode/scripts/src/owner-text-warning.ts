@@ -29,7 +29,7 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const clocks = [...own.matchAll(clockRe)].map((m) => {
     const at = m.index ?? 0, end = at + m[0].length;
     const after = own.slice(end), before = own.slice(0, at);
-    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || /\bUTC\s*[:：]?\s*$/i.test(before) || /^\s*UTC\b/i.test(after);
+    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || /\bUTC\s*(?:기준|시간)?\s*[:：]?\s*$/i.test(before) || /^\s*UTC\b/i.test(after);
     return { at, end, utcLabel };
   });
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);

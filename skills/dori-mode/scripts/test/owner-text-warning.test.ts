@@ -132,3 +132,9 @@ test("review 5 of #501: fractional KST clocks count, and a punctuated UTC label 
   expect(kstOwnerProblem("UTC: 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
   expect(kstOwnerProblem("UTC: 10:30 / 19:30 KST", "ko-KR")).toBeUndefined();
 });
+
+test("review 6 of #501: Korean UTC qualifiers (기준, 시간) mark the UTC clock too", () => {
+  expect(kstOwnerProblem("UTC 기준 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 기준 10:30 / 19:30 KST", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 시간 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+});
