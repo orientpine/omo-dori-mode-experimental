@@ -29,8 +29,9 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const clocks = [...own.matchAll(clockRe)].map((m) => {
     const at = m.index ?? 0, end = at + m[0].length;
     const after = own.slice(end), before = own.slice(0, at);
-    const pre = before.slice(-12);
-    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || (/\bUTC/i.test(pre) && !/(?:KST|한국)/i.test(pre)) || /^\s*UTC\b/i.test(after);
+    const pre = before.slice(-12), utcAt = pre.toUpperCase().lastIndexOf("UTC");
+    const tail = utcAt < 0 ? "" : pre.slice(utcAt + 3);
+    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || (utcAt >= 0 && !/\d/.test(tail) && !/(?:KST|한국)/i.test(tail)) || /^\s*UTC\b/i.test(after);
     return { at, end, utcLabel };
   });
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
