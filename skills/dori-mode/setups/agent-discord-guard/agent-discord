@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# agent-discord guard (directive no-agent-discord): agent-discord is the owner's own Discord user-account CLI, and a Dori
+# never writes through it; every Dori message goes out with its bot token (dori send discord). Installed ahead of the real
+# CLI on PATH, it runs the real one unchanged and, for a command that writes (send, edit, delete, ack, upload, react...),
+# first prints AGENT_DISCORD_SEND to stderr and appends it to the guard log. A warning until 2026-12-01, then it refuses.
+set -euo pipefail
+
+self_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+link_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+real=""
+IFS=: read -r -a dirs <<<"${PATH:-}"
+for d in "${dirs[@]}"; do
+  [[ -n "$d" && -x "$d/agent-discord" ]] || continue
+  r=$(cd "$d" && pwd)
+  [[ "$r" == "$self_dir" || "$r" == "$link_dir" ]] && continue
+  [[ "$(readlink -f "$d/agent-discord")" == "$(readlink -f "${BASH_SOURCE[0]}")" ]] && continue
+  real="$d/agent-discord"
+  break
+done
+[[ -n "$real" ]] || { echo "agent-discord guard: no real agent-discord after this guard on PATH" >&2; exit 127; }
+
+# the group and its subcommand: the first two words that are not options (--server takes a value)
+words=()
+skip=0
+for a in "$@"; do
+  if ((skip)); then skip=0; continue; fi
+  case "$a" in
+    --server) skip=1 ;;
+    -*) ;;
+    *) words+=("$a") ;;
+  esac
+  ((${#words[@]} >= 2)) && break
+done
+sub="${words[1]:-}"
+case "$sub" in
+  send | edit | delete | ack | upload | add | remove | create | update | set | pin | unpin | join | leave | archive | rename | react | reply)
+    line="AGENT_DISCORD_SEND agent-discord ${words[0]} $sub: the owner's user-account CLI was called to write (directive no-agent-discord; a warning until 2026-12-01, then it refuses). Send with dori send discord (bot token)."
+    echo "$line" >&2
+    log="${XDG_STATE_HOME:-$HOME/.local/state}/dori/agent-discord-guard.log"
+    mkdir -p "$(dirname "$log")" && printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" >>"$log" || true
+    ;;
+esac
+exec "$real" "$@"
