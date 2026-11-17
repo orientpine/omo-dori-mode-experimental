@@ -27,6 +27,8 @@ globalThis.fetch = Object.assign(async (input: string | URL | Request, init?: Re
   } else if (method === "GET" && path === "/channels/300000000000000003") {
     // DORI_TEST_THREAD_PARENT: the channel the thread is in (unset: none given, as before)
     result = { name: state.name, type: 11, parent_id: process.env["DORI_TEST_THREAD_PARENT"], thread_metadata: { archived: state.archived } };
+  } else if (method === "PATCH" && /^\/channels\/[^/]+\/messages\/[^/]+$/.test(path)) {
+    result = { id: path.split("/").at(-1), content: body["content"] };
   } else if (method === "PATCH" && path === "/channels/300000000000000003") {
     // DORI_TEST_PATCH_FAIL: thread PATCHes are refused (403), the call still recorded
     if (process.env["DORI_TEST_PATCH_FAIL"]) {

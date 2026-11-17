@@ -579,6 +579,8 @@ Korean owner posts and edits checked by `dori send` also warn `OWNER_NOT_KOREAN`
 
 The same Korean owner places warn `OWNER_TIME_NOT_KST` for a UTC time (`HH:MMZ`, `UTC`, or an ISO timestamp ending in `Z`) without a KST time. A converted clock time labelled KST or 한국 시간, or an ISO `+09:00` timestamp, satisfies the check; mentioning KST alone does not. Code, quotations, URLs and command lines are excluded. `thread reply|wait|done` apply this warning too. It goes to stderr and the command's watch-log tag and leaves the send and exit status unchanged during the warning period until 2026-12-01.
 
+For Discord sends or edits whose actual destination equals `DORI_DISCORD_PAIR_CHANNEL`, `PAIR_REPORT_SHAPE` warns when the first line starts with `[REPORT]`, and `PAIR_ACK_ONLY` warns when the entire text is acknowledgements such as 받았어, 확인했어, 알겠어, ok or 넵. A message carrying attachments is not acknowledgement-only. An unset or empty pair channel disables these checks. The warnings go to stderr and the `send` watch-log tag; posting and exit status stay unchanged until 2026-12-01. These are partial checks: `report-shape` and `pair-efficient` stay `mode: inject`; report completeness and useful handoff content still require judgment.
+
 ### `dori presence <slack|discord>`
 Keeps the account shown as online until stopped.
 - **Discord:** the bot connects to the gateway and identifies as online.

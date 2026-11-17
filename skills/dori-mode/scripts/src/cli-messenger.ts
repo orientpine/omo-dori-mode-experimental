@@ -15,6 +15,8 @@ import type { Command } from "./cli-context.ts";
 import { die, envSlackToken, every } from "./cli-context.ts";
 import { makeHandoverDeps } from "./cli-deps-handover.ts";
 import { makeDiscordDeps } from "./cli-deps-discord.ts";
+import { pairTextWarnings } from "./pair-text-warning.ts";
+import { textWarning } from "./owner-text-warning.ts";
 
 const sendCommand: Command = async (context) => {
   const { key, onlyOptions, need, opt, flags, postable, textOrFile, config } = context;
@@ -123,6 +125,9 @@ const sendCommand: Command = async (context) => {
       });
   } else if (platform === "discord") {
     const dc = new Discord(fetchHttp, realClock, checkedDiscordToken(token("DORI_DISCORD_TOKEN")), discordApi());
+    const pair = process.env["DORI_DISCORD_PAIR_CHANNEL"]?.trim();
+    if (pair && (edit ? to : (thread ?? to)) === pair)
+      for (const warning of pairTextWarnings(body, discordFiles.length > 0)) textWarning(config.watchLog, "send", warning.token, warning.id, warning.problem);
     await ownerSpeech(body, "send", () => ownerPlace(dc, edit ? to : (thread ?? to)));
     if (edit) await dc.edit(to, edit, text);
     else {
