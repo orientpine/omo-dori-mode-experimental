@@ -27,12 +27,32 @@ const fixture = () => {
 };
 const place = { kind: "thread" as const, thread: THREAD };
 
+test("a fresh authenticated owner mention in another Dori's channel relayed through pair warns", () => {
+  const s = fixture();
+  try {
+    const crossOriginal = original.replace("/500/", "/700/");
+    s.writeRows([
+      { ...owner, channel_id: "700", scope: "mention", content: "<@123> Do the task" },
+      { ...relay, content: `Delegated scope: implement the fix. Owner original: ${crossOriginal}` },
+    ]);
+    expect(askRelayWarning(s.input, place, "Confirm I should proceed with this task?", now)).toContain("ASK_RELAY_RECHECK");
+  } finally { s.done(); }
+});
+
+test("a mention original from another author is still silent", () => {
+  const s = fixture();
+  try {
+    s.writeRows([{ ...owner, author_id: "88", scope: "mention" }, relay]);
+    expect(askRelayWarning(s.input, place, card, now)).toBeUndefined();
+  } finally { s.done(); }
+});
+
 test("warns on a linked fresh owner original or linked relay, including the asking lane's brief", () => {
   const s = fixture();
   try {
     for (const text of [card, `Approve this task? ${relayLink}`, "Should I proceed with this task?"]) {
       expect(askRelayWarning(s.input, place, text, now)).toContain("ASK_RELAY_RECHECK ask:");
-      expect(askRelayWarning(s.input, place, text, now)).toContain("(directive pair-owner-relay; a warning until 2026-12-01, then it refuses)");
+      expect(askRelayWarning(s.input, place, text, now)).toContain("(directive pair-owner-relay; a warning for now, refusal to be reviewed on 2026-12-01)");
     }
   } finally { s.done(); }
 });
@@ -82,9 +102,14 @@ for (const text of ["Approve sending the mail?", "Approve sharing this document?
   });
 }
 
-test("real ask CLI warns, logs and posts successfully; clean outward card posts without warning", async () => {
+test("real ask CLI warns for a relayed cross-Dori owner mention; clean outward card posts without warning", async () => {
   const s = fixture();
   try {
+    const crossOriginal = original.replace("/500/", "/700/");
+    s.writeRows([
+      { ...owner, channel_id: "700", scope: "mention", content: "<@123> Do the task" },
+      { ...relay, content: `Delegated scope: implement the fix. Owner original: ${crossOriginal}` },
+    ]);
     await new Registry(s.dir).write(s.lane);
     const http = join(s.dir, "http.json"), log = join(s.dir, "watch.log");
     writeFileSync(join(s.dir, "config.json"), JSON.stringify({ stateDir: s.dir, watchLog: log }));
@@ -96,7 +121,7 @@ test("real ask CLI warns, logs and posts successfully; clean outward card posts 
     const warned = await cli("Confirm I should proceed with this task?");
     expect(warned.code).toBe(0);
     expect(warned.err).toContain("ASK_RELAY_RECHECK ask:");
-    expect(warned.err).toContain("directive pair-owner-relay");
+    expect(warned.err).toContain("(directive pair-owner-relay; a warning for now, refusal to be reviewed on 2026-12-01)");
     expect(readFileSync(log, "utf8")).toContain(" ask ASK_RELAY_RECHECK ask:");
     expect(warned.out).toContain("ASKED Q1 message=900");
     const clean = await cli("Approve sending the mail?");

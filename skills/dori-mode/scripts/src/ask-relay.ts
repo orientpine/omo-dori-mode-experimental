@@ -32,10 +32,10 @@ export const askRelayWarning = (input: AskPlaceInput, place: AskPlace, text: str
     for (const origin of links(relay.content)) {
       if (!refs.some((r) => (r.id === relay.id && r.channel === relay.channel_id) || (r.id === origin.id && r.channel === origin.channel))) continue;
       const owner = inbox.findLast((r) => r.id === origin.id && r.channel_id === origin.channel);
-      if (!owner || owner.author_id !== input.owner || !["channel", "thread", "pair"].includes(owner.scope)) continue;
+      if (!owner || owner.author_id !== input.owner || !["channel", "thread", "pair", "mention"].includes(owner.scope)) continue;
       const at = Date.parse(owner.ts), relayedAt = Date.parse(relay.ts);
       if (!(now - at >= 0 && now - at < 24 * 60 * 60_000 && relayedAt >= at && relayedAt <= now)) continue;
-      return `ASK_RELAY_RECHECK ask: confirmation card cites a scoped pair relay of an owner message less than 24h old; proceed within the delegated scope (directive pair-owner-relay; a warning until 2026-12-01, then it refuses)`;
+      return `ASK_RELAY_RECHECK ask: confirmation card cites a scoped pair relay of an owner message less than 24h old; proceed within the delegated scope (directive pair-owner-relay; a warning for now, refusal to be reviewed on 2026-12-01)`;
     }
   }
   return undefined;
