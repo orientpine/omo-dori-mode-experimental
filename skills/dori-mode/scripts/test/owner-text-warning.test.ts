@@ -174,3 +174,10 @@ test("review 12 of #501: a UTC clock in a conversion promise does not count, and
   expect(kstOwnerProblem("UTC 10:30 / 19:30 KST로 표시했어", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("UTC 10:30 / 19:30 KST로 바꿀게", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 13 of #501: scheduling prose is not a conversion, and longer UTC clocks in promises do not count", () => {
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST에 배포 예정이야", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("KST로 10:30:00Z를 변환할게", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("KST로 10:30:00.123Z를 변환할게", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST로 표시했어", "ko-KR")).toBeUndefined();
+});

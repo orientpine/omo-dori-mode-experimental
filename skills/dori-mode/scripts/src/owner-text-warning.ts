@@ -30,7 +30,11 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   // a conversion promise (KST로, KST 변환 예정, KST로 바꿀게) is not a KST time; every other KST annotation with a
   // clock right next to it is, whatever the UTC clock looks like elsewhere in the message
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
-  const conversion = (end: number): boolean => /(?:변환|예정|바꿀)/.test(own.slice(end, end + 12));
+  const conversion = (end: number): boolean => {
+    const s = own.slice(end, end + 20);
+    // KST 변환 예정 / KST로 바꿀게 / KST로 10:30:00Z를 변환할게, but not KST에 배포 예정 or KST로 표시했어
+    return /^\s*[()]*\s*(?:변환|예정)/.test(s) || /^\s*[()]*\s*(?:으로|로)[\s\S]*(?:변환|예정|바꿀)/.test(s);
+  };
   const utcClock = (c: { end: number }): boolean => /^\s*(?:\.\d+)?Z/.test(own.slice(c.end)) || /^\s*\(?\s*UTC\b/i.test(own.slice(c.end));
   const kst = plus9 || [...own.matchAll(zoneRe)].some((m) => {
     const at = m.index ?? 0, end = at + m[0].length;
