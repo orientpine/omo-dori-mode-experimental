@@ -8,6 +8,7 @@ import { gateMissing } from "./merge-gate.ts";
 import { realClock } from "./run.ts";
 import type { Command } from "./cli-context.ts";
 import { die } from "./cli-context.ts";
+import { warnClaimSkills } from "./skill-check.ts";
 
 const typeCommand: Command = async (context) => {
   const { key, opt, need, deps, config } = context;
@@ -40,6 +41,7 @@ const claimDoneCommand: Command = async (context) => {
   if (flags.values["rollover-unresolved"] && outcome === undefined) die("--rollover-unresolved goes with --rollover-outcome \"<one line>\"", 2);
   const claimed = await claimDone(deps, l, evidence(), summary, { posted: postedId(), postSummary: Boolean(flags.values["post-summary"]), ...(outcome !== undefined ? { rolloverOutcome: { line: outcome, resolved: !flags.values["rollover-unresolved"] } } : {}) });
   if (claimed.startsWith("ROLLOVER_OUTCOME_MISSING ")) die(claimed, 2);
+  await warnClaimSkills(deps, l);
   console.log(claimed);
   return;
 };

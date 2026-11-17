@@ -5,7 +5,7 @@
   "src/directive-audit.ts": 497,
   "src/directives.ts": 721,
   "src/done-signals.ts": 324,
-  "src/explore.ts": 665,
+  "src/explore.ts": 647,
   "src/handover.ts": 902,
   "src/heavy-mem.ts": 251,
   "src/heavy-spread.ts": 554,

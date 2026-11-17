@@ -13,6 +13,7 @@ import { iso } from "./run.ts";
 import { fixCount, normFix } from "./same-fix.ts";
 import { sessionDirFor } from "./session-id.ts";
 import { watchLog } from "./watch-log.ts";
+import { skillRead } from "./skill-read.ts";
 
 // The hypothesis tree: what one area of work (a repo, or a topic tag) tried, which hypotheses are open, which a test
 // falsified or supported, which directions nobody tried yet, and which external searches are due. One JSON file per area
@@ -533,25 +534,6 @@ export const sendResearch = async (deps: FlowDeps, lane: Lane, tree: Tree, signa
 export const RESEARCH_POINTER = "omo-ulw-research:skill-pointer";
 export const RESEARCH_SKILL = "ulw-research/SKILL.md";
 export type ResearchStart = { readonly seen: boolean; readonly pointer: boolean; readonly read: boolean; readonly readEarlier: boolean };
-
-// A read of the skill file, not a mention of it (a lane that records a finding quoting the path did not read it):
-// - the read tool with that path, or
-// - an eval/bash call whose code holds the file's path (/..., ~/..., ./..., ${dir}/...) as a whole string literal and
-//   reads a file (Bun.file, readFile, ... or a shell cat, sed, head, ...), or runs such a shell command on the path.
-// A bare "ulw-research/SKILL.md" in a string, or the path inside a sentence, is a mention.
-const SKILL_PATH = /ulw-research\/SKILL\.md(?![\w.-])/;
-const SKILL_LITERAL = /(["'`])(?:\/|~|\.|\$\{)[^"'`\s]*ulw-research\/SKILL\.md\1/;
-const READ_API = /\b(?:Bun\.file|readFileSync|readFile|createReadStream|openSync|tool\.read)\s*\(/;
-// a shell read command on an interpolated path (cat ${skill}); a bare `| tail -1` reads a pipe, not a file
-const SHELL_VAR = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|nl|awk)\b[^\n;&|`]*?\s["']?\$\{/;
-const SHELL_READ = /(?:^|[\n;&|(`"']|\$\()\s*(?:cat|sed|head|tail|less|more|bat|nl|awk)\b[^\n;&|`]*?[\s"'][^\s"';&|`]*ulw-research\/SKILL\.md(?![\w.-])/;
-export const skillRead = (name: string | undefined, args: unknown): boolean => {
-  const a = (args ?? {}) as Record<string, unknown>;
-  if (name?.toLowerCase() === "read") return [a["path"], a["file_path"], a["filePath"]].some((p) => typeof p === "string" && SKILL_PATH.test(p));
-  const code = [a["code"], a["command"], a["cmd"]].find((c): c is string => typeof c === "string");
-  if (!code) return false;
-  return (SKILL_LITERAL.test(code) && (READ_API.test(code) || SHELL_VAR.test(code))) || SHELL_READ.test(code);
-};
 
 type LogEntry = { type?: string; customType?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
 const blocks = (content: unknown): { type?: string; text?: string; name?: string; arguments?: unknown }[] => (Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : []);
