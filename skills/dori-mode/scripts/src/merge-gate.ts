@@ -9,7 +9,7 @@ import type { Lane } from "./registry.ts";
 import { exitNote, keepReviewerOutput } from "./reviewer-output.ts";
 import { iso, type Ran } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
-
+import { warnDocsUntouched } from "./review-docs.ts";
 // dori review / dori merge: a PR merges only at the exact head commit a review receipt names (ported from dori-superagent
 // harness.ts review()/mergeGate(), MIT). A lane that changes a commit after its review has no receipt at the new head, so
 // dori merge refuses it, and gh pr merge --match-head-commit makes GitHub refuse a head that moved after the gate's read.
@@ -23,7 +23,6 @@ import { watchLog } from "./watch-log.ts";
 // (omo-native-code-reviewer) leaves its only copy with the lane; this one the CLI runs and records itself.
 
 export class GateRefusal extends Error {}
-
 export type PrRef = { readonly repo: string; readonly number: string; readonly id: string };
 
 export const parsePr = (s: string): PrRef => {
@@ -310,6 +309,7 @@ export const reviewPr = async (deps: FlowDeps, pr: PrRef, opts: ReviewOptions): 
   // a new run at this head replaces both old results: a pass or a CLEAR from before must not outlive a failure, no verdict or a reviewer that cannot start now (dori-superagent #232 https://github.com/sisyphuslabs/dori-superagent/pull/232)
   for (const kind of ["tests", "review"] as const) rmSync(receiptPath(deps.config.stateDir, pr, sha, kind), { force: true });
   const read = await readPrCommits(deps, pr, root, sha);
+  await warnDocsUntouched(deps, pr, read.executables);
   const identity = Object.entries(cfg.identities ?? {}).find(([r]) => r.toLowerCase() === pr.repo.toLowerCase())?.[1];
   const checked = checkCommits(pr.repo, read.commits, { atHead: read.atHead, executables: read.executables, ...(identity ? { identity } : {}), ...(opts.noTest ? { noTest: opts.noTest } : {}) });
   if (checked.problems.length) throw new GateRefusal(`REVIEW_CHECKS_FAILED ${pr.id} head=${short(sha)}: ${checked.problems.join("; ")}; no receipt, no tests run`);
