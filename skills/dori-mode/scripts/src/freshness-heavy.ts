@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmuxPanePid } from "./aoe.ts";
+import { holdLock } from "./checkpoint-lock.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { treeOf } from "./heavy-headroom.ts";
 import { NESTED_ENV } from "./heavy-here.ts";
@@ -45,42 +46,46 @@ const checkBypass = async (deps: FlowDeps): Promise<void> => {
   const config = deps.config;
   const roots = holders({ dir: join(config.stateDir, "heavy"), alive: pidAlive }, Math.max(config.heavySlots, config.heavyMaxSlots)).map((h) => h.tree);
   const file = join(config.stateDir, "heavy-bypass-seen.json");
-  const seen = new Set<string>(existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as string[] : []);
-  const marked = new Map<number, boolean>();
-  const underHeavy = async (pid: number): Promise<boolean> => {
-    const cached = marked.get(pid);
-    if (cached !== undefined) return cached;
-    const [cg, env] = await Promise.all([
-      deps.run(["cat", `/proc/${pid}/cgroup`]),
-      deps.run(["cat", `/proc/${pid}/environ`], { preserveOutput: true }),
-    ]);
-    const yes = (cg.code === 0 && /(?:^|\/)dori-heavy-[^/\n]+\.(?:scope|service)(?:\/|$)/m.test(cg.out))
-      || (env.code === 0 && env.out.split("\0").some((entry) => entry.startsWith(`${NESTED_ENV}=`) && entry.length > NESTED_ENV.length + 1));
-    marked.set(pid, yes);
-    return yes;
-  };
-  let changed = false;
-  for (const lane of lanes) {
-    const shell = await tmuxPanePid(deps.run, lane.pane!);
-    if (!shell || !parents.has(shell)) continue;
-    const tree = new Set(treeOf(ps.out, shell).pids);
-    for (const pid of pids) {
-      const key = `${lane.key}:${pid}`;
-      if (!tree.has(pid) || seen.has(key)) continue;
-      const chain = lineage(pid);
-      if (roots.some((root) => chain.includes(root))) continue;
-      let heavy = false;
-      for (const parent of chain) if (await underHeavy(parent)) { heavy = true; break; }
-      if (heavy) continue;
-      const line = `HEAVY_BYPASS ${lane.key}: pid ${pid} uses GPU compute outside dori heavy (directive spread-load; a warning until 2026-12-01, then it refuses)`;
-      console.error(line);
-      watchLog(config.watchLog, deps.clock, { source: "freshness", line });
-      seen.add(key);
-      changed = true;
+  // One process owns the read/check/write interval: overlapping ticks cannot warn twice or lose another tick's receipts.
+  await holdLock(`${file}.lock`, "heavy bypass", "freshness", async () => {
+    const seen = new Set<string>(existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as string[] : []);
+    const marked = new Map<number, boolean>();
+    const underHeavy = async (pid: number): Promise<boolean> => {
+      const cached = marked.get(pid);
+      if (cached !== undefined) return cached;
+      const [cg, env] = await Promise.all([
+        deps.run(["cat", `/proc/${pid}/cgroup`]),
+        deps.run(["cat", `/proc/${pid}/environ`], { preserveOutput: true }),
+      ]);
+      const yes = (cg.code === 0 && /(?:^|\/)dori-heavy-[^/\n]+\.(?:scope|service)(?:\/|$)/m.test(cg.out))
+        || (env.code === 0 && env.out.split("\0").some((entry) => entry.startsWith(`${NESTED_ENV}=`) && entry.length > NESTED_ENV.length + 1));
+      marked.set(pid, yes);
+      return yes;
+    };
+    let changed = false;
+    for (const lane of lanes) {
+      const shell = await tmuxPanePid(deps.run, lane.pane!);
+      if (!shell || !parents.has(shell)) continue;
+      const tree = new Set(treeOf(ps.out, shell).pids);
+      for (const pid of pids) {
+        const key = `${lane.key}:${pid}`;
+        if (!tree.has(pid) || seen.has(key)) continue;
+        const chain = lineage(pid);
+        if (roots.some((root) => chain.includes(root))) continue;
+        let heavy = false;
+        for (const parent of chain) if (await underHeavy(parent)) { heavy = true; break; }
+        if (heavy) continue;
+        const line = `HEAVY_BYPASS ${lane.key}: pid ${pid} uses GPU compute outside dori heavy (directive spread-load; a warning for now, refusal to be reviewed on 2026-12-01)`;
+        console.error(line);
+        watchLog(config.watchLog, deps.clock, { source: "freshness", line });
+        seen.add(key);
+        changed = true;
+      }
     }
-  }
-  if (changed) {
-    mkdirSync(config.stateDir, { recursive: true });
-    writeFileSync(file, JSON.stringify([...seen].slice(-512)));
-  }
+    if (changed) {
+      const tmp = `${file}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify([...seen].slice(-512)));
+      renameSync(tmp, file);
+    }
+  });
 };

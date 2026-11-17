@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { freshnessTick } from "../src/freshness.ts";
 import { heavyBypassTick } from "../src/freshness-heavy.ts";
@@ -31,7 +31,7 @@ test("freshness succeeds and warns on stderr and watch log once per lane/pid acr
     expect(await freshnessTick(f.deps, f.state.dir)).toEqual([]);
     const line = String(stderr.mock.calls[0]?.[0]);
     expect(line).toContain("HEAVY_BYPASS training: pid 4200");
-    expect(line).toContain("directive spread-load; a warning until 2026-12-01, then it refuses");
+    expect(line).toContain("(directive spread-load; a warning for now, refusal to be reviewed on 2026-12-01)");
     expect(readFileSync(f.deps.config.watchLog, "utf8")).toContain(`freshness ${line}`);
     expect(await freshnessTick(f.deps, f.state.dir)).toEqual([]);
     expect(stderr).toHaveBeenCalledTimes(1);
@@ -90,3 +90,70 @@ test("a stale slot cannot hide a bypass, and a new pid gets its own warning", as
     expect(String(stderr.mock.calls[1]?.[0])).toContain("pid 4201");
   } finally { stderr.mockRestore(); f.state.done(); }
 });
+
+for (const secondPid of [4200, 4201]) test(`overlapping processes serialize receipts for ${secondPid === 4200 ? "the same" : "different"} GPU pids`, async () => {
+  const f = await fixture();
+  const script = `
+    const { depsFor, fakeClock, newWorld } = await import(${JSON.stringify(join(import.meta.dir, "fakes.ts"))});
+    const { heavyBypassTick } = await import(${JSON.stringify(join(import.meta.dir, "../src/freshness-heavy.ts"))});
+    const deps = depsFor(newWorld(), fakeClock(Date.now()), process.env["QA_STATE"]);
+    const base = deps.run;
+    const run = async (argv, opts) => {
+      if (argv[0] === "nvidia-smi") {
+        console.log("QUERY_READY");
+        return { code: 0, out: process.env["QA_GPU"] + ", [N/A]", err: "" };
+      }
+      if (argv[0] === "ps") return { code: 0, out: "4000 1 0 0\\n4200 4000 1 1\\n4201 4000 1 1", err: "" };
+      if (argv[0] === "herdr" && argv.includes("process-info")) {
+        console.log("ENTERED");
+        if (process.env["QA_GATE"] === "yes") await new Response(Bun.stdin.stream()).text();
+      }
+      if (argv[0] === "cat" && argv[1].startsWith("/proc/")) return { code: 0, out: "", err: "" };
+      return base(argv, opts);
+    };
+    await heavyBypassTick({ ...deps, run });
+  `;
+  const start = (pid: number, gated: boolean) => {
+    const ready = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const p = Bun.spawn([process.execPath, "-e", script], {
+      env: { ...process.env, QA_STATE: f.state.dir, QA_GPU: String(pid), QA_GATE: gated ? "yes" : "no" },
+      stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    });
+    const stdout = (async () => {
+      let text = "";
+      for await (const chunk of p.stdout) {
+        text += new TextDecoder().decode(chunk);
+        if (text.includes("QUERY_READY")) ready.resolve();
+        if (text.includes("ENTERED")) entered.resolve();
+      }
+      return text;
+    })();
+    return { p, ready: ready.promise, entered: entered.promise, stdout, stderr: new Response(p.stderr).text() };
+  };
+  const first = start(4200, true);
+  let second: ReturnType<typeof start> | undefined;
+  try {
+    await first.entered;
+    second = start(secondPid, false);
+    await second.ready;
+    // First is paused after reading seen, while second has queried the GPU and is trying to enter that same interval.
+    expect(await Promise.race([second.entered.then(() => "entered"), Bun.sleep(200).then(() => "locked")])).toBe("locked");
+    first.p.stdin.end();
+    expect(await first.p.exited).toBe(0);
+    expect(await second.p.exited).toBe(0);
+    const stderr = (await first.stderr) + (await second.stderr);
+    expect((stderr.match(/HEAVY_BYPASS/g) ?? []).length).toBe(secondPid === 4200 ? 1 : 2);
+    const log = readFileSync(f.deps.config.watchLog, "utf8");
+    expect((log.match(/HEAVY_BYPASS/g) ?? []).length).toBe(secondPid === 4200 ? 1 : 2);
+    expect(log).not.toContain("FRESHNESS_WARN");
+    expect(JSON.parse(readFileSync(join(f.state.dir, "heavy-bypass-seen.json"), "utf8"))).toEqual(secondPid === 4200 ? ["training:4200"] : ["training:4200", "training:4201"]);
+    expect(readdirSync(f.state.dir).filter((name) => name.startsWith("heavy-bypass-seen.json."))).toEqual([]);
+    await Promise.all([first.stdout, second.stdout]);
+  } finally {
+    first.p.kill();
+    second?.p.kill();
+    await Promise.all([first.p.exited, second?.p.exited]);
+    f.state.done();
+  }
+}, 10_000);
