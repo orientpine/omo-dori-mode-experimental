@@ -237,3 +237,9 @@ test("review 22 of #501: bare 예정 is scheduling, and a version change with a 
   expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
   expect(kstOwnerProblem("UTC 10:30 (KST 기준으로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 23 of #501: KST 기준으로 바꿀게 is a promise even with a non-UTC clock before it, but a version change is not", () => {
+  expect(kstOwnerProblem("10:30Z가 아니라 오늘 19:00에 열고 19:30 KST 기준으로 바꿀게", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST 기준으로 새 버전으로 바꿀게", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST 예정이야", "ko-KR")).toBeUndefined();
+});
