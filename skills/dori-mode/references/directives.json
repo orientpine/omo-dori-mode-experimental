@@ -400,7 +400,8 @@
       "scope": {
         "all": true
       },
-      "mode": "inject"
+      "mode": "inject",
+      "enforced": { "by": "skills/dori-mode/scripts/src/pair-text-warning.ts:pairTextWarnings", "token": "PAIR_REPORT_SHAPE" }
     },
     {
       "id": "pair-efficient",
@@ -420,7 +421,8 @@
         ],
         "briefOnly": true
       },
-      "mode": "inject"
+      "mode": "inject",
+      "enforced": { "by": "skills/dori-mode/scripts/src/pair-text-warning.ts:pairTextWarnings", "token": "PAIR_ACK_ONLY" }
     },
     {
       "id": "eyes-not-mine",
