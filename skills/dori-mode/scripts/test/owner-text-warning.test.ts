@@ -200,3 +200,9 @@ test("review 16 of #501: a parenthesized UTC clock is not a suffix of the KST cl
   expect(kstOwnerProblem("KST 환산: 10:30Z → ?", "ko-KR")).toBe("UTC time without a KST time");
   expect(kstOwnerProblem("10:30 (UTC) (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 17 of #501: a UTC label on the next line is not a suffix, and an arrow to KST is a conversion request", () => {
+  expect(kstOwnerProblem("KST 19:30\nUTC 10:30", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 → KST ?", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 (KST)", "ko-KR")).toBeUndefined();
+});
