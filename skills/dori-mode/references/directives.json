@@ -683,6 +683,7 @@
         "all": true
       },
       "mode": "lead",
+      "enforced": { "by": "skills/dori-mode/scripts/src/cli-messenger.ts", "token": "UPDATE_NOTICE_REPEAT" },
       "check": "none"
     },
     {
