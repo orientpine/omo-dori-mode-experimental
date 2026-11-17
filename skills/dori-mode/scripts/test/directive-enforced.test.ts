@@ -109,6 +109,18 @@ test("a host line whose enforced is not { by, token } is left out by the toleran
   expect(r.lines.some((l) => l.startsWith("DIRECTIVES_LOCAL_SKIP eight-steps:"))).toBe(true);
 });
 
+test("a check path that is a directory or cannot be read does not stop the load: the entry falls back as gone (review 2 of #493)", async () => {
+  const local = { entries: [entry("dir-check", { by: `${state.dir}:refuse`, token: "DIR_REFUSED" })] };
+  const directives = { common: COMMON_LEDGER, local: await write("local.json", JSON.stringify(local)) };
+  const e = loadLedger({ directives }).entries.find((x) => x.id === "dir-check");
+  expect(e?.mode).toBe("inject");
+  expect(e?.gone?.why).toStartWith(`${state.dir} cannot be read (`);
+  const deps = depsFor(newWorld(), fakeClock(Date.parse("2026-11-17T00:00:00Z")), state.dir, { directives, watchLog: join(state.dir, "watch.log") });
+  const r = await runDirectiveAudit(deps, { since: "2026-11-16T00:00:00.000Z", inbox: join(state.dir, "inbox.jsonl"), owner: "7", dryRun: true });
+  expect(r.failed).toBeUndefined();
+  expect(r.lines.some((l) => l.startsWith("DIRECTIVE_ENFORCER_GONE dir-check: "))).toBe(true);
+});
+
 test("every check the fork ledger names is in this checkout (renaming a token means updating the ledger in the same change)", () => {
   const fork = loadLedger({ directives: { common: COMMON_LEDGER, local: "" } });
   const named = fork.entries.filter((e) => e.enforced);

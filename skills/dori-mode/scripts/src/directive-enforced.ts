@@ -27,7 +27,14 @@ const fileOf = (by: string): string => {
 export const enforcerGone = (enforced: Enforced): string | undefined => {
   const file = fileOf(enforced.by);
   if (!existsSync(file)) return `${file} is not there`;
-  return readFileSync(file, "utf8").includes(enforced.token) ? undefined : `token ${enforced.token} is no longer in ${file}`;
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (e) {
+    // a directory or an unreadable file is a check this load cannot see: the entry falls back as if it were gone
+    return `${file} cannot be read (${e instanceof Error ? e.message : String(e)})`;
+  }
+  return text.includes(enforced.token) ? undefined : `token ${enforced.token} is no longer in ${file}`;
 };
 
 const TOKEN = /^[A-Za-z_$][\w$.-]{2,}$/;
