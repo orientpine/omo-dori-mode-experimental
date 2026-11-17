@@ -1,5 +1,6 @@
 import { isAbsolute, join } from "node:path";
 import { laneSessionFiles } from "./auto-signals.ts";
+import { laneSessionFile } from "./compaction-keep.ts";
 import { leadText } from "./directives.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { leadSessionFiles, leadSessionIds } from "./lead-sessions.ts";
@@ -39,15 +40,19 @@ export const warnClaimSkills = async (deps: Pick<FlowDeps, "config" | "clock">, 
     if (!skills.length) return;
     const lead = new Set(leadSessionFiles(deps.config.scorecard.leadSessions, deps.config.stateDir));
     const leadIds = leadSessionIds(deps.config.stateDir);
-    const ids = new Set([lane.session, ...(lane.priorSessions ?? [])].filter(Boolean));
+    const ids = new Set([lane.session, ...(lane.priorSessions ?? [])].filter((id): id is string => Boolean(id)));
+    const files = ids.size
+      ? [...ids].map((id) => laneSessionFile(deps.config.sessionsDir, lane.cwd ?? deps.config.defaultCwd, id))
+      : laneSessionFiles(deps.config, lane);
     const own: Entry[] = [];
-    for (const file of laneSessionFiles(deps.config, lane)) {
+    for (const file of files) {
+      if (!file) return; // An unresolved current/prior session cannot prove a missing skill trace.
       const text = await Bun.file(file).text();
       const rows = entries(text);
       const id = rows.find((e) => e.type === "session")?.id;
       // The lead's unknown-identity folder fallback may also hold this lane's identified session.
       if ((id && leadIds.has(id)) || (!ids.size && lead.has(file))) continue;
-      if (ids.size ? !ids.has(id) : !text.includes(`[REPORT] ${lane.key} |`)) continue;
+      if (ids.size ? !id || !ids.has(id) : !text.includes(`[REPORT] ${lane.key} |`)) continue;
       own.push(...rows);
     }
     if (!own.length) return;

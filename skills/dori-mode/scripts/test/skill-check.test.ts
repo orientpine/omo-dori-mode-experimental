@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Registry, type Lane } from "../src/registry.ts";
 import { run } from "../src/run.ts";
@@ -13,7 +13,7 @@ const at = "2026-11-17T00:00:00Z";
 const msg = (role: string, content: unknown) => ({ type: "message", timestamp: at, message: { role, content } });
 const read = (skill: string) => msg("assistant", [{ type: "toolCall", name: "read", arguments: { path: `/skills/${skill}/SKILL.md` } }]);
 const transcript = (id: string, rows: unknown[]) => [{ type: "session", id, timestamp: at }, ...rows].map((r) => JSON.stringify(r)).join("\n");
-const session = (rows: unknown[], id = "lane-session") => writeFileSync(join(sessions, `${id}.jsonl`), transcript(id, rows));
+const session = (rows: unknown[], id = "lane-session") => writeFileSync(join(sessions, `2026-11-17T00-00-00-000Z_${id}.jsonl`), transcript(id, rows));
 const brief = (text: string) => writeFileSync(lane.brief, text);
 const invoke = () => run(["env", "-u", "HC_TERMINAL_ID", "-u", "HERDR_PANE_ID", "-u", "TMUX", "-u", "DORI_DISCORD_TOKEN",
   `DORI_CONFIG=${join(state.dir, "config.json")}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "empty.env")}`,
@@ -124,6 +124,45 @@ test("an identified lane in the shared lead folder warns before any lead handove
   expect(r.err).toContain("SKILL_NOT_READ qa-skills: bun");
   session([read("bun")]);
   r = await invoke();
+  expect(r.code).toBe(0);
+  expect(r.err).toBe("");
+}, 40_000);
+
+test("an adopted lane finds its identified session outside the recorded cwd", async () => {
+  const actual = sessionDirFor(join(state.dir, "sessions"), join(state.dir, "adopted-cwd"));
+  mkdirSync(actual, { recursive: true });
+  const file = join(actual, "2026-11-17T00-00-00-000Z_lane-session.jsonl");
+  writeFileSync(file, transcript("lane-session", [msg("assistant", "done")]));
+  let r = await invoke();
+  expect(r.code).toBe(0);
+  expect(r.err).toContain("SKILL_NOT_READ qa-skills: bun");
+  writeFileSync(file, transcript("lane-session", [read("bun")]));
+  r = await invoke();
+  expect(r.code).toBe(0);
+  expect(r.err).toBe("");
+}, 40_000);
+
+test("a handover finds the prior skill read under a symlink's real path", async () => {
+  const real = join(state.dir, "real-cwd");
+  const linked = join(state.dir, "linked-cwd");
+  mkdirSync(real);
+  symlinkSync(real, linked, "dir");
+  await new Registry(state.dir).write({ ...lane, cwd: linked, priorSessions: ["prior-session"] });
+  sessions = sessionDirFor(join(state.dir, "sessions"), linked);
+  mkdirSync(sessions, { recursive: true });
+  session([msg("assistant", "done")]);
+  const previous = sessionDirFor(join(state.dir, "sessions"), real);
+  mkdirSync(previous, { recursive: true });
+  writeFileSync(join(previous, "2026-11-17T00-00-00-000Z_prior-session.jsonl"), transcript("prior-session", [read("bun")]));
+  const r = await invoke();
+  expect(r.code).toBe(0);
+  expect(r.err).toBe("");
+}, 40_000);
+
+test("an unresolved prior session cannot prove a missing skill read", async () => {
+  session([msg("assistant", "done")]);
+  await new Registry(state.dir).write({ ...lane, priorSessions: ["unavailable-session"] });
+  const r = await invoke();
   expect(r.code).toBe(0);
   expect(r.err).toBe("");
 }, 40_000);
