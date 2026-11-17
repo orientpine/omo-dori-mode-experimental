@@ -60,7 +60,7 @@ test("launch leaves a code entry out of the brief while its check is in the code
   expect(r.text).toContain("[리드 규칙 lost-check]\nlost-check 규칙 문장이다.");
   const loaded = loadLedger({ directives });
   expect(loaded.entries.find((e) => e.id === "kept-check")?.mode).toBe("code");
-  expect(loaded.entries.find((e) => e.id === "lost-check")).toMatchObject({ mode: "inject", gone: `token LOST_REFUSED is no longer in ${join(state.dir, "check.ts")}` });
+  expect(loaded.entries.find((e) => e.id === "lost-check")).toMatchObject({ mode: "inject", gone: { why: `token LOST_REFUSED is no longer in ${join(state.dir, "check.ts")}`, from: "code" } });
   // the lead's hints (an owner message, a thread he opens) leave it out too while the check stands
   expect(textDirectives("아무 글", loaded, { all: true }).map((x) => x.e.id)).toEqual(expect.not.arrayContaining(["kept-check"]));
   expect(textDirectives("아무 글", loaded, { all: true }).map((x) => x.e.id)).toContain("lost-check");
@@ -82,6 +82,31 @@ test("dori directive-audit names an entry whose check is gone (DIRECTIVE_ENFORCE
     `DIRECTIVE_ENFORCER_GONE kept-check: token KEPT_REFUSED is no longer in ${join(state.dir, "check.ts")} (enforced by ${join(state.dir, "check.ts")}:refuse); it goes into briefs as inject again until the check is back or the ledger names the new one`,
     `DIRECTIVE_ENFORCER_GONE lost-check: token LOST_REFUSED is no longer in ${join(state.dir, "check.ts")} (enforced by ${join(state.dir, "check.ts")}:refuse); it goes into briefs as inject again until the check is back or the ledger names the new one`,
   ]);
+});
+
+test("an entry of another mode whose check is gone keeps its mode, and the table and the audit both say the check is gone (review 1 of #493)", async () => {
+  const check = await write("check.ts", "nothing here");
+  const local = { entries: [entry("lead-check", { by: `${check}:refuse`, token: "LEAD_REFUSED" }, "lead")].map((e) => ({ ...e, check: "none" })) };
+  const directives = { common: COMMON_LEDGER, local: await write("local.json", JSON.stringify(local)) };
+  const loaded = loadLedger({ directives });
+  expect(loaded.entries.find((e) => e.id === "lead-check")).toMatchObject({ mode: "lead", gone: { from: "lead" } });
+  expect(ledgerTable(loaded)).toMatch(/\| lead-check \|.*\| 리드 행동\(기계 확인 없음, intent-check가 읽음\) · 검사 사라짐\(token LEAD_REFUSED is no longer in .*check\.ts\) \| 로컬 \|$/m);
+  const deps = depsFor(newWorld(), fakeClock(Date.parse("2026-11-17T00:00:00Z")), state.dir, { directives, watchLog: join(state.dir, "watch.log") });
+  const r = await runDirectiveAudit(deps, { since: "2026-11-16T00:00:00.000Z", inbox: join(state.dir, "inbox.jsonl"), owner: "7", dryRun: true });
+  expect(r.lines.filter((l) => l.startsWith("DIRECTIVE_ENFORCER_GONE lead-check:"))[0]).toEndWith("; it keeps mode lead until the check is back or the ledger names the new one");
+});
+
+test("a host line whose enforced is not { by, token } is left out by the tolerant load and the fork entry stands; the audit still runs (review 1 of #493)", async () => {
+  const directives = { common: COMMON_LEDGER, local: await write("local.json", JSON.stringify({ entries: [{ id: "eight-steps", enforced: null }, { id: "four-fields", enforced: { by: 3, token: "X" } }] })) };
+  const loaded = loadLedger({ directives }, { tolerant: true });
+  expect(loaded.skipped?.filter((l) => l.includes("enforced"))).toEqual([
+    "DIRECTIVES_LOCAL_SKIP eight-steps: its local line is left out and the fork entry stands (enforced must be { by, token })",
+    "DIRECTIVES_LOCAL_SKIP four-fields: its local line is left out and the fork entry stands (enforced.by must name the file (and symbol) of the check; enforced.token must be the check's refusal or warning token (letters, digits, _ . -))",
+  ]);
+  expect(loaded.entries.find((e) => e.id === "eight-steps")?.enforced?.token).toBe("LAUNCH_STEPS_ADDED");
+  const deps = depsFor(newWorld(), fakeClock(Date.parse("2026-11-17T00:00:00Z")), state.dir, { directives, watchLog: join(state.dir, "watch.log") });
+  const r = await runDirectiveAudit(deps, { since: "2026-11-16T00:00:00.000Z", inbox: join(state.dir, "inbox.jsonl"), owner: "7", dryRun: true });
+  expect(r.lines.some((l) => l.startsWith("DIRECTIVES_LOCAL_SKIP eight-steps:"))).toBe(true);
 });
 
 test("every check the fork ledger names is in this checkout (renaming a token means updating the ledger in the same change)", () => {

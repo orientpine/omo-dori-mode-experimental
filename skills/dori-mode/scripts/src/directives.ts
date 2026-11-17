@@ -69,7 +69,7 @@ export type Directive = {
   // that names where the rule is written, e.g. a repo's AGENTS.md); the pointer in a brief counts as this entry
   readonly via?: string;
   readonly enforced?: Enforced;
-  readonly gone?: string; // set by the load: why the check of a code entry is gone (the entry is inject again)
+  readonly gone?: { readonly why: string; readonly from: DirectiveMode }; // set by the load: why the check is gone, and the mode the ledger gave
   readonly layer: "common" | "local";
 };
 

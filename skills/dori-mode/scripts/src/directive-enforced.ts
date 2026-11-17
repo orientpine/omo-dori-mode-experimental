@@ -30,12 +30,20 @@ export const enforcerGone = (enforced: Enforced): string | undefined => {
   return readFileSync(file, "utf8").includes(enforced.token) ? undefined : `token ${enforced.token} is no longer in ${file}`;
 };
 
-// The entries as a launch reads them: a code entry whose check is gone is inject again, with the reason in gone.
+const TOKEN = /^[A-Za-z_$][\w$.-]{2,}$/;
+// enforced as the ledger must hold it: a host line can hold anything (null, a number), and a load never stops on it
+const wellFormed = (x: unknown): x is Enforced => {
+  const { by, token } = (typeof x === "object" && x !== null ? x : {}) as { by?: unknown; token?: unknown };
+  return typeof by === "string" && by.trim() !== "" && typeof token === "string" && TOKEN.test(token);
+};
+
+// The entries as a launch reads them: every entry whose check is gone carries why in gone, and a code entry is inject
+// again; an entry of another mode keeps it (its mode is the check).
 export const withEnforcers = (entries: readonly Directive[]): Directive[] =>
   entries.map((e) => {
-    if (e.mode !== "code" || !e.enforced?.by || !e.enforced.token) return e;
-    const gone = enforcerGone(e.enforced);
-    return gone ? { ...e, mode: "inject", gone } : e;
+    if (!wellFormed(e.enforced)) return e;
+    const why = enforcerGone(e.enforced);
+    return why ? { ...e, mode: e.mode === "code" ? "inject" : e.mode, gone: { why, from: e.mode } } : e;
   });
 
 export const enforcedProblems = (e: Directive, at: string): string[] => {
@@ -43,20 +51,20 @@ export const enforcedProblems = (e: Directive, at: string): string[] => {
   if (e.mode === "code" && !e.enforced) out.push(`${at}: a code directive needs enforced { by, token } (the check that enforces it)`);
   if (e.mode === "code" && !e.words && !e.rule) out.push(`${at}: a code directive needs words or a rule (it goes into briefs again when its check is gone)`);
   if (e.enforced === undefined) return out;
-  const { by, token } = e.enforced;
+  if (typeof e.enforced !== "object" || e.enforced === null) return [...out, `${at}: enforced must be { by, token }`];
+  const { by, token } = e.enforced as { by?: unknown; token?: unknown };
   if (typeof by !== "string" || !by.trim()) out.push(`${at}: enforced.by must name the file (and symbol) of the check`);
-  if (typeof token !== "string" || !/^[A-Za-z_$][\w$.-]{2,}$/.test(token)) out.push(`${at}: enforced.token must be the check's refusal or warning token (letters, digits, _ . -)`);
+  if (typeof token !== "string" || !TOKEN.test(token)) out.push(`${at}: enforced.token must be the check's refusal or warning token (letters, digits, _ . -)`);
   return out;
 };
 
 // The daily audit's line for every entry whose check is gone (a code entry is inject again until it is back).
 export const enforcerGaps = (entries: readonly Directive[]): Gap[] =>
   entries.flatMap((e) => {
-    const gone = e.gone ?? (e.enforced?.by && e.enforced.token ? enforcerGone(e.enforced) : undefined);
-    if (!gone || !e.enforced) return [];
-    const what = e.gone ? "it goes into briefs as inject again" : `it keeps mode ${e.mode}`;
-    return [{ lane: "enforcer-gone", id: e.id, line: `DIRECTIVE_ENFORCER_GONE ${e.id}: ${gone} (enforced by ${e.enforced.by}); ${what} until the check is back or the ledger names the new one` }];
+    if (!e.gone || !e.enforced) return [];
+    const what = e.gone.from === "code" ? "it goes into briefs as inject again" : `it keeps mode ${e.mode}`;
+    return [{ lane: "enforcer-gone", id: e.id, line: `DIRECTIVE_ENFORCER_GONE ${e.id}: ${e.gone.why} (enforced by ${e.enforced.by}); ${what} until the check is back or the ledger names the new one` }];
   });
 
 export const enforcedLabel = (e: Directive): string | undefined =>
-  e.gone ? `검사 사라짐(${e.gone})` : e.enforced ? `코드가 강제함(${e.enforced.token})` : undefined;
+  e.gone ? `검사 사라짐(${e.gone.why})` : e.enforced ? `코드가 강제함(${e.enforced.token})` : undefined;
