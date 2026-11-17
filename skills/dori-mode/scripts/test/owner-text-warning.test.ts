@@ -206,3 +206,9 @@ test("review 17 of #501: a UTC label on the next line is not a suffix, and an ar
   expect(kstOwnerProblem("UTC 10:30 → KST ?", "ko-KR")).toBe("UTC time without a KST time");
   expect(kstOwnerProblem("UTC 10:30 / 19:30 (KST)", "ko-KR")).toBeUndefined();
 });
+
+test("review 18 of #501: a UTC-labelled clock before KST is not a counterpart, and a duration (9시간) is not a clock", () => {
+  expect(kstOwnerProblem("UTC 10:30, KST로는?", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30에 시작해. 한국 시간은 9시간 빨라.", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 (KST)", "ko-KR")).toBeUndefined();
+});
