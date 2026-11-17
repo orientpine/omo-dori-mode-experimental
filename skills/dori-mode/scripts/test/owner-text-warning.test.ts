@@ -230,3 +230,10 @@ test("review 21 of #501: a version change after KST is not a conversion promise"
   expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
   expect(kstOwnerProblem("UTC 10:30 (KST 기준으로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 22 of #501: bare 예정 is scheduling, and a version change with a second particle is not a promise", () => {
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST 예정이야", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 / 19:30 KST 기준으로 새 버전으로 바꿀게", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("UTC 10:30 (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+  expect(kstOwnerProblem("UTC 10:30 (KST 기준으로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+});

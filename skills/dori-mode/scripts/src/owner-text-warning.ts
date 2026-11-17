@@ -32,9 +32,9 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
   const conversion = (end: number): boolean => {
     const s = own.slice(end, end + 20);
-    // future promises only, and the particle must be the one right after the zone (KST로, KST 기준으로),
-    // not KST에 새 버전으로 바꿀게 (a version change) or KST 기준으로 배포 예정 (scheduling)
-    return /^\s*[()]*\s*(?:예정|변환\s*(?:예정|할))/.test(s) || (/^\s*[()]*\s*(?:으로|로|기준)/.test(s) && /(?:변환할|바꿀)/.test(s));
+    // future promises only: KST 변환 예정/변환할, or the zone's own particle then a conversion verb with no second
+    // particle in between (KST로 바꿀게, KST 기준으로 바꿀게); not KST 예정이야, not ...새 버전으로 바꿀게
+    return /^\s*[()]*\s*변환\s*(?:예정|할)/.test(s) || (/^\s*[()]*\s*(?:으로|로|기준)(?![^]*(?:으로|로))/.test(s) && /(?:변환할|바꿀)/.test(s));
   };
   const utcClock = (c: { at: number; end: number }): boolean => {
     const after = own.slice(c.end);
