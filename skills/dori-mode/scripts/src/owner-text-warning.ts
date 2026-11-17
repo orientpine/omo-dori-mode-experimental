@@ -24,14 +24,22 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const own = ownText(text);
   const utc = /\bUTC\b|\b(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?Z\b|\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z\b/i.test(own);
   const clockRe = /(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?|(?:오전|오후)?\s*\d{1,2}시(?:\s*\d{1,2}분)?/g;
-  const zone = /\bKST\b|한국\s*(?:시간|시각)|한국표준시/i.test(own) || /\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?\+09:00/.test(own);
-  // the counterpart is any clock that is not the UTC-labelled one (10:30Z, UTC 10:30, an ISO ...Z): a conversion
-  // promise (KST로, KST 변환 예정) has no other clock, while real prose delimiters after KST change nothing
-  const local = [...own.matchAll(clockRe)].some((m) => {
-    const at = m.index ?? 0;
-    return !/^\s*Z/.test(own.slice(at + m[0].length)) && !/\bUTC\s*$/i.test(own.slice(0, at));
+  const zoneRe = /\bKST\b|한국\s*(?:시간|시각)|한국표준시/gi;
+  const plus9 = /\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?\+09:00/.test(own);
+  const clocks = [...own.matchAll(clockRe)].map((m) => {
+    const at = m.index ?? 0, end = at + m[0].length;
+    const after = own.slice(end), before = own.slice(0, at);
+    const utcLabel = /^\s*(?:\.\d+)?Z/.test(after) || /\bUTC\s*$/i.test(before) || /^\s*UTC\b/i.test(after);
+    return { at, end, utcLabel };
   });
-  return utc && !(zone && local) ? "UTC time without a KST time" : undefined;
+  const near = (gap: string): boolean => gap.length <= 6 && !/[A-Za-z.]/.test(gap);
+  // a clock counts as the counterpart only right next to a KST zone (whitespace, parentheses or a Korean particle
+  // between them), and never the UTC-labelled one; an unrelated other-zone clock (PST) is not next to KST
+  const kst = plus9 || [...own.matchAll(zoneRe)].some((m) => {
+    const at = m.index ?? 0, end = at + m[0].length;
+    return clocks.some((c) => !c.utcLabel && ((c.end <= at && near(own.slice(c.end, at))) || (c.at >= end && near(own.slice(end, c.at)))));
+  });
+  return utc && !kst ? "UTC time without a KST time" : undefined;
 };
 
 // Warning-only rollout: preserve the send and its exit status, and record the same line under the command's tag.
