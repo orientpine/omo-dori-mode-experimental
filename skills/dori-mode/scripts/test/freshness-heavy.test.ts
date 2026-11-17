@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { freshnessTick } from "../src/freshness.ts";
 import { heavyBypassTick } from "../src/freshness-heavy.ts";
+import type { FlowDeps } from "../src/done-flow.ts";
 import type { Lane } from "../src/registry.ts";
 import type { Runner } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
@@ -157,3 +158,19 @@ for (const secondPid of [4200, 4201]) test(`overlapping processes serialize rece
     f.state.done();
   }
 }, 10_000);
+
+test("a failed check whose watch log cannot be written still never stops the tick: the warning goes to stderr", async () => {
+  const state = withState();
+  const blocker = join(state.dir, "not-a-dir");
+  writeFileSync(blocker, "a file where the log's folder would be");
+  const base = depsFor(newWorld(), fakeClock(Date.parse("2026-11-17T00:00:00Z")), state.dir, { watchLog: join(blocker, "watch.log") });
+  const deps = { ...base, registry: { ...base.registry, open: async () => { throw new Error("registry unreadable"); } } } as unknown as FlowDeps;
+  const err = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await expect(heavyBypassTick(deps)).resolves.toBeUndefined();
+    expect(err.mock.calls.map((c) => String(c[0]))).toContain("FRESHNESS_WARN heavy bypass check: Error: registry unreadable");
+  } finally {
+    err.mockRestore();
+    state.done();
+  }
+});

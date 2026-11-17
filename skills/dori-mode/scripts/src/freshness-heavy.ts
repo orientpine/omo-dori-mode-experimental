@@ -13,7 +13,13 @@ export const heavyBypassTick = async (deps: FlowDeps): Promise<void> => {
   try {
     await checkBypass(deps);
   } catch (e) {
-    watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `FRESHNESS_WARN heavy bypass check: ${String(e).replace(/[\r\n]+/g, " ").slice(0, 160)}` });
+    const line = `FRESHNESS_WARN heavy bypass check: ${String(e).replace(/[\r\n]+/g, " ").slice(0, 160)}`;
+    // the watch log itself may be what failed: the tick's other work goes on either way
+    try {
+      watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line });
+    } catch {
+      console.error(line);
+    }
   }
 };
 
