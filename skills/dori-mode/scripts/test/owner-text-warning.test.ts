@@ -156,3 +156,9 @@ test("review 9 of #501: UTC suffixes belong to complete parsed clocks of any for
   expect(kstOwnerProblem("10시 30분 UTC / 19시 30분 KST에 시작해", "ko-KR")).toBeUndefined();
   expect(kstOwnerProblem("10:30:00.123 UTC (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
 });
+
+test("review 10 of #501: parenthesized UTC suffixes belong to their own clock too", () => {
+  expect(kstOwnerProblem("10:30 (UTC) / 19:30 KST에 시작해", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30 (UTC) / 19:30 (KST)", "ko-KR")).toBeUndefined();
+  expect(kstOwnerProblem("10:30 (UTC) (KST로 바꿀게)", "ko-KR")).toBe("UTC time without a KST time");
+});

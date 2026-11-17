@@ -30,7 +30,7 @@ export const kstOwnerProblem = (text: string, locale: string): string | undefine
   const utcAt = [...own.matchAll(/\bUTC/gi)].map((m) => m.index ?? 0);
   const suffix = new Set<number>();
   for (const u of utcAt) {
-    const owner = clocks.find((c) => c.end <= u && /^\s*$/.test(own.slice(c.end, u)));
+    const owner = clocks.find((c) => c.end <= u && /^[\s()]*$/.test(own.slice(c.end, u)));
     // a UTC right after a clock belongs to that clock (suffix), whatever the clock's format
     if (owner) { owner.utcLabel = true; suffix.add(u); }
   }
