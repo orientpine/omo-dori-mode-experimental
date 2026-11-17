@@ -33,7 +33,7 @@ test("a write through agent-discord warns AGENT_DISCORD_SEND with the directive 
   const env = setup();
   const r = await run(env, ["--server", "9", "message", "send", "123", "hello send"]);
   expect(r.code).toBe(3);
-  expect(r.err).toBe("AGENT_DISCORD_SEND agent-discord message send: the owner's user-account CLI was called to write (directive no-agent-discord; a warning until 2026-12-01, then it refuses). Send with dori send discord (bot token).\n");
+  expect(r.err).toBe("AGENT_DISCORD_SEND agent-discord message send: the owner's user-account CLI was called to write (directive no-agent-discord; a warning for now, refusal to be reviewed on 2026-12-01). Send with dori send discord (bot token).\n");
   expect(readFileSync(join(state.dir, "calls"), "utf8")).toBe("--server 9 message send 123 hello send\n");
   expect(readFileSync(log(env), "utf8")).toMatch(/^\S+Z AGENT_DISCORD_SEND agent-discord message send: /);
 });

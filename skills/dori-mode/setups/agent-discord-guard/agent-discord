@@ -2,7 +2,7 @@
 # agent-discord guard (directive no-agent-discord): agent-discord is the owner's own Discord user-account CLI, and a Dori
 # never writes through it; every Dori message goes out with its bot token (dori send discord). Installed ahead of the real
 # CLI on PATH, it runs the real one unchanged and, for a command that writes (send, edit, delete, ack, upload, react...),
-# first prints AGENT_DISCORD_SEND to stderr and appends it to the guard log. A warning until 2026-12-01, then it refuses.
+# first prints AGENT_DISCORD_SEND to stderr and appends it to the guard log. A warning for now; refusal is reviewed on 2026-12-01.
 set -euo pipefail
 
 self_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
@@ -34,7 +34,7 @@ done
 sub="${words[1]:-}"
 case "$sub" in
   send | edit | delete | ack | upload | add | remove | create | update | set | pin | unpin | join | leave | archive | rename | react | reply)
-    line="AGENT_DISCORD_SEND agent-discord ${words[0]} $sub: the owner's user-account CLI was called to write (directive no-agent-discord; a warning until 2026-12-01, then it refuses). Send with dori send discord (bot token)."
+    line="AGENT_DISCORD_SEND agent-discord ${words[0]} $sub: the owner's user-account CLI was called to write (directive no-agent-discord; a warning for now, refusal to be reviewed on 2026-12-01). Send with dori send discord (bot token)."
     echo "$line" >&2
     log="${XDG_STATE_HOME:-$HOME/.local/state}/dori/agent-discord-guard.log"
     mkdir -p "$(dirname "$log")" && printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" >>"$log" || true

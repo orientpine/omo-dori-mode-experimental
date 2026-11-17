@@ -25,7 +25,7 @@ const review = async (paths: string[], verdict = "CLEAR", listCode = 0) => {
 
 test("code without docs warns on stderr and review watch log while tests, receipt and CLEAR succeed", async () => {
   const r = await review(["skills/dori-mode/scripts/src/foo.ts"]);
-  expect(r.warnings).toEqual(["DOCS_UNTOUCHED acme/app#7: 1 code file(s) changed and no documentation file was touched (directive docs-same-pr; a warning until 2026-12-01, then it refuses)"]);
+  expect(r.warnings).toEqual(["DOCS_UNTOUCHED acme/app#7: 1 code file(s) changed and no documentation file was touched (directive docs-same-pr; a warning for now, refusal to be reviewed on 2026-12-01)"]);
   expect(r.log).toContain(` review ${r.warnings[0]}`);
   expect(r.tests?.code).toBe(0);
   expect(r.receipt?.verdict).toBe("CLEAR");

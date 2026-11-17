@@ -10,7 +10,7 @@ hash -r; command -v agent-discord   # ~/.local/bin/agent-discord, before the rea
 It runs the real `agent-discord` (the next one on `PATH`) with the same arguments and exit code. When the command writes (`message send|edit|delete|ack`, `file upload`, `reaction add|remove`, `thread create|archive`, ...), it first prints one line to stderr and appends it to `${XDG_STATE_HOME:-~/.local/state}/dori/agent-discord-guard.log`:
 
 ```
-AGENT_DISCORD_SEND agent-discord message send: the owner's user-account CLI was called to write (directive no-agent-discord; a warning until 2026-12-01, then it refuses). Send with dori send discord (bot token).
+AGENT_DISCORD_SEND agent-discord message send: the owner's user-account CLI was called to write (directive no-agent-discord; a warning for now, refusal to be reviewed on 2026-12-01). Send with dori send discord (bot token).
 ```
 
-Reads (`message list|get|search`, `whoami`, `snapshot`, `--help`) pass silently. New checks start as warnings; after 2026-12-01, with the log showing no false positives, the guard is changed to refuse (exit 1 before the real CLI runs). The directive ledger names this file and `AGENT_DISCORD_SEND` as the entry's check (`enforced`); if the file or token goes away, the entry goes back into briefs.
+Reads (`message list|get|search`, `whoami`, `snapshot`, `--help`) pass silently. New checks start as warnings; on 2026-12-01 the log is reviewed for false positives, and only a later change makes the guard refuse (exit 1 before the real CLI runs). The directive ledger names this file and `AGENT_DISCORD_SEND` as the entry's check (`enforced`); if the file or token goes away, the entry goes back into briefs.

@@ -12,7 +12,7 @@ export const warnDocsUntouched = async (deps: FlowDeps, pr: PrRef, executables: 
   const paths = files.out.split("\n").filter(Boolean);
   const code = paths.filter((p) => !isDoc(p) && !isTestPath(p) && (isSourcePath(p) || /(?:^|\/)(?:scripts\/src|setups)\//.test(p) || executables.has(p)));
   if (!code.length || paths.some(isDoc)) return;
-  const line = `DOCS_UNTOUCHED ${pr.id}: ${code.length} code file(s) changed and no documentation file was touched (directive docs-same-pr; a warning until 2026-12-01, then it refuses)`;
+  const line = `DOCS_UNTOUCHED ${pr.id}: ${code.length} code file(s) changed and no documentation file was touched (directive docs-same-pr; a warning for now, refusal to be reviewed on 2026-12-01)`;
   console.error(line);
   watchLog(deps.config.watchLog, deps.clock, { source: "review", line });
 };
