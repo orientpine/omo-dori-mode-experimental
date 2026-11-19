@@ -173,3 +173,19 @@ What would close it: the builder opens every entry itself (`openat` with `O_NOFO
 Upstream #232 (https://github.com/sisyphuslabs/dori-superagent/pull/232) also puts a live-PID lock on the `(PR, head)` receipt (`Store.lockReceipt`): a second review at that head refuses instead of starting, and `dori merge` during a review refuses `review_in_progress`. The fork took in only the clear (merge-gate.ts `reviewPr` takes back the head's review receipt before its reviewer runs), as the lane brief set. While one review of a head runs, a merge of that head already refuses (its receipt is gone); what is left open is two overlapping reviews of one head, where the earlier one can still write its verdict after the later one.
 
 What would close it: `reviewPr` and `mergePr` take one lock file beside the receipt (`<receipt>.lock`, the pid lock the fork's other locks use), freed by a dead pid; a test runs two reviews at one head with the first reviewer held open and expects the second to refuse.
+
+## Gateway: a send the gateway took, whose answer was lost and whose sender died, goes out again (#511)
+
+`dori send gateway` sends one new message at a time per conversation (cli-gateway.ts `gatewayOnce`: the conversation's flock around `sendOnce` and the send), so two live calls never post the same text twice. What it cannot know is the outcome of a send whose sender died after the gateway stored the message and before its answer came back: the claim is taken over after 60 s and the same command posts again with a new `op_id` (QA 2026-11-19, ~/.soodori/qa/port-upstream-255/qa-cli.log, "B": two stored posts, two op_ids). Every messenger of the fork has the same at-least-once boundary (a Discord post whose response is lost). Upstream #255 has it too: its `op_id` is chosen per call. What would close it: the claim stores the `op_id` before the first write and a takeover reuses it, so the gateway stores the message once (the receiver-side idempotency key of the Idempotency-Key draft); a test kills the sender after the gateway stored the message and expects one stored post.
+
+## Gateway: a gateway that accepts the subscription and then closes is reconnected every second (#511)
+
+`Gateway.subscribe` resets its failure count on every `ok` answer to `subscribe`, so a gateway that answers `ok` and then drops the stream is reopened after the first backoff step (1 s) forever, instead of ending with `gateway_unavailable` (QA 2026-11-19: 60 reconnects in 60 s against a fake gateway that closed after each ack). This is upstream #255's behaviour, unchanged. What would close it: count a stream that delivered nothing as a failure, and a test of a gateway that accepts and closes at once.
+
+## Gateway: a Dori VM's gateway is an egress path outside the gate (#511)
+
+The fork takes in only the client of the dori.bot socket; no fork host has the socket today (`dori boot`: `GATEWAY skipped (no gateway socket)`). On a Dori VM the host-side gateway carries the owner's chat to and from dori.bot, outside the egress gate, and its `INBOUND gateway` lines are no owner message link and no card answer. What would close it: before a Dori runs on such a machine, the owner decides which of the gate's rules and evidence checks apply there.
+
+## Gateway: the ordering test does not resend B after the window (#511)
+
+Review 4 of #511 (LOW, not fixed per the lead's last-round rule): test/gateway-send-once.test.ts "the recorded last post is the one sent last" resends only A after the 10-minute window; it does not resend B, the real last post, and check it is refused as the last post. The lock it guards is covered (the test fails with the lock removed), only the second half of the claim is unasserted. What would close it: before resending A, resend B at the later clock and expect `duplicate: true`, `last: true`, B's id and no send. Not upstream behaviour: the repeat check on gateway sends is the fork's.
