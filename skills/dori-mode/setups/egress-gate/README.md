@@ -501,23 +501,39 @@ python3 -I summary.py --config /etc/dori-gate/config.json --hours 24 --post
 ```
 
 The first command reads the gate endpoint (admin UID allowed) and prints nothing
-when no changes exist. The second is suitable for an external systemd timer,
-running as the gate user: reads journals/pending directly and posts a short
-phone-sized message: a head line (changes in the window), one line of counts per
-kind (`일정 4(추가 3·수정 1) · 할 일 1`), the latest three `HH:MM title` (KST),
-titles matching `게이트 시험`/`gate test` folded into one line, a count of restorable
-deletes, one line of failed/refused/pending counts, and `자세한 건 <name>에게 물어보면
-올림`. Optional config `"dori_name"` names the Dori in the head and last lines.
+when no changes exist; otherwise it prints the post and then the attachment text. The second is
+suitable for an external systemd timer, running as the gate user: reads journals, `pending/` and
+`batches/` directly and posts ONE message with ONE attached Markdown file
+(`gate-summary-YYYY-MM-DD.md`), never a run of chunks. The message is grouped by job, not by write:
+a head line (changes in the window), then one line per job - a batch card's writes, or one owner
+message's writes of one kind into the same Drive folders - with kinds and verbs counted
+(`드라이브 추가 30건`), the batch title or folder name, one or two titles (`p000.las 외 29건`)
+and the owner message as `근거 글 <#thread> HH:MM` (Discord shows the thread's name; the raw link
+is in the attachment). At most five job lines, then `- 외 N묶음 M건`. Titles matching
+`게이트 시험`/`gate test` fold into one line, then a count of restorable deletes, one line of
+failed/refused/pending counts, one line per group of waiting cards (same owner message, kind and
+reason: `- 승인 기다림 드라이브 추가 40건 · 근거 글당 쓰기 한도 · 근거 글 <#thread> HH:MM`) and
+per waiting batch card, at most three, and `자세한 목록은 첨부 파일`. Lines drop (into the overflow
+counts) until the message is at most 1900 characters. The attachment lists every write by job (time,
+verb, title, success or HTTP status, link or id, approving card, `되살리기 POST /_gate/restore/<id>`,
+folder ids, the owner message link), every refused write (method, reason, and the path for a Google or
+Discord API request; only the host for any other service, whose path can be a capability) and every
+waiting card with its link, a waiting batch card item by item (kind, names, refs, state). It never
+carries request bodies or headers, and the gate's bot token plus token-shaped strings (Discord bot,
+Google access/refresh, Slack, GitHub) are masked as `[가림]` in the post and the attachment. Cards
+merged into a batch card are not counted as waiting. Drive creates and copies are
+journaled with the request's file `name` when Google's answer has none (a Dori asking `fields=id`) and
+`folders: [{id, name}]` for their parents. Optional config `"dori_name"` names the Dori in the head
+line and the attachment title.
 `막힌 쓰기` counts refused writes only: a `denials.jsonl` row whose method is not
 `GET`/`HEAD`/`CONNECT` and whose reason is not an upstream failure (`request-failed`,
 `upstream-unavailable`, ...). Refused CONNECT tunnels (a tool's telemetry host off the allow
 list), refused reads and upstream failures stay in the journal and are not posted; with
 nothing else to say the summary prints `SUMMARY_EMPTY`.
-Links, owner proof, approvals and restore IDs stay in the journal only; the Dori
-reads them from `GET /_gate/changes` and `GET /_gate/pending` when the owner asks.
-Posts using the gate bot to the configured approval channel in chunks below 1900
-characters. Prints `SUMMARY_EMPTY` or
-`SUMMARY_POSTED N messages`. No service or timer is installed by these files.
+The journal still keeps everything, and the Dori reads it from `GET /_gate/changes` and
+`GET /_gate/pending`. Posts using the gate bot to the configured approval channel (multipart:
+`payload_json` plus `files[0]`). Prints `SUMMARY_EMPTY` or
+`SUMMARY_POSTED 1 message + gate-summary-YYYY-MM-DD.md`. No service or timer is installed by these files.
 
 ## One gate holds the keys: forward mode and named grants
 

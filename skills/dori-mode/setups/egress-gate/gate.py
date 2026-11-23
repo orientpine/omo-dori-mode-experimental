@@ -2032,7 +2032,9 @@ class Gate:
                     # A session URL bypasses metadata checks; the gate supports media/multipart only.
                     raise Refused("resumable-upload-not-allowed")
             for parent in parents:
-                await self.drive_owned(parent, reasons)
+                folder = await self.drive_owned(parent, reasons)
+                # The journal names the folder a write went into (daily summary groups by it).
+                self.remember(("drive-folder", parent), str(folder.get("name") or ""))
             return "drive", "files." + ("update" if method == "PATCH" else "copy" if match[2] else "create"), snapshot if method == "PATCH" else None
         if host == "docs.googleapis.com":
             match = re.fullmatch(r"/v1/documents(?:/([^/:]+):batchUpdate)?", route)
@@ -2059,7 +2061,7 @@ class Gate:
         raise Refused("write-not-allowed")
 
     def record(self, uid, api, op, method, path, query, status, response, proof, snapshot, approved_by=None,
-               deleting=False, prepared=None, batch=None, verified=None) -> dict:
+               deleting=False, prepared=None, batch=None, verified=None, request=None) -> dict:
         identity = Path(prepared).stem if prepared else f"{time.time_ns():020d}-{secrets.token_hex(6)}"
         snapname = None
         if prepared is not None:
@@ -2090,6 +2092,14 @@ class Gate:
                    path=journal_path(path, query), status=status, resource=resource,
                    owner_message=proof, snapshot=snapname,
                    restorable=restorable and 200 <= status < 300)
+        if api == "drive" and op in {"files.create", "files.copy"} and isinstance(request, dict):
+            # A Dori asking fields=id gets no name back; the request's own metadata names the file.
+            if resource and isinstance(request.get("name"), str):
+                resource.setdefault("name", request["name"])
+            parents = [p for p in request.get("parents") or [] if isinstance(p, str)]
+            parents += [p for key, value in query if key == "addParents" for p in value.split(",") if p]
+            if parents:
+                row["folders"] = [dict(id=p, name=self.cached(("drive-folder", p)) or "") for p in parents]
         if proof in self.order_facts:
             row["owner_order"] = self.order_facts[proof]
         if proof in self.todo_facts:
@@ -2194,7 +2204,8 @@ class Gate:
             if landed:
                 response = json_bytes({k: meta[k] for k in ("id", "name", "parents") if k in meta})
                 self.record(uid, api, op, method, path, query, 200, response, link, snapshot, approved_by,
-                            prepared=prepared, batch=batch and batch["id"], verified="read-back-moved")
+                            prepared=prepared, batch=batch and batch["id"], verified="read-back-moved",
+                            request=data)
                 if claimed is not None:
                     self.batch_settle(batch, claimed, "done", response)
                 if headed:
@@ -2202,14 +2213,14 @@ class Gate:
                 return 200, {"content-type": "application/json"}, response
             self.record(uid, api, op, method, path, query, status, b"{}", link, snapshot,
                         approved_by, prepared=prepared, batch=batch and batch["id"],
-                        verified="read-back-not-moved" if landed is False else None)
+                        verified="read-back-not-moved" if landed is False else None, request=data)
             if claimed is not None:
                 self.batch_settle(batch, claimed, "open" if landed is False else "uncertain")
             raise Refused("upstream-unavailable", 502, {"moved": landed} if move else None) from None
         self.record(uid, api, ("restore." if restore else "") + op, method, path, query,
                     status, response, link, snapshot, approved_by,
                     deleting=op == "files.update" and data.get("trashed") is True, prepared=prepared,
-                    batch=batch and batch["id"])
+                    batch=batch and batch["id"], request=data)
         if claimed is not None:
             self.batch_settle(batch, claimed, "done" if 200 <= status < 300 else "open", response)
         if api == "calendar" and op.startswith("acl."):
