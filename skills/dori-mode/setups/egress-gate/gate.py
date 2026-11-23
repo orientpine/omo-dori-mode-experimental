@@ -1133,6 +1133,13 @@ def batch_item_key(item: dict, refs: dict) -> tuple | None:
     return "upload", item["name"], target, item["size"], item["sha256"]
 
 
+def batch_list_item(key: tuple) -> dict:
+    """A write's batch key as the item a Dori puts on its POST /_gate/batch list."""
+    fields = {"folder": ("name", "parent"), "upload": ("name", "parent", "size", "sha256"),
+              "move": ("file", "from", "to")}[key[0]]
+    return dict(kind=key[0], **dict(zip(fields, key[1:])))
+
+
 def multipart_media(headers: dict, body: bytes) -> tuple[dict, bytes] | None:
     """The metadata and the file bytes of a Drive multipart upload, split on its boundary."""
     found = re.search(r'boundary="?([^";]+)"?', headers.get("content-type", ""))
@@ -2135,6 +2142,14 @@ class Gate:
             claimed = self.batch_claim(batch, batch_write_key(method, path, query, headers, body, data))
             approved_by = approved_by or batch["card"]
         if reasons and not approved_by:
+            limit_key = (batch_write_key(method, path, query, headers, body, data)
+                         if set(reasons) == {"owner-message-write-limit"} and not restore else None)
+            if limit_key is not None:
+                # Owner 2026-11-23 "낱개로 쏟아지는거 다 수정해야해": a 76-file upload past the limit posted ~40 cards,
+                # one per write, and every file under a parked folder failed. A folder, upload or move past the
+                # limit is refused without a card; the whole job goes on one batch card, folders named by ref.
+                raise Refused("owner-message-write-limit", extra=dict(next="POST /_gate/batch",
+                                                                     item=batch_list_item(limit_key)))
             return await self.park(uid, method, path, query, headers, body, link, api, op, reasons, data, snapshot,
                                    restoring=restore)
         if approved_by and api == "calendar" and op.startswith("events."):
@@ -2304,9 +2319,7 @@ class Gate:
             row["batch"] = entry["batch"]
         key = self.parked_key(entry)
         if key is not None:
-            fields = {"folder": ("name", "parent"), "upload": ("name", "parent", "size", "sha256"),
-                      "move": ("file", "from", "to")}[key[0]]
-            row["item"] = dict(kind=key[0], **dict(zip(fields, key[1:])))
+            row["item"] = batch_list_item(key)
         return row
 
     def batch_card(self, title: str, items: list, names: dict, merged: int, proof: str) -> str:
@@ -2582,9 +2595,31 @@ class Gate:
             name = " ".join(name.splitlines()) or f"파일 이름을 읽지 못함 · {shared[1][:40]}"
             role = DRIVE_ROLES.get(str({**fallback, **data}.get("role", "")), "")
             title = (f"{name} 공유({role})" if role else f"{name} 공유") if shared[2] == "permissions" else f"{name} 댓글"
+        reason = ",".join(sorted(set(reasons)))
         # Owner Q474 (2026-11-03): from choosing the thread until the card is on record, no other card chooses one and
         # the poller decides nothing, so cards asked at once share the thread and no thread is closed under a new card.
         async with self.approval_lock:
+            if reason == "owner-message-write-limit":
+                # Owner 2026-11-23 "낱개로 쏟아지는거 다 수정해야해": the same write sent again while its limit card waits
+                # gets that card back, not a second one. (Other cards keep the rule below: a re-ask replaces the card.)
+                sent = dict(uid=uid, method=method, path=path, query=json.loads(json_bytes(query)),
+                            body=base64.b64encode(body).decode(), owner_message=proof, reason=reason,
+                            restoring=restoring)
+                for entry in self.pending():
+                    if entry.get("status") == "pending" and all(entry.get(k) == v for k, v in sent.items()):
+                        return 202, {}, json_bytes(dict(status="pending_approval", id=entry["id"], card=entry["card"],
+                                                        reason=entry["reason"]))
+                # Past the limit one owner message has one card waiting at a time; more writes wait for its decision
+                # or a new owner message. Decided before anything changes, so a refused write replaces no card; only
+                # a newer version of the waiting card's own work goes on, to replace it below (supersede).
+                waiting = next((entry for entry in self.pending() if entry.get("owner_message") == proof
+                                and entry.get("status") == "pending" and entry.get("reason") == reason), None)
+                if waiting:
+                    base = f"/channels/{waiting['channel']}/messages/{waiting['message']}"
+                    if (waiting.get("thread") == channel
+                            or not self.replaces(waiting, waiting.get("thread"), api, op, path, method, title, grantee(body))
+                            or await self.owner_reacted(base, "⛔") or await self.owner_reacted(base, "✅")):
+                        raise Refused("owner-message-limit-card-waiting", extra=dict(card=waiting["card"], id=waiting["id"]))
             thread = await self.card_thread(channel, proof, f"{CARD_KIND.get(api, api)} · {(title or op)[:40]}")
             await self.supersede(thread, api, op, path, method, title, body)
             # Owner 2026-10-19 00:00 KST: the card shows who, what and the reactions; the reason,
@@ -2607,7 +2642,7 @@ class Gate:
                          body=base64.b64encode(body).decode(), owner_message=proof,
                          owner_order=self.order_facts.get(proof), owner_todo=self.todo_facts.get(proof),
                          owner_kakao=self.kakao_facts.get(proof),
-                         reason=",".join(sorted(set(reasons))), api=api, op=op,
+                         reason=reason, api=api, op=op,
                          channel=channel, message=message, card=link, title=title, thread=thread,
                          content_hash=hashlib.sha256(json_object(response).get("content", content).encode()).hexdigest(), status="pending",
                          snapshot_hash=hashlib.sha256(json_bytes(snapshot)).hexdigest(),
@@ -2704,11 +2739,7 @@ class Gate:
         The caller holds approval_lock."""
         incoming = grantee(body)  # read once: the loop below reuses `body` for the Discord replies
         for entry in self.pending():
-            if (entry.get("thread") != thread or entry.get("api") != api or entry.get("op") != op
-                    or entry.get("path") != path or entry.get("status") != "pending"
-                    or method == "POST" and entry.get("title") != title
-                    or method == "POST" and path.endswith(("/permissions", "/acl"))
-                    and grantee(base64.b64decode(entry.get("body") or "")) != incoming):
+            if not self.replaces(entry, thread, api, op, path, method, title, incoming):
                 continue
             base = f"/channels/{entry['channel']}/messages/{entry['message']}"
             if await self.owner_reacted(base, "⛔") or await self.owner_reacted(base, "✅"):
@@ -2720,6 +2751,16 @@ class Gate:
             await self.bot_call("PATCH", base, {
                 "content": ("🔁 새 판으로 대체됨 — 이 카드는 실행되지 않습니다\n" + original)[:2000],
                 "allowed_mentions": {"parse": []}})
+
+    @staticmethod
+    def replaces(entry, thread, api, op, path, method, title, incoming) -> bool:
+        """Whether a newer card for this work in `thread` replaces the undecided card `entry` (supersede); `incoming`
+        is the newer request's grantee."""
+        return not (entry.get("thread") != thread or entry.get("api") != api or entry.get("op") != op
+                    or entry.get("path") != path or entry.get("status") != "pending"
+                    or method == "POST" and entry.get("title") != title
+                    or method == "POST" and path.endswith(("/permissions", "/acl"))
+                    and grantee(base64.b64decode(entry.get("body") or "")) != incoming)
 
     async def owner_reacted(self, base, emoji) -> bool:
         after = None

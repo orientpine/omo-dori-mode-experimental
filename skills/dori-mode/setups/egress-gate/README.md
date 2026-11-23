@@ -379,8 +379,22 @@ one check fails: a failure it does not expect is logged as `GATE_APPROVAL_CHECK_
 (never the error text). On 2026-10-25 a Drive share with a query string ended the poller with
 an unlogged TypeError, and no card ran after it until a restart.
 `GET /_gate/pending` lists IDs, reasons, links, owner messages, ages, and `status` (`merged` with its `batch`
-for a card waiting on a batch). A Drive card parked only by the owner-message limit also shows `item`: the
-batch item that write is, ready to copy onto a batch list so the card merges.
+for a card waiting on a batch). A Drive card parked only by the owner-message limit (gates before 2026-11-23
+parked them; such cards can still wait after an upgrade) also shows `item`: the batch item that write is, ready
+to copy onto a batch list so the card merges.
+
+Past the owner-message write limit (owner 2026-11-23 "낱개로 쏟아지는거 다 수정해야해": a 76-file upload sent write by
+write posted about 40 cards, the same file again on each retry, and every file under a parked folder failed):
+
+- A write the limit alone holds that is one of the batch kinds below (folder create, multipart upload, move) gets
+  no card: `403 {"error": "owner-message-write-limit", "next": "POST /_gate/batch", "item": {...}}`, `item` being
+  that write as a batch list item. The whole job goes on one batch card, where folders made in the job are named by
+  `ref`, which single cards cannot do.
+- Any other write the limit alone holds gets a card, one at a time per owner message: while that card waits,
+  another such write is `403 {"error": "owner-message-limit-card-waiting", "card": "<link>", "id": "<id>"}`
+  (wait for the decision or a new owner message); a newer version of the same work still replaces the card, and
+  the same write sent again gets the waiting card's own `202` answer, no second card.
+- A write with any other reason (sharing, outside attendees, not owned) still gets its own card as before.
 
 ### Batch approval
 
@@ -444,7 +458,8 @@ reason and cards not on the list stay as they are. If the batch card goes missin
 cards go back to waiting on their own.
 
 For the Dori, only when the config sets the write limit: "한 형 글에서 형 드라이브 안 쓰기(폴더 만들기·올리기·옮기기)가 30건을 넘을 것 같으면 하나씩 카드를 만들지 말고
-목록 전체를 POST /_gate/batch로 한 번 내고, 형 ✅ 뒤 각 쓰기에 X-Dori-Batch 머리를 붙인다."
+목록 전체를 POST /_gate/batch로 한 번 내고, 형 ✅ 뒤 각 쓰기에 X-Dori-Batch 머리를 붙인다. 쓰기가 owner-message-write-limit로 거절되면
+그 응답의 item을 목록에 넣고 남은 작업 전체를 한 목록으로 낸다(하나씩 다시 보내지 않는다)."
 
 Changes/denials are in `changes.jsonl`/`denials.jsonl` (0600), snapshots in
 `snapshots/` (0700 directory, 0600 files). Each Google write carries its original

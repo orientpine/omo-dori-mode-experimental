@@ -2104,17 +2104,20 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.reactions[(message, quote(emoji))] = [{"id": owner, "bot": False}]
 
     async def batch_folder(self, batch, name="짱돌", parent="root1"):
-        return await self.request(path="/www.googleapis.com/drive/v3/files?fields=id", proof=False,
+        """A folder create under the batch, or (batch None) a plain one with the owner message."""
+        return await self.request(path="/www.googleapis.com/drive/v3/files?fields=id", proof=batch is None,
                                   data={"name": name, "mimeType": self.FOLDER, "parents": [parent]},
-                                  headers={"x-dori-batch": batch})
+                                  headers={"x-dori-batch": batch} if batch else {})
 
-    async def batch_upload(self, batch, content=b"hello", parent="new"):
-        meta = json.dumps({"name": "a.md", "parents": [parent]})
+    async def batch_upload(self, batch, content=b"hello", parent="new", name="a.md"):
+        """A multipart upload under the batch, or (batch None) a plain one with the owner message."""
+        meta = json.dumps({"name": name, "parents": [parent]}, ensure_ascii=False)
         raw = (f"--b0\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n"
                f"--b0\r\nContent-Type: text/markdown\r\n\r\n").encode() + content + b"\r\n--b0--\r\n"
         return await self.request(path="/www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
-                                  raw=raw, proof=False, headers={"x-dori-batch": batch,
-                                                                 "content-type": "multipart/related; boundary=b0"})
+                                  raw=raw, proof=batch is None,
+                                  headers={**({"x-dori-batch": batch} if batch else {}),
+                                           "content-type": "multipart/related; boundary=b0"})
 
     async def batch_move(self, batch, to="new"):
         return await self.request("PATCH", f"/www.googleapis.com/drive/v3/files/m1?addParents={to}&removeParents=old1"
@@ -2328,23 +2331,28 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((status, json.loads(body)["error"]), (403, "batch-expired"))
         self.assertEqual(self.writes(), [])
 
+    async def legacy_limit_card(self, data):
+        """A Drive write parked on its own card by the owner-message limit, as gates before 2026-11-23 did (this gate
+        refuses it toward a batch); such cards still wait after an upgrade and must still merge."""
+        with patch.object(gate, "batch_write_key", return_value=None):
+            return (await self.request(path="/www.googleapis.com/drive/v3/files?fields=id", data=data))[0]
+
     async def test_waiting_cards_on_the_list_merge_into_the_batch_and_close_with_its_decision(self):
-        # Given: two writes parked by the owner-message limit, one on the list and one not.
+        # Given: an older gate's limit card on the list, and a card for a share (its own reason) that is not.
         self.approval()
         self.config["limits"] = {"writes_per_owner_message": 1}
         self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
         folder = {"mimeType": self.FOLDER, "parents": ["root1"]}
-        self.assertEqual((await self.request(path="/www.googleapis.com/drive/v3/files?fields=id",
-                                             data={"name": "짱돌", **folder}))[0], 202)
-        self.assertEqual((await self.request(path="/www.googleapis.com/drive/v3/files?fields=id",
-                                             data={"name": "옥돌", **folder}))[0], 202)
+        self.assertEqual(await self.legacy_limit_card({"name": "짱돌", **folder}), 202)
+        self.assertEqual((await self.request(path="/www.googleapis.com/drive/v3/files/f/permissions", data={
+            "type": "user", "role": "reader", "emailAddress": "partner@example.net"}))[0], 202)
         listed, other = self.service.pending()
         other_card = self.cards[other["message"]]
-        # And: the waiting list names each limit card's batch item, so the Dori can copy it onto its list.
+        # And: the waiting list names the limit card's batch item, so the Dori can copy it onto its list.
         rows = json.loads((await self.request("GET", "/_gate/pending", proof=False))[1])
-        self.assertEqual([(r["item"], r["owner_message"]) for r in rows],
-                         [({"kind": "folder", "name": name, "parent": "root1"}, "https://discord.com/channels/10/20/100")
-                          for name in ("짱돌", "옥돌")])
+        self.assertEqual([(r.get("item"), r["owner_message"]) for r in rows],
+                         [({"kind": "folder", "name": "짱돌", "parent": "root1"}, "https://discord.com/channels/10/20/100"),
+                          (None, "https://discord.com/channels/10/20/100")])
         # When: the batch comes in.
         _, answer = await self.submit_batch()
         batch = self.service.batch(answer["batch"])
@@ -2368,8 +2376,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e["id"] for e in self.service.pending()], [other["id"]])
         self.assertEqual(json.loads((await self.batch_folder(answer["batch"]))[1])["error"], "batch-item-used")
         # And: a ⛔ on a batch closes its merged cards as cancelled without running them.
-        await self.request(path="/www.googleapis.com/drive/v3/files?fields=id", data={"name": "짱돌", "mimeType": self.FOLDER,
-                                                                                     "parents": ["root2"]})
+        await self.legacy_limit_card({"name": "짱돌", "mimeType": self.FOLDER, "parents": ["root2"]})
         items = [{"kind": "folder", "name": "짱돌", "parent": "root2"}]
         _, answer = await self.submit_batch(items, title="취소할 묶음")
         merged = [e for e in self.service.pending() if e.get("batch") == answer["batch"]][0]
@@ -2379,6 +2386,114 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.writes()), writes)
         self.assertTrue(self.cards[merged["message"]].startswith("⛔ 취소됨\n🔗 묶음 카드로 합침"))
         self.assertEqual([e["id"] for e in self.service.pending()], [other["id"]])
+
+    def survey_tree(self, count=76):
+        """The 2026-11-23 job: 76 survey files in a folder tree (two days, raw and registered), as one batch list."""
+        folders = [("d1", "1일차", "top"), ("d2", "2일차", "top"), ("d1r", "원본", "d1"), ("d1j", "정합", "d1"),
+                   ("d2r", "원본", "d2"), ("d2j", "정합", "d2")]
+        items = [{"kind": "folder", "ref": "top", "name": "KCL 측량", "parent": "root1"}]
+        items += [{"kind": "folder", "ref": ref, "name": name, "parent_ref": parent} for ref, name, parent in folders]
+        files = [(f"p{i:03d}.las", f"points {i}".encode()) for i in range(count)]
+        items += [{"kind": "upload", "name": name, "parent_ref": ("d1r", "d1j", "d2r", "d2j")[i % 4],
+                   "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                  for i, (name, content) in enumerate(files)]
+        return items, files
+
+    async def test_a_76_file_tree_past_the_limit_is_one_batch_card_not_a_card_per_write(self):
+        # Owner 2026-11-23 "낱개로 쏟아지는거 다 수정해야해": YooDori sent 76 files one by one past the limit and the
+        # owner got ~40 cards, the same file again on each retry, and every file under a parked folder failed.
+        # Given: the owner message already used its one write.
+        self.approval()
+        self.config["limits"] = {"writes_per_owner_message": 1}
+        self.assertEqual((await self.request(path="/tasks.googleapis.com/tasks/v1/lists/l/tasks"))[0], 200)
+        items, files = self.survey_tree()
+        writes = len(self.writes())
+        # When: the Dori sends the tree write by write, then all of it again.
+        for _ in range(2):
+            status, body = await self.batch_folder(None, "KCL 측량", "root1")
+            self.assertEqual((status, json.loads(body)), (403, {
+                "error": "owner-message-write-limit", "next": "POST /_gate/batch",
+                "item": {"kind": "folder", "name": "KCL 측량", "parent": "root1"}}))
+            for item, (name, content) in zip(items[7:], files):
+                status, body = await self.batch_upload(None, content, "root1", name)
+                self.assertEqual((status, json.loads(body)["item"]),
+                                 (403, {**{k: item[k] for k in ("kind", "name", "size", "sha256")}, "parent": "root1"}))
+        # Then: no card, nothing waiting, nothing written; each refusal names its batch item and the way on.
+        self.assertEqual((self.batch_card_posts(), self.service.pending(), len(self.writes())), ([], [], writes))
+        # When: the Dori hands in the whole tree as one list, and again.
+        status, answer = await self.submit_batch(items, title="KCL 측량 자료")
+        self.assertEqual((status, answer["status"]), (202, "pending_approval"))
+        again = await self.submit_batch(items, title="KCL 측량 자료")
+        self.assertEqual((again[0], again[1]["batch"]), (200, answer["batch"]))
+        # Then: one card for the whole job, with its counts and size.
+        self.assertEqual(len(self.batch_card_posts()), 1)
+        batch = self.service.batch(answer["batch"])
+        self.assertIn("KCL 측량 자료: 폴더 7개 만들기 · 파일 76개 올리기 · 합계 ",
+                      self.cards[batch["message"]].splitlines()[1])
+        # When: the owner presses ✅ once, and the Dori runs the list folders first.
+        self.react(batch["message"])
+        await self.service.poll_approvals()
+        for item in items[:7]:
+            self.assertEqual((await self.batch_folder(answer["batch"], item["name"], item.get("parent", "new")))[0], 200)
+        for name, content in files:
+            self.assertEqual((await self.batch_upload(answer["batch"], content, "new", name))[0], 200)
+        # Then: every folder and file ran once, still under that one card; nothing else and nothing twice runs.
+        self.assertEqual(len(self.writes()) - writes, 83)
+        self.assertEqual(self.service.batch(answer["batch"])["state"], ["done"] * 83)
+        status, body = await self.batch_upload(answer["batch"], b"not listed", "new", "p999.las")
+        self.assertEqual((status, json.loads(body)["error"]), (403, "batch-item-not-listed"))
+        status, body = await self.batch_upload(answer["batch"], files[0][1], "new", files[0][0])
+        self.assertEqual((status, json.loads(body)["error"]), (403, "batch-item-used"))
+        self.assertEqual((len(self.batch_card_posts()), len(self.writes()) - writes), (1, 83))
+
+    async def test_writes_past_the_limit_that_cannot_batch_wait_on_one_card_per_owner_message(self):
+        # Given: the owner message already used its one write.
+        self.approval()
+        self.config["limits"] = {"writes_per_owner_message": 1}
+        tasks = "/tasks.googleapis.com/tasks/v1/lists/l/tasks"
+        self.assertEqual((await self.request(path=tasks, data={"title": "0"}))[0], 200)
+        writes = len(self.writes())
+        # When: one more task, the same task again, then another task.
+        status, first = await self.request(path=tasks, data={"title": "A"})
+        first = json.loads(first)
+        self.assertEqual((status, first["status"]), (202, "pending_approval"))
+        status, retry = await self.request(path=tasks, data={"title": "A"})
+        self.assertEqual((status, json.loads(retry)), (202, first))
+        status, other = await self.request(path=tasks, data={"title": "B"})
+        # Then: one card; the retry gets that card back, the other write waits on it without a card of its own.
+        self.assertEqual((status, json.loads(other)), (403, {"error": "owner-message-limit-card-waiting",
+                                                            "card": first["card"], "id": first["id"]}))
+        self.assertEqual((len(self.batch_card_posts()), [e["id"] for e in self.service.pending()]), (1, [first["id"]]))
+        # When: the owner approves it.
+        self.approve()
+        await self.service.poll_approvals()
+        # Then: exactly that write ran, and the next write past the limit gets the next card.
+        self.assertEqual([json.loads(w[3])["title"] for w in self.writes()[writes:]], ["A"])
+        self.assertEqual((await self.request(path=tasks, data={"title": "B"}))[0], 202)
+        self.assertEqual(len(self.batch_card_posts()), 2)
+
+    async def test_a_write_refused_past_the_limit_replaces_no_card_and_a_revision_still_replaces_its_own(self):
+        # Given: past the limit, a waiting limit card (task A) and a card with its own reason (an outside invite).
+        self.approval()
+        self.config["limits"] = {"writes_per_owner_message": 1}
+        tasks = "/tasks.googleapis.com/tasks/v1/lists/l/tasks"
+        self.assertEqual((await self.request(path=tasks, data={"title": "0"}))[0], 200)
+        self.assertEqual((await self.request(path=tasks, data={"title": "A"}))[0], 202)
+        self.assertEqual((await self.request(data={"summary": "Invite", "attendees": [{"email": "outside@example.net"}]}))[0], 202)
+        task, invite = self.service.pending()
+        # When: the same invite comes again without the outside guest, so only the limit holds it.
+        status, body = await self.request(data={"summary": "Invite"})
+        # Then: it is refused, and the invite card it would have replaced still waits untouched.
+        self.assertEqual((status, json.loads(body)["error"]), (403, "owner-message-limit-card-waiting"))
+        self.assertEqual([e["id"] for e in self.service.pending()], [task["id"], invite["id"]])
+        self.assertTrue(self.cards[invite["message"]].startswith("승인 필요"))
+        # When: a revised version of the waiting task comes in.
+        self.assertEqual((await self.request(path=tasks, data={"title": "A", "notes": "고친 판"}))[0], 202)
+        # Then: it replaces that card, and one limit card still waits.
+        self.assertTrue(self.cards[task["message"]].startswith("🔁 새 판으로 대체됨"))
+        limit_cards = [e for e in self.service.pending() if e["reason"] == "owner-message-write-limit"]
+        self.assertEqual([json.loads(base64.b64decode(e["body"]))["notes"] for e in limit_cards], ["고친 판"])
+        self.assertEqual(len(self.batch_card_posts()), 3)
 
     async def order_request(self, order="17", **kwargs):
         return await self.request(proof=False, headers={"x-dori-owner-order": order, **kwargs.pop("headers", {})},
