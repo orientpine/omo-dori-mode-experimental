@@ -32,4 +32,3 @@ export const tmuxPanePid = async (run: Runner, pane: string): Promise<number> =>
   const r = await run(["tmux", "display-message", "-p", "-t", `=${pane}:`, "#{pane_pid}"]);
   return r.code === 0 ? Number(r.out.trim()) || 0 : 0;
 };
-
