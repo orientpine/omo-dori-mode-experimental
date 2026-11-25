@@ -1,3 +1,4 @@
+import { parseRef } from "./runtime/types.ts";
 import { resolve } from "node:path";
 import { forwardEnv, laneEnv } from "./aoe.ts";
 import { aoeRefForLane, listAoeSessions } from "./sessions.ts";
@@ -32,12 +33,13 @@ export const laneRepo = async (deps: Pick<FlowDeps, "run">, cwd: string): Promis
 // live agent sessions as tmux names it (never an aoe_term_ plain terminal). The pane's own address picks the listing
 // (hc:t<n> hc, <ws>:<pane> herdr, else tmux), whatever the backend, so a Dori moving between backends adopts both.
 const paneOwned = async (deps: FlowDeps, pane: string): Promise<{ readonly owned: boolean; readonly group: string }> => {
-  if (!isHcPane(pane) && !isHerdrPane(pane)) return { owned: (await listAoeSessions(deps.run)).some((s) => s.ref.id === pane), group: "aoe live agent sessions" };
+  const hosted = parseRef(pane)?.runtime === "omo-host";
+  if (!hosted && !isHcPane(pane) && !isHerdrPane(pane)) return { owned: (await listAoeSessions(deps.run)).some((s) => s.ref.id === pane), group: "aoe live agent sessions" };
   const ref = paneRef(pane);
   const group = deps.config.laneWorkspace || undefined;
   const filter = ref.runtime === "hc" ? { group: group ?? "dori" } : group ? { group } : undefined;
   const sessions = await runtimesOf(deps.run, deps.config).for(ref).list(filter);
-  return { owned: sessions.some((s) => s.ref.id === ref.id), group: ref.runtime === "hc" ? `hc dori.group=${filter?.group}` : filter ? `herdr workspace ${filter.group}` : "herdr panes" };
+  return { owned: sessions.some((s) => s.ref.id === ref.id), group: hosted ? "omo-host lanes" : ref.runtime === "hc" ? `hc dori.group=${filter?.group}` : filter ? `herdr workspace ${filter.group}` : "herdr panes" };
 };
 
 // An adopt takes over a session dori did not start, so it proves three things first (upstream #230,
@@ -48,7 +50,7 @@ const paneOwned = async (deps: FlowDeps, pane: string): Promise<{ readonly owned
 // on, as `dori boot` prints it: on hc it is hc:<id>, never the tmux reading (upstream #223, issue #222,
 // https://github.com/sisyphuslabs/dori-superagent/pull/223); the ownership check then runs on that address.
 const adoptedPane = (deps: FlowDeps, pane: string): string =>
-  isHcPane(pane) || isHerdrPane(pane) || aoeRefForLane(pane) || deps.config.backend === "aoe" || runtimesOf(deps.run, deps.config).choice?.kind !== "hc" ? pane : `hc:${pane}`;
+  parseRef(pane)?.runtime === "omo-host" || isHcPane(pane) || isHerdrPane(pane) || aoeRefForLane(pane) || deps.config.backend === "aoe" || runtimesOf(deps.run, deps.config).choice?.kind !== "hc" ? pane : `hc:${pane}`;
 
 export const adoptLane = async (deps: FlowDeps, given: LaunchInput & { readonly pane: string }): Promise<Lane> => {
   const input = { ...given, pane: adoptedPane(deps, given.pane) };

@@ -7,6 +7,7 @@ import { paneLife } from "./aoe.ts";
 import { frozenPanes } from "./frozen.ts";
 import { isHerdrPane } from "./herdr.ts";
 import { hcStaleBlock, isHcPane } from "./hc-pane.ts";
+import { parseRef } from "./runtime/types.ts";
 import { herdrLeadSession, readHerdrSessions, reviveHerdr } from "./herdr-sessions.ts";
 import { sendVerified } from "./panes.ts";
 import { findLead } from "./lead.ts";
@@ -139,6 +140,12 @@ export const leadDownTick = async (deps: FlowDeps, env: Readonly<Record<string, 
     return out;
   }
   const [id = "", tmux = pane] = lead.split(" ");
+  const ref = parseRef(tmux);
+  if (ref?.runtime === "omo-host") {
+    const sent = await sendVerified(deps.run, deps.clock, deps.config, tmux, revivedText(next.since, "host session"));
+    save({ ...next, lastReviveAt: new Date(now).toISOString(), revives: next.revives + 1 });
+    return [...out, sent ? `LEAD_REVIVE ${pane}: host accepted the recovery prompt` : `LEAD_REVIVE_WARN ${pane}: hosted recovery prompt was not submitted`];
+  }
   if (isHerdrPane(tmux)) {
     // the herdr server owns the agent it starts, so no unit of its own is needed (a restart of dori-lanes leaves it)
     // next itself, so the notice saved below keeps the count

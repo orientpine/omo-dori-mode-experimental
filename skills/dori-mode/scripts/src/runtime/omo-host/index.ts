@@ -98,6 +98,7 @@ export class OmoHostRuntime implements SessionRuntime {
         const tail = await hostCall(this.exec, ["read", id, "--tail", String(n)]);
         return Array.isArray(tail["entries"]) ? tail["entries"] : [];
       } catch (e) {
+        if (isReason(e, "unknown_session")) return [];
         if (!(e instanceof OmoHostError && e.result.code === 0)) throw e;
       }
     }

@@ -1,5 +1,6 @@
 import { normalizeLeadPane } from "./lead-ref.ts";
 import { paneActivity } from "./aoe.ts";
+import type { Activity } from "./pane-activity.ts";
 import { autoturnTick } from "./autoturn.ts";
 import { laneBackground } from "./lane-wait.ts";
 import { laneDeathTick, laneSuspendTick } from "./lane-death.ts";
@@ -7,7 +8,7 @@ import { leadDownTick } from "./lead-down.ts";
 import { leadInboxTick } from "./lead-inbox.ts";
 import { leadLimitTick, limitResumeTick } from "./lead-limit.ts";
 import { missedAnswersTick } from "./missed-answers.ts";
-import { type Lane, statusOf, withStatus } from "./registry.ts";
+import { type Lane, sessionOf, statusOf, withStatus } from "./registry.ts";
 import { iso } from "./run.ts";
 import { omoPane, omoSession, sendVerified } from "./panes.ts";
 import { pendingGoalTick } from "./pending-goal.ts";
@@ -73,11 +74,13 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
       await deps.registry.write(lane);
     }
     if (lane.pane && omoPane(deps.config, lane.pane)) {
-      const reopened = await claimTurn(deps, lane, lane.claim ?? claim);
+      const act = (await paneActivity(deps.run, [lane.pane])).get(lane.pane);
+      const reopened = await claimTurn(deps, lane, act);
       if (reopened) {
         out.push(reopened);
         continue;
       }
+      if (act === "busy" && sessionOf(lane)?.runtime === "omo-host") continue;
     }
     if (deps.clock.now() - Date.parse(claim.at) < windowMs(deps)) continue;
     out.push(...(await settle(deps, (await deps.registry.read(lane.key)) ?? lane, claim.evidence)));
@@ -103,9 +106,10 @@ export const IDLE_SETTLE_MS = 45_000;
 // A claimed lane answers the claim's [LEAD] line and may get a goal wake, both within IDLE_SETTLE_MS of going idle. Once it
 // stayed idle that long, a main turn running again (omo's busy mark) is new work: a text typed some other way than dori
 // type, a background result. The claim is taken back and the lane told. A turn before that only restarts the idle clock.
-const claimTurn = async (deps: FlowDeps, lane: Lane, claim: NonNullable<Lane["claim"]>): Promise<string | undefined> => {
-  const pane = lane.pane ?? "";
-  const act = (await paneActivity(deps.run, [pane])).get(pane);
+const claimTurn = async (deps: FlowDeps, lane: Lane, act: Activity | undefined): Promise<string | undefined> => {
+  const claim = lane.claim;
+  if (!claim || !lane.pane) return undefined;
+  const pane = lane.pane;
   const now = deps.clock.now();
   if (act === "idle") {
     if (claim.idleAt === undefined) await deps.registry.patch(lane.key, { claim: { ...claim, idleAt: now } });

@@ -79,7 +79,9 @@ export const uiWarning = (input: LaunchInput, brief: string, ledger: Pick<Ledger
     : `LAUNCH_UI_HINT ${input.key}: the brief reads like UI work (${words}) but has no --ui, so the owner's seven UI steps (references/ui-work.md) are not in it. Launched as is; for UI work, launch with --ui.`;
 };
 
-export const cliCommand = (path: string = fileURLToPath(new URL("./cli.ts", import.meta.url)), instance?: FooterInstance, platform: string = process.platform): string => agentLine(["bun", path], instance ? instanceEnv(instance) : {}, platform);
+const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
+
+export const cliCommand = (path: string = CLI_PATH, instance?: FooterInstance, platform: string = process.platform): string => agentLine(["bun", path], instance ? instanceEnv(instance) : {}, platform);
 
 type FooterInstance = { readonly config: string; readonly stateDir: string; readonly envFile?: string; readonly hosted?: boolean; readonly sendTo?: string };
 
@@ -87,7 +89,7 @@ type FooterInstance = { readonly config: string; readonly stateDir: string; read
 const instanceEnv = (instance: FooterInstance): Readonly<Record<string, string>> => ({ DORI_CONFIG: instance.config, DORI_STATE_DIR: instance.stateDir, ...(instance.envFile ? { DORI_ENV_FILE: instance.envFile } : {}) });
 
 const reportTarget = (pane: string, instance?: FooterInstance): readonly string[] => [
-  ...(instance?.sendTo ? ["env", ...Object.entries(instanceEnv(instance)).map(([key, value]) => `${key}=${value}`), "bun", fileURLToPath(new URL("./cli.ts", import.meta.url))] : ["dori"]),
+  ...(instance?.sendTo ? ["env", ...Object.entries(instanceEnv(instance)).map(([key, value]) => `${key}=${value}`), "bun", CLI_PATH] : ["dori"]),
   "type", pane, "--text", "<report line>",
 ];
 

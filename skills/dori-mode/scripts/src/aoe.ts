@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathS
 import { basename, dirname, join } from "node:path";
 
 import { closeHerdrSession, herdrAgentPid, herdrSessions, isHerdrPane, openHerdrSession, procEnv } from "./herdr.ts";
+import { parseRef } from "./runtime/types.ts";
 import { captureTmux } from "./pane-io.ts";
 export { captureTmux, paneLife, type PaneLife, tmuxPanePid } from "./pane-io.ts";
 import type { Pane } from "./panes.ts";
@@ -67,7 +68,7 @@ export const BUSY_MARK = "esc to interrupt";
 export const WAKE_MARKS = ["◉ watching", "wake source", "goal continues in", "Pursuing goal"];
 export const QUESTION_MARK = /Ask user ·|\(\d+\/\d+ answered\)/;
 
-export { paneActivity, type Activity } from "./pane-activity.ts";
+export { paneActivity } from "./pane-activity.ts";
 
 // omo's input line is the last line starting with ❯; transcript lines above it are not input
 export const inputLine = (screen: string): string | undefined => screen.split("\n").findLast((l) => l.trimStart().startsWith("❯"));
@@ -245,6 +246,8 @@ export const openAoeSession = async (run: Runner, clock: Clock, opts: { readonly
 
 // stop the agent and move the session to the aoe trash (restorable; never --purge here)
 export const closeAoeSession = async (run: Runner, pane: string): Promise<string> => {
+  const ref = parseRef(pane);
+  if (ref?.runtime === "omo-host") return runtimesOf(run).for(ref).close(ref).then(() => `omo-host session ${pane} stopped and closed`, (e: unknown) => `omo-host session ${pane} not closed: ${String(e)}`);
   if (isHerdrPane(pane)) return closeHerdrSession(run, pane);
   const id = await aoeIdFor(run, pane);
   if (!id) return `aoe session for ${pane} not found`;

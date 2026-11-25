@@ -100,7 +100,9 @@ export function probeOf(state: Record<string, unknown> | undefined): Probe {
   if (state === undefined) return { status: "gone", shellInFront: false };
   const selected = rec(state["model"]);
   const [provider, id] = [str(selected["provider"]), str(selected["id"])];
-  const model = provider && id ? `${provider}/${id}` : str(state["model"]);
+  const baseModel = provider && id ? `${provider}/${id}` : str(state["model"]);
+  const thinking = str(state["thinkingLevel"]);
+  const model = baseModel && thinking ? `${baseModel}:${thinking}` : baseModel;
   const [title, cwd] = [str(state["sessionName"]), str(state["cwd"])];
   return {
     status: statusOf(state),

@@ -28,7 +28,7 @@ type HerdrTab = { readonly tab_id: string; readonly label?: string; readonly pan
 export const herdrRuntime = (run: Runner): SessionRuntime => runtimesOf(run).for({ runtime: "herdr", id: "" });
 export const herdrRef = (pane: string): SessionRef => ({ runtime: "herdr", id: pane });
 // the runtime a stored pane belongs to (an hc terminal "hc:t<n>", else herdr) and its ref there
-export const paneRef = (pane: string): SessionRef => parseRef(pane) ?? (isHcPane(pane) ? hcRef(pane) : herdrRef(pane));
+export const paneRef = (pane: string): SessionRef => { const ref = parseRef(pane); return ref?.runtime === "omo-host" ? ref : isHcPane(pane) ? hcRef(pane) : herdrRef(pane); };
 export const paneRuntime = (run: Runner, pane: string): SessionRuntime => runtimesOf(run).for(paneRef(pane));
 const herdrCli = (run: Runner): HerdrCli => new HerdrCli(execOf(run), process.env["DORI_HERDR_SESSION"]);
 

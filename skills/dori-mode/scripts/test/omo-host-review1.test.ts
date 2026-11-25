@@ -82,6 +82,18 @@ test("a hosted lane's settled claim reopens when it starts a new turn", async ()
   } finally { f.state.done(); }
 });
 
+test("watch does not settle a hosted claim while its first post-claim turn is busy", async () => {
+  const f = fixture();
+  try {
+    f.session.state["isStreaming"] = true;
+    const claim = { at: new Date(at - 86_400_000).toISOString(), evidence: "proof", emitted: true };
+    await f.deps.registry.write({ ...f.lane, status: "done-claimed", claim });
+    expect(await watchTick(f.deps)).not.toContainEqual(expect.stringMatching(/^LANE_CLOSED hosted/));
+    expect((await f.deps.registry.read(f.lane.key))?.status).toBe("done-claimed");
+    expect(f.session.parked).not.toBe(true);
+  } finally { f.state.done(); }
+});
+
 test("hc-only listing discovers recorded hosted lanes even when the placement override is absent", async () => {
   const f = fixture();
   const previous = process.env["DORI_RUNTIME"];
@@ -133,9 +145,10 @@ test("launch without a pinned model inherits the live hosted lead's model", asyn
   try {
     await Bun.write(f.lane.brief, "Do the work.");
     f.session.state["model"] = { provider: "test-provider", id: "lead-model" };
+    f.session.state["thinkingLevel"] = "medium";
     const config = { ...f.deps.config, leadRuntime: "omo-host" as const, leadPane: pane, laneRuntime: "omo-host" as const };
     const launched = await launchLane({ ...f.deps, config }, input(f));
-    expect(launched.lane.model).toBe("test-provider/lead-model");
+    expect(launched.lane.model).toBe("test-provider/lead-model:medium");
   } finally { f.state.done(); }
 });
 
