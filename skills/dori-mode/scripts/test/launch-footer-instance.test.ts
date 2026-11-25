@@ -22,11 +22,12 @@ test("relative selectors resolve from the launching cwd before the command runs 
     writeFileSync(brief, "do the work\n");
     process.chdir(launchRoot);
     process.env["DORI_CONFIG"] = "./config.json";
-    const deps = depsFor(newWorld(), fakeClock(Date.parse("2026-01-01T12:00:00.000Z")), state.dir, { stateDir: "./state", defaultCwd: launchRoot });
+    const deps = depsFor(newWorld(), fakeClock(Date.parse("2026-01-01T12:00:00.000Z")), state.dir, { stateDir: "./state", defaultCwd: launchRoot, runtime: "hc", leadPane: "hc:t3" });
     const rendered = await renderBrief(deps, { key: "report-lane", title: "reports", brief, done: "file /done", noThread: "QA", cwd: unrelated });
     const command = rendered.text.match(/with (.+ report) /)?.[1];
     expect(command).toContain(`DORI_CONFIG=${join(launchRoot, "config.json")}`);
     expect(command).toContain(`DORI_STATE_DIR=${stateDir}`);
+    expect(rendered.text.match(/run (\[.*?\])\. It prints SUBMITTED/)?.[1]).toBe('["dori","type","hc:t3","--text","<report line>"]');
     await new Registry(stateDir).write({ key: "report-lane", title: "reports", thread: "none", brief: "/b.md", done: "file /done", openedAt: "2026-01-01T12:00:00.000Z" });
     const child = Bun.spawn(["sh", "-c", `${command} report-lane --kind milestone --text "relative bound"`], {
       cwd: unrelated,

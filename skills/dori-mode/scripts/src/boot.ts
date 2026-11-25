@@ -48,6 +48,8 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   const rts = deps.rts ?? runtimesOf(deps.run, { runtime: deps.config.runtime });
   const choice = rts.choice;
   lines.push(choice ? `RUNTIME ${choice.kind} (from ${choice.source})` : `RUNTIME unavailable: ${rts.failure?.message ?? "unknown"}`);
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284: only announce an explicit lead placement.
+  if (deps.config.leadRuntime) lines.push(`LEAD_RUNTIME ${deps.config.leadRuntime} (from config)`);
   if (rts.failure) {
     lines.push("BOOT incomplete read-only; nothing restarted, written or stopped");
     return { exitCode: 1, lines };

@@ -26,13 +26,13 @@ import { omoSession, sendVerified } from "./panes.ts";
 import { hcLeadTitle } from "./hc-pane.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso, openingRuntime } from "./run.ts";
+import { leadUnmovable } from "./lead-ref.ts";
 import { descendants, ended, hasSessionSelector, type Proc, sessionDirFor } from "./session-id.ts";
 import { flat, missingHeadings, quoted, ROUND_TRIES } from "./restatement.ts";
 import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFile, type Signals, sessionSignals, setQuiet, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
 import { turnRunning } from "./submit.ts";
 import { watchLog } from "./watch-log.ts";
 import { type WorklogFacts, worklogFacts, worklogSection } from "./worklog-notes.ts";
-
 export type HandoverDeps = FlowDeps & Pick<FreezeDeps, "procs"> & {
   readonly signal: (pid: number, sig: Sig | "SIGTERM" | "SIGKILL") => boolean;
   readonly configPath: string;
@@ -685,7 +685,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
   if (!omoSession(config)) return refuse("dori handover needs omo as the agent (backend aoe, or herdr with agentCommand omo)");
   // a herdr handover opens a new conversation; an agentCommand that picks its session itself (--continue, --session ...) would reopen the old one
   if (config.backend === "herdr" && hasSessionSelector(config.agentCommand.slice(1))) return refuse(`dori handover on herdr needs an agentCommand without a session selector (it opens a new session): ${config.agentCommand.join(" ")}`);
-  if (!config.leadPane) return refuse("leadPane is not set");
+  const unmovable = leadUnmovable(config.leadPane, config.leadRuntime, () => openingRuntime(deps.run, config.backend)); if (unmovable) return refuse(unmovable);
   if (deps.envLeadPane) return refuse(`DORI_LEAD_PANE=${deps.envLeadPane} is set in the environment and overrides leadPane in ${deps.configPath}, so lanes would keep reporting there; remove it (also from any wrapper script) and keep the pane in the config file`);
   if (opts.note && !existsSync(opts.note)) return refuse(`note file not found: ${opts.note}`);
   const lacking = opts.note ? missingHeadings(readFileSync(opts.note, "utf8"), LEAD_SUMMARY_HEADINGS) : [];

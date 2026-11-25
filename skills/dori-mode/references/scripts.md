@@ -2,6 +2,9 @@
 
 `scripts/` is a bun + TypeScript package with one CLI, `dori`. Every external command runs as an argv array; nothing builds a shell string.
 
+<!-- https://github.com/sisyphuslabs/dori-superagent/pull/284 -->
+`leadRuntime` optionally identifies where the existing lead lives: `"hc"` with `leadPane` written as `hc:<terminal>`, or `"herdr"` with a pane ID such as `w1:p3`. It does not start or migrate a lead or change where lanes, duty, or loops open. If set, `dori boot` prints `LEAD_RUNTIME <kind> (from config)`, new lane footers bind `dori type` to the lead and the launching Dori instance, and lead handover refuses if the replacement would open on a different runtime. If unset, existing behavior is unchanged. The `omo-host` runtime is not ported; leave `laneRuntime` unset.
+
 ## Install and test
 
 ```sh

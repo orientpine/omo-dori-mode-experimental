@@ -129,7 +129,7 @@ export class ChosenRuntimes extends Runtimes {
   readonly choice: RuntimeChoice | undefined;
   readonly failure: Error | undefined;
 
-  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime) {
+  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime, private readonly leadKind?: RuntimeKind) {
     let choice: RuntimeChoice | undefined;
     let failure: Error | undefined;
     try {
@@ -146,6 +146,11 @@ export class ChosenRuntimes extends Runtimes {
     if (this.failure) throw this.failure;
     return super.default;
   }
+
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284: lead placement does not change where new sessions open.
+  get lead(): SessionRuntime {
+    return this.leadKind ? this.for({ runtime: this.leadKind, id: "" }) : this.default;
+  }
 }
 
 // Every runtime behind the scripts' Runner, so a test's fake runner answers the runtime's calls as it answered the herdr
@@ -155,13 +160,15 @@ export const execOf = (runner: Runner): Exec => async (cmd, argv) => {
   return { code: r.code, stdout: r.out, stderr: r.err };
 };
 
-export const runtimesFor = (config: { readonly runtime?: RuntimeKind | undefined }, env: Env, runner: Runner = run, clock: Clock = realClock): ChosenRuntimes => {
+type RuntimeConfig = { readonly runtime?: RuntimeKind | undefined; readonly leadRuntime?: RuntimeKind };
+
+export const runtimesFor = (config: RuntimeConfig, env: Env, runner: Runner = run, clock: Clock = realClock): ChosenRuntimes => {
   const exec = execOf(runner);
   const make: Record<RuntimeKind, () => SessionRuntime> = {
     herdr: () => new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], { env, sleep: clock.sleep }),
     hc: () => new HcRuntime(exec, { env, sleep: clock.sleep }),
   };
-  return new ChosenRuntimes(() => runtimeChoice(config, env), (kind) => make[kind]());
+  return new ChosenRuntimes(() => runtimeChoice(config, env), (kind) => make[kind](), config.leadRuntime);
 };
 
 const built = new WeakMap<Runner, Map<string, ChosenRuntimes>>();
@@ -174,10 +181,10 @@ export const useConfiguredRuntime = (kind: RuntimeKind | undefined): void => {
 };
 
 // One registry per Runner and configured runtime, so a sweep's calls share the runtimes it built.
-export const runtimesOf = (runner: Runner, config: { readonly runtime?: RuntimeKind | undefined } = { runtime: configured }): ChosenRuntimes => {
+export const runtimesOf = (runner: Runner, config: RuntimeConfig = { runtime: configured }): ChosenRuntimes => {
   const byKind = built.get(runner) ?? new Map<string, ChosenRuntimes>();
   built.set(runner, byKind);
-  const key = config.runtime ?? "";
+  const key = config.leadRuntime ? `${config.runtime ?? ""}:${config.leadRuntime}` : config.runtime ?? "";
   const rts = byKind.get(key) ?? runtimesFor(config, process.env, runner);
   byKind.set(key, rts);
   return rts;

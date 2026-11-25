@@ -18,7 +18,16 @@ test("boot prints the selected runtime before every other check", async () => {
   const deps = depsFor(world);
   const rts = new ChosenRuntimes(() => ({ kind: "herdr", source: "default" }), () => deps.rts.default);
   await deps.registry.write(lane("leftover", "closed", "w2:p2"));
-  expect((await bootCheck({ ...deps, rts })).lines[0]).toBe("RUNTIME herdr (from default)");
+  const { lines } = await bootCheck({ ...deps, rts });
+  expect(lines[0]).toBe("RUNTIME herdr (from default)");
+  expect(lines.filter((line) => line.startsWith("LEAD_RUNTIME"))).toEqual([]);
+});
+
+test("boot announces explicit lead placement without changing the default runtime", async () => {
+  const deps = depsFor(newWorld());
+  const { lines } = await bootCheck({ ...deps, config: { ...deps.config, leadRuntime: "hc" } });
+  expect(lines).toContain("LEAD_RUNTIME hc (from config)");
+  expect(lines.some((line) => line.startsWith("RUNTIME herdr "))).toBe(true);
 });
 
 test("an unavailable runtime prints its fix and fails boot before any other check", async () => {
