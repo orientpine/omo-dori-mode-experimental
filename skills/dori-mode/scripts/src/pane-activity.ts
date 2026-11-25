@@ -2,7 +2,7 @@ import { aoeSessions, aoeStates, QUESTION_MARK, sessionFor, WAKE_MARKS } from ".
 import { onDuty } from "./duty-line.ts";
 import { herdrLife, isHerdrPane } from "./herdr.ts";
 import { captureTmux } from "./pane-io.ts";
-import type { Runner } from "./run.ts";
+import { runtimesOf, type Runner } from "./run.ts";
 import { parseRef } from "./runtime/types.ts";
 import { turnRunning } from "./submit.ts";
 
@@ -17,8 +17,11 @@ export const paneActivity = async (run: Runner, panes: readonly string[]): Promi
   for (const pane of panes) {
     const ref = parseRef(pane);
     if (ref?.runtime === "omo-host") {
-      const screen = await captureTmux(run, pane);
-      if (screen) out.set(pane, turnRunning(screen) ? "busy" : QUESTION_MARK.test(screen) ? "question" : /^(?:Running \(|Pursuing goal)/m.test(screen) ? "running" : "idle");
+      const rt = runtimesOf(run).for(ref);
+      if (await rt.observe?.(ref)) {
+        const { activity } = await rt.probe(ref);
+        if (activity) out.set(pane, activity);
+      }
       continue;
     }
     const id = isHerdrPane(pane) ? ((await herdrLife(run, pane)).live ? pane : undefined) : sessionFor(sessions, pane)?.id;

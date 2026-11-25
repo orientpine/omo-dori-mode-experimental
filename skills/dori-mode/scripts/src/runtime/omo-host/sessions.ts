@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 
 import type { Exec } from "../exec.ts";
 import type { AgentStatus, CreateSpec, Probe, SessionInfo, SessionRef } from "../types.ts";
+import { backgroundWork } from "./render.ts";
 import { hostCall, isReason, rec, str } from "./exec.ts";
 
 const DEFAULT_GROUP = "dori";
@@ -103,14 +104,19 @@ export function probeOf(state: Record<string, unknown> | undefined): Probe {
   const baseModel = provider && id ? `${provider}/${id}` : str(state["model"]);
   const thinking = str(state["thinkingLevel"]);
   const model = baseModel && thinking ? `${baseModel}:${thinking}` : baseModel;
-  const [title, cwd] = [str(state["sessionName"]), str(state["cwd"])];
+  const [title, cwd, transcriptPath] = [str(state["sessionName"]), str(state["cwd"]), str(state["sessionFile"])];
+  const status = statusOf(state);
+  const goal = goalOf(state);
+  const question = [state["pendingQuestions"], state["pendingDialogs"]].some((value) => Array.isArray(value) && value.length > 0);
   return {
-    status: statusOf(state),
+    status,
+    activity: status === "working" ? "busy" : question ? "question" : backgroundWork(rec(state["lifecycle"])) || goal === "active" ? "running" : "idle",
+    ...(transcriptPath ? { transcriptPath } : {}),
     agent: "omo",
     ...(title === undefined ? {} : { title }),
     ...(cwd === undefined ? {} : { cwd }),
     shellInFront: false,
-    goal: goalOf(state),
+    goal,
     ...(model ? { model } : {}),
   };
 }

@@ -1,6 +1,6 @@
 import { hostedStartup, openHostedLane } from "./launch-hosted.ts";
 import { resolve } from "node:path";
-import { rmSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import { laneEnv } from "./aoe.ts";
 import { laneHomeEnv } from "./home-env.ts";
 import { TokenFileError } from "./slack-token.ts";
@@ -11,7 +11,7 @@ import type { Lane } from "./registry.ts";
 import { Reports } from "./reports.ts";
 import { watchLog } from "./watch-log.ts";
 import { assignArm } from "./compaction-keep.ts";
-import { type LaunchInput, LaunchError, LaunchFailed, NEW_THREAD, ThreadMissingError, DirectiveMissingError } from "./launch-types.ts";
+import { type LaunchInput, LaunchError, LaunchFailed, LaunchRegistrationError, NEW_THREAD, ThreadMissingError, DirectiveMissingError } from "./launch-types.ts";
 import { failureOf, startupGoal, openHerdr, openAoe } from "./launch-startup.ts";
 import { validateLaunch, threadGate, relatedGate, doneWeakWarning } from "./launch-gates.ts";
 import { aoeStartup } from "./launch-screen.ts";
@@ -96,9 +96,10 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     ? openAoe(deps, input.key, cwd, model, prompt, env, async (pane) => beforeStart({ pane }))
     : openHerdr(deps, input.key, cwd, model, prompt, env, beforeStart)
   ).catch(async (e: unknown) => {
-    if (registered && deps.config.backend !== "aoe" && (e instanceof HcStartupError || e instanceof HerdrStartupError) && e.rollback) {
+    if (registered && (e instanceof HcStartupError || e instanceof HerdrStartupError || e instanceof LaunchRegistrationError) && e.rollback) {
       rmSync(deps.registry.path(input.key), { force: true });
-      rmSync(new Reports(deps.config.stateDir).path(input.key), { force: true });
+      const journal = new Reports(deps.config.stateDir).path(input.key);
+      if (statSync(journal, { throwIfNoEntry: false })?.isFile()) rmSync(journal, { force: true });
     }
     throw e instanceof LaunchFailed && openedThread ? new LaunchFailed(e.message, openedThread) : e;
   });

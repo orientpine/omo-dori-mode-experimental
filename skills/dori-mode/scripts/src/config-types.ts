@@ -1,4 +1,4 @@
-import type { RuntimeKind } from "./runtime/types.ts";
+import type { RuntimeKind, TerminalKind } from "./runtime/types.ts";
 import type { RuntimeChoice } from "./run.ts";
 import type { RelatedSettings } from "./related-thread.ts";
 import type { StateGitSettings } from "./state-git.ts";
@@ -50,7 +50,7 @@ export type DoriConfig = {
   // https://github.com/sisyphuslabs/dori-superagent/pull/282: opt-in lane placement.
   readonly laneRuntime?: RuntimeKind;
   // https://github.com/sisyphuslabs/dori-superagent/pull/284: identifies the runtime of the existing lead session.
-  readonly leadRuntime?: RuntimeKind;
+  readonly leadRuntime?: TerminalKind;
   readonly stateDir: string;
   readonly watchLog: string;
   readonly update: UpdateConfig;

@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isOmoExecutable } from "./executable.ts";
+import { parseRef } from "./runtime/types.ts";
 import { normalizeLeadPane } from "./lead-ref.ts";
 import { isRuntimeKind, type Ran, run, type Runner, type RunOptions } from "./run.ts";
 import { supervisionProblem } from "./supervision.ts";
@@ -110,7 +111,9 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   // https://github.com/sisyphuslabs/dori-superagent/pull/282: the base runtime stays terminal-only.
   if (raw.laneRuntime !== undefined && raw.laneRuntime !== "omo-host" && !isRuntimeKind(raw.laneRuntime)) throw new ConfigError(`${path}: laneRuntime must be "herdr", "hc", or "omo-host", not ${JSON.stringify(raw.laneRuntime)}`);
   // https://github.com/sisyphuslabs/dori-superagent/pull/284: `runtime` remains terminal-only even with a hosted lead.
-  if (raw.leadRuntime !== undefined && raw.leadRuntime !== "omo-host" && !isRuntimeKind(raw.leadRuntime)) throw new ConfigError(`${path}: leadRuntime must be "herdr", "hc", or "omo-host", not ${JSON.stringify(raw.leadRuntime)}`);
+  const leadRuntime: unknown = raw.leadRuntime;
+  if (leadRuntime === "omo-host" || parseRef(process.env["DORI_LEAD_PANE"] ?? merged.leadPane)?.runtime === "omo-host") throw new ConfigError(`${path}: a hosted lead is not supported yet in this fork; leadRuntime may be "hc" or "herdr"`);
+  if (leadRuntime !== undefined && !isRuntimeKind(leadRuntime)) throw new ConfigError(`${path}: leadRuntime must be "herdr" or "hc", not ${JSON.stringify(leadRuntime)}`);
   if (raw.runtime !== undefined && !isRuntimeKind(raw.runtime)) throw new ConfigError(`${path}: runtime must be "herdr" or "hc" (unset: detected), not ${JSON.stringify(raw.runtime)}`);
   const supervisionBad = supervisionProblem((raw as { supervision?: unknown }).supervision);
   if (supervisionBad) throw new ConfigError(`${path}: invalid ${supervisionBad}`);

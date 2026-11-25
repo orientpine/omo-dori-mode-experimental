@@ -4,7 +4,6 @@ import { loadConfig } from "../src/config.ts";
 import { paneActivity } from "../src/aoe.ts";
 import { leadNow, useDoriState } from "../src/hc-pane.ts";
 import { listPanes } from "../src/panes.ts";
-import { launchLane } from "../src/launch.ts";
 import { renderBrief } from "../src/launch-render.ts";
 import { watchTick } from "../src/done-flow.ts";
 import { pendingGoalTick } from "../src/pending-goal.ts";
@@ -131,24 +130,12 @@ test("stored hc discovery and activity keep their terminal behavior without over
   }
 });
 
-test("watch lead refresh keeps a bare hosted ID on the same runtime as initial load", async () => {
+test("watch lead refresh keeps a bare hc ID on the same runtime as initial load", async () => {
   const f = fixture();
   try {
-    await Bun.write(f.configPath, JSON.stringify({ leadRuntime: "omo-host", leadPane: id }));
-    expect((await loadConfig(f.configPath)).leadPane).toBe(pane);
-    expect(leadNow(f.configPath)).toBe(pane);
-  } finally { f.state.done(); }
-});
-
-test("launch without a pinned model inherits the live hosted lead's model", async () => {
-  const f = fixture();
-  try {
-    await Bun.write(f.lane.brief, "Do the work.");
-    f.session.state["model"] = { provider: "test-provider", id: "lead-model" };
-    f.session.state["thinkingLevel"] = "medium";
-    const config = { ...f.deps.config, leadRuntime: "omo-host" as const, leadPane: pane, laneRuntime: "omo-host" as const };
-    const launched = await launchLane({ ...f.deps, config }, input(f));
-    expect(launched.lane.model).toBe("test-provider/lead-model:medium");
+    await Bun.write(f.configPath, JSON.stringify({ leadRuntime: "hc", leadPane: "t3" }));
+    expect((await loadConfig(f.configPath)).leadPane).toBe("hc:t3");
+    expect(leadNow(f.configPath)).toBe("hc:t3");
   } finally { f.state.done(); }
 });
 

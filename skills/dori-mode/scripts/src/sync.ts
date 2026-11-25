@@ -1,7 +1,7 @@
 import type { FlowDeps } from "./done-flow.ts";
 import { frozenPanes } from "./frozen.ts";
 import { listPanes } from "./panes.ts";
-import { statusOf } from "./registry.ts";
+import { sessionOf, statusOf } from "./registry.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 
 export type SyncRow = { readonly key: string; readonly thread: string; readonly pane: string; readonly session: string; readonly status: string };
@@ -17,8 +17,9 @@ export const syncRegistry = async (deps: FlowDeps, write: boolean): Promise<Sync
   const lanes = await deps.registry.open();
   for (const lane of lanes) {
     const pane = lane.pane ? live.get(lane.pane) : undefined;
-    if (!pane) drift.push(`${lane.key}: pane ${lane.pane ?? "(none)"} is gone but the lane is ${statusOf(lane)}`);
-    const hit = pane ? await resolveSession(pane.pane_id, pane.cwd ?? "", table, sessionDeps) : { id: "", via: "none" };
+    const ref = sessionOf(lane);
+    if (!pane) drift.push(ref?.runtime === "omo-host" ? `${lane.key}: hosted session is unlisted (may be parked; not resumed)` : `${lane.key}: pane ${lane.pane ?? "(none)"} is gone but the lane is ${statusOf(lane)}`);
+    const hit = ref?.runtime === "omo-host" ? { id: ref.id, via: "runtime" as const } : pane ? await resolveSession(pane.pane_id, pane.cwd ?? "", table, sessionDeps) : { id: "", via: "none" };
     if (lane.session && hit.id && hit.id !== lane.session) drift.push(`${lane.key}: pane now runs session ${hit.id} (registry has ${lane.session})`);
     if (!lane.done) drift.push(`${lane.key}: empty Done line, so a done claim can never close it`);
     if (write && hit.id && hit.id !== lane.session) await deps.registry.write({ ...lane, session: hit.id, sessionVia: hit.via });

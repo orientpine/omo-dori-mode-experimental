@@ -24,6 +24,8 @@ export type Probe = {
   readonly cwd?: string;
   // Ported from https:  //github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
   readonly goal?: string;
+  readonly activity?: "busy" | "running" | "question" | "idle";
+  readonly transcriptPath?: string;
   readonly model?: string;
   readonly shellInFront: boolean;
   readonly foreground?: readonly ForegroundProcess[];
@@ -77,6 +79,8 @@ export interface SessionRuntime {
   start(ref: SessionRef, command: string): Promise<void>;
   list(filter?: { readonly group?: string }): Promise<readonly SessionInfo[]>;
   probe(ref: SessionRef): Promise<Probe>;
+  /** Passive lookup: absence from a live-only index is unlisted, not proof of disappearance. */
+  observe?(ref: SessionRef): Promise<SessionInfo | undefined>;
   read(ref: SessionRef, lines: number): Promise<string>;
   /** Never types into a session whose probe says shellInFront, whatever `status` says. Default `when` = "idle". */
   deliver(ref: SessionRef, text: string, opts?: DeliverOptions): Promise<DeliverOutcome>;

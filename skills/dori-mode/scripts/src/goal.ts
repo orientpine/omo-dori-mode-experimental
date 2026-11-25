@@ -126,6 +126,9 @@ export const goalCommand = async (deps: FlowDeps, pane: string, act: GoalAct): P
 };
 
 export const liveSession = async (deps: FlowDeps, pane: string): Promise<string | undefined> => {
+  const ref = parseRef(pane);
+  // Explicit pause/resume may reactivate a registered lane; passive sweeps never use this path.
+  if (ref?.runtime === "omo-host") return (await runtimesOf(deps.run, deps.config).for(ref).probe(ref)).status === "gone" ? "no hosted session" : undefined;
   const life = await paneLife(deps.run, pane);
-  return life.live ? undefined : life.how === "gone" ? (parseRef(pane)?.runtime === "omo-host" ? "no hosted session" : pane.includes(":") ? "no herdr pane" : "no tmux session") : life.status < 0 ? "no agent runs in its pane" : `its program exited (status ${life.status})`;
+  return life.live ? undefined : life.how !== "dead" ? (pane.includes(":") ? "no herdr pane" : "no tmux session") : life.status < 0 ? "no agent runs in its pane" : `its program exited (status ${life.status})`;
 };

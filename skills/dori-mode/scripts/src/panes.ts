@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 
-import { captureTmux, listAoePanes, liveSessions, paneLife, QUESTION_MARK, sessionFor, target, tmuxPanePid, waitForPrompt } from "./aoe.ts";
-import { sessionFile } from "./background.ts";
+import { captureTmux, listAoePanes, paneLife, QUESTION_MARK, target, tmuxPanePid, waitForPrompt } from "./aoe.ts";
+import { paneTranscript, transcriptHas } from "./pane-transcript.ts";
 import type { Backend, DoriConfig } from "./config.ts";
 import { herdrOk, herdrRef, herdrResult, herdrRuntime, isHerdrPane, shellInFrontName } from "./herdr.ts";
-import { hcRead, hcType, isHcPane, listKeptSessions } from "./hc-pane.ts";
+import { hcRead, hcType, isHcPane, listKeptSessions, storedRuntimes } from "./hc-pane.ts";
 import { hostedTypeLine, submitHosted } from "./sessions.ts";
 import { formatRef, parseRef } from "./runtime/types.ts";
 import { replacementOf } from "./frozen.ts";
@@ -28,11 +28,13 @@ export class UnsafeTextError extends Error {}
 
 // The sessions of the configured runtime and of the stored ones (as sessions.ts listSessions, upstream #154) as the pane rows the sweeps read; an aoe
 // Dori lists its tmux sessions.
-export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime" | "laneRuntime"> & { readonly workspaces?: readonly string[] }): Promise<Pane[]> => {
+export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime" | "laneRuntime"> & Partial<Pick<DoriConfig, "stateDir">> & { readonly workspaces?: readonly string[] }): Promise<Pane[]> => {
   const rts = runtimesOf(run, config);
   const aoe = config.backend === "aoe" ? await listAoePanes(run) : [];
   if (config.laneRuntime) void rts.lane;
-  const sessions = config.backend === "aoe" ? (config.laneRuntime ? await rts.lane.list() : []) : await listKeptSessions(rts);
+  const stored = config.backend === "aoe" ? await storedRuntimes(config.stateDir) : [];
+  const kinds = new Set([...stored, ...(config.laneRuntime ? [config.laneRuntime] : [])]);
+  const sessions = config.backend === "aoe" ? (await Promise.all([...kinds].map((runtime) => rts.for({ runtime, id: "" }).list()))).flat() : await listKeptSessions(rts);
   // hc lists no dori.group label unasked: each configured workspace is listed by its label, so a workspace filter keeps
   // the hc terminals of that group (review 1 of #404)
   const hcGroup = new Map<string, string>();
@@ -76,38 +78,7 @@ export const sendChunks = (text: string, max = SEND_CHUNK_BYTES): string[] => {
   return part ? [...out, part] : out;
 };
 
-// The session's transcript holds the text as a user message at or after since (ms). A long text is matched by its first
-// line, which omo keeps as typed; a paste-folded text shows up whole in the transcript.
-export const transcriptHas = (transcript: string, text: string, since: number): boolean => {
-  const head = (text.split("\n")[0] ?? "").trim().slice(0, 80);
-  if (!head) return false;
-  return transcript.split("\n").some((line) => {
-    if (!line.includes('"user"')) return false;
-    try {
-      const o = JSON.parse(line) as { timestamp?: string; message?: { role?: string; content?: unknown } };
-      if (o.message?.role !== "user" || !(Date.parse(o.timestamp ?? "") >= since)) return false;
-      const c = o.message.content;
-      const said = typeof c === "string" ? c : Array.isArray(c) ? c.map((p: { text?: string }) => p.text ?? "").join("\n") : "";
-      return said.includes(head);
-    } catch {
-      return false;
-    }
-  });
-};
-
-export const paneTranscript = async (run: Runner, sessionsDir: string, pane: string): Promise<string | undefined> => {
-  const cwd = sessionFor(await liveSessions(run), pane)?.path;
-  return cwd ? (await sessionFile(run, sessionsDir, pane, cwd))?.path : undefined;
-};
-
-export const paneTranscriptHas = async (run: Runner, sessionsDir: string, pane: string, text: string, since: number): Promise<boolean> => {
-  const path = await paneTranscript(run, sessionsDir, pane).catch(() => undefined);
-  try {
-    return !!path && transcriptHas(readFileSync(path, "utf8"), text, since);
-  } catch {
-    return false;
-  }
-};
+export { paneTranscript, paneTranscriptHas, transcriptHas } from "./pane-transcript.ts";
 
 // Whether an aoe pane's omo session recorded the text since the send; the transcript file is looked up once per send.
 const transcriptCheck = (run: Runner, clock: Clock, sessionsDir: string, pane: string, text: string): (() => Promise<boolean>) => {
@@ -198,7 +169,7 @@ const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, t
     type: async (text) => {
       // named, so a lead does not read a missing pane as a busy one (the prompt check below would say "no ❯ prompt")
       const life = await paneLife(run, pane);
-      if (!life.live) return life.how === "gone" ? `PANE_GONE: there is no ${where} (it ended, or the name is wrong); nothing was typed` : `PANE_DEAD: the program in ${pane} exited (${life.status < 0 ? "no agent runs in it" : `status ${life.status}`}); nothing was typed`;
+      if (!life.live) return life.how !== "dead" ? `PANE_GONE: there is no ${where} (it ended, or the name is wrong); nothing was typed` : `PANE_DEAD: the program in ${pane} exited (${life.status < 0 ? "no agent runs in it" : `status ${life.status}`}); nothing was typed`;
       const stopped = await stoppedAgent(run, pane);
       if (stopped) return `the agent in the pane is stopped (pid ${stopped}, frozen): nothing would read the text, so it was not typed`;
       const behind = await backgroundAgent(run, pane);

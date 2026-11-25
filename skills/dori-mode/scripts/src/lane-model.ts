@@ -2,8 +2,7 @@ import type { DoriConfig } from "./config.ts";
 import { herdrLeadSession, readHerdrSessions } from "./herdr-sessions.ts";
 import { splitModel } from "./lane-handover.ts";
 import type { Lane } from "./registry.ts";
-import { parseRef } from "./runtime/types.ts";
-import { runtimesOf, type Runner } from "./run.ts";
+import type { Runner } from "./run.ts";
 
 // A lane runs its lead's model (owner 2026-11-10: "각 리드 하위의 레인들이 리드와 동일한 모델을 쓰도록 해줘"): dori launch without
 // --model and every dori handover --lane (by hand or automatic) start it on the lead's model of then, so a lead moved to
@@ -65,8 +64,6 @@ export const withThinking = (argv: readonly string[], model: string): string[] =
 // read that fails leaves the record as it was, and only with no model in it does its error stop the launch. aoe records no
 // lead model, so it keeps defaultModel.
 export const resolveLeadModel = async (run: Runner, config: Pick<DoriConfig, "backend" | "stateDir" | "sessionsDir" | "leadPane" | "defaultModel">): Promise<string | undefined> => {
-  const hosted = parseRef(config.leadPane);
-  if (hosted?.runtime === "omo-host") return (await runtimesOf(run).for(hosted).probe(hosted)).model;
   if (config.backend !== "herdr") return leadModel(config) ?? config.defaultModel;
   if (!config.leadPane) return undefined;
   const failed = await herdrLeadSession(run, config, config.leadPane, true).then(() => undefined, (e: unknown) => e);

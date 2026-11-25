@@ -143,7 +143,7 @@ export const laneDeathTick = async (deps: FlowDeps): Promise<string[]> => {
       if (lane.died) await deps.registry.patch(lane.key, { died: undefined });
       continue;
     }
-    if (lane.died?.pane === pane) continue;
+    if (life.how === "unlisted" || lane.died?.pane === pane) continue;
     const first = notLive.get(pane);
     if (first === undefined) {
       notLive.set(pane, now);
