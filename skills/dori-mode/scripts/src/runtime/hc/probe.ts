@@ -1,8 +1,9 @@
 // From upstream dori-superagent src/runtime/hc/probe.ts (https://github.com/sisyphuslabs/dori-superagent/blob/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444/src/runtime/hc/probe.ts; #147 #148 #150 #155, licences in NOTICE).
-import { interactiveShellInFront } from "../foreground.ts";
+import { interactiveShellInFront, namesAgent } from "../foreground.ts";
 import type { AgentStatus, ForegroundProcess, Probe } from "../types.ts";
 import type { Exec } from "../exec.ts";
 import { hcCall, isKind } from "./exec.ts";
+import { foregroundGroup } from "./front.ts";
 
 const REPORTED: ReadonlySet<string> = new Set(["idle", "working", "blocked", "error", "done"]);
 
@@ -54,12 +55,29 @@ export function parseProbe(terminal: unknown): Probe {
   };
 }
 
+/**
+ * upstream sisyphuslabs/dori-superagent#277: hc can report a status with no `foreground` (seen for up to ~0.5 s after a
+ * first report), which alone proves nothing (a suspended agent, #66). The OS process table is read instead: the agent is
+ * in front only when the terminal's foreground group holds no interactive shell and a member names the app hc reported.
+ * Anything less leaves the doubt (`shellInFront`) as it was. A remote address (`machine/t7`) is never matched against
+ * this machine's table.
+ */
+async function withOsForeground(exec: Exec, id: string, parsed: Probe): Promise<Probe> {
+  const { foreground, agent, rootPid } = parsed;
+  if (foreground !== undefined || agent === undefined || rootPid === undefined || id.includes("/")) return parsed;
+  const group = await foregroundGroup(exec, rootPid);
+  if (group === undefined || interactiveShellInFront(group.processes) || !namesAgent(group.processes, agent)) return parsed;
+  return { ...parsed, pgid: group.pgid, shellInFront: false, foreground: group.processes };
+}
+
 /** `hc get`: a terminal hc no longer knows is `gone`; any other failure throws (the caller decides what doubt means). */
 export async function probe(exec: Exec, id: string): Promise<Probe> {
+  let parsed: Probe;
   try {
-    return parseProbe(await hcCall(exec, ["get", id]));
+    parsed = parseProbe(await hcCall(exec, ["get", id]));
   } catch (e) {
     if (isKind(e, "not_found")) return { status: "gone", shellInFront: false };
     throw e;
   }
+  return withOsForeground(exec, id, parsed);
 }

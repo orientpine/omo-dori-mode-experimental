@@ -37,6 +37,9 @@ export type FakeKnobs = {
   nameTaken?: boolean;
   /** `get` answers this error kind for every terminal. */
   getError?: string;
+  readError?: string;
+  /** Process table output; unset means ps is unavailable. */
+  ps?: string;
 };
 
 const EXIT: Readonly<Record<string, number>> = {
@@ -89,6 +92,10 @@ export class FakeHc {
   }
 
   readonly exec: Exec = async (cmd, argv) => {
+    if (cmd === "ps") {
+      const stdout = this.knobs.ps;
+      return stdout === undefined ? { code: 1, stdout: "", stderr: "no process table" } : { code: 0, stdout, stderr: "" };
+    }
     if (cmd !== "hc" || argv[0] !== "--json") throw new Error(`unexpected call ${cmd} ${argv.join(" ")}`);
     const args = argv.slice(1);
     this.calls.push(args);
@@ -102,6 +109,7 @@ export class FakeHc {
       case "get":
         return ok({ address: id, ...t });
       case "read":
+        if (this.knobs.readError !== undefined) return fail(this.knobs.readError, "read refused");
         return Number(args[args.indexOf("--lines") + 1] ?? 0) > 0 && t.history ? ok({ text: `${t.history}\n${t.screen ?? ""}`, complete: true, how: "history" }) : ok({ text: t.screen ?? "", complete: true, how: "screen" });
       case "send":
         return this.send(id, t, args);

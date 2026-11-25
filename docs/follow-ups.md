@@ -2,6 +2,14 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
+## hc: an agent that never reports a status word gets nothing delivered (upstream #272, left out of #521)
+
+Upstream sisyphuslabs/dori-superagent#272 reads such a terminal's screen (`esc to interrupt` = working, omo's idle input = idle) and lets deliver() send on that verdict with no `--if`. In the fork every hole of that inference becomes a paste-and-Enter into whatever runs in front, under `dori type`'s `when: "any"`: three reviews of #521 and a challenge found the phrase in a draft, words right above a box holding a draft (even a real running banner over a draft), an editor quoting the phrase with no omo box at all, and an editor showing a copy of omo's idle box. A screen layout cannot prove which program is in front, and the program's name cannot either: a real omo under hc runs as `bun .../senpi/dist/bundle/cli.js` and reports OSC 7501 itself (`hc get`: `reported: true`, `app: omo`), so the fork's agents never take this path. An unreported terminal stays held as before (`unknown`). What would close it: a status the program itself gives (OSC 7501 or an RPC bound to its foreground session), never a screen read, before anything is typed into a terminal that never reported.
+
+## Close: the receipt says "stopped" when SIGTERM was sent (#522)
+
+`N lane processes outlived the pane, stopped: <pids>` is printed once `kill -TERM` succeeds; a process may catch or ignore SIGTERM and run on (review 2 of #522, LOW; upstream #225 words it the same). What would close it: say `SIGTERM sent`, or read the table again after a short bounded wait and name the pids still alive.
+
 ## Guard: the disk alert's largest folders need GNU tools (#509)
 
 `dori guard`'s disk alert lists the largest entries under /tmp, /var/tmp and /home with `timeout 120 du -xsk` and `stat -c %U` (host-guard.ts diskTops). macOS has neither `timeout` nor a `stat` that takes `-c`, so there every entry reads 못 읽음 and no account is named; the alert and the lead's inbox row still go out. Every host runs Linux today (lead 2026-11-19). What would close it: the runner's own `timeoutMs` instead of `timeout`, the owner from `statSync().uid` and the account database instead of `stat -c`, and a test of the list with no GNU tools on PATH.
