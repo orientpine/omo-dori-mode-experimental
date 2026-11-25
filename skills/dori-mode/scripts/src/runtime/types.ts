@@ -24,6 +24,7 @@ export type Probe = {
   readonly cwd?: string;
   // Ported from https:  //github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
   readonly goal?: string;
+  readonly model?: string;
   readonly shellInFront: boolean;
   readonly foreground?: readonly ForegroundProcess[];
 };

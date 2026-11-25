@@ -60,7 +60,7 @@ test("a hosted launch can be read, prompted and closed without a terminal", asyn
     expect(host.calls.find(([verb]) => verb === "open")).toContain("a/m");
     const rendered = await Bun.file(brief).text();
     expect(rendered).toContain(`DORI_STATE_DIR=${configured.config.stateDir}`);
-    expect(rendered).toContain('["hc","send","t3","--","<report line>"]');
+    expect(rendered).toContain('cli.ts","type","hc:t3","--text","<report line>"');
     expect(await readScreen(configured.run, "herdr", pane)).toContain("You are the fix-x lane");
     expect(await sendVerified(configured.run, configured.clock, configured.config, pane, "test follow-up")).toBe(true);
     expect(await readScreen(configured.run, "herdr", pane)).toContain("test follow-up");

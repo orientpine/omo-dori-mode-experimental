@@ -3,6 +3,7 @@ import { createConnection } from "node:net";
 import { delimiter, join } from "node:path";
 import { envFileEntries, envFilePath } from "./config-env.ts";
 
+import { hostedCustody } from "./hosted-custody.ts";
 import type { Exec } from "./runtime/exec.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
 import { HerdrRuntime } from "./runtime/herdr/index.ts";
@@ -166,14 +167,14 @@ export const execOf = (runner: Runner): Exec => async (cmd, argv) => {
   return { code: r.code, stdout: r.out, stderr: r.err };
 };
 
-type RuntimeConfig = { readonly runtime?: TerminalKind | undefined; readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: RuntimeKind };
+type RuntimeConfig = { readonly runtime?: TerminalKind | undefined; readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: RuntimeKind; readonly stateDir?: string };
 
 export const runtimesFor = (config: RuntimeConfig, env: Env, runner: Runner = run, clock: Clock = realClock): ChosenRuntimes => {
   const exec = execOf(runner);
   const make: Record<RuntimeKind, () => SessionRuntime> = {
     herdr: () => new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], { env, sleep: clock.sleep }),
     hc: () => new HcRuntime(exec, { env, sleep: clock.sleep }),
-    "omo-host": () => new OmoHostRuntime(exec, { env, now: clock.now }),
+    "omo-host": () => new OmoHostRuntime(hostedCustody(exec, config.stateDir), { env, now: clock.now }),
   };
   return new ChosenRuntimes(() => runtimeChoice(config, env), (kind) => make[kind](), config);
 };

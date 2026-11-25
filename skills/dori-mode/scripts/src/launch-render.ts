@@ -1,10 +1,10 @@
-import { parseRef } from "./runtime/types.ts";
+import { normalizeLeadPane } from "./lead-ref.ts";
+import { envFilePath } from "./config-env.ts";
 import { resolve } from "node:path";
 import { configPath, runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Lane } from "./registry.ts";
-import { leadSendArgv } from "./launch-footer.ts";
-import { iso, runtimesOf } from "./run.ts";
+import { iso } from "./run.ts";
 import { addedLine, type DirectivePick, type Ledger, mergePicks, missingLines, parsePick, PICK_RUNS, PICK_SYSTEM, pickCandidates, pickPrompt, planDirectives, type ScopeContext, scopeContext, waivedLines, withDirectives } from "./directives.ts";
 import { type LaunchInput, LaunchError } from "./launch-types.ts";
 import { uiSteps, withUiSteps, eightSteps, withEightSteps, stepsLine, uiWarning, footer } from "./launch-footer.ts";
@@ -77,10 +77,10 @@ export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<R
   const lines = [...(hint ? [hint] : []), ...(added ? [added] : []), ...(picked ? [picked] : []), ...waivedLines(input.key, plan), ...lessons.warnings];
   // https://github.com/sisyphuslabs/dori-superagent/pull/282: only hosted lanes need an explicit lead send route.
   // https://github.com/sisyphuslabs/dori-superagent/pull/284: an explicit lead placement also routes terminal-lane reports.
-  const send = deps.config.laneRuntime === "omo-host" || deps.config.leadRuntime !== undefined
-    ? leadSendArgv(deps.config.leadRuntime ? runtimesOf(deps.run, deps.config).lead.kind : parseRef(deps.config.leadPane)?.runtime ?? runtimesOf(deps.run, deps.config).lead.kind, deps.config.leadPane)
-    : undefined;
-  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${lessons.section ? `${lessons.section}\n` : ""}${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos), { config: resolve(configPath()), stateDir: resolve(deps.config.stateDir), ...(send ? { send } : {}) })}` };
+  const hosted = deps.config.laneRuntime === "omo-host";
+  const explicitLead = deps.config.leadRuntime !== undefined;
+  const pane = normalizeLeadPane(deps.config.leadPane, deps.config.leadRuntime);
+  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${lessons.section ? `${lessons.section}\n` : ""}${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos), { config: resolve(configPath()), stateDir: resolve(deps.config.stateDir), ...(hosted ? { hosted, envFile: resolve(envFilePath()) } : {}), ...(hosted || explicitLead ? { sendTo: pane, envFile: resolve(envFilePath()) } : {}) })}` };
 };
 
 // The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.

@@ -28,6 +28,6 @@ test("a terminal lane can send its report to an explicitly hosted lead", async (
     const deps = depsFor(newWorld(), fakeClock(0), state.dir, { runtime: "hc", leadPane: id });
     const config = { ...deps.config, leadRuntime: "omo-host" as const };
     const { text } = await renderBrief({ ...deps, config }, { key: "fix-x", title: "fix", brief, done: "closed acme/app#3" });
-    expect(text).toContain(JSON.stringify(["dori", "type", `omo-host:${id}`, "--text", "<report line>"]));
+    expect(text).toContain(`cli.ts","type","omo-host:${id}","--text","<report line>"`);
   } finally { state.done(); }
 });

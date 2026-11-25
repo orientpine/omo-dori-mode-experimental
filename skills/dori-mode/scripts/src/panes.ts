@@ -151,7 +151,7 @@ const backgroundAgent = async (run: Runner, pane: string): Promise<number | unde
 // Whether dori drives omo in this session the aoe way: every tmux session (also under a herdr config while the Dori
 // moves), and the herdr panes of a Dori whose agentCommand is omo.
 export const omoSession = (config: Pick<DoriConfig, "backend" | "agentCommand">): boolean => config.backend === "aoe" || isOmoExecutable(config.agentCommand[0] ?? "");
-export const omoPane = (config: Pick<DoriConfig, "backend" | "agentCommand">, pane: string): boolean => !isHerdrPane(pane) || omoSession(config);
+export const omoPane = (config: Pick<DoriConfig, "backend" | "agentCommand">, pane: string): boolean => parseRef(pane)?.runtime === "omo-host" || !isHerdrPane(pane) || omoSession(config);
 
 // upstream #69: the states herdr reports for a pane whose agent is running (its others: unknown, or none over a shell)
 export const ALIVE_STATUSES: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done"]);

@@ -2,6 +2,7 @@ import { paneLife, sessionFor, type AoeSession } from "./aoe.ts";
 import type { DoriConfig } from "./config.ts";
 import { isHerdrPane } from "./herdr.ts";
 import { herdrLeadSession } from "./herdr-sessions.ts";
+import { parseRef } from "./runtime/types.ts";
 import type { Runner } from "./run.ts";
 
 export class LeadError extends Error {}
@@ -16,6 +17,8 @@ export const findLead = async (run: Runner, config: Pick<DoriConfig, "leadPane">
   if (!tmux) throw new LeadError("no DORI_LEAD_TMUX or leadPane configured");
   // a herdr lead (a pane id with ":"): "<omo session id> <pane>", the session its agent runs (or ran: herdr-sessions.ts
   // keeps it, so a lead whose agent ended or whose server restarted is started again in the same conversation)
+  const hosted = parseRef(tmux);
+  if (hosted?.runtime === "omo-host") return `${hosted.id} ${tmux}${(await paneLife(run, tmux)).live ? "" : " stopped"}`;
   if (isHerdrPane(tmux)) {
     const life = await paneLife(run, tmux);
     const session = await herdrLeadSession(run, config, tmux, life.live);

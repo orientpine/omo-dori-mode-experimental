@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { type Clock, execOf, type Runner, runtimesOf } from "./run.ts";
 import { HerdrCli, reasonOf, ToolError } from "./runtime/herdr/exec.ts";
-import type { SessionRef, SessionRuntime } from "./runtime/types.ts";
+import { parseRef, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import { commandExecutable, executableName } from "./executable.ts";
 import { powershellData } from "./powershell.ts";
 import { AGENT, type Proc, procTable, topAgent } from "./session-id.ts";
@@ -17,7 +17,7 @@ export { paneGroup } from "./hc-pane.ts";
 // herdr's own agent_status is not used for omo (herdr 0.9.5 has no omo rule and falls back to idle; upstream #62/#63): the
 // state comes from omo's screen, the same marks the aoe side reads (https://github.com/sisyphuslabs/dori-superagent/pull/63,
 // https://github.com/sisyphuslabs/dori-superagent/issues/62).
-export const isHerdrPane = (pane: string): boolean => pane.includes(":");
+export const isHerdrPane = (pane: string): boolean => pane.includes(":") && parseRef(pane)?.runtime !== "omo-host";
 
 export type HerdrPane = { readonly pane_id: string; readonly tab_id?: string; readonly workspace_id?: string; readonly cwd?: string; readonly agent?: string; readonly agent_status?: string };
 type HerdrTab = { readonly tab_id: string; readonly label?: string; readonly pane_count?: number };
@@ -28,7 +28,7 @@ type HerdrTab = { readonly tab_id: string; readonly label?: string; readonly pan
 export const herdrRuntime = (run: Runner): SessionRuntime => runtimesOf(run).for({ runtime: "herdr", id: "" });
 export const herdrRef = (pane: string): SessionRef => ({ runtime: "herdr", id: pane });
 // the runtime a stored pane belongs to (an hc terminal "hc:t<n>", else herdr) and its ref there
-export const paneRef = (pane: string): SessionRef => (isHcPane(pane) ? hcRef(pane) : herdrRef(pane));
+export const paneRef = (pane: string): SessionRef => parseRef(pane) ?? (isHcPane(pane) ? hcRef(pane) : herdrRef(pane));
 export const paneRuntime = (run: Runner, pane: string): SessionRuntime => runtimesOf(run).for(paneRef(pane));
 const herdrCli = (run: Runner): HerdrCli => new HerdrCli(execOf(run), process.env["DORI_HERDR_SESSION"]);
 

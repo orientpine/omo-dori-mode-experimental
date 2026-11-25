@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
 import { BUSY_MARK, liveSessions, QUESTION_MARK, sessionFor } from "./aoe.ts";
 import { readFrozen } from "./frozen.ts";
-import { Registry } from "./registry.ts";
+import { useHostedCustody } from "./hosted-custody.ts";
+import { normalizeLeadPane } from "./lead-ref.ts";
+import { Registry, sessionOf } from "./registry.ts";
 import { hcCall, isKind } from "./runtime/hc/exec.ts";
 import { slugName } from "./runtime/hc/sessions.ts";
 import { shellInFrontName } from "./herdr.ts";
 import { type ChosenRuntimes, type Clock, execOf, openingRuntime, type Runner, runtimesOf } from "./run.ts";
-import { formatRef, type RuntimeKind, type SessionInfo, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
+import { formatRef, parseRef, type RuntimeKind, type SessionInfo, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import { AGENT, procTable, topAgent } from "./session-id.ts";
 import { LaunchFailed } from "./launch-types.ts";
 
@@ -27,22 +29,25 @@ type DoriState = { readonly stateDir: string; readonly configPath: string };
 let state: DoriState | undefined;
 export const useDoriState = (next: DoriState | undefined): void => {
   state = next;
+  useHostedCustody(next?.stateDir);
 };
-const kindOfPane = (pane: string): RuntimeKind | undefined => (isHcPane(pane) ? "hc" : pane.includes(":") ? "herdr" : undefined);
+const kindOfPane = (pane: string): RuntimeKind | undefined => (parseRef(pane)?.runtime ?? (isHcPane(pane) ? "hc" : pane.includes(":") ? "herdr" : undefined));
 // the lead as loadConfig takes it: DORI_LEAD_PANE over the file's leadPane (review 4 of #404)
 export const leadNow = (path: string): string => {
   const env = process.env["DORI_LEAD_PANE"];
-  if (env !== undefined) return env;
   try {
-    return String((JSON.parse(readFileSync(path, "utf8")) as { leadPane?: unknown }).leadPane ?? "");
+    const config: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!config || typeof config !== "object") return env ?? "";
+    return normalizeLeadPane(env ?? String("leadPane" in config ? config.leadPane ?? "" : ""), "leadRuntime" in config ? config.leadRuntime : undefined);
   } catch {
-    return "";
+    return env ?? "";
   }
 };
 export const storedRuntimes = async (): Promise<ReadonlySet<RuntimeKind>> => {
   if (!state) return new Set();
-  const panes = [...(await new Registry(state.stateDir).open()).map((l) => l.pane ?? ""), leadNow(state.configPath), ...readFrozen(state.stateDir).map((r) => r.pane)];
-  return new Set(panes.flatMap((p) => kindOfPane(p) ?? []));
+  const lanes = await new Registry(state.stateDir).open();
+  const panes = [leadNow(state.configPath), ...readFrozen(state.stateDir).map((r) => r.pane)];
+  return new Set([...lanes.flatMap((lane) => sessionOf(lane)?.runtime ?? kindOfPane(lane.pane ?? "") ?? []), ...panes.flatMap((pane) => kindOfPane(pane) ?? [])]);
 };
 
 // The group a pane's session lives in: an hc terminal's dori.group label (hc ls prints no labels, hc 0.1.18), a herdr pane's

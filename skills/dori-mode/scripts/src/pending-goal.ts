@@ -1,13 +1,14 @@
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { parseRef } from "./runtime/types.ts";
 import { paneLife } from "./aoe.ts";
 import { pendingBackground, restoredMonitors } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { parseRef } from "./runtime/types.ts";
 import { type GoalRead, laneGoal, sessionGoal } from "./goal.ts";
 import { omoPane, readScreen, submitToPane } from "./panes.ts";
-import { statusOf } from "./registry.ts";
+import { closedMeanwhile } from "./sessions.ts";
+import { sessionOf, statusOf } from "./registry.ts";
 import { AGENT, descendants, ended, procTable, sessionDirFor, shellPidOf } from "./session-id.ts";
 import { turnRunning } from "./submit.ts";
 import { isHerdrPane } from "./herdr.ts";
@@ -78,7 +79,7 @@ export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | 
 // left unfinished died with it (laneBackground has the same cutoff); a persistent monitor the restart restored counts while
 // the session's monitor manifest says it runs (handover.ts liveMonitors), as in laneBackground
 export const firstTurnRuns = async (deps: FlowDeps, pane: string, cwd: string, session: string, screen: string): Promise<boolean> =>
-  turnRunning(screen) || (await ownOrRestored(deps, pane, cwd, session));
+  turnRunning(screen) || (parseRef(pane)?.runtime === "omo-host" ? /^Running \(/m.test(screen) : await ownOrRestored(deps, pane, cwd, session));
 
 const ownOrRestored = async (deps: FlowDeps, pane: string, cwd: string, session: string): Promise<boolean> => {
   const since = await agentStart(deps, pane);
@@ -139,6 +140,8 @@ export const pendingGoalTick = async (deps: FlowDeps): Promise<string[]> => {
   for (const lane of await deps.registry.list()) {
     const mark = lane.pendingGoal;
     if (!mark || !lane.pane || !["working", "not-done"].includes(statusOf(lane)) || (!lane.session && !deps.readGoal)) continue;
+    const ref = sessionOf(lane);
+    if (ref?.runtime === "omo-host" && await closedMeanwhile(deps, ref, lane.key)) continue;
     const gone = await agentGone(deps, lane.pane);
     if (gone && omoPane(deps.config, lane.pane)) continue;
     if (gone) {
@@ -149,12 +152,14 @@ export const pendingGoalTick = async (deps: FlowDeps): Promise<string[]> => {
     }
     const cwd = lane.cwd ?? deps.config.defaultCwd;
     const goal = await goalReader(deps, cwd, lane.session ?? "")(lane.pane);
+    if (ref?.runtime === "omo-host" && await closedMeanwhile(deps, ref, lane.key)) continue;
     if (typeof goal === "object") {
       await deps.registry.patch(lane.key, { pendingGoal: undefined });
       out.push(`LANE_GOAL_SET ${lane.key} ${lane.pane}: its session holds a goal now; the pending-goal mark is cleared`);
       continue;
     }
     const screen = await readScreen(deps.run, deps.config.backend, lane.pane, 40);
+    if (ref?.runtime === "omo-host" && await closedMeanwhile(deps, ref, lane.key)) continue;
     if (mark.at !== undefined && deps.clock.now() - mark.at >= GOAL_WAIT.maxPendingMs) {
       await deps.registry.patch(lane.key, { pendingGoal: undefined });
       out.push(`LANE_NO_GOAL ${lane.key} ${lane.pane}: still pending 25 minutes after launch with ${noGoalWhy(goal)}; last lines: ${lastLines(screen)}`);

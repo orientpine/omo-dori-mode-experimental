@@ -1,7 +1,5 @@
 {
   "backend": "herdr",
-  "laneRuntime": "herdr",
-  "leadRuntime": "herdr",
   "stateDir": "~/.dori/state",
   "laneWorkspace": "lanes",
   "workspaces": [

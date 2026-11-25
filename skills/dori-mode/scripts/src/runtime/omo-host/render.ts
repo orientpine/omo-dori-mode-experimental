@@ -55,7 +55,7 @@ const questionLines = (state: Record<string, unknown>): string[] =>
     (Array.isArray(list) ? list.map(rec) : []).map((q) => {
       const options = Array.isArray(q["options"]) ? q["options"].filter((o) => typeof o === "string") : [];
       const title = str(q["title"]) ?? str(q["question"]) ?? "(question)";
-      return `? ${lines(title)[0]}${options.length ? ` [${options.join(" / ")}]` : ""}`;
+      return `Ask user · ${lines(title)[0]}${options.length ? ` [${options.join(" / ")}]` : ""}`;
     }),
   );
 
@@ -87,7 +87,7 @@ export function footerLines(state: Record<string, unknown>, goal: string, now: n
   const working = state["isStreaming"] === true || state["isCompacting"] === true;
   const waiting = backgroundWork(lifecycle);
   const status = working
-    ? `Working (${time})`
+    ? `Working (${time} • esc to interrupt)`
     : waiting
       ? `Running (${time}) · waiting on ${waiting} background task${waiting === 1 ? "" : "s"}`
       : "❯";
