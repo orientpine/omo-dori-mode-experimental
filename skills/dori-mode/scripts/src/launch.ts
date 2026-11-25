@@ -107,7 +107,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   });
   const arm = hosted ? undefined : assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
   const lane: Lane = { ...draft, ...("ref" in opened ? { sessionRef: opened.ref } : {}), model, reportProtocol: "jsonl-v1", pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
-  if ("ref" in opened && (await deps.registry.read(lane.key))?.status === "closed") return { lane, startup: await hostedStartup(deps, input.key, opened.ref) };
+  if ("ref" in opened && (await deps.registry.read(lane.key))?.status === "closed") return { lane, startup: await hostedStartup(deps, input.key, opened.ref, launchedAt) };
   await deps.registry.write(lane);
   if (!registered) new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${lane.pane ?? "unknown"}` });
   // registered first, so the queue counts this lane as working in the thread; a thread --thread new just opened is 🔄 already
@@ -116,7 +116,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     if (reopened) warn(reopened);
   }
   if (opened.failure) return { lane, startup: `STARTUP_ERROR ${input.key} ${opened.pane}: ${opened.failure}` };
-  if ("ref" in opened) return { lane, startup: await hostedStartup(deps, input.key, opened.ref) };
+  if ("ref" in opened) return { lane, startup: await hostedStartup(deps, input.key, opened.ref, launchedAt) };
   const prompted = deps.clock.now();
   await deps.clock.sleep(STARTUP_CHECK_MS);
   const screen = await readScreen(deps.run, deps.config.backend, opened.pane, 40);

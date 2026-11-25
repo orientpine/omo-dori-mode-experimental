@@ -6,7 +6,7 @@ import { holdLock } from "./checkpoint-lock.ts";
 import { type DoriConfig, type Explore, expandHome, fill, type Stuck } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { tagsOf } from "./lane-signals.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import { type FixAttempt, type Lane, statusOf, type StuckMark } from "./registry.ts";
 import { sessionStart } from "./rollover.ts";
 import { iso } from "./run.ts";
@@ -490,7 +490,7 @@ export const researchHint = (lane: Lane, tree: Tree): string[] => {
 
 // ---- the external-search step, run through omo's ulw research ----
 
-// Text typed into a pane stays one line, and sendVerified refuses backticks and $(.
+// Text typed into a pane stays one line, and sendOnce refuses backticks and $(.
 const typeable = (s: string): string => s.replace(/\s+/g, " ").replace(/`/g, "'").replaceAll("$(", "$ (").trim();
 
 // The research question for ulw research, from the lane's records: the exact symptom, what was tried, what a test ruled
@@ -518,7 +518,7 @@ export const sendResearch = async (deps: FlowDeps, lane: Lane, tree: Tree, signa
   if (!lane.pane) return false;
   const text = researchMessage(deps.config.explore, lane, tree, signal, metric);
   const sentAt = deps.clock.now();
-  const delivered = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
+  const delivered = await sendOnce(deps.run, deps.clock, deps.config, lane.pane, text);
   if (delivered) await deps.registry.patch(lane.key, { research: { at: new Date(sentAt).toISOString(), sentAt, probe: text.slice(0, 80), metric, signal } });
   return delivered;
 };

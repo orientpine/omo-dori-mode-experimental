@@ -37,7 +37,7 @@ export const openHostedLane = async (deps: FlowDeps, input: { readonly key: stri
   return { pane, tab: undefined, session: ref.id, ref, failure };
 };
 
-export const hostedStartup = async (deps: FlowDeps, key: string, ref: SessionRef): Promise<string> => {
+export const hostedStartup = async (deps: FlowDeps, key: string, ref: SessionRef, launchedAt = deps.clock.now()): Promise<string> => {
   const pane = formatRef(ref);
   const rt = runtimesOf(deps.run, deps.config).for(ref);
   await deps.clock.sleep(STARTUP_CHECK_MS);
@@ -48,6 +48,9 @@ export const hostedStartup = async (deps: FlowDeps, key: string, ref: SessionRef
     const probe = await rt.probe(ref);
     if (await closedMeanwhile(deps, ref, key)) return `STARTUP_DONE ${key}`;
     if (probe.status === "gone") return `STARTUP_ERROR ${key} ${pane}: the host session is gone`;
+    const error = probe.status === "working" ? undefined : await rt.startupError?.(ref, launchedAt);
+    if (await closedMeanwhile(deps, ref, key)) return `STARTUP_DONE ${key}`;
+    if (error) return `STARTUP_ERROR ${key} ${pane}: ${error}`;
     if (probe.goal === "active") return `STARTUP_OK ${key} ${pane}`;
     if (probe.activity === "busy" || probe.activity === "running") {
       await deps.registry.patch(key, { pendingGoal: { idle: 0, at: deps.clock.now() } });

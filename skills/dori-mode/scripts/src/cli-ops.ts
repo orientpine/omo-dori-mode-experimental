@@ -7,7 +7,7 @@ import { reviveHerdr } from "./herdr-sessions.ts";
 import { fileLog, installTaskRefusal, serve, serveLoops, spawnLoop, TASK_NAME, taskArgv } from "./serve.ts";
 import { findLead } from "./lead.ts";
 import { configPath } from "./config.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import { applyUpdate } from "./update.ts";
 import { announceChange } from "./update-announce.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
@@ -35,7 +35,7 @@ import { CheckpointError, takeLock } from "./checkpoint-lock.ts";
 const notifyChangeCommand: Command = async (context) => {
   const { flags, config, need } = context;
   const files = flags.values.file;
-  process.exitCode = await announceChange({ config, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { summary: need("summary"), files: Array.isArray(files) ? files.filter((file): file is string => typeof file === "string") : [] }) ? 0 : 1;
+  process.exitCode = await announceChange({ config, clock: realClock, send: (pane, text) => sendOnce(run, realClock, config, pane, text), print: (line) => console.log(line) }, { summary: need("summary"), files: Array.isArray(files) ? files.filter((file): file is string => typeof file === "string") : [] }) ? 0 : 1;
   return;
 };
 
@@ -52,7 +52,7 @@ const eyesCommand: Command = async (context) => {
 
 const updateCommand: Command = async (context) => {
   const { config, flags } = context;
-  process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendVerified(run, realClock, config, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
+  process.exitCode = await applyUpdate({ config, configPath: configPath(), git: run, systemctl: run, clock: realClock, send: (pane, text) => sendOnce(run, realClock, config, pane, text), print: (line) => console.log(line) }, { pull: Boolean(flags.values.pull), dryRun: Boolean(flags.values["dry-run"]) }) ? 0 : 1;
   return;
 };
 
@@ -203,7 +203,7 @@ const reviveCommand: Command = async (context) => {
     console.log(`REVIVE_ALREADY_RUNNING ${pane}`);
     return;
   }
-  const line = await reviveHerdr(run, realClock, config, pane, opt("text") ?? "", (p, t) => sendVerified(run, realClock, config, p, t));
+  const line = await reviveHerdr(run, realClock, config, pane, opt("text") ?? "", (p, t) => sendOnce(run, realClock, config, p, t));
   console.log(line);
   if (!line.startsWith("REVIVE_OK")) process.exitCode = 1;
   return;

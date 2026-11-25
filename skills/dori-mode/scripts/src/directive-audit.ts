@@ -12,7 +12,7 @@ import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { eightSteps, laneRepo, launchLedger, uiSteps } from "./launch.ts";
 import { leadSessionFiles } from "./lead-sessions.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce, sendVerified } from "./panes.ts";
 import type { ThreadMap } from "./messenger/thread-map.ts";
 import type { Lane } from "./registry.ts";
 import { keepReviewerOutput } from "./reviewer-output.ts";
@@ -186,11 +186,11 @@ export const applyDirectives = async (deps: FlowDeps, lane: Lane, opts: { readon
   const message = applyMessage(lane.brief, texts);
   if (opts.dryRun) return { ok: true, added: ids, message, lines: [...lines, `DIRECTIVES_APPLY_DRY ${lane.key}: would send ${ids.join(", ")} to ${lane.pane ?? "(no pane)"} and add them to ${lane.brief}`] };
   if (!lane.pane) throw new DirectiveError(`lane ${lane.key} has no pane to send the directives to`);
-  if (!(await sendVerified(deps.run, deps.clock, deps.config, lane.pane, message))) {
-    const line = `DIRECTIVES_APPLY_NOT_SENT ${lane.key} ${lane.pane}: the [LEAD] message was not submitted; the brief is unchanged (run it again)`;
-    watchLog(deps.config.watchLog, deps.clock, { source: "directives", line });
-    return { ok: false, added: [], message, lines: [...lines, line] };
-  }
+  // a held hosted message is not sent twice; the brief changes once the session takes it (upstream https://github.com/sisyphuslabs/dori-superagent/pull/282, review 5 of PR 527)
+  const delivery = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, message);
+  const held = delivery.kind === "pending" ? `DIRECTIVES_APPLY_PENDING ${lane.key} ${lane.pane}: the host holds the [LEAD] message (${delivery.receipt}); the brief is unchanged until the session takes it, and running this again sends no second copy` : delivery.kind === "not-sent" ? `DIRECTIVES_APPLY_NOT_SENT ${lane.key} ${lane.pane}: the [LEAD] message was not submitted; the brief is unchanged (run it again)` : undefined;
+  if (held) watchLog(deps.config.watchLog, deps.clock, { source: "directives", line: held });
+  if (held) return { ok: delivery.kind === "pending", added: [], message, lines: [...lines, held] };
   await Bun.write(briefOf(lane, deps.config.defaultCwd), withApplied(brief, texts));
   await deps.registry.patch(lane.key, { directives: { ...lane.directives, applied: [...new Set([...(lane.directives?.applied ?? []), ...ids])], waived: lane.directives?.waived ?? [] } });
   const line = `DIRECTIVES_APPLIED ${lane.key}: ${ids.join(", ")} sent to ${lane.pane} (SUBMITTED) and added to ${lane.brief} under "${APPLIED_HEADING.slice(3)}"`;
@@ -313,7 +313,7 @@ const tellLead = async (deps: FlowDeps, inbox: string, lines: readonly string[],
   for (const line of lines) watchLog(deps.config.watchLog, deps.clock, { source: "directive-audit", line });
   toInbox(inbox, deps, summary);
   const pane = deps.config.leadPane;
-  const sent = pane ? await sendVerified(deps.run, deps.clock, deps.config, pane, summary) : false;
+  const sent = pane ? await sendOnce(deps.run, deps.clock, deps.config, pane, summary) : false;
   const tail = sent ? `DIRECTIVE_AUDIT_SENT ${pane}` : `DIRECTIVE_AUDIT_NOT_SENT ${pane || "(no leadPane)"}: the summary did not reach the lead's pane; it is in the inbox and the watch log`;
   watchLog(deps.config.watchLog, deps.clock, { source: "directive-audit", line: tail });
   return tail;

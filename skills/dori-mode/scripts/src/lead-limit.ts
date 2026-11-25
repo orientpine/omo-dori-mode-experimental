@@ -6,7 +6,7 @@ import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { currentTranscript, reconcileRows, type AnswerRow } from "./missed-answers.ts";
 import { waitingOwnerRows } from "./owner-waiting.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
 
@@ -159,7 +159,7 @@ export const leadLimitTick = async (deps: FlowDeps): Promise<string[]> => {
     if (next.wakeKey !== key) {
       const min = Math.floor((now - oldest.at) / 60_000);
       const text = `[DORI] LEAD_OWNER_WAITING: ${waiting.length} owner message(s) since ${clock(deps, oldest.at)} have had no reply from you for ${min} min${blocked ? " (your model calls failed meanwhile)" : ""}. The oldest: "${plain(oldest.text, 120)}". Read them in the inbox and answer the owner now.`;
-      const ok = await sendVerified(deps.run, deps.clock, deps.config, pane, text);
+      const ok = await sendOnce(deps.run, deps.clock, deps.config, pane, text);
       if (ok) save({ ...next, wakeKey: key, wakeIds: [...new Set([...(next.wakeIds ?? []).filter((id) => rows.some((r) => r.id === id)), ...waiting.map((r) => r.id)])], wokeAt: new Date(now).toISOString() });
       out.push(`LEAD_OWNER_WAITING ${pane} ${waiting.length} owner message(s), oldest ${new Date(oldest.at).toISOString()} (${min} min)${blocked ? ", model failing" : ""}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane"}`);
     }
@@ -241,7 +241,7 @@ export const limitResumeTick = async (deps: FlowDeps): Promise<string[]> => {
       next[t.pane] = key;
       continue;
     }
-    const ok = await sendVerified(deps.run, deps.clock, deps.config, t.pane, RESUME_TEXT);
+    const ok = await sendOnce(deps.run, deps.clock, deps.config, t.pane, RESUME_TEXT);
     if (ok) next[t.pane] = key;
     out.push(`${head}; ${ok ? "SUBMITTED" : "NOT_SUBMITTED: the line did not reach the pane, tried again next tick"}`);
   }

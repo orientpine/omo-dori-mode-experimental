@@ -9,7 +9,7 @@ import { isHerdrPane } from "./herdr.ts";
 import { hcStaleBlock, isHcPane } from "./hc-pane.ts";
 import { parseRef } from "./runtime/types.ts";
 import { herdrLeadSession, readHerdrSessions, reviveHerdr } from "./herdr-sessions.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import { findLead } from "./lead.ts";
 import { clock, ownerRows, placeOf, tailOf } from "./lead-limit.ts";
 import { waitingOwnerRows } from "./owner-waiting.ts";
@@ -142,7 +142,7 @@ export const leadDownTick = async (deps: FlowDeps, env: Readonly<Record<string, 
   const [id = "", tmux = pane] = lead.split(" ");
   const ref = parseRef(tmux);
   if (ref?.runtime === "omo-host") {
-    const sent = await sendVerified(deps.run, deps.clock, deps.config, tmux, revivedText(next.since, "host session"));
+    const sent = await sendOnce(deps.run, deps.clock, deps.config, tmux, revivedText(next.since, "host session"));
     save({ ...next, lastReviveAt: new Date(now).toISOString(), revives: next.revives + 1 });
     return [...out, sent ? `LEAD_REVIVE ${pane}: host accepted the recovery prompt` : `LEAD_REVIVE_WARN ${pane}: hosted recovery prompt was not submitted`];
   }
@@ -151,7 +151,7 @@ export const leadDownTick = async (deps: FlowDeps, env: Readonly<Record<string, 
     // next itself, so the notice saved below keeps the count
     next = { ...next, revives: next.revives + 1, lastReviveAt: new Date(now).toISOString() };
     save(next);
-    const line = await reviveHerdr(deps.run, deps.clock, deps.config, tmux, revivedText(clock(deps, since), "herdr agent"), (p, t) => sendVerified(deps.run, deps.clock, deps.config, p, t));
+    const line = await reviveHerdr(deps.run, deps.clock, deps.config, tmux, revivedText(clock(deps, since), "herdr agent"), (p, t) => sendOnce(deps.run, deps.clock, deps.config, p, t));
     if (!line.startsWith("REVIVE_OK")) {
       out.push(`LEAD_REVIVE_WARN ${pane} ${line}`);
       return out;

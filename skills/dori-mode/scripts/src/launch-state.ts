@@ -1,3 +1,4 @@
+import { DEFAULT_GROUP } from "./runtime/omo-host/sessions.ts";
 import { parseRef } from "./runtime/types.ts";
 import { resolve } from "node:path";
 import { forwardEnv, laneEnv } from "./aoe.ts";
@@ -5,7 +6,7 @@ import { aoeRefForLane, listAoeSessions } from "./sessions.ts";
 import { isHerdrPane, paneRef } from "./herdr.ts";
 import { isHcPane } from "./hc-pane.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import { type Lane, threadRefProblem } from "./registry.ts";
 import { iso, runtimesOf } from "./run.ts";
 import { checkDone, doneSyntaxErrors } from "./done-signals.ts";
@@ -37,7 +38,7 @@ const paneOwned = async (deps: FlowDeps, pane: string): Promise<{ readonly owned
   if (!hosted && !isHcPane(pane) && !isHerdrPane(pane)) return { owned: (await listAoeSessions(deps.run)).some((s) => s.ref.id === pane), group: "aoe live agent sessions" };
   const ref = paneRef(pane);
   const group = deps.config.laneWorkspace || undefined;
-  const filter = ref.runtime === "hc" ? { group: group ?? "dori" } : group ? { group } : undefined;
+  const filter = hosted ? { group: group ?? DEFAULT_GROUP } : ref.runtime === "hc" ? { group: group ?? "dori" } : group ? { group } : undefined;
   const sessions = await runtimesOf(deps.run, deps.config).for(ref).list(filter);
   return { owned: sessions.some((s) => s.ref.id === ref.id), group: hosted ? "omo-host lanes" : ref.runtime === "hc" ? `hc dori.group=${filter?.group}` : filter ? `herdr workspace ${filter.group}` : "herdr panes" };
 };
@@ -116,7 +117,7 @@ export const setDone = async (deps: FlowDeps, lane: Lane, done: string, reason: 
   }
   if (lane.pane) {
     const text = `[LEAD] Done line changed for ${lane.key}: ${change.reason}. The new line is in your brief's Lane footer (${lane.brief}); the lane closes only when it reads back live.`;
-    await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text).then(
+    await sendOnce(deps.run, deps.clock, deps.config, lane.pane, text).then(
       (ok) => out.push(ok ? `LANE_TOLD ${lane.pane}` : `DONE_SET_NOT_SENT ${lane.key} ${lane.pane}: not submitted (see NOT_SUBMITTED in the watch log)`),
       (e: unknown) => out.push(`DONE_SET_NOT_SENT ${lane.key} ${lane.pane}: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`),
     );

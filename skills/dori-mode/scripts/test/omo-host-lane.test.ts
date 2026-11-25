@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { goalCommand } from "../src/goal.ts";
 import { loadConfig } from "../src/config.ts";
 import { launchLane } from "../src/launch.ts";
-import { readScreen, sendVerified } from "../src/panes.ts";
+import { readScreen, sendOnce } from "../src/panes.ts";
 import { closeLane } from "../src/done-flow.ts";
 import type { Runner } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
@@ -62,7 +62,7 @@ test("a hosted launch can be read, prompted and closed without a terminal", asyn
     expect(rendered).toContain(`DORI_STATE_DIR=${configured.config.stateDir}`);
     expect(rendered).toContain('cli.ts","type","hc:t3","--text","<report line>"');
     expect(await readScreen(configured.run, "herdr", pane)).toContain("You are the fix-x lane");
-    expect(await sendVerified(configured.run, configured.clock, configured.config, pane, "test follow-up")).toBe(true);
+    expect(await sendOnce(configured.run, configured.clock, configured.config, pane, "test follow-up")).toBe(true);
     expect(await readScreen(configured.run, "herdr", pane)).toContain("test follow-up");
     expect((await closeLane(configured, result.lane, "QA complete")).closed).toBe(true);
     expect(hosted?.parked).toBe(true);

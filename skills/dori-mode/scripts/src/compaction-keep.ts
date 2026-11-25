@@ -16,7 +16,7 @@ import { QUESTION_MARK } from "./aoe.ts";
 import type { CompactionTrial, DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { briefAnchor } from "./launch.ts";
-import { readScreen, sendVerified } from "./panes.ts";
+import { readScreen, sendOnce } from "./panes.ts";
 import { sessionOf, type Lane } from "./registry.ts";
 import { compactionScan, sessionFile } from "./rollover.ts";
 import { sessionDirFor } from "./session-id.ts";
@@ -111,7 +111,7 @@ export const keepTick = async (deps: FlowDeps, lane: Lane): Promise<KeepAct[]> =
       await deps.registry.patch(lane.key, { compactionsSeen: scan.count });
     } else if (!editorText(await readScreen(deps.run, deps.config.backend, lane.pane, 40))) {
       const text = reanchorText(lane, existsSync(lane.brief) ? readFileSync(lane.brief, "utf8") : "");
-      const ok = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
+      const ok = await sendOnce(deps.run, deps.clock, deps.config, lane.pane, text);
       if (ok) await deps.registry.patch(lane.key, { compactionsSeen: scan.count });
       const detail = `compaction ${scan.count} kept no brief path${ok ? "; the lane was told to re-read its brief" : `; the re-anchor did not reach pane ${lane.pane}, tried again next sweep`}`;
       watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `${ok ? "COMPACTION_REANCHOR" : "COMPACTION_REANCHOR_FAIL"} ${lane.key} ${detail}` });
@@ -127,7 +127,7 @@ export const keepTick = async (deps: FlowDeps, lane: Lane): Promise<KeepAct[]> =
   // running turn, and a draft in the input box would be sent with it
   const screen = await readScreen(deps.run, deps.config.backend, lane.pane, 40);
   if (turnRunning(screen) || QUESTION_MARK.test(screen) || editorText(screen)) return acts;
-  const ok = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, "/compact");
+  const ok = await sendOnce(deps.run, deps.clock, deps.config, lane.pane, "/compact");
   await deps.registry.patch(lane.key, { trialCompact: { count: scan.count, at: now } });
   const detail = `context ${scan.lastK}k >= ${trial.atK}k at an idle moment${ok ? "; /compact typed" : `; /compact did not reach pane ${lane.pane}`}`;
   watchLog(deps.config.watchLog, deps.clock, { source: "freshness", line: `${ok ? "TRIAL_COMPACT" : "TRIAL_COMPACT_FAIL"} ${lane.key} ${detail}` });

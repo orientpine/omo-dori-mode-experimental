@@ -22,7 +22,7 @@ import { compactionStuckOn } from "./lane-handover.ts";
 import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
 import { paneGroup, isHerdrPane } from "./herdr.ts";
-import { omoSession, sendVerified } from "./panes.ts";
+import { omoSession, sendOnce } from "./panes.ts";
 import { hcLeadTitle } from "./hc-pane.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso, openingRuntime } from "./run.ts";
@@ -515,7 +515,7 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
     }
     const fresh = (await deps.registry.read(lane.key)) ?? lane;
     await deps.registry.write({ ...fresh, history: [...(fresh.history ?? []), { at, status: statusOf(fresh), note: `lead moved ${from.pane} -> ${to.pane} (dori handover)` }] });
-    const told = lane.pane ? await sendVerified(deps.run, deps.clock, deps.config, lane.pane, leadMovedText(to.pane)) : false;
+    const told = lane.pane ? await sendOnce(deps.run, deps.clock, deps.config, lane.pane, leadMovedText(to.pane)) : false;
     // a lane that did not take it is retried by freshness (lane-tells.ts) instead of being left told=no
     if (lane.pane) noteLaneTell(deps.config.stateDir, lane.key, lane.pane, to.pane, at, told);
     out.push(`HANDOVER_LANE ${lane.key} brief=${brief} told=${told ? "yes" : `no${lane.pane ? " (freshness retries it)" : ""}`}`);
@@ -584,7 +584,7 @@ export const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Targe
   // the probes go in once the new lead's first turn (reading the note) has ended, as a lane's does (lane-handover.ts verifyLane)
   for (; i < tries && turnRunning(await captureTmux(deps.run, to.pane)); i++) await deps.clock.sleep(POLL_MS);
   if (i >= tries) return { reasons: [`the first turn of ${to.pane} was still running after ${verifyMin} min; the probes were not sent`], session };
-  if (!(await sendVerified(deps.run, deps.clock, deps.config, routed, `[REPORT] handover-probe | milestone | ${PROBE} ${report}: run ${ack(report)}`))) return { reasons: [`the report probe did not reach ${routed}`], session };
+  if (!(await sendOnce(deps.run, deps.clock, deps.config, routed, `[REPORT] handover-probe | milestone | ${PROBE} ${report}: run ${ack(report)}`))) return { reasons: [`the report probe did not reach ${routed}`], session };
   appendInboxRow(deps.inbox, { ts: iso(deps.clock), id: `handover-${inbox}`, scope: "channel", kind: "handover-probe", content: `${PROBE} ${inbox}: run ${ack(inbox)}` });
   emit(`HANDOVER_PROBES_SENT report=${report} inbox=${inbox} (${deps.inbox})`);
   let problems: string[] = [];
@@ -621,7 +621,7 @@ export const endStrayTasks = async (deps: Pick<HandoverDeps, "run" | "clock" | "
   const ids = stray.map((t) => t.id);
   const id = deps.nonce();
   const ack = `dori handover ack ${id} --state ${deps.config.stateDir}`;
-  const told = await sendVerified(deps.run, deps.clock, deps.config, o.pane, `[LEAD] ${TASKS_CANCEL} ${id}: ${stray.length} background task(s) of the old session still run after the move: ${stray.map((t) => `${t.id}${t.what ? ` (${t.what})` : ""}`).join("; ")}. They can still change the files you work on, and their answers go to the old session. End each one with task_cancel (task_id ${ids.join(", ")}); its record and transcript stay readable, and the note lists them, so run one again as your own task if its work is still needed. Then run ${ack} and nothing else for this line.`).catch(() => false);
+  const told = await sendOnce(deps.run, deps.clock, deps.config, o.pane, `[LEAD] ${TASKS_CANCEL} ${id}: ${stray.length} background task(s) of the old session still run after the move: ${stray.map((t) => `${t.id}${t.what ? ` (${t.what})` : ""}`).join("; ")}. They can still change the files you work on, and their answers go to the old session. End each one with task_cancel (task_id ${ids.join(", ")}); its record and transcript stay readable, and the note lists them, so run one again as your own task if its work is still needed. Then run ${ack} and nothing else for this line.`).catch(() => false);
   let acked: string | undefined;
   for (let j = 0; told && j < ROUND_TRIES && acked === undefined; j++) {
     await deps.clock.sleep(POLL_MS);
@@ -801,7 +801,7 @@ export const handover = async (deps: HandoverDeps, opts: HandoverOptions = {}): 
 const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: HandoverFacts, ctx: MoveContext): Promise<HandoverResult> => {
   const { config } = deps;
   const { note, stamp, dir, title, model, units, emit, mark } = ctx;
-  const tell = (pane: string, text: string) => sendVerified(deps.run, deps.clock, config, pane, text).catch(() => false);
+  const tell = (pane: string, text: string) => sendOnce(deps.run, deps.clock, config, pane, text).catch(() => false);
   let pane: string;
   try {
     // the lead is no lane: it never starts with launchEnv, even when the handover runs from a lane's environment
@@ -822,7 +822,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   }
   setQuiet(config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
   await tell(config.leadPane, `[LEAD] Handover to ${pane} started (note ${note}). Stay quiet now: do not answer the owner or act on inbox, lane or session events, and ignore ${PROBE} lines. If the handover fails you are told and stay the lead.`);
-  if (!(await sendVerified(deps.run, deps.clock, config, pane, `${config.handover.prompt}. Read the handover note at ${note} in full and do what it says, starting with its first section.`))) {
+  if (!(await sendOnce(deps.run, deps.clock, config, pane, `${config.handover.prompt}. Read the handover note at ${note} in full and do what it says, starting with its first section.`))) {
     await tell(config.leadPane, `[LEAD] Handover to ${pane} failed before anything moved: its first message did not register. You stay the lead.`);
     await rollBackNew({ run: deps.run, routedPane: deps.routedPane, tell, emit, lead: config.leadPane, pane, why: "its first message did not register", fail: `HANDOVER_FAIL the first message did not register in ${pane}; nothing moved, ${config.leadPane} stays the lead` });
     return { code: 3, note, to: pane };

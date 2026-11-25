@@ -5,7 +5,7 @@ import { ChallengeError, checkReviewers, familyOf, reviewerOrder, reviewers } fr
 import { fill, runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { stuckContext } from "./explore.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import type { Lane } from "./registry.ts";
 import { exitNote, keepReviewerOutput } from "./reviewer-output.ts";
 import { iso } from "./run.ts";
@@ -424,7 +424,7 @@ export const sendReread = async (deps: FlowDeps, lane: Lane): Promise<{ readonly
   if (!lane.pane) return { ok: false, line: `REREAD_REFUSED ${lane.key}: the lane has no pane` };
   const finding = (last.finding ?? last.kinds.join(", ")).replace(/^INTENT_CHECK \S+ /, "").replace(/`/g, "'").replaceAll("$(", "$ (").slice(0, 400);
   const text = fill([deps.config.stuck.rereadText], { key: lane.key, brief: lane.brief, finding })[0] ?? deps.config.stuck.rereadText;
-  const ok = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
+  const ok = await sendOnce(deps.run, deps.clock, deps.config, lane.pane, text);
   if (ok) await deps.registry.patch(lane.key, { intentCheck: { ...last, rereadAt: iso(deps.clock) } });
   const line = ok ? `REREAD_SENT ${lane.key}: the lead confirmed the intent-check finding of ${last.at}; the lane got its brief and the owner's words to re-read` : `REREAD_FAILED ${lane.key}: the re-read did not reach pane ${lane.pane}`;
   watchLog(deps.config.watchLog, deps.clock, { source: "intent-check", line });

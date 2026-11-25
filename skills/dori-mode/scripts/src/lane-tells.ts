@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 
 import { captureTmux } from "./aoe.ts";
 import type { DoriConfig } from "./config.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import type { Registry } from "./registry.ts";
 import type { Clock, Runner } from "./run.ts";
 import { turnRunning } from "./submit.ts";
@@ -81,7 +81,7 @@ export const retryLaneTells = async (deps: LaneTellDeps): Promise<string[]> => {
       continue;
     }
     if (turnRunning(await captureTmux(deps.run, t.pane).catch(() => ""))) {
-      const ok = await sendVerified(deps.run, deps.clock, deps.config, t.pane, leadMovedText(lead));
+      const ok = await sendOnce(deps.run, deps.clock, deps.config, t.pane, leadMovedText(lead));
       if (ok) {
         delete tells[key];
         out.push(`HANDOVER_LANE_TOLD ${key} ${t.pane}: told the lead is ${lead} (try ${t.tries + 1}, while its turn ran)`);
@@ -92,7 +92,7 @@ export const retryLaneTells = async (deps: LaneTellDeps): Promise<string[]> => {
     const waited = deps.clock.now() - since;
     if (waited >= LANE_TELL_LEAD_AFTER_MS && !t.leadTold) {
       const min = Math.round(waited / 60_000);
-      const told = await sendVerified(deps.run, deps.clock, deps.config, lead, `[DORI] HANDOVER_LANE_UNTOLD ${key}: lane pane ${t.pane} has not taken the notice that the lead moved to ${lead} for ${min} min (${t.tries} tries; omo holds a text typed while the lane's main turn waits on its children). Its brief footer names you already, and a report it types into the frozen old lead is forwarded to you. To tell it sooner: read its pane and dori type it once a turn runs there.`);
+      const told = await sendOnce(deps.run, deps.clock, deps.config, lead, `[DORI] HANDOVER_LANE_UNTOLD ${key}: lane pane ${t.pane} has not taken the notice that the lead moved to ${lead} for ${min} min (${t.tries} tries; omo holds a text typed while the lane's main turn waits on its children). Its brief footer names you already, and a report it types into the frozen old lead is forwarded to you. To tell it sooner: read its pane and dori type it once a turn runs there.`);
       tells[key] = { ...(tells[key] ?? t), leadTold: told };
       out.push(`HANDOVER_LANE_UNTOLD ${key} ${t.pane}: ${min} min without the lead notice; ${told ? "the lead was told" : "telling the lead failed, tried again next tick"}`);
     }

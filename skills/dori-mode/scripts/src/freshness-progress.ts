@@ -2,7 +2,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import type { DoriConfig } from "./config.ts";
 import type { Lane } from "./registry.ts";
 import type { SweepAct } from "./freshness-handover.ts";
-import { readScreen, sendVerified } from "./panes.ts";
+import { readScreen, sendOnce } from "./panes.ts";
 import { HUNG_MESSAGE, laneSessionUsage, Supervision } from "./supervision.ts";
 
 // What the lead reads when a lane reaches a cap, looks hung, or has a cap that cannot be checked. The lane itself is never
@@ -27,7 +27,7 @@ export const superviseLane = async (deps: FlowDeps, lane: Lane): Promise<SweepAc
         told.set(message, "lead not told: leadPane is not configured; sent again next sweep");
         return false;
       }
-      const ok = await sendVerified(deps.run, deps.clock, deps.config, lead, supervisionNote(l, message, settings));
+      const ok = await sendOnce(deps.run, deps.clock, deps.config, lead, supervisionNote(l, message, settings));
       told.set(message, ok ? "lead told" : `lead not told: the note did not reach pane ${lead}; sent again next sweep`);
       return ok;
     },

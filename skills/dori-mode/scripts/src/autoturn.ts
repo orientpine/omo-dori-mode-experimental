@@ -6,7 +6,7 @@ import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { hostedTranscript } from "./pane-transcript.ts";
 import { parseRef } from "./runtime/types.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import { type AutoturnMark, type Lane, sessionOf, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { procTable } from "./session-id.ts";
@@ -205,7 +205,7 @@ export const autoturnTick = async (deps: FlowDeps, terminal = true): Promise<str
     if (resumes.length >= max) tail = `not resumed: ${resumes.length} resumes in 24h already (autoturnResumeMax ${max}), the lead decides`;
     else {
       const n = resumes.length + 1;
-      const ok = await sendVerified(deps.run, deps.clock, deps.config, t.pane, t.lane ? laneText(t.lane, pause, n, max) : leadText(pause, n, max));
+      const ok = await sendOnce(deps.run, deps.clock, deps.config, t.pane, t.lane ? laneText(t.lane, pause, n, max) : leadText(pause, n, max));
       if (ok) resumes.push(iso(deps.clock));
       tail = ok ? `resumed ${n}/${max} in 24h` : "resume NOT_SUBMITTED: the message did not reach the pane";
     }

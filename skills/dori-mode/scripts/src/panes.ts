@@ -5,6 +5,7 @@ import { paneTranscript, transcriptHas } from "./pane-transcript.ts";
 import type { Backend, DoriConfig } from "./config.ts";
 import { herdrOk, herdrRef, herdrResult, herdrRuntime, isHerdrPane, shellInFrontName } from "./herdr.ts";
 import { hcRead, hcType, isHcPane, listKeptSessions, storedRuntimes } from "./hc-pane.ts";
+import { verifiedHosted } from "./hosted-delivery.ts";
 import { hostedTypeLine, submitHosted } from "./sessions.ts";
 import { formatRef, parseRef } from "./runtime/types.ts";
 import { replacementOf } from "./frozen.ts";
@@ -205,17 +206,35 @@ export const typeLine = async (run: Runner, clock: Clock, config: DoriConfig, pa
 // Every text the scripts type into a pane goes through here; NOT_SUBMITTED lands in the watch log for the lead. A pane a
 // handover froze reads nothing, so the text goes to the session that replaced it (pane: where it went; FORWARDED in the
 // watch log).
-export const submitToPane = async (run: Runner, clock: Clock, config: DoriConfig, pane: string, text: string): Promise<Submitted & { readonly pane: string }> => {
+export const submitToPane = async (run: Runner, clock: Clock, config: DoriConfig, pane: string, text: string, verified = false): Promise<Submitted & { readonly pane: string }> => {
   if (/`|\$\(/.test(text)) throw new UnsafeTextError("refusing to send text containing a backtick or $(");
   const to = replacementOf(config.stateDir, pane) ?? pane;
   if (to !== pane) watchLog(config.watchLog, clock, { source: "submit", line: `FORWARDED ${pane} -> ${to}: ${pane} was frozen by a handover; the text goes to the session that replaced it` });
   const ref = parseRef(to);
   const result = ref?.runtime === "omo-host"
-    ? await submitHosted(runtimesOf(run, config), ref, text)
+    ? await (verified ? verifiedHosted(run, config.stateDir, ref, text, clock.now()) : submitHosted(runtimesOf(run, config), ref, text))
     : await submitText(paneKeys(run, clock, config, to, text), clock, text);
-  if (result.status === "NOT_SUBMITTED") watchLog(config.watchLog, clock, { source: "submit", line: `NOT_SUBMITTED ${to} ${result.reason}` });
+  if (result.status !== "SUBMITTED") watchLog(config.watchLog, clock, { source: "submit", line: `${result.status} ${to} ${result.reason}` });
   return { ...result, pane: to };
 };
 
-export const sendVerified = async (run: Runner, clock: Clock, config: DoriConfig, pane: string, text: string): Promise<boolean> =>
-  (await submitToPane(run, clock, config, pane, text)).status === "SUBMITTED";
+export type VerifiedDelivery =
+  | { readonly kind: "sent" }
+  | { readonly kind: "not-sent"; readonly reason: string }
+  | { readonly kind: "pending"; readonly receipt: "QUEUED" | "AMBIGUOUS"; readonly reason: string };
+
+export const sendVerified = async (run: Runner, clock: Clock, config: DoriConfig, pane: string, text: string): Promise<VerifiedDelivery> => {
+  const { status, reason } = await submitToPane(run, clock, config, pane, text, true);
+  switch (status) {
+    case "SUBMITTED": return { kind: "sent" };
+    case "NOT_SUBMITTED": return { kind: "not-sent", reason };
+    case "QUEUED": case "AMBIGUOUS": return { kind: "pending", receipt: status, reason };
+  }
+};
+
+// For callers that only need to know whether to send again: false only when the text surely did not arrive. A hosted
+// QUEUED or AMBIGUOUS delivery may still reach the session, so it reads true here: a retry would put a second copy
+// behind the first (review 5 of PR 527; upstream https://github.com/sisyphuslabs/dori-superagent/pull/282). The watch
+// log keeps the real status (submitToPane).
+export const sendOnce = async (run: Runner, clock: Clock, config: DoriConfig, pane: string, text: string): Promise<boolean> =>
+  (await sendVerified(run, clock, config, pane, text)).kind !== "not-sent";

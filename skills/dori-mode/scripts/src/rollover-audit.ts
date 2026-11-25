@@ -32,7 +32,7 @@ import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type Monitor
 import { type LaneFacts, type LaneHandoverDeps, missingFrom, UNDERSTOOD_HEADINGS } from "./lane-handover.ts";
 import { launchLedger } from "./launch.ts";
 import { beforeGenerated } from "./directives.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import { covered, fillGaps, flat, type Missing, quoted, section, words as wordsIn } from "./restatement.ts";
 import { type Candidate, inboxMessages, leadLines, type OwnerProof, ownerQuotes, QUOTE, readRollovers, type Said, sessionFile, userLines } from "./rollover.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
@@ -460,7 +460,7 @@ export const auditHandover = async (deps: LaneHandoverDeps, c: Committed, opts: 
     const ackedBy = (id: string): string | undefined => readJson<{ pane?: string }>(ackFile(config.stateDir, id))?.pane ?? (existsSync(ackFile(config.stateDir, id)) ? "" : undefined);
     const conversation = send.some((g) => g.conversation);
     const r = await fillGaps(
-      { clock: deps.clock, stateDir: config.stateDir, nonce: deps.nonce, tell: (to, line) => sendVerified(deps.run, deps.clock, config, to, line).catch(() => false), ackedBy },
+      { clock: deps.clock, stateDir: config.stateDir, nonce: deps.nonce, tell: (to, line) => sendOnce(deps.run, deps.clock, config, to, line).catch(() => false), ackedBy },
       { who: c.key, pane: c.to, understood, headings: c.who === "lane" ? UNDERSTOOD_HEADINGS : LEAD_UNDERSTOOD_HEADINGS, rounds: 1, oldLog, check: () => check(), emit: (l) => emit(l.replace(/^HANDOVER_/, "HANDOVER_AUDIT_")), label: "audit-supplement", tries: AUDIT_TRIES, extra: `This comes from the audit after the handover: the work goes on meanwhile.${conversation ? ` ${RECORD_TEXT}` : ""}` },
     );
     sent = r.supplements[0]?.file ?? "";

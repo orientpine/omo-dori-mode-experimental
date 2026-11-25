@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config.ts";
 import { writeFrozen } from "../src/frozen.ts";
-import { SEND_CHUNK_BYTES, sendVerified, submitToPane, transcriptHas } from "../src/panes.ts";
+import { SEND_CHUNK_BYTES, sendOnce, submitToPane, transcriptHas } from "../src/panes.ts";
 import { editorText, type PaneKeys, SUBMIT_TIMING, submitText } from "../src/submit.ts";
 import { announceChange } from "../src/update-announce.ts";
 import { fakeClock, fakeRunner, newWorld, withState } from "./fakes.ts";
@@ -315,7 +315,7 @@ test("an update announcement that stays in the lead's input box logs ANNOUNCE_FA
   const config = { ...defaultConfig("/home/test"), backend: "aoe" as const, leadPane: "aoe_lead_0a1b2c3d", watchLog: join(state.dir, "lanes.log") };
   const run = fakeRunner(world);
   const clock = fakeClock(0);
-  expect(await announceChange({ config, clock, print: () => {}, send: (pane, text) => sendVerified(run, clock, config, pane, text) }, { summary: "Guidance updated", files: ["skills/dori-mode/references/sessions.md"] })).toBe(false);
+  expect(await announceChange({ config, clock, print: () => {}, send: (pane, text) => sendOnce(run, clock, config, pane, text) }, { summary: "Guidance updated", files: ["skills/dori-mode/references/sessions.md"] })).toBe(false);
   const log = await Bun.file(config.watchLog).text();
   expect(log).toContain("update ANNOUNCE_FAIL aoe_lead_0a1b2c3d");
   expect(log).not.toContain("ANNOUNCED");

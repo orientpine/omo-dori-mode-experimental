@@ -13,7 +13,7 @@ import type { Question } from "../src/messenger/discord-cards.ts";
 import { missedAnswersTick, sawAnswer } from "../src/missed-answers.ts";
 import type { DoriConfig } from "../src/config.ts";
 import { eightSteps, launchEnvArgs, launchLane, withSessionId } from "../src/launch.ts";
-import { listPanes, sendVerified } from "../src/panes.ts";
+import { listPanes, sendOnce } from "../src/panes.ts";
 import { SUBMIT_TIMING } from "../src/submit.ts";
 import type { Lane } from "../src/registry.ts";
 import { argvSessionId, resolveSession } from "../src/session-id.ts";
@@ -235,11 +235,11 @@ test("five quiet minutes after a claim the lane's aoe session is stopped and tra
 test("only omo's input box counts as unsent text: a transcript line above it does not, text still in the box after a poll window gets one more Enter", async () => {
   const enters = () => world.calls.filter((c) => c[0] === "tmux" && c.at(-1) === "Enter").length;
   world.screen = "❯ [LEAD] stuck text still here\nworking...\n────\n❯ \n────";
-  expect(await sendVerified(at(T0).run, at(T0).clock, at(T0).config, PANE, "[LEAD] stuck text still here")).toBe(true);
+  expect(await sendOnce(at(T0).run, at(T0).clock, at(T0).config, PANE, "[LEAD] stuck text still here")).toBe(true);
   expect(enters()).toBe(1);
   world.screen = "❯ ";
   world.stuckReads = SUBMIT_TIMING.clearPolls + 2; // the first two reads are the box before typing and the wait for the ❯ prompt
-  expect(await sendVerified(at(T0).run, at(T0).clock, at(T0).config, PANE, "[LEAD] stuck text still here")).toBe(true);
+  expect(await sendOnce(at(T0).run, at(T0).clock, at(T0).config, PANE, "[LEAD] stuck text still here")).toBe(true);
   expect(enters()).toBe(3);
 });
 

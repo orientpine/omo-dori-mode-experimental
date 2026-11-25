@@ -19,7 +19,7 @@ import type {
   SessionRuntime,
   SubmitResult,
 } from "../types.ts";
-import { asText, hostCall, isReason, OMO, OmoHostError, str } from "./exec.ts";
+import { asText, hostCall, isReason, OMO, OmoHostError, rec, str } from "./exec.ts";
 import { footerLines, renderEntries } from "./render.ts";
 import { close, create, goalOf, list, probeOf, selfRef, stateOf } from "./sessions.ts";
 
@@ -101,6 +101,17 @@ export class OmoHostRuntime implements SessionRuntime {
    * tail holding a large entry (an image, a long tool output) arrives cut off, unparseable, with exit 0: it is asked
    * again for half as many entries, and a last entry too large on its own reads as no entries.
    */
+  async startupError(ref: SessionRef, since: number): Promise<string | undefined> {
+    const entries = await this.tail(ref.id, 80);
+    const latest = entries.map(rec).filter((entry) => entry["type"] === "message").map((entry) => rec(entry["message"])).findLast((message) => message["role"] === "assistant");
+    const time = latest?.["timestamp"];
+    const at = typeof time === "number" ? time : Date.parse(str(time) ?? "");
+    if (!(at >= since) || latest?.["stopReason"] !== "error") return undefined;
+    const state = await stateOf(this.exec, ref.id);
+    if (!state || state["isStreaming"] === true || Number(state["retryAttempt"] ?? 0) > 0) return undefined;
+    return (str(latest["errorMessage"]) ?? "provider error").replace(/\s+/g, " ").slice(0, 300);
+  }
+
   private async tail(id: string, want: number): Promise<unknown[]> {
     for (let n = want; n >= 1; n = Math.floor(n / 2)) {
       try {

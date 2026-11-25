@@ -82,6 +82,7 @@ export interface SessionRuntime {
   start(ref: SessionRef, command: string): Promise<void>;
   list(filter?: { readonly group?: string }): Promise<readonly SessionInfo[]>;
   probe(ref: SessionRef): Promise<Probe>;
+  startupError?(ref: SessionRef, since: number): Promise<string | undefined>;
   /** Passive lookup: absence from a live-only index is unlisted, not proof of disappearance. */
   observe?(ref: SessionRef): Promise<SessionInfo | undefined>;
   read(ref: SessionRef, lines: number): Promise<string>;

@@ -1,7 +1,7 @@
 import { repeatTick } from "./auto-signals.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { researchCheck, stuckTop } from "./explore.ts";
-import { omoPane, paneTranscript, readScreen, sendVerified } from "./panes.ts";
+import { omoPane, paneTranscript, readScreen, sendOnce } from "./panes.ts";
 import { dailyFile, dailySnapshot } from "./compaction-keep.ts";
 import { lanesForFreshness } from "./freshness-lanes.ts";
 import { type Lane, type RolloverDue, sessionOf, statusOf } from "./registry.ts";
@@ -173,7 +173,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     const threadQuietMin = lane.reportProtocol === "jsonl-v1" ? Math.round((now - Math.max(lastHeard(lane), lane.lastAutoReplyAt ?? 0)) / 60_000) : silentMin;
     const running = !progress || progress.state === "running";
     if (running && silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
-      const delivered = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`);
+      const delivered = await sendOnce(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`);
       current = { ...current, lastNudgeAt: now };
       await deps.registry.patch(lane.key, { lastNudgeAt: now });
       acts.push({ kind: delivered ? "nudged" : "nudge-failed", lane: lane.key, detail: delivered ? `${silentMin} min silent` : `${silentMin} min silent; the nudge did not reach pane ${lane.pane}` });
@@ -196,7 +196,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
         continue;
       }
       const note = `[DORI] ${lane.key}: ${silentMin} min without a new report. Nothing was posted in its thread. If the owner needs to know where it stands, tell him in one plain line. Last report: ${known.replace(/`/g, "'").replaceAll("$(", "$ (")}`;
-      if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, note))) {
+      if (!(await sendOnce(deps.run, deps.clock, deps.config, pane, note))) {
         acts.push({ kind: "lead-tell-failed", lane: lane.key, detail: `${silentMin} min silent; the note did not reach pane ${pane}` });
         continue;
       }

@@ -8,7 +8,7 @@ import { agentGone, firstTurnRuns, GOAL_WAIT, goalReader, lastLines, noGoalWhy }
 import { AGENT, argvSessionId, descendants, ended, hasSessionSelector, procTable, sessionDirFor, shellPidOf } from "./session-id.ts";
 import { isOmoExecutable } from "./executable.ts";
 import { leadReplies, type LeadReply } from "./lead-limit.ts";
-import { readScreen, sendVerified } from "./panes.ts";
+import { readScreen, sendOnce } from "./panes.ts";
 import { join } from "node:path";
 import { LaunchFailed, LaunchRegistrationError } from "./launch-types.ts";
 import { splitModel } from "./lane-handover.ts";
@@ -147,7 +147,7 @@ export const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: s
     const rolledBack = await closeAoeSession(deps.run, pane).then(isClosedLine, () => false);
     throw new LaunchRegistrationError(error, rolledBack);
   });
-  if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, prompt)))
+  if (!(await sendOnce(deps.run, deps.clock, deps.config, pane, prompt)))
     return { pane, failure: startupFailure(await readScreen(deps.run, "aoe", pane)) ?? "the launch prompt was not submitted (see NOT_SUBMITTED in the watch log)" };
   return { pane, session };
 };

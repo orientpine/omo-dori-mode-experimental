@@ -5,7 +5,7 @@ import type { DoriConfig } from "./config.ts";
 import type { Question } from "./messenger/discord-cards.ts";
 import { hasThread, type Lane, type Registry, statusOf, type ThreadPost, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
-import { omoPane, sendVerified, submitToPane } from "./panes.ts";
+import { omoPane, sendOnce, submitToPane } from "./panes.ts";
 import type { Submitted } from "./submit.ts";
 import { replacementOf } from "./frozen.ts";
 import { watchLog } from "./watch-log.ts";
@@ -122,14 +122,14 @@ export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, su
   // A paused lane waits on a human, so its claim is recorded and announced but never closes it on a timer.
   if (statusOf(lane) === "paused") {
     await deps.registry.write({ ...lane, claim, history: [...(lane.history ?? []), { at, status: "paused", note: `done claimed while paused: ${evidence}` }] });
-    if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}, but the lane is paused, so it does not close automatically; the lead decides. Stay idle until then.`);
+    if (lane.pane) await sendOnce(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}, but the lane is paused, so it does not close automatically; the lead decides. Stay idle until then.`);
     return `LANE_DONE_CLAIMED_PAUSED ${lane.key} ${lane.pane ?? "-"} ${evidence}${postedLine}${outcome.write()}`;
   }
   await deps.registry.write(withStatus(lane, "done-claimed", evidence, at, { claim }));
   const outcomeNote = outcome.write();
   if (lane.pane) {
     const closesAt = new Date(deps.clock.now() + windowMs(deps)).toISOString().slice(11, 16);
-    await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
+    await sendOnce(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
   }
   return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}${postedLine}${outcomeNote}`;
 };
@@ -180,7 +180,7 @@ export const typeIntoPane = async (deps: FlowDeps, pane: string, text: string): 
     notes.push(line);
   }
   const r = await submitToPane(deps.run, deps.clock, deps.config, pane, text);
-  if (notes.length && lane?.pane && r.status === "SUBMITTED") await sendVerified(deps.run, deps.clock, deps.config, r.pane, reopenedText(lane.key, why));
+  if (notes.length && lane?.pane && r.status === "SUBMITTED") await sendOnce(deps.run, deps.clock, deps.config, r.pane, reopenedText(lane.key, why));
   return { ...r, notes };
 };
 
@@ -188,7 +188,7 @@ export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly s
   const at = iso(deps.clock);
   if (lane.reportProtocol === "jsonl-v1") new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at, state: "running", text: `NOT_DONE: ${reasons.join("; ")}` });
   await deps.registry.write(withStatus(lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }));
-  if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
+  if (lane.pane) await sendOnce(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
 };
 

@@ -10,7 +10,7 @@ import { leadLimitTick, limitResumeTick } from "./lead-limit.ts";
 import { missedAnswersTick } from "./missed-answers.ts";
 import { type Lane, sessionOf, statusOf, withStatus } from "./registry.ts";
 import { iso } from "./run.ts";
-import { omoPane, omoSession, sendVerified } from "./panes.ts";
+import { omoPane, omoSession, sendOnce } from "./panes.ts";
 import { pendingGoalTick } from "./pending-goal.ts";
 import { checkDone } from "./done-signals.ts";
 import { type FlowDeps, objectDone, reopenClaim } from "./done-flow-state.ts";
@@ -125,7 +125,7 @@ const claimTurn = async (deps: FlowDeps, lane: Lane, act: Activity | undefined):
   }
   const why = `the lane ran a new turn after it sat idle since ${new Date(claim.idleAt).toISOString()}`;
   const line = await reopenClaim(deps, lane, why);
-  await sendVerified(deps.run, deps.clock, deps.config, pane, reopenedText(lane.key, why));
+  await sendOnce(deps.run, deps.clock, deps.config, pane, reopenedText(lane.key, why));
   return line;
 };
 

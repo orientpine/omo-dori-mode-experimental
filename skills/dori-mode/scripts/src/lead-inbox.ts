@@ -12,7 +12,7 @@ import { clock, ownerRows, tailOf } from "./lead-limit.ts";
 import { callsThisDori, watchProblem } from "./lead-inbox-watch.ts";
 import { sawAnswer } from "./missed-answers.ts";
 import { tokenBotId } from "./messenger/discord.ts";
-import { sendVerified } from "./panes.ts";
+import { sendOnce } from "./panes.ts";
 import { handedSession, procEnv, procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 
 // The lead hears the inbox only through a monitor its own session runs, and nothing said when there was none. On 2026-11-09
@@ -232,7 +232,7 @@ export const leadInboxTick = async (deps: FlowDeps, alive: (pid: number) => bool
       : undefined;
 
   if (incident && (incident.key !== mark.key || now - (mark.typedAt ?? 0) >= REPEAT_MS)) {
-    const ok = await sendVerified(deps.run, deps.clock, deps.config, pane, incident.text);
+    const ok = await sendOnce(deps.run, deps.clock, deps.config, pane, incident.text);
     if (ok) next = { ...next, key: incident.key, typedAt: now };
     out.push(`${incident.head}; ${ok ? "woke the lead (SUBMITTED)" : "NOT_SUBMITTED: the line did not reach the pane, typed again next tick"}`);
   } else if (!incident && !problem && !unheard.length && mark.key) {

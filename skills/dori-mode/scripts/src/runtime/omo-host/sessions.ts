@@ -7,7 +7,7 @@ import type { AgentStatus, CreateSpec, Probe, SessionInfo, SessionRef } from "..
 import { backgroundWork } from "./render.ts";
 import { hostCall, isReason, rec, str } from "./exec.ts";
 
-const DEFAULT_GROUP = "dori";
+export const DEFAULT_GROUP = "dori";
 
 /** The host has no labels: a Dori session's name carries its group, `dori/<group>/<name>`, so list can filter on it. */
 export const sessionName = (spec: Pick<CreateSpec, "name" | "group">): string =>

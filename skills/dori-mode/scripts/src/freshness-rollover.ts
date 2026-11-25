@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { omoSession, readScreen, sendVerified } from "./panes.ts";
+import { omoSession, readScreen, sendOnce } from "./panes.ts";
 import { leadAlert } from "./autoturn.ts";
 import { compactionStuckOn, type ReadyMark, readyFile, safePointText, statusLine } from "./lane-handover.ts";
 import { COMMITTED, crossed, dueReasons, limitsFor, readRollovers, type RolloverEntry, type Signals, type Who } from "./rollover.ts";
@@ -94,7 +94,7 @@ export const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who
       // the lane was busy: ask it once per autoRetryMin to reach a safe point, then start again when it can move
       if (who === "lane" && (!seen.askedAt || now - Date.parse(seen.askedAt) >= retryMs)) {
         const why = (last.reasons[0] ?? "").replace(/\. Ask the lane to reach a safe point.*$/, "");
-        const told = await sendVerified(deps.run, deps.clock, deps.config, pane, safePointText(key, why, "auto"));
+        const told = await sendOnce(deps.run, deps.clock, deps.config, pane, safePointText(key, why, "auto"));
         seen = { ...seen, askedAt: at };
         await save(seen);
         acts.push({ kind: "rollover_auto", lane: key, detail: `asked ${pane} to reach a safe point and write its summary (${why})${told ? "" : `; the request did not reach pane ${pane}`}` });
@@ -111,7 +111,7 @@ export const rolloverDue = async (deps: FlowDeps, hooks: RolloverHooks, who: Who
         if (who === "lane" && running.length && (seen.tries ?? 1) >= 2 && !seen.tasksToldAt) {
           const lead = deps.config.leadPane;
           const text = `[DORI] ${key}: the automatic rollover is held: background task(s) ${running.join(", ")} of the old session still run, and a move would leave them editing the lane's files out of the new session's reach. It moves by itself once they end. To move it sooner, ask the lane to let them finish or end them, or run dori handover --lane ${key} --approved-by "lead:<reason and signal>" --force (their answers then go to the old session).`;
-          const told = lead ? await sendVerified(deps.run, deps.clock, deps.config, lead, text) : false;
+          const told = lead ? await sendOnce(deps.run, deps.clock, deps.config, lead, text) : false;
           seen = { ...seen, tasksToldAt: at };
           await save(seen);
           acts.push({ kind: "rollover_auto", lane: key, detail: `held by the old session's background tasks ${running.join(", ")}; ${!lead ? "lead not told: leadPane is not configured" : told ? "lead told" : `lead not told: the note did not reach pane ${lead}`}` });

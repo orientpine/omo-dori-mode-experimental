@@ -25,7 +25,7 @@ import { awaitPrompt, briefAnchor, keptModel, laneModel, modelMove, moveThinking
 import { resumeAgent, type StatOf } from "./job-control.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
 import { paneGroup, herdrResult, isHerdrPane } from "./herdr.ts";
-import { omoSession, sendVerified } from "./panes.ts";
+import { omoSession, sendOnce } from "./panes.ts";
 import { hasSessionSelector } from "./session-id.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { iso, openingRuntime, type Runner } from "./run.ts";
@@ -355,7 +355,7 @@ const ancestors = (table: readonly Proc[], pid: number): Set<number> => {
 
 // what the lane is asked when a rollover finds it busy (an automatic one, or the lead's approved one): reach a safe point,
 // write the summary, mark ready, go idle
-// the causes quote command lines, and a backtick or $( is never typed into a pane (sendVerified refuses the whole text):
+// the causes quote command lines, and a backtick or $( is never typed into a pane (sendOnce refuses the whole text):
 // they are written as ' and $ ( so the ask still reaches the lane (review 320 round 9)
 const typeSafe = (text: string): string => text.replace(/`/g, "'").replace(/\$\(/g, "$ (");
 export const safePointText = (key: string, cause: string, by: "auto" | "lead"): string =>
@@ -1053,7 +1053,7 @@ export const verifyLane = async (deps: LaneHandoverDeps, facts: LaneFacts, pane:
   for (; i < tries && turnRunning(await captureTmux(deps.run, pane)); i++) await deps.clock.sleep(POLL_MS);
   if (i >= tries) return { reasons: [`the first turn of ${pane} was still running after the verify time; the probe was not sent`], session };
   const id = deps.nonce();
-  if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, `[LEAD] ${PROBE} ${id}: once you have read the whole handover note, run dori handover ack ${id} --state ${deps.config.stateDir} and nothing else for this line.`))) return { reasons: [`the probe did not reach ${pane}`], session };
+  if (!(await sendOnce(deps.run, deps.clock, deps.config, pane, `[LEAD] ${PROBE} ${id}: once you have read the whole handover note, run dori handover ack ${id} --state ${deps.config.stateDir} and nothing else for this line.`))) return { reasons: [`the probe did not reach ${pane}`], session };
   emit(`HANDOVER_PROBE_SENT ${id} -> ${pane}`);
   let by: string | undefined;
   for (; i < tries; i++) {
@@ -1097,7 +1097,7 @@ const chainsEnded = async (deps: LaneHandoverDeps, key: string, chains: readonly
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type MoveContext = { readonly note: string; readonly at: string; readonly title: string; readonly emit: (line: string) => void; readonly steps: Step[]; readonly mark: (step: string, ok: boolean) => void; readonly accounts: { to?: string | undefined }; readonly supplements: Supplement[]; readonly frozen: boolean; readonly sizes: Mutable<Sizes> };
 
-const tell = (deps: LaneHandoverDeps, pane: string, text: string) => sendVerified(deps.run, deps.clock, deps.config, pane, text).catch(() => false);
+const tell = (deps: LaneHandoverDeps, pane: string, text: string) => sendOnce(deps.run, deps.clock, deps.config, pane, text).catch(() => false);
 
 // A thawed agent goes on where it was: resumed, then checked to be its tty's running foreground job again, and brought back
 // to it when not (job-control.ts resumeAgent); the repair or its failure is a line of its own.
@@ -1244,7 +1244,7 @@ const finishMove = async (deps: LaneHandoverDeps, opts: LaneHandoverOptions, fac
     emit(frozen ? `HANDOVER_FROZEN ${lane.key} agent ${facts.agentPid} in ${from.pane}` : `HANDOVER_FREEZE_FAIL ${lane.key} agent ${facts.agentPid}: it stays told and quiet only`);
   }
   // no work keyword here: the new session only arms monitors and answers the probe until it is committed
-  const first = await sendVerified(deps.run, deps.clock, config, pane, `You are the ${lane.key} lane in a new session; the old session hands its work over to you. Read the handover note at ${note} in full and do steps 1 to 4 of its first section; start the work only when a [LEAD] ${COMMITTED} line tells you to. ${briefAnchor(lane, existsSync(lane.brief) ? readFileSync(lane.brief, "utf8") : "")}`);
+  const first = await sendOnce(deps.run, deps.clock, config, pane, `You are the ${lane.key} lane in a new session; the old session hands its work over to you. Read the handover note at ${note} in full and do steps 1 to 4 of its first section; start the work only when a [LEAD] ${COMMITTED} line tells you to. ${briefAnchor(lane, existsSync(lane.brief) ? readFileSync(lane.brief, "utf8") : "")}`);
   mark("first-message", first);
   if (!first) {
     emit(`HANDOVER_FAIL ${lane.key}: the first message did not register in ${pane}`);
