@@ -24,6 +24,8 @@ export type Probe = {
   readonly cwd?: string;
   // Ported from https:  //github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
   readonly goal?: string;
+  readonly steering?: readonly string[];
+  readonly pendingMessageCount?: number;
   readonly activity?: "busy" | "running" | "question" | "idle";
   readonly transcriptPath?: string;
   readonly model?: string;
@@ -60,6 +62,7 @@ export type DeliverWhen = "idle" | "working" | "any";
 export type DeliverOptions = { readonly when?: DeliverWhen; readonly force?: boolean };
 export type DeliverOutcome =
   | { readonly kind: "delivered"; readonly turn?: number; readonly started?: boolean }
+  | { readonly kind: "queued" }
   | { readonly kind: "no-agent" }
   | { readonly kind: "not-ready"; readonly status: AgentStatus }
   | { readonly kind: "typed"; readonly into: AgentIdentity; readonly failure: unknown }

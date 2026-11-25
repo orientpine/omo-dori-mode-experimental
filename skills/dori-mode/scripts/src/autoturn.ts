@@ -7,7 +7,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { hostedTranscript } from "./pane-transcript.ts";
 import { parseRef } from "./runtime/types.ts";
 import { sendVerified } from "./panes.ts";
-import { type AutoturnMark, type Lane, statusOf } from "./registry.ts";
+import { type AutoturnMark, type Lane, sessionOf, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
 import { procTable } from "./session-id.ts";
 
@@ -154,11 +154,11 @@ export const leadAlertPoster =
 // LANE_AUTOTURN_LONG <key> <turns> <last user message time> each time the same session passes another autoturnLongTurns
 // (300) turns started on its own since its last user message: the runaway alert once omo's own limit is off
 // (engineTurns.maxPerUserInput 0). It is only a line in the watch log; nothing is typed or stopped.
-export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
-  const lanes = (await deps.registry.open()).filter((l) => l.pane && ["working", "not-done", "paused"].includes(statusOf(l)));
-  const lead = deps.config.leadPane;
+export const autoturnTick = async (deps: FlowDeps, terminal = true): Promise<string[]> => {
+  const lanes = (await deps.registry.open()).filter((l) => l.pane && (terminal || sessionOf(l)?.runtime === "omo-host") && ["working", "not-done", "paused"].includes(statusOf(l)));
+  const lead = terminal ? deps.config.leadPane : "";
   if (!lanes.length && !lead) return [];
-  const [sessions, table] = await Promise.all([liveSessions(deps.run), procTable(deps.run)]);
+  const [sessions, table] = terminal ? await Promise.all([liveSessions(deps.run), procTable(deps.run)]) : [[], []] as const;
   const now = deps.clock.now();
   const max = deps.config.autoturnResumeMax;
   const every = deps.config.autoturnLongTurns;
@@ -168,7 +168,7 @@ export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
     ...(lead && !lanes.some((l) => l.pane === lead) ? [{ pane: lead, cwd: sessionFor(sessions, lead)?.path ?? "" }] : []),
   ];
   for (const t of targets) {
-    const ref = parseRef(t.pane);
+    const ref = t.lane ? sessionOf(t.lane) : parseRef(t.pane);
     const hosted = t.lane && ref?.runtime === "omo-host" ? ref : undefined;
     if (!hosted && (!t.cwd || !sessionFor(sessions, t.pane))) continue;
     const key = t.lane?.key ?? "lead";

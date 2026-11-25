@@ -4,7 +4,7 @@ import { researchCheck, stuckTop } from "./explore.ts";
 import { omoPane, paneTranscript, readScreen, sendVerified } from "./panes.ts";
 import { dailyFile, dailySnapshot } from "./compaction-keep.ts";
 import { lanesForFreshness } from "./freshness-lanes.ts";
-import { type Lane, type RolloverDue, statusOf } from "./registry.ts";
+import { type Lane, type RolloverDue, sessionOf, statusOf } from "./registry.ts";
 import { fixTag, recordFix } from "./same-fix.ts";
 import { taskOpen, taskRecord } from "./background.ts";
 import { laneBackground } from "./lane-wait.ts";
@@ -100,7 +100,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
     }
   };
   for await (const lane of lanesForFreshness(deps)) {
-    if (!lane.pane) continue;
+    if (!lane.pane || sessionOf(lane)?.runtime === "omo-host") continue;
     if (statusOf(lane) !== "working" && statusOf(lane) !== "not-done") continue;
     const state = await readProgress(lane);
     if (state.error) {

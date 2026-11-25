@@ -17,7 +17,7 @@ import type { CompactionTrial, DoriConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { briefAnchor } from "./launch.ts";
 import { readScreen, sendVerified } from "./panes.ts";
-import type { Lane } from "./registry.ts";
+import { sessionOf, type Lane } from "./registry.ts";
 import { compactionScan, sessionFile } from "./rollover.ts";
 import { sessionDirFor } from "./session-id.ts";
 import { editorText, turnRunning } from "./submit.ts";
@@ -96,6 +96,7 @@ const RETRY_MS = 30 * 60_000;
 
 // One sweep for one working lane: the re-anchor after a compaction that lost the brief, then the trial's early /compact.
 export const keepTick = async (deps: FlowDeps, lane: Lane): Promise<KeepAct[]> => {
+  if (sessionOf(lane)?.runtime === "omo-host") return [];
   const file = laneLog(deps.config, lane);
   if (!file || !lane.pane) return [];
   const scan = compactionScan(file);
@@ -193,7 +194,7 @@ export const trialRows = (config: DoriConfig, lanes: readonly Lane[], read: (fil
     const row: ArmRow = { arm, lanes: 0, closed: 0, notDone: 0, fixes: 0, sessions: 0, missing: 0, complete: 0, ...emptyUsage() };
     for (const rec of arms.filter((a) => a.arm === arm)) {
       const lane = lanes.find((l) => l.key === rec.key);
-      if (!lane) continue;
+      if (!lane || sessionOf(lane)?.runtime === "omo-host") continue;
       row.lanes++;
       if (lane.closedAt) row.closed++;
       row.notDone += (lane.history ?? []).filter((h) => h.status === "not-done").length;

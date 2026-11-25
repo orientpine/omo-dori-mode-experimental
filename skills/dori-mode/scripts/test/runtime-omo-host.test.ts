@@ -119,8 +119,8 @@ describe("probe and deliver", () => {
     host.refuseNext.set("prompt", "busy");
     const out = await rt.deliver(REF, "hi", { when: "any" });
     expect(host.calls.map((c) => c[0])).toEqual(["state", "prompt", "steer"]);
-    // The fake's session is idle, so the steer is parked: reported ambiguous, never sent again.
-    expect(out.kind).toBe("ambiguous");
+    // A successful steer acknowledgment while idle is queued, not a transport ambiguity.
+    expect(out).toEqual({ kind: "queued" });
   });
 
   test("busy under `idle` is not-ready; an open question takes the answer as a prompt; gone is no-agent", async () => {

@@ -24,10 +24,10 @@ const typeCommand: Command = async (context) => {
   const r = await typeIntoPane(deps, pane, text);
   for (const note of r.notes) console.error(note);
   if (r.pane !== pane) console.error(`FORWARDED ${pane} -> ${r.pane}: ${pane} was frozen by a handover, so the text went to the session that replaced it`);
-  console.log(r.status === "SUBMITTED" ? `SUBMITTED ${r.pane}` : `NOT_SUBMITTED ${r.pane} ${r.reason}`);
+  console.log(r.status === "SUBMITTED" ? `SUBMITTED ${r.pane}` : `${r.status} ${r.pane} ${r.reason}`);
   // a pane a handover is moving: the text is kept for the new session too (lane-handover hands it over at the commit)
   if (holdTyped(config.stateDir, pane, Date.now(), text)) console.error(`HANDOVER_HELD ${pane}: a handover is moving this session; the text is also kept for the new session and handed to it when the move commits`);
-  process.exitCode = r.status === "SUBMITTED" ? 0 : 1;
+  process.exitCode = r.status === "SUBMITTED" || r.status === "QUEUED" ? 0 : r.status === "AMBIGUOUS" ? 3 : 1;
   return;
 };
 

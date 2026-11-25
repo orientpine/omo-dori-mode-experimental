@@ -117,6 +117,8 @@ export function probeOf(state: Record<string, unknown> | undefined): Probe {
     ...(title === undefined ? {} : { title }),
     ...(cwd === undefined ? {} : { cwd }),
     shellInFront: false,
+    ...(Array.isArray(state["steering"]) ? { steering: state["steering"].filter((value): value is string => typeof value === "string") } : {}),
+    ...(typeof state["pendingMessageCount"] === "number" ? { pendingMessageCount: state["pendingMessageCount"] } : {}),
     ...(goal === undefined ? {} : { goal }),
     ...(model ? { model } : {}),
   };

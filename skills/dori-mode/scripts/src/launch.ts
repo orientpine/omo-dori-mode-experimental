@@ -105,7 +105,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     }
     throw e instanceof LaunchFailed && openedThread ? new LaunchFailed(e.message, openedThread) : e;
   });
-  const arm = assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
+  const arm = hosted ? undefined : assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
   const lane: Lane = { ...draft, ...("ref" in opened ? { sessionRef: opened.ref } : {}), model, reportProtocol: "jsonl-v1", pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
   if ("ref" in opened && (await deps.registry.read(lane.key))?.status === "closed") return { lane, startup: await hostedStartup(deps, input.key, opened.ref) };
   await deps.registry.write(lane);

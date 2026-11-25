@@ -1,4 +1,9 @@
 // Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
+// | Support boundary | Behavior |
+// | Supported | Hosted lane launch, list/read/type/attach/close, goal pause/resume, read-only boot/sync, claim and pending-goal checks, blocked detection, missed answers and turn-limit recovery. |
+// | Refused | Hosted leads, and runtime requests for per-session environment injection. Launch requires a reachable shared host. |
+// | Contained | Hosted lanes do not enter terminal freshness automation, compaction/re-anchoring, rollover or terminal process recovery. Rendered output is display-only; recovery uses structured host state and JSONL records. |
+// | Keys unset | New lanes and the lead keep their terminal defaults; existing hosted lanes remain managed by stored runtime. |
 import type { Exec } from "../exec.ts";
 import { spawnExec } from "../exec.ts";
 import type {
@@ -112,7 +117,7 @@ export class OmoHostRuntime implements SessionRuntime {
   /**
    * `prompt` into an idle session (it starts a turn), `steer` into a working one (queued into the running turn); the
    * host refuses a prompt while a turn runs (`busy`), which is the compare-and-send gate. A steer that reaches a session
-   * whose turn ended in between is parked until its next prompt: `ambiguous`, never sent again. `force` changes nothing:
+   * whose turn ended in between is parked until its next prompt: `queued`, distinct from a transport ambiguity. `force` changes nothing:
    * nothing here is ever blocked (an open question is answered by the next prompt).
    */
   async deliver(ref: SessionRef, text: string, opts: DeliverOptions = {}): Promise<DeliverOutcome> {
@@ -139,12 +144,7 @@ export class OmoHostRuntime implements SessionRuntime {
         }
       }
       const r = await hostCall(this.exec, ["steer", ref.id, sent], { redact: sent });
-      if (r["streaming"] === false)
-        return {
-          kind: "ambiguous",
-          detail: "the turn ended before the steer arrived; it is parked until the session's next prompt",
-          failure: "steer parked",
-        };
+      if (r["streaming"] === false && r["disposition"] === "queued") return { kind: "queued" };
       return { kind: "delivered", started: false };
     } catch (e) {
       if (isReason(e, "busy")) return { kind: "not-ready", status: "working" };

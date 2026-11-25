@@ -4,7 +4,6 @@ import { formatRef, type SessionRef } from "./runtime/types.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
 import { LaunchFailed, LaunchRegistrationError } from "./launch-types.ts";
 import { STARTUP_CHECK_MS, GOAL_WAIT, lastLines } from "./pending-goal.ts";
-import { startupFailure } from "./launch-screen.ts";
 import { isReason } from "./runtime/omo-host/exec.ts";
 import { closedMeanwhile } from "./sessions.ts";
 
@@ -46,8 +45,6 @@ export const hostedStartup = async (deps: FlowDeps, key: string, ref: SessionRef
     if (await closedMeanwhile(deps, ref, key)) return `STARTUP_DONE ${key}`;
     const screen = await rt.read(ref, 40);
     if (await closedMeanwhile(deps, ref, key)) return `STARTUP_DONE ${key}`;
-    const bad = startupFailure(screen);
-    if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad}`;
     const probe = await rt.probe(ref);
     if (await closedMeanwhile(deps, ref, key)) return `STARTUP_DONE ${key}`;
     if (probe.status === "gone") return `STARTUP_ERROR ${key} ${pane}: the host session is gone`;

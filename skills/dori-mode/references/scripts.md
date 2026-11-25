@@ -17,6 +17,15 @@ Read its transcript with `dori read <key>`, send a prompt with `dori type omo-ho
 
 `"laneRuntime": "omo-host"` requires the shared OmO host to be listening on the default socket. Start it with `omo host ensure`; Dori does not start it.
 
+#### Support boundary
+
+| Scope | Behavior |
+| --- | --- |
+| Supported | Hosted lane launch, list/read/type/attach/close, goal pause/resume, read-only boot/sync, claim and pending-goal checks, blocked detection, missed answers and turn-limit recovery. |
+| Refused | Hosted leads, and runtime requests for per-session environment injection. Launch requires a reachable shared host. |
+| Contained | Hosted lanes do not enter terminal freshness automation, compaction/re-anchoring, rollover or terminal process recovery. Rendered output is display-only; recovery uses structured host state and JSONL records. |
+| Keys unset | New lanes and the lead keep their terminal defaults; existing hosted lanes remain managed by stored runtime. |
+
 ## Install and test
 
 ```sh

@@ -4,7 +4,7 @@ import type { Clock } from "./run.ts";
 // Typing into an agent pane only counts once the agent took it: a long or multi-line text folds into
 // "[paste #1 +13 lines]" and an Enter sent right after it can be lost, leaving the text unsent while the
 // old "is the start of the text still on the ❯ line" check passed (okdori, 2026-10-11).
-export type Submitted = { readonly status: "SUBMITTED" | "NOT_SUBMITTED"; readonly reason: string };
+export type Submitted = { readonly status: "SUBMITTED" | "NOT_SUBMITTED" | "QUEUED" | "AMBIGUOUS"; readonly reason: string };
 
 export type PaneKeys = {
   // types the text without Enter; a returned string is why it could not

@@ -14,10 +14,10 @@ import type { FlowDeps } from "./done-flow.ts";
 import type { Question } from "./messenger/discord-cards.ts";
 import { hostedTranscript } from "./pane-transcript.ts";
 import { parseRef } from "./runtime/types.ts";
-import { sendVerified } from "./panes.ts";
+import { submitToPane } from "./panes.ts";
 import { answeredBy } from "./send-dedupe.ts";
-import { iso } from "./run.ts";
-import { type Lane, statusOf } from "./registry.ts";
+import { iso, runtimesOf } from "./run.ts";
+import { type Lane, sessionOf, statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
 import type { Proc } from "./session-id.ts";
 
@@ -32,7 +32,7 @@ export const MISSED_ANSWER_GRACE_MS = 3 * 60_000;
 export const MISSED_ANSWER_WINDOW_MS = 2 * 60 * 60_000;
 const MAX_TRIES = 3;
 
-type Marks = Record<string, { readonly at: string; readonly tries: number; readonly sent: boolean }>;
+type Marks = Record<string, { readonly at: string; readonly tries: number; readonly sent: boolean; readonly pending?: "QUEUED" | "AMBIGUOUS"; readonly recovered?: boolean; readonly pane?: string; readonly answeredAt?: string }>;
 const marksPath = (deps: FlowDeps): string => join(deps.config.stateDir, "answers-redelivered.json");
 const readMarks = (deps: FlowDeps): Marks => {
   const path = marksPath(deps);
@@ -157,25 +157,31 @@ const sessionStart = (transcript: string): number => {
   }
 };
 
-export const missedAnswersTick = async (deps: FlowDeps): Promise<string[]> => {
+export const missedAnswersTick = async (deps: FlowDeps, terminal = true): Promise<string[]> => {
   const now = deps.clock.now();
+  const marks = readMarks(deps);
   const cards = (deps.answeredCards?.() ?? []).filter((q) => {
     const at = Date.parse(q.answeredAt ?? "");
-    return q.status === "answered" && now - at >= MISSED_ANSWER_GRACE_MS && now - at < MISSED_ANSWER_WINDOW_MS;
+    return q.status === "answered" && now - at >= MISSED_ANSWER_GRACE_MS && (marks[q.id]?.pending || now - at < MISSED_ANSWER_WINDOW_MS);
   });
-  const marks = readMarks(deps);
-  const due = cards.filter((q) => !marks[q.id]?.sent && (marks[q.id]?.tries ?? 0) < MAX_TRIES && (q.tmux || deps.config.leadPane));
+  const hosted = new Set((await deps.registry.open()).filter((l) => sessionOf(l)?.runtime === "omo-host").map((l) => l.pane));
+  const due = cards.filter((q) => (terminal || hosted.has(q.tmux ?? undefined)) && !marks[q.id]?.sent && (marks[q.id]?.pending || (marks[q.id]?.tries ?? 0) < MAX_TRIES) && (q.tmux || deps.config.leadPane));
   if (!due.length) return [];
-  const [sessions, table] = await Promise.all([liveSessions(deps.run), procTable(deps.run)]);
+  const [sessions, table] = terminal ? await Promise.all([liveSessions(deps.run), procTable(deps.run)]) : [[], []] as const;
   const out: string[] = [];
   const transcripts = new Map<string, string | undefined>();
   for (const q of due) {
     const pane = q.tmux || deps.config.leadPane;
-    if (!transcripts.has(pane)) {
-      const ref = parseRef(pane);
+    const ref = parseRef(pane);
+    const mark = marks[q.id];
+    if (mark?.pending && (mark.pane !== pane || mark.answeredAt !== q.answeredAt)) continue;
+    const probe = mark?.pending && ref?.runtime === "omo-host" && hosted.has(pane)
+      ? await (async () => { const rt = runtimesOf(deps.run, deps.config).for(ref); return await rt.observe?.(ref) ? rt.probe(ref) : undefined; })()
+      : undefined;
+    if (!transcripts.has(pane) || mark?.pending) {
       const session = sessionFor(sessions, pane);
       if (ref?.runtime === "omo-host") {
-        const path = await hostedTranscript(deps.run, deps.config, ref);
+        const path = mark?.pending ? probe?.transcriptPath : await hostedTranscript(deps.run, deps.config, ref);
         transcripts.set(pane, path && existsSync(path) ? readFileSync(path, "utf8") : undefined);
       } else {
         const file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table, deps.config.stateDir) : undefined;
@@ -184,10 +190,26 @@ export const missedAnswersTick = async (deps: FlowDeps): Promise<string[]> => {
     }
     const text = transcripts.get(pane);
     // a session that started after the answer (a rollover) did not ask: the handover carries what it needs
-    if (!text || sawAnswer(text, q.id) || !(sessionStart(text) < Date.parse(q.answeredAt ?? ""))) continue;
-    const ok = await sendVerified(deps.run, deps.clock, deps.config, pane, answerLine(q));
-    const tries = (marks[q.id]?.tries ?? 0) + 1;
-    marks[q.id] = { at: iso(deps.clock), tries, sent: ok };
+    const consumed = !!text && sawAnswer(text, q.id, { id: "", at: Date.parse(q.answeredAt ?? "") }, q.answeredAt);
+    if (mark?.pending && consumed) {
+      marks[q.id] = { ...mark, sent: true };
+      out.push(`CARD_ANSWER_CONSUMED ${q.id} ${pane}: answer found in the session transcript`);
+      continue;
+    }
+    if (mark?.pending && (mark.pending === "AMBIGUOUS" || mark.recovered || probe?.status !== "idle" || !probe.steering || probe.steering.includes(answerLine(q)) || probe.pendingMessageCount !== 0)) {
+      out.push(`CARD_ANSWER_PENDING ${q.id} ${pane}: ${mark.pending.toLowerCase()}; no duplicate sent`);
+      continue;
+    }
+    if (!text || (ref?.runtime === "omo-host" ? consumed : sawAnswer(text, q.id)) || !(sessionStart(text) < Date.parse(q.answeredAt ?? ""))) continue;
+    const result = await submitToPane(deps.run, deps.clock, deps.config, pane, answerLine(q));
+    const ok = result.status === "SUBMITTED";
+    const tries = (mark?.tries ?? 0) + 1;
+    const pending = result.status === "QUEUED" || result.status === "AMBIGUOUS" ? result.status : undefined;
+    marks[q.id] = { at: iso(deps.clock), tries: mark?.pending && !pending ? MAX_TRIES : tries, sent: ok, ...(pending ? { pending, pane, ...(q.answeredAt ? { answeredAt: q.answeredAt } : {}), ...(mark?.pending ? { recovered: true } : {}) } : {}) };
+    if (pending) {
+      out.push(`CARD_ANSWER_${pending} ${q.id} ${pane}: ${result.reason}`);
+      continue;
+    }
     out.push(
       ok
         ? `CARD_ANSWER_REDELIVERED ${q.id} ${pane}: answered ${q.answeredAt}, not in that session's transcript; typed it there (SUBMITTED)`

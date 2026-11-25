@@ -97,7 +97,8 @@ export const submitHosted = async (rts: Runtimes, ref: SessionRef, text: string)
     case "delivered": return { status: "SUBMITTED", reason: result.started ? "host started a turn" : "host accepted input" };
     case "no-agent": return { status: "NOT_SUBMITTED", reason: "host session not found" };
     case "not-ready": return { status: "NOT_SUBMITTED", reason: `host session is ${result.status}` };
-    case "ambiguous": return { status: "NOT_SUBMITTED", reason: result.detail };
+    case "queued": return { status: "QUEUED", reason: "host acknowledged a parked steer; do not resend" };
+    case "ambiguous": return { status: "AMBIGUOUS", reason: result.detail };
     case "typed": return { status: "NOT_SUBMITTED", reason: "host did not submit input" };
   }
 };

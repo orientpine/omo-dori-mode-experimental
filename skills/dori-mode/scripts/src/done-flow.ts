@@ -74,7 +74,7 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
       await deps.registry.write(lane);
     }
     if (lane.pane && omoPane(deps.config, lane.pane)) {
-      const act = (await paneActivity(deps.run, [lane.pane])).get(lane.pane);
+      const act = (await paneActivity(deps.run, [lane.pane], deps.config)).get(lane.pane);
       const reopened = await claimTurn(deps, lane, act);
       if (reopened) {
         out.push(reopened);
@@ -86,10 +86,13 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
     out.push(...(await settle(deps, (await deps.registry.read(lane.key)) ?? lane, claim.evidence)));
   }
   out.push(...(await pendingGoalTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN pending goal check: ${String(e).slice(0, 200)}`])));
-  if (omoSession(deps.config)) {
-    out.push(...(await blockedTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
-    out.push(...(await autoturnTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN autoturn check: ${String(e).slice(0, 200)}`])));
-    out.push(...(await missedAnswersTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN missed answer check: ${String(e).slice(0, 200)}`])));
+  const terminal = omoSession(deps.config);
+  if (terminal || (await deps.registry.open()).some((lane) => sessionOf(lane)?.runtime === "omo-host")) {
+    out.push(...(await blockedTick(deps, terminal).catch((e: unknown) => [`LANE_WATCH_WARN blocked check: ${String(e).slice(0, 200)}`])));
+    out.push(...(await autoturnTick(deps, terminal).catch((e: unknown) => [`LANE_WATCH_WARN autoturn check: ${String(e).slice(0, 200)}`])));
+    out.push(...(await missedAnswersTick(deps, terminal).catch((e: unknown) => [`LANE_WATCH_WARN missed answer check: ${String(e).slice(0, 200)}`])));
+  }
+  if (terminal) {
     out.push(...(await leadDownTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lead down check: ${String(e).slice(0, 200)}`])));
     out.push(...(await laneDeathTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lane death check: ${String(e).slice(0, 200)}`])));
     out.push(...(await laneSuspendTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN lane suspend check: ${String(e).slice(0, 200)}`])));
@@ -133,9 +136,9 @@ const claimTurn = async (deps: FlowDeps, lane: Lane, act: Activity | undefined):
 // than blockedWaitMin before the lane went idle (a server or watcher left running) does not count. A job that runs
 // longer than an hour is not a human block by itself: on 2026-11-02 pingpong-analytics' long bash_19 and bash_21 aged out of
 // "started within the last hour" and the lane was LANE_BLOCKED idle three times while they ran.
-export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
-  const lanes = (await deps.registry.open()).filter((l) => l.pane && (statusOf(l) === "working" || statusOf(l) === "not-done"));
-  const activity = await paneActivity(deps.run, lanes.map((l) => l.pane ?? ""));
+export const blockedTick = async (deps: FlowDeps, terminal = true): Promise<string[]> => {
+  const lanes = (await deps.registry.open()).filter((l) => l.pane && (terminal || sessionOf(l)?.runtime === "omo-host") && (statusOf(l) === "working" || statusOf(l) === "not-done"));
+  const activity = await paneActivity(deps.run, lanes.map((l) => l.pane ?? ""), deps.config);
   const now = deps.clock.now();
   const out: string[] = [];
   for (const lane of lanes) {
@@ -144,7 +147,7 @@ export const blockedTick = async (deps: FlowDeps): Promise<string[]> => {
     let blocked = act === "waiting" || act === "error" || act === "question" ? act : idleSince !== undefined && now - idleSince >= IDLE_SETTLE_MS ? "idle" : undefined;
     let waitingOn: string | undefined;
     const waitMs = deps.config.blockedWaitMin * 60_000;
-    if (blocked === "idle" && lane.blocked !== "idle" && idleSince !== undefined && now - idleSince < waitMs) {
+    if (sessionOf(lane)?.runtime !== "omo-host" && blocked === "idle" && lane.blocked !== "idle" && idleSince !== undefined && now - idleSince < waitMs) {
       // an end that landed within the settle time may not have woken the lane yet; it counts once the lane stayed idle after it
       const jobs = await laneBackground(deps.run, deps.config.sessionsDir, lane.pane ?? "", lane.cwd ?? "", now - IDLE_SETTLE_MS, idleSince - waitMs).catch((e: unknown) => {
         out.push(`LANE_WATCH_WARN background check ${lane.key}: ${String(e).slice(0, 160)}`);
