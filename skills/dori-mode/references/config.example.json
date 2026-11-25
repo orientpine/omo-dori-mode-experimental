@@ -22,6 +22,8 @@
   "postAfterMin": 20,
   "closeAfterMin": 5,
   "heavySlots": 1,
+  "heavyJobMemGb": null,
+  "heavyMinSlots": 1,
   "heavyMaxLoad": 80,
   "heavyMaxSlots": 8,
   "heavyHeadroomPct": 10,
