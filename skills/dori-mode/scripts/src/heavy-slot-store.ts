@@ -1,6 +1,9 @@
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { SlotDeps } from "./heavy-slot-types.ts";
+import { HeavyAdmissionError, withHeavyFlock } from "./heavy-lock.ts";
+import type { SlotDeps, SlotRequest } from "./heavy-slot-types.ts";
+
+export { pidAlive } from "./heavy-pid.ts";
 
 const ORPHAN_MS = 60_000;
 
@@ -36,6 +39,15 @@ export const slotSettleSec = (deps: SlotDeps, n: number): number | undefined => 
   }
 };
 
+const writeOwner = (deps: SlotDeps, path: string, request: SlotRequest & { readonly stamp: string }): string => {
+  const { label, memKb, settleSec, stamp } = request;
+  const owner = `${deps.pid} ${label} ${stamp}`;
+  if (memKb) writeFileSync(join(path, MEM_FILE), String(Math.round(memKb)));
+  if (settleSec) writeFileSync(join(path, SETTLE_FILE), String(settleSec));
+  writeFileSync(join(path, "owner"), owner);
+  return owner;
+};
+
 export const tryTake = (deps: SlotDeps, n: number, label: string, memKb?: number, settleSec?: number): string | null => {
   const slot = join(deps.dir, `slot.${n}`);
   const claim = (): string | null => {
@@ -44,11 +56,7 @@ export const tryTake = (deps: SlotDeps, n: number, label: string, memKb?: number
     } catch {
       return null;
     }
-    const owner = `${deps.pid} ${label} ${new Date(deps.clock.now()).toISOString()}`;
-    if (memKb) writeFileSync(join(slot, MEM_FILE), String(Math.round(memKb)));
-    if (settleSec) writeFileSync(join(slot, SETTLE_FILE), String(settleSec));
-    writeFileSync(join(slot, "owner"), owner);
-    taken.set(slot, owner);
+    taken.set(slot, writeOwner(deps, slot, { label, memKb, settleSec, stamp: new Date(deps.clock.now()).toISOString() }));
     return slot;
   };
   const got = claim();
@@ -64,6 +72,72 @@ export const tryTake = (deps: SlotDeps, n: number, label: string, memKb?: number
   if (!orphaned) return null;
   rmSync(slot, { recursive: true, force: true });
   return claim();
+};
+
+const hasCode = (e: unknown, code: string): boolean => e instanceof Error && "code" in e && e.code === code;
+export type InspectedSlot = { readonly n: number; readonly pid?: number; readonly label?: string; readonly since?: number | undefined; readonly memKb: number };
+type ClaimableSlot = { readonly path: string; readonly orphaned: boolean };
+
+// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+// An unknown owner occupies capacity, including an unreadable/malformed record. Probe each owner only once.
+export const inspectSlots = (deps: SlotDeps & { readonly dynamic: { readonly maxSlots: number } }) => {
+  const held: InspectedSlot[] = [];
+  const occupied = new Set<number>();
+  const dead = new Set<number>();
+  let names: string[];
+  try {
+    names = readdirSync(deps.dir);
+  } catch (e) {
+    if (!hasCode(e, "ENOENT")) throw new HeavyAdmissionError(`cannot list heavy slots in ${deps.dir}`, { cause: e });
+    names = [];
+  }
+  for (const name of names) {
+    if (!/^slot\.[1-9]\d*$/.test(name)) continue;
+    const n = Number(name.slice(5));
+    let raw: string;
+    try {
+      raw = readFileSync(join(deps.dir, name, "owner"), "utf8");
+    } catch (e) {
+      if (!(e instanceof Error)) throw e;
+      // A release may have removed the whole directory since readdir.
+      if (hasCode(e, "ENOENT") && !statSync(join(deps.dir, name), { throwIfNoEntry: false })) continue;
+      occupied.add(n);
+      held.push({ n, memKb: slotMemKb(deps, n) });
+      continue;
+    }
+    const match = /^([1-9]\d*) (.*) (\S+)$/.exec(raw.trim());
+    const pid = Number(match?.[1]);
+    const time = Date.parse(match?.[3] ?? "");
+    const known = Number.isSafeInteger(pid) && pid > 0;
+    const since = Number.isFinite(time) ? time : undefined;
+    if (known && !deps.alive(pid, since)) {
+      dead.add(n);
+      continue;
+    }
+    occupied.add(n);
+    held.push({ n, ...(known ? { pid, label: match?.[2] ?? "", since } : {}), memKb: slotMemKb(deps, n) });
+  }
+  let free: ClaimableSlot | undefined;
+  for (let n = 1; n <= deps.dynamic.maxSlots; n++) {
+    if (occupied.has(n)) continue;
+    free = { path: join(deps.dir, `slot.${n}`), orphaned: dead.has(n) };
+    break;
+  }
+  return { held: held.sort((a, b) => a.n - b.n), free };
+};
+
+export const claimSlot = (deps: SlotDeps, slot: ClaimableSlot, request: SlotRequest & { readonly stamp: string }): void => {
+  // Publish a complete owner record at once. A killed claimant cannot leave an ownerless slot.
+  const staging = mkdtempSync(join(deps.dir, ".claim-"));
+  try {
+    const owner = writeOwner(deps, staging, request);
+    if (slot.orphaned) rmSync(slot.path, { recursive: true, force: true });
+    renameSync(staging, slot.path);
+    taken.set(slot.path, owner);
+  } catch (e) {
+    rmSync(staging, { recursive: true, force: true });
+    throw e;
+  }
 };
 
 // The process whose tree is a slot's job, when that is not the slot's owner (dori heavy --items here, heavy-batch.ts): the
@@ -108,6 +182,8 @@ export const heldBy = (deps: SlotDeps, running: readonly Holder[]): string =>
 
 // one admission decision at a time across processes, so two waiters never both take the same headroom
 export const withLock = async <T>(deps: SlotDeps, f: () => Promise<T>): Promise<T | null> => {
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  if (deps.dynamic) return withHeavyFlock(deps, f);
   const lock = join(deps.dir, "admit.lock");
   const take = (): boolean => {
     try {
@@ -152,17 +228,4 @@ export const releaseSlot = (slot: string): void => {
     if (now !== mine) return;
   }
   rmSync(slot, { recursive: true, force: true });
-};
-
-// alive and not a zombie; with `since`, also started by then (ps etimes is whole seconds, so 2 s of slack)
-export const pidAlive = (pid: number, since?: number): boolean => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  const [stat = "", etimes = ""] = Bun.spawnSync(["ps", "-o", "stat=,etimes=", "-p", String(pid)]).stdout.toString().trim().split(/\s+/);
-  if (stat === "" || stat.startsWith("Z")) return false;
-  return since === undefined || !/^\d+$/.test(etimes) || Date.now() - Number(etimes) * 1000 <= since + 2_000;
 };

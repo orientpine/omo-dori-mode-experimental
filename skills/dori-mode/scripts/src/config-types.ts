@@ -93,6 +93,9 @@ export type DoriConfig = {
   readonly postAfterMin: number;
   readonly closeAfterMin: number;
   readonly heavySlots: number;
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  readonly heavyJobMemGb: number | null;
+  readonly heavyMinSlots: number;
   readonly heavyMaxLoad: number;
   // dori heavy beside the first heavySlots jobs: up to heavyMaxSlots at once, a job only when GPU use, GPU (or unified)
   // memory, CPU and memory each keep heavyHeadroomPct percent free with it added, and none while a job taken less than

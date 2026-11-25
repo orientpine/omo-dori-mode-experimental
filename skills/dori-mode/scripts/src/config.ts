@@ -6,7 +6,7 @@ import { supervisionProblem } from "./supervision.ts";
 import type { ArgvTemplate, DoriConfig } from "./config-types.ts";
 import { defaultConfig } from "./config-defaults.ts";
 import { OWNER_SPEECHES } from "./config-discord.ts";
-import { heavyQueueProblem } from "./config-heavy.ts";
+import { heavyDynamicProblem, heavyQueueProblem } from "./config-heavy.ts";
 import { compactionTrialProblem, ConfigError, researchTextProblem } from "./config-validation.ts";
 import { configPath, expandHome } from "./config-env.ts";
 
@@ -115,7 +115,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   // to back (the --loop check of upstream #131/#134, https://github.com/sisyphuslabs/dori-superagent/pull/134)
   const everyMin: unknown = merged.stateGit.everyMin;
   if (!(typeof everyMin === "number" && Number.isFinite(everyMin) && (everyMin === 0 || everyMin * 60_000 >= 1))) throw new ConfigError(`${path}: stateGit.everyMin must be a number of minutes: 0 turns it off, or 1 ms (0.0000167) or more, not ${JSON.stringify(everyMin)}`);
-  const heavyProblem = heavyQueueProblem(merged.heavyQueue);
+  const heavyProblem = heavyQueueProblem(merged.heavyQueue) ?? heavyDynamicProblem(merged); // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
   if (heavyProblem) throw new ConfigError(`${path}: ${heavyProblem}`);
   // DORI_HEAVY_HOLD_DIR: the suite's own (test/preload.ts), so no test reads a hold this host really has on
   const heavyHoldDir: unknown = process.env["DORI_HEAVY_HOLD_DIR"] ?? merged.heavyHoldDir;

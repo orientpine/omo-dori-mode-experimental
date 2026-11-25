@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { stager } from "./heavy-assets.ts";
 import { defaultOut, heavyBatch, readItems } from "./heavy-batch.ts";
 import { heavyOuter, runHere } from "./heavy-here.ts";
+import { dynamicStatus } from "./heavy-dynamic.ts";
 import { holdCommand } from "./heavy-hold.ts";
 import { gpuRoom, neverFits, parseMem, readMeminfo } from "./heavy-mem.ts";
 import { heavyJobCommand, heavyServe } from "./heavy-queue.ts";
@@ -22,6 +23,14 @@ const heavyCommand: Command = async (context) => {
   const label = rest[0];
   const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
   const load = async () => (await sampleHost(run, config)).load1;
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  if (label === "--status" && rest.length === 1) {
+    const deps = heavyDeps(load);
+    if (deps.dynamic) {
+      for (const line of await dynamicStatus({ ...deps, dynamic: deps.dynamic })) console.log(line);
+      return;
+    }
+  }
   // dori heavy hold-local [on --until ... --reason ... [--except ACCOUNT ...] | off]: no job of any account but those
   // excepted takes this host's slots meanwhile
   if (label === "hold-local" && sep < 0) {

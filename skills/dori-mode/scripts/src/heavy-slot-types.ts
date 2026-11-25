@@ -1,5 +1,9 @@
 import type { UsageSample } from "./heavy-headroom.ts";
+import type { DynamicPolicy } from "./heavy-dynamic.ts";
 import type { Clock } from "./run.ts";
+
+export type Try = { readonly slot: string; readonly why: string } | { readonly wait: string; readonly why: string };
+export type SlotRequest = { readonly label: string; readonly memKb?: number | undefined; readonly settleSec?: number | undefined; readonly ownerMemPct?: number | undefined };
 
 // More jobs beside the first `slots`: up to maxSlots at once, each only when every resource keeps `free` percent free with
 // it added, and not while a job taken less than settleSec ago has not shown its load yet.
@@ -22,6 +26,8 @@ export type SlotDeps = {
   readonly alive: (pid: number, since?: number) => boolean;
   readonly pid: number;
   readonly headroom?: Headroom;
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264 (opt-in per host)
+  readonly dynamic?: DynamicPolicy;
   // one line per job when it is taken (HEAVY_ADMIT) and when it starts or changes why it waits (HEAVY_WAIT)
   readonly log?: (line: string) => void;
   // the live holds on this host's slots (dori heavy hold-local, heavy-hold.ts holdNote), or undefined: none, a job may take one
