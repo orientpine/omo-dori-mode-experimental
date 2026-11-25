@@ -181,7 +181,7 @@ export const openHerdrSession = async (
     readonly argv: readonly string[];
     readonly env?: Readonly<Record<string, string | undefined>>;
     readonly workspace?: string;
-    readonly runtime?: "hc" | "herdr"; // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282
+    readonly runtime?: "hc" | "herdr"; // https://github.com/sisyphuslabs/dori-superagent/pull/282
     readonly beforeStart?: (opened: { readonly pane: string; readonly tab?: string }) => Promise<void>;
   },
 ): Promise<{ readonly pane: string; readonly tab?: string }> => {

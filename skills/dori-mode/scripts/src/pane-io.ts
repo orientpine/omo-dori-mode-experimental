@@ -4,7 +4,7 @@ import { parseRef } from "./runtime/types.ts";
 
 // a herdr pane is read through herdr (herdr.ts), the same visible screen or last lines
 export const captureTmux = async (run: Runner, pane: string, lines?: number): Promise<string> => {
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: hosted refs are never tmux or herdr panes.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: hosted refs are never tmux or herdr panes.
   const hosted = parseRef(pane);
   if (hosted?.runtime === "omo-host") return runtimesOf(run).for(hosted).read(hosted, lines ?? 80);
   if (isHerdrPane(pane)) return herdrRead(run, pane, lines);

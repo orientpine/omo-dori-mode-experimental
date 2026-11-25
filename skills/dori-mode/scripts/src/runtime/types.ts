@@ -1,5 +1,5 @@
 // From upstream dori-superagent src/runtime/types.ts (https://github.com/sisyphuslabs/dori-superagent/blob/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444/src/runtime/types.ts; #147 #148 #150 #155, licences in NOTICE).
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 export type TerminalKind = "herdr" | "hc";
 export type RuntimeKind = TerminalKind | "omo-host";
 export const AGENT_SESSION_KINDS: ReadonlySet<RuntimeKind> = new Set(["omo-host"]);
@@ -92,7 +92,7 @@ const BARE_HERDR = /^w[0-9A-Za-z]+:p[0-9A-Za-z]+$/;
  * address/id_shaped). The fork widened upstream's `t<digits>`, which drops a lane past t19 (review 7 of #404). */
 export const HC_ADDRESS = /^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$/;
 /** Id shape after each prefix: a herdr pane, or an hc terminal address. */
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 const ID_SHAPES = { herdr: BARE_HERDR, hc: HC_ADDRESS, "omo-host": /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i } satisfies Record<RuntimeKind, RegExp>;
 const KINDS = ["herdr", "hc", "omo-host"] as const;
 

@@ -124,7 +124,7 @@ const launchEnvCommand: Command = async (context) => {
   return;
 };
 
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: this terminal is just a viewer, not the lane.
+// https://github.com/sisyphuslabs/dori-superagent/pull/282: this terminal is just a viewer, not the lane.
 const attachCommand: Command = async ({ deps, lane, key, flags }) => {
   const target = await lane(key ?? die("attach needs a lane key"));
   const ref = sessionOf(target);

@@ -48,7 +48,7 @@ export const readGoalFile = (file: string): GoalRead => {
 };
 
 export const sessionGoal = async (deps: FlowDeps, pane: string): Promise<GoalRead> => {
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: hosted slash commands have no terminal confirmation.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: hosted slash commands have no terminal confirmation.
   const ref = parseRef(pane);
   if (ref?.runtime === "omo-host") {
     const goal = (await runtimesOf(deps.run, deps.config).for(ref).probe(ref)).goal;

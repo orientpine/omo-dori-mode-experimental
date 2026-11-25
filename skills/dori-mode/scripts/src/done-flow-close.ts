@@ -154,7 +154,7 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   const at = iso(deps.clock);
   const receipt = { checks, note, cleanup };
   await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: a read between close and the registry write can resume a host session.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: a read between close and the registry write can resume a host session.
   if (ref?.runtime === "omo-host") await closeSession(runtimesOf(deps.run, deps.config), ref);
   // dori close --lesson (dori-superagent #65): kept only after the close is recorded, and a failure to keep it is a warning
   // that never undoes or blocks the close. Each lesson is kept on its own: one that cannot be kept costs only itself.

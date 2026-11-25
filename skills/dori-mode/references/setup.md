@@ -4,10 +4,10 @@ Run these once, in order. Stop and ask the owner wherever a step needs their cho
 
 If the owner is on Discord and lanes should run as aoe/tmux sessions rather than herdr tabs, follow `setups/discord-aoe/README.md` instead of steps 1 and 5: it installs the listener, question cards, thread hooks, lane sweeps and session watcher as user services. Steps 2 to 4 still apply.
 
-<!-- https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282 -->
+<!-- https://github.com/sisyphuslabs/dori-superagent/pull/282 -->
 To opt in to shared-engine lanes, first verify `omo host session list --json` works and see `scripts.md` under Hosted lane runtime. Leave `laneRuntime` unset for ordinary terminal setup.
 
-<!-- https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284 -->
+<!-- https://github.com/sisyphuslabs/dori-superagent/pull/284 -->
 If the lead already runs in the OmO host, configure `leadRuntime` and its durable `leadPane` as described in `scripts.md`; this setup still starts terminal leads.
 
 ## 1. herdr

@@ -85,7 +85,7 @@ export const closeSession = async (rts: Runtimes, ref: SessionRef): Promise<stri
   return rts.for(ref).close(ref, ref.container ? "container" : "session").then(() => `${what} closed`, () => `${what} not closed`);
 };
 
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: prompt or steer is a single delivery; never retry an uncertain result.
+// https://github.com/sisyphuslabs/dori-superagent/pull/282: prompt or steer is a single delivery; never retry an uncertain result.
 export const submitHosted = async (rts: Runtimes, ref: SessionRef, text: string): Promise<Submitted> => {
   const result = await rts.for(ref).deliver(ref, text, { when: "any" });
   switch (result.kind) {

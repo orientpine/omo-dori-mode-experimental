@@ -47,9 +47,9 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   const lines: string[] = [];
   const rts = deps.rts ?? runtimesOf(deps.run, { runtime: deps.config.runtime });
   const choice = rts.choice;
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: no extra output for an unset override.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: no extra output for an unset override.
   if (deps.config.laneRuntime) lines.push(`LANE_RUNTIME ${deps.config.laneRuntime} (from config)`);
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284: only announce an explicit lead placement.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284: only announce an explicit lead placement.
   if (deps.config.leadRuntime) lines.push(`LEAD_RUNTIME ${deps.config.leadRuntime} (from config)`);
   lines.push(choice ? `RUNTIME ${choice.kind} (from ${choice.source})` : `RUNTIME unavailable: ${rts.failure?.message ?? "unknown"}`);
   if (rts.failure) {

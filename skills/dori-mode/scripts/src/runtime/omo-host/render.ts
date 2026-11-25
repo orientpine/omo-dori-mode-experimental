@@ -1,4 +1,4 @@
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 // A host session has no screen. `read` renders its transcript tail as the lines a TUI pane would show, so the parsers
 // that read a lane's screen (launch's startup checks, the freshness sweep, supervision, pause) work unchanged: the
 // agent's text and tool output as printed, `Error: ...` for a failed turn, and a footer drawn from the live state.

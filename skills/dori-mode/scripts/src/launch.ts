@@ -88,7 +88,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     registered = true;
     new Reports(deps.config.stateDir).append({ type: "activity", key: pending.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${pane}` });
   };
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: hosted sessions take the model at open and a prompt, not a shell command.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: hosted sessions take the model at open and a prompt, not a shell command.
   const hosted = deps.config.laneRuntime !== undefined && AGENT_SESSION_KINDS.has(deps.config.laneRuntime);
   const opened = await (hosted
     ? openHostedLane(deps, { key: input.key, cwd, model, prompt }, beforeStart)

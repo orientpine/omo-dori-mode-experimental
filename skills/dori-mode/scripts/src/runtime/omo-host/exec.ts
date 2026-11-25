@@ -1,4 +1,4 @@
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 // One `omo host session <verb> ... --json` call: the CLI prints exactly one JSON line on stdout, failures included, and
 // its exit code classifies the outcome (0 ok, 1 failed, 2 usage, 3 refused by the host).
 import type { Exec, ExecResult } from "../exec.ts";

@@ -1,4 +1,4 @@
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

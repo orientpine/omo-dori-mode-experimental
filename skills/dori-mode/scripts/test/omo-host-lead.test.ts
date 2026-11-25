@@ -1,4 +1,4 @@
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/284.
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
