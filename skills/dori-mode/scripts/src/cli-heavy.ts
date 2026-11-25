@@ -27,10 +27,12 @@ const heavyCommand: Command = async (context) => {
   // https://github.com/sisyphuslabs/dori-superagent/pull/264
   if (label === "--status" && rest.length === 1) {
     const deps = heavyDeps(load);
-    if (deps.dynamic) {
-      for (const line of await dynamicStatus({ ...deps, dynamic: deps.dynamic })) console.log(line);
-      return;
-    }
+    // a host that did not opt in says which policy it keeps instead of refusing the bare switch
+    const lines = deps.dynamic
+      ? await dynamicStatus({ ...deps, dynamic: deps.dynamic })
+      : [`HEAVY DEFAULT dynamic slots off (heavyJobMemGb not set): the default heavy policy admits jobs, heavySlots ${config.heavySlots}, heavyMaxSlots ${config.heavyMaxSlots}, heavyMaxLoad ${config.heavyMaxLoad}`];
+    for (const line of lines) console.log(line);
+    return;
   }
   // dori heavy hold-local [on --until ... --reason ... [--except ACCOUNT ...] | off]: no job of any account but those
   // excepted takes this host's slots meanwhile

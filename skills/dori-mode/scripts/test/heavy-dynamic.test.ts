@@ -120,6 +120,14 @@ test("heavy status displays the enabled limit and a held owner's full label", as
   expect(result.out).toContain(`HEAVY_SLOT slot.1 browser suite pid ${process.pid}`);
 });
 
+test.each([{}, { heavyJobMemGb: null }])("heavy status on a host without dynamic slots prints one line and exits 0: %j", async (given) => {
+  const path = join(state.dir, "config.json");
+  await Bun.write(path, JSON.stringify(given));
+  const result = await run(["env", `DORI_CONFIG=${path}`, `DORI_STATE_DIR=${state.dir}`, `DORI_ENV_FILE=${join(state.dir, "no.env")}`, process.execPath, join(import.meta.dir, "../src/cli.ts"), "heavy", "--status"]);
+  expect(result.code).toBe(0);
+  expect(result.out.trimEnd().split("\n")).toEqual([expect.stringMatching(/^HEAVY DEFAULT /)]);
+});
+
 test("dynamic full waits name the blocking slot holder before routing elsewhere", async () => {
   const deps = depsFor(async () => sample(19));
   owner(deps.dir, 1, `42 browser suite ${new Date(now).toISOString()}\n`);
