@@ -1,5 +1,6 @@
 // Ported from https://github.com/sisyphuslabs/dori-superagent/pull/284.
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { renderBrief } from "../src/launch-render.ts";
@@ -69,5 +70,29 @@ test.each([
     expect(line).toContain('run ["env","DORI_CONFIG=');
     expect(line).toContain(`"DORI_STATE_DIR=${state.dir}","bun",`);
     expect(line).toContain(`cli.ts","type","${target}","--text","<report line>"`);
+  }
+});
+
+// Review 1 of #529: the env file the lead-bound report command names is the one this process reads, symlinks and .. kept.
+test.skipIf(process.platform === "win32")("the lead-bound report command keeps symlink traversal in DORI_ENV_FILE", async () => {
+  const saved = process.env["DORI_ENV_FILE"];
+  try {
+    const home = join(state.dir, "instance");
+    const target = join(home, "child");
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, join(state.dir, "link"), "dir");
+    writeFileSync(join(home, "dori.env"), "intended");
+    writeFileSync(join(state.dir, "dori.env"), "wrong");
+    process.env["DORI_ENV_FILE"] = `${state.dir}/link/../dori.env`;
+    const brief = join(home, "brief.md");
+    writeFileSync(brief, "do the work\n");
+    const deps = depsFor(newWorld(), fakeClock(0), state.dir, { leadRuntime: "hc", leadPane: "hc:t1" });
+    const rendered = await renderBrief(deps, { key: "lead-bound", title: "reports", brief, done: "file /done", noThread: "QA", cwd: target });
+    const file = rendered.text.match(/DORI_ENV_FILE=([^\s"]+)/)?.[1];
+    expect(file).toBeDefined();
+    expect(await Bun.file(file ?? "").text()).toBe("intended");
+  } finally {
+    if (saved === undefined) delete process.env["DORI_ENV_FILE"];
+    else process.env["DORI_ENV_FILE"] = saved;
   }
 });

@@ -10,7 +10,7 @@ import { laneTokenEnv, TokenFileError } from "./slack-token.ts";
 // or path.join, which collapse `..` on paper, so the OS resolves links and `..` for the lane exactly as it did for the
 // launcher and both find the same token home. One whose home moves when normalized (empty, `.`, `..`) names no config
 // file and is refused rather than letting the home check move up a directory.
-const asGiven = (path: string): string => (isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`);
+export const asGiven = (path: string): string => (isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`);
 
 export const homeEnv = (config: Pick<DoriConfig, "stateDir">, env: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> => {
   const raw = env["DORI_CONFIG"] ?? configPath();
