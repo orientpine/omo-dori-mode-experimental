@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { footer, cliCommand } from "../src/launch-footer.ts";
 import { renderBrief } from "../src/launch-render.ts";
@@ -25,8 +25,8 @@ test("relative selectors resolve from the launching cwd before the command runs 
     const deps = depsFor(newWorld(), fakeClock(Date.parse("2026-01-01T12:00:00.000Z")), state.dir, { stateDir: "./state", defaultCwd: launchRoot });
     const rendered = await renderBrief(deps, { key: "report-lane", title: "reports", brief, done: "file /done", noThread: "QA", cwd: unrelated });
     const command = rendered.text.match(/with (.+ report) /)?.[1];
-    expect(command).toContain(`DORI_CONFIG=${join(launchRoot, "config.json")}`);
-    expect(command).toContain(`DORI_STATE_DIR=${stateDir}`);
+    expect(command).toContain(`DORI_CONFIG=${launchRoot}/./config.json`);
+    expect(command).toContain(`DORI_STATE_DIR=${launchRoot}/./state`);
     await new Registry(stateDir).write({ key: "report-lane", title: "reports", thread: "none", brief: "/b.md", done: "file /done", openedAt: "2026-01-01T12:00:00.000Z" });
     const child = Bun.spawn(["sh", "-c", `${command} report-lane --kind milestone --text "relative bound"`], {
       cwd: unrelated,
@@ -96,4 +96,39 @@ test("the generated report command binds a non-default instance without DORI_ENV
     expect(new Reports(stateDir).read("report-lane")?.lastReport?.text).toBe("bound report");
     expect(existsSync(join(home, ".dori", "state"))).toBe(false);
   } finally { state.done(); }
+});
+
+test.skipIf(process.platform === "win32")("the hosted footer keeps symlink traversal for all instance selectors", async () => {
+  const state = withState();
+  const config = process.env["DORI_CONFIG"];
+  const envFile = process.env["DORI_ENV_FILE"];
+  try {
+    const home = join(state.dir, "instance");
+    const target = join(home, "child");
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, join(state.dir, "link"), "dir");
+    for (const [dir, marker] of [[home, "intended"], [state.dir, "wrong"]] as const) {
+      for (const file of ["config.json", "dori.env"]) writeFileSync(join(dir, file), `${marker}-${file}`);
+      mkdirSync(join(dir, "state"));
+      writeFileSync(join(dir, "state", "marker"), marker);
+    }
+    const selector = `${state.dir}/link/..`;
+    process.env["DORI_CONFIG"] = `${selector}/config.json`;
+    process.env["DORI_ENV_FILE"] = `${selector}/dori.env`;
+    const brief = join(home, "brief.md");
+    writeFileSync(brief, "do the work\n");
+    const deps = depsFor(newWorld(), fakeClock(0), state.dir, { stateDir: `${selector}/state`, laneRuntime: "omo-host" });
+    const rendered = await renderBrief(deps, { key: "report-lane", title: "reports", brief, done: "file /done", noThread: "QA", cwd: target });
+    const command = rendered.text.match(/with (.+ report) /)?.[1];
+    expect(command).toBeDefined();
+    const child = Bun.spawn(["sh", "-c", `${command?.replace(/ bun .+ report$/, " sh -c 'cat \"$DORI_CONFIG\"; cat \"$DORI_ENV_FILE\"; cat \"$DORI_STATE_DIR/marker\"'")}`], { cwd: target, stdout: "pipe" });
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    expect({ out, code }).toEqual({ out: "intended-config.jsonintended-dori.envintended", code: 0 });
+  } finally {
+    if (config === undefined) delete process.env["DORI_CONFIG"];
+    else process.env["DORI_CONFIG"] = config;
+    if (envFile === undefined) delete process.env["DORI_ENV_FILE"];
+    else process.env["DORI_ENV_FILE"] = envFile;
+    state.done();
+  }
 });
