@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { bootCheck } from "../src/boot.ts";
@@ -109,6 +109,24 @@ test("a working hosted lane pauses via a command-capable prompt, not steer", asy
     expect((await f.deps.registry.read(f.lane.key))?.pausedGoal).toBe(true);
   } finally { f.state.done(); }
 });
+
+for (const record of ["unreadable", "malformed", "missing-status", "invalid-status"] as const) {
+  test(`a hosted lane stays working when its goal record is ${record}`, async () => {
+    const f = fixture();
+    try {
+      const dir = join(f.state.dir, "sessions", "--repo--", "extensions", "goal");
+      const file = join(dir, `${id}.json`);
+      mkdirSync(dir, { recursive: true });
+      if (record === "unreadable") mkdirSync(file); // EISDIR, even when run as root
+      else writeFileSync(file, record === "malformed" ? "{" : record === "missing-status" ? '{"goal":{}}' : '{"goal":{"status":"typo"}}');
+      const lane = { ...f.lane, status: "working" as const };
+      await f.deps.registry.write(lane);
+      const before = await f.deps.registry.read(lane.key);
+      await expect(pauseLane(f.deps, lane, "wait")).rejects.toThrow("PAUSE_UNVERIFIED");
+      expect(await f.deps.registry.read(lane.key)).toEqual(before);
+    } finally { f.state.done(); }
+  });
+}
 
 test("a parked hosted lane resumes its paused goal", async () => {
   const f = fixture();

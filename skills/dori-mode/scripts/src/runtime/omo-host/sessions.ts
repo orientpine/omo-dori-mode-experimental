@@ -82,18 +82,19 @@ export function statusOf(state: Record<string, unknown>): AgentStatus {
 
 /**
  * omo's goal record for the session: `<session dir>/extensions/goal/<session id>.json` holding `{ goal: { status } }`,
- * the record omo's own goal footer is drawn from. `none` when the session has no goal (or no record yet).
+ * the record omo's own goal footer is drawn from. Only a missing record means `none`; undefined means unverifiable.
  */
-export function goalOf(state: Record<string, unknown>): string {
+export function goalOf(state: Record<string, unknown>): string | undefined {
   const [file, id] = [str(state["sessionFile"]), str(state["sessionId"])];
-  if (file === undefined || id === undefined) return "none";
+  if (!file || !id) return undefined;
   try {
     const record = rec(
       JSON.parse(readFileSync(join(dirname(file), "extensions", "goal", `${encodeURIComponent(id)}.json`), "utf8")),
     );
-    return str(rec(record["goal"])["status"]) ?? "none";
-  } catch {
-    return "none";
+    const status = str(rec(record["goal"])["status"]);
+    return status === "active" || status === "paused" || status === "complete" || status === "blocked" ? status : undefined;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "none" : undefined;
   }
 }
 
@@ -116,7 +117,7 @@ export function probeOf(state: Record<string, unknown> | undefined): Probe {
     ...(title === undefined ? {} : { title }),
     ...(cwd === undefined ? {} : { cwd }),
     shellInFront: false,
-    goal,
+    ...(goal === undefined ? {} : { goal }),
     ...(model ? { model } : {}),
   };
 }

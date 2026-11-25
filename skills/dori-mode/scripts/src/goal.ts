@@ -102,10 +102,12 @@ const count = (screen: string, re: RegExp): number => screen.split("\n").filter(
 // "Goal paused"/"Goal active" line on screen than before. A goal that is not in the state the command changes is left alone.
 export const goalCommand = async (deps: FlowDeps, pane: string, act: GoalAct): Promise<GoalOutcome> => {
   const read = deps.readGoal ?? ((p: string) => sessionGoal(deps, p));
+  const hosted = parseRef(pane)?.runtime === "omo-host";
   const before = await read(pane);
+  if (hosted && before === "unknown") return { outcome: "unconfirmed", detail: "could not read the hosted goal state" };
   if (before === "none") return { outcome: "no-goal", detail: "no goal in its session" };
   if (before !== "unknown" && before.status !== FROM[act]) return { outcome: "not-active", detail: `its goal is ${before.status}, left as it is` };
-  const screen = await captureTmux(deps.run, pane);
+  const screen = hosted ? "" : await captureTmux(deps.run, pane);
   const shownBefore = count(screen, SHOWN[act]);
   const noneBefore = count(screen, NO_GOAL);
   const why = await typeLine(deps.run, deps.clock, deps.config, pane, `/goal ${act}`);
@@ -113,11 +115,15 @@ export const goalCommand = async (deps: FlowDeps, pane: string, act: GoalAct): P
   for (let i = 0; i < READ_BACK_TRIES; i++) {
     await deps.clock.sleep(1_000);
     const now = await read(pane);
-    if (now === "none") return { outcome: "no-goal", detail: "no goal in its session" };
+    if (now === "none") {
+      if (!hosted) return { outcome: "no-goal", detail: "no goal in its session" };
+      continue;
+    }
     if (now !== "unknown") {
       if (now.status === WANT[act]) return { outcome: "confirmed", detail: `goal store reads ${now.status}` };
       continue;
     }
+    if (hosted) continue;
     const shown = await captureTmux(deps.run, pane);
     if (count(shown, SHOWN[act]) > shownBefore) return { outcome: "confirmed", detail: `screen shows Goal ${WANT[act]}` };
     if (count(shown, NO_GOAL) > noneBefore) return { outcome: "no-goal", detail: "omo says no goal exists" };
