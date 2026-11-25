@@ -100,8 +100,10 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
     const target = row.qid ? version?.tmux || cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
     const session = sessionFor(sessions, target), key = session || target === lead.pane ? target : `${target}\0${row.at}`;
     if (!transcripts.has(key)) {
-      const cwd = session?.path;
-      let file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined;
+      const cwd = session?.path, ref = parseRef(target);
+      // an open hosted lane has no terminal session: the host names its transcript (upstream https://github.com/sisyphuslabs/dori-superagent/pull/282, review 6 of PR 527)
+      const hosted = target !== lead.pane && ref?.runtime === "omo-host" ? await hostedTranscript(deps.run, deps.config, ref) : undefined;
+      let file = target === lead.pane ? { path: lead.path } : hosted && existsSync(hosted) ? { path: hosted } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined;
       if (!file && !session && target !== lead.pane) {
         // Closing a lane keeps its session identity and log. Read that exact session, never a newer same-title log.
         archived ??= await deps.registry.list();

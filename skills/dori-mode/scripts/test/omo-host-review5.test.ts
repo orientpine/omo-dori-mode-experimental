@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { applyDirectives } from "../src/directive-audit.ts";
 import { hostedStartup } from "../src/launch-hosted.ts";
 import { adoptLane } from "../src/launch-state.ts";
-import { sendVerified } from "../src/panes.ts";
+import { objectDone } from "../src/done-flow-state.ts";
+import { reconcileRows } from "../src/missed-answers.ts";
 import type { Runner } from "../src/run.ts";
 import { FakeOmoHost, writeGoal } from "./fake-omo-host.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
@@ -46,20 +47,31 @@ test.each([[undefined, "", false], ["dori/other/personal", "", false], ["dori/do
   } finally { f.state.done(); }
 });
 
-test("a held hosted delivery found in the transcript settles, so the same text sent later goes again", async () => {
+// review 6 of PR 527: a delivery is one send, never matched to an earlier one by its words
+test("two objections with the same reasons both reach the hosted lane", async () => {
   const f = fixture();
   try {
-    const text = "[LEAD] same words again";
+    await f.deps.registry.write(f.lane);
     const sends = () => f.host.calls.filter(([verb]) => verb === "steer" || verb === "prompt").length;
     f.host.refuseNext.set("steer", "transport_gone");
     f.host.refuseNext.set("prompt", "transport_gone");
-    expect((await sendVerified(f.deps.run, f.deps.clock, f.deps.config, pane, text)).kind).toBe("pending");
-    const file = String(f.session.state["sessionFile"]);
-    await Bun.write(file, `${JSON.stringify({ type: "message", message: { role: "user", timestamp: at, content: text } })}\n`);
-    expect((await sendVerified(f.deps.run, f.deps.clock, f.deps.config, pane, text)).kind).toBe("sent");
-    expect(sends()).toBe(1);
-    expect((await sendVerified(f.deps.run, f.deps.clock, f.deps.config, pane, text)).kind).toBe("sent");
+    await objectDone(f.deps, f.lane, ["tests fail"]);
+    const said = "[LEAD] not done: tests fail; keep working, claim again when fixed";
+    await Bun.write(String(f.session.state["sessionFile"]), `${JSON.stringify({ type: "message", message: { role: "user", timestamp: at, content: said } })}\n`);
+    await objectDone(f.deps, f.lane, ["tests fail"]);
     expect(sends()).toBe(2);
+  } finally { f.state.done(); }
+});
+
+test("a card answer an open hosted lane took is not waiting for the terminal lead", async () => {
+  const f = fixture();
+  try {
+    const row = { id: "answer-1", qid: "Q7", tmux: pane, thread: "CARD", at };
+    await Bun.write(String(f.session.state["sessionFile"]), `${JSON.stringify({ type: "custom_message", customType: "senpi-monitor:notification", content: JSON.stringify({ kind: "answer", qid: "Q7", id: row.id, ts: new Date(at).toISOString() }) })}\n`);
+    const leadPath = join(f.state.dir, "lead.jsonl");
+    await Bun.write(leadPath, "");
+    const input = { rows: [row], cards: [], lead: { pane: "lead", path: leadPath, title: "", text: "" }, sessions: [], table: [], deps: f.deps };
+    expect(await reconcileRows(input)).toEqual({ waiting: [], answeredIds: [row.id] });
   } finally { f.state.done(); }
 });
 
@@ -84,7 +96,7 @@ test.each(["queued", "ambiguous"] as const)("directives apply twice does not res
     const second = await applyDirectives(deps, f.lane);
     expect(f.host.calls.filter(([verb]) => verb === "steer" || verb === "prompt").map(([verb]) => verb)).toEqual(["steer"]);
     expect(first.lines.at(-1)).toContain("PENDING");
-    expect(second.lines.at(-1)).toContain("PENDING");
-    expect(await Bun.file(f.lane.brief).text()).toBe(brief);
+    expect(second.lines.at(-1)).toContain("DIRECTIVES_APPLY_NONE");
+    expect(await Bun.file(f.lane.brief).text()).not.toBe(brief);
   } finally { f.state.done(); }
 });
