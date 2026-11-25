@@ -4,7 +4,10 @@
 import type { Runtimes } from "./runtime/registry.ts";
 import type { RuntimeKind, SessionInfo, SessionRef } from "./runtime/types.ts";
 import { aoeSessions, tmuxNameFor, type PaneLife } from "./aoe.ts";
-import type { Runner } from "./run.ts";
+import { runtimesOf, type Runner } from "./run.ts";
+import type { FlowDeps } from "./done-flow-state.ts";
+import { statusOf } from "./registry.ts";
+import type { Submitted } from "./submit.ts";
 
 export type AoeSessionRef = { readonly runtime: "aoe"; readonly id: string; readonly group?: string };
 export type BootSession = Omit<SessionInfo, "ref"> & { readonly ref: SessionRef | AoeSessionRef };
@@ -80,4 +83,30 @@ export const listSessions = async (rts: Runtimes, options: { readonly group?: st
 export const closeSession = async (rts: Runtimes, ref: SessionRef): Promise<string> => {
   const what = ref.container ? `tab ${ref.container}` : `pane ${ref.id}`;
   return rts.for(ref).close(ref, ref.container ? "container" : "session").then(() => `${what} closed`, () => `${what} not closed`);
+};
+
+// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: prompt or steer is a single delivery; never retry an uncertain result.
+export const submitHosted = async (rts: Runtimes, ref: SessionRef, text: string): Promise<Submitted> => {
+  const result = await rts.for(ref).deliver(ref, text, { when: "any" });
+  switch (result.kind) {
+    case "delivered": return { status: "SUBMITTED", reason: result.started ? "host started a turn" : "host accepted input" };
+    case "no-agent": return { status: "NOT_SUBMITTED", reason: "host session not found" };
+    case "not-ready": return { status: "NOT_SUBMITTED", reason: `host session is ${result.status}` };
+    case "ambiguous": return { status: "NOT_SUBMITTED", reason: result.detail };
+    case "typed": return { status: "NOT_SUBMITTED", reason: "host did not submit input" };
+  }
+};
+
+export const hostedTypeLine = async (rts: Runtimes, ref: SessionRef, text: string): Promise<string | undefined> => {
+  const sent = await submitHosted(rts, ref, text);
+  return sent.status === "SUBMITTED" ? undefined : sent.reason;
+};
+
+// A read racing a registry close may have resumed the session; the reader owns closing it again.
+export const closedMeanwhile = async (deps: Pick<FlowDeps, "registry" | "run">, ref: SessionRef, key: string): Promise<boolean> => {
+  if (ref.runtime !== "omo-host") return false;
+  const lane = await deps.registry.read(key);
+  if (lane === null || statusOf(lane) !== "closed") return false;
+  await closeSession(runtimesOf(deps.run), ref);
+  return true;
 };

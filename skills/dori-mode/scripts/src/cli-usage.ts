@@ -3,6 +3,8 @@ import { USAGE_END } from "./cli-usage-end.ts";
 
 const USAGE_START = `dori <command> [options]
 
+  read <key>                           print a hosted lane’s recent transcript
+  attach <key> [--print]               view a hosted lane (or print the attach command)
   lead                                 print the live lead as "<aoe-id> <tmux-session>" (herdr: "<omo session id> <pane>"),
                                        " stopped" after it when its session or agent is not running
   serve [--log FILE] [--only TAG ...] [--install-task]

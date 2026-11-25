@@ -1,6 +1,6 @@
 import type { Runner } from "./run.ts";
 import type { Runtimes } from "./runtime/registry.ts";
-import type { RuntimeKind, SessionRef } from "./runtime/types.ts";
+import type { TerminalKind, SessionRef } from "./runtime/types.ts";
 import { descendants, ended, type Proc, procEnv, readProcTable } from "./session-id.ts";
 
 // upstream sisyphuslabs/dori-superagent#225: collect while the pane still owns the process tree.
@@ -18,9 +18,11 @@ const startTimes = async (run: Runner, pids: readonly number[]): Promise<Map<num
     return m ? [[Number(m[1]), m[2] ?? ""] as const] : [];
   }));
 };
-const SESSION_VAR: Readonly<Record<RuntimeKind, string>> = { herdr: "HERDR_PANE_ID", hc: "HC_TERMINAL_ID" };
+const SESSION_VAR: Readonly<Record<TerminalKind, string>> = { herdr: "HERDR_PANE_ID", hc: "HC_TERMINAL_ID" };
 
 export const laneProcesses = async (rts: Runtimes, run: Runner, ref: SessionRef): Promise<Snapshot> => {
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: the shared engine’s processes belong to no individual lane.
+  if (ref.runtime === "omo-host") return [];
   if (process.platform === "win32") return "local session ownership cannot be checked on Windows";
   const pid = await rts.for(ref).probe(ref).then((p) => p.rootPid, () => undefined);
   if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) return "the session reported no root process";

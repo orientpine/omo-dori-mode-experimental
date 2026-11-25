@@ -2,6 +2,16 @@
 
 `scripts/` is a bun + TypeScript package with one CLI, `dori`. Every external command runs as an argv array; nothing builds a shell string.
 
+
+## Hosted lane runtime
+
+<!-- Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282. -->
+With `laneRuntime` unset, lanes use their existing terminal path. Set `"laneRuntime": "omo-host"` to open new lanes in the shared OmO engine host, or `"hc"` or `"herdr"` to select a terminal runtime explicitly. `runtime` and `DORI_RUNTIME` still select the terminal default.
+
+The OmO host must be running and reachable by `omo host session list --json`. A hosted lane uses the model selected by launch, but not the terminal agent command or its `launchEnv`; do not opt in for work that relies on per-lane GPU or other environment isolation. The footer binds report commands to the launching Dori’s config and state, and names the lead’s delivery command.
+
+Read its transcript with `dori read <key>`, send a prompt with `dori type omo-host:<session-id> --text TEXT`, and close it with `dori close <key>` once Done is verified. `dori attach <key> --print` prints the viewer command; without `--print` it opens a disposable hc terminal and leaves the lane running when the viewer exits. Quit a viewer before closing the lane.
+
 ## Install and test
 
 ```sh

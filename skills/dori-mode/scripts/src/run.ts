@@ -6,9 +6,10 @@ import { envFileEntries, envFilePath } from "./config-env.ts";
 import type { Exec } from "./runtime/exec.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
 import { HerdrRuntime } from "./runtime/herdr/index.ts";
+import { OmoHostRuntime } from "./runtime/omo-host/index.ts";
 import { Runtimes } from "./runtime/registry.ts";
 import { ConfigError, type RuntimeSource } from "./runtime/select.ts";
-import type { RuntimeKind, SessionRuntime } from "./runtime/types.ts";
+import type { RuntimeKind, SessionRuntime, TerminalKind } from "./runtime/types.ts";
 
 export type Ran = { readonly code: number; readonly out: string; readonly err: string };
 // env: variables set for this one command on top of the process environment; an undefined value removes the variable
@@ -92,10 +93,10 @@ export const iso = (clock: Clock): string => new Date(clock.now()).toISOString()
 // runtimes per process, each stored session answered by its own kind, new sessions opened on the chosen one.
 type Env = Readonly<Record<string, string | undefined>>;
 // "default": nothing chose one and neither binary is on PATH, so herdr (an aoe Dori runs neither), where upstream refuses.
-export type RuntimeChoice = { readonly kind: RuntimeKind; readonly source: RuntimeSource | "default" };
+export type RuntimeChoice = { readonly kind: TerminalKind; readonly source: RuntimeSource | "default" };
 
-const KINDS: Readonly<Record<RuntimeKind, true>> = { herdr: true, hc: true };
-export const isRuntimeKind = (value: unknown): value is RuntimeKind => typeof value === "string" && Object.hasOwn(KINDS, value);
+const KINDS: Readonly<Record<TerminalKind, true>> = { herdr: true, hc: true };
+export const isRuntimeKind = (value: unknown): value is TerminalKind => typeof value === "string" && Object.hasOwn(KINDS, value);
 
 const executable = (path: string): boolean => {
   try {
@@ -109,7 +110,7 @@ const executable = (path: string): boolean => {
 
 // upstream #177 (https://github.com/sisyphuslabs/dori-superagent/pull/177, c275b55, its run.ts and runtime/select.ts):
 // DORI_RUNTIME > the config's runtime > inside an hc terminal > inside a herdr pane > hc on PATH > herdr on PATH > herdr
-export const runtimeChoice = (config: { readonly runtime?: RuntimeKind | undefined }, env: Env, exists: (path: string) => boolean = executable): RuntimeChoice => {
+export const runtimeChoice = (config: { readonly runtime?: TerminalKind | undefined }, env: Env, exists: (path: string) => boolean = executable): RuntimeChoice => {
   const fromEnv = env["DORI_RUNTIME"];
   if (fromEnv) {
     if (!isRuntimeKind(fromEnv)) throw new ConfigError(`DORI_RUNTIME must be "herdr" or "hc", got ${JSON.stringify(fromEnv)}`);
@@ -129,7 +130,8 @@ export class ChosenRuntimes extends Runtimes {
   readonly choice: RuntimeChoice | undefined;
   readonly failure: Error | undefined;
 
-  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime) {
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: placement of lanes is independent of the terminal default.
+  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime, private readonly laneKind?: RuntimeKind) {
     let choice: RuntimeChoice | undefined;
     let failure: Error | undefined;
     try {
@@ -140,6 +142,10 @@ export class ChosenRuntimes extends Runtimes {
     super(choice?.kind ?? "herdr", make);
     this.choice = choice;
     this.failure = failure;
+  }
+
+  get lane(): SessionRuntime {
+    return this.laneKind ? this.for({ runtime: this.laneKind, id: "" }) : this.default;
   }
 
   override get default(): SessionRuntime {
@@ -155,29 +161,32 @@ export const execOf = (runner: Runner): Exec => async (cmd, argv) => {
   return { code: r.code, stdout: r.out, stderr: r.err };
 };
 
-export const runtimesFor = (config: { readonly runtime?: RuntimeKind | undefined }, env: Env, runner: Runner = run, clock: Clock = realClock): ChosenRuntimes => {
+type RuntimeConfig = { readonly runtime?: TerminalKind | undefined; readonly laneRuntime?: RuntimeKind };
+
+export const runtimesFor = (config: RuntimeConfig, env: Env, runner: Runner = run, clock: Clock = realClock): ChosenRuntimes => {
   const exec = execOf(runner);
   const make: Record<RuntimeKind, () => SessionRuntime> = {
     herdr: () => new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], { env, sleep: clock.sleep }),
     hc: () => new HcRuntime(exec, { env, sleep: clock.sleep }),
+    "omo-host": () => new OmoHostRuntime(exec, { env, now: clock.now }),
   };
-  return new ChosenRuntimes(() => runtimeChoice(config, env), (kind) => make[kind]());
+  return new ChosenRuntimes(() => runtimeChoice(config, env), (kind) => make[kind](), config.laneRuntime);
 };
 
 const built = new WeakMap<Runner, Map<string, ChosenRuntimes>>();
 
 // The Dori's own config.runtime, set once by the CLI after it loaded the config: a caller with no config at hand (an
 // opener, a listing) then opens and lists on the runtime the config chose, not only on what DORI_RUNTIME says.
-let configured: RuntimeKind | undefined;
-export const useConfiguredRuntime = (kind: RuntimeKind | undefined): void => {
+let configured: TerminalKind | undefined;
+export const useConfiguredRuntime = (kind: TerminalKind | undefined): void => {
   configured = kind;
 };
 
 // One registry per Runner and configured runtime, so a sweep's calls share the runtimes it built.
-export const runtimesOf = (runner: Runner, config: { readonly runtime?: RuntimeKind | undefined } = { runtime: configured }): ChosenRuntimes => {
+export const runtimesOf = (runner: Runner, config: RuntimeConfig = { runtime: configured }): ChosenRuntimes => {
   const byKind = built.get(runner) ?? new Map<string, ChosenRuntimes>();
   built.set(runner, byKind);
-  const key = config.runtime ?? "";
+  const key = `${config.runtime ?? ""}:${config.laneRuntime ?? ""}`;
   const rts = byKind.get(key) ?? runtimesFor(config, process.env, runner);
   byKind.set(key, rts);
   return rts;

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { launchLane } from "../src/launch.ts";
+import { launchLane, renderBrief } from "../src/launch.ts";
 import { Reports } from "../src/reports.ts";
 import { terminal as hcTerm } from "./fake-hc.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
@@ -100,4 +100,19 @@ test("an initial journal append failure closes the new terminal and unwinds for 
   const result = await launchLane({ ...fixture.deps, run: fixture.run }, fixture.input);
   expect(result.startup).toBe("STARTUP_OK smoke hc:t1");
   expect(reports.read("smoke")?.state).toBe("running");
+});
+// Compatibility guard for https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+test("an hc launch without placement overrides uses the same terminal spec and footer", async () => {
+  const fixture = rig(undefined, true);
+  const expected = await renderBrief(fixture.deps, fixture.input);
+  const result = await launchLane({ ...fixture.deps, run: fixture.run }, fixture.input);
+  expect(result.lane.pane).toBe("hc:t1");
+  const [open] = fixture.calls.filter((argv) => argv[0] === "hc" && argv[2] === "run");
+  expect(open?.slice(0, open.indexOf("--"))).toEqual([
+    "hc", "--json", "run", "--bg", "--no-parent", "--no-notify", "--keep", "--cwd", "/tmp/w", "--label", "dori.group=dori", "--label", "dori.role=lane", "--label", "dori.name=smoke", "--label", "dori.lane=smoke", "--name", "smoke",
+  ]);
+  const rendered = await Bun.file(brief).text();
+  expect(rendered.split("## Lane footer")[1]).toBe(expected.text.split("## Lane footer")[1]);
+  expect(rendered).toContain('run ["dori","type",');
+  expect(rendered).not.toContain('["hc","send",');
 });

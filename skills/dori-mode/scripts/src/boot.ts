@@ -47,6 +47,8 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   const lines: string[] = [];
   const rts = deps.rts ?? runtimesOf(deps.run, { runtime: deps.config.runtime });
   const choice = rts.choice;
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: no extra output for an unset override.
+  if (deps.config.laneRuntime) lines.push(`LANE_RUNTIME ${deps.config.laneRuntime} (from config)`);
   lines.push(choice ? `RUNTIME ${choice.kind} (from ${choice.source})` : `RUNTIME unavailable: ${rts.failure?.message ?? "unknown"}`);
   if (rts.failure) {
     lines.push("BOOT incomplete read-only; nothing restarted, written or stopped");

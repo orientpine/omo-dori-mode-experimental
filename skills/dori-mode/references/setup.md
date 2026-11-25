@@ -4,6 +4,9 @@ Run these once, in order. Stop and ask the owner wherever a step needs their cho
 
 If the owner is on Discord and lanes should run as aoe/tmux sessions rather than herdr tabs, follow `setups/discord-aoe/README.md` instead of steps 1 and 5: it installs the listener, question cards, thread hooks, lane sweeps and session watcher as user services. Steps 2 to 4 still apply.
 
+<!-- https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282 -->
+To opt in to shared-engine lanes, first verify `omo host session list --json` works and see `scripts.md` under Hosted lane runtime. Leave `laneRuntime` unset for ordinary terminal setup.
+
 ## 1. herdr
 
 herdr is the terminal multiplexer the Dori runs in. Every lane is a herdr tab, and herdr lets you read a pane, type into it and see which process runs there.

@@ -1,3 +1,4 @@
+import type { RuntimeKind } from "./runtime/types.ts";
 import type { RuntimeChoice } from "./run.ts";
 import type { RelatedSettings } from "./related-thread.ts";
 import type { StateGitSettings } from "./state-git.ts";
@@ -46,6 +47,8 @@ export type Backend = "herdr" | "aoe";
 export type DoriConfig = {
   readonly backend: Backend;
   readonly runtime?: RuntimeChoice["kind"];
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: opt-in lane placement.
+  readonly laneRuntime?: RuntimeKind;
   readonly stateDir: string;
   readonly watchLog: string;
   readonly update: UpdateConfig;

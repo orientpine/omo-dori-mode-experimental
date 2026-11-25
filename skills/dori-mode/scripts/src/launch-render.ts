@@ -1,8 +1,10 @@
+import { parseRef } from "./runtime/types.ts";
 import { resolve } from "node:path";
 import { configPath, runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Lane } from "./registry.ts";
-import { iso } from "./run.ts";
+import { leadSendArgv } from "./launch-footer.ts";
+import { iso, runtimesOf } from "./run.ts";
 import { addedLine, type DirectivePick, type Ledger, mergePicks, missingLines, parsePick, PICK_RUNS, PICK_SYSTEM, pickCandidates, pickPrompt, planDirectives, type ScopeContext, scopeContext, waivedLines, withDirectives } from "./directives.ts";
 import { type LaunchInput, LaunchError } from "./launch-types.ts";
 import { uiSteps, withUiSteps, eightSteps, withEightSteps, stepsLine, uiWarning, footer } from "./launch-footer.ts";
@@ -73,7 +75,9 @@ export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<R
   const lessons = repoLessons(deps, draft.cwd ?? deps.config.defaultCwd, lead);
   const picked = chosen.pick ? `LAUNCH_DIRECTIVE_PICKED ${input.key}: ${chosen.pick.model} chose ${chosen.pick.picked.map((p) => p.id).join(", ")} (${chosen.pick.runs?.answered ?? 1} of ${chosen.pick.runs?.asked ?? 1} runs answered)` : chosen.pickFallback ? `LAUNCH_DIRECTIVE_PICK_FALLBACK ${input.key}: the scope rules decide (${chosen.pickFallback})` : undefined;
   const lines = [...(hint ? [hint] : []), ...(added ? [added] : []), ...(picked ? [picked] : []), ...waivedLines(input.key, plan), ...lessons.warnings];
-  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${lessons.section ? `${lessons.section}\n` : ""}${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos), { config: resolve(configPath()), stateDir: resolve(deps.config.stateDir) })}` };
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: only hosted lanes need an explicit lead send route.
+  const send = deps.config.laneRuntime === "omo-host" ? leadSendArgv(parseRef(deps.config.leadPane)?.runtime ?? runtimesOf(deps.run, deps.config).default.kind, deps.config.leadPane) : undefined;
+  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${lessons.section ? `${lessons.section}\n` : ""}${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos), { config: resolve(configPath()), stateDir: resolve(deps.config.stateDir), ...(send ? { send } : {}) })}` };
 };
 
 // The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.

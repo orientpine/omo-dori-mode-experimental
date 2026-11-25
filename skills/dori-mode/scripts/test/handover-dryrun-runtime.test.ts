@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { handover, type HandoverDeps } from "../src/handover.ts";
 import { laneHandover, type LaneHandoverDeps } from "../src/lane-handover.ts";
 import { useConfiguredRuntime } from "../src/run.ts";
-import type { RuntimeKind } from "../src/runtime/types.ts";
+import type { TerminalKind } from "../src/runtime/types.ts";
 import { depsFor, fakeClock, newWorld, type World } from "./fakes.ts";
 
 // A herdr-backend Dori whose config runtime is hc opens its new lead and lane sessions on hc (herdr.ts openHerdrSession),
@@ -30,7 +30,7 @@ afterEach(() => {
 
 const extras = { cardDir: join("x", "cards"), home: "/home/test", sessionOf: async () => "", procs: async () => [{ pid: 4000, ppid: 1, cmd: "bash" }, { pid: 4001, ppid: 4000, cmd: "omo" }], envOf: () => "", alive: () => false, signal: () => true, realpath: (path: string) => path, nonce: () => "n1", print: (line: string) => printed.push(line) };
 
-const laneDryRun = async (runtime: RuntimeKind): Promise<string> => {
+const laneDryRun = async (runtime: TerminalKind): Promise<string> => {
   useConfiguredRuntime(runtime);
   const brief = join(dir, "brief.md");
   writeFileSync(brief, "# Demo\n");
@@ -42,7 +42,7 @@ const laneDryRun = async (runtime: RuntimeKind): Promise<string> => {
   return printed.find((l) => l.startsWith("HANDOVER_DRY_RUN")) ?? printed.join("\n");
 };
 
-const leadDryRun = async (runtime: RuntimeKind, callNames: readonly string[] = []): Promise<string> => {
+const leadDryRun = async (runtime: TerminalKind, callNames: readonly string[] = []): Promise<string> => {
   useConfiguredRuntime(runtime);
   const base = depsFor(world, fakeClock(0), dir, { backend: "herdr", runtime, leadPane: "w1:p1", agentCommand: ["omo", "--model", "{model}", "{prompt}"], sessionsDir: join(dir, "sessions") });
   const deps: HandoverDeps = { ...base, ...extras, config: { ...base.config, discord: { ...base.config.discord, callNames } }, cardDir: join(dir, "cards"), configPath: join(dir, "config.json"), envPath: join(dir, "dori.env"), inbox: join(dir, "inbox.jsonl"), routedPane: async () => "w1:p1", envLeadPane: "", timers: async () => [], restart: async () => undefined };

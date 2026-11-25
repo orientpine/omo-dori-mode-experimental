@@ -5,7 +5,8 @@ import { sessionFile } from "./background.ts";
 import type { Backend, DoriConfig } from "./config.ts";
 import { herdrOk, herdrRef, herdrResult, herdrRuntime, isHerdrPane, shellInFrontName } from "./herdr.ts";
 import { hcRead, hcType, isHcPane, listKeptSessions } from "./hc-pane.ts";
-import { formatRef } from "./runtime/types.ts";
+import { hostedTypeLine, submitHosted } from "./sessions.ts";
+import { formatRef, parseRef } from "./runtime/types.ts";
 import { replacementOf } from "./frozen.ts";
 import { type Clock, type Runner, runtimesOf } from "./run.ts";
 import { procTable, topAgent } from "./session-id.ts";
@@ -27,10 +28,11 @@ export class UnsafeTextError extends Error {}
 
 // The sessions of the configured runtime and of the stored ones (as sessions.ts listSessions, upstream #154) as the pane rows the sweeps read; an aoe
 // Dori lists its tmux sessions.
-export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime"> & { readonly workspaces?: readonly string[] }): Promise<Pane[]> => {
-  if (config.backend === "aoe") return listAoePanes(run);
+export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime" | "laneRuntime"> & { readonly workspaces?: readonly string[] }): Promise<Pane[]> => {
   const rts = runtimesOf(run, config);
-  const sessions = await listKeptSessions(rts);
+  const aoe = config.backend === "aoe" ? await listAoePanes(run) : [];
+  if (config.laneRuntime) void rts.lane;
+  const sessions = config.backend === "aoe" ? (config.laneRuntime ? await rts.lane.list() : []) : await listKeptSessions(rts);
   // hc lists no dori.group label unasked: each configured workspace is listed by its label, so a workspace filter keeps
   // the hc terminals of that group (review 1 of #404)
   const hcGroup = new Map<string, string>();
@@ -38,16 +40,16 @@ export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" 
     const hcRt = rts.for({ runtime: "hc", id: "" });
     for (const group of config.workspaces) for (const s of await hcRt.list({ group }).catch(() => [])) hcGroup.set(s.ref.id, group);
   }
-  return sessions.map((s) => ({
+  return [...aoe, ...sessions.map((s) => ({
     // an hc terminal is "hc:t<n>" wherever the fork stores or reads a pane (hc-pane.ts); a herdr pane id stands alone
-    pane_id: s.ref.runtime === "hc" ? formatRef(s.ref) : s.ref.id,
+    pane_id: s.ref.runtime === "herdr" ? s.ref.id : formatRef(s.ref),
     workspace_id: s.ref.group ?? (s.ref.runtime === "hc" ? hcGroup.get(s.ref.id) : undefined) ?? "",
     ...(s.ref.container ? { tab_id: s.ref.container } : {}),
     agent: s.agent,
     ...(s.status && s.status !== "shell" ? { agent_status: s.status } : {}),
     ...(s.title ? { title: s.title } : {}),
     ...(s.cwd ? { cwd: s.cwd } : {}),
-  }));
+  }))];
 };
 
 // a tmux name is read through tmux and a herdr pane id through herdr, whatever the config says (captureTmux dispatches on
@@ -219,6 +221,8 @@ const paneKeys = (run: Runner, clock: Clock, config: DoriConfig, pane: string, t
 // confirmed the way submitToPane confirms a text; the caller reads its effect back instead. Typed into a live aoe pane
 // only: undefined when typed and entered, else why not.
 export const typeLine = async (run: Runner, clock: Clock, config: DoriConfig, pane: string, text: string): Promise<string | undefined> => {
+  const hosted = parseRef(pane);
+  if (hosted?.runtime === "omo-host") return hostedTypeLine(runtimesOf(run, config), hosted, text);
   const keys = paneKeys(run, clock, config, pane, text);
   const why = await keys.type(text);
   if (why) return why;
@@ -234,7 +238,10 @@ export const submitToPane = async (run: Runner, clock: Clock, config: DoriConfig
   if (/`|\$\(/.test(text)) throw new UnsafeTextError("refusing to send text containing a backtick or $(");
   const to = replacementOf(config.stateDir, pane) ?? pane;
   if (to !== pane) watchLog(config.watchLog, clock, { source: "submit", line: `FORWARDED ${pane} -> ${to}: ${pane} was frozen by a handover; the text goes to the session that replaced it` });
-  const result = await submitText(paneKeys(run, clock, config, to, text), clock, text);
+  const ref = parseRef(to);
+  const result = ref?.runtime === "omo-host"
+    ? await submitHosted(runtimesOf(run, config), ref, text)
+    : await submitText(paneKeys(run, clock, config, to, text), clock, text);
   if (result.status === "NOT_SUBMITTED") watchLog(config.watchLog, clock, { source: "submit", line: `NOT_SUBMITTED ${to} ${result.reason}` });
   return { ...result, pane: to };
 };
