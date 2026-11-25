@@ -1,4 +1,5 @@
 // From upstream dori-superagent src/runtime/foreground.ts (https://github.com/sisyphuslabs/dori-superagent/blob/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444/src/runtime/foreground.ts; #147 #148 #150 #155, licences in NOTICE).
+import { isAgentCommand } from "../executable.ts";
 import type { ForegroundProcess } from "./types.ts";
 
 export const SHELLS: ReadonlySet<string> = new Set([
@@ -53,6 +54,10 @@ export function interactiveShellInFront(processes: readonly ForegroundProcess[] 
 const stem = (value: string): string => baseName(value).replace(/\.[^.]*$/, "");
 const RUNS_NEXT: ReadonlySet<string> = new Set([".", "source", "exec"]);
 const COMMAND_ZERO = /^(?:\$0|"\$0")$/;
+// the fork's omo runs as bun (or node) on senpi's bundle and reports app omo (review 4 of #521): only that script as the
+// runtime's first argument counts, never the bundle's path elsewhere on a command line (an editor opening it)
+const JS_RUNTIMES: ReadonlySet<string> = new Set(["bun", "node"]);
+const omoBundle = (argv: readonly string[]): boolean => JS_RUNTIMES.has(stem(argv[0] ?? "")) && isAgentCommand(argv[1] ?? "");
 
 /** upstream sisyphuslabs/dori-superagent#277: accept an executable or a shell launcher that actually runs its $0. */
 export function namesAgent(processes: readonly ForegroundProcess[], app: string): boolean {
@@ -63,6 +68,7 @@ export function namesAgent(processes: readonly ForegroundProcess[], app: string)
   };
   return processes.some(({ name, argv }) => {
     const executable = baseName(name);
+    if (want === "omo" && omoBundle(argv)) return true;
     if (!SHELLS.has(executable)) return matches(argv[0] ?? name);
     const flag = argv.findIndex((arg, i) => i > 0 && runsCommand(executable, arg));
     if (flag < 0) return false;

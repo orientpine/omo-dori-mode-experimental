@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { terminal } from "./fake-hc.ts";
+import { hcType } from "../src/hc-pane.ts";
+import type { Runner } from "../src/run.ts";
+import { FakeHc, terminal } from "./fake-hc.ts";
 import { rig, T1 } from "./hc-rig.ts";
 
 const WRAPPER = 'sh -c . "$0" /w/omo-linux.sh --append-system-prompt /w/prompt';
@@ -35,6 +37,36 @@ test.each([
   if (rows !== undefined) fake.knobs.ps = rows.join("\n");
   expect(await rt.deliver(T1, "next")).toEqual({ kind: "no-agent" });
   expect(fake.sent).toEqual([]);
+});
+
+// review 4 of #521: the fork's omo runs as bun on senpi's bundle and reports app omo (hc get, 2026-11-25)
+const SENPI = "/home/u/.bun/bin/bun /home/u/.bun/install/global/node_modules/@code-yeongyu/senpi/dist/bundle/cli.js --extension";
+
+test("when hc omits foreground, the fork's omo (bun on senpi's bundle) permits delivery", async () => {
+  const { fake, rt } = rig({ t1: missing });
+  fake.knobs.ps = [login, front(SENPI)].join("\n");
+  expect((await rt.deliver(T1, "next")).kind).toBe("delivered");
+});
+
+test.each([
+  ["bun on another script", "/usr/bin/bun /tmp/other.js"],
+  ["an editor on senpi's bundle", "vim /x/senpi/dist/bundle/cli.js"],
+  ["bun with the bundle only as a later argument", "bun /tmp/x.js /x/senpi/dist/bundle/cli.js"],
+])("when hc omits foreground, %s holds delivery", async (_, args) => {
+  const { fake, rt } = rig({ t1: missing });
+  fake.knobs.ps = [login, front(args)].join("\n");
+  expect(await rt.deliver(T1, "next")).toEqual({ kind: "no-agent" });
+});
+
+test("dori type reaches the fork's omo when hc omits its foreground", async () => {
+  const fake = new FakeHc({ t1: terminal({ foreground: null, screen: "omo idle\n> " }) });
+  fake.knobs.ps = [login, front(SENPI)].join("\n");
+  const run: Runner = async (argv) => {
+    const r = await fake.exec(argv[0] ?? "", argv.slice(1));
+    return { code: r.code, out: r.stdout.trim(), err: r.stderr.trim() };
+  };
+  expect(await hcType(run, "hc:t1", "PING")).toBeUndefined();
+  expect(fake.sent).toEqual([{ id: "t1", text: "PING" }]);
 });
 
 test("a shell hc names is authoritative even if ps shows the agent", async () => {
