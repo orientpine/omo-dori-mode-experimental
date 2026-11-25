@@ -1,8 +1,8 @@
-import { hostedStartup, openHostedLane } from "./launch-hosted.ts";
+import { checkHostedLaunch, hostedStartup, openHostedLane } from "./launch-hosted.ts";
 import { resolve } from "node:path";
 import { rmSync, statSync } from "node:fs";
 import { laneEnv } from "./aoe.ts";
-import { laneHomeEnv } from "./home-env.ts";
+import { homeEnv, laneHomeEnv } from "./home-env.ts";
 import { TokenFileError } from "./slack-token.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { omoSession, readScreen } from "./panes.ts";
@@ -33,6 +33,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     if (e instanceof ThreadMissingError) watchLog(deps.config.watchLog, deps.clock, { source: "launch", line: e.message });
     throw e;
   }
+  const hosted = deps.config.laneRuntime !== undefined && AGENT_SESSION_KINDS.has(deps.config.laneRuntime);
+  if (hosted) await checkHostedLaunch(deps);
   // no --model: the lead's model as the backlog's quota check chose it, else resolved now; never a default-model lane on herdr
   const leadPane = deps.config.leadPane || "<unset>";
   const model = input.model ?? input.leadModel ?? await resolveLeadModel(deps.run, deps.config).catch((e: unknown) => {
@@ -58,7 +60,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   // named one, a bad DORI_CONFIG) stops the launch with nothing opened (upstream #219, token stack)
   let home: Record<string, string>;
   try {
-    home = laneHomeEnv(deps.config);
+    const placement = deps.config.laneRuntime;
+    home = placement === "hc" || placement === "herdr" ? homeEnv(deps.config) : laneHomeEnv(deps.config);
   } catch (e) {
     throw e instanceof TokenFileError ? new LaunchError(`token file refused: ${e.message}`) : e;
   }
@@ -89,7 +92,6 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     new Reports(deps.config.stateDir).append({ type: "activity", key: pending.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${pane}` });
   };
   // https://github.com/sisyphuslabs/dori-superagent/pull/282: hosted sessions take the model at open and a prompt, not a shell command.
-  const hosted = deps.config.laneRuntime !== undefined && AGENT_SESSION_KINDS.has(deps.config.laneRuntime);
   const opened = await (hosted
     ? openHostedLane(deps, { key: input.key, cwd, model, prompt }, beforeStart)
     : deps.config.backend === "aoe" && deps.config.laneRuntime === undefined

@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { autoturnTick } from "../src/autoturn.ts";
+import { missedAnswersTick } from "../src/missed-answers.ts";
+import type { Question } from "../src/messenger/discord-cards.ts";
 import { loadConfig } from "../src/config.ts";
 import { bootCheck } from "../src/boot.ts";
 import { runtimesFor } from "../src/run.ts";
@@ -15,7 +18,6 @@ import type { Lane } from "../src/registry.ts";
 import type { Runner } from "../src/run.ts";
 import { FakeOmoHost, writeGoal } from "./fake-omo-host.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, withState } from "./fakes.ts";
-
 
 const id = "00000000-0000-4000-8000-000000000052";
 const pane = `omo-host:${id}`;
@@ -40,6 +42,48 @@ const fixture = () => {
 };
 
 const input = (f: ReturnType<typeof fixture>) => ({ key: "fresh", title: "Fresh", noThread: "test", brief: f.lane.brief, cwd: f.state.dir, done: f.lane.done });
+
+const logFor = (f: ReturnType<typeof fixture>, ...entries: unknown[]): void => {
+  const path = String(f.session.state["sessionFile"]);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, [{ type: "session", timestamp: new Date(at - 600_000).toISOString() }, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+};
+
+test("a lost hosted answer is delivered once, with no terminal process", async () => {
+  const f = fixture();
+  try {
+    logFor(f);
+    await f.deps.registry.write(f.lane);
+    const card = { id: "Q20", status: "answered", tmux: pane, answeredAt: new Date(at - 240_000).toISOString(), text: "which?", answer: "blue" } as const;
+    const deps = { ...f.deps, answeredCards: () => [card as Question] };
+    expect(await missedAnswersTick(deps)).toEqual([expect.stringContaining(`CARD_ANSWER_REDELIVERED Q20 ${pane}`)]);
+    expect(f.session.entries).toEqual([expect.objectContaining({ message: { role: "user", content: expect.stringContaining("blue") } })]);
+    expect(await missedAnswersTick(deps)).toEqual([]);
+  } finally { f.state.done(); }
+});
+
+test("a hosted turn-limit pause is reported and resumed once", async () => {
+  const f = fixture();
+  try {
+    logFor(f, { type: "custom", customType: "engine-turn-limit", timestamp: openedAt, data: { sinceUserInput: 150, reason: "per-user-input" } });
+    await f.deps.registry.write(f.lane);
+    expect(await autoturnTick(f.deps)).toEqual([expect.stringMatching(/LANE_AUTOTURN_PAUSED hosted .*; resumed 1\//)]);
+    expect(f.session.entries).toEqual([expect.objectContaining({ message: { role: "user", content: expect.stringContaining("This message lifts the pause") } })]);
+    expect(await autoturnTick(f.deps)).toEqual([]);
+  } finally { f.state.done(); }
+});
+
+test("a stored closed hosted lane is never probed or sent a recovery prompt even if listed", async () => {
+  const f = fixture();
+  try {
+    logFor(f, { type: "custom", customType: "engine-turn-limit", timestamp: openedAt, data: { sinceUserInput: 150 } });
+    await f.deps.registry.write({ ...f.lane, status: "closed" });
+    const card = { id: "Q21", status: "answered", tmux: pane, answeredAt: new Date(at - 240_000).toISOString(), text: "which?", answer: "blue" } as const;
+    expect(await missedAnswersTick({ ...f.deps, answeredCards: () => [card as Question] })).toEqual([]);
+    expect(await autoturnTick(f.deps)).toEqual([]);
+    expect(f.host.calls.filter(([verb]) => verb !== "list")).toEqual([]);
+  } finally { f.state.done(); }
+});
 
 const borders = { type: "message", message: { role: "assistant", content: "──────\n❯ transcript only\n──────" } };
 
@@ -149,6 +193,21 @@ test("aoe listings keep the hosted lanes when new-lane placement changes", async
     for (const placement of [config, { ...config, laneRuntime: "hc" as const }]) {
       expect((await listPanes(f.deps.run, placement)).map((p) => p.pane_id)).toContain(pane);
     }
+  } finally { f.state.done(); }
+});
+
+test("unreachable shared host refuses launch before changing the brief or opening a lane", async () => {
+  const f = fixture();
+  try {
+    await Bun.write(f.lane.brief, "QA brief\n");
+    for (const verb of ["list", "open"]) f.host.refuseNext.set(verb, "host_unavailable");
+    const warn: string[] = [];
+    const deps = { ...f.deps, config: { ...f.deps.config, laneRuntime: "omo-host" as const } };
+    await expect(launchLane(deps, { ...input(f), model: "m" }, (line) => warn.push(line))).rejects.toThrow("host is unreachable; start the shared host: omo host ensure");
+    expect(warn).toEqual([]);
+    expect(await Bun.file(f.lane.brief).text()).toBe("QA brief\n");
+    expect(await deps.registry.read("fresh")).toBeNull();
+    expect(f.host.calls.map(([verb]) => verb)).toEqual(["list"]);
   } finally { f.state.done(); }
 });
 

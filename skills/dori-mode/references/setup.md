@@ -10,6 +10,8 @@ To opt in to shared-engine lanes, first verify `omo host session list --json` wo
 <!-- https://github.com/sisyphuslabs/dori-superagent/pull/284 -->
 For a terminal lead on a different runtime, set `leadRuntime` to `"hc"` or `"herdr"` as described in `scripts.md`. Hosted leads are not supported in this fork.
 
+`"laneRuntime": "omo-host"` requires the shared OmO host to be listening on the default socket. Start it with `omo host ensure`; Dori does not start it.
+
 ## 1. herdr
 
 herdr is the terminal multiplexer the Dori runs in. Every lane is a herdr tab, and herdr lets you read a pane, type into it and see which process runs there.

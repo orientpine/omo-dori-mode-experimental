@@ -15,6 +15,8 @@ Read its transcript with `dori read <key>`, send a prompt with `dori type omo-ho
 <!-- Ported from https://github.com/sisyphuslabs/dori-superagent/pull/284. -->
 `leadRuntime` optionally identifies the existing terminal lead (`"hc"` or `"herdr"`), independently of new lanes. Hosted leads are not supported in this fork. This setting does not start or migrate a lead; duty and loops still use the terminal default. `dori boot` reports only configured overrides.
 
+`"laneRuntime": "omo-host"` requires the shared OmO host to be listening on the default socket. Start it with `omo host ensure`; Dori does not start it.
+
 ## Install and test
 
 ```sh
