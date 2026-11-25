@@ -137,7 +137,7 @@ const options = {
   step: { type: "string" }, "remote-effect": { type: "string", multiple: true },
   "wall-minutes": { type: "string" }, "token-limit": { type: "string" }, "cost-limit": { type: "string" }, "activity-path": { type: "string", multiple: true },
   "delete-branch": { type: "boolean" }, "no-test": { type: "string" }, "install-task": { type: "boolean" }, only: { type: "string", multiple: true }, log: { type: "string" }, priority: { type: "string" }, ask: { type: "string" }, "read-only": { type: "boolean" }, "owner-link": { type: "string" }, hash: { type: "string" }, question: { type: "string" },
-  source: { type: "string" },
+  source: { type: "string" }, days: { type: "string" }, json: { type: "boolean" }, "no-send": { type: "boolean" }, fixed: { type: "boolean" }, "ack-promise": { type: "boolean" },
 } as const;
 const flags = parseArgs({ args: rest, allowPositionals: true, strict: false, options });
 if (command === "--help" || flags.values.help) {
@@ -168,6 +168,9 @@ for (const [name, spec] of Object.entries(options)) {
   const value = flags.values[name];
   const bare = value === true || (Array.isArray(value) && value.includes(true));
   if (spec.type === "string" && bare && !ownCheck.has(name)) die(`--${name} needs a value`);
+  // a switch given a value (--force=false) comes back as that string, which is truthy: the switch would be on
+  // (upstream sisyphuslabs/dori-superagent#242)
+  if (spec.type === "boolean" && typeof value === "string") die(`--${name} takes no value`);
 }
 const cli = makeCli(command, rest, flags, config, deps, waive, discordToken, import.meta.path, import.meta.url, makeSignal());
 const { cardDir, threadStatuses, ownDiscord, env } = makeDiscordDeps(cli);

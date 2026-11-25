@@ -45,6 +45,29 @@ test("a value flag left at the end is refused as missing a value before any requ
   }
 }, 30_000);
 
+// upstream sisyphuslabs/dori-superagent#242 (https://github.com/sisyphuslabs/dori-superagent/pull/242): parseArgs reads
+// --again=false as the string "false", which is truthy, so a switch the caller meant off was on. A switch takes no value.
+test("a switch given a value (--again=false) is refused before any request; --name=value still sets a value flag", async () => {
+  const state = withState();
+  try {
+    const r = await runCli(state.dir, ["send", "telegram", "--to=-1001", "--text", "hello", "--again=false"]);
+    expect({ code: r.code, err: r.err, out: r.out, requested: r.requested }).toEqual({
+      code: 1,
+      err: "--again takes no value",
+      out: "",
+      requested: false,
+    });
+    // a switch a command reads without the option table (worklog close --ack-promise) is refused the same way (review 1 of #520)
+    const ack = await runCli(state.dir, ["worklog", "close", "w1", "--result", "done", "--ack-promise=false"]);
+    expect({ code: ack.code, err: ack.err, out: ack.out }).toEqual({ code: 1, err: "--ack-promise takes no value", out: "" });
+    const ok = await runCli(state.dir, ["send", "telegram", "--to=-1001", "--text=a=b"]);
+    const texts = ok.requested ? readFileSync(join(state.dir, "fetch.jsonl"), "utf8").trim().split("\n").map((l) => (JSON.parse(JSON.parse(l).body) as { text?: string }).text) : [];
+    expect({ code: ok.code, texts }).toEqual({ code: 0, texts: ["a=b"] });
+  } finally {
+    state.done();
+  }
+});
+
 test("--help before a command prints usage and runs nothing", async () => {
   const state = withState();
   try {
