@@ -131,7 +131,7 @@ export class ChosenRuntimes extends Runtimes {
   readonly failure: Error | undefined;
 
   // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: placement of lanes is independent of the terminal default.
-  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime, private readonly laneKind?: RuntimeKind) {
+  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime, private readonly placement: { readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: RuntimeKind } = {}) {
     let choice: RuntimeChoice | undefined;
     let failure: Error | undefined;
     try {
@@ -145,7 +145,12 @@ export class ChosenRuntimes extends Runtimes {
   }
 
   get lane(): SessionRuntime {
-    return this.laneKind ? this.for({ runtime: this.laneKind, id: "" }) : this.default;
+    return this.placement.laneRuntime ? this.for({ runtime: this.placement.laneRuntime, id: "" }) : this.default;
+  }
+
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284: the lead can live elsewhere without moving lane, duty or loop defaults.
+  get lead(): SessionRuntime {
+    return this.placement.leadRuntime ? this.for({ runtime: this.placement.leadRuntime, id: "" }) : this.default;
   }
 
   override get default(): SessionRuntime {
@@ -161,7 +166,7 @@ export const execOf = (runner: Runner): Exec => async (cmd, argv) => {
   return { code: r.code, stdout: r.out, stderr: r.err };
 };
 
-type RuntimeConfig = { readonly runtime?: TerminalKind | undefined; readonly laneRuntime?: RuntimeKind };
+type RuntimeConfig = { readonly runtime?: TerminalKind | undefined; readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: RuntimeKind };
 
 export const runtimesFor = (config: RuntimeConfig, env: Env, runner: Runner = run, clock: Clock = realClock): ChosenRuntimes => {
   const exec = execOf(runner);
@@ -170,7 +175,7 @@ export const runtimesFor = (config: RuntimeConfig, env: Env, runner: Runner = ru
     hc: () => new HcRuntime(exec, { env, sleep: clock.sleep }),
     "omo-host": () => new OmoHostRuntime(exec, { env, now: clock.now }),
   };
-  return new ChosenRuntimes(() => runtimeChoice(config, env), (kind) => make[kind](), config.laneRuntime);
+  return new ChosenRuntimes(() => runtimeChoice(config, env), (kind) => make[kind](), config);
 };
 
 const built = new WeakMap<Runner, Map<string, ChosenRuntimes>>();
@@ -186,7 +191,7 @@ export const useConfiguredRuntime = (kind: TerminalKind | undefined): void => {
 export const runtimesOf = (runner: Runner, config: RuntimeConfig = { runtime: configured }): ChosenRuntimes => {
   const byKind = built.get(runner) ?? new Map<string, ChosenRuntimes>();
   built.set(runner, byKind);
-  const key = `${config.runtime ?? ""}:${config.laneRuntime ?? ""}`;
+  const key = `${config.runtime ?? ""}:${config.laneRuntime ?? ""}:${config.leadRuntime ?? ""}`;
   const rts = byKind.get(key) ?? runtimesFor(config, process.env, runner);
   byKind.set(key, rts);
   return rts;

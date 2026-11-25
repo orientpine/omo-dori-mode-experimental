@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isOmoExecutable } from "./executable.ts";
+import { parseRef } from "./runtime/types.ts";
 import { isRuntimeKind, type Ran, run, type Runner, type RunOptions } from "./run.ts";
 import { supervisionProblem } from "./supervision.ts";
 import type { ArgvTemplate, DoriConfig } from "./config-types.ts";
@@ -108,6 +109,8 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   if (merged.backlog.pairRepairPattern && merged.backlog.writeNeedsOwnerLink) warn(`CONFIG_BACKLOG_REPAIR_EXEMPT backlog.pairRepairPattern and backlog.writeNeedsOwnerLink are both on: #dori-pair repair requests start without an owner message link, because the owner's standing rule that faults of the Dori base go to the maintenance Dori is their approval (${path})`);
   // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: the base runtime stays terminal-only.
   if (raw.laneRuntime !== undefined && raw.laneRuntime !== "omo-host" && !isRuntimeKind(raw.laneRuntime)) throw new ConfigError(`${path}: laneRuntime must be "herdr", "hc", or "omo-host", not ${JSON.stringify(raw.laneRuntime)}`);
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284: `runtime` remains terminal-only even with a hosted lead.
+  if (raw.leadRuntime !== undefined && raw.leadRuntime !== "omo-host" && !isRuntimeKind(raw.leadRuntime)) throw new ConfigError(`${path}: leadRuntime must be "herdr", "hc", or "omo-host", not ${JSON.stringify(raw.leadRuntime)}`);
   if (raw.runtime !== undefined && !isRuntimeKind(raw.runtime)) throw new ConfigError(`${path}: runtime must be "herdr" or "hc" (unset: detected), not ${JSON.stringify(raw.runtime)}`);
   const supervisionBad = supervisionProblem((raw as { supervision?: unknown }).supervision);
   if (supervisionBad) throw new ConfigError(`${path}: invalid ${supervisionBad}`);
@@ -129,7 +132,9 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const env: unknown = merged.launchEnv;
   if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((v) => typeof v !== "string")) throw new ConfigError(`${path}: launchEnv must map variable names to strings, e.g. {"CUDA_VISIBLE_DEVICES": ""}`);
   const stateDir = expandHome(process.env["DORI_STATE_DIR"] ?? merged.stateDir, home);
-  const leadPane = process.env["DORI_LEAD_PANE"] ?? merged.leadPane;
+  const configuredLead = process.env["DORI_LEAD_PANE"] ?? merged.leadPane;
+  const hostedLead = `omo-host:${configuredLead}`;
+  const leadPane = merged.leadRuntime === "omo-host" && parseRef(hostedLead) ? hostedLead : configuredLead;
   const repo = raw.update?.repo ? expandHome(raw.update.repo, home) : (await run(["git", "-C", import.meta.dir, "rev-parse", "--show-toplevel"])).out || base.update.repo;
   return {
     ...merged,

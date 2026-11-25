@@ -7,6 +7,9 @@ If the owner is on Discord and lanes should run as aoe/tmux sessions rather than
 <!-- https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282 -->
 To opt in to shared-engine lanes, first verify `omo host session list --json` works and see `scripts.md` under Hosted lane runtime. Leave `laneRuntime` unset for ordinary terminal setup.
 
+<!-- https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284 -->
+If the lead already runs in the OmO host, configure `leadRuntime` and its durable `leadPane` as described in `scripts.md`; this setup still starts terminal leads.
+
 ## 1. herdr
 
 herdr is the terminal multiplexer the Dori runs in. Every lane is a herdr tab, and herdr lets you read a pane, type into it and see which process runs there.
