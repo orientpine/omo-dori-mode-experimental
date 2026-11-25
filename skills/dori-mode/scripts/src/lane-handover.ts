@@ -36,7 +36,7 @@ import { stuckTop } from "./explore.ts";
 import { bulletsIn, covered, flat, type Missing, missingHeadings, quoted, quotesIn, section, wholeBullet } from "./restatement.ts";
 import { watchLog } from "./watch-log.ts";
 import { type WorklogFacts, worklogFacts, worklogSection } from "./worklog-notes.ts";
-
+import { parseRef } from "./runtime/types.ts";
 export type LaneHandoverDeps = FlowDeps & {
   // a process's /proc stat (job-control.ts readStat when not given)
   readonly stat?: StatOf;
@@ -647,7 +647,7 @@ const attempt = async (deps: LaneHandoverDeps, key: string, here: string, opts: 
   const lane = await deps.registry.read(key);
   if (!lane) return refuse("no such lane");
   if (statusOf(lane) === "closed") return refuse("the lane is closed");
-  if (!lane.pane) return refuse("the lane has no pane");
+  if (!lane.pane || parseRef(lane.pane)?.runtime === "omo-host") return refuse(lane.pane ? "terminal handover cannot move a hosted lane" : "the lane has no pane");
   fromPane = lane.pane;
   // a run freshness started again for a request the lead has since replaced (or a move finished) leaves here, before any
   // refusal of its own: a row it logged would hide the newer waiting request (review 320 round 16). It holds the lane's

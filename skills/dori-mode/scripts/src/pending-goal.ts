@@ -58,7 +58,7 @@ export const goalReader = (deps: FlowDeps, cwd: string, session: string): ((pane
 export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | undefined> => {
   if (omoPane(deps.config, pane)) {
     const life = await paneLife(deps.run, pane);
-    return life.live ? undefined : life.how === "gone" ? (isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`;
+    return life.live ? undefined : life.how === "gone" ? (parseRef(pane)?.runtime === "omo-host" ? "the hosted session is gone" : isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`;
   }
   // whether any agent still runs under the pane's shell, which is not the same question as which session it is:
   // resolveSession skips a command holding the word mcp (an MCP server of the agent), and a herdr lane carries its own
