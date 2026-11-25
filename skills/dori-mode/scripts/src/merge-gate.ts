@@ -10,14 +10,14 @@ import { exitNote, keepReviewerOutput } from "./reviewer-output.ts";
 import { iso, type Ran } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
 import { warnDocsUntouched } from "./review-docs.ts";
+import { holdHead } from "./merge-gate-head.ts";
 // dori review / dori merge: a PR merges only at the exact head commit a review receipt names (ported from dori-superagent
 // harness.ts review()/mergeGate(), MIT). A lane that changes a commit after its review has no receipt at the new head, so
 // dori merge refuses it, and gh pr merge --match-head-commit makes GitHub refuse a head that moved after the gate's read.
 // dori-superagent also refuses an empty check list ("never green"); the fork has no CI, so there every merge would be
 // refused. This gate is for repositories without CI: a passing local test run (dori review ran mergeGate.testCommand in
 // a clean checkout at that head) stands in for checks, and a PR that has GitHub checks or an auto-merge request is
-// refused as unsupported (MERGE_REFUSED unsupported:checks / unsupported:queue). Porting check handling is follow-up
-// work for when a gated repo gets CI.
+// refused as unsupported (MERGE_REFUSED unsupported:checks / unsupported:workflows / unsupported:queue, merge-gate-head.ts).
 // The reviewer is a fresh run (explore.challengeCommand: omo -p, no session, read-only tools) of a reviewers.models id of
 // another family than the lane's model, the same machinery as dori challenge. A review inside the lane's own session
 // (omo-native-code-reviewer) leaves its only copy with the lane; this one the CLI runs and records itself.
@@ -242,7 +242,7 @@ const cut = (text: string, max: number, file: string): string => {
 export const reviewPrompt = (pr: PrRef, sha: string, title: string, diff: string, root: string, diffFile: string, prior?: Prior): string => [
   `You are a code reviewer. Review pull request ${pr.id} ("${title}") at exactly head ${sha}.`,
   `The diff is below. The repository checked out at that head is ${root}; read files there with the read, grep, find and ls tools when the diff alone does not show whether the change is right.`,
-  "Context: this repository has no CI. dori merge refuses a PR that has GitHub checks or auto-merge (unsupported:checks / unsupported:queue) and merges only at once, at this exact head, so paths that need CI checks, a merge queue or auto-merge cannot run here. Grade each finding by whether it can happen in this repository.",
+  "Context: this repository has no CI. dori merge refuses a PR that has GitHub checks, pull_request workflow runs or auto-merge (unsupported:checks / unsupported:workflows / unsupported:queue) and merges only at once, at this exact head, so paths that need CI checks, a merge queue or auto-merge cannot run here. Grade each finding by whether it can happen in this repository.",
   "Check the change against the PR's stated goal: correctness, regressions, missing tests for changed behaviour, security issues (secrets, injection, unsafe shell use), and scope creep. Ignore style nits a formatter would fix.",
   "<<<DIFF",
   cut(diff, DIFF_BYTES, diffFile),
@@ -284,8 +284,7 @@ export const reviewPr = async (deps: FlowDeps, pr: PrRef, opts: ReviewOptions): 
   const log = (line: string) => watchLog(deps.config.watchLog, deps.clock, { source: "merge-gate", line });
   const v = await viewPr(deps, pr);
   if (v.state !== "OPEN") throw new GateRefusal(`REVIEW_REFUSED ${pr.id} is ${v.state}, not open`);
-  const notHere = unsupported(v);
-  if (notHere) throw new GateRefusal(`REVIEW_REFUSED ${pr.id} ${notHere}`);
+  using _head = await holdHead(deps, pr, v, "REVIEW_REFUSED");
   const sha = v.headRefOid;
   const top = await deps.run(["git", "-C", opts.dir, "rev-parse", "--show-toplevel"]);
   const root = top.out.trim();
@@ -378,6 +377,7 @@ export const mergePr = async (deps: FlowDeps, pr: PrRef, opts: { readonly dryRun
   const v = await viewPr(deps, pr);
   if (v.state !== "OPEN") throw new GateRefusal(`MERGE_REFUSED ${pr.id} is ${v.state}, not open`);
   const sha = v.headRefOid;
+  using _head = await holdHead(deps, pr, v, "MERGE_REFUSED");
   const review = await readReceipt(deps.config.stateDir, pr, sha, "review");
   if (!review) {
     const last = (await receiptsOf(deps.config.stateDir, pr, "review"))[0];
@@ -386,8 +386,6 @@ export const mergePr = async (deps: FlowDeps, pr: PrRef, opts: { readonly dryRun
       : `MERGE_REFUSED ${pr.id} head ${short(sha)} has no review receipt: run dori review ${pr.id} in a checkout of that head`);
   }
   if (review.verdict !== "CLEAR") throw new GateRefusal(`MERGE_REFUSED ${pr.id} review at ${short(sha)} is ${review.verdict} (${review.file ?? "-"}): fix the findings, push, and review again`);
-  const notHere = unsupported(v);
-  if (notHere) throw new GateRefusal(`MERGE_REFUSED ${pr.id} ${notHere}`);
   const tests = await readReceipt(deps.config.stateDir, pr, sha, "tests");
   if (!tests) throw new GateRefusal(`MERGE_REFUSED ${pr.id} has no local test receipt at head ${short(sha)}: run dori review ${pr.id} (it runs the tests first)`);
   if (tests.code !== 0) throw new GateRefusal(`MERGE_REFUSED ${pr.id} local tests at ${short(sha)} exited ${tests.code}`);

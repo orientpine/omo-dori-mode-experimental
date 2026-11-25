@@ -12,7 +12,7 @@
   "src/intent-check.ts": 432,
   "src/lane-handover.ts": 1347,
   "src/lane-signals.ts": 349,
-  "src/merge-gate.ts": 453,
+  "src/merge-gate.ts": 451,
   "src/messenger/discord-cards.ts": 560,
   "src/messenger/discord-listener.ts": 599,
   "src/rollover-audit.ts": 580,
