@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import { currentTmuxSession } from "../src/aoe.ts";
 import { bootCheck } from "../src/boot.ts";
 import { runtimesFor } from "../src/run.ts";
 import { Worklog } from "../src/worklog.ts";
@@ -77,20 +76,19 @@ test("boot never resumes a parked hosted lane", async () => {
   } finally { f.state.done(); }
 });
 
-test("a hosted caller resolves its registered lane without a process or terminal", async () => {
+test("the CLI recognizes the registered hosted caller without a process or terminal", async () => {
   const f = fixture();
-  const env = { ...process.env };
   try {
-    process.env["PI_SESSION_ID"] = id;
-    process.env["SENPI_RPC_HOST_PUBLIC_SOCKET"] = "/fake/rpc.sock";
+    await Bun.write(f.configPath, JSON.stringify({ stateDir: f.state.dir }));
     await f.deps.registry.write(f.lane);
-    expect((await f.deps.registry.byPane(await currentTmuxSession(f.deps.run)))?.key).toBe(f.lane.key);
-  } finally {
-    for (const key of ["PI_SESSION_ID", "SENPI_RPC_HOST_PUBLIC_SOCKET"]) {
-      if (env[key] === undefined) delete process.env[key]; else process.env[key] = env[key];
-    }
-    f.state.done();
-  }
+    const cli = new URL("../src/cli.ts", import.meta.url).pathname;
+    const child = Bun.spawn([process.execPath, cli, "lesson", "add", "--global", "--rule", "example", "--evidence", "example"], {
+      env: { ...process.env, DORI_CONFIG: f.configPath, DORI_STATE_DIR: f.state.dir, DORI_ENV_FILE: join(f.state.dir, "isolated.env"), PI_SESSION_ID: id, SENPI_RPC_HOST_PUBLIC_SOCKET: "/fake/rpc.sock" },
+      stdout: "pipe", stderr: "pipe",
+    });
+    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect({ code, stderr: stderr.trim() }).toEqual({ code: 1, stderr: "a --global lesson is the lead's; this pane is lane hosted" });
+  } finally { f.state.done(); }
 });
 
 test("a working hosted lane pauses via a command-capable prompt, not steer", async () => {

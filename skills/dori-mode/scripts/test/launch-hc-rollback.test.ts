@@ -71,6 +71,14 @@ test("a definite hc start failure with confirmed cleanup unwinds and retries", a
   expect(new Reports(state.dir).read("smoke")?.state).toBe("running");
 });
 
+test("aoe with explicit hc placement unwinds confirmed hc rollback", async () => {
+  const fixture = rig("invalid_params", true);
+  const config = { ...fixture.deps.config, backend: "aoe" as const, laneRuntime: "hc" as const };
+  await expect(launchLane({ ...fixture.deps, config, run: fixture.run }, fixture.input)).rejects.toThrow("hc send failed");
+  expect(await fixture.deps.registry.read("smoke")).toBeNull();
+  expect(existsSync(new Reports(state.dir).path("smoke"))).toBe(false);
+});
+
 test("an ambiguous hc send failure preserves registration even after terminal cleanup", async () => {
   const fixture = rig("unavailable", true);
   await expect(launchLane({ ...fixture.deps, run: fixture.run }, fixture.input)).rejects.toThrow("hc send failed");
