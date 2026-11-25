@@ -137,7 +137,7 @@ const options = {
   step: { type: "string" }, "remote-effect": { type: "string", multiple: true },
   "wall-minutes": { type: "string" }, "token-limit": { type: "string" }, "cost-limit": { type: "string" }, "activity-path": { type: "string", multiple: true },
   "delete-branch": { type: "boolean" }, "no-test": { type: "string" }, "install-task": { type: "boolean" }, only: { type: "string", multiple: true }, log: { type: "string" }, priority: { type: "string" }, ask: { type: "string" }, "read-only": { type: "boolean" }, "owner-link": { type: "string" }, hash: { type: "string" }, question: { type: "string" },
-  source: { type: "string" },
+  source: { type: "string" }, days: { type: "string" }, json: { type: "boolean" }, "no-send": { type: "boolean" }, fixed: { type: "boolean" }, "ack-promise": { type: "boolean" },
 } as const;
 const flags = parseArgs({ args: rest, allowPositionals: true, strict: false, options });
 if (command === "--help" || flags.values.help) {

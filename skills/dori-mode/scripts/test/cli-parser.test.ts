@@ -57,6 +57,9 @@ test("a switch given a value (--again=false) is refused before any request; --na
       out: "",
       requested: false,
     });
+    // a switch a command reads without the option table (worklog close --ack-promise) is refused the same way (review 1 of #520)
+    const ack = await runCli(state.dir, ["worklog", "close", "w1", "--result", "done", "--ack-promise=false"]);
+    expect({ code: ack.code, err: ack.err, out: ack.out }).toEqual({ code: 1, err: "--ack-promise takes no value", out: "" });
     const ok = await runCli(state.dir, ["send", "telegram", "--to=-1001", "--text=a=b"]);
     const texts = ok.requested ? readFileSync(join(state.dir, "fetch.jsonl"), "utf8").trim().split("\n").map((l) => (JSON.parse(JSON.parse(l).body) as { text?: string }).text) : [];
     expect({ code: ok.code, texts }).toEqual({ code: 0, texts: ["a=b"] });
