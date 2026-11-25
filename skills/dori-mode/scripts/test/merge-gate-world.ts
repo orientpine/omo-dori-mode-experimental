@@ -16,7 +16,7 @@ export const PR = parsePr("acme/app#7");
 export const DIR = "/wt/app";
 
 export type FakeCommit = { sha: string; subject: string; email?: string; numstat?: string };
-export type Gh = { commits?: FakeCommit[]; atHead?: string[]; head: string; checkout: string; state: string; dirtyAfterTests?: boolean; tested?: boolean; statusFails?: boolean; queued?: boolean; viewFailsAfterMerge?: boolean; deleteFails?: boolean; mergeRejects?: boolean; autoMerge?: boolean; diff?: string; prompt?: string | undefined; pushDuringReview?: string; noVerdict?: { code: number; out: string; times: number; err?: string }; reviewerThrows?: boolean; runs?: string; runsFail?: boolean; holdReview?: Promise<void> | undefined; reviewing?: () => void; checks: Record<string, string>[]; testsCode: number; verdict: string; mergedAt: string; calls: string[][] };
+export type Gh = { commits?: FakeCommit[]; atHead?: string[]; head: string; checkout: string; state: string; dirtyAfterTests?: boolean; tested?: boolean; statusFails?: boolean; queued?: boolean; viewFailsAfterMerge?: boolean; deleteFails?: boolean; mergeRejects?: boolean; autoMerge?: boolean; diff?: string; diffTooLarge?: boolean; base?: string; localDiff?: string; localDiffFails?: boolean; prompt?: string | undefined; pushDuringReview?: string; noVerdict?: { code: number; out: string; times: number; err?: string }; reviewerThrows?: boolean; runs?: string; runsFail?: boolean; holdReview?: Promise<void> | undefined; reviewing?: () => void; checks: Record<string, string>[]; testsCode: number; verdict: string; mergedAt: string; calls: string[][] };
 
 const dirs: string[] = [];
 export const cleanup = (): void => {
@@ -31,7 +31,10 @@ export const runner = (w: Gh): Runner => async (argv) => {
   const a = argv.join(" ");
   if (a.startsWith("gh pr view") && w.viewFailsAfterMerge && w.calls.some((c) => c[2] === "merge")) return { code: 1, out: "", err: "HTTP 502" };
   if (a.startsWith("gh pr view")) return ok(JSON.stringify({ state: w.state, headRefOid: w.head, mergedAt: w.mergedAt || null, mergeCommit: w.state === "MERGED" ? { oid: "m".repeat(40) } : null, title: "demo", statusCheckRollup: w.checks, autoMergeRequest: w.autoMerge ? { enabledAt: "2026-11-02T08:00:00Z" } : null }));
+  if (a === "gh api repos/acme/app/pulls/7") return ok(JSON.stringify({ base: { sha: w.base ?? "c".repeat(40) } }));
+  if (a.startsWith("gh pr diff") && w.diffTooLarge) return { code: 1, out: "", err: "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000)" };
   if (a.startsWith("gh pr diff")) return ok(w.diff ?? "diff --git a/x b/x\n+x");
+  if (argv[3] === "diff" && argv.at(-1)?.includes("...")) return w.localDiffFails ? { code: 128, out: "", err: "fatal: bad revision" } : ok(w.localDiff ?? "diff --git a/big b/big\n+LOCAL_DIFF");
   if (a.toLowerCase().startsWith("gh api repos/acme/app/actions/runs?")) return w.runsFail ? { code: 1, out: "", err: "HTTP 502" } : ok(w.runs ?? '{"total_count":0,"workflow_runs":[]}');
   const listed = w.commits ?? [{ sha: w.head, subject: "feat: demo" }];
   if (a.startsWith("gh api --paginate repos/")) return ok(listed.map((c) => `${c.sha}\n`).join(""));

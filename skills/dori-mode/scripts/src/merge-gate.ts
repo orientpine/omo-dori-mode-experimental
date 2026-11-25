@@ -10,7 +10,7 @@ import { exitNote, keepReviewerOutput } from "./reviewer-output.ts";
 import { iso, type Ran } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
 import { warnDocsUntouched } from "./review-docs.ts";
-import { holdHead } from "./merge-gate-head.ts";
+import { holdHead, prDiff } from "./merge-gate-head.ts";
 // dori review / dori merge: a PR merges only at the exact head commit a review receipt names (ported from dori-superagent
 // harness.ts review()/mergeGate(), MIT). A lane that changes a commit after its review has no receipt at the new head, so
 // dori merge refuses it, and gh pr merge --match-head-commit makes GitHub refuse a head that moved after the gate's read.
@@ -322,7 +322,7 @@ export const reviewPr = async (deps: FlowDeps, pr: PrRef, opts: ReviewOptions): 
   const path = await writeReceipt(deps.config.stateDir, pr, { pr: pr.id, sha, kind: "tests", at: iso(deps.clock), command: cfg.testCommand, code: t.code, tail: tailOf(t), checks, ...(checked.waiver ? { waiver: checked.waiver } : {}) });
   log(`TESTS ${pr.id} head=${sha} exit=${t.code} receipt=${path}`);
   lines.push(`TESTS_OK ${pr.id} head=${sha} ${cfg.testCommand.join(" ")} exit 0 in ${secs(deps, started)} s receipt=${path}`);
-  const diff = await deps.run(["gh", "pr", "diff", pr.number, "--repo", pr.repo]);
+  const diff = await prDiff(deps, pr, root, sha);
   if (diff.code !== 0) throw new GateRefusal(`REVIEW_REFUSED cannot read the diff of ${pr.id}: ${why(diff)}`);
   await still("after reading the diff");
   // always another family, --model too: reviewers.allowSameFamily is for dori challenge only
