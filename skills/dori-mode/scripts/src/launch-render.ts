@@ -1,7 +1,7 @@
 import { normalizeLeadPane } from "./lead-ref.ts";
-import { envFilePath } from "./config-env.ts";
 import { resolve } from "node:path";
-import { configPath, runWithPrompt } from "./config.ts";
+import { homeSelectors } from "./home-env.ts";
+import { runWithPrompt } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Lane } from "./registry.ts";
 import { iso } from "./run.ts";
@@ -80,7 +80,8 @@ export const renderBrief = async (deps: FlowDeps, input: LaunchInput): Promise<R
   const hosted = deps.config.laneRuntime === "omo-host";
   const explicitLead = deps.config.leadRuntime !== undefined;
   const pane = normalizeLeadPane(deps.config.leadPane, deps.config.leadRuntime);
-  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${lessons.section ? `${lessons.section}\n` : ""}${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos), { config: resolve(configPath()), stateDir: resolve(deps.config.stateDir), ...(hosted ? { hosted, envFile: resolve(envFilePath()) } : {}), ...(hosted || explicitLead ? { sendTo: pane, envFile: resolve(envFilePath()) } : {}) })}` };
+  const { DORI_CONFIG: config, DORI_STATE_DIR: stateDir, DORI_ENV_FILE: envFile } = homeSelectors(deps.config);
+  return { draft, ...(steps ? { steps } : {}), lines, missing: missingLines(input.key, plan), text: `${ui ? withUiSteps(lead, await uiSteps()) : lead}\n${lessons.section ? `${lessons.section}\n` : ""}${past ? `${past}\n` : ""}${tree ? `${tree}\n` : ""}${footer(draft, deps.config.leadPane, deps.config.backend, Object.keys(deps.config.mergeGate.repos), { config, stateDir, ...(hosted ? { hosted } : {}), ...(hosted || explicitLead ? { sendTo: pane, envFile } : {}) })}` };
 };
 
 // The first lines of the lead's brief (headings and blank lines left out), for the thread's first message.
