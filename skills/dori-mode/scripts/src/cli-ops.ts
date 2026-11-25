@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { paneLife } from "./aoe.ts";
 import { isHerdrPane } from "./herdr.ts";
 import { reviveHerdr } from "./herdr-sessions.ts";
+import { parseRef } from "./runtime/types.ts";
 import { fileLog, installTaskRefusal, serve, serveLoops, spawnLoop, TASK_NAME, taskArgv } from "./serve.ts";
 import { findLead } from "./lead.ts";
 import { configPath } from "./config.ts";
@@ -197,6 +198,8 @@ const serveCommand: Command = async (context) => {
 const reviveCommand: Command = async (context) => {
   const { key, config, opt } = context;
   const pane = key ?? die("usage: dori revive <herdr pane> [--text TEXT]");
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: a hosted lane has no terminal agent to restart.
+  if (parseRef(pane)?.runtime === "omo-host") die(`REVIVE_REFUSED ${pane}: a hosted lane has no terminal agent to restart; dori watch lifts its turn-limit pause, and dori type ${pane} --text TEXT sends it a message`);
   if (!isHerdrPane(pane)) die("revive takes a herdr pane id (an aoe session restarts with self-restart.sh)");
   // dori never ends a live herdr agent: only a pane whose agent is gone is started again
   if ((await paneLife(run, pane)).live) {
