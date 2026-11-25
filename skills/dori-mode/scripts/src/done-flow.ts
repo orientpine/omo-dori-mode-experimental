@@ -74,16 +74,14 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
       await deps.registry.write(lane);
     }
     if (lane.pane && omoPane(deps.config, lane.pane)) {
-      const hosted = sessionOf(lane)?.runtime === "omo-host";
       // https://github.com/sisyphuslabs/dori-superagent/pull/282: an unreachable host holds this lane only, never the tick
-      let unobserved = false;
-      const act = await paneActivity(deps.run, [lane.pane], deps.config).then((m) => m.get(lane.pane ?? ""), (e: unknown) => {
-        if (!hosted) throw e;
-        unobserved = true;
-        out.push(`LANE_WATCH_WARN ${lane.key} hosted session not observed (${String(e).slice(0, 200)}); its claim waits for the next tick`);
-        return undefined;
-      });
-      if (unobserved) continue;
+      const failed = new Map<string, string>();
+      const act = (await paneActivity(deps.run, [lane.pane], deps.config, failed)).get(lane.pane);
+      const unseen = failed.get(lane.pane);
+      if (unseen !== undefined) {
+        out.push(`LANE_WATCH_WARN ${lane.key} hosted session not observed (${unseen}); its claim waits for the next tick`);
+        continue;
+      }
       const reopened = await claimTurn(deps, lane, act);
       if (reopened) {
         out.push(reopened);
@@ -147,10 +145,16 @@ const claimTurn = async (deps: FlowDeps, lane: Lane, act: Activity | undefined):
 // "started within the last hour" and the lane was LANE_BLOCKED idle three times while they ran.
 export const blockedTick = async (deps: FlowDeps, terminal = true): Promise<string[]> => {
   const lanes = (await deps.registry.open()).filter((l) => l.pane && (terminal || sessionOf(l)?.runtime === "omo-host") && (statusOf(l) === "working" || statusOf(l) === "not-done"));
-  const activity = await paneActivity(deps.run, lanes.map((l) => l.pane ?? ""), deps.config);
+  const failed = new Map<string, string>();
+  const activity = await paneActivity(deps.run, lanes.map((l) => l.pane ?? ""), deps.config, failed);
   const now = deps.clock.now();
   const out: string[] = [];
   for (const lane of lanes) {
+    const unseen = failed.get(lane.pane ?? "");
+    if (unseen !== undefined) {
+      out.push(`LANE_WATCH_WARN ${lane.key} hosted session not observed (${unseen}); its blocked state is kept`);
+      continue;
+    }
     const act = activity.get(lane.pane ?? "");
     const idleSince = act === "idle" ? (lane.idleSince ?? now) : undefined;
     let blocked = act === "waiting" || act === "error" || act === "question" ? act : idleSince !== undefined && now - idleSince >= IDLE_SETTLE_MS ? "idle" : undefined;

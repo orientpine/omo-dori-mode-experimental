@@ -177,50 +177,60 @@ export const missedAnswersTick = async (deps: FlowDeps, terminal = true): Promis
   for (const q of due) {
     const pane = q.tmux || deps.config.leadPane;
     const ref = parseRef(pane);
-    const mark = marks[q.id];
-    if (mark?.pending && (mark.pane !== pane || mark.answeredAt !== q.answeredAt)) continue;
-    const probe = mark?.pending && ref?.runtime === "omo-host" && hosted.has(pane)
-      ? await (async () => { const rt = runtimesOf(deps.run, deps.config).for(ref); return await rt.observe?.(ref) ? rt.probe(ref) : undefined; })()
-      : undefined;
-    if (!transcripts.has(pane) || mark?.pending) {
-      const session = sessionFor(sessions, pane);
-      if (ref?.runtime === "omo-host") {
-        const path = mark?.pending ? probe?.transcriptPath : await hostedTranscript(deps.run, deps.config, ref);
-        transcripts.set(pane, path && existsSync(path) ? readFileSync(path, "utf8") : undefined);
-      } else {
-        const file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table, deps.config.stateDir) : undefined;
-        transcripts.set(pane, file ? currentTranscript(file, session?.title ?? "") : undefined);
+    // https://github.com/sisyphuslabs/dori-superagent/pull/282: a host that cannot be read holds that card only; the marks
+    // the sweep made so far are kept, so an answer already queued is not typed again (review 9 of PR 527)
+    try {
+      const mark = marks[q.id];
+      if (mark?.pending && (mark.pane !== pane || mark.answeredAt !== q.answeredAt)) continue;
+      const probe = mark?.pending && ref?.runtime === "omo-host" && hosted.has(pane)
+        ? await (async () => { const rt = runtimesOf(deps.run, deps.config).for(ref); return await rt.observe?.(ref) ? rt.probe(ref) : undefined; })()
+        : undefined;
+      if (!transcripts.has(pane) || mark?.pending) {
+        const session = sessionFor(sessions, pane);
+        if (ref?.runtime === "omo-host") {
+          const path = mark?.pending ? probe?.transcriptPath : await hostedTranscript(deps.run, deps.config, ref);
+          transcripts.set(pane, path && existsSync(path) ? readFileSync(path, "utf8") : undefined);
+        } else {
+          const file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table, deps.config.stateDir) : undefined;
+          transcripts.set(pane, file ? currentTranscript(file, session?.title ?? "") : undefined);
+        }
       }
+      const text = transcripts.get(pane);
+      // a session that started after the answer (a rollover) did not ask: the handover carries what it needs
+      const consumed = !!text && sawAnswer(text, q.id, { id: "", at: Date.parse(q.answeredAt ?? "") }, q.answeredAt);
+      if (mark?.pending && consumed) {
+        marks[q.id] = { ...mark, sent: true };
+        out.push(`CARD_ANSWER_CONSUMED ${q.id} ${pane}: answer found in the session transcript`);
+        continue;
+      }
+      if (mark?.pending && (mark.pending === "AMBIGUOUS" || mark.recovered || probe?.status !== "idle" || !probe.steering || probe.steering.includes(answerLine(q)) || probe.pendingMessageCount !== 0)) {
+        out.push(`CARD_ANSWER_PENDING ${q.id} ${pane}: ${mark.pending.toLowerCase()}; no duplicate sent`);
+        continue;
+      }
+      if (!text || (ref?.runtime === "omo-host" ? consumed : sawAnswer(text, q.id)) || !(sessionStart(text) < Date.parse(q.answeredAt ?? ""))) continue;
+      const result = await submitToPane(deps.run, deps.clock, deps.config, pane, answerLine(q));
+      const ok = result.status === "SUBMITTED";
+      const tries = (mark?.tries ?? 0) + 1;
+      const pending = result.status === "QUEUED" || result.status === "AMBIGUOUS" ? result.status : undefined;
+      marks[q.id] = { at: iso(deps.clock), tries: mark?.pending && !pending ? MAX_TRIES : tries, sent: ok, ...(pending ? { pending, pane, ...(q.answeredAt ? { answeredAt: q.answeredAt } : {}), ...(mark?.pending ? { recovered: true } : {}) } : {}) };
+      if (pending) {
+        out.push(`CARD_ANSWER_${pending} ${q.id} ${pane}: ${result.reason}`);
+        continue;
+      }
+      out.push(
+        ok
+          ? `CARD_ANSWER_REDELIVERED ${q.id} ${pane}: answered ${q.answeredAt}, not in that session's transcript; typed it there (SUBMITTED)`
+          : tries >= MAX_TRIES
+            ? `CARD_ANSWER_GAVE_UP ${q.id} ${pane}: ${tries} tries did not reach the pane; read it with dori questions`
+            : `CARD_ANSWER_NOT_SUBMITTED ${q.id} ${pane}: answered ${q.answeredAt}, not in that session's transcript; the message did not reach the pane (try ${tries}/${MAX_TRIES})`,
+      );
+    } catch (e) {
+      if (ref?.runtime !== "omo-host") {
+        if (hosted.size) writeFileSync(marksPath(deps), `${JSON.stringify(marks, null, 1)}\n`);
+        throw e;
+      }
+      out.push(`CARD_ANSWER_HELD ${q.id} ${pane}: the host was not read (${String(e).slice(0, 200)}); tried again next tick`);
     }
-    const text = transcripts.get(pane);
-    // a session that started after the answer (a rollover) did not ask: the handover carries what it needs
-    const consumed = !!text && sawAnswer(text, q.id, { id: "", at: Date.parse(q.answeredAt ?? "") }, q.answeredAt);
-    if (mark?.pending && consumed) {
-      marks[q.id] = { ...mark, sent: true };
-      out.push(`CARD_ANSWER_CONSUMED ${q.id} ${pane}: answer found in the session transcript`);
-      continue;
-    }
-    if (mark?.pending && (mark.pending === "AMBIGUOUS" || mark.recovered || probe?.status !== "idle" || !probe.steering || probe.steering.includes(answerLine(q)) || probe.pendingMessageCount !== 0)) {
-      out.push(`CARD_ANSWER_PENDING ${q.id} ${pane}: ${mark.pending.toLowerCase()}; no duplicate sent`);
-      continue;
-    }
-    if (!text || (ref?.runtime === "omo-host" ? consumed : sawAnswer(text, q.id)) || !(sessionStart(text) < Date.parse(q.answeredAt ?? ""))) continue;
-    const result = await submitToPane(deps.run, deps.clock, deps.config, pane, answerLine(q));
-    const ok = result.status === "SUBMITTED";
-    const tries = (mark?.tries ?? 0) + 1;
-    const pending = result.status === "QUEUED" || result.status === "AMBIGUOUS" ? result.status : undefined;
-    marks[q.id] = { at: iso(deps.clock), tries: mark?.pending && !pending ? MAX_TRIES : tries, sent: ok, ...(pending ? { pending, pane, ...(q.answeredAt ? { answeredAt: q.answeredAt } : {}), ...(mark?.pending ? { recovered: true } : {}) } : {}) };
-    if (pending) {
-      out.push(`CARD_ANSWER_${pending} ${q.id} ${pane}: ${result.reason}`);
-      continue;
-    }
-    out.push(
-      ok
-        ? `CARD_ANSWER_REDELIVERED ${q.id} ${pane}: answered ${q.answeredAt}, not in that session's transcript; typed it there (SUBMITTED)`
-        : tries >= MAX_TRIES
-          ? `CARD_ANSWER_GAVE_UP ${q.id} ${pane}: ${tries} tries did not reach the pane; read it with dori questions`
-          : `CARD_ANSWER_NOT_SUBMITTED ${q.id} ${pane}: answered ${q.answeredAt}, not in that session's transcript; the message did not reach the pane (try ${tries}/${MAX_TRIES})`,
-    );
   }
   writeFileSync(marksPath(deps), `${JSON.stringify(marks, null, 1)}\n`);
   return out;

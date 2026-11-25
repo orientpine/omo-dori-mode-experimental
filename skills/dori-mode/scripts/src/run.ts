@@ -29,7 +29,9 @@ export type Runner = (argv: readonly string[], opts?: RunOptions) => Promise<Ran
 // shell started handed it to the next lead's agent and every monitor of it, which then named the old lead's session (MooDori
 // hc:t1, 2026-11-11), nor the marker of the monitor that ran the call (SENPI_MONITOR_*): the next agent's tools would pass
 // for monitors (review 6 of #460).
-const OMO_SESSION = new Set(["PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL", "OMO_BROWSER_ENGINE"]);
+// SENPI_RPC_HOST_PUBLIC_SOCKET marks a hosted session (https://github.com/sisyphuslabs/dori-superagent/pull/282): left in a
+// server's environment, every terminal agent it starts later would pass for one (review 9 of PR 527).
+const OMO_SESSION = new Set(["PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL", "OMO_BROWSER_ENGINE", "SENPI_RPC_HOST_PUBLIC_SOCKET"]);
 const SERVERS = ["aoe", "tmux", "herdr", "hc"];
 export const childEnv = (argv: readonly string[], env: Readonly<Record<string, string | undefined>>, core?: string, named = false): Record<string, string | undefined> => {
   const tool = argv[0]?.split("/").pop() ?? "";
