@@ -265,9 +265,9 @@ export const reviewPrompt = (pr: PrRef, sha: string, title: string, diff: string
   "VERDICT: BLOCK   (at least one HIGH or MEDIUM finding)",
 ].join("\n");
 
-// only the last non-empty line counts: a verdict quoted earlier in a reply that then gives up is no verdict
+// only the last non-empty line counts (a quoted verdict before a give-up is none); **VERDICT**: CLEAR counts (upstream #231)
 export const verdictOf = (text: string): "CLEAR" | "BLOCK" | undefined =>
-  /^[\s*_`]*VERDICT:[\s*_`]*(CLEAR|BLOCK)\b[^\n]*$/.exec(text.trim().split("\n").at(-1)?.trim() ?? "")?.[1] as "CLEAR" | "BLOCK" | undefined;
+  /^[\s*_`]*VERDICT[*_`]*\s*:[\s*_`]*(CLEAR|BLOCK)\b[^\n]*$/.exec(text.trim().split("\n").at(-1)?.trim() ?? "")?.[1] as "CLEAR" | "BLOCK" | undefined;
 
 const secs = (deps: Pick<FlowDeps, "clock">, since: number): number => Math.round((deps.clock.now() - since) / 1000);
 

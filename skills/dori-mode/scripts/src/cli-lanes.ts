@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+
 import { fill } from "./config.ts";
 import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, launchLedger, relatedGate, renderBrief, reopenLaneThread, setDone, setGpu, setThread, threadGate, ThreadMissingError, validateLaunch } from "./launch.ts";
 import { realClock } from "./run.ts";
@@ -12,6 +14,10 @@ const launchCommand: Command = async (context) => {
   const { key, need, threadOpt, noThreadOpt, whyNewOpt, opt, tags, flags, many, waive, budgetOpts, deps, config, discordToken } = context;
   const { ownDiscord, discordClient, env } = makeDiscordDeps(context);
   const input = { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: threadOpt(), noThread: noThreadOpt(), whyNew: whyNewOpt(), model: opt("model"), cwd: opt("cwd"), tags: tags(), doneWeakOk: Boolean(flags.values["done-weak-ok"]), goal: opt("goal"), challengeBefore: many("challenge-before"), useGpu: Boolean(flags.values["use-gpu"]), ui: Boolean(flags.values.ui), waive, budget: budgetOpts(), activityPaths: many("activity-path") };
+  // checked first, before any warning, ledger read, model call or write (upstream sisyphuslabs/dori-superagent#243): a
+  // missing --cwd went on through every gate to the runtime
+  if (!statSync(input.brief, { throwIfNoEntry: false })?.isFile()) die(`brief not found: ${input.brief}`);
+  if (input.cwd !== undefined && !statSync(input.cwd, { throwIfNoEntry: false })?.isDirectory()) die(`LAUNCH_NO_CWD ${input.key}: no directory ${input.cwd}; nothing was written or opened`);
   const noGoal = goalWarning(input);
   if (noGoal) console.log(noGoal);
   // LAUNCH_NO_THREAD / LAUNCH_THREAD_IS_CHANNEL / LAUNCH_RELATED_THREAD: nothing opened, exit 4 like a missing directive

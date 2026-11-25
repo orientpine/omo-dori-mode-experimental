@@ -168,6 +168,9 @@ for (const [name, spec] of Object.entries(options)) {
   const value = flags.values[name];
   const bare = value === true || (Array.isArray(value) && value.includes(true));
   if (spec.type === "string" && bare && !ownCheck.has(name)) die(`--${name} needs a value`);
+  // a switch given a value (--force=false) comes back as that string, which is truthy: the switch would be on
+  // (upstream sisyphuslabs/dori-superagent#242)
+  if (spec.type === "boolean" && typeof value === "string") die(`--${name} takes no value`);
 }
 const cli = makeCli(command, rest, flags, config, deps, waive, discordToken, import.meta.path, import.meta.url, makeSignal());
 const { cardDir, threadStatuses, ownDiscord, env } = makeDiscordDeps(cli);
