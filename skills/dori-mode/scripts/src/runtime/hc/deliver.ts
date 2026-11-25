@@ -6,6 +6,12 @@ import { probe } from "./probe.ts";
 
 const KEY_NAMES: Readonly<Record<Key, string>> = { enter: "enter", escape: "esc" };
 
+// hc (notes.rs; on unless config.toml says notes = false) wraps a send from an agent terminal, named by the caller's
+// HC_TERMINAL_ID, as <hc from="t29 lead">text</hc>. The agent then reads a slash command as plain text: /goal pause and
+// /model never ran in ZzangDori's lane (2026-11-25). Only that one variable decides the tag (HC_SCOPE and
+// HC_TERMINAL_SOCKET do not), so a command goes out without it and plain text keeps its sender.
+const UNTAGGED = { HC_TERMINAL_ID: undefined } as const;
+
 const scrub = (message: string, text: string): string => (text === "" ? message : message.replaceAll(text, "<text>"));
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -50,7 +56,7 @@ export async function deliver(
   const argv = ["send", id, ...gate, ...(force ? ["--force"] : []), "--", text];
   let result: Record<string, unknown>;
   try {
-    result = await hcCall(exec, argv, { redact: text });
+    result = await hcCall(exec, argv, { redact: text, ...(text.startsWith("/") ? { env: UNTAGGED } : {}) });
   } catch (e) {
     if (isKind(e, "blocked")) return { kind: "not-ready", status: "blocked" };
     if (isKind(e, "status_mismatch")) return { kind: "not-ready", status: await statusNow(exec, id) };

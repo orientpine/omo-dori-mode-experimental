@@ -155,8 +155,8 @@ export class ChosenRuntimes extends Runtimes {
 
 // Every runtime behind the scripts' Runner, so a test's fake runner answers the runtime's calls as it answered the herdr
 // calls before (the same argv, ["herdr", ...]); sleeps go through the clock.
-export const execOf = (runner: Runner): Exec => async (cmd, argv) => {
-  const r = await runner([cmd, ...argv]);
+export const execOf = (runner: Runner): Exec => async (cmd, argv, env) => {
+  const r = await runner([cmd, ...argv], ...(env ? [{ env }] : []));
   return { code: r.code, stdout: r.out, stderr: r.err };
 };
 
