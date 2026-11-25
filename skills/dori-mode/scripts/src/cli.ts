@@ -163,7 +163,7 @@ const checksBare: Readonly<Record<string, readonly string[]>> = {
   freshness: ["loop"],
   guard: ["loop"],
   "dead-panes": ["loop"],
-  heavy: config.heavyJobMemGb !== null && rest.length === 1 && rest[0] === "--status" ? ["status"] : [], // https://github.com/sisyphuslabs/dori-superagent/pull/264
+  heavy: rest.length === 1 && rest[0] === "--status" ? ["status"] : [], // https://github.com/sisyphuslabs/dori-superagent/pull/264
 };
 const ownCheck = new Set(Object.hasOwn(checksBare, command) ? checksBare[command] : []);
 for (const [name, spec] of Object.entries(options)) {
