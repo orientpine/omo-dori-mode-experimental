@@ -66,10 +66,10 @@ export const paneGroup = async (run: Runner, pane: string): Promise<string | und
 };
 
 // Every session of the runtimes in use, as sessions.ts listSessions (upstream #154) lists them, with the stored kinds added
-export const listKeptSessions = async (rts: ChosenRuntimes): Promise<SessionInfo[]> => {
+export const listKeptSessions = async (rts: ChosenRuntimes, stateDir?: string): Promise<SessionInfo[]> => {
   // the chosen runtime and every one a stored session lives on must answer; another the process built on the way (a herdr
   // adapter liveSessions made on an hc Dori) is listed when it can be, never failing the count (review 2 of #404)
-  const stored = await storedRuntimes();
+  const stored = await storedRuntimes(stateDir);
   for (const kind of stored) rts.for({ runtime: kind, id: "" });
   const required = new Set<RuntimeKind>([...stored, ...(rts.choice ? [rts.choice.kind] : [])]);
   try {

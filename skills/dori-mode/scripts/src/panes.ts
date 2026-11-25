@@ -34,7 +34,7 @@ export const listPanes = async (run: Runner, config: Pick<DoriConfig, "backend" 
   if (config.laneRuntime) void rts.lane;
   const stored = config.backend === "aoe" ? await storedRuntimes(config.stateDir) : [];
   const kinds = new Set([...stored, ...(config.laneRuntime ? [config.laneRuntime] : [])]);
-  const sessions = config.backend === "aoe" ? (await Promise.all([...kinds].map((runtime) => rts.for({ runtime, id: "" }).list()))).flat() : await listKeptSessions(rts);
+  const sessions = config.backend === "aoe" ? (await Promise.all([...kinds].map((runtime) => rts.for({ runtime, id: "" }).list()))).flat() : await listKeptSessions(rts, config.stateDir);
   // hc lists no dori.group label unasked: each configured workspace is listed by its label, so a workspace filter keeps
   // the hc terminals of that group (review 1 of #404)
   const hcGroup = new Map<string, string>();
