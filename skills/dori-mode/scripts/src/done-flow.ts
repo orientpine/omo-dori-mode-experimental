@@ -1,3 +1,4 @@
+import { normalizeLeadPane } from "./lead-ref.ts";
 import { paneActivity } from "./aoe.ts";
 import { autoturnTick } from "./autoturn.ts";
 import { laneBackground } from "./lane-wait.ts";
@@ -50,7 +51,7 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
 // forward of the old lead are gone a day later, so each pass gives every check the lead the config names then
 // (2026-11-11: a watch kept reviving the frozen w1:p37 after ZzangDori's handover to w1:p4C; review 1 of #442)
 const withLeadNow = (deps: FlowDeps): FlowDeps => {
-  const pane = deps.leadPaneNow?.() ?? "";
+  const pane = normalizeLeadPane(deps.leadPaneNow?.() ?? "", deps.config.leadRuntime);
   return pane && pane !== deps.config.leadPane ? { ...deps, config: { ...deps.config, leadPane: pane } } : deps;
 };
 

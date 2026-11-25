@@ -129,7 +129,7 @@ describe("probe and deliver", () => {
     host.refuseNext.set("prompt", "busy");
     expect(await rt.deliver(REF, "hi")).toEqual({ kind: "not-ready", status: "working" });
     s.state = { ...s.state, pendingDialogs: [{ title: "Which one?", options: ["a", "b"] }] };
-    expect(await rt.read(REF, 3)).toBe("? Which one? [a / b]\n❯");
+    expect(await rt.read(REF, 3)).toBe("Ask user · Which one? [a / b]\n❯");
     expect(await rt.deliver(REF, "a")).toEqual({ kind: "delivered", started: true });
     host.sessions.clear();
     expect(await rt.deliver(REF, "hi")).toEqual({ kind: "no-agent" });

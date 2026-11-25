@@ -1,13 +1,11 @@
 import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import { closeHerdrSession, herdrAgentPid, herdrLife, herdrSessions, isHerdrPane, openHerdrSession, procEnv } from "./herdr.ts";
+import { closeHerdrSession, herdrAgentPid, herdrSessions, isHerdrPane, openHerdrSession, procEnv } from "./herdr.ts";
 import { captureTmux } from "./pane-io.ts";
 export { captureTmux, paneLife, type PaneLife, tmuxPanePid } from "./pane-io.ts";
 import type { Pane } from "./panes.ts";
 import { type Clock, type Runner, runtimesOf } from "./run.ts";
-import { turnRunning } from "./submit.ts";
-import { onDuty } from "./duty-line.ts";
 
 // pane: the herdr pane id of a herdr session (herdr.ts); aoe sessions are matched by their tmux name
 export type AoeSession = { readonly id: string; readonly title: string; readonly path: string; readonly tool?: string; readonly profile?: string; readonly pane?: string; readonly tab?: string };
@@ -69,27 +67,7 @@ export const BUSY_MARK = "esc to interrupt";
 export const WAKE_MARKS = ["◉ watching", "wake source", "goal continues in", "Pursuing goal"];
 export const QUESTION_MARK = /Ask user ·|\(\d+\/\d+ answered\)/;
 
-export type Activity = "busy" | "running" | "waiting" | "error" | "question" | "idle";
-
-// What each live pane's agent is doing, from aoe ps plus its screen. Panes aoe does not list are left out.
-// A herdr pane has no such state: one whose agent runs is judged from its screen alone, idle when nothing shows.
-export const paneActivity = async (run: Runner, panes: readonly string[]): Promise<Map<string, Activity>> => {
-  const out = new Map<string, Activity>();
-  const tmuxPanes = panes.filter((p) => p && !isHerdrPane(p));
-  const [sessions, states] = tmuxPanes.length ? await Promise.all([aoeSessions(run), aoeStates(run)]) : [[], new Map<string, string>()];
-  for (const pane of panes) {
-    const id = isHerdrPane(pane) ? ((await herdrLife(run, pane)).live ? pane : undefined) : idFor(sessions, pane);
-    const state = id ? (isHerdrPane(pane) ? "idle" : states.get(id)) : undefined;
-    if (!state) continue;
-    const screen = await captureTmux(run, pane);
-    if (turnRunning(screen)) out.set(pane, "busy");
-    else if (state === "waiting" || state === "error") out.set(pane, state);
-    else if (QUESTION_MARK.test(screen)) out.set(pane, "question");
-    else if (WAKE_MARKS.some((m) => screen.includes(m)) || onDuty(screen)) out.set(pane, "running");
-    else out.set(pane, state === "idle" ? "idle" : "running");
-  }
-  return out;
-};
+export { paneActivity, type Activity } from "./pane-activity.ts";
 
 // omo's input line is the last line starting with ❯; transcript lines above it are not input
 export const inputLine = (screen: string): string | undefined => screen.split("\n").findLast((l) => l.trimStart().startsWith("❯"));

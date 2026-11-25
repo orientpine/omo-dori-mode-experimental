@@ -98,6 +98,9 @@ export function goalOf(state: Record<string, unknown>): string {
 
 export function probeOf(state: Record<string, unknown> | undefined): Probe {
   if (state === undefined) return { status: "gone", shellInFront: false };
+  const selected = rec(state["model"]);
+  const [provider, id] = [str(selected["provider"]), str(selected["id"])];
+  const model = provider && id ? `${provider}/${id}` : str(state["model"]);
   const [title, cwd] = [str(state["sessionName"]), str(state["cwd"])];
   return {
     status: statusOf(state),
@@ -106,6 +109,7 @@ export function probeOf(state: Record<string, unknown> | undefined): Probe {
     ...(cwd === undefined ? {} : { cwd }),
     shellInFront: false,
     goal: goalOf(state),
+    ...(model ? { model } : {}),
   };
 }
 

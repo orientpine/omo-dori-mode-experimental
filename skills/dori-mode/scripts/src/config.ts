@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isOmoExecutable } from "./executable.ts";
-import { parseRef } from "./runtime/types.ts";
+import { normalizeLeadPane } from "./lead-ref.ts";
 import { isRuntimeKind, type Ran, run, type Runner, type RunOptions } from "./run.ts";
 import { supervisionProblem } from "./supervision.ts";
 import type { ArgvTemplate, DoriConfig } from "./config-types.ts";
@@ -132,9 +132,7 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const env: unknown = merged.launchEnv;
   if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((v) => typeof v !== "string")) throw new ConfigError(`${path}: launchEnv must map variable names to strings, e.g. {"CUDA_VISIBLE_DEVICES": ""}`);
   const stateDir = expandHome(process.env["DORI_STATE_DIR"] ?? merged.stateDir, home);
-  const configuredLead = process.env["DORI_LEAD_PANE"] ?? merged.leadPane;
-  const hostedLead = `omo-host:${configuredLead}`;
-  const leadPane = merged.leadRuntime === "omo-host" && parseRef(hostedLead) ? hostedLead : configuredLead;
+  const leadPane = normalizeLeadPane(process.env["DORI_LEAD_PANE"] ?? merged.leadPane, merged.leadRuntime);
   const repo = raw.update?.repo ? expandHome(raw.update.repo, home) : (await run(["git", "-C", import.meta.dir, "rev-parse", "--show-toplevel"])).out || base.update.repo;
   return {
     ...merged,
