@@ -4,7 +4,20 @@ import type { RuntimeKind, SessionRef } from "./runtime/types.ts";
 import { descendants, ended, type Proc, procEnv, readProcTable } from "./session-id.ts";
 
 // upstream sisyphuslabs/dori-superagent#225: collect while the pane still owns the process tree.
-type Snapshot = readonly Proc[] | string;
+// each process with its start time: a pid and a command line alone do not prove it is the same process after the close
+type Seen = Proc & { readonly start: string };
+type Snapshot = readonly Seen[] | string;
+
+// `ps -o lstart` (Linux procps and macOS): when each listed process started; a gone pid is simply not listed
+const startTimes = async (run: Runner, pids: readonly number[]): Promise<Map<number, string> | string> => {
+  if (!pids.length) return new Map();
+  const r = await run(["ps", "-o", "pid=,lstart=", "-p", pids.join(",")]);
+  if (r.code !== 0 && r.err.trim()) return r.err.trim();
+  return new Map(r.out.split("\n").flatMap((line) => {
+    const m = /^\s*(\d+)\s+(\S.*?)\s*$/.exec(line);
+    return m ? [[Number(m[1]), m[2] ?? ""] as const] : [];
+  }));
+};
 const SESSION_VAR: Readonly<Record<RuntimeKind, string>> = { herdr: "HERDR_PANE_ID", hc: "HC_TERMINAL_ID" };
 
 export const laneProcesses = async (rts: Runtimes, run: Runner, ref: SessionRef): Promise<Snapshot> => {
@@ -27,7 +40,10 @@ export const laneProcesses = async (rts: Runtimes, run: Runner, ref: SessionRef)
   if (!env.split(linux ? "\0" : /\s+/).includes(marker)) {
     return `session root ${pid} on this host does not carry ${marker} (the session may run on another host)`;
   }
-  return [root, ...descendants(rows, pid)].filter((p) => p.pid > 1 && p.pid !== process.pid && p.cmd && !ended(p));
+  const tree = [root, ...descendants(rows, pid)].filter((p) => p.pid > 1 && p.pid !== process.pid && p.cmd && !ended(p));
+  const began = await startTimes(run, tree.map((p) => p.pid));
+  if (typeof began === "string") return began;
+  return tree.flatMap((p) => (began.has(p.pid) ? [{ ...p, start: began.get(p.pid) ?? "" }] : []));
 };
 
 // upstream sisyphuslabs/dori-superagent#225: the surviving exact PIDs may have been reparented after the close.
@@ -36,7 +52,11 @@ export const stopLeftovers = async (run: Runner, before: Snapshot): Promise<stri
   const { rows, error } = await readProcTable(run);
   if (error) return `lane processes not checked: ${error}`;
   const live = new Map(rows.filter((p) => !ended(p)).map((p) => [p.pid, p.cmd]));
-  const survivors = before.filter((p) => live.get(p.pid) === p.cmd).map((p) => String(p.pid));
+  const same = before.filter((p) => live.get(p.pid) === p.cmd);
+  const began = await startTimes(run, same.map((p) => p.pid));
+  if (typeof began === "string") return `lane processes not checked: ${began}`;
+  // a pid a new process with the same command took during the close has another start time (review 1 of #522)
+  const survivors = same.filter((p) => began.get(p.pid) === p.start).map((p) => String(p.pid));
   if (!survivors.length) return "no lane process outlived the pane";
   const r = await run(["kill", "-TERM", ...survivors]);
   const what = `${survivors.length} lane processes outlived the pane`;

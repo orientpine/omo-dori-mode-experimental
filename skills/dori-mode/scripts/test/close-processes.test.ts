@@ -31,6 +31,10 @@ let tables: string[];
 let rootEnv: string | undefined;
 let rootCommand: string;
 let failedClose: boolean;
+// what `ps -o pid=,lstart= -p ...` prints, read before and after the close
+let starts: string[];
+const START = "Wed Nov 25 10:40:10 2026";
+const startsOf = (pids: readonly number[], at = START) => pids.map((p) => `${p} ${at}`).join("\n");
 
 const kills = () => world.calls.filter((c) => c[0] === "kill");
 const receipt = (lines: readonly string[]) =>
@@ -46,6 +50,11 @@ const deps = (): FlowDeps => {
     if ((argv[0] === "ps" && argv[1] === "eww") || (argv[0] === "cat" && argv[1] === "/proc/4000/environ")) {
       const out = rootEnv === undefined ? "" : argv[0] === "cat" ? rootEnv : `${rootCommand} ${rootEnv.replaceAll("\0", " ")}`;
       return { code: rootEnv === undefined ? 1 : 0, out, err: "" };
+    }
+    if (argv[0] === "ps" && argv[1] === "-o" && argv[2] === "pid=,lstart=") {
+      world.calls.push([...argv]);
+      const out = starts.shift();
+      return out === undefined ? { code: 1, out: "", err: "ps: unavailable" } : { code: 0, out, err: "" };
     }
     if (argv[0] === "ps" && argv[1] === "-A") {
       world.calls.push([...argv]);
@@ -76,6 +85,22 @@ beforeEach(() => {
   rootCommand = "-bash";
   failedClose = false;
   tables = [BEFORE, AFTER];
+  starts = [startsOf([4000, 4001, 4200, 4201, 4202]), startsOf([4200, 4201, 4202])];
+});
+
+// review 1 of #522: a watch that ended during the close and whose pid a new process with the same command took is not ours
+test("a pid reused by the same command after the close (another start time) is left alone", async () => {
+  starts = [startsOf([4000, 4001, 4200, 4201, 4202]), `${startsOf([4200, 4202])}\n4201 Wed Nov 25 10:41:00 2026`];
+  const r = await closeLane(deps(), lane, "Done");
+  expect(kills()).toEqual([["kill", "-TERM", "4200", "4202"]]);
+  expect(receipt(r.lines).cleanup).toContain("2 lane processes outlived the pane, stopped: 4200 4202");
+});
+
+test("start times that cannot be read after the close stop nothing", async () => {
+  starts = [startsOf([4000, 4001, 4200, 4201, 4202])];
+  const r = await closeLane(deps(), lane, "Done");
+  expect(kills()).toEqual([]);
+  expect(receipt(r.lines).cleanup).toContain("lane processes not checked: ps: unavailable");
 });
 afterEach(() => state.done());
 
