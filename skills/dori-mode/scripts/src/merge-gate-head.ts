@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { CheckpointError, takeLock } from "./checkpoint-lock.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { GateRefusal, type PrRef, receiptPath, unsupported } from "./merge-gate.ts";
+import type { Ran } from "./run.ts";
 
 type Prefix = "REVIEW_REFUSED" | "MERGE_REFUSED";
 type WorkflowRun = { readonly name?: unknown; readonly status?: unknown; readonly conclusion?: unknown };
@@ -47,4 +48,20 @@ export const holdHead = async (deps: Pick<FlowDeps, "run" | "config" | "clock">,
     if (!(e instanceof CheckpointError)) throw e;
     throw new GateRefusal(`${prefix} ${pr.id} head ${short(view.headRefOid)} is held by another dori review or merge (${e.message}); run it again once that one has finished`);
   }
+};
+
+const TOO_LARGE = /too_large|exceeded the maximum number of lines/;
+
+// The PR's diff for its review. GitHub refuses one over 20000 lines (HTTP 406 too_large), seen on a 2.4k-line PR as well;
+// then the same three-dot diff is read from the clean checkout the review already verified at the head, against the PR's
+// base commit. Any other failure stays a failure, so the review is refused as before.
+export const prDiff = async (deps: Pick<FlowDeps, "run">, pr: PrRef, root: string, sha: string): Promise<Ran> => {
+  const gh = await deps.run(["gh", "pr", "diff", pr.number, "--repo", pr.repo]);
+  if (gh.code === 0 || !TOO_LARGE.test(`${gh.err}\n${gh.out}`)) return gh;
+  // gh pr view has no base commit field; the REST pull request has it as base.sha
+  const view = await deps.run(["gh", "api", `repos/${pr.repo}/pulls/${pr.number}`]);
+  if (view.code !== 0) return view;
+  const base: unknown = (JSON.parse(view.out) as { base?: { sha?: unknown } }).base?.sha;
+  if (typeof base !== "string" || !/^[0-9a-f]{40}$/.test(base)) return { code: 1, out: "", err: `${gh.err.trim()}; and gh named no base commit` };
+  return deps.run(["git", "-C", root, "diff", `${base}...${sha}`]);
 };
