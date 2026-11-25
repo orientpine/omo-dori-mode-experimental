@@ -4,9 +4,7 @@ import { applyDirectives } from "../src/directive-audit.ts";
 import { hostedStartup } from "../src/launch-hosted.ts";
 import { adoptLane } from "../src/launch-state.ts";
 import { objectDone } from "../src/done-flow-state.ts";
-import { leadMovedText } from "../src/lane-tells.ts";
 import { reconcileRows } from "../src/missed-answers.ts";
-import { sessionDirFor } from "../src/session-id.ts";
 import type { Runner } from "../src/run.ts";
 import { FakeOmoHost, writeGoal } from "./fake-omo-host.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
@@ -65,18 +63,6 @@ test("two objections with the same reasons both reach the hosted lane", async ()
   } finally { f.state.done(); }
 });
 
-test("a card answer an open hosted lane took is not waiting for the terminal lead", async () => {
-  const f = fixture();
-  try {
-    const row = { id: "answer-1", qid: "Q7", tmux: pane, thread: "CARD", at };
-    await Bun.write(String(f.session.state["sessionFile"]), `${JSON.stringify({ type: "custom_message", customType: "senpi-monitor:notification", content: JSON.stringify({ kind: "answer", qid: "Q7", id: row.id, ts: new Date(at).toISOString() }) })}\n`);
-    const leadPath = join(f.state.dir, "lead.jsonl");
-    await Bun.write(leadPath, "");
-    const input = { rows: [row], cards: [], lead: { pane: "lead", path: leadPath, title: "", text: "" }, sessions: [], table: [], deps: f.deps };
-    expect(await reconcileRows(input)).toEqual({ waiting: [], answeredIds: [row.id] });
-  } finally { f.state.done(); }
-});
-
 test.each(["queued", "ambiguous"] as const)("directives apply twice does not resend a %s hosted delivery", async (mode) => {
   const f = fixture();
   try {
@@ -103,30 +89,15 @@ test.each(["queued", "ambiguous"] as const)("directives apply twice does not res
   } finally { f.state.done(); }
 });
 
-// review 7 of PR 527
-test("a stopped host does not stop the lead's answer check: a closed hosted lane's archive is read without it", async () => {
+// a hosted lane's card answer is its watch's to redeliver, not the terminal lead's wait (scope cut after review 7 of PR 527)
+test("a card answer for a hosted lane does not count as the owner waiting on the lead; an owner message still does", async () => {
   const f = fixture();
   try {
-    const sessionsDir = join(f.state.dir, "archive"), cwd = "/repo/hosted";
-    const folder = sessionDirFor(sessionsDir, cwd);
-    await Bun.write(join(folder, `2026-11-25T11-59-00-000Z_${id}.jsonl`), `${JSON.stringify({ type: "custom_message", customType: "senpi-monitor:notification", content: JSON.stringify({ kind: "answer", qid: "Q8", id: "answer-8", ts: new Date(at).toISOString() }) })}\n`);
-    await f.deps.registry.write({ ...f.lane, session: id, cwd, openedAt: new Date(at - 60_000).toISOString(), closedAt: new Date(at + 60_000).toISOString() });
-    const run: Runner = (argv, opts) => (argv[0] === "omo" ? Promise.reject(new Error("host_unavailable")) : f.deps.run(argv, opts));
-    const deps = { ...f.deps, run, config: { ...f.deps.config, sessionsDir } };
-    const answer = { id: "answer-8", qid: "Q8", tmux: pane, thread: "CARD", at }, owner = { id: "owner-1", at };
     const leadPath = join(f.state.dir, "lead.jsonl");
     await Bun.write(leadPath, "");
-    const input = { rows: [answer, owner], cards: [], lead: { pane: "lead", path: leadPath, title: "", text: "" }, sessions: [], table: [], deps };
-    expect(await reconcileRows(input)).toEqual({ waiting: [owner], answeredIds: [answer.id] });
+    const answer = { id: "answer-9", qid: "Q9", tmux: pane, thread: "CARD", at }, owner = { id: "owner-9", at };
+    const run: Runner = (argv, opts) => (argv[0] === "omo" ? Promise.reject(new Error("the lead's check must not ask the host")) : f.deps.run(argv, opts));
+    const input = { rows: [answer, owner], cards: [], lead: { pane: "lead", path: leadPath, title: "", text: "" }, sessions: [], table: [], deps: { ...f.deps, run } };
+    expect((await reconcileRows(input)).waiting).toEqual([owner]);
   } finally { f.state.done(); }
-});
-
-test("a lead-move notice gives a hosted lane this instance's report command; a terminal lane's stays plain", () => {
-  const config = { stateDir: "/srv/second/state" };
-  const hosted = leadMovedText("hc:t9", pane, config);
-  expect(hosted).toContain(JSON.stringify(["env", `DORI_CONFIG=${process.env["DORI_CONFIG"] ?? ""}`]).slice(1, 8));
-  expect(hosted).toContain('"DORI_STATE_DIR=/srv/second/state"');
-  expect(hosted).toContain('"type","hc:t9","--text","<report line>"]');
-  expect(hosted).not.toContain('["dori","type"');
-  expect(leadMovedText("hc:t9", "hc:t4", config)).toBe('[LEAD] The lead moved to tmux session hc:t9. Send every [REPORT] there from now on: ["dori","type","hc:t9","--text","<report line>"]. Your brief\'s footer says the same now.');
 });

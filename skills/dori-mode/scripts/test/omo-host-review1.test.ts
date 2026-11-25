@@ -130,13 +130,23 @@ test("stored hc discovery and activity keep their terminal behavior without over
   }
 });
 
-test("watch lead refresh keeps a bare hc ID on the same runtime as initial load", async () => {
+// the attach helpers (dori.sh, doriterm) read leadPane as written, so a bare hc id is refused, not normalized
+// (scope cut after review 7 of PR 527; docs/follow-ups.md)
+test("leadRuntime hc refuses a bare lead id, from the file or DORI_LEAD_PANE; a full hc address loads", async () => {
   const f = fixture();
+  const previous = process.env["DORI_LEAD_PANE"];
   try {
     await Bun.write(f.configPath, JSON.stringify({ leadRuntime: "hc", leadPane: "t3" }));
+    await expect(loadConfig(f.configPath)).rejects.toThrow(/hc:<terminal>/);
+    await Bun.write(f.configPath, JSON.stringify({ leadRuntime: "hc", leadPane: "hc:t3" }));
     expect((await loadConfig(f.configPath)).leadPane).toBe("hc:t3");
     expect(leadNow(f.configPath)).toBe("hc:t3");
-  } finally { f.state.done(); }
+    process.env["DORI_LEAD_PANE"] = "t4";
+    await expect(loadConfig(f.configPath)).rejects.toThrow(/hc:<terminal>/);
+  } finally {
+    if (previous === undefined) delete process.env["DORI_LEAD_PANE"]; else process.env["DORI_LEAD_PANE"] = previous;
+    f.state.done();
+  }
 });
 
 test("pending goal does not count a hosted streaming turn as idle", async () => {

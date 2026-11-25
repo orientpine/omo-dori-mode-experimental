@@ -12,7 +12,7 @@ The OmO host must be running and reachable by `omo host session list --json`. A 
 
 Read its transcript with `dori read <key>`, send a prompt with `dori type omo-host:<session-id> --text TEXT`, and close it with `dori close <key>` once Done is verified. `dori attach <key> --print` prints the viewer command; without `--print` it opens a disposable hc terminal and leaves the lane running when the viewer exits. Quit a viewer before closing the lane.
 
-A text the scripts send to a hosted lane (a nudge, a directive, a handover line) that the host holds (`QUEUED`) or whose outcome it cannot tell (`AMBIGUOUS`) is never sent again: each sender treats it as sent and the watch log keeps the real status; a new send of the same words later is a send of its own. `dori directives apply` says `DIRECTIVES_APPLY_PENDING` and writes the directives into the brief as for a submitted message, so the lane has them even if the held message never arrives. A card answer an open hosted lane took is found in its host transcript, so it does not count as the owner waiting on a terminal lead.
+A text the scripts send to a hosted lane (a typed line, a nudge, a directive) that the host holds (`QUEUED`) or whose outcome it cannot tell (`AMBIGUOUS`) is never sent again: each sender treats it as sent and the watch log keeps the real status; a new send of the same words later is a send of its own. `dori directives apply` says `DIRECTIVES_APPLY_PENDING` and writes the directives into the brief as for a submitted message, so the lane has them even if the held message never arrives.
 
 <!-- Ported from https://github.com/sisyphuslabs/dori-superagent/pull/284. -->
 `leadRuntime` optionally identifies the existing terminal lead (`"hc"` or `"herdr"`), independently of new lanes. Hosted leads are not supported in this fork. This setting does not start or migrate a lead; duty and loops still use the terminal default. `dori boot` reports only configured overrides.
@@ -23,7 +23,8 @@ A text the scripts send to a hosted lane (a nudge, a directive, a handover line)
 
 | Scope | Behavior |
 | --- | --- |
-| Supported | Hosted lane launch, list/read/type/attach/close, goal pause/resume, read-only boot/sync, claim and pending-goal checks, blocked detection, missed answers and turn-limit recovery, a terminal lead's move notice (with this Dori's own report command, as in the footer). |
+| Supported | Hosted lane launch; type (with list, read and attach); watch (claim and pending-goal checks, blocked detection, a missed card answer typed again into the lane); close; revive (turn-limit recovery). |
+| Not supported | Where the lead's side meets a hosted lane. A lead handover types no move notice into a hosted lane (`told=no`), and after the wait the lead gets `HANDOVER_LANE_UNTOLD` to pass it on; the lead's owner-waiting check leaves a hosted lane's card answers to that lane's watch and never asks the host; goal pause/resume at the lead's limit is not covered. With `leadRuntime` `"hc"` the lead must be written `hc:<terminal>` (a bare id is refused at config load), since `dori.sh` and doriterm read it as written. With these keys unset every path is the terminal one, as on main; [follow-ups](../../../docs/follow-ups.md) lists what full support needs. |
 | Refused | Hosted leads, and runtime requests for per-session environment injection. Launch requires a reachable shared host. |
 | Contained | Hosted lanes do not enter terminal freshness automation, compaction/re-anchoring, rollover or terminal process recovery. Rendered output is display-only; recovery uses structured host state and JSONL records. |
 | Keys unset | New lanes and the lead keep their terminal defaults; existing hosted lanes remain managed by stored runtime. |

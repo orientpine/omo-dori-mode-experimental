@@ -114,6 +114,10 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const leadRuntime: unknown = raw.leadRuntime;
   if (leadRuntime === "omo-host" || parseRef(process.env["DORI_LEAD_PANE"] ?? merged.leadPane)?.runtime === "omo-host") throw new ConfigError(`${path}: a hosted lead is not supported yet in this fork; leadRuntime may be "hc" or "herdr"`);
   if (leadRuntime !== undefined && !isRuntimeKind(leadRuntime)) throw new ConfigError(`${path}: leadRuntime must be "herdr" or "hc", not ${JSON.stringify(leadRuntime)}`);
+  // dori.sh and doriterm read the lead as written, so a bare id is refused here, not normalized (upstream
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284 accepts it; scope cut after review 7 of PR 527, docs/follow-ups.md)
+  const named = process.env["DORI_LEAD_PANE"] ?? merged.leadPane;
+  if (leadRuntime === "hc" && named && !named.startsWith("hc:")) throw new ConfigError(`${path}: with leadRuntime "hc" write the lead as hc:<terminal>, not ${JSON.stringify(named)}: the attach helpers read it as written`);
   if (raw.runtime !== undefined && !isRuntimeKind(raw.runtime)) throw new ConfigError(`${path}: runtime must be "herdr" or "hc" (unset: detected), not ${JSON.stringify(raw.runtime)}`);
   const supervisionBad = supervisionProblem((raw as { supervision?: unknown }).supervision);
   if (supervisionBad) throw new ConfigError(`${path}: invalid ${supervisionBad}`);

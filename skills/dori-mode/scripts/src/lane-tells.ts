@@ -8,7 +8,6 @@ import { dirname, join } from "node:path";
 
 import { captureTmux } from "./aoe.ts";
 import type { DoriConfig } from "./config.ts";
-import { hostedReportArgv } from "./launch-footer.ts";
 import { sendOnce } from "./panes.ts";
 import { parseRef } from "./runtime/types.ts";
 import type { Registry } from "./registry.ts";
@@ -38,9 +37,13 @@ const writeTells = (stateDir: string, tells: Tells): void => {
   writeFileSync(file, `${JSON.stringify(tells, null, 1)}\n`);
 };
 
-// a hosted lane has no instance environment: its command names this Dori's files, as its footer does (review 7 of PR 527)
-export const leadMovedText = (lead: string, pane = "", config?: Pick<DoriConfig, "stateDir">): string =>
-  `[LEAD] The lead moved to tmux session ${lead}. Send every [REPORT] there from now on: ${JSON.stringify(config && parseRef(pane)?.runtime === "omo-host" ? hostedReportArgv(lead, config) : ["dori", "type", lead, "--text", "<report line>"])}. Your brief's footer says the same now.`;
+export const leadMovedText = (lead: string): string =>
+  `[LEAD] The lead moved to tmux session ${lead}. Send every [REPORT] there from now on: ["dori","type","${lead}","--text","<report line>"]. Your brief's footer says the same now.`;
+
+// A hosted lane has no instance environment, so the plain command would report elsewhere: it is not typed there, and the
+// wait below tells the lead to pass the move on (upstream https://github.com/sisyphuslabs/dori-superagent/pull/282; scope
+// cut after review 7 of PR 527, docs/follow-ups.md).
+export const noticeReaches = (pane: string): boolean => parseRef(pane)?.runtime !== "omo-host";
 
 // told: the lane took the line (any earlier wait for it ends); not told: it waits for the freshness retry
 export const noteLaneTell = (stateDir: string, key: string, pane: string, lead: string, at: string, told: boolean): void => {
@@ -78,13 +81,13 @@ export const retryLaneTells = async (deps: LaneTellDeps): Promise<string[]> => {
       continue;
     }
     const since = Date.parse(t.at);
-    if (await deps.delivered(t.pane, leadMovedText(t.lead, t.pane, deps.config), since)) {
+    if (await deps.delivered(t.pane, leadMovedText(t.lead), since)) {
       delete tells[key];
       out.push(`HANDOVER_LANE_TOLD ${key} ${t.pane}: the lead notice reached the lane's transcript late (omo held it)`);
       continue;
     }
-    if (turnRunning(await captureTmux(deps.run, t.pane).catch(() => ""))) {
-      const ok = await sendOnce(deps.run, deps.clock, deps.config, t.pane, leadMovedText(lead, t.pane, deps.config));
+    if (noticeReaches(t.pane) && turnRunning(await captureTmux(deps.run, t.pane).catch(() => ""))) {
+      const ok = await sendOnce(deps.run, deps.clock, deps.config, t.pane, leadMovedText(lead));
       if (ok) {
         delete tells[key];
         out.push(`HANDOVER_LANE_TOLD ${key} ${t.pane}: told the lead is ${lead} (try ${t.tries + 1}, while its turn ran)`);

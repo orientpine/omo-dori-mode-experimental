@@ -6,6 +6,21 @@ Work left out of a merged change on purpose, with why and what would close it. E
 
 This fork ports terminal `leadRuntime` selection but refuses `omo-host` for the lead. Supporting a hosted lead requires processless lead identity and transcript lookup in `currentLeadSession`, `leadLimitTick`, `leadInboxTick`, and missed-answer recovery, with recovery and watcher coverage before enabling the setting.
 
+## Hosted lanes on the lead's side (upstream #282 and #284, cut from fork #527)
+
+Reviews 5 to 7 of #527 found 3, 2 and 3 new spots each where the lead's side meets an omo-host lane, so the lead cut #527 to lane launch, type, watch, close and revive (2026-11-25). Contained instead of supported, each with what would close it:
+
+- Lead-move notice: a handover types none into a hosted lane and the lead is told to pass it on. Closing it: type the footer's instance-bound argv (`env DORI_CONFIG=... bun cli.ts type ...`) in the notice and its retry, with a retry path that reads host state instead of `captureTmux` (review 7 finding 3).
+- Owner-waiting check: a hosted lane's card answer is left to `missedAnswersTick`. Closing it: read the hosted transcript in `unansweredRows`, closed lanes' archives first, one target's host failure isolated to its rows (reviews 6 and 7).
+- Bare hc lead id with `leadRuntime` `"hc"`: refused at config load, though upstream #284 accepts it. Closing it: `hc-lead-core.ts` (used by `dori.sh` and doriterm) applies the shared `normalizeLeadPane`, overrides first, then the refusal goes (review 7 finding 2).
+- Goal pause/resume at the lead's limit for hosted lanes: not reviewed under the cut.
+
+Receipts: `~/.soodori/state/receipts/reviews/orientpine__omo-dori-mode-experimental_527@{dced27d4,527d2d54}*.md`, challenge `~/.soodori/state/challenges/port-upstream-264-284/2026-11-25T15-25-53-469Z-*.md`.
+
+## heavy-queue: helper tests can hit bun's 5 s default timeout (seen on #527 ci)
+
+On 4eae ci of a746d2db (load 0.28), three `test/heavy-queue.test.ts` cases ("a job the queue host cannot start runs on a helper", twice, and "an rl job ... runs on a helper that runs rl jobs") ended at 5000 ms; the same tests passed on dced27d4 and 527d2d54. #527 does not touch heavy code. Closing it: find what those cases wait on and await that signal with a bounded timeout instead of the default.
+
 ## hc: an agent that never reports a status word gets nothing delivered (upstream #272, left out of #521)
 
 Upstream sisyphuslabs/dori-superagent#272 reads such a terminal's screen (`esc to interrupt` = working, omo's idle input = idle) and lets deliver() send on that verdict with no `--if`. In the fork every hole of that inference becomes a paste-and-Enter into whatever runs in front, under `dori type`'s `when: "any"`: three reviews of #521 and a challenge found the phrase in a draft, words right above a box holding a draft (even a real running banner over a draft), an editor quoting the phrase with no omo box at all, and an editor showing a copy of omo's idle box. A screen layout cannot prove which program is in front, and the program's name cannot either: a real omo under hc runs as `bun .../senpi/dist/bundle/cli.js` and reports OSC 7501 itself (`hc get`: `reported: true`, `app: omo`), so the fork's agents never take this path. An unreported terminal stays held as before (`unknown`). What would close it: a status the program itself gives (OSC 7501 or an RPC bound to its foreground session), never a screen read, before anything is typed into a terminal that never reported.

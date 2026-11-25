@@ -17,7 +17,7 @@ import { endedWatch, endOldMonitors, procStart, readText, sameWatch, shellScript
 import { ranToEnd } from "./handover-ran.ts";
 import { foregroundOnly, watchOnly } from "./handover-watch.ts";
 import { missingTodos, OWNER_HOURS, type OwnerWord, recentOwnerWords, todoTask } from "./handover-todos.ts";
-import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
+import { leadMovedText, noteLaneTell, noticeReaches } from "./lane-tells.ts";
 import { compactionStuckOn } from "./lane-handover.ts";
 import { awaitPrompt } from "./launch.ts";
 import { type Question, QuestionStore } from "./messenger/discord-cards.ts";
@@ -515,7 +515,7 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
     }
     const fresh = (await deps.registry.read(lane.key)) ?? lane;
     await deps.registry.write({ ...fresh, history: [...(fresh.history ?? []), { at, status: statusOf(fresh), note: `lead moved ${from.pane} -> ${to.pane} (dori handover)` }] });
-    const told = lane.pane ? await sendOnce(deps.run, deps.clock, deps.config, lane.pane, leadMovedText(to.pane, lane.pane, deps.config)) : false;
+    const told = lane.pane && noticeReaches(lane.pane) ? await sendOnce(deps.run, deps.clock, deps.config, lane.pane, leadMovedText(to.pane)) : false;
     // a lane that did not take it is retried by freshness (lane-tells.ts) instead of being left told=no
     if (lane.pane) noteLaneTell(deps.config.stateDir, lane.key, lane.pane, to.pane, at, told);
     out.push(`HANDOVER_LANE ${lane.key} brief=${brief} told=${told ? "yes" : `no${lane.pane ? " (freshness retries it)" : ""}`}`);

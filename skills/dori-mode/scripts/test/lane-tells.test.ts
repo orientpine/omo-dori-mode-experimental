@@ -83,3 +83,22 @@ test("a closed lane or one moved to a new session drops its wait without typing 
   expect(sent(w)).toEqual([]);
   expect(existsSync(laneTellsFile(state.dir)) && JSON.parse(readFileSync(laneTellsFile(state.dir), "utf8"))).toEqual({});
 });
+
+// a hosted lane is not sent the plain notice (it has no instance environment): the lead is told to pass it on
+// (scope cut after review 7 of PR 527; docs/follow-ups.md)
+test("a hosted lane gets no lead notice typed; once the wait is over the lead is told to pass it on", async () => {
+  const HOSTED = "omo-host:00000000-0000-4000-8000-000000000071";
+  const clock = fakeClock(Date.parse(AT) + LANE_TELL_LEAD_AFTER_MS + 60_000);
+  const base = depsFor(w, clock, state.dir, { backend: "aoe", leadPane: NEW });
+  await base.registry.write({ ...lane(), pane: HOSTED });
+  noteLaneTell(state.dir, "analytics", HOSTED, NEW, AT, false);
+  w.screens[HOSTED] = BUSY;
+  const typed: string[] = [];
+  const run: typeof base.run = (argv, opts) => {
+    if (argv[0] === "omo") typed.push(argv.join(" "));
+    return base.run(argv, opts);
+  };
+  const lines = await retryLaneTells({ ...base, run, delivered: async () => false });
+  expect([...typed, ...sent(w).filter((t) => t.startsWith("[LEAD] The lead moved"))]).toEqual([]);
+  expect(lines.some((l) => l.startsWith("HANDOVER_LANE_UNTOLD analytics"))).toBe(true);
+});
