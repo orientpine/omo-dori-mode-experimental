@@ -19,6 +19,7 @@ import { answeredBy } from "./send-dedupe.ts";
 import { iso, runtimesOf } from "./run.ts";
 import { type Lane, sessionOf, statusOf } from "./registry.ts";
 import { procTable } from "./session-id.ts";
+import { watchLog } from "./watch-log.ts";
 import type { Proc } from "./session-id.ts";
 
 // A card's answer reaches the session that asked only as one inbox row its monitor turns into an event. An event that
@@ -101,9 +102,7 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
     const session = sessionFor(sessions, target), key = session || target === lead.pane ? target : `${target}\0${row.at}`;
     if (!transcripts.has(key)) {
       const cwd = session?.path, ref = parseRef(target);
-      // an open hosted lane has no terminal session: the host names its transcript (upstream https://github.com/sisyphuslabs/dori-superagent/pull/282, review 6 of PR 527)
-      const hosted = target !== lead.pane && ref?.runtime === "omo-host" ? await hostedTranscript(deps.run, deps.config, ref) : undefined;
-      let file = target === lead.pane ? { path: lead.path } : hosted && existsSync(hosted) ? { path: hosted } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined;
+      let file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined;
       if (!file && !session && target !== lead.pane) {
         // Closing a lane keeps its session identity and log. Read that exact session, never a newer same-title log.
         archived ??= await deps.registry.list();
@@ -113,6 +112,16 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
           const path = kept?.session === lane.session && kept.cwd === lane.cwd && kept.log && existsSync(kept.log) ? kept.log : argvSessionLog([], deps.config.sessionsDir, lane.cwd, lane.session);
           if (path) file = { path };
         }
+      }
+      // an open hosted lane has no terminal session: the host names its transcript, after the archive, which needs no host;
+      // a host that does not answer leaves only this row waiting (upstream https://github.com/sisyphuslabs/dori-superagent/pull/282,
+      // reviews 6-7 of PR 527)
+      if (!file && target !== lead.pane && ref?.runtime === "omo-host") {
+        const hosted = await hostedTranscript(deps.run, deps.config, ref).catch((e: unknown) => {
+          watchLog(deps.config.watchLog, deps.clock, { source: "answers", line: `HOSTED_TRANSCRIPT_UNREAD ${target}: ${String(e).slice(0, 160)}; its answer rows stay waiting this tick` });
+          return undefined;
+        });
+        if (hosted && existsSync(hosted)) file = { path: hosted };
       }
       transcripts.set(key, { text: file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "", ...(file ? { path: file.path } : {}) });
     }

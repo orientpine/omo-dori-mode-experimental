@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
-import type { Backend } from "./config.ts";
+import type { Backend, DoriConfig } from "./config.ts";
+import { homeSelectors } from "./home-env.ts";
 import { agentLine } from "./herdr.ts";
 import { hasThread, type Lane } from "./registry.ts";
 import { type Ledger, uiHits, scopeText } from "./directives.ts";
@@ -92,6 +93,13 @@ const reportTarget = (pane: string, instance?: FooterInstance): readonly string[
   ...(instance?.sendTo ? ["env", ...Object.entries(instanceEnv(instance)).map(([key, value]) => `${key}=${value}`), "bun", CLI_PATH] : ["dori"]),
   "type", pane, "--text", "<report line>",
 ];
+
+// The footer's report argv for a hosted lane, bound to this instance's files; a lead-move notice uses it too
+// (upstream https://github.com/sisyphuslabs/dori-superagent/pull/282, review 7 of PR 527).
+export const hostedReportArgv = (pane: string, config: Pick<DoriConfig, "stateDir">): readonly string[] => {
+  const { DORI_CONFIG: file, DORI_STATE_DIR: stateDir, DORI_ENV_FILE: envFile } = homeSelectors(config);
+  return reportTarget(pane, { config: file, stateDir, envFile, sendTo: pane });
+};
 
 export const footer = (lane: Lane, leadPane: string, backend: Backend = "herdr", gated: readonly string[] = [], instance?: FooterInstance): string => {
 const bound = cliCommand(undefined, instance);

@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { envFileEntries, envFilePath, configPath, expandHome, loadEnvFile } from "./config-env.ts";
 import { defaultConfig } from "./config-defaults.ts";
+import { normalizeLeadPane } from "./lead-ref.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { hcCoreRunning, run } from "./run.ts";
 import { HC_ADDRESS } from "./runtime/types.ts";
@@ -16,15 +17,18 @@ if (import.meta.main) {
   const core = hcCore((await file.exists()) ? await file.text() : "");
   let lead = "";
   await loadEnvFile(envFilePath());
-  lead = process.env["DORI_LEAD_TMUX"]?.trim() || process.env["DORI_LEAD_PANE"]?.trim() || "";
-  if (!lead) {
-    try {
-      const config = (await Bun.file(configPath()).json()) as { leadPane?: unknown };
-      lead = typeof config.leadPane === "string" ? config.leadPane : "";
-    } catch {
-      lead = "";
-    }
+  let leadRuntime: unknown;
+  let configured = "";
+  try {
+    const config = (await Bun.file(configPath()).json()) as { leadPane?: unknown; leadRuntime?: unknown };
+    configured = typeof config.leadPane === "string" ? config.leadPane : "";
+    leadRuntime = config.leadRuntime;
+  } catch {
+    configured = "";
   }
+  // an override still wins; leadRuntime "hc" names a bare id's core as the CLI does (upstream
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284, review 7 of PR 527)
+  lead = normalizeLeadPane(process.env["DORI_LEAD_TMUX"]?.trim() || process.env["DORI_LEAD_PANE"]?.trim() || configured, leadRuntime);
   const mode = process.argv[2];
   const target = mode === "terminal" ? process.argv[3] : undefined;
   if (mode === "terminal" && (!target || !HC_ADDRESS.test(target))) throw new Error("dori: invalid hc terminal");

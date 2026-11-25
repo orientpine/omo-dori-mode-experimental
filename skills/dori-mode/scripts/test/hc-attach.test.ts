@@ -133,3 +133,16 @@ test("the hc core name uses the dori.env parser: whitespace, quotes and the firs
   expect(hcCore("HC_SESSION='agents'\n")).toBe("agents");
   expect(hcCore("OTHER=x\n")).toBe("");
 });
+
+// review 7 of PR 527: leadRuntime "hc" makes a bare terminal id the lead in this Dori's core, an override too
+// (upstream https://github.com/sisyphuslabs/dori-superagent/pull/284)
+test.each([["", "hc:t7"], ["t8", "hc:t8"]])("the attach helper resolves a bare hc lead id under leadRuntime hc (override %p)", async (override, want) => {
+  const { dir } = rig("unused");
+  writeFileSync(join(dir, ".dori", "config.json"), JSON.stringify({ runtime: "hc", leadRuntime: "hc", leadPane: "t7" }));
+  mkdirSync(join(dir, "run", "herdr-core"), { recursive: true });
+  await listen(join(dir, "run", "herdr-core", "agents.sock"));
+  const env: Record<string, string | undefined> = { ...process.env, HOME: dir, XDG_RUNTIME_DIR: join(dir, "run"), DORI_CONFIG: join(dir, ".dori", "config.json"), DORI_ENV_FILE: join(dir, ".dori", "dori.env"), DORI_LEAD_TMUX: undefined, DORI_LEAD_PANE: override || undefined };
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/hc-lead-core.ts")], { env, stdout: "pipe", stderr: "pipe" });
+  const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  expect({ code, out: out.trim(), err }).toEqual({ code: 0, out: `agents ${want}`, err: "" });
+});

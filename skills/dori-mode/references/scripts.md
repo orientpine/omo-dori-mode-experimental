@@ -23,7 +23,7 @@ A text the scripts send to a hosted lane (a nudge, a directive, a handover line)
 
 | Scope | Behavior |
 | --- | --- |
-| Supported | Hosted lane launch, list/read/type/attach/close, goal pause/resume, read-only boot/sync, claim and pending-goal checks, blocked detection, missed answers and turn-limit recovery. |
+| Supported | Hosted lane launch, list/read/type/attach/close, goal pause/resume, read-only boot/sync, claim and pending-goal checks, blocked detection, missed answers and turn-limit recovery, a terminal lead's move notice (with this Dori's own report command, as in the footer). |
 | Refused | Hosted leads, and runtime requests for per-session environment injection. Launch requires a reachable shared host. |
 | Contained | Hosted lanes do not enter terminal freshness automation, compaction/re-anchoring, rollover or terminal process recovery. Rendered output is display-only; recovery uses structured host state and JSONL records. |
 | Keys unset | New lanes and the lead keep their terminal defaults; existing hosted lanes remain managed by stored runtime. |
