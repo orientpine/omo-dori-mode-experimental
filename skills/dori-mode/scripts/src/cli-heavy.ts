@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { stager } from "./heavy-assets.ts";
 import { defaultOut, heavyBatch, readItems } from "./heavy-batch.ts";
 import { heavyOuter, runHere } from "./heavy-here.ts";
-import { dynamicStatus } from "./heavy-dynamic.ts";
+import { dynamicStatus, explicitMemFloor } from "./heavy-dynamic.ts";
 import { holdCommand } from "./heavy-hold.ts";
 import { gpuRoom, neverFits, parseMem, readMeminfo } from "./heavy-mem.ts";
 import { heavyJobCommand, heavyServe } from "./heavy-queue.ts";
@@ -74,7 +74,7 @@ const heavyCommand: Command = async (context) => {
   const offHere = itemsOpt !== undefined && ((onHosts && !onHosts.includes(hostname())) || notOn?.includes(hostname()));
   const host = helpersOnly || offHere ? undefined : readMeminfo();
   const oneJob = itemsOpt !== undefined ? perBytes : needBytes;
-  const never = oneJob && host ? neverFits(oneJob, host, config.heavyHeadroomPct) : undefined;
+  const never = oneJob && host ? neverFits(oneJob, host, explicitMemFloor(deps)) : undefined;
   if (never) {
     deps.log?.(`HEAVY_REFUSED ${name}: ${never}`);
     process.exitCode = 2;

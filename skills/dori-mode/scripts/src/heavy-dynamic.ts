@@ -15,6 +15,15 @@ export type DynamicPolicy = {
 };
 type DynamicDeps = SlotDeps & { readonly dynamic: DynamicPolicy };
 
+export type ExplicitMemPolicy = {
+  readonly headroom?: { readonly free: number };
+  readonly dynamic?: Pick<DynamicPolicy, "memFreeMinPct">;
+};
+
+// The permanent preflight and the live admission check must leave the same share for an explicit estimate.
+export const explicitMemFloor = ({ dynamic, headroom }: ExplicitMemPolicy): number =>
+  dynamic ? Math.max(dynamic.memFreeMinPct, headroom?.free ?? 0) : headroom?.free ?? 10;
+
 const WARMUP_MS = 120_000;
 const MAX_AGE_MS = 1_000;
 const SAMPLE_TRIES = 3;
@@ -58,7 +67,7 @@ const decide = async (deps: DynamicDeps, snapshot: ReturnType<typeof inspectSlot
   if (request?.memKb) {
     if (!memory) return { result: { wait: "memory", why: `${why}; explicit memory estimate cannot be weighed here` }, held };
     const owner = request.ownerMemPct === undefined ? undefined : ownerMemWhy(memory.totalKb, memory.totalKb - memory.availKb, reservedKb, request.memKb, request.ownerMemPct);
-    const explicit = memVerdict(memory, request.memKb, reservedKb, Math.max(p.memFreeMinPct, deps.headroom?.free ?? 0));
+    const explicit = memVerdict(memory, request.memKb, reservedKb, explicitMemFloor(deps));
     if (owner || !explicit.ok) return { result: { wait: "memory", why: `${why}; ${owner ?? explicit.why}` }, held };
   }
   return { result: { slot: free.path, why }, held, free, stamp };
