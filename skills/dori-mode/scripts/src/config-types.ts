@@ -93,7 +93,7 @@ export type DoriConfig = {
   readonly postAfterMin: number;
   readonly closeAfterMin: number;
   readonly heavySlots: number;
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264
   readonly heavyJobMemGb: number | null;
   readonly heavyMinSlots: number;
   readonly heavyMaxLoad: number;

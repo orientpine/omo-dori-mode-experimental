@@ -1,4 +1,4 @@
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+// https://github.com/sisyphuslabs/dori-superagent/pull/264
 // In dynamic mode, a failed probe is not proof of death. Legacy mode retains its existing fallback.
 const probePid = (pid: number, since: number | undefined, conservative: boolean): boolean => {
   if (!Number.isInteger(pid) || pid <= 0) return false;

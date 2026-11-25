@@ -11,7 +11,7 @@ import type { Cli } from "./cli-context.ts";
 
 export const makeHeavyDeps = (cli: Pick<Cli, "config">) => {
   const { config } = cli;
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264
   const dynamic = config.heavyJobMemGb === null ? undefined : {
     minSlots: config.heavyMinSlots,
     maxSlots: config.heavyMaxSlots,

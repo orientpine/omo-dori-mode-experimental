@@ -78,7 +78,7 @@ const hasCode = (e: unknown, code: string): boolean => e instanceof Error && "co
 export type InspectedSlot = { readonly n: number; readonly pid?: number; readonly label?: string; readonly since?: number | undefined; readonly memKb: number };
 type ClaimableSlot = { readonly path: string; readonly orphaned: boolean };
 
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+// https://github.com/sisyphuslabs/dori-superagent/pull/264
 // An unknown owner occupies capacity, including an unreadable/malformed record. Probe each owner only once.
 export const inspectSlots = (deps: SlotDeps & { readonly dynamic: { readonly maxSlots: number } }) => {
   const held: InspectedSlot[] = [];
@@ -182,7 +182,7 @@ export const heldBy = (deps: SlotDeps, running: readonly Holder[]): string =>
 
 // one admission decision at a time across processes, so two waiters never both take the same headroom
 export const withLock = async <T>(deps: SlotDeps, f: () => Promise<T>): Promise<T | null> => {
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264
   if (deps.dynamic) return withHeavyFlock(deps, f);
   const lock = join(deps.dir, "admit.lock");
   const take = (): boolean => {

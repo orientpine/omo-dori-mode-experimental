@@ -24,7 +24,7 @@ export const sampleGuardLoadMemory = async (run: Runner) => {
   return { load1: Number.isFinite(load) ? load : 0, memFreePct: macPct ?? (proc ? (100 * proc.availKb) / proc.totalKb : null) };
 };
 
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+// https://github.com/sisyphuslabs/dori-superagent/pull/264
 // Read load first and available memory last; unlike guard, an unsuccessful read is not zero load.
 export const sampleHeavyHost = async (run: Runner): Promise<DynamicHost> => {
   const { text, code } = await loadReading(run);

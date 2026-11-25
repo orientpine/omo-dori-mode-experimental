@@ -83,7 +83,7 @@ const admitUnheld = async (deps: SlotDeps, admit: () => Promise<Try>, holdExempt
 // memKb: the job's own estimate (dori heavy --mem). With it even the first slot waits until the memory it needs, beside
 // what running jobs said they need and do not use yet, keeps headroom.free percent of the host free.
 const tryAdmit = async (deps: SlotDeps, request: SlotRequest): Promise<Try> => {
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264
   if (deps.dynamic) return admitDynamic({ ...deps, dynamic: deps.dynamic }, request);
   const { label, memKb, settleSec, ownerMemPct } = request;
   const load = await deps.load();

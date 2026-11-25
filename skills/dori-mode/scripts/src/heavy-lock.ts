@@ -6,7 +6,7 @@ export class HeavyAdmissionError extends Error {
   override readonly name = "HeavyAdmissionError";
 }
 
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+// https://github.com/sisyphuslabs/dori-superagent/pull/264
 // Stop and admission use the same kernel lock, reusing the fork's lazy flock and inode-safe handoff.
 export const withHeavyFlock = async <T>(deps: SlotDeps, section: () => Promise<T>): Promise<T | null> => {
   if (process.platform !== "linux" && process.platform !== "darwin")

@@ -50,7 +50,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   postAfterMin: 20,
   closeAfterMin: 5,
   heavySlots: 1,
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264
   heavyJobMemGb: null,
   heavyMinSlots: 1,
   heavyMaxLoad: 80,

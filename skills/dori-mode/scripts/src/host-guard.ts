@@ -25,7 +25,7 @@ const num = (s: string | undefined, fallback: number): number => {
 export const memFreeText = (pct: number | null): string => (pct === null ? "memory free unknown" : `memory free ${Math.floor(pct)}%`);
 
 export const sampleHost = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime">, dataPath = "/"): Promise<HostSample> => {
-  const { load1, memFreePct } = await sampleGuardLoadMemory(run); // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  const { load1, memFreePct } = await sampleGuardLoadMemory(run); // https://github.com/sisyphuslabs/dori-superagent/pull/264
   const diskFreeGb = (await sampleDiskFreeGb(run, dataPath)) ?? 0;
   const swap = await run(["sysctl", "-n", "vm.swapusage"]);
   const swapFreeGb = num(/free = ([\d.]+)M/.exec(swap.out)?.[1], 0) / 1024;

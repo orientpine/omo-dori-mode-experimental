@@ -26,7 +26,7 @@ export type SlotDeps = {
   readonly alive: (pid: number, since?: number) => boolean;
   readonly pid: number;
   readonly headroom?: Headroom;
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264 (opt-in per host)
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264 (opt-in per host)
   readonly dynamic?: DynamicPolicy;
   // one line per job when it is taken (HEAVY_ADMIT) and when it starts or changes why it waits (HEAVY_WAIT)
   readonly log?: (line: string) => void;

@@ -704,7 +704,7 @@ With less than SIZE (`heavyGpuFreeGb`, 20G) free (`dori heavy` before a GPU job:
 
 ### `dori heavy --status`: inspect opt-in dynamic admission
 
-The default heavy policy is unchanged. To opt in on a host, set `heavyJobMemGb` to a positive estimate in GiB (for example, `4`); omit it or set it to `null` to keep the old policy. [`#264`](https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264) uses `heavyMinSlots` (default `1`, `0` to gate every job), `heavyMaxSlots` (the fork's existing ceiling, default `8`), `heavyMaxLoad`, and `guard.memFreeMinPct`. `heavySlots` is unchanged in legacy mode and is not used in dynamic mode.
+The default heavy policy is unchanged. To opt in on a host, set `heavyJobMemGb` to a positive estimate in GiB (for example, `4`); omit it or set it to `null` to keep the old policy. [`#264`](https://github.com/sisyphuslabs/dori-superagent/pull/264) uses `heavyMinSlots` (default `1`, `0` to gate every job), `heavyMaxSlots` (the fork's existing ceiling, default `8`), `heavyMaxLoad`, and `guard.memFreeMinPct`. `heavySlots` is unchanged in legacy mode and is not used in dynamic mode.
 
 Dynamic mode replaces the GPU/CPU headroom and settle calculation for slot admission, not helper selection, queue order, holds, or the job's scope. It adds as many estimated jobs as fit above the memory floor, reserving estimates for jobs still starting (two minutes). Load at or above the cutoff bars expansion; unreadable load or memory and repeatedly stale samples allow only the configured minimum. The minimum can admit an unestimated job even under pressure; explicit `--mem` and helper memory caps still have to fit. A reduced limit never stops a running job.
 

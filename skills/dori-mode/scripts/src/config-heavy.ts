@@ -2,7 +2,7 @@ import type { ArgvTemplate } from "./config-types.ts";
 import { type HeavyHelper, helperProblem } from "./heavy-route.ts";
 import type { DoriConfig } from "./config-types.ts";
 
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+// https://github.com/sisyphuslabs/dori-superagent/pull/264
 export const heavyDynamicProblem = (c: DoriConfig): string | undefined => {
   if (c.heavyJobMemGb === null) return undefined;
   if (typeof c.heavyJobMemGb !== "number" || !Number.isFinite(c.heavyJobMemGb * 1024 ** 2) || c.heavyJobMemGb <= 0)

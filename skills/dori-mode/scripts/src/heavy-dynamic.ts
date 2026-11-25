@@ -3,7 +3,7 @@ import { claimSlot, inspectSlots } from "./heavy-slot-store.ts";
 import type { SlotDeps, SlotRequest, Try } from "./heavy-slot-types.ts";
 import { ownerMemWhy } from "./heavy-owner-pc.ts";
 
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+// https://github.com/sisyphuslabs/dori-superagent/pull/264
 export type DynamicHost = { readonly load1: number | null; readonly memory: MemInfo | null };
 export type DynamicPolicy = {
   readonly minSlots: number;

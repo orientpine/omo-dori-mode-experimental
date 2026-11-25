@@ -94,7 +94,7 @@ const LOCK_WAIT_MS = 5_000;
 // nothing, an admission's tryTake takes it over and holders() does not count it.
 const freeSlots = async (deps: SlotDeps, pid: number): Promise<void> => {
   const free = async (): Promise<true> => {
-    // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264: a failed or still-pending stop is not proof of death.
+    // https://github.com/sisyphuslabs/dori-superagent/pull/264: a failed or still-pending stop is not proof of death.
     if (deps.dynamic && deps.alive(pid)) return true;
     for (const s of ls(deps.dir).filter((x) => /^slot\.\d+$/.test(x))) {
       try {

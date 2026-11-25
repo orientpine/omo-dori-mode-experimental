@@ -23,7 +23,7 @@ const heavyCommand: Command = async (context) => {
   const label = rest[0];
   const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
   const load = async () => (await sampleHost(run, config)).load1;
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264
   if (label === "--status" && rest.length === 1) {
     const deps = heavyDeps(load);
     if (deps.dynamic) {

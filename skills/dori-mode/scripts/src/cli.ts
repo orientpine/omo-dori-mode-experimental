@@ -163,7 +163,7 @@ const checksBare: Readonly<Record<string, readonly string[]>> = {
   freshness: ["loop"],
   guard: ["loop"],
   "dead-panes": ["loop"],
-  heavy: config.heavyJobMemGb !== null && rest.length === 1 && rest[0] === "--status" ? ["status"] : [], // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  heavy: config.heavyJobMemGb !== null && rest.length === 1 && rest[0] === "--status" ? ["status"] : [], // https://github.com/sisyphuslabs/dori-superagent/pull/264
 };
 const ownCheck = new Set(Object.hasOwn(checksBare, command) ? checksBare[command] : []);
 for (const [name, spec] of Object.entries(options)) {
@@ -203,7 +203,7 @@ try {
     process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof HeavyAdmissionError) die(e.message); // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/264
+  if (e instanceof HeavyAdmissionError) die(e.message); // https://github.com/sisyphuslabs/dori-superagent/pull/264
   if (e instanceof LeadError || e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof QuestionError || e instanceof ThreadRefError || e instanceof LaneStateError || e instanceof ScorecardError || e instanceof TreeError || e instanceof ChallengeError || e instanceof GateRefusal || e instanceof ForkError || e instanceof DirectiveError || e instanceof HeavyJobError || e instanceof CheckpointError || e instanceof LessonError || e instanceof WorklogError || e instanceof ReportError || e instanceof TokenFileError) die(e.message);
   throw e;
 }
