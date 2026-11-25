@@ -80,7 +80,7 @@ export const backgroundWork = (lifecycle: Record<string, unknown>): number => {
  * background work (a lane in a long command is not stalled), the bare idle prompt `❯` otherwise (the freshness sweep's
  * idle check), then the goal as omo's footer names it.
  */
-export function footerLines(state: Record<string, unknown>, goal: string, now: number): string[] {
+export function footerLines(state: Record<string, unknown>, goal: string | undefined, now: number): string[] {
   const lifecycle = rec(state["lifecycle"]);
   const since = Date.parse(str(lifecycle["since"]) ?? "");
   const time = elapsed(Number.isNaN(since) ? 0 : now - since);
@@ -91,6 +91,6 @@ export function footerLines(state: Record<string, unknown>, goal: string, now: n
     : waiting
       ? `Running (${time}) · waiting on ${waiting} background task${waiting === 1 ? "" : "s"}`
       : "❯";
-  const goalLine = goal === "active" ? "Pursuing goal" : goal === "none" ? [] : `Goal ${goal}`;
+  const goalLine = goal === "active" ? "Pursuing goal" : goal === "none" ? [] : goal === undefined ? "Goal state unavailable" : `Goal ${goal}`;
   return [...questionLines(state), status, ...(Array.isArray(goalLine) ? goalLine : [goalLine])];
 }
