@@ -67,6 +67,10 @@ test("a definite hc start failure with confirmed cleanup unwinds and retries", a
   fixture.succeed();
   const result = await launchLane({ ...fixture.deps, run: fixture.run }, fixture.input);
   expect(result.startup).toBe("STARTUP_OK smoke hc:t1");
+  const open = fixture.calls.find((argv) => argv[0] === "hc" && argv[2] === "run");
+  expect(open?.slice(0, open.indexOf("--"))).toEqual([
+    "hc", "--json", "run", "--bg", "--no-parent", "--no-notify", "--keep", "--cwd", "/tmp/w", "--label", "dori.group=dori", "--label", "dori.role=lane", "--label", "dori.name=smoke", "--label", "dori.lane=smoke", "--name", "smoke",
+  ]);
   expect(await fixture.deps.registry.read("smoke")).not.toBeNull();
   expect(new Reports(state.dir).read("smoke")?.state).toBe("running");
 });

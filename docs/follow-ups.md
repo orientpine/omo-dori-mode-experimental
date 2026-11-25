@@ -2,6 +2,10 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
+## omo-host runtime (upstream #282) left out of the fork
+
+The lead placement port accepts only terminal runtimes. The full port of [upstream #282](https://github.com/sisyphuslabs/dori-superagent/pull/282) is kept on branch `port-upstream-282-284` (head `6b4d8a93`) and as patches in `/home/soodori/.soodori/qa/port-upstream-264-284/omo-host-282-full/`. It comes back when upstream ships more omo-host fixes or the owner says he will use it.
+
 ## hc: an agent that never reports a status word gets nothing delivered (upstream #272, left out of #521)
 
 Upstream sisyphuslabs/dori-superagent#272 reads such a terminal's screen (`esc to interrupt` = working, omo's idle input = idle) and lets deliver() send on that verdict with no `--if`. In the fork every hole of that inference becomes a paste-and-Enter into whatever runs in front, under `dori type`'s `when: "any"`: three reviews of #521 and a challenge found the phrase in a draft, words right above a box holding a draft (even a real running banner over a draft), an editor quoting the phrase with no omo box at all, and an editor showing a copy of omo's idle box. A screen layout cannot prove which program is in front, and the program's name cannot either: a real omo under hc runs as `bun .../senpi/dist/bundle/cli.js` and reports OSC 7501 itself (`hc get`: `reported: true`, `app: omo`), so the fork's agents never take this path. An unreported terminal stays held as before (`unknown`). What would close it: a status the program itself gives (OSC 7501 or an RPC bound to its foreground session), never a screen read, before anything is typed into a terminal that never reported.

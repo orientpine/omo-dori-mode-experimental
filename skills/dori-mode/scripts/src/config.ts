@@ -102,8 +102,16 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const base = defaultConfig(home);
   const file = Bun.file(path);
   const migrated = migrateOldKeys((await file.exists()) ? ((await file.json()) as Raw) : {});
-  for (const w of migrated.warnings) warn(`${w} (${path})`);
   const raw = migrated.raw as Partial<DoriConfig>;
+  const envLead = process.env["DORI_LEAD_PANE"];
+  const leadRuntime: unknown = raw.leadRuntime;
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282 is not ported. Recognize its lead address only to refuse it.
+  if (Object.hasOwn(migrated.raw, "laneRuntime") || leadRuntime === "omo-host" || [raw.leadPane, envLead].some((pane) => typeof pane === "string" && /^omo-host:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(pane) && pane.startsWith("omo-host:"))) {
+    throw new ConfigError(`${path}: the omo-host runtime (upstream #282) is not ported in this fork; leave laneRuntime unset and use leadRuntime "hc" or "herdr"`);
+  }
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284: the lead must be on a terminal runtime.
+  if (leadRuntime !== undefined && !isRuntimeKind(leadRuntime)) throw new ConfigError(`${path}: leadRuntime must be "herdr" or "hc" (unset: follows runtime), not ${JSON.stringify(leadRuntime)}`);
+  for (const w of migrated.warnings) warn(`${w} (${path})`);
   const merged: DoriConfig = { ...base, ...raw, update: { ...base.update, ...raw.update }, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks }, discord: { ...base.discord, ...raw.discord }, stuck: { ...base.stuck, ...raw.stuck }, reviewers: { ...base.reviewers, ...raw.reviewers }, mergeGate: { ...base.mergeGate, ...raw.mergeGate }, scorecard: { ...base.scorecard, ...raw.scorecard }, signals: { ...base.signals, ...raw.signals }, explore: { ...base.explore, ...raw.explore }, autoSignals: { ...base.autoSignals, ...raw.autoSignals, intentCheck: { ...base.autoSignals.intentCheck, ...raw.autoSignals?.intentCheck } }, handover: { ...base.handover, ...raw.handover }, supervision: { ...base.supervision, ...raw.supervision }, compactionTrial: { ...base.compactionTrial, ...raw.compactionTrial }, related: { ...base.related, ...raw.related }, stateGit: { ...base.stateGit, ...raw.stateGit, backup: { ...base.stateGit.backup, ...raw.stateGit?.backup } }, heavyQueue: { ...base.heavyQueue, ...raw.heavyQueue }, backlog: { ...base.backlog, ...raw.backlog } };
   if (merged.backlog.pairRepairPattern && merged.backlog.writeNeedsOwnerLink) warn(`CONFIG_BACKLOG_REPAIR_EXEMPT backlog.pairRepairPattern and backlog.writeNeedsOwnerLink are both on: #dori-pair repair requests start without an owner message link, because the owner's standing rule that faults of the Dori base go to the maintenance Dori is their approval (${path})`);
   if (raw.runtime !== undefined && !isRuntimeKind(raw.runtime)) throw new ConfigError(`${path}: runtime must be "herdr" or "hc" (unset: detected), not ${JSON.stringify(raw.runtime)}`);
@@ -127,7 +135,9 @@ export const loadConfig = async (path = configPath(), home = homedir(), warn: (l
   const env: unknown = merged.launchEnv;
   if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((v) => typeof v !== "string")) throw new ConfigError(`${path}: launchEnv must map variable names to strings, e.g. {"CUDA_VISIBLE_DEVICES": ""}`);
   const stateDir = expandHome(process.env["DORI_STATE_DIR"] ?? merged.stateDir, home);
-  const leadPane = process.env["DORI_LEAD_PANE"] ?? merged.leadPane;
+  const leadPane = envLead ?? merged.leadPane;
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284: dori.sh and doriterm read the lead as written.
+  if (leadRuntime === "hc" && leadPane && (typeof leadPane !== "string" || !leadPane.startsWith("hc:"))) throw new ConfigError(`${path}: with leadRuntime "hc" write the lead as hc:<terminal>, not ${JSON.stringify(leadPane)}: the attach helpers read it as written`);
   const repo = raw.update?.repo ? expandHome(raw.update.repo, home) : (await run(["git", "-C", import.meta.dir, "rev-parse", "--show-toplevel"])).out || base.update.repo;
   return {
     ...merged,

@@ -46,6 +46,8 @@ export type Backend = "herdr" | "aoe";
 export type DoriConfig = {
   readonly backend: Backend;
   readonly runtime?: RuntimeChoice["kind"];
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284: identifies the runtime of the existing lead session.
+  readonly leadRuntime?: RuntimeChoice["kind"];
   readonly stateDir: string;
   readonly watchLog: string;
   readonly update: UpdateConfig;

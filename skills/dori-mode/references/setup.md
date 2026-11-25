@@ -4,6 +4,9 @@ Run these once, in order. Stop and ask the owner wherever a step needs their cho
 
 If the owner is on Discord and lanes should run as aoe/tmux sessions rather than herdr tabs, follow `setups/discord-aoe/README.md` instead of steps 1 and 5: it installs the listener, question cards, thread hooks, lane sweeps and session watcher as user services. Steps 2 to 4 still apply.
 
+<!-- https://github.com/sisyphuslabs/dori-superagent/pull/284 -->
+For an existing lead on `"hc"` or `"herdr"`, `leadRuntime` is optional; see [Scripts](scripts.md) for the matching `leadPane` and handover behavior. This setup does not start or move the lead based on `leadRuntime`. The `omo-host` runtime is not ported; leave `laneRuntime` unset.
+
 ## 1. herdr
 
 herdr is the terminal multiplexer the Dori runs in. Every lane is a herdr tab, and herdr lets you read a pane, type into it and see which process runs there.
