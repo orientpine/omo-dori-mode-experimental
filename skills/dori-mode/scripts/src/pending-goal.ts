@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { runtimesOf } from "./run.ts";
 import { parseRef } from "./runtime/types.ts";
 import { paneLife } from "./aoe.ts";
 import { pendingBackground, restoredMonitors } from "./background.ts";
@@ -58,7 +59,7 @@ export const goalReader = (deps: FlowDeps, cwd: string, session: string): ((pane
 export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | undefined> => {
   if (omoPane(deps.config, pane)) {
     const life = await paneLife(deps.run, pane);
-    return life.live ? undefined : life.how === "gone" ? (parseRef(pane)?.runtime === "omo-host" ? "the hosted session is gone" : isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`;
+    return life.live ? undefined : life.how !== "dead" ? (parseRef(pane)?.runtime === "omo-host" ? "the hosted session is gone" : isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`;
   }
   // whether any agent still runs under the pane's shell, which is not the same question as which session it is:
   // resolveSession skips a command holding the word mcp (an MCP server of the agent), and a herdr lane carries its own
@@ -79,7 +80,16 @@ export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | 
 // left unfinished died with it (laneBackground has the same cutoff); a persistent monitor the restart restored counts while
 // the session's monitor manifest says it runs (handover.ts liveMonitors), as in laneBackground
 export const firstTurnRuns = async (deps: FlowDeps, pane: string, cwd: string, session: string, screen: string): Promise<boolean> =>
-  turnRunning(screen) || (parseRef(pane)?.runtime === "omo-host" ? /^Running \(/m.test(screen) : await ownOrRestored(deps, pane, cwd, session));
+  parseRef(pane)?.runtime === "omo-host"
+    ? (await hostedFirstTurn(deps, pane))
+    : turnRunning(screen) || (await ownOrRestored(deps, pane, cwd, session));
+
+const hostedFirstTurn = async (deps: FlowDeps, pane: string): Promise<boolean> => {
+  const ref = parseRef(pane);
+  if (!ref) return false;
+  const { activity } = await runtimesOf(deps.run, deps.config).for(ref).probe(ref);
+  return activity === "busy" || activity === "running";
+};
 
 const ownOrRestored = async (deps: FlowDeps, pane: string, cwd: string, session: string): Promise<boolean> => {
   const since = await agentStart(deps, pane);
@@ -167,6 +177,7 @@ export const pendingGoalTick = async (deps: FlowDeps): Promise<string[]> => {
       continue;
     }
     const idle = (await firstTurnRuns(deps, lane.pane, cwd, lane.session ?? "", screen)) ? 0 : mark.idle + 1;
+    if (ref?.runtime === "omo-host" && await closedMeanwhile(deps, ref, lane.key)) continue;
     if (idle < GOAL_WAIT.idleChecks) {
       if (idle !== mark.idle) await deps.registry.patch(lane.key, { pendingGoal: { ...mark, idle } });
       continue;

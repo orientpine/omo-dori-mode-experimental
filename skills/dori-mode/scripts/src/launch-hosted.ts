@@ -2,7 +2,7 @@
 import { runtimesOf } from "./run.ts";
 import { formatRef, type SessionRef } from "./runtime/types.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
-import { LaunchFailed } from "./launch-types.ts";
+import { LaunchFailed, LaunchRegistrationError } from "./launch-types.ts";
 import { STARTUP_CHECK_MS, GOAL_WAIT, lastLines } from "./pending-goal.ts";
 import { startupFailure } from "./launch-screen.ts";
 import { closedMeanwhile } from "./sessions.ts";
@@ -18,8 +18,8 @@ export const openHostedLane = async (deps: FlowDeps, input: { readonly key: stri
   try {
     await register({ pane });
   } catch (error) {
-    await rt.close(ref);
-    throw error;
+    const rolledBack = await rt.close(ref).then(() => true, () => false);
+    throw new LaunchRegistrationError(error, rolledBack);
   }
   const failure = await rt.start(ref, prompt).then(() => undefined, (error: unknown) => String(error));
   return { pane, tab: undefined, session: ref.id, ref, failure };
@@ -39,7 +39,7 @@ export const hostedStartup = async (deps: FlowDeps, key: string, ref: SessionRef
     if (await closedMeanwhile(deps, ref, key)) return `STARTUP_DONE ${key}`;
     if (probe.status === "gone") return `STARTUP_ERROR ${key} ${pane}: the host session is gone`;
     if (probe.goal === "active") return `STARTUP_OK ${key} ${pane}`;
-    if (probe.status === "working" || /^Running \(/m.test(screen)) {
+    if (probe.activity === "busy" || probe.activity === "running") {
       await deps.registry.patch(key, { pendingGoal: { idle: 0, at: deps.clock.now() } });
       return `STARTUP_PENDING_GOAL ${key} ${pane}: its first turn is still on and has set no goal yet; dori watch says LANE_NO_GOAL if it ends without one`;
     }

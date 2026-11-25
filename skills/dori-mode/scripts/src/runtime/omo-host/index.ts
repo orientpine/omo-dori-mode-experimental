@@ -68,6 +68,10 @@ export class OmoHostRuntime implements SessionRuntime {
     return list(this.exec, filter?.group);
   }
 
+  async observe(ref: SessionRef): Promise<SessionInfo | undefined> {
+    return (await this.list()).find((session) => session.ref.id === ref.id);
+  }
+
   /** `state`, which resumes a parked session (callers probe only open lanes); a session the host never had is `gone`. */
   async probe(ref: SessionRef): Promise<Probe> {
     return probeOf(await stateOf(this.exec, ref.id));
@@ -79,7 +83,7 @@ export class OmoHostRuntime implements SessionRuntime {
    * a closed session exactly like a parked one, so a screen read must never bring back a lane Dori closed.
    */
   async read(ref: SessionRef, lines: number): Promise<string> {
-    if (!(await list(this.exec, undefined)).some((s) => s.ref.id === ref.id)) return "";
+    if (!(await this.observe(ref))) return "";
     const state = await stateOf(this.exec, ref.id);
     if (state === undefined) return "";
     const entries = await this.tail(ref.id, Math.min(lines * 2, 400));

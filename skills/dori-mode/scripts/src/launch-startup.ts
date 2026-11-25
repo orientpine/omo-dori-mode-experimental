@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { agentPath, AoeError, envMismatch, inputLine, openAoeSession } from "./aoe.ts";
+import { agentPath, AoeError, closeAoeSession, envMismatch, isClosedLine, inputLine, openAoeSession } from "./aoe.ts";
 import { openHerdrSession } from "./herdr.ts";
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
@@ -10,7 +10,7 @@ import { isOmoExecutable } from "./executable.ts";
 import { leadReplies, type LeadReply } from "./lead-limit.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import { join } from "node:path";
-import { LaunchFailed } from "./launch-types.ts";
+import { LaunchFailed, LaunchRegistrationError } from "./launch-types.ts";
 import { splitModel } from "./lane-handover.ts";
 import { withThinking } from "./lane-model.ts";
 import { startupFailure } from "./launch-screen.ts";
@@ -143,7 +143,10 @@ export const openAoe = async (deps: FlowDeps, key: string, cwd: string, model: s
   const off = await envMismatch(deps.run, pane, env);
   if (off.length) return { pane, failure: `launchEnv not in the session: ${off.join(", ")}; the lane prompt was not sent` };
   // an agent with no API key shows its error where the prompt went in and keeps the text: that error is the reason
-  await beforePrompt?.(pane);
+  await beforePrompt?.(pane).catch(async (error: unknown) => {
+    const rolledBack = await closeAoeSession(deps.run, pane).then(isClosedLine, () => false);
+    throw new LaunchRegistrationError(error, rolledBack);
+  });
   if (!(await sendVerified(deps.run, deps.clock, deps.config, pane, prompt)))
     return { pane, failure: startupFailure(await readScreen(deps.run, "aoe", pane)) ?? "the launch prompt was not submitted (see NOT_SUBMITTED in the watch log)" };
   return { pane, session };

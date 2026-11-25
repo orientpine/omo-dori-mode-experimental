@@ -132,7 +132,7 @@ export class ChosenRuntimes extends Runtimes {
   readonly failure: Error | undefined;
 
   // https://github.com/sisyphuslabs/dori-superagent/pull/282: placement of lanes is independent of the terminal default.
-  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime, private readonly placement: { readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: RuntimeKind } = {}) {
+  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime, private readonly placement: { readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: TerminalKind } = {}) {
     let choice: RuntimeChoice | undefined;
     let failure: Error | undefined;
     try {
@@ -167,7 +167,7 @@ export const execOf = (runner: Runner): Exec => async (cmd, argv) => {
   return { code: r.code, stdout: r.out, stderr: r.err };
 };
 
-type RuntimeConfig = { readonly runtime?: TerminalKind | undefined; readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: RuntimeKind; readonly stateDir?: string };
+type RuntimeConfig = { readonly runtime?: TerminalKind | undefined; readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: TerminalKind; readonly stateDir?: string };
 
 export const runtimesFor = (config: RuntimeConfig, env: Env, runner: Runner = run, clock: Clock = realClock): ChosenRuntimes => {
   const exec = execOf(runner);

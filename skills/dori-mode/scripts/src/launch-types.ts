@@ -40,6 +40,10 @@ export type LaunchInput = {
 };
 
 export class LaunchError extends Error {}
+
+export class LaunchRegistrationError extends LaunchError {
+  constructor(cause: unknown, readonly rollback: boolean) { super(String(cause), { cause }); }
+}
 // The session could not be opened (the terminal backend failed): worth another try, unlike every other LaunchError, which
 // the launch input itself causes and which no retry changes.
 export class LaunchFailed extends LaunchError {

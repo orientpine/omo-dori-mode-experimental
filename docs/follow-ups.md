@@ -2,6 +2,10 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
+## Hosted lead watchers (upstream #284, fork #525)
+
+This fork ports terminal `leadRuntime` selection but refuses `omo-host` for the lead. Supporting a hosted lead requires processless lead identity and transcript lookup in `currentLeadSession`, `leadLimitTick`, `leadInboxTick`, and missed-answer recovery, with recovery and watcher coverage before enabling the setting.
+
 ## hc: an agent that never reports a status word gets nothing delivered (upstream #272, left out of #521)
 
 Upstream sisyphuslabs/dori-superagent#272 reads such a terminal's screen (`esc to interrupt` = working, omo's idle input = idle) and lets deliver() send on that verdict with no `--if`. In the fork every hole of that inference becomes a paste-and-Enter into whatever runs in front, under `dori type`'s `when: "any"`: three reviews of #521 and a challenge found the phrase in a draft, words right above a box holding a draft (even a real running banner over a draft), an editor quoting the phrase with no omo box at all, and an editor showing a copy of omo's idle box. A screen layout cannot prove which program is in front, and the program's name cannot either: a real omo under hc runs as `bun .../senpi/dist/bundle/cli.js` and reports OSC 7501 itself (`hc get`: `reported: true`, `app: omo`), so the fork's agents never take this path. An unreported terminal stays held as before (`unknown`). What would close it: a status the program itself gives (OSC 7501 or an RPC bound to its foreground session), never a screen read, before anything is typed into a terminal that never reported.

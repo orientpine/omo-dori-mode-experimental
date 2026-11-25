@@ -4,7 +4,7 @@ import { aoeRefForLane, type BootSession } from "./sessions.ts";
 
 const laneRef = (lane: Lane): SessionRef | ReturnType<typeof aoeRefForLane> => sessionOf(lane) ?? aoeRefForLane(lane.pane);
 
-export type PaneState = "live" | "vanished" | "unassigned";
+export type PaneState = "live" | "vanished" | "unassigned" | "unlisted";
 
 export const reconcilePanes = (
   lanes: readonly Lane[],
@@ -22,7 +22,7 @@ export const reconcilePanes = (
         key: lane.key,
         status: statusOf(lane),
         pane: lane.pane ?? null,
-        paneState: !ref ? "unassigned" : live.has(`${ref.runtime}:${ref.id}`) ? "live" : "vanished",
+        paneState: !ref ? "unassigned" : live.has(`${ref.runtime}:${ref.id}`) ? "live" : ref.runtime === "omo-host" ? "unlisted" : "vanished",
       };
     }),
     unregistered: sessions.filter((session) => !registered.has(`${session.ref.runtime}:${session.ref.id}`)).map((session) => session.ref.id),

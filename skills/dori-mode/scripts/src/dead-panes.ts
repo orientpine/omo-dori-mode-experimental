@@ -4,6 +4,7 @@ import { inputLine } from "./aoe.ts";
 import type { DoriConfig } from "./config.ts";
 import { frozenPanes } from "./frozen.ts";
 import { listPanes, readScreen } from "./panes.ts";
+import { parseRef } from "./runtime/types.ts";
 import type { Runner } from "./run.ts";
 import { turnRunning } from "./submit.ts";
 
@@ -31,6 +32,8 @@ export const deadPaneTick = async (run: Runner, config: DoriConfig, seen: Set<st
   for (const pane of await listPanes(run, config)) {
     const id = pane.pane_id;
     if (skip.has(id) || (watch.size > 0 && !watch.has(pane.workspace_id))) continue;
+    // A listed hosted agent is already live; its transcript is not a terminal screen.
+    if (parseRef(id)?.runtime === "omo-host") continue;
     const screen = await readScreen(run, config.backend, id);
     // a herdr pane keeps the screen of an agent that ended (and a shell can draw ❯): its prompt counts only while an agent runs
     if (agentShows(screen) && (!isHerdrPane(id) || (await paneLife(run, id)).live)) {

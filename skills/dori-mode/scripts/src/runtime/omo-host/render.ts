@@ -65,7 +65,7 @@ const count = (value: unknown): number => (typeof value === "number" && value > 
  * The background work an idle turn waits on (a shell the agent's bash detached, a child session). omo lists the goal
  * monitor there too, which runs for every session with a goal and is no work of its own.
  */
-const backgroundWork = (lifecycle: Record<string, unknown>): number => {
+export const backgroundWork = (lifecycle: Record<string, unknown>): number => {
   const on = rec(lifecycle["waitingOn"]);
   const sources = Array.isArray(on["background"]) ? on["background"].map(rec) : [];
   return (

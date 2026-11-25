@@ -12,12 +12,12 @@ export const captureTmux = async (run: Runner, pane: string, lines?: number): Pr
   return lines ? out.split("\n").slice(-lines).join("\n") : out;
 };
 
-export type PaneLife = { readonly live: true } | { readonly live: false; readonly how: "gone" } | { readonly live: false; readonly how: "dead"; readonly status: number };
+export type PaneLife = { readonly live: true } | { readonly live: false; readonly how: "gone" } | { readonly live: false; readonly how: "unlisted" } | { readonly live: false; readonly how: "dead"; readonly status: number };
 
 // gone: no tmux session of that name; dead: the session is there, its pane's program exited (remain-on-exit)
 export const paneLife = async (run: Runner, pane: string): Promise<PaneLife> => {
   const hosted = parseRef(pane);
-  if (hosted?.runtime === "omo-host") return (await runtimesOf(run).for(hosted).list()).some(({ ref }) => ref.id === hosted.id) ? { live: true } : { live: false, how: "gone" };
+  if (hosted?.runtime === "omo-host") return (await runtimesOf(run).for(hosted).observe?.(hosted)) ? { live: true } : { live: false, how: "unlisted" };
   if (isHerdrPane(pane)) return herdrLife(run, pane);
   if ((await run(["tmux", "has-session", "-t", `=${pane}`])).code !== 0) return { live: false, how: "gone" };
   const r = await run(["tmux", "display-message", "-p", "-t", `=${pane}:`, "#{pane_dead} #{pane_dead_status}"]);

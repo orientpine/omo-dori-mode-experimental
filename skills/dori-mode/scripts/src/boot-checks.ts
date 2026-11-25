@@ -68,6 +68,8 @@ export const driftCheck = async (
       if (aoe) {
         const life = await input.probeAoe(aoe.id);
         if (!life.live && life.how === "gone") gone.push(lane.key);
+      } else if (ref?.runtime === "omo-host") {
+        if (!(await rts.for(ref).observe?.(ref))) lines.push(`DRIFT unlisted ${lane.key}: hosted session may be parked; not resumed`);
       } else if (ref && (await rts.for(ref).probe(ref)).status === "gone") gone.push(lane.key);
     } catch (e) {
       failed = true;

@@ -43,10 +43,10 @@ export const leadNow = (path: string): string => {
     return env ?? "";
   }
 };
-export const storedRuntimes = async (): Promise<ReadonlySet<RuntimeKind>> => {
-  if (!state) return new Set();
-  const lanes = await new Registry(state.stateDir).open();
-  const panes = [leadNow(state.configPath), ...readFrozen(state.stateDir).map((r) => r.pane)];
+export const storedRuntimes = async (stateDir = state?.stateDir): Promise<ReadonlySet<RuntimeKind>> => {
+  if (!stateDir) return new Set();
+  const lanes = await new Registry(stateDir).open();
+  const panes = [...(state?.stateDir === stateDir ? [leadNow(state.configPath)] : []), ...readFrozen(stateDir).map((r) => r.pane)];
   return new Set([...lanes.flatMap((lane) => sessionOf(lane)?.runtime ?? kindOfPane(lane.pane ?? "") ?? []), ...panes.flatMap((pane) => kindOfPane(pane) ?? [])]);
 };
 

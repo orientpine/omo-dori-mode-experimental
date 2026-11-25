@@ -73,7 +73,7 @@ export const aoeStartup = async (deps: FlowDeps, key: string, pane: string, scre
       const done = await launchDone(deps, key, pane);
       if (done) return done;
     }
-    if (!life.live) return `STARTUP_ERROR ${key} ${pane}: ${life.how === "gone" ? (isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`}`;
+    if (!life.live) return `STARTUP_ERROR ${key} ${pane}: ${life.how !== "dead" ? (isHerdrPane(pane) ? "the herdr pane is gone" : "the tmux session is gone") : life.status < 0 ? "no agent runs in the pane any more" : `the agent exited (status ${life.status})`}`;
     const full = await readScreen(deps.run, "aoe", pane);
     if ([shown, full].some((s) => turnRunning(s) || WAKE_MARKS.some((m) => s.includes(m)) || inputLine(s) !== undefined)) return `STARTUP_OK ${key} ${pane}`;
     if (!(await recheck())) return `STARTUP_UNCONFIRMED ${key} ${pane}: no running turn and no ❯ prompt on screen after ${Math.round((deps.clock.now() - prompted) / 1_000)} s; last lines: ${lastLines(full || shown)}`;

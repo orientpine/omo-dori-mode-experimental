@@ -8,7 +8,7 @@ If the owner is on Discord and lanes should run as aoe/tmux sessions rather than
 To opt in to shared-engine lanes, first verify `omo host session list --json` works and see `scripts.md` under Hosted lane runtime. Leave `laneRuntime` unset for ordinary terminal setup.
 
 <!-- https://github.com/sisyphuslabs/dori-superagent/pull/284 -->
-If the lead already runs in the OmO host, configure `leadRuntime` and its durable `leadPane` as described in `scripts.md`; this setup still starts terminal leads.
+For a terminal lead on a different runtime, set `leadRuntime` to `"hc"` or `"herdr"` as described in `scripts.md`. Hosted leads are not supported in this fork.
 
 ## 1. herdr
 

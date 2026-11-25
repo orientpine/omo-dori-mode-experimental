@@ -2,7 +2,7 @@ import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathS
 import { basename, dirname, join } from "node:path";
 
 import { closeHerdrSession, herdrAgentPid, herdrSessions, isHerdrPane, openHerdrSession, procEnv } from "./herdr.ts";
-import { parseRef } from "./runtime/types.ts";
+import { formatRef, parseRef } from "./runtime/types.ts";
 import { captureTmux } from "./pane-io.ts";
 export { captureTmux, paneLife, type PaneLife, tmuxPanePid } from "./pane-io.ts";
 import type { Pane } from "./panes.ts";
@@ -262,7 +262,7 @@ export const isClosedLine = (line: string): boolean => / stopped and (trashed|cl
 // the session this process runs in: its runtime's own (Runtimes.selfAny: an hc terminal, else the herdr pane of HERDR_PANE_ID;
 // a $TMUX there is only inherited from where the server was started), else its tmux session
 export const currentTmuxSession = async (run: Runner): Promise<string> => {
-  const self = runtimesOf(run).selfAny(process.env); if (self) return self.runtime === "hc" ? `hc:${self.id}` : self.id;
+  const self = runtimesOf(run).selfAny(process.env); if (self) return self.runtime === "herdr" ? self.id : formatRef(self);
   if (!process.env["TMUX"]) return "";
   const r = await run(["tmux", "display-message", "-p", "#S"]);
   return r.code === 0 ? r.out.trim() : "";

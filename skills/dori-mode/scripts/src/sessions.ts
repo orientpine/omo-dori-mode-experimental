@@ -7,7 +7,7 @@ import { aoeSessions, tmuxNameFor, type PaneLife } from "./aoe.ts";
 import { runtimesOf, type Runner } from "./run.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
 import { statusOf } from "./registry.ts";
-import type { Submitted } from "./submit.ts";
+import { isOmoCommand, type Submitted } from "./submit.ts";
 
 export type AoeSessionRef = { readonly runtime: "aoe"; readonly id: string; readonly group?: string };
 export type BootSession = Omit<SessionInfo, "ref"> & { readonly ref: SessionRef | AoeSessionRef };
@@ -87,7 +87,12 @@ export const closeSession = async (rts: Runtimes, ref: SessionRef): Promise<stri
 
 // https://github.com/sisyphuslabs/dori-superagent/pull/282: prompt or steer is a single delivery; never retry an uncertain result.
 export const submitHosted = async (rts: Runtimes, ref: SessionRef, text: string): Promise<Submitted> => {
-  const result = await rts.for(ref).deliver(ref, text, { when: "any" });
+  const rt = rts.for(ref);
+  if (isOmoCommand(text)) return rt.start(ref, text).then(
+    () => ({ status: "SUBMITTED", reason: "host accepted the slash command" }),
+    (error: unknown) => ({ status: "NOT_SUBMITTED", reason: String(error) }),
+  );
+  const result = await rt.deliver(ref, text, { when: "any" });
   switch (result.kind) {
     case "delivered": return { status: "SUBMITTED", reason: result.started ? "host started a turn" : "host accepted input" };
     case "no-agent": return { status: "NOT_SUBMITTED", reason: "host session not found" };

@@ -13,7 +13,7 @@ The OmO host must be running and reachable by `omo host session list --json`. A 
 Read its transcript with `dori read <key>`, send a prompt with `dori type omo-host:<session-id> --text TEXT`, and close it with `dori close <key>` once Done is verified. `dori attach <key> --print` prints the viewer command; without `--print` it opens a disposable hc terminal and leaves the lane running when the viewer exits. Quit a viewer before closing the lane.
 
 <!-- Ported from https://github.com/sisyphuslabs/dori-superagent/pull/284. -->
-`leadRuntime` optionally identifies the runtime of the existing lead, independently of new lanes. For a hosted lead, set `"leadRuntime": "omo-host"` and `leadPane` to its durable session ID (bare or prefixed `omo-host:`). This does not start or migrate a lead; duty and loops still use the terminal default. `dori boot` reports only configured overrides.
+`leadRuntime` optionally identifies the existing terminal lead (`"hc"` or `"herdr"`), independently of new lanes. Hosted leads are not supported in this fork. This setting does not start or migrate a lead; duty and loops still use the terminal default. `dori boot` reports only configured overrides.
 
 ## Install and test
 
