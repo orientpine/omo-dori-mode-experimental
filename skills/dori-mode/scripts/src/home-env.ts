@@ -10,9 +10,10 @@ import { laneTokenEnv, TokenFileError } from "./slack-token.ts";
 // or path.join, which collapse `..` on paper, so the OS resolves links and `..` for the lane exactly as it did for the
 // launcher and both find the same token home. One whose home moves when normalized (empty, `.`, `..`) names no config
 // file and is refused rather than letting the home check move up a directory.
-export const asGiven = (path: string): string => (isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`);
+const asGiven = (path: string): string => (isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`);
 
-export const homeEnv = (config: Pick<DoriConfig, "stateDir">, env: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> => {
+// The three selectors alone, also for the lead-bound report command of a lane footer (upstream #284, reviews 1 and 2 of #529).
+export const homeSelectors = (config: Pick<DoriConfig, "stateDir">, env: Readonly<Record<string, string | undefined>> = process.env) => {
   const raw = env["DORI_CONFIG"] ?? configPath();
   if (dirname(resolve(raw)) !== resolve(dirname(raw))) throw new TokenFileError(`DORI_CONFIG "${raw}" does not name a config file; set it to the config file's path`);
   const configFile = asGiven(raw);
@@ -22,8 +23,12 @@ export const homeEnv = (config: Pick<DoriConfig, "stateDir">, env: Readonly<Reco
     DORI_CONFIG: configFile,
     DORI_STATE_DIR: asGiven(config.stateDir),
     DORI_ENV_FILE: asGiven(env["DORI_ENV_FILE"] ?? envFilePath()),
-    ...laneTokenEnv(env, configFile),
   };
+};
+
+export const homeEnv = (config: Pick<DoriConfig, "stateDir">, env: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> => {
+  const selectors = homeSelectors(config, env);
+  return { ...selectors, ...laneTokenEnv(env, selectors.DORI_CONFIG) };
 };
 
 // herdr and hc only: an aoe session's env goes through the global tmux update-environment, where a home selector would

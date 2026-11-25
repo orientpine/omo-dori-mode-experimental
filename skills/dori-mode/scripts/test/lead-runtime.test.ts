@@ -73,26 +73,34 @@ test.each([
   }
 });
 
-// Review 1 of #529: the env file the lead-bound report command names is the one this process reads, symlinks and .. kept.
-test.skipIf(process.platform === "win32")("the lead-bound report command keeps symlink traversal in DORI_ENV_FILE", async () => {
-  const saved = process.env["DORI_ENV_FILE"];
+// Reviews 1 and 2 of #529: every selector the lead-bound report command names is the one this process reads, symlinks and ..
+// kept (DORI_CONFIG, DORI_STATE_DIR, DORI_ENV_FILE), as home-env.ts hands a lane its own.
+test.skipIf(process.platform === "win32")("the lead-bound report command keeps symlink traversal in every instance selector", async () => {
+  const saved = { config: process.env["DORI_CONFIG"], env: process.env["DORI_ENV_FILE"] };
   try {
     const home = join(state.dir, "instance");
     const target = join(home, "child");
     mkdirSync(target, { recursive: true });
     symlinkSync(target, join(state.dir, "link"), "dir");
-    writeFileSync(join(home, "dori.env"), "intended");
-    writeFileSync(join(state.dir, "dori.env"), "wrong");
-    process.env["DORI_ENV_FILE"] = `${state.dir}/link/../dori.env`;
+    for (const [dir, marker] of [[home, "intended"], [state.dir, "wrong"]] as const) {
+      for (const file of ["config.json", "dori.env"]) writeFileSync(join(dir, file), `${marker}-${file}`);
+      mkdirSync(join(dir, "state"), { recursive: true });
+      writeFileSync(join(dir, "state", "marker"), marker);
+    }
+    const selector = `${state.dir}/link/..`;
+    process.env["DORI_CONFIG"] = `${selector}/config.json`;
+    process.env["DORI_ENV_FILE"] = `${selector}/dori.env`;
     const brief = join(home, "brief.md");
     writeFileSync(brief, "do the work\n");
-    const deps = depsFor(newWorld(), fakeClock(0), state.dir, { leadRuntime: "hc", leadPane: "hc:t1" });
+    const deps = depsFor(newWorld(), fakeClock(0), state.dir, { stateDir: `${selector}/state`, leadRuntime: "hc", leadPane: "hc:t1" });
     const rendered = await renderBrief(deps, { key: "lead-bound", title: "reports", brief, done: "file /done", noThread: "QA", cwd: target });
-    const file = rendered.text.match(/DORI_ENV_FILE=([^\s"]+)/)?.[1];
-    expect(file).toBeDefined();
-    expect(await Bun.file(file ?? "").text()).toBe("intended");
+    const argv = JSON.parse(rendered.text.match(/run (\["env",[^\]]*"type","hc:t1"[^\]]*\])/)?.[1] ?? "[]") as string[];
+    const value = (name: string) => argv.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
+    expect([await Bun.file(value("DORI_CONFIG")).text(), await Bun.file(value("DORI_ENV_FILE")).text(), await Bun.file(`${value("DORI_STATE_DIR")}/marker`).text()]).toEqual(["intended-config.json", "intended-dori.env", "intended"]);
   } finally {
-    if (saved === undefined) delete process.env["DORI_ENV_FILE"];
-    else process.env["DORI_ENV_FILE"] = saved;
+    for (const [name, v] of [["DORI_CONFIG", saved.config], ["DORI_ENV_FILE", saved.env]] as const) {
+      if (v === undefined) delete process.env[name];
+      else process.env[name] = v;
+    }
   }
 });
