@@ -1,3 +1,4 @@
+import { hostedStartup, openHostedLane } from "./launch-hosted.ts";
 import { resolve } from "node:path";
 import { rmSync } from "node:fs";
 import { laneEnv } from "./aoe.ts";
@@ -5,6 +6,7 @@ import { laneHomeEnv } from "./home-env.ts";
 import { TokenFileError } from "./slack-token.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { omoSession, readScreen } from "./panes.ts";
+import { AGENT_SESSION_KINDS, parseRef } from "./runtime/types.ts";
 import type { Lane } from "./registry.ts";
 import { Reports } from "./reports.ts";
 import { watchLog } from "./watch-log.ts";
@@ -80,12 +82,17 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   const env = { ...laneEnv(deps.config.launchEnv, input.useGpu), ...home };
   let registered = false;
   const beforeStart = async ({ pane, tab }: { readonly pane: string; readonly tab?: string }): Promise<void> => {
-    const pending: Lane = { ...draft, reportProtocol: "jsonl-v1", pane, ...(tab ? { tab } : {}) };
+    const ref = parseRef(pane);
+    const pending: Lane = { ...draft, ...(ref?.runtime === "omo-host" ? { sessionRef: ref, session: ref.id, sessionVia: "launch" } : {}), reportProtocol: "jsonl-v1", pane, ...(tab ? { tab } : {}) };
     await deps.registry.write(pending);
     registered = true;
     new Reports(deps.config.stateDir).append({ type: "activity", key: pending.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${pane}` });
   };
-  const opened = await (deps.config.backend === "aoe"
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: hosted sessions take the model at open and a prompt, not a shell command.
+  const hosted = deps.config.laneRuntime !== undefined && AGENT_SESSION_KINDS.has(deps.config.laneRuntime);
+  const opened = await (hosted
+    ? openHostedLane(deps, { key: input.key, cwd, model, prompt }, beforeStart)
+    : deps.config.backend === "aoe" && deps.config.laneRuntime === undefined
     ? openAoe(deps, input.key, cwd, model, prompt, env, async (pane) => beforeStart({ pane }))
     : openHerdr(deps, input.key, cwd, model, prompt, env, beforeStart)
   ).catch(async (e: unknown) => {
@@ -96,7 +103,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     throw e instanceof LaunchFailed && openedThread ? new LaunchFailed(e.message, openedThread) : e;
   });
   const arm = assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
-  const lane: Lane = { ...draft, model, reportProtocol: "jsonl-v1", pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
+  const lane: Lane = { ...draft, ...("ref" in opened ? { sessionRef: opened.ref } : {}), model, reportProtocol: "jsonl-v1", pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
+  if ("ref" in opened && (await deps.registry.read(lane.key))?.status === "closed") return { lane, startup: await hostedStartup(deps, input.key, opened.ref) };
   await deps.registry.write(lane);
   if (!registered) new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${lane.pane ?? "unknown"}` });
   // registered first, so the queue counts this lane as working in the thread; a thread --thread new just opened is 🔄 already
@@ -105,6 +113,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
     if (reopened) warn(reopened);
   }
   if (opened.failure) return { lane, startup: `STARTUP_ERROR ${input.key} ${opened.pane}: ${opened.failure}` };
+  if ("ref" in opened) return { lane, startup: await hostedStartup(deps, input.key, opened.ref) };
   const prompted = deps.clock.now();
   await deps.clock.sleep(STARTUP_CHECK_MS);
   const screen = await readScreen(deps.run, deps.config.backend, opened.pane, 40);

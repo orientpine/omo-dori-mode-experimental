@@ -1,5 +1,8 @@
 // From upstream dori-superagent src/runtime/types.ts (https://github.com/sisyphuslabs/dori-superagent/blob/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444/src/runtime/types.ts; #147 #148 #150 #155, licences in NOTICE).
-export type RuntimeKind = "herdr" | "hc";
+// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+export type TerminalKind = "herdr" | "hc";
+export type RuntimeKind = TerminalKind | "omo-host";
+export const AGENT_SESSION_KINDS: ReadonlySet<RuntimeKind> = new Set(["omo-host"]);
 /** One session as its runtime addresses it. `group`: the herdr workspace id or the hc dori.group label. `container`: the herdr tab id (absent on hc). */
 export type SessionRef = {
   readonly runtime: RuntimeKind;
@@ -19,6 +22,8 @@ export type Probe = {
   readonly turn?: number;
   readonly title?: string;
   readonly cwd?: string;
+  // Ported from https:  //github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+  readonly goal?: string;
   readonly shellInFront: boolean;
   readonly foreground?: readonly ForegroundProcess[];
 };
@@ -44,6 +49,8 @@ export type CreateSpec = {
   readonly container: "workspace-root" | "tab" | "split-below";
   readonly group?: string;
   readonly near?: SessionRef;
+  // Ported from https:  //github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+  readonly model?: string;
 };
 export type DeliverWhen = "idle" | "working" | "any";
 /** `when`: the status the text may be typed under (hc: --if idle / --if working / none for "any"; "any" still never types into an `unknown` or `shell` session). `force`: type into a blocked agent (hc --force; herdr: no-op). */
@@ -85,8 +92,9 @@ const BARE_HERDR = /^w[0-9A-Za-z]+:p[0-9A-Za-z]+$/;
  * address/id_shaped). The fork widened upstream's `t<digits>`, which drops a lane past t19 (review 7 of #404). */
 export const HC_ADDRESS = /^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$/;
 /** Id shape after each prefix: a herdr pane, or an hc terminal address. */
-const ID_SHAPES: Readonly<Record<RuntimeKind, RegExp>> = { herdr: BARE_HERDR, hc: HC_ADDRESS };
-const KINDS = Object.keys(ID_SHAPES) as RuntimeKind[];
+// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+const ID_SHAPES = { herdr: BARE_HERDR, hc: HC_ADDRESS, "omo-host": /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i } satisfies Record<RuntimeKind, RegExp>;
+const KINDS = ["herdr", "hc", "omo-host"] as const;
 
 /** "herdr:w1:p3", "hc:t7", bare "w1:p3" (herdr). A bare "t7" is NOT a ref (it is a legal lane key); undefined otherwise. */
 export const parseRef: (text: string) => SessionRef | undefined = (text) => {

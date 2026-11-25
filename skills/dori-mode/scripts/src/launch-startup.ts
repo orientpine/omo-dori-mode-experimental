@@ -111,11 +111,12 @@ export const openHerdr = async (deps: FlowDeps, key: string, cwd: string, model:
   const filled = fill(withSessionId(deps.config.agentCommand, crypto.randomUUID()), { model, prompt });
   const argv = isOmoExecutable(filled[0] ?? "") ? withThinking(filled, model) : filled;
   // the shared opener (herdr.ts): a tab labelled with the key, a workspace first on a fresh server, the agent run there
+  const placement = deps.config.laneRuntime;
   let opened: { readonly pane: string; readonly tab?: string };
   try {
     // omo needs node for its hooks (agentPath); another agent starts with the server's PATH as before
     const path = isOmoExecutable(argv[0] ?? "") ? { PATH: agentPath(argv[0] ?? "omo") } : {};
-    opened = await openHerdrSession(deps.run, deps.clock, { title: key, cwd, argv, env: { ...env, ...path }, ...(deps.config.laneWorkspace ? { workspace: deps.config.laneWorkspace } : {}), ...(beforeStart ? { beforeStart } : {}) });
+    opened = await openHerdrSession(deps.run, deps.clock, { title: key, cwd, argv, env: { ...env, ...path }, ...(deps.config.laneWorkspace ? { workspace: deps.config.laneWorkspace } : {}), ...(beforeStart ? { beforeStart } : {}), ...(placement === "hc" || placement === "herdr" ? { runtime: placement } : {}) });
   } catch (e) {
     if (e instanceof HcStartupError || e instanceof HerdrStartupError) throw e;
     throw new LaunchFailed(e instanceof Error ? e.message : String(e));

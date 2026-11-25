@@ -5,6 +5,8 @@ import { claimDone, closeLane, closeLessons, GoalUnverifiedError, objectDone, pa
 import { plainSummaryProblem } from "./close-summary.ts";
 import { challengeMissing } from "./challenge.ts";
 import { gateMissing } from "./merge-gate.ts";
+import { sessionOf } from "./registry.ts";
+import { formatRef } from "./runtime/types.ts";
 import { realClock } from "./run.ts";
 import type { Command } from "./cli-context.ts";
 import { die } from "./cli-context.ts";
@@ -12,7 +14,10 @@ import { warnClaimSkills } from "./skill-check.ts";
 
 const typeCommand: Command = async (context) => {
   const { key, opt, need, deps, config } = context;
-  const pane = key ?? die("type needs a pane (a tmux session name or a herdr pane id)");
+  const target = key ?? die("type needs a pane (a tmux session name or a herdr pane id)");
+  const registered = /^[a-z0-9][a-z0-9._-]{1,60}$/.test(target) ? await deps.registry.read(target).catch(() => null) : null;
+  const ref = registered ? sessionOf(registered) : undefined;
+  const pane = ref?.runtime === "omo-host" ? formatRef(ref) : target;
   const file = opt("text-file");
   const text = file ? (await Bun.file(file).text()).trim() : need("text");
   if (!text) die("type needs non-empty text");

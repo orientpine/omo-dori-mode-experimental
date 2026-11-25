@@ -1,7 +1,9 @@
 import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import { closeHerdrSession, herdrAgentPid, herdrLife, herdrRead, herdrSessions, herdrShellPid, isHerdrPane, openHerdrSession, procEnv } from "./herdr.ts";
+import { closeHerdrSession, herdrAgentPid, herdrLife, herdrSessions, isHerdrPane, openHerdrSession, procEnv } from "./herdr.ts";
+import { captureTmux } from "./pane-io.ts";
+export { captureTmux, paneLife, type PaneLife, tmuxPanePid } from "./pane-io.ts";
 import type { Pane } from "./panes.ts";
 import { type Clock, type Runner, runtimesOf } from "./run.ts";
 import { turnRunning } from "./submit.ts";
@@ -87,31 +89,6 @@ export const paneActivity = async (run: Runner, panes: readonly string[]): Promi
     else out.set(pane, state === "idle" ? "idle" : "running");
   }
   return out;
-};
-
-// a herdr pane is read through herdr (herdr.ts), the same visible screen or last lines
-export const captureTmux = async (run: Runner, pane: string, lines?: number): Promise<string> => {
-  if (isHerdrPane(pane)) return herdrRead(run, pane, lines);
-  const out = (await run(["tmux", "capture-pane", "-p", "-J", "-t", target(pane), ...(lines ? ["-S", `-${lines}`] : [])])).out;
-  return lines ? out.split("\n").slice(-lines).join("\n") : out;
-};
-
-export type PaneLife = { readonly live: true } | { readonly live: false; readonly how: "gone" } | { readonly live: false; readonly how: "dead"; readonly status: number };
-
-// gone: no tmux session of that name; dead: the session is there, its pane's program exited (remain-on-exit)
-export const paneLife = async (run: Runner, pane: string): Promise<PaneLife> => {
-  if (isHerdrPane(pane)) return herdrLife(run, pane);
-  if ((await run(["tmux", "has-session", "-t", `=${pane}`])).code !== 0) return { live: false, how: "gone" };
-  const r = await run(["tmux", "display-message", "-p", "-t", `=${pane}:`, "#{pane_dead} #{pane_dead_status}"]);
-  const [dead = "", status = ""] = r.out.trim().split(" ");
-  return r.code === 0 && dead === "1" ? { live: false, how: "dead", status: Number(status) } : { live: true };
-};
-
-// the pane's shell: a herdr pane's from herdr pane process-info
-export const tmuxPanePid = async (run: Runner, pane: string): Promise<number> => {
-  if (isHerdrPane(pane)) return herdrShellPid(run, pane);
-  const r = await run(["tmux", "display-message", "-p", "-t", target(pane), "#{pane_pid}"]);
-  return r.code === 0 ? Number(r.out.trim()) || 0 : 0;
 };
 
 // omo's input line is the last line starting with ❯; transcript lines above it are not input

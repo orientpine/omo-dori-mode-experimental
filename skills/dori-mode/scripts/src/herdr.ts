@@ -181,11 +181,11 @@ export const openHerdrSession = async (
     readonly argv: readonly string[];
     readonly env?: Readonly<Record<string, string | undefined>>;
     readonly workspace?: string;
+    readonly runtime?: "hc" | "herdr"; // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282
     readonly beforeStart?: (opened: { readonly pane: string; readonly tab?: string }) => Promise<void>;
   },
 ): Promise<{ readonly pane: string; readonly tab?: string }> => {
-  // a new session opens on the chosen runtime (default): a refused choice (DORI_RUNTIME=hc) throws here, before any tab
-  const rt = runtimesOf(run).default;
+  const rt = opts.runtime ? runtimesOf(run).for({ runtime: opts.runtime, id: "" }) : runtimesOf(run).default;
   // hc's launch is a Unix env line in $SHELL, where the fork's native-Windows lanes run PowerShell (review 8 of #404)
   if (rt.kind === "hc" && process.platform === "win32") throw new Error("hc lanes are not supported on native Windows; use herdr there");
   if (rt.kind === "hc") return hcOpen(rt, run, clock, opts, agentLine(opts.argv, opts.env));

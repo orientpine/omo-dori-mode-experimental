@@ -1,4 +1,5 @@
 // From upstream dori-superagent src/runtime/registry.ts (https://github.com/sisyphuslabs/dori-superagent/blob/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444/src/runtime/registry.ts; #147 #148 #150 #155, licences in NOTICE).
+import { selfRef as hostSelf } from "./omo-host/sessions.ts";
 import type { RuntimeKind, SessionRef, SessionRuntime } from "./types.ts";
 
 const nonEmpty = (value: string | undefined): string | undefined =>
@@ -35,6 +36,9 @@ export class Runtimes {
    * hc terminal, else `HERDR_PANE_ID` a herdr pane (grouped by `HERDR_WORKSPACE_ID` when set). Builds no runtime.
    */
   selfAny(env: Readonly<Record<string, string | undefined>>): SessionRef | undefined {
+    // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: a host can inherit its launch terminal.
+    const hosted = hostSelf(env);
+    if (hosted !== undefined) return hosted;
     const terminal = nonEmpty(env["HC_TERMINAL_ID"]);
     if (terminal !== undefined) return { runtime: "hc", id: terminal };
     const pane = nonEmpty(env["HERDR_PANE_ID"]);

@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 import { paneLife } from "./aoe.ts";
 import { pendingBackground, restoredMonitors } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { type GoalRead, laneGoal } from "./goal.ts";
+import { parseRef } from "./runtime/types.ts";
+import { type GoalRead, laneGoal, sessionGoal } from "./goal.ts";
 import { omoPane, readScreen, submitToPane } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { AGENT, descendants, ended, procTable, sessionDirFor, shellPidOf } from "./session-id.ts";
@@ -50,7 +51,8 @@ export const noGoalWhy = (goal: GoalRead): string => (goal === "none" ? "no goal
 
 // The goal of the lane's own session: the exact id its agent runs under (goal.ts laneGoal)
 export const goalReader = (deps: FlowDeps, cwd: string, session: string): ((pane: string) => Promise<GoalRead>) =>
-  deps.readGoal ?? (async () => laneGoal(deps.config.sessionsDir, cwd, session));
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: watch reads hosted goals using the real session file reported by the host.
+  deps.readGoal ?? (async (pane) => parseRef(pane)?.runtime === "omo-host" ? sessionGoal(deps, pane) : laneGoal(deps.config.sessionsDir, cwd, session));
 
 export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | undefined> => {
   if (omoPane(deps.config, pane)) {

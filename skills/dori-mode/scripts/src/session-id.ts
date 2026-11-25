@@ -2,6 +2,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { tmuxPanePid } from "./aoe.ts";
+import { parseRef } from "./runtime/types.ts";
 import type { Backend } from "./config.ts";
 import type { Runner } from "./run.ts";
 import { isAgentCommand } from "./executable.ts";
@@ -11,7 +12,7 @@ export { descendants } from "./process-tree.ts";
 // stat: the ps state letters ("S", "R+", "Z" for a zombie); absent when the table was built without it
 // sid: the terminal session the process is in (Linux ps sid); absent or 0 when it cannot be told (macOS, Windows)
 export type Proc = { readonly pid: number; readonly ppid: number; readonly cmd: string; readonly stat?: string; readonly sid?: number; readonly startedAt?: string; readonly executable?: string };
-export type SessionHit = { readonly id: string; readonly via: "argv" | "child-env" | "start-time" | "none"; readonly pid?: number };
+export type SessionHit = { readonly id: string; readonly via: "argv" | "child-env" | "start-time" | "runtime" | "none"; readonly pid?: number };
 
 // omo on Linux and macOS (senpi's bundle under bun, or the omo command), and on Windows (the same bundle path with
 // backslashes, or omo.exe / omo-windows-x64.exe, quoted as Win32_Process shows a command line with spaces in its path)
@@ -217,6 +218,9 @@ const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: str
 };
 
 export const resolveSession = async (pane: string, cwd: string, table: readonly Proc[], deps: SessionDeps): Promise<SessionHit> => {
+  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: the host’s durable ref is the agent session ID.
+  const hosted = parseRef(pane);
+  if (hosted?.runtime === "omo-host") return { id: hosted.id, via: "runtime" };
   const shellPid = await shellPidOf(pane, deps);
   const agent = topAgent(table, shellPid);
   if (!agent) return { id: "", via: "none" };

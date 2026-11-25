@@ -2,7 +2,10 @@ import { statSync } from "node:fs";
 
 import { fill } from "./config.ts";
 import { adoptLane, DirectiveMissingError, doneWeakWarning, goalWarning, laneStartText, launchEnvArgs, launchLane, launchLedger, relatedGate, renderBrief, reopenLaneThread, setDone, setGpu, setThread, threadGate, ThreadMissingError, validateLaunch } from "./launch.ts";
-import { realClock } from "./run.ts";
+import { OmoHostRuntime } from "./runtime/omo-host/index.ts";
+import { sessionOf } from "./registry.ts";
+import { agentLine } from "./herdr.ts";
+import { realClock, runtimesOf } from "./run.ts";
 import { watchLog } from "./watch-log.ts";
 import { syncRegistry } from "./sync.ts";
 import { postInThread, postLaneStart } from "./messenger/discord-thread.ts";
@@ -121,9 +124,38 @@ const launchEnvCommand: Command = async (context) => {
   return;
 };
 
+// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: this terminal is just a viewer, not the lane.
+const attachCommand: Command = async ({ deps, lane, key, flags }) => {
+  const target = await lane(key ?? die("attach needs a lane key"));
+  const ref = sessionOf(target);
+  if (ref?.runtime !== "omo-host") return die(`lane ${target.key} is not an omo-host lane`);
+  const rt = runtimesOf(deps.run, deps.config).for(ref);
+  if (!(rt instanceof OmoHostRuntime)) return die("omo-host runtime is unavailable");
+  const argv = await rt.attachArgv(ref);
+  if (flags.values["print"]) {
+    console.log(agentLine(argv));
+    return;
+  }
+  const cwd = target.cwd ?? deps.config.defaultCwd;
+  const r = await deps.run(["hc", "--json", "run", "--bg", "--no-parent", "--no-notify", "--rm", "--cwd", cwd, "--label", `dori.view=${target.key}`, "--", ...argv]);
+  if (r.code !== 0) return die(`hc run failed: ${(r.err || r.out).slice(0, 300)}`);
+  const view: unknown = JSON.parse(r.out);
+  if (!(view && typeof view === "object" && "address" in view && typeof view.address === "string")) return die("hc did not return a viewer address");
+  console.log(`ATTACHED ${target.key} view=${view.address} (quit the client or hc kill ${view.address}; the lane keeps running)`);
+};
+
+const readCommand: Command = async ({ deps, lane, key }) => {
+  const target = await lane(key ?? die("read needs a lane key"));
+  const ref = sessionOf(target);
+  if (ref?.runtime !== "omo-host") return die(`lane ${target.key} is not an omo-host lane`);
+  console.log(await runtimesOf(deps.run, deps.config).for(ref).read(ref, 80));
+};
+
 export const lanesCommands: Readonly<Record<string, Command>> = {
   "launch": launchCommand,
   "adopt": adoptCommand,
+  attach: attachCommand,
+  read: readCommand,
   "sync": syncCommand,
   "set-thread": setThreadCommand,
   "done-set": doneSetCommand,

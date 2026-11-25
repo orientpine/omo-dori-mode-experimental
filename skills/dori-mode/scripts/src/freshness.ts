@@ -3,6 +3,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { researchCheck, stuckTop } from "./explore.ts";
 import { omoPane, paneTranscript, readScreen, sendVerified } from "./panes.ts";
 import { dailyFile, dailySnapshot } from "./compaction-keep.ts";
+import { lanesForFreshness } from "./freshness-lanes.ts";
 import { type Lane, type RolloverDue, statusOf } from "./registry.ts";
 import { fixTag, recordFix } from "./same-fix.ts";
 import { taskOpen, taskRecord } from "./background.ts";
@@ -98,7 +99,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string, given: Rollove
       return { previous: null, progress: null, report: null, error };
     }
   };
-  for (const lane of await deps.registry.open()) {
+  for await (const lane of lanesForFreshness(deps)) {
     if (!lane.pane) continue;
     if (statusOf(lane) !== "working" && statusOf(lane) !== "not-done") continue;
     const state = await readProgress(lane);
