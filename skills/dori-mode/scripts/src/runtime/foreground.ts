@@ -49,3 +49,25 @@ export function interactiveShellInFront(processes: readonly ForegroundProcess[] 
   }
   return false;
 }
+
+const stem = (value: string): string => baseName(value).replace(/\.[^.]*$/, "");
+const RUNS_NEXT: ReadonlySet<string> = new Set([".", "source", "exec"]);
+const COMMAND_ZERO = /^(?:\$0|"\$0")$/;
+
+/** upstream sisyphuslabs/dori-superagent#277: accept an executable or a shell launcher that actually runs its $0. */
+export function namesAgent(processes: readonly ForegroundProcess[], app: string): boolean {
+  const want = app.toLowerCase();
+  const matches = (word: string): boolean => {
+    const name = stem(word);
+    return name === want || name.startsWith(`${want}-`);
+  };
+  return processes.some(({ name, argv }) => {
+    const executable = baseName(name);
+    if (!SHELLS.has(executable)) return matches(argv[0] ?? name);
+    const flag = argv.findIndex((arg, i) => i > 0 && runsCommand(executable, arg));
+    if (flag < 0) return false;
+    const zero = flag + (RUNS_NEXT.has(argv[flag + 1] ?? "") ? 2 : 1);
+    const script = argv[zero + 1];
+    return COMMAND_ZERO.test(argv[zero] ?? "") && script?.includes("/") === true && matches(script);
+  });
+}
