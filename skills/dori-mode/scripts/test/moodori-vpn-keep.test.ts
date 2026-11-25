@@ -118,7 +118,7 @@ test("MOTP is RFC 6238 TOTP-SHA256 with 6 digits", () => {
 });
 
 const MON_10_KST = new Date("2026-11-02T01:00:00Z");
-// state: one answer for every check (a link check after a round too), or answers in turn (the last one repeats)
+// state: one answer for every check (a link check after a round too), or answers in turn (the last one repeats); no login here reaches the login button (sent is false), so no round is a stop
 const deps = (state: VpnState | VpnState[], logins: string[], over: Partial<KeepDeps> = {}) => {
   const calls: string[] = [];
   const states = Array.isArray(state) ? [...state] : [state];
@@ -128,7 +128,7 @@ const deps = (state: VpnState | VpnState[], logins: string[], over: Partial<Keep
     link: async (since) => { calls.push("link"); const up = ((states.length > 1 ? states.shift() : states[0]) ?? "DOWN") === "UP"; return up ? { up, at: since + 1000 } : { up, why: "no Completed start after the last stop" }; },
     wait: async () => { calls.push("wait"); }, ensureAgents: async () => { calls.push("agents"); },
     login: async () => { const r = logins.shift() ?? "FAIL"; calls.push(`login:${r}`); if (r.startsWith("throw")) throw new Error(r); return r; },
-    restartAgent: async () => { calls.push("restart"); }, restartEdge: async () => { calls.push("restartEdge"); },
+    restartAgent: async () => { calls.push("restart"); }, restartEdge: async () => { calls.push("restartEdge"); }, sent: () => false, stop: async (why) => { calls.push(`stop:${why}`); },
     log: (line) => calls.push(`log:${line}`),
     ...over,
   };
@@ -214,7 +214,7 @@ const fakePortal = (page: Page = {}) => {
     const name = /\[name=(\w+)\]/.exec(x)?.[1] ?? "";
     if (page.throwOn && x.includes(`[name=${page.throwOn}]`)) return { result: { result: { type: "object" }, exceptionDetails: { text: "Uncaught", exception: { description: "TypeError: e is null" } } } };
     const val = (v: unknown) => ({ result: { result: { type: typeof v, value: v } } });
-    if (x.includes("vxs")) return val(page.otpChoice ?? true);
+    if (x.includes("readyState")) return val("ready"); if (x.includes("vxs")) return val(page.otpChoice ?? true);
     if (x.startsWith("!!")) return val(!page.noOtpField);
     if (x.includes("e.focus()")) { const ok = page.focus?.[name] ?? true; if (ok) focused = name; return val(ok); }
     if (x.includes("e.value.length")) return val(focused === name ? value[name] ?? 0 : -1);

@@ -21,29 +21,39 @@ Every minute inside the window (`days`, `hours`, `timeZone`):
    6 digits, 30 s) from the key in `motpFile`. A secret is typed only into its own field once that field is found,
    emptied and focused, and the field must then hold that many characters; a field that is missing or not focused, a
    page script that throws, a navigation error or a CDP error stops the login before anything else is typed or sent.
+   The MOTP choice is clicked only once login.jsp has loaded (`document.readyState` complete with the MOTP choice on
+   the page, read every 0.5 s for up to 15 s: its onload sets the choice back to PUSH), and it must still be chosen
+   right before the login button; a miss stops the login before the account is sent.
    When the login page never appears (the agent check page hangs), it restarts the agent once and tries again; if the
    tab still stays on the agent check page (`activexloading`, "보안프로그램 설치 중": an Edge that was open before the
    drop does not move on after the agent restart), it restarts MooDori's Edge once and tries again: it stops only the
    `msedge` processes whose `--user-data-dir` has exactly `edgeProfile` as its last folder, by pid (the owner's own Edge,
    its windows and other profiles stay) and
    starts `edgeTask` again. That is at most one agent restart and one Edge restart a round, so `maxFails` still bounds
-   them. Any other failure is tried once more.
+   them. Any other failure is tried once more if it came before the login button; a login whose button was clicked
+   is never sent again in that round.
 4. A round is judged by the connection, not by the portal page: it is a recovery when `sslvpn.log`'s last tunnel
    start or stop line is an `Initialization Sequence Completed` written at or after the round began (the log's times
    are the PC's local time, read with the PC's UTC offset) and the portal's port 443 (`vpnUrl`'s host) opens from the
-   PC. Once the MOTP code was sent (the portal flow ended at the bookmark page or with `FAIL`) this is checked every
+   PC. Once the login button was clicked (the portal has the account) this is checked every
    5 s for 30 s, else once. A connected round whose portal flow said otherwise logs
    `RELOGIN OK connected <UTC time of the Completed line> (portal flow: FAIL ...)`; a bookmark page without that
    connection is a failed round (`RELOGIN OK portal, VPN still down after 30 s (<why>)`). A failed round is tried
    again at the next check (`DOWN` again), and a next check that finds the VPN up logs `UP after N failed rounds`;
    an up check ends a run of failed rounds.
-5. Three failed rounds in a row (`maxFails`; a login that errors counts too) rest 15 minutes (`restMs`), so the
+5. A round that clicked the login button and still did not connect, while its portal flow did not reach the
+   bookmark page (`FAIL`, `no cert`, `no otp field` or an error after the click: maybe a wrong or stale password or
+   MOTP code, which the portal counts toward locking the account), is a stop: it writes `pauseFile` (the UTC time and
+   the round's `RELOGIN` line) and logs `STOP ...`, and no check logs in again until someone has checked the account
+   and removed the file. A bookmark page without the connection is no stop: the portal took the account and the code.
+6. Three failed rounds in a row (`maxFails`; a login that errors counts too) rest 15 minutes (`restMs`), so the
    account is not tried every minute.
 
-`touch /tmp/moodori-vpn-keep.pause` (`pauseFile`) pauses it; remove the file to resume.
+`touch /tmp/moodori-vpn-keep.pause` (`pauseFile`) pauses it; remove the file to resume. A stop writes the same file;
+`/tmp` is emptied at a reboot, so set `pauseFile` outside it for a stop that outlasts one.
 
 Log lines (`~/.dori/vpn-keep.log`): `VPN_KEEP_ON ...` at start, `DOWN` / `NOLOG`, `AGENT_RESTART`, `VPN_EDGE_RESTART`,
-`RELOGIN OK|OK connected ...|OK portal, VPN still down ...|FAIL ...|no cert ...|no otp field|ERR ...`, `GIVEUP after 3 fails, resting 15 min`, `UP after N failed rounds`, `ERR ...`. `VPN_KEEP_OFF` (exit 0)
+`RELOGIN OK|OK connected ...|OK portal, VPN still down ...|FAIL ...|no cert ...|no otp field|ERR ...`, `STOP the account was sent and the VPN did not come up; no login until <pauseFile> is removed`, `GIVEUP after 3 fails, resting 15 min`, `UP after N failed rounds`, `ERR ...`. `VPN_KEEP_OFF` (exit 0)
 when off, `VPN_KEEP_CONFIG_BAD` (exit 2) for an enabled config with a missing or wrong value. Neither the account nor
 the MOTP key or code is ever printed.
 

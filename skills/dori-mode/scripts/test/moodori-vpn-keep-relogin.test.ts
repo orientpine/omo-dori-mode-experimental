@@ -8,16 +8,20 @@ const options = (): KeepOptions => {
 };
 const MON_10_KST = new Date("2026-11-02T01:00:00Z");
 const DOWN: Link = { up: false, why: "no Completed start after the last stop" };
-// a round whose VPN state reads state, whose portal flow answers logins in turn and whose link check answers link
-const deps = (state: "UP" | "DOWN", logins: string[], link: (since: number) => Promise<Link> = async () => DOWN) => {
+// a round whose VPN state reads state, whose portal flow answers logins in turn and whose link check answers link;
+// sent: every login got as far as the login button (the portal has the account), and a stop pauses the next checks
+const deps = (state: "UP" | "DOWN", logins: string[], link: (since: number) => Promise<Link> = async () => DOWN, sent = false) => {
   const calls: string[] = [];
+  let stopped = false;
   const d: KeepDeps = {
-    paused: async () => false,
+    paused: async () => stopped,
     state: async () => { calls.push("state"); return state; },
     link: (since) => { calls.push("link"); return link(since); },
     wait: async () => {},
     ensureAgents: async () => { calls.push("agents"); },
     login: async () => { const r = logins.shift() ?? "FAIL"; calls.push(`login:${r}`); return r; },
+    sent: () => sent,
+    stop: async (why) => { calls.push(`stop:${why}`); stopped = true; },
     restartAgent: async () => {}, restartEdge: async () => {},
     log: (line) => calls.push(`log:${line}`),
   };
@@ -53,12 +57,27 @@ test("a round whose portal flow says FAIL but whose tunnel came up after the rou
   });
 });
 
-test("a round that really did not connect stays FAIL, and the next check tries again or says the VPN came up", async () => {
+// A FAIL after the login button may be a wrong or stale password or MOTP code, which the portal counts toward locking
+// the account (owner, 2026-11-25: repeated failures must never leave the account locked).
+test("a round that sent the account and did not connect stops: no second login, and no check logs in until the pause file is removed", async () => {
   const o = options();
   const s = { fails: 0 };
-  const failed = deps("DOWN", ["FAIL ", "FAIL "]);
+  const sent = deps("DOWN", ["FAIL ", "FAIL "], async () => DOWN, true);
+  expect(await keepTick(o, s, sent.d, MON_10_KST)).toBe(60000);
+  expect(await keepTick(o, s, sent.d, MON_10_KST)).toBe(60000);
+  expect({ calls: sent.calls.filter((c) => c !== "link"), links: sent.calls.filter((c) => c === "link").length, fails: s.fails }).toEqual({
+    calls: ["state", "log:DOWN", "agents", "login:FAIL ", "log:RELOGIN FAIL ", "stop:RELOGIN FAIL ", `log:STOP the account was sent and the VPN did not come up; no login until ${o.pauseFile} is removed`],
+    links: 6,
+    fails: 0,
+  });
+});
+
+test("a round that failed before the login button stays failed, and the next check tries again or says the VPN came up", async () => {
+  const o = options();
+  const s = { fails: 0 };
+  const failed = deps("DOWN", ["ERR no MOTP choice", "ERR no MOTP choice"]);
   expect(await keepTick(o, s, failed.d, MON_10_KST)).toBe(60000);
-  expect({ logs: failed.calls.filter((c) => c.startsWith("log:")), links: failed.calls.filter((c) => c === "link").length, fails: s.fails }).toEqual({ logs: ["log:DOWN", "log:RELOGIN FAIL "], links: 6, fails: 1 });
+  expect({ logs: failed.calls.filter((c) => c.startsWith("log:")), logins: failed.calls.filter((c) => c.startsWith("login:")).length, links: failed.calls.filter((c) => c === "link").length, fails: s.fails }).toEqual({ logs: ["log:DOWN", "log:RELOGIN ERR no MOTP choice"], logins: 2, links: 1, fails: 1 });
   const again = deps("DOWN", ["OK"]);
   await keepTick(o, s, again.d, MON_10_KST);
   expect(again.calls.slice(0, 4)).toEqual(["state", "log:DOWN", "agents", "login:OK"]);

@@ -138,14 +138,16 @@ export type KeepDeps = {
   readonly link: (since: number) => Promise<Link>;
   readonly ensureAgents: () => Promise<void>;
   readonly login: () => Promise<string>; // "OK", "no login page", or why it failed
+  readonly sent: () => boolean; // whether the last login got as far as the login button, so the portal has the account
+  readonly stop: (why: string) => Promise<void>; // writes pauseFile: no check logs in again until someone removes it
   readonly restartAgent: () => Promise<void>;
   readonly restartEdge: () => Promise<void>;
   readonly wait: (ms: number) => Promise<void>;
   readonly log: (line: string) => void;
 };
 
-// A round counts by the connection, whatever the portal page said: once the MOTP code was sent (the flow ended OK or
-// FAIL) the link is checked every 5 s for 30 s, else once.
+// A round counts by the connection, whatever the portal page said: once the account was sent (the login button was
+// clicked, or the flow ended OK or FAIL) the link is checked every 5 s for 30 s, else once.
 export const UP_CHECKS = 6;
 export const UP_EVERY_MS = 5000;
 const linkBack = async (d: KeepDeps, since: number, sent: boolean): Promise<Link> => {
@@ -183,11 +185,20 @@ export async function keepTick(o: KeepOptions, s: KeepState, d: KeepDeps, now: D
       await d.restartEdge();
       r = await attempt();
     }
-  } else if (r !== "OK") r = await attempt();
-  const link = await linkBack(d, now.getTime(), r === "OK" || r.startsWith("FAIL"));
+  } else if (r !== "OK" && !d.sent()) r = await attempt(); // an account the portal already got is never sent again
+  const failedAfterSend = r !== "OK" && d.sent();
+  const link = await linkBack(d, now.getTime(), r === "OK" || r.startsWith("FAIL") || d.sent());
   if (link.up) r = r === "OK" ? "OK" : `OK connected ${new Date(link.at).toISOString()} (portal flow: ${r.trim()})`;
   else if (r === "OK") r = `OK portal, VPN still down after ${(UP_CHECKS * UP_EVERY_MS) / 1000} s (${link.why})`;
   d.log(`RELOGIN ${r}`);
+  // The portal got the account (or the MOTP code) and the round still failed: maybe a wrong password or code, which the
+  // portal counts toward locking the account. So no check logs in again until someone looked and removed pauseFile.
+  if (failedAfterSend && !link.up) {
+    await d.stop(`RELOGIN ${r}`);
+    d.log(`STOP the account was sent and the VPN did not come up; no login until ${o.pauseFile} is removed`);
+    s.fails = 0;
+    return o.intervalMs;
+  }
   s.fails = link.up ? 0 : s.fails + 1;
   if (s.fails < o.maxFails) return o.intervalMs;
   d.log(`GIVEUP after ${s.fails} fails, resting ${Math.round(o.restMs / 60_000)} min`);
@@ -224,9 +235,25 @@ const clickIn = async (send: Send, contextId: number, what: string, find: string
   if (found !== true) throw new Error(`${what} not found`);
 };
 
+// login.jsp loads a dozen scripts before its form, and its onload (change_select('1');init()) sets the choice back to
+// PUSH, so MOTP is chosen only once the page is complete and has that choice: read every 500 ms for up to 15 s. A fixed
+// 1.5 s wait chose too early right after an agent restart (vpn-keep.log 2026-11-24T23:43:05Z).
+const LOGIN_READY = `(()=>{const r=document.readyState,e=document.querySelector("input[name=vxs][value='2']");return r==="complete"&&e?"ready":r+(e?"":", no MOTP choice")})()`;
+const loginPage = async (send: Send, frame: Frame, clock: Clock): Promise<number> => {
+  let seen = "";
+  for (let i = 0; i < 30; i++) {
+    await clock.sleep(500);
+    const c = await world(send, frame);
+    seen = String(await evalIn(send, c, LOGIN_READY));
+    if (seen === "ready") return c;
+  }
+  throw new Error(`OTP login choice not found or not chosen (login page ${seen})`);
+};
+
 // The Secuway portal: agent check page -> login.jsp (account) -> flag3_cert (MOTP) -> bookmark. "OK" only at the
 // bookmark page; "no login page" when the agent check page never moves on (the caller restarts the agent, then Edge).
-export async function loginFlow(V: Cdp, vpnUrl: string, creds: () => Promise<[string, string]>, motp: () => string, clock: Clock): Promise<string> {
+// onSend runs right before the login button is clicked: from there on the portal has the account.
+export async function loginFlow(V: Cdp, vpnUrl: string, creds: () => Promise<[string, string]>, motp: () => string, clock: Clock, onSend: () => void = () => {}): Promise<string> {
   const frames = async (): Promise<Frame[]> => {
     const all: Frame[] = [];
     const walk = (f: any) => { all.push(f.frame); (f.childFrames || []).forEach(walk); };
@@ -246,8 +273,7 @@ export async function loginFlow(V: Cdp, vpnUrl: string, creds: () => Promise<[st
   if (nav?.errorText) throw new Error(`navigate: ${nav.errorText}`);
   const fr = await waitFrame(/login\.jsp/, 45, 2000, /act=1/);
   if (!fr) return "no login page";
-  await clock.sleep(1500);
-  const ctx = await world(V.send, fr);
+  const ctx = await loginPage(V.send, fr, clock);
   const otpChoice = await evalIn(V.send, ctx, `(()=>{const e=document.querySelector("input[name=vxs][value='2']");if(!e)return false;e.click();return e.checked===true})()`);
   if (otpChoice !== true) throw new Error("OTP login choice not found or not chosen");
   const [id, pw] = await creds();
@@ -255,6 +281,9 @@ export async function loginFlow(V: Cdp, vpnUrl: string, creds: () => Promise<[st
   await typeInto(V.send, ctx, "userpw", pw);
   const left = 30 - (Math.floor(clock.now() / 1000) % 30);
   if (left < 15) await clock.sleep(left * 1000 + 500); // the code must not expire before it is sent
+  // a choice set back to PUSH would send the account for a push to the owner's phone, not to the MOTP page
+  if ((await evalIn(V.send, ctx, `(()=>{const e=document.querySelector("input[name=vxs][value='2']");return !!e&&e.checked})()`)) !== true) throw new Error("OTP login choice was set back before the login");
+  onSend();
   await clickIn(V.send, ctx, "login button", `document.querySelector('a[href*="go("]')`);
   const cf = await waitFrame(/flag3_cert/, 40, 500);
   if (!cf) return `no cert ${V.dialogs.join("|")}`;
@@ -338,10 +367,12 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
       }), 10_000, method, clock);
     return { send, dialogs, close: () => ws.close() };
   };
+  let sent = false;
   const login = async (): Promise<string> => {
+    sent = false;
     const V = await cdp();
     try {
-      return await loginFlow(V, o.vpnUrl, creds, motp, clock);
+      return await loginFlow(V, o.vpnUrl, creds, motp, clock, () => { sent = true; });
     } finally {
       V.close();
     }
@@ -352,6 +383,8 @@ export function realDeps(o: KeepOptions, runner: Runner = run, clock: Clock = re
     link: async (since) => linkFrom(await ps(linkPs(new URL(o.vpnUrl).hostname)), since),
     ensureAgents,
     login,
+    sent: () => sent,
+    stop: async (why) => { await Bun.write(o.pauseFile, `${new Date(clock.now()).toISOString()} ${why}\n`); },
     wait: (ms) => clock.sleep(ms),
     restartAgent: async () => { await ps(`Stop-Process -Name SecuwayUPort -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-ScheduledTask -TaskName ${psQuote(o.secuwayTask)}; Start-Sleep 8`); },
     // Lists the msedge processes, stops only those edgePids picks (pids, never a name), starts edgeTask again and
