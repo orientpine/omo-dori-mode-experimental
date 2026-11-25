@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { closeAoeSession } from "./aoe.ts";
+import { closeAoeSession, isClosedLine } from "./aoe.ts";
+import { laneProcesses, stopLeftovers } from "./lane-processes.ts";
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
 import { signalIo } from "./done-flow-common.ts";
@@ -128,9 +129,21 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   }
   // an aoe session or a herdr pane is closed by its own backend (the pane id says which; a herdr pane's tab goes only when
   // the pane is all it holds); a lane of another herdr agent keeps the tab/pane close it had
-  if (lane.pane && omoPane(deps.config, lane.pane)) {
+  // upstream sisyphuslabs/dori-superagent#225: capture runtime processes before either close path can orphan them.
+  // Keep the existing Omo/hc close path (including its close read-back) and the non-runtime aoe path.
+  const ref = sessionOf(lane);
+  if (ref) {
+    const rts = runtimesOf(deps.run, deps.config);
+    const procs = await laneProcesses(rts, deps.run, ref);
+    const legacyPane = lane.pane && omoPane(deps.config, lane.pane) ? lane.pane : undefined;
+    const closed = legacyPane ? await closeAoeSession(deps.run, legacyPane) : await closeSession(rts, ref);
+    cleanup.push(closed);
+    if (legacyPane ? isClosedLine(closed) : !closed.endsWith("not closed")) {
+      cleanup.push(await stopLeftovers(deps.run, procs));
+    }
+  } else if (lane.pane && omoPane(deps.config, lane.pane)) {
     cleanup.push(await closeAoeSession(deps.run, lane.pane));
-  } else if (sessionOf(lane)) cleanup.push(await closeSession(runtimesOf(deps.run, deps.config), sessionOf(lane)!));
+  }
   const root = lane.cwd ?? deps.config.defaultCwd;
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) {
     const r = await deps.run(["git", "-C", root, "worktree", "remove", wt]);

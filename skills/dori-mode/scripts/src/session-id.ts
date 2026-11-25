@@ -5,6 +5,8 @@ import { tmuxPanePid } from "./aoe.ts";
 import type { Backend } from "./config.ts";
 import type { Runner } from "./run.ts";
 import { isAgentCommand } from "./executable.ts";
+import { descendants } from "./process-tree.ts";
+export { descendants } from "./process-tree.ts";
 
 // stat: the ps state letters ("S", "R+", "Z" for a zombie); absent when the table was built without it
 // sid: the terminal session the process is in (Linux ps sid); absent or 0 when it cannot be told (macOS, Windows)
@@ -50,34 +52,27 @@ export const winProcs = (json: string): Proc[] => {
 
 // On Linux the table carries each process's session id too (macOS ps has no sid column): herdr ends every process of a
 // pane's terminal session when it closes the pane, so a job that left the pane's process tree dies with it all the same.
-export const procTable = async (run: Runner, platform: string = process.platform): Promise<Proc[]> => {
-  if (platform === "win32") return winProcs((await run(WIN_PROCS)).out);
+// upstream sisyphuslabs/dori-superagent#225: signal callers need to distinguish a failed read from an empty table.
+export const readProcTable = async (run: Runner, platform: string = process.platform): Promise<{ rows: Proc[]; error?: string }> => {
+  if (platform === "win32") {
+    const r = await run(WIN_PROCS);
+    return { rows: winProcs(r.out), ...(r.code === 0 ? {} : { error: r.err || `process query exited ${r.code}` }) };
+  }
   const linux = platform === "linux";
   // -ww: whole command lines, even when COLUMNS is set (procps cuts the command column to it otherwise)
-  return (await run(["ps", "-A", "-ww", "-o", linux ? "pid=,ppid=,sid=,stat=,command=" : "pid=,ppid=,stat=,command="])).out.split("\n").flatMap((line) => {
+  const r = await run(["ps", "-A", "-ww", "-o", linux ? "pid=,ppid=,sid=,stat=,command=" : "pid=,ppid=,stat=,command="]);
+  const rows = r.out.split("\n").flatMap((line) => {
     // the sid column is optional in what is read: the state letters are never a number
     const m = /^\s*(\d+)\s+(\d+)\s+(?:(\d+)\s+)?(\S+)\s+(.*)$/.exec(line);
     return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), ...(m[3] ? { sid: Number(m[3]) } : {}), stat: m[4] ?? "", cmd: m[5] ?? "" }] : [];
   });
+  return { rows, ...(r.code === 0 ? {} : { error: r.err || `ps exited ${r.code}` }) };
 };
+
+export const procTable = async (run: Runner, platform: string = process.platform): Promise<Proc[]> => (await readProcTable(run, platform)).rows;
 
 // A zombie ("[bash] <defunct>"): it already ended and only waits for its parent to collect it, so no work dies with it.
 export const ended = (p: Proc): boolean => (p.stat ?? "").startsWith("Z") || /<defunct>\s*$/.test(p.cmd);
-
-export const descendants = (table: readonly Proc[], root: number): Proc[] => {
-  const byParent = new Map<number, Proc[]>();
-  for (const p of table) byParent.set(p.ppid, [...(byParent.get(p.ppid) ?? []), p]);
-  const out: Proc[] = [];
-  const queue = [...(byParent.get(root) ?? [])];
-  const seen = new Set([root]);
-  for (let p = queue.shift(); p; p = queue.shift()) {
-    if (seen.has(p.pid)) continue;
-    seen.add(p.pid);
-    out.push(p);
-    queue.push(...(byParent.get(p.pid) ?? []));
-  }
-  return out;
-};
 
 // The pane's agent: the topmost agent process at or under its shell, read in tree order. Its command line is not searched
 // for "mcp": a herdr lane carries its own prompt there (a lane keyed mcp-fix), and the agent's MCP servers sit below it.

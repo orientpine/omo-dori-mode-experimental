@@ -1,0 +1,46 @@
+import type { Runner } from "./run.ts";
+import type { Runtimes } from "./runtime/registry.ts";
+import type { RuntimeKind, SessionRef } from "./runtime/types.ts";
+import { descendants, ended, type Proc, procEnv, readProcTable } from "./session-id.ts";
+
+// upstream sisyphuslabs/dori-superagent#225: collect while the pane still owns the process tree.
+type Snapshot = readonly Proc[] | string;
+const SESSION_VAR: Readonly<Record<RuntimeKind, string>> = { herdr: "HERDR_PANE_ID", hc: "HC_TERMINAL_ID" };
+
+export const laneProcesses = async (rts: Runtimes, run: Runner, ref: SessionRef): Promise<Snapshot> => {
+  if (process.platform === "win32") return "local session ownership cannot be checked on Windows";
+  const pid = await rts.for(ref).probe(ref).then((p) => p.rootPid, () => undefined);
+  if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) return "the session reported no root process";
+
+  const { rows, error } = await readProcTable(run);
+  if (error) return error;
+  const root = rows.find((p) => p.pid === pid && !ended(p));
+  if (!root) return `session root ${pid} could not be read on this host`;
+
+  // A runtime may report a remote PID. Check its own marker in the environment, never the command line.
+  const linux = process.platform === "linux";
+  const env = linux
+    ? await run(["cat", `/proc/${pid}/environ`], { preserveOutput: true }).then((r) => (r.code === 0 ? r.out : ""))
+    : await procEnv(run, root);
+  if (!env.trim()) return `session root ${pid} could not be read on this host`;
+  const marker = `${SESSION_VAR[ref.runtime]}=${ref.id}`;
+  if (!env.split(linux ? "\0" : /\s+/).includes(marker)) {
+    return `session root ${pid} on this host does not carry ${marker} (the session may run on another host)`;
+  }
+  return [root, ...descendants(rows, pid)].filter((p) => p.pid > 1 && p.pid !== process.pid && p.cmd && !ended(p));
+};
+
+// upstream sisyphuslabs/dori-superagent#225: the surviving exact PIDs may have been reparented after the close.
+export const stopLeftovers = async (run: Runner, before: Snapshot): Promise<string> => {
+  if (typeof before === "string") return `lane processes not checked: ${before}`;
+  const { rows, error } = await readProcTable(run);
+  if (error) return `lane processes not checked: ${error}`;
+  const live = new Map(rows.filter((p) => !ended(p)).map((p) => [p.pid, p.cmd]));
+  const survivors = before.filter((p) => live.get(p.pid) === p.cmd).map((p) => String(p.pid));
+  if (!survivors.length) return "no lane process outlived the pane";
+  const r = await run(["kill", "-TERM", ...survivors]);
+  const what = `${survivors.length} lane processes outlived the pane`;
+  return r.code === 0
+    ? `${what}, stopped: ${survivors.join(" ")}`
+    : `${what}, stop incomplete (${(r.err || `kill exited ${r.code}`).slice(0, 120)}): ${survivors.join(" ")}`;
+};
