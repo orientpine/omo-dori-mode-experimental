@@ -16,7 +16,7 @@ export const PR = parsePr("acme/app#7");
 export const DIR = "/wt/app";
 
 export type FakeCommit = { sha: string; subject: string; email?: string; numstat?: string };
-export type Gh = { commits?: FakeCommit[]; atHead?: string[]; head: string; checkout: string; state: string; dirtyAfterTests?: boolean; tested?: boolean; statusFails?: boolean; queued?: boolean; viewFailsAfterMerge?: boolean; deleteFails?: boolean; mergeRejects?: boolean; autoMerge?: boolean; diff?: string; prompt?: string | undefined; pushDuringReview?: string; noVerdict?: { code: number; out: string; times: number; err?: string }; reviewerThrows?: boolean; checks: Record<string, string>[]; testsCode: number; verdict: string; mergedAt: string; calls: string[][] };
+export type Gh = { commits?: FakeCommit[]; atHead?: string[]; head: string; checkout: string; state: string; dirtyAfterTests?: boolean; tested?: boolean; statusFails?: boolean; queued?: boolean; viewFailsAfterMerge?: boolean; deleteFails?: boolean; mergeRejects?: boolean; autoMerge?: boolean; diff?: string; prompt?: string | undefined; pushDuringReview?: string; noVerdict?: { code: number; out: string; times: number; err?: string }; reviewerThrows?: boolean; runs?: string; runsFail?: boolean; holdReview?: Promise<void> | undefined; reviewing?: () => void; checks: Record<string, string>[]; testsCode: number; verdict: string; mergedAt: string; calls: string[][] };
 
 const dirs: string[] = [];
 export const cleanup = (): void => {
@@ -32,6 +32,7 @@ export const runner = (w: Gh): Runner => async (argv) => {
   if (a.startsWith("gh pr view") && w.viewFailsAfterMerge && w.calls.some((c) => c[2] === "merge")) return { code: 1, out: "", err: "HTTP 502" };
   if (a.startsWith("gh pr view")) return ok(JSON.stringify({ state: w.state, headRefOid: w.head, mergedAt: w.mergedAt || null, mergeCommit: w.state === "MERGED" ? { oid: "m".repeat(40) } : null, title: "demo", statusCheckRollup: w.checks, autoMergeRequest: w.autoMerge ? { enabledAt: "2026-11-02T08:00:00Z" } : null }));
   if (a.startsWith("gh pr diff")) return ok(w.diff ?? "diff --git a/x b/x\n+x");
+  if (a.toLowerCase().startsWith("gh api repos/acme/app/actions/runs?")) return w.runsFail ? { code: 1, out: "", err: "HTTP 502" } : ok(w.runs ?? '{"total_count":0,"workflow_runs":[]}');
   const listed = w.commits ?? [{ sha: w.head, subject: "feat: demo" }];
   if (a.startsWith("gh api --paginate repos/")) return ok(listed.map((c) => `${c.sha}\n`).join(""));
   const one = listed.find((c) => c.sha === argv.at(-1));
@@ -57,6 +58,10 @@ export const runner = (w: Gh): Runner => async (argv) => {
   }
   if (argv[0] === "fake-reviewer") {
     if (w.reviewerThrows) throw new Error("spawn fake-reviewer ENOENT");
+    const hold = w.holdReview;
+    w.holdReview = undefined; // only the first review waits, so an unserialized second one runs through
+    w.reviewing?.();
+    if (hold) await hold;
     if (w.pushDuringReview) w.head = w.pushDuringReview;
     w.prompt = argv.at(-1);
     if (w.noVerdict && w.noVerdict.times-- > 0) return { code: w.noVerdict.code, out: w.noVerdict.out, err: w.noVerdict.err ?? (w.noVerdict.code ? "error: provider overloaded" : "") };
