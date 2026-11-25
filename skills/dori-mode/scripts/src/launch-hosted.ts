@@ -5,14 +5,27 @@ import type { FlowDeps } from "./done-flow-state.ts";
 import { LaunchFailed, LaunchRegistrationError } from "./launch-types.ts";
 import { STARTUP_CHECK_MS, GOAL_WAIT, lastLines } from "./pending-goal.ts";
 import { startupFailure } from "./launch-screen.ts";
+import { isReason } from "./runtime/omo-host/exec.ts";
 import { closedMeanwhile } from "./sessions.ts";
+
+const hostUnavailable = (error: unknown): boolean => isReason(error, "host_unavailable", "transport_gone");
+const hostHelp = "OmO host is unreachable; start the shared host: omo host ensure";
+
+export const checkHostedLaunch = async (deps: FlowDeps): Promise<void> => {
+  try {
+    await runtimesOf(deps.run, deps.config).lane.list();
+  } catch (error) {
+    if (hostUnavailable(error)) throw new LaunchFailed(hostHelp);
+    throw new LaunchFailed(`host check failed: ${String(error)}`);
+  }
+};
 
 export const openHostedLane = async (deps: FlowDeps, input: { readonly key: string; readonly cwd: string; readonly model: string; readonly prompt: string }, register: (opened: { readonly pane: string }) => Promise<void>) => {
   const rt = runtimesOf(deps.run, deps.config).lane;
   const { key, cwd, model, prompt } = input;
   const group = deps.config.laneWorkspace;
   const ref = await rt.create({ name: key, cwd, model, env: {}, role: "lane", container: "tab", ...(group ? { group } : {}) }).catch((error: unknown) => {
-    throw new LaunchFailed(`session create failed: ${String(error)}`);
+    throw new LaunchFailed(hostUnavailable(error) ? hostHelp : `session create failed: ${String(error)}`);
   });
   const pane = formatRef(ref);
   try {

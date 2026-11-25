@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { launchLane, renderBrief } from "../src/launch.ts";
 import { Reports } from "../src/reports.ts";
+import { FakeOmoHost } from "./fake-omo-host.ts";
+import { syncRegistry } from "../src/sync.ts";
+import { watchTick } from "../src/done-flow.ts";
+import { listPanes, readScreen } from "../src/panes.ts";
 import { terminal as hcTerm } from "./fake-hc.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
@@ -123,4 +127,56 @@ test("an hc launch without placement overrides uses the same terminal spec and f
   expect(rendered.split("## Lane footer")[1]).toBe(expected.text.split("## Lane footer")[1]);
   expect(rendered).toContain('run ["dori","type",');
   expect(rendered).not.toContain('["hc","send",');
+});
+
+test("without placement overrides hc launch, sync and watch coexist with a stored hosted lane", async () => {
+  const fixture = rig(undefined, true);
+  const host = new FakeOmoHost(join(state.dir, "sessions"));
+  const id = "00000000-0000-4000-8000-000000000073";
+  const pane = `omo-host:${id}`;
+  const entry = { type: "message", message: { role: "assistant", content: "hosted marker" } };
+  const hosted = host.add({ id, entries: [entry] });
+  const transcript = String(hosted.state["sessionFile"]);
+  mkdirSync(dirname(transcript), { recursive: true });
+  writeFileSync(transcript, `${JSON.stringify(entry)}\n`);
+  const run: typeof fixture.run = async (argv, opts) => {
+    if (argv[0] !== "omo") return fixture.run(argv, opts);
+    const result = await host.exec("omo", argv.slice(1));
+    return { code: result.code, out: result.stdout, err: result.stderr };
+  };
+  const deps = { ...fixture.deps, run };
+  expect(deps.config.laneRuntime).toBeUndefined();
+  expect(deps.config.leadRuntime).toBeUndefined();
+  await deps.registry.write({ key: "hosted", title: "Hosted", pane, thread: "none", done: "file /hosted", brief, openedAt: new Date(T0).toISOString() });
+  const { lane, startup } = await launchLane(deps, fixture.input);
+  expect(startup).toBe("STARTUP_OK smoke hc:t1");
+  expect((await listPanes(run, deps.config)).map((p) => p.pane_id)).toEqual(expect.arrayContaining([pane, lane.pane]));
+  const sync = await syncRegistry(deps, false);
+  expect(sync.drift).toEqual([]);
+  expect(sync.rows).toEqual(expect.arrayContaining([expect.objectContaining({ key: "smoke", pane: "hc:t1" }), expect.objectContaining({ key: "hosted", pane, session: `${id} (runtime)` })]));
+  expect(await watchTick(deps)).toEqual([]);
+  expect(await readScreen(run, deps.config.backend, pane)).toContain("hosted marker");
+  expect(host.calls.some(([verb]) => verb === "open")).toBe(false);
+});
+
+test("an aoe config with explicit hc runs the lane in the launching instance", async () => {
+  const fixture = rig(undefined, true);
+  const previous = { DORI_CONFIG: process.env["DORI_CONFIG"], DORI_ENV_FILE: process.env["DORI_ENV_FILE"] };
+  const configFile = join(state.dir, "custom.json");
+  const envFile = join(state.dir, "custom.env");
+  process.env["DORI_CONFIG"] = configFile;
+  process.env["DORI_ENV_FILE"] = envFile;
+  try {
+    const config = { ...fixture.deps.config, backend: "aoe" as const, laneRuntime: "hc" as const };
+    const result = await launchLane({ ...fixture.deps, config, run: fixture.run }, fixture.input);
+    expect(result.startup).toBe("STARTUP_OK smoke hc:t1");
+    const argv = fixture.calls.find((a) => a[0] === "hc" && a[2] === "send");
+    expect(argv?.join(" ")).toContain(`DORI_CONFIG=${configFile}`);
+    expect(argv?.join(" ")).toContain(`DORI_STATE_DIR=${state.dir}`);
+    expect(argv?.join(" ")).toContain(`DORI_ENV_FILE=${envFile}`);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });

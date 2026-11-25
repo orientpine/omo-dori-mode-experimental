@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { liveSessions, sessionFor } from "./aoe.ts";
 import { sessionFile } from "./background.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { hostedTranscript } from "./pane-transcript.ts";
+import { parseRef } from "./runtime/types.ts";
 import { sendVerified } from "./panes.ts";
 import { type AutoturnMark, type Lane, statusOf } from "./registry.ts";
 import { iso } from "./run.ts";
@@ -166,13 +168,15 @@ export const autoturnTick = async (deps: FlowDeps): Promise<string[]> => {
     ...(lead && !lanes.some((l) => l.pane === lead) ? [{ pane: lead, cwd: sessionFor(sessions, lead)?.path ?? "" }] : []),
   ];
   for (const t of targets) {
-    if (!t.cwd || !sessionFor(sessions, t.pane)) continue;
+    const ref = parseRef(t.pane);
+    const hosted = t.lane && ref?.runtime === "omo-host" ? ref : undefined;
+    if (!hosted && (!t.cwd || !sessionFor(sessions, t.pane))) continue;
     const key = t.lane?.key ?? "lead";
     let pause: AutoturnPause | undefined;
     let run: AutoturnRun | undefined;
     try {
-      const file = await sessionFile(deps.run, deps.config.sessionsDir, t.pane, t.cwd, table);
-      const text = file ? readTranscript(file.path) : undefined;
+      const path = hosted ? await hostedTranscript(deps.run, deps.config, hosted) : (await sessionFile(deps.run, deps.config.sessionsDir, t.pane, t.cwd, table))?.path;
+      const text = path ? readTranscript(path) : undefined;
       pause = text ? autoturnPause(text.tail) : undefined;
       run = text && every > 0 ? runOf(text) : undefined;
     } catch (e) {

@@ -12,6 +12,8 @@ import { currentTranscript } from "./current-transcript.ts";
 export { currentTranscript } from "./current-transcript.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Question } from "./messenger/discord-cards.ts";
+import { hostedTranscript } from "./pane-transcript.ts";
+import { parseRef } from "./runtime/types.ts";
 import { sendVerified } from "./panes.ts";
 import { answeredBy } from "./send-dedupe.ts";
 import { iso } from "./run.ts";
@@ -169,11 +171,16 @@ export const missedAnswersTick = async (deps: FlowDeps): Promise<string[]> => {
   const transcripts = new Map<string, string | undefined>();
   for (const q of due) {
     const pane = q.tmux || deps.config.leadPane;
-    const cwd = sessionFor(sessions, pane)?.path;
-    if (!cwd) continue;
     if (!transcripts.has(pane)) {
-      const file = await sessionFile(deps.run, deps.config.sessionsDir, pane, cwd, table, deps.config.stateDir);
-      transcripts.set(pane, file ? currentTranscript(file, sessionFor(sessions, pane)?.title ?? "") : undefined);
+      const ref = parseRef(pane);
+      const session = sessionFor(sessions, pane);
+      if (ref?.runtime === "omo-host") {
+        const path = await hostedTranscript(deps.run, deps.config, ref);
+        transcripts.set(pane, path && existsSync(path) ? readFileSync(path, "utf8") : undefined);
+      } else {
+        const file = session?.path ? await sessionFile(deps.run, deps.config.sessionsDir, pane, session.path, table, deps.config.stateDir) : undefined;
+        transcripts.set(pane, file ? currentTranscript(file, session?.title ?? "") : undefined);
+      }
     }
     const text = transcripts.get(pane);
     // a session that started after the answer (a rollover) did not ask: the handover carries what it needs

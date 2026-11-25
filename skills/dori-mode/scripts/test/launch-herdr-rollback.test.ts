@@ -107,3 +107,25 @@ test("a herdr journal append failure closes the new terminal and unwinds for ret
   expect(result.startup).toBe("STARTUP_OK smoke w1:p3");
   expect(reports.read("smoke")?.state).toBe("running");
 });
+
+test("an aoe config with explicit herdr runs the lane in the launching instance", async () => {
+  const fixture = rig(undefined, true);
+  const previous = { DORI_CONFIG: process.env["DORI_CONFIG"], DORI_ENV_FILE: process.env["DORI_ENV_FILE"] };
+  const configFile = join(state.dir, "custom.json");
+  const envFile = join(state.dir, "custom.env");
+  process.env["DORI_CONFIG"] = configFile;
+  process.env["DORI_ENV_FILE"] = envFile;
+  try {
+    const config = { ...fixture.deps.config, backend: "aoe" as const, laneRuntime: "herdr" as const };
+    const result = await launchLane({ ...fixture.deps, config, run: fixture.run }, fixture.input);
+    expect(result.startup).toBe("STARTUP_OK smoke w1:p3");
+    const argv = fixture.calls.find((a) => a[0] === "herdr" && a[2] === "run");
+    expect(argv?.join(" ")).toContain(`DORI_CONFIG=${configFile}`);
+    expect(argv?.join(" ")).toContain(`DORI_STATE_DIR=${state.dir}`);
+    expect(argv?.join(" ")).toContain(`DORI_ENV_FILE=${envFile}`);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
