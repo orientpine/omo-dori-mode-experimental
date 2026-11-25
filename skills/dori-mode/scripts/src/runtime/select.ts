@@ -3,7 +3,7 @@ import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { TerminalKind } from "./types.ts";
 
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 export type RuntimeSource = "env" | "config" | "detect:HC_TERMINAL_ID" | "detect:HERDR_PANE_ID" | "detect:path";
 export type RuntimeChoice = { readonly kind: TerminalKind; readonly source: RuntimeSource };
 

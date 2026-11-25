@@ -1,4 +1,4 @@
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 

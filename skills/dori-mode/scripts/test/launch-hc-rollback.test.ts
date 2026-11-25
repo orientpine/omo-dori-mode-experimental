@@ -101,7 +101,7 @@ test("an initial journal append failure closes the new terminal and unwinds for 
   expect(result.startup).toBe("STARTUP_OK smoke hc:t1");
   expect(reports.read("smoke")?.state).toBe("running");
 });
-// Compatibility guard for https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Compatibility guard for https://github.com/sisyphuslabs/dori-superagent/pull/282.
 test("an hc launch without placement overrides uses the same terminal spec and footer", async () => {
   const fixture = rig(undefined, true);
   const expected = await renderBrief(fixture.deps, fixture.input);

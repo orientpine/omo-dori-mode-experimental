@@ -1,4 +1,4 @@
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 // A fake `omo host session ... --json` over an in-memory set of sessions: one JSON line on stdout per call, exit 3 with
 // `{ action: "refuse", reason }` for a host refusal, as the real CLI answers.
 import { mkdirSync, writeFileSync } from "node:fs";

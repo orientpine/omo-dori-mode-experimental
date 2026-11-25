@@ -1,4 +1,4 @@
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 import type { FlowDeps } from "./done-flow-state.ts";
 import { sessionOf, type Lane } from "./registry.ts";
 import { closedMeanwhile } from "./sessions.ts";

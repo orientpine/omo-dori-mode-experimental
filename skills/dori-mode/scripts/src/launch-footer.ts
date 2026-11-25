@@ -82,13 +82,13 @@ export const uiWarning = (input: LaunchInput, brief: string, ledger: Pick<Ledger
 export const cliCommand = (path: string = fileURLToPath(new URL("./cli.ts", import.meta.url)), instance?: { readonly config: string; readonly stateDir: string }, platform: string = process.platform): string => agentLine(["bun", path], instance ? { DORI_CONFIG: instance.config, DORI_STATE_DIR: instance.stateDir } : {}, platform);
 const CLI = cliCommand();
 
-// https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: hosted lanes cannot infer the lead’s terminal from their environment.
+// https://github.com/sisyphuslabs/dori-superagent/pull/282: hosted lanes cannot infer the lead’s terminal from their environment.
 export const leadSendArgv = (kind: string, pane: string): readonly string[] | undefined => {
   if (!pane) return undefined;
   switch (kind) {
     case "hc": return ["hc", "send", pane.replace(/^hc:/, ""), "--", "<report line>"];
     case "herdr": return ["herdr", "pane", "run", pane.replace(/^herdr:/, ""), "<report line>"];
-    // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284: the lead may itself be a host session.
+    // https://github.com/sisyphuslabs/dori-superagent/pull/284: the lead may itself be a host session.
     case "omo-host": return ["dori", "type", `omo-host:${pane.replace(/^omo-host:/, "")}`, "--text", "<report line>"];
     default: return undefined;
   }

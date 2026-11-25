@@ -36,7 +36,7 @@ export class Runtimes {
    * hc terminal, else `HERDR_PANE_ID` a herdr pane (grouped by `HERDR_WORKSPACE_ID` when set). Builds no runtime.
    */
   selfAny(env: Readonly<Record<string, string | undefined>>): SessionRef | undefined {
-    // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: a host can inherit its launch terminal.
+    // https://github.com/sisyphuslabs/dori-superagent/pull/282: a host can inherit its launch terminal.
     const hosted = hostSelf(env);
     if (hosted !== undefined) return hosted;
     const terminal = nonEmpty(env["HC_TERMINAL_ID"]);

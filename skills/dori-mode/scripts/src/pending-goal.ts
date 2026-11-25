@@ -51,7 +51,7 @@ export const noGoalWhy = (goal: GoalRead): string => (goal === "none" ? "no goal
 
 // The goal of the lane's own session: the exact id its agent runs under (goal.ts laneGoal)
 export const goalReader = (deps: FlowDeps, cwd: string, session: string): ((pane: string) => Promise<GoalRead>) =>
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: watch reads hosted goals using the real session file reported by the host.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: watch reads hosted goals using the real session file reported by the host.
   deps.readGoal ?? (async (pane) => parseRef(pane)?.runtime === "omo-host" ? sessionGoal(deps, pane) : laneGoal(deps.config.sessionsDir, cwd, session));
 
 export const agentGone = async (deps: FlowDeps, pane: string): Promise<string | undefined> => {

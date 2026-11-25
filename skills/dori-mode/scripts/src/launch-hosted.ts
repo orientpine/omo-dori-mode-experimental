@@ -1,4 +1,4 @@
-// Ported from https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282.
+// Ported from https://github.com/sisyphuslabs/dori-superagent/pull/282.
 import { runtimesOf } from "./run.ts";
 import { formatRef, type SessionRef } from "./runtime/types.ts";
 import type { FlowDeps } from "./done-flow-state.ts";

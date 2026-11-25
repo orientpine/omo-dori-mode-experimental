@@ -47,9 +47,9 @@ export type Backend = "herdr" | "aoe";
 export type DoriConfig = {
   readonly backend: Backend;
   readonly runtime?: RuntimeChoice["kind"];
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: opt-in lane placement.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: opt-in lane placement.
   readonly laneRuntime?: RuntimeKind;
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284: identifies the runtime of the existing lead session.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284: identifies the runtime of the existing lead session.
   readonly leadRuntime?: RuntimeKind;
   readonly stateDir: string;
   readonly watchLog: string;

@@ -130,7 +130,7 @@ export class ChosenRuntimes extends Runtimes {
   readonly choice: RuntimeChoice | undefined;
   readonly failure: Error | undefined;
 
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: placement of lanes is independent of the terminal default.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: placement of lanes is independent of the terminal default.
   constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime, private readonly placement: { readonly laneRuntime?: RuntimeKind; readonly leadRuntime?: RuntimeKind } = {}) {
     let choice: RuntimeChoice | undefined;
     let failure: Error | undefined;
@@ -148,7 +148,7 @@ export class ChosenRuntimes extends Runtimes {
     return this.placement.laneRuntime ? this.for({ runtime: this.placement.laneRuntime, id: "" }) : this.default;
   }
 
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/284: the lead can live elsewhere without moving lane, duty or loop defaults.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/284: the lead can live elsewhere without moving lane, duty or loop defaults.
   get lead(): SessionRuntime {
     return this.placement.leadRuntime ? this.for({ runtime: this.placement.leadRuntime, id: "" }) : this.default;
   }

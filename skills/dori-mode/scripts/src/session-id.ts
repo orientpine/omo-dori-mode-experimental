@@ -218,7 +218,7 @@ const currentSession = async (table: readonly Proc[], agent: Proc, fromFlag: str
 };
 
 export const resolveSession = async (pane: string, cwd: string, table: readonly Proc[], deps: SessionDeps): Promise<SessionHit> => {
-  // https://github.com/sisyphuslabs/omo-dori-mode-experimental/pull/282: the host’s durable ref is the agent session ID.
+  // https://github.com/sisyphuslabs/dori-superagent/pull/282: the host’s durable ref is the agent session ID.
   const hosted = parseRef(pane);
   if (hosted?.runtime === "omo-host") return { id: hosted.id, via: "runtime" };
   const shellPid = await shellPidOf(pane, deps);
