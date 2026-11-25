@@ -74,7 +74,16 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
       await deps.registry.write(lane);
     }
     if (lane.pane && omoPane(deps.config, lane.pane)) {
-      const act = (await paneActivity(deps.run, [lane.pane], deps.config)).get(lane.pane);
+      const hosted = sessionOf(lane)?.runtime === "omo-host";
+      // https://github.com/sisyphuslabs/dori-superagent/pull/282: an unreachable host holds this lane only, never the tick
+      let unobserved = false;
+      const act = await paneActivity(deps.run, [lane.pane], deps.config).then((m) => m.get(lane.pane ?? ""), (e: unknown) => {
+        if (!hosted) throw e;
+        unobserved = true;
+        out.push(`LANE_WATCH_WARN ${lane.key} hosted session not observed (${String(e).slice(0, 200)}); its claim waits for the next tick`);
+        return undefined;
+      });
+      if (unobserved) continue;
       const reopened = await claimTurn(deps, lane, act);
       if (reopened) {
         out.push(reopened);

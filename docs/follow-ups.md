@@ -14,6 +14,7 @@ Reviews 5 to 7 of #527 found 3, 2 and 3 new spots each where the lead's side mee
 - Owner-waiting check: a hosted lane's card answer is left to `missedAnswersTick`. Closing it: read the hosted transcript in `unansweredRows`, closed lanes' archives first, one target's host failure isolated to its rows (reviews 6 and 7).
 - Bare hc lead id with `leadRuntime` `"hc"`: refused at config load, though upstream #284 accepts it. Closing it: `hc-lead-core.ts` (used by `dori.sh` and doriterm) applies the shared `normalizeLeadPane`, overrides first, then the refusal goes (review 7 finding 2).
 - Goal pause/resume at the lead's limit for hosted lanes: not reviewed under the cut.
+- Lead handover with `leadRuntime` set to a place other than where the backend opens the replacement (`openingRuntime`): refused with `HANDOVER_REFUSED leadRuntime ... differs from ...` before anything moves, since `pointLead` would point an hc-typed lead at a herdr or aoe address and the next config load would refuse it. Closing it: open the replacement on `leadRuntime` (or repoint `leadRuntime` with `leadPane` in pointLead and its rollback) with a mixed-runtime handover test that reloads the config (review 8 finding 1).
 
 Receipts: `~/.soodori/state/receipts/reviews/orientpine__omo-dori-mode-experimental_527@{dced27d4,527d2d54}*.md`, challenge `~/.soodori/state/challenges/port-upstream-264-284/2026-11-25T15-25-53-469Z-*.md`.
 

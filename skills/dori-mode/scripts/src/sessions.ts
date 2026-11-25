@@ -8,6 +8,7 @@ import { runtimesOf, type Runner } from "./run.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
 import { statusOf } from "./registry.ts";
 import { isOmoCommand, type Submitted } from "./submit.ts";
+import { isReason, OmoHostError } from "./runtime/omo-host/exec.ts";
 
 export type AoeSessionRef = { readonly runtime: "aoe"; readonly id: string; readonly group?: string };
 export type BootSession = Omit<SessionInfo, "ref"> & { readonly ref: SessionRef | AoeSessionRef };
@@ -86,11 +87,14 @@ export const closeSession = async (rts: Runtimes, ref: SessionRef): Promise<stri
 };
 
 // https://github.com/sisyphuslabs/dori-superagent/pull/282: prompt or steer is a single delivery; never retry an uncertain result.
+// A refusal the host answered (busy, unknown session, usage, refused) is definite; any other failure may follow a run.
+const refusedByHost = (error: unknown): boolean => error instanceof OmoHostError && (error.result.code === 2 || error.result.code === 3 || isReason(error, "busy", "unknown_session"));
+
 export const submitHosted = async (rts: Runtimes, ref: SessionRef, text: string): Promise<Submitted> => {
   const rt = rts.for(ref);
   if (isOmoCommand(text)) return rt.start(ref, text).then(
     () => ({ status: "SUBMITTED", reason: "host accepted the slash command" }),
-    (error: unknown) => ({ status: "NOT_SUBMITTED", reason: String(error) }),
+    (error: unknown) => (refusedByHost(error) ? { status: "NOT_SUBMITTED", reason: String(error) } : { status: "AMBIGUOUS", reason: `the host may have run it: ${String(error)}` }),
   );
   const result = await rt.deliver(ref, text, { when: "any" });
   switch (result.kind) {
