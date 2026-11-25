@@ -63,5 +63,8 @@ export const prDiff = async (deps: Pick<FlowDeps, "run">, pr: PrRef, root: strin
   if (view.code !== 0) return view;
   const base: unknown = (JSON.parse(view.out) as { base?: { sha?: unknown } }).base?.sha;
   if (typeof base !== "string" || !/^[0-9a-f]{40}$/.test(base)) return { code: 1, out: "", err: `${gh.err.trim()}; and gh named no base commit` };
-  return deps.run(["git", "-C", root, "diff", `${base}...${sha}`]);
+  // the checkout's own diff drivers and textconv filters must not replace the patch the reviewer reads (an external driver
+  // can print nothing and still exit 0), and an empty diff of a PR is no diff to review
+  const local = await deps.run(["git", "-C", root, "diff", "--no-ext-diff", "--no-textconv", "--no-color", `${base}...${sha}`]);
+  return local.code === 0 && !local.out.trim() ? { code: 1, out: "", err: `git diff ${base.slice(0, 12)}...${sha.slice(0, 12)} in ${root} printed nothing` } : local;
 };

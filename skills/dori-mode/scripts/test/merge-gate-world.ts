@@ -34,7 +34,7 @@ export const runner = (w: Gh): Runner => async (argv) => {
   if (a === "gh api repos/acme/app/pulls/7") return ok(JSON.stringify({ base: { sha: w.base ?? "c".repeat(40) } }));
   if (a.startsWith("gh pr diff") && w.diffTooLarge) return { code: 1, out: "", err: "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000)" };
   if (a.startsWith("gh pr diff")) return ok(w.diff ?? "diff --git a/x b/x\n+x");
-  if (argv[3] === "diff" && argv[4]?.includes("...")) return w.localDiffFails ? { code: 128, out: "", err: "fatal: bad revision" } : ok(w.localDiff ?? "diff --git a/big b/big\n+LOCAL_DIFF");
+  if (argv[3] === "diff" && argv.at(-1)?.includes("...")) return w.localDiffFails ? { code: 128, out: "", err: "fatal: bad revision" } : ok(w.localDiff ?? "diff --git a/big b/big\n+LOCAL_DIFF");
   if (a.toLowerCase().startsWith("gh api repos/acme/app/actions/runs?")) return w.runsFail ? { code: 1, out: "", err: "HTTP 502" } : ok(w.runs ?? '{"total_count":0,"workflow_runs":[]}');
   const listed = w.commits ?? [{ sha: w.head, subject: "feat: demo" }];
   if (a.startsWith("gh api --paginate repos/")) return ok(listed.map((c) => `${c.sha}\n`).join(""));
