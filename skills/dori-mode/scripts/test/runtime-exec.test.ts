@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnExec, ToolError } from "../src/runtime/exec.ts";
 import { groupId } from "../src/runtime/group.ts";
+import { execOf, type RunOptions } from "../src/run.ts";
 
 describe("groupId", () => {
   test("is 8 lowercase hex chars and stable for one store root", () => {
@@ -42,5 +43,24 @@ describe("exec", () => {
   test("spawnExec returns code, stdout and stderr of a real process", async () => {
     const r = await spawnExec("sh", ["-c", "printf out; printf err >&2; exit 4"]);
     expect(r).toEqual({ code: 4, stdout: "out", stderr: "err" });
+  });
+
+  test("spawnExec's per-call env removes a variable named undefined and sets a named one, the rest inherited", async () => {
+    const names = (await spawnExec("env", [], { HOME: undefined, DORI_EXEC_SET: "1" })).stdout.split("\n");
+    expect(names.some((line) => line.startsWith("HOME="))).toBe(false);
+    expect(names).toContain("DORI_EXEC_SET=1");
+    expect(names.some((line) => line.startsWith("PATH="))).toBe(true);
+  });
+
+  test("execOf hands a call's env to the Runner, and no env when the call has none", async () => {
+    const seen: (RunOptions | undefined)[] = [];
+    const exec = execOf(async (_argv, opts) => {
+      seen.push(opts);
+      return { code: 0, out: "", err: "" };
+    });
+    await exec("hc", ["--json", "send"], { HC_TERMINAL_ID: undefined });
+    await exec("hc", ["--json", "get"]);
+    expect(seen).toEqual([{ env: { HC_TERMINAL_ID: undefined } }, undefined]);
+    expect(Object.hasOwn(seen[0]?.env ?? {}, "HC_TERMINAL_ID")).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 // From upstream dori-superagent src/runtime/hc/exec.ts (https://github.com/sisyphuslabs/dori-superagent/blob/7ac0ed761dfb6aa0b3a81e8740a29cde5cbd0444/src/runtime/hc/exec.ts; #147 #148 #150 #155, licences in NOTICE).
 // One `hc --json` call: the session is the inherited HC_SESSION (hc has no --session flag), the result is hc's JSON.
-import type { Exec, ExecResult } from "../exec.ts";
+import type { Exec, ExecEnv, ExecResult } from "../exec.ts";
 import { ToolError } from "../exec.ts";
 
 /** Exit codes per error kind (hc's rpc table), read only when stderr carries no JSON. */
@@ -53,7 +53,7 @@ function errorOf(argv: readonly string[], result: ExecResult): HcError {
   return new HcError(argv, result, kind, hint, str(error["message"]) ?? (raw || "no output"));
 }
 
-export type HcCallOptions = { readonly redact?: string };
+export type HcCallOptions = { readonly redact?: string; readonly env?: ExecEnv };
 
 export async function hcCall(
   exec: Exec,
@@ -61,7 +61,7 @@ export async function hcCall(
   options: HcCallOptions = {},
 ): Promise<Record<string, unknown>> {
   const full = ["--json", ...argv];
-  const result = await exec("hc", full);
+  const result = await (options.env ? exec("hc", full, options.env) : exec("hc", full));
   if (result.code !== 0) {
     const shown = options.redact === undefined ? full : full.map((a) => (a === options.redact ? "<text>" : a));
     throw errorOf(shown, result);

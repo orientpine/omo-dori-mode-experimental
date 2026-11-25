@@ -3,10 +3,13 @@
 // and end-to-end tests point it at an isolated session.
 
 export type ExecResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
-export type Exec = (cmd: string, argv: readonly string[]) => Promise<ExecResult>;
+// env: variables for this one call on top of the inherited environment; an undefined value removes the variable
+export type ExecEnv = Readonly<Record<string, string | undefined>>;
+export type Exec = (cmd: string, argv: readonly string[], env?: ExecEnv) => Promise<ExecResult>;
 
-export const spawnExec: Exec = async (cmd, argv) => {
-  const proc = Bun.spawn([cmd, ...argv], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+export const spawnExec: Exec = async (cmd, argv, env) => {
+  const childEnv = env && Object.fromEntries(Object.entries({ ...process.env, ...env }).filter(([, v]) => v !== undefined));
+  const proc = Bun.spawn([cmd, ...argv], { stdout: "pipe", stderr: "pipe", stdin: "ignore", ...(childEnv ? { env: childEnv } : {}) });
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

@@ -82,6 +82,8 @@ export function terminal(over: Partial<FakeTerminal> = {}): FakeTerminal {
 export class FakeHc {
   readonly calls: string[][] = [];
   readonly sent: { id: string; text: string }[] = [];
+  /** The per-call environment of each `send` (undefined: none, the caller's own environment as it is). */
+  readonly sendEnvs: (Readonly<Record<string, string | undefined>> | undefined)[] = [];
   readonly terminals = new Map<string, FakeTerminal>();
   knobs: FakeKnobs = {};
   private next = 1;
@@ -91,7 +93,7 @@ export class FakeHc {
     this.next = this.terminals.size + 1;
   }
 
-  readonly exec: Exec = async (cmd, argv) => {
+  readonly exec: Exec = async (cmd, argv, env) => {
     if (cmd === "ps") {
       const stdout = this.knobs.ps;
       return stdout === undefined ? { code: 1, stdout: "", stderr: "no process table" } : { code: 0, stdout, stderr: "" };
@@ -100,6 +102,7 @@ export class FakeHc {
     const args = argv.slice(1);
     this.calls.push(args);
     const [verb, id] = args;
+    if (verb === "send") this.sendEnvs.push(env);
     if (verb === "run") return this.run(args);
     if (verb === "ls") return this.ls(args);
     const t = id === undefined ? undefined : this.terminals.get(id);

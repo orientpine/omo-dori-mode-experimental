@@ -71,6 +71,13 @@ describe("deliver", () => {
     expect(fake.calls.filter((c) => c[0] === "send")).toEqual([["send", "t1", "--if", "working", "--", "/goal pause"]]);
   });
 
+  test("a slash command is sent without the caller's HC_TERMINAL_ID, so hc types no <hc from> tag around it; plain text keeps the tag", async () => {
+    const { fake, rt } = rig({ t1: terminal() });
+    for (const text of ["/goal pause", "/model chatgpt-subscription/gpt-6.1-sol", "hello /goal pause", " /goal pause"])
+      expect((await rt.deliver(T1, text)).kind).toBe("delivered");
+    expect(fake.sendEnvs).toEqual([{ HC_TERMINAL_ID: undefined }, { HC_TERMINAL_ID: undefined }, undefined, undefined]);
+  });
+
   test("when=any sends with no status gate", async () => {
     const { fake, rt } = rig({ t1: terminal({ status: { state: "working", app: "omo" } }) });
     expect((await rt.deliver(T1, "x", { when: "any" })).kind).toBe("delivered");
