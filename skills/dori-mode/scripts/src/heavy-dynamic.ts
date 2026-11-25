@@ -1,5 +1,5 @@
 import { type MemInfo, fmtMem, memVerdict } from "./heavy-mem.ts";
-import { claimSlot, inspectSlots } from "./heavy-slot-store.ts";
+import { claimSlot, inspectSlots, type InspectedSlot } from "./heavy-slot-store.ts";
 import type { SlotDeps, SlotRequest, Try } from "./heavy-slot-types.ts";
 import { ownerMemWhy } from "./heavy-owner-pc.ts";
 
@@ -27,6 +27,8 @@ export const explicitMemFloor = ({ dynamic, headroom }: ExplicitMemPolicy): numb
 const WARMUP_MS = 120_000;
 const MAX_AGE_MS = 1_000;
 const SAMPLE_TRIES = 3;
+const slotOwner = (h: InspectedSlot): string =>
+  `slot.${h.n} ${h.pid === undefined ? "owner unknown" : `${h.label} pid ${h.pid} since ${h.since === undefined ? "unknown" : new Date(h.since).toISOString()}`}`;
 
 const decide = async (deps: DynamicDeps, snapshot: ReturnType<typeof inspectSlots>, request?: SlotRequest) => {
   const { dynamic: p } = deps;
@@ -54,23 +56,25 @@ const decide = async (deps: DynamicDeps, snapshot: ReturnType<typeof inspectSlot
   const wanted = held.length + (loadOk ? fits : Math.min(0, fits));
   const limit = load1 === null || memory === null ? p.minSlots : Math.max(p.minSlots, Math.min(p.maxSlots, wanted));
   const bound = wanted >= p.maxSlots && memory && load1 !== null ? "ceiling" : wanted < p.minSlots || load1 === null ? "floor" : loadOk ? "memory" : "load";
-  const why = `limit ${limit} of ${p.minSlots}-${p.maxSlots} (${bound}), running ${held.length}${warming.length ? ` (${warming.length} starting)` : ""}: ` +
-    (memory ? `memory ${((100 * memory.availKb) / memory.totalKb).toFixed(1)}% free, ${fmtMem(p.jobMemKb * 1024)} per job above ${p.memFreeMinPct}% fits ${fits >= 0 ? `${fits} more` : `${-fits} fewer`}; ` : "memory unknown; ") +
-    (load1 === null ? "load unknown" : `load ${load1.toFixed(1)} ${loadOk ? "<" : ">="} ${deps.maxLoad}`) +
-    (stale ? `; host sample took over ${MAX_AGE_MS} ms ${SAMPLE_TRIES} times` : "");
-  if (!free || held.length >= p.maxSlots) return { result: { wait: "full", why }, held };
-  if (held.length >= limit) return { result: { wait: loadOk ? "memory" : "load", why }, held };
+  const capacity = `limit ${limit} of ${p.minSlots}-${p.maxSlots} (${bound}), running ${held.length}${warming.length ? ` (${warming.length} starting)` : ""}: ` +
+    (memory ? `memory ${((100 * memory.availKb) / memory.totalKb).toFixed(1)}% free, ${fmtMem(p.jobMemKb * 1024)} per job above ${p.memFreeMinPct}% fits ${fits >= 0 ? `${fits} more` : `${-fits} fewer`}` : "memory unknown");
+  const loadText = load1 === null ? "load unknown" : `load ${load1.toFixed(1)} ${loadOk ? "<" : ">="} ${deps.maxLoad}`;
+  const ageText = stale ? `; host sample took over ${MAX_AGE_MS} ms ${SAMPLE_TRIES} times` : "";
+  const why = `${capacity}; ${loadText}${ageText}`;
+  if (!free || held.length >= p.maxSlots) return { result: { wait: "full", why: `all ${p.maxSlots} slots busy: ${held.map(slotOwner).join(", ")}; ${why}` }, held, why };
+  // "memory:" is part of WORKER_BUSY's wire text: legacy batch callers use it to report pressure.
+  if (held.length >= limit) return { result: loadOk ? { wait: "memory", why: `memory: ${why}` } : { wait: "load", why: `${loadText}; ${capacity}${ageText}` }, held, why };
   if (request?.ownerMemPct !== undefined && held.length > 0)
-    return { result: { wait: "full", why: `${why}; the owner's PC runs one batch item at a time` }, held };
+    return { result: { wait: "full", why: `${why}; the owner's PC runs one batch item at a time` }, held, why };
   if (request?.ownerMemPct !== undefined && !request.memKb)
-    return { result: { wait: "memory", why: `${why}; the owner's memory cap cannot be weighed here` }, held };
+    return { result: { wait: "memory", why: `memory: the owner's memory cap cannot be weighed here; ${why}` }, held, why };
   if (request?.memKb) {
-    if (!memory) return { result: { wait: "memory", why: `${why}; explicit memory estimate cannot be weighed here` }, held };
+    if (!memory) return { result: { wait: "memory", why: `memory: explicit estimate cannot be weighed here; ${why}` }, held, why };
     const owner = request.ownerMemPct === undefined ? undefined : ownerMemWhy(memory.totalKb, memory.totalKb - memory.availKb, reservedKb, request.memKb, request.ownerMemPct);
     const explicit = memVerdict(memory, request.memKb, reservedKb, explicitMemFloor(deps));
-    if (owner || !explicit.ok) return { result: { wait: "memory", why: `${why}; ${owner ?? explicit.why}` }, held };
+    if (owner || !explicit.ok) return { result: { wait: "memory", why: `${owner ? `memory: ${owner}` : explicit.why}; ${why}` }, held, why };
   }
-  return { result: { slot: free.path, why }, held, free, stamp };
+  return { result: { slot: free.path, why }, held, free, stamp, why };
 };
 
 // The caller holds the admission flock; inspect owners and reservations before sampling, then claim without re-probing.
@@ -81,7 +85,6 @@ export const admitDynamic = async (deps: DynamicDeps, request: SlotRequest): Pro
 };
 
 export const dynamicStatus = async (deps: DynamicDeps): Promise<readonly string[]> => {
-  const { result, held } = await decide(deps, inspectSlots(deps));
-  return [`HEAVY ${"slot" in result ? "OPEN" : "FULL"} ${result.why}`, ...held.map((h) =>
-    `HEAVY_SLOT slot.${h.n} ${h.pid === undefined ? "owner unknown" : `${h.label} pid ${h.pid} since ${h.since === undefined ? "unknown" : new Date(h.since).toISOString()}`}`)];
+  const { result, held, why } = await decide(deps, inspectSlots(deps));
+  return [`HEAVY ${"slot" in result ? "OPEN" : "FULL"} ${why}`, ...held.map((h) => `HEAVY_SLOT ${slotOwner(h)}`)];
 };

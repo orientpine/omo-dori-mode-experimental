@@ -448,7 +448,7 @@ export const heavyExec = async (ctx: HeavyCtx, words: readonly string[], d: Exec
   const pathOk = (o: string): boolean => o.startsWith("path=") && BOX_PATH_OK.test(o.slice(5));
   const bad = opts.find((o) => !/^playwright=\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(o) && !/^mem=\d{1,15}$/.test(o) && !/^arch=[\w-]{1,32}$/.test(o) && !needOk(o) && !whichOk(o) && !pathOk(o) && !toolOptOk(o) && !assetsOptOk(o) && !ownerOptOk(o) && o !== "back");
   if (bad !== undefined) return d.refuse(label, `unknown option "${bad}"`);
-  const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : (hostRefusal(ctx.q.kinds, kind, opts) ?? memRefusal(opts, ctx.deps));
+  const off = !ctx.q.exec ? "exec is off on this host (heavyQueue.exec)" : !Bun.which("bwrap") ? "no bwrap on this host" : (hostRefusal(ctx.q.kinds, kind, opts) ?? await memRefusal(opts, ctx.deps));
   if (off) return d.refuse(label, off);
   const got = toolBundles(opts, d.tools.toolsDir);
   if ("why" in got) return d.refuse(label, got.why);

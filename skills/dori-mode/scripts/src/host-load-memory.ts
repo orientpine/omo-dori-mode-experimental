@@ -24,13 +24,17 @@ export const sampleGuardLoadMemory = async (run: Runner) => {
   return { load1: Number.isFinite(load) ? load : 0, memFreePct: macPct ?? (proc ? (100 * proc.availKb) / proc.totalKb : null) };
 };
 
+export const sampleHeavyMemory = async (run: Runner): Promise<MemInfo | null> => {
+  const totalKb = totalmem() / 1024;
+  const { macPct, proc } = await memoryReading(run);
+  return proc ?? (macPct !== undefined && macPct <= 100 && totalKb > 0 ? { totalKb, availKb: (macPct * totalKb) / 100 } : null);
+};
+
 // https://github.com/sisyphuslabs/dori-superagent/pull/264
 // Read load first and available memory last; unlike guard, an unsuccessful read is not zero load.
 export const sampleHeavyHost = async (run: Runner): Promise<DynamicHost> => {
   const { text, code } = await loadReading(run);
   const load = code === 0 && /^\d+(?:\.\d+)?$/.test(text ?? "") ? Number(text) : NaN;
-  const totalKb = totalmem() / 1024;
-  const { macPct, proc } = await memoryReading(run);
-  const memory: MemInfo | null = proc ?? (macPct !== undefined && macPct <= 100 && totalKb > 0 ? { totalKb, availKb: (macPct * totalKb) / 100 } : null);
+  const memory = await sampleHeavyMemory(run);
   return { load1: Number.isFinite(load) ? load : null, memory };
 };

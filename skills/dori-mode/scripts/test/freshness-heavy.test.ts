@@ -57,20 +57,20 @@ for (const kind of ["empty", "unrelated", "gone", "missing", "unsupported", "mal
   } finally { stderr.mockRestore(); f.state.done(); }
 });
 
-for (const kind of ["scope", "service", "env", "slot", "slot-tree"] as const) test(`heavy ${kind} process trees are exempt`, async () => {
+for (const kind of ["scope", "service", "env", "slot", "slot-tree", "dynamic-slot-tree"] as const) test(`heavy ${kind} process trees are exempt`, async () => {
   const f = await fixture();
   const stderr = spyOn(console, "error").mockImplementation(() => {});
   try {
     if (kind === "scope" || kind === "service") f.probe.cgroup = `0::/user.slice/dori-heavy-test-10-1.${kind}\n`;
     if (kind === "env") f.probe.env = "OTHER=1\0DORI_HEAVY_JOB=training\0";
-    if (kind === "slot" || kind === "slot-tree") {
+    if (kind === "slot" || kind === "slot-tree" || kind === "dynamic-slot-tree") {
       const slot = join(f.state.dir, "heavy", "slot.1");
       mkdirSync(slot, { recursive: true });
       writeFileSync(join(slot, "owner"), `${process.pid} training ${new Date().toISOString()}`);
-      if (kind === "slot-tree") writeFileSync(join(slot, "tree"), "4100");
+      if (kind !== "slot") writeFileSync(join(slot, "tree"), "4100");
       else f.probe.ps = `4000 1 0 0\n${process.pid} 4000 0 0\n4200 ${process.pid} 0 0`;
     }
-    await heavyBypassTick(f.deps);
+    await heavyBypassTick(kind === "dynamic-slot-tree" ? { ...f.deps, config: { ...f.deps.config, heavyJobMemGb: 4 } } : f.deps);
     expect(stderr).not.toHaveBeenCalled();
   } finally { stderr.mockRestore(); f.state.done(); }
 });

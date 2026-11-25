@@ -58,6 +58,26 @@ test("--mem over --mem-per-worker caps the items running at once on each host; a
   expect(most).toBe(2);
 });
 
+test("a dynamic batch emits SHRINK while an admitted item is still running", async () => {
+  const gate = join(state.dir, "release");
+  expect(Bun.spawnSync(["mkfifo", gate], { env: process.env }).exitCode).toBe(0);
+  const ctx = ctxWith([], false, undefined, false, 2);
+  const kb = 1024 ** 2;
+  let availKb = 18 * kb;
+  const dynamic = { minSlots: 0, maxSlots: 2, jobMemKb: 4 * kb, memFreeMinPct: 20, sample: async () => ({ load1: 2, memory: { totalKb: 20 * kb, availKb } }) };
+  const log = (line: string): void => {
+    logs.push(line);
+    if (line.startsWith("HEAVY_BATCH_START b #1 ")) availKb = 6 * kb;
+    if (/^HEAVY_BATCH_(?:WAIT|SHRINK) b /.test(line)) {
+      availKb = 18 * kb;
+      Bun.spawn(["sh", "-c", 'printf "go\\n" > "$1"', "release", gate], { env: process.env, stdin: "ignore", timeout: 2_000 });
+    }
+  };
+  const job = batchOf(["1", "2"], ["sh", "-c", 'if [ "$0" = 1 ]; then read -r line < "$1"; fi', "{item}", gate]);
+  expect(await batchCode({ ...ctx, deps: { ...ctx.deps, dynamic, log } }, job)).toBe(0);
+  expect(logs.find((line) => line.startsWith("HEAVY_BATCH_SHRINK b "))).toContain("1 running there go on");
+});
+
 test("an item here is measured by its own process, and its slot stays the batch's until the item drained, so a later item never takes it over (review 2 of #476)", async () => {
   // item 1 exits at once but a child holds its output for 2 s; item 2, in the second slot, looks at the first meanwhile
   const heavy = join(state.dir, "heavy");

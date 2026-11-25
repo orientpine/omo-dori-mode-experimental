@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { takeLock } from "../src/checkpoint-lock.ts";
 import { loadConfig } from "../src/config.ts";
-import { admitOnce, type SlotDeps } from "../src/heavy-slot.ts";
+import { acquire, admitOnce, type SlotDeps } from "../src/heavy-slot.ts";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 
@@ -118,4 +118,15 @@ test("heavy status displays the enabled limit and a held owner's full label", as
   expect(result.code).toBe(0);
   expect(result.out).toContain("HEAVY OPEN limit 2 of 2-2");
   expect(result.out).toContain(`HEAVY_SLOT slot.1 browser suite pid ${process.pid}`);
+});
+
+test("dynamic full waits name the blocking slot holder before routing elsewhere", async () => {
+  const deps = depsFor(async () => sample(19));
+  owner(deps.dir, 1, `42 browser suite ${new Date(now).toISOString()}\n`);
+  const logs: string[] = [];
+  const got = await acquire({ ...deps, dynamic: { ...deps.dynamic, maxSlots: 1 }, log: (line) => logs.push(line) }, "next", {
+    elsewhere: async () => "helper",
+  });
+  expect(got).toEqual({ elsewhere: "helper" });
+  expect(logs).toEqual([expect.stringMatching(/^HEAVY_WAIT next: .*slot\.1 browser suite pid 42/)]);
 });
