@@ -9,6 +9,7 @@ import { addNode, formatTree, gateFix, intentView, laneArea, loadTree, metricAtt
 import { sessionDirFor } from "../src/session-id.ts";
 import { branchesFrom, forkExplore, parseBranch } from "../src/fork-explore.ts";
 import { freshnessTick } from "../src/freshness.ts";
+import { acquireSlot, releaseSlot, type SlotDeps } from "../src/heavy-slot.ts";
 import { footer, renderBrief } from "../src/launch.ts";
 import type { FixAttempt, Lane } from "../src/registry.ts";
 import { type Ran, run, type Runner } from "../src/run.ts";
@@ -384,15 +385,12 @@ test("a stricter retry that writes the three sections is saved as the review", a
 test("fork-explore runs CPU branches at once, queues GPU branches on the slot, prints one table and feeds the tree", async () => {
   let gpuActive = 0;
   let gpuMax = 0;
-  let held = Promise.resolve();
   const slotLabels: string[] = [];
+  const slots: SlotDeps = { dir: join(state.dir, "heavy"), slots: 1, maxLoad: 80, pid: process.pid, alive: () => true, load: async () => 2, clock: { now: () => T0, sleep: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); } }, dynamic: { minSlots: 1, maxSlots: 1, jobMemKb: 1024 ** 2, memFreeMinPct: 20, sample: async () => ({ load1: 2, memory: null }) } };
   const takeSlot = async (label: string) => {
     slotLabels.push(label);
-    const prev = held;
-    let free = () => {};
-    held = new Promise<void>((r) => { free = r; });
-    await prev;
-    return free;
+    const slot = await acquireSlot(slots, label);
+    return () => releaseSlot(slot);
   };
   const fake: Runner = async (argv) => {
     const cmd = argv.at(-1) ?? "";

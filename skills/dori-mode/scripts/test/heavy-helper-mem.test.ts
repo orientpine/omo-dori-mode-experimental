@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { HeavyCtx } from "../src/heavy-queue.ts";
+import { readMeminfo } from "../src/heavy-mem.ts";
 import { memRefusal } from "../src/heavy-route.ts";
 import { admitOnce, type SlotDeps } from "../src/heavy-slot.ts";
 import { heavySpread, spreadPlan, type SpreadJob } from "../src/heavy-spread.ts";
@@ -23,20 +24,41 @@ beforeEach(() => {
 });
 afterEach(() => state.done());
 
-const helperArgv = (name: string): string[] => {
+const helperArgv = (name: string, heavyJobMemGb: number | null = null, floor = 20): string[] => {
   const dir = join(state.dir, name);
   mkdirSync(dir, { recursive: true });
   const config = join(dir, "config.json");
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyJobMemGb, heavyMinSlots: floor === 100 ? 0 : 1, guard: { memFreeMinPct: floor }, heavyMaxLoad: 1e9, heavyQueue: { exec: true, execMaxMin: 5, jobDir: join(dir, "jobs") } }));
   const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
   return ["env", "-i", ...own, `DORI_CONFIG=${config}`, `DORI_ENV_FILE=${join(dir, "none.env")}`, process.execPath, CLI, "heavy-worker", "--caller", "tester"];
 };
 
-test("a job's mem= that can never fit this host is a refusal, one that fits or none is not", () => {
-  const m = { totalKb: 16 * 1024 ** 2, availKb: 12 * 1024 ** 2 };
-  expect(memRefusal([`mem=${32 * 1024 ** 3}`], 10, m)).toContain("never fits here");
-  expect(memRefusal([`mem=${8 * 1024 ** 3}`], 10, m)).toBeUndefined();
-  expect(memRefusal(["playwright=1.2.3"], 10, m)).toBeUndefined();
+test("a job's mem= that can never fit this host is a refusal, one that fits or none is not", async () => {
+  const m = { totalKb: 20 * 1024 ** 2, availKb: 12 * 1024 ** 2 };
+  const legacyMax = 18 * 1024 ** 3;
+  const legacy = { headroom: { free: 10 } };
+  expect(await memRefusal([`mem=${legacyMax + 1}`], legacy, m)).toContain("never fits here");
+  expect(await memRefusal([`mem=${legacyMax}`], legacy, m)).toBeUndefined();
+  expect(await memRefusal(["playwright=1.2.3"], legacy, m)).toBeUndefined();
+});
+
+test("an opted-in helper refuses an estimate of 85% of RAM rather than reporting busy", () => {
+  const host = readMeminfo();
+  if (!host) throw new Error("test requires /proc/meminfo");
+  const needBytes = Math.floor(host.totalKb * 1024 * 0.85);
+  const p = Bun.spawnSync([...helperArgv("dynamic", 4), "exec", "big", "cpu", "100", `mem=${needBytes}`], { stdin: "ignore", stderr: "pipe" });
+  expect({ code: p.exitCode, err: p.stderr.toString() }).toMatchObject({
+    code: 3,
+    err: expect.stringMatching(/WORKER_REFUSED .*never fits here.*keeps 20% free/),
+  });
+});
+
+test("an opted-in helper reports temporary memory pressure as WORKER_BUSY with the batch category", () => {
+  const p = Bun.spawnSync([...helperArgv("busy", 4, 100), "exec", "wait", "cpu", "100"], { env: process.env, stdin: "ignore", stderr: "pipe" });
+  expect({ code: p.exitCode, err: p.stderr.toString() }).toEqual({
+    code: 75,
+    err: expect.stringMatching(/^WORKER_BUSY memory: limit 0\b/),
+  });
 });
 
 test("a helper refuses an exec whose mem= it can never fit, before it admits anything", () => {

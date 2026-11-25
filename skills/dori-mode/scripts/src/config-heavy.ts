@@ -1,5 +1,20 @@
 import type { ArgvTemplate } from "./config-types.ts";
 import { type HeavyHelper, helperProblem } from "./heavy-route.ts";
+import type { DoriConfig } from "./config-types.ts";
+
+// https://github.com/sisyphuslabs/dori-superagent/pull/264
+export const heavyDynamicProblem = (c: DoriConfig): string | undefined => {
+  if (c.heavyJobMemGb === null) return undefined;
+  if (typeof c.heavyJobMemGb !== "number" || !Number.isFinite(c.heavyJobMemGb * 1024 ** 2) || c.heavyJobMemGb <= 0)
+    return "heavyJobMemGb must be a positive number of GiB or null";
+  if (!Number.isSafeInteger(c.heavyMaxSlots) || c.heavyMaxSlots < 1) return "heavyMaxSlots must be a positive whole number";
+  if (!Number.isSafeInteger(c.heavyMinSlots) || c.heavyMinSlots < 0 || c.heavyMinSlots > c.heavyMaxSlots)
+    return "heavyMinSlots must be a whole number between 0 and heavyMaxSlots";
+  if (!Number.isFinite(c.heavyMaxLoad) || c.heavyMaxLoad <= 0) return "heavyMaxLoad must be a positive number";
+  const floor = c.guard.memFreeMinPct;
+  if (!Number.isFinite(floor) || floor < 0 || floor > 100) return "guard.memFreeMinPct must be a number between 0 and 100";
+  return undefined;
+};
 
 // dori heavy --job: a named job one host may run for another. argv fills {in} (the input folder), {in0}, {in1}... (the
 // input files in the order given), {out} (a folder for result files); env is all the job gets besides PATH, HOME, LANG and

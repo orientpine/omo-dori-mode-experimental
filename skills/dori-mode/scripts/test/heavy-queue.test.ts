@@ -21,12 +21,12 @@ let input: string;
 const upper = (where: string) => ({ argv: ["sh", "-c", `tr a-z A-Z < "$0"; echo ${where} > "$1/where"`, "{in0}", "{out}"] });
 const train = { argv: ["sh", "-c", "echo trained"], rl: true };
 
-const helperArgv = (rl?: boolean): string[] => {
+const helperArgv = (rl?: boolean, dynamic = false): string[] => {
   const dir = join(state.dir, "helper");
   mkdirSync(dir, { recursive: true });
   const config = join(dir, "config.json");
   const jobs = { upper: upper("helper"), train, rlprobe: { ...upper("helper"), rl: true } };
-  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, heavyQueue: { jobs, jobDir: join(dir, "jobs"), ...(rl === undefined ? {} : { rl }) } }));
+  writeFileSync(config, JSON.stringify({ stateDir: join(dir, "state"), heavyHoldDir: join(dir, "hold"), heavyMaxLoad: 1e9, ...(dynamic ? { heavyJobMemGb: 4, heavyMinSlots: 1 } : {}), heavyQueue: { jobs, jobDir: join(dir, "jobs"), ...(rl === undefined ? {} : { rl }) } }));
   // env -i with this process's environment (no DORI_*, test/preload.ts): src spawns the stand-in without env, and Bun
   // then hands it the environment bun test started with, which in an aoe window names that Dori's live state dir
   const own = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
@@ -69,10 +69,10 @@ beforeEach(() => {
 });
 afterEach(() => state.done());
 
-test("a job the queue host cannot start now runs on the helper, comes back the same, and leaves no file there", async () => {
+test.each([false, true])("a job the queue host cannot start runs on a helper (dynamic=%s) and returns its files", async (dynamic) => {
   // Given
   holdSlot();
-  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv() }] });
+  const ctx = ctxWith({ helpers: [{ name: "second", ssh: helperArgv(undefined, dynamic) }] });
   // When
   const r = await queued(ctx);
   // Then

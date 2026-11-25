@@ -27,7 +27,7 @@
   "test/discord-cards.test.ts": 728,
   "test/discord-listener.test.ts": 954,
   "test/discord-markdown.test.ts": 273,
-  "test/explore.test.ts": 453,
+  "test/explore.test.ts": 451,
   "test/handover.test.ts": 922,
   "test/heavy-spread.test.ts": 373,
   "test/herdr-backend.test.ts": 279,

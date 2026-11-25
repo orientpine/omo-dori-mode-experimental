@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { stager } from "./heavy-assets.ts";
 import { defaultOut, heavyBatch, readItems } from "./heavy-batch.ts";
 import { heavyOuter, runHere } from "./heavy-here.ts";
+import { dynamicStatus, explicitMemFloor } from "./heavy-dynamic.ts";
 import { holdCommand } from "./heavy-hold.ts";
 import { gpuRoom, neverFits, parseMem, readMeminfo } from "./heavy-mem.ts";
 import { heavyJobCommand, heavyServe } from "./heavy-queue.ts";
@@ -11,6 +12,7 @@ import { logShip, shipMissing } from "./heavy-ship.ts";
 import { heavySpread, isKind, spreadPlan, toolsHere, withPipefail, type Plan, type SpreadJob } from "./heavy-spread.ts";
 import { sampleHost } from "./host-guard.ts";
 import { run } from "./run.ts";
+import { sampleHeavyMemory } from "./host-load-memory.ts";
 import type { Command } from "./cli-context.ts";
 import { die } from "./cli-context.ts";
 import { makeHeavyDeps } from "./cli-deps-heavy.ts";
@@ -22,6 +24,14 @@ const heavyCommand: Command = async (context) => {
   const label = rest[0];
   const cmd = sep >= 0 ? rest.slice(sep + 1) : [];
   const load = async () => (await sampleHost(run, config)).load1;
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264
+  if (label === "--status" && rest.length === 1) {
+    const deps = heavyDeps(load);
+    if (deps.dynamic) {
+      for (const line of await dynamicStatus({ ...deps, dynamic: deps.dynamic })) console.log(line);
+      return;
+    }
+  }
   // dori heavy hold-local [on --until ... --reason ... [--except ACCOUNT ...] | off]: no job of any account but those
   // excepted takes this host's slots meanwhile
   if (label === "hold-local" && sep < 0) {
@@ -63,9 +73,9 @@ const heavyCommand: Command = async (context) => {
   if (local && (onHosts || notOn)) die("dori heavy --local keeps a batch on this host; --on / --not-on pick other hosts: give one of them");
   // a --helpers-only job, or a batch --on/--not-on keep off this host, never runs here: the helper that takes it checks its own memory (heavy-spread.ts heavyExec)
   const offHere = itemsOpt !== undefined && ((onHosts && !onHosts.includes(hostname())) || notOn?.includes(hostname()));
-  const host = helpersOnly || offHere ? undefined : readMeminfo();
   const oneJob = itemsOpt !== undefined ? perBytes : needBytes;
-  const never = oneJob && host ? neverFits(oneJob, host, config.heavyHeadroomPct) : undefined;
+  const host = oneJob && !helpersOnly && !offHere ? deps.dynamic ? await sampleHeavyMemory(run) : readMeminfo() : undefined;
+  const never = oneJob && host ? neverFits(oneJob, host, explicitMemFloor(deps)) : undefined;
   if (never) {
     deps.log?.(`HEAVY_REFUSED ${name}: ${never}`);
     process.exitCode = 2;

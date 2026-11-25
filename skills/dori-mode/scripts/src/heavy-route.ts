@@ -3,15 +3,20 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
 import type { ArgvTemplate } from "./config.ts";
+import { type ExplicitMemPolicy, explicitMemFloor } from "./heavy-dynamic.ts";
 import { type MemInfo, neverFits, readMeminfo } from "./heavy-mem.ts";
 import type { OwnerPc } from "./heavy-owner-pc.ts";
 import type { Kind, Plan, SpreadJob } from "./heavy-spread.ts";
+import { sampleHeavyMemory } from "./host-load-memory.ts";
+import { run } from "./run.ts";
 
 // a helper asked for a job with its own estimate (exec mem=, dori heavy --mem) that it can never fit refuses it, so the
 // caller asks the next one: a --helpers-only caller does not check the estimate against its own memory (review 2 of #413)
-export const memRefusal = (opts: readonly string[], free: number, m: MemInfo | undefined = readMeminfo()): string | undefined => {
+export const memRefusal = async (opts: readonly string[], policy: ExplicitMemPolicy, sampled?: MemInfo): Promise<string | undefined> => {
   const mem = Number(opts.find((o) => o.startsWith("mem="))?.slice(4)) || 0;
-  return mem && m ? neverFits(mem, m, free) : undefined;
+  if (!mem) return undefined;
+  const memory = sampled ?? (policy.dynamic ? await sampleHeavyMemory(run) : readMeminfo());
+  return memory ? neverFits(mem, memory, explicitMemFloor(policy)) : undefined;
 };
 
 // a host the queue host hands jobs to: ssh argv to its `dori heavy-worker`; prefer: the --kind kinds it takes first;

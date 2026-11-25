@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { canScope, gpuRoomPlan, makeGpuRoom, memVerdict, neverFits, parseMem, parseRoomInfo, spawnScoped } from "../src/heavy-mem.ts";
+import { canScope, gpuRoomPlan, makeGpuRoom, memVerdict, neverFits, parseMem, parseRoomInfo, readMeminfo, spawnScoped } from "../src/heavy-mem.ts";
 import { linesOf } from "../src/heavy-queue.ts";
+import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 
 setDefaultTimeout(30_000); // load-proof: the tests here start systemd-run, systemctl and a memory-touching helper as child processes; a loaded host (40-67 on 20 cores) slows them several times over, so this file, not the suite, gets 30 s
@@ -84,6 +85,25 @@ test("memory sizes read as bytes and a fit keeps the free share", () => {
   expect(memVerdict(host, 50_000_000, 0, 10).ok).toBe(true);
   expect(memVerdict(host, 50_000_001, 0, 10).ok).toBe(false);
 });
+
+test.each([["dynamic", 4, 2], ["legacy", null, 0]] as const)(
+  "local preflight uses the %s threshold for an estimate of 85%% of RAM",
+  async (mode, heavyJobMemGb, code) => {
+    const host = readMeminfo();
+    if (!host) throw new Error("test requires /proc/meminfo");
+    const config = join(state.dir, "config.json");
+    await Bun.write(config, JSON.stringify({ heavyJobMemGb, heavyMinSlots: 0, heavyHeadroomPct: 10, guard: { memFreeMinPct: 20 } }));
+    // Legacy nested execution skips the wait for currently available RAM; the permanent preflight still runs.
+    const result = await run([process.execPath, CLI, "heavy", mode, "--local", "--mem", String(Math.floor(host.totalKb * 1024 * 0.85)), "--", "true"], {
+      timeoutMs: 3_000,
+      env: { DORI_CONFIG: config, DORI_STATE_DIR: state.dir, DORI_ENV_FILE: join(state.dir, "none.env"), DORI_HEAVY_JOB: mode === "legacy" ? "outer" : undefined },
+    });
+    expect({ code: result.code, err: result.err }).toMatchObject({
+      code,
+      err: expect.stringContaining(mode === "dynamic" ? "never fits here: this host" : "HEAVY_NESTED legacy:"),
+    });
+  },
+);
 
 test("before a GPU job page cache is pushed out only when free memory is short, and never under the heavy headroom floor", () => {
   // the host at 2026-11-02 20:33 KST, when the owner's voice note failed in ggml_cuda_init: MemFree 1G, MemAvailable 95G of 121G

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { dirname, join } from "node:path";
 
 import type { DoriConfig, GuardThresholds } from "./config.ts";
-import { parseMeminfo } from "./heavy-mem.ts";
+import { sampleGuardLoadMemory } from "./host-load-memory.ts";
 import { listPanes } from "./panes.ts";
 import type { Runner } from "./run.ts";
 import { type HcGuardDeps, type HcStuck, hcPass } from "./host-guard-hc.ts";
@@ -21,25 +21,11 @@ const num = (s: string | undefined, fallback: number): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-// macOS: memory_pressure -Q; Linux: MemAvailable over MemTotal in /proc/meminfo, where memory_pressure is missing and
-// memory used to read as 100% free (https://github.com/sisyphuslabs/dori-superagent/issues/90)
-const sampleMemFreePct = async (run: Runner): Promise<number | null> => {
-  const mp = await run(["memory_pressure", "-Q"]);
-  const mac = mp.code === 0 ? Number(/free percentage: (\d+)%/.exec(mp.out)?.[1]) : NaN;
-  if (Number.isFinite(mac)) return mac;
-  const mi = await run(["cat", "/proc/meminfo"]);
-  const m = mi.code === 0 ? parseMeminfo(mi.out) : undefined;
-  return m ? (100 * m.availKb) / m.totalKb : null;
-};
-
 // unrounded in the sample so 19.9% stays under a 20% floor; shown rounded down so the line never claims the floor
 export const memFreeText = (pct: number | null): string => (pct === null ? "memory free unknown" : `memory free ${Math.floor(pct)}%`);
 
 export const sampleHost = async (run: Runner, config: Pick<DoriConfig, "backend" | "runtime">, dataPath = "/"): Promise<HostSample> => {
-  const load = await run(["sysctl", "-n", "vm.loadavg"]);
-  const loadLinux = load.code === 0 ? null : await run(["cat", "/proc/loadavg"]);
-  const load1 = num((load.code === 0 ? load.out.replace(/[{}]/g, "").trim() : loadLinux?.out ?? "").split(/\s+/)[0], 0);
-  const memFreePct = await sampleMemFreePct(run);
+  const { load1, memFreePct } = await sampleGuardLoadMemory(run); // https://github.com/sisyphuslabs/dori-superagent/pull/264
   const diskFreeGb = (await sampleDiskFreeGb(run, dataPath)) ?? 0;
   const swap = await run(["sysctl", "-n", "vm.swapusage"]);
   const swapFreeGb = num(/free = ([\d.]+)M/.exec(swap.out)?.[1], 0) / 1024;

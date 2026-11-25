@@ -1,16 +1,15 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { admitDynamic } from "./heavy-dynamic.ts";
 import { headroomVerdict, type UsageSample } from "./heavy-headroom.ts";
 import { memVerdict } from "./heavy-mem.ts";
 import { ownerMemWhy } from "./heavy-owner-pc.ts";
 import { heldBy, type Holder, holders, releaseSlot, slotMemKb, slotSettleSec, tryTake, withLock } from "./heavy-slot-store.ts";
 
-import type { Headroom, SlotDeps } from "./heavy-slot-types.ts";
+import type { Headroom, SlotDeps, SlotRequest, Try } from "./heavy-slot-types.ts";
 
 export type * from "./heavy-slot-types.ts";
-export { releaseSlot, pidAlive } from "./heavy-slot-store.ts";
-
-export type Try = { readonly slot: string; readonly why: string } | { readonly wait: string; readonly why: string };
+export { pidAlive, releaseSlot } from "./heavy-slot-store.ts";
 
 // Waiters stand in line: a ticket file per waiter in <dir>/queue named <enqueued ms, 15 digits>-<pid>-<label>, so names
 // sort in arrival order. Only the first live ticket may take a slot; a ticket whose process died is dropped.
@@ -65,7 +64,7 @@ export const admitOnce = async (deps: SlotDeps, label: string, settleSec?: numbe
   if (held) return { wait: "hold", why: `this host's heavy slots are held ${held}` };
   const waiting = line(deps).length;
   if (waiting) return { wait: "queue", why: `${waiting} job(s) wait in this host's queue` };
-  const t = await admitUnheld(deps, () => tryAdmit(deps, label, memKb, settleSec, ownerMemPct));
+  const t = await admitUnheld(deps, () => tryAdmit(deps, { label, memKb, settleSec, ownerMemPct }));
   return t && "wait" in t && t.wait === "hold" ? { wait: "hold", why: `this host's heavy slots are held ${t.why}` } : t;
 };
 
@@ -83,7 +82,10 @@ const admitUnheld = async (deps: SlotDeps, admit: () => Promise<Try>, holdExempt
 
 // memKb: the job's own estimate (dori heavy --mem). With it even the first slot waits until the memory it needs, beside
 // what running jobs said they need and do not use yet, keeps headroom.free percent of the host free.
-const tryAdmit = async (deps: SlotDeps, label: string, memKb?: number, settleSec?: number, ownerMemPct?: number): Promise<Try> => {
+const tryAdmit = async (deps: SlotDeps, request: SlotRequest): Promise<Try> => {
+  // https://github.com/sisyphuslabs/dori-superagent/pull/264
+  if (deps.dynamic) return admitDynamic({ ...deps, dynamic: deps.dynamic }, request);
+  const { label, memKb, settleSec, ownerMemPct } = request;
   const load = await deps.load();
   if (load >= deps.maxLoad) return { wait: "load", why: `load ${load.toFixed(0)} >= ${deps.maxLoad}` };
   const h = deps.headroom;
@@ -175,7 +177,7 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
       const holdNow = opts.helpersOnly ? undefined : deps.hold?.();
       const ahead = ticket && !(opts.holdExempt && holdNow) ? names.slice(0, Math.max(0, names.indexOf(basename(ticket)))) : [];
       const before = opts.helpersOnly ? "--helpers-only" : opts.holdExempt ? undefined : holdNow;
-      const tried: Try | null = before ? { wait: "hold", why: before } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await admitUnheld(deps, () => tryAdmit(deps, label, opts.memKb, opts.settleSec), Boolean(opts.holdExempt));
+      const tried: Try | null = before ? { wait: "hold", why: before } : ahead.length ? { wait: "queue", why: `${ahead.length} job(s) ahead in the queue` } : await admitUnheld(deps, () => tryAdmit(deps, { label, memKb: opts.memKb, settleSec: opts.settleSec }), Boolean(opts.holdExempt));
       const held = tried && "wait" in tried && tried.wait === "hold" ? tried.why : undefined;
       const t: Try | null = held ? { wait: `hold ${local}`, why: held } : tried;
       const localOnlyAhead = ahead.length > 0 && ahead.every((n) => ticketKind(deps, n) === "local");
@@ -191,7 +193,7 @@ export const acquire = async <T>(deps: SlotDeps, label: string, opts: AcquireOpt
         const got = await opts.elsewhere(t.why);
         if (got !== null) return { elsewhere: got };
       }
-      await deps.clock.sleep(opts.pollMs ?? 15_000);
+      await deps.clock.sleep(tried === null && deps.dynamic ? 50 : opts.pollMs ?? 15_000);
     }
   } finally {
     if (ticket) rmSync(ticket, { force: true });
