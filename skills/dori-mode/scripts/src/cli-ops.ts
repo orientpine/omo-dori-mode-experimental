@@ -1,9 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { paneLife } from "./aoe.ts";
-import { isHerdrPane } from "./herdr.ts";
-import { reviveHerdr } from "./herdr-sessions.ts";
+import { reviveTarget } from "./lane-revive.ts";
 import { fileLog, installTaskRefusal, serve, serveLoops, spawnLoop, TASK_NAME, taskArgv } from "./serve.ts";
 import { findLead } from "./lead.ts";
 import { configPath } from "./config.ts";
@@ -195,17 +193,11 @@ const serveCommand: Command = async (context) => {
 };
 
 const reviveCommand: Command = async (context) => {
-  const { key, config, opt } = context;
-  const pane = key ?? die("usage: dori revive <herdr pane> [--text TEXT]");
-  if (!isHerdrPane(pane)) die("revive takes a herdr pane id (an aoe session restarts with self-restart.sh)");
-  // dori never ends a live herdr agent: only a pane whose agent is gone is started again
-  if ((await paneLife(run, pane)).live) {
-    console.log(`REVIVE_ALREADY_RUNNING ${pane}`);
-    return;
-  }
-  const line = await reviveHerdr(run, realClock, config, pane, opt("text") ?? "", (p, t) => sendVerified(run, realClock, config, p, t));
+  const { key, deps, opt } = context;
+  // dori never ends a live agent: only a pane whose agent is gone, or an open lane's pane that is gone, is started again
+  const line = await reviveTarget(deps, key ?? die("usage: dori revive <lane key | herdr or hc pane> [--text TEXT]"), opt("text") ?? "");
   console.log(line);
-  if (!line.startsWith("REVIVE_OK")) process.exitCode = 1;
+  if (!line.startsWith("REVIVE_OK") && !line.startsWith("REVIVE_ALREADY_RUNNING")) process.exitCode = 1;
   return;
 };
 

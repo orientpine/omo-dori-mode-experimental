@@ -149,7 +149,7 @@ export const herdrLeadSession = async (run: Runner, config: Partial<Pick<DoriCon
   return hit.id;
 };
 
-const omoInputBox = (screen: string): boolean => {
+export const omoInputBox = (screen: string): boolean => {
   const lines = screen.split("\n");
   return lines.some((l, i) => l.trimStart().startsWith("❯") && lines.slice(Math.max(0, i - 2), i).some((u) => u.trimStart().startsWith("─")));
 };

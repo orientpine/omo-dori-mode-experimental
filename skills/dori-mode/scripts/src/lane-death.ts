@@ -6,6 +6,8 @@ import { pidAlive } from "./background.ts";
 import { handoverRunning } from "./freshness.ts";
 import { frozenPanes } from "./frozen.ts";
 import { herdrAgentPid, isHerdrPane } from "./herdr.ts";
+import { isHcPane } from "./hc-pane.ts";
+import { reviveGoneLane } from "./lane-revive.ts";
 import { type Hold, holdOf, readStat } from "./job-control.ts";
 import { leadResumeNoticeTick, leadResumeTick, leadSignal, type LeadResumeIO } from "./lead-resume.ts";
 import { procTable, topAgent } from "./session-id.ts";
@@ -43,6 +45,7 @@ export const oomLine = async (run: Runner, pane: string, sinceMs: number): Promi
 };
 
 export const laneDiedText = (key: string, reason: string): string => `[DORI] 레인 ${key} 꺼짐(${reason}) — 이어서 살릴지 정해`;
+export const laneRevivedText = (key: string, pane: string): string => `[DORI] 레인 ${key} 창이 없어져 새 창 ${pane}에서 같은 대화로 다시 열었어 (일은 시키지 않음)`;
 
 // 2026-11-03 15:41Z a rolled-back handover thawed handover-simplify's omo into a background job of its shell, where the
 // next key stopped it again (T). Its screen kept its last "esc to interrupt", so every check reading screens took it for
@@ -153,10 +156,27 @@ export const laneDeathTick = async (deps: FlowDeps): Promise<string[]> => {
     const oom = await oomLine(deps.run, pane, first - JOURNAL_BACK_MS).catch(() => undefined);
     // a herdr pane keeps no exit status (herdr.ts herdrLife: status -1)
     const herdr = isHerdrPane(pane);
-    const reason = oom ? "메모리 부족" : life.how === "dead" ? (life.status < 0 ? "에이전트 꺼짐" : `종료 코드 ${life.status}`) : herdr ? "herdr pane 없음" : "tmux 세션 없음";
-    const why = oom ? `oom-kill (journal: ${oom})` : life.how === "dead" ? (life.status < 0 ? "pane dead, no agent runs in it" : `pane dead, status ${life.status}`) : herdr ? "herdr pane gone" : "tmux session gone";
+    const hc = isHcPane(pane);
+    let reason = oom ? "메모리 부족" : life.how === "dead" ? (life.status < 0 ? "에이전트 꺼짐" : `종료 코드 ${life.status}`) : hc ? "hc 창 없음" : herdr ? "herdr pane 없음" : "tmux 세션 없음";
+    let why = oom ? `oom-kill (journal: ${oom})` : life.how === "dead" ? (life.status < 0 ? "pane dead, no agent runs in it" : `pane dead, status ${life.status}`) : hc ? "hc terminal gone" : herdr ? "herdr pane gone" : "tmux session gone";
     out.push(`LANE_DIED ${lane.key} ${pane}: ${why}`);
     const lead = deps.config.leadPane;
+    // a gone pane of a lane with a recorded session opens again on that session by itself (lane-revive.ts); a pane a handover
+    // froze or is moving is left to it, and a revive that fails is told to the lead as before, with why
+    if (life.how === "gone" && herdr && lane.session && !frozenPanes(deps.config.stateDir).includes(pane) && !handoverRunning(deps.config.stateDir, "lane", lane.key, pidAlive)) {
+      const revived = await reviveGoneLane(deps, lane, "");
+      if (revived.startsWith("REVIVE_OK ")) {
+        notLive.delete(pane);
+        const fresh = /^REVIVE_OK \S+ (\S+)/.exec(revived)?.[1] ?? "";
+        out.push(`LANE_REVIVED ${revived.slice("REVIVE_OK ".length)}`);
+        const told = lead ? await submitToPane(deps.run, deps.clock, deps.config, lead, laneRevivedText(lane.key, fresh)) : { status: "NOT_SUBMITTED", reason: "no leadPane" };
+        out.push(told.status === "SUBMITTED" ? `LANE_REVIVED_TOLD ${lane.key} ${lead}` : `LANE_REVIVED_NOT_TOLD ${lane.key}: ${told.reason}`);
+        continue;
+      }
+      out.push(revived);
+      reason = `${reason}, 새 창 열기 실패`;
+      why = `${why}; ${revived}`;
+    }
     const sent: Submitted = lead ? await submitToPane(deps.run, deps.clock, deps.config, lead, laneDiedText(lane.key, reason)) : { status: "NOT_SUBMITTED", reason: "no leadPane" };
     const told = sent.status === "SUBMITTED";
     out.push(told ? `LANE_DIED_TOLD ${lane.key} ${lead}` : `LANE_DIED_NOT_TOLD ${lane.key}: ${sent.reason}`);
