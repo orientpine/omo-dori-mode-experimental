@@ -11,7 +11,7 @@
 // (a for variable inside its own loop, #532 review 3), and a lowercase name the command never sets is the session's. What it cannot
 // read (a subshell, a background job, a here-doc, $(( )), ${ }, a comment) is work; a real watch missing here is work
 // too, and the new session arms a watch-only monitor in its place: a manual step, never a second run.
-import { ASSIGN, CLOSE, CONTROL, forLoops, lex, type Simple, type Word } from "./handover-watch-lex.ts";
+import { ASSIGN, CLOSE, CONTROL, caseAssigned, forLoops, lex, type Simple, type Word } from "./handover-watch-lex.ts";
 
 export { foregroundOnly } from "./handover-watch-foreground.ts";
 
@@ -199,7 +199,9 @@ export const watchOnly = (command: string): boolean => {
     return w[0] === "git" && rest[0] === "rev-parse" && rest[1] === "--verify" && rest.length === 3 && /^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(rest[2] ?? "");
   };
   // a trusted variable has at least one recorded value (an empty for list gives none, #532 review 3), all of one kind
-  const trustedBy = (ok: (v: Word) => boolean) => new Set([...values].filter(([n, vs]) => TRUSTED(n) && vs.length > 0 && vs.every(ok)).map(([n]) => n));
+  // and is never assigned in a case arm, which may not run (dori challenge of plan-r3)
+  const inCase = caseAssigned(r.cmds);
+  const trustedBy = (ok: (v: Word) => boolean) => new Set([...values].filter(([n, vs]) => TRUSTED(n) && !inCase.has(n) && vs.length > 0 && vs.every(ok)).map(([n]) => n));
   const hashes = trustedBy(revParse);
   const aliases = trustedBy(direct);
   // a literal variable only where the loop binds it (review 3: an assignment the classifier cannot order against a use,

@@ -79,5 +79,8 @@ test("read-only loops of the moodori lead note stay watches the new session may 
     "for d in /tmp; do d=-R; ls \"$d\"; done",
     "for d in /tmp; do for d in -R; do true; done; ls \"$d\"; done",
     "echo \"a\\\nb\"; tail -F /tmp/watch.log",
+    // dori challenge of plan-r3: an assignment in a case arm may not run, so it makes no state file or hash
+    "case no in\n  yes) f=\"$SENPI_MONITOR_STATE_DIR/x\";;\nesac\necho reset > \"$f\"",
+    "case no in yes) x=$(git rev-parse --verify HEAD);; esac; git log -1 $x",
   ]) rejectsSameCommand(command);
 });

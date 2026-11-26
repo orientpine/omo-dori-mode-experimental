@@ -199,3 +199,26 @@ export const forLoops = (cmds: readonly Simple[]): Loop[] => {
   });
   return [...out, ...cmds.flatMap((c) => [...c.words, ...c.outs, ...c.ins].flatMap((w) => w.subs.flatMap(forLoops)))];
 };
+
+// The names assigned inside a case clause, at every depth: an arm that may not run sets nothing the classifier can count
+// on (dori challenge of #532 plan-r3: a skipped arm left an inherited value where a state file was assumed).
+export const caseAssigned = (cmds: readonly Simple[]): Set<string> => {
+  const out = new Set<string>();
+  const bare = (w: Word) => !w.quoted && !w.expand && !w.glob;
+  let depth = 0;
+  for (const c of cmds) {
+    const k = c.words.findIndex((w) => !(CONTROL.has(w.text) && bare(w)));
+    const rest = k < 0 ? [] : c.words.slice(k);
+    if (rest.length === 3 && rest[0]?.text === "case" && bare(rest[0])) depth++;
+    else if (depth > 0) {
+      const sub = (ws: readonly Word[]): Word[] => ws.flatMap((w) => [w, ...w.subs.flat().flatMap((s) => sub([...s.words, ...s.outs, ...s.ins]))]);
+      for (const w of sub([...c.words, ...c.outs, ...c.ins])) {
+        const name = ASSIGN.exec(w.text)?.[1];
+        if (name) out.add(name);
+      }
+      if (rest.length && rest.every((w) => CLOSE.has(w.text) && bare(w))) depth -= rest.filter((w) => w.text === "esac").length;
+    }
+  }
+  for (const c of cmds) for (const w of [...c.words, ...c.outs, ...c.ins]) for (const s of w.subs) for (const n of caseAssigned(s)) out.add(n);
+  return out;
+};
