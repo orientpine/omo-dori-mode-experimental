@@ -90,6 +90,11 @@ test("read-only loops of the moodori lead note stay watches the new session may 
     "ssh host 'powershell -NoProfile -Command \"Get-Process\" -File C:/x.ps1'",
     "ssh host 'powershell -Command \"Get-Process\" & del C:\\x'",
     "tr -dc 0-9 < /tmp/a > /tmp/b",
+    // review 1 of #532: an escaped word is never a reserved word, and a loop variable that also holds a state file or a
+    // git hash is neither once the loop gives it another value
+    "echo \"$(case esac in \\esac) bun test;; esac)\"",
+    "f=\"$SENPI_MONITOR_STATE_DIR/state\"; for f in /tmp/result; do echo reset > \"$f\"; done",
+    "x=$(git rev-parse --verify HEAD); for x in --output=/tmp/x; do git log $x; done",
   ]) rejectsSameCommand(command);
 });
 

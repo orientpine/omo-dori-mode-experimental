@@ -181,6 +181,12 @@ export const watchOnly = (command: string): boolean => {
     const name = ASSIGN.exec(w.text)?.[1];
     if (name) values.set(name, [...(values.get(name) ?? []), { ...w, text: w.text.slice(name.length + 1) }]);
   }
+  // a for variable takes each word of its list as a value, before any variable is trusted for its values (#532 review 1)
+  for (const c of allCmds(r.cmds)) {
+    const k = c.words.findIndex((w) => !(CONTROL.has(w.text) && !w.quoted && !w.expand));
+    const [f, name, ...list] = c.words.slice(k);
+    if (k >= 0 && f?.text === "for" && !f.quoted && name) values.set(name.text, [...(values.get(name.text) ?? []), ...list.slice(1)]);
+  }
   const direct = stateFile(new Set());
   // a variable every assignment of which is $(git [-C dir] rev-parse --verify <one ref>): one hash or nothing (#414 review 25)
   const revParse = (v: Word): boolean => {
@@ -192,12 +198,6 @@ export const watchOnly = (command: string): boolean => {
   };
   const hashes = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(revParse)).map(([n]) => n));
   const aliases = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(direct)).map(([n]) => n));
-  // a for variable takes each word of its list as a value
-  for (const c of allCmds(r.cmds)) {
-    const k = c.words.findIndex((w) => !(CONTROL.has(w.text) && !w.quoted && !w.expand));
-    const [f, name, ...list] = c.words.slice(k);
-    if (k >= 0 && f?.text === "for" && !f.quoted && name) values.set(name.text, [...(values.get(name.text) ?? []), ...list.slice(1)]);
-  }
   // a variable every value of which is a literal word that cannot be read as an option: quoted (one word, never split), it
   // is that word, so it may stand where the word may (the folder of ls -A "$d" in the moodori inbox poll)
   const literals = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every((v) => literal(v) && !v.text.startsWith("-"))).map(([n]) => n));

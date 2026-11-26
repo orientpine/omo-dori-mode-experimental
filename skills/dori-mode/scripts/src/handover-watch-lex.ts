@@ -60,7 +60,9 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
         }
         i++;
       } else if (c === "\\") {
+        // an escaped character is quoted: \esac or \do is a plain word, never the shell's reserved one (#532 review 1)
         text += s[i + 1] ?? "";
+        quoted = true;
         i += 2;
       } else if (c === "`" || (c === "$" && s[i + 1] === "{")) return undefined;
       else if (c === "$" && s[i + 1] === "(") {
