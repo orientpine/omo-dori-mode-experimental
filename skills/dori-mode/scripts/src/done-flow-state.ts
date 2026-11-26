@@ -8,6 +8,7 @@ import { type Clock, iso, type Runner } from "./run.ts";
 import { omoPane, sendVerified, submitToPane } from "./panes.ts";
 import type { Submitted } from "./submit.ts";
 import { replacementOf } from "./frozen.ts";
+import { readHerdrSessions } from "./herdr-sessions.ts";
 import { watchLog } from "./watch-log.ts";
 import type { SignalIo } from "./done-signals.ts";
 import { reopenedText, windowMs } from "./done-flow-common.ts";
@@ -157,7 +158,9 @@ export const closerOf = (lane: Lane): string => {
 // (LANE_CLAIM_REOPENED in the watch log, then the lane is told after the text). Into the pane of a closed lane nothing is
 // typed: NOT_SUBMITTED <pane> LANE_IS_CLOSED <key> with when and who closed it, instead of the screen check's "no ❯
 // prompt", which the lead read as a busy lane for 30 minutes (Moodori 2026-10-31 07:23Z). A gone or dead pane is named the
-// same way by the screen check (PANE_GONE / PANE_DEAD).
+// same way by the screen check (PANE_GONE / PANE_DEAD). hc gives a closed lane's number to a later session, so the lead's
+// pane or one whose recorded session is not the lane's is never refused (ZzangDori 2026-11-26: the new lead got hc:t34 of
+// rv-private-word-fix, closed 11/12, and every lane report to it was LANE_IS_CLOSED).
 export const typeIntoPane = async (deps: FlowDeps, pane: string, text: string): Promise<Submitted & { readonly pane: string; readonly notes: readonly string[] }> => {
   const log = (line: string) => watchLog(deps.config.watchLog, deps.clock, { source: "type", line });
   const notes: string[] = [];
@@ -166,7 +169,8 @@ export const typeIntoPane = async (deps: FlowDeps, pane: string, text: string): 
   const lane = forwarded ? null : await deps.registry.byPane(pane);
   if (!lane && !forwarded) {
     const closed = (await deps.registry.list()).filter((l) => l.pane === pane && statusOf(l) === "closed").sort((a, b) => (a.closedAt ?? "").localeCompare(b.closedAt ?? "")).at(-1);
-    if (closed) {
+    const lead = deps.leadPaneNow?.() || deps.config.leadPane, now = readHerdrSessions(deps.config.stateDir)[pane]?.session;
+    if (closed && pane !== lead && !(closed.session && now && now !== closed.session)) {
       const gone = omoPane(deps.config, pane) && !(await paneLife(deps.run, pane)).live ? "; its pane is gone" : "";
       const reason = `LANE_IS_CLOSED ${closed.key} closed at ${closed.closedAt} by ${closerOf(closed)}${gone}: nothing was typed; no lane reads this pane, launch a new lane (dori launch) for new work`;
       log(`NOT_SUBMITTED ${pane} ${reason}`);
