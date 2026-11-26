@@ -50,6 +50,8 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
           const d = s[i];
           if (d === undefined || d === "`" || (d === "$" && s[i + 1] === "{")) return undefined;
           if (d === "\\") {
+            // a line continuation, which the shell removes before it reads words, is not modelled (#532 review 3)
+            if (s[i + 1] === "\n") return undefined;
             text += s[i + 1] ?? "";
             i += 2;
           } else if (d === "$" && s[i + 1] === "(") {
@@ -62,7 +64,9 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
         }
         i++;
       } else if (c === "\\") {
-        // an escaped character is quoted: \esac or \do is a plain word, never the shell's reserved one (#532 review 1)
+        // an escaped character is quoted: \esac or \do is a plain word, never the shell's reserved one (#532 review 1); a
+        // line continuation is not modelled (review 3)
+        if (s[i + 1] === "\n") return undefined;
         text += s[i + 1] ?? "";
         quoted = true;
         i += 2;
@@ -163,4 +167,35 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
     }
   }
   return inSub || cases || pattern ? undefined : { cmds, end: i };
+};
+
+// Every for loop, at every depth: its variable, its list and its body, the commands from its do to the done that closes it.
+export type Loop = { readonly name: string; readonly list: readonly Word[]; readonly body: readonly Simple[] };
+export const forLoops = (cmds: readonly Simple[]): Loop[] => {
+  const bare = (w: Word) => !w.quoted && !w.expand && !w.glob;
+  const lead = (c: Simple) => {
+    const k = c.words.findIndex((w) => !(CONTROL.has(w.text) && bare(w)));
+    return k < 0 ? c.words : c.words.slice(0, k);
+  };
+  // a done closes a loop only as a closing word in command position (done, or done } fi), never as an argument (echo done)
+  const closes = (c: Simple) => {
+    const rest = c.words.slice(lead(c).length);
+    return rest.every((w) => CLOSE.has(w.text) && bare(w)) ? rest.filter((w) => w.text === "done").length : 0;
+  };
+  const out: Loop[] = [];
+  cmds.forEach((c, i) => {
+    const k = lead(c).length;
+    const [f, name, , ...list] = c.words.slice(k);
+    if (f?.text !== "for" || f.quoted || !name) return;
+    let depth = 0;
+    for (let j = i + 1; j < cmds.length; j++) {
+      const d = cmds[j] as Simple;
+      depth += lead(d).filter((w) => w.text === "do").length - closes(d);
+      if (depth <= 0) {
+        out.push({ name: name.text, list, body: cmds.slice(i + 1, j + 1) });
+        return;
+      }
+    }
+  });
+  return [...out, ...cmds.flatMap((c) => [...c.words, ...c.outs, ...c.ins].flatMap((w) => w.subs.flatMap(forLoops)))];
 };

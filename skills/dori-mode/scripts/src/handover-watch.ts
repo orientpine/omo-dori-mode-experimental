@@ -6,10 +6,12 @@
 // words, case, ls and md5sum of a folder, TZ= in front of date, tr -c, and a PowerShell count of one Get- read over ssh. Anything else is work and keeps its watch, so a new session never
 // arms it again (reviews 4-21 of #414 found a way around every list of forms that start work). Threat model: these are
 // the lane's own monitors, not an attacker's; the list keeps ordinary work (a bun test, a dori review, a remote ci) from
-// running twice. It trusts the listed programs and options to only read, and the session's environment. What it cannot
+// running twice. It trusts the listed programs and options to only read, and the session's environment.
+// What it proves comes from the command's own words only. A variable stands for a value only where the shell must have set it
+// (a for variable inside its own loop, #532 review 3), and a lowercase name the command never sets is the session's. What it cannot
 // read (a subshell, a background job, a here-doc, $(( )), ${ }, a comment) is work; a real watch missing here is work
 // too, and the new session arms a watch-only monitor in its place: a manual step, never a second run.
-import { ASSIGN, CLOSE, CONTROL, lex, type Simple, type Word } from "./handover-watch-lex.ts";
+import { ASSIGN, CLOSE, CONTROL, forLoops, lex, type Simple, type Word } from "./handover-watch-lex.ts";
 
 export { foregroundOnly } from "./handover-watch-foreground.ts";
 
@@ -75,6 +77,8 @@ const ENV = (w: Word): boolean => !w.subs.length && (/^GH_CONFIG_DIR=/.test(w.te
 // the zone a listed program prints times in, which only selects a zone file to read
 const TZ = (w: Word | undefined): boolean => !!w && /^TZ=/.test(w.text);
 const literal = (w: Word): boolean => !w.expand && !w.glob && !w.subs.length;
+// a name whose value the command's own words set: lowercase, and never _, which the shell sets after every command (#532 review 3)
+const TRUSTED = (n: string): boolean => VAR.test(n) && n !== "_";
 // programs that hand their words to another shell, which reads a variable's value as commands: no literal variable there (#532 review 2)
 const REMOTE = new Set(["ssh", "node-dori-do"]);
 // a PowerShell command that reads one count or list: a listed Get- cmdlet with literal parameters, nothing else (no ; | &
@@ -169,8 +173,6 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
 const cmdsOk = (cmds: readonly Simple[], state: (w: Word) => boolean, hash: (w: Word) => boolean, lit: (w: Word) => boolean): boolean =>
   cmds.every((c) => simpleOk(c, state, hash, lit) && [...c.words, ...c.outs, ...c.ins].every((w) => w.subs.every((s) => cmdsOk(s, state, hash, lit))));
 
-const allCmds = (cmds: readonly Simple[]): Simple[] => cmds.flatMap((c) => [c, ...[...c.words, ...c.outs, ...c.ins].flatMap((w) => w.subs.flatMap(allCmds))]);
-
 const allWords = (cmds: readonly Simple[]): Word[] => cmds.flatMap((c) => [...c.words, ...c.outs, ...c.ins]).flatMap((w) => [w, ...w.subs.flatMap(allWords)]);
 
 // true when the command only watches; false for work and for anything the list does not cover.
@@ -183,12 +185,10 @@ export const watchOnly = (command: string): boolean => {
     const name = ASSIGN.exec(w.text)?.[1];
     if (name) values.set(name, [...(values.get(name) ?? []), { ...w, text: w.text.slice(name.length + 1) }]);
   }
+  const assigned = new Set(values.keys());
   // a for variable takes each word of its list as a value, before any variable is trusted for its values (#532 review 1)
-  for (const c of allCmds(r.cmds)) {
-    const k = c.words.findIndex((w) => !(CONTROL.has(w.text) && !w.quoted && !w.expand));
-    const [f, name, ...list] = c.words.slice(k);
-    if (k >= 0 && f?.text === "for" && !f.quoted && name) values.set(name.text, [...(values.get(name.text) ?? []), ...list.slice(1)]);
-  }
+  const loops = forLoops(r.cmds);
+  for (const l of loops) values.set(l.name, [...(values.get(l.name) ?? []), ...l.list]);
   const direct = stateFile(new Set());
   // a variable every assignment of which is $(git [-C dir] rev-parse --verify <one ref>): one hash or nothing (#414 review 25)
   const revParse = (v: Word): boolean => {
@@ -198,11 +198,18 @@ export const watchOnly = (command: string): boolean => {
     const rest = w[1] === "-C" ? w.slice(3) : w.slice(1);
     return w[0] === "git" && rest[0] === "rev-parse" && rest[1] === "--verify" && rest.length === 3 && /^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(rest[2] ?? "");
   };
-  const hashes = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(revParse)).map(([n]) => n));
-  const aliases = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(direct)).map(([n]) => n));
-  // a variable every value of which is a literal word that cannot be read as an option: quoted (one word, never split), it
-  // is that word, so it may stand where the word may (the folder of ls -A "$d" in the moodori inbox poll)
-  const literals = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every((v) => literal(v) && !v.text.startsWith("-"))).map(([n]) => n));
+  // a trusted variable has at least one recorded value (an empty for list gives none, #532 review 3), all of one kind
+  const trustedBy = (ok: (v: Word) => boolean) => new Set([...values].filter(([n, vs]) => TRUSTED(n) && vs.length > 0 && vs.every(ok)).map(([n]) => n));
+  const hashes = trustedBy(revParse);
+  const aliases = trustedBy(direct);
+  // a literal variable only where the loop binds it (review 3: an assignment the classifier cannot order against a use,
+  // a condition or the inherited environment proves nothing): the quoted "$name" inside the body of the one for that binds
+  // the name, over a list of literal words that cannot be read as options, with no other binding anywhere; it is that word,
+  // so it may stand where the word may (the folder of ls -A "$d" in the moodori inbox poll)
+  const uses = new Set<Word>();
+  for (const l of loops)
+    if (TRUSTED(l.name) && !assigned.has(l.name) && loops.filter((o) => o.name === l.name).length === 1 && l.list.length > 0 && l.list.every((v) => literal(v) && !v.text.startsWith("-")))
+      for (const w of allWords(l.body)) if (!w.split && !w.subs.length && w.text === `$${l.name}`) uses.add(w);
   const named = (set: ReadonlySet<string>) => (w: Word) => !w.subs.length && set.has(/^\$([a-z_]\w*)$/.exec(w.text)?.[1] ?? "\0");
-  return r.cmds.some((c) => c.words.length > 0) && cmdsOk(r.cmds, stateFile(aliases), named(hashes), (w) => !w.split && named(literals)(w));
+  return r.cmds.some((c) => c.words.length > 0) && cmdsOk(r.cmds, stateFile(aliases), named(hashes), (w) => uses.has(w));
 };
