@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import { claimDone, type FlowDeps, typeIntoPane, watchTick } from "../src/done-flow.ts";
+import { recordHerdrSession } from "../src/herdr-sessions.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
 import type { Runner } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, RUNNING, sent, withState, type World } from "./fakes.ts";
@@ -93,6 +94,25 @@ test("dori type into a closed lane's pane names the lane, when and who closed it
   expect(r.reason).toStartWith(`LANE_IS_CLOSED dori-promo closed at ${closedAt} by the watch (automatic close after the done claim): nothing was typed`);
   expect(typed()).toEqual([]);
   expect(await watchLog()).toContain(`type NOT_SUBMITTED ${PANE} LANE_IS_CLOSED dori-promo`);
+});
+
+// ZzangDori 2026-11-26: hc gave the lead handed over at 23:11Z the number hc:t34 of rv-private-word-fix, closed on 11/12,
+// and every lane report typed into the new lead was LANE_IS_CLOSED (23:12:15Z, 23:14:12Z).
+test("a closed lane's pane number that is now the lead's pane takes the text: the lead is not that lane", async () => {
+  const closedAt = "2026-11-12T02:14:20.521Z";
+  await at(T0).registry.write({ ...lane, status: "closed", closedAt, history: [{ at: closedAt, status: "closed", note: "Done" }] });
+  const r = await typeIntoPane(at(T0, { config: { ...at(T0).config, leadPane: PANE } }), PANE, "[REPORT] h3 | milestone | done");
+  expect(r.status).toBe("SUBMITTED");
+  expect(sent(world).at(-1)).toBe("[REPORT] h3 | milestone | done");
+});
+
+test("a closed lane's pane number that another session runs in now takes the text; the lane's own session still refuses", async () => {
+  const closedAt = "2026-11-12T02:14:20.521Z";
+  await at(T0).registry.write({ ...lane, session: "3167deac-old", status: "closed", closedAt, history: [{ at: closedAt, status: "closed", note: "Done" }] });
+  recordHerdrSession(state.dir, PANE, { session: "3167deac-old", cwd: "/repo", at: closedAt });
+  expect((await typeIntoPane(at(T0), PANE, "[LEAD] hi")).reason).toStartWith("LANE_IS_CLOSED dori-promo");
+  recordHerdrSession(state.dir, PANE, { session: "823b8b65-new", cwd: "/repo", at: new Date(T0).toISOString() });
+  expect((await typeIntoPane(at(T0), PANE, "[LEAD] hi")).status).toBe("SUBMITTED");
 });
 
 test("dori type into a pane whose tmux session is gone is PANE_GONE, and a dead pane PANE_DEAD; nothing is typed", async () => {
