@@ -594,16 +594,16 @@ export const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Targe
     if (!problems.length) break;
     await deps.clock.sleep(POLL_MS);
   }
-  if (problems.length) return { reasons: problems, session };
   // No restatement before the commit (owner Q476, 2026-11-03): the probes' acks show the new lead reads its pane and its
   // inbox and runs dori; the note carries the owner's words word for word, and the audit after the commit checks the rest.
-  // checked again before the old lead goes: a monitor that ran at the first check can end before the move commits (a remote tail whose ssh dropped); one that exited 0 after its signal is not missing
+  return { reasons: problems.length ? problems : stillThere(deps, facts, to.pane, session), session };
+};
+
+// checked again before the old lead goes, here and after it settled: a monitor can end before the move commits (a remote tail whose ssh dropped; one that exited 0 after its signal is not missing), and a new lead can write its todo list anew (review of #416)
+const stillThere = (deps: HandoverDeps, facts: HandoverFacts, pane: string, session: string): string[] => {
   const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), ranToEnd(sessionDirFor(deps.config.sessionsDir, facts.cwd), session, deps.home)) : [];
-  if (stopped.length) return { reasons: [`monitors stopped in ${to.pane} after the first check: ${stopped.join(", ")}`], session };
-  // and the todos: a new lead can put them in and then write its list anew while it finishes its first turn (review of #416)
   const dropped = facts.todos.length ? missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session) : [];
-  if (dropped.length) return { reasons: [`todos left the todo list of ${to.pane} after the first check: ${dropped.join(", ")}`], session };
-  return { reasons: [], session };
+  return [...(stopped.length ? [`monitors stopped in ${pane} after the first check: ${stopped.join(", ")}`] : []), ...(dropped.length ? [`todos left the todo list of ${pane} after the first check: ${dropped.join(", ")}`] : [])];
 };
 
 export type HandoverResult = { readonly code: number; readonly note?: string; readonly to?: string };
@@ -841,7 +841,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   for (const line of await pointLead(deps, facts.from, to, stamp)) emit(line);
   const restartFailures = await restartAll();
   mark("repoint", !restartFailures.length);
-  const checked = await settleOldLead<Checked>(deps, restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, join(dir, `${stamp}.understood.md`), emit), config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
+  const checked = await settleOldLead<Checked>(deps, restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, join(dir, `${stamp}.understood.md`), emit), config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`, (session) => stillThere(deps, facts, pane, session));
   ctx.supplements.push(...(checked.supplements ?? []));
   if (!restartFailures.length) mark("verify", !checked.reasons.length);
   const record = (result: string, reasons: readonly string[]) => writeFileSync(join(dir, `${stamp}.result.json`), JSON.stringify({ at: iso(deps.clock), from: facts.from, to: { ...to, session: checked.session }, note, result, reasons }, null, 1));
