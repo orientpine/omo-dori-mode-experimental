@@ -7,12 +7,20 @@ export type Word = { readonly text: string; readonly quoted: boolean; readonly e
 // A simple command: its words, its output redirection targets ("&1" for a descriptor copy) and its input files.
 export type Simple = { readonly words: Word[]; readonly outs: Word[]; readonly ins: Word[] };
 
+// The words that open or continue a compound command in front of a simple one (do cmd, if cmd, { cmd), those that close
+// one, and an assignment word: shared by the watch list (handover-watch.ts) and the foreground check (handover-watch-foreground.ts).
+export const CONTROL = new Set(["if", "then", "else", "elif", "while", "until", "do", "{", "!"]);
+export const CLOSE = new Set(["fi", "done", "}"]);
+export const ASSIGN = /^([A-Za-z_]\w*)=/;
+
 // ; && || | and newlines split commands; ( ` # & alone, |&, ;;, here-docs and <( ) are never a plain poll, so the lexer gives up.
 export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[]; end: number } | undefined => {
   const cmds: Simple[] = [{ words: [], outs: [], ins: [] }];
   const cur = (): Simple => cmds[cmds.length - 1] as Simple;
   let i = start;
   const word = (): Word | undefined => {
+    // a # starting a word is a comment wherever the word is read: a command or a redirection target (#532 review 2)
+    if (s[i] === "#") return undefined;
     let text = "", quoted = false, expand = false, glob = false, split = false;
     const subs: Simple[][] = [];
     const sub = (): boolean => {
@@ -38,6 +46,8 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
           const d = s[i];
           if (d === undefined || d === "`" || (d === "$" && s[i + 1] === "{")) return undefined;
           if (d === "\\") {
+            // a line continuation, which the shell removes before it reads words, is not modelled (#532 review 3)
+            if (s[i + 1] === "\n") return undefined;
             text += s[i + 1] ?? "";
             i += 2;
           } else if (d === "$" && s[i + 1] === "(") {
@@ -50,7 +60,11 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
         }
         i++;
       } else if (c === "\\") {
+        // an escaped character is quoted, never a reserved word (\do), as the shell reads it (#532 review 1); a line
+        // continuation is not modelled (review 3)
+        if (s[i + 1] === "\n") return undefined;
         text += s[i + 1] ?? "";
+        quoted = true;
         i += 2;
       } else if (c === "`" || (c === "$" && s[i + 1] === "{")) return undefined;
       else if (c === "$" && s[i + 1] === "(") {

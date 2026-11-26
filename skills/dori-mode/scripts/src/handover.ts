@@ -13,7 +13,7 @@ import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
-import { endedWatch, endOldMonitors, procStart, readText, sameWatch, shellScripts } from "./handover-monitors.ts";
+import { endedWatch, endOldMonitors, procStart, readText, rearmable, sameWatch, shellScripts } from "./handover-monitors.ts";
 import { ranToEnd } from "./handover-ran.ts";
 import { foregroundOnly, watchOnly } from "./handover-watch.ts";
 import { missingTodos, OWNER_HOURS, type OwnerWord, recentOwnerWords, todoTask } from "./handover-todos.ts";
@@ -212,7 +212,7 @@ export const liveMonitors = (entries: readonly ManifestEntry[], now: number, ali
   entries.filter((e) => running(e, now) && (!!e.path || e.runtime?.pid === undefined || alive(e.runtime.pid))).map((e) => {
     const s = spec(e);
     const ended = endedWatch(e);
-    const launch = s.command ? launchOf(s.command, home) : undefined;
+    const launch = s.command && !rearmable(s.description) ? launchOf(s.command, home) : undefined;
     return { ...s, ...(launch ? { launch } : {}), ...(ended ? { ended } : {}) };
   });
 
@@ -225,7 +225,7 @@ const READER = /^(?:\S*\/)?(?:tail|grep)\s/;
 export const monitorWork = (entries: readonly ManifestEntry[], table: readonly Proc[], now: number, alive: (pid: number) => boolean, home: string): MonitorWork[] =>
   entries.flatMap((e) => {
     const pid = e.runtime?.pid;
-    if (pid === undefined || !e.command || !running(e, now) || !alive(pid) || !launchOf(e.command, home)) return [];
+    if (pid === undefined || !e.command || !running(e, now) || !alive(pid) || rearmable(e.description) || !launchOf(e.command, home)) return [];
     const pids = descendants(table, pid).filter((p) => !ended(p) && !READER.test(p.cmd)).map((p) => p.pid);
     return [{ pid, start: procStart(pid), cmd: e.description || e.command, pids, starts: pids.map((p) => procStart(p)) }];
   });
@@ -361,7 +361,7 @@ export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonl
   const out: string[] = [];
   for (const m of wanted.filter((w) => !w.ended && !endedWatch(w) && !done(w))) {
     const name = m.description || m.command || m.path || "?";
-    const launch = m.launch ?? (m.command ? launchOf(m.command, home) : undefined);
+    const launch = m.launch ?? (m.command && !rearmable(m.description) ? launchOf(m.command, home) : undefined);
     if (m.command && launch) {
       const watchOnly = live.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))
         && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)));
@@ -409,7 +409,7 @@ export const openGoal = (sessionDir: string, session: string): string | undefine
 
 const cell = (text: string): string => text.replace(/\s*\|\s*/g, " / ").replace(/\s*[\r\n]+\s*/g, " ").slice(0, 160);
 const launchHow = (m: MonitorSpec, l: Launch): string =>
-  ` LAUNCHES_WORK (${l.why}): do not arm this command again, it would start its work a second time. Arm in its place a persistent watch-only monitor with the same description${m.filter ? " and filter" : ""} that only reads what the work writes${l.writes.length ? ` (${l.writes.join(", ")})` : ""}, on this machine, in one of the plain watch shapes: tail -F of a file it writes piped to grep, an until or while loop of sleep over grep or test, or a wait on its pid (while kill -0 <pid> 2>/dev/null; do sleep 2; done; echo DONE); nothing that starts, posts or changes anything. A watch over ssh counts as work again.`;
+  ` LAUNCHES_WORK (${l.why}): do not arm this command again, it would start its work a second time (a watch that only reads is re-armed as is next time when the session that arms it ends its description with [rearm]). Arm in its place a persistent watch-only monitor with the same description${m.filter ? " and filter" : ""} that only reads what the work writes${l.writes.length ? ` (${l.writes.join(", ")})` : ""}, on this machine, in one of the plain watch shapes: tail -F of a file it writes piped to grep, an until or while loop of sleep over grep or test, or a wait on its pid (while kill -0 <pid> 2>/dev/null; do sleep 2; done; echo DONE); nothing that starts, posts or changes anything. A watch over ssh counts as work again.`;
 export const monitorLine = (m: MonitorSpec): string =>
   `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.ended ? ` ENDED (${m.ended}): do not arm it, it has nothing left to wait for; the handover does not check it. Look at the file (or the work that writes it) yourself once you may act.` : `${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}${m.launch ? launchHow(m, m.launch) : ""}`}`;
 const watcherLine = (w: HandoverWatcher): string => `- ${w.name}: check ${JSON.stringify(w.check)}${w.arm ? `; to start it: ${w.arm}` : "; runs outside omo, nothing to arm"}`;

@@ -98,3 +98,16 @@ test("a foreground monitor whose work is its own root process is done once that 
     child.kill();
   }
 });
+
+// #532: a monitor its session marked [rearm] runs no work the handover keeps the old session for, whatever its command
+test("a [rearm] monitor is not work the old session is kept frozen for", async () => {
+  const command = "sleep 30 > /tmp/rearm-only.out";
+  expect(launchOf(command, HOME, () => undefined)).toBeDefined();
+  const child = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+  try {
+    const entry = { description: "rearm only [rearm]", command, persistent: true, suspended: false, expiresAt: null, runtime: { pid: child.pid } };
+    expect(monitorWork([entry as never], await procTable(run), Date.now(), () => true, HOME)).toEqual([]);
+  } finally {
+    child.kill();
+  }
+});

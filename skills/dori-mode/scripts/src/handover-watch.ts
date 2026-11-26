@@ -2,13 +2,16 @@
 // too), is one of the plain poll shapes of the real handover notes (2026-11-11: 45 distinct commands in 86 lane and
 // lead notes): tail -F | grep, until/while loops of sleep over grep, test, date or kill -0 <pid>, gh pr/run/api reads,
 // git fetch/rev-parse/log polls, a find that only reads (a re-armed gate, 2026-11-11 14:22Z), a plain sed or awk filter, a state file under $SENPI_MONITOR_STATE_DIR, and the same
-// run as another account or host (node-dori-do, ssh). Anything else is work and keeps its watch, so a new session never
+// run as another account or host (node-dori-do, ssh); since 2026-11-26 (the moodori lead's reads) ls and md5sum of a folder,
+// TZ= in front of a listed program, tr -c, and a PowerShell count of one Get- read over ssh. Anything else is work and keeps its watch, so a new session never
 // arms it again (reviews 4-21 of #414 found a way around every list of forms that start work). Threat model: these are
 // the lane's own monitors, not an attacker's; the list keeps ordinary work (a bun test, a dori review, a remote ci) from
 // running twice. It trusts the listed programs and options to only read, and the session's environment. What it cannot
 // read (a subshell, a background job, a here-doc, $(( )), ${ }, a comment) is work; a real watch missing here is work
 // too, and the new session arms a watch-only monitor in its place: a manual step, never a second run.
-import { lex, type Simple, type Word } from "./handover-watch-lex.ts";
+import { ASSIGN, CLOSE, CONTROL, lex, type Simple, type Word } from "./handover-watch-lex.ts";
+
+export { foregroundOnly } from "./handover-watch-foreground.ts";
 
 // The options each listed program may take (flags: short options alone; vals: short options with a value; num: -N),
 // and what its other words may be. Any other option is work (date -s, grep -r, sort -o are not on the list).
@@ -21,9 +24,11 @@ const PROGRAMS = new Map<string, Spec>([
   ["tail", { flags: "Ff", vals: "n", num: true }],
   ["head", { vals: "nc", num: true }],
   ["sha256sum", {}],
+  ["md5sum", {}],
+  ["ls", { flags: "Aa1lrtd" }],
   ["journalctl", { vals: "un", long: ["no-pager"] }],
   ["cut", { vals: "fcd" }],
-  ["tr", { flags: "ds" }],
+  ["tr", { flags: "dsc" }],
   ["wc", { flags: "lcw" }],
   ["stat", { vals: "c" }],
   // a filter on its input only: sed printing, quitting or substituting (no w, e or r command, no file), awk printing fields
@@ -53,7 +58,7 @@ const findRead = (a: readonly string[]): boolean => {
 };
 // test and [ only in shapes where no word, expanded or not, can be read as another operator: -v and -R evaluate an
 // array subscript and the command substitution in it (#414 review 25); every expansion double-quoted, so none splits (review 26)
-const UNARY = new Set(["-n", "-z", "-e", "-f", "-s", "!"]);
+const UNARY = new Set(["-n", "-z", "-e", "-f", "-d", "-s", "!"]);
 const BINARY = new Set(["=", "!=", "-eq", "-ne", "-lt", "-gt", "-ge", "-le"]);
 const testOk = (ws: readonly Word[]): boolean => {
   const op = (w: Word | undefined, set: ReadonlySet<string>) => !!w && !w.expand && !w.glob && set.has(w.text);
@@ -63,13 +68,23 @@ const testOk = (ws: readonly Word[]): boolean => {
   if (ws.length === 3) return op(ws[1], BINARY) || (ws[0]?.text === "!" && op(ws[0], UNARY) && testOk(ws.slice(1)));
   return ws.length === 4 && ws[0]?.text === "!" && op(ws[0], UNARY) && testOk(ws.slice(1));
 };
-const CONTROL = new Set(["if", "then", "else", "elif", "while", "until", "do", "{", "!"]);
-const CLOSE = new Set(["fi", "done", "}"]);
-const ASSIGN = /^([A-Za-z_]\w*)=/;
 const SSH_OPTION = /^(?:BatchMode|ConnectTimeout|ServerAliveInterval|StrictHostKeyChecking)=[\w.-]+$/;
 const VAR = /^[a-z_][a-z0-9_]*$/;
 // the environment a watch may set for gh: its config folder, and a pager that only prints
 const ENV = (w: Word): boolean => !w.subs.length && (/^GH_CONFIG_DIR=/.test(w.text) || w.text === "GH_PAGER=cat");
+// the zone a listed program prints times in, which only selects a zone file to read
+const TZ = (w: Word | undefined): boolean => !!w && /^TZ=/.test(w.text);
+// a name whose value the command's own words set: lowercase, and never _, which the shell sets after every command (#532 review 3)
+const TRUSTED = (n: string): boolean => VAR.test(n) && n !== "_";
+// a PowerShell command that reads one count or list: a listed Get- cmdlet with literal parameters, nothing else (no ; | &
+// $ { or a path, which cmd.exe or PowerShell could read as more); the remote device count of the moodori lead (2026-11-26)
+const PS_READ = /^@?\(?Get-(?:PnpDevice|Process|Service)(?: -[A-Za-z]+(?: [A-Za-z0-9]+)?)*\)?(?:\.Count)?$/;
+const psRead = (args: readonly Word[]): boolean => {
+  let k = 0;
+  while (args[k]?.text === "-NoProfile" || args[k]?.text === "-NonInteractive") k++;
+  const cmd = args[k + 1];
+  return args[k]?.text === "-Command" && args.length === k + 2 && !!cmd && !cmd.expand && !cmd.glob && !cmd.subs.length && PS_READ.test(cmd.text);
+};
 
 const argsOk = (spec: Spec, args: readonly Word[]): boolean => {
   if (spec.raw) return true;
@@ -110,6 +125,7 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   if (rest.every((x) => ASSIGN.test(x.text))) return rest.every((x) => VAR.test(ASSIGN.exec(x.text)?.[1] ?? ""));
   let e = 0;
   while (ENV(rest[e] as Word) && rest[e + 1]?.text === "gh") e++;
+  if (TZ(rest[e]) && rest[e + 1]) e++;
   const [name, ...args] = rest.slice(e);
   if (!plain(name) || name.subs.length) return false;
   // an expansion ($name, $( ), a glob) may become options or other words: an argument only of echo, printf, test and [ (in
@@ -133,6 +149,7 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
     const r = a[k] && !a[k]?.startsWith("-") && remote ? lex(remote, 0, false) : undefined;
     return !!r && cmdsOk(r.cmds, () => false, () => false);
   }
+  if (name.text === "powershell" || name.text === "pwsh") return psRead(args);
   if (name.text === "git") {
     const g = a[0] === "-C" ? args.slice(2) : args;
     const spec = GIT.get(g[0]?.text ?? "");
@@ -167,67 +184,9 @@ export const watchOnly = (command: string): boolean => {
     const rest = w[1] === "-C" ? w.slice(3) : w.slice(1);
     return w[0] === "git" && rest[0] === "rev-parse" && rest[1] === "--verify" && rest.length === 3 && /^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(rest[2] ?? "");
   };
-  const hashes = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(revParse)).map(([n]) => n));
-  const aliases = new Set([...values].filter(([n, vs]) => VAR.test(n) && vs.every(direct)).map(([n]) => n));
+  // a trusted variable has at least one recorded value, all of one kind (#532 review 3)
+  const trustedBy = (ok: (v: Word) => boolean) => new Set([...values].filter(([n, vs]) => TRUSTED(n) && vs.length > 0 && vs.every(ok)).map(([n]) => n));
+  const hashes = trustedBy(revParse);
+  const aliases = trustedBy(direct);
   return r.cmds.some((c) => c.words.length > 0) && cmdsOk(r.cmds, stateFile(aliases), (w) => !w.subs.length && hashes.has(/^\$([a-z_]\w*)$/.exec(w.text)?.[1] ?? "\0"));
-};
-
-// #414 review 41: a work monitor ends with its watch (detached false) only when every command word in it, at every depth,
-// is a listed foreground tool or shell word; a path, a script, an unknown program or a shell fed a script keeps the watch.
-// git is none (--upload-pack, -c core.fsmonitor, --exec run programs); gh only with these subcommands (extensions and aliases run programs)
-// only tools that cannot start a program whatever their arguments (#414 review 42): not awk (system), sed (e), journalctl
-// or systemctl (a pager), export or set (an environment a later program reads), nor any interpreter, wrapper or runner
-const SHELL_READS = new Set(["histchars", "auto_resume"]);
-const FOREGROUND = new Set(["sleep", "true", "false", "break", "continue", "cd", "cat", "echo", "date", "grep", "tail", "head", "sha256sum", "cut", "tr", "wc", "stat", "jq", "kill", "tee", "exit", "test", "["]);
-// the lone word [ is the test command, not a glob
-const plainWord = (w: Word | undefined, set: ReadonlySet<string>): boolean => !!w && !w.quoted && !w.expand && (!w.glob || w.text === "[") && set.has(w.text);
-// test and [ only as [ A OP B ], [ OP A ] or [ A ]: OP a literal listed operator, no -v or -R anywhere (they evaluate a
-// subscript), an expanded word only as an unsplit operand (#414 review 43); printf is out (-v assigns)
-const TEST_BINARY = new Set(["-eq", "-ne", "-lt", "-le", "-gt", "-ge", "=", "!="]);
-const TEST_UNARY = new Set(["-f", "-e", "-s", "-d", "-n", "-z"]);
-const predicate = (ws: readonly Word[]): boolean => {
-  const operand = (w: Word | undefined) => !!w && !w.split && !/^-[vR]$/.test(w.text);
-  if (ws.length === 1) return operand(ws[0]);
-  if (ws.length === 2) return plainWord(ws[0], TEST_UNARY) && operand(ws[1]);
-  return ws.length === 3 && operand(ws[0]) && plainWord(ws[1], TEST_BINARY) && operand(ws[2]);
-};
-// gh only as a read: pr checkout, repo clone/sync/fork run git and its hooks, pr create/merge can open an editor
-const GH_READS = new Map<string, ReadonlySet<string> | undefined>([
-  ["pr", new Set(["checks", "view", "list", "status", "diff"])],
-  ["run", new Set(["watch", "view", "list"])],
-  ["api", undefined],
-  ["release", new Set(["view", "list", "download"])],
-  ["issue", new Set(["view", "list"])],
-  ["repo", new Set(["view"])],
-]);
-const ghRead = (ws: readonly Word[], k: number): boolean => {
-  const [sub, verb] = [ws[k + 1], ws[k + 2]];
-  if (!plainWord(sub, new Set(GH_READS.keys()))) return false;
-  const verbs = GH_READS.get(sub?.text ?? "");
-  return !verbs || plainWord(verb, verbs);
-};
-export const foregroundOnly = (command: string): boolean => {
-  const ok = (cmds: readonly Simple[]): boolean =>
-    cmds.every((c) => {
-      let k = 0;
-      const names: string[] = [];
-      for (let x = c.words[k]; x && ((!x.quoted && !x.expand && (CONTROL.has(x.text) || CLOSE.has(x.text))) || ASSIGN.test(x.text)); x = c.words[k]) {
-        const name = ASSIGN.exec(x.text)?.[1];
-        if (name) names.push(name);
-        k++;
-      }
-      const w = c.words[k];
-      // an assignment in front of a command (PAGER=x gh ...) hands that program an environment it may run
-      if (names.length && w) return false;
-      // a standalone assignment changes what later words run (PATH, IFS, BASH_ENV, PAGER, GH_...): only a lowercase name
-      // the shell does not read itself (#414 review 44)
-      if (names.some((n) => !/^[a-z_][a-z0-9_]*$/.test(n) || SHELL_READS.has(n))) return false;
-      if (plainWord(w, new Set(["test", "["]))) {
-        const args = c.words.slice(k + 1);
-        if (w?.text === "[" ? !plainWord(args.at(-1), new Set(["]"])) || !predicate(args.slice(0, -1)) : !predicate(args)) return false;
-      }
-      return (!w || plainWord(w, FOREGROUND) || (plainWord(w, new Set(["gh"])) && ghRead(c.words, k))) && [...c.words, ...c.outs, ...c.ins].every((x) => x.subs.every(ok));
-    });
-  const r = lex(command, 0, false);
-  return !!r && ok(r.cmds);
 };

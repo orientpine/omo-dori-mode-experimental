@@ -158,3 +158,12 @@ test("a watch that did not end normally, or whose end cannot be told from its ow
   ];
   for (const [name, rows, wanted = gate] of cases) expect([name, missing([wanted], rows)]).toEqual([name, [`${DESC} (starts work: arm a watch-only one with the same description)`]]);
 });
+
+// #532: a monitor its session marked [rearm] is carried by its own command; a re-arm of it that fired and exited 0 is done
+test("a [rearm] monitor whose re-arm with the same command fired and exited 0 is not missing", () => {
+  const command = 'for d in /tmp/a; do ls -A "$d"; done; echo REARM_DONE';
+  expect(launchOf(command, HOME)).toBeDefined();
+  const marked: MonitorSpec = { description: "inbox [rearm]", command, filter: "^REARM_DONE", persistent: true };
+  const args = { description: "inbox [rearm]", command, filter: "^REARM_DONE", persistent: true };
+  expect(missing([marked], [arm(args), fired(["REARM_DONE", DONE], "inbox [rearm]")])).toEqual([]);
+});
