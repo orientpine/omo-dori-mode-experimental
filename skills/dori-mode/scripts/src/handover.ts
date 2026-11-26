@@ -854,13 +854,13 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     record("rolled-back", checked.reasons);
     return { code: 3, note, to: pane };
   }
-  const replying = await quietOldLead(deps, config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`, emit);
+  const busy = await quietOldLead(deps, config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
   new QuestionStore(deps.cardDir).retarget({ tmux: config.leadPane, ...(facts.from.session && checked.session ? { session: facts.from.session } : {}) }, { tmux: pane, ...(checked.session ? { session: checked.session } : {}) });
   // committed: the old lead is frozen, not closed, so it spends no tokens and does nothing while its pane and log stay.
   // work a monitor of the old lead started goes on: those monitors are not stopped, and the session closes once it ended
   const work = facts.from.session ? monitorWork(readManifest(manifestPath(config.sessionsDir, facts.from.cwd, facts.from.session)), await deps.procs(), deps.clock.now(), deps.alive, deps.home).filter((j) => j.pids.length > 0) : [];
   for (const line of await endOldMonitors(deps, facts, work.map((j) => j.pid))) emit(line);
-  const ice = await freezePane(deps, config.leadPane, process.pid, [...work.map((j) => j.pid), ...replying]).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
+  const ice = busy ? { pids: [] as number[], agentPid: undefined, why: busy } : await freezePane(deps, config.leadPane, process.pid, work.map((j) => j.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
   mark("freeze", !!ice.agentPid);
   if (ice.agentPid) {
     const h = config.handover.frozenCloseH;
