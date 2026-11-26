@@ -3,56 +3,134 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { quietOldLead, TURN_END_MS } from "../src/handover-drain.ts";
+import { SETTLE_MS, settleOldLead } from "../src/handover-drain.ts";
+import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import { quietReason } from "../src/rollover.ts";
 
 const BUSY = ["transcript", "── • Working (2s • esc to interrupt) ──────────", "❯ ", "────────────────────────", " ~/repo • main"].join("\n");
 const IDLE = ["transcript", "────────────────────────", "❯ ", "────────────────────────", " ~/repo • main"].join("\n");
+const PASSED = { reasons: [] as string[], session: "new-sid" };
 
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-// the old lead's screen shows its turn running for the first busyReads reads (a dori send, ask or resolve inside it)
-const world = (busyReads: number) => {
+// screens: what each read of the old lead's pane shows, the last one from then on; atSleep runs before each poll's sleep
+const world = (screens: readonly (string | Error)[], atSleep: (n: number) => void = () => {}) => {
   let t = 1_000_000;
   let reads = 0;
+  let sleeps = 0;
+  const state = mkdtempSync(join(tmpdir(), "settle-"));
+  dirs.push(state);
   const deps = {
-    run: async (argv: readonly string[]) => ({ code: 0, out: argv.includes("capture-pane") ? (reads++ < busyReads ? BUSY : IDLE) : "", err: "" }),
+    run: async (argv: readonly string[]) => {
+      if (!argv.includes("capture-pane")) return { code: 1, out: "", err: "" };
+      const s = screens[Math.min(reads++, screens.length - 1)] ?? IDLE;
+      if (s instanceof Error) throw s;
+      return { code: 0, out: s, err: "" };
+    },
     clock: {
       now: () => t,
       sleep: async (ms: number) => {
+        atSleep(++sleeps);
         t += ms;
       },
     },
+    cardDir: join(state, "discord"),
   };
-  const state = mkdtempSync(join(tmpdir(), "drain-"));
-  dirs.push(state);
-  return { deps, state, now: () => t, reads: () => reads };
+  const settle = (checked = PASSED) => settleOldLead(deps, checked, state, "lead", t + 600_000, "the handover of the lead to new is running");
+  return { deps, state, settle, now: () => t, sleeps: () => sleeps };
 };
 
-test("at the commit the old lead is made quiet and is frozen only once its running turn has ended", async () => {
+test("checks that failed are returned as they are: the old lead gets no quiet mark and nothing waits", async () => {
   // Given
-  const w = world(3);
-  const start = w.now();
+  const w = world([BUSY]);
+  const failed = { reasons: ["monitors not running"], session: "" };
   // When
-  const busy = await quietOldLead(w.deps, w.state, "lead", start + 60_000, "the handover of the lead to new is running");
+  const r = await w.settle(failed);
   // Then
-  expect(quietReason(w.state, "lead", w.now())).toStartWith("HANDOVER_QUIET lead: the handover of the lead to new is running");
-  expect(busy).toBeUndefined();
-  expect(w.reads()).toBe(4);
-  expect(w.now() - start).toBeLessThan(TURN_END_MS);
+  expect(r).toBe(failed);
+  expect(quietReason(w.state, "lead", w.now())).toBeUndefined();
+  expect(w.sleeps()).toBe(0);
 });
 
-test("an old lead whose turn still runs at the bound is not frozen: the reason sends the commit the freeze-failed way", async () => {
+test("after passed checks the old lead is made quiet and the move goes on once its turn ended and no card claim is held", async () => {
   // Given
-  const w = world(Number.POSITIVE_INFINITY);
-  const start = w.now();
+  const w = world([BUSY, BUSY, IDLE]);
   // When
-  const busy = await quietOldLead(w.deps, w.state, "lead", start + 600_000, "moving");
+  const r = await w.settle();
   // Then
-  expect(busy).toBe(`its turn still ran ${TURN_END_MS / 1000} s after the commit, and a stopped turn would keep any question claim it holds`);
-  expect(w.now() - start).toBeGreaterThanOrEqual(TURN_END_MS);
-  expect(quietReason(w.state, "lead", w.now())).toBeDefined();
+  expect(r).toMatchObject(PASSED);
+  expect(quietReason(w.state, "lead", w.now())).toStartWith("HANDOVER_QUIET lead: the handover of the lead to new is running");
+  expect(w.sleeps()).toBe(2);
+});
+
+test("an idle screen is not enough while a card claim is held (a dori ask or resolve in a background job): the move waits for it", async () => {
+  // Given
+  let release: (() => void) | null = null;
+  const w = world([IDLE], (n) => {
+    if (n === 3) release?.();
+  });
+  const store = new QuestionStore(w.deps.cardDir);
+  const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
+  release = store.claim(q.id, w.now());
+  // When
+  const r = await w.settle();
+  // Then
+  expect(release).not.toBeNull();
+  expect(r).toMatchObject(PASSED);
+  expect(w.sleeps()).toBe(3);
+});
+
+test("an old lead that does not come to rest in time makes the checks fail, so the move rolls back and nothing is frozen or closed", async () => {
+  // Given
+  const held = world([IDLE]);
+  const store = new QuestionStore(held.deps.cardDir);
+  const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
+  expect(store.claim(q.id, held.now())).not.toBeNull();
+  const unreadable = world([new Error("hc read failed"), ""]);
+  const busy = world([BUSY]);
+  // When
+  const results = [await held.settle(), await unreadable.settle(), await busy.settle()];
+  // Then
+  expect(results.map((r) => r.reasons)).toEqual([
+    [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (the claim of card ${q.id} was still held); nothing was frozen or closed`],
+    [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (its screen could not be read); nothing was frozen or closed`],
+    [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (its turn was still running); nothing was frozen or closed`],
+  ]);
+  expect(held.now() - 1_000_000).toBeGreaterThanOrEqual(SETTLE_MS);
+});
+
+test("the claims a settled old lead had free stay taken until the freeze is done, so no ask, resolve or reopen can take one in between", async () => {
+  // Given
+  const w = world([IDLE]);
+  const store = new QuestionStore(w.deps.cardDir);
+  const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
+  // When
+  const r = await w.settle();
+  const during = store.claim(q.id, w.now());
+  r.release?.();
+  const after = store.claim(q.id, w.now());
+  after?.();
+  // Then
+  expect(r.reasons).toEqual([]);
+  expect(during).toBeNull();
+  expect(after).not.toBeNull();
+});
+
+test("a claim held on an answered card (its repaint or a reopen) also keeps the old lead from rest", async () => {
+  // Given
+  const w = world([IDLE]);
+  const store = new QuestionStore(w.deps.cardDir);
+  const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
+  store.answer(q.id, "yes", "button", "2026-11-26T00:01:00Z");
+  expect(store.get(q.id)?.status).not.toBe("open");
+  const holder = store.claim(q.id, w.now());
+  // When
+  const r = await w.settle();
+  holder?.();
+  // Then
+  expect(holder).not.toBeNull();
+  expect(r.reasons).toEqual([`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (the claim of card ${q.id} was still held); nothing was frozen or closed`]);
 });

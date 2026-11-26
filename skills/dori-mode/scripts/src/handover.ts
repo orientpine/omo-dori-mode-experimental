@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { captureTmux, closeAoeSession, inputLine, isClosedLine, laneEnv, liveSessions, openAoeSession, sessionFor } from "./aoe.ts";
 import { rollBackNew } from "./handover-rollback.ts";
-import { quietOldLead } from "./handover-drain.ts";
+import { settleOldLead } from "./handover-drain.ts";
 import { strayTasks, taskRecords } from "./background.ts";
 import { laneHomeEnv } from "./home-env.ts";
 import type { HandoverWatcher } from "./config.ts";
@@ -841,7 +841,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   for (const line of await pointLead(deps, facts.from, to, stamp)) emit(line);
   const restartFailures = await restartAll();
   mark("repoint", !restartFailures.length);
-  const checked: Checked = restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, join(dir, `${stamp}.understood.md`), emit);
+  const checked = await settleOldLead<Checked>(deps, restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, join(dir, `${stamp}.understood.md`), emit), config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
   ctx.supplements.push(...(checked.supplements ?? []));
   if (!restartFailures.length) mark("verify", !checked.reasons.length);
   const record = (result: string, reasons: readonly string[]) => writeFileSync(join(dir, `${stamp}.result.json`), JSON.stringify({ at: iso(deps.clock), from: facts.from, to: { ...to, session: checked.session }, note, result, reasons }, null, 1));
@@ -849,18 +849,18 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     emit(`HANDOVER_VERIFY_FAIL ${pane}: ${checked.reasons.join("; ")}`);
     for (const line of await pointLead(deps, to, facts.from, stamp)) emit(line);
     await restartAll();
-    await tell(config.leadPane, `[LEAD] Handover to ${pane} failed (${checked.reasons.join("; ")}). You stay the lead: handle inbox, lane and session events again.`);
+    await tell(config.leadPane, `[LEAD] Handover to ${pane} failed (${checked.reasons.join("; ")}). You stay the lead: handle inbox, lane and session events again, and send now any reply to the owner that was refused as HANDOVER_QUIET meanwhile.`);
     await rollBackNew({ run: deps.run, routedPane: deps.routedPane, tell, emit, lead: config.leadPane, pane, why: checked.reasons.join("; ") });
     record("rolled-back", checked.reasons);
     return { code: 3, note, to: pane };
   }
-  const busy = await quietOldLead(deps, config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
   new QuestionStore(deps.cardDir).retarget({ tmux: config.leadPane, ...(facts.from.session && checked.session ? { session: facts.from.session } : {}) }, { tmux: pane, ...(checked.session ? { session: checked.session } : {}) });
   // committed: the old lead is frozen, not closed, so it spends no tokens and does nothing while its pane and log stay.
   // work a monitor of the old lead started goes on: those monitors are not stopped, and the session closes once it ended
   const work = facts.from.session ? monitorWork(readManifest(manifestPath(config.sessionsDir, facts.from.cwd, facts.from.session)), await deps.procs(), deps.clock.now(), deps.alive, deps.home).filter((j) => j.pids.length > 0) : [];
   for (const line of await endOldMonitors(deps, facts, work.map((j) => j.pid))) emit(line);
-  const ice = busy ? { pids: [] as number[], agentPid: undefined, why: busy } : await freezePane(deps, config.leadPane, process.pid, work.map((j) => j.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
+  const ice = await freezePane(deps, config.leadPane, process.pid, work.map((j) => j.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
+  checked.release?.();
   mark("freeze", !!ice.agentPid);
   if (ice.agentPid) {
     const h = config.handover.frozenCloseH;
