@@ -2,16 +2,14 @@
 // too), is one of the plain poll shapes of the real handover notes (2026-11-11: 45 distinct commands in 86 lane and
 // lead notes): tail -F | grep, until/while loops of sleep over grep, test, date or kill -0 <pid>, gh pr/run/api reads,
 // git fetch/rev-parse/log polls, a find that only reads (a re-armed gate, 2026-11-11 14:22Z), a plain sed or awk filter, a state file under $SENPI_MONITOR_STATE_DIR, and the same
-// run as another account or host (node-dori-do, ssh). The moodori lead's read loops (2026-11-26) added: for over literal
-// words, case, ls and md5sum of a folder, TZ= in front of date, tr -c, and a PowerShell count of one Get- read over ssh. Anything else is work and keeps its watch, so a new session never
+// run as another account or host (node-dori-do, ssh); since 2026-11-26 (the moodori lead's reads) ls and md5sum of a folder,
+// TZ= in front of a listed program, tr -c, and a PowerShell count of one Get- read over ssh. Anything else is work and keeps its watch, so a new session never
 // arms it again (reviews 4-21 of #414 found a way around every list of forms that start work). Threat model: these are
 // the lane's own monitors, not an attacker's; the list keeps ordinary work (a bun test, a dori review, a remote ci) from
-// running twice. It trusts the listed programs and options to only read, and the session's environment.
-// What it proves comes from the command's own words only. A variable stands for a value only where the shell must have set it
-// (a for variable inside its own loop, #532 review 3), and a lowercase name the command never sets is the session's. What it cannot
+// running twice. It trusts the listed programs and options to only read, and the session's environment. What it cannot
 // read (a subshell, a background job, a here-doc, $(( )), ${ }, a comment) is work; a real watch missing here is work
 // too, and the new session arms a watch-only monitor in its place: a manual step, never a second run.
-import { ASSIGN, CLOSE, CONTROL, caseAssigned, forLoops, lex, type Simple, type Word } from "./handover-watch-lex.ts";
+import { ASSIGN, CLOSE, CONTROL, lex, type Simple, type Word } from "./handover-watch-lex.ts";
 
 export { foregroundOnly } from "./handover-watch-foreground.ts";
 
@@ -76,11 +74,8 @@ const VAR = /^[a-z_][a-z0-9_]*$/;
 const ENV = (w: Word): boolean => !w.subs.length && (/^GH_CONFIG_DIR=/.test(w.text) || w.text === "GH_PAGER=cat");
 // the zone a listed program prints times in, which only selects a zone file to read
 const TZ = (w: Word | undefined): boolean => !!w && /^TZ=/.test(w.text);
-const literal = (w: Word): boolean => !w.expand && !w.glob && !w.subs.length;
 // a name whose value the command's own words set: lowercase, and never _, which the shell sets after every command (#532 review 3)
 const TRUSTED = (n: string): boolean => VAR.test(n) && n !== "_";
-// programs that hand their words to another shell, which reads a variable's value as commands: no literal variable there (#532 review 2)
-const REMOTE = new Set(["ssh", "node-dori-do"]);
 // a PowerShell command that reads one count or list: a listed Get- cmdlet with literal parameters, nothing else (no ; | &
 // $ { or a path, which cmd.exe or PowerShell could read as more); the remote device count of the moodori lead (2026-11-26)
 const PS_READ = /^@?\(?Get-(?:PnpDevice|Process|Service)(?: -[A-Za-z]+(?: [A-Za-z0-9]+)?)*\)?(?:\.Count)?$/;
@@ -88,7 +83,7 @@ const psRead = (args: readonly Word[]): boolean => {
   let k = 0;
   while (args[k]?.text === "-NoProfile" || args[k]?.text === "-NonInteractive") k++;
   const cmd = args[k + 1];
-  return args[k]?.text === "-Command" && args.length === k + 2 && !!cmd && literal(cmd) && PS_READ.test(cmd.text);
+  return args[k]?.text === "-Command" && args.length === k + 2 && !!cmd && !cmd.expand && !cmd.glob && !cmd.subs.length && PS_READ.test(cmd.text);
 };
 
 const argsOk = (spec: Spec, args: readonly Word[]): boolean => {
@@ -118,7 +113,7 @@ const argsOk = (spec: Spec, args: readonly Word[]): boolean => {
 const stateFile = (aliases: ReadonlySet<string>) => (w: Word): boolean =>
   !w.subs.length && ((/^\$SENPI_MONITOR_STATE_DIR(?:\/[\w.-]+)+$/.test(w.text) && !w.text.split("/").includes("..")) || aliases.has(/^\$([a-z_]\w*)$/.exec(w.text)?.[1] ?? "\0"));
 
-const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boolean, lit: (w: Word) => boolean): boolean => {
+const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boolean): boolean => {
   const w = c.words;
   const plain = (x: Word | undefined): x is Word => !!x && !x.quoted && !x.expand;
   let k = 0;
@@ -126,11 +121,6 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   const rest = w.slice(k);
   if (!c.outs.every((o) => o.dup || (o.text === "/dev/null" && !o.expand && !o.glob) || state(o))) return false;
   if (rest.every((x) => plain(x) && CLOSE.has(x.text))) return true;
-  // a case header (its word is never split or run), a list of case patterns (matched, never run), and a for header (its
-  // words become a variable a word only stands for when each one is literal); what $( ) any holds is checked on its own
-  if (rest.length === 3 && plain(rest[0]) && rest[0].text === "case" && plain(rest[2]) && rest[2].text === "in") return true;
-  if (plain(rest[0]) && rest[0].text === ")") return true;
-  if (plain(rest[0]) && rest[0].text === "for") return plain(rest[1]) && VAR.test(rest[1].text) && plain(rest[2]) && rest[2].text === "in";
   // a statement of assignments only, to lowercase shell variables (an exported or uppercase name reaches programs)
   if (rest.every((x) => ASSIGN.test(x.text))) return rest.every((x) => VAR.test(ASSIGN.exec(x.text)?.[1] ?? ""));
   let e = 0;
@@ -141,7 +131,7 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   // an expansion ($name, $( ), a glob) may become options or other words: an argument only of echo, printf, test and [ (in
   // their shapes) and the right side of an assignment; elsewhere a state file, for git a rev-parse --verify hash (#414 r22-r25)
   if (name.text === "test" || name.text === "[") return name.text === "test" ? testOk(args) : args.at(-1)?.text === "]" && !args.at(-1)?.expand && testOk(args.slice(0, -1));
-  if ((!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !(x.expand || x.glob) || state(x) || (!REMOTE.has(name.text) && lit(x)) || (name.text === "git" && hash(x)))) || (name.text === "printf" && (!args[0] || args[0].expand || args[0].glob || !/^(?:[^%-][^%]*|)(?:%[s%][^%]*)*$/.test(args[0].text)))) return false;
+  if ((!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !(x.expand || x.glob) || state(x) || (name.text === "git" && hash(x)))) || (name.text === "printf" && (!args[0] || args[0].expand || args[0].glob || !/^(?:[^%-][^%]*|)(?:%[s%][^%]*)*$/.test(args[0].text)))) return false;
   const a = args.map((x) => x.text);
   if (name.text === "tee") return argsOk({ flags: "a", operand: (x) => x.text === "/dev/null" || state(x) }, args);
   if (name.text === "kill") return a[0] === "-0" && a.length > 1 && a.slice(1).every((p) => /^\d+$/.test(p));
@@ -157,7 +147,7 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
     while (name.text === "ssh" && (/^-[Tnq]$/.test(a[k] ?? "") || (a[k] === "-o" && SSH_OPTION.test(a[k + 1] ?? "")))) k += a[k] === "-o" ? 2 : 1;
     const remote = a.slice(k + 1).join(" ");
     const r = a[k] && !a[k]?.startsWith("-") && remote ? lex(remote, 0, false) : undefined;
-    return !!r && cmdsOk(r.cmds, () => false, () => false, () => false);
+    return !!r && cmdsOk(r.cmds, () => false, () => false);
   }
   if (name.text === "powershell" || name.text === "pwsh") return psRead(args);
   if (name.text === "git") {
@@ -170,8 +160,8 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   return !!spec && argsOk(spec, args);
 };
 
-const cmdsOk = (cmds: readonly Simple[], state: (w: Word) => boolean, hash: (w: Word) => boolean, lit: (w: Word) => boolean): boolean =>
-  cmds.every((c) => simpleOk(c, state, hash, lit) && [...c.words, ...c.outs, ...c.ins].every((w) => w.subs.every((s) => cmdsOk(s, state, hash, lit))));
+const cmdsOk = (cmds: readonly Simple[], state: (w: Word) => boolean, hash: (w: Word) => boolean): boolean =>
+  cmds.every((c) => simpleOk(c, state, hash) && [...c.words, ...c.outs, ...c.ins].every((w) => w.subs.every((s) => cmdsOk(s, state, hash))));
 
 const allWords = (cmds: readonly Simple[]): Word[] => cmds.flatMap((c) => [...c.words, ...c.outs, ...c.ins]).flatMap((w) => [w, ...w.subs.flatMap(allWords)]);
 
@@ -185,10 +175,6 @@ export const watchOnly = (command: string): boolean => {
     const name = ASSIGN.exec(w.text)?.[1];
     if (name) values.set(name, [...(values.get(name) ?? []), { ...w, text: w.text.slice(name.length + 1) }]);
   }
-  const assigned = new Set(values.keys());
-  // a for variable takes each word of its list as a value, before any variable is trusted for its values (#532 review 1)
-  const loops = forLoops(r.cmds);
-  for (const l of loops) values.set(l.name, [...(values.get(l.name) ?? []), ...l.list]);
   const direct = stateFile(new Set());
   // a variable every assignment of which is $(git [-C dir] rev-parse --verify <one ref>): one hash or nothing (#414 review 25)
   const revParse = (v: Word): boolean => {
@@ -198,20 +184,9 @@ export const watchOnly = (command: string): boolean => {
     const rest = w[1] === "-C" ? w.slice(3) : w.slice(1);
     return w[0] === "git" && rest[0] === "rev-parse" && rest[1] === "--verify" && rest.length === 3 && /^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(rest[2] ?? "");
   };
-  // a trusted variable has at least one recorded value (an empty for list gives none, #532 review 3), all of one kind
-  // and is never assigned in a case arm, which may not run (dori challenge of plan-r3)
-  const inCase = caseAssigned(r.cmds);
-  const trustedBy = (ok: (v: Word) => boolean) => new Set([...values].filter(([n, vs]) => TRUSTED(n) && !inCase.has(n) && vs.length > 0 && vs.every(ok)).map(([n]) => n));
+  // a trusted variable has at least one recorded value, all of one kind (#532 review 3)
+  const trustedBy = (ok: (v: Word) => boolean) => new Set([...values].filter(([n, vs]) => TRUSTED(n) && vs.length > 0 && vs.every(ok)).map(([n]) => n));
   const hashes = trustedBy(revParse);
   const aliases = trustedBy(direct);
-  // a literal variable only where the loop binds it (review 3: an assignment the classifier cannot order against a use,
-  // a condition or the inherited environment proves nothing): the quoted "$name" inside the body of the one for that binds
-  // the name, over a list of literal words that cannot be read as options, with no other binding anywhere; it is that word,
-  // so it may stand where the word may (the folder of ls -A "$d" in the moodori inbox poll)
-  const uses = new Set<Word>();
-  for (const l of loops)
-    if (TRUSTED(l.name) && !assigned.has(l.name) && loops.filter((o) => o.name === l.name).length === 1 && l.list.length > 0 && l.list.every((v) => literal(v) && !v.text.startsWith("-")))
-      for (const w of allWords(l.body)) if (!w.split && !w.subs.length && w.text === `$${l.name}`) uses.add(w);
-  const named = (set: ReadonlySet<string>) => (w: Word) => !w.subs.length && set.has(/^\$([a-z_]\w*)$/.exec(w.text)?.[1] ?? "\0");
-  return r.cmds.some((c) => c.words.length > 0) && cmdsOk(r.cmds, stateFile(aliases), named(hashes), (w) => uses.has(w));
+  return r.cmds.some((c) => c.words.length > 0) && cmdsOk(r.cmds, stateFile(aliases), (w) => !w.subs.length && hashes.has(/^\$([a-z_]\w*)$/.exec(w.text)?.[1] ?? "\0"));
 };

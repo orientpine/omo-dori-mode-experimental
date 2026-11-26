@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
-import { launchOf, missingMonitors } from "../src/handover.ts";
+import { launchOf, liveMonitors, missingMonitors } from "../src/handover.ts";
+import { armed } from "../src/rollover-audit.ts";
 
 const HOME = "/home/test";
 const rearmed = (command: string) => [{ description: "w", command, persistent: true, runtime: { pid: 7 } }];
@@ -11,17 +12,19 @@ const rejectsSameCommand = (command: string) => {
 };
 
 // moodori lead handover 2026-11-26 (hc:t1r, t1s, t1v): three read-only loops of the lead note fell back as LAUNCHES_WORK
-// and failed the check: an inbox poll (for over literal folders, ls | md5sum, case), a weekday clock (TZ= date) and a
-// remote device count (ssh, a PowerShell Get- read, tr -dc). They only read and echo, so the new session arms them again.
-test("read-only loops of the moodori lead note stay watches the new session may arm again", () => {
+// and failed the check. A weekday clock (TZ= date) and a remote device count (ssh, a PowerShell Get- read, tr -dc) are read
+// as watches; the inbox poll (for, case, a loop variable) is not, since reviews 1-4 of #532 found a way around every reading
+// of those forms (lead decision: the session that arms it marks it [rearm], next test).
+const INBOX = "seen=''; first=1; while true; do for d in ~/inbox/kaist ~/inbox/h200 ~/inbox/mail; do [ -d \"$d\" ] || continue; n=$(ls -A \"$d\" 2>/dev/null | md5sum); k=\"$d:$n\"; case \"$seen\" in *\"$k\"*) ;; *) [ -z \"$first\" ] && [ -n \"$(ls -A \"$d\")\" ] && echo \"INBOX_CHANGED $d\"; seen=\"$seen $k\";; esac; done; first=''; sleep 20; done";
+test("read-only loops of the moodori lead note: the clock and the device count stay watches, the inbox poll is work unmarked", () => {
   for (const command of [
-    "seen=''; first=1; while true; do for d in ~/inbox/kaist ~/inbox/h200 ~/inbox/mail; do [ -d \"$d\" ] || continue; n=$(ls -A \"$d\" 2>/dev/null | md5sum); k=\"$d:$n\"; case \"$seen\" in *\"$k\"*) ;; *) [ -z \"$first\" ] && [ -n \"$(ls -A \"$d\")\" ] && echo \"INBOX_CHANGED $d\"; seen=\"$seen $k\";; esac; done; first=''; sleep 20; done",
     "while true; do h=$(TZ=Asia/Seoul date +%H%M); d=$(TZ=Asia/Seoul date +%u); if [ \"$d\" -le 5 ] && { [ \"$h\" = \"0830\" ] || [ \"$h\" = \"1430\" ]; }; then echo \"CARD1124_CHECK $(TZ=Asia/Seoul date +%F_%H:%M)\"; sleep 70; fi; sleep 30; done",
     "while true; do n=$(ssh -o ConnectTimeout=10 orien@100.70.29.48 'powershell -NoProfile -Command \"@(Get-PnpDevice -Class Monitor -PresentOnly -ErrorAction SilentlyContinue).Count\"' 2>/dev/null | tr -dc 0-9); if [ -n \"$n\" ] && [ \"$n\" -gt 0 ]; then echo \"MONITOR_PRESENT $n\"; break; fi; sleep 60; done",
   ]) {
     expect([command, launchOf(command, HOME, () => undefined)]).toEqual([command, undefined]);
     expect(missingMonitors([{ description: "w", command, persistent: true }], rearmed(command), () => true, HOME, 0)).toEqual([]);
   }
+  rejectsSameCommand(INBOX);
   // the same shapes holding work, or words the list cannot read, stay work and keep their watch
   for (const command of [
     "case x in a) bun test;; esac",
@@ -83,4 +86,26 @@ test("read-only loops of the moodori lead note stay watches the new session may 
     "case no in\n  yes) f=\"$SENPI_MONITOR_STATE_DIR/x\";;\nesac\necho reset > \"$f\"",
     "case no in yes) x=$(git rev-parse --verify HEAD);; esac; git log -1 $x",
   ]) rejectsSameCommand(command);
+});
+
+// the lead's decision on #532 after review 4: a monitor whose description ends in [rearm] is re-armed as is by the new
+// session and the check accepts that; only the old session's own mark counts, never one a replacement takes
+test("a monitor marked [rearm] is re-armed as is; a work command that takes the mark at the handover is still refused", () => {
+  const marked = { description: "h200/kaist inbox [rearm]", command: INBOX, filter: "^INBOX_CHANGED", persistent: true, runtime: { pid: 7 } };
+  const [spec] = liveMonitors([marked], 0, () => true, HOME);
+  expect(spec?.launch).toBeUndefined();
+  expect(missingMonitors([spec as never], [{ ...marked, runtime: { pid: 8 } }], () => true, HOME, 0)).toEqual([]);
+  expect(missingMonitors([spec as never], [], () => true, HOME, 0)).toHaveLength(1);
+  // unmarked, the same command keeps LAUNCHES_WORK
+  expect(liveMonitors([{ ...marked, description: "h200/kaist inbox" }], 0, () => true, HOME)[0]?.launch).toBeDefined();
+  // a work monitor re-armed with its own command under a marked description is the work started again
+  const work = "cd /tmp/w && bun test > /tmp/w/out 2>&1; echo DONE";
+  const [old] = liveMonitors([{ description: "suite", command: work, persistent: true, runtime: { pid: 7 } }], 0, () => true, HOME);
+  expect(old?.launch).toBeDefined();
+  expect(missingMonitors([old as never], [{ description: "suite [rearm]", command: work, persistent: true, runtime: { pid: 8 } }], () => true, HOME, 0)).toEqual(["suite (armed again with the command that starts work; arm a watch-only one instead)"]);
+  // the audit after the commit counts the same re-arm as carried, not as a launching command armed again
+  expect(armed(spec as never, [{ ...marked, runtime: { pid: 8 } }] as never, HOME)).toBe(true);
+  expect(armed(old as never, [{ description: "suite [rearm]", command: work, persistent: true, runtime: { pid: 8 } }] as never, HOME)).toBe(false);
+  // the mark is the description's last word, not a word inside it
+  expect(liveMonitors([{ ...marked, description: "[rearm] h200/kaist inbox" }], 0, () => true, HOME)[0]?.launch).toBeDefined();
 });
