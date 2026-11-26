@@ -95,6 +95,11 @@ test("read-only loops of the moodori lead note stay watches the new session may 
     "echo \"$(case esac in \\esac) bun test;; esac)\"",
     "f=\"$SENPI_MONITOR_STATE_DIR/state\"; for f in /tmp/result; do echo reset > \"$f\"; done",
     "x=$(git rev-parse --verify HEAD); for x in --output=/tmp/x; do git log $x; done",
+    // review 2 of #532: a comment never starts a case pattern, and a literal variable never reaches a remote shell, which
+    // reads its value as commands (H399, H400)
+    "echo \"$(case echo in #) ;; esac\necho) bun test;; esac)\"\ntail -F /tmp/watch.log",
+    "arg='ok; bun test'; ssh host echo \"$arg\"; tail -F /tmp/watch.log",
+    "arg='ok; bun test'; node-dori-do okdori echo \"$arg\"",
   ]) rejectsSameCommand(command);
 });
 

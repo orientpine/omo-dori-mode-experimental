@@ -23,6 +23,8 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
   let i = start;
   let cases = 0, pattern = false;
   const word = (): Word | undefined => {
+    // a # starting a word is a comment wherever the word is read: a command, a redirection target, a case pattern (#532 review 2)
+    if (s[i] === "#") return undefined;
     let text = "", quoted = false, expand = false, glob = false, split = false;
     const subs: Simple[][] = [];
     const sub = (): boolean => {

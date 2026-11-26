@@ -75,6 +75,8 @@ const ENV = (w: Word): boolean => !w.subs.length && (/^GH_CONFIG_DIR=/.test(w.te
 // the zone a listed program prints times in, which only selects a zone file to read
 const TZ = (w: Word | undefined): boolean => !!w && /^TZ=/.test(w.text);
 const literal = (w: Word): boolean => !w.expand && !w.glob && !w.subs.length;
+// programs that hand their words to another shell, which reads a variable's value as commands: no literal variable there (#532 review 2)
+const REMOTE = new Set(["ssh", "node-dori-do"]);
 // a PowerShell command that reads one count or list: a listed Get- cmdlet with literal parameters, nothing else (no ; | &
 // $ { or a path, which cmd.exe or PowerShell could read as more); the remote device count of the moodori lead (2026-11-26)
 const PS_READ = /^@?\(?Get-(?:PnpDevice|Process|Service)(?: -[A-Za-z]+(?: [A-Za-z0-9]+)?)*\)?(?:\.Count)?$/;
@@ -135,7 +137,7 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   // an expansion ($name, $( ), a glob) may become options or other words: an argument only of echo, printf, test and [ (in
   // their shapes) and the right side of an assignment; elsewhere a state file, for git a rev-parse --verify hash (#414 r22-r25)
   if (name.text === "test" || name.text === "[") return name.text === "test" ? testOk(args) : args.at(-1)?.text === "]" && !args.at(-1)?.expand && testOk(args.slice(0, -1));
-  if ((!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !(x.expand || x.glob) || state(x) || lit(x) || (name.text === "git" && hash(x)))) || (name.text === "printf" && (!args[0] || args[0].expand || args[0].glob || !/^(?:[^%-][^%]*|)(?:%[s%][^%]*)*$/.test(args[0].text)))) return false;
+  if ((!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !(x.expand || x.glob) || state(x) || (!REMOTE.has(name.text) && lit(x)) || (name.text === "git" && hash(x)))) || (name.text === "printf" && (!args[0] || args[0].expand || args[0].glob || !/^(?:[^%-][^%]*|)(?:%[s%][^%]*)*$/.test(args[0].text)))) return false;
   const a = args.map((x) => x.text);
   if (name.text === "tee") return argsOk({ flags: "a", operand: (x) => x.text === "/dev/null" || state(x) }, args);
   if (name.text === "kill") return a[0] === "-0" && a.length > 1 && a.slice(1).every((p) => /^\d+$/.test(p));
