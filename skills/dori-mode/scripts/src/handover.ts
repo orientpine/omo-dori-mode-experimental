@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { captureTmux, closeAoeSession, inputLine, isClosedLine, laneEnv, liveSessions, openAoeSession, sessionFor } from "./aoe.ts";
 import { rollBackNew } from "./handover-rollback.ts";
+import { quietOldLead } from "./handover-drain.ts";
 import { strayTasks, taskRecords } from "./background.ts";
 import { laneHomeEnv } from "./home-env.ts";
 import type { HandoverWatcher } from "./config.ts";
@@ -29,7 +30,7 @@ import { iso, openingRuntime } from "./run.ts";
 import { leadUnmovable } from "./lead-ref.ts";
 import { descendants, ended, hasSessionSelector, type Proc, sessionDirFor } from "./session-id.ts";
 import { flat, missingHeadings, quoted, ROUND_TRIES } from "./restatement.ts";
-import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFile, type Signals, sessionSignals, setQuiet, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
+import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFile, type Signals, sessionSignals, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
 import { turnRunning } from "./submit.ts";
 import { watchLog } from "./watch-log.ts";
 import { type WorklogFacts, worklogFacts, worklogSection } from "./worklog-notes.ts";
@@ -853,14 +854,13 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     record("rolled-back", checked.reasons);
     return { code: 3, note, to: pane };
   }
-  setQuiet(config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
-  if (facts.from.session && checked.session) new QuestionStore(deps.cardDir).retarget({ session: facts.from.session }, { session: checked.session });
+  const replying = await quietOldLead(deps, config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`, emit);
+  new QuestionStore(deps.cardDir).retarget({ tmux: config.leadPane, ...(facts.from.session && checked.session ? { session: facts.from.session } : {}) }, { tmux: pane, ...(checked.session ? { session: checked.session } : {}) });
   // committed: the old lead is frozen, not closed, so it spends no tokens and does nothing while its pane and log stay.
-  // A rolled-back move never gets here; until here the old lead answered the owner (quiet only from now: ZzangDori 2026-11-26).
   // work a monitor of the old lead started goes on: those monitors are not stopped, and the session closes once it ended
   const work = facts.from.session ? monitorWork(readManifest(manifestPath(config.sessionsDir, facts.from.cwd, facts.from.session)), await deps.procs(), deps.clock.now(), deps.alive, deps.home).filter((j) => j.pids.length > 0) : [];
   for (const line of await endOldMonitors(deps, facts, work.map((j) => j.pid))) emit(line);
-  const ice = await freezePane(deps, config.leadPane, process.pid, work.map((j) => j.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
+  const ice = await freezePane(deps, config.leadPane, process.pid, [...work.map((j) => j.pid), ...replying]).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
   mark("freeze", !!ice.agentPid);
   if (ice.agentPid) {
     const h = config.handover.frozenCloseH;
