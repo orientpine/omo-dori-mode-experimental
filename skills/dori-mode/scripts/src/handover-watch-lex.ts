@@ -7,11 +7,21 @@ export type Word = { readonly text: string; readonly quoted: boolean; readonly e
 // A simple command: its words, its output redirection targets ("&1" for a descriptor copy) and its input files.
 export type Simple = { readonly words: Word[]; readonly outs: Word[]; readonly ins: Word[] };
 
-// ; && || | and newlines split commands; ( ` # & alone, |&, ;;, here-docs and <( ) are never a plain poll, so the lexer gives up.
+// The words that open or continue a compound command in front of a simple one (do cmd, if cmd, { cmd).
+export const CONTROL = new Set(["if", "then", "else", "elif", "while", "until", "do", "{", "!"]);
+export const CLOSE = new Set(["fi", "done", "}", "esac"]);
+export const ASSIGN = /^([A-Za-z_]\w*)=/;
+const bare = (w: Word | undefined, text: string): boolean => !!w && !w.quoted && !w.expand && !w.glob && w.text === text;
+
+// ; && || | and newlines split commands; ( ` # & alone, |&, here-docs and <( ) are never a plain poll, so the lexer gives up.
+// A case statement (moodori lead, 2026-11-26) is read as commands too: its header [case, word, in], each list of patterns
+// as one command whose first word is a bare ")" (no word the lexer reads spells one), ;; between clauses, esac a closing
+// word; ;& ;;& and (pattern) are not read (a lone & ends the lex, an empty pattern word too).
 export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[]; end: number } | undefined => {
   const cmds: Simple[] = [{ words: [], outs: [], ins: [] }];
   const cur = (): Simple => cmds[cmds.length - 1] as Simple;
   let i = start;
+  let cases = 0, pattern = false;
   const word = (): Word | undefined => {
     let text = "", quoted = false, expand = false, glob = false, split = false;
     const subs: Simple[][] = [];
@@ -66,15 +76,47 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
     }
     return { text, quoted, expand, glob, split, subs };
   };
+  const blanks = () => {
+    while (s[i] === " " || s[i] === "\t" || s[i] === "\n") i++;
+  };
   while (i < s.length) {
     const c = s[i] ?? "";
     const fd = /^\d*[<>]/.exec(s.slice(i, i + 12));
-    if (c === " " || c === "\t") i++;
-    else if (c === "\n" || c === ";" || c === "&" || c === "|") {
-      if ((c === ";" && s[i + 1] === ";") || (c === "&" && s[i + 1] !== "&") || (c === "|" && s[i + 1] === "&")) return undefined;
+    if (pattern) {
+      blanks();
+      if (i >= s.length) break;
+      const first = word();
+      if (!first?.text) return undefined;
+      if (bare(first, "esac")) {
+        cur().words.push(first);
+        cases--;
+        pattern = false;
+        continue;
+      }
+      const pats = [first];
+      for (blanks(); s[i] === "|"; blanks()) {
+        i++;
+        blanks();
+        const w = word();
+        if (!w?.text) return undefined;
+        pats.push(w);
+      }
+      if (s[i] !== ")") return undefined;
+      i++;
+      cur().words.push({ text: ")", quoted: false, expand: false, glob: false, split: false, subs: [] }, ...pats);
+      cmds.push({ words: [], outs: [], ins: [] });
+      pattern = false;
+    } else if (c === " " || c === "\t") i++;
+    else if (c === ";" && s[i + 1] === ";") {
+      if (!cases) return undefined;
+      cmds.push({ words: [], outs: [], ins: [] });
+      i += 2;
+      pattern = true;
+    } else if (c === "\n" || c === ";" || c === "&" || c === "|") {
+      if ((c === "&" && s[i + 1] !== "&") || (c === "|" && s[i + 1] === "&")) return undefined;
       cmds.push({ words: [], outs: [], ins: [] });
       i += (c === "&" || c === "|") && s[i + 1] === c ? 2 : 1;
-    } else if (c === ")") return inSub ? { cmds, end: i + 1 } : undefined;
+    } else if (c === ")") return inSub && !cases ? { cmds, end: i + 1 } : undefined;
     else if (c === "(" || c === "`" || c === "#") return undefined;
     else if (fd?.[0].endsWith("<")) {
       // an input file a listed program reads; <<, <<<, <( ), <& and <> are not
@@ -105,8 +147,16 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
       const at = i;
       const w = word();
       if (!w || i === at) return undefined;
-      cur().words.push(w);
+      const ws = cur().words;
+      ws.push(w);
+      const lead = ws.findIndex((x) => !(CONTROL.has(x.text) && bare(x, x.text)));
+      if (cases && bare(w, "esac") && lead === ws.length - 1) cases--;
+      if (ws.length - lead === 3 && bare(ws[lead], "case") && bare(w, "in")) {
+        cmds.push({ words: [], outs: [], ins: [] });
+        cases++;
+        pattern = true;
+      }
     }
   }
-  return inSub ? undefined : { cmds, end: i };
+  return inSub || cases || pattern ? undefined : { cmds, end: i };
 };
