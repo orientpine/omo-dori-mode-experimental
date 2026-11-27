@@ -54,6 +54,9 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string,
     throw error;
   }
   try {
+    // the whole revive, from the new pane written to its agent ready, holds the lane's lifecycle lock: a pause or a close
+    // of the lane runs before it (and a watch revive gives way to a pause) or after it, on the new pane (review 15 of #535)
+    return await withLaneLifecycle(deps, lane.key, async () => {
     // the lane as it stands now: another revive, a handover or a close may have moved it since it was read
     const moved = (l: Lane | null): string | undefined => (!l ? "not recorded" : statusOf(l) === "closed" || (auto && statusOf(l) === "paused") || l.pane !== gone || l.session !== session ? `${statusOf(l)} in ${l.pane ?? "no pane"}` : undefined);
     // a handover of the lane (running, one that froze the gone pane, or an interrupted one whose journal is left for its
@@ -62,7 +65,6 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string,
     const handover = (): string | undefined =>
       existsSync(pendingFile(config.stateDir, lane.key)) ? `an interrupted handover of the lane is left in ${pendingFile(config.stateDir, lane.key)} for its repair` : frozenPanes(config.stateDir).includes(gone) || handoverRunning(config.stateDir, "lane", lane.key, pidAlive) ? `a handover of the lane is running or holds ${gone}` : undefined;
     const now = await deps.registry.read(lane.key);
-    const pausedBefore = !!now && statusOf(now) === "paused";
     const moving = handover();
     if (moving) return fail(`${moving}; it moves the lane itself, so nothing was opened`);
     const off = moved(now);
@@ -121,8 +123,6 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string,
     for (let i = 0; i < 90; i++) {
       const latest = await deps.registry.read(now.key);
       if (!latest || statusOf(latest) === "closed") return fail(`the lane was closed while ${pane} started (the close closes ${pane})`);
-      // a pause that landed after the new pane was written found the gone pane and paused no goal: the revive gives way
-      if (!pausedBefore && statusOf(latest) === "paused") return fail(`the lane was paused while ${pane} started; ${await closeHerdrSession(deps.run, pane)}`);
       if (latest.pane !== pane) return fail(`the lane moved to ${latest.pane ?? "no pane"} while ${pane} started; ${await closeHerdrSession(deps.run, pane)}`);
       // ready once an agent runs there and shows omo's own input box (an echoed command line has no box)
       const screen = (await paneLife(deps.run, pane)).live ? await captureTmux(deps.run, pane) : "";
@@ -133,6 +133,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string,
       await deps.clock.sleep(2_000);
     }
     return fail(`no running agent with its ❯ prompt within 3 minutes in ${pane} (session ${session}); the record names ${pane}`);
+    });
   } finally {
     release();
   }

@@ -8,7 +8,8 @@ import type { FlowDeps } from "./done-flow-state.ts";
 // A revive, a close and every registry write of one lane take turns on this lock (reviews 2 and 11 of #535): a revive checks the lane is still open in
 // its gone pane and writes the new pane under it, and a close reads the lane again and writes it closed under it, closing a
 // pane a revive wrote since the close began. So a new pane is either seen and closed by the close or never written. Both
-// sections are short (a read, a write, one pane close), so a busy lock is waited for, up to 30 s.
+// sections are short (a read, a write, one pane close; a revive's start, seconds), so a busy lock is waited for in real time,
+// up to 30 s.
 // Each revive writes where a lane's session moved (review 6 of #535): a card answered while the old pane was gone keeps
 // that pane in answers.jsonl, often with no session (dori ask without --session), so the owner-waiting check finds the
 // revived lane through this record, never through a card's metadata.
@@ -71,4 +72,4 @@ export const withLaneLock = async <T>(stateDir: string, key: string, wait: (ms: 
     }
   }
 };
-export const withLaneLifecycle = <T>(deps: Pick<FlowDeps, "config" | "clock">, key: string, section: () => Promise<T>): Promise<T> => withLaneLock(deps.config.stateDir, key, (ms) => deps.clock.sleep(ms), () => deps.clock.now(), section);
+export const withLaneLifecycle = <T>(deps: Pick<FlowDeps, "config" | "clock">, key: string, section: () => Promise<T>): Promise<T> => withLaneLock(deps.config.stateDir, key, (ms) => Bun.sleep(ms), () => deps.clock.now(), section);

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import { pauseLane, watchTick } from "../src/done-flow.ts";
 import { reviveTarget } from "../src/lane-revive.ts";
@@ -80,36 +81,26 @@ test("a lane closed after a revive stays closed when a read taken after the revi
   expect(fake.calls.filter((c) => c[0] === "run").length).toBe(1);
 });
 
-test("a pause after the new pane was written reads that pane: unless its agent's goal is paused there, the pause is refused and the lane runs on", async () => {
-  // Given: the lead pauses the lane, with a read naming the gone pane, as the revive types the agent's start line
-  let refused = "";
+test("a pause made while a revive starts waits for it, then acts on the new pane: the lane is never paused with its agent left working", async () => {
+  // Given: the lead's pause comes in (from outside the revive, as another process would) as the revive types the start line
+  const outside = AsyncLocalStorage.snapshot();
+  let pausing: Promise<string> | undefined;
+  let settled = false;
   const { deps } = reviveRig(state.dir, {
-    before: async (argv) => {
-      if (argv[0] !== "hc" || argv[2] !== "send" || refused) return;
-      refused = await pauseLane(deps(T0), laneOf(state.dir, { pane: "hc:t93" }), "owner asked to wait").then(() => "paused", (e: unknown) => String(e));
+    before: (argv) => {
+      if (argv[0] !== "hc" || argv[2] !== "send" || pausing) return;
+      pausing = outside(() => pauseLane(deps(T0), laneOf(state.dir, { pane: "hc:t93" }), "owner asked to wait")).then((l) => l.join(" "), (e: unknown) => String(e)).finally(() => (settled = true));
     },
   });
   await deps(T0).registry.write(laneOf(state.dir, { pane: "hc:t93" }));
   // When
   const line = await reviveTarget(deps(T0), "h3-charsheet", "");
-  // Then: the pause went to hc:t1 and was refused there (no goal read back); the lane works on in hc:t1
-  expect(refused).toContain("PAUSE_UNVERIFIED h3-charsheet hc:t1");
+  const doneFirst = !settled;
+  const paused = await pausing;
+  // Then: the revive finished first; the pause then went to hc:t1 (refused there, as no goal reads back in this world)
   expect(line).toStartWith("REVIVE_OK h3-charsheet hc:t1");
+  expect(doneFirst).toBe(true);
+  expect(paused).toContain("PAUSE_UNVERIFIED h3-charsheet hc:t1");
   const after = await deps(T0).registry.read("h3-charsheet");
   expect(after && statusOf(after)).toBe("working");
-});
-
-test("a pause recorded after the new pane was written (its goal step found no agent yet) closes that pane: the paused lane runs nothing", async () => {
-  let paused = false;
-  const { fake, deps } = reviveRig(state.dir, {
-    before: async (argv) => {
-      if (argv[0] !== "hc" || argv[2] !== "send" || paused) return;
-      paused = true;
-      await deps(T0).registry.patch("h3-charsheet", { status: "paused" });
-    },
-  });
-  await deps(T0).registry.write(laneOf(state.dir, { pane: "hc:t94" }));
-  expect(await reviveTarget(deps(T0), "h3-charsheet", "")).toStartWith("REVIVE_FAIL h3-charsheet: the lane was paused while hc:t1 started");
-  expect([...fake.terminals.values()].filter((x) => x.state === "live")).toEqual([]);
-  expect((await deps(T0).registry.read("h3-charsheet"))?.status).toBe("paused");
 });
