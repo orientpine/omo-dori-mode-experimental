@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { launchOf, liveMonitors, missingMonitors, monitorLine } from "../src/handover.ts";
 import { workEnded } from "../src/handover-monitors.ts";
+import { armed } from "../src/rollover-audit.ts";
 
 // port-hc-runtime's lane handover rolled back on 2026-11-08 22:35Z: the old session ran its 4eae ci as a monitor that
 // fed a script to a remote shell (node-dori-do ... ssh ori4eae bash -s < ci.sh > log). launchOf did not see work in it,
@@ -141,4 +142,13 @@ test("a script fed to a shell with combined options or with its output redirecte
   for (const c of ["bash -se < /tmp/job.sh", "bash -s > /tmp/job.log 2>&1 < /tmp/job.sh", "ssh h bash -ex -s -- a < /tmp/job.sh"]) {
     expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a script run by a shell from its input (bash -s < file)"]);
   }
+});
+
+// review 4 of #536: the audit takes a work monitor's [rearm] replacement only when its command is not the work's own,
+// in any spelling the shell runs the same way, as the handover's own check does
+test("the audit counts a work monitor's [rearm] replacement as armed, never its own command quoted otherwise", () => {
+  const job = { description: "job", command: "python3 /tmp/job.py", persistent: true };
+  const as = (command: string) => [{ description: "job [rearm]", command, persistent: true, runtime: { pid: 9 } }] as never;
+  expect(armed(job, as("until test -e /tmp/job.done; do sleep 2; done; echo DONE"), "/home/test")).toBe(true);
+  for (const same of ['python3 "/tmp/job.py"', "python3 '/tmp/job.py'", "python3  /tmp/job.py"]) expect([same, armed(job, as(same), "/home/test")]).toEqual([same, false]);
 });
