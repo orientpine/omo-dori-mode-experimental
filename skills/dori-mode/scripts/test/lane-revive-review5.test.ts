@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { closeLane } from "../src/done-flow.ts";
 import { reviveTarget } from "../src/lane-revive.ts";
+import { withStatus } from "../src/registry.ts";
 import type { Question } from "../src/messenger/discord-cards.ts";
 import { answerLine, unansweredRows } from "../src/missed-answers.ts";
 import { sessionDirFor } from "../src/session-id.ts";
@@ -37,8 +39,9 @@ test("a lane whose interrupted handover left its journal (owner dead) is not rev
   expect(fake.calls.some((c) => c[0] === "run")).toBe(false);
 });
 
-type Case = { readonly closed?: boolean; readonly handover?: "moved" | "current"; readonly sessionDir?: boolean };
+type Case = { readonly closed?: boolean; readonly handover?: "moved" | "current" | "middle"; readonly sessionDir?: boolean };
 const NEXT = "77777777-2222-4333-8444-555555555555";
+const LAST = "88888888-2222-4333-8444-555555555555";
 
 const answered = async (c: Case) => {
   // Given: a card asked from hc:t27 with no session of its own (dori ask without --session) was answered while the pane
@@ -53,9 +56,10 @@ const answered = async (c: Case) => {
   await d.registry.write(laneOf(state.dir));
   expect(await reviveTarget(d, "h3-charsheet", "")).toStartWith("REVIVE_OK h3-charsheet hc:t1");
   if (c.handover) await d.registry.patch("h3-charsheet", { session: NEXT, pane: "hc:t2" });
+  if (c.handover === "middle") await d.registry.patch("h3-charsheet", { session: LAST, pane: "hc:t3" });
   if (c.closed) await d.registry.patch("h3-charsheet", { closedAt: new Date(T0 + 900_000).toISOString() });
   // the answer is in the log of the session that read it: the revived one, or the one the handover started
-  const reader = c.handover === "current" ? NEXT : SESSION;
+  const reader = c.handover === "current" || c.handover === "middle" ? NEXT : SESSION;
   const logs = c.sessionDir ? own : sessionDirFor(config.sessionsDir, state.dir);
   mkdirSync(logs, { recursive: true });
   writeFileSync(join(logs, `2026-11-21T15-48-52-096Z_${reader}.jsonl`), [{ type: "session", id: reader, cwd: state.dir }, { type: "message", message: { role: "user", content: answerLine(version) } }].map((e) => JSON.stringify(e)).join("\n"));
@@ -70,8 +74,26 @@ test.each<[string, Case]>([
   ["lane closed since", { closed: true }],
   ["a handover after the revive, the answer read before it", { handover: "moved" }],
   ["a handover after the revive, the answer read after it, lane closed since", { handover: "current", closed: true }],
+  ["two handovers after the revive, the answer read by the session in between", { handover: "middle" }],
   ["the agent keeps its sessions in its own --session-dir", { sessionDir: true }],
   ["own --session-dir, lane closed since", { sessionDir: true, closed: true }],
 ])("an answer given while the pane was gone counts as seen once the revived conversation read it: %s", async (_name, c) => {
   expect(await answered(c)).toEqual([]);
+});
+
+test("a record read before a revive and written back after it keeps the revived pane, so the close then takes that pane down", async () => {
+  // Given: the watch read the done-claimed lane in hc:t27 before a revive moved it to hc:t1
+  const snapshot = laneOf(state.dir, { thread: "none", done: "merged acme/app#1", status: "done-claimed" });
+  const { fake, deps } = reviveRig(state.dir);
+  const d = deps(T0);
+  await d.registry.write(snapshot);
+  expect(await reviveTarget(d, "h3-charsheet", "")).toStartWith("REVIVE_OK h3-charsheet hc:t1");
+  // When: its settle writes verified-done from that old read, then closes the lane
+  const verified = withStatus(snapshot, "verified-done", "Done signals read back live", new Date(T0).toISOString());
+  await d.registry.write(verified);
+  expect((await d.registry.read("h3-charsheet"))?.pane).toBe("hc:t1");
+  expect((await closeLane(d, verified, "done")).closed).toBe(true);
+  // Then: the revived terminal is closed with the lane, and the record says where it was
+  expect([...fake.terminals.values()].filter((x) => x.state === "live")).toEqual([]);
+  expect((await d.registry.read("h3-charsheet"))?.pane).toBe("hc:t1");
 });

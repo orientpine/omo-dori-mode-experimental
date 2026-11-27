@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { closeLane, watchTick } from "../src/done-flow.ts";
@@ -34,7 +35,8 @@ test("an agent start whose outcome is unknown keeps the new pane in the record; 
   // When / Then: the record names the new pane, so no later revive opens the conversation again
   expect(await reviveTarget(d, "h3-charsheet", "")).toContain("hc:t1 failed and that pane is not confirmed closed");
   expect(await pane(d)).toBe("hc:t1");
-  // Given / When: a refused start in a fresh world
+  // Given / When: a refused start in a fresh world (no revive recorded)
+  rmSync(join(state.dir, "revive"), { recursive: true, force: true });
   await d.registry.write(laneOf(state.dir));
   const refused = reviveRig(state.dir);
   refused.fake.knobs.sendError = "invalid_params";
@@ -82,6 +84,7 @@ test("a lane marked dead before (its pane dead, then gone, or a mark from before
   // a marked lane whose revive fails is marked tried and left alone after
   fake.terminals.clear();
   fake.knobs.sendError = "invalid_params";
+  rmSync(join(state.dir, "revive"), { recursive: true, force: true });
   await deps(T0).registry.write(laneOf(state.dir, { died: mark }));
   await watchTick(deps(T0 + 60_000));
   expect(lines(await watchTick(deps(T0 + 90_000)))[0]).toStartWith("REVIVE_FAIL h3-charsheet: the agent's start in hc:t2 failed and that pane was closed");

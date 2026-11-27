@@ -98,6 +98,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
       await withLaneLifecycle(deps, now.key, async () => {
         const after = await deps.registry.read(now.key);
         if (!after || statusOf(after) === "closed" || after.pane !== back) return;
+        recordMove(config.stateDir, { key: now.key, session, from: back, to: gone, at: new Date(deps.clock.now()).toISOString() });
         await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
         deps.retargetCards?.(back, gone);
       });

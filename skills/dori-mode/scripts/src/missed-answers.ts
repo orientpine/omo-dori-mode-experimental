@@ -121,7 +121,7 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
         const sessionsOf = (l: Lane): string[] => [l.session ?? "", ...(l.priorSessions ?? [])].filter(Boolean);
         const revived = archived.filter((l) => moves.some((m) => m.key === l.key && sessionsOf(l).includes(m.session)) && Date.parse(l.openedAt) <= row.at && (!l.closedAt || row.at <= Date.parse(l.closedAt))).sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt))[0];
         const cwd = revived?.cwd;
-        const ids = revived ? [...new Set([...moves.filter((m) => m.key === revived.key).map((m) => m.session), revived.session ?? ""])].filter(Boolean) : [];
+        const ids = revived ? [...new Set([...moves.filter((m) => m.key === revived.key).map((m) => m.session), ...sessionsOf(revived)])] : [];
         const logs = cwd ? ids.flatMap((id) => argvSessionLog(deps.config.agentCommand, deps.config.sessionsDir, cwd, id) ?? []) : [];
         if (logs[0]) file = { path: logs[0] };
         also = logs.slice(1).map((path) => currentTranscript({ path }, "")).join("\n");

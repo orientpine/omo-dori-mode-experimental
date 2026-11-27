@@ -1,7 +1,8 @@
 import { mkdirSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { DirectivePick } from "./directives.ts";
+import { revivedAway } from "./lane-lifecycle.ts";
 import { listLanes, scanLanes } from "./registry-scan.ts";
 import { parseRef, type SessionRef } from "./runtime/types.ts";
 import type { BudgetLimits } from "./supervision.ts";
@@ -215,6 +216,7 @@ export class Registry {
     const outgoing = before?.session && before.session !== lane.session ? [before.session] : [];
     const prior = [...new Set([...(before?.priorSessions ?? []), ...(lane.priorSessions ?? []), ...outgoing])].filter((s) => s !== lane.session);
     if (prior.length) lane = { ...lane, priorSessions: prior };
+    if (before?.pane && lane.pane && lane.pane !== before.pane && revivedAway(dirname(this.dir), lane.key, lane.pane, before.pane)) lane = { ...lane, pane: before.pane, tab: before.tab };
     lane = upgradeLane(lane);
     const tmp = `${this.path(lane.key)}.${process.pid}.tmp`;
     await Bun.write(tmp, JSON.stringify(lane, null, 1));

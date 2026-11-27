@@ -17,17 +17,25 @@ export const recordMove = (stateDir: string, move: PaneMove): void => {
   mkdirSync(join(stateDir, "revive"), { recursive: true });
   appendFileSync(movesFile(stateDir), `${JSON.stringify(move)}\n`);
 };
-export const movesFrom = (stateDir: string, pane: string): PaneMove[] => {
+const allMoves = (stateDir: string): PaneMove[] => {
   const file = movesFile(stateDir);
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8").split("\n").flatMap((line) => {
     try {
       const m = JSON.parse(line) as Partial<PaneMove>;
-      return m.from === pane && typeof m.key === "string" && typeof m.session === "string" ? [m as PaneMove] : [];
+      return typeof m.key === "string" && typeof m.session === "string" && typeof m.from === "string" && typeof m.to === "string" ? [m as PaneMove] : [];
     } catch {
       return [];
     }
   });
+};
+export const movesFrom = (stateDir: string, pane: string): PaneMove[] => allMoves(stateDir).filter((m) => m.from === pane);
+// A record read before a revive and written back after it would name the pane the lane was revived away from (the watch's
+// settle and not-done writes, a pause: review 8 of #535). Registry.write keeps the revived pane then: true when the lane's
+// latest move went from the pane being written to the pane on disk.
+export const revivedAway = (stateDir: string, key: string, writing: string, onDisk: string): boolean => {
+  const last = allMoves(stateDir).filter((m) => m.key === key).at(-1);
+  return last?.from === writing && last.to === onDisk;
 };
 
 const WAIT_MS = 100;
