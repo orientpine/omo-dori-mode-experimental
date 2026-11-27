@@ -18,9 +18,11 @@ export const endedWatch = (m: { readonly path?: string; readonly event?: string 
 
 // A monitor the session that armed it marked as re-armable: its description ends in [rearm]. The handover re-arms its
 // command as is and the check accepts it (the lead's decision on #532: a shell text never proves itself read-only, the
-// session that wrote it can say so; same account, same trust boundary). Only the old session's own monitor counts: a
-// replacement armed at the handover is judged by its command, so a work command never passes by taking the mark.
+// session that wrote it can say so; same account, same trust boundary). The same decision for a monitor that starts work
+// (h3-prompt-app, 2026-11-27): the new session marks its replacement with the same description and [rearm] (rearmedAs),
+// and any command of it but the work's own counts; the work's own command never passes by taking the mark.
 export const rearmable = (description: string | undefined): boolean => /\s\[rearm\]$/.test(description ?? "");
+export const rearmedAs = (wanted: string | undefined, armed: string | undefined): boolean => !!wanted && armed === `${wanted} [rearm]`;
 // The watch a monitor of the note was carried over as: its description, or that description with a note of the new
 // session's own after it (port-hc-runtime's "dori review #404 round 9 (watch-only: old session's review pid 3636161
 // already running)", 2026-11-08 22:51Z), never another name that only begins with the same words.

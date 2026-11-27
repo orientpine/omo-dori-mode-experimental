@@ -25,7 +25,7 @@ import { basename, dirname, join } from "node:path";
 import { ChallengeError, checkReviewers, reviewerOrder, reviewers } from "./challenge.ts";
 import { runWithPrompt } from "./config.ts";
 import { laneDirectiveWords } from "./directive-audit.ts";
-import { endedWatch, rearmable, sameWatch, workEnded } from "./handover-monitors.ts";
+import { endedWatch, rearmable, rearmedAs, sameWatch, workEnded } from "./handover-monitors.ts";
 import { ranToEnd } from "./handover-ran.ts";
 import { allTodos, todoTask } from "./handover-todos.ts";
 import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest } from "./handover.ts";
@@ -235,13 +235,13 @@ const anyGoal = (sessionDir: string, session: string): string | undefined =>
 
 const norm = (text: string, home: string): string => text.replace(/(^|[\s=:'"])~\//g, `$1${home}/`).replace(/\s+/g, " ").trim();
 // carried: the new session armed the same watch at any time, a path watch has nothing left to wait for (ENDED, endedWatch), or a command watch it ran to its end (done: ranToEnd, or its work ended, workEnded).
-// LAUNCHES_WORK: by the watch-only one the note asks for (its description, filter or watch-only form), never its own command (e7-leap's re-arm sent back as "never armed", 2026-10-24 04:15Z).
+// LAUNCHES_WORK: by the watch-only one the note asks for (its description, filter or watch-only form, or its description and [rearm]), never its own command (e7-leap's re-arm sent back as "never armed", 2026-10-24 04:15Z).
 export const armed = (m: MonitorSpec, entries: ReturnType<typeof readManifest>, home: string, done: (m: MonitorSpec) => boolean = () => false): boolean => {
   if (m.ended || endedWatch(m) || done(m)) return true;
   const launch = m.launch ?? (m.command && !rearmable(m.description) ? launchOf(m.command, home) : undefined);
   if (m.command && launch) {
-    return entries.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))
-      && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)));
+    return entries.some((e) => ((e.path || (!!e.command && !launchOf(e.command, home))) && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)))
+      || (!!e.command && rearmedAs(m.description, e.description) && norm(m.command ?? "", home) !== norm(e.command, home)));
   }
   return entries.some((e) => (m.command ? !!e.command && norm(m.command, home) === norm(e.command, home) : m.path ? !!e.path && norm(m.path, home) === norm(e.path, home) : !!m.description && e.description === m.description));
 };

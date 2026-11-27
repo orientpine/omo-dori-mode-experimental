@@ -15,7 +15,7 @@ import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
-import { endedWatch, endOldMonitors, procStart, readText, rearmable, sameWatch, shellScripts } from "./handover-monitors.ts";
+import { endedWatch, endOldMonitors, procStart, readText, rearmable, rearmedAs, sameWatch, shellScripts } from "./handover-monitors.ts";
 import { ranToEnd } from "./handover-ran.ts";
 import { foregroundOnly, watchOnly } from "./handover-watch.ts";
 import { missingTodos, OWNER_HOURS, type OwnerWord, recentOwnerWords, todoTask } from "./handover-todos.ts";
@@ -365,9 +365,9 @@ export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonl
     const name = m.description || m.command || m.path || "?";
     const launch = m.launch ?? (m.command && !rearmable(m.description) ? launchOf(m.command, home) : undefined);
     if (m.command && launch) {
-      const watchOnly = live.some((e) => (e.path || (!!e.command && !launchOf(e.command, home)))
-        && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)));
       const command = m.command;
+      const watchOnly = live.some((e) => ((e.path || (!!e.command && !launchOf(e.command, home))) && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)))
+        || (!!e.command && rearmedAs(m.description, e.description) && !same(command, e.command)));
       if (!watchOnly) out.push(live.some((e) => !!e.command && same(command, e.command)) ? `${name} (armed again with the command that starts work; arm a watch-only one instead)` : `${name} (starts work: arm a watch-only one with the same description)`);
       continue;
     }
@@ -411,7 +411,7 @@ export const openGoal = (sessionDir: string, session: string): string | undefine
 
 const cell = (text: string): string => text.replace(/\s*\|\s*/g, " / ").replace(/\s*[\r\n]+\s*/g, " ").slice(0, 160);
 const launchHow = (m: MonitorSpec, l: Launch): string =>
-  ` LAUNCHES_WORK (${l.why}): do not arm this command again, it would start its work a second time (a watch that only reads is re-armed as is next time when the session that arms it ends its description with [rearm]). Arm in its place a persistent watch-only monitor with the same description${m.filter ? " and filter" : ""} that only reads what the work writes${l.writes.length ? ` (${l.writes.join(", ")})` : ""}, on this machine, in one of the plain watch shapes: tail -F of a file it writes piped to grep, an until or while loop of sleep over grep or test, or a wait on its pid (while kill -0 <pid> 2>/dev/null; do sleep 2; done; echo DONE); nothing that starts, posts or changes anything. A watch over ssh counts as work again.`;
+  ` LAUNCHES_WORK (${l.why}): do not arm this command again, it would start its work a second time (a watch that only reads is re-armed as is next time when the session that arms it ends its description with [rearm]). Arm in its place a persistent watch-only monitor with the same description followed by " [rearm]" (your word that it only reads; any other description is judged by its command)${m.filter ? " and the same filter" : ""} that only reads what the work writes${l.writes.length ? ` (${l.writes.join(", ")})` : ""}, on this machine, in one of the plain watch shapes: tail -F of a file it writes piped to grep, an until or while loop of sleep over grep or test, or a wait on its pid (while kill -0 <pid> 2>/dev/null; do sleep 2; done; echo DONE); nothing that starts, posts or changes anything. A watch over ssh counts as work again.`;
 export const monitorLine = (m: MonitorSpec): string =>
   `- ${m.description || "(no description)"}: ${m.command ? `command ${JSON.stringify(m.command)}${m.filter ? ` filter ${JSON.stringify(m.filter)}` : ""}` : `path ${JSON.stringify(m.path)}${m.event ? ` event ${m.event}` : ""}`}${m.ended ? ` ENDED (${m.ended}): do not arm it, it has nothing left to wait for; the handover does not check it. Look at the file (or the work that writes it) yourself once you may act.` : `${m.persistent ? "" : " (was not persistent in the old session; arm it as persistent)"}${m.launch ? launchHow(m, m.launch) : ""}`}`;
 const watcherLine = (w: HandoverWatcher): string => `- ${w.name}: check ${JSON.stringify(w.check)}${w.arm ? `; to start it: ${w.arm}` : "; runs outside omo, nothing to arm"}`;

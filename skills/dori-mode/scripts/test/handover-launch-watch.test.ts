@@ -115,8 +115,11 @@ test("a script fed to a shell with no space before < or with descriptor 0 starts
 
 // h3-prompt-app's lane handover rolled back on 2026-11-27 11:29Z: its monitor ran a python watcher (LAUNCHES_WORK), and the
 // new session armed the watch-only one the note asked for, with the same description and filter: an until loop of grep
-// -o over $HOME/.cache/.../remote-jobs.json. The check read grep -o and the $HOME path as work and asked for it again.
-test("a watch-only until-grep over a $HOME path, with grep -o, counts as armed for a monitor that starts work", () => {
+// -o over $HOME/.cache/.../remote-jobs.json, which the list of watch shapes does not read. Widening the list let work
+// through twice (reviews 2 and 3 of #536), so the lead's decision of #532 holds here too: the new session marks its
+// replacement as one that only reads, with the same description ending in [rearm], and the check takes any command
+// but the one that starts the work.
+test("a replacement armed with the same description and [rearm] counts as armed for a monitor that starts work, the work's own command does not", () => {
   // Given: the old session's monitor and the new session's watch-only one, as the two sessions armed them
   const description = "h3-prompt-app: owner's first real container job delivered (phone/Discord check)";
   const filter = "^OWNER_REMOTE_DONE";
@@ -124,18 +127,14 @@ test("a watch-only until-grep over a $HOME path, with grep -o, counts as armed f
   if (!remote) throw new Error("no monitor");
   expect(monitorLine(remote)).toContain("LAUNCHES_WORK");
   const watch = `until grep -Eo '\\{[^{}]*\\}' $HOME/.cache/h3-prompt-app/remote-jobs.json 2>/dev/null | grep -E '"test": *false' | grep -Eq '"done": *[0-9]'; do sleep 20; done; echo OWNER_REMOTE_DONE`;
-  // When / Then: the watch-only one is armed, here and with the path quoted; the watcher armed again still is not
-  expect(launchOf(watch, HOME)).toBeUndefined();
-  expect(missingMonitors([remote], [entry({ description, command: watch, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([]);
-  expect(launchOf('tail -n 0 -F "$HOME/.cache/h3/jobs.log" | grep --line-buffered -o DONE', HOME)).toBeUndefined();
-  expect(missingMonitors([remote], [entry({ description, command: remote.command, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (armed again with the command that starts work; arm a watch-only one instead)`]);
-  // only $HOME in front of a literal path: another variable, a longer name or a second expansion is still work
-  for (const c of ["grep -o X $DIR/jobs.json", "grep -o X $HOMEDIR/jobs.json", "grep -o X $HOME/$name.json", "grep -o X $HOME/*.json"]) expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a command that is not one of the plain watch shapes"]);
-  // review 2 of #536: ANSI-C ($'...') and locale ($"...") quoting spell $HOME/ but bash decodes them into other words
-  for (const c of ["ssh host cat $'HOME/\\x3btouch\\x20/tmp/replayed'; sleep 600", 'cat $"HOME/x"', "cat $'HOME/x'"]) {
-    expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a command that is not one of the plain watch shapes"]);
-    expect(missingMonitors([remote], [entry({ description, command: c, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (starts work: arm a watch-only one with the same description)`]);
-  }
+  const marked = `${description} [rearm]`;
+  // When / Then: the replacement marked [rearm] is armed, by the shell form as typed or quoted; unmarked, the list decides
+  expect(missingMonitors([remote], [entry({ description: marked, command: watch, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([]);
+  expect(missingMonitors([remote], [entry({ description: marked, command: watch.replace("$HOME/.cache/h3-prompt-app/remote-jobs.json", '"$HOME/.cache/h3-prompt-app/remote-jobs.json"'), runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([]);
+  expect(missingMonitors([remote], [entry({ description, command: watch, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (starts work: arm a watch-only one with the same description)`]);
+  // the watcher itself, marked or not, still starts the work a second time, and a mark on another description is not this one
+  for (const d of [description, marked]) expect(missingMonitors([remote], [entry({ description: d, command: remote.command, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (armed again with the command that starts work; arm a watch-only one instead)`]);
+  expect(missingMonitors([remote], [entry({ description: `${description}0 [rearm]`, command: watch, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (starts work: arm a watch-only one with the same description)`]);
 });
 
 test("a script fed to a shell with combined options or with its output redirected first starts work", () => {

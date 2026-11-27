@@ -167,3 +167,12 @@ test("a [rearm] monitor whose re-arm with the same command fired and exited 0 is
   const args = { description: "inbox [rearm]", command, filter: "^REARM_DONE", persistent: true };
   expect(missing([marked], [arm(args), fired(["REARM_DONE", DONE], "inbox [rearm]")])).toEqual([]);
 });
+
+// h3-prompt-app (2026-11-27): a monitor that starts work, replaced by a watch the new session marked with its description
+// and [rearm], is done once that replacement fired and exited 0; the work's own command so marked is not
+test("a work monitor's [rearm] replacement that fired and exited 0 is not missing, its own command so marked is", () => {
+  const replacement = { ...watchOnly, description: `${DESC} [rearm]`, command: "until grep -Eo X $HOME/u.json; do sleep 30; done; echo UPDATE_QUIET_456" };
+  expect(launchOf(replacement.command, HOME)).toBeDefined();
+  expect(missing([gate], [arm(replacement), fired(["UPDATE_QUIET_456", DONE], replacement.description)])).toEqual([]);
+  expect(missing([gate], [arm({ ...replacement, command: OLD }), fired(["UPDATE_QUIET_456", DONE], replacement.description)])).toEqual([`${DESC} (starts work: arm a watch-only one with the same description)`]);
+});

@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 
 import { launchOf, type MonitorSpec, sameCommand } from "./handover.ts";
-import { rearmable, sameWatch } from "./handover-monitors.ts";
+import { rearmable, rearmedAs, sameWatch } from "./handover-monitors.ts";
 import { sessionFile } from "./rollover.ts";
 
 const DONE = "watcher completed (exit code 0)";
@@ -93,7 +93,7 @@ export const ranToEnd = (sessionDir: string, session: string, home: string, also
     const launch = m.launch ?? (rearmable(m.description) ? undefined : launchOf(m.command, home));
     const carries = (a: Armed): boolean =>
       a.persistent === true && !!a.command && (launch
-        ? !launchOf(a.command, home) && (sameWatch(m.description, a.description) || (!!m.filter && a.filter === m.filter))
+        ? (!launchOf(a.command, home) && (sameWatch(m.description, a.description) || (!!m.filter && a.filter === m.filter))) || (rearmedAs(m.description, a.description) && !sameCommand(m.command ?? "", a.command, home))
         : sameCommand(m.command ?? "", a.command, home) && (!m.filter || a.filter === m.filter));
     const all = read();
     return all.some((r, i) => {
