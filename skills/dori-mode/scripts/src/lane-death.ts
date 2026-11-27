@@ -146,7 +146,12 @@ export const laneDeathTick = async (deps: FlowDeps): Promise<string[]> => {
       if (lane.died) await deps.registry.patch(lane.key, { died: undefined });
       continue;
     }
-    if (lane.died?.pane === pane) continue;
+    // a gone pane of a lane with a recorded session opens again on that session by itself (lane-revive.ts), once per death
+    // mark: a mark told before (the pane dead first, then gone; a mark from before this check) does not hold it back, and a
+    // revive that failed marks it tried. A pane a handover froze or is moving is left to it.
+    const marked = lane.died?.pane === pane ? lane.died : undefined;
+    const revivable = life.how === "gone" && isHerdrPane(pane) && !!lane.session && !frozenPanes(deps.config.stateDir).includes(pane) && !handoverRunning(deps.config.stateDir, "lane", lane.key, pidAlive);
+    if (marked && !(revivable && !marked.reviveTried)) continue;
     const first = notLive.get(pane);
     if (first === undefined) {
       notLive.set(pane, now);
@@ -159,11 +164,10 @@ export const laneDeathTick = async (deps: FlowDeps): Promise<string[]> => {
     const hc = isHcPane(pane);
     let reason = oom ? "메모리 부족" : life.how === "dead" ? (life.status < 0 ? "에이전트 꺼짐" : `종료 코드 ${life.status}`) : hc ? "hc 창 없음" : herdr ? "herdr pane 없음" : "tmux 세션 없음";
     let why = oom ? `oom-kill (journal: ${oom})` : life.how === "dead" ? (life.status < 0 ? "pane dead, no agent runs in it" : `pane dead, status ${life.status}`) : hc ? "hc terminal gone" : herdr ? "herdr pane gone" : "tmux session gone";
-    out.push(`LANE_DIED ${lane.key} ${pane}: ${why}`);
+    if (!marked) out.push(`LANE_DIED ${lane.key} ${pane}: ${why}`);
     const lead = deps.config.leadPane;
-    // a gone pane of a lane with a recorded session opens again on that session by itself (lane-revive.ts); a pane a handover
-    // froze or is moving is left to it, and a revive that fails is told to the lead as before, with why
-    if (life.how === "gone" && herdr && lane.session && !frozenPanes(deps.config.stateDir).includes(pane) && !handoverRunning(deps.config.stateDir, "lane", lane.key, pidAlive)) {
+    const at = new Date(now).toISOString();
+    if (revivable) {
       const revived = await reviveGoneLane(deps, lane, "");
       if (revived.startsWith("REVIVE_OK ")) {
         notLive.delete(pane);
@@ -174,13 +178,17 @@ export const laneDeathTick = async (deps: FlowDeps): Promise<string[]> => {
         continue;
       }
       out.push(revived);
+      if (marked) {
+        await deps.registry.patch(lane.key, { died: { ...marked, reviveTried: at } });
+        continue;
+      }
       reason = `${reason}, 새 창 열기 실패`;
       why = `${why}; ${revived}`;
     }
     const sent: Submitted = lead ? await submitToPane(deps.run, deps.clock, deps.config, lead, laneDiedText(lane.key, reason)) : { status: "NOT_SUBMITTED", reason: "no leadPane" };
     const told = sent.status === "SUBMITTED";
     out.push(told ? `LANE_DIED_TOLD ${lane.key} ${lead}` : `LANE_DIED_NOT_TOLD ${lane.key}: ${sent.reason}`);
-    const died: LaneDied = { pane, at: new Date(now).toISOString(), reason, why, told };
+    const died: LaneDied = { pane, at, reason, why, told, ...(revivable ? { reviveTried: at } : {}) };
     await deps.registry.patch(lane.key, { died });
   }
   return out;

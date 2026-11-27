@@ -4,12 +4,15 @@ import { join } from "node:path";
 import { agentPath, captureTmux, herdrAgentArgv, laneEnv, paneLife } from "./aoe.ts";
 import { CheckpointError, takeLock } from "./checkpoint-lock.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { HcStartupError, hcLife, isHcPane } from "./hc-pane.ts";
 import { argvSessionLog, omoInputBox, reviveHerdr, sessionModel } from "./herdr-sessions.ts";
-import { isHerdrPane, openHerdrSession } from "./herdr.ts";
+import { HerdrStartupError, isHerdrPane, openHerdrSession } from "./herdr.ts";
 import { laneHomeEnv } from "./home-env.ts";
 import { splitModel } from "./lane-handover.ts";
 import { sendVerified } from "./panes.ts";
 import { LANE_KEY, type Lane, statusOf } from "./registry.ts";
+import { execOf, type Runner } from "./run.ts";
+import { HerdrCli, reasonOf } from "./runtime/herdr/exec.ts";
 import { argvSessionId, hasSessionSelector } from "./session-id.ts";
 import { TokenFileError } from "./slack-token.ts";
 
@@ -17,9 +20,11 @@ import { TokenFileError } from "./slack-token.ts";
 // PANE_GONE, the watch asked the lead to decide, and dori revive (reviveHerdr) starts an agent only in a pane that is still
 // there. An open lane whose pane is gone is opened here in a new pane of the chosen runtime, labelled with its key in its
 // cwd, running the lane's own conversation (omo --session-id <the recorded session>, the model its log ran last), with the
-// same lane env a launch gives. Only the record's pane (and tab) moves, written before the agent starts so a watch tick
-// in between sees the new pane; a start that fails puts the gone pane back. No prompt unless the caller gives one: the
-// lane comes back where it stood, and is never told to start work again. One revive per lane at a time (a lock).
+// same lane env a launch gives. Only the record's pane (and tab) moves, with the lane's open question cards: written right
+// before the agent starts, once the record still names the gone pane on the same session and is not closed, so a close or
+// handover in between wins and the new pane is closed unused. A start that fails puts the gone pane back only when the new
+// pane was confirmed closed; else the record keeps naming it, so nothing opens the conversation twice. No prompt unless the
+// caller gives one: the lane comes back where it stood, and is never told to start work again. One revive per lane (a lock).
 export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string): Promise<string> => {
   const { config } = deps;
   const gone = lane.pane ?? "";
@@ -44,26 +49,40 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
     throw error;
   }
   try {
-    // read again under the lock: another revive, a handover or a close may have moved the lane since it was read
+    // the lane as it stands now: another revive, a handover or a close may have moved it since it was read
+    const moved = (l: Lane | null): string | undefined => (!l ? "not recorded" : statusOf(l) === "closed" || l.pane !== gone || l.session !== session ? `${statusOf(l)} in ${l.pane ?? "no pane"}` : undefined);
     const now = await deps.registry.read(lane.key);
-    if (!now || statusOf(now) === "closed" || now.pane !== gone) return fail(`the lane's pane is ${now?.pane ?? "none"} now, not ${gone}; nothing was opened`);
+    const off = moved(now);
+    if (off || !now) return fail(`the lane is ${off} now, not open in ${gone}; nothing was opened`);
+    if (!(await paneGoneForSure(deps.run, gone))) return fail(`${gone} is not known to be gone (its runtime did not answer not found); nothing was opened`);
     const cwd = now.cwd ?? config.defaultCwd;
     const log = argvSessionLog(config.agentCommand, config.sessionsDir, cwd, session);
     const { base, thinking } = splitModel((log ? sessionModel(log) : undefined) || now.model || config.defaultModel);
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, session);
     const env = { ...laneEnv(config.launchEnv, now.useGpu), ...home, PATH: agentPath(config.agentCommand[0] ?? "omo") };
+    let published: string | undefined;
     const opened = await openHerdrSession(deps.run, deps.clock, {
       title: now.key,
       cwd,
       argv,
       env,
       ...(config.laneWorkspace ? { workspace: config.laneWorkspace } : {}),
-      beforeStart: ({ pane, tab }) => deps.registry.patch(now.key, { pane, tab }),
+      beforeStart: async ({ pane, tab }) => {
+        const later = moved(await deps.registry.read(now.key));
+        if (later) throw new Error(`the lane is ${later} now, so ${pane} is not used`);
+        await deps.registry.patch(now.key, { pane, tab });
+        published = pane;
+        deps.retargetCards?.(gone, pane);
+      },
     }).catch((e: unknown) => (e instanceof Error ? e : new Error(String(e))));
     if (opened instanceof Error) {
-      const moved = (await deps.registry.read(now.key))?.pane;
-      if (moved !== gone) await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
-      return fail(`no new pane could be started: ${opened.message.slice(0, 160)}`);
+      const why = opened.message.slice(0, 160);
+      if (!published) return fail(`no new pane was started: ${why}`);
+      const closed = (opened instanceof HcStartupError || opened instanceof HerdrStartupError) && opened.rollback;
+      if (!closed) return fail(`the agent's start in ${published} failed and that pane is not confirmed closed (${why}); the record names ${published}, so the conversation is not opened twice`);
+      if ((await deps.registry.read(now.key))?.pane === published) await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
+      deps.retargetCards?.(published, gone);
+      return fail(`the agent's start in ${published} failed and that pane was closed (${why}); the record names ${gone} again`);
     }
     const { pane } = opened;
     const done = `${now.key} ${pane} session ${session} (pane ${gone} was gone)`;
@@ -80,6 +99,16 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
   } finally {
     release();
   }
+};
+
+// herdr's pane get fails alike for a pane it does not have and for a server it cannot reach (herdrLife reads both as gone):
+// only its pane_not_found counts here. hc's not_found is the only gone verdict hcLife gives (an unreadable core is live).
+export const paneGoneForSure = async (run: Runner, pane: string): Promise<boolean> => {
+  if (isHcPane(pane)) {
+    const life = await hcLife(run, pane);
+    return !life.live && life.how === "gone";
+  }
+  return new HerdrCli(execOf(run)).call(["pane", "get", pane]).then(() => false, (e: unknown) => /pane_not_found/.test(reasonOf(e)));
 };
 
 // dori revive <lane key | pane>: an open lane's gone pane opens again in a new one (reviveGoneLane); a pane that is still

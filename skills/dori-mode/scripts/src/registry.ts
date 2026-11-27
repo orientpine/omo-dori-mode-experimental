@@ -155,7 +155,7 @@ export type Lane = {
   readonly trialCompact?: { readonly count: number; readonly at: number };
 };
 
-export type LaneDied = { readonly pane: string; readonly at: string; readonly reason: string; readonly why: string; readonly told: boolean };
+export type LaneDied = { readonly pane: string; readonly at: string; readonly reason: string; readonly why: string; readonly told: boolean; readonly reviveTried?: string };
 export type AutoturnMark = { readonly since?: string; readonly resumes?: readonly string[]; readonly long?: AutoturnLongMark };
 // the last LANE_AUTOTURN_LONG: the user message its run counts from and the multiple of autoturnLongTurns it reported
 export type AutoturnLongMark = { readonly user: string; readonly at: number };
