@@ -132,6 +132,6 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   mergeGate: { repos: {}, identities: {}, testCommand: ["bun", "test"], testDir: "skills/dori-mode/scripts", testMinutes: 20 },
   backlog: { enabled: false, everyMin: 60, maxLanes: 2, maxStarts: 1, hostMaxLanes: 3, hostDir: "/tmp/dori-backlog", pairRepairPattern: "", intakeDone: "file {stateDir}/backlog/reports/{id}.md", writeNeedsOwnerLink: false, feedCommand: [], orderKinds: [], dayReportAt: "", timeZone: "UTC" },
   supervision: defaultSupervision(),
-  compactionTrial: { from: "", until: "", atK: 300, exclude: "" },
+  compactionTrial: { from: "", until: "", atK: 300, exclude: "", allLanes: true },
   instances: [],
 });

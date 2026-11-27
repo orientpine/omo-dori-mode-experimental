@@ -143,7 +143,8 @@ export type DoriConfig = {
 
 // from/until: ISO times; the trial runs while from <= now < until (until empty: off). atK: the early arm's point, in
 // thousands of tokens of context. exclude: a regular expression over "<key> <tags>"; a matching lane joins no arm.
-export type CompactionTrial = { readonly from: string; readonly until: string; readonly atK: number; readonly exclude: string };
+// allLanes: every lane exclude does not match compacts at atK, with no arm drawn (owner Q680).
+export type CompactionTrial = { readonly from: string; readonly until: string; readonly atK: number; readonly exclude: string; readonly allLanes: boolean };
 
 
 // Another Dori on this host: its config file (whose defaultCwd marks its directory) and its dori.env (default: next to

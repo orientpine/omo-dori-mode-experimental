@@ -109,7 +109,8 @@ export const USAGE_END = `                                       --text-file pos
   compaction-trial [--json]           the early-compaction trial (config compactionTrial): each arm's lanes and their
                                        context per call, calls >= 300k, tokens and usage per lane, compactions (fallback),
                                        re-reads per compaction, lead not-done and fix attempts, from the session logs;
-                                       the daily rows freshness wrote are in <stateDir>/compaction-trial/daily.jsonl
+                                       the daily rows freshness wrote are in <stateDir>/compaction-trial/daily.jsonl;
+                                       with compactionTrial.allLanes a first line says every lane compacts early
   rollover-stats [--window H] [--stuck]
                                        proposals and rollovers from the log: signal values, approval time, each step's time
                                        and result, and the lane's watch-log quality signals H hours (24) before and after;

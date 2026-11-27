@@ -5,6 +5,7 @@ export const compactionTrialProblem = (raw: unknown): string | undefined => {
   for (const k of ["from", "until"] as const)
     if (t[k] !== undefined && (typeof t[k] !== "string" || (t[k] !== "" && Number.isNaN(Date.parse(t[k] as string))))) return `compactionTrial.${k}: an ISO time or ""`;
   if (t["atK"] !== undefined && !(typeof t["atK"] === "number" && t["atK"] > 0)) return "compactionTrial.atK: a positive number";
+  if (t["allLanes"] !== undefined && typeof t["allLanes"] !== "boolean") return "compactionTrial.allLanes: true or false";
   if (t["exclude"] !== undefined) {
     if (typeof t["exclude"] !== "string") return "compactionTrial.exclude: a regular expression";
     try {
