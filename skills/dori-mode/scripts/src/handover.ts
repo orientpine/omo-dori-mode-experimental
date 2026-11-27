@@ -262,7 +262,7 @@ export const shellWords = (text: string): string[] | undefined => {
   };
   for (let i = 0; i < text.length; ) {
     const c = text[i] ?? "";
-    if (c === "$" && /['"]/.test(text[i + 1] ?? "")) return undefined; else if (c === "'") { // $'...' and $"..." are not read
+    if (c === "'") {
       const end = text.indexOf("'", i + 1);
       if (end < 0) return undefined;
       cur += text.slice(i + 1, end);

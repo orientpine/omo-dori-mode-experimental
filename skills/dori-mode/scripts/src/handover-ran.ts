@@ -76,10 +76,11 @@ const signalled = (wake: Wake, filter: RegExp): boolean => {
 // The replacement the new session marked for a monitor that starts work (the lead's decision, 2026-11-27): its description
 // and [rearm], a path watch or a command that is not the work's own. The [rearm] mark is the session's word that the watch
 // only reads (same account, same trust boundary, #532); this guard only keeps the note's own work command from being armed
-// again, in any spelling shellWords reads, and refuses a command in quoting it does not read ($'...', $"...", unclosed):
-// it does not try to tell every command that runs the same program (another path to it, a wrapper), which the mark covers.
+// again, in any spelling sameCommand reads, and refuses a command with quoting it does not decode anywhere in its text, at
+// any depth ($'...', $"...", review 6 of #536) or unclosed: it does not try to tell every command that runs the same
+// program (another path to it, a wrapper), which the mark covers. sameCommand itself stays as it is for every other monitor.
 export const replacesWork = (m: MonitorSpec, e: { readonly description?: string | undefined; readonly command?: string | undefined; readonly path?: string | undefined }, home: string): boolean =>
-  rearmedAs(m.description, e.description) && (!!e.path || (!!e.command && shellWords(e.command) !== undefined && !sameCommand(m.command ?? "", e.command, home)));
+  rearmedAs(m.description, e.description) && (!!e.path || (!!e.command && !/\$['"]/.test(e.command) && shellWords(e.command) !== undefined && !sameCommand(m.command ?? "", e.command, home)));
 
 // done for missingMonitors: the new session armed m again (a LAUNCHES_WORK one as a watch-only one with its description or
 // filter, any other with its command and filter) and that watch ended with exit code 0 after its signal; or also(m)

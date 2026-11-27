@@ -153,4 +153,15 @@ test("the check and the audit count a work monitor's [rearm] replacement as arme
   expect(both({ command: "until test -e /tmp/job.done; do sleep 2; done; echo DONE" })).toEqual([true, true]);
   expect(both({ path: "/tmp/job.log", event: "modify" })).toEqual([true, true]);
   for (const same of ['python3 "/tmp/job.py"', "python3 '/tmp/job.py'", "python3  /tmp/job.py", "python3 $'/tmp/job.py'", 'python3 $"/tmp/job.py"']) expect([same, both({ command: same })]).toEqual([same, [false, false]]);
+  // review 6: the same quoting nested in a shell string the check reads again
+  const wrapped = { ...job, command: 'bash -c "python3 /tmp/job.py"' };
+  const nested = as({ command: "bash -c \"python3 \\$'/tmp/job.py'\"" });
+  expect([missingMonitors([wrapped], nested, () => true, HOME, 0).length === 0, armed(wrapped, nested, HOME)]).toEqual([false, false]);
+});
+
+// review 6 of #536: a [rearm] monitor re-armed as is keeps matching when only its quoting changed, a $'...' literal in it too
+test("a [rearm] watch with an ANSI-C literal re-armed with other quoting elsewhere is armed", () => {
+  const status = { description: "status [rearm]", command: "tail -F /tmp/status | grep --line-buffered $'READY\\t'", persistent: true };
+  const again = [{ ...status, command: "tail -F \"/tmp/status\" | grep --line-buffered $'READY\\t'", runtime: { pid: 9 } }] as never;
+  expect(missingMonitors([status], again, () => true, HOME, 0)).toEqual([]);
 });
