@@ -14,7 +14,7 @@
 // 1249 single-watch exit-0 wakes in this account's session logs carry the watch's line too (2026-11-11).
 import { readFileSync } from "node:fs";
 
-import { launchOf, type MonitorSpec, sameCommand, shellWords } from "./handover.ts";
+import { launchOf, type MonitorSpec, sameCommand } from "./handover.ts";
 import { rearmable, rearmedAs, sameWatch } from "./handover-monitors.ts";
 import { sessionFile } from "./rollover.ts";
 
@@ -75,12 +75,12 @@ const signalled = (wake: Wake, filter: RegExp): boolean => {
 
 // The replacement the new session marked for a monitor that starts work (the lead's decision, 2026-11-27): its description
 // and [rearm], a path watch or a command that is not the work's own. The [rearm] mark is the session's word that the watch
-// only reads (same account, same trust boundary, #532); this guard only keeps the note's own work command from being armed
-// again, in any spelling sameCommand reads, and refuses a command with quoting it does not decode anywhere in its text, at
-// any depth ($'...', $"...", review 6 of #536) or unclosed: it does not try to tell every command that runs the same
-// program (another path to it, a wrapper), which the mark covers. sameCommand itself stays as it is for every other monitor.
+// only reads (same account, same trust boundary, #532). Threat model (the lead's decision after review 7 of #536): the guard
+// stops only a mistake, the note's work command copied as is (in any spelling sameCommand reads as the same command); it
+// does not look for a work command written another way (other quoting, a wrapper, another path to the program), which a
+// session that marks its watch [rearm] says it is not. Reviews 2-7 found such spellings; none is in scope.
 export const replacesWork = (m: MonitorSpec, e: { readonly description?: string | undefined; readonly command?: string | undefined; readonly path?: string | undefined }, home: string): boolean =>
-  rearmedAs(m.description, e.description) && (!!e.path || (!!e.command && !/\$['"]/.test(e.command) && shellWords(e.command) !== undefined && !sameCommand(m.command ?? "", e.command, home)));
+  rearmedAs(m.description, e.description) && (!!e.path || (!!e.command && !sameCommand(m.command ?? "", e.command, home)));
 
 // done for missingMonitors: the new session armed m again (a LAUNCHES_WORK one as a watch-only one with its description or
 // filter, any other with its command and filter) and that watch ended with exit code 0 after its signal; or also(m)

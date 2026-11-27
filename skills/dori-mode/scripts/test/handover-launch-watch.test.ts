@@ -144,19 +144,17 @@ test("a script fed to a shell with combined options or with its output redirecte
   }
 });
 
-// reviews 4 and 5 of #536: the check and the audit take a work monitor's [rearm] replacement only when its command is not
-// the work's own in a spelling they read (quoting they do not model, as $'...', is refused); a marked path watch is one too
+// reviews 4, 5 and 7 of #536: the check and the audit take a work monitor's [rearm] replacement when its command is not the
+// work's own as sameCommand reads it (the mark is the session's word; a respelling is out of scope); a marked path watch too
 test("the check and the audit count a work monitor's [rearm] replacement as armed, never its own command quoted otherwise", () => {
   const job = { description: "job", command: "python3 /tmp/job.py", persistent: true, launch: { why: "a command that is not one of the plain watch shapes", writes: [], detached: false } };
   const as = (e: Record<string, unknown>) => [{ description: "job [rearm]", persistent: true, runtime: { pid: 9 }, ...e }] as never;
   const both = (e: Record<string, unknown>) => [missingMonitors([job], as(e), () => true, HOME, 0).length === 0, armed(job, as(e), HOME)];
   expect(both({ command: "until test -e /tmp/job.done; do sleep 2; done; echo DONE" })).toEqual([true, true]);
   expect(both({ path: "/tmp/job.log", event: "modify" })).toEqual([true, true]);
-  for (const same of ['python3 "/tmp/job.py"', "python3 '/tmp/job.py'", "python3  /tmp/job.py", "python3 $'/tmp/job.py'", 'python3 $"/tmp/job.py"']) expect([same, both({ command: same })]).toEqual([same, [false, false]]);
-  // review 6: the same quoting nested in a shell string the check reads again
-  const wrapped = { ...job, command: 'bash -c "python3 /tmp/job.py"' };
-  const nested = as({ command: "bash -c \"python3 \\$'/tmp/job.py'\"" });
-  expect([missingMonitors([wrapped], nested, () => true, HOME, 0).length === 0, armed(wrapped, nested, HOME)]).toEqual([false, false]);
+  // review 7: a plain anchored regex ($ before a closing quote) and a $HOME path are a replacement like any other
+  expect(both({ command: "until grep -Eq '^DONE$' \"$HOME/job.log\"; do sleep 2; done; echo DONE" })).toEqual([true, true]);
+  for (const same of ['python3 "/tmp/job.py"', "python3 '/tmp/job.py'", "python3  /tmp/job.py"]) expect([same, both({ command: same })]).toEqual([same, [false, false]]);
 });
 
 // review 6 of #536: a [rearm] monitor re-armed as is keeps matching when only its quoting changed, a $'...' literal in it too

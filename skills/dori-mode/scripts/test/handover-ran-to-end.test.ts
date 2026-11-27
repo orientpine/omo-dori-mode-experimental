@@ -174,5 +174,8 @@ test("a work monitor's [rearm] replacement that fired and exited 0 is not missin
   const replacement = { ...watchOnly, description: `${DESC} [rearm]`, command: "until grep -Eo X $HOME/u.json; do sleep 30; done; echo UPDATE_QUIET_456" };
   expect(launchOf(replacement.command, HOME)).toBeDefined();
   expect(missing([gate], [arm(replacement), fired(["UPDATE_QUIET_456", DONE], replacement.description)])).toEqual([]);
-  for (const own of [OLD, OLD.replace("printf 'UPDATE", () => "printf $'UPDATE")]) expect(missing([gate], [arm({ ...replacement, command: own }), fired(["UPDATE_QUIET_456", DONE], replacement.description)])).toEqual([`${DESC} (starts work: arm a watch-only one with the same description)`]);
+  expect(missing([gate], [arm({ ...replacement, command: OLD }), fired(["UPDATE_QUIET_456", DONE], replacement.description)])).toEqual([`${DESC} (starts work: arm a watch-only one with the same description)`]);
+  // review 7 of #536: a plain anchored regex in the replacement is no reason to refuse it
+  const anchored = { ...replacement, command: "until grep -Eq '^UPDATE_QUIET_456$' \"$HOME/u.log\"; do sleep 30; done; echo UPDATE_QUIET_456" };
+  expect(missing([gate], [arm(anchored), fired(["UPDATE_QUIET_456", DONE], anchored.description)])).toEqual([]);
 });
