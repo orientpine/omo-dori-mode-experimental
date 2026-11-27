@@ -154,6 +154,7 @@ const compactionTrialCommand: Command = async (context) => {
     console.log(JSON.stringify({ trial: t, rows }));
     return;
   }
+  if (t.allLanes) console.log(`EARLY_COMPACTION every lane at ${t.atK}k, exclude /${t.exclude}/ (compactionTrial.allLanes); the trial below draws no new arms`);
   console.log(`COMPACTION_TRIAL ${t.until ? `${t.from || "-"} .. ${t.until}, early arm at ${t.atK}k, exclude /${t.exclude}/` : "off (compactionTrial.until is empty)"}; ${trialActive(t, Date.now()) ? "running" : "not running"}`);
   for (const line of trialTable(rows)) console.log(line);
   return;

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { assignArm, keepTick, laneSessionFile, readArms, sessionUsage, trialRows, trialTable } from "../src/compaction-keep.ts";
+import { assignArm, compactsEarly, keepTick, laneSessionFile, readArms, sessionUsage, trialRows, trialTable } from "../src/compaction-keep.ts";
 import { freshnessTick } from "../src/freshness.ts";
 import { Reports } from "../src/reports.ts";
 import type { DoriConfig } from "../src/config.ts";
@@ -20,7 +20,7 @@ beforeEach(() => {
 });
 afterEach(() => state.done());
 
-const trial = { from: new Date(T0 - H).toISOString(), until: new Date(T0 + 96 * H).toISOString(), atK: 300, exclude: "rl|render" };
+const trial = { from: new Date(T0 - H).toISOString(), until: new Date(T0 + 96 * H).toISOString(), atK: 300, exclude: "rl|render", allLanes: false };
 const deps = (ms: number, patch: Partial<DoriConfig> = {}) => depsFor(world, fakeClock(ms), state.dir, { sessionsDir: join(state.dir, "sessions"), ...patch });
 
 const lane = (brief: string, extra: Partial<Lane> = {}): Lane => ({ key: "keep-lane", title: "keep", thread: "none", pane: "w:p7", brief, done: "file /tmp/ok", goal: "형 원문 그대로", cwd: "/w", session: "sid", openedAt: new Date(T0).toISOString(), lastReplyAt: T0, ...extra });
@@ -53,6 +53,7 @@ test("a compaction whose summary lost the brief path re-anchors the lane once wi
   expect(sent(world)[0]).toContain(`re-read the brief at ${brief}`);
   expect(sent(world)[0]).toContain("[목표] 압축 뒤에도 과제를 잃지 않게 한다.");
   expect(sent(world)[0]).toContain("Done = file /tmp/ok");
+  expect(sent(world)[0]).toContain(`your reports so far at ${join(state.dir, "lanes", "keep-lane", "reports.jsonl")}`);
   expect(sent(world)[0]).toContain(`Owner's words: "형 원문 그대로"`);
   expect(await keepTick(deps(T0 + 120_000), (await deps(T0).registry.read("keep-lane"))!)).toEqual([]);
   // And a generated summary that kept the brief path is left alone
@@ -196,6 +197,46 @@ test("an early-arm lane gets /compact at its idle moment once its context reache
   await d(T0).registry.patch("keep-lane", { trialArm: "control" });
   expect(await keepTick(d(T0 + 40 * 60_000), await read())).toEqual([]);
   expect(sent(world)).toEqual(["/compact"]);
+});
+
+test("by default every lane the exclude pattern misses gets /compact at atK at its idle moment, with no arm drawn; an excluded lane never", async () => {
+  // Given the fork's default (no trial running), which takes in training lanes too, and a config that leaves them out
+  expect(compactsEarly(deps(T0).config.compactionTrial, lane("/b.md", { key: "rl-e9", tags: ["rl"] }), T0)).toBe(true);
+  const brief = join(state.dir, "brief.md");
+  writeFileSync(brief, "[목표] x\n");
+  const file = log();
+  const rlFile = join(sessionDirFor(join(state.dir, "sessions"), "/w"), "2026-11-07T14-00-00-000Z_sid-rl.jsonl");
+  const on = { ...deps(T0).config.compactionTrial, exclude: "(^|[\\s-])(rl|render)" };
+  const d = (ms: number, t = on) => deps(ms, { compactionTrial: t });
+  expect(assignArm(d(T0).config, "keep-lane", [], T0)).toBeUndefined();
+  expect(assignArm(d(T0).config, "keep-lane", [], T0 + H)).toBeUndefined();
+  expect(readArms(state.dir)).toEqual([]);
+  await d(T0).registry.write(lane(brief, { compactionsSeen: 0 }));
+  await d(T0).registry.write(lane(brief, { key: "rl-e9", tags: ["rl"], pane: "w:p8", session: "sid-rl", compactionsSeen: 0 }));
+  appendFileSync(file, turn(310));
+  writeFileSync(rlFile, turn(400));
+  world.screens["w:p8"] = "❯ ";
+  // When a turn runs or a draft waits, nothing is typed
+  world.screens["w:p7"] = `${RUNNING}\n❯ `;
+  expect((await freshnessTick(d(T0), "/home/test")).filter((a) => a.kind.startsWith("trial-compact"))).toEqual([]);
+  world.screens["w:p7"] = "❯ a draft the owner is typing";
+  expect((await freshnessTick(d(T0), "/home/test")).filter((a) => a.kind.startsWith("trial-compact"))).toEqual([]);
+  expect(sent(world)).toEqual([]);
+  // Then at the idle moment the normal lane gets /compact once and the training lane nothing
+  world.screens["w:p7"] = "❯ ";
+  const acts = (await freshnessTick(d(T0 + 60_000), "/home/test")).filter((a) => a.kind.startsWith("trial-compact"));
+  expect(acts.map((a) => [a.kind, a.lane])).toEqual([["trial-compact", "keep-lane"]]);
+  expect(sent(world)).toEqual(["/compact"]);
+  expect(world.calls.filter((c) => c.includes("w:p8") && (c.includes("send-text") || c.includes("send-keys")))).toEqual([]);
+  // the same compaction count is not typed again within 30 minutes; after a compaction the lane is below atK
+  expect((await freshnessTick(d(T0 + 120_000), "/home/test")).filter((a) => a.kind.startsWith("trial-compact"))).toEqual([]);
+  appendFileSync(file, compaction(`kept ${brief}`) + turn(40));
+  expect((await freshnessTick(d(T0 + 40 * 60_000), "/home/test")).filter((a) => a.kind.startsWith("trial-compact"))).toEqual([]);
+  expect(sent(world).filter((t) => t === "/compact")).toHaveLength(1);
+  // and with allLanes off a lane with no arm is left to omo's own point
+  appendFileSync(file, turn(330));
+  expect(await keepTick(d(T0 + 80 * 60_000, { ...on, allLanes: false }), (await d(T0).registry.read("keep-lane"))!)).toEqual([]);
+  expect(sent(world).filter((t) => t === "/compact")).toHaveLength(1);
 });
 
 test("session usage counts calls, context, compactions with fallbacks, and reads after a compaction of paths read before it", () => {

@@ -9,6 +9,8 @@
 //    early arm, freshness types /compact at the lane's idle moment once its context reaches atK thousand tokens, instead of
 //    omo's own point (about 80 % of the window). omo's settings stay untouched: the threshold has no per-session setting,
 //    and a global one would move the lead too. dori compaction-trial prints the comparison table from the session logs.
+// 3. By default (owner Q680, 2026-11-27: "기본으로 켜기: 모든 일반 레인 300k에서 일찍 압축 (추천)"): with compactionTrial.allLanes
+//    every lane exclude does not match compacts at atK the same way, with no arm drawn (arms.jsonl stays for the table).
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -18,6 +20,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { briefAnchor } from "./launch.ts";
 import { readScreen, sendVerified } from "./panes.ts";
 import type { Lane } from "./registry.ts";
+import { Reports } from "./reports.ts";
 import { compactionScan, sessionFile } from "./rollover.ts";
 import { sessionDirFor } from "./session-id.ts";
 import { editorText, turnRunning } from "./submit.ts";
@@ -38,14 +41,20 @@ export const readArms = (stateDir: string): ArmRecord[] => {
   return readFileSync(file, "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as ArmRecord);
 };
 
-// The arm of a lane launched now, recorded once (a key launched again keeps its first arm); undefined when no trial runs.
+export const laneExcluded = (t: CompactionTrial, key: string, tags: readonly string[]): boolean => Boolean(t.exclude) && new RegExp(t.exclude, "i").test(`${key} ${tags.join(" ")}`);
+
+// Whether freshness types the early /compact: with allLanes every lane exclude misses, else the running trial's early arm.
+export const compactsEarly = (t: CompactionTrial, lane: Lane, now: number): boolean =>
+  t.allLanes ? !laneExcluded(t, lane.key, lane.tags ?? []) : lane.trialArm === "early" && trialActive(t, now);
+
+// The arm of a lane launched now, recorded once (a key launched again keeps its first arm); undefined with no trial or allLanes.
 export const assignArm = (config: DoriConfig, key: string, tags: readonly string[], now: number): TrialArm | undefined => {
   const t = config.compactionTrial;
-  if (!trialActive(t, now)) return undefined;
+  if (t.allLanes || !trialActive(t, now)) return undefined;
   const arms = readArms(config.stateDir);
   const had = arms.find((a) => a.key === key);
   if (had) return had.arm === "excluded" ? undefined : had.arm;
-  const excluded = Boolean(t.exclude) && new RegExp(t.exclude, "i").test(`${key} ${tags.join(" ")}`);
+  const excluded = laneExcluded(t, key, tags);
   const early = arms.filter((a) => a.arm === "early").length;
   const control = arms.filter((a) => a.arm === "control").length;
   const arm: ArmRecord["arm"] = excluded ? "excluded" : early <= control ? "early" : "control";
@@ -88,8 +97,8 @@ const laneLog = (config: DoriConfig, lane: Lane): string | undefined =>
 
 export type KeepAct = { readonly kind: "reanchored" | "reanchor-failed" | "trial-compact" | "trial-compact-failed"; readonly lane: string; readonly detail: string };
 
-export const reanchorText = (lane: Lane, briefText: string): string =>
-  `[LEAD] Your context was just compacted and the summary lost your task. Before your next step re-read the brief at ${lane.brief} and your notepad. ${briefAnchor(lane, briefText)}`;
+export const reanchorText = (lane: Lane, briefText: string, reports: string): string =>
+  `[LEAD] Your context was just compacted and the summary lost your task. Before your next step re-read the brief at ${lane.brief}, your notepad and your reports so far at ${reports} (the run, checkpoint and step you were on). ${briefAnchor(lane, briefText)}`;
 
 // RETRY_MS: a /compact that did not bring a new compaction is typed again after this long at the next idle moment.
 const RETRY_MS = 30 * 60_000;
@@ -109,7 +118,7 @@ export const keepTick = async (deps: FlowDeps, lane: Lane): Promise<KeepAct[]> =
     if ((scan.summary ?? "").includes(lane.brief)) {
       await deps.registry.patch(lane.key, { compactionsSeen: scan.count });
     } else if (!editorText(await readScreen(deps.run, deps.config.backend, lane.pane, 40))) {
-      const text = reanchorText(lane, existsSync(lane.brief) ? readFileSync(lane.brief, "utf8") : "");
+      const text = reanchorText(lane, existsSync(lane.brief) ? readFileSync(lane.brief, "utf8") : "", new Reports(deps.config.stateDir).path(lane.key));
       const ok = await sendVerified(deps.run, deps.clock, deps.config, lane.pane, text);
       if (ok) await deps.registry.patch(lane.key, { compactionsSeen: scan.count });
       const detail = `compaction ${scan.count} kept no brief path${ok ? "; the lane was told to re-read its brief" : `; the re-anchor did not reach pane ${lane.pane}, tried again next sweep`}`;
@@ -119,7 +128,7 @@ export const keepTick = async (deps: FlowDeps, lane: Lane): Promise<KeepAct[]> =
   }
   const trial = deps.config.compactionTrial;
   const now = deps.clock.now();
-  if (lane.trialArm !== "early" || !trialActive(trial, now) || (scan.lastK ?? 0) < trial.atK) return acts;
+  if (!compactsEarly(trial, lane, now) || (scan.lastK ?? 0) < trial.atK) return acts;
   const last = lane.trialCompact;
   if (last && last.count === scan.count && now - last.at < RETRY_MS) return acts;
   // only at the idle moment: /compact while a turn runs would be queued as a message, omo's manual compaction stops the
