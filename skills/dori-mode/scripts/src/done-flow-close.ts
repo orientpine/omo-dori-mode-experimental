@@ -147,19 +147,20 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
       cleanup.push(await closeAoeSession(deps.run, l.pane));
     }
   };
-  await closeRuntime(lane);
   const root = lane.cwd ?? deps.config.defaultCwd;
+  const at = iso(deps.clock);
+  const receipt = { checks, note, cleanup };
+  // the runtime close and the record take the lane's lifecycle lock together: a revive runs before them (its new pane is
+  // read here and closed too) or after them (it finds the lane closed); a revive may have given the lane a new pane since
+  // this close read it, so the record is read again here and that pane closed and recorded (reviews 2 and 16 of #535)
+  await withLaneLifecycle(deps, lane.key, async () => {
+  await closeRuntime(lane);
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) {
     const r = await deps.run(["git", "-C", root, "worktree", "remove", wt]);
     cleanup.push(r.code === 0 ? `worktree ${wt} removed` : `worktree ${wt} kept: ${r.err.slice(0, 120)}`);
   }
   const scratch = scratchLeft(lane.key);
   if (scratch) warnings.push(scratch);
-  const at = iso(deps.clock);
-  const receipt = { checks, note, cleanup };
-  // a revive may have given the lane a new pane since this close read it (lane-revive.ts): read again under the lane's
-  // lifecycle lock, close that pane too and record it, so no revived agent outlives its closed lane (review 2 of #535)
-  await withLaneLifecycle(deps, lane.key, async () => {
     const fresh = await deps.registry.read(lane.key);
     const moved = fresh?.pane && fresh.pane !== lane.pane ? fresh : undefined;
     if (moved) await closeRuntime(moved);

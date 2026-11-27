@@ -233,8 +233,8 @@ const goalLine = async (deps: FlowDeps, lane: Lane, act: GoalAct): Promise<{ rea
 };
 
 // Back to the status it had before the pause; the silence clock restarts now, so the first nudge comes a full interval later.
-export const resumeLane = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
-  if (statusOf(lane) !== "paused") throw new LaneStateError(`lane ${lane.key} is ${statusOf(lane)}, not paused`);
+export const resumeLane = (deps: FlowDeps, given: Lane): Promise<string[]> => withLaneLifecycle(deps, given.key, async () => {
+  const lane = (await deps.registry.read(given.key)) ?? given; if (statusOf(lane) !== "paused") throw new LaneStateError(`lane ${lane.key} is ${statusOf(lane)}, not paused`);
   const to = lane.pausedFrom ?? "working";
   // only a goal this pause paused is resumed: one the agent or the owner paused stays paused
   const goal = lane.pausedGoal ? await goalLine(deps, lane, "resume") : undefined;
@@ -247,4 +247,4 @@ export const resumeLane = async (deps: FlowDeps, lane: Lane): Promise<string[]> 
   }
   if (lane.claim && lane.claim.at >= pausedAt(lane)) out.push(`NOTE ${lane.key} claimed done while paused (${lane.claim.evidence}); close it with dori close ${lane.key}, or object with dori object-done`);
   return out;
-};
+});
