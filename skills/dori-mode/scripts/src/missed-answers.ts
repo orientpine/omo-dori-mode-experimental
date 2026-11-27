@@ -110,6 +110,14 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
           if (path) file = { path };
         }
       }
+      if (!file && !session && target !== lead.pane && version?.session) {
+        // a lane revived on that same session in a new pane (lane-revive.ts) asked it, open or closed since: that exact
+        // session's log, for a lane open when the answer came (reviews 3-5 of #535)
+        archived ??= await deps.registry.list();
+        const revived = archived.filter((l) => l.session === version.session && l.pane !== target && Date.parse(l.openedAt) <= row.at && (!l.closedAt || row.at <= Date.parse(l.closedAt))).sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt))[0];
+        const path = revived?.session && revived.cwd ? argvSessionLog([], deps.config.sessionsDir, revived.cwd, revived.session) : undefined;
+        if (path) file = { path };
+      }
       transcripts.set(key, { text: file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "", ...(file ? { path: file.path } : {}) });
     }
     const current = transcripts.get(key), transcript = current?.text ?? "";

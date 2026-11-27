@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { agentPath, captureTmux, herdrAgentArgv, laneEnv, paneLife } from "./aoe.ts";
@@ -11,7 +11,7 @@ import { handoverRunning } from "./freshness.ts";
 import { frozenPanes } from "./frozen.ts";
 import { closeHerdrSession, HerdrStartupError, isHerdrPane, openHerdrSession } from "./herdr.ts";
 import { laneHomeEnv } from "./home-env.ts";
-import { splitModel } from "./lane-handover.ts";
+import { pendingFile, splitModel } from "./lane-handover.ts";
 import { sendVerified } from "./panes.ts";
 import { withLaneLifecycle } from "./lane-lifecycle.ts";
 import { LANE_KEY, type Lane, statusOf } from "./registry.ts";
@@ -55,9 +55,11 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
   try {
     // the lane as it stands now: another revive, a handover or a close may have moved it since it was read
     const moved = (l: Lane | null): string | undefined => (!l ? "not recorded" : statusOf(l) === "closed" || l.pane !== gone || l.session !== session ? `${statusOf(l)} in ${l.pane ?? "no pane"}` : undefined);
-    // a handover of the lane (running, or one that froze the gone pane) moves the lane itself: a revive then opens nothing,
-    // read again right before the new pane is written (review 4 of #535)
-    const handover = (): string | undefined => (frozenPanes(config.stateDir).includes(gone) || handoverRunning(config.stateDir, "lane", lane.key, pidAlive) ? `a handover of the lane is running or holds ${gone}` : undefined);
+    // a handover of the lane (running, one that froze the gone pane, or an interrupted one whose journal is left for its
+    // repair, whose owner may be dead) moves the lane itself: a revive then opens nothing, read again right before the new
+    // pane is written (reviews 4 and 5 of #535)
+    const handover = (): string | undefined =>
+      existsSync(pendingFile(config.stateDir, lane.key)) ? `an interrupted handover of the lane is left in ${pendingFile(config.stateDir, lane.key)} for its repair` : frozenPanes(config.stateDir).includes(gone) || handoverRunning(config.stateDir, "lane", lane.key, pidAlive) ? `a handover of the lane is running or holds ${gone}` : undefined;
     const now = await deps.registry.read(lane.key);
     const moving = handover();
     if (moving) return fail(`${moving}; it moves the lane itself, so nothing was opened`);

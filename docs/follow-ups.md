@@ -2,10 +2,6 @@
 
 Work left out of a merged change on purpose, with why and what would close it. Each entry names the PR that left it.
 
-## Revive: an answer given while a lane's pane was gone can still read as waiting (#535)
-
-`dori revive` and `dori watch` open a lane whose pane is gone in a new pane on the same session (`src/lane-revive.ts`), and its open and answered cards move with it. The owner-waiting reconciliation (`missed-answers.ts` `unansweredRows`) still resolves an answer through the pane it was asked from (`answers.jsonl` keeps it): that pane has no session any more and no handover links it, so an answer the revived agent already saw can still count as waiting and bring a false `LEAD_OWNER_WAITING`. Reviews 3 and 4 of #535 found it; the lead moved it here (2026-11-27). What would close it: resolve the asking pane through the lane on the same session, open or closed, within its lifetime (`openedAt`..`closedAt`), and a test of an outage answer, the revive, the answer seen, a close, then the reconciliation.
-
 ## omo-host runtime (upstream #282) left out of the fork
 
 The lead placement port accepts only terminal runtimes. The full port of [upstream #282](https://github.com/sisyphuslabs/dori-superagent/pull/282) is kept on branch `port-upstream-282-284` (head `6b4d8a93`) and as patches in `/home/soodori/.soodori/qa/port-upstream-264-284/omo-host-282-full/`. It comes back when upstream ships more omo-host fixes or the owner says he will use it.
