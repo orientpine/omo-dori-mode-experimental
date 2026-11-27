@@ -13,7 +13,22 @@ const IDLE = ["transcript", "─────────────────
 const PASSED = { reasons: [] as string[], session: "new-sid" };
 
 const dirs: string[] = [];
+// every claim and lock a test takes is let go before its folder is removed: Windows refuses to delete a file held open
+const held: (() => void)[] = [];
+const once = <F extends (() => void) | null | undefined>(f: F): F => {
+  if (!f) return f;
+  let done = false;
+  const g = () => {
+    if (!done) {
+      done = true;
+      f();
+    }
+  };
+  held.push(g);
+  return g as F;
+};
 afterEach(() => {
+  for (const r of held.splice(0)) r();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -41,7 +56,10 @@ const world = (screens: readonly (string | Error)[], atSleep: (n: number) => voi
     },
     cardDir: join(state, "discord"),
   };
-  const settle = (checked = PASSED) => settleOldLead(deps, checked, state, "lead", t + 600_000, "the handover of the lead to new is running", opts.recheck ?? (() => []));
+  const settle = async (checked = PASSED) => {
+    const r = await settleOldLead(deps, checked, state, "lead", t + 600_000, "the handover of the lead to new is running", opts.recheck ?? (() => []));
+    return r.release ? { ...r, release: once(r.release) } : r;
+  };
   return { deps, state, settle, now: () => t, sleeps: () => sleeps };
 };
 
@@ -76,7 +94,7 @@ test("an idle screen is not enough while a card claim is held (a dori ask or res
   });
   const store = new QuestionStore(w.deps.cardDir);
   const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
-  release = store.claim(q.id, w.now());
+  release = once(store.claim(q.id, w.now()));
   // When
   const r = await w.settle();
   // Then
@@ -90,7 +108,7 @@ test("an old lead that does not come to rest in time makes the checks fail, so t
   const held = world([IDLE]);
   const store = new QuestionStore(held.deps.cardDir);
   const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
-  expect(store.claim(q.id, held.now())).not.toBeNull();
+  expect(once(store.claim(q.id, held.now()))).not.toBeNull();
   const unreadable = world([new Error("hc read failed"), ""]);
   const busy = world([BUSY]);
   // When
@@ -111,9 +129,9 @@ test("the claims a settled old lead had free stay taken until the freeze is done
   const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
   // When
   const r = await w.settle();
-  const during = store.claim(q.id, w.now());
+  const during = once(store.claim(q.id, w.now()));
   r.release?.();
-  const after = store.claim(q.id, w.now());
+  const after = once(store.claim(q.id, w.now()));
   after?.();
   // Then
   expect(r.reasons).toEqual([]);
@@ -128,7 +146,7 @@ test("a claim held on an answered card (its repaint or a reopen) also keeps the 
   const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
   store.answer(q.id, "yes", "button", "2026-11-26T00:01:00Z");
   expect(store.get(q.id)?.status).not.toBe("open");
-  const holder = store.claim(q.id, w.now());
+  const holder = once(store.claim(q.id, w.now()));
   // When
   const r = await w.settle();
   holder?.();
@@ -145,7 +163,7 @@ test("an answered card with no claim file is taken too, so a dori reopen started
   store.answer(q.id, "yes", "button", "2026-11-26T00:01:00Z");
   // When
   const r = await w.settle();
-  const reopen = store.claim(q.id, w.now());
+  const reopen = once(store.claim(q.id, w.now()));
   r.release?.();
   // Then
   expect([r.reasons, reopen]).toEqual([[], null]);
@@ -157,9 +175,9 @@ test("a dori send, thread, ask, reopen or resolve in flight (it holds the pane's
   const ends = world([IDLE], (n) => {
     if (n === 2) send?.();
   });
-  send = holdAdmission(admissionFile(ends.state, "lead"), "shared");
+  send = once(holdAdmission(admissionFile(ends.state, "lead"), "shared"));
   const stays = world([IDLE]);
-  const stuck = holdAdmission(admissionFile(stays.state, "lead"), "shared");
+  const stuck = once(holdAdmission(admissionFile(stays.state, "lead"), "shared"));
   // When
   const results = [await ends.settle(), await stays.settle()];
   stuck?.();
@@ -179,9 +197,9 @@ test("the admission lock stays taken exclusive until the freeze is done, so a do
   const lock = admissionFile(w.state, "lead");
   // When
   const r = await w.settle();
-  const during = holdAdmission(lock, "shared");
+  const during = once(holdAdmission(lock, "shared"));
   r.release?.();
-  const after = holdAdmission(lock, "shared");
+  const after = once(holdAdmission(lock, "shared"));
   after?.();
   // Then
   expect([r.reasons, during, after !== undefined]).toEqual([[], undefined, true]);
@@ -195,9 +213,9 @@ test("the new session's monitors and todos are checked again after the settle: o
   const q = store.create("Ship it?", ["yes", "no"], "1", { thread: "9", tmux: "lead" }, "2026-11-26T00:00:00Z");
   // When
   const r = await w.settle();
-  const free = store.claim(q.id, w.now());
+  const free = once(store.claim(q.id, w.now()));
   free?.();
-  const admitted = holdAdmission(admissionFile(w.state, "lead"), "shared");
+  const admitted = once(holdAdmission(admissionFile(w.state, "lead"), "shared"));
   admitted?.();
   // Then
   expect([r.reasons, r.release, seen, free === null, admitted !== undefined]).toEqual([["monitors stopped in new after the first check: owner inbox"], undefined, ["new-sid"], false, true]);

@@ -3,8 +3,9 @@ import { join } from "node:path";
 
 import { captureTmux, currentTmuxSession } from "./aoe.ts";
 import { holdAdmission } from "./checkpoint-lock.ts";
+import { frozenFile } from "./frozen.ts";
 import { QuestionStore } from "./messenger/discord-cards.ts";
-import { setQuiet } from "./rollover.ts";
+import { quietReason, setQuiet } from "./rollover.ts";
 import type { Clock, Runner } from "./run.ts";
 import { turnRunning } from "./submit.ts";
 
@@ -26,6 +27,12 @@ const ADMIT_POLL_MS = 100;
 
 // one per lead pane, named like its quiet mark; permanent (holdAdmission)
 export const admissionFile = (stateDir: string, pane: string): string => join(stateDir, "handover", "admission", `${pane.replace(/[^\w.-]/g, "_")}.lock`);
+
+// Why a dori command of this pane must not talk to the owner now: its quiet mark, or a frozen record. A pane a handover
+// froze is no longer the lead until its record is gone (closed, or thawed by hand), so a command stopped mid-wait by the
+// freeze and resumed by the close cannot send beside the new lead after the commit cleared the mark (review 8 of #533).
+export const ownerQuiet = (stateDir: string, pane: string, now: number): string | undefined =>
+  quietReason(stateDir, pane, now) ?? (pane && existsSync(frozenFile(stateDir, pane)) ? `HANDOVER_QUIET ${pane}: a handover froze this session and it is being closed; the new lead talks to the owner now` : undefined);
 
 type SettleDeps = { readonly run: Runner; readonly clock: Clock; readonly cardDir: string };
 

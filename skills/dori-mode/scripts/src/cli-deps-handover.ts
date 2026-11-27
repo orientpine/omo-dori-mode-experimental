@@ -5,8 +5,7 @@ import { jobSignal } from "./job-control.ts";
 import { winSignal } from "./win-suspend.ts";
 import { accountHome, type HandoverDeps } from "./handover.ts";
 import type { LaneHandoverDeps } from "./lane-handover.ts";
-import { admitOwnerCommand } from "./handover-drain.ts";
-import { quietReason } from "./rollover.ts";
+import { admitOwnerCommand, ownerQuiet } from "./handover-drain.ts";
 import { watchLog } from "./watch-log.ts";
 import { procTable, resolveSession } from "./session-id.ts";
 import { restartService } from "./update-ready.ts";
@@ -109,7 +108,7 @@ export const makeHandoverDeps = (cli: Pick<Cli, "discordToken" | "config" | "dep
       console.error(line);
       watchLog(config.watchLog, realClock, { source: "handover", line });
     }
-    const why = quietReason(config.stateDir, here, Date.now());
+    const why = ownerQuiet(config.stateDir, here, Date.now());
     if (why) die(why, 4);
   };
   const passEnv = (): string[] => {
