@@ -199,17 +199,17 @@ export class QuestionStore {
     }));
   }
 
-  // open cards asked from one session belong to another from now on (dori handover); returns the ids moved
-  retarget(from: QuestionMeta, to: QuestionMeta): string[] {
-    return this.locked(() => this.retargeted(from, to));
+  // open cards (and with answered, answered ones the watch may still deliver) asked from one pane and/or session go on
+  retarget(from: QuestionMeta, to: QuestionMeta, answered = false): string[] {
+    return this.locked(() => this.retargeted(from, to, answered));
   }
 
-  private retargeted(from: QuestionMeta, to: QuestionMeta): string[] {
+  private retargeted(from: QuestionMeta, to: QuestionMeta, answered: boolean): string[] {
     const s = this.load();
     const moved: string[] = [];
     for (const q of s.questions) {
-      if (q.status !== "open") continue;
-      const tmux = !!from.tmux && q.tmux === from.tmux;
+      if (q.status !== "open" && !(answered && q.status === "answered")) continue;
+      const tmux = !!from.tmux && q.tmux === from.tmux && (!from.session || q.session === from.session);
       const session = !!from.session && q.session === from.session;
       if (tmux) q.tmux = to.tmux ?? null;
       if (session) q.session = to.session ?? null;

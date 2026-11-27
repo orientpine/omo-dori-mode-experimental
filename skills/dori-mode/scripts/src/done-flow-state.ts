@@ -14,6 +14,7 @@ import type { SignalIo } from "./done-signals.ts";
 import { reopenedText, windowMs } from "./done-flow-common.ts";
 import { appendRollover, outcomeLine, outcomeMissing, pendingStuck, readRollovers } from "./rollover.ts";
 import { Reports } from "./reports.ts";
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -32,6 +33,7 @@ export type FlowDeps = {
   readonly answeredCards?: () => readonly Question[];
   // immutable versions from answers.jsonl, including cards since reopened or resolved
   readonly answerHistory?: () => readonly Question[];
+  readonly retargetCards?: (from: string, to: string, session: string) => { readonly moved: readonly string[]; readonly left: readonly Question[] }; // a revived lane's own-session cards follow its pane; the rest stay (cli: the card store)
   // asks the thread status queue for a status on a discord:<id> work thread; the queue keeps it working while a lane there
   // still works. Resolves with the queue's outcome (cli wires it when DORI_DISCORD_TOKEN is set)
   readonly requestThreadStatus?: (ref: string, status: "working" | "waiting") => Promise<string>;
@@ -112,8 +114,8 @@ const claimOutcome = (deps: FlowDeps, lane: Lane, at: string, given: ClaimOption
 // summary: what the owner's thread gets when the lane closes (dori claim-done --summary), kept with the claim; posted: the
 // lane's result already in its thread (opts.posted, else its own post there in the last RESULT_POST_MS), so the close posts
 // no summary; opts.postSummary: that post was not the result, post the summary anyway
-export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, summary?: string, opts: ClaimOptions = {}): Promise<string> => {
-  const at = iso(deps.clock);
+export const claimDone = (deps: FlowDeps, given: Lane, evidence: string, summary?: string, opts: ClaimOptions = {}): Promise<string> => withLaneLifecycle(deps, given.key, async () => {
+  const lane = (await deps.registry.read(given.key)) ?? given, at = iso(deps.clock); // the record now, under the lane's lock
   const posted = opts.postSummary || !hasThread(lane) ? undefined : (opts.posted ?? resultPost(lane, deps.clock.now())?.id);
   const claim = { at, evidence, emitted: false, ...(summary?.trim() ? { summary: summary.trim() } : {}), ...(posted ? { posted } : {}) };
   const outcome = claimOutcome(deps, lane, at, opts.rolloverOutcome);
@@ -133,19 +135,19 @@ export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, su
     await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
   }
   return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}${postedLine}${outcomeNote}`;
-};
+});
 
 // The lead often gives a lane new work right after it claimed done (the owner's feedback on its result). On 2026-10-31
 // Moodori's dori-promo claimed at 07:16:55Z, the lead typed two new instructions into it at 07:19 and 07:22 (both
 // SUBMITTED), the lane started on them, and the watch closed it at 07:22:29Z in the middle of that work: five minutes after
 // the claim without an objection. The claim is now taken back when the lead types into the lane (dori type) or the lane
 // runs a new turn after it sat idle: the lane is working again, without a timer, until it claims again.
-export const reopenClaim = async (deps: FlowDeps, lane: Lane, why: string): Promise<string> => {
-  const at = iso(deps.clock);
+export const reopenClaim = (deps: FlowDeps, given: Lane, why: string): Promise<string> => withLaneLifecycle(deps, given.key, async () => {
+  const lane = (await deps.registry.read(given.key)) ?? given, at = iso(deps.clock);
   if (lane.reportProtocol === "jsonl-v1") new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at, state: "running", text: `REOPENED: ${why}` });
   await deps.registry.write(withStatus(lane, "working", `REOPENED: ${why}`, at, { claim: undefined, idleSince: undefined, blocked: undefined, lastReplyAt: deps.clock.now() }));
   return `LANE_CLAIM_REOPENED ${lane.key} ${lane.pane ?? "-"} ${why}`;
-};
+});
 
 // Who closed a closed lane: the watch closes a claim it settled (verified-done just before closed), else dori close did.
 export const closerOf = (lane: Lane): string => {
@@ -191,8 +193,8 @@ export const typeIntoPane = async (deps: FlowDeps, pane: string, text: string): 
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
   const at = iso(deps.clock);
   if (lane.reportProtocol === "jsonl-v1") new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at, state: "running", text: `NOT_DONE: ${reasons.join("; ")}` });
-  await deps.registry.write(withStatus(lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }));
-  if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
+  const now = await withLaneLifecycle(deps, lane.key, async () => { const next = withStatus((await deps.registry.read(lane.key)) ?? lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }); await deps.registry.write(next); return next; });
+  if (now.pane) await sendVerified(deps.run, deps.clock, deps.config, now.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
 };
 
@@ -201,22 +203,22 @@ const pausedAt = (lane: Lane): string => lane.history?.findLast((h) => h.status 
 // Parks a lane that waits on the owner: freshness, LANE_BLOCKED and dead-pane alerts skip it until it is resumed, and the
 // omo goal of its session is paused first, read back, so it starts no turn on its own (goal.ts). A live session whose
 // goal pause is not read back leaves the lane as it was (GoalUnverifiedError, PAUSE_UNVERIFIED).
-export const pauseLane = async (deps: FlowDeps, lane: Lane, reason: string): Promise<string[]> => {
-  const from = statusOf(lane);
+export const pauseLane = (deps: FlowDeps, given: Lane, reason: string): Promise<string[]> => withLaneLifecycle(deps, given.key, async () => {
+  const lane = (await deps.registry.read(given.key)) ?? given, from = statusOf(lane); // the record now, under the lane's lock: a revive's new pane (#535)
   if (from !== "working" && from !== "not-done") throw new LaneStateError(`lane ${lane.key} is ${from}; only a working or not-done lane can be paused`);
   const goal = await goalLine(deps, lane, "pause");
   await deps.registry.write(withStatus(lane, "paused", `PAUSED: ${reason}`, iso(deps.clock), { pausedFrom: from, pausedGoal: goal?.changed || undefined, blocked: undefined, idleSince: undefined, waitingOn: undefined }));
   return [`LANE_PAUSED ${lane.key} (was ${from}) ${reason}`, ...(goal ? [goal.line] : [])];
-};
+});
 
 // The goal step of pause and resume, for a lane with a pane dori drives omo in (panes.ts omoPane; another herdr agent's pane is left as before): its GOAL_* line and
 // whether the goal was changed; undefined when there is nothing to do.
-const goalLine = async (deps: FlowDeps, lane: Lane, act: GoalAct): Promise<{ readonly line: string; readonly changed: boolean } | undefined> => {
+const goalLine = async (deps: FlowDeps, lane: Lane, act: GoalAct): Promise<{ readonly line: string; readonly changed: boolean; readonly dead?: true } | undefined> => {
   const pane = lane.pane;
   if (!pane || !omoPane(deps.config, pane)) return undefined;
   const head = act === "pause" ? "PAUSE_UNVERIFIED" : "RESUME_UNVERIFIED";
   const dead = await liveSession(deps, pane);
-  if (dead) return { line: `GOAL_SKIPPED ${lane.key} ${pane}: no live session (${dead}), nothing to ${act}`, changed: false };
+  if (dead) return { line: `GOAL_SKIPPED ${lane.key} ${pane}: no live session (${dead}), nothing to ${act}`, changed: false, dead: true };
   const r = await goalCommand(deps, pane, act);
   switch (r.outcome) {
     case "confirmed":
@@ -231,11 +233,11 @@ const goalLine = async (deps: FlowDeps, lane: Lane, act: GoalAct): Promise<{ rea
 };
 
 // Back to the status it had before the pause; the silence clock restarts now, so the first nudge comes a full interval later.
-export const resumeLane = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
-  if (statusOf(lane) !== "paused") throw new LaneStateError(`lane ${lane.key} is ${statusOf(lane)}, not paused`);
+export const resumeLane = (deps: FlowDeps, given: Lane): Promise<string[]> => withLaneLifecycle(deps, given.key, async () => {
+  const lane = (await deps.registry.read(given.key)) ?? given; if (statusOf(lane) !== "paused") throw new LaneStateError(`lane ${lane.key} is ${statusOf(lane)}, not paused`);
   const to = lane.pausedFrom ?? "working";
-  // only a goal this pause paused is resumed: one the agent or the owner paused stays paused
-  const goal = lane.pausedGoal ? await goalLine(deps, lane, "resume") : undefined;
+  // only a goal this pause paused is resumed; with no live session for it (a revive may open one, #535 review 17) the lane stays paused
+  const goal = lane.pausedGoal ? await goalLine(deps, lane, "resume") : undefined; if (goal?.dead) throw new GoalUnverifiedError(`RESUME_UNVERIFIED ${lane.key} ${lane.pane}: no live session; lane left paused`);
   const { pausedFrom: _, pausedGoal: __, ...rest } = lane;
   await deps.registry.write(withStatus(rest, to, "RESUMED", iso(deps.clock), { lastReplyAt: deps.clock.now() }));
   const out = [`LANE_RESUMED ${lane.key} ${to}`, ...(goal ? [goal.line] : [])];
@@ -245,4 +247,4 @@ export const resumeLane = async (deps: FlowDeps, lane: Lane): Promise<string[]> 
   }
   if (lane.claim && lane.claim.at >= pausedAt(lane)) out.push(`NOTE ${lane.key} claimed done while paused (${lane.claim.evidence}); close it with dori close ${lane.key}, or object with dori object-done`);
   return out;
-};
+});

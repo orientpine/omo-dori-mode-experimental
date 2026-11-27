@@ -16,6 +16,7 @@ import { sendVerified } from "./panes.ts";
 import { answeredBy } from "./send-dedupe.ts";
 import { iso } from "./run.ts";
 import { type Lane, statusOf } from "./registry.ts";
+import { provenRoute } from "./lane-lifecycle.ts";
 import { procTable } from "./session-id.ts";
 import type { Proc } from "./session-id.ts";
 
@@ -95,8 +96,21 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
   for (const row of rows) {
     // Inbox ts is written after QuestionStore.answer. Pick the last version at that instant, never today's live card.
     const version = row.qid ? history.filter((q) => q.id === row.qid && Date.parse(q.answeredAt ?? "") <= row.at).sort((a, b) => Date.parse(b.answeredAt ?? "") - Date.parse(a.answeredAt ?? ""))[0] : undefined;
-    const target = row.qid ? version?.tmux || cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
-    const session = sessionFor(sessions, target), key = session || target === lead.pane ? target : `${target}\0${row.at}`;
+    const asked = row.qid ? version?.tmux || cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
+    // a pane a lane was revived away from: asked through that lane's live pane only on the lead's rule (provenRoute), the
+    // card on the lane's session and that pane's live agent still on it (no /clear); any doubt leaves the answer waiting,
+    // which tells the lead (2026-11-27)
+    let forward: string | undefined, forwardSession: string | undefined;
+    if (row.qid && version?.session && asked !== lead.pane && !sessionFor(sessions, asked)) {
+      archived ??= await deps.registry.list();
+      const lane = archived.find((l) => statusOf(l) !== "closed" && l.session === version.session && provenRoute(deps.config.stateDir, l, asked));
+      const cwd = lane?.pane ? sessionFor(sessions, lane.pane)?.path : undefined;
+      const live = lane?.pane && cwd ? await sessionFile(deps.run, deps.config.sessionsDir, lane.pane, cwd, table, deps.config.stateDir) : undefined;
+      if (live?.path.endsWith(`_${lane?.session}.jsonl`)) [forward, forwardSession] = [lane?.pane, lane?.session];
+    }
+    const target = forward ?? asked;
+    // a forwarded row is cached apart: its check of the lane's session must not empty the pane's own transcript (review 12)
+    const session = sessionFor(sessions, target), key = forwardSession ? `${target}\0${forwardSession}` : session || target === lead.pane ? target : `${target}\0${row.at}`;
     if (!transcripts.has(key)) {
       const cwd = session?.path;
       let file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined;
@@ -110,7 +124,11 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
           if (path) file = { path };
         }
       }
-      transcripts.set(key, { text: file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "", ...(file ? { path: file.path } : {}) });
+      const text = file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "";
+      // a forwarded answer is read only in the lane's own session: the transcript picked (a newer same-title log after a
+      // /clear) must open with that session, else it is doubt and the answer waits (review 11 of #535)
+      const opens = (t: string): string | undefined => { try { return (JSON.parse(t.slice(0, t.indexOf("\n") >>> 0)) as { id?: string }).id; } catch { return undefined; } };
+      transcripts.set(key, { text: forwardSession && opens(text) !== forwardSession ? "" : text, ...(file ? { path: file.path } : {}) });
     }
     const current = transcripts.get(key), transcript = current?.text ?? "";
     if (row.qid && sawAnswer(transcript, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) continue; if (discordAnswered(transcript, row)) continue;

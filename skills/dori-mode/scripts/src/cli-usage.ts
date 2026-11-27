@@ -11,9 +11,9 @@ const USAGE_START = `dori <command> [options]
                                        session watcher, each started again when it exits, every line stamped and tagged in
                                        --log (default <stateDir>/serve.log); --install-task registers it with the Windows
                                        Task Scheduler to start at logon with no execution time limit
-  revive <herdr pane> [--text TEXT]    start the omo session recorded for a herdr pane whose agent is gone again in that
-                                       pane (omo --session-id), wait for its prompt and type TEXT; REVIVE_OK or REVIVE_FAIL;
-                                       a pane whose agent runs is left alone (REVIVE_ALREADY_RUNNING)
+  revive <lane key | pane> [--text T]  start the recorded omo session again (omo --session-id): in the pane whose agent is
+                                       gone, or for an open lane whose pane is gone in a new pane that the record then names;
+                                       wait for its prompt, type T; REVIVE_OK|REVIVE_FAIL; a live agent: REVIVE_ALREADY_RUNNING
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" --thread REF|new [--why-new "<reason>"] | --no-thread "<reason>" [--model M] [--cwd DIR] [--tag T ...] [--done-weak-ok]
          [--goal "owner words"] [--challenge-before STEP ...] [--use-gpu] [--ui] [--dry-run]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...]

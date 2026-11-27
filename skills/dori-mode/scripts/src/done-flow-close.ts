@@ -16,6 +16,7 @@ import { CostRecordBusy, laneSessionUsage, Supervision } from "./supervision.ts"
 import { Lessons, type LessonInput } from "./lessons.ts";
 import { isRepeat } from "./send-dedupe.ts";
 import { scratchLeft } from "./scratch.ts";
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 
 // note goes into the lane's record. A lane with a work thread closes only with a summary for the owner (summary, else the
 // claim's, else one a model writes from the lane's notes; close-summary.ts), posted there before the thread is marked done
@@ -131,29 +132,40 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   // the pane is all it holds); a lane of another herdr agent keeps the tab/pane close it had
   // upstream sisyphuslabs/dori-superagent#225: capture runtime processes before either close path can orphan them.
   // Keep the existing Omo/hc close path (including its close read-back) and the non-runtime aoe path.
-  const ref = sessionOf(lane);
-  if (ref) {
-    const rts = runtimesOf(deps.run, deps.config);
-    const procs = await laneProcesses(rts, deps.run, ref);
-    const legacyPane = lane.pane && omoPane(deps.config, lane.pane) ? lane.pane : undefined;
-    const closed = legacyPane ? await closeAoeSession(deps.run, legacyPane) : await closeSession(rts, ref);
-    cleanup.push(closed);
-    if (legacyPane ? isClosedLine(closed) : !closed.endsWith("not closed")) {
-      cleanup.push(await stopLeftovers(deps.run, procs));
+  const closeRuntime = async (l: Lane): Promise<void> => {
+    const ref = sessionOf(l);
+    if (ref) {
+      const rts = runtimesOf(deps.run, deps.config);
+      const procs = await laneProcesses(rts, deps.run, ref);
+      const legacyPane = l.pane && omoPane(deps.config, l.pane) ? l.pane : undefined;
+      const closed = legacyPane ? await closeAoeSession(deps.run, legacyPane) : await closeSession(rts, ref);
+      cleanup.push(closed);
+      if (legacyPane ? isClosedLine(closed) : !closed.endsWith("not closed")) {
+        cleanup.push(await stopLeftovers(deps.run, procs));
+      }
+    } else if (l.pane && omoPane(deps.config, l.pane)) {
+      cleanup.push(await closeAoeSession(deps.run, l.pane));
     }
-  } else if (lane.pane && omoPane(deps.config, lane.pane)) {
-    cleanup.push(await closeAoeSession(deps.run, lane.pane));
-  }
+  };
   const root = lane.cwd ?? deps.config.defaultCwd;
+  const at = iso(deps.clock);
+  const receipt = { checks, note, cleanup };
+  // the runtime close and the record take the lane's lifecycle lock together: a revive runs before them (its new pane is
+  // read here and closed too) or after them (it finds the lane closed); a revive may have given the lane a new pane since
+  // this close read it, so the record is read again here and that pane closed and recorded (reviews 2 and 16 of #535)
+  await withLaneLifecycle(deps, lane.key, async () => {
+  await closeRuntime(lane);
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) {
     const r = await deps.run(["git", "-C", root, "worktree", "remove", wt]);
     cleanup.push(r.code === 0 ? `worktree ${wt} removed` : `worktree ${wt} kept: ${r.err.slice(0, 120)}`);
   }
   const scratch = scratchLeft(lane.key);
   if (scratch) warnings.push(scratch);
-  const at = iso(deps.clock);
-  const receipt = { checks, note, cleanup };
-  await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
+    const fresh = await deps.registry.read(lane.key);
+    const moved = fresh?.pane && fresh.pane !== lane.pane ? fresh : undefined;
+    if (moved) await closeRuntime(moved);
+    await deps.registry.write(withStatus(moved ? { ...lane, pane: moved.pane, tab: moved.tab } : lane, "closed", note, at, { closedAt: at, receipt }));
+  });
   // dori close --lesson (dori-superagent #65): kept only after the close is recorded, and a failure to keep it is a warning
   // that never undoes or blocks the close. Each lesson is kept on its own: one that cannot be kept costs only itself.
   for (const lesson of lessons) {

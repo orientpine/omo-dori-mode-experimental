@@ -1,6 +1,7 @@
 // dori handover: move the lead to a new agent session without losing work, monitors or notifications.
 // Order: write the note -> open the new session -> point leadPane, lanes and cards at it -> check that its monitors run and
 // that a [REPORT] and an inbox event reach it -> only then close the old session. A failed check moves everything back.
+import { noteLaneHistory } from "./lane-lifecycle.ts";
 import { appendInboxRow } from "./inbox-append.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -514,8 +515,7 @@ export const pointLead = async (deps: HandoverDeps, from: Target, to: Target, st
       brief = text.includes(from.pane) ? "rewritten" : "unchanged";
       if (brief === "rewritten") writeFileSync(lane.brief, text.split(from.pane).join(to.pane));
     }
-    const fresh = (await deps.registry.read(lane.key)) ?? lane;
-    await deps.registry.write({ ...fresh, history: [...(fresh.history ?? []), { at, status: statusOf(fresh), note: `lead moved ${from.pane} -> ${to.pane} (dori handover)` }] });
+    await noteLaneHistory(deps, lane, (fresh) => ({ at, status: statusOf(fresh), note: `lead moved ${from.pane} -> ${to.pane} (dori handover)` }));
     const told = lane.pane ? await sendVerified(deps.run, deps.clock, deps.config, lane.pane, leadMovedText(to.pane)) : false;
     // a lane that did not take it is retried by freshness (lane-tells.ts) instead of being left told=no
     if (lane.pane) noteLaneTell(deps.config.stateDir, lane.key, lane.pane, to.pane, at, told);

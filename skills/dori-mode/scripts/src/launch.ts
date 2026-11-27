@@ -1,3 +1,4 @@
+import { writeOnFresh } from "./lane-lifecycle.ts";
 import { resolve } from "node:path";
 import { rmSync } from "node:fs";
 import { laneEnv } from "./aoe.ts";
@@ -81,7 +82,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   let registered = false;
   const beforeStart = async ({ pane, tab }: { readonly pane: string; readonly tab?: string }): Promise<void> => {
     const pending: Lane = { ...draft, reportProtocol: "jsonl-v1", pane, ...(tab ? { tab } : {}) };
-    await deps.registry.write(pending);
+    await deps.registry.write(pending, { relocate: true });
     registered = true;
     new Reports(deps.config.stateDir).append({ type: "activity", key: pending.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${pane}` });
   };
@@ -97,7 +98,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   });
   const arm = assignArm(deps.config, input.key, draft.tags ?? [], deps.clock.now());
   const lane: Lane = { ...draft, model, reportProtocol: "jsonl-v1", pane: opened.pane, ...(opened.tab ? { tab: opened.tab } : {}), ...(opened.session ? { session: opened.session, sessionVia: "launch" } : {}), ...(arm ? { trialArm: arm } : {}) };
-  await deps.registry.write(lane);
+  // merged onto the record as it is now, under the lane's lock: what a sweep wrote while the agent started is kept
+  await writeOnFresh(deps, lane);
   if (!registered) new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${lane.pane ?? "unknown"}` });
   // registered first, so the queue counts this lane as working in the thread; a thread --thread new just opened is 🔄 already
   if (input.thread !== NEW_THREAD) {

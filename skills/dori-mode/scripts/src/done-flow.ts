@@ -15,6 +15,7 @@ import { type FlowDeps, objectDone, reopenClaim } from "./done-flow-state.ts";
 import { reopenedText, signalIo, windowMs } from "./done-flow-common.ts";
 import { unpushedWork } from "./done-flow-worktrees.ts";
 import { closeLane } from "./done-flow-close.ts";
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 
 export * from "./done-flow-state.ts";
 export * from "./done-flow-worktrees.ts";
@@ -25,11 +26,16 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   if (blocked.length) return [await objectDone(deps, lane, blocked)];
   const failing = (await checkDone(lane.done, deps.run, signalIo(deps, lane))).filter((c) => !c.ok).map((c) => `${c.signal} -> ${c.detail}`);
   if (failing.length) return [await objectDone(deps, lane, failing)];
-  // the checks take seconds: a dori type that took the claim back meanwhile wins
-  const fresh = await deps.registry.read(lane.key);
-  if (fresh && statusOf(fresh) !== "done-claimed") return [];
-  const verified = withStatus(lane, "verified-done", "Done signals read back live", iso(deps.clock));
-  await deps.registry.write(verified);
+  // the checks take seconds: a dori type that took the claim back meanwhile wins, and a revive that moved the pane meanwhile
+  // is kept (the record is read again under the lane's lifecycle lock, review 9 of #535)
+  const verified = await withLaneLifecycle(deps, lane.key, async () => {
+    const fresh = await deps.registry.read(lane.key);
+    if (fresh && statusOf(fresh) !== "done-claimed") return undefined;
+    const next = withStatus(fresh ?? lane, "verified-done", "Done signals read back live", iso(deps.clock));
+    await deps.registry.write(next);
+    return next;
+  });
+  if (!verified) return [];
   const note = `Done: ${evidence}`;
   // the claim's summary is read by closeLane itself; an explicit summary there would post even when the result is in the thread
   const result = await closeLane(deps, verified, note);
@@ -60,7 +66,7 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
   for (const listed of await deps.registry.list()) {
     if (statusOf(listed) === "paused" && listed.claim && !listed.claim.emitted) {
       out.push(`LANE_DONE_CLAIMED_PAUSED ${listed.key} ${listed.pane ?? "-"} ${listed.claim.evidence}`);
-      await deps.registry.patch(listed.key, { claim: { ...listed.claim, emitted: true } });
+      await withLaneLifecycle(deps, listed.key, async () => { const fresh = await deps.registry.read(listed.key); if (fresh?.claim) await deps.registry.write({ ...fresh, claim: { ...fresh.claim, emitted: true } }); });
       continue;
     }
     if (statusOf(listed) !== "done-claimed" || !listed.claim) continue;
@@ -68,8 +74,10 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
     const claim = listed.claim;
     if (!claim.emitted) {
       out.push(`LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${claim.evidence}`);
-      lane = { ...lane, claim: { ...claim, emitted: true } };
-      await deps.registry.write(lane);
+      // marked under the lane's lock on the record as it is then: a close, a reopen or a revive since the listing is kept
+      const marked = await withLaneLifecycle(deps, lane.key, async () => { const fresh = await deps.registry.read(lane.key); if (!fresh || statusOf(fresh) !== "done-claimed" || !fresh.claim) return undefined; const next = { ...fresh, claim: { ...fresh.claim, emitted: true } }; await deps.registry.write(next); return next; });
+      if (!marked) continue;
+      lane = marked;
     }
     if (lane.pane && omoPane(deps.config, lane.pane)) {
       const reopened = await claimTurn(deps, lane, lane.claim ?? claim);
