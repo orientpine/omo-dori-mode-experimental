@@ -62,6 +62,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string,
     const handover = (): string | undefined =>
       existsSync(pendingFile(config.stateDir, lane.key)) ? `an interrupted handover of the lane is left in ${pendingFile(config.stateDir, lane.key)} for its repair` : frozenPanes(config.stateDir).includes(gone) || handoverRunning(config.stateDir, "lane", lane.key, pidAlive) ? `a handover of the lane is running or holds ${gone}` : undefined;
     const now = await deps.registry.read(lane.key);
+    const pausedBefore = !!now && statusOf(now) === "paused";
     const moving = handover();
     if (moving) return fail(`${moving}; it moves the lane itself, so nothing was opened`);
     const off = moved(now);
@@ -120,6 +121,8 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string,
     for (let i = 0; i < 90; i++) {
       const latest = await deps.registry.read(now.key);
       if (!latest || statusOf(latest) === "closed") return fail(`the lane was closed while ${pane} started (the close closes ${pane})`);
+      // a pause that landed after the new pane was written found the gone pane and paused no goal: the revive gives way
+      if (!pausedBefore && statusOf(latest) === "paused") return fail(`the lane was paused while ${pane} started; ${await closeHerdrSession(deps.run, pane)}`);
       if (latest.pane !== pane) return fail(`the lane moved to ${latest.pane ?? "no pane"} while ${pane} started; ${await closeHerdrSession(deps.run, pane)}`);
       // ready once an agent runs there and shows omo's own input box (an echoed command line has no box)
       const screen = (await paneLife(deps.run, pane)).live ? await captureTmux(deps.run, pane) : "";

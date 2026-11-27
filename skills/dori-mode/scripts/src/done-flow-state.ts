@@ -203,13 +203,13 @@ const pausedAt = (lane: Lane): string => lane.history?.findLast((h) => h.status 
 // Parks a lane that waits on the owner: freshness, LANE_BLOCKED and dead-pane alerts skip it until it is resumed, and the
 // omo goal of its session is paused first, read back, so it starts no turn on its own (goal.ts). A live session whose
 // goal pause is not read back leaves the lane as it was (GoalUnverifiedError, PAUSE_UNVERIFIED).
-export const pauseLane = async (deps: FlowDeps, lane: Lane, reason: string): Promise<string[]> => {
-  const from = statusOf(lane);
+export const pauseLane = (deps: FlowDeps, given: Lane, reason: string): Promise<string[]> => withLaneLifecycle(deps, given.key, async () => {
+  const lane = (await deps.registry.read(given.key)) ?? given, from = statusOf(lane); // the record now, under the lane's lock: a revive's new pane (#535)
   if (from !== "working" && from !== "not-done") throw new LaneStateError(`lane ${lane.key} is ${from}; only a working or not-done lane can be paused`);
   const goal = await goalLine(deps, lane, "pause");
   await deps.registry.write(withStatus(lane, "paused", `PAUSED: ${reason}`, iso(deps.clock), { pausedFrom: from, pausedGoal: goal?.changed || undefined, blocked: undefined, idleSince: undefined, waitingOn: undefined }));
   return [`LANE_PAUSED ${lane.key} (was ${from}) ${reason}`, ...(goal ? [goal.line] : [])];
-};
+});
 
 // The goal step of pause and resume, for a lane with a pane dori drives omo in (panes.ts omoPane; another herdr agent's pane is left as before): its GOAL_* line and
 // whether the goal was changed; undefined when there is nothing to do.
