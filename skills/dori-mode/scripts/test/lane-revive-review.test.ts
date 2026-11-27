@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { join } from "node:path";
 
 import { closeLane, watchTick } from "../src/done-flow.ts";
+import { lockWaits } from "../src/lane-lifecycle.ts";
 import { reviveTarget } from "../src/lane-revive.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { LaneDied } from "../src/registry.ts";
@@ -13,6 +15,7 @@ import { laneOf, reviveRig, SESSION, T0 } from "./lane-revive-rig.ts";
 // before, and must take the lane's open question cards along.
 let state: ReturnType<typeof withState>;
 const saved = process.env["DORI_RUNTIME"];
+const outside = AsyncLocalStorage.snapshot();
 beforeEach(() => {
   state = withState();
   process.env["DORI_RUNTIME"] = "hc";
@@ -110,10 +113,23 @@ test("the lane's open cards and the cards answered while its pane was gone follo
 test("a close that read the lane before a revive published its new pane closes that pane too and records the lane closed there", async () => {
   // Given: a close took the lane as it was (pane hc:t27); it reaches its final write while the revive starts the agent
   const snapshot = laneOf(state.dir, { thread: "none", done: "merged acme/app#1" });
+  // the close runs outside the revive's async context, as another process would (inside it, it would hold the revive's
+  // lock and run alongside it), and the revive goes on once the close waits for the lane's lock: no clock
   let closing: Promise<{ readonly closed: boolean }> | undefined;
   const { fake, deps } = reviveRig(state.dir, {
-    before: (argv) => {
-      if (argv[0] === "hc" && argv[2] === "send" && !closing) closing = closeLane(deps(T0), snapshot, "done");
+    before: async (argv) => {
+      if (argv[0] !== "hc" || argv[2] !== "send" || closing) return;
+      const waited = new Promise<void>((resolve) => {
+        const on = (e: Event) => {
+          if ((e as CustomEvent).detail !== "h3-charsheet") return;
+          lockWaits.removeEventListener("wait", on);
+          resolve();
+        };
+        lockWaits.addEventListener("wait", on);
+      });
+      const close = outside(() => closeLane(deps(T0), snapshot, "done"));
+      closing = close;
+      await Promise.race([waited, close.then(() => undefined, () => undefined)]);
     },
   });
   const d = deps(T0);
