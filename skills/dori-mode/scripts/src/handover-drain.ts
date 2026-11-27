@@ -5,7 +5,7 @@ import { QuestionStore } from "./messenger/discord-cards.ts";
 import { descendants } from "./process-tree.ts";
 import { setQuiet } from "./rollover.ts";
 import type { Clock, Runner } from "./run.ts";
-import type { Proc } from "./session-id.ts";
+import { readProcTable, winArgv } from "./session-id.ts";
 import { turnRunning } from "./submit.ts";
 
 // The old lead answers the owner until a lead handover commits (ZzangDori 2026-11-26: two checks of ~16 min each left him
@@ -21,19 +21,24 @@ import { turnRunning } from "./submit.ts";
 export const SETTLE_MS = 60_000;
 const POLL_MS = 2_000;
 
-type SettleDeps = { readonly run: Runner; readonly clock: Clock; readonly cardDir: string; readonly procs: () => Promise<readonly Proc[]> };
-const DORI = /(?:^|[\s/\\])(?:dori|cli\.ts)\s+(send|thread|ask|reopen|resolve)(?=\s|$)/;
+type SettleDeps = { readonly run: Runner; readonly clock: Clock; readonly cardDir: string };
+const OWNER_FACING = new Set(["send", "thread", "ask", "reopen", "resolve"]);
 
-// the first owner-facing dori command running under the pane's shell, but not this command or what runs it
+// the first owner-facing dori command running under the pane's shell, but not this command or what runs it; a command
+// line is split as Windows splits it (quoted paths with spaces), and a ps that failed or listed nothing is no evidence
 const doriUnder = async (deps: SettleDeps, lead: string): Promise<string | undefined> => {
   const shell = await tmuxPanePid(deps.run, lead).catch(() => 0);
-  const table = shell ? await deps.procs().catch(() => undefined) : undefined;
-  if (!table) return "its processes could not be listed";
-  const parent = new Map(table.map((p) => [p.pid, p.ppid]));
+  const listed = shell ? await readProcTable(deps.run).catch(() => undefined) : undefined;
+  if (!listed || listed.error || !listed.rows.length) return "its processes could not be listed";
+  const parent = new Map(listed.rows.map((p) => [p.pid, p.ppid]));
   const mine = new Set<number>();
   for (let p: number | undefined = process.pid; p && !mine.has(p); p = parent.get(p)) mine.add(p);
-  const hit = descendants(table, shell).find((p) => !mine.has(p.pid) && DORI.test(p.cmd));
-  return hit ? `a dori ${DORI.exec(hit.cmd)?.[1]} of it was still running, pid ${hit.pid}` : undefined;
+  for (const p of descendants(listed.rows, shell)) {
+    const words = winArgv(p.cmd);
+    const at = words.findIndex((w, i) => /^(?:dori(?:\.exe|\.cmd|\.ps1)?|cli\.ts)$/i.test(w.split(/[\\/]/).at(-1) ?? "") && OWNER_FACING.has(words[i + 1] ?? ""));
+    if (at >= 0 && !mine.has(p.pid)) return `a dori ${words[at + 1]} of it was still running, pid ${p.pid}`;
+  }
+  return undefined;
 };
 
 export const settleOldLead = async <C extends { readonly reasons: readonly string[]; readonly session: string }>(deps: SettleDeps, checked: C, stateDir: string, lead: string, until: number, why: string, recheck: (session: string) => readonly string[]): Promise<C & { readonly release?: () => void }> => {

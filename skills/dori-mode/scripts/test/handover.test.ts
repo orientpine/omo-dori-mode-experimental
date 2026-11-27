@@ -155,7 +155,7 @@ const leadPaneInConfig = () => (JSON.parse(readFileSync(join(state.dir, "config.
 
 beforeEach(() => {
   state = withState();
-  w = newWorld();
+  w = { ...newWorld(), ps: TREE.map((p) => `${p.pid} ${p.ppid} ${p.cmd}`).join("\n") };
   sim = { arm: [{ description: "inbox", command: INBOX_CMD, pid: 201 }, { description: "lanes", command: LANES_CMD.replace("~/", "/home/test/"), pid: 202 }, { description: "digest due", command: "until false; do sleep 60; done", pid: 203 }], ackPane: NEW, ackReport: true, ackInbox: true, guardFor: new Set([OLD, NEW]), restate: "full", supplement: "fix", handled: new Set(), todos: ["watch the E7 run"] };
   printed = [];
   restarted = [];
@@ -447,7 +447,7 @@ test("an old lead that cannot be frozen (no agent under its pane) is closed as b
   // Given a fresh world with the agent, kept open
   state.done();
   state = withState();
-  w = newWorld();
+  w = { ...newWorld(), ps: TREE.map((p) => `${p.pid} ${p.ppid} ${p.cmd}`).join("\n") };
   printed = [];
   sim.handled = new Set();
   const kept = await setup();

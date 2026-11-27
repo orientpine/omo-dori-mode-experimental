@@ -20,7 +20,8 @@ afterEach(() => {
 // screens: what each read of the old lead's pane shows, the last one from then on; atSleep runs before each poll's sleep;
 // table: the process table (its shell is pid 10); recheck: the new session's second monitor and todo check
 const AGENT = [{ pid: 10, ppid: 1, cmd: "bash" }, { pid: 11, ppid: 10, cmd: "bun /home/u/.bun/install/global/node_modules/omo-ai/dist/omo.js" }];
-const world = (screens: readonly (string | Error)[], atSleep: (n: number) => void = () => {}, opts: { table?: () => readonly Proc[]; recheck?: (session: string) => readonly string[] } = {}) => {
+// table: the rows ps prints, or the error text of a ps that failed
+const world = (screens: readonly (string | Error)[], atSleep: (n: number) => void = () => {}, opts: { table?: () => readonly Proc[] | string; recheck?: (session: string) => readonly string[] } = {}) => {
   let t = 1_000_000;
   let reads = 0;
   let sleeps = 0;
@@ -29,6 +30,10 @@ const world = (screens: readonly (string | Error)[], atSleep: (n: number) => voi
   const deps = {
     run: async (argv: readonly string[]) => {
       if (argv.includes("#{pane_pid}")) return { code: 0, out: "10", err: "" };
+      if (argv[0] === "ps") {
+        const rows = opts.table?.() ?? AGENT;
+        return typeof rows === "string" ? { code: 1, out: "", err: rows } : { code: 0, out: rows.map((r) => `${r.pid} ${r.ppid} ${r.pid} S ${r.cmd}`).join("\n"), err: "" };
+      }
       if (!argv.includes("capture-pane")) return { code: 1, out: "", err: "" };
       const s = screens[Math.min(reads++, screens.length - 1)] ?? IDLE;
       if (s instanceof Error) throw s;
@@ -42,7 +47,6 @@ const world = (screens: readonly (string | Error)[], atSleep: (n: number) => voi
       },
     },
     cardDir: join(state, "discord"),
-    procs: async () => [...(opts.table?.() ?? AGENT)],
   };
   const settle = (checked = PASSED) => settleOldLead(deps, checked, state, "lead", t + 600_000, "the handover of the lead to new is running", opts.recheck ?? (() => []));
   return { deps, state, settle, now: () => t, sleeps: () => sleeps };
@@ -154,7 +158,7 @@ test("an answered card with no claim file is taken too, so a dori reopen started
   expect([r.reasons, reopen]).toEqual([[], null]);
 });
 
-test("a dori send, thread or ask still running under the old lead (a background job past an idle screen) keeps it from rest; past the time the move rolls back", async () => {
+test("a dori send, thread or ask still running under the old lead (a background job past an idle screen, a quoted Windows command line too) keeps it from rest, and so does a ps that failed; past the time the move rolls back", async () => {
   // Given
   const send = { pid: 12, ppid: 11, cmd: "/home/u/.bun/bin/bun /home/u/.dori/src/skills/dori-mode/scripts/src/cli.ts send discord --to 1 --text hi" };
   let running = true;
@@ -162,14 +166,16 @@ test("a dori send, thread or ask still running under the old lead (a background 
     if (n === 2) running = false;
   }, { table: () => (running ? [...AGENT, send] : AGENT) });
   const stays = world([IDLE], () => {}, { table: () => [...AGENT, { pid: 13, ppid: 11, cmd: "bash /home/u/.local/bin/dori thread reply 9 --text hi" }] });
-  const unlisted = world([IDLE], () => {}, { table: () => { throw new Error("ps failed"); } });
+  const unlisted = world([IDLE], () => {}, { table: () => "ps: cannot read /proc" });
+  const windows = world([IDLE], () => {}, { table: () => [...AGENT, { pid: 14, ppid: 11, cmd: '"C:\\Program Files\\bun\\bun.exe" "C:\\work dir\\scripts\\src\\cli.ts" send discord --to 1' }] });
   // When
-  const results = [await ends.settle(), await stays.settle(), await unlisted.settle()];
+  const results = [await ends.settle(), await stays.settle(), await unlisted.settle(), await windows.settle()];
   // Then
   expect(results.map((r) => r.reasons)).toEqual([
     [],
     [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (a dori thread of it was still running, pid 13); nothing was frozen or closed`],
     [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (its processes could not be listed); nothing was frozen or closed`],
+    [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (a dori send of it was still running, pid 14); nothing was frozen or closed`],
   ]);
   expect(ends.sleeps()).toBe(2);
 });
