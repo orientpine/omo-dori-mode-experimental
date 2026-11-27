@@ -1,20 +1,16 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { CheckpointError, takeLock } from "../src/checkpoint-lock.ts";
 import { closeLane } from "../src/done-flow.ts";
 import { reviveTarget } from "../src/lane-revive.ts";
-import type { Question } from "../src/messenger/discord-cards.ts";
-import { answerLine, unansweredRows } from "../src/missed-answers.ts";
 import { Registry } from "../src/registry.ts";
-import { sessionDirFor } from "../src/session-id.ts";
 import { withState } from "./fakes.ts";
-import { laneOf, reviveRig, SESSION, T0 } from "./lane-revive-rig.ts";
+import { laneOf, reviveRig, T0 } from "./lane-revive-rig.ts";
 
 // Review 3 of #535: a failed start's rollback runs under the lane's lifecycle lock, a close takes a revived pane down the
-// way it takes its own (processes that outlive it stopped), and an answer given while the pane was gone counts as seen
-// once the revived session read it.
+// way it takes its own (processes that outlive it stopped). Review 4: a running handover moves the lane itself.
 let state: ReturnType<typeof withState>;
 const saved = process.env["DORI_RUNTIME"];
 beforeEach(() => {
@@ -96,20 +92,25 @@ test("a close takes a revived pane down as it takes its own: the lane process th
   expect(w.calls.some((c) => c[0] === "kill" && c.includes("4300"))).toBe(true);
 });
 
-test("an answer given while the pane was gone counts as seen once the revived session (same session, new pane) read it", async () => {
-  // Given: the card was asked from hc:t27; the lane now runs that session in hc:t1, whose log holds the answer
-  const { deps } = reviveRig(state.dir);
-  const answeredAt = new Date(T0).toISOString();
-  const version: Question = { id: "Q1", text: "keep the GPU off?", options: ["yes", "no"], channel: "1", thread: null, session: SESSION, tmux: "hc:t27", created: answeredAt, status: "answered", answer: "yes", answerKind: "button", answeredAt };
-  const d = { ...deps(T0 + 600_000), config: { ...deps(T0).config, sessionsDir: join(state.dir, "sessions") }, answerHistory: () => [version] };
-  await d.registry.write(laneOf(state.dir, { pane: "hc:t1" }));
-  const dir = sessionDirFor(d.config.sessionsDir, state.dir);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `2026-11-21T15-48-52-096Z_${SESSION}.jsonl`), [{ type: "session", id: SESSION, cwd: state.dir }, { type: "message", message: { role: "user", content: answerLine(version) } }].map((e) => JSON.stringify(e)).join("\n"));
-  const lead = join(state.dir, "lead.jsonl");
-  writeFileSync(lead, "");
-  // When
-  const waiting = await unansweredRows({ rows: [{ id: "a1", qid: "Q1", tmux: "hc:t27", at: T0 }], cards: [], lead: { pane: "lead:p1", path: lead, title: "" }, sessions: [], table: [], deps: d });
-  // Then: not waiting any more, so no false owner-waiting notice
-  expect(waiting).toEqual([]);
+test("a revive refuses while a handover of the lane runs, and one starting while the new pane opens leaves the record as it was", async () => {
+  // Given: a handover holds the lane (its lock names a live process)
+  const lock = join(state.dir, "handover", "lanes", "h3-charsheet.lock");
+  const hold = () => {
+    mkdirSync(join(state.dir, "handover", "lanes"), { recursive: true });
+    writeFileSync(lock, JSON.stringify({ pid: process.ppid }));
+  };
+  hold();
+  const first = reviveRig(state.dir);
+  const d = first.deps(T0);
+  await d.registry.write(laneOf(state.dir));
+  // When / Then: nothing opened
+  expect(await reviveTarget(d, "h3-charsheet", "")).toBe("REVIVE_FAIL h3-charsheet: a handover of the lane is running or holds hc:t27; it moves the lane itself, so nothing was opened");
+  expect(first.fake.calls.some((c) => c[0] === "run")).toBe(false);
+  // Given: the handover starts only once the new terminal is being made
+  rmSync(lock);
+  const second = reviveRig(state.dir, { before: (argv) => void (argv[0] === "hc" && argv[2] === "run" && hold()) });
+  // When / Then: the new pane is not written and is closed unused
+  expect(await reviveTarget(second.deps(T0), "h3-charsheet", "")).toContain("a handover of the lane is running or holds hc:t27");
+  expect((await d.registry.read("h3-charsheet"))?.pane).toBe("hc:t27");
+  expect(second.fake.sent.length).toBe(0);
 });
