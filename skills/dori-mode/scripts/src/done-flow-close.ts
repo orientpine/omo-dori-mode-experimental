@@ -16,6 +16,7 @@ import { CostRecordBusy, laneSessionUsage, Supervision } from "./supervision.ts"
 import { Lessons, type LessonInput } from "./lessons.ts";
 import { isRepeat } from "./send-dedupe.ts";
 import { scratchLeft } from "./scratch.ts";
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 
 // note goes into the lane's record. A lane with a work thread closes only with a summary for the owner (summary, else the
 // claim's, else one a model writes from the lane's notes; close-summary.ts), posted there before the thread is marked done
@@ -153,7 +154,14 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   if (scratch) warnings.push(scratch);
   const at = iso(deps.clock);
   const receipt = { checks, note, cleanup };
-  await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
+  // a revive may have given the lane a new pane since this close read it (lane-revive.ts): read again under the lane's
+  // lifecycle lock, close that pane too and record it, so no revived agent outlives its closed lane (review 2 of #535)
+  await withLaneLifecycle(deps, lane.key, async () => {
+    const fresh = await deps.registry.read(lane.key);
+    const moved = fresh?.pane && fresh.pane !== lane.pane ? sessionOf(fresh) : undefined;
+    if (moved && fresh) cleanup.push(await closeSession(runtimesOf(deps.run, deps.config), moved));
+    await deps.registry.write(withStatus(moved && fresh ? { ...lane, pane: fresh.pane, tab: fresh.tab } : lane, "closed", note, at, { closedAt: at, receipt }));
+  });
   // dori close --lesson (dori-superagent #65): kept only after the close is recorded, and a failure to keep it is a warning
   // that never undoes or blocks the close. Each lesson is kept on its own: one that cannot be kept costs only itself.
   for (const lesson of lessons) {

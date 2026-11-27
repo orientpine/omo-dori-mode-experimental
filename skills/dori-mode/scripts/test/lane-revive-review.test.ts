@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { watchTick } from "../src/done-flow.ts";
+import { closeLane, watchTick } from "../src/done-flow.ts";
 import { reviveTarget } from "../src/lane-revive.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
 import type { LaneDied } from "../src/registry.ts";
@@ -92,12 +92,37 @@ test("a lane marked dead before (its pane dead, then gone, or a mark from before
   expect(fake.calls.filter((c) => c[0] === "run").length).toBe(runs);
 });
 
-test("the lane's open question cards follow it to the new pane, so an answer typed later reaches the revived agent", async () => {
+test("the lane's open cards and the cards answered while its pane was gone follow it, so the watch delivers the answer to the revived agent", async () => {
+  // Given: one card still open and one the owner answered during the outage, both asked from hc:t27
   const store = new QuestionStore(join(state.dir, "cards"));
-  const card = store.create("which pose set?", ["a", "b"], "1", { tmux: "hc:t27", session: SESSION }, new Date(T0).toISOString());
-  const { deps } = reviveRig(state.dir, { patch: { retargetCards: (from, to) => store.retarget({ tmux: from }, { tmux: to }) } });
+  const open = store.create("which pose set?", ["a", "b"], "1", { tmux: "hc:t27", session: SESSION }, new Date(T0).toISOString());
+  const answered = store.create("keep the GPU off?", ["yes", "no"], "1", { tmux: "hc:t27", session: SESSION }, new Date(T0).toISOString());
+  store.answer(answered.id, "yes", "button", new Date(T0).toISOString());
+  const { deps } = reviveRig(state.dir, { patch: { retargetCards: (from, to) => store.retarget({ tmux: from }, { tmux: to }, true) } });
   const d = deps(T0);
   await d.registry.write(laneOf(state.dir));
+  // When
   expect(await reviveTarget(d, "h3-charsheet", "")).toStartWith("REVIVE_OK");
-  expect(store.get(card.id)?.tmux).toBe("hc:t1");
+  // Then: both name the new pane, where missedAnswersTick reads the session and types an answer it never saw
+  expect([store.get(open.id)?.tmux, store.get(answered.id)?.tmux, store.get(answered.id)?.status]).toEqual(["hc:t1", "hc:t1", "answered"]);
+});
+
+test("a close that read the lane before a revive published its new pane closes that pane too and records the lane closed there", async () => {
+  // Given: a close took the lane as it was (pane hc:t27); it reaches its final write while the revive starts the agent
+  const snapshot = laneOf(state.dir, { thread: "none", done: "merged acme/app#1" });
+  let closing: Promise<{ readonly closed: boolean }> | undefined;
+  const { fake, deps } = reviveRig(state.dir, {
+    before: (argv) => {
+      if (argv[0] === "hc" && argv[2] === "send" && !closing) closing = closeLane(deps(T0), snapshot, "done");
+    },
+  });
+  const d = deps(T0);
+  await d.registry.write(snapshot);
+  // When
+  await reviveTarget(d, "h3-charsheet", "");
+  // Then: the close went through and took the revived pane with it; no terminal of the lane is left running
+  expect((await closing)?.closed).toBe(true);
+  const after = await d.registry.read("h3-charsheet");
+  expect([after?.closedAt !== undefined, after?.pane]).toEqual([true, "hc:t1"]);
+  expect([...fake.terminals.values()].filter((t) => t.state === "live")).toEqual([]);
 });

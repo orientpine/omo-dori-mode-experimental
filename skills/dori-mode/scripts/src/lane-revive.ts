@@ -10,6 +10,7 @@ import { HerdrStartupError, isHerdrPane, openHerdrSession } from "./herdr.ts";
 import { laneHomeEnv } from "./home-env.ts";
 import { splitModel } from "./lane-handover.ts";
 import { sendVerified } from "./panes.ts";
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 import { LANE_KEY, type Lane, statusOf } from "./registry.ts";
 import { execOf, type Runner } from "./run.ts";
 import { HerdrCli, reasonOf } from "./runtime/herdr/exec.ts";
@@ -67,26 +68,30 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
       argv,
       env,
       ...(config.laneWorkspace ? { workspace: config.laneWorkspace } : {}),
-      beforeStart: async ({ pane, tab }) => {
-        const later = moved(await deps.registry.read(now.key));
-        if (later) throw new Error(`the lane is ${later} now, so ${pane} is not used`);
-        await deps.registry.patch(now.key, { pane, tab });
-        published = pane;
-        deps.retargetCards?.(gone, pane);
-      },
+      beforeStart: ({ pane, tab }) =>
+        withLaneLifecycle(deps, now.key, async () => {
+          const later = moved(await deps.registry.read(now.key));
+          if (later) throw new Error(`the lane is ${later} now, so ${pane} is not used`);
+          await deps.registry.patch(now.key, { pane, tab });
+          published = pane;
+          deps.retargetCards?.(gone, pane);
+        }),
     }).catch((e: unknown) => (e instanceof Error ? e : new Error(String(e))));
     if (opened instanceof Error) {
       const why = opened.message.slice(0, 160);
       if (!published) return fail(`no new pane was started: ${why}`);
       const closed = (opened instanceof HcStartupError || opened instanceof HerdrStartupError) && opened.rollback;
       if (!closed) return fail(`the agent's start in ${published} failed and that pane is not confirmed closed (${why}); the record names ${published}, so the conversation is not opened twice`);
-      if ((await deps.registry.read(now.key))?.pane === published) await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
+      const after = await deps.registry.read(now.key);
+      if (after && statusOf(after) !== "closed" && after.pane === published) await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
       deps.retargetCards?.(published, gone);
       return fail(`the agent's start in ${published} failed and that pane was closed (${why}); the record names ${gone} again`);
     }
     const { pane } = opened;
     const done = `${now.key} ${pane} session ${session} (pane ${gone} was gone)`;
     for (let i = 0; i < 90; i++) {
+      const latest = await deps.registry.read(now.key);
+      if (!latest || statusOf(latest) === "closed") return fail(`the lane was closed while ${pane} started (the close closes ${pane})`);
       // ready once an agent runs there and shows omo's own input box (an echoed command line has no box)
       const screen = (await paneLife(deps.run, pane)).live ? await captureTmux(deps.run, pane) : "";
       if (omoInputBox(screen)) {
