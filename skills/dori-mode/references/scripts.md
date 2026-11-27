@@ -694,10 +694,10 @@ Every path that changes a lane record takes the lane's lock (`<stateDir>/revive/
 | Claim taken back | done-flow-state.ts `reopenClaim` | yes | yes | - | `write` | lane-lock-entrypoints |
 | Not-done objection | done-flow-state.ts `objectDone` | yes | yes | - | `write`, typed into the pane of that record | lane-lock-entrypoints, lane-revive-review11 |
 | `dori pause` | done-flow-state.ts `pauseLane` | yes, with the goal step | yes | status, goal on the pane of that record | `write` | lane-lock-entrypoints, lane-revive-review12 |
-| `dori resume` | done-flow-state.ts `resumeLane` | yes, with the goal step | yes | same | `write` | lane-lock-entrypoints, lane-revive-review12 |
+| `dori resume` | done-flow-state.ts `resumeLane` | yes, with the goal step | yes | same; a paused goal with no live session (a revive may open one) refuses, lane left paused (RESUME_UNVERIFIED) | `write` | lane-lock-entrypoints (incl. no live session, review 17), lane-revive-review12 |
 | `dori handover --lane` (the move) | lane-handover.ts `pointLane` | yes | yes | pane differs | `write` | lane-lock-entrypoints (handover) |
 | The lead handover's note on each lane | handover.ts via lane-lifecycle.ts `noteLaneHistory` | yes | yes | - | `write` | lane-lock-entrypoints |
-| `dori launch` (its final record) | launch.ts via lane-lifecycle.ts `writeOnFresh` | yes | yes: merged onto what sweeps wrote meanwhile | - | `write` | lane-lock-entrypoints |
+| `dori launch` (its final record) | launch.ts via lane-lifecycle.ts `writeOnFresh` | yes | yes: merged onto what sweeps wrote meanwhile | a pane a handover moved the lane to meanwhile keeps its pane and session | `write` | lane-lock-entrypoints (incl. moved meanwhile, review 17) |
 | `dori adopt` | launch-state.ts `adoptLane` | through `Registry.write` | a new record (validateLaunch before) | - | `write` relocate | lane-lock-entrypoints (adopt) |
 | `dori sync --write` | sync.ts `syncRegistry` | yes | yes | same pane, new session | `write` | lane-lock-entrypoints (sync) |
 | Card answers of a revived lane | lane-revive.ts (`retargetCards` inside the revive), missed-answers.ts (read only) | the revive's; reconciliation reads only | the moves and the lane | `provenRoute` (the lead's rule) | the card store's own lock | lane-revive-cards-rule |

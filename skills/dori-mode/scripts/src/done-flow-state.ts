@@ -213,12 +213,12 @@ export const pauseLane = (deps: FlowDeps, given: Lane, reason: string): Promise<
 
 // The goal step of pause and resume, for a lane with a pane dori drives omo in (panes.ts omoPane; another herdr agent's pane is left as before): its GOAL_* line and
 // whether the goal was changed; undefined when there is nothing to do.
-const goalLine = async (deps: FlowDeps, lane: Lane, act: GoalAct): Promise<{ readonly line: string; readonly changed: boolean } | undefined> => {
+const goalLine = async (deps: FlowDeps, lane: Lane, act: GoalAct): Promise<{ readonly line: string; readonly changed: boolean; readonly dead?: true } | undefined> => {
   const pane = lane.pane;
   if (!pane || !omoPane(deps.config, pane)) return undefined;
   const head = act === "pause" ? "PAUSE_UNVERIFIED" : "RESUME_UNVERIFIED";
   const dead = await liveSession(deps, pane);
-  if (dead) return { line: `GOAL_SKIPPED ${lane.key} ${pane}: no live session (${dead}), nothing to ${act}`, changed: false };
+  if (dead) return { line: `GOAL_SKIPPED ${lane.key} ${pane}: no live session (${dead}), nothing to ${act}`, changed: false, dead: true };
   const r = await goalCommand(deps, pane, act);
   switch (r.outcome) {
     case "confirmed":
@@ -236,8 +236,8 @@ const goalLine = async (deps: FlowDeps, lane: Lane, act: GoalAct): Promise<{ rea
 export const resumeLane = (deps: FlowDeps, given: Lane): Promise<string[]> => withLaneLifecycle(deps, given.key, async () => {
   const lane = (await deps.registry.read(given.key)) ?? given; if (statusOf(lane) !== "paused") throw new LaneStateError(`lane ${lane.key} is ${statusOf(lane)}, not paused`);
   const to = lane.pausedFrom ?? "working";
-  // only a goal this pause paused is resumed: one the agent or the owner paused stays paused
-  const goal = lane.pausedGoal ? await goalLine(deps, lane, "resume") : undefined;
+  // only a goal this pause paused is resumed; with no live session for it (a revive may open one, #535 review 17) the lane stays paused
+  const goal = lane.pausedGoal ? await goalLine(deps, lane, "resume") : undefined; if (goal?.dead) throw new GoalUnverifiedError(`RESUME_UNVERIFIED ${lane.key} ${lane.pane}: no live session; lane left paused`);
   const { pausedFrom: _, pausedGoal: __, ...rest } = lane;
   await deps.registry.write(withStatus(rest, to, "RESUMED", iso(deps.clock), { lastReplyAt: deps.clock.now() }));
   const out = [`LANE_RESUMED ${lane.key} ${to}`, ...(goal ? [goal.line] : [])];

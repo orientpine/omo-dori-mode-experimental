@@ -125,6 +125,25 @@ test("the lead handover's note on a lane and a launch's final record are written
   expect([(await read(d)).model, (await read(d)).pendingGoal]).toEqual(["m/x", { idle: 0 }]);
 });
 
+test("a launch's final record keeps the pane and session a handover moved the lane to while it waited (review 17 of #535)", async () => {
+  const { deps } = rig();
+  const d = deps(T0);
+  await d.registry.write(laneOf(state.dir));
+  const moved = "99999999-2222-4333-8444-555555555555";
+  await held(() => writeOnFresh(d, laneOf(state.dir, { model: "m/x" })), () => d.registry.patch(KEY, { pane: "hc:t70", session: moved }, { relocate: true }));
+  const after = await read(d);
+  expect([after.pane, after.session, after.model]).toEqual(["hc:t70", moved, "m/x"]);
+});
+
+test("a resume whose paused goal finds no live session leaves the lane paused with its goal still marked paused (review 17 of #535)", async () => {
+  const { deps } = rig();
+  const d = deps(T0);
+  await d.registry.write(laneOf(state.dir, { status: "paused", pausedGoal: true }));
+  await expect(resumeLane(d, await read(d))).rejects.toThrow(/^RESUME_UNVERIFIED h3-charsheet hc:t27: no live session/);
+  const after = await read(d);
+  expect([statusOf(after), after.pausedGoal]).toEqual(["paused", true]);
+});
+
 test("an adopt waits for the lock before it writes the new record (Registry.write takes the lane lock itself)", async () => {
   const w = newWorld();
   w.panes.push({ pane_id: "w:p2", workspace_id: "w" });

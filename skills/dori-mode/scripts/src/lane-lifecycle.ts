@@ -77,7 +77,12 @@ export const withLaneLock = async <T>(stateDir: string, key: string, wait: (ms: 
   }
 };
 // A lane record changed whole under the lane's lock, from the record as it is then: a history note (the lead handover's)
-// and a launch's final record merged onto what sweeps wrote while its agent started.
+// and a launch's final record merged onto what sweeps wrote while its agent started; a pane a handover moved the lane to
+// meanwhile wins, with its session (review 17 of #535).
 export const noteLaneHistory = (deps: Pick<FlowDeps, "config" | "clock" | "registry">, fallback: Lane, entry: (fresh: Lane) => HistoryEntry): Promise<void> => withLaneLifecycle(deps, fallback.key, async () => { const fresh = (await deps.registry.read(fallback.key)) ?? fallback; await deps.registry.write({ ...fresh, history: [...(fresh.history ?? []), entry(fresh)] }); });
-export const writeOnFresh = (deps: Pick<FlowDeps, "config" | "clock" | "registry">, lane: Lane): Promise<void> => withLaneLifecycle(deps, lane.key, async () => deps.registry.write({ ...((await deps.registry.read(lane.key)) ?? {}), ...lane }));
+export const writeOnFresh = (deps: Pick<FlowDeps, "config" | "clock" | "registry">, lane: Lane): Promise<void> => withLaneLifecycle(deps, lane.key, async () => {
+  const fresh = await deps.registry.read(lane.key);
+  const moved = fresh && fresh.pane !== lane.pane ? { pane: fresh.pane, tab: fresh.tab, paneRev: fresh.paneRev, session: fresh.session, sessionVia: fresh.sessionVia } : {};
+  await deps.registry.write({ ...(fresh ?? {}), ...lane, ...moved } as Lane);
+});
 export const withLaneLifecycle = <T>(deps: Pick<FlowDeps, "config" | "clock">, key: string, section: () => Promise<T>): Promise<T> => withLaneLock(deps.config.stateDir, key, (ms) => Bun.sleep(ms), () => deps.clock.now(), section);
