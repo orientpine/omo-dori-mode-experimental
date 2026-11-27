@@ -81,7 +81,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, warn: (line
   let registered = false;
   const beforeStart = async ({ pane, tab }: { readonly pane: string; readonly tab?: string }): Promise<void> => {
     const pending: Lane = { ...draft, reportProtocol: "jsonl-v1", pane, ...(tab ? { tab } : {}) };
-    await deps.registry.write(pending);
+    await deps.registry.write(pending, { relocate: true });
     registered = true;
     new Reports(deps.config.stateDir).append({ type: "activity", key: pending.key, at: new Date(deps.clock.now()).toISOString(), state: "running", text: `lane launched in ${pane}` });
   };

@@ -46,7 +46,7 @@ test("at a revive only the cards of the lane's own session follow it; a card wit
   expect(sent(w)).toEqual([`[DORI] 레인 h3-charsheet 새 창 hc:t1: 카드 ${bare.id}(keep the GPU off?) 답 "yes"는 옛 창 hc:t27에 그대로 뒀어(카드에 세션 기록 없음) — 레인에 손으로 넣어 줘`]);
 });
 
-type Doubt = "none" | "clear" | "no-session" | "broken";
+type Doubt = "none" | "clear" | "stale-env" | "no-session" | "broken";
 
 // an answer asked from a pane the lane was revived away from, delivered (or not) in the revived pane's live session
 const reconcile = async (doubt: Doubt): Promise<string[]> => {
@@ -56,7 +56,9 @@ const reconcile = async (doubt: Doubt): Promise<string[]> => {
   const sessionsDir = join(state.dir, "sessions"), dir = sessionDirFor(sessionsDir, cwd), leadDir = sessionDirFor(sessionsDir, leadCwd);
   mkdirSync(dir, { recursive: true });
   mkdirSync(leadDir, { recursive: true });
-  const cleared = doubt === "clear", reader = cleared ? current : old;
+  const cleared = doubt === "clear" || doubt === "stale-env", reader = cleared ? current : old;
+  // stale-env: after the /clear the agent's children still name old, while the newer same-title log is current's
+  const named = doubt === "stale-env" ? old : reader;
   const oldPath = join(dir, `2026-01-01T11-59-00-000Z_${old}.jsonl`), currentPath = join(dir, `2026-01-01T12-02-00-000Z_${current}.jsonl`);
   const store = new QuestionStore(join(state.dir, "cards"));
   const meta = { tmux: gone, thread: "CARD", ...(doubt === "no-session" ? {} : { session: old }) };
@@ -69,10 +71,11 @@ const reconcile = async (doubt: Doubt): Promise<string[]> => {
   const pending = { ...delivered, id: "answer-pending", ts: iso(t + min + 300), qid: second.id };
   const log = (id: string, ts: number, withAnswer: boolean) => [{ type: "session", id, cwd, timestamp: iso(ts) }, { type: "session_info", name: "Asking" }, ...(withAnswer ? [{ type: "custom_message", customType: "senpi-monitor:notification", content: JSON.stringify(delivered) }] : [])].map((e) => JSON.stringify(e)).join("\n");
   writeFileSync(oldPath, log(old, t - 2 * min, reader === old));
-  writeFileSync(currentPath, log(current, t + 2 * min, reader === current));
+  // a newer same-title log exists only after a /clear
+  if (cleared) writeFileSync(currentPath, log(current, t + 2 * min, reader === current));
   writeFileSync(join(leadDir, `2026-01-01T12-02-00-000Z_${leadId}.jsonl`), `${JSON.stringify({ type: "session", id: leadId, cwd: leadCwd, timestamp: iso(t + 2 * min) })}\n${JSON.stringify({ type: "session_info", name: "Dori" })}\n`);
   utimesSync(oldPath, new Date(t + 500), new Date(t + 500));
-  utimesSync(currentPath, new Date(t + 2 * min), new Date(t + 2 * min));
+  if (cleared) utimesSync(currentPath, new Date(t + 2 * min), new Date(t + 2 * min));
   const world = newWorld();
   world.aoe = [{ id: "0a1b2c3d4e5f6a7b", title: "Dori", path: leadCwd, tool: "omo", profile: "main" }, { id: "fedcba0987654321", title: "Asking", path: cwd, tool: "omo", profile: "main" }];
   world.tmux = [lead, pane];
@@ -84,7 +87,7 @@ const reconcile = async (doubt: Doubt): Promise<string[]> => {
   const base = depsFor(world, fakeClock(t + 20 * min), state.dir, { backend: "aoe", leadPane: lead, sessionsDir, leadInboxMin: 0 });
   const run: FlowDeps["run"] = async (argv, opts) =>
     argv[0] === "tmux" && argv[1] === "display-message" && argv.some((a) => a.includes(pane)) ? { code: 0, out: "20", err: "" }
-    : argv[0] === "ps" && argv[1] === "eww" && argv.at(-1) === "22" ? { code: 0, out: `/bin/sleep 100 PI_SESSION_ID=${reader} PI_SESSION_FILE=${reader === old ? oldPath : currentPath}`, err: "" }
+    : argv[0] === "ps" && argv[1] === "eww" && argv.at(-1) === "22" ? { code: 0, out: `/bin/sleep 100 PI_SESSION_ID=${named} PI_SESSION_FILE=${named === old ? oldPath : currentPath}`, err: "" }
     : base.run(argv, opts);
   await base.registry.write({ key: "asking", title: "Asking", thread: "none", pane, session: old, cwd, brief: "/brief", done: "merged acme/app#1", status: "paused", openedAt: iso(t - 2 * min) });
   recordMove(state.dir, { key: "asking", session: old, from: gone, to: doubt === "broken" ? "aoe_Other_33334444" : pane, at: iso(t + 500) });
@@ -99,6 +102,7 @@ test("a proven chain on one session counts the answer the revived pane's session
 
 test.each<[string, Doubt]>([
   ["a /clear in the revived pane", "clear"],
+  ["a /clear whose children still name the old session", "stale-env"],
   ["a card with no session", "no-session"],
   ["a move record that does not reach the lane's pane", "broken"],
 ])("on doubt (%s) the answer is not taken as delivered: it stays waiting for the lead", async (_name, doubt) => {

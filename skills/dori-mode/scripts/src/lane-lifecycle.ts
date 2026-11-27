@@ -1,10 +1,11 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { join } from "node:path";
 
 import { CheckpointError, takeLock } from "./checkpoint-lock.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
 
-// A revive and a close of one lane take turns on this lock (review 2 of #535): a revive checks the lane is still open in
+// A revive, a close and every registry write of one lane take turns on this lock (reviews 2 and 11 of #535): a revive checks the lane is still open in
 // its gone pane and writes the new pane under it, and a close reads the lane again and writes it closed under it, closing a
 // pane a revive wrote since the close began. So a new pane is either seen and closed by the close or never written. Both
 // sections are short (a read, a write, one pane close), so a busy lock is waited for, up to 30 s.
@@ -43,34 +44,31 @@ export const provenRoute = (stateDir: string, lane: { readonly key: string; read
   }
   return at === lane.pane;
 };
-// A record read before a revive and written back after it would name the pane the lane was revived away from (the watch's
-// settle and not-done writes, a pause: review 8 of #535). Registry.write keeps the revived pane then: true when the lane's
-// latest move ended on the pane on disk and some move left the pane being written (A to B to C, then an old read naming A;
-// review 9 of #535). A move back (a refused start) is recorded too, so its own write passes.
-export const revivedAway = (stateDir: string, key: string, writing: string, onDisk: string): boolean => {
-  const mine = allMoves(stateDir).filter((m) => m.key === key);
-  return mine.at(-1)?.to === onDisk && mine.some((m) => m.from === writing);
-};
 
 const WAIT_MS = 100;
 const TRIES = 300;
 
-export const withLaneLifecycle = async <T>(deps: Pick<FlowDeps, "config" | "clock">, key: string, section: () => Promise<T>): Promise<T> => {
-  const dir = join(deps.config.stateDir, "revive");
+// Held again inside its own section (the same async chain: a revive's section writing the lane, a registry write inside a
+// close) the lock is not taken twice; another chain or process waits for it (review 11 of #535).
+const held = new AsyncLocalStorage<ReadonlySet<string>>();
+export const withLaneLock = async <T>(stateDir: string, key: string, wait: (ms: number) => Promise<void>, now: () => number, section: () => Promise<T>): Promise<T> => {
+  if (held.getStore()?.has(key)) return section();
+  const dir = join(stateDir, "revive");
   mkdirSync(dir, { recursive: true });
   for (let i = 0; ; i++) {
     let release: () => void;
     try {
-      release = takeLock(join(dir, `${key}.lifecycle.lock`), deps.clock.now(), "lane lifecycle", key);
+      release = takeLock(join(dir, `${key}.lifecycle.lock`), now(), "lane lifecycle", key);
     } catch (error) {
       if (!(error instanceof CheckpointError) || i >= TRIES) throw error;
-      await deps.clock.sleep(WAIT_MS);
+      await wait(WAIT_MS);
       continue;
     }
     try {
-      return await section();
+      return await held.run(new Set([...(held.getStore() ?? []), key]), section);
     } finally {
       release();
     }
   }
 };
+export const withLaneLifecycle = <T>(deps: Pick<FlowDeps, "config" | "clock">, key: string, section: () => Promise<T>): Promise<T> => withLaneLock(deps.config.stateDir, key, (ms) => deps.clock.sleep(ms), () => deps.clock.now(), section);

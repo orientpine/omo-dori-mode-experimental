@@ -193,8 +193,8 @@ export const typeIntoPane = async (deps: FlowDeps, pane: string, text: string): 
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
   const at = iso(deps.clock);
   if (lane.reportProtocol === "jsonl-v1") new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at, state: "running", text: `NOT_DONE: ${reasons.join("; ")}` });
-  await withLaneLifecycle(deps, lane.key, async () => deps.registry.write(withStatus((await deps.registry.read(lane.key)) ?? lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } })));
-  if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
+  const now = await withLaneLifecycle(deps, lane.key, async () => { const next = withStatus((await deps.registry.read(lane.key)) ?? lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }); await deps.registry.write(next); return next; });
+  if (now.pane) await sendVerified(deps.run, deps.clock, deps.config, now.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
 };
 

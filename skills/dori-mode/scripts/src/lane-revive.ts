@@ -84,7 +84,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
         withLaneLifecycle(deps, now.key, async () => {
           const later = moved(await deps.registry.read(now.key)) ?? handover();
           if (later) throw new Error(`the lane is ${later} now, so ${pane} is not used`);
-          await deps.registry.patch(now.key, { pane, tab });
+          await deps.registry.patch(now.key, { pane, tab }, { relocate: true });
           recordMove(config.stateDir, { key: now.key, session, from: gone, to: pane, at: new Date(deps.clock.now()).toISOString() });
           published = pane;
           left = deps.retargetCards?.(gone, pane, session).left ?? [];
@@ -101,7 +101,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
         const after = await deps.registry.read(now.key);
         if (!after || statusOf(after) === "closed" || after.pane !== back) return;
         recordMove(config.stateDir, { key: now.key, session, from: back, to: gone, at: new Date(deps.clock.now()).toISOString() });
-        await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
+        await deps.registry.patch(now.key, { pane: gone, tab: now.tab }, { relocate: true });
         deps.retargetCards?.(back, gone, session);
       });
       return fail(`the agent's start in ${published} failed and that pane was closed (${why}); the record names ${gone} again`);
@@ -109,9 +109,12 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
     const { pane } = opened;
     // the lead's rule (2026-11-27): a card not on the lane's session stays in the gone pane with its answer, and the lead is
     // told which, one line each, to type it into the lane by hand
+    // a card's own words never reach the pane as typed: dori type refuses backticks and $( (panes.ts), and a notice that
+    // cannot be sent leaves the revive done (review 11 of #535)
+    const safe = (text: string): string => text.replaceAll("`", "'").replaceAll("$(", "$ (");
     for (const q of left) {
-      const what = q.status === "answered" ? `답 "${q.answer ?? ""}"는` : "아직 답 없는 카드는";
-      if (config.leadPane) await submitToPane(deps.run, deps.clock, config, config.leadPane, `[DORI] 레인 ${now.key} 새 창 ${pane}: 카드 ${q.id}(${q.text.slice(0, 60)}) ${what} 옛 창 ${gone}에 그대로 뒀어(${q.session ? "다른 세션의 카드" : "카드에 세션 기록 없음"}) — 레인에 손으로 넣어 줘`);
+      const what = q.status === "answered" ? `답 "${safe(q.answer ?? "")}"는` : "아직 답 없는 카드는";
+      if (config.leadPane) await submitToPane(deps.run, deps.clock, config, config.leadPane, `[DORI] 레인 ${now.key} 새 창 ${pane}: 카드 ${q.id}(${safe(q.text.slice(0, 60))}) ${what} 옛 창 ${gone}에 그대로 뒀어(${q.session ? "다른 세션의 카드" : "카드에 세션 기록 없음"}) — 레인에 손으로 넣어 줘`).catch(() => undefined);
     }
     const done = `${now.key} ${pane} session ${session} (pane ${gone} was gone${left.length ? `; ${left.length} card${left.length > 1 ? "s" : ""} left to the lead` : ""})`;
     for (let i = 0; i < 90; i++) {

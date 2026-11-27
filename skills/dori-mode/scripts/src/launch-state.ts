@@ -61,7 +61,7 @@ export const adoptLane = async (deps: FlowDeps, given: LaunchInput & { readonly 
   });
   if (!owned) throw new LaunchError(`pane ${input.pane} is not one of dori's sessions (${group}); refusing to adopt a pane dori does not own`);
   const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: resolve(input.brief), done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, ...(input.tags?.length ? { tags: input.tags } : {}), ...intentFields(input), openedAt: iso(deps.clock) };
-  await deps.registry.write(lane);
+  await deps.registry.write(lane, { relocate: true });
   return lane;
 };
 

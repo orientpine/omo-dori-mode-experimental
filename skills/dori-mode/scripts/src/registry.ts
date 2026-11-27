@@ -1,8 +1,8 @@
-import { mkdirSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { DirectivePick } from "./directives.ts";
-import { revivedAway } from "./lane-lifecycle.ts";
+import { withLaneLock } from "./lane-lifecycle.ts";
+import { type WriteOptions, writeLane } from "./registry-write.ts";
 import { listLanes, scanLanes } from "./registry-scan.ts";
 import { parseRef, type SessionRef } from "./runtime/types.ts";
 import type { BudgetLimits } from "./supervision.ts";
@@ -74,6 +74,8 @@ export type Lane = {
   readonly sessionRef?: SessionRef | undefined;
   readonly pane?: string | undefined;
   readonly tab?: string | undefined;
+  // a new revision each time a relocation moved the pane (registry-write.ts)
+  readonly paneRev?: number;
   readonly session?: string | undefined;
   readonly sessionVia?: string;
   // the sessions this lane had before its current one, oldest first (a handover adds the outgoing one)
@@ -208,26 +210,17 @@ export class Registry {
   }
 
   // temp file + rename so a concurrent reader never sees a half-written lane
-  async write(lane: Lane): Promise<void> {
-    mkdirSync(this.dir, { recursive: true });
-    // A lane's sessions are history: whatever path changes its session (a handover, dori sync --write, a revive), the
-    // outgoing one is kept in priorSessions, so its cost counts every session it had (supervision.ts laneSessionUsage)
-    const before = await this.read(lane.key).catch(() => null);
-    const outgoing = before?.session && before.session !== lane.session ? [before.session] : [];
-    const prior = [...new Set([...(before?.priorSessions ?? []), ...(lane.priorSessions ?? []), ...outgoing])].filter((s) => s !== lane.session);
-    if (prior.length) lane = { ...lane, priorSessions: prior };
-    if (before?.pane && lane.pane && lane.pane !== before.pane && lane.session === before.session && revivedAway(dirname(this.dir), lane.key, lane.pane, before.pane)) lane = { ...lane, pane: before.pane, tab: before.tab };
-    lane = upgradeLane(lane);
-    const tmp = `${this.path(lane.key)}.${process.pid}.tmp`;
-    await Bun.write(tmp, JSON.stringify(lane, null, 1));
-    renameSync(tmp, this.path(lane.key));
+  async write(lane: Lane, opts: WriteOptions = {}): Promise<void> {
+    await writeLane(this.dir, this.path(lane.key), (key) => this.read(key), upgradeLane, lane, opts);
   }
 
-  // Sweeps change only their own fields: merge them onto the lane as it is now, so a claim or an objection written
-  // by another process since the sweep read the lane is kept.
-  async patch(key: string, fields: Partial<Lane>): Promise<void> {
-    const fresh = await this.read(key);
-    if (fresh) await this.write({ ...fresh, ...fields });
+  // Sweeps change only their own fields: merge them onto the lane as it is now (read under the lane's lock), so a claim,
+  // an objection or a pane another process wrote since the sweep read the lane is kept.
+  async patch(key: string, fields: Partial<Lane>, opts: WriteOptions = {}): Promise<void> {
+    await withLaneLock(dirname(this.dir), key, (ms) => Bun.sleep(ms), Date.now, async () => {
+      const fresh = await this.read(key);
+      if (fresh) await this.write({ ...fresh, ...fields }, opts);
+    });
   }
 
   async list(): Promise<Lane[]> { return listLanes(this.dir, loaded); }

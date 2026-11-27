@@ -40,8 +40,8 @@ test("dori revive <lane key> opens a lane whose hc terminal is gone in a new ter
   expect(start).toContain("--model anthropic-subscription/claude-opus-5-5 --thinking medium");
   // the record keeps every field but its pane (and the session ref it mirrors)
   const after = await d.registry.read("h3-charsheet");
-  const { pane: _p, sessionRef: _r, ...kept } = after ?? ({} as Lane);
-  const { pane: _p0, sessionRef: _r0, ...was } = before ?? ({} as Lane);
+  const { pane: _p, sessionRef: _r, paneRev: _v, ...kept } = after ?? ({} as Lane);
+  const { pane: _p0, sessionRef: _r0, paneRev: _v0, ...was } = before ?? ({} as Lane);
   expect(after?.pane).toBe("hc:t1");
   expect(kept).toEqual(was);
   // a second revive finds it running
