@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { launchOf, liveMonitors, missingMonitors, monitorLine } from "../src/handover.ts";
 import { workEnded } from "../src/handover-monitors.ts";
+import { armed } from "../src/rollover-audit.ts";
 
 // port-hc-runtime's lane handover rolled back on 2026-11-08 22:35Z: the old session ran its 4eae ci as a monitor that
 // fed a script to a remote shell (node-dori-do ... ssh ori4eae bash -s < ci.sh > log). launchOf did not see work in it,
@@ -113,8 +114,52 @@ test("a script fed to a shell with no space before < or with descriptor 0 starts
   expect(launchOf("bash /nonexistent/x.sh 0< /tmp/in", HOME, () => undefined)).toEqual({ why: "a script the handover cannot read", writes: [], detached: true });
 });
 
+// h3-prompt-app's lane handover rolled back on 2026-11-27 11:29Z: its monitor ran a python watcher (LAUNCHES_WORK), and the
+// new session armed the watch-only one the note asked for, with the same description and filter: an until loop of grep
+// -o over $HOME/.cache/.../remote-jobs.json, which the list of watch shapes does not read. Widening the list let work
+// through twice (reviews 2 and 3 of #536), so the lead's decision of #532 holds here too: the new session marks its
+// replacement as one that only reads, with the same description ending in [rearm], and the check takes any command
+// but the one that starts the work.
+test("a replacement armed with the same description and [rearm] counts as armed for a monitor that starts work, the work's own command does not", () => {
+  // Given: the old session's monitor and the new session's watch-only one, as the two sessions armed them
+  const description = "h3-prompt-app: owner's first real container job delivered (phone/Discord check)";
+  const filter = "^OWNER_REMOTE_DONE";
+  const [remote] = liveMonitors([entry({ description, command: "python3 ~/.cache/dori-scratch/h3-prompt-app/watch-remote.py", filter, runtime: { pid: 1450000 } })], 0, () => true, HOME);
+  if (!remote) throw new Error("no monitor");
+  expect(monitorLine(remote)).toContain("LAUNCHES_WORK");
+  const watch = `until grep -Eo '\\{[^{}]*\\}' $HOME/.cache/h3-prompt-app/remote-jobs.json 2>/dev/null | grep -E '"test": *false' | grep -Eq '"done": *[0-9]'; do sleep 20; done; echo OWNER_REMOTE_DONE`;
+  const marked = `${description} [rearm]`;
+  // When / Then: the replacement marked [rearm] is armed, by the shell form as typed or quoted; unmarked, the list decides
+  expect(missingMonitors([remote], [entry({ description: marked, command: watch, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([]);
+  expect(missingMonitors([remote], [entry({ description: marked, command: watch.replace("$HOME/.cache/h3-prompt-app/remote-jobs.json", '"$HOME/.cache/h3-prompt-app/remote-jobs.json"'), runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([]);
+  expect(missingMonitors([remote], [entry({ description, command: watch, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (starts work: arm a watch-only one with the same description)`]);
+  // the watcher itself, marked or not, still starts the work a second time, and a mark on another description is not this one
+  for (const d of [description, marked]) expect(missingMonitors([remote], [entry({ description: d, command: remote.command, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (armed again with the command that starts work; arm a watch-only one instead)`]);
+  expect(missingMonitors([remote], [entry({ description: `${description}0 [rearm]`, command: watch, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (starts work: arm a watch-only one with the same description)`]);
+});
+
 test("a script fed to a shell with combined options or with its output redirected first starts work", () => {
   for (const c of ["bash -se < /tmp/job.sh", "bash -s > /tmp/job.log 2>&1 < /tmp/job.sh", "ssh h bash -ex -s -- a < /tmp/job.sh"]) {
     expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a script run by a shell from its input (bash -s < file)"]);
   }
+});
+
+// reviews 4, 5 and 7 of #536: the check and the audit take a work monitor's [rearm] replacement when its command is not the
+// work's own as sameCommand reads it (the mark is the session's word; a respelling is out of scope); a marked path watch too
+test("the check and the audit count a work monitor's [rearm] replacement as armed, never its own command quoted otherwise", () => {
+  const job = { description: "job", command: "python3 /tmp/job.py", persistent: true, launch: { why: "a command that is not one of the plain watch shapes", writes: [], detached: false } };
+  const as = (e: Record<string, unknown>) => [{ description: "job [rearm]", persistent: true, runtime: { pid: 9 }, ...e }] as never;
+  const both = (e: Record<string, unknown>) => [missingMonitors([job], as(e), () => true, HOME, 0).length === 0, armed(job, as(e), HOME)];
+  expect(both({ command: "until test -e /tmp/job.done; do sleep 2; done; echo DONE" })).toEqual([true, true]);
+  expect(both({ path: "/tmp/job.log", event: "modify" })).toEqual([true, true]);
+  // review 7: a plain anchored regex ($ before a closing quote) and a $HOME path are a replacement like any other
+  expect(both({ command: "until grep -Eq '^DONE$' \"$HOME/job.log\"; do sleep 2; done; echo DONE" })).toEqual([true, true]);
+  for (const same of ['python3 "/tmp/job.py"', "python3 '/tmp/job.py'", "python3  /tmp/job.py"]) expect([same, both({ command: same })]).toEqual([same, [false, false]]);
+});
+
+// review 6 of #536: a [rearm] monitor re-armed as is keeps matching when only its quoting changed, a $'...' literal in it too
+test("a [rearm] watch with an ANSI-C literal re-armed with other quoting elsewhere is armed", () => {
+  const status = { description: "status [rearm]", command: "tail -F /tmp/status | grep --line-buffered $'READY\\t'", persistent: true };
+  const again = [{ ...status, command: "tail -F \"/tmp/status\" | grep --line-buffered $'READY\\t'", runtime: { pid: 9 } }] as never;
+  expect(missingMonitors([status], again, () => true, HOME, 0)).toEqual([]);
 });

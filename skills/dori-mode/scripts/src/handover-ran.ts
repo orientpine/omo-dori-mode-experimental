@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 
 import { launchOf, type MonitorSpec, sameCommand } from "./handover.ts";
-import { rearmable, sameWatch } from "./handover-monitors.ts";
+import { rearmable, rearmedAs, sameWatch } from "./handover-monitors.ts";
 import { sessionFile } from "./rollover.ts";
 
 const DONE = "watcher completed (exit code 0)";
@@ -73,6 +73,15 @@ const signalled = (wake: Wake, filter: RegExp): boolean => {
   return false;
 };
 
+// The replacement the new session marked for a monitor that starts work (the lead's decision, 2026-11-27): its description
+// and [rearm], a path watch or a command that is not the work's own. The [rearm] mark is the session's word that the watch
+// only reads (same account, same trust boundary, #532). Threat model (the lead's decision after review 7 of #536): the guard
+// stops only a mistake, the note's work command copied as is (in any spelling sameCommand reads as the same command); it
+// does not look for a work command written another way (other quoting, a wrapper, another path to the program), which a
+// session that marks its watch [rearm] says it is not. Reviews 2-7 found such spellings; none is in scope.
+export const replacesWork = (m: MonitorSpec, e: { readonly description?: string | undefined; readonly command?: string | undefined; readonly path?: string | undefined }, home: string): boolean =>
+  rearmedAs(m.description, e.description) && (!!e.path || (!!e.command && !sameCommand(m.command ?? "", e.command, home)));
+
 // done for missingMonitors: the new session armed m again (a LAUNCHES_WORK one as a watch-only one with its description or
 // filter, any other with its command and filter) and that watch ended with exit code 0 after its signal; or also(m)
 export const ranToEnd = (sessionDir: string, session: string, home: string, also: (m: MonitorSpec) => boolean = () => false): ((m: MonitorSpec) => boolean) => {
@@ -93,7 +102,7 @@ export const ranToEnd = (sessionDir: string, session: string, home: string, also
     const launch = m.launch ?? (rearmable(m.description) ? undefined : launchOf(m.command, home));
     const carries = (a: Armed): boolean =>
       a.persistent === true && !!a.command && (launch
-        ? !launchOf(a.command, home) && (sameWatch(m.description, a.description) || (!!m.filter && a.filter === m.filter))
+        ? (!launchOf(a.command, home) && (sameWatch(m.description, a.description) || (!!m.filter && a.filter === m.filter))) || replacesWork(m, a, home)
         : sameCommand(m.command ?? "", a.command, home) && (!m.filter || a.filter === m.filter));
     const all = read();
     return all.some((r, i) => {
