@@ -12,13 +12,15 @@ export const laneOf = (cwd: string, patch: Partial<Lane> = {}): Lane => ({ key: 
 
 // hc calls go to the fake core (an agent drawing omo's box once the start line is typed), the rest to the world (the lead);
 // before runs ahead of each call, so a test can change the world in the middle of a revive
-export const reviveRig = (stateDir: string, opts: { readonly initial?: Record<string, FakeTerminal>; readonly before?: (argv: readonly string[]) => Promise<void> | void; readonly patch?: Partial<FlowDeps> } = {}) => {
+export const reviveRig = (stateDir: string, opts: { readonly initial?: Record<string, FakeTerminal>; readonly before?: (argv: readonly string[]) => Promise<void> | void; readonly answer?: (argv: readonly string[]) => { code: number; out: string; err: string } | undefined; readonly patch?: Partial<FlowDeps> } = {}) => {
   const fake = new FakeHc(opts.initial ?? {});
   const w = newWorld();
   w.screens["lead:p1"] = "❯ ";
   const world = fakeRunner(w);
   const run: Runner = async (argv, o) => {
     await opts.before?.(argv);
+    const answered = opts.answer?.(argv);
+    if (answered) return answered;
     if (argv[0] !== "hc") return world(argv, o);
     const r = await fake.exec("hc", argv.slice(1));
     if (argv[2] === "send" && argv[3] && r.code === 0) {

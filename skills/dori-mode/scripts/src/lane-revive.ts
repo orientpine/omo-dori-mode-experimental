@@ -82,9 +82,14 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
       if (!published) return fail(`no new pane was started: ${why}`);
       const closed = (opened instanceof HcStartupError || opened instanceof HerdrStartupError) && opened.rollback;
       if (!closed) return fail(`the agent's start in ${published} failed and that pane is not confirmed closed (${why}); the record names ${published}, so the conversation is not opened twice`);
-      const after = await deps.registry.read(now.key);
-      if (after && statusOf(after) !== "closed" && after.pane === published) await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
-      deps.retargetCards?.(published, gone);
+      const back = published;
+      // under the lifecycle lock, so a close between this read and write is never undone (review 3 of #535)
+      await withLaneLifecycle(deps, now.key, async () => {
+        const after = await deps.registry.read(now.key);
+        if (!after || statusOf(after) === "closed" || after.pane !== back) return;
+        await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
+        deps.retargetCards?.(back, gone);
+      });
       return fail(`the agent's start in ${published} failed and that pane was closed (${why}); the record names ${gone} again`);
     }
     const { pane } = opened;

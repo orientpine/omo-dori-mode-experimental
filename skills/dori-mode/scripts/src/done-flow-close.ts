@@ -132,19 +132,22 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   // the pane is all it holds); a lane of another herdr agent keeps the tab/pane close it had
   // upstream sisyphuslabs/dori-superagent#225: capture runtime processes before either close path can orphan them.
   // Keep the existing Omo/hc close path (including its close read-back) and the non-runtime aoe path.
-  const ref = sessionOf(lane);
-  if (ref) {
-    const rts = runtimesOf(deps.run, deps.config);
-    const procs = await laneProcesses(rts, deps.run, ref);
-    const legacyPane = lane.pane && omoPane(deps.config, lane.pane) ? lane.pane : undefined;
-    const closed = legacyPane ? await closeAoeSession(deps.run, legacyPane) : await closeSession(rts, ref);
-    cleanup.push(closed);
-    if (legacyPane ? isClosedLine(closed) : !closed.endsWith("not closed")) {
-      cleanup.push(await stopLeftovers(deps.run, procs));
+  const closeRuntime = async (l: Lane): Promise<void> => {
+    const ref = sessionOf(l);
+    if (ref) {
+      const rts = runtimesOf(deps.run, deps.config);
+      const procs = await laneProcesses(rts, deps.run, ref);
+      const legacyPane = l.pane && omoPane(deps.config, l.pane) ? l.pane : undefined;
+      const closed = legacyPane ? await closeAoeSession(deps.run, legacyPane) : await closeSession(rts, ref);
+      cleanup.push(closed);
+      if (legacyPane ? isClosedLine(closed) : !closed.endsWith("not closed")) {
+        cleanup.push(await stopLeftovers(deps.run, procs));
+      }
+    } else if (l.pane && omoPane(deps.config, l.pane)) {
+      cleanup.push(await closeAoeSession(deps.run, l.pane));
     }
-  } else if (lane.pane && omoPane(deps.config, lane.pane)) {
-    cleanup.push(await closeAoeSession(deps.run, lane.pane));
-  }
+  };
+  await closeRuntime(lane);
   const root = lane.cwd ?? deps.config.defaultCwd;
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) {
     const r = await deps.run(["git", "-C", root, "worktree", "remove", wt]);
@@ -158,9 +161,9 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string, summar
   // lifecycle lock, close that pane too and record it, so no revived agent outlives its closed lane (review 2 of #535)
   await withLaneLifecycle(deps, lane.key, async () => {
     const fresh = await deps.registry.read(lane.key);
-    const moved = fresh?.pane && fresh.pane !== lane.pane ? sessionOf(fresh) : undefined;
-    if (moved && fresh) cleanup.push(await closeSession(runtimesOf(deps.run, deps.config), moved));
-    await deps.registry.write(withStatus(moved && fresh ? { ...lane, pane: fresh.pane, tab: fresh.tab } : lane, "closed", note, at, { closedAt: at, receipt }));
+    const moved = fresh?.pane && fresh.pane !== lane.pane ? fresh : undefined;
+    if (moved) await closeRuntime(moved);
+    await deps.registry.write(withStatus(moved ? { ...lane, pane: moved.pane, tab: moved.tab } : lane, "closed", note, at, { closedAt: at, receipt }));
   });
   // dori close --lesson (dori-superagent #65): kept only after the close is recorded, and a failure to keep it is a warning
   // that never undoes or blocks the close. Each lesson is kept on its own: one that cannot be kept costs only itself.
