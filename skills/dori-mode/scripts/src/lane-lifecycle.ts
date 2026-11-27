@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { CheckpointError, takeLock } from "./checkpoint-lock.ts";
 import type { FlowDeps } from "./done-flow-state.ts";
+import type { HistoryEntry, Lane } from "./registry.ts";
 
 // A revive, a close and every registry write of one lane take turns on this lock (reviews 2 and 11 of #535): a revive checks the lane is still open in
 // its gone pane and writes the new pane under it, and a close reads the lane again and writes it closed under it, closing a
@@ -52,6 +53,8 @@ const TRIES = 2_400;
 // Held again inside its own section (the same async chain: a revive's section writing the lane, a registry write inside a
 // close) the lock is not taken twice; another chain or process waits for it (review 11 of #535).
 const held = new AsyncLocalStorage<ReadonlySet<string>>();
+// one "wait" event (detail: the lane key) when a caller first finds the lane locked: tests watch a caller wait, no clock
+export const lockWaits = new EventTarget();
 export const withLaneLock = async <T>(stateDir: string, key: string, wait: (ms: number) => Promise<void>, now: () => number, section: () => Promise<T>): Promise<T> => {
   if (held.getStore()?.has(key)) return section();
   const dir = join(stateDir, "revive");
@@ -62,6 +65,7 @@ export const withLaneLock = async <T>(stateDir: string, key: string, wait: (ms: 
       release = takeLock(join(dir, `${key}.lifecycle.lock`), now(), "lane lifecycle", key);
     } catch (error) {
       if (!(error instanceof CheckpointError) || i >= TRIES) throw error;
+      if (i === 0) lockWaits.dispatchEvent(new CustomEvent("wait", { detail: key }));
       await wait(WAIT_MS);
       continue;
     }
@@ -72,4 +76,8 @@ export const withLaneLock = async <T>(stateDir: string, key: string, wait: (ms: 
     }
   }
 };
+// A lane record changed whole under the lane's lock, from the record as it is then: a history note (the lead handover's)
+// and a launch's final record merged onto what sweeps wrote while its agent started.
+export const noteLaneHistory = (deps: Pick<FlowDeps, "config" | "clock" | "registry">, fallback: Lane, entry: (fresh: Lane) => HistoryEntry): Promise<void> => withLaneLifecycle(deps, fallback.key, async () => { const fresh = (await deps.registry.read(fallback.key)) ?? fallback; await deps.registry.write({ ...fresh, history: [...(fresh.history ?? []), entry(fresh)] }); });
+export const writeOnFresh = (deps: Pick<FlowDeps, "config" | "clock" | "registry">, lane: Lane): Promise<void> => withLaneLifecycle(deps, lane.key, async () => deps.registry.write({ ...((await deps.registry.read(lane.key)) ?? {}), ...lane }));
 export const withLaneLifecycle = <T>(deps: Pick<FlowDeps, "config" | "clock">, key: string, section: () => Promise<T>): Promise<T> => withLaneLock(deps.config.stateDir, key, (ms) => Bun.sleep(ms), () => deps.clock.now(), section);

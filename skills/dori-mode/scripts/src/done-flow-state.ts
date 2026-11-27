@@ -114,8 +114,8 @@ const claimOutcome = (deps: FlowDeps, lane: Lane, at: string, given: ClaimOption
 // summary: what the owner's thread gets when the lane closes (dori claim-done --summary), kept with the claim; posted: the
 // lane's result already in its thread (opts.posted, else its own post there in the last RESULT_POST_MS), so the close posts
 // no summary; opts.postSummary: that post was not the result, post the summary anyway
-export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, summary?: string, opts: ClaimOptions = {}): Promise<string> => {
-  const at = iso(deps.clock);
+export const claimDone = (deps: FlowDeps, given: Lane, evidence: string, summary?: string, opts: ClaimOptions = {}): Promise<string> => withLaneLifecycle(deps, given.key, async () => {
+  const lane = (await deps.registry.read(given.key)) ?? given, at = iso(deps.clock); // the record now, under the lane's lock
   const posted = opts.postSummary || !hasThread(lane) ? undefined : (opts.posted ?? resultPost(lane, deps.clock.now())?.id);
   const claim = { at, evidence, emitted: false, ...(summary?.trim() ? { summary: summary.trim() } : {}), ...(posted ? { posted } : {}) };
   const outcome = claimOutcome(deps, lane, at, opts.rolloverOutcome);
@@ -135,19 +135,19 @@ export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, su
     await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
   }
   return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}${postedLine}${outcomeNote}`;
-};
+});
 
 // The lead often gives a lane new work right after it claimed done (the owner's feedback on its result). On 2026-10-31
 // Moodori's dori-promo claimed at 07:16:55Z, the lead typed two new instructions into it at 07:19 and 07:22 (both
 // SUBMITTED), the lane started on them, and the watch closed it at 07:22:29Z in the middle of that work: five minutes after
 // the claim without an objection. The claim is now taken back when the lead types into the lane (dori type) or the lane
 // runs a new turn after it sat idle: the lane is working again, without a timer, until it claims again.
-export const reopenClaim = async (deps: FlowDeps, lane: Lane, why: string): Promise<string> => {
-  const at = iso(deps.clock);
+export const reopenClaim = (deps: FlowDeps, given: Lane, why: string): Promise<string> => withLaneLifecycle(deps, given.key, async () => {
+  const lane = (await deps.registry.read(given.key)) ?? given, at = iso(deps.clock);
   if (lane.reportProtocol === "jsonl-v1") new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at, state: "running", text: `REOPENED: ${why}` });
   await deps.registry.write(withStatus(lane, "working", `REOPENED: ${why}`, at, { claim: undefined, idleSince: undefined, blocked: undefined, lastReplyAt: deps.clock.now() }));
   return `LANE_CLAIM_REOPENED ${lane.key} ${lane.pane ?? "-"} ${why}`;
-};
+});
 
 // Who closed a closed lane: the watch closes a claim it settled (verified-done just before closed), else dori close did.
 export const closerOf = (lane: Lane): string => {

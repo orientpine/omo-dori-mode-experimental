@@ -1,5 +1,6 @@
 import type { FlowDeps } from "./done-flow.ts";
 import { frozenPanes } from "./frozen.ts";
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 import { listPanes } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { procTable, resolveSession } from "./session-id.ts";
@@ -21,7 +22,7 @@ export const syncRegistry = async (deps: FlowDeps, write: boolean): Promise<Sync
     const hit = pane ? await resolveSession(pane.pane_id, pane.cwd ?? "", table, sessionDeps) : { id: "", via: "none" };
     if (lane.session && hit.id && hit.id !== lane.session) drift.push(`${lane.key}: pane now runs session ${hit.id} (registry has ${lane.session})`);
     if (!lane.done) drift.push(`${lane.key}: empty Done line, so a done claim can never close it`);
-    if (write && hit.id && hit.id !== lane.session) await deps.registry.write({ ...lane, session: hit.id, sessionVia: hit.via });
+    if (write && hit.id && hit.id !== lane.session) await withLaneLifecycle(deps, lane.key, async () => { const fresh = await deps.registry.read(lane.key); if (fresh && fresh.pane === lane.pane && fresh.session !== hit.id) await deps.registry.write({ ...fresh, session: hit.id, sessionVia: hit.via }); });
     rows.push({ key: lane.key, thread: lane.thread, pane: lane.pane ?? "-", session: hit.id ? `${hit.id} (${hit.via})` : (lane.session ?? "-"), status: statusOf(lane) });
   }
   const owned = new Set(lanes.map((l) => l.pane));

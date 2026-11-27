@@ -679,6 +679,30 @@ A pane that is still there but whose agent is gone:
 
 Starts the omo session recorded for a herdr pane (`<stateDir>/herdr-sessions.json`, kept by `dori lead` and `dori watch`) again in that pane with `omo --session-id <id> --model <model> --thinking <level>` (the model and thinking the session ran last, from its log; else the recorded model), waits up to 3 minutes for its `❯` prompt and types TEXT through the `dori type` check: `REVIVE_OK <pane> session <id>` (exit 0), `REVIVE_ALREADY_RUNNING` when an agent runs there, `REVIVE_FAIL ...` (exit 1) when no session is recorded or herdr has no such pane. dori never ends a live herdr agent, so there is no restart of a running one. `self-restart.sh` uses it for a herdr lead.
 
+#### Lane lock entry points (#535)
+
+Every path that changes a lane record takes the lane's lock (`<stateDir>/revive/<key>.lifecycle.lock`, `src/lane-lifecycle.ts`), reads the record again under it, decides and writes; a caller finds a busy lock and waits up to 240 s (a revive holds it at most about 3 minutes). Each row has a test that holds the lock, calls the entry point from another async context, waits for its lock-wait event and changes the record before letting go.
+
+| Entry point | Code | Lane lock | Read again under it | Decides | Writes | Test |
+|---|---|---|---|---|---|---|
+| Every registry write (`Registry.write`, `Registry.patch`) | registry-write.ts `writeLane`, registry.ts `patch` | takes it (`withLaneLock`, re-entrant in its own chain) | yes: the record on disk (`before`); `patch` reads it and merges its fields | an older pane revision keeps the pane on disk; a closed lane stays closed unless a launch or adopt makes it anew | rename | lane-revive-review11 (a write waits for a revive), lane-lock-entrypoints (adopt) |
+| `dori revive <key|pane>`, the watch's auto revive | lane-revive.ts `reviveGoneLane`, lane-death.ts `laneDeathTick` | the whole revive, from the new pane written to its agent ready | yes: closed, moved, other session, a handover, paused (watch only) | refuse, or open the pane | `patch(..., { relocate: true })` | lane-lock-entrypoints (revive waits, refuses a lane closed meanwhile) |
+| Close and its teardown | done-flow-close.ts `closeLane` | runtime close, worktrees and the closed record in one section | yes: a pane a revive wrote is closed too | close the pane the record names now | `write` closed | lane-lock-entrypoints (close) |
+| Watch settle (verified-done) | done-flow.ts `settle` | yes | yes | still done-claimed | `write` | lane-revive-review5 |
+| Watch marks a claim emitted | done-flow.ts `watchTick` | yes | yes | still claimed | `write` | lane-lock-entrypoints (watch) |
+| `dori claim-done` | done-flow-state.ts `claimDone` | yes | yes | paused or not | `write` | lane-lock-entrypoints (claim) |
+| Claim taken back | done-flow-state.ts `reopenClaim` | yes | yes | - | `write` | lane-lock-entrypoints |
+| Not-done objection | done-flow-state.ts `objectDone` | yes | yes | - | `write`, typed into the pane of that record | lane-lock-entrypoints, lane-revive-review11 |
+| `dori pause` | done-flow-state.ts `pauseLane` | yes, with the goal step | yes | status, goal on the pane of that record | `write` | lane-lock-entrypoints, lane-revive-review12 |
+| `dori resume` | done-flow-state.ts `resumeLane` | yes, with the goal step | yes | same | `write` | lane-lock-entrypoints, lane-revive-review12 |
+| `dori handover --lane` (the move) | lane-handover.ts `pointLane` | yes | yes | pane differs | `write` | lane-lock-entrypoints (handover) |
+| The lead handover's note on each lane | handover.ts via lane-lifecycle.ts `noteLaneHistory` | yes | yes | - | `write` | lane-lock-entrypoints |
+| `dori launch` (its final record) | launch.ts via lane-lifecycle.ts `writeOnFresh` | yes | yes: merged onto what sweeps wrote meanwhile | - | `write` | lane-lock-entrypoints |
+| `dori adopt` | launch-state.ts `adoptLane` | through `Registry.write` | a new record (validateLaunch before) | - | `write` relocate | lane-lock-entrypoints (adopt) |
+| `dori sync --write` | sync.ts `syncRegistry` | yes | yes | same pane, new session | `write` | lane-lock-entrypoints (sync) |
+| Card answers of a revived lane | lane-revive.ts (`retargetCards` inside the revive), missed-answers.ts (read only) | the revive's; reconciliation reads only | the moves and the lane | `provenRoute` (the lead's rule) | the card store's own lock | lane-revive-cards-rule |
+| Field patches of sweeps (freshness, autoturn, explore, compaction, intent check, pending goal, died marks, budget, thread, done, gpu, ...) | `Registry.patch` callers | `patch`'s lock | yes, by `patch` | their own fields only (never pane or status) | merge | Registry.patch (lane-revive-review11) |
+
 ### `dori lead`
 Prints `<aoe-id> <tmux-session>` for the lead, followed by ` stopped` when its tmux session is not running (at boot it is not yet; `dori-lead.service` and `dori.sh` start it from the id). The tmux name comes from `DORI_LEAD_TMUX`, else `leadPane` (`DORI_LEAD_PANE` overrides the config). `DORI_LEAD_AOE_ID` is accepted only when its first eight characters match the tmux name's final eight characters; otherwise the id is found with `aoe list --json`. No configured lead, or no matching aoe session (`aoe list` includes stopped ones), exits 1 with a reason. `src/lead.ts` exports `findLead` for other callers.
 

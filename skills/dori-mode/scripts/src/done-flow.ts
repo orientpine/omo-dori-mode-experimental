@@ -66,7 +66,7 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
   for (const listed of await deps.registry.list()) {
     if (statusOf(listed) === "paused" && listed.claim && !listed.claim.emitted) {
       out.push(`LANE_DONE_CLAIMED_PAUSED ${listed.key} ${listed.pane ?? "-"} ${listed.claim.evidence}`);
-      await deps.registry.patch(listed.key, { claim: { ...listed.claim, emitted: true } });
+      await withLaneLifecycle(deps, listed.key, async () => { const fresh = await deps.registry.read(listed.key); if (fresh?.claim) await deps.registry.write({ ...fresh, claim: { ...fresh.claim, emitted: true } }); });
       continue;
     }
     if (statusOf(listed) !== "done-claimed" || !listed.claim) continue;
@@ -74,8 +74,10 @@ export const watchTick = async (given: FlowDeps): Promise<string[]> => {
     const claim = listed.claim;
     if (!claim.emitted) {
       out.push(`LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${claim.evidence}`);
-      lane = { ...lane, claim: { ...claim, emitted: true } };
-      await deps.registry.write(lane);
+      // marked under the lane's lock on the record as it is then: a close, a reopen or a revive since the listing is kept
+      const marked = await withLaneLifecycle(deps, lane.key, async () => { const fresh = await deps.registry.read(lane.key); if (!fresh || statusOf(fresh) !== "done-claimed" || !fresh.claim) return undefined; const next = { ...fresh, claim: { ...fresh.claim, emitted: true } }; await deps.registry.write(next); return next; });
+      if (!marked) continue;
+      lane = marked;
     }
     if (lane.pane && omoPane(deps.config, lane.pane)) {
       const reopened = await claimTurn(deps, lane, lane.claim ?? claim);

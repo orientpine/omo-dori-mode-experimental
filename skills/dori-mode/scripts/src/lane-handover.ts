@@ -8,6 +8,7 @@
 // the new session; the old one stays the lane. Detached jobs (outside the pane's process tree) are listed, never touched.
 // Work a monitor of the old session started (a LAUNCHES_WORK monitor: a chain it put in the background) runs under that
 // monitor, so the old session is frozen instead of closed, its monitors left running, and closes once that work ended.
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
@@ -1129,12 +1130,11 @@ const forwardLate = async (deps: LaneHandoverDeps, facts: LaneFacts, ctx: MoveCo
 };
 
 // The registry entry and the open question cards of the lane follow its pane.
-const pointLane = async (deps: LaneHandoverDeps, key: string, from: string, to: string, why: string, emit: (line: string) => void, model?: Pick<Lane, "model" | "modelPinned">): Promise<void> => {
-  const fresh = await deps.registry.read(key);
+export const pointLane = async (deps: LaneHandoverDeps, key: string, from: string, to: string, why: string, emit: (line: string) => void, model?: Pick<Lane, "model" | "modelPinned">): Promise<void> => {
   // a herdr lane's tab is the new pane's (dori close closes it); the old tab goes with the old session
   const tab = isHerdrPane(to) ? ((await herdrResult(deps.run, ["pane", "get", to]))?.["pane"] as { tab_id?: string } | undefined)?.tab_id : undefined;
-  // a lane that had no model before the move gets none back
-  if (fresh && fresh.pane !== to) await deps.registry.write({ ...(model && !model.model ? (({ model: _had, ...kept }) => kept)(fresh) : fresh), ...model, pane: to, tab, history: [...(fresh.history ?? []), { at: iso(deps.clock), status: statusOf(fresh), note: why }] });
+  // read and written under the lane's lifecycle lock (#535); a lane that had no model before the move gets none back
+  await withLaneLifecycle(deps, key, async () => { const fresh = await deps.registry.read(key); if (fresh && fresh.pane !== to) await deps.registry.write({ ...(model && !model.model ? (({ model: _had, ...kept }) => kept)(fresh) : fresh), ...model, pane: to, tab, history: [...(fresh.history ?? []), { at: iso(deps.clock), status: statusOf(fresh), note: why }] }); });
   const cards = new QuestionStore(deps.cardDir).retarget({ tmux: from }, { tmux: to });
   emit(`HANDOVER_LANE ${key} pane -> ${to}; cards ${cards.length ? cards.join(",") : "none"}`);
 };
