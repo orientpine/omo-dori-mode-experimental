@@ -25,10 +25,11 @@ import { basename, dirname, join } from "node:path";
 import { ChallengeError, checkReviewers, reviewerOrder, reviewers } from "./challenge.ts";
 import { runWithPrompt } from "./config.ts";
 import { laneDirectiveWords } from "./directive-audit.ts";
-import { endedWatch, rearmable, rearmedAs, sameWatch, workEnded } from "./handover-monitors.ts";
+import { endedWatch, rearmable, sameWatch, workEnded } from "./handover-monitors.ts";
+import { replacesWork } from "./handover-ran.ts";
 import { ranToEnd } from "./handover-ran.ts";
 import { allTodos, todoTask } from "./handover-todos.ts";
-import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest, sameCommand } from "./handover.ts";
+import { ackFile, launchOf, LEAD_UNDERSTOOD_HEADINGS, manifestPath, type MonitorSpec, openGoal, readManifest } from "./handover.ts";
 import { type LaneFacts, type LaneHandoverDeps, missingFrom, UNDERSTOOD_HEADINGS } from "./lane-handover.ts";
 import { launchLedger } from "./launch.ts";
 import { beforeGenerated } from "./directives.ts";
@@ -240,8 +241,7 @@ export const armed = (m: MonitorSpec, entries: ReturnType<typeof readManifest>, 
   if (m.ended || endedWatch(m) || done(m)) return true;
   const launch = m.launch ?? (m.command && !rearmable(m.description) ? launchOf(m.command, home) : undefined);
   if (m.command && launch) {
-    return entries.some((e) => ((e.path || (!!e.command && !launchOf(e.command, home))) && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)))
-      || (!!e.command && rearmedAs(m.description, e.description) && !sameCommand(m.command ?? "", e.command, home)));
+    return entries.some((e) => ((e.path || (!!e.command && !launchOf(e.command, home))) && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter))) || replacesWork(m, e, home));
   }
   return entries.some((e) => (m.command ? !!e.command && norm(m.command, home) === norm(e.command, home) : m.path ? !!e.path && norm(m.path, home) === norm(e.path, home) : !!m.description && e.description === m.description));
 };

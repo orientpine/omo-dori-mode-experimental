@@ -174,5 +174,5 @@ test("a work monitor's [rearm] replacement that fired and exited 0 is not missin
   const replacement = { ...watchOnly, description: `${DESC} [rearm]`, command: "until grep -Eo X $HOME/u.json; do sleep 30; done; echo UPDATE_QUIET_456" };
   expect(launchOf(replacement.command, HOME)).toBeDefined();
   expect(missing([gate], [arm(replacement), fired(["UPDATE_QUIET_456", DONE], replacement.description)])).toEqual([]);
-  expect(missing([gate], [arm({ ...replacement, command: OLD }), fired(["UPDATE_QUIET_456", DONE], replacement.description)])).toEqual([`${DESC} (starts work: arm a watch-only one with the same description)`]);
+  for (const own of [OLD, OLD.replace("printf 'UPDATE", () => "printf $'UPDATE")]) expect(missing([gate], [arm({ ...replacement, command: own }), fired(["UPDATE_QUIET_456", DONE], replacement.description)])).toEqual([`${DESC} (starts work: arm a watch-only one with the same description)`]);
 });

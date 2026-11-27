@@ -144,11 +144,13 @@ test("a script fed to a shell with combined options or with its output redirecte
   }
 });
 
-// review 4 of #536: the audit takes a work monitor's [rearm] replacement only when its command is not the work's own,
-// in any spelling the shell runs the same way, as the handover's own check does
-test("the audit counts a work monitor's [rearm] replacement as armed, never its own command quoted otherwise", () => {
-  const job = { description: "job", command: "python3 /tmp/job.py", persistent: true };
-  const as = (command: string) => [{ description: "job [rearm]", command, persistent: true, runtime: { pid: 9 } }] as never;
-  expect(armed(job, as("until test -e /tmp/job.done; do sleep 2; done; echo DONE"), "/home/test")).toBe(true);
-  for (const same of ['python3 "/tmp/job.py"', "python3 '/tmp/job.py'", "python3  /tmp/job.py"]) expect([same, armed(job, as(same), "/home/test")]).toEqual([same, false]);
+// reviews 4 and 5 of #536: the check and the audit take a work monitor's [rearm] replacement only when its command is not
+// the work's own in a spelling they read (quoting they do not model, as $'...', is refused); a marked path watch is one too
+test("the check and the audit count a work monitor's [rearm] replacement as armed, never its own command quoted otherwise", () => {
+  const job = { description: "job", command: "python3 /tmp/job.py", persistent: true, launch: { why: "a command that is not one of the plain watch shapes", writes: [], detached: false } };
+  const as = (e: Record<string, unknown>) => [{ description: "job [rearm]", persistent: true, runtime: { pid: 9 }, ...e }] as never;
+  const both = (e: Record<string, unknown>) => [missingMonitors([job], as(e), () => true, HOME, 0).length === 0, armed(job, as(e), HOME)];
+  expect(both({ command: "until test -e /tmp/job.done; do sleep 2; done; echo DONE" })).toEqual([true, true]);
+  expect(both({ path: "/tmp/job.log", event: "modify" })).toEqual([true, true]);
+  for (const same of ['python3 "/tmp/job.py"', "python3 '/tmp/job.py'", "python3  /tmp/job.py", "python3 $'/tmp/job.py'", 'python3 $"/tmp/job.py"']) expect([same, both({ command: same })]).toEqual([same, [false, false]]);
 });

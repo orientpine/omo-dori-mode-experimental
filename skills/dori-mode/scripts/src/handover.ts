@@ -15,8 +15,8 @@ import type { HandoverWatcher } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type FreezeDeps, type FrozenRecord, type Sig, freezePane, writeFrozen } from "./frozen.ts";
 import { pointInstanceAlerts } from "./handover-alerts.ts";
-import { endedWatch, endOldMonitors, procStart, readText, rearmable, rearmedAs, sameWatch, shellScripts } from "./handover-monitors.ts";
-import { ranToEnd } from "./handover-ran.ts";
+import { endedWatch, endOldMonitors, procStart, readText, rearmable, sameWatch, shellScripts } from "./handover-monitors.ts";
+import { ranToEnd, replacesWork } from "./handover-ran.ts";
 import { foregroundOnly, watchOnly } from "./handover-watch.ts";
 import { missingTodos, OWNER_HOURS, type OwnerWord, recentOwnerWords, todoTask } from "./handover-todos.ts";
 import { leadMovedText, noteLaneTell } from "./lane-tells.ts";
@@ -262,7 +262,7 @@ export const shellWords = (text: string): string[] | undefined => {
   };
   for (let i = 0; i < text.length; ) {
     const c = text[i] ?? "";
-    if (c === "'") {
+    if (c === "$" && /['"]/.test(text[i + 1] ?? "")) return undefined; else if (c === "'") { // $'...' and $"..." are not read
       const end = text.indexOf("'", i + 1);
       if (end < 0) return undefined;
       cur += text.slice(i + 1, end);
@@ -367,7 +367,7 @@ export const missingMonitors = (wanted: readonly MonitorSpec[], entries: readonl
     if (m.command && launch) {
       const command = m.command;
       const watchOnly = live.some((e) => ((e.path || (!!e.command && !launchOf(e.command, home))) && (sameWatch(m.description, e.description) || (!!m.filter && e.filter === m.filter)))
-        || (!!e.command && rearmedAs(m.description, e.description) && !same(command, e.command)));
+        || replacesWork(m, e, home));
       if (!watchOnly) out.push(live.some((e) => !!e.command && same(command, e.command)) ? `${name} (armed again with the command that starts work; arm a watch-only one instead)` : `${name} (starts work: arm a watch-only one with the same description)`);
       continue;
     }
