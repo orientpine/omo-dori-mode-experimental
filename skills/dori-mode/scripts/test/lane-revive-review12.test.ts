@@ -46,7 +46,8 @@ test("the watch's revive gives way to a pause made while the new terminal is mad
       }
     },
   });
-  await deps(T0).registry.write(laneOf(state.dir));
+  // its own pane: dori watch keeps the first not-live time of each pane in memory, shared by every test file in one run
+  await deps(T0).registry.write(laneOf(state.dir, { pane: "hc:t91" }));
   await watchTick(deps(T0));
   // When: the confirming tick revives
   const out = (await watchTick(deps(T0 + 30_000))).filter((l) => /^(LANE_|REVIVE_)/.test(l));
@@ -54,7 +55,7 @@ test("the watch's revive gives way to a pause made while the new terminal is mad
   expect(out.some((l) => l.startsWith("LANE_REVIVED"))).toBe(false);
   expect(fake.sent.length).toBe(0);
   const after = await deps(T0).registry.read("h3-charsheet");
-  expect([after && statusOf(after), after?.pane]).toEqual(["paused", "hc:t27"]);
+  expect([after && statusOf(after), after?.pane]).toEqual(["paused", "hc:t91"]);
   // and the lead's own dori revive of the paused lane opens it
   expect(await reviveTarget(deps(T0), "h3-charsheet", "")).toStartWith("REVIVE_OK h3-charsheet");
 });
