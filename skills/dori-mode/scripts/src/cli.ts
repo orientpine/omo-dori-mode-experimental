@@ -63,7 +63,10 @@ const deps: FlowDeps = {
   openCards: (ref: string) => (ref.startsWith("discord:") ? openCardIds(new QuestionStore(cardDir()), discordThreadId(ref)) : []),
   answeredCards: () => new QuestionStore(cardDir()).all().filter((q) => q.status === "answered"),
   answerHistory: () => readAnswerHistory(new QuestionStore(cardDir()).answersFile),
-  retargetCards: (from: string, to: string) => new QuestionStore(cardDir()).retarget({ tmux: from }, { tmux: to }, true),
+  retargetCards: (from: string, to: string, session: string) => {
+    const store = new QuestionStore(cardDir());
+    return { moved: store.retarget({ tmux: from, session }, { tmux: to, session }, true), left: store.all().filter((q) => q.tmux === from && (q.status === "open" || q.status === "answered")) };
+  },
   ...(discordToken
     ? {
         markThreadDone: async (ref: string) => {

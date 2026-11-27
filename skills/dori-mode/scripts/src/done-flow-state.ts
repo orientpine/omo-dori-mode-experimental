@@ -33,7 +33,7 @@ export type FlowDeps = {
   readonly answeredCards?: () => readonly Question[];
   // immutable versions from answers.jsonl, including cards since reopened or resolved
   readonly answerHistory?: () => readonly Question[];
-  readonly retargetCards?: (from: string, to: string) => readonly string[]; // a revived lane's cards follow its pane (cli: the card store)
+  readonly retargetCards?: (from: string, to: string, session: string) => { readonly moved: readonly string[]; readonly left: readonly Question[] }; // a revived lane's own-session cards follow its pane; the rest stay (cli: the card store)
   // asks the thread status queue for a status on a discord:<id> work thread; the queue keeps it working while a lane there
   // still works. Resolves with the queue's outcome (cli wires it when DORI_DISCORD_TOKEN is set)
   readonly requestThreadStatus?: (ref: string, status: "working" | "waiting") => Promise<string>;

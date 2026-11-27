@@ -101,7 +101,7 @@ test("the lane's open cards and the cards answered while its pane was gone follo
   const open = store.create("which pose set?", ["a", "b"], "1", { tmux: "hc:t27", session: SESSION }, new Date(T0).toISOString());
   const answered = store.create("keep the GPU off?", ["yes", "no"], "1", { tmux: "hc:t27", session: SESSION }, new Date(T0).toISOString());
   store.answer(answered.id, "yes", "button", new Date(T0).toISOString());
-  const { deps } = reviveRig(state.dir, { patch: { retargetCards: (from, to) => store.retarget({ tmux: from }, { tmux: to }, true) } });
+  const { deps } = reviveRig(state.dir, { patch: { retargetCards: (from, to, session) => ({ moved: store.retarget({ tmux: from, session }, { tmux: to, session }, true), left: [] }) } });
   const d = deps(T0);
   await d.registry.write(laneOf(state.dir));
   // When

@@ -12,7 +12,8 @@ import { frozenPanes } from "./frozen.ts";
 import { closeHerdrSession, HerdrStartupError, isHerdrPane, openHerdrSession } from "./herdr.ts";
 import { laneHomeEnv } from "./home-env.ts";
 import { pendingFile, splitModel } from "./lane-handover.ts";
-import { sendVerified } from "./panes.ts";
+import { sendVerified, submitToPane } from "./panes.ts";
+import type { Question } from "./messenger/discord-cards.ts";
 import { recordMove, withLaneLifecycle } from "./lane-lifecycle.ts";
 import { LANE_KEY, type Lane, statusOf } from "./registry.ts";
 import { execOf, type Runner } from "./run.ts";
@@ -72,6 +73,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
     const argv = herdrAgentArgv(config.agentCommand, base, thinking, session);
     const env = { ...laneEnv(config.launchEnv, now.useGpu), ...home, PATH: agentPath(config.agentCommand[0] ?? "omo") };
     let published: string | undefined;
+    let left: readonly Question[] = [];
     const opened = await openHerdrSession(deps.run, deps.clock, {
       title: now.key,
       cwd,
@@ -85,7 +87,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
           await deps.registry.patch(now.key, { pane, tab });
           recordMove(config.stateDir, { key: now.key, session, from: gone, to: pane, at: new Date(deps.clock.now()).toISOString() });
           published = pane;
-          deps.retargetCards?.(gone, pane);
+          left = deps.retargetCards?.(gone, pane, session).left ?? [];
         }),
     }).catch((e: unknown) => (e instanceof Error ? e : new Error(String(e))));
     if (opened instanceof Error) {
@@ -100,12 +102,18 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
         if (!after || statusOf(after) === "closed" || after.pane !== back) return;
         recordMove(config.stateDir, { key: now.key, session, from: back, to: gone, at: new Date(deps.clock.now()).toISOString() });
         await deps.registry.patch(now.key, { pane: gone, tab: now.tab });
-        deps.retargetCards?.(back, gone);
+        deps.retargetCards?.(back, gone, session);
       });
       return fail(`the agent's start in ${published} failed and that pane was closed (${why}); the record names ${gone} again`);
     }
     const { pane } = opened;
-    const done = `${now.key} ${pane} session ${session} (pane ${gone} was gone)`;
+    // the lead's rule (2026-11-27): a card not on the lane's session stays in the gone pane with its answer, and the lead is
+    // told which, one line each, to type it into the lane by hand
+    for (const q of left) {
+      const what = q.status === "answered" ? `답 "${q.answer ?? ""}"는` : "아직 답 없는 카드는";
+      if (config.leadPane) await submitToPane(deps.run, deps.clock, config, config.leadPane, `[DORI] 레인 ${now.key} 새 창 ${pane}: 카드 ${q.id}(${q.text.slice(0, 60)}) ${what} 옛 창 ${gone}에 그대로 뒀어(${q.session ? "다른 세션의 카드" : "카드에 세션 기록 없음"}) — 레인에 손으로 넣어 줘`);
+    }
+    const done = `${now.key} ${pane} session ${session} (pane ${gone} was gone${left.length ? `; ${left.length} card${left.length > 1 ? "s" : ""} left to the lead` : ""})`;
     for (let i = 0; i < 90; i++) {
       const latest = await deps.registry.read(now.key);
       if (!latest || statusOf(latest) === "closed") return fail(`the lane was closed while ${pane} started (the close closes ${pane})`);

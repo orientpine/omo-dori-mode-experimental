@@ -29,7 +29,20 @@ const allMoves = (stateDir: string): PaneMove[] => {
     }
   });
 };
-export const movesFrom = (stateDir: string, pane: string): PaneMove[] => allMoves(stateDir).filter((m) => m.from === pane);
+// The lead's rule for a revived lane's cards (2026-11-27): an answer asked from pane `from` goes on to the lane's pane by
+// itself only when the lane's moves, walked in order from the first one leaving `from`, all stay on the lane's session,
+// none branches off the walk, and the walk ends on the lane's pane now. Anything else is doubt: the answer stays.
+export const provenRoute = (stateDir: string, lane: { readonly key: string; readonly pane?: string | undefined; readonly session?: string | undefined }, from: string): boolean => {
+  const mine = allMoves(stateDir).filter((m) => m.key === lane.key);
+  const start = mine.findIndex((m) => m.from === from);
+  if (start < 0 || !lane.session || !lane.pane) return false;
+  let at = from;
+  for (const m of mine.slice(start)) {
+    if (m.from !== at || m.session !== lane.session) return false;
+    at = m.to;
+  }
+  return at === lane.pane;
+};
 // A record read before a revive and written back after it would name the pane the lane was revived away from (the watch's
 // settle and not-done writes, a pause: review 8 of #535). Registry.write keeps the revived pane then: true when the lane's
 // latest move ended on the pane on disk and some move left the pane being written (A to B to C, then an old read naming A;

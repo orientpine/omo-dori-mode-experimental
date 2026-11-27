@@ -16,7 +16,7 @@ import { sendVerified } from "./panes.ts";
 import { answeredBy } from "./send-dedupe.ts";
 import { iso } from "./run.ts";
 import { type Lane, statusOf } from "./registry.ts";
-import { movesFrom } from "./lane-lifecycle.ts";
+import { provenRoute } from "./lane-lifecycle.ts";
 import { procTable } from "./session-id.ts";
 import type { Proc } from "./session-id.ts";
 
@@ -97,10 +97,17 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
     // Inbox ts is written after QuestionStore.answer. Pick the last version at that instant, never today's live card.
     const version = row.qid ? history.filter((q) => q.id === row.qid && Date.parse(q.answeredAt ?? "") <= row.at).sort((a, b) => Date.parse(b.answeredAt ?? "") - Date.parse(a.answeredAt ?? ""))[0] : undefined;
     const asked = row.qid ? version?.tmux || cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
-    // a pane a lane was revived away from (lane-lifecycle moves) is asked through that lane's live pane now, so its live
-    // session (a /clear there, its successors) is read as any asking pane's is (review 9 of #535)
-    if (row.qid && asked !== lead.pane && !sessionFor(sessions, asked) && movesFrom(deps.config.stateDir, asked).length) archived ??= await deps.registry.list();
-    const forward = archived && row.qid && asked !== lead.pane && !sessionFor(sessions, asked) ? archived.find((l) => statusOf(l) !== "closed" && l.pane && sessionFor(sessions, l.pane) && movesFrom(deps.config.stateDir, asked).some((m) => m.key === l.key && [l.session, ...(l.priorSessions ?? [])].includes(m.session)))?.pane : undefined;
+    // a pane a lane was revived away from: asked through that lane's live pane only on the lead's rule (provenRoute), the
+    // card on the lane's session and that pane's live agent still on it (no /clear); any doubt leaves the answer waiting,
+    // which tells the lead (2026-11-27)
+    let forward: string | undefined;
+    if (row.qid && version?.session && asked !== lead.pane && !sessionFor(sessions, asked)) {
+      archived ??= await deps.registry.list();
+      const lane = archived.find((l) => statusOf(l) !== "closed" && l.session === version.session && provenRoute(deps.config.stateDir, l, asked));
+      const cwd = lane?.pane ? sessionFor(sessions, lane.pane)?.path : undefined;
+      const live = lane?.pane && cwd ? await sessionFile(deps.run, deps.config.sessionsDir, lane.pane, cwd, table, deps.config.stateDir) : undefined;
+      if (live?.path.endsWith(`_${lane?.session}.jsonl`)) forward = lane?.pane;
+    }
     const target = forward ?? asked;
     const session = sessionFor(sessions, target), key = session || target === lead.pane ? target : `${target}\0${row.at}`;
     if (!transcripts.has(key)) {
@@ -116,23 +123,7 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
           if (path) file = { path };
         }
       }
-      const moves = !file && !session && target !== lead.pane ? movesFrom(deps.config.stateDir, target) : [];
-      let also = "";
-      if (moves.length) {
-        // a lane revived away from this pane (lane-revive.ts records each move) asked it, open or closed since, for a lane
-        // open when the answer came; a card's own session may be empty. The moved session and the lane's session now (a
-        // handover after the revive) are read, each found as its agent writes it (agentCommand: --session-dir) (#535)
-        archived ??= await deps.registry.list();
-        const sessionsOf = (l: Lane): string[] => [l.session ?? "", ...(l.priorSessions ?? [])].filter(Boolean);
-        const revived = archived.filter((l) => moves.some((m) => m.key === l.key && sessionsOf(l).includes(m.session)) && Date.parse(l.openedAt) <= row.at && (!l.closedAt || row.at <= Date.parse(l.closedAt))).sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt))[0];
-        const cwd = revived?.cwd;
-        const ids = revived ? [...new Set([...moves.filter((m) => m.key === revived.key).map((m) => m.session), ...sessionsOf(revived)])] : [];
-        const logs = cwd ? ids.flatMap((id) => argvSessionLog(deps.config.agentCommand, deps.config.sessionsDir, cwd, id) ?? []) : [];
-        if (logs[0]) file = { path: logs[0] };
-        also = logs.slice(1).map((path) => currentTranscript({ path }, "")).join("\n");
-      }
-      const own = file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "";
-      transcripts.set(key, { text: also ? `${own}\n${also}` : own, ...(file ? { path: file.path } : {}) });
+      transcripts.set(key, { text: file ? target === lead.pane && lead.text !== undefined ? lead.text : currentTranscript(file, session?.title ?? "") : "", ...(file ? { path: file.path } : {}) });
     }
     const current = transcripts.get(key), transcript = current?.text ?? "";
     if (row.qid && sawAnswer(transcript, row.qid, row, version?.answeredAt ?? cardById.get(row.qid)?.answeredAt)) continue; if (discordAnswered(transcript, row)) continue;
