@@ -30,7 +30,7 @@ import { TokenFileError } from "./slack-token.ts";
 // handover in between wins and the new pane is closed unused. A start that fails puts the gone pane back only when the new
 // pane was confirmed closed; else the record keeps naming it, so nothing opens the conversation twice. No prompt unless the
 // caller gives one: the lane comes back where it stood, and is never told to start work again. One revive per lane (a lock).
-export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string): Promise<string> => {
+export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string, auto = false): Promise<string> => {
   const { config } = deps;
   const gone = lane.pane ?? "";
   const fail = (why: string): string => `REVIVE_FAIL ${lane.key}: ${why}`;
@@ -55,7 +55,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
   }
   try {
     // the lane as it stands now: another revive, a handover or a close may have moved it since it was read
-    const moved = (l: Lane | null): string | undefined => (!l ? "not recorded" : statusOf(l) === "closed" || l.pane !== gone || l.session !== session ? `${statusOf(l)} in ${l.pane ?? "no pane"}` : undefined);
+    const moved = (l: Lane | null): string | undefined => (!l ? "not recorded" : statusOf(l) === "closed" || (auto && statusOf(l) === "paused") || l.pane !== gone || l.session !== session ? `${statusOf(l)} in ${l.pane ?? "no pane"}` : undefined);
     // a handover of the lane (running, one that froze the gone pane, or an interrupted one whose journal is left for its
     // repair, whose owner may be dead) moves the lane itself: a revive then opens nothing, read again right before the new
     // pane is written (reviews 4 and 5 of #535)

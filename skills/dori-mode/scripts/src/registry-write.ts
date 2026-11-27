@@ -22,7 +22,8 @@ export const writeLane = (dir: string, path: string, read: (key: string) => Prom
     if (prior.length) lane = { ...lane, priorSessions: prior };
     const rev = before?.paneRev ?? 0;
     if (opts.relocate) lane = { ...lane, paneRev: rev + 1 };
-    else if (before && (lane.paneRev ?? 0) < rev) lane = { ...lane, pane: before.pane, tab: before.tab, paneRev: rev };
+    // nor does such an old read open again a lane closed since (review 12 of #535)
+    else if (before && (lane.paneRev ?? 0) < rev) lane = { ...lane, pane: before.pane, tab: before.tab, paneRev: rev, ...(before.closedAt && !lane.closedAt ? { closedAt: before.closedAt, status: before.status, receipt: before.receipt, history: before.history } : {}) };
     lane = upgrade(lane);
     const tmp = `${path}.${process.pid}.tmp`;
     await Bun.write(tmp, JSON.stringify(lane, null, 1));

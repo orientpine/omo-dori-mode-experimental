@@ -168,7 +168,7 @@ export const laneDeathTick = async (deps: FlowDeps): Promise<string[]> => {
     const lead = deps.config.leadPane;
     const at = new Date(now).toISOString();
     if (revivable) {
-      const revived = await reviveGoneLane(deps, lane, "");
+      const revived = await reviveGoneLane(deps, lane, "", true);
       if (revived.startsWith("REVIVE_OK ")) {
         notLive.delete(pane);
         const fresh = /^REVIVE_OK \S+ (\S+)/.exec(revived)?.[1] ?? "";

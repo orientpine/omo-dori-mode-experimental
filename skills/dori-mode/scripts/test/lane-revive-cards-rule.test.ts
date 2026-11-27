@@ -49,7 +49,7 @@ test("at a revive only the cards of the lane's own session follow it; a card wit
 type Doubt = "none" | "clear" | "stale-env" | "no-session" | "broken";
 
 // an answer asked from a pane the lane was revived away from, delivered (or not) in the revived pane's live session
-const reconcile = async (doubt: Doubt): Promise<string[]> => {
+const reconcile = async (doubt: Doubt, direct = false): Promise<string[]> => {
   const t = Date.parse("2026-01-01T12:00:00Z"), min = 60_000;
   const old = "11111111-1111-1111-1111-111111111111", current = "22222222-2222-2222-2222-222222222222", leadId = "99999999-9999-9999-9999-999999999999";
   const gone = "aoe_Gone_11112222", pane = "aoe_Asking_fedcba09", lead = "aoe_Dori_0a1b2c3d", cwd = "/home/test/asking", leadCwd = "/home/test/dori", owner = "100000000000000001";
@@ -67,9 +67,13 @@ const reconcile = async (doubt: Doubt): Promise<string[]> => {
   store.answer(first.id, "yes", "button", iso(t));
   store.answer(second.id, "yes", "button", iso(t + min));
   store.resolve(first.id);
+  // direct: a third card asked from the revived pane itself on its session now, its answer read there
+  const third = direct ? store.create("third?", ["yes"], "CARD", { tmux: pane, thread: "CARD", session: current }, iso(t)) : undefined;
+  if (third) store.answer(third.id, "yes", "button", iso(t + 30_000));
   const delivered = { id: "answer-delivered", ts: iso(t + 300), kind: "answer", qid: first.id, tmux: gone, thread: "CARD", scope: "thread", channel_id: "CARD", author_id: owner, answer: "yes" };
   const pending = { ...delivered, id: "answer-pending", ts: iso(t + min + 300), qid: second.id };
-  const log = (id: string, ts: number, withAnswer: boolean) => [{ type: "session", id, cwd, timestamp: iso(ts) }, { type: "session_info", name: "Asking" }, ...(withAnswer ? [{ type: "custom_message", customType: "senpi-monitor:notification", content: JSON.stringify(delivered) }] : [])].map((e) => JSON.stringify(e)).join("\n");
+  const thirdRow = third ? [{ ...delivered, id: "answer-third", ts: iso(t + 30_300), qid: third.id, tmux: pane }] : [];
+  const log = (id: string, ts: number, withAnswer: boolean) => [{ type: "session", id, cwd, timestamp: iso(ts) }, { type: "session_info", name: "Asking" }, ...(withAnswer ? [delivered, ...thirdRow].map((row) => ({ type: "custom_message", customType: "senpi-monitor:notification", content: JSON.stringify(row) })) : [])].map((e) => JSON.stringify(e)).join("\n");
   writeFileSync(oldPath, log(old, t - 2 * min, reader === old));
   // a newer same-title log exists only after a /clear
   if (cleared) writeFileSync(currentPath, log(current, t + 2 * min, reader === current));
@@ -83,7 +87,7 @@ const reconcile = async (doubt: Doubt): Promise<string[]> => {
   world.agentStart = new Date(t - 2 * min).toUTCString();
   world.ps = `10 1 /bin/bash\n11 10 /x/senpi/dist/bundle/cli.js --session-id ${leadId}\n20 1 /bin/bash\n21 20 /x/senpi/dist/bundle/cli.js --session-id ${old}\n22 21 /bin/sleep 100\n`;
   const inbox = join(state.dir, "inbox.jsonl");
-  writeFileSync(inbox, [delivered, pending].map((row) => JSON.stringify(row)).join("\n"));
+  writeFileSync(inbox, [delivered, pending, ...thirdRow].map((row) => JSON.stringify(row)).join("\n"));
   const base = depsFor(world, fakeClock(t + 20 * min), state.dir, { backend: "aoe", leadPane: lead, sessionsDir, leadInboxMin: 0 });
   const run: FlowDeps["run"] = async (argv, opts) =>
     argv[0] === "tmux" && argv[1] === "display-message" && argv.some((a) => a.includes(pane)) ? { code: 0, out: "20", err: "" }
@@ -107,4 +111,10 @@ test.each<[string, Doubt]>([
   ["a move record that does not reach the lane's pane", "broken"],
 ])("on doubt (%s) the answer is not taken as delivered: it stays waiting for the lead", async (_name, doubt) => {
   expect(await reconcile(doubt)).toEqual(["LEAD_OWNER_WAITING aoe_Dori_0a1b2c3d 2 owner message(s)"]);
+});
+
+test("a doubtful forwarded answer leaves the revived pane's own transcript as it is for a card asked there", async () => {
+  // Given / When: after a /clear the children still name, one card asked from the gone pane (forwarded, then doubt) and one asked from the revived pane itself
+  // Then: the gone pane's two wait; the revived pane's own answer counts as read there
+  expect(await reconcile("stale-env", true)).toEqual(["LEAD_OWNER_WAITING aoe_Dori_0a1b2c3d 2 owner message(s)", "answer-third"]);
 });

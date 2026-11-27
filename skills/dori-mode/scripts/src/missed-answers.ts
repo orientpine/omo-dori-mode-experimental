@@ -109,7 +109,8 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
       if (live?.path.endsWith(`_${lane?.session}.jsonl`)) [forward, forwardSession] = [lane?.pane, lane?.session];
     }
     const target = forward ?? asked;
-    const session = sessionFor(sessions, target), key = session || target === lead.pane ? target : `${target}\0${row.at}`;
+    // a forwarded row is cached apart: its check of the lane's session must not empty the pane's own transcript (review 12)
+    const session = sessionFor(sessions, target), key = forwardSession ? `${target}\0${forwardSession}` : session || target === lead.pane ? target : `${target}\0${row.at}`;
     if (!transcripts.has(key)) {
       const cwd = session?.path;
       let file = target === lead.pane ? { path: lead.path } : cwd ? await sessionFile(deps.run, deps.config.sessionsDir, target, cwd, table, deps.config.stateDir) : undefined;
