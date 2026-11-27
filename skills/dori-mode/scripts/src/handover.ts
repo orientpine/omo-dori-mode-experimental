@@ -854,7 +854,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     record("rolled-back", checked.reasons);
     return { code: 3, note, to: pane };
   }
-  new QuestionStore(deps.cardDir).retarget({ tmux: config.leadPane, ...(facts.from.session && checked.session ? { session: facts.from.session } : {}) }, { tmux: pane, ...(checked.session ? { session: checked.session } : {}) });
+  const store = new QuestionStore(deps.cardDir); store.retarget({ tmux: config.leadPane }, { tmux: pane }); if (facts.from.session && checked.session) store.retarget({ session: facts.from.session }, { session: checked.session }); // the old lead's pane is the lead's alone: every card on it moves, one asked with no session while the checks ran too; then the old session's cards take the new one (retarget matches a pane only with its session since #535)
   // committed: the old lead is frozen, not closed, so it spends no tokens and does nothing while its pane and log stay.
   // work a monitor of the old lead started goes on: those monitors are not stopped, and the session closes once it ended
   const work = facts.from.session ? monitorWork(readManifest(manifestPath(config.sessionsDir, facts.from.cwd, facts.from.session)), await deps.procs(), deps.clock.now(), deps.alive, deps.home).filter((j) => j.pids.length > 0) : [];
