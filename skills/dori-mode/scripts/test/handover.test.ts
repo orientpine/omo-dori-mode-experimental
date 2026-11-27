@@ -457,7 +457,7 @@ test("an old lead that cannot be frozen (no agent under its pane) is closed as b
   expect(r).toMatchObject({ code: 0, to: NEW });
   expect(sigs).toEqual(["SIGSTOP 11", "SIGSTOP 12", "SIGSTOP 13"]);
   expect(stopped()).toBe(false);
-  expect(readFrozen(state.dir)[0]?.closeAt).toBeUndefined();
+  expect([readFrozen(state.dir)[0]?.closeAt, quietReason(state.dir, OLD, kept.clock.now())?.startsWith(`HANDOVER_QUIET ${OLD}: the handover of the lead to ${NEW}`)]).toEqual([undefined, true]);
   expect(printed.some((l) => l.startsWith(`HANDOVER_OLD_FROZEN ${OLD}`) && l.includes("kept until closed by hand"))).toBe(true);
 });
 
@@ -641,20 +641,20 @@ test("the lead's own approval without a signal gets the one freshness measured f
   expect(due.code).not.toBe(2);
 });
 
-test("the old lead is quiet from the moment the new lead takes over until the checks end, then the log has the rollover", async () => {
+test("the old lead keeps answering the owner until the move commits (ZzangDori 2026-11-26: two ~16 min checks without a reply), then the log has the rollover", async () => {
   // Given
   const deps = await setup();
   const quietSeen: (string | undefined)[] = [];
   const sleep = deps.clock.sleep;
-  const watched = { ...deps, clock: { ...deps.clock, sleep: async (ms: number) => { quietSeen.push(quietReason(state.dir, OLD, deps.clock.now())); await sleep(ms); } } };
+  const watched = { ...deps, clock: { ...deps.clock, sleep: async (ms: number) => { if (!sent(w).some((t) => t.includes("HANDOVER_COMMITTED:"))) quietSeen.push(quietReason(state.dir, OLD, deps.clock.now())); if (printed.some((l) => l.startsWith("HANDOVER_CARDS")) && !new QuestionStore(join(state.dir, "discord")).get("Q2")) new QuestionStore(join(state.dir, "discord")).create("Asked while the checks ran?", ["yes", "no"], "1", { thread: "9", tmux: OLD }, "2026-10-11T00:00:00Z"); await sleep(ms); } } };
   // When
   const r = await handover(watched, { title: "lead2", approvedBy: APPROVED });
   // Then
   expect(r).toMatchObject({ code: 0, to: NEW });
   expect(quietSeen.length).toBeGreaterThan(0);
-  expect(quietSeen.every((q) => q?.startsWith(`HANDOVER_QUIET ${OLD}: the handover of the lead to ${NEW} is running`))).toBe(true);
+  expect([quietSeen.filter(Boolean), sent(w).find((t) => t.startsWith(`[LEAD] Handover to ${NEW} started`))?.includes("keep answering the owner's messages")]).toEqual([[], true]);
   expect(quietReason(state.dir, OLD, deps.clock.now())).toBeUndefined();
-  expect(quietReason(state.dir, NEW, deps.clock.now())).toBeUndefined();
+  expect([quietReason(state.dir, NEW, deps.clock.now()), new QuestionStore(join(state.dir, "discord")).get("Q2")?.tmux]).toEqual([undefined, NEW]);
   const log = readRollovers(state.dir);
   expect(log[0]).toMatchObject({ kind: "rollover", who: "lead", key: "lead", from: OLD, to: NEW, approvedBy: APPROVED, result: "done-frozen", frozen: { pids: 3, closeAt: "2026-10-12T16:35:00.000Z" } });
   expect(log[0]?.kind === "rollover" && log[0].steps.map((s) => s.step)).toEqual(["open", "startup", "repoint", "verify", "freeze"]);

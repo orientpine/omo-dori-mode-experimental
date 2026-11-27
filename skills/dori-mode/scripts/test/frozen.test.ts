@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import { agentTree, closeDueFrozen, closeFrozen, type FrozenRecord, readFrozen, replacementOf, thawFrozen, writeFrozen } from "../src/frozen.ts";
 import { deadPaneTick, newDeadPaneState } from "../src/dead-panes.ts";
+import { ownerQuiet } from "../src/handover-drain.ts";
 import { syncRegistry } from "../src/sync.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, withState, type World } from "./fakes.ts";
 
@@ -48,6 +49,18 @@ test("a frozen old lead is closed only once its close time passed: resumed child
   expect(sigs).toEqual(["SIGCONT 13", "SIGCONT 12", "SIGCONT 11"]);
   expect(w.calls.some((c) => c[0] === "aoe" && c[1] === "rm" && c[2] === OLD_ID)).toBe(true);
   expect(readFrozen(state.dir)).toEqual([]);
+});
+
+test("a frozen old lead stays quiet while it is resumed to be closed, so a dori send it was stopped in cannot reach the owner beside the new lead (review 8 of #533)", async () => {
+  // Given a frozen old lead whose move committed (its quiet mark gone), and what a resumed dori command of it would read
+  writeFrozen(state.dir, rec());
+  const at = Date.parse("2026-10-12T16:35:00Z");
+  const seen: (string | undefined)[] = [];
+  const deps = { run: fakeRunner(w), procs: async () => [], signal: (pid: number, sig: "SIGSTOP" | "SIGCONT") => (sig === "SIGCONT" && seen.push(ownerQuiet(state.dir, OLD, at)), signal(pid, sig)) };
+  // When
+  await closeDueFrozen(deps, state.dir, at);
+  // Then each resume met a refusal, and the pane may talk again once the close removed the record
+  expect([seen.length, seen.every((q) => q?.startsWith(`HANDOVER_QUIET ${OLD}:`)), ownerQuiet(state.dir, OLD, at)]).toEqual([3, true, undefined]);
 });
 
 test("a frozen session kept by hand is never closed by the clock; one already gone only loses its record; thaw resumes and forgets it", async () => {

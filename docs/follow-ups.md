@@ -188,3 +188,10 @@ Upstream sisyphuslabs/dori-superagent#283 (carries #266) reads an omo-host lane'
 
 What would close it: read the open question from the lane's session file instead of its screen. senpi writes `{"type":"custom","customType":"ask-user:question","data":{"requestId":...}}` when the overlay opens and a `toolResult` with `toolName: "ask_user_question"` and that `toolCallId` when it is answered (a real capture is in the #523 lane's QA folder). An open question is a requestId with no result; its identity is the requestId, so the same wording twice is two questions. freshness counts it as what the lane waits on for that sweep (no nudge, no STALLED, nothing journaled), and blockedTick tells `LANE_BLOCKED question` once per requestId. It needs a rule for a record with no result that will never get one (the session died, the question was cancelled, the lane restarted), e.g. only while the session's last entry is that question or the agent process is alive, so an orphan record cannot hold off nudges for good. Separately, a nudge refused as `PANE_BLOCKED` should not set `lastNudgeAt`, so a lane whose question was missed still gets its nudge once it closes.
 
+
+## Lead handover: what the old lead's settle does not cover (#533)
+
+Since #533 the old lead answers the owner until the commit and is frozen only at rest (no turn on its screen, every card claim and its pane's admission lock taken), else the move rolls back. Left out:
+- A new reply turn can start between the last screen read and the freeze. Its `dori send` meets the quiet mark and is refused, so nothing goes out half sent, but the owner row it was answering is left to the new lead, which hears the same inbox. What would close it: a cooperative stop at the inbox and agent boundary (the old lead is told to stop taking rows and says when it did), instead of reading its screen.
+- Lane handovers keep their quiet mark from the start of the checks; only the lead's move was changed.
+- On a rollback, owner rows only the new session heard are not handed to the old lead. It matters only while the old lead's own inbox monitor is down, which `LEAD_INBOX_UNHEARD` already reports.

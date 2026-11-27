@@ -75,6 +75,7 @@ const questionsCommand: Command = async (context) => {
 const reopenCommand: Command = async (context) => {
   const { key } = context;
   const { questionCards, discordClient } = makeDiscordDeps(context);
+  await makeHandoverDeps(context).quietGuard();
   console.log(`REOPENED ${(await questionCards(discordClient()).reopen(key ?? die("reopen needs a question id"))).id}`);
   return;
 };
@@ -82,6 +83,7 @@ const reopenCommand: Command = async (context) => {
 const resolveCommand: Command = async (context) => {
   const { key, opt } = context;
   const { questionCards, discordClient } = makeDiscordDeps(context);
+  await makeHandoverDeps(context).quietGuard();
   const id = key ?? die("resolve needs a question id");
   const resolved = (await questionCards(discordClient()).resolve(id, opt("answer"))) ?? die(`no question ${id}`);
   console.log(`RESOLVED ${id} ${resolved}`);

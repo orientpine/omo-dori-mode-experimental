@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { captureTmux, closeAoeSession, inputLine, isClosedLine, laneEnv, liveSessions, openAoeSession, sessionFor } from "./aoe.ts";
 import { rollBackNew } from "./handover-rollback.ts";
+import { settleOldLead } from "./handover-drain.ts";
 import { strayTasks, taskRecords } from "./background.ts";
 import { laneHomeEnv } from "./home-env.ts";
 import type { HandoverWatcher } from "./config.ts";
@@ -29,7 +30,7 @@ import { iso, openingRuntime } from "./run.ts";
 import { leadUnmovable } from "./lead-ref.ts";
 import { descendants, ended, hasSessionSelector, type Proc, sessionDirFor } from "./session-id.ts";
 import { flat, missingHeadings, quoted, ROUND_TRIES } from "./restatement.ts";
-import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFile, type Signals, sessionSignals, setQuiet, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
+import { appendRollover, approvalProblem, autoReason, type Candidate, clearQuiet, COMMITTED, decidedBy, filledApproval, inboxMessages, measuredSignal, LEAD_PREFIX, lastProposal, limitsFor, ownerQuotes, ownerRolloverText, readRollovers, reportToOwner, rolloverCause, sessionFile, type Signals, sessionSignals, type Step, type Supplement, takeAutoGrant, userLines } from "./rollover.ts";
 import { turnRunning } from "./submit.ts";
 import { watchLog } from "./watch-log.ts";
 import { type WorklogFacts, worklogFacts, worklogSection } from "./worklog-notes.ts";
@@ -423,8 +424,8 @@ export const renderNote = (f: HandoverFacts, at: string): string => [
   "1. Arm every monitor under Monitors again as a persistent monitor, with the same command and filter; one marked LAUNCHES_WORK gets the watch-only monitor its line describes instead, never its own command; one marked ENDED is not armed. Take each command, filter and description from its line under Monitors, where they are JSON strings: put them into the tool call as they are (a JSON string is a valid JS string), not retyped and not from the conversation summary, where a copy can differ. Arm each one once. Start each watcher under Watchers that says how. Put every line under Todos left in the old session into your todo list, word for word: the part before its first \": \" is the phase, the rest without the status in brackets is the task, with that status. The handover checks that the monitors run in this session and that your todo list holds each of those todos, and runs each watcher's check.",
   `2. A line with ${PROBE} <id>, typed into this session or arriving as an inbox event, is a check of this handover: run the dori handover ack command the line gives (with its --state) and nothing else.`,
   `3. A [LEAD] HANDOVER_SUPPLEMENT <id> line comes from the audit after the commit: it names a file with what you were missing and the old log lines behind it; write those items into the file it names (create it if it is not there), keep them in mind as the note's, and run the ack command it gives. No restatement is asked before the commit.`,
-  `4. Until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing besides that file and your todo list: the handover can still roll back. The old session stays quiet meanwhile and is closed once the checks pass.`,
-  `5. After ${COMMITTED}, carry on: open lanes, owner questions, todos, open worklog items (each from its Next and NOTE lines: a NOTE may hold a promise to someone, keep it; and keep it with dori worklog next|note|close), timers, promised follow-ups and the old lead's notes; answer the owner where his last messages left off. A [LEAD] HANDOVER_SUPPLEMENT line that comes later is the audit after the handover: do what it says and go on. When you or a lane find later that an old session knew something its handover did not carry and it cost something (asking again, redoing, guessing), run dori handover gap <lane key or lead> --kind "<owner's words|decision|lead instruction|todo|goal|monitor|tried fix|other>" --text "<one line, no secret values>".`,
+  `4. Until a [LEAD] ${COMMITTED} line arrives answer no one, act on no event and change nothing besides that file and your todo list: the handover can still roll back. The old session keeps answering the owner meanwhile and is frozen or closed once the checks pass.`,
+  `5. After ${COMMITTED}, carry on: open lanes, owner questions, todos, open worklog items (each from its Next and NOTE lines: a NOTE may hold a promise to someone, keep it; and keep it with dori worklog next|note|close), timers, promised follow-ups and the old lead's notes; answer the owner where his last messages left off (the old session answered him until the commit: its log shows which of his messages already got a reply). A [LEAD] HANDOVER_SUPPLEMENT line that comes later is the audit after the handover: do what it says and go on. When you or a lane find later that an old session knew something its handover did not carry and it cost something (asking again, redoing, guessing), run dori handover gap <lane key or lead> --kind "<owner's words|decision|lead instruction|todo|goal|monitor|tried fix|other>" --text "<one line, no secret values>".`,
   "",
   `## Monitors (${f.monitors.length})`,
   ...(f.monitors.length ? f.monitors.map(monitorLine) : ["none"]),
@@ -593,16 +594,16 @@ export const verify = async (deps: HandoverDeps, facts: HandoverFacts, to: Targe
     if (!problems.length) break;
     await deps.clock.sleep(POLL_MS);
   }
-  if (problems.length) return { reasons: problems, session };
   // No restatement before the commit (owner Q476, 2026-11-03): the probes' acks show the new lead reads its pane and its
   // inbox and runs dori; the note carries the owner's words word for word, and the audit after the commit checks the rest.
-  // checked again before the old lead goes: a monitor that ran at the first check can end before the move commits (a remote tail whose ssh dropped); one that exited 0 after its signal is not missing
+  return { reasons: problems.length ? problems : stillThere(deps, facts, to.pane, session), session };
+};
+
+// checked again before the old lead goes, here and after it settled: a monitor can end before the move commits (a remote tail whose ssh dropped; one that exited 0 after its signal is not missing), and a new lead can write its todo list anew (review of #416)
+const stillThere = (deps: HandoverDeps, facts: HandoverFacts, pane: string, session: string): string[] => {
   const stopped = facts.monitors.length ? missingMonitors(facts.monitors, readManifest(manifestPath(deps.config.sessionsDir, facts.cwd, session)), deps.alive, deps.home, deps.clock.now(), ranToEnd(sessionDirFor(deps.config.sessionsDir, facts.cwd), session, deps.home)) : [];
-  if (stopped.length) return { reasons: [`monitors stopped in ${to.pane} after the first check: ${stopped.join(", ")}`], session };
-  // and the todos: a new lead can put them in and then write its list anew while it finishes its first turn (review of #416)
   const dropped = facts.todos.length ? missingTodos(facts.todos, sessionDirFor(deps.config.sessionsDir, facts.cwd), session) : [];
-  if (dropped.length) return { reasons: [`todos left the todo list of ${to.pane} after the first check: ${dropped.join(", ")}`], session };
-  return { reasons: [], session };
+  return [...(stopped.length ? [`monitors stopped in ${pane} after the first check: ${stopped.join(", ")}`] : []), ...(dropped.length ? [`todos left the todo list of ${pane} after the first check: ${dropped.join(", ")}`] : [])];
 };
 
 export type HandoverResult = { readonly code: number; readonly note?: string; readonly to?: string };
@@ -820,8 +821,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     await rollBackNew({ run: deps.run, routedPane: deps.routedPane, tell, emit, lead: config.leadPane, pane, why: startup, fail: `HANDOVER_FAIL new session ${pane}: ${startup}; nothing moved, ${config.leadPane} stays the lead` });
     return { code: 3, note, to: pane };
   }
-  setQuiet(config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`);
-  await tell(config.leadPane, `[LEAD] Handover to ${pane} started (note ${note}). Stay quiet now: do not answer the owner or act on inbox, lane or session events, and ignore ${PROBE} lines. If the handover fails you are told and stay the lead.`);
+  await tell(config.leadPane, `[LEAD] Handover to ${pane} started (note ${note}). You stay the lead until it commits: keep answering the owner's messages as they come, but do not act on other inbox, lane or session events, and ignore ${PROBE} lines. If the handover fails you are told and stay the lead.`);
   if (!(await sendVerified(deps.run, deps.clock, config, pane, `${config.handover.prompt}. Read the handover note at ${note} in full and do what it says, starting with its first section.`))) {
     await tell(config.leadPane, `[LEAD] Handover to ${pane} failed before anything moved: its first message did not register. You stay the lead.`);
     await rollBackNew({ run: deps.run, routedPane: deps.routedPane, tell, emit, lead: config.leadPane, pane, why: "its first message did not register", fail: `HANDOVER_FAIL the first message did not register in ${pane}; nothing moved, ${config.leadPane} stays the lead` });
@@ -841,7 +841,7 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
   for (const line of await pointLead(deps, facts.from, to, stamp)) emit(line);
   const restartFailures = await restartAll();
   mark("repoint", !restartFailures.length);
-  const checked: Checked = restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, join(dir, `${stamp}.understood.md`), emit);
+  const checked = await settleOldLead<Checked>(deps, restartFailures.length ? { reasons: restartFailures, session: "" } : await verify(deps, facts, to, opts.verifyMin ?? config.handover.verifyMin, join(dir, `${stamp}.understood.md`), emit), config.stateDir, config.leadPane, deps.clock.now() + ((opts.verifyMin ?? config.handover.verifyMin) + 10) * 60_000, `the handover of the lead to ${pane} is running`, (session) => stillThere(deps, facts, pane, session));
   ctx.supplements.push(...(checked.supplements ?? []));
   if (!restartFailures.length) mark("verify", !checked.reasons.length);
   const record = (result: string, reasons: readonly string[]) => writeFileSync(join(dir, `${stamp}.result.json`), JSON.stringify({ at: iso(deps.clock), from: facts.from, to: { ...to, session: checked.session }, note, result, reasons }, null, 1));
@@ -849,18 +849,18 @@ const moveLead = async (deps: HandoverDeps, opts: HandoverOptions, facts: Handov
     emit(`HANDOVER_VERIFY_FAIL ${pane}: ${checked.reasons.join("; ")}`);
     for (const line of await pointLead(deps, to, facts.from, stamp)) emit(line);
     await restartAll();
-    await tell(config.leadPane, `[LEAD] Handover to ${pane} failed (${checked.reasons.join("; ")}). You stay the lead: answer the owner and handle events again.`);
+    await tell(config.leadPane, `[LEAD] Handover to ${pane} failed (${checked.reasons.join("; ")}). You stay the lead: handle inbox, lane and session events again, and send now any reply to the owner that was refused as HANDOVER_QUIET meanwhile.`);
     await rollBackNew({ run: deps.run, routedPane: deps.routedPane, tell, emit, lead: config.leadPane, pane, why: checked.reasons.join("; ") });
     record("rolled-back", checked.reasons);
     return { code: 3, note, to: pane };
   }
-  if (facts.from.session && checked.session) new QuestionStore(deps.cardDir).retarget({ session: facts.from.session }, { session: checked.session });
+  new QuestionStore(deps.cardDir).retarget({ tmux: config.leadPane, ...(facts.from.session && checked.session ? { session: facts.from.session } : {}) }, { tmux: pane, ...(checked.session ? { session: checked.session } : {}) });
   // committed: the old lead is frozen, not closed, so it spends no tokens and does nothing while its pane and log stay.
-  // A rolled-back move never gets here, and before this point it was only told to stay quiet.
   // work a monitor of the old lead started goes on: those monitors are not stopped, and the session closes once it ended
   const work = facts.from.session ? monitorWork(readManifest(manifestPath(config.sessionsDir, facts.from.cwd, facts.from.session)), await deps.procs(), deps.clock.now(), deps.alive, deps.home).filter((j) => j.pids.length > 0) : [];
   for (const line of await endOldMonitors(deps, facts, work.map((j) => j.pid))) emit(line);
   const ice = await freezePane(deps, config.leadPane, process.pid, work.map((j) => j.pid)).catch((e: unknown) => ({ pids: [] as number[], agentPid: undefined, why: e instanceof Error ? e.message : String(e) }));
+  checked.release?.();
   mark("freeze", !!ice.agentPid);
   if (ice.agentPid) {
     const h = config.handover.frozenCloseH;
