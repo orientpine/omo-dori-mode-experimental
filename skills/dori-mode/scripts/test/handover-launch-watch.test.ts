@@ -131,6 +131,11 @@ test("a watch-only until-grep over a $HOME path, with grep -o, counts as armed f
   expect(missingMonitors([remote], [entry({ description, command: remote.command, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (armed again with the command that starts work; arm a watch-only one instead)`]);
   // only $HOME in front of a literal path: another variable, a longer name or a second expansion is still work
   for (const c of ["grep -o X $DIR/jobs.json", "grep -o X $HOMEDIR/jobs.json", "grep -o X $HOME/$name.json", "grep -o X $HOME/*.json"]) expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a command that is not one of the plain watch shapes"]);
+  // review 2 of #536: ANSI-C ($'...') and locale ($"...") quoting spell $HOME/ but bash decodes them into other words
+  for (const c of ["ssh host cat $'HOME/\\x3btouch\\x20/tmp/replayed'; sleep 600", 'cat $"HOME/x"', "cat $'HOME/x'"]) {
+    expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a command that is not one of the plain watch shapes"]);
+    expect(missingMonitors([remote], [entry({ description, command: c, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (starts work: arm a watch-only one with the same description)`]);
+  }
 });
 
 test("a script fed to a shell with combined options or with its output redirected first starts work", () => {

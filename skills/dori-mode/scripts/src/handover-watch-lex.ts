@@ -66,7 +66,8 @@ export const lex = (s: string, start: number, inSub: boolean): { cmds: Simple[];
         text += s[i + 1] ?? "";
         quoted = true;
         i += 2;
-      } else if (c === "`" || (c === "$" && s[i + 1] === "{")) return undefined;
+      } else if (c === "`" || (c === "$" && /[{'"]/.test(s[i + 1] ?? ""))) return undefined;
+      // ${ }, and the ANSI-C $'...' and locale $"..." quotes bash decodes into other words (review 2 of #536), are not modelled
       else if (c === "$" && s[i + 1] === "(") {
         split = true;
         if (!sub()) return undefined;
