@@ -15,6 +15,7 @@ import { type FlowDeps, objectDone, reopenClaim } from "./done-flow-state.ts";
 import { reopenedText, signalIo, windowMs } from "./done-flow-common.ts";
 import { unpushedWork } from "./done-flow-worktrees.ts";
 import { closeLane } from "./done-flow-close.ts";
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 
 export * from "./done-flow-state.ts";
 export * from "./done-flow-worktrees.ts";
@@ -25,11 +26,16 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
   if (blocked.length) return [await objectDone(deps, lane, blocked)];
   const failing = (await checkDone(lane.done, deps.run, signalIo(deps, lane))).filter((c) => !c.ok).map((c) => `${c.signal} -> ${c.detail}`);
   if (failing.length) return [await objectDone(deps, lane, failing)];
-  // the checks take seconds: a dori type that took the claim back meanwhile wins
-  const fresh = await deps.registry.read(lane.key);
-  if (fresh && statusOf(fresh) !== "done-claimed") return [];
-  const verified = withStatus(lane, "verified-done", "Done signals read back live", iso(deps.clock));
-  await deps.registry.write(verified);
+  // the checks take seconds: a dori type that took the claim back meanwhile wins, and a revive that moved the pane meanwhile
+  // is kept (the record is read again under the lane's lifecycle lock, review 9 of #535)
+  const verified = await withLaneLifecycle(deps, lane.key, async () => {
+    const fresh = await deps.registry.read(lane.key);
+    if (fresh && statusOf(fresh) !== "done-claimed") return undefined;
+    const next = withStatus(fresh ?? lane, "verified-done", "Done signals read back live", iso(deps.clock));
+    await deps.registry.write(next);
+    return next;
+  });
+  if (!verified) return [];
   const note = `Done: ${evidence}`;
   // the claim's summary is read by closeLane itself; an explicit summary there would post even when the result is in the thread
   const result = await closeLane(deps, verified, note);

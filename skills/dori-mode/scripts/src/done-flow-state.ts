@@ -14,6 +14,7 @@ import type { SignalIo } from "./done-signals.ts";
 import { reopenedText, windowMs } from "./done-flow-common.ts";
 import { appendRollover, outcomeLine, outcomeMissing, pendingStuck, readRollovers } from "./rollover.ts";
 import { Reports } from "./reports.ts";
+import { withLaneLifecycle } from "./lane-lifecycle.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -32,8 +33,7 @@ export type FlowDeps = {
   readonly answeredCards?: () => readonly Question[];
   // immutable versions from answers.jsonl, including cards since reopened or resolved
   readonly answerHistory?: () => readonly Question[];
-  // moves the open question cards asked from pane from to pane to (cli reads the card store); a revived lane's cards follow it
-  readonly retargetCards?: (from: string, to: string) => readonly string[];
+  readonly retargetCards?: (from: string, to: string) => readonly string[]; // a revived lane's cards follow its pane (cli: the card store)
   // asks the thread status queue for a status on a discord:<id> work thread; the queue keeps it working while a lane there
   // still works. Resolves with the queue's outcome (cli wires it when DORI_DISCORD_TOKEN is set)
   readonly requestThreadStatus?: (ref: string, status: "working" | "waiting") => Promise<string>;
@@ -193,7 +193,7 @@ export const typeIntoPane = async (deps: FlowDeps, pane: string, text: string): 
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
   const at = iso(deps.clock);
   if (lane.reportProtocol === "jsonl-v1") new Reports(deps.config.stateDir).append({ type: "activity", key: lane.key, at, state: "running", text: `NOT_DONE: ${reasons.join("; ")}` });
-  await deps.registry.write(withStatus(lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }));
+  await withLaneLifecycle(deps, lane.key, async () => deps.registry.write(withStatus((await deps.registry.read(lane.key)) ?? lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } })));
   if (lane.pane) await sendVerified(deps.run, deps.clock, deps.config, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
 };

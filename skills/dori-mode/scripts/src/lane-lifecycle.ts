@@ -32,10 +32,11 @@ const allMoves = (stateDir: string): PaneMove[] => {
 export const movesFrom = (stateDir: string, pane: string): PaneMove[] => allMoves(stateDir).filter((m) => m.from === pane);
 // A record read before a revive and written back after it would name the pane the lane was revived away from (the watch's
 // settle and not-done writes, a pause: review 8 of #535). Registry.write keeps the revived pane then: true when the lane's
-// latest move went from the pane being written to the pane on disk.
+// latest move ended on the pane on disk and some move left the pane being written (A to B to C, then an old read naming A;
+// review 9 of #535). A move back (a refused start) is recorded too, so its own write passes.
 export const revivedAway = (stateDir: string, key: string, writing: string, onDisk: string): boolean => {
-  const last = allMoves(stateDir).filter((m) => m.key === key).at(-1);
-  return last?.from === writing && last.to === onDisk;
+  const mine = allMoves(stateDir).filter((m) => m.key === key);
+  return mine.at(-1)?.to === onDisk && mine.some((m) => m.from === writing);
 };
 
 const WAIT_MS = 100;

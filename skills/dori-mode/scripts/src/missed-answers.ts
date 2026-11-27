@@ -96,7 +96,12 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
   for (const row of rows) {
     // Inbox ts is written after QuestionStore.answer. Pick the last version at that instant, never today's live card.
     const version = row.qid ? history.filter((q) => q.id === row.qid && Date.parse(q.answeredAt ?? "") <= row.at).sort((a, b) => Date.parse(b.answeredAt ?? "") - Date.parse(a.answeredAt ?? ""))[0] : undefined;
-    const target = row.qid ? version?.tmux || cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
+    const asked = row.qid ? version?.tmux || cardById.get(row.qid)?.tmux || row.tmux || lead.pane : lead.pane;
+    // a pane a lane was revived away from (lane-lifecycle moves) is asked through that lane's live pane now, so its live
+    // session (a /clear there, its successors) is read as any asking pane's is (review 9 of #535)
+    if (row.qid && asked !== lead.pane && !sessionFor(sessions, asked) && movesFrom(deps.config.stateDir, asked).length) archived ??= await deps.registry.list();
+    const forward = archived && row.qid && asked !== lead.pane && !sessionFor(sessions, asked) ? archived.find((l) => statusOf(l) !== "closed" && l.pane && sessionFor(sessions, l.pane) && movesFrom(deps.config.stateDir, asked).some((m) => m.key === l.key && [l.session, ...(l.priorSessions ?? [])].includes(m.session)))?.pane : undefined;
+    const target = forward ?? asked;
     const session = sessionFor(sessions, target), key = session || target === lead.pane ? target : `${target}\0${row.at}`;
     if (!transcripts.has(key)) {
       const cwd = session?.path;
