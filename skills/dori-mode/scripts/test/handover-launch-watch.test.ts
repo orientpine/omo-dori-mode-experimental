@@ -113,6 +113,26 @@ test("a script fed to a shell with no space before < or with descriptor 0 starts
   expect(launchOf("bash /nonexistent/x.sh 0< /tmp/in", HOME, () => undefined)).toEqual({ why: "a script the handover cannot read", writes: [], detached: true });
 });
 
+// h3-prompt-app's lane handover rolled back on 2026-11-27 11:29Z: its monitor ran a python watcher (LAUNCHES_WORK), and the
+// new session armed the watch-only one the note asked for, with the same description and filter: an until loop of grep
+// -o over $HOME/.cache/.../remote-jobs.json. The check read grep -o and the $HOME path as work and asked for it again.
+test("a watch-only until-grep over a $HOME path, with grep -o, counts as armed for a monitor that starts work", () => {
+  // Given: the old session's monitor and the new session's watch-only one, as the two sessions armed them
+  const description = "h3-prompt-app: owner's first real container job delivered (phone/Discord check)";
+  const filter = "^OWNER_REMOTE_DONE";
+  const [remote] = liveMonitors([entry({ description, command: "python3 ~/.cache/dori-scratch/h3-prompt-app/watch-remote.py", filter, runtime: { pid: 1450000 } })], 0, () => true, HOME);
+  if (!remote) throw new Error("no monitor");
+  expect(monitorLine(remote)).toContain("LAUNCHES_WORK");
+  const watch = `until grep -Eo '\\{[^{}]*\\}' $HOME/.cache/h3-prompt-app/remote-jobs.json 2>/dev/null | grep -E '"test": *false' | grep -Eq '"done": *[0-9]'; do sleep 20; done; echo OWNER_REMOTE_DONE`;
+  // When / Then: the watch-only one is armed, here and with the path quoted; the watcher armed again still is not
+  expect(launchOf(watch, HOME)).toBeUndefined();
+  expect(missingMonitors([remote], [entry({ description, command: watch, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([]);
+  expect(launchOf('tail -n 0 -F "$HOME/.cache/h3/jobs.log" | grep --line-buffered -o DONE', HOME)).toBeUndefined();
+  expect(missingMonitors([remote], [entry({ description, command: remote.command, filter, runtime: { pid: 9 } })], () => true, HOME, 0)).toEqual([`${description} (armed again with the command that starts work; arm a watch-only one instead)`]);
+  // only $HOME in front of a literal path: another variable, a longer name or a second expansion is still work
+  for (const c of ["grep -o X $DIR/jobs.json", "grep -o X $HOMEDIR/jobs.json", "grep -o X $HOME/$name.json", "grep -o X $HOME/*.json"]) expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a command that is not one of the plain watch shapes"]);
+});
+
 test("a script fed to a shell with combined options or with its output redirected first starts work", () => {
   for (const c of ["bash -se < /tmp/job.sh", "bash -s > /tmp/job.log 2>&1 < /tmp/job.sh", "ssh h bash -ex -s -- a < /tmp/job.sh"]) {
     expect([c, launchOf(c, HOME)?.why]).toEqual([c, "a script run by a shell from its input (bash -s < file)"]);

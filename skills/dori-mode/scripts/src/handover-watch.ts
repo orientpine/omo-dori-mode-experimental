@@ -3,7 +3,8 @@
 // lead notes): tail -F | grep, until/while loops of sleep over grep, test, date or kill -0 <pid>, gh pr/run/api reads,
 // git fetch/rev-parse/log polls, a find that only reads (a re-armed gate, 2026-11-11 14:22Z), a plain sed or awk filter, a state file under $SENPI_MONITOR_STATE_DIR, and the same
 // run as another account or host (node-dori-do, ssh); since 2026-11-26 (the moodori lead's reads) ls and md5sum of a folder,
-// TZ= in front of a listed program, tr -c, and a PowerShell count of one Get- read over ssh. Anything else is work and keeps its watch, so a new session never
+// TZ= in front of a listed program, tr -c, and a PowerShell count of one Get- read over ssh; since 2026-11-27 (h3-prompt-app's
+// watch-only replacement, rolled back at 11:29Z) grep -o and a file under $HOME, read like the same path under ~. Anything else is work and keeps its watch, so a new session never
 // arms it again (reviews 4-21 of #414 found a way around every list of forms that start work). Threat model: these are
 // the lane's own monitors, not an attacker's; the list keeps ordinary work (a bun test, a dori review, a remote ci) from
 // running twice. It trusts the listed programs and options to only read, and the session's environment. What it cannot
@@ -20,7 +21,7 @@ const PROGRAMS = new Map<string, Spec>([
   ...["sleep", "true", "false", "break", "continue", "cd", "cat"].map((n) => [n, {}] as const),
   ...["echo", "printf"].map((n) => [n, { raw: true }] as const),
   ["date", { flags: "u", vals: "d", operand: (w) => w.text.startsWith("+") }],
-  ["grep", { flags: "qExvicFnsw", vals: "e", long: ["line-buffered"] }],
+  ["grep", { flags: "qExvicFnswo", vals: "e", long: ["line-buffered"] }],
   ["tail", { flags: "Ff", vals: "n", num: true }],
   ["head", { vals: "nc", num: true }],
   ["sha256sum", {}],
@@ -74,6 +75,8 @@ const VAR = /^[a-z_][a-z0-9_]*$/;
 const ENV = (w: Word): boolean => !w.subs.length && (/^GH_CONFIG_DIR=/.test(w.text) || w.text === "GH_PAGER=cat");
 // the zone a listed program prints times in, which only selects a zone file to read
 const TZ = (w: Word | undefined): boolean => !!w && /^TZ=/.test(w.text);
+// a path under the account's home: $HOME and literal path words after it, the same file ~/ names (the environment is trusted)
+const HOME_PATH = (w: Word): boolean => !w.subs.length && !w.glob && /^\$HOME(?:\/[^$]*)?$/.test(w.text);
 // a name whose value the command's own words set: lowercase, and never _, which the shell sets after every command (#532 review 3)
 const TRUSTED = (n: string): boolean => VAR.test(n) && n !== "_";
 // a PowerShell command that reads one count or list: a listed Get- cmdlet with literal parameters, nothing else (no ; | &
@@ -129,9 +132,9 @@ const simpleOk = (c: Simple, state: (w: Word) => boolean, hash: (w: Word) => boo
   const [name, ...args] = rest.slice(e);
   if (!plain(name) || name.subs.length) return false;
   // an expansion ($name, $( ), a glob) may become options or other words: an argument only of echo, printf, test and [ (in
-  // their shapes) and the right side of an assignment; elsewhere a state file, for git a rev-parse --verify hash (#414 r22-r25)
+  // their shapes) and the right side of an assignment; elsewhere a state file, a path under $HOME, for git a rev-parse --verify hash (#414 r22-r25)
   if (name.text === "test" || name.text === "[") return name.text === "test" ? testOk(args) : args.at(-1)?.text === "]" && !args.at(-1)?.expand && testOk(args.slice(0, -1));
-  if ((!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !(x.expand || x.glob) || state(x) || (name.text === "git" && hash(x)))) || (name.text === "printf" && (!args[0] || args[0].expand || args[0].glob || !/^(?:[^%-][^%]*|)(?:%[s%][^%]*)*$/.test(args[0].text)))) return false;
+  if ((!RAW.has(name.text) && name.text !== "export" && !args.every((x) => !(x.expand || x.glob) || state(x) || HOME_PATH(x) || (name.text === "git" && hash(x)))) || (name.text === "printf" && (!args[0] || args[0].expand || args[0].glob || !/^(?:[^%-][^%]*|)(?:%[s%][^%]*)*$/.test(args[0].text)))) return false;
   const a = args.map((x) => x.text);
   if (name.text === "tee") return argsOk({ flags: "a", operand: (x) => x.text === "/dev/null" || state(x) }, args);
   if (name.text === "kill") return a[0] === "-0" && a.length > 1 && a.slice(1).every((p) => /^\d+$/.test(p));
