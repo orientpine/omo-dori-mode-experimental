@@ -37,13 +37,16 @@ test("a lane whose interrupted handover left its journal (owner dead) is not rev
   expect(fake.calls.some((c) => c[0] === "run")).toBe(false);
 });
 
-const answered = async (lane: Parameters<typeof laneOf>[1]) => {
-  // Given: the card was asked from hc:t27; the lane runs that session in hc:t1 now, and its log holds the answer
+const answered = async (closed: boolean) => {
+  // Given: a card asked from hc:t27 with no session of its own (dori ask without --session) was answered while the pane
+  // was gone; then the lane was revived (its move recorded) and its revived session read the answer
   const { deps } = reviveRig(state.dir);
   const answeredAt = new Date(T0).toISOString();
-  const version: Question = { id: "Q1", text: "keep the GPU off?", options: ["yes", "no"], channel: "1", thread: null, session: SESSION, tmux: "hc:t27", created: answeredAt, status: "answered", answer: "yes", answerKind: "button", answeredAt };
+  const version: Question = { id: "Q1", text: "keep the GPU off?", options: ["yes", "no"], channel: "1", thread: null, session: null, tmux: "hc:t27", created: answeredAt, status: "answered", answer: "yes", answerKind: "button", answeredAt };
   const d = { ...deps(T0 + 600_000), config: { ...deps(T0).config, sessionsDir: join(state.dir, "sessions") }, answerHistory: () => [version] };
-  await d.registry.write(laneOf(state.dir, { pane: "hc:t1", ...lane }));
+  await d.registry.write(laneOf(state.dir));
+  expect(await reviveTarget(d, "h3-charsheet", "")).toStartWith("REVIVE_OK h3-charsheet hc:t1");
+  if (closed) await d.registry.patch("h3-charsheet", { closedAt: new Date(T0 + 900_000).toISOString() });
   const logs = sessionDirFor(d.config.sessionsDir, state.dir);
   mkdirSync(logs, { recursive: true });
   writeFileSync(join(logs, `2026-11-21T15-48-52-096Z_${SESSION}.jsonl`), [{ type: "session", id: SESSION, cwd: state.dir }, { type: "message", message: { role: "user", content: answerLine(version) } }].map((e) => JSON.stringify(e)).join("\n"));
@@ -54,9 +57,9 @@ const answered = async (lane: Parameters<typeof laneOf>[1]) => {
 };
 
 test("an answer given while the pane was gone counts as seen once the revived session read it (lane still open)", async () => {
-  expect(await answered({})).toEqual([]);
+  expect(await answered(false)).toEqual([]);
 });
 
 test("the same answer still counts as seen after the revived lane closed", async () => {
-  expect(await answered({ closedAt: new Date(T0 + 300_000).toISOString() })).toEqual([]);
+  expect(await answered(true)).toEqual([]);
 });

@@ -13,7 +13,7 @@ import { closeHerdrSession, HerdrStartupError, isHerdrPane, openHerdrSession } f
 import { laneHomeEnv } from "./home-env.ts";
 import { pendingFile, splitModel } from "./lane-handover.ts";
 import { sendVerified } from "./panes.ts";
-import { withLaneLifecycle } from "./lane-lifecycle.ts";
+import { recordMove, withLaneLifecycle } from "./lane-lifecycle.ts";
 import { LANE_KEY, type Lane, statusOf } from "./registry.ts";
 import { execOf, type Runner } from "./run.ts";
 import { HerdrCli, reasonOf } from "./runtime/herdr/exec.ts";
@@ -83,6 +83,7 @@ export const reviveGoneLane = async (deps: FlowDeps, lane: Lane, prompt: string)
           const later = moved(await deps.registry.read(now.key)) ?? handover();
           if (later) throw new Error(`the lane is ${later} now, so ${pane} is not used`);
           await deps.registry.patch(now.key, { pane, tab });
+          recordMove(config.stateDir, { key: now.key, session, from: gone, to: pane, at: new Date(deps.clock.now()).toISOString() });
           published = pane;
           deps.retargetCards?.(gone, pane);
         }),

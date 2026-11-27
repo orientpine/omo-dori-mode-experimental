@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { CheckpointError, takeLock } from "./checkpoint-lock.ts";
@@ -8,6 +8,28 @@ import type { FlowDeps } from "./done-flow-state.ts";
 // its gone pane and writes the new pane under it, and a close reads the lane again and writes it closed under it, closing a
 // pane a revive wrote since the close began. So a new pane is either seen and closed by the close or never written. Both
 // sections are short (a read, a write, one pane close), so a busy lock is waited for, up to 30 s.
+// Each revive writes where a lane's session moved (review 6 of #535): a card answered while the old pane was gone keeps
+// that pane in answers.jsonl, often with no session (dori ask without --session), so the owner-waiting check finds the
+// revived lane through this record, never through a card's metadata.
+export type PaneMove = { readonly key: string; readonly session: string; readonly from: string; readonly to: string; readonly at: string };
+const movesFile = (stateDir: string): string => join(stateDir, "revive", "moved.jsonl");
+export const recordMove = (stateDir: string, move: PaneMove): void => {
+  mkdirSync(join(stateDir, "revive"), { recursive: true });
+  appendFileSync(movesFile(stateDir), `${JSON.stringify(move)}\n`);
+};
+export const movesFrom = (stateDir: string, pane: string): PaneMove[] => {
+  const file = movesFile(stateDir);
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8").split("\n").flatMap((line) => {
+    try {
+      const m = JSON.parse(line) as Partial<PaneMove>;
+      return m.from === pane && typeof m.key === "string" && typeof m.session === "string" ? [m as PaneMove] : [];
+    } catch {
+      return [];
+    }
+  });
+};
+
 const WAIT_MS = 100;
 const TRIES = 300;
 

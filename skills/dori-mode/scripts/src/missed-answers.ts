@@ -16,6 +16,7 @@ import { sendVerified } from "./panes.ts";
 import { answeredBy } from "./send-dedupe.ts";
 import { iso } from "./run.ts";
 import { type Lane, statusOf } from "./registry.ts";
+import { movesFrom } from "./lane-lifecycle.ts";
 import { procTable } from "./session-id.ts";
 import type { Proc } from "./session-id.ts";
 
@@ -110,11 +111,12 @@ export const unansweredRows = async <T extends AnswerRow>(input: UnansweredInput
           if (path) file = { path };
         }
       }
-      if (!file && !session && target !== lead.pane && version?.session) {
-        // a lane revived on that same session in a new pane (lane-revive.ts) asked it, open or closed since: that exact
-        // session's log, for a lane open when the answer came (reviews 3-5 of #535)
+      const moves = !file && !session && target !== lead.pane ? movesFrom(deps.config.stateDir, target) : [];
+      if (moves.length) {
+        // a lane revived away from this pane (lane-revive.ts records each move) asked it, open or closed since: that exact
+        // session's log, for a lane open when the answer came; a card's own session may be empty (reviews 3-6 of #535)
         archived ??= await deps.registry.list();
-        const revived = archived.filter((l) => l.session === version.session && l.pane !== target && Date.parse(l.openedAt) <= row.at && (!l.closedAt || row.at <= Date.parse(l.closedAt))).sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt))[0];
+        const revived = archived.filter((l) => moves.some((m) => m.key === l.key && m.session === l.session) && Date.parse(l.openedAt) <= row.at && (!l.closedAt || row.at <= Date.parse(l.closedAt))).sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt))[0];
         const path = revived?.session && revived.cwd ? argvSessionLog([], deps.config.sessionsDir, revived.cwd, revived.session) : undefined;
         if (path) file = { path };
       }
