@@ -12,6 +12,7 @@ type LockOwner = { readonly pid: number; readonly host: string; readonly at: str
 // owner record is checked and then deleted. A check and a delete on a pathname are never one step, so upstream's takeover
 // of a stale lock could delete a live writer's lock and let two writers append at once. The kernel drops a flock when its
 // process dies, so a writer killed mid-write never locks the lane and nothing is taken over by age.
+const LOCK_SH = 1;
 const LOCK_EX = 2;
 const LOCK_NB = 4;
 // libc is opened on first use, not at import: every dori command imports this module, and native Windows has no libc
@@ -37,6 +38,7 @@ const openKernel32 = () => dlopen("kernel32.dll", {
   CloseHandle: { args: [FFIType.i64], returns: FFIType.i32 },
   GetLastError: { args: [], returns: FFIType.u32 },
 });
+const GENERIC_READ = 0x80000000;
 const GENERIC_WRITE = 0x40000000;
 const DELETE = 0x00010000;
 const FILE_SHARE_READ = 1;
@@ -157,4 +159,31 @@ export const holdLock = async <T>(lock: string, what: string, key: string, body:
   } finally {
     release();
   }
+};
+
+// The admission lock of a lead pane (#533, lead 2026-11-27): every dori command that talks to the owner holds it shared for
+// its whole run, and a lead handover takes it exclusive before it freezes the old lead, so no reply is stopped half sent.
+// Unlike takeLock, the file is permanent and never removed: with two shared holders, one that removed it on release would
+// let the handover take a new file while the other still sends (challenge r8). The kernel lets go when a holder exits.
+// Undefined: another holder has it in the other mode. Windows: share modes (a shared opener lets others read, an
+// exclusive one shares nothing), as takeWindowsLock does for its own lock.
+export const holdAdmission = (lock: string, mode: "shared" | "exclusive"): (() => void) | undefined => {
+  mkdirSync(dirname(lock), { recursive: true });
+  if (process.platform === "win32") {
+    kernel32 ??= openKernel32();
+    const k = kernel32.symbols;
+    const handle = k.CreateFileW(Buffer.from(`${lock}\0`, "utf16le"), mode === "shared" ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE, mode === "shared" ? FILE_SHARE_READ : 0, null, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, null);
+    if (handle === -1n) {
+      const code = k.GetLastError();
+      if (code === ERROR_SHARING_VIOLATION || code === ERROR_ACCESS_DENIED) return undefined;
+      throw new Error(`lock ${lock}: CreateFileW failed (Windows error ${code})`);
+    }
+    return () => void k.CloseHandle(handle);
+  }
+  const fd = openSync(lock, "a+", 0o600);
+  if (flock(fd, (mode === "shared" ? LOCK_SH : LOCK_EX) | LOCK_NB) !== 0) {
+    closeSync(fd);
+    return undefined;
+  }
+  return () => closeSync(fd);
 };

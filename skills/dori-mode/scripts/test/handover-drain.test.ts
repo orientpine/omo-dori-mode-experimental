@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SETTLE_MS, settleOldLead } from "../src/handover-drain.ts";
+import { admissionFile, SETTLE_MS, settleOldLead } from "../src/handover-drain.ts";
 import { QuestionStore } from "../src/messenger/discord-cards.ts";
+import { holdAdmission } from "../src/checkpoint-lock.ts";
 import { quietReason } from "../src/rollover.ts";
-import type { Proc } from "../src/session-id.ts";
 
 const BUSY = ["transcript", "── • Working (2s • esc to interrupt) ──────────", "❯ ", "────────────────────────", " ~/repo • main"].join("\n");
 const IDLE = ["transcript", "────────────────────────", "❯ ", "────────────────────────", " ~/repo • main"].join("\n");
@@ -18,10 +18,8 @@ afterEach(() => {
 });
 
 // screens: what each read of the old lead's pane shows, the last one from then on; atSleep runs before each poll's sleep;
-// table: the process table (its shell is pid 10); recheck: the new session's second monitor and todo check
-const AGENT = [{ pid: 10, ppid: 1, cmd: "bash" }, { pid: 11, ppid: 10, cmd: "bun /home/u/.bun/install/global/node_modules/omo-ai/dist/omo.js" }];
-// table: the rows ps prints, or the error text of a ps that failed
-const world = (screens: readonly (string | Error)[], atSleep: (n: number) => void = () => {}, opts: { table?: () => readonly Proc[] | string; recheck?: (session: string) => readonly string[] } = {}) => {
+// recheck: the new session's second monitor and todo check
+const world = (screens: readonly (string | Error)[], atSleep: (n: number) => void = () => {}, opts: { recheck?: (session: string) => readonly string[] } = {}) => {
   let t = 1_000_000;
   let reads = 0;
   let sleeps = 0;
@@ -29,11 +27,6 @@ const world = (screens: readonly (string | Error)[], atSleep: (n: number) => voi
   dirs.push(state);
   const deps = {
     run: async (argv: readonly string[]) => {
-      if (argv.includes("#{pane_pid}")) return { code: 0, out: "10", err: "" };
-      if (argv[0] === "ps") {
-        const rows = opts.table?.() ?? AGENT;
-        return typeof rows === "string" ? { code: 1, out: "", err: rows } : { code: 0, out: rows.map((r) => `${r.pid} ${r.ppid} ${r.pid} S ${r.cmd}`).join("\n"), err: "" };
-      }
       if (!argv.includes("capture-pane")) return { code: 1, out: "", err: "" };
       const s = screens[Math.min(reads++, screens.length - 1)] ?? IDLE;
       if (s instanceof Error) throw s;
@@ -158,26 +151,40 @@ test("an answered card with no claim file is taken too, so a dori reopen started
   expect([r.reasons, reopen]).toEqual([[], null]);
 });
 
-test("a dori send, thread or ask still running under the old lead (a background job past an idle screen, a quoted Windows command line too) keeps it from rest, and so does a ps that failed; past the time the move rolls back", async () => {
-  // Given
-  const send = { pid: 12, ppid: 11, cmd: "/home/u/.bun/bin/bun /home/u/.dori/src/skills/dori-mode/scripts/src/cli.ts send discord --to 1 --text hi" };
-  let running = true;
+test("a dori send, thread, ask, reopen or resolve in flight (it holds the pane's admission lock shared) keeps the old lead from rest until it ends; past the time the move rolls back", async () => {
+  // Given a command of the old lead's pane that ends at the second poll, and one that never ends
+  let send: (() => void) | undefined;
   const ends = world([IDLE], (n) => {
-    if (n === 2) running = false;
-  }, { table: () => (running ? [...AGENT, send] : AGENT) });
-  const stays = world([IDLE], () => {}, { table: () => [...AGENT, { pid: 13, ppid: 11, cmd: "bash /home/u/.local/bin/dori thread reply 9 --text hi" }] });
-  const unlisted = world([IDLE], () => {}, { table: () => "ps: cannot read /proc" });
-  const windows = world([IDLE], () => {}, { table: () => [...AGENT, { pid: 14, ppid: 11, cmd: '"C:\\Program Files\\bun\\bun.exe" "C:\\work dir\\scripts\\src\\cli.ts" send discord --to 1' }] });
+    if (n === 2) send?.();
+  });
+  send = holdAdmission(admissionFile(ends.state, "lead"), "shared");
+  const stays = world([IDLE]);
+  const stuck = holdAdmission(admissionFile(stays.state, "lead"), "shared");
   // When
-  const results = [await ends.settle(), await stays.settle(), await unlisted.settle(), await windows.settle()];
+  const results = [await ends.settle(), await stays.settle()];
+  stuck?.();
   // Then
+  expect([send !== undefined, stuck !== undefined]).toEqual([true, true]);
   expect(results.map((r) => r.reasons)).toEqual([
     [],
-    [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (a dori thread of it was still running, pid 13); nothing was frozen or closed`],
-    [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (its processes could not be listed); nothing was frozen or closed`],
-    [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (a dori send of it was still running, pid 14); nothing was frozen or closed`],
+    [`the old lead lead did not come to rest within ${SETTLE_MS / 1000} s after the checks passed (a dori send, thread, ask, reopen or resolve of it was still running: its admission lock was held); nothing was frozen or closed`],
   ]);
   expect(ends.sleeps()).toBe(2);
+  results[0]?.release?.();
+});
+
+test("the admission lock stays taken exclusive until the freeze is done, so a dori command starting meanwhile cannot take it", async () => {
+  // Given
+  const w = world([IDLE]);
+  const lock = admissionFile(w.state, "lead");
+  // When
+  const r = await w.settle();
+  const during = holdAdmission(lock, "shared");
+  r.release?.();
+  const after = holdAdmission(lock, "shared");
+  after?.();
+  // Then
+  expect([r.reasons, during, after !== undefined]).toEqual([[], undefined, true]);
 });
 
 test("the new session's monitors and todos are checked again after the settle: one gone meanwhile rolls the move back and frees the claims", async () => {
@@ -190,6 +197,8 @@ test("the new session's monitors and todos are checked again after the settle: o
   const r = await w.settle();
   const free = store.claim(q.id, w.now());
   free?.();
+  const admitted = holdAdmission(admissionFile(w.state, "lead"), "shared");
+  admitted?.();
   // Then
-  expect([r.reasons, r.release, seen, free === null]).toEqual([["monitors stopped in new after the first check: owner inbox"], undefined, ["new-sid"], false]);
+  expect([r.reasons, r.release, seen, free === null, admitted !== undefined]).toEqual([["monitors stopped in new after the first check: owner inbox"], undefined, ["new-sid"], false, true]);
 });
